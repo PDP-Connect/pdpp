@@ -19,7 +19,7 @@ const CLICKABLE_TOAST_RE = /<button|onClick|Copy to this device/;
 const POLICY_WRITE_GUARD_RE = /!currentClipboardPolicy\.canWriteLocalClipboard[\s\S]*reason: "write-unavailable"/;
 const WRITE_TEXT_RE = /navigator\.clipboard\.writeText\(text\)/;
 const NATIVE_PASTE_POLICY_GUARD_RE =
-  /!currentClipboardPolicy\.canForwardNativePasteEvent[\s\S]*reason: "policy-denied"[\s\S]*event\.clipboardData\?\.getData\("text"\)/;
+  /getClipboardPolicy: \(\) => clipboardPolicyRef\.current/;
 const PASSWORD_INPUT_RE = /inputType === "password"/;
 const MASKED_LOCAL_INPUT_RE = /remoteInputSensitive && !revealLocalText/;
 const MASKED_ATTRIBUTE_RE = /data-masked=\{localInputMasked \? "true" : "false"\}/;
@@ -37,6 +37,9 @@ const CORNER_PASTE_DIRECT_READ_RE =
 const VIEWER_DIRECT_NEKO_CLIPBOARD_CALL_RE = /\b(?:pasteTextIntoNeko|copyRemoteSelectionFromNeko)\(/;
 const VIEWER_CLIPBOARD_VIA_ADAPTER_RE =
   /if \(surface && surfaceState === "mounted"\) \{[\s\S]*pasted = await surface\.pasteText\(localText\)[\s\S]*if \(surface && surfaceState === "mounted"\) \{[\s\S]*dispatched = await surface\.copyRemoteSelection\(\)/;
+const CDP_NATIVE_PASTE_VIA_ADAPTER_RE =
+  /new CdpSurfaceAdapter\(\{[\s\S]*sendInput: sendCdpInput[\s\S]*getClipboardPolicy: \(\) => clipboardPolicyRef\.current/;
+const VIEWER_DIRECT_CDP_PASTE_POST_RE = /postInput\(\{ type: "paste", text \}\)/;
 
 test("mobile clipboard uses explicit copy and paste buttons with sheet fallback", async () => {
   const src = await readFile(STREAM_VIEWER_FILE, "utf8");
@@ -93,4 +96,10 @@ test("explicit n.eko clipboard commands route through the RemoteSurface adapter"
   const src = await readFile(STREAM_VIEWER_FILE, "utf8");
   assert.match(src, VIEWER_CLIPBOARD_VIA_ADAPTER_RE);
   assert.doesNotMatch(src, VIEWER_DIRECT_NEKO_CLIPBOARD_CALL_RE);
+});
+
+test("native CDP paste forwarding is package-backed", async () => {
+  const src = await readFile(STREAM_VIEWER_FILE, "utf8");
+  assert.match(src, CDP_NATIVE_PASTE_VIA_ADAPTER_RE);
+  assert.doesNotMatch(src, VIEWER_DIRECT_CDP_PASTE_POST_RE);
 });

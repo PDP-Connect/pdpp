@@ -30,7 +30,7 @@
 - [x] 3.2 Move DOM controllers for n.eko mounting, pointer dispatch, keyboard/IME handling, and explicit clipboard actions behind the package client API.
 - [x] 3.3 Keep React components, dashboard copy, server actions, URL resolution, styling, and owner-specific affordances in `apps/web`.
 - [x] 3.4 Preserve existing dashboard stream tests or add package-backed equivalents for keyboard, clipboard, viewport, media settle, visual quality, and n.eko client behavior.
-- [ ] 3.5 Verify mobile keyboard and IME paths still route through the package client API rather than ad hoc dashboard-only handlers.
+- [x] 3.5 Verify mobile keyboard and IME paths still route through the package client API rather than ad hoc dashboard-only handlers.
 
 ## 4. Backend Adapter Hardening
 

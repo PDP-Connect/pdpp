@@ -12,9 +12,6 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
-  type KeyboardEvent as ReactKeyboardEvent,
-  type MouseEvent as ReactMouseEvent,
-  type TouchEvent as ReactTouchEvent,
   type RefObject,
   useCallback,
   useEffect,
@@ -41,7 +38,7 @@ import {
   setNekoRemoteCopyFallback,
   setNekoViewportLayout,
 } from "./neko-client.ts";
-import { NekoSurfaceAdapter } from "@pdpp/remote-surface/client";
+import { CdpSurfaceAdapter, NekoSurfaceAdapter } from "@pdpp/remote-surface/client";
 import { createNekoClientApi } from "./neko-client-api-shim.ts";
 import {
   assessClipboardCapabilities,
@@ -742,7 +739,7 @@ function keyDebugName(key: string): string {
   return key.length === 1 ? "character" : key;
 }
 
-function keyboardDebugPayload(event: KeyboardEvent | ReactKeyboardEvent<Element>, action: string): StreamDebugPayload {
+function keyboardDebugPayload(event: KeyboardEvent, action: string): StreamDebugPayload {
   return {
     action,
     altKey: event.altKey,
@@ -3788,69 +3785,17 @@ function BrowserSurface({
   // ratio isn't the connector's.
   const aspect = viewportInfo ? `${viewportInfo.width} / ${viewportInfo.height}` : "16 / 10";
   const imgRef = useRef<HTMLImageElement | null>(null);
+  const softKeyboardInputRef = useRef<HTMLInputElement | null>(null);
+  const adapterRef = useRef<CdpSurfaceAdapter | null>(null);
+  const viewportInfoRef = useRef(viewportInfo);
   const clipboardPolicyRef = useRef(clipboardPolicy);
+  viewportInfoRef.current = viewportInfo;
   clipboardPolicyRef.current = clipboardPolicy;
 
-  // Throttle state for continuous-motion events: reduces network requests from
-  // ~60/sec down to ~30/sec. Mouse and touch motion don't need sub-frame precision;
-  // throttling prevents network saturation and reference-side CDP back-pressure.
-  // Only mousemove and touchmove are throttled; everything else (down/up/click/
-  // key/wheel/paste/touchstart/touchend) fires immediately. The cancel path
-  // discards any pending throttled coords so a stale move doesn't outlive the gesture.
-  const motionThrottleRef = useRef<{
-    mouseTimeoutId: ReturnType<typeof setTimeout> | null;
-    mousePendingCoords: { x: number; y: number } | null;
-    touchTimeoutId: ReturnType<typeof setTimeout> | null;
-    touchPendingTouch: { x: number; y: number; id: number } | null;
-  }>({
-    mouseTimeoutId: null,
-    mousePendingCoords: null,
-    touchTimeoutId: null,
-    touchPendingTouch: null,
-  });
-  const MOTION_THROTTLE_MS = 33; // ~30 Hz; generous for remote stream
-
-  // Mobile soft-keyboard trigger. We can't ask CDP whether the streamed page's
-  // focused element wants text (Runtime/DOM are blocked by the stealth
-  // allowlist — see server/streaming/cdp-method-allowlist.test.js). Instead,
-  // place a visually-hidden but focusable <input> inside the surface; on the
-  // first touch interaction we focus() it so the OS opens the soft keyboard.
-  // Keystrokes still bubble up to the role="application" div's onKeyDown/Up
-  // handlers (single dispatch — the input has no key handlers of its own), so
-  // CDP receives exactly one keyboard event per press regardless of focus.
-  // Gated by `(pointer: coarse)` so desktop's real keyboard isn't disrupted
-  // by stealing focus to the hidden input.
-  const softKeyboardInputRef = useRef<HTMLInputElement | null>(null);
   useSurfaceDebugTelemetry({ containerRef, debugEnabled, logDebug, surface: "cdp-frame", viewportInfo });
   useVisualQualityDebugTelemetry({ containerRef, debugEnabled, logDebug, surface: "cdp-frame", viewportInfo });
-  function focusSoftKeyboardIfMobile() {
-    if (typeof window === "undefined") {
-      return;
-    }
-    try {
-      if (!window.matchMedia("(pointer: coarse)").matches) {
-        logDebug("surface.cdp-frame.soft_keyboard.skip", {
-          reason: "fine-pointer",
-        });
-        return;
-      }
-    } catch {
-      logDebug("surface.cdp-frame.soft_keyboard.skip", {
-        reason: "match-media-error",
-      });
-      return;
-    }
-    softKeyboardInputRef.current?.focus();
-    logDebug("surface.cdp-frame.soft_keyboard.focus", {
-      active: document.activeElement === softKeyboardInputRef.current,
-      snapshot: readSurfaceDebugSnapshot(containerRef.current),
-    });
-  }
 
-  // Stable refs so the wheel/paste useEffect doesn't tear down on every render.
-  // These functions read from refs only (containerRef, inputUrlRef) so capturing
-  // them once on mount is correct and matches the React handler behaviour.
-  const postInput = useCallback(
+  const sendCdpInput = useCallback(
     async (payload: Record<string, unknown>) => {
       const url = inputUrlRef.current;
       if (!url) {
@@ -3893,226 +3838,40 @@ function BrowserSurface({
     [inputUrlRef, logDebug]
   );
 
-  const localCoords = useCallback(
-    (event: { clientX: number; clientY: number }): { x: number; y: number } | null => {
-      const node = containerRef.current;
-      if (!node) {
-        return null;
-      }
-      const img = imgRef.current;
-      return pointToStreamViewport(event, {
-        containerBox: node.getBoundingClientRect(),
-        imageBox: img?.getBoundingClientRect(),
-        viewport: viewportInfo,
-      });
-    },
-    [containerRef, viewportInfo]
-  );
-
-  function handleMouseMove(e: ReactMouseEvent<HTMLDivElement>) {
-    const c = localCoords(e);
-    if (!c) {
-      return;
-    }
-    const state = motionThrottleRef.current;
-    state.mousePendingCoords = c;
-    if (state.mouseTimeoutId) {
-      return;
-    }
-    postInput({ type: "mouse", action: "mousemove", x: c.x, y: c.y }).catch(() => undefined);
-    state.mouseTimeoutId = setTimeout(() => {
-      state.mouseTimeoutId = null;
-      if (state.mousePendingCoords) {
-        const coords = state.mousePendingCoords;
-        state.mousePendingCoords = null;
-        postInput({ type: "mouse", action: "mousemove", x: coords.x, y: coords.y }).catch(() => undefined);
-      }
-    }, MOTION_THROTTLE_MS);
-  }
-
-  function handleMouseDown(e: ReactMouseEvent<HTMLDivElement>) {
-    const c = localCoords(e);
-    if (!c) {
-      return;
-    }
-    postInput({ type: "mouse", action: "mousedown", x: c.x, y: c.y, button: e.button ?? 0 }).catch(() => undefined);
-  }
-
-  function handleMouseUp(e: ReactMouseEvent<HTMLDivElement>) {
-    const c = localCoords(e);
-    if (!c) {
-      return;
-    }
-    postInput({ type: "mouse", action: "mouseup", x: c.x, y: c.y, button: e.button ?? 0 }).catch(() => undefined);
-  }
-
-  function firstChangedTouch(e: ReactTouchEvent<HTMLDivElement>): { x: number; y: number; id: number } | null {
-    // The wire schema accepts a single touch point per event. We send the
-    // first changed touch — multi-touch isn't supported on the wire and
-    // splitting one gesture into multiple events would race the CDP queue.
-    const t = e.changedTouches[0];
-    if (!t) {
-      return null;
-    }
-    const coords = localCoords({ clientX: t.clientX, clientY: t.clientY });
-    if (!coords) {
-      return null;
-    }
-    return { ...coords, id: t.identifier };
-  }
-
-  function handleTouchStart(e: ReactTouchEvent<HTMLDivElement>) {
-    // Focus the hidden input so the mobile OS opens the soft keyboard. Safe
-    // to re-call on every touch — focus() on an already-focused element is a
-    // no-op, and re-focusing recovers from cases where the OS dismissed the
-    // keyboard after the operator tapped elsewhere on the streamed page.
-    focusSoftKeyboardIfMobile();
-    const t = firstChangedTouch(e);
-    if (!t) {
-      return;
-    }
-    postInput({ type: "touch", action: "touchstart", x: t.x, y: t.y, id: t.id }).catch(() => undefined);
-  }
-
-  function handleTouchMove(e: ReactTouchEvent<HTMLDivElement>) {
-    const t = firstChangedTouch(e);
-    if (!t) {
-      return;
-    }
-    const state = motionThrottleRef.current;
-    state.touchPendingTouch = t;
-    if (state.touchTimeoutId) {
-      return;
-    }
-    postInput({ type: "touch", action: "touchmove", x: t.x, y: t.y, id: t.id }).catch(() => undefined);
-    state.touchTimeoutId = setTimeout(() => {
-      state.touchTimeoutId = null;
-      if (state.touchPendingTouch) {
-        const pending = state.touchPendingTouch;
-        state.touchPendingTouch = null;
-        postInput({ type: "touch", action: "touchmove", x: pending.x, y: pending.y, id: pending.id }).catch(
-          () => undefined
-        );
-      }
-    }, MOTION_THROTTLE_MS);
-  }
-
-  function handleTouchEnd(e: ReactTouchEvent<HTMLDivElement>) {
-    // Drop any in-flight throttled touchmove so a stale coord doesn't arrive
-    // after the gesture ended.
-    const state = motionThrottleRef.current;
-    if (state.touchTimeoutId) {
-      clearTimeout(state.touchTimeoutId);
-      state.touchTimeoutId = null;
-    }
-    state.touchPendingTouch = null;
-    const t = firstChangedTouch(e);
-    if (!t) {
-      // Wire schema allows touchend with empty touchPoints (id ignored server-side).
-      postInput({ type: "touch", action: "touchend", x: 0, y: 0 }).catch(() => undefined);
-      return;
-    }
-    postInput({ type: "touch", action: "touchend", x: t.x, y: t.y, id: t.id }).catch(() => undefined);
-  }
-
-  function handleTouchCancel(e: ReactTouchEvent<HTMLDivElement>) {
-    // Wire schema has no `touchcancel`; the server's CDP mapper produces
-    // `Input.dispatchTouchEvent` with `type: 'touchEnd'` on touchend, which is
-    // the safest representation for a cancelled gesture too. Reuse that path
-    // so the remote browser doesn't think a touch is still pressed.
-    handleTouchEnd(e);
-  }
-
-  function handleKey(e: ReactKeyboardEvent<HTMLDivElement>, action: "keydown" | "keyup") {
-    // Don't preventDefault Escape — let base-ui Dialog handle it.
-    if (e.key === "Escape") {
-      return;
-    }
-    e.preventDefault();
-    logDebug("surface.cdp-frame.keyboard.forward", keyboardDebugPayload(e, action));
-    postInput({
-      type: "keyboard",
-      action,
-      key: e.key,
-      code: e.code,
-      modifiers: (e.altKey ? 1 : 0) + (e.ctrlKey ? 2 : 0) + (e.metaKey ? 4 : 0) + (e.shiftKey ? 8 : 0),
-    }).catch(() => undefined);
-  }
-
-  // Wheel and paste need non-passive listeners so we can preventDefault.
-  // React's synthetic onWheel and onPaste both attach as passive in modern
-  // React/Next, which silently breaks preventDefault on the operator's page.
-  // We attach native listeners directly to the same DOM node the React
-  // handlers are bound to (the role="application" surface).
   useEffect(() => {
     const node = containerRef.current;
     if (!node) {
       return;
     }
-    function onWheel(event: WheelEvent) {
-      event.preventDefault();
-      const c = localCoords({ clientX: event.clientX, clientY: event.clientY });
-      if (!c) {
-        return;
-      }
-      postInput({
-        type: "scroll",
-        x: c.x,
-        y: c.y,
-        deltaX: event.deltaX,
-        deltaY: event.deltaY,
-      }).catch(() => undefined);
-    }
-    function onPaste(event: ClipboardEvent) {
-      // Always preventDefault even on empty paste so the operator's local
-      // browser doesn't act on it inside our overlay.
-      event.preventDefault();
-      const currentClipboardPolicy = clipboardPolicyRef.current;
-      if (!currentClipboardPolicy.canForwardNativePasteEvent) {
-        logDebug("surface.cdp-frame.clipboard.paste", {
-          phase: "skipped",
-          policy: currentClipboardPolicy.directionPolicy,
-          reason: "policy-denied",
-          surface: currentClipboardPolicy.surface,
-          target: elementDebugSnapshot(event.target),
-        });
-        return;
-      }
-      const text = event.clipboardData?.getData("text") ?? "";
-      logDebug("surface.cdp-frame.clipboard.paste", {
-        length: text.length,
-        phase: "native-paste",
-        policy: currentClipboardPolicy.directionPolicy,
-        surface: currentClipboardPolicy.surface,
-        target: elementDebugSnapshot(event.target),
-      });
-      if (text.length === 0) {
-        return;
-      }
-      postInput({ type: "paste", text }).catch(() => undefined);
-    }
-    node.addEventListener("wheel", onWheel, { passive: false });
-    node.addEventListener("paste", onPaste);
+    const adapter = new CdpSurfaceAdapter({
+      client: {
+        sendInput: sendCdpInput,
+        getViewportInfo: () => viewportInfoRef.current,
+        getFrameElement: () => imgRef.current,
+        getClipboardPolicy: () => clipboardPolicyRef.current,
+        getSoftKeyboardElement: () => softKeyboardInputRef.current,
+        onInputDebug: (event, payload) => {
+          logDebug(event, {
+            ...payload,
+            snapshot: event === "surface.cdp-frame.soft_keyboard.focus" ? readSurfaceDebugSnapshot(containerRef.current) : undefined,
+          });
+        },
+      },
+      config: { kind: "cdp" },
+    });
+    adapterRef.current = adapter;
+    void adapter.mount(node);
     return () => {
-      node.removeEventListener("wheel", onWheel);
-      node.removeEventListener("paste", onPaste);
+      adapterRef.current = null;
+      void adapter.unmount();
     };
-  }, [containerRef, localCoords, logDebug, postInput]);
+  }, [containerRef, logDebug, sendCdpInput]);
 
   return (
     <div className="flex flex-1 items-center justify-center overflow-hidden">
       <div
         aria-label="Connector browser stream"
         className="pdpp-stream-frame relative focus-within:ring-2 focus-within:ring-primary/40 focus-within:ring-inset"
-        onKeyDown={(e) => handleKey(e, "keydown")}
-        onKeyUp={(e) => handleKey(e, "keyup")}
-        onMouseDown={handleMouseDown}
-        onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
-        onTouchCancel={handleTouchCancel}
-        onTouchEnd={handleTouchEnd}
-        onTouchMove={handleTouchMove}
-        onTouchStart={handleTouchStart}
         ref={surfaceRef}
         role="application"
         style={{ aspectRatio: aspect, height: "100%", width: "100%" }}

@@ -93,6 +93,11 @@ const NEKO_LOCAL_GESTURE_EXPORT_RE = /export function focusNekoKeyboardFromLocal
 const VIEWER_DIRECT_NEKO_KEYBOARD_CALL_RE = /\b(?:setNekoRemoteInputFocused|focusNekoKeyboard|blurNekoKeyboard)\(/;
 const VIEWER_REMOTE_INPUT_FOCUS_VIA_ADAPTER_RE =
   /adapter\.setRemoteInputFocused\(true\)[\s\S]*adapter\.focusTextInput\(\)[\s\S]*adapter\.setRemoteInputFocused\(false\)[\s\S]*adapter\.blurTextInput\(\)/;
+const CDP_SURFACE_ADAPTER_IMPORT_RE = /import \{ CdpSurfaceAdapter, NekoSurfaceAdapter \} from "@pdpp\/remote-surface\/client"/;
+const CDP_SURFACE_ADAPTER_WIRING_RE =
+  /new CdpSurfaceAdapter\(\{[\s\S]*sendInput: sendCdpInput[\s\S]*getViewportInfo: \(\) => viewportInfoRef\.current[\s\S]*getFrameElement: \(\) => imgRef\.current[\s\S]*getSoftKeyboardElement: \(\) => softKeyboardInputRef\.current/;
+const VIEWER_DIRECT_CDP_KEYBOARD_POST_RE = /postInput\(\{[\s\S]*type: "keyboard"/;
+const VIEWER_REACT_CDP_KEYBOARD_HANDLER_RE = /onKeyDown=\{\(e\) => handleKey\(e, "keydown"\)\}|function handleKey\(/;
 const STREAM_SURFACE_RESOLUTION_POLL_PROP_RE = /pollForResolution\?: boolean/;
 const STREAM_SURFACE_RESOLUTION_POLL_GATE_RE =
   /if \(!pollForResolution\) \{\s*return;\s*\}[\s\S]*setInterval\(\(\) => router\.refresh\(\), RESOLUTION_POLL_MS\)/;
@@ -133,6 +138,14 @@ test("remote editable focus updates n.eko keyboard state through the RemoteSurfa
   const viewerSrc = await readFile(STREAM_VIEWER_FILE, "utf8");
   assert.match(viewerSrc, VIEWER_REMOTE_INPUT_FOCUS_VIA_ADAPTER_RE);
   assert.doesNotMatch(viewerSrc, VIEWER_DIRECT_NEKO_KEYBOARD_CALL_RE);
+});
+
+test("legacy CDP keyboard and mobile soft-keyboard path is package-backed", async () => {
+  const viewerSrc = await readFile(STREAM_VIEWER_FILE, "utf8");
+  assert.match(viewerSrc, CDP_SURFACE_ADAPTER_IMPORT_RE);
+  assert.match(viewerSrc, CDP_SURFACE_ADAPTER_WIRING_RE);
+  assert.doesNotMatch(viewerSrc, VIEWER_DIRECT_CDP_KEYBOARD_POST_RE);
+  assert.doesNotMatch(viewerSrc, VIEWER_REACT_CDP_KEYBOARD_HANDLER_RE);
 });
 
 test("setNekoViewportLayout receives the live container rect, not the window viewport", async () => {
