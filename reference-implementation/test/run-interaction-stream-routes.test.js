@@ -833,7 +833,71 @@ test('n.eko status diagnostics are scoped to the n.eko stream cookie', async () 
       assert.deepEqual(status.body, {
         object: 'run_interaction_neko_status',
         control_available: true,
+        native_control_available: true,
         status: { connected: true, url: 'https://example.test/login' },
+      });
+
+      ac.abort();
+      try {
+        await reader.cancel();
+      } catch {
+        /* aborted */
+      }
+      await cancelRun(asUrl, started.run_id, pending.interaction_id);
+    },
+  );
+});
+
+test('n.eko status keeps native control available separate from strict stealth page CDP', async () => {
+  await withHarness(
+    {
+      makeCompanion: makeMockNekoCompanion('http://127.0.0.1:8080', {
+        status: {
+          screen: { width: 1280, height: 720 },
+          page_cdp_available: false,
+          page_cdp_skipped: {
+            browser_owner_mode: 'neko-owned',
+            stealth_mode: 'strict',
+          },
+        },
+        stealthMode: 'strict',
+      }),
+    },
+    async ({ asUrl, spotifyManifest }) => {
+      const started = await startRun(asUrl, spotifyManifest.connector_id);
+      const pending = await waitForPendingInteraction(asUrl, started.run_id);
+      const mint = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(started.run_id)}/run-interaction-stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ interaction_id: pending.interaction_id }),
+      });
+      assert.equal(mint.status, 201);
+
+      const ac = new AbortController();
+      const sseResp = await fetch(`${asUrl}${mint.body.viewer_path}`, { signal: ac.signal });
+      assert.equal(sseResp.status, 200);
+      const reader = sseResp.body.getReader();
+      await reader.read();
+
+      const entry = await fetch(`${asUrl}/_ref/run-interaction-streams/${encodeURIComponent(mint.body.token)}/neko`, {
+        redirect: 'manual',
+      });
+      assert.equal(entry.status, 302);
+      const cookie = entry.headers.get('set-cookie') || '';
+      const status = await fetchJson(`${asUrl}/neko/__pdpp/status`, { headers: { cookie } });
+      assert.equal(status.status, 200);
+      assert.deepEqual(status.body, {
+        object: 'run_interaction_neko_status',
+        control_available: true,
+        native_control_available: true,
+        status: {
+          screen: { width: 1280, height: 720 },
+          page_cdp_available: false,
+          page_cdp_skipped: {
+            browser_owner_mode: 'neko-owned',
+            stealth_mode: 'strict',
+          },
+        },
       });
 
       ac.abort();

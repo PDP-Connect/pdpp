@@ -1070,11 +1070,10 @@ body>p{display:none!important}
           control_available: false,
         });
       }
-      const pageControlAvailable =
-        !(status && typeof status === 'object' && status.page_cdp_available === false);
       return res.status(200).json({
         object: 'run_interaction_neko_status',
-        control_available: pageControlAvailable,
+        control_available: true,
+        native_control_available: true,
         status,
       });
     } catch (err) {
