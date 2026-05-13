@@ -56,7 +56,9 @@ function createSchedulerStore(calls) {
   };
 }
 
-function createManager({ surfaceCap = 1, staticProfileKey, leaseWaitTimeoutMs = 300_000 } = {}) {
+function createManager(options = {}) {
+  const { surfaceCap = 1, leaseWaitTimeoutMs = 300_000 } = options;
+  const staticProfileKey = Object.hasOwn(options, "staticProfileKey") ? options.staticProfileKey : "managed-profile";
   let leaseSeq = 0;
   let surfaceSeq = 0;
   let tokenSeq = 0;
@@ -80,7 +82,99 @@ function createManager({ surfaceCap = 1, staticProfileKey, leaseWaitTimeoutMs = 
   });
 }
 
-function setup(t, { manager = createManager(), runConnectorImpl, connectorPathResolver = () => "/tmp/connector.js" } = {}) {
+function createDynamicManager(options = {}) {
+  return createManager({ ...options, staticProfileKey: undefined });
+}
+
+function createReadyAllocator() {
+  return {
+    ensureSurface: async (request) => ({
+      surface_id: request.surfaceId,
+      backend: "neko",
+      profile_key: request.profileKey,
+      connector_id: request.connectorId,
+      cdp_url: `http://127.0.0.1:9222/${request.surfaceId}`,
+      stream_base_url: `http://127.0.0.1:8080/${request.surfaceId}`,
+      health: "ready",
+      created_at: "2026-05-12T12:00:00.000Z",
+      last_used_at: "2026-05-12T12:00:00.000Z",
+    }),
+    getSurfaceStatus: async (surfaceId) => ({
+      surface_id: surfaceId,
+      backend: "neko",
+      profile_key: "managed-profile",
+      connector_id: "managed",
+      cdp_url: `http://127.0.0.1:9222/${surfaceId}`,
+      stream_base_url: `http://127.0.0.1:8080/${surfaceId}`,
+      health: "ready",
+      created_at: "2026-05-12T12:00:00.000Z",
+      last_used_at: "2026-05-12T12:00:00.000Z",
+    }),
+    stopSurface: async () => null,
+    listSurfaces: async () => [],
+  };
+}
+
+function createFailingAllocator() {
+  return {
+    ensureSurface: async () => {
+      throw new Error("allocator failed");
+    },
+    getSurfaceStatus: async () => null,
+    stopSurface: async () => null,
+    listSurfaces: async () => [],
+  };
+}
+
+function createBlockedAllocator() {
+  let unblock;
+  const ready = new Promise((resolve) => {
+    unblock = resolve;
+  });
+  return {
+    allocator: {
+      ensureSurface: async (request) => {
+        await ready;
+        return {
+          surface_id: request.surfaceId,
+          backend: "neko",
+          profile_key: request.profileKey,
+          connector_id: request.connectorId,
+          cdp_url: `http://127.0.0.1:9222/${request.surfaceId}`,
+          stream_base_url: `http://127.0.0.1:8080/${request.surfaceId}`,
+          health: "ready",
+          created_at: "2026-05-12T12:00:00.000Z",
+          last_used_at: "2026-05-12T12:00:00.000Z",
+        };
+      },
+      getSurfaceStatus: async (surfaceId) => ({
+        surface_id: surfaceId,
+        backend: "neko",
+        profile_key: "managed-profile",
+        connector_id: "managed",
+        cdp_url: `http://127.0.0.1:9222/${surfaceId}`,
+        stream_base_url: `http://127.0.0.1:8080/${surfaceId}`,
+        health: "ready",
+        created_at: "2026-05-12T12:00:00.000Z",
+        last_used_at: "2026-05-12T12:00:00.000Z",
+      }),
+      stopSurface: async () => null,
+      listSurfaces: async () => [],
+    },
+    unblock,
+  };
+}
+
+function setup(
+  t,
+  {
+    manager = createManager(),
+    browserSurfaceAllocator,
+    browserSurfaceReadinessTimeoutMs,
+    runConnectorImpl,
+    connectorPathResolver = () => "/tmp/connector.js",
+  } = {},
+) {
   closeDb();
   initDb(tempDbPath());
   __resetControllerInteractionStateForTests();
@@ -96,7 +190,9 @@ function setup(t, { manager = createManager(), runConnectorImpl, connectorPathRe
     runConnectorOpts: [],
   };
   const controller = createController({
+    browserSurfaceAllocator,
     browserSurfaceLeaseManager: manager,
+    browserSurfaceReadinessTimeoutMs,
     connectorPathResolver,
     logger: { error: () => {}, warn: () => {} },
     schedulerStore: createSchedulerStore(calls),
@@ -198,6 +294,79 @@ test("managed run emits browser-surface requested before starting before leased"
       "leased event should precede run.started"
     );
   }
+});
+
+test("dynamic starting surface does not spawn connector or emit run.started before readiness", async (t) => {
+  const manager = createDynamicManager();
+  const blocked = createBlockedAllocator();
+  const { calls, controller } = setup(t, {
+    manager,
+    browserSurfaceAllocator: blocked.allocator,
+  });
+
+  const runPromise = controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_dynamic_blocked",
+  });
+  await waitFor(
+    () => listRunEventTypes("run_dynamic_blocked").includes("run.browser_surface_starting"),
+    "dynamic run should emit starting before waiting for readiness"
+  );
+
+  assert.equal(calls.runConnector, 0);
+  assert.equal(calls.persistActiveRun, 0);
+  assert.equal(listRunEventTypes("run_dynamic_blocked").includes("run.started"), false);
+  assert.equal(listRunEventTypes("run_dynamic_blocked").includes("run.browser_surface_leased"), false);
+
+  blocked.unblock();
+  const result = await runPromise;
+  await controller.drainActiveRuns(1000);
+
+  assert.equal(result.status, "started");
+  assert.equal(calls.runConnector, 1);
+  assert.ok(listRunEventTypes("run_dynamic_blocked").includes("run.browser_surface_leased"));
+});
+
+test("dynamic immediate-ready allocator leases then starts connector", async (t) => {
+  const { calls, controller, manager } = setup(t, {
+    manager: createDynamicManager(),
+    browserSurfaceAllocator: createReadyAllocator(),
+  });
+
+  const result = await controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_dynamic_ready",
+  });
+  await controller.drainActiveRuns(1000);
+
+  const eventTypes = listRunEventTypes("run_dynamic_ready");
+  assert.equal(result.status, "started");
+  assert.equal(calls.runConnector, 1);
+  assert.equal(manager.getLease("lease_1").status, "released");
+  assert.ok(eventTypes.indexOf("run.browser_surface_leased") < eventTypes.indexOf("run.started") || !eventTypes.includes("run.started"));
+});
+
+test("dynamic allocator failure emits browser-surface failed without spawning connector", async (t) => {
+  const { calls, controller, manager } = setup(t, {
+    manager: createDynamicManager(),
+    browserSurfaceAllocator: createFailingAllocator(),
+  });
+
+  const result = await controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_dynamic_failed",
+  });
+
+  const events = listRunEvents("run_dynamic_failed");
+  assert.equal(result.status, "surface_failed");
+  assert.equal(manager.getLease("lease_1").status, "surface_failed");
+  assert.equal(calls.runConnector, 0);
+  assert.equal(calls.persistActiveRun, 0);
+  assert.ok(events.some((event) => event.event_type === "run.browser_surface_failed"));
+  assert.equal(events.some((event) => event.event_type === "run.started"), false);
 });
 
 test("managed run emits browser-surface cancelled when manual action is cancelled", async (t) => {
@@ -402,12 +571,12 @@ test("promotion precondition failure defers lease instead of recording clean rel
 
 test("managed connector with active run rejects without acquiring a new lease", async (t) => {
   let releaseFirst;
-  const manager = createManager({ surfaceCap: 2 });
+  const manager = createDynamicManager({ surfaceCap: 2 });
   const runConnectorImpl = () =>
     new Promise((resolve) => {
       releaseFirst = () => resolve({ status: "completed" });
     });
-  const { controller } = setup(t, { manager, runConnectorImpl });
+  const { controller } = setup(t, { manager, browserSurfaceAllocator: createReadyAllocator(), runConnectorImpl });
 
   await controller.runNow("managed", {
     manifest: MANIFEST,

@@ -36,6 +36,7 @@ import {
 } from "../server/stores/scheduler-store.ts";
 import {
   type BrowserSurface,
+  type BrowserSurfaceAllocator,
   type BrowserSurfaceLease,
   type BrowserSurfaceLeaseManager,
   type BrowserSurfaceProjection,
@@ -230,7 +231,9 @@ export interface ControllerOptions {
    */
   runtimeContext?: { rsUrl?: string; referenceBaseUrl?: string };
   scheduler?: unknown;
+  browserSurfaceAllocator?: BrowserSurfaceAllocator;
   browserSurfaceLeaseManager?: BrowserSurfaceLeaseManager;
+  browserSurfaceReadinessTimeoutMs?: number;
   browserSurfaceLeaseStore?: BrowserSurfaceLeaseStore;
   runConnectorImpl?: RunConnectorFn;
   // Optional store override; defaults to the configured storage-backed singleton.
@@ -902,7 +905,9 @@ export function createController(opts: ControllerOptions = {}): Controller {
   const ownerClientId = opts.ownerClientId || "cli_longview";
   const ownerSubjectId = opts.ownerSubjectId || "owner_local";
   const schedulerStore = opts.schedulerStore || getDefaultSchedulerStore();
+  const browserSurfaceAllocator = opts.browserSurfaceAllocator;
   const browserSurfaceLeaseManager = opts.browserSurfaceLeaseManager;
+  const browserSurfaceReadinessTimeoutMs = opts.browserSurfaceReadinessTimeoutMs;
   const browserSurfaceLeaseStore = opts.browserSurfaceLeaseStore;
   const runConnectorImpl = opts.runConnectorImpl || runConnector;
   const pendingBrowserSurfaceLaunches = new Map<string, RunNowOptions>();
@@ -1084,6 +1089,47 @@ export function createController(opts: ControllerOptions = {}): Controller {
       }
       await store.upsertLease(lease);
     });
+  }
+
+  async function waitForStartingBrowserSurface(
+    lease: BrowserSurfaceLease,
+    connectorId: string,
+    runId: string,
+    traceContext: SpineTraceContext,
+  ): Promise<{ lease: BrowserSurfaceLease; surface?: BrowserSurface }> {
+    await emitBrowserSurfaceLeaseEvent("run.browser_surface_starting", connectorId, runId, traceContext, lease);
+    if (!browserSurfaceLeaseManager) {
+      return { lease };
+    }
+
+    let current = lease;
+    while (current.status === "starting_surface") {
+      const allocator =
+        browserSurfaceAllocator ??
+        ({
+          ensureSurface: async () => {
+            throw new Error("browser surface allocator is not configured");
+          },
+          getSurfaceStatus: async () => null,
+          stopSurface: async () => null,
+          listSurfaces: async () => [],
+        } satisfies BrowserSurfaceAllocator);
+      const readyResult = await browserSurfaceLeaseManager.ensureStartingSurfaceReady({
+        leaseId: current.lease_id,
+        allocator,
+        ...(browserSurfaceReadinessTimeoutMs !== undefined
+          ? { readinessTimeoutMs: browserSurfaceReadinessTimeoutMs }
+          : {}),
+      });
+      current = readyResult.lease;
+      await persistBrowserSurfaceLeaseMutation(readyResult.lease, readyResult.surface);
+      if (current.status !== "starting_surface") {
+        return readyResult;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    const surface = current.surface_id ? browserSurfaceLeaseManager.getSurface(current.surface_id) : undefined;
+    return { lease: current, ...(surface ? { surface } : {}) };
   }
 
   function promoteBrowserSurfaceLease(lease: BrowserSurfaceLease, reason: string): void {
@@ -1430,7 +1476,33 @@ export function createController(opts: ControllerOptions = {}): Controller {
         };
       }
 
-      if (leaseResult.lease.status === "leased" && leaseResult.surface) {
+      if (leaseResult.lease.status === "starting_surface") {
+        const readyResult = await waitForStartingBrowserSurface(leaseResult.lease, connectorId, runId, traceContext);
+        browserSurfaceLease = readyResult.lease;
+        if (readyResult.lease.status === "surface_failed") {
+          pendingBrowserSurfaceLaunches.delete(runId);
+          await emitBrowserSurfaceLeaseEvent("run.browser_surface_failed", connectorId, runId, traceContext, readyResult.lease);
+          return {
+            run_id: runId,
+            trace_id: traceContext.trace_id,
+            status: readyResult.lease.status,
+            browser_surface: projectBrowserSurfaceLease(readyResult.lease),
+          };
+        }
+        if (readyResult.lease.status === "leased" && readyResult.surface) {
+          pendingBrowserSurfaceLaunches.delete(readyResult.lease.run_id);
+          await emitBrowserSurfaceLeaseEvent("run.browser_surface_leased", connectorId, runId, traceContext, readyResult.lease);
+          browserSurfaceEnv = browserSurfaceLeaseEnv(readyResult.lease, readyResult.surface);
+        } else {
+          await emitBrowserSurfaceLeaseEvent("run.browser_surface_deferred", connectorId, runId, traceContext, readyResult.lease);
+          return {
+            run_id: runId,
+            trace_id: traceContext.trace_id,
+            status: "deferred",
+            browser_surface: projectBrowserSurfaceLease(readyResult.lease),
+          };
+        }
+      } else if (leaseResult.lease.status === "leased" && leaseResult.surface) {
         pendingBrowserSurfaceLaunches.delete(leaseResult.lease.run_id);
         await emitBrowserSurfaceLeaseEvent("run.browser_surface_starting", connectorId, runId, traceContext, leaseResult.lease);
         await emitBrowserSurfaceLeaseEvent("run.browser_surface_leased", connectorId, runId, traceContext, leaseResult.lease);
