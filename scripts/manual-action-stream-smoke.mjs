@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { createRequire } from "node:module";
+import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
@@ -9,7 +10,9 @@ const repoRoot = path.resolve(new URL("..", import.meta.url).pathname);
 const require = createRequire(import.meta.url);
 
 const DEFAULT_TIMEOUT_MS = 90_000;
+const DEBUG_EVENT_BUFFER_MAX = 2_000;
 const STREAM_FRAME_SELECTOR = '[aria-label="Connector browser stream"]';
+const EVIDENCE_DIR = path.join(repoRoot, "tmp", "stream-smoke");
 
 function env(name) {
   const value = process.env[name];
@@ -61,6 +64,163 @@ function hasEvent(events, predicate) {
       return false;
     }
   });
+}
+
+function eventSummary(event) {
+  const payload = eventPayload(event);
+  return {
+    type: eventType(event),
+    viewerId: typeof event?.viewerId === "string" ? event.viewerId : null,
+    receivedAt: typeof event?.receivedAt === "string" ? event.receivedAt : null,
+    payload: summarizePayload(payload),
+  };
+}
+
+function summarizePayload(payload) {
+  const out = {};
+  for (const [key, value] of Object.entries(payload || {})) {
+    if (
+      [
+        "type",
+        "status",
+        "count",
+        "clientX",
+        "clientY",
+        "pageX",
+        "pageY",
+        "innerWidth",
+        "innerHeight",
+        "devicePixelRatio",
+        "scrollX",
+        "scrollY",
+        "pageId",
+        "seq",
+        "backend",
+        "runId",
+        "interactionId",
+        "smokeTokenPresent",
+        "valueLength",
+        "target",
+        "elementAtPoint",
+        "activeElement",
+        "calibration",
+        "controls",
+        "beacons",
+        "visualViewport",
+        "error",
+      ].includes(key)
+    ) {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
+function latestEvent(events, predicate) {
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const event = events[i];
+    if (predicate(event, eventPayload(event), eventType(event))) return event;
+  }
+  return null;
+}
+
+function latestRemoteLayoutEvent(events) {
+  return latestEvent(
+    events,
+    (_event, payload, type) =>
+      (type === "playground.ready" || type === "playground.calibration_init") &&
+      payload.controls &&
+      typeof payload.controls === "object"
+  );
+}
+
+function resolveRemoteControlTarget(events, controlId) {
+  const layoutEvent = latestRemoteLayoutEvent(events);
+  const payload = layoutEvent ? eventPayload(layoutEvent) : null;
+  const control = payload?.controls?.[controlId];
+  const centre = control?.centre;
+  const remoteWidth = Number(payload?.visualViewport?.width || payload?.innerWidth);
+  const remoteHeight = Number(payload?.visualViewport?.height || payload?.innerHeight);
+  if (
+    Number.isFinite(centre?.x) &&
+    Number.isFinite(centre?.y) &&
+    Number.isFinite(remoteWidth) &&
+    remoteWidth > 0 &&
+    Number.isFinite(remoteHeight) &&
+    remoteHeight > 0
+  ) {
+    return {
+      sourceType: eventType(layoutEvent),
+      controlId,
+      remote: { x: centre.x, y: centre.y, width: remoteWidth, height: remoteHeight },
+      xRatio: centre.x / remoteWidth,
+      yRatio: centre.y / remoteHeight,
+    };
+  }
+  return null;
+}
+
+async function streamFrameReport(page) {
+  const frame = page.locator(STREAM_FRAME_SELECTOR).first();
+  const box = await frame.boundingBox().catch(() => null);
+  const attrs = await frame
+    .evaluate((node) => ({
+      loading: node.getAttribute("data-pdpp-stream-loading"),
+      debug: node.getAttribute("data-pdpp-stream-debug"),
+      width: node.clientWidth,
+      height: node.clientHeight,
+    }))
+    .catch((error) => ({ error: error.message }));
+  return { box, attrs };
+}
+
+async function captureFailureEvidence(page, debugEvents, message) {
+  await mkdir(EVIDENCE_DIR, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const screenshotPath = path.join(EVIDENCE_DIR, `manual-action-stream-smoke-${stamp}.png`);
+  const frame = await streamFrameReport(page);
+  await page.screenshot({ path: screenshotPath, fullPage: true }).catch(() => undefined);
+  const recent = debugEvents.slice(-30).map(eventSummary);
+  const relevantTypes = [
+    "debug.enabled",
+    "neko.client.start",
+    "neko.media.displayable",
+    "stream.input.post.start",
+    "stream.input.post.result",
+    "stream.input.post.error",
+    "playground.ready",
+    "playground.calibration_init",
+    "playground.pointerdown",
+    "playground.pointerup",
+    "playground.click",
+    "playground.counter_click",
+    "playground.focusin",
+    "playground.input",
+  ];
+  const relevant = debugEvents
+    .filter((event) => {
+      const type = eventType(event);
+      return relevantTypes.includes(type) || type.startsWith("surface.neko.") || type.startsWith("neko.touch");
+    })
+    .slice(-40)
+    .map(eventSummary);
+  process.stderr.write(
+    `${JSON.stringify(
+      {
+        failure: message,
+        pageUrl: page.url(),
+        screenshotPath,
+        streamFrame: frame,
+        remotePlaygroundReady: Boolean(latestEvent(debugEvents, (_event, _payload, type) => type === "playground.ready")),
+        remoteLayoutSource: eventType(latestRemoteLayoutEvent(debugEvents)),
+        debugEventCount: debugEvents.length,
+        recent,
+        relevant,
+      },
+      null,
+      2
+    )}\n`
+  );
 }
 
 async function waitFor(predicate, message, { timeoutMs = DEFAULT_TIMEOUT_MS, intervalMs = 250 } = {}) {
@@ -129,6 +289,15 @@ async function clickInsideStream(page, xRatio, yRatio) {
   await page.mouse.click(Math.round(box.x + box.width * xRatio), Math.round(box.y + box.height * yRatio));
 }
 
+async function clickRemoteControl(page, debugEvents, controlId) {
+  const target = resolveRemoteControlTarget(debugEvents, controlId);
+  if (!target) {
+    fail(`remote playground did not publish a measurable ${controlId} target`);
+  }
+  await clickInsideStream(page, target.xRatio, target.yRatio);
+  return target;
+}
+
 async function run() {
   const origin = publicUrlFromEnv();
   if (!origin) {
@@ -155,6 +324,9 @@ async function run() {
       const url = new URL(request.url());
       if (url.pathname === "/api/stream-debug") {
         debugEvents.push(...parseDebugEventsFromPostData(request.postData()));
+        if (debugEvents.length > DEBUG_EVENT_BUFFER_MAX) {
+          debugEvents.splice(0, debugEvents.length - DEBUG_EVENT_BUFFER_MAX);
+        }
       }
     } catch {
       // Ignore malformed request URLs from browser internals.
@@ -191,14 +363,19 @@ async function run() {
       "stream debug telemetry did not initialize"
     );
 
-    await clickInsideStream(page, 0.36, 0.18);
+    await waitFor(
+      () => resolveRemoteControlTarget(debugEvents, "counter"),
+      "remote playground telemetry did not publish counter target"
+    );
+
+    await clickRemoteControl(page, debugEvents, "counter");
     await waitFor(
       () => hasEvent(debugEvents, (_event, payload, type) => type === "playground.counter_click" && Number(payload.count) >= 1),
       "remote counter did not report an increment"
     );
 
     const token = `pdpp-smoke-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-    await clickInsideStream(page, 0.38, 0.26);
+    await clickRemoteControl(page, debugEvents, "text-input");
     await page.keyboard.type(token, { delay: 8 });
     await waitFor(
       () =>
@@ -221,6 +398,11 @@ async function run() {
     );
 
     process.stdout.write(`PASS manual-action stream smoke ${url}\n`);
+  } catch (error) {
+    await captureFailureEvidence(page, debugEvents, error instanceof Error ? error.message : String(error)).catch((captureError) => {
+      process.stderr.write(`failed to capture smoke evidence: ${captureError.message}\n`);
+    });
+    throw error;
   } finally {
     await browser.close().catch(() => undefined);
   }

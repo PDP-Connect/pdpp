@@ -209,6 +209,21 @@ test('stream playground records calibration data on every pointer/click event', 
     /pdppRecordPlaygroundEvent\(['"]calibration_init['"]/,
     'calibration_init event fires at script boot to publish beacon registry'
   );
+  assert.match(
+    src,
+    /function pdppControlRects\(/,
+    'debug telemetry exposes control rectangles for smoke targeting'
+  );
+  assert.match(
+    src,
+    /controls:\s*pdppControlRects\(\)/,
+    'calibration_init includes control rectangles for counter/input targeting'
+  );
+  assert.match(
+    src,
+    /pdppRecordPlaygroundEvent\(['"]ready['"]/,
+    'ready event publishes playground telemetry readiness'
+  );
   // And it must re-emit on resize / visualViewport.resize / orientation
   // change. Without these, beacon coordinates captured at boot reflect
   // the pre-emulation X-server layout rather than the post-emulation

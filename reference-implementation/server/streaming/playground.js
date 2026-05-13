@@ -248,6 +248,28 @@ function pdppListBeacons() {
   }
   return out;
 }
+function pdppControlRects() {
+  const controls = [
+    ['counter', counter],
+    ['text-input', input],
+  ];
+  const out = {};
+  for (const [id, el] of controls) {
+    if (!el || typeof el.getBoundingClientRect !== 'function') continue;
+    const rect = el.getBoundingClientRect();
+    out[id] = {
+      x: Math.round(rect.left),
+      y: Math.round(rect.top),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
+      centre: {
+        x: Math.round(rect.left + rect.width / 2),
+        y: Math.round(rect.top + rect.height / 2),
+      },
+    };
+  }
+  return out;
+}
 // Exposed for adapter introspection if needed; primary path is the
 // per-event calibration field below.
 window.__pdppPlaygroundBeacons = pdppListBeacons;
@@ -326,6 +348,7 @@ function pdppPointerExtras(event) {
 function pdppEmitCalibrationInit() {
   pdppRecordPlaygroundEvent('calibration_init', {
     beacons: pdppListBeacons(),
+    controls: pdppControlRects(),
     toleranceRadiusPx: PDPP_CALIBRATION_HIT_RADIUS_PX,
     visualViewport: window.visualViewport ? {
       width: Math.round(window.visualViewport.width),
@@ -340,6 +363,10 @@ function pdppEmitCalibrationInit() {
   });
 }
 pdppEmitCalibrationInit();
+pdppRecordPlaygroundEvent('ready', {
+  controls: pdppControlRects(),
+  beacons: pdppListBeacons(),
+});
 let pdppCalibrationInitPending = false;
 let pdppLastCalibrationInitAt = performance.now();
 function pdppQueueCalibrationInit() {
