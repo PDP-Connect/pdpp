@@ -24,17 +24,20 @@
  *     sets the same cookie and returns direct n.eko client configuration
  *
  * The token is the only credential the viewer presents after mint. It is short
- * lived (default 5 min), single-attach, scoped to one (run, interaction,
- * browser session), and invalidated when the interaction resolves or the run
- * ends. The token never authorizes record reads, consent approval, grant
- * issuance, or unrelated browser access.
+ * lived (default 5 min), reconnect-safe for repeated SSE attaches, scoped to
+ * one (run, interaction, browser session), and invalidated when the interaction
+ * resolves or the run ends. The token never authorizes record reads, consent
+ * approval, grant issuance, or unrelated browser access.
  */
 import http from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
 import tls from 'node:tls';
 import {
+  buildReferenceWireAttachedPayload,
   buildReferenceWireBackendReadyPayload,
+  buildReferenceWireCompanionEventPayload,
+  buildReferenceWireFramePayload,
   normalizeReferenceWireViewportPayload,
   parseReferenceWireInputPayload,
   parseReferenceWireInputTelemetryCursor,
@@ -717,19 +720,15 @@ body>p{display:none!important}
       raw.write(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`);
     }
 
-    writeEvent('attached', {
-      run_id: session.run_id,
-      interaction_id: session.interaction_id,
-      browser_session_id: session.browser_session_id,
+    writeEvent('attached', buildReferenceWireAttachedPayload({
+      runId: session.run_id,
+      interactionId: session.interaction_id,
+      browserSessionId: session.browser_session_id,
       viewport: session.viewport,
-    });
+    }));
 
     const unsubscribe = companion.onFrame((frame) => {
-      writeEvent('frame', {
-        session_id: frame.sessionId,
-        data_base64: frame.data,
-        metadata: frame.metadata || null,
-      });
+      writeEvent('frame', buildReferenceWireFramePayload(frame));
       // CDP `Page.startScreencast` only delivers the next frame after the
       // previous one is acknowledged. Without this ack the stream stalls
       // after the first frame against a real Chromium. Best-effort: a
@@ -750,29 +749,12 @@ body>p{display:none!important}
     const unsubscribeEvents =
       typeof companion.onEvent === 'function'
         ? companion.onEvent((event) => {
-            if (!event || typeof event.kind !== 'string') return;
-            switch (event.kind) {
-              case 'url_changed': {
-                const data = { url: event.url };
-                if (typeof event.title === 'string') data.title = event.title;
-                writeEvent('url_changed', data);
-                return;
-              }
-              case 'popup_opened':
-                writeEvent('popup_opened', {
-                  targetId: event.targetId,
-                  url: event.url || '',
-                });
-                return;
-              case 'popup_closed':
-                writeEvent('popup_closed', { targetId: event.targetId });
-                return;
-              default:
-              // Forward unknown event kinds as-is so newer companions can add
-              // event types without a route change. Tests can assert against
-              // the discriminator via the SSE event name.
-                writeEvent(event.kind, event);
-            }
+            const payload = buildReferenceWireCompanionEventPayload(event);
+            if (!payload) return;
+            // Forward unknown event kinds as-is so newer companions can add
+            // event types without a route change. Tests can assert against
+            // the discriminator via the SSE event name.
+            writeEvent(payload.name, payload.data);
           })
         : () => {};
 

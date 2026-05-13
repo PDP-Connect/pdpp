@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
+  buildReferenceWireAttachedPayload,
   buildReferenceWireBackendReadyPayload,
+  buildReferenceWireCompanionEventPayload,
+  buildReferenceWireFramePayload,
   normalizeReferenceWireViewportPayload,
   parseReferenceWireInputPayload,
   parseReferenceWireInputTelemetryCursor,
@@ -147,6 +150,64 @@ describe("reference wire fixtures", () => {
       iframe_path: null,
       stealth_mode: null,
     });
+  });
+
+  it("builds current browser-visible SSE event payloads from package helpers", () => {
+    const attached = REFERENCE_WIRE_SSE_EVENT_FIXTURES.find((fixture) => fixture.event === "attached");
+    const frame = REFERENCE_WIRE_SSE_EVENT_FIXTURES.find((fixture) => fixture.event === "frame");
+    const urlChanged = REFERENCE_WIRE_SSE_EVENT_FIXTURES.find((fixture) => fixture.event === "url_changed");
+    const popupOpened = REFERENCE_WIRE_SSE_EVENT_FIXTURES.find((fixture) => fixture.event === "popup_opened");
+    const popupClosed = REFERENCE_WIRE_SSE_EVENT_FIXTURES.find((fixture) => fixture.event === "popup_closed");
+
+    assert.ok(attached);
+    assert.deepEqual(
+      buildReferenceWireAttachedPayload({
+        runId: String(attached.data?.run_id),
+        interactionId: String(attached.data?.interaction_id),
+        browserSessionId: String(attached.data?.browser_session_id),
+        viewport: attached.data?.viewport,
+      }),
+      attached.data,
+    );
+
+    assert.ok(frame);
+    assert.deepEqual(
+      buildReferenceWireFramePayload({
+        sessionId: frame.data?.session_id,
+        data: frame.data?.data_base64,
+        metadata: frame.data?.metadata,
+      }),
+      frame.data,
+    );
+
+    assert.ok(urlChanged);
+    assert.deepEqual(
+      buildReferenceWireCompanionEventPayload({
+        kind: "url_changed",
+        url: urlChanged.data?.url,
+        title: urlChanged.data?.title,
+      }),
+      { name: "url_changed", data: urlChanged.data },
+    );
+
+    assert.ok(popupOpened);
+    assert.deepEqual(
+      buildReferenceWireCompanionEventPayload({
+        kind: "popup_opened",
+        targetId: popupOpened.data?.targetId,
+        url: popupOpened.data?.url,
+      }),
+      { name: "popup_opened", data: popupOpened.data },
+    );
+
+    assert.ok(popupClosed);
+    assert.deepEqual(
+      buildReferenceWireCompanionEventPayload({
+        kind: "popup_closed",
+        targetId: popupClosed.data?.targetId,
+      }),
+      { name: "popup_closed", data: popupClosed.data },
+    );
   });
 
   it("keeps every fixture JSON-compatible", () => {

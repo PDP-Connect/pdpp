@@ -264,6 +264,24 @@ export interface ReferenceWireBackendReadyPayload {
   stealth_mode: string | null;
 }
 
+export interface ReferenceWireAttachedPayload {
+  run_id: string;
+  interaction_id: string;
+  browser_session_id: string;
+  viewport: JsonValue;
+}
+
+export interface ReferenceWireFramePayload {
+  session_id: number;
+  data_base64: string;
+  metadata: JsonValue;
+}
+
+export interface ReferenceWireNamedSseEvent {
+  name: string;
+  data: unknown;
+}
+
 export class RemoteSurfaceProtocolError extends Error {
   readonly path: string;
 
@@ -508,6 +526,65 @@ export function parseReferenceWireInputTelemetryRecord(value: unknown): Referenc
   return record as ReferenceWireInputTelemetryRecord;
 }
 
+export function buildReferenceWireAttachedPayload({
+  runId,
+  interactionId,
+  browserSessionId,
+  viewport,
+}: {
+  runId: string;
+  interactionId: string;
+  browserSessionId: string;
+  viewport: unknown;
+}): ReferenceWireAttachedPayload {
+  return {
+    run_id: runId,
+    interaction_id: interactionId,
+    browser_session_id: browserSessionId,
+    viewport: toJsonValueOrNull(viewport),
+  };
+}
+
+export function buildReferenceWireFramePayload(frame: {
+  sessionId?: unknown;
+  data?: unknown;
+  metadata?: unknown;
+}): ReferenceWireFramePayload {
+  return {
+    session_id: typeof frame.sessionId === "number" ? frame.sessionId : Number(frame.sessionId),
+    data_base64: typeof frame.data === "string" ? frame.data : "",
+    metadata: frame.metadata ? toJsonValueOrNull(frame.metadata) : null,
+  };
+}
+
+export function buildReferenceWireCompanionEventPayload(event: unknown): ReferenceWireNamedSseEvent | null {
+  if (!event || typeof event !== "object" || Array.isArray(event)) return null;
+  const record = event as Record<string, unknown>;
+  if (typeof record.kind !== "string") return null;
+  switch (record.kind) {
+    case "url_changed": {
+      const data: Record<string, JsonValue> = { url: typeof record.url === "string" ? record.url : "" };
+      if (typeof record.title === "string") data.title = record.title;
+      return { name: "url_changed", data };
+    }
+    case "popup_opened":
+      return {
+        name: "popup_opened",
+        data: {
+          targetId: typeof record.targetId === "string" ? record.targetId : "",
+          url: typeof record.url === "string" ? record.url : "",
+        },
+      };
+    case "popup_closed":
+      return {
+        name: "popup_closed",
+        data: { targetId: typeof record.targetId === "string" ? record.targetId : "" },
+      };
+    default:
+      return { name: record.kind, data: event };
+  }
+}
+
 export function buildReferenceWireBackendReadyPayload({
   backend,
   token,
@@ -529,6 +606,24 @@ export function buildReferenceWireBackendReadyPayload({
     iframe_path: backendName === "neko" ? `/_ref/run-interaction-streams/${encodedToken}/neko` : null,
     stealth_mode: backendName === "neko" && typeof stealthMode === "function" ? nullableString(stealthMode()) : null,
   };
+}
+
+function toJsonValueOrNull(value: unknown): JsonValue {
+  if (value === null) return null;
+  const type = typeof value;
+  if (type === "string") return value as string;
+  if (type === "boolean") return value as boolean;
+  if (type === "number") {
+    const numberValue = value as number;
+    return Number.isFinite(numberValue) ? numberValue : null;
+  }
+  if (Array.isArray(value)) return value.map(toJsonValueOrNull);
+  if (type !== "object") return null;
+  const out: Record<string, JsonValue> = {};
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    if (child !== undefined) out[key] = toJsonValueOrNull(child);
+  }
+  return out;
 }
 
 export function parseSafeRemoteSurfaceBackendDescriptor(value: unknown): SafeRemoteSurfaceBackendDescriptor {
