@@ -28,7 +28,7 @@
 
 - [x] 3.1 Move pure stream viewer protocol, viewport classification, visual-settle, geometry, clipboard-policy, pointer mapping diagnostics, and media-quality logic into package modules where they do not depend on React or dashboard routes.
 - [x] 3.2 Move DOM controllers for n.eko mounting, pointer dispatch, keyboard/IME handling, and explicit clipboard actions behind the package client API.
-- [ ] 3.3 Keep React components, dashboard copy, server actions, URL resolution, styling, and owner-specific affordances in `apps/web`.
+- [x] 3.3 Keep React components, dashboard copy, server actions, URL resolution, styling, and owner-specific affordances in `apps/web`.
 - [x] 3.4 Preserve existing dashboard stream tests or add package-backed equivalents for keyboard, clipboard, viewport, media settle, visual quality, and n.eko client behavior.
 - [ ] 3.5 Verify mobile keyboard and IME paths still route through the package client API rather than ad hoc dashboard-only handlers.
 
@@ -49,11 +49,11 @@
 
 ## 6. Reference Integration
 
-- [ ] 6.1 Replace direct reference streaming-session and protocol helper use with package broker/client APIs while preserving current `_ref` route behavior.
-- [ ] 6.2 Keep `runTargetRegistry`, connector `browser-handoff.ts`, and `streaming-target-registration.ts` as reference-owned host orchestration unless a later change extracts a host adapter.
-- [ ] 6.3 Wire package telemetry hooks into current `run.stream_session_*` events and diagnostics without moving timeline ownership into the package.
-- [ ] 6.4 Ensure dynamic n.eko allocation consumes package lease/session/allocator interfaces but leaves Docker/Compose/sidecar implementation reference-owned.
-- [ ] 6.5 Update package README and reference docs to describe the OSS-spinnable boundary.
+- [x] 6.1 Replace direct reference streaming-session and protocol helper use with package broker/client APIs while preserving current `_ref` route behavior.
+- [x] 6.2 Keep `runTargetRegistry`, connector `browser-handoff.ts`, and `streaming-target-registration.ts` as reference-owned host orchestration unless a later change extracts a host adapter.
+- [x] 6.3 Wire package telemetry hooks into current `run.stream_session_*` events and diagnostics without moving timeline ownership into the package.
+- [x] 6.4 Ensure dynamic n.eko allocation consumes package lease/session/allocator interfaces but leaves Docker/Compose/sidecar implementation reference-owned.
+- [x] 6.5 Update package README and reference docs to describe the OSS-spinnable boundary.
 
 ## 7. Verification And Smoke
 
