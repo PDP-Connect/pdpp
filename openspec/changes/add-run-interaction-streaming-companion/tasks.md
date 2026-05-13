@@ -137,3 +137,4 @@
 - [x] 17.3 Split CSS viewport dimensions from bounded high-DPR n.eko screen/capture dimensions and keep the backend CDP emulation CSS viewport stable.
 - [x] 17.4 Add deterministic coverage for viewport authority, bounded capture target selection, keyboard reacquire wiring, and n.eko CSS-vs-capture backend behavior.
 - [ ] 17.5 Re-run affected checks, rebuild/recreate the n.eko Docker overlay, and run public desktop plus real-phone smoke focused on keyboard reacquire, rotation settle, and visual sharpness. Public raw-CDP desktop and mobile-emulated smokes now pass with clean rotation, visual-quality, and pointer telemetry; physical real-phone smoke remains.
+- [x] 17.6 Add an automated owner-surface Docker/public smoke command for the n.eko stream playground that skips without a configured public URL and proves display, remote counter click, remote input, and telemetry capture when enabled.

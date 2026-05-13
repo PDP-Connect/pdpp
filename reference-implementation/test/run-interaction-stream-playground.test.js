@@ -257,6 +257,9 @@ test('stream playground HTML installs a __pdppPlaygroundEvents ring buffer for c
   assert.match(src, /pdppRecordPlaygroundEvent\(['"]focusin['"]/, 'records focusin');
   assert.match(src, /pdppRecordPlaygroundEvent\(['"]focusout['"]/, 'records focusout');
   assert.match(src, /pdppRecordPlaygroundEvent\(['"]scroll['"]/, 'records scroll');
+  assert.match(src, /pdppRecordPlaygroundEvent\(['"]input['"]/, 'records input');
+  assert.match(src, /smokeTokenPresent:/, 'input telemetry can prove smoke-token delivery without logging raw text');
+  assert.match(src, /valueLength:/, 'input telemetry reports length-only input state');
   // Privacy: text content / selection / clipboard payloads are NEVER
   // logged. We summarise via lengths only.
   assert.match(src, /summary\.valueLength\s*=\s*el\.value\.length/, 'value reported only by length');

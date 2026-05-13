@@ -390,7 +390,15 @@ counter.addEventListener('click', (event) => {
 });
 input.addEventListener('keydown', (e) => logEvent('keydown: ' + e.key));
 input.addEventListener('beforeinput', (e) => logEvent('beforeinput: ' + e.inputType + (e.data ? ' "' + e.data + '"' : '')));
-input.addEventListener('input', () => logEvent('text now: "' + input.value + '"'));
+input.addEventListener('input', (event) => {
+  logEvent('text now: "' + input.value + '"');
+  pdppRecordPlaygroundEvent('input', {
+    inputType: event.inputType || null,
+    smokeTokenPresent: /pdpp-smoke-[a-z0-9-]+/.test(input.value),
+    target: pdppSummariseElement(input),
+    valueLength: input.value.length,
+  });
+});
 window.addEventListener('scroll', () => logEvent('page scrollY=' + Math.round(window.scrollY)), { passive: true });
 window.addEventListener('wheel', (e) => logEvent('wheel deltaY=' + e.deltaY), { passive: true });
 window.addEventListener('touchstart', (e) => logEvent('touchstart (' + e.touches.length + ' touches)'), { passive: true });

@@ -14,6 +14,7 @@
     "docker:neko": "docker compose --env-file .env.docker -f docker-compose.yml -f docker-compose.neko.yml up --build",
     "docker:neko:turn": "docker compose --profile turn --env-file .env.docker -f docker-compose.yml -f docker-compose.neko.yml up --build",
     "docker:smoke": "bash scripts/docker-smoke.sh",
+    "docker:stream-smoke": "node scripts/manual-action-stream-smoke.mjs",
     "agent-skill:check": "node scripts/sync-agent-skill.mjs --check",
     "agent-skill:sync": "node scripts/sync-agent-skill.mjs --write",
     "spec:check": "node scripts/spec-check.mjs",
