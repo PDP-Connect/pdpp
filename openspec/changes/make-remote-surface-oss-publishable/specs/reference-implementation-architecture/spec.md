@@ -1,8 +1,8 @@
 ## ADDED Requirements
 
-### Requirement: Remote surface package SHALL be standalone OSS-publishable
+### Requirement: Remote surface package SHALL be almost push-button OSS-publishable
 
-`@pdpp/remote-surface` SHALL publish as a standalone package that external consumers can install, typecheck, import, and evaluate without a PDPP monorepo checkout or unpublished workspace dependencies.
+`@pdpp/remote-surface` SHALL have an architecture and package shape that is almost push-button OSS-publishable as a standalone package that external consumers can install from a packed artifact, typecheck, import, and evaluate without a PDPP monorepo checkout or unpublished workspace dependencies. The package MAY remain unpublished and `private: true` until release preparation.
 
 #### Scenario: A consumer installs the package outside the monorepo
 
@@ -22,6 +22,12 @@
 - **WHEN** maintainers inspect the package tarball before publication
 - **THEN** it SHALL include only intentional public artifacts such as package metadata, README, license, compiled runtime files, declaration files, and required runtime assets
 - **AND** it SHALL NOT include package-local tests, private/raw source intended only for the monorepo build, fixtures, build caches, internal audit notes, or unrelated repository files unless explicitly justified as public package content
+
+#### Scenario: Maintainers defer the release switch
+
+- **WHEN** maintainers complete the package-shape implementation for this change
+- **THEN** the package SHALL NOT be required to publish to a registry
+- **AND** the package SHALL NOT be required to switch from `private: true` to `private: false` until release preparation
 
 ### Requirement: Remote surface public APIs SHALL be host-neutral
 
@@ -55,14 +61,14 @@ Server store and lease APIs exposed by `@pdpp/remote-surface` SHALL describe hos
 - **THEN** the lease API SHALL be expressible without PDPP runtime-specific identifiers or endpoint names
 - **AND** lease state transitions SHALL be documented well enough for a host to implement them without importing app/runtime code
 
-### Requirement: Remote surface publication checks SHALL prove SLVP readiness
+### Requirement: Remote surface publication checks SHALL prove release readiness
 
-The repository SHALL maintain automated checks that prove `@pdpp/remote-surface` is ready for standalone publication before maintainers publish it.
+The repository SHALL maintain automated checks that prove `@pdpp/remote-surface` is architecturally ready for standalone publication before maintainers publish it.
 
 #### Scenario: Publication validation runs in CI
 
 - **WHEN** package publication validation runs
-- **THEN** it SHALL verify tarball hygiene, public exports, declaration coverage, dependency publishability, package-local tests, README example validity, and clean-consumer install/import/typecheck from the packed artifact
+- **THEN** it SHALL verify tarball hygiene, public exports, declaration coverage, dependency publishability, package-local tests, host-neutral public artifact scans, and clean-consumer install/import/typecheck from the packed artifact
 - **AND** a failure in any of those checks SHALL block publication readiness
 
 #### Scenario: Maintainers run a publication dry run
@@ -70,3 +76,8 @@ The repository SHALL maintain automated checks that prove `@pdpp/remote-surface`
 - **WHEN** a maintainer prepares to publish `@pdpp/remote-surface`
 - **THEN** the documented dry-run path SHALL produce an inspectable package artifact or file list without publishing
 - **AND** the dry run SHALL expose enough evidence to confirm that private source, tests, workspace-only dependencies, and PDPP reference-only concepts are not leaking into the public package
+
+#### Scenario: Maintainers prepare launch documentation
+
+- **WHEN** maintainers perform release preparation for `@pdpp/remote-surface`
+- **THEN** polished README examples, cookbook documentation, final registry metadata, the `private: false` switch, and actual publication SHALL be handled as release-prep work rather than as prerequisites for this package-shape change
