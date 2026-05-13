@@ -108,6 +108,19 @@ function summarizePayload(payload) {
         "beacons",
         "visualViewport",
         "error",
+        "eventType",
+        "insideMedia",
+        "insideOverlay",
+        "insideWrapper",
+        "mapped",
+        "mappingBasis",
+        "pageCdpAvailable",
+        "reason",
+        "reasons",
+        "result",
+        "screen",
+        "strictSafe",
+        "viewport",
       ].includes(key)
     ) {
       out[key] = value;
@@ -134,6 +147,41 @@ function latestRemoteLayoutEvent(events) {
   );
 }
 
+function latestNekoPageCdpAvailability(events) {
+  const event = latestEvent(
+    events,
+    (_event, payload, type) => type === "neko.status.poll" && typeof payload.pageCdpAvailable === "boolean"
+  );
+  return event ? eventPayload(event).pageCdpAvailable : null;
+}
+
+function latestNekoStatusViewport(events) {
+  const event = latestEvent(events, (_event, payload, type) => type === "neko.status.poll" && payload.viewport);
+  const viewport = event ? eventPayload(event).viewport : null;
+  const width = Number(viewport?.width);
+  const height = Number(viewport?.height);
+  return Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0 ? { width, height } : null;
+}
+
+function hasHealthyNekoPointerMapping(events) {
+  return hasEvent(
+    events,
+    (_event, payload, type) =>
+      type === "neko.pointer_mapping" &&
+      (payload.eventType === "pointerdown" || payload.eventType === "mousedown") &&
+      payload.mapped &&
+      typeof payload.mapped === "object" &&
+      payload.insideOverlay === true &&
+      !hasEvent(
+        events,
+        (_issueEvent, issuePayload, issueType) =>
+          issueType === "neko.pointer_mapping.issue" &&
+          Array.isArray(issuePayload.reasons) &&
+          issuePayload.reasons.length > 0
+      )
+  );
+}
+
 function resolveRemoteControlTarget(events, controlId) {
   const layoutEvent = latestRemoteLayoutEvent(events);
   const payload = layoutEvent ? eventPayload(layoutEvent) : null;
@@ -152,12 +200,35 @@ function resolveRemoteControlTarget(events, controlId) {
     return {
       sourceType: eventType(layoutEvent),
       controlId,
-      remote: { x: centre.x, y: centre.y, width: remoteWidth, height: remoteHeight },
-      xRatio: centre.x / remoteWidth,
-      yRatio: centre.y / remoteHeight,
+      remotePoint: { x: centre.x, y: centre.y },
+      remoteViewport: { width: remoteWidth, height: remoteHeight },
     };
   }
   return null;
+}
+
+function containedStreamRect(imageBox, viewport) {
+  const aspectRatio = viewport.width / viewport.height;
+  const boxRatio = imageBox.width / imageBox.height;
+  if (!(Number.isFinite(aspectRatio) && Number.isFinite(boxRatio)) || imageBox.width <= 0 || imageBox.height <= 0) {
+    return imageBox;
+  }
+  if (boxRatio > aspectRatio) {
+    const width = imageBox.height * aspectRatio;
+    return {
+      x: imageBox.x + (imageBox.width - width) / 2,
+      y: imageBox.y,
+      width,
+      height: imageBox.height,
+    };
+  }
+  const height = imageBox.width / aspectRatio;
+  return {
+    x: imageBox.x,
+    y: imageBox.y + (imageBox.height - height) / 2,
+    width: imageBox.width,
+    height,
+  };
 }
 
 async function streamFrameReport(page) {
@@ -174,6 +245,26 @@ async function streamFrameReport(page) {
   return { box, attrs };
 }
 
+async function streamContentRect(page, remoteViewport) {
+  const frame = page.locator(STREAM_FRAME_SELECTOR).first();
+  const box = await frame.boundingBox();
+  if (!box) {
+    fail("stream frame is not measurable");
+  }
+  const mediaBox = await frame
+    .evaluate((node) => {
+      const media = node.querySelector("video, img");
+      if (!media) return null;
+      const rect = media.getBoundingClientRect();
+      return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+    })
+    .catch(() => null);
+  if (mediaBox) {
+    return containedStreamRect(mediaBox, remoteViewport);
+  }
+  return box;
+}
+
 async function captureFailureEvidence(page, debugEvents, message) {
   await mkdir(EVIDENCE_DIR, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -185,6 +276,9 @@ async function captureFailureEvidence(page, debugEvents, message) {
     "debug.enabled",
     "neko.client.start",
     "neko.media.displayable",
+    "neko.pointer_mapping",
+    "neko.pointer_mapping.issue",
+    "neko.status.poll",
     "stream.input.post.start",
     "stream.input.post.result",
     "stream.input.post.error",
@@ -280,13 +374,12 @@ async function ensureOwnerSession(page) {
   ]);
 }
 
-async function clickInsideStream(page, xRatio, yRatio) {
-  const frame = page.locator(STREAM_FRAME_SELECTOR).first();
-  const box = await frame.boundingBox();
-  if (!box) {
-    fail("stream frame is not measurable");
-  }
-  await page.mouse.click(Math.round(box.x + box.width * xRatio), Math.round(box.y + box.height * yRatio));
+async function clickInsideStream(page, remotePoint, remoteViewport) {
+  const rect = await streamContentRect(page, remoteViewport);
+  await page.mouse.click(
+    Math.round(rect.x + (rect.width * remotePoint.x) / remoteViewport.width),
+    Math.round(rect.y + (rect.height * remotePoint.y) / remoteViewport.height)
+  );
 }
 
 async function clickRemoteControl(page, debugEvents, controlId) {
@@ -294,8 +387,33 @@ async function clickRemoteControl(page, debugEvents, controlId) {
   if (!target) {
     fail(`remote playground did not publish a measurable ${controlId} target`);
   }
-  await clickInsideStream(page, target.xRatio, target.yRatio);
+  await clickInsideStream(page, target.remotePoint, target.remoteViewport);
   return target;
+}
+
+async function clickStrictVisualCounterTarget(page, debugEvents) {
+  const remoteViewport = latestNekoStatusViewport(debugEvents);
+  if (remoteViewport) {
+    await clickInsideStream(
+      page,
+      {
+        // Strict mode cannot read remote DOM telemetry. This point targets the
+        // visible playground counter button from the known debug page layout.
+        x: remoteViewport.width * 0.29,
+        y: remoteViewport.height * 0.15,
+      },
+      remoteViewport
+    );
+    return { remoteViewport, strictSafe: true };
+  }
+
+  const frame = page.locator(STREAM_FRAME_SELECTOR).first();
+  const box = await frame.boundingBox();
+  if (!box) {
+    fail("stream frame is not measurable");
+  }
+  await page.mouse.click(Math.round(box.x + box.width * 0.29), Math.round(box.y + box.height * 0.15));
+  return { remoteViewport: null, strictSafe: true };
 }
 
 async function run() {
@@ -364,38 +482,55 @@ async function run() {
     );
 
     await waitFor(
-      () => resolveRemoteControlTarget(debugEvents, "counter"),
-      "remote playground telemetry did not publish counter target"
+      () => resolveRemoteControlTarget(debugEvents, "counter") || latestNekoPageCdpAvailability(debugEvents) === false,
+      "stream did not publish either remote playground telemetry or strict-mode page-CDP status"
     );
 
-    await clickRemoteControl(page, debugEvents, "counter");
-    await waitFor(
-      () => hasEvent(debugEvents, (_event, payload, type) => type === "playground.counter_click" && Number(payload.count) >= 1),
-      "remote counter did not report an increment"
-    );
+    if (latestNekoPageCdpAvailability(debugEvents) === false && !resolveRemoteControlTarget(debugEvents, "counter")) {
+      await clickStrictVisualCounterTarget(page, debugEvents);
+      await waitFor(
+        () => hasHealthyNekoPointerMapping(debugEvents),
+        "strict-mode smoke did not observe healthy n.eko pointer mapping"
+      );
+      await waitFor(
+        () => hasEvent(debugEvents, (_event, _payload, type) => type === "adapter_mounted" || type === "neko.client.start"),
+        "strict-mode smoke did not observe n.eko adapter/client startup"
+      );
+      process.stdout.write(`${JSON.stringify({ mode: "strict", pageCdpAvailable: false, strictSafe: true })}\n`);
+    } else {
+      await clickRemoteControl(page, debugEvents, "counter");
+      await waitFor(
+        () =>
+          hasEvent(debugEvents, (_event, payload, type) => type === "playground.counter_click" && Number(payload.count) >= 1),
+        "remote counter did not report an increment"
+      );
 
-    const token = `pdpp-smoke-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-    await clickRemoteControl(page, debugEvents, "text-input");
-    await page.keyboard.type(token, { delay: 8 });
-    await waitFor(
-      () =>
-        hasEvent(
-          debugEvents,
-          (_event, payload, type) =>
-            type === "playground.input" &&
-            payload.smokeTokenPresent === true &&
-            Number(payload.valueLength) >= token.length
-        ),
-      "unique smoke token did not land in the remote playground input"
-    );
+      const token = `pdpp-smoke-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      await clickRemoteControl(page, debugEvents, "text-input");
+      await page.keyboard.type(token, { delay: 8 });
+      await waitFor(
+        () =>
+          hasEvent(
+            debugEvents,
+            (_event, payload, type) =>
+              type === "playground.input" &&
+              payload.smokeTokenPresent === true &&
+              Number(payload.valueLength) >= token.length
+          ),
+        "unique smoke token did not land in the remote playground input"
+      );
 
-    await waitFor(
-      () =>
-        hasEvent(debugEvents, (_event, _payload, type) => type.startsWith("surface.neko.") || type.startsWith("neko.touch")) &&
-        hasEvent(debugEvents, (_event, payload, type) => type === "playground.click" || type === "playground.input") &&
-        hasEvent(debugEvents, (_event, payload, type) => type === "stream.input.post.result" || type === "neko.client.start"),
-      "telemetry did not capture both local input path and remote playground events"
-    );
+      await waitFor(
+        () =>
+          hasEvent(
+            debugEvents,
+            (_event, _payload, type) => type.startsWith("surface.neko.") || type.startsWith("neko.touch")
+          ) &&
+          hasEvent(debugEvents, (_event, payload, type) => type === "playground.click" || type === "playground.input") &&
+          hasEvent(debugEvents, (_event, payload, type) => type === "stream.input.post.result" || type === "neko.client.start"),
+        "telemetry did not capture both local input path and remote playground events"
+      );
+    }
 
     process.stdout.write(`PASS manual-action stream smoke ${url}\n`);
   } catch (error) {
