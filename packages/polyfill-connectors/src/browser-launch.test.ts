@@ -100,6 +100,53 @@ test("decideContainerHeadedBrowserGate: undefined headless on host (no container
   );
 });
 
+test("decideContainerHeadedBrowserGate: HEADED in container with remoteCdpUrl proceeds (remote browser is operator-visible)", () => {
+  assert.deepEqual(
+    decideContainerHeadedBrowserGate({
+      headless: false,
+      inContainer: true,
+      escapeHatchEnabled: false,
+      remoteCdpUrl: "http://neko:9223",
+    }),
+    { kind: "proceed" }
+  );
+});
+
+test("decideContainerHeadedBrowserGate: undefined headless in container with remoteCdpUrl proceeds", () => {
+  assert.deepEqual(
+    decideContainerHeadedBrowserGate({
+      headless: undefined,
+      inContainer: true,
+      escapeHatchEnabled: false,
+      remoteCdpUrl: "http://neko:9223",
+    }),
+    { kind: "proceed" }
+  );
+});
+
+test("decideContainerHeadedBrowserGate: HEADED in container WITHOUT remoteCdpUrl still fails closed (local headed)", () => {
+  assert.deepEqual(
+    decideContainerHeadedBrowserGate({
+      headless: false,
+      inContainer: true,
+      escapeHatchEnabled: false,
+    }),
+    { kind: "fail_closed" }
+  );
+});
+
+test("decideContainerHeadedBrowserGate: empty-string remoteCdpUrl does not bypass the gate", () => {
+  assert.deepEqual(
+    decideContainerHeadedBrowserGate({
+      headless: false,
+      inContainer: true,
+      escapeHatchEnabled: false,
+      remoteCdpUrl: "",
+    }),
+    { kind: "fail_closed" }
+  );
+});
+
 test("decideContainerHeadedBrowserGate: explicit headless: true in container proceeds even when undefined would not", () => {
   assert.deepEqual(decideContainerHeadedBrowserGate({ headless: true, inContainer: true, escapeHatchEnabled: false }), {
     kind: "proceed",

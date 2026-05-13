@@ -15,8 +15,10 @@
 import type { BrowserContext, Page } from "playwright";
 import { manualAction } from "../browser-handoff.ts";
 import type { InteractionRequest, InteractionResponse } from "../connector-runtime.ts";
+import type { CaptureSession } from "../fixture-capture.ts";
 
 interface EnsureChatGptSessionArgs {
+  capture?: CaptureSession | null;
   context: BrowserContext;
   page: Page;
   sendInteraction: (req: InteractionRequest) => Promise<InteractionResponse>;
@@ -82,6 +84,7 @@ async function checkLoggedInViaDOM(page: Page): Promise<boolean> {
 }
 
 export async function ensureChatGptSession({
+  capture,
   context: _context,
   page,
   sendInteraction,
@@ -170,6 +173,7 @@ export async function ensureChatGptSession({
       .click()
       .catch((): undefined => undefined);
     await page.waitForTimeout(5000);
+    await capture?.captureDom(page, "auth-after-password-submit");
 
     // Handle 2FA code entry if prompted (input[name="code"], tel, or numeric).
     const tfaIn = page.locator('input[name="code"], input[type="tel"], input[inputmode="numeric"]').first();

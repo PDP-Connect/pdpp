@@ -167,6 +167,7 @@ export interface BrowserRuntimeVisibility {
 }
 
 export interface EnsureSessionArgs {
+  capture: CaptureSession | null;
   context: BrowserContext;
   page: Page;
   progress: BaseCollectContext["progress"];
@@ -592,7 +593,7 @@ async function runInBrowser(args: {
     const page = await ctx.newPage();
     await establishSession(
       { ensureSession, probeSession },
-      { context: ctx, page, name, progress, sendInteraction: browserSendInteraction }
+      { capture: baseCtx.capture, context: ctx, page, name, progress, sendInteraction: browserSendInteraction }
     );
     await collect({ ...baseCtx, context: ctx, page, sendInteraction: browserSendInteraction });
   } finally {
@@ -723,6 +724,7 @@ async function acquireBrowser(browser: BrowserConfig, name: string): Promise<Acq
 }
 
 interface SessionEstablishArgs {
+  capture: CaptureSession | null;
   context: BrowserContext;
   name: string;
   page: Page;
@@ -745,11 +747,11 @@ async function establishSession(
   args: SessionEstablishArgs
 ): Promise<void> {
   const { ensureSession, probeSession } = hooks;
-  const { context, page, name, sendInteraction, progress } = args;
+  const { capture, context, page, name, sendInteraction, progress } = args;
 
   if (typeof ensureSession === "function") {
     try {
-      await ensureSession({ context, page, sendInteraction, progress });
+      await ensureSession({ capture, context, page, sendInteraction, progress });
       return;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

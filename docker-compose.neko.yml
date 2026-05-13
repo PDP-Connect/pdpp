@@ -23,7 +23,7 @@ services:
       # the binary+launch-arg+driver stealth layers documented in
       # docs/neko-stealth-design-brief.md. Per-connector env-var so other
       # connectors (gmail, github, etc.) keep their host-local Patchright.
-      PDPP_CHATGPT_REMOTE_CDP_URL: ${PDPP_CHATGPT_REMOTE_CDP_URL:-http://neko:9223}
+      PDPP_CHATGPT_REMOTE_CDP_URL: ${PDPP_CHATGPT_REMOTE_CDP_URL:-${PDPP_NEKO_CDP_HTTP_URL:-http://neko:9223}}
       NEKO_USERNAME: operator
       NEKO_PASSWORD: "1"
 

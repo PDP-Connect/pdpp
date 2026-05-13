@@ -147,6 +147,15 @@ export interface ContainerHeadedBrowserGateInputs {
   readonly escapeHatchEnabled: boolean;
   readonly headless: boolean | undefined;
   readonly inContainer: boolean;
+  /**
+   * When set, the launcher will NOT spawn a local headed Chromium — it
+   * will attach to a remote CDP endpoint (e.g. a n.eko browser surface) which
+   * already renders the browser visibly for the operator. In that case
+   * the in-container fail-closed gate does not apply: there is no
+   * invisible headed browser to fail closed against. Local headed
+   * container launches (no remoteCdpUrl) still fail closed as before.
+   */
+  readonly remoteCdpUrl?: string;
 }
 
 /**
@@ -161,6 +170,13 @@ export function decideContainerHeadedBrowserGate(inputs: ContainerHeadedBrowserG
   const effectiveHeadless = inputs.headless ?? ACQUIRE_ISOLATED_BROWSER_HEADLESS_DEFAULT;
   const headedRequested = effectiveHeadless === false;
   if (!(headedRequested && inputs.inContainer)) {
+    return { kind: "proceed" };
+  }
+  // Remote-CDP attach bypasses the gate: the visible browser is owned by a
+  // separate operator-visible surface (e.g. n.eko) and the operator can see it
+  // via the streaming companion. There is no invisible headed Chromium in the
+  // reference container to fail closed against.
+  if (inputs.remoteCdpUrl && inputs.remoteCdpUrl.length > 0) {
     return { kind: "proceed" };
   }
   if (inputs.escapeHatchEnabled) {
@@ -217,7 +233,7 @@ async function acquireRemoteCdpBrowser(cdpUrl: string, profileName: string): Pro
   const browser = await localChromium.connectOverCDP(cdpUrl);
   const [context] = browser.contexts();
   if (!context) {
-    await browser.close().catch(() => {});
+    await browser.close().catch(() => undefined);
     throw new Error(
       `acquireRemoteCdpBrowser(${profileName}): remote browser at ${cdpUrl} has no contexts; cannot attach`
     );
@@ -639,6 +655,7 @@ export async function acquireBrowserForConnector(options: AcquireIsolatedBrowser
     headless: options.headless,
     inContainer: isRunningInContainer(),
     escapeHatchEnabled: process.env.PDPP_ALLOW_HEADED_CONTAINER_BROWSER === "1",
+    ...(options.remoteCdpUrl ? { remoteCdpUrl: options.remoteCdpUrl } : {}),
   });
   if (gate.kind === "fail_closed") {
     throw new HeadedBrowserUnavailableError({

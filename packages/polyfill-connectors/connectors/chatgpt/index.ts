@@ -640,8 +640,9 @@ if (isMainModule(import.meta.url)) {
     name: "chatgpt",
     validateRecord,
     browser: { profileName: "chatgpt" },
-    async ensureSession({ context, page, sendInteraction }) {
+    async ensureSession({ capture, context, page, sendInteraction }) {
       await ensureChatGptSession({
+        capture,
         context,
         page,
         sendInteraction,
