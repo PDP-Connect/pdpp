@@ -64,8 +64,8 @@ export function createNekoClientApi(opts?: {
     setRemoteInputFocused(focused: boolean): void {
       setNekoRemoteInputFocused(focused);
     },
-    sendText(text: string): void {
-      pasteTextIntoNeko(text);
+    sendText(text: string): boolean {
+      return pasteTextIntoNeko(text);
     },
     pasteText(text: string): boolean {
       return pasteTextIntoNeko(text);

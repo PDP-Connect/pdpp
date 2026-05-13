@@ -67,7 +67,7 @@ export interface NekoClientApi {
   focusKeyboard?(): void;
   blurKeyboard?(): void;
   setRemoteInputFocused?(focused: boolean): void;
-  sendText?(text: string): Promise<void> | void;
+  sendText?(text: string): Promise<boolean | void> | boolean | void;
   pasteText?(text: string): Promise<boolean> | boolean;
   copyRemoteSelection?(): Promise<boolean> | boolean;
   /**
@@ -274,13 +274,7 @@ export class NekoSurfaceAdapter implements RemoteSurface {
     this.textInputController = new MobileTextInputController({
       textarea,
       onTextCommit: (text) => {
-        if (this.client.sendText) {
-          void this.client.sendText(text);
-        } else {
-          this.log("warn", "neko-surface-adapter.no-send-text-helper", {
-            textLength: text.length,
-          });
-        }
+        void this.dispatchCommittedText(text);
       },
       onSpecialKey: (keysym) => {
         if (this.client.sendKeysym) {
@@ -360,9 +354,45 @@ export class NekoSurfaceAdapter implements RemoteSurface {
 
   async sendText(text: string): Promise<void> {
     this.ensureMounted("sendText");
+    await this.sendTextViaClient(text, "surface-api");
+  }
+
+  private async dispatchCommittedText(text: string): Promise<void> {
+    this.log("debug", "neko-surface-adapter.text-commit", {
+      textLength: text.length,
+    });
+    try {
+      await this.sendTextViaClient(text, "mobile-ime");
+    } catch (err) {
+      this.log("error", "neko-surface-adapter.text-commit-failed", {
+        error: err instanceof Error ? err.message : String(err),
+        textLength: text.length,
+      });
+    }
+  }
+
+  private async sendTextViaClient(
+    text: string,
+    source: "mobile-ime" | "surface-api",
+  ): Promise<boolean> {
     if (this.client.sendText) {
-      await this.client.sendText(text);
-      return;
+      this.log("debug", "neko-surface-adapter.send-text", {
+        phase: "start",
+        source,
+        textLength: text.length,
+      });
+      const result = await this.client.sendText(text);
+      const sent = result !== false;
+      this.log(sent ? "info" : "warn", "neko-surface-adapter.send-text", {
+        phase: "result",
+        sent,
+        source,
+        textLength: text.length,
+      });
+      if (!sent) {
+        throw new Error("client.sendText returned false");
+      }
+      return true;
     }
     // TODO(step-3): dashboard wiring should provide a `sendText` that
     // proxies the existing `nekoInstance.control.paste(text)` path
@@ -371,6 +401,7 @@ export class NekoSurfaceAdapter implements RemoteSurface {
     this.log("warn", "neko-surface-adapter.no-send-text-helper", {
       textLength: text.length,
     });
+    return false;
   }
 
   async pasteText(text: string): Promise<boolean> {

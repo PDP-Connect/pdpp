@@ -50,6 +50,12 @@ interface MockClient extends NekoClientApi {
   copyRemoteSelectionCalls: number;
 }
 
+interface CapturedLog {
+  level: string;
+  msg: string;
+  meta?: Record<string, unknown>;
+}
+
 function makeMockClient(overrides: Partial<NekoClientApi> = {}): MockClient {
   const startCalls: MockClient["startCalls"] = [];
   let stopCalls = 0;
@@ -190,19 +196,84 @@ describe("NekoSurfaceAdapter", () => {
 
   it("focusTextInput() focuses and binds the controller textarea for text commits", async () => {
     const textarea = makeStubTextarea();
+    const logs: CapturedLog[] = [];
     const client = makeMockClient({
       getTextareaElement: () => textarea,
     });
-    const adapter = new NekoSurfaceAdapter({ client, config: baseConfig });
+    const adapter = new NekoSurfaceAdapter({
+      client,
+      config: baseConfig,
+      logger: (level, msg, meta) => logs.push({ level, msg, meta }),
+    });
     await adapter.mount(fakeEl);
 
     adapter.focusTextInput();
     textarea.dispatchEvent(makeInputEvent("insertText", "h"));
+    await new Promise((resolve) => setImmediate(resolve));
 
     assert.equal(client.focusCalls, 1);
     assert.deepEqual(textarea.focusCalls, [{ preventScroll: true }]);
     assert.deepEqual(client.sendTextCalls, ["h"]);
     assert.equal(textarea.value, "");
+    assert.ok(
+      logs.some(
+        (l) =>
+          l.msg === "neko-surface-adapter.text-commit" &&
+          l.meta?.textLength === 1,
+      ),
+    );
+    assert.ok(
+      logs.some(
+        (l) =>
+          l.level === "info" &&
+          l.msg === "neko-surface-adapter.send-text" &&
+          l.meta?.phase === "result" &&
+          l.meta?.sent === true &&
+          l.meta?.source === "mobile-ime",
+      ),
+    );
+  });
+
+  it("IME text commits log paste failure when client.sendText returns false", async () => {
+    const textarea = makeStubTextarea();
+    const logs: CapturedLog[] = [];
+    const client = makeMockClient({
+      getTextareaElement: () => textarea,
+      sendText(text) {
+        client.sendTextCalls.push(text);
+        return false;
+      },
+    });
+    const adapter = new NekoSurfaceAdapter({
+      client,
+      config: baseConfig,
+      logger: (level, msg, meta) => logs.push({ level, msg, meta }),
+    });
+    await adapter.mount(fakeEl);
+
+    adapter.focusTextInput();
+    textarea.dispatchEvent(makeInputEvent("insertText", "x"));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.deepEqual(client.sendTextCalls, ["x"]);
+    assert.ok(
+      logs.some(
+        (l) =>
+          l.level === "warn" &&
+          l.msg === "neko-surface-adapter.send-text" &&
+          l.meta?.phase === "result" &&
+          l.meta?.sent === false &&
+          l.meta?.source === "mobile-ime",
+      ),
+    );
+    assert.ok(
+      logs.some(
+        (l) =>
+          l.level === "error" &&
+          l.msg === "neko-surface-adapter.text-commit-failed" &&
+          l.meta?.textLength === 1,
+      ),
+    );
   });
 
   it("remote text input state delegates through the client boundary", async () => {
@@ -216,12 +287,55 @@ describe("NekoSurfaceAdapter", () => {
     assert.equal(client.blurCalls, 1);
   });
 
-  it("sendText() delegates to client.sendText", async () => {
+  it("sendText() delegates to client.sendText and logs native-path success", async () => {
     const client = makeMockClient();
-    const adapter = new NekoSurfaceAdapter({ client, config: baseConfig });
+    const logs: CapturedLog[] = [];
+    const adapter = new NekoSurfaceAdapter({
+      client,
+      config: baseConfig,
+      logger: (level, msg, meta) => logs.push({ level, msg, meta }),
+    });
     await adapter.mount(fakeEl);
     await adapter.sendText("hello");
     assert.deepEqual(client.sendTextCalls, ["hello"]);
+    assert.ok(
+      logs.some(
+        (l) =>
+          l.level === "info" &&
+          l.msg === "neko-surface-adapter.send-text" &&
+          l.meta?.phase === "result" &&
+          l.meta?.sent === true &&
+          l.meta?.source === "surface-api",
+      ),
+    );
+  });
+
+  it("sendText() rejects and logs when client.sendText reports native paste failure", async () => {
+    const client = makeMockClient({
+      sendText(text) {
+        client.sendTextCalls.push(text);
+        return false;
+      },
+    });
+    const logs: CapturedLog[] = [];
+    const adapter = new NekoSurfaceAdapter({
+      client,
+      config: baseConfig,
+      logger: (level, msg, meta) => logs.push({ level, msg, meta }),
+    });
+    await adapter.mount(fakeEl);
+    await assert.rejects(() => adapter.sendText("hello"), /returned false/);
+    assert.deepEqual(client.sendTextCalls, ["hello"]);
+    assert.ok(
+      logs.some(
+        (l) =>
+          l.level === "warn" &&
+          l.msg === "neko-surface-adapter.send-text" &&
+          l.meta?.phase === "result" &&
+          l.meta?.sent === false &&
+          l.meta?.source === "surface-api",
+      ),
+    );
   });
 
   it("explicit clipboard actions delegate through the client boundary", async () => {

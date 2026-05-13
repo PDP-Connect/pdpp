@@ -447,3 +447,35 @@ test("n.eko touch.start event captures the full local→remote mapping with an i
     "pointer mapping snapshot exposes alternative basis candidates for anomaly correlation"
   );
 });
+
+test("n.eko adapter text path preserves native paste result for telemetry", async () => {
+  // Regression guard for the public-smoke failure where MobileTextInputController
+  // committed text but the adapter/shim path discarded whether native
+  // `control.paste` actually fired.
+  const { readFile } = await import("node:fs/promises");
+  const { fileURLToPath } = await import("node:url");
+  const here = fileURLToPath(new URL(".", import.meta.url));
+  const shim = await readFile(`${here}neko-client-api-shim.ts`, "utf8");
+  const client = await readFile(`${here}neko-client.ts`, "utf8");
+
+  assert.match(
+    shim,
+    /sendText\(text:\s*string\):\s*boolean\s*\{[\s\S]{0,80}return pasteTextIntoNeko\(text\);/,
+    "adapter sendText must return pasteTextIntoNeko's boolean result"
+  );
+  assert.match(
+    client,
+    /export function pasteTextIntoNeko\(text:\s*string\):\s*boolean[\s\S]{0,500}control\.paste\(text\);/,
+    "pasteTextIntoNeko must call nekoInstance.control.paste on the native path"
+  );
+  assert.match(
+    client,
+    /neko\.clipboard_local_to_remote[\s\S]{0,300}phase:\s*"sent"/,
+    "successful native paste emits sent telemetry"
+  );
+  assert.match(
+    client,
+    /neko\.clipboard_local_to_remote[\s\S]{0,300}phase:\s*"skipped"/,
+    "failed native paste emits skipped telemetry"
+  );
+});
