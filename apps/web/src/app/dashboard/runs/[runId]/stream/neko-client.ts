@@ -558,6 +558,10 @@ function activeElementDebugSnapshot(): Record<string, unknown> | null {
   return elementDebugSnapshot(document.activeElement);
 }
 
+function isPdppSoftKeyboardElement(element: Element | null): boolean {
+  return element?.matches('[data-pdpp-soft-keyboard="neko"]') ?? false;
+}
+
 function overlayDebugSnapshot(): Record<string, unknown> {
   const textarea = getOverlayTextarea();
   return {
@@ -2140,7 +2144,8 @@ export async function startNeko(container: HTMLElement, config: NekoClientConfig
       if (textarea && document.activeElement !== textarea) {
         const active = document.activeElement;
         const isPdppUi = active instanceof Element && active.closest("[data-pdpp-stream-ui]");
-        if (!(isPdppUi || hasUiTextSelection())) {
+        const isPdppSoftKeyboard = active instanceof Element && isPdppSoftKeyboardElement(active);
+        if (!(isPdppUi || isPdppSoftKeyboard || hasUiTextSelection())) {
           textarea.focus();
         }
       }

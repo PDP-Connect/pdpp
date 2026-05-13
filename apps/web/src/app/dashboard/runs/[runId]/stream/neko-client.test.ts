@@ -489,3 +489,27 @@ test("n.eko adapter text path preserves native paste result for telemetry", asyn
     "failed native paste emits skipped telemetry"
   );
 });
+
+test("n.eko focus interval does not steal focus from the PDPP soft-keyboard textarea", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const { fileURLToPath } = await import("node:url");
+  const here = fileURLToPath(new URL(".", import.meta.url));
+  const src = await readFile(`${here}neko-client.ts`, "utf8");
+
+  assert.match(
+    src,
+    /function isPdppSoftKeyboardElement\(element: Element \| null\): boolean[\s\S]{0,160}\[data-pdpp-soft-keyboard="neko"\]/,
+    "PDPP soft-keyboard textarea is recognized by data attribute"
+  );
+  const focusInterval = src.split("focusInterval = setInterval(")[1]?.split("}, 2000);")[0] ?? "";
+  assert.match(
+    focusInterval,
+    /isPdppSoftKeyboardElement\(active\)/,
+    "focus interval checks whether activeElement is the PDPP soft-keyboard textarea"
+  );
+  assert.match(
+    focusInterval,
+    /!\(isPdppUi \|\| isPdppSoftKeyboard \|\| hasUiTextSelection\(\)\)[\s\S]{0,80}textarea\.focus\(\)/,
+    "focus interval does not refocus n.eko overlay while PDPP soft-keyboard textarea is active"
+  );
+});
