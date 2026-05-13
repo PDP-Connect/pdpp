@@ -78,7 +78,9 @@ either X11 keysym events (for ASCII keystrokes) or text-commit batches
 
 The package contains a working browser-surface lease substrate, early
 n.eko/client controller pieces, host-neutral API/type destinations for the
-streaming extraction, and pure diagnostics/protocol/testing helpers. Server
-broker extraction, dashboard viewer migration, reference route adaptation, and
-dynamic Docker-backed n.eko allocation remain intentionally outside this
-tranche.
+streaming extraction, pure diagnostics/protocol/testing helpers, and the
+default in-memory session lifecycle consumed by the reference route adapter.
+The reference server still owns `_ref` routes, auth, run timelines, connector
+handoff, and dynamic Docker-backed n.eko allocation. That split is intentional:
+the package is closer to OSS publication because reusable remote-surface
+contracts are isolated, but it is not a standalone product server.
