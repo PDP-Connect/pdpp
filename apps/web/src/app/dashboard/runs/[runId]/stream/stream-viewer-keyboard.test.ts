@@ -99,9 +99,13 @@ const NEKO_LOCAL_STREAM_HANDLER_RE = /handleLocalStreamGesture/;
 const NEKO_LOCAL_GESTURE_FOCUS_CALL_RE = /focusNekoKeyboardFromLocalGesture\(/;
 const NEKO_LOCAL_GESTURE_EXPORT_RE = /export function focusNekoKeyboardFromLocalGesture/;
 const NEKO_MOUSE_POINTER_UP_TEXT_FOCUS_RE =
-  /type === "pointerup" && pointerType === "mouse" && event\.button === 0[\s\S]*focusTextInputAfterMousePointerUp\(\)/;
+  /type === "pointerup" && pointerType === "mouse" && event\.button === 0[\s\S]*focusTextInputAfterMousePointerUp\("pointerup"\)/;
 const NEKO_MOUSE_POINTER_UP_ADAPTER_FOCUS_RE =
   /neko\.keyboard_focus\.mouse_pointer_up[\s\S]*adapter\.setRemoteInputFocused\(true\)[\s\S]*adapter\.focusTextInput\(\)|adapter\.setRemoteInputFocused\(true\)[\s\S]*adapter\.focusTextInput\(\)[\s\S]*neko\.keyboard_focus\.mouse_pointer_up/;
+const NEKO_DOCUMENT_MOUSEUP_FALLBACK_RE =
+  /document\.addEventListener\("mouseup",\s*mouseupFallback[\s\S]*document\.removeEventListener\("mouseup",\s*mouseupFallback/;
+const NEKO_DOCUMENT_MOUSEUP_CONSTRAINTS_RE =
+  /const mouseupFallback = \(event: MouseEvent\)[\s\S]*isCoarsePointer\(\)[\s\S]*event\.button !== 0[\s\S]*mountNode\.contains\(target\)[\s\S]*focusTextInputAfterMousePointerUp\("document-mouseup"\)/;
 const VIEWER_DIRECT_NEKO_KEYBOARD_CALL_RE = /\b(?:setNekoRemoteInputFocused|focusNekoKeyboard|blurNekoKeyboard)\(/;
 const VIEWER_REMOTE_INPUT_FOCUS_VIA_ADAPTER_RE =
   /adapter\.setRemoteInputFocused\(true\)[\s\S]*adapter\.focusTextInput\(\)[\s\S]*adapter\.setRemoteInputFocused\(false\)[\s\S]*adapter\.blurTextInput\(\)/;
@@ -143,6 +147,8 @@ test("touch tap on the n.eko surface no longer opens the soft keyboard optimisti
   assert.doesNotMatch(viewerSrc, NEKO_LOCAL_GESTURE_FOCUS_CALL_RE);
   assert.match(viewerSrc, NEKO_MOUSE_POINTER_UP_TEXT_FOCUS_RE);
   assert.match(viewerSrc, NEKO_MOUSE_POINTER_UP_ADAPTER_FOCUS_RE);
+  assert.match(viewerSrc, NEKO_DOCUMENT_MOUSEUP_FALLBACK_RE);
+  assert.match(viewerSrc, NEKO_DOCUMENT_MOUSEUP_CONSTRAINTS_RE);
   // The exported helper still exists so the test guarding remote-focus path
   // stays meaningful, but no surface invokes it.
   assert.match(nekoClientSrc, NEKO_LOCAL_GESTURE_EXPORT_RE);

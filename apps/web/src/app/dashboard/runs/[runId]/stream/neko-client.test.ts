@@ -460,13 +460,23 @@ test("n.eko adapter text path preserves native paste result for telemetry", asyn
 
   assert.match(
     shim,
-    /sendText\(text:\s*string\):\s*boolean\s*\{[\s\S]{0,80}return pasteTextIntoNeko\(text\);/,
-    "adapter sendText must return pasteTextIntoNeko's boolean result"
+    /sendText\(text:\s*string\):\s*boolean\s*\{[\s\S]{0,120}return pasteTextIntoNeko\(text,\s*\{\s*focusKeyboardAfterPaste:\s*false\s*\}\);/,
+    "adapter sendText must return pasteTextIntoNeko's boolean result without refocusing the n.eko overlay"
+  );
+  assert.match(
+    shim,
+    /pasteText\(text:\s*string\):\s*boolean\s*\{[\s\S]{0,80}return pasteTextIntoNeko\(text\);/,
+    "manual paste keeps pasteTextIntoNeko's default keyboard refocus behavior"
   );
   assert.match(
     client,
-    /export function pasteTextIntoNeko\(text:\s*string\):\s*boolean[\s\S]{0,500}control\.paste\(text\);/,
+    /export function pasteTextIntoNeko\([\s\S]{0,180}\):\s*boolean[\s\S]{0,700}control\.paste\(text\);/,
     "pasteTextIntoNeko must call nekoInstance.control.paste on the native path"
+  );
+  assert.match(
+    client,
+    /focusKeyboardAfterPaste[\s\S]{0,500}if \(focusKeyboardAfterPaste\) \{[\s\S]{0,80}focusNekoKeyboard\(\);/,
+    "pasteTextIntoNeko refocuses the n.eko overlay only when requested"
   );
   assert.match(
     client,

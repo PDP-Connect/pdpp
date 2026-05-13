@@ -935,7 +935,11 @@ function stopMobileTextInputGuard(): void {
   mobileTextInputGuardAttempts = 0;
 }
 
-export function pasteTextIntoNeko(text: string): boolean {
+export function pasteTextIntoNeko(
+  text: string,
+  opts: { focusKeyboardAfterPaste?: boolean } = {},
+): boolean {
+  const focusKeyboardAfterPaste = opts.focusKeyboardAfterPaste ?? true;
   const control = nekoInstance?.control;
   if (!text || typeof control?.paste !== "function") {
     emitNekoDebug("neko.clipboard_local_to_remote", {
@@ -953,9 +957,12 @@ export function pasteTextIntoNeko(text: string): boolean {
     length: text.length,
     method: "control.paste",
     phase: "sent",
+    refocusedKeyboard: focusKeyboardAfterPaste,
     ...overlayDebugSnapshot(),
   });
-  focusNekoKeyboard();
+  if (focusKeyboardAfterPaste) {
+    focusNekoKeyboard();
+  }
   return true;
 }
 

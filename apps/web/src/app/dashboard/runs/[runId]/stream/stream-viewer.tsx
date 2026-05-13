@@ -3305,11 +3305,17 @@ function NekoSurface({
     if (!mountNode) {
       return;
     }
-    const focusTextInputAfterMousePointerUp = () => {
+    const isCoarsePointer = () =>
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(pointer: coarse)").matches;
+    const focusTextInputAfterMousePointerUp = (
+      source: "pointerup" | "document-mouseup",
+    ) => {
       window.setTimeout(() => {
         const adapter = nekoSurfaceAdapterRef.current;
         if (!adapter || adapter.getLifecycleState() !== "mounted") {
           logDebug("neko.keyboard_focus.mouse_pointer_up.skip", {
+            source,
             state: adapter?.getLifecycleState() ?? null,
           });
           return;
@@ -3321,6 +3327,7 @@ function NekoSurface({
             document.activeElement ===
             containerRef.current?.querySelector<HTMLTextAreaElement>('[data-pdpp-soft-keyboard="neko"]'),
           snapshot: readSurfaceDebugSnapshot(containerRef.current),
+          source,
         });
       }, 0);
     };
@@ -3370,23 +3377,35 @@ function NekoSurface({
         })
         .then(() => {
           if (type === "pointerup" && pointerType === "mouse" && event.button === 0) {
-            focusTextInputAfterMousePointerUp();
+            focusTextInputAfterMousePointerUp("pointerup");
           }
         })
         .catch(() => {
           /* swallow; adapter logs */
         });
     };
+    const mouseupFallback = (event: MouseEvent) => {
+      if (isCoarsePointer() || event.button !== 0) {
+        return;
+      }
+      const target = event.target;
+      if (!(target instanceof Node) || !mountNode.contains(target)) {
+        return;
+      }
+      focusTextInputAfterMousePointerUp("document-mouseup");
+    };
     const opts: AddEventListenerOptions = { capture: true, passive: true };
     mountNode.addEventListener("pointerdown", handler as EventListener, opts);
     mountNode.addEventListener("pointermove", handler as EventListener, opts);
     mountNode.addEventListener("pointerup", handler as EventListener, opts);
     mountNode.addEventListener("pointercancel", handler as EventListener, opts);
+    document.addEventListener("mouseup", mouseupFallback, opts);
     return () => {
       mountNode.removeEventListener("pointerdown", handler as EventListener, opts);
       mountNode.removeEventListener("pointermove", handler as EventListener, opts);
       mountNode.removeEventListener("pointerup", handler as EventListener, opts);
       mountNode.removeEventListener("pointercancel", handler as EventListener, opts);
+      document.removeEventListener("mouseup", mouseupFallback, opts);
     };
   }, [logDebug]);
 
