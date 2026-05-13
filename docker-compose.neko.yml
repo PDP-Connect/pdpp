@@ -10,9 +10,9 @@ services:
       # Static managed n.eko mode exposes exactly one browser surface. The
       # controller owns leasing, queueing, and child-process CDP env injection;
       # connectors should not discover the static CDP endpoint directly.
-      PDPP_NEKO_MANAGED_CONNECTORS: ${PDPP_NEKO_MANAGED_CONNECTORS:-chatgpt}
+      PDPP_NEKO_MANAGED_CONNECTORS: ${PDPP_NEKO_MANAGED_CONNECTORS:-https://registry.pdpp.org/connectors/chatgpt}
       PDPP_NEKO_SURFACE_CAP: ${PDPP_NEKO_SURFACE_CAP:-1}
-      PDPP_NEKO_STATIC_PROFILE_KEY: ${PDPP_NEKO_STATIC_PROFILE_KEY:-chatgpt}
+      PDPP_NEKO_STATIC_PROFILE_KEY: ${PDPP_NEKO_STATIC_PROFILE_KEY:-https://registry.pdpp.org/connectors/chatgpt}
       PDPP_NEKO_BROWSER_OWNER_MODE: ${PDPP_NEKO_BROWSER_OWNER_MODE:-neko-owned}
       # strict = adapter never issues Runtime.enable / Page.addScript / etc
       # against the user's tab. Required for Cloudflare Turnstile to pass —
