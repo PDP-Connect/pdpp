@@ -14,7 +14,6 @@
  * conversation. Incremental via update_time cursor.
  */
 
-import pRetry, { AbortError } from "p-retry";
 import type { Page } from "playwright";
 import { ensureChatGptSession } from "../../src/auto-login/chatgpt.ts";
 import {
@@ -26,6 +25,7 @@ import {
   type ValidateRecord,
 } from "../../src/connector-runtime.ts";
 import type { CaptureSession } from "../../src/fixture-capture.ts";
+import { RetryExhaustedError, retryHttp, TerminalHttpStatusError } from "../../src/http-retry.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
 import {
   buildConversationRecord,
@@ -120,12 +120,40 @@ async function getAuthFromPage(page: Page): Promise<ChatGptAuth> {
  * Auth is cached inside the closure — no module-level mutable state. Every
  * successful response is auto-captured when PDPP_CAPTURE_FIXTURES=1.
  *
- * Retry policy (via p-retry):
+ * Retry policy:
  *   - Retryable: 429, 502/503/504, browser-level network errors
- *   - Terminal (AbortError): 401/403 (auth dead); 4xx except 429
+ *   - Terminal: 401/403 (auth dead)
+ *   - Non-retryable 4xx return to stream code for SKIP_RESULT handling
  *   - Caller decides what to do with a successful response body
  */
-function createChatGptApi({ page, capture }: { page: Page; capture: CaptureSession | null }): ChatGptApi {
+const CHATGPT_RATE_LIMIT_MAX_ATTEMPTS = 12;
+const CHATGPT_RATE_LIMIT_BASE_DELAY_MS = 2000;
+const CHATGPT_RATE_LIMIT_MAX_DELAY_MS = 5 * 60_000;
+const CHATGPT_RATE_LIMIT_MAX_RETRY_AFTER_MS = 15 * 60_000;
+const CHATGPT_LONG_SLEEP_PROGRESS_THRESHOLD_MS = 5000;
+
+function formatSleepDuration(ms: number): string {
+  if (ms < 1000) {
+    return `${ms}ms`;
+  }
+  const seconds = Math.ceil(ms / 1000);
+  if (seconds < 60) {
+    return `${seconds}s`;
+  }
+  const minutes = Math.floor(seconds / 60);
+  const remainderSeconds = seconds % 60;
+  return remainderSeconds ? `${minutes}m ${remainderSeconds}s` : `${minutes}m`;
+}
+
+function createChatGptApi({
+  capture,
+  emit,
+  page,
+}: {
+  capture: CaptureSession | null;
+  emit?: CollectContext["emit"];
+  page: Page;
+}): ChatGptApi {
   let authCache: ChatGptAuth | null = null;
   async function auth(): Promise<ChatGptAuth> {
     if (authCache) {
@@ -169,13 +197,14 @@ function createChatGptApi({ page, capture }: { page: Page; capture: CaptureSessi
         }
         const res = await fetch(`https://chatgpt.com/backend-api${path}`, init);
         const status = res.status;
+        const retryAfter = res.headers.get("retry-after") ?? undefined;
         let json: unknown = null;
         try {
           json = await res.json();
         } catch {
           json = null;
         }
-        return { status, json };
+        return { status, json, headers: retryAfter ? { "retry-after": retryAfter } : undefined };
       },
       { path, method, body, auth: a }
     )) as ChatGptFetchResult;
@@ -187,33 +216,50 @@ function createChatGptApi({ page, capture }: { page: Page; capture: CaptureSessi
       path: string,
       { method = "GET", body }: { method?: string; body?: unknown } = {}
     ): Promise<ChatGptFetchResult> {
-      return pRetry(
-        async () => {
-          let result: ChatGptFetchResult;
+      return retryHttp({
+        baseDelayMs: CHATGPT_RATE_LIMIT_BASE_DELAY_MS,
+        maxAttempts: CHATGPT_RATE_LIMIT_MAX_ATTEMPTS,
+        maxDelayMs: CHATGPT_RATE_LIMIT_MAX_DELAY_MS,
+        maxRetryAfterMs: CHATGPT_RATE_LIMIT_MAX_RETRY_AFTER_MS,
+        onRetry: async ({ attempt, delayMs, maxAttempts, response }) => {
+          if (delayMs < CHATGPT_LONG_SLEEP_PROGRESS_THRESHOLD_MS) {
+            return;
+          }
+          const status = response?.status ? `HTTP ${response.status}` : "network error";
+          await emit?.({
+            type: "PROGRESS",
+            message: `ChatGPT rate limit/backoff on ${method} ${path}: ${status}; waiting ${formatSleepDuration(delayMs)} before retry ${attempt + 1}/${maxAttempts}`,
+          });
+        },
+        request: async () => {
           try {
-            result = await fetchOnce(path, { method, body });
+            const result = await fetchOnce(path, { method, body });
+            if (
+              capture &&
+              !(result.status === 429 || result.status === 502 || result.status === 503 || result.status === 504)
+            ) {
+              capture.captureHttp(`${method}-${path}`, result.json, {
+                status: result.status,
+                path,
+                method,
+              });
+            }
+            return result;
           } catch (err) {
             const m = err instanceof Error ? err.message : String(err);
             throw new Error(`apiFetch network error on ${method} ${path}: ${m}`);
           }
-          const { status } = result;
-          if (status === 429 || status === 502 || status === 503 || status === 504) {
-            throw new Error(`apiFetch got ${status} on ${method} ${path}`);
-          }
-          if (status === 401 || status === 403) {
-            throw new AbortError(`apiFetch got ${status} on ${method} ${path} (auth — not retryable)`);
-          }
-          if (capture) {
-            capture.captureHttp(`${method}-${path}`, result.json, {
-              status,
-              path,
-              method,
-            });
-          }
-          return result;
         },
-        { retries: 3, minTimeout: 1500, factor: 2 }
-      );
+        shouldAbort: (result) => result.status === 401 || result.status === 403,
+      }).catch((err: unknown) => {
+        if (err instanceof TerminalHttpStatusError) {
+          throw new Error(`apiFetch got ${err.status} on ${method} ${path} (auth - not retryable)`);
+        }
+        if (err instanceof RetryExhaustedError) {
+          throw new Error(`apiFetch retry budget exhausted on ${method} ${path}`);
+        }
+        throw err;
+      });
     },
   };
 }
@@ -654,7 +700,7 @@ if (isMainModule(import.meta.url)) {
 
       // API client closes over page + capture — no module-level mutable state,
       // auth cached inside the closure for the run's lifetime.
-      const api = createChatGptApi({ page, capture });
+      const api = createChatGptApi({ page, capture, emit });
       const emitRecord = makeEmitRecord(baseEmitRecord);
 
       // Verify session (extract bearer token for /backend-api calls)

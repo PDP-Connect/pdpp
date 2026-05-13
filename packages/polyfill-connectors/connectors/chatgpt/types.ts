@@ -112,6 +112,7 @@ export interface ChatGptAuth {
 }
 
 export interface ChatGptFetchResult {
+  headers?: Record<string, string | undefined>;
   json: ChatGptJson | null;
   status: number;
 }
