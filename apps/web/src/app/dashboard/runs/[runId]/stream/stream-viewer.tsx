@@ -3308,7 +3308,7 @@ function NekoSurface({
     const isCoarsePointer = () =>
       typeof window.matchMedia === "function" &&
       window.matchMedia("(pointer: coarse)").matches;
-    const focusTextInputAfterMousePointerUp = (
+    const markRemoteInputFocusedAfterMousePointerUp = (
       source: "pointerup" | "document-mouseup",
     ) => {
       window.setTimeout(() => {
@@ -3321,11 +3321,7 @@ function NekoSurface({
           return;
         }
         adapter.setRemoteInputFocused(true);
-        adapter.focusTextInput();
         logDebug("neko.keyboard_focus.mouse_pointer_up", {
-          controllerTextareaFocused:
-            document.activeElement ===
-            containerRef.current?.querySelector<HTMLTextAreaElement>('[data-pdpp-soft-keyboard="neko"]'),
           snapshot: readSurfaceDebugSnapshot(containerRef.current),
           source,
         });
@@ -3377,7 +3373,7 @@ function NekoSurface({
         })
         .then(() => {
           if (type === "pointerup" && pointerType === "mouse" && event.button === 0) {
-            focusTextInputAfterMousePointerUp("pointerup");
+            markRemoteInputFocusedAfterMousePointerUp("pointerup");
           }
         })
         .catch(() => {
@@ -3392,7 +3388,7 @@ function NekoSurface({
       if (!(target instanceof Node) || !mountNode.contains(target)) {
         return;
       }
-      focusTextInputAfterMousePointerUp("document-mouseup");
+      markRemoteInputFocusedAfterMousePointerUp("document-mouseup");
     };
     const opts: AddEventListenerOptions = { capture: true, passive: true };
     mountNode.addEventListener("pointerdown", handler as EventListener, opts);
