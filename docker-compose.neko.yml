@@ -3,17 +3,25 @@ services:
     environment:
       PDPP_ENABLE_STREAM_PLAYGROUND: "1"
       PDPP_STREAM_PLAYGROUND_BACKEND: ${PDPP_STREAM_PLAYGROUND_BACKEND:-neko}
-      PDPP_NEKO_BASE_URL: ${PDPP_NEKO_BASE_URL:-http://neko:8080/neko}
+      PDPP_NEKO_BASE_URL: ${PDPP_NEKO_BASE_URL-http://neko:8080/neko}
       PDPP_NEKO_PROXY_ALLOWED_HOSTS: ${PDPP_NEKO_PROXY_ALLOWED_HOSTS:-neko:8080}
       PDPP_NEKO_PROXY_AUTOLOGIN: ${PDPP_NEKO_PROXY_AUTOLOGIN:-1}
-      PDPP_NEKO_CDP_HTTP_URL: ${PDPP_NEKO_CDP_HTTP_URL:-http://neko:9223}
+      PDPP_NEKO_CDP_HTTP_URL: ${PDPP_NEKO_CDP_HTTP_URL-http://neko:9223}
       # Static managed n.eko mode exposes exactly one browser surface. The
       # controller owns leasing, queueing, and child-process CDP env injection;
       # connectors should not discover the static CDP endpoint directly.
       PDPP_NEKO_MANAGED_CONNECTORS: ${PDPP_NEKO_MANAGED_CONNECTORS:-https://registry.pdpp.org/connectors/chatgpt}
+      PDPP_NEKO_SURFACE_MODE: ${PDPP_NEKO_SURFACE_MODE:-static}
       PDPP_NEKO_SURFACE_CAP: ${PDPP_NEKO_SURFACE_CAP:-1}
-      PDPP_NEKO_STATIC_PROFILE_KEY: ${PDPP_NEKO_STATIC_PROFILE_KEY:-https://registry.pdpp.org/connectors/chatgpt}
+      PDPP_NEKO_STATIC_PROFILE_KEY: ${PDPP_NEKO_STATIC_PROFILE_KEY-https://registry.pdpp.org/connectors/chatgpt}
       PDPP_NEKO_BROWSER_OWNER_MODE: ${PDPP_NEKO_BROWSER_OWNER_MODE:-neko-owned}
+      # Dynamic mode is opt-in only. Operators must set
+      # PDPP_NEKO_SURFACE_MODE=dynamic and clear the static-only URL/profile
+      # settings before this allocator URL is used by the reference runtime.
+      PDPP_NEKO_ALLOCATOR_URL: ${PDPP_NEKO_ALLOCATOR_URL:-}
+      PDPP_NEKO_PROFILE_STORAGE_POLICY: ${PDPP_NEKO_PROFILE_STORAGE_POLICY:-}
+      PDPP_NEKO_PROFILE_STORAGE_ROOT: ${PDPP_NEKO_PROFILE_STORAGE_ROOT:-}
+      PDPP_NEKO_READINESS_TIMEOUT_MS: ${PDPP_NEKO_READINESS_TIMEOUT_MS:-}
       # strict = adapter never issues Runtime.enable / Page.addScript / etc
       # against the user's tab. Required for Cloudflare Turnstile to pass —
       # any CDP touch on the page is detected by Turnstile's challenge JS.
@@ -61,6 +69,25 @@ services:
       timeout: 5s
       retries: 12
       start_period: 20s
+
+  neko-allocator:
+    image: ${NEKO_ALLOCATOR_IMAGE:-pdpp-neko-allocator:local}
+    profiles: ["neko-dynamic"]
+    environment:
+      PDPP_NEKO_ALLOCATOR_PORT: "7331"
+      PDPP_NEKO_PROFILE_STORAGE_ROOT: ${PDPP_NEKO_PROFILE_STORAGE_ROOT:-/var/lib/pdpp/neko-profiles}
+      NEKO_IMAGE: ${NEKO_IMAGE:-pdpp-neko:local}
+      NEKO_BASE_IMAGE: ${NEKO_BASE_IMAGE:-ghcr.io/m1k1o/neko/chromium:3.0@sha256:13264ee217ecccda06b07aa7543dc12d8f9a423ace344b6bda6ebf6d2ecea193}
+      NEKO_DESKTOP_SCREEN: ${NEKO_DESKTOP_SCREEN:-1440x900@30}
+      NEKO_WEBRTC_NAT1TO1: ${NEKO_WEBRTC_NAT1TO1:-127.0.0.1}
+      NEKO_WEBRTC_ICESERVERS: ${NEKO_WEBRTC_ICESERVERS:-[]}
+    expose:
+      - "7331"
+    volumes:
+      # Dynamic allocation requires Docker control of sibling n.eko containers.
+      # Do not enable this profile unless the allocator image is trusted.
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${PDPP_NEKO_PROFILE_STORAGE_ROOT:-./tmp/neko-profiles}:/var/lib/pdpp/neko-profiles
 
   coturn:
     image: ${TURN_IMAGE:-coturn/coturn:4.6.3-alpine}
