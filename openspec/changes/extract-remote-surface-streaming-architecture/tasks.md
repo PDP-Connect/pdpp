@@ -26,10 +26,10 @@
 
 ## 3. Client And Viewer Extraction
 
-- [ ] 3.1 Move pure stream viewer protocol, viewport classification, visual-settle, geometry, clipboard-policy, pointer mapping diagnostics, and media-quality logic into package modules where they do not depend on React or dashboard routes.
+- [x] 3.1 Move pure stream viewer protocol, viewport classification, visual-settle, geometry, clipboard-policy, pointer mapping diagnostics, and media-quality logic into package modules where they do not depend on React or dashboard routes.
 - [ ] 3.2 Move DOM controllers for n.eko mounting, pointer dispatch, keyboard/IME handling, and explicit clipboard actions behind the package client API.
 - [ ] 3.3 Keep React components, dashboard copy, server actions, URL resolution, styling, and owner-specific affordances in `apps/web`.
-- [ ] 3.4 Preserve existing dashboard stream tests or add package-backed equivalents for keyboard, clipboard, viewport, media settle, visual quality, and n.eko client behavior.
+- [x] 3.4 Preserve existing dashboard stream tests or add package-backed equivalents for keyboard, clipboard, viewport, media settle, visual quality, and n.eko client behavior.
 - [ ] 3.5 Verify mobile keyboard and IME paths still route through the package client API rather than ad hoc dashboard-only handlers.
 
 ## 4. Backend Adapter Hardening

@@ -1,11 +1,47 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  classifyVisualQualityIssues,
   computePixelFitTelemetry,
   computeSharpnessTelemetryFromLuma,
   computeStreamCaptureTarget,
   computeStreamCaptureTargetForContext,
 } from "./visual-quality.ts";
+
+test("classifyVisualQualityIssues preserves stream debug issue thresholds and shape", () => {
+  assert.deepEqual(
+    classifyVisualQualityIssues([
+      {
+        intrinsic: { width: 390, height: 844 },
+        pixelFit: {
+          emptyAreaRatio: 0.02,
+          stretchRatio: 1.04,
+          upscaledCss: true,
+          upscaledPhysical: true,
+        },
+        rect: { width: 400, height: 800 },
+        tagName: "video",
+      },
+      { pixelFit: { emptyAreaRatio: 0.015, stretchRatio: 1.03 } },
+      { pixelFit: null },
+    ]),
+    [
+      {
+        index: 0,
+        intrinsic: { width: 390, height: 844 },
+        pixelFit: {
+          emptyAreaRatio: 0.02,
+          stretchRatio: 1.04,
+          upscaledCss: true,
+          upscaledPhysical: true,
+        },
+        reasons: ["empty-area", "non-uniform-stretch", "upscaled-css", "upscaled-physical"],
+        rect: { width: 400, height: 800 },
+        tagName: "video",
+      },
+    ]
+  );
+});
 
 test("computePixelFitTelemetry identifies exact CSS-pixel mapping separately from physical pixels", () => {
   const fit = computePixelFitTelemetry({

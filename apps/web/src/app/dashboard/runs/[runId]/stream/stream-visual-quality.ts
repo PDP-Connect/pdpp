@@ -1,4 +1,5 @@
 export {
+  classifyVisualQualityIssues,
   computePixelFitTelemetry,
   computeSharpnessTelemetryFromLuma,
   computeStreamCaptureTarget,

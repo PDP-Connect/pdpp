@@ -61,10 +61,18 @@ import {
   createMobileKeyboardResizeState,
   decideClipboardPolicy,
   type LocalViewportSample,
+  type NekoMediaSettleTarget,
   pointToStreamViewport,
+  nekoMediaSettleTarget,
+  nekoMediaSettleTargetsMatch,
+  streamViewportInfosMatch,
+  toNekoNativeViewportInfo,
   type ViewportPayload,
   type ViewportObservation,
   viewportPayloadsAreEquivalent,
+  viewportCaptureSize,
+  viewportInfoFromPayload,
+  type StreamViewportInfo,
 } from "@pdpp/remote-surface/client";
 import { assessNekoMediaSettle, createNekoMediaSettleState } from "@pdpp/remote-surface/backends/neko";
 import {
@@ -72,7 +80,6 @@ import {
   localSurfaceCanDisplayPresentation,
   nextPresentationKeyboardHoldUntilMs,
   nextPresentationOrientationHoldUntilMs,
-  presentationViewportsMatch,
   reduceStreamViewerControl,
   stablePresentationContainerRect,
   type StreamViewerCommand,
@@ -97,6 +104,7 @@ import {
 } from "./stream-viewer-protocol.ts";
 import {
   computePixelFitTelemetry,
+  classifyVisualQualityIssues,
   computeStreamCaptureTargetForContext,
   sampleVideoSharpnessTelemetry,
 } from "./stream-visual-quality.ts";
@@ -292,8 +300,6 @@ const STREAM_DEBUG_BATCH_SIZE = 20;
 const STREAM_DEBUG_FLUSH_MS = 750;
 const STREAM_DEBUG_POINTER_MOVE_MS = 250;
 const STREAM_DEBUG_VISUAL_QUALITY_MS = 1000;
-const STREAM_DEBUG_EMPTY_AREA_ISSUE_RATIO = 0.015;
-const STREAM_DEBUG_STRETCH_ISSUE_RATIO = 1.03;
 
 type StreamDebugPayload = Record<string, unknown>;
 type StreamDebugLogger = (type: string, payload?: StreamDebugPayload) => void;
@@ -400,75 +406,6 @@ function readViewerViewport(width: number, height: number, options: ReadViewerVi
     screenWidth: captureTarget.width,
     userAgent: window.navigator.userAgent,
   });
-}
-
-type StreamViewportInfo = Pick<ViewportPayload, "height" | "screenHeight" | "screenWidth" | "width"> & {
-  deviceScaleFactor?: number;
-};
-
-function viewportInfoFromPayload(viewport: ViewportPayload): StreamViewportInfo {
-  return {
-    width: viewport.width,
-    height: viewport.height,
-    deviceScaleFactor: viewport.deviceScaleFactor,
-    screenWidth: viewport.screenWidth,
-    screenHeight: viewport.screenHeight,
-  };
-}
-
-function toNekoNativeViewportInfo(viewport: StreamViewportInfo | null): StreamViewportInfo | null {
-  if (!viewport) {
-    return null;
-  }
-  return {
-    ...viewport,
-    deviceScaleFactor: 1,
-    screenHeight: viewport.height,
-    screenWidth: viewport.width,
-  };
-}
-
-function viewportCaptureSize(viewport: StreamViewportInfo): { height: number; width: number } {
-  return {
-    width: viewport.screenWidth ?? viewport.width,
-    height: viewport.screenHeight ?? viewport.height,
-  };
-}
-
-interface NekoMediaSettleTarget {
-  statusPath: string;
-  viewport: StreamViewportInfo;
-}
-
-function nekoMediaSettleTarget(clientConfig: NekoClientConfig, viewport: StreamViewportInfo): NekoMediaSettleTarget {
-  return {
-    statusPath: clientConfig.statusPath ?? "",
-    viewport,
-  };
-}
-
-function nekoMediaSettleTargetsMatch(
-  a: NekoMediaSettleTarget | null | undefined,
-  b: NekoMediaSettleTarget | null | undefined
-): boolean {
-  if (!(a && b)) {
-    return false;
-  }
-  return (
-    a.statusPath === b.statusPath &&
-    streamViewportInfosMatch(a.viewport, b.viewport) &&
-    Math.abs((a.viewport.deviceScaleFactor ?? 1) - (b.viewport.deviceScaleFactor ?? 1)) <= 0.01
-  );
-}
-
-function streamViewportInfosMatch(
-  a: StreamViewportInfo | null | undefined,
-  b: StreamViewportInfo | null | undefined
-): boolean {
-  return (
-    presentationViewportsMatch(a ?? null, b ?? null) &&
-    presentationViewportsMatch(a ? viewportCaptureSize(a) : null, b ? viewportCaptureSize(b) : null)
-  );
 }
 
 function useStableNekoNativeViewportInfo(
@@ -736,44 +673,6 @@ function mediaDebugSnapshot(
         tagName: element.tagName.toLowerCase(),
       };
     });
-}
-
-function visualQualityIssues(media: StreamDebugPayload[]): StreamDebugPayload[] {
-  return media.flatMap((entry, index) => {
-    const pixelFit =
-      entry.pixelFit && typeof entry.pixelFit === "object" ? (entry.pixelFit as StreamDebugPayload) : null;
-    if (!pixelFit) {
-      return [];
-    }
-    const reasons: string[] = [];
-    const emptyAreaRatio = Number(pixelFit.emptyAreaRatio);
-    const stretchRatio = Number(pixelFit.stretchRatio);
-    if (Number.isFinite(emptyAreaRatio) && emptyAreaRatio > STREAM_DEBUG_EMPTY_AREA_ISSUE_RATIO) {
-      reasons.push("empty-area");
-    }
-    if (Number.isFinite(stretchRatio) && stretchRatio > STREAM_DEBUG_STRETCH_ISSUE_RATIO) {
-      reasons.push("non-uniform-stretch");
-    }
-    if (pixelFit.upscaledCss === true) {
-      reasons.push("upscaled-css");
-    }
-    if (pixelFit.upscaledPhysical === true) {
-      reasons.push("upscaled-physical");
-    }
-    if (reasons.length === 0) {
-      return [];
-    }
-    return [
-      {
-        index,
-        intrinsic: entry.intrinsic,
-        pixelFit,
-        reasons,
-        rect: entry.rect,
-        tagName: entry.tagName,
-      },
-    ];
-  });
 }
 
 function readViewportDebugSnapshot(observedNode: Element | null): StreamDebugPayload {
@@ -1210,7 +1109,7 @@ function useVisualQualityDebugTelemetry({
           surface,
           viewport: viewportInfo,
         });
-        const issues = occluded ? [] : visualQualityIssues(media);
+        const issues = occluded ? [] : classifyVisualQualityIssues(media);
         if (issues.length > 0) {
           logDebug(`surface.${surface}.visual_quality.issue`, {
             issues,

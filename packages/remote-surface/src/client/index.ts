@@ -17,6 +17,8 @@ export {
 export { type NekoPointerControl } from "../controllers/index.ts";
 export * from "./clipboard-policy.ts";
 export * from "./geometry.ts";
+export * from "./stream-viewer-control.ts";
+export * from "./stream-viewer-media.ts";
 export * from "./viewport-classifier.ts";
 
 export type RemoteSurfaceViewerState = "idle" | "mounting" | "mounted" | "ready" | "closing" | "closed" | "error";

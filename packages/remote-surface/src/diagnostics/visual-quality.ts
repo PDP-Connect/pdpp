@@ -4,6 +4,8 @@ const DEFAULT_RATIO_TOLERANCE = 0.02;
 const DEFAULT_CAPTURE_ALIGNMENT_PX = 8;
 const DEFAULT_CAPTURE_MAX_PIXELS = 2_200_000;
 const DEFAULT_CAPTURE_MAX_SCALE = 2.5;
+const DEFAULT_EMPTY_AREA_ISSUE_RATIO = 0.015;
+const DEFAULT_STRETCH_ISSUE_RATIO = 1.03;
 const EDGE_MAGNITUDE_THRESHOLD = 64;
 const MAX_LUMA = 255;
 const SOBEL_MAX_MAGNITUDE = 1020;
@@ -57,6 +59,27 @@ export interface StreamCaptureTargetContextInput {
   maxPixels?: number;
   maxScale?: number;
   viewport: StreamViewport;
+}
+
+export interface VisualQualityIssueClassificationOptions {
+  emptyAreaIssueRatio?: number;
+  stretchIssueRatio?: number;
+}
+
+export interface VisualQualityIssueInput {
+  intrinsic?: unknown;
+  pixelFit?: unknown;
+  rect?: unknown;
+  tagName?: unknown;
+}
+
+export interface VisualQualityIssue {
+  index: number;
+  intrinsic: unknown;
+  pixelFit: Record<string, unknown>;
+  reasons: string[];
+  rect: unknown;
+  tagName: unknown;
 }
 
 function finitePositive(value: number | null | undefined): value is number {
@@ -216,6 +239,50 @@ export function computePixelFitTelemetry({
     upscaledCss: decodedPerCssX < 1 - ratioTolerance || decodedPerCssY < 1 - ratioTolerance,
     upscaledPhysical: decodedPerPhysicalX < 1 - ratioTolerance || decodedPerPhysicalY < 1 - ratioTolerance,
   };
+}
+
+export function classifyVisualQualityIssues(
+  media: VisualQualityIssueInput[],
+  {
+    emptyAreaIssueRatio = DEFAULT_EMPTY_AREA_ISSUE_RATIO,
+    stretchIssueRatio = DEFAULT_STRETCH_ISSUE_RATIO,
+  }: VisualQualityIssueClassificationOptions = {}
+): VisualQualityIssue[] {
+  return media.flatMap((entry, index) => {
+    const pixelFit =
+      entry.pixelFit && typeof entry.pixelFit === "object" ? (entry.pixelFit as Record<string, unknown>) : null;
+    if (!pixelFit) {
+      return [];
+    }
+    const reasons: string[] = [];
+    const emptyAreaRatio = Number(pixelFit.emptyAreaRatio);
+    const stretchRatio = Number(pixelFit.stretchRatio);
+    if (Number.isFinite(emptyAreaRatio) && emptyAreaRatio > emptyAreaIssueRatio) {
+      reasons.push("empty-area");
+    }
+    if (Number.isFinite(stretchRatio) && stretchRatio > stretchIssueRatio) {
+      reasons.push("non-uniform-stretch");
+    }
+    if (pixelFit.upscaledCss === true) {
+      reasons.push("upscaled-css");
+    }
+    if (pixelFit.upscaledPhysical === true) {
+      reasons.push("upscaled-physical");
+    }
+    if (reasons.length === 0) {
+      return [];
+    }
+    return [
+      {
+        index,
+        intrinsic: entry.intrinsic,
+        pixelFit,
+        reasons,
+        rect: entry.rect,
+        tagName: entry.tagName,
+      },
+    ];
+  });
 }
 
 function lumaAt(luma: ArrayLike<number>, width: number, x: number, y: number): number {

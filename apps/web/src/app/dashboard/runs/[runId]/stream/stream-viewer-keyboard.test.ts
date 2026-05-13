@@ -51,7 +51,7 @@ const NEKO_STABLE_PRESENTATION_CONTAINER_RECT_RE =
 const NEKO_LOADING_OVERLAY_CLASS_RE = /className="absolute inset-0 z-20/;
 const NEKO_LOADING_OVERLAY_DATA_ATTR_RE = /data-pdpp-stream-loading/;
 const NEKO_VISUAL_QUALITY_IGNORES_OCCLUDED_MEDIA_RE =
-  /node\.matches\("\[data-pdpp-stream-loading\]"\)[\s\S]*const issues = occluded \? \[\] : visualQualityIssues\(media\)/;
+  /node\.matches\("\[data-pdpp-stream-loading\]"\)[\s\S]*const issues = occluded \? \[\] : classifyVisualQualityIssues\(media\)/;
 const NEKO_MEDIA_SETTLE_LONG_STARTUP_WINDOW_RE = /nekoMediaSettleMaxPolls:\s*40/;
 const NEKO_MEDIA_LAYOUT_EVENT_EXPORT_RE = /export const NEKO_MEDIA_LAYOUT_EVENT = "pdpp:neko-media-layout"/;
 const NEKO_MEDIA_LAYOUT_EVENT_DISPATCH_RE =
@@ -61,7 +61,7 @@ const NEKO_MEDIA_LAYOUT_EVENT_LISTENER_RE =
 const NEKO_MEDIA_REFRESH_EPOCH_DEP_RE =
   /mediaRefreshEpoch[\s\S]*?setMediaRefreshEpoch[\s\S]*?\[clientConfig, logDebug, mediaRefreshEpoch, onPresentationViewportReady, viewportInfo\]/;
 const NEKO_MEDIA_SETTLE_TARGET_MATCH_RE =
-  /function nekoMediaSettleTargetsMatch[\s\S]*streamViewportInfosMatch\(a\.viewport, b\.viewport\)[\s\S]*deviceScaleFactor/;
+  /nekoMediaSettleTarget,[\s\S]*nekoMediaSettleTargetsMatch,[\s\S]*from "@pdpp\/remote-surface\/client"/;
 const NEKO_MEDIA_REFRESH_DOES_NOT_RESET_READY_RE =
   /const targetChanged = !nekoMediaSettleTargetsMatch\(mediaSettleTargetRef\.current, target\)[\s\S]*if \(targetChanged\) \{[\s\S]*setMediaReady\(false\);[\s\S]*\} else \{[\s\S]*neko\.media\.settle\.refresh/;
 const NEKO_WEBRTC_RECONNECT_CONFIG_RE =
@@ -69,7 +69,7 @@ const NEKO_WEBRTC_RECONNECT_CONFIG_RE =
 const NEKO_WEBRTC_RECONNECT_CONFIG_APPLIED_RE =
   /setReconnectorConfig\?\.\("webrtc",\s*NEKO_WEBRTC_RECONNECT_CONFIG\)/;
 const NEKO_NATIVE_VIEWPORT_INFO_RE =
-  /function toNekoNativeViewportInfo[\s\S]*deviceScaleFactor:\s*1[\s\S]*screenHeight:\s*viewport\.height[\s\S]*screenWidth:\s*viewport\.width/;
+  /toNekoNativeViewportInfo,[\s\S]*from "@pdpp\/remote-surface\/client"/;
 const NEKO_SURFACE_NATIVE_VIEWPORT_INFO_RE =
   /const nekoViewportInfo = useStableNekoNativeViewportInfo\(\s*!!nekoSession,\s*viewportInfo\s*\)[\s\S]*viewportInfo=\{nekoViewportInfo\}/;
 const NEKO_STABLE_NATIVE_VIEWPORT_INFO_RE =
