@@ -26,6 +26,15 @@ import { createRunTargetRegistry } from './run-target-registry.js';
 
 // ─── helpers ────────────────────────────────────────────────────────────
 
+function assertNoRawBackendAuthority(value) {
+  const serialized = JSON.stringify(value);
+  assert.equal(/ws:\/\/|wss:\/\//i.test(serialized), false);
+  assert.equal(/https?:\/\/(?:127\.0\.0\.1|localhost|neko)(?::\d+)?/i.test(serialized), false);
+  assert.equal(/\/json\/version|\/devtools\/browser/i.test(serialized), false);
+  assert.equal(/base_url|cdpWsUrl|cdpHttpUrl|webSocketDebuggerUrl/i.test(serialized), false);
+  assert.equal(/docker\.sock|allocatorCredentials/i.test(serialized), false);
+}
+
 function makeFakeApp() {
   const routes = [];
   return {
@@ -840,6 +849,7 @@ test('PUT accepts neko descriptor and does not echo auth metadata', async () => 
   await runRoute(handlers, req, res);
 
   assert.equal(res.statusCode, 200);
+  assertNoRawBackendAuthority(res.payload);
   assert.deepEqual(registry.get({ runId: 'run_neko', interactionId: 'int_a' }), {
     backend: 'neko',
     base_url: VALID_NEKO_BASE_URL_2,
@@ -904,6 +914,7 @@ test('POST accepts managed neko descriptor with lease metadata and omits CDP det
   await runRoute(handlers, req, res);
 
   assert.equal(res.statusCode, 200);
+  assertNoRawBackendAuthority(res.payload);
   const descriptor = registry.get({ runId: 'run_neko_managed', interactionId: 'int_a' });
   assert.deepEqual(descriptor, {
     backend: 'neko',

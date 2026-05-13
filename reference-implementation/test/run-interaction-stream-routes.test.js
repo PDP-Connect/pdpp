@@ -45,6 +45,15 @@ async function fetchJson(url, opts = {}) {
   return { status: resp.status, body, headers: resp.headers };
 }
 
+function assertNoRawBackendAuthority(value) {
+  const serialized = JSON.stringify(value);
+  assert.equal(/ws:\/\/|wss:\/\//i.test(serialized), false);
+  assert.equal(/https?:\/\/(?:127\.0\.0\.1|localhost|neko)(?::\d+)?/i.test(serialized), false);
+  assert.equal(/\/json\/version|\/devtools\/browser/i.test(serialized), false);
+  assert.equal(/base_url|cdpWsUrl|cdpHttpUrl|webSocketDebuggerUrl/i.test(serialized), false);
+  assert.equal(/docker\.sock|allocatorCredentials/i.test(serialized), false);
+}
+
 async function registerConnector(asUrl, manifest) {
   const r = await fetch(`${asUrl}/connectors`, {
     method: 'POST',
@@ -377,6 +386,7 @@ test('SSE attach delivers an attached event and dispatches frames', async () => 
     assert.equal(backendReady.backend, 'cdp');
     assert.equal(backendReady.client_config_path, null);
     assert.equal(backendReady.iframe_path, null);
+    assertNoRawBackendAuthority(backendReady);
 
     // Inject a frame via the mock companion and confirm the viewer receives it.
     const tracked = companions.find((c) => c.run_id === started.run_id);
@@ -507,13 +517,15 @@ test('n.eko backend emits iframe path and proxies only after stream-token entry'
         );
         assert.equal(backendReady.browser_owner_mode, 'neko-owned');
         assert.equal(backendReady.stealth_mode, 'balanced');
+        assertNoRawBackendAuthority(backendReady);
 
         const clientConfig = await fetch(`${asUrl}${backendReady.client_config_path}`);
         assert.equal(clientConfig.status, 200);
         const clientConfigCookie = clientConfig.headers.get('set-cookie') || '';
         assert.match(clientConfigCookie, /pdpp_neko_stream=/);
         assert.match(clientConfigCookie, /Path=\/neko/);
-        assert.deepEqual(await clientConfig.json(), {
+        const clientConfigBody = await clientConfig.json();
+        assert.deepEqual(clientConfigBody, {
           object: 'run_interaction_neko_client',
           server_path: '/neko',
           status_path: '/neko/__pdpp/status',
@@ -522,6 +534,7 @@ test('n.eko backend emits iframe path and proxies only after stream-token entry'
             password: 'neko',
           },
         });
+        assertNoRawBackendAuthority(clientConfigBody);
 
         const entry = await fetch(`${asUrl}${backendReady.iframe_path}`, { redirect: 'manual' });
         assert.equal(entry.status, 302);
@@ -748,10 +761,12 @@ test('n.eko entry can include noauth auto-login query params', async () => {
       assert.equal(backendReady.backend, 'neko');
       assert.equal(backendReady.browser_owner_mode, 'neko-owned');
       assert.equal(backendReady.stealth_mode, 'balanced');
+      assertNoRawBackendAuthority(backendReady);
 
       const clientConfig = await fetch(`${asUrl}${backendReady.client_config_path}`);
       assert.equal(clientConfig.status, 200);
-      assert.deepEqual(await clientConfig.json(), {
+      const clientConfigBody = await clientConfig.json();
+      assert.deepEqual(clientConfigBody, {
         object: 'run_interaction_neko_client',
         server_path: '/neko',
         status_path: '/neko/__pdpp/status',
@@ -760,6 +775,7 @@ test('n.eko entry can include noauth auto-login query params', async () => {
           password: '1',
         },
       });
+      assertNoRawBackendAuthority(clientConfigBody);
 
       const entry = await fetch(`${asUrl}${backendReady.iframe_path}`, { redirect: 'manual' });
       assert.equal(entry.status, 302);

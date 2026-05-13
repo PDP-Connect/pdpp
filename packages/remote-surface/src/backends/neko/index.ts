@@ -2,6 +2,7 @@ import type {
   RemoteSurfaceCapabilities,
   SafeRemoteSurfaceBackendDescriptor,
 } from "../../protocol/index.ts";
+import { parseSafeRemoteSurfaceBackendDescriptor } from "../../protocol/index.ts";
 import type {
   RemoteSurfaceBackendAdapter,
   RemoteSurfaceBackendAdapterFactory,
@@ -53,3 +54,46 @@ export const NEKO_BACKEND_CAPABILITIES: RemoteSurfaceCapabilities = {
   ownerBrowser: true,
   serverSideAutomationEndpoint: true,
 };
+
+export interface NekoSafeClientDescriptorOptions {
+  proxyPath: string;
+  sessionPath?: string;
+  allowedMethods?: readonly string[];
+  expiresAt?: number;
+  capabilities?: RemoteSurfaceCapabilities;
+}
+
+export function buildNekoSafeClientDescriptor({
+  proxyPath,
+  sessionPath,
+  allowedMethods,
+  expiresAt,
+  capabilities = NEKO_BACKEND_CAPABILITIES,
+}: NekoSafeClientDescriptorOptions): NekoSafeClientDescriptor {
+  return parseNekoSafeClientDescriptor({
+    backend: "neko",
+    capabilities,
+    proxy: {
+      path: proxyPath,
+      sameOrigin: true,
+      ...(allowedMethods === undefined ? {} : { allowedMethods }),
+    },
+    ...(sessionPath === undefined
+      ? {}
+      : {
+          session: {
+            path: sessionPath,
+            sameOrigin: true,
+            ...(expiresAt === undefined ? {} : { expiresAt }),
+          },
+        }),
+  });
+}
+
+export function parseNekoSafeClientDescriptor(value: unknown): NekoSafeClientDescriptor {
+  const descriptor = parseSafeRemoteSurfaceBackendDescriptor(value);
+  if (descriptor.backend !== "neko" || !descriptor.proxy) {
+    throw new TypeError("n.eko client descriptors must include a same-origin proxy path");
+  }
+  return descriptor as NekoSafeClientDescriptor;
+}

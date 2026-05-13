@@ -19,9 +19,9 @@
 
 - [x] 2.1 Move pure streaming session token/store behavior behind the package broker interface while preserving reference route URLs and response envelopes.
 - [x] 2.2 Move input, viewport, clipboard, event-channel, and diagnostics payload parsing/validation into package-owned protocol helpers.
-- [ ] 2.3 Keep owner auth, device-exporter auth, per-run nonce auth, `_ref` route registration, and spine event emission in the reference host adapter.
+- [x] 2.3 Keep owner auth, device-exporter auth, per-run nonce auth, `_ref` route registration, and spine event emission in the reference host adapter.
 - [x] 2.4 Preserve token expiry, attach, authorize, revoke, interaction-resolved invalidation, and run-ended invalidation behavior through focused tests.
-- [ ] 2.5 Verify raw CDP target URLs and n.eko upstream origins are never returned in browser-visible descriptors except through token-scoped proxy/session config.
+- [x] 2.5 Verify raw CDP target URLs and n.eko upstream origins are never returned in browser-visible descriptors except through token-scoped proxy/session config.
 - [x] 2.6 Add package broker conformance tests before switching reference routes to package-backed broker behavior.
 
 ## 3. Client And Viewer Extraction
@@ -34,9 +34,9 @@
 
 ## 4. Backend Adapter Hardening
 
-- [ ] 4.1 Normalize n.eko adapter descriptors so client-visible config contains only token-scoped same-origin proxy/session details.
-- [ ] 4.2 Normalize CDP fallback descriptors so raw CDP WebSocket and HTTP URLs remain server-side.
-- [ ] 4.3 Add adapter capability tests for event channel support, input modes, clipboard modes, viewport modes, diagnostics, and owner-browser mode.
+- [x] 4.1 Normalize n.eko adapter descriptors so client-visible config contains only token-scoped same-origin proxy/session details.
+- [x] 4.2 Normalize CDP fallback descriptors so raw CDP WebSocket and HTTP URLs remain server-side.
+- [x] 4.3 Add adapter capability tests for event channel support, input modes, clipboard modes, viewport modes, diagnostics, and owner-browser mode.
 - [ ] 4.4 Add future-backend seams without implementing VNC/Kasm-like backends in this tranche.
 - [ ] 4.5 Verify n.eko client dependency details are wrapped behind adapter interfaces and not exposed as product architecture.
 

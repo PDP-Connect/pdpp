@@ -2,6 +2,7 @@ import type {
   RemoteSurfaceCapabilities,
   SafeRemoteSurfaceBackendDescriptor,
 } from "../../protocol/index.ts";
+import { parseSafeRemoteSurfaceBackendDescriptor } from "../../protocol/index.ts";
 import type {
   RemoteSurfaceBackendAdapter,
   RemoteSurfaceBackendAdapterFactory,
@@ -33,3 +34,21 @@ export const CDP_BACKEND_CAPABILITIES: RemoteSurfaceCapabilities = {
   ownerBrowser: true,
   serverSideAutomationEndpoint: true,
 };
+
+export interface CdpSafeClientDescriptorOptions {
+  capabilities?: RemoteSurfaceCapabilities;
+}
+
+export function buildCdpSafeClientDescriptor({
+  capabilities = CDP_BACKEND_CAPABILITIES,
+}: CdpSafeClientDescriptorOptions = {}): CdpSafeClientDescriptor {
+  return parseCdpSafeClientDescriptor({ backend: "cdp", capabilities });
+}
+
+export function parseCdpSafeClientDescriptor(value: unknown): CdpSafeClientDescriptor {
+  const descriptor = parseSafeRemoteSurfaceBackendDescriptor(value);
+  if (descriptor.backend !== "cdp" || descriptor.proxy || descriptor.session) {
+    throw new TypeError("CDP client descriptors must not expose proxy or session endpoints");
+  }
+  return descriptor as CdpSafeClientDescriptor;
+}

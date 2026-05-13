@@ -6,6 +6,7 @@ import {
   buildReferenceWireBackendReadyPayload,
   buildReferenceWireCompanionEventPayload,
   buildReferenceWireFramePayload,
+  findUnsafeDescriptorPaths,
   normalizeReferenceWireViewportPayload,
   parseReferenceWireInputPayload,
   parseReferenceWireInputTelemetryCursor,
@@ -236,6 +237,24 @@ describe("reference wire fixtures", () => {
 
     for (const pattern of forbiddenPatterns) {
       assert.doesNotMatch(serialized, pattern);
+    }
+  });
+
+  it("flags unsafe descriptor examples that must stay server-side", () => {
+    const unsafeExamples = [
+      { cdpWsUrl: "ws://127.0.0.1:9222/devtools/browser/secret" },
+      { cdpHttpUrl: "http://127.0.0.1:9222/json/version" },
+      { browserEndpoint: "/json/version" },
+      { browserEndpoint: "/devtools/browser/secret" },
+      { base_url: "http://neko:6080" },
+      { dockerHost: "unix:///var/run/docker.sock" },
+      { dockerSocket: "/var/run/docker.sock" },
+      { auth: { bearerToken: "device-exporter-secret" } },
+      { allocatorCredentials: { username: "allocator", password: "secret" } },
+    ];
+
+    for (const example of unsafeExamples) {
+      assert.notDeepEqual(findUnsafeDescriptorPaths(example), [], JSON.stringify(example));
     }
   });
 });

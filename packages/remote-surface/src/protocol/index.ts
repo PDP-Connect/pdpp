@@ -682,6 +682,8 @@ const UNSAFE_DESCRIPTOR_KEYS = new Set([
   "allocatorcredentials",
   "apikey",
   "api_key",
+  "auth",
+  "bearertoken",
   "password",
   "authorization",
   "cdphttpurl",
