@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  type BrowserLaunchSource,
   type BrowserRuntimeVisibility,
   decorateBrowserManualAction,
   type InteractionRequest,
+  resolveBrowserLaunchSource,
   resolveBrowserRuntimeVisibility,
 } from "./connector-runtime.ts";
 
@@ -39,6 +41,63 @@ test("resolveBrowserRuntimeVisibility honors explicit profile names", () => {
     headless: true,
     profileName: "chatgpt",
   });
+});
+
+test("resolveBrowserLaunchSource prefers managed n.eko lease env over legacy profile CDP env", () => {
+  assert.deepEqual(
+    resolveBrowserLaunchSource(
+      { profileName: "chatgpt" },
+      {
+        PDPP_BROWSER_SURFACE_REQUIRED: "neko",
+        PDPP_BROWSER_SURFACE_LEASE_ID: "lease_123",
+        PDPP_BROWSER_SURFACE_PROFILE_KEY: "chatgpt:owner",
+        PDPP_BROWSER_SURFACE_REMOTE_CDP_URL: "http://managed-neko:9223",
+        PDPP_CHATGPT_REMOTE_CDP_URL: "http://legacy-dev:9223",
+      }
+    ),
+    {
+      kind: "managed_neko",
+      leaseId: "lease_123",
+      profileKey: "chatgpt:owner",
+      remoteCdpUrl: "http://managed-neko:9223",
+    } satisfies BrowserLaunchSource
+  );
+});
+
+test("resolveBrowserLaunchSource fails closed for required n.eko without managed CDP URL", () => {
+  assert.throws(
+    () =>
+      resolveBrowserLaunchSource(
+        { profileName: "chatgpt" },
+        {
+          PDPP_BROWSER_SURFACE_REQUIRED: "neko",
+          PDPP_CHATGPT_REMOTE_CDP_URL: "http://legacy-dev:9223",
+        }
+      ),
+    /PDPP_BROWSER_SURFACE_REQUIRED=neko.*PDPP_BROWSER_SURFACE_REMOTE_CDP_URL is missing/u
+  );
+});
+
+test("resolveBrowserLaunchSource keeps unmanaged per-profile CDP env as a dev override", () => {
+  assert.deepEqual(
+    resolveBrowserLaunchSource(
+      { profileName: "chatgpt" },
+      {
+        PDPP_CHATGPT_REMOTE_CDP_URL: "http://legacy-dev:9223",
+      }
+    ),
+    {
+      envKey: "PDPP_CHATGPT_REMOTE_CDP_URL",
+      kind: "legacy_remote_cdp",
+      remoteCdpUrl: "http://legacy-dev:9223",
+    } satisfies BrowserLaunchSource
+  );
+});
+
+test("resolveBrowserLaunchSource falls back to isolated local launch only when no remote surface applies", () => {
+  assert.deepEqual(resolveBrowserLaunchSource({ profileName: "chatgpt" }, {}), {
+    kind: "isolated_local",
+  } satisfies BrowserLaunchSource);
 });
 
 test("decorateBrowserManualAction appends recovery copy for headless browser runs", () => {

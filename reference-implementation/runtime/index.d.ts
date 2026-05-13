@@ -16,7 +16,35 @@ export interface RuntimeTraceContext {
   readonly trace_id: string;
 }
 
+export interface RuntimeBrowserSurfaceLease {
+  readonly browserSurfaceRequired?: string | null;
+  readonly cdpUrl?: string | null;
+  readonly id?: string | null;
+  readonly leaseId?: string | null;
+  readonly profileKey?: string | null;
+  readonly remoteCdpUrl?: string | null;
+  readonly required?: string | null;
+}
+
+export interface RuntimeBrowserSurfaceEnv {
+  readonly PDPP_BROWSER_SURFACE_LEASE_ID?: string | null;
+  readonly PDPP_BROWSER_SURFACE_PROFILE_KEY?: string | null;
+  readonly PDPP_BROWSER_SURFACE_REMOTE_CDP_URL?: string | null;
+  readonly PDPP_BROWSER_SURFACE_REQUIRED?: string | null;
+}
+
 export interface RuntimeRunConnectorOptions {
+  /**
+   * Managed browser-surface lease selected by the controller. When present
+   * with a CDP URL, `runConnector` forwards the lease-scoped
+   * `PDPP_BROWSER_SURFACE_*` env block to the connector child.
+   */
+  browserSurfaceLease?: RuntimeBrowserSurfaceLease | null;
+  /**
+   * Explicit browser-surface child env override for tests and integration
+   * seams. Values here win over `browserSurfaceLease` fields.
+   */
+  browserSurfaceEnv?: RuntimeBrowserSurfaceEnv | null;
   collectionMode?: RuntimeCollectionMode;
   connectorId: string;
   connectorPath: string;

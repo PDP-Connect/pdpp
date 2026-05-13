@@ -786,6 +786,38 @@ function safeStderrWrite(line) {
   }
 }
 
+function optionalNonEmptyEnv(value) {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function buildBrowserSurfaceLaunchEnv({ browserSurfaceLease, browserSurfaceEnv }) {
+  const source = browserSurfaceLease && typeof browserSurfaceLease === 'object'
+    ? browserSurfaceLease
+    : {};
+  const explicit = browserSurfaceEnv && typeof browserSurfaceEnv === 'object'
+    ? browserSurfaceEnv
+    : {};
+  const leaseId = optionalNonEmptyEnv(explicit.PDPP_BROWSER_SURFACE_LEASE_ID)
+    || optionalNonEmptyEnv(source.leaseId)
+    || optionalNonEmptyEnv(source.id);
+  const profileKey = optionalNonEmptyEnv(explicit.PDPP_BROWSER_SURFACE_PROFILE_KEY)
+    || optionalNonEmptyEnv(source.profileKey);
+  const remoteCdpUrl = optionalNonEmptyEnv(explicit.PDPP_BROWSER_SURFACE_REMOTE_CDP_URL)
+    || optionalNonEmptyEnv(source.remoteCdpUrl)
+    || optionalNonEmptyEnv(source.cdpUrl);
+  const required = optionalNonEmptyEnv(explicit.PDPP_BROWSER_SURFACE_REQUIRED)
+    || optionalNonEmptyEnv(source.required)
+    || optionalNonEmptyEnv(source.browserSurfaceRequired)
+    || (remoteCdpUrl ? 'neko' : null);
+
+  return {
+    ...(required ? { PDPP_BROWSER_SURFACE_REQUIRED: required } : {}),
+    ...(leaseId ? { PDPP_BROWSER_SURFACE_LEASE_ID: leaseId } : {}),
+    ...(profileKey ? { PDPP_BROWSER_SURFACE_PROFILE_KEY: profileKey } : {}),
+    ...(remoteCdpUrl ? { PDPP_BROWSER_SURFACE_REMOTE_CDP_URL: remoteCdpUrl } : {}),
+  };
+}
+
 export async function runConnector(opts) {
   const defaultOnProgress = process.env.PDPP_RUNTIME_QUIET === '1'
     ? () => {}
@@ -816,6 +848,8 @@ export async function runConnector(opts) {
     //   packages/polyfill-connectors/src/streaming-target-registration.ts
     streamingRegistrationToken = null,
     referenceBaseUrl = null,
+    browserSurfaceLease = null,
+    browserSurfaceEnv = null,
   } = opts;
 
   // Check binding requirements
@@ -854,6 +888,7 @@ export async function runConnector(opts) {
           PDPP_STREAMING_REGISTRATION_TOKEN: streamingRegistrationToken,
         }
       : {};
+  const browserSurfaceLaunchEnv = buildBrowserSurfaceLaunchEnv({ browserSurfaceLease, browserSurfaceEnv });
 
   // Spawn connector process. Connectors may be .ts (source-only) or .js
   // (migrated or third-party). For .ts, use `node --import tsx/esm`, which
@@ -873,6 +908,7 @@ export async function runConnector(opts) {
       PDPP_OWNER_TOKEN: ownerToken,
       PDPP_RS_URL: rsUrl,
       ...streamingRegistrationEnv,
+      ...browserSurfaceLaunchEnv,
     },
   });
 

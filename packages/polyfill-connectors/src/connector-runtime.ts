@@ -166,6 +166,20 @@ export interface BrowserRuntimeVisibility {
   readonly profileName: string;
 }
 
+export type BrowserLaunchSource =
+  | {
+      readonly kind: "managed_neko";
+      readonly leaseId?: string;
+      readonly profileKey?: string;
+      readonly remoteCdpUrl: string;
+    }
+  | {
+      readonly envKey: string;
+      readonly kind: "legacy_remote_cdp";
+      readonly remoteCdpUrl: string;
+    }
+  | { readonly kind: "isolated_local" };
+
 export interface EnsureSessionArgs {
   capture: CaptureSession | null;
   context: BrowserContext;
@@ -642,6 +656,42 @@ export function resolveBrowserRuntimeVisibility(
   };
 }
 
+export function resolveBrowserLaunchSource(
+  visibility: Pick<BrowserRuntimeVisibility, "profileName">,
+  env: NodeJS.ProcessEnv = process.env
+): BrowserLaunchSource {
+  const managedRequired = env.PDPP_BROWSER_SURFACE_REQUIRED?.trim().toLowerCase() === "neko";
+  const managedRemoteCdpUrl = env.PDPP_BROWSER_SURFACE_REMOTE_CDP_URL?.trim();
+  if (managedRequired) {
+    if (!managedRemoteCdpUrl) {
+      throw new TerminalError(
+        "browser surface required: PDPP_BROWSER_SURFACE_REQUIRED=neko but PDPP_BROWSER_SURFACE_REMOTE_CDP_URL is missing",
+        false
+      );
+    }
+    return {
+      kind: "managed_neko",
+      remoteCdpUrl: managedRemoteCdpUrl,
+      ...(env.PDPP_BROWSER_SURFACE_LEASE_ID?.trim() ? { leaseId: env.PDPP_BROWSER_SURFACE_LEASE_ID.trim() } : {}),
+      ...(env.PDPP_BROWSER_SURFACE_PROFILE_KEY?.trim()
+        ? { profileKey: env.PDPP_BROWSER_SURFACE_PROFILE_KEY.trim() }
+        : {}),
+    };
+  }
+
+  const legacyRemoteCdpEnvKey = `PDPP_${visibility.profileName.toUpperCase()}_REMOTE_CDP_URL`;
+  const legacyRemoteCdpUrl = env[legacyRemoteCdpEnvKey]?.trim();
+  if (legacyRemoteCdpUrl) {
+    return {
+      envKey: legacyRemoteCdpEnvKey,
+      kind: "legacy_remote_cdp",
+      remoteCdpUrl: legacyRemoteCdpUrl,
+    };
+  }
+
+  return { kind: "isolated_local" };
+}
+
 export function decorateBrowserManualAction(
   req: InteractionRequest,
   visibility: BrowserRuntimeVisibility
@@ -682,7 +732,8 @@ export function decorateBrowserManualAction(
  */
 async function acquireBrowser(browser: BrowserConfig, name: string): Promise<AcquiredBrowser> {
   const { acquireBrowserForConnector, HeadedBrowserUnavailableError } = await import("./browser-launch.ts");
-  const { headless, profileName } = resolveBrowserRuntimeVisibility(browser, name);
+  const visibility = resolveBrowserRuntimeVisibility(browser, name);
+  const { headless, profileName } = visibility;
   // Streaming env vars are present iff the controller wired up Mode-A
   // streaming for this run. Their presence is the signal to launch
   // Chromium in CDP-port mode (so the handoff helper can compose
@@ -693,17 +744,11 @@ async function acquireBrowser(browser: BrowserConfig, name: string): Promise<Acq
     Boolean(process.env.PDPP_RUN_ID?.trim()) &&
     Boolean(process.env.PDPP_REFERENCE_BASE_URL?.trim()) &&
     Boolean(process.env.PDPP_STREAMING_REGISTRATION_TOKEN?.trim() || process.env.PDPP_LOCAL_DEVICE_TOKEN?.trim());
-  // Per-connector opt-in to remote-CDP attach: when
-  // `PDPP_<PROFILE>_REMOTE_CDP_URL` is set (e.g.
-  // PDPP_CHATGPT_REMOTE_CDP_URL=http://neko:9223), the connector attaches
-  // to the n.eko-hosted Chromium instead of spawning a local Chrome. This
-  // is the only path that gets ALL three stealth layers (binary, launch
-  // args, driver) when the streaming companion is expected — see
-  // docs/neko-stealth-design-brief.md. Local Chrome inside the reference
-  // container can't get those layers because it runs headless without an
-  // X server.
-  const remoteCdpEnvKey = `PDPP_${profileName.toUpperCase()}_REMOTE_CDP_URL`;
-  const remoteCdpUrl = process.env[remoteCdpEnvKey]?.trim() || undefined;
+  const launchSource = resolveBrowserLaunchSource(visibility);
+  const remoteCdpUrl =
+    launchSource.kind === "managed_neko" || launchSource.kind === "legacy_remote_cdp"
+      ? launchSource.remoteCdpUrl
+      : undefined;
   try {
     return await acquireBrowserForConnector({
       profileName,
