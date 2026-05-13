@@ -45,6 +45,10 @@ This package must not import `reference-implementation`, `apps/web`,
   same-origin client descriptor shapes.
 - `@pdpp/remote-surface/backends/cdp` — CDP fallback contracts that keep raw
   CDP HTTP/WebSocket authority server-side.
+- `@pdpp/remote-surface/backends/types` (via package facade) — generic backend
+  adapter/lifecycle contracts plus future-backend seams for VNC/Kasm-like
+  adapters. The package names those kinds but does not implement them in this
+  tranche.
 - `@pdpp/remote-surface/diagnostics` — redacted diagnostics event helpers and
   bounded in-memory buffers.
 - `@pdpp/remote-surface/leases` — browser-surface lease substrate.
@@ -53,11 +57,14 @@ This package must not import `reference-implementation`, `apps/web`,
 
 ## Adapters
 
-- **`NekoSurfaceAdapter`** — **preferred** for stealth flows. Wraps an
-  `@demodesk/neko` client and forwards interaction events over n.eko's
-  WebRTC data channel.
+- **`NekoSurfaceAdapter`** — **preferred** for stealth flows. It depends on a
+  small package-owned `NekoClientApi` adapter interface rather than exposing
+  concrete n.eko client package details as product architecture.
 - **`CdpSurfaceAdapter`** — fallback / legacy / debug path. Wraps the
   existing CDP-backed `BrowserSurface` for sessions that cannot use n.eko.
+- **Future backends** — VNC/Kasm-like backends may satisfy the generic
+  `RemoteSurfaceBackendAdapter` and safe descriptor contracts later. This
+  package currently provides only the seam, not concrete VNC or Kasm clients.
 
 ## Mobile IME
 

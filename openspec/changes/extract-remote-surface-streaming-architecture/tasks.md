@@ -1,6 +1,6 @@
 ## 0. Boundary Map And Fixtures
 
-- [ ] 0.1 Inventory current reference streaming routes, session store behavior, companion contracts, run-target registry behavior, dashboard stream modules, and connector handoff paths.
+- [x] 0.1 Inventory current reference streaming routes, session store behavior, companion contracts, run-target registry behavior, dashboard stream modules, and connector handoff paths.
 - [x] 0.2 Define the package export map for `protocol`, `server`, `client`, `backends/neko`, `backends/cdp`, `diagnostics`, `leases`, and `testing`.
 - [x] 0.3 Capture fixture cases from current SSE events, n.eko client config, input payloads, viewport payloads, clipboard events, target descriptors, and diagnostics records.
 - [x] 0.4 Update `packages/remote-surface/README.md` so it reflects implemented exports and no longer describes implemented controllers as scaffold-only.
@@ -37,8 +37,8 @@
 - [x] 4.1 Normalize n.eko adapter descriptors so client-visible config contains only token-scoped same-origin proxy/session details.
 - [x] 4.2 Normalize CDP fallback descriptors so raw CDP WebSocket and HTTP URLs remain server-side.
 - [x] 4.3 Add adapter capability tests for event channel support, input modes, clipboard modes, viewport modes, diagnostics, and owner-browser mode.
-- [ ] 4.4 Add future-backend seams without implementing VNC/Kasm-like backends in this tranche.
-- [ ] 4.5 Verify n.eko client dependency details are wrapped behind adapter interfaces and not exposed as product architecture.
+- [x] 4.4 Add future-backend seams without implementing VNC/Kasm-like backends in this tranche.
+- [x] 4.5 Verify n.eko client dependency details are wrapped behind adapter interfaces and not exposed as product architecture.
 
 ## 5. Telemetry And Diagnostics
 

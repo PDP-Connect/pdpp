@@ -2,6 +2,15 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
+  isRemoteSurfaceFutureBackendKind,
+  REMOTE_SURFACE_FUTURE_BACKEND_KINDS,
+  type FutureRemoteSurfaceBackendAdapter,
+  type FutureRemoteSurfaceBackendDescriptor,
+  type RemoteSurfaceBackendLifecycle,
+  type RemoteSurfaceBackendSubscription,
+  type RemoteSurfaceFutureBackendKind,
+} from "./types.ts";
+import {
   buildCdpSafeClientDescriptor,
   CDP_BACKEND_CAPABILITIES,
   parseCdpSafeClientDescriptor,
@@ -107,3 +116,52 @@ describe("backend capability declarations", () => {
     });
   });
 });
+
+describe("future backend seams", () => {
+  it("declares future backend kinds without adding concrete VNC or Kasm implementations", () => {
+    assert.deepEqual(REMOTE_SURFACE_FUTURE_BACKEND_KINDS, ["vnc", "kasm", "custom"]);
+    assert.equal(isRemoteSurfaceFutureBackendKind("vnc"), true);
+    assert.equal(isRemoteSurfaceFutureBackendKind("kasm"), true);
+    assert.equal(isRemoteSurfaceFutureBackendKind("custom"), true);
+    assert.equal(isRemoteSurfaceFutureBackendKind("neko"), false);
+    assert.equal(isRemoteSurfaceFutureBackendKind("cdp"), false);
+  });
+
+  it("allows future backends to satisfy the generic adapter contract only through safe descriptors", async () => {
+    const adapter = makeFutureBackendAdapter("vnc");
+    const lifecycle = await adapter.start();
+
+    assert.equal(adapter.kind, "vnc");
+    assert.deepEqual(lifecycle.safeClientDescriptor, {
+      backend: "vnc",
+      capabilities: adapter.capabilities,
+    });
+  });
+});
+
+function makeFutureBackendAdapter(kind: RemoteSurfaceFutureBackendKind): FutureRemoteSurfaceBackendAdapter {
+  const capabilities = {
+    eventChannel: "websocket" as const,
+    input: ["pointer", "keyboard", "text"] as const,
+    clipboard: ["manual_fallback"] as const,
+    viewport: ["report", "resize"] as const,
+    diagnostics: ["events", "redacted_buffer"] as const,
+    ownerBrowser: true,
+    serverSideAutomationEndpoint: false,
+  };
+  return {
+    kind,
+    capabilities,
+    async start(): Promise<RemoteSurfaceBackendLifecycle<FutureRemoteSurfaceBackendDescriptor>> {
+      return {
+        safeClientDescriptor: { backend: kind, capabilities },
+        onEvent(): RemoteSurfaceBackendSubscription {
+          return { unsubscribe() {} };
+        },
+        async input() {},
+        async setViewport() {},
+      };
+    },
+    async stop() {},
+  };
+}
