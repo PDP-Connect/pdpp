@@ -32,6 +32,8 @@ That static mode is honest but insufficient for SLVP browser-backed collection. 
 
 Dynamic allocation builds on `extract-remote-surface-substrate`. The backend-agnostic lease types, lease manager policy, queue/fencing/reconcile behavior, and allocator interfaces live in `@pdpp/remote-surface`; this change adds reference-owned dynamic n.eko allocation around that substrate.
 
+If `extract-remote-surface-streaming-architecture` proceeds in parallel, this change may consume package-compatible session, target descriptor, and diagnostics seams from that work. It SHALL NOT absorb the full streaming session broker, dashboard viewer/client API, clipboard/keyboard/mobile UX orchestration, telemetry schema extraction, or generic backend adapter extraction; those belong to the remote-surface streaming architecture tranche.
+
 ### Add a Narrow n.eko Surface Allocator Boundary
 
 The reference controller SHALL depend on a `NekoSurfaceAllocator` abstraction rather than directly constructing Docker commands inside connector launch code. The allocator owns surface lifecycle operations:
