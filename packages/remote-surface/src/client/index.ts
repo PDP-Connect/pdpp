@@ -5,6 +5,16 @@ import type {
   RemoteSurfaceViewportPayload,
 } from "../protocol/index.ts";
 
+export {
+  type CdpSurfaceConfig,
+  CdpSurfaceAdapter,
+  type NekoClientApi,
+  type NekoSurfaceAdapterDeps,
+  type NekoSurfaceConfig,
+  NekoSurfaceAdapter,
+  type RemoteSurfaceLogger,
+} from "../adapters/index.ts";
+export { type NekoPointerControl } from "../controllers/index.ts";
 export * from "./clipboard-policy.ts";
 export * from "./geometry.ts";
 export * from "./viewport-classifier.ts";

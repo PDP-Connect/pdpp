@@ -46,7 +46,7 @@ import {
   setNekoRemoteInputFocused,
   setNekoViewportLayout,
 } from "./neko-client.ts";
-import { NekoSurfaceAdapter } from "@pdpp/remote-surface";
+import { NekoSurfaceAdapter } from "@pdpp/remote-surface/client";
 import { createNekoClientApi } from "./neko-client-api-shim.ts";
 import {
   assessClipboardCapabilities,

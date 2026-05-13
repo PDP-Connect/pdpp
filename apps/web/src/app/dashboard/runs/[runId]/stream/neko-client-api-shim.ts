@@ -9,7 +9,7 @@
 import type {
   NekoClientApi,
   NekoPointerControl,
-} from "@pdpp/remote-surface";
+} from "@pdpp/remote-surface/client";
 
 import {
   dispatchNekoKeysymForAdapter,
