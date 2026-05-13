@@ -14,6 +14,26 @@ import {
 // and passes it to client.start, so we don't need DOM semantics here.
 const fakeEl = {} as unknown as HTMLElement;
 
+class StubTextarea extends EventTarget {
+  value = "";
+  focusCalls: Array<FocusOptions | undefined> = [];
+
+  focus(options?: FocusOptions): void {
+    this.focusCalls.push(options);
+  }
+}
+
+function makeStubTextarea(): HTMLTextAreaElement & StubTextarea {
+  return new StubTextarea() as HTMLTextAreaElement & StubTextarea;
+}
+
+function makeInputEvent(inputType: string, data: string | null): Event {
+  const e = new Event("input") as unknown as Record<string, unknown>;
+  e.inputType = inputType;
+  e.data = data;
+  return e as unknown as Event;
+}
+
 const baseConfig: NekoSurfaceConfig = {
   kind: "neko",
   serverPath: "wss://example.invalid/ws",
@@ -166,6 +186,23 @@ describe("NekoSurfaceAdapter", () => {
     adapter.focusTextInput();
     adapter.focusTextInput({ inputMode: "email" });
     assert.equal(client.focusCalls, 2);
+  });
+
+  it("focusTextInput() focuses and binds the controller textarea for text commits", async () => {
+    const textarea = makeStubTextarea();
+    const client = makeMockClient({
+      getTextareaElement: () => textarea,
+    });
+    const adapter = new NekoSurfaceAdapter({ client, config: baseConfig });
+    await adapter.mount(fakeEl);
+
+    adapter.focusTextInput();
+    textarea.dispatchEvent(makeInputEvent("insertText", "h"));
+
+    assert.equal(client.focusCalls, 1);
+    assert.deepEqual(textarea.focusCalls, [{ preventScroll: true }]);
+    assert.deepEqual(client.sendTextCalls, ["h"]);
+    assert.equal(textarea.value, "");
   });
 
   it("remote text input state delegates through the client boundary", async () => {

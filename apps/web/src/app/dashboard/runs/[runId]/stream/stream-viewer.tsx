@@ -2932,19 +2932,11 @@ function StreamStage({
         onKeyboard={
           nekoSession && clipboardPolicy.showKeyboardButton
             ? () => {
-                // Focus the MobileTextInputController-bound textarea
-                // (rendered inside NekoSurface). The OS soft keyboard
-                // opens on focus; the controller intercepts compositionend
-                // / input and forwards via the RemoteSurface adapter.
-                const softKeyboardTextarea = document.querySelector<HTMLTextAreaElement>(
-                  'textarea[data-pdpp-soft-keyboard="neko"]'
-                );
                 // Step 5b: route through the adapter so
                 // MobileTextInputController binds and our IME pipeline
                 // takes over (rather than n.eko's bundled fallback).
-                // adapter.focusTextInput() calls focusKeyboard() internally
-                // but does NOT call .focus() on the textarea — keep the
-                // explicit .focus() so the OS soft keyboard opens.
+                // adapter.focusTextInput() preserves n.eko remote focus
+                // state and focuses the controller-bound textarea.
                 const adapter = nekoSurfaceAdapterRef.current;
                 logDebug("neko.corner.keyboard.tapped", {
                   adapterPresent: !!adapter,
@@ -2954,14 +2946,11 @@ function StreamStage({
                 if (adapter && adapter.getLifecycleState() === "mounted") {
                   adapter.focusTextInput();
                 }
-                if (softKeyboardTextarea) {
-                  softKeyboardTextarea.focus();
-                }
                 logDebug("neko.corner.keyboard", {
                   adapterMounted:
                     adapter?.getLifecycleState() === "mounted",
                   controllerTextareaFocused:
-                    document.activeElement === softKeyboardTextarea,
+                    document.activeElement === softKeyboardTextareaRef.current,
                   snapshot: readSurfaceDebugSnapshot(containerRef.current),
                 });
               }

@@ -220,16 +220,20 @@ export class NekoSurfaceAdapter implements RemoteSurface {
         inputMode: opts.inputMode,
       });
     }
+    // Bind MobileTextInputController lazily here — by the time the user
+    // requests text input, the dashboard has typically mounted the hidden
+    // textarea. Re-bind if the dashboard has handed us a new textarea
+    // (e.g. after remount).
+    const textarea = this.ensureTextInputController();
     if (this.client.focusKeyboard) {
       this.client.focusKeyboard();
     } else {
       this.log("warn", "neko-surface-adapter.no-focus-keyboard-helper");
     }
-    // Bind MobileTextInputController lazily here — by the time the user
-    // requests text input, the dashboard has typically mounted the hidden
-    // textarea. Re-bind if the dashboard has handed us a new textarea
-    // (e.g. after remount).
-    this.ensureTextInputController();
+    if (textarea) {
+      textarea.focus({ preventScroll: true });
+      this.log("debug", "neko-surface-adapter.text-input-focused");
+    }
   }
 
   blurTextInput(): void {
@@ -252,19 +256,19 @@ export class NekoSurfaceAdapter implements RemoteSurface {
     }
   }
 
-  private ensureTextInputController(): void {
+  private ensureTextInputController(): HTMLTextAreaElement | null {
     const textarea = this.client.getTextareaElement?.() ?? null;
     if (!textarea) {
       if (!this.textInputController) {
         this.log("debug", "neko-surface-adapter.no-textarea");
       }
-      return;
+      return null;
     }
     if (
       this.textInputController &&
       this.textInputControllerTextarea === textarea
     ) {
-      return;
+      return textarea;
     }
     this.textInputController?.dispose();
     this.textInputController = new MobileTextInputController({
@@ -291,6 +295,7 @@ export class NekoSurfaceAdapter implements RemoteSurface {
     });
     this.textInputControllerTextarea = textarea;
     this.log("info", "neko-surface-adapter.text-input-bound");
+    return textarea;
   }
 
   // eslint-disable-next-line @typescript-eslint/require-await
