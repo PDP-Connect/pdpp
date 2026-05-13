@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  jitteredExponentialDelayMs,
   parseRetryAfterMs,
   RetryExhaustedError,
   retryAfterMsFromHeaders,
@@ -60,6 +61,10 @@ test("retryHttp: uses bounded jittered exponential delay when Retry-After is abs
   });
 
   assert.deepEqual(sleeps, [1000, 2000]);
+});
+
+test("retryHttp: caps jittered exponential delay after applying jitter", () => {
+  assert.equal(jitteredExponentialDelayMs({ attempt: 10, baseDelayMs: 1000, maxDelayMs: 5000, random: () => 1 }), 5000);
 });
 
 test("retryHttp: caps large Retry-After values", async () => {

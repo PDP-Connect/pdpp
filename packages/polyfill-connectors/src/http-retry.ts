@@ -96,7 +96,7 @@ export function jitteredExponentialDelayMs({
 }): number {
   const exponential = Math.min(maxDelayMs, baseDelayMs * 2 ** Math.max(0, attempt - 1));
   const jitterMultiplier = 0.5 + random();
-  return Math.max(0, Math.round(exponential * jitterMultiplier));
+  return Math.max(0, Math.min(maxDelayMs, Math.round(exponential * jitterMultiplier)));
 }
 
 export async function retryHttp<T extends HttpRetryResponse>(options: HttpRetryOptions<T>): Promise<T> {

@@ -128,7 +128,7 @@ async function getAuthFromPage(page: Page): Promise<ChatGptAuth> {
  */
 const CHATGPT_RATE_LIMIT_MAX_ATTEMPTS = 12;
 const CHATGPT_RATE_LIMIT_BASE_DELAY_MS = 2000;
-const CHATGPT_RATE_LIMIT_MAX_DELAY_MS = 5 * 60_000;
+const CHATGPT_RATE_LIMIT_MAX_DELAY_MS = 15 * 60_000;
 const CHATGPT_RATE_LIMIT_MAX_RETRY_AFTER_MS = 15 * 60_000;
 const CHATGPT_LONG_SLEEP_PROGRESS_THRESHOLD_MS = 5000;
 
@@ -221,14 +221,18 @@ function createChatGptApi({
         maxAttempts: CHATGPT_RATE_LIMIT_MAX_ATTEMPTS,
         maxDelayMs: CHATGPT_RATE_LIMIT_MAX_DELAY_MS,
         maxRetryAfterMs: CHATGPT_RATE_LIMIT_MAX_RETRY_AFTER_MS,
-        onRetry: async ({ attempt, delayMs, maxAttempts, response }) => {
+        onRetry: async ({ attempt, delayMs, maxAttempts, response, retryAfterMs }) => {
           if (delayMs < CHATGPT_LONG_SLEEP_PROGRESS_THRESHOLD_MS) {
             return;
           }
           const status = response?.status ? `HTTP ${response.status}` : "network error";
+          const policy =
+            retryAfterMs == null
+              ? `jittered exponential backoff, capped at ${formatSleepDuration(CHATGPT_RATE_LIMIT_MAX_DELAY_MS)}`
+              : `server Retry-After, capped at ${formatSleepDuration(CHATGPT_RATE_LIMIT_MAX_RETRY_AFTER_MS)}`;
           await emit?.({
             type: "PROGRESS",
-            message: `ChatGPT rate limit/backoff on ${method} ${path}: ${status}; waiting ${formatSleepDuration(delayMs)} before retry ${attempt + 1}/${maxAttempts}`,
+            message: `ChatGPT rate limit/backoff on ${method} ${path}: ${status}; waiting ${formatSleepDuration(delayMs)} before retry ${attempt + 1}/${maxAttempts} (${policy})`,
           });
         },
         request: async () => {
