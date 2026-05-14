@@ -380,6 +380,7 @@ test('register accepts dynamic managed n.eko descriptor approved by lease metada
         descriptor.surface_id === 'surf_1' &&
         descriptor.lease_id === 'lease_1' &&
         descriptor.profile_key === 'profile_1' &&
+        descriptor.interaction_id === 'int_a' &&
         descriptor.base_url === 'http://10.88.0.4:6080/neko'
       );
     },
@@ -396,6 +397,7 @@ test('register accepts dynamic managed n.eko descriptor approved by lease metada
       surface_id: 'surf_1',
       lease_id: 'lease_1',
       profile_key: 'profile_1',
+      interaction_id: 'int_a',
     },
     deviceId: 'dev_1',
   });
@@ -406,8 +408,38 @@ test('register accepts dynamic managed n.eko descriptor approved by lease metada
     lease_id: 'lease_1',
     profile_key: 'profile_1',
     surface_id: 'surf_1',
+    interaction_id: 'int_a',
   });
   assert.equal(approved.length, 1);
+  registry.shutdown();
+});
+
+test('register rejects managed n.eko descriptor for the wrong interaction when approval is interaction-exact', () => {
+  const registry = createRunTargetRegistry({
+    sweepIntervalMs: 0,
+    isNekoDescriptorApproved(descriptor, context) {
+      return descriptor.interaction_id === context.interactionId;
+    },
+  });
+
+  assert.throws(
+    () =>
+      registry.register({
+        runId: 'run_dynamic_1',
+        interactionId: 'int_a',
+        backend: 'neko',
+        descriptor: {
+          backend: 'neko',
+          base_url: 'http://10.88.0.4:6080/neko',
+          surface_id: 'surf_1',
+          lease_id: 'lease_1',
+          profile_key: 'profile_1',
+          interaction_id: 'int_b',
+        },
+        deviceId: 'dev_1',
+      }),
+    (err) => err.code === 'run_target_non_loopback',
+  );
   registry.shutdown();
 });
 
@@ -949,6 +981,7 @@ test('POST accepts managed neko descriptor with lease metadata and omits CDP det
         lease_id: 'lease_123',
         profile_key: 'chatgpt:owner',
         surface_id: 'surface_static_1',
+        interaction_id: 'int_a',
         start_url: 'https://example.test/login',
       },
     },
@@ -965,6 +998,7 @@ test('POST accepts managed neko descriptor with lease metadata and omits CDP det
     lease_id: 'lease_123',
     profile_key: 'chatgpt:owner',
     surface_id: 'surface_static_1',
+    interaction_id: 'int_a',
     start_url: 'https://example.test/login',
   });
   const serialized = JSON.stringify(descriptor);
@@ -1246,7 +1280,7 @@ test('PUT: bearer matching the per-run nonce authenticates without device-export
   registry.shutdown();
 });
 
-test('PUT: per-run nonce authenticates registrations for ANY interactionId in the same run', async () => {
+test('PUT: per-run nonce can authenticate multiple interaction routes in the same run', async () => {
   const registry = createRunTargetRegistry({ sweepIntervalMs: 0 });
   registry.registerNonce({ runId: 'run_a', nonce: 'shared_run_nonce' });
   const app = makeFakeApp();

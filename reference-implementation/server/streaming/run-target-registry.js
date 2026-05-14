@@ -34,10 +34,11 @@
  *    A different device-exporter cannot unregister another device's
  *    target.
  *  - Nonces are scoped per-run (not per-interaction): a single nonce
- *    minted at run spawn time authenticates registrations for ANY
- *    interaction that arises during that run. The synthetic deviceId
- *    on the nonce path is `nonce:<runId>` so the same nonce-issued
- *    authority is consistent across the run's interactions.
+ *    minted at run spawn time authenticates registrations for the run.
+ *    Interaction exactness for managed n.eko descriptors is enforced by
+ *    descriptor metadata (`interaction_id`) checked against the route key.
+ *    The synthetic deviceId on the nonce path is `nonce:<runId>` so the
+ *    same nonce-issued authority is consistent across the run's interactions.
  *  - Records expire after a short TTL (default 1h) and are evicted by
  *    explicit DELETE, lazy on-access sweep, periodic timer, and
  *    process exit.
@@ -299,6 +300,10 @@ function normalizeTargetDescriptor(input, { isNekoDescriptorApproved } = {}) {
     if (profileKey !== undefined) descriptor.profile_key = profileKey;
     const surfaceId = optionalString(source.surface_id ?? source.surfaceId);
     if (surfaceId !== undefined) descriptor.surface_id = surfaceId;
+    const descriptorInteractionId = optionalString(
+      source !== input ? source.interaction_id ?? source.interactionId : source.interaction_id,
+    );
+    if (descriptorInteractionId !== undefined) descriptor.interaction_id = descriptorInteractionId;
     const auth = normalizeAuthMetadata(source.auth ?? input.auth);
     if (auth !== undefined) descriptor.auth = auth;
     if (
@@ -602,8 +607,8 @@ export function createRunTargetRegistry({
    * comparison is constant-time so timing cannot reveal which characters
    * differ. A nonce that authenticates for run X cannot be used to act
    * on run Y because the lookup is keyed by `runId`. Within a single run
-   * the nonce authenticates registrations for ANY interactionId — see
-   * the per-run-not-per-interaction comment at `nonceHashes`.
+   * the nonce authenticates the route for multiple interactionIds, while
+   * managed n.eko descriptors enforce interaction exactness in approval.
    */
   function verifyNonce({ runId, presentedToken }) {
     if (typeof runId !== 'string' || runId.length === 0) return false;
@@ -654,8 +659,9 @@ export function createRunTargetRegistry({
      * first and only fall through when no nonce credential is present.
      *
      * Nonce scoping reminder: the nonce verifies against `runId` only.
-     * The same nonce authenticates registrations for any interactionId
-     * within that run. The synthetic deviceId for the nonce path is
+     * The same nonce authenticates the route for multiple interactionIds
+     * within that run; managed n.eko descriptors still carry their own
+     * `interaction_id` for approval. The synthetic deviceId for the nonce path is
      * `nonce:<runId>`, which is unique per run and cannot collide with
      * a real device id (those live in the device-exporter table and have
      * a different prefix). That keeps the existing register/unregister

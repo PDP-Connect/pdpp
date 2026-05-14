@@ -433,13 +433,30 @@ export function registerStreamingRoutes({
   }
 
   function buildNekoTargetUrl(origin, reqUrl) {
-    let path = reqUrl || nekoProxyPath;
-    if (path === '/neko') {
-      path = '/neko/';
-    } else if (path.startsWith('/neko?')) {
-      path = `/neko/${path.slice('/neko'.length)}`;
+    const base = new URL(origin.href);
+    const incoming = new URL(reqUrl || nekoProxyPath, 'http://pdpp.local');
+    let suffix = incoming.pathname;
+    if (suffix === '/neko') {
+      suffix = '/';
+    } else if (suffix.startsWith('/neko/')) {
+      suffix = suffix.slice('/neko'.length);
     }
-    return new URL(path, origin);
+
+    const basePath = base.pathname.endsWith('/') ? base.pathname.slice(0, -1) : base.pathname;
+    if (!basePath) {
+      base.pathname =
+        incoming.pathname === '/neko'
+          ? '/neko/'
+          : incoming.pathname.startsWith('/neko')
+            ? incoming.pathname
+            : suffix;
+    } else {
+      const suffixPath = suffix.startsWith('/') ? suffix : `/${suffix}`;
+      base.pathname = `${basePath}${suffixPath}`;
+    }
+    base.search = incoming.search;
+    base.hash = '';
+    return base;
   }
 
   function shouldInjectNekoBase(req, targetUrl, upstreamRes) {

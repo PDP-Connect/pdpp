@@ -18,11 +18,63 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { startServer } from '../server/index.js';
+import { isManagedNekoSurfaceApproved, startServer } from '../server/index.js';
 import { createMockCompanion } from '../server/streaming/cdp-companion.js';
+import { BrowserSurfaceLeaseManager, DEFAULT_NEKO_PRIORITY_RANKS } from '../runtime/browser-surface-leases.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, '..');
+
+function makeLeaseManager({ surfaceHealth = 'ready', initialActiveLease = false } = {}) {
+  return new BrowserSurfaceLeaseManager({
+    config: {
+      managedConnectors: new Set(['chatgpt']),
+      surfaceCap: 1,
+      staticProfileKey: 'profile_dynamic_1',
+      staticCdpHttpUrl: 'http://neko:9222',
+      staticStreamBaseUrl: 'http://neko:8080',
+      leaseWaitTimeoutMs: 60_000,
+      idleTtlMs: 300_000,
+      defaultPriorityClass: 'scheduled_refresh',
+      priorityRanks: DEFAULT_NEKO_PRIORITY_RANKS,
+      surfaceMode: 'static',
+    },
+    now: () => new Date('2026-05-12T12:00:00.000Z'),
+    makeLeaseId: () => 'lease_dynamic_1',
+    makeSurfaceId: () => 'surface_dynamic_1',
+    nextFencingToken: () => 1,
+    initialSurfaces: [
+      {
+        surface_id: 'surface_dynamic_1',
+        backend: 'neko',
+        profile_key: 'profile_dynamic_1',
+        connector_id: 'chatgpt',
+        cdp_url: 'http://neko:9222',
+        stream_base_url: 'http://10.88.0.4:6080/_ref/browser-surfaces/surface_dynamic_1',
+        health: surfaceHealth,
+        ...(initialActiveLease ? { active_lease_id: 'lease_dynamic_1' } : {}),
+        created_at: '2026-05-12T11:00:00.000Z',
+        last_used_at: '2026-05-12T11:00:00.000Z',
+      },
+    ],
+    initialLeases: initialActiveLease
+      ? [
+          {
+            lease_id: 'lease_dynamic_1',
+            surface_id: 'surface_dynamic_1',
+            connector_id: 'chatgpt',
+            profile_key: 'profile_dynamic_1',
+            run_id: 'run_dynamic_1',
+            status: 'leased',
+            priority_class: 'scheduled_refresh',
+            requested_at: '2026-05-12T11:00:00.000Z',
+            leased_at: '2026-05-12T11:00:01.000Z',
+            fencing_token: 1,
+          },
+        ]
+      : undefined,
+  });
+}
 
 async function closeServer(server) {
   server.asServer.closeAllConnections();
@@ -210,6 +262,65 @@ async function cancelRun(asUrl, runId, interactionId) {
   });
   await waitForRunTerminal(asUrl, runId);
 }
+
+test('managed n.eko approval is lease, surface, profile, run, interaction, readiness, and origin scoped', () => {
+  const leaseManager = makeLeaseManager();
+  const acquired = leaseManager.acquire({
+    connectorId: 'chatgpt',
+    runId: 'run_dynamic_1',
+    profileKey: 'profile_dynamic_1',
+  });
+  assert.equal(acquired.lease.status, 'leased');
+
+  const target = {
+    origin: 'http://10.88.0.4:6080/_ref/browser-surfaces/surface_dynamic_1',
+    surface_id: 'surface_dynamic_1',
+    lease_id: 'lease_dynamic_1',
+    profile_key: 'profile_dynamic_1',
+    interaction_id: 'int_a',
+  };
+  const context = {
+    runId: 'run_dynamic_1',
+    interactionId: 'int_a',
+    browserSurfaceLeaseManager: leaseManager,
+  };
+
+  assert.equal(isManagedNekoSurfaceApproved(target, context), true);
+  assert.equal(isManagedNekoSurfaceApproved({ ...target, interaction_id: 'int_b' }, context), false);
+  assert.equal(isManagedNekoSurfaceApproved({ ...target, surface_id: 'surface_other' }, context), false);
+  assert.equal(isManagedNekoSurfaceApproved({ ...target, lease_id: 'lease_other' }, context), false);
+  assert.equal(isManagedNekoSurfaceApproved({ ...target, profile_key: 'profile_other' }, context), false);
+  assert.equal(isManagedNekoSurfaceApproved({ ...target, origin: 'http://10.88.0.4:6080/neko' }, context), false);
+  assert.equal(
+    isManagedNekoSurfaceApproved(target, { ...context, runId: 'run_other' }),
+    false,
+  );
+
+  leaseManager.release({ leaseId: acquired.lease.lease_id, fencingToken: acquired.lease.fencing_token });
+  assert.equal(isManagedNekoSurfaceApproved(target, context), false);
+});
+
+test('managed n.eko approval rejects a non-ready real lease-manager surface', () => {
+  const leaseManager = makeLeaseManager({ surfaceHealth: 'starting', initialActiveLease: true });
+
+  assert.equal(
+    isManagedNekoSurfaceApproved(
+      {
+        origin: 'http://10.88.0.4:6080/_ref/browser-surfaces/surface_dynamic_1',
+        surface_id: 'surface_dynamic_1',
+        lease_id: 'lease_dynamic_1',
+        profile_key: 'profile_dynamic_1',
+        interaction_id: 'int_a',
+      },
+      {
+        runId: 'run_dynamic_1',
+        interactionId: 'int_a',
+        browserSurfaceLeaseManager: leaseManager,
+      },
+    ),
+    false,
+  );
+});
 
 test('mint requires a pending manual_action interaction', async () => {
   await withHarness({}, async ({ asUrl, spotifyManifest }) => {
@@ -599,6 +710,81 @@ test('n.eko backend emits iframe path and proxies only after stream-token entry'
 });
 
 test('n.eko client config allows allocator-approved dynamic origin without exposing backend URLs', async () => {
+  const upstream = http.createServer((req, res) => {
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.end(`proxied:${req.method}:${req.url}`);
+  });
+  await new Promise((resolve, reject) => {
+    upstream.once('error', reject);
+    upstream.listen(0, '127.0.0.1', resolve);
+  });
+  const dynamicOrigin = `http://127.0.0.1:${upstream.address().port}/_ref/browser-surfaces/surf_dynamic_1`;
+
+  try {
+    await withHarness(
+      {
+        makeCompanion: ({ browser_session_id, interaction_id }) => ({
+          ...makeMockNekoCompanion(dynamicOrigin)({ browser_session_id }),
+          getNekoProxyTarget() {
+            return {
+              origin: dynamicOrigin,
+              surface_id: 'surf_dynamic_1',
+              lease_id: 'lease_dynamic_1',
+              profile_key: 'profile_dynamic_1',
+              interaction_id,
+            };
+          },
+        }),
+        isNekoProxyTargetApproved(target, { session }) {
+          return (
+            session?.run_id &&
+            target.origin === dynamicOrigin &&
+            target.surface_id === 'surf_dynamic_1' &&
+            target.lease_id === 'lease_dynamic_1' &&
+            target.profile_key === 'profile_dynamic_1' &&
+            target.interaction_id === session.interaction_id
+          );
+        },
+      },
+      async ({ asUrl, spotifyManifest }) => {
+        const started = await startRun(asUrl, spotifyManifest.connector_id);
+        const pending = await waitForPendingInteraction(asUrl, started.run_id);
+        const mint = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(started.run_id)}/run-interaction-stream`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ interaction_id: pending.interaction_id }),
+        });
+        assert.equal(mint.status, 201);
+
+        const ac = new AbortController();
+        const sseResp = await fetch(`${asUrl}${mint.body.viewer_path}`, { signal: ac.signal });
+        assert.equal(sseResp.status, 200);
+        try {
+          const clientConfig = await fetchJson(
+            `${asUrl}/_ref/run-interaction-streams/${encodeURIComponent(mint.body.token)}/neko/session`,
+          );
+          assert.equal(clientConfig.status, 200);
+          assert.equal(clientConfig.body.server_path, '/neko');
+          assertNoRawBackendAuthority(clientConfig.body);
+          const cookie = clientConfig.headers.get('set-cookie') || '';
+          const proxied = await fetch(`${asUrl}/neko/api/room/screen?x=1`, { headers: { cookie } });
+          assert.equal(proxied.status, 200);
+          assert.equal(
+            await proxied.text(),
+            'proxied:GET:/_ref/browser-surfaces/surf_dynamic_1/api/room/screen?x=1',
+          );
+        } finally {
+          ac.abort();
+          await cancelRun(asUrl, started.run_id, pending.interaction_id);
+        }
+      },
+    );
+  } finally {
+    await new Promise((resolve) => upstream.close(resolve));
+  }
+});
+
+test('n.eko client config rejects allocator-approved dynamic origin for the wrong interaction', async () => {
   const dynamicOrigin = 'http://10.88.0.4:6080/neko';
   await withHarness(
     {
@@ -610,17 +796,12 @@ test('n.eko client config allows allocator-approved dynamic origin without expos
             surface_id: 'surf_dynamic_1',
             lease_id: 'lease_dynamic_1',
             profile_key: 'profile_dynamic_1',
+            interaction_id: 'int_other',
           };
         },
       }),
       isNekoProxyTargetApproved(target, { session }) {
-        return (
-          session?.run_id &&
-          target.origin === dynamicOrigin &&
-          target.surface_id === 'surf_dynamic_1' &&
-          target.lease_id === 'lease_dynamic_1' &&
-          target.profile_key === 'profile_dynamic_1'
-        );
+        return target.interaction_id === session?.interaction_id;
       },
     },
     async ({ asUrl, spotifyManifest }) => {
@@ -637,12 +818,11 @@ test('n.eko client config allows allocator-approved dynamic origin without expos
       const sseResp = await fetch(`${asUrl}${mint.body.viewer_path}`, { signal: ac.signal });
       assert.equal(sseResp.status, 200);
       try {
-        const clientConfig = await fetchJson(
+        const rejected = await fetchJson(
           `${asUrl}/_ref/run-interaction-streams/${encodeURIComponent(mint.body.token)}/neko/session`,
         );
-        assert.equal(clientConfig.status, 200);
-        assert.equal(clientConfig.body.server_path, '/neko');
-        assertNoRawBackendAuthority(clientConfig.body);
+        assert.equal(rejected.status, 401);
+        assert.equal(rejected.body.error.code, 'neko_origin_not_allowed');
       } finally {
         ac.abort();
         await cancelRun(asUrl, started.run_id, pending.interaction_id);

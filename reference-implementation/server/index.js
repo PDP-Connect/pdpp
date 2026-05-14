@@ -6040,7 +6040,7 @@ function normalizedUrlWithoutTrailingSlash(value) {
   }
 }
 
-function isManagedNekoSurfaceApproved(target, { runId, interactionId, browserSurfaceLeaseManager } = {}) {
+export function isManagedNekoSurfaceApproved(target, { runId, interactionId, browserSurfaceLeaseManager } = {}) {
   if (!browserSurfaceLeaseManager || !target || typeof target !== 'object') return false;
   const surfaceId = typeof target.surface_id === 'string' ? target.surface_id : null;
   const leaseId = typeof target.lease_id === 'string' ? target.lease_id : null;
@@ -6061,6 +6061,11 @@ function isManagedNekoSurfaceApproved(target, { runId, interactionId, browserSur
   if (surface.active_lease_id !== leaseId) return false;
   if (lease.profile_key !== profileKey || surface.profile_key !== profileKey) return false;
   if (runId && lease.run_id !== runId) return false;
+  if (interactionId) {
+    const targetInteractionId =
+      typeof target.interaction_id === 'string' ? target.interaction_id : null;
+    if (targetInteractionId !== interactionId) return false;
+  }
   return normalizedUrlWithoutTrailingSlash(surface.stream_base_url) === baseUrl;
 }
 

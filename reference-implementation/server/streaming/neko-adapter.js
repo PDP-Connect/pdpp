@@ -1458,6 +1458,7 @@ export function createNekoCompanion(options = {}) {
         ...(target.surface_id ? { surface_id: target.surface_id } : {}),
         ...(target.lease_id ? { lease_id: target.lease_id } : {}),
         ...(target.profile_key ? { profile_key: target.profile_key } : {}),
+        ...(target.interaction_id ? { interaction_id: target.interaction_id } : {}),
       };
     },
     /** test-only escape hatch */
