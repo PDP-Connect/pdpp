@@ -913,10 +913,10 @@ function makeConversationDetailGap(
   return {
     type: "DETAIL_GAP",
     stream: "messages",
-    key: c.id,
+    record_key: c.id,
     status: "pending",
     reason: error.class,
-    locator: { kind: "chatgpt.conversation", conversation_id: c.id },
+    detail_locator: { kind: "chatgpt.conversation", conversation_id: c.id },
     retryable: true,
     reference_only: true,
     detail: {

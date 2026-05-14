@@ -116,12 +116,19 @@ export interface DetailGapMessage {
     class?: string;
     http_status?: number;
   };
-  key: string | number;
-  locator: {
+  detail_locator: {
     kind: string;
     [field: string]: string | number | boolean | null;
   };
+  last_error?: {
+    class?: string;
+    http_status?: number;
+    message?: string;
+  };
+  list_cursor?: unknown;
+  parent_stream?: string;
   reason: "rate_limited" | "retry_exhausted" | "temporary_unavailable" | "upstream_pressure";
+  record_key: string | number;
   reference_only: true;
   retryable: true;
   status: "pending";

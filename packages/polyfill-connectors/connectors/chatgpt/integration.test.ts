@@ -680,10 +680,10 @@ test("runConversationsAndMessagesStreams: recoverable detail exhaustion emits DE
   assert.deepEqual(gap, {
     type: "DETAIL_GAP",
     stream: "messages",
-    key: "convo-gap",
+    record_key: "convo-gap",
     status: "pending",
     reason: "rate_limited",
-    locator: { kind: "chatgpt.conversation", conversation_id: "convo-gap" },
+    detail_locator: { kind: "chatgpt.conversation", conversation_id: "convo-gap" },
     retryable: true,
     reference_only: true,
     detail: { class: "rate_limited", http_status: 429 },
