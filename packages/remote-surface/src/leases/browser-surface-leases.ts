@@ -534,17 +534,16 @@ export class BrowserSurfaceLeaseManager {
     const stopped: BrowserSurface[] = [];
     for (const surface of expiredIdle) {
       const stopping = { ...surface, health: "stopping" as const, last_used_at: this.#isoNow() };
-      this.#surfaces.set(surface.surface_id, stopping);
       let stoppedSurface: BrowserSurface | null;
       try {
         stoppedSurface = await allocator.stopSurface({ surfaceId: surface.surface_id, reason: "idle_ttl" });
       } catch (error) {
-        this.#surfaces.set(surface.surface_id, surface);
         throw error;
       }
       this.#surfaces.delete(surface.surface_id);
+      const { active_lease_id: _activeLeaseId, ...stoppedWithoutActiveLease } = stoppedSurface ?? stopping;
       stopped.push({
-        ...(stoppedSurface ?? stopping),
+        ...stoppedWithoutActiveLease,
         surface_id: surface.surface_id,
         backend: "neko",
         profile_key: surface.profile_key,

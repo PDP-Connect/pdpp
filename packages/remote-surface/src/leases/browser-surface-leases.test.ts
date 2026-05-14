@@ -62,6 +62,7 @@ class FakeBrowserSurfaceAllocator implements BrowserSurfaceAllocator {
 
   failEnsure = false;
   failStop = false;
+  stopBarrier: Promise<void> | null = null;
   returnStoppedAsReady = false;
 
   async ensureSurface(request: EnsureBrowserSurfaceRequest): Promise<BrowserSurface> {
@@ -95,6 +96,7 @@ class FakeBrowserSurfaceAllocator implements BrowserSurfaceAllocator {
     if (this.failStop) {
       throw new Error("allocator stop failed");
     }
+    await this.stopBarrier;
     const surface = this.#surfaces.get(request.surfaceId);
     if (!surface) {
       return null;
@@ -382,6 +384,46 @@ test("successful idle cleanup deletes surface and promotes queued leases", async
   assert.equal(leases.getSurface("surface_idle"), undefined);
   assert.equal(leases.getLease("lease_waiting")?.status, "starting_surface");
   assert.equal(leases.listSurfaces().length, 1);
+});
+
+test("pending idle cleanup keeps surface counted until allocator confirms stop", async () => {
+  const idleSurface: BrowserSurface = {
+    surface_id: "surface_idle",
+    backend: "neko",
+    profile_key: "idle_profile",
+    connector_id: "chatgpt",
+    cdp_url: "http://neko:9222",
+    stream_base_url: "http://neko:8080",
+    health: "ready",
+    created_at: "2026-05-12T11:00:00.000Z",
+    last_used_at: "2026-05-12T11:00:00.000Z",
+  };
+  const { leases } = manager({ initialSurfaces: [idleSurface] });
+  const allocator = new FakeBrowserSurfaceAllocator();
+  let unblockStop!: () => void;
+  allocator.setSurface(idleSurface);
+  allocator.stopBarrier = new Promise((resolve) => {
+    unblockStop = resolve;
+  });
+
+  const cleanup = leases.cleanupIdleSurfaces(allocator);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(allocator.stopRequests.length, 1);
+
+  const queued = leases.acquire({ connectorId: "chatgpt", runId: "run_waiting", profileKey: "queued_profile" });
+  assert.equal(queued.lease.status, "waiting_for_browser_surface");
+  assert.equal(queued.lease.wait_reason, "capacity_full");
+  assert.equal(leases.getSurface("surface_idle")?.health, "ready");
+  assert.deepEqual(leases.pumpQueuedLeases(), []);
+
+  unblockStop();
+  const result = await cleanup;
+
+  assert.equal(result.stopped[0]?.health, "stopping");
+  assert.equal(result.promoted[0]?.lease_id, queued.lease.lease_id);
+  assert.equal(result.promoted[0]?.status, "starting_surface");
+  assert.equal(leases.getSurface("surface_idle"), undefined);
+  assert.equal(leases.getLease(queued.lease.lease_id)?.status, "starting_surface");
 });
 
 test("restart reconciliation defers expired queued leases", () => {
