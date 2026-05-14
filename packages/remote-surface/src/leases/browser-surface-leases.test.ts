@@ -62,6 +62,7 @@ class FakeBrowserSurfaceAllocator implements BrowserSurfaceAllocator {
 
   failEnsure = false;
   failStop = false;
+  returnStoppedAsReady = false;
 
   async ensureSurface(request: EnsureBrowserSurfaceRequest): Promise<BrowserSurface> {
     this.ensureRequests.push(request);
@@ -98,7 +99,7 @@ class FakeBrowserSurfaceAllocator implements BrowserSurfaceAllocator {
     if (!surface) {
       return null;
     }
-    const stopped = { ...surface, health: "stopping" as const };
+    const stopped = this.returnStoppedAsReady ? surface : { ...surface, health: "stopping" as const };
     this.#surfaces.set(request.surfaceId, stopped);
     return stopped;
   }
@@ -320,7 +321,8 @@ test("failed idle cleanup keeps surface counted against cap and does not promote
     ],
   });
   const allocator = new FakeBrowserSurfaceAllocator();
-  allocator.setSurface(idleSurface);
+  allocator.setSurface({ ...idleSurface, active_lease_id: "stale_lease" });
+  allocator.returnStoppedAsReady = true;
   allocator.failStop = true;
 
   await assert.rejects(() => leases.cleanupIdleSurfaces(allocator), /allocator stop failed/);
@@ -373,6 +375,8 @@ test("successful idle cleanup deletes surface and promotes queued leases", async
     ["idle_ttl"],
   );
   assert.equal(result.stopped[0]?.surface_id, "surface_idle");
+  assert.equal(result.stopped[0]?.health, "stopping");
+  assert.equal(result.stopped[0]?.active_lease_id, undefined);
   assert.equal(result.promoted[0]?.lease_id, "lease_waiting");
   assert.equal(result.promoted[0]?.status, "starting_surface");
   assert.equal(leases.getSurface("surface_idle"), undefined);

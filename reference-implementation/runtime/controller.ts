@@ -1255,6 +1255,13 @@ export function createController(opts: ControllerOptions = {}): Controller {
       return [];
     }
     const cleanupResult = await browserSurfaceLeaseManager.cleanupIdleSurfaces(browserSurfaceAllocator);
+    if (browserSurfaceLeaseStore && cleanupResult.stopped.length > 0) {
+      await browserSurfaceLeaseStore.withLeaseTransaction(async (store) => {
+        for (const surface of cleanupResult.stopped) {
+          await store.upsertSurface(surface);
+        }
+      });
+    }
     await persistAndPromoteBrowserSurfaceLeases(cleanupResult.promoted, "browser-surface idle cleanup");
     return cleanupResult.promoted.map((lease) => projectBrowserSurfaceLease(lease));
   }

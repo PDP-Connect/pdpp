@@ -65,6 +65,50 @@ function createSchedulerStore(calls) {
   };
 }
 
+function createMemoryBrowserSurfaceLeaseStore({ surfaces = [], leases = [] } = {}) {
+  const surfaceRows = new Map(surfaces.map((surface) => [surface.surface_id, surface]));
+  const leaseRows = new Map(leases.map((lease) => [lease.lease_id, lease]));
+  const terminalStatuses = new Set(["released", "expired", "deferred", "cancelled", "surface_failed"]);
+  const store = {
+    surfaces: surfaceRows,
+    leases: leaseRows,
+    upsertSurface: async (surface) => {
+      surfaceRows.set(surface.surface_id, surface);
+      return surface;
+    },
+    upsertLease: async (lease) => {
+      leaseRows.set(lease.lease_id, lease);
+      return lease;
+    },
+    getSurface: async (surfaceId) => surfaceRows.get(surfaceId) ?? null,
+    getLease: async (leaseId) => leaseRows.get(leaseId) ?? null,
+    listSurfaces: async () => [...surfaceRows.values()].sort((a, b) => a.surface_id.localeCompare(b.surface_id)),
+    listNonTerminalLeases: async () => [...leaseRows.values()].filter((lease) => !terminalStatuses.has(lease.status)),
+    updateLeaseTerminal: async (leaseId, status, options = {}) => {
+      const lease = leaseRows.get(leaseId);
+      if (!lease) return null;
+      const updated = {
+        ...lease,
+        status,
+        ...(options.releasedAt ? { released_at: options.releasedAt } : {}),
+        ...(options.waitReason ? { wait_reason: options.waitReason } : {}),
+      };
+      leaseRows.set(leaseId, updated);
+      return updated;
+    },
+    clearSurfaceActiveLease: async (surfaceId) => {
+      const surface = surfaceRows.get(surfaceId);
+      if (!surface) return null;
+      const updated = { ...surface };
+      delete updated.active_lease_id;
+      surfaceRows.set(surfaceId, updated);
+      return updated;
+    },
+    withLeaseTransaction: async (fn) => fn(store),
+  };
+  return store;
+}
+
 function createManager(options = {}) {
   const { surfaceCap = 1, leaseWaitTimeoutMs = 300_000, now = () => new Date("2026-05-12T12:00:00.000Z") } = options;
   const staticProfileKey = Object.hasOwn(options, "staticProfileKey") ? options.staticProfileKey : "managed-profile";
@@ -184,6 +228,7 @@ function setup(
   {
     manager = createManager(),
     browserSurfaceAllocator,
+    browserSurfaceLeaseStore,
     browserSurfaceReadinessTimeoutMs,
     runConnectorImpl,
     connectorPathResolver = () => "/tmp/connector.js",
@@ -206,6 +251,7 @@ function setup(
   const controller = createController({
     browserSurfaceAllocator,
     browserSurfaceLeaseManager: manager,
+    browserSurfaceLeaseStore,
     browserSurfaceReadinessTimeoutMs,
     connectorPathResolver,
     logger: { error: () => {}, warn: () => {} },
@@ -412,6 +458,7 @@ test("dynamic cap queues distinct-profile managed run, then promotes after incom
   let now = new Date("2026-05-12T12:00:00.000Z");
   const allocator = createReadyAllocator();
   const manager = createDynamicManager({ surfaceCap: 1, leaseWaitTimeoutMs: 1_800_000, now: () => now });
+  const browserSurfaceLeaseStore = createMemoryBrowserSurfaceLeaseStore();
   const runConnectorImpl = (opts) => {
     if (opts.runId === "run_dynamic_cap_first") {
       return new Promise((resolve) => {
@@ -420,7 +467,7 @@ test("dynamic cap queues distinct-profile managed run, then promotes after incom
     }
     return Promise.resolve({ status: "completed", records_emitted: 0, state: null, checkpoint_summary: null });
   };
-  const { calls, controller } = setup(t, { manager, browserSurfaceAllocator: allocator, runConnectorImpl });
+  const { calls, controller } = setup(t, { manager, browserSurfaceAllocator: allocator, browserSurfaceLeaseStore, runConnectorImpl });
 
   await controller.runNow("managed", {
     manifest: MANIFEST,
@@ -463,6 +510,19 @@ test("dynamic cap queues distinct-profile managed run, then promotes after incom
   assert.deepEqual(allocator.stopRequests.map((request) => request.surfaceId), ["surface_1"]);
   assert.deepEqual(manager.listSurfaces().map((surface) => surface.surface_id), ["surface_2"]);
   assert.deepEqual(promoted.map((lease) => lease.pending_run_id), ["run_dynamic_cap_second"]);
+  assert.deepEqual(await browserSurfaceLeaseStore.getSurface("surface_1"), {
+    surface_id: "surface_1",
+    backend: "neko",
+    profile_key: "managed-profile",
+    connector_id: "managed",
+    cdp_url: "http://127.0.0.1:9222/surface_1",
+    stream_base_url: "http://127.0.0.1:8080/surface_1",
+    health: "stopping",
+    created_at: "2026-05-12T12:00:00.000Z",
+    last_used_at: "2026-05-12T12:10:01.000Z",
+  });
+  assert.equal((await browserSurfaceLeaseStore.getLease("lease_2")).status, "starting_surface");
+  assert.equal((await browserSurfaceLeaseStore.getSurface("surface_2")).health, "starting");
 
   await waitFor(() => allocator.ensureRequests.length === 2, "queued dynamic run should allocate after idle cleanup frees cap");
   await waitFor(() => calls.runConnector === 2, "queued dynamic run should spawn after allocator readiness");
@@ -477,6 +537,60 @@ test("dynamic cap queues distinct-profile managed run, then promotes after incom
   assert.ok(listRunEventTypes("run_dynamic_cap_second").includes("run.browser_surface_starting"));
   assert.ok(listRunEventTypes("run_dynamic_cap_second").includes("run.browser_surface_leased"));
   assert.equal(calls.runConnectorOpts[1].runId, "run_dynamic_cap_second");
+});
+
+test("persisted stopping dynamic surface does not consume cap after rehydration", async () => {
+  const store = createMemoryBrowserSurfaceLeaseStore({
+    surfaces: [
+      {
+        surface_id: "surface_stopped",
+        backend: "neko",
+        profile_key: "managed-profile",
+        connector_id: "managed",
+        cdp_url: "http://127.0.0.1:9222/surface_stopped",
+        stream_base_url: "http://127.0.0.1:8080/surface_stopped",
+        health: "stopping",
+        created_at: "2026-05-12T12:00:00.000Z",
+        last_used_at: "2026-05-12T12:10:01.000Z",
+      },
+    ],
+    leases: [
+      {
+        lease_id: "lease_waiting",
+        connector_id: "other-managed",
+        profile_key: "other-managed-profile",
+        run_id: "run_after_restart",
+        status: "waiting_for_browser_surface",
+        priority_class: "owner_interactive",
+        requested_at: "2026-05-12T12:10:02.000Z",
+        expires_at: "2026-05-12T12:40:02.000Z",
+        fencing_token: 0,
+        wait_reason: "capacity_full",
+      },
+    ],
+  });
+  const manager = new BrowserSurfaceLeaseManager({
+    config: createDynamicManager({ surfaceCap: 1 }).config,
+    initialSurfaces: await store.listSurfaces(),
+    initialLeases: await store.listNonTerminalLeases(),
+    now: () => new Date("2026-05-12T12:10:03.000Z"),
+    makeSurfaceId: () => "surface_promoted",
+    nextFencingToken: () => 7,
+  });
+
+  const promoted = manager.pumpQueuedLeases();
+
+  assert.equal(promoted.length, 1);
+  assert.equal(promoted[0].lease_id, "lease_waiting");
+  assert.equal(promoted[0].status, "starting_surface");
+  assert.equal(promoted[0].surface_id, "surface_promoted");
+  assert.deepEqual(
+    manager.listSurfaces().map((surface) => ({ id: surface.surface_id, health: surface.health })),
+    [
+      { id: "surface_stopped", health: "stopping" },
+      { id: "surface_promoted", health: "starting" },
+    ]
+  );
 });
 
 test("dynamic allocator failure emits browser-surface failed without spawning connector", async (t) => {

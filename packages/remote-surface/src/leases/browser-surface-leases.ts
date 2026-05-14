@@ -543,7 +543,16 @@ export class BrowserSurfaceLeaseManager {
         throw error;
       }
       this.#surfaces.delete(surface.surface_id);
-      stopped.push(stoppedSurface ?? stopping);
+      stopped.push({
+        ...(stoppedSurface ?? stopping),
+        surface_id: surface.surface_id,
+        backend: "neko",
+        profile_key: surface.profile_key,
+        connector_id: surface.connector_id,
+        health: "stopping",
+        last_used_at: stopping.last_used_at,
+        ...(surface.account_key ? { account_key: surface.account_key } : {}),
+      });
     }
 
     return { stopped, promoted: this.pumpQueuedLeases() };
