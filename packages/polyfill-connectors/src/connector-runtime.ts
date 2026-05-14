@@ -37,7 +37,7 @@
  */
 
 import { createInterface } from "node:readline";
-import type { BrowserContext, Page } from "playwright";
+import type { Browser, BrowserContext, CDPSession, Page } from "playwright";
 
 import { type AuthConfig, resolveAuth } from "./auth.ts";
 import { type CaptureSession, createCaptureSession } from "./fixture-capture.ts";
@@ -746,10 +746,12 @@ async function runInBrowser(args: {
     collect,
     baseCtx,
   } = args;
-  const visibility = resolveBrowserRuntimeVisibility(browser, name);
-  const browserSendInteraction: BaseCollectContext["sendInteraction"] = (req) =>
-    sendInteraction(decorateBrowserManualAction(req, visibility));
   const { context: ctx, release } = await acquireBrowser(browser, name);
+  const visibility = resolveBrowserRuntimeVisibility(browser, name);
+  const browserSendInteraction = makeBrowserInteractionKeepalive({
+    context: ctx,
+    sendInteraction: (req) => sendInteraction(decorateBrowserManualAction(req, visibility)),
+  });
   // Prevention layer (Layer A): register a SIGTERM/SIGINT handler that
   // awaits release() before exit. Without this, Docker stop / controller
   // restart kills this child process before the `finally` block below
@@ -782,6 +784,65 @@ async function runInBrowser(args: {
     await release().catch((): undefined => undefined);
     disposeShutdownHook();
   }
+}
+
+const BROWSER_INTERACTION_KEEPALIVE_INTERVAL_MS = 15_000;
+
+export function makeBrowserInteractionKeepalive(args: {
+  context: Pick<BrowserContext, "browser">;
+  intervalMs?: number;
+  sendInteraction: BaseCollectContext["sendInteraction"];
+}): BaseCollectContext["sendInteraction"] {
+  const { context, intervalMs = BROWSER_INTERACTION_KEEPALIVE_INTERVAL_MS, sendInteraction } = args;
+  return async (req) => {
+    const stop = startBrowserConnectionKeepalive(context, intervalMs);
+    try {
+      return await sendInteraction(req);
+    } finally {
+      stop();
+    }
+  };
+}
+
+function startBrowserConnectionKeepalive(context: Pick<BrowserContext, "browser">, intervalMs: number): () => void {
+  if (intervalMs <= 0) {
+    return (): void => undefined;
+  }
+  const browser = context.browser();
+  if (!browser?.isConnected()) {
+    return (): void => undefined;
+  }
+  let sessionPromise: Promise<CDPSession> | null = null;
+  let pingInFlight = false;
+  let stopped = false;
+  const sessionFor = (connectedBrowser: Browser): Promise<CDPSession> => {
+    sessionPromise ??= connectedBrowser.newBrowserCDPSession();
+    return sessionPromise;
+  };
+  const ping = async (): Promise<void> => {
+    if (stopped || pingInFlight || !browser.isConnected()) {
+      return;
+    }
+    pingInFlight = true;
+    try {
+      const session = await sessionFor(browser);
+      await session.send("Browser.getVersion");
+    } catch (err) {
+      sessionPromise = null;
+      const message = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`[browser-keepalive] Browser.getVersion failed: ${message}\n`);
+    } finally {
+      pingInFlight = false;
+    }
+  };
+  const timer = setInterval(ping, intervalMs);
+  timer.unref?.();
+  ping().catch((): undefined => undefined);
+  return (): void => {
+    stopped = true;
+    clearInterval(timer);
+    sessionPromise?.then((session) => session.detach()).catch((): undefined => undefined);
+  };
 }
 
 /** Emit the final PROGRESS summary (if any skips) and the succeeded DONE. */

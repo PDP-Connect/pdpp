@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { BrowserContext } from "playwright";
 import {
   type BrowserLaunchSource,
   type BrowserRuntimeVisibility,
   decorateBrowserManualAction,
   type InteractionRequest,
+  makeBrowserInteractionKeepalive,
   resolveBrowserLaunchSource,
   resolveBrowserRuntimeVisibility,
 } from "./connector-runtime.ts";
@@ -20,6 +22,20 @@ const MANUAL_ACTION: InteractionRequest = {
   message: "Log in to reddit.com in the browser window and re-run.",
   timeout_seconds: 1800,
 };
+
+interface KeepaliveTestBrowser {
+  isConnected: () => boolean;
+  newBrowserCDPSession: () => Promise<{
+    detach: () => Promise<void>;
+    send: (method: string) => Promise<unknown>;
+  }>;
+}
+
+function makeKeepaliveContext(browser: KeepaliveTestBrowser): Pick<BrowserContext, "browser"> {
+  return {
+    browser: () => browser as ReturnType<BrowserContext["browser"]>,
+  };
+}
 
 test("resolveBrowserRuntimeVisibility defaults browser connectors to headless unless env disables it", () => {
   assert.deepEqual(resolveBrowserRuntimeVisibility({}, "reddit", {}), {
@@ -132,3 +148,143 @@ test("decorateBrowserManualAction does not duplicate existing recovery copy", ()
 
   assert.equal(decorateBrowserManualAction(alreadyActionable, HEADLESS), alreadyActionable);
 });
+
+test("makeBrowserInteractionKeepalive sends browser-level CDP pings while interaction is pending", async () => {
+  let pingCalls = 0;
+  let detachCalls = 0;
+  const context = makeKeepaliveContext({
+    isConnected: () => true,
+    newBrowserCDPSession: () =>
+      Promise.resolve({
+        detach: () => {
+          detachCalls++;
+          return Promise.resolve();
+        },
+        send: (method: string) => {
+          assert.equal(method, "Browser.getVersion");
+          pingCalls++;
+          return Promise.resolve({});
+        },
+      }),
+  });
+  let resolveInteraction:
+    | ((value: { request_id: string; status: "success"; type: "INTERACTION_RESPONSE" }) => void)
+    | undefined;
+  const wrapped = makeBrowserInteractionKeepalive({
+    context,
+    intervalMs: 5,
+    sendInteraction: (req) =>
+      new Promise((resolve) => {
+        resolveInteraction = resolve;
+        assert.equal(req.kind, "otp");
+      }),
+  });
+
+  const responsePromise = wrapped({ kind: "otp", message: "Enter OTP" });
+  await delay(20);
+  assert.ok(pingCalls > 0, "expected Browser.getVersion CDP pings while waiting");
+
+  resolveInteraction?.({ request_id: "int_test", status: "success", type: "INTERACTION_RESPONSE" });
+  assert.equal((await responsePromise).status, "success");
+  await delay(5);
+  assert.equal(detachCalls, 1);
+  const callsAfterResponse = pingCalls;
+  await delay(20);
+  assert.equal(pingCalls, callsAfterResponse);
+});
+
+test("makeBrowserInteractionKeepalive stops after interaction errors", async () => {
+  let pingCalls = 0;
+  let detachCalls = 0;
+  const wrapped = makeBrowserInteractionKeepalive({
+    context: makeKeepaliveContext({
+      isConnected: () => true,
+      newBrowserCDPSession: () =>
+        Promise.resolve({
+          detach: () => {
+            detachCalls++;
+            return Promise.resolve();
+          },
+          send: () => {
+            pingCalls++;
+            return Promise.resolve({});
+          },
+        }),
+    }),
+    intervalMs: 5,
+    sendInteraction: async () => {
+      await delay(15);
+      throw new Error("interaction_failed");
+    },
+  });
+
+  await assert.rejects(() => wrapped({ kind: "manual_action", message: "Continue in browser" }), /interaction_failed/u);
+  await delay(5);
+  assert.equal(detachCalls, 1);
+  const callsAfterError = pingCalls;
+  await delay(20);
+  assert.equal(pingCalls, callsAfterError);
+});
+
+test("makeBrowserInteractionKeepalive skips pings when browser is already disconnected", async () => {
+  let newSessionCalls = 0;
+  const wrapped = makeBrowserInteractionKeepalive({
+    context: makeKeepaliveContext({
+      isConnected: () => false,
+      newBrowserCDPSession: () => {
+        newSessionCalls++;
+        return Promise.resolve({
+          detach: () => Promise.resolve(),
+          send: () => Promise.resolve({}),
+        });
+      },
+    }),
+    intervalMs: 5,
+    sendInteraction: async (req) => ({
+      request_id: req.request_id ?? "int_test",
+      status: "success",
+      type: "INTERACTION_RESPONSE",
+    }),
+  });
+
+  assert.equal((await wrapped({ kind: "otp", message: "Enter OTP" })).status, "success");
+  await delay(10);
+  assert.equal(newSessionCalls, 0);
+});
+
+test("makeBrowserInteractionKeepalive ignores CDP ping errors without failing interaction", async () => {
+  let pingCalls = 0;
+  const wrapped = makeBrowserInteractionKeepalive({
+    context: makeKeepaliveContext({
+      isConnected: () => true,
+      newBrowserCDPSession: () =>
+        Promise.resolve({
+          detach: () => Promise.resolve(),
+          send: () => {
+            pingCalls++;
+            return Promise.reject(new Error("cdp_unavailable"));
+          },
+        }),
+    }),
+    intervalMs: 5,
+    sendInteraction: async (req) =>
+      new Promise((resolve) =>
+        setTimeout(
+          () =>
+            resolve({
+              request_id: req.request_id ?? "int_test",
+              status: "success",
+              type: "INTERACTION_RESPONSE",
+            }),
+          15
+        )
+      ),
+  });
+
+  assert.equal((await wrapped({ kind: "otp", message: "Enter OTP" })).status, "success");
+  assert.ok(pingCalls > 0);
+});
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
