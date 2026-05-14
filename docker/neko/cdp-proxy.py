@@ -2,6 +2,9 @@
 import os
 import socket
 import threading
+import itertools
+import json
+import time
 
 
 LISTEN_HOST = os.environ.get("PDPP_NEKO_CDP_PROXY_HOST", "0.0.0.0")
@@ -10,6 +13,41 @@ UPSTREAM_HOST = os.environ.get("PDPP_NEKO_CDP_UPSTREAM_HOST", "127.0.0.1")
 UPSTREAM_PORT = int(os.environ.get("PDPP_NEKO_CDP_UPSTREAM_PORT", "9222"))
 BUFFER_SIZE = 64 * 1024
 MAX_HEADER_SIZE = 1024 * 1024
+CONNECTION_IDS = itertools.count(1)
+
+
+def log_event(event, **fields):
+    payload = {
+        "event": event,
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        **fields,
+    }
+    print(json.dumps(payload, sort_keys=True), flush=True)
+
+
+def socket_label(sock):
+    try:
+        host, port = sock.getpeername()[:2]
+        return f"{host}:{port}"
+    except OSError:
+        return "unknown"
+
+
+def request_target(request):
+    first_line = request.split(b"\r\n", 1)[0]
+    try:
+        parts = first_line.decode("ascii", "replace").split(" ")
+    except UnicodeDecodeError:
+        return "unparseable"
+    if len(parts) < 2:
+        return "unknown"
+    target = parts[1]
+    if target.startswith("/devtools/"):
+        # Target IDs are bearer-like debugging capabilities. Keep route shape,
+        # but redact the unstable authority token from container logs.
+        pieces = target.split("/")
+        return "/".join(pieces[:3] + ["[redacted]"])
+    return target[:160]
 
 
 def close_quietly(sock):
@@ -23,18 +61,38 @@ def close_quietly(sock):
         pass
 
 
-def pump(source, target):
+def pump(source, target, *, connection_id, direction):
+    bytes_relayed = 0
     try:
         while True:
             chunk = source.recv(BUFFER_SIZE)
             if not chunk:
+                log_event(
+                    "cdp_proxy.websocket_eof",
+                    connection_id=connection_id,
+                    direction=direction,
+                    bytes_relayed=bytes_relayed,
+                )
                 break
+            bytes_relayed += len(chunk)
             target.sendall(chunk)
-    except OSError:
-        pass
+    except OSError as err:
+        log_event(
+            "cdp_proxy.websocket_error",
+            connection_id=connection_id,
+            direction=direction,
+            bytes_relayed=bytes_relayed,
+            error=repr(err),
+        )
     finally:
         close_quietly(source)
         close_quietly(target)
+        log_event(
+            "cdp_proxy.websocket_closed",
+            connection_id=connection_id,
+            direction=direction,
+            bytes_relayed=bytes_relayed,
+        )
 
 
 def read_initial_request(client):
@@ -161,7 +219,7 @@ def response_content_length(response_head):
     return None
 
 
-def relay_single_http_response(upstream, client, inbound_host=None):
+def relay_single_http_response(upstream, client, inbound_host=None, connection_id=None):
     upstream.settimeout(10)
     data = bytearray()
     try:
@@ -171,6 +229,7 @@ def relay_single_http_response(upstream, client, inbound_host=None):
                 break
             data.extend(chunk)
         if not data:
+            log_event("cdp_proxy.http_upstream_empty", connection_id=connection_id)
             return
         header_end = data.find(b"\r\n\r\n")
         if header_end < 0:
@@ -218,32 +277,62 @@ def relay_single_http_response(upstream, client, inbound_host=None):
             if not chunk:
                 break
             client.sendall(chunk)
-    except OSError:
-        pass
+    except OSError as err:
+        log_event("cdp_proxy.http_error", connection_id=connection_id, error=repr(err))
     finally:
         close_quietly(upstream)
         close_quietly(client)
 
 
 def handle(client):
+    connection_id = next(CONNECTION_IDS)
+    client_peer = socket_label(client)
     initial_request = read_initial_request(client)
     if not initial_request:
+        log_event("cdp_proxy.empty_request", connection_id=connection_id, client=client_peer)
         close_quietly(client)
         return
     is_websocket_upgrade = is_websocket_upgrade_request(initial_request)
+    log_event(
+        "cdp_proxy.request",
+        connection_id=connection_id,
+        client=client_peer,
+        target=request_target(initial_request),
+        websocket=is_websocket_upgrade,
+    )
     try:
         upstream = socket.create_connection((UPSTREAM_HOST, UPSTREAM_PORT), timeout=10)
-    except OSError:
+    except OSError as err:
+        log_event(
+            "cdp_proxy.upstream_connect_error",
+            connection_id=connection_id,
+            client=client_peer,
+            error=repr(err),
+        )
         close_quietly(client)
         return
     inbound_host = extract_inbound_host(initial_request)
     upstream.sendall(rewrite_host_header(initial_request))
     if not is_websocket_upgrade:
-        relay_single_http_response(upstream, client, inbound_host=inbound_host)
+        relay_single_http_response(upstream, client, inbound_host=inbound_host, connection_id=connection_id)
         return
 
-    for source, target in ((client, upstream), (upstream, client)):
-        threading.Thread(target=pump, args=(source, target), daemon=True).start()
+    log_event(
+        "cdp_proxy.websocket_open",
+        connection_id=connection_id,
+        client=client_peer,
+        upstream=f"{UPSTREAM_HOST}:{UPSTREAM_PORT}",
+    )
+    for source, target, direction in (
+        (client, upstream, "client_to_upstream"),
+        (upstream, client, "upstream_to_client"),
+    ):
+        threading.Thread(
+            target=pump,
+            args=(source, target),
+            kwargs={"connection_id": connection_id, "direction": direction},
+            daemon=True,
+        ).start()
 
 
 def main():

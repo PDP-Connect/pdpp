@@ -230,7 +230,22 @@ function isMissingChromeInstallError(error: unknown): boolean {
 async function acquireRemoteCdpBrowser(cdpUrl: string, profileName: string): Promise<IsolatedBrowser> {
   // @ts-expect-error — patchright.chromium is runtime-identical to playwright.chromium
   const { chromium: localChromium }: { chromium: typeof chromium } = await import("patchright");
+  const attachStartedAt = Date.now();
+  process.stderr.write(`[browser-launch] remote CDP attach start profile=${profileName} url=${redactCdpUrl(cdpUrl)}\n`);
   const browser = await localChromium.connectOverCDP(cdpUrl);
+  const attachedAt = Date.now();
+  let releaseRequested = false;
+  const onDisconnected = (): void => {
+    process.stderr.write(
+      `[browser-launch] remote CDP disconnected profile=${profileName} elapsedMs=${Date.now() - attachedAt} releaseRequested=${String(
+        releaseRequested
+      )}\n`
+    );
+  };
+  browser.on("disconnected", onDisconnected);
+  process.stderr.write(
+    `[browser-launch] remote CDP attached profile=${profileName} elapsedMs=${Date.now() - attachStartedAt}\n`
+  );
   const [context] = browser.contexts();
   if (!context) {
     await browser.close().catch(() => undefined);
@@ -257,13 +272,30 @@ async function acquireRemoteCdpBrowser(cdpUrl: string, profileName: string): Pro
     release: async (): Promise<void> => {
       // Disconnect only. Closing the remote browser would kill the n.eko
       // X-attached process; that lifecycle is owned by the neko container.
+      releaseRequested = true;
       try {
         await browser.close();
       } catch {
         /* ignore */
+      } finally {
+        browser.off("disconnected", onDisconnected);
       }
     },
   };
+}
+
+function redactCdpUrl(rawUrl: string): string {
+  try {
+    const url = new URL(rawUrl);
+    url.username = "";
+    url.password = "";
+    url.pathname = "/";
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  } catch {
+    return "unparseable";
+  }
 }
 
 /**

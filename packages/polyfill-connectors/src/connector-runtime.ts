@@ -798,8 +798,12 @@ interface BrowserSurfaceDiagnosticContext {
 interface BrowserConnectionKeepaliveSummary {
   browserConnectedAtStart: boolean;
   browserConnectedAtStop: boolean;
+  disconnectEventCount: number;
+  disconnectEventElapsedMs?: number;
   elapsedMs: number;
+  firstObservedDisconnectedElapsedMs?: number;
   lastError?: string;
+  lastSuccessfulPingElapsedMs?: number;
   pingAttempts: number;
   pingFailures: number;
   pingInFlight: boolean;
@@ -943,6 +947,7 @@ function summarizeInactiveKeepalive(
     browserConnectedAtStart: Boolean(browser?.isConnected()),
     browserConnectedAtStop: Boolean(browser?.isConnected()),
     elapsedMs: Date.now() - startedAt,
+    disconnectEventCount: 0,
     pingAttempts: 0,
     pingFailures: 0,
     pingInFlight: false,
@@ -968,7 +973,18 @@ function startBrowserConnectionKeepalive(
   let skippedDisconnected = 0;
   let stopped = false;
   let lastError: string | undefined;
+  let lastSuccessfulPingElapsedMs: number | undefined;
+  let firstObservedDisconnectedElapsedMs: number | undefined;
+  let disconnectEventElapsedMs: number | undefined;
+  let disconnectEventCount = 0;
   const browserConnectedAtStart = browser.isConnected();
+  const removeDisconnectedListener = attachBrowserDisconnectedDiagnostic(browser, () => {
+    disconnectEventCount++;
+    disconnectEventElapsedMs ??= Date.now() - startedAt;
+    process.stderr.write(
+      `[browser-keepalive] browser disconnected during interaction after ${disconnectEventElapsedMs}ms\n`
+    );
+  });
   const sessionFor = (connectedBrowser: Browser): Promise<CDPSession> => {
     sessionPromise ??= connectedBrowser.newBrowserCDPSession();
     return sessionPromise;
@@ -978,6 +994,7 @@ function startBrowserConnectionKeepalive(
       return;
     }
     if (!browser.isConnected()) {
+      firstObservedDisconnectedElapsedMs ??= Date.now() - startedAt;
       skippedDisconnected++;
       return;
     }
@@ -987,6 +1004,7 @@ function startBrowserConnectionKeepalive(
       const session = await sessionFor(browser);
       await session.send("Browser.getVersion");
       pingSuccesses++;
+      lastSuccessfulPingElapsedMs = Date.now() - startedAt;
     } catch (err) {
       sessionPromise = null;
       pingFailures++;
@@ -1003,11 +1021,16 @@ function startBrowserConnectionKeepalive(
     stop: () => {
       stopped = true;
       clearInterval(timer);
+      removeDisconnectedListener();
       sessionPromise?.then((session) => session.detach()).catch((): undefined => undefined);
       return {
         browserConnectedAtStart,
         browserConnectedAtStop: browser.isConnected(),
+        disconnectEventCount,
+        ...(disconnectEventElapsedMs === undefined ? {} : { disconnectEventElapsedMs }),
         elapsedMs: Date.now() - startedAt,
+        ...(firstObservedDisconnectedElapsedMs === undefined ? {} : { firstObservedDisconnectedElapsedMs }),
+        ...(lastSuccessfulPingElapsedMs === undefined ? {} : { lastSuccessfulPingElapsedMs }),
         pingAttempts,
         pingFailures,
         pingInFlight,
@@ -1016,6 +1039,22 @@ function startBrowserConnectionKeepalive(
         ...(lastError ? { lastError } : {}),
       };
     },
+  };
+}
+
+function attachBrowserDisconnectedDiagnostic(browser: Browser, onDisconnected: () => void): () => void {
+  const eventTarget = browser as Browser & {
+    off?: (event: "disconnected", listener: () => void) => Browser;
+    on?: (event: "disconnected", listener: () => void) => Browser;
+  };
+  if (typeof eventTarget.on !== "function") {
+    return () => undefined;
+  }
+  eventTarget.on("disconnected", onDisconnected);
+  return () => {
+    if (typeof eventTarget.off === "function") {
+      eventTarget.off("disconnected", onDisconnected);
+    }
   };
 }
 

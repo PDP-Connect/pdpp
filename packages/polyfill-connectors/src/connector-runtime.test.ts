@@ -29,6 +29,8 @@ interface KeepaliveTestBrowser {
     detach: () => Promise<void>;
     send: (method: string) => Promise<unknown>;
   }>;
+  off?: (event: "disconnected", listener: () => void) => KeepaliveTestBrowser;
+  on?: (event: "disconnected", listener: () => void) => KeepaliveTestBrowser;
 }
 
 function makeKeepaliveContext(
@@ -348,6 +350,84 @@ test("makeBrowserInteractionKeepalive emits gated browser-surface diagnostics ar
   assert.equal(diagnostics[1]?.response_status, "success");
   assert.ok((diagnostics[1]?.keepalive?.pingAttempts ?? 0) > 0);
   assert.equal(diagnostics[1]?.surface.pages[0]?.url, "https://secure.chase.com/web/auth/");
+});
+
+test("makeBrowserInteractionKeepalive records browser disconnect timing in diagnostics", async () => {
+  const progressMessages: string[] = [];
+  let connected = true;
+  let disconnectedListener: (() => void) | undefined;
+  let detachCalls = 0;
+  const browser: KeepaliveTestBrowser = {
+    isConnected: () => connected,
+    newBrowserCDPSession: () =>
+      Promise.resolve({
+        detach: () => {
+          detachCalls++;
+          return Promise.resolve();
+        },
+        send: () => Promise.resolve({}),
+      }),
+    off: (_event, listener) => {
+      if (disconnectedListener === listener) {
+        disconnectedListener = undefined;
+      }
+      return browser;
+    },
+    on: (_event, listener) => {
+      disconnectedListener = listener;
+      return browser;
+    },
+  };
+  const wrapped = makeBrowserInteractionKeepalive({
+    context: makeKeepaliveContext(browser),
+    diagnostics: true,
+    intervalMs: 5,
+    progress: (message) => {
+      progressMessages.push(message);
+      return Promise.resolve();
+    },
+    sendInteraction: async (req) =>
+      new Promise((resolve) =>
+        setTimeout(
+          () =>
+            resolve({
+              request_id: req.request_id ?? "int_test",
+              status: "success",
+              type: "INTERACTION_RESPONSE",
+            }),
+          35
+        )
+      ),
+  });
+
+  const responsePromise = wrapped({ kind: "otp", message: "Enter OTP", request_id: "int_test" });
+  await delay(10);
+  connected = false;
+  const listener = disconnectedListener;
+  if (!listener) {
+    assert.fail("expected keepalive to attach a browser disconnected listener");
+  }
+  listener();
+  assert.equal((await responsePromise).status, "success");
+
+  const responseDiagnostic = JSON.parse(
+    progressMessages.at(-1)?.replace(/^browser_surface\.diagnostic /u, "") ?? "{}"
+  ) as {
+    keepalive?: {
+      browserConnectedAtStop: boolean;
+      disconnectEventCount: number;
+      disconnectEventElapsedMs?: number;
+      firstObservedDisconnectedElapsedMs?: number;
+      lastSuccessfulPingElapsedMs?: number;
+    };
+  };
+  assert.equal(responseDiagnostic.keepalive?.browserConnectedAtStop, false);
+  assert.equal(responseDiagnostic.keepalive?.disconnectEventCount, 1);
+  assert.equal(typeof responseDiagnostic.keepalive?.disconnectEventElapsedMs, "number");
+  assert.equal(typeof responseDiagnostic.keepalive?.firstObservedDisconnectedElapsedMs, "number");
+  assert.equal(typeof responseDiagnostic.keepalive?.lastSuccessfulPingElapsedMs, "number");
+  assert.equal(detachCalls, 1);
+  assert.equal(disconnectedListener, undefined);
 });
 
 function delay(ms: number): Promise<void> {
