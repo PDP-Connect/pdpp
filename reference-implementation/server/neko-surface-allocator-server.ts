@@ -362,7 +362,7 @@ export class NekoSurfaceAllocatorService {
       );
     }
     const hostPort = readHostPort(inspect, Number(labels[`${this.#options.labelNamespace}.webrtc_host_port`]), {
-      allowLabelFallback: options.allowLabelHostPort === true,
+      allowLabelFallback: options.allowLabelHostPort === true || !isInspectRunning(inspect),
     });
     const containerName = inspect.Name?.replace(LEADING_SLASH_RE, "") ?? "";
     const cdpUrl = this.#expandTemplate(this.#options.cdpBaseUrlTemplate, surfaceId, hostPort, containerName);

@@ -252,6 +252,38 @@ test("stopSurface tolerates post-stop inspect without Docker host port bindings"
   assert.equal(stopped?.allocator_metadata.host_port, "59000");
 });
 
+test("getSurfaceStatus and listSurfaces tolerate stopped containers without Docker host port bindings", async () => {
+  const docker = new FakeDocker();
+  docker.omitPortBindingsWhenStopped = true;
+  const service = new NekoSurfaceAllocatorService({ ...BASE_OPTIONS, docker, fetchImpl: readyFetch() });
+  await service.ensureSurface({ surfaceId: "surface_1", connectorId: "chatgpt", profileKey: "profile_1" });
+  await service.stopSurface({ surfaceId: "surface_1", reason: "idle_ttl" });
+
+  const status = await service.getSurfaceStatus("surface_1");
+  const listed = await service.listSurfaces();
+
+  assert.equal(status?.surface_id, "surface_1");
+  assert.equal(status?.health, "starting");
+  assert.equal(status?.allocator_metadata.readiness, "container_not_running");
+  assert.equal(status?.allocator_metadata.host_port, "59000");
+  assert.deepEqual(
+    listed.map((surface) => [surface.surface_id, surface.health, surface.allocator_metadata.host_port]),
+    [["surface_1", "starting", "59000"]],
+  );
+});
+
+test("getSurfaceStatus keeps rejecting running containers without Docker host port bindings", async () => {
+  const docker = new FakeDocker();
+  const service = new NekoSurfaceAllocatorService({ ...BASE_OPTIONS, docker, fetchImpl: readyFetch() });
+  await service.ensureSurface({ surfaceId: "surface_1", connectorId: "chatgpt", profileKey: "profile_1" });
+  docker.containers.get("container_1").hostPort = undefined;
+
+  await assert.rejects(
+    () => service.getSurfaceStatus("surface_1"),
+    (error) => error instanceof NekoSurfaceAllocatorServiceError && error.code === "docker_malformed_response",
+  );
+});
+
 test("HTTP DELETE returns a stopped surface when Docker removes the owned container before post-stop inspect", async () => {
   const docker = new FakeDocker();
   docker.removeOnStop = true;
@@ -265,6 +297,31 @@ test("HTTP DELETE returns a stopped surface when Docker removes the owned contai
     assert.equal(stopped?.surface_id, "surface_1");
     assert.equal(stopped?.health, "stopping");
     assert.equal(stopped?.allocator_metadata.readiness, "container_removed");
+  } finally {
+    await server.close();
+  }
+});
+
+test("HTTP GET and list return a stopped surface when Docker omits post-stop host port bindings", async () => {
+  const docker = new FakeDocker();
+  docker.omitPortBindingsWhenStopped = true;
+  const server = await startNekoSurfaceAllocatorServer({ ...BASE_OPTIONS, docker, fetchImpl: readyFetch() });
+  try {
+    const client = new NekoSurfaceAllocatorClient({ baseUrl: server.url });
+    await client.ensureSurface({ surfaceId: "surface_1", connectorId: "chatgpt", profileKey: "profile_1" });
+    await client.stopSurface({ surfaceId: "surface_1", reason: "operator" });
+
+    const status = await client.getSurfaceStatus("surface_1");
+    const listed = await client.listSurfaces();
+
+    assert.equal(status?.surface_id, "surface_1");
+    assert.equal(status?.health, "starting");
+    assert.equal(status?.allocator_metadata.readiness, "container_not_running");
+    assert.equal(status?.allocator_metadata.host_port, "59000");
+    assert.deepEqual(
+      listed.map((surface) => [surface.surface_id, surface.health, surface.allocator_metadata.host_port]),
+      [["surface_1", "starting", "59000"]],
+    );
   } finally {
     await server.close();
   }
