@@ -7,6 +7,7 @@
 ## 2. Runtime Semantics
 
 - [x] Add runtime handling for connector-reported recoverable detail gaps.
+- [ ] Add reference-only detail coverage handling for list-plus-detail cursor boundaries.
 - [ ] Enforce that list-level cursor progress can commit only when missing required detail is emitted, explicitly optional/skipped, or durably recorded as a pending gap.
 - [ ] Ensure failed, cancelled, and protocol-violating runs still preserve existing no-commit behavior unless the run reaches the new successful-with-gap condition.
 - [x] Add recovery selection so future runs load pending gaps for the same source and requested scope.
@@ -14,6 +15,7 @@
 ## 3. Connector Pilot
 
 - [ ] Update the ChatGPT connector to report exhausted recoverable conversation-detail failures as pending detail gaps instead of fake records.
+- [ ] Update the ChatGPT connector to emit reference-only detail coverage for conversation list cursor advancement.
 - [ ] Route ChatGPT gap recovery through the same adaptive lane, retry, pacing, and cancellation controls as normal conversation detail hydration.
 - [ ] Mark recovered gaps only after the real hydrated record is emitted.
 

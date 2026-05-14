@@ -1,20 +1,25 @@
 ## ADDED Requirements
 
 ### Requirement: Bounded runs SHALL record recoverable detail gaps before committing list progress
-The reference implementation SHALL NOT durably advance list-level cursor progress past required connector detail whose content is unknown unless the missing detail is durably recorded as an explicit recoverable detail gap or backlog entry. The gap record SHALL include enough safe targeting information for a later run to retry the missing detail without replaying the full committed list tranche.
+The reference implementation SHALL NOT durably advance list-level cursor progress past declared required connector detail whose content is unknown unless the missing detail is durably recorded as an explicit recoverable detail gap or backlog entry. The gap record SHALL include enough safe targeting information for a later run to retry the missing detail without replaying the full committed list tranche.
 
 #### Scenario: Required detail exhausts recoverable pressure
-- **WHEN** a connector enumerates a list cursor tranche and a required detail fetch for one listed item exhausts recoverable upstream pressure
+- **WHEN** a connector enumerates a list cursor tranche, declares the listed keys that require detail for that cursor boundary, and a required detail fetch for one listed item exhausts recoverable upstream pressure
 - **THEN** the run MAY commit list-level cursor progress only if the missing detail is durably recorded as a pending recoverable detail gap before checkpoint commit
 - **AND** the connector SHALL NOT emit a placeholder record that represents the required detail as complete
 
 #### Scenario: Required detail is missing without a durable gap
-- **WHEN** a bounded run reaches checkpoint commit with list-level progress that covers an item whose required detail was neither emitted nor durably recorded as a recoverable gap
+- **WHEN** a bounded run reaches checkpoint commit with list-level progress whose declared detail coverage includes an item whose required detail was neither hydrated, explicitly optional/skipped, nor durably recorded as a recoverable gap
 - **THEN** the runtime SHALL reject the commit or fail the run
 - **AND** the main cursor SHALL NOT advance past that item
 
+#### Scenario: Connector does not declare detail coverage
+- **WHEN** a connector does not emit the reference-only detail coverage signal for a list cursor boundary
+- **THEN** the runtime SHALL NOT infer missing required detail from ordinary record absence alone
+- **AND** the connector SHALL NOT use the successful-with-pending-detail cursor semantics for that boundary
+
 #### Scenario: Optional detail is skipped
-- **WHEN** a connector skips detail that the stream semantics treat as optional
+- **WHEN** a connector skips detail that the stream semantics treat as optional and declares that skip in the reference-only coverage for the cursor boundary
 - **THEN** the skip SHALL be explicit in connector output or reference observability
 - **AND** the runtime SHALL NOT treat that optional skip as a required-detail recoverable gap
 
@@ -48,7 +53,7 @@ Connector detail-gap backlog storage, recovery scheduling, and observability SHA
 - **WHEN** a reviewer asks whether detail-gap backlog entries are required Collection Profile messages or fields
 - **THEN** the reference documentation SHALL state that they are not normative Collection Profile protocol in this tranche
 - **AND** it SHALL identify any connector/runtime reporting mechanism as internal reference behavior
-- **AND** portable connectors and protocol readers SHALL NOT rely on the reference `DETAIL_GAP` signal, backlog schema, or cursor interpretation unless a later root protocol change promotes an explicit wire contract
+- **AND** portable connectors and protocol readers SHALL NOT rely on the reference `DETAIL_GAP` signal, detail-coverage signal, backlog schema, or cursor interpretation unless a later root protocol change promotes an explicit wire contract
 
 #### Scenario: Gap metadata is stored or displayed
 - **WHEN** the reference stores or displays detail-gap locators, reasons, or errors

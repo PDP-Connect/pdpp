@@ -26,12 +26,15 @@ The reference implementation adds a durable detail-gap backlog for connector str
 1. The connector enumerates list items for a bounded cursor tranche.
 2. The connector attempts required detail hydration for each listed item.
 3. If detail hydration exhausts recoverable pressure for an item, the connector reports a recoverable detail gap instead of emitting a fake complete record.
-4. The runtime durably records the gap with source, stream, record key or safe upstream locator, list cursor boundary, reason, attempt metadata, and recovery status.
-5. The run may succeed and commit list-level cursor progress only if every missing required detail inside that cursor boundary has a durable recoverable gap entry.
-6. Future runs prioritize pending gap recovery before, or in the same run as, forward list collection.
-7. When recovery succeeds, the runtime marks the gap recovered and the connector emits the real hydrated record.
+4. Before advancing the list cursor, the connector emits a reference-only coverage attestation for the cursor boundary: which listed keys required detail, which keys were hydrated, which keys were explicitly optional/skipped, and which keys were recorded as pending detail recovery.
+5. The runtime durably records any gap with source, stream, record key or safe upstream locator, list cursor boundary, reason, attempt metadata, and recovery status.
+6. The run may succeed and commit list-level cursor progress only if the declared coverage has no uncovered required detail: every required key is hydrated, explicitly optional/skipped, or backed by a durable recoverable gap entry.
+7. Future runs prioritize pending gap recovery before, or in the same run as, forward list collection.
+8. When recovery succeeds, the runtime marks the gap recovered and the connector emits the real hydrated record.
 
 The main cursor remains honest because it no longer means "all detail is present." It means "list enumeration is complete through this boundary and any required missing detail inside the boundary is durably represented as recoverable backlog."
+
+The runtime cannot infer arbitrary source detail completeness from ordinary records alone. This tranche therefore enforces the invariant for connectors that opt into this reference-only list-plus-detail coverage contract. Connectors that do not emit coverage do not get the new successful-with-pending-detail cursor semantics.
 
 ## Data Shape
 
@@ -49,6 +52,8 @@ The implementation should use an internal reference-only durable representation.
 
 Sensitive upstream URLs, cookies, bearer tokens, request bodies, and raw private payloads must not be stored in the gap record. The locator must be enough for the connector to retry, not a dump of the failed request.
 
+Coverage attestations are internal run messages, not durable public records. They should be small enough to audit the current cursor boundary and should contain only stable list/detail keys, not raw private payloads.
+
 ## Run Semantics
 
 This change is not sub-run durable checkpointing in the broad sense. It does not create named durable run segments with independent success/failure states. It creates one explicit exception to all-detail-or-fail behavior for list-plus-detail connectors: list cursor progress may commit only when missing required detail is durably externalized as targeted backlog.
@@ -61,6 +66,8 @@ Required detail can end in four states for a cursor tranche:
 - Terminal failure, which fails the run and prevents cursor commit.
 
 The runtime must reject or fail any run that tries to commit a cursor boundary while required detail is neither emitted nor represented by a durable pending gap.
+
+That rejection is only mechanically enforceable for boundaries where the connector has declared the required-detail key set through the reference coverage signal. Without that declaration, the runtime cannot know which un-emitted detail items exist.
 
 ## Recovery Scheduling
 
@@ -95,15 +102,17 @@ Reference-only in the first tranche:
 - `_ref` gap observability.
 - ChatGPT pilot behavior.
 - Internal connector messages or runtime APIs used to report gaps.
+- Internal connector messages used to attest detail coverage for a list cursor boundary.
 
 Not Collection Profile protocol yet:
 
 - A standard wire message for detail gaps.
+- A standard wire message for detail coverage.
 - Normative meaning of committing a list cursor while detail backlog exists.
 - A standard backlog schema for interoperable connectors.
 - Owner-visible protocol fields for gap state.
 
-This is a non-commitment boundary. The reference implementation may use an internal `DETAIL_GAP` signal to connect connector output to runtime backlog storage, but that signal is not a portable Collection Profile message. Protocol readers must not infer that PDPP has standardized a gap schema, a cursor meaning for incomplete detail hydration, or a cross-runtime recovery contract.
+This is a non-commitment boundary. The reference implementation may use internal `DETAIL_GAP` and detail-coverage signals to connect connector output to runtime backlog storage and commit validation, but those signals are not portable Collection Profile messages. Protocol readers must not infer that PDPP has standardized a gap schema, a coverage schema, a cursor meaning for incomplete detail hydration, or a cross-runtime recovery contract.
 
 The durable abstraction should be evaluated as pending detail recovery work/backlog. "Detail gap" is useful diagnostic language for the missing-data condition, but it should not become the public primitive unless a later root protocol change proves that naming and contract are the right general model.
 
