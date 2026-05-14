@@ -10,6 +10,8 @@ const MAX_STRING_LENGTH = 300;
 const MAX_ARRAY_LENGTH = 20;
 const MAX_OBJECT_KEYS = 40;
 const MAX_DEPTH = 5;
+const SAFE_ROUTE_TEMPLATE_KEY_PATTERN = /^(endpoint_route|route_template)$/i;
+const SAFE_ROUTE_TEMPLATE_PATTERN = /^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS) \/[A-Za-z0-9._~!$&'()*+,;=:@/%{}-]+$/;
 
 function nowIso() {
   return new Date().toISOString();
@@ -36,9 +38,18 @@ function safeUrlSummary(value) {
   }
 }
 
+function isSafeRouteTemplate(value, keyName) {
+  return SAFE_ROUTE_TEMPLATE_KEY_PATTERN.test(keyName)
+    && SAFE_ROUTE_TEMPLATE_PATTERN.test(value)
+    && !value.includes('?')
+    && !value.includes('#')
+    && !value.includes('//');
+}
+
 export function sanitizeDetailGapMetadata(value, depth = 0, keyName = '') {
   if (value == null || typeof value === 'boolean' || typeof value === 'number') return value;
   if (typeof value === 'string') {
+    if (isSafeRouteTemplate(value, keyName)) return value;
     if (/^https?:\/\//i.test(value) || URL_KEY_PATTERN.test(keyName)) return safeUrlSummary(value);
     return value.length > MAX_STRING_LENGTH ? `${value.slice(0, MAX_STRING_LENGTH - 1)}…` : value;
   }

@@ -149,10 +149,16 @@ test('sanitizeDetailGapMetadata does not preserve full URLs or secret-bearing fi
   const sanitized = sanitizeDetailGapMetadata({
     href: 'https://example.test/path/to/private?id=123',
     access_token: 'secret',
+    network_pressure: {
+      endpoint_route: 'GET /conversation/{conversation_id}',
+      unsafe_endpoint_route: 'GET /conversation/private-id?token=secret',
+    },
     nested: { bearer: 'secret', ok: 'safe' },
   });
   assert.deepEqual(sanitized.href, { scheme: 'https', host: 'example.test', path_hash: sanitized.href.path_hash });
   assert.equal(sanitized.access_token, '[redacted]');
+  assert.equal(sanitized.network_pressure.endpoint_route, 'GET /conversation/{conversation_id}');
+  assert.equal(sanitized.network_pressure.unsafe_endpoint_route, '[redacted-url]');
   assert.equal(sanitized.nested.bearer, '[redacted]');
   assert.equal(sanitized.nested.ok, 'safe');
 });
