@@ -174,7 +174,6 @@ test("preserves base URL paths when joining readiness probe paths", async () => 
     ...BASE_OPTIONS,
     docker: new FakeDocker(),
     cdpVersionPath: "/json/version",
-    streamHealthPath: "/api/room/screen/cast.jpg",
     fetchImpl: async (input) => {
       const url = new URL(String(input));
       requestedPaths.push(url.pathname);
@@ -189,29 +188,37 @@ test("preserves base URL paths when joining readiness probe paths", async () => 
 
   assert.ok(requestedPaths.includes("/neko/health"));
   assert.ok(requestedPaths.includes("/cdp/surface_1/json/version"));
-  assert.ok(requestedPaths.includes("/neko/api/room/screen/cast.jpg"));
 });
 
-test("preserves custom pathful stream bases when joining readiness probe paths", async () => {
+test("reports ready when stream image endpoints are unauthorized or unavailable", async () => {
   const requestedPaths = [];
   const service = new NekoSurfaceAllocatorService({
     ...BASE_OPTIONS,
     docker: new FakeDocker(),
-    streamBaseUrlTemplate: "http://127.0.0.1:{host_port}/neko/{surface_id}/",
     fetchImpl: async (input) => {
       const url = new URL(String(input));
       requestedPaths.push(url.pathname);
       if (url.pathname.endsWith("/json/version")) {
-        return Response.json({ Browser: "Chrome/126.0.0.0" });
+        return Response.json({ Browser: "Chrome/126.0.0.0", webSocketDebuggerUrl: "ws://127.0.0.1/devtools/browser/1" });
+      }
+      if (url.pathname.endsWith("/api/room/screen/cast.jpg")) {
+        return new Response("screencast pipeline is not enabled", { status: 400 });
+      }
+      if (url.pathname.endsWith("/api/room/screen/shot.jpg")) {
+        return new Response("unauthorized", { status: 401 });
       }
       return new Response("ok", { status: 200 });
     },
   });
 
-  await service.ensureSurface({ surfaceId: "surface_1", connectorId: "chatgpt", profileKey: "profile_1" });
+  const surface = await service.ensureSurface({ surfaceId: "surface_1", connectorId: "chatgpt", profileKey: "profile_1" });
 
-  assert.ok(requestedPaths.includes("/neko/health"));
-  assert.ok(requestedPaths.includes("/neko/surface_1/api/room/screen/cast.jpg"));
+  assert.equal(surface.health, "ready");
+  assert.equal(surface.allocator_metadata.readiness, "ready");
+  assert.deepEqual(
+    requestedPaths.filter((path) => path.includes("/api/room/screen/")),
+    [],
+  );
 });
 
 test("gets, lists, and stops only PDPP-owned surfaces", async () => {
@@ -260,7 +267,7 @@ test("does not create beyond the configured host port range", async () => {
   );
 });
 
-test("reports starting until n.eko, CDP, Chromium, and stream probes pass", async () => {
+test("reports starting until n.eko, CDP, and Chromium probes pass", async () => {
   const docker = new FakeDocker();
   const service = new NekoSurfaceAllocatorService({
     ...BASE_OPTIONS,

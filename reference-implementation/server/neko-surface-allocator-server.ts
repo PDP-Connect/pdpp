@@ -17,7 +17,6 @@ const DEFAULT_LABEL_NAMESPACE = "org.pdpp.reference.neko";
 const DEFAULT_CONTAINER_HTTP_PORT = 8080;
 const DEFAULT_CONTAINER_CDP_PORT = 9223;
 const DEFAULT_NEKO_HEALTH_PATH = "/neko/health";
-const DEFAULT_STREAM_HEALTH_PATH = "/api/room/screen/cast.jpg";
 const DEFAULT_CDP_VERSION_PATH = "/json/version";
 const DEFAULT_ALLOCATOR_HOST = "0.0.0.0";
 const DEFAULT_ALLOCATOR_PORT = 7331;
@@ -102,7 +101,6 @@ export interface NekoSurfaceAllocatorServerOptions {
   readonly profileOwnerUid?: number;
   readonly profileRoot: string;
   readonly streamBaseUrlTemplate: string;
-  readonly streamHealthPath?: string;
   readonly webrtcHostPortEnd: number;
   readonly webrtcHostPortStart: number;
 }
@@ -218,7 +216,6 @@ export class NekoSurfaceAllocatorService {
       | "profileFilesystem"
       | "profileOwnerGid"
       | "profileOwnerUid"
-      | "streamHealthPath"
       | "cdpVersionPath"
       | "now"
     >
@@ -233,7 +230,6 @@ export class NekoSurfaceAllocatorService {
       | "profileFilesystem"
       | "profileOwnerGid"
       | "profileOwnerUid"
-      | "streamHealthPath"
       | "cdpVersionPath"
       | "now"
     >;
@@ -251,7 +247,6 @@ export class NekoSurfaceAllocatorService {
       profileFilesystem: options.profileFilesystem ?? nodeProfileFilesystem,
       profileOwnerGid: options.profileOwnerGid ?? DEFAULT_NEKO_PROFILE_GID,
       profileOwnerUid: options.profileOwnerUid ?? DEFAULT_NEKO_PROFILE_UID,
-      streamHealthPath: options.streamHealthPath ?? DEFAULT_STREAM_HEALTH_PATH,
       cdpVersionPath: options.cdpVersionPath ?? DEFAULT_CDP_VERSION_PATH,
       now: options.now ?? (() => new Date()),
     };
@@ -408,13 +403,6 @@ export class NekoSurfaceAllocatorService {
     }
     if (!looksLikeChromiumVersion(cdpVersion.value)) {
       return { health: "unhealthy", reason: "chromium_unhealthy" };
-    }
-    const streamReady = await probeUrl(
-      this.#options.fetchImpl,
-      joinUrlPath(input.streamBaseUrl, this.#options.streamHealthPath)
-    );
-    if (!streamReady) {
-      return { health: "starting", reason: "stream_unready" };
     }
     return { health: "ready", reason: "ready" };
   }

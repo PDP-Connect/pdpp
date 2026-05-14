@@ -18,7 +18,7 @@
 - [ ] 3.1 Implement a local allocator/supervisor service with a narrow HTTP API for dynamic n.eko surfaces.
 - [ ] 3.2 Start n.eko containers with reference-owned labels, configured image, configured network, CDP proxy, stream path, and per-surface environment.
 - [ ] 3.3 Mount persistent profile storage derived from sanitized/hashed profile keys.
-- [ ] 3.4 Implement readiness probes for container state, n.eko HTTP health, CDP `/json/version`, Chromium liveness, and stream proxy reachability.
+- [ ] 3.4 Implement allocator readiness probes for container state/network, n.eko HTTP health, CDP `/json/version`, and Chromium version shape; keep stream descriptor authorization server-side and defer authenticated stream readiness probing to the interaction adapter.
 - [ ] 3.5 Reject allocator operations against unlabeled or foreign Docker resources.
 
 ## 4. Streaming And Proxy Wiring

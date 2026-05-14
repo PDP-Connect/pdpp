@@ -47,7 +47,7 @@ The reference implementation SHALL associate each dynamic n.eko surface with per
 
 ### Requirement: Dynamic n.eko lease promotion SHALL be readiness gated
 
-The reference implementation SHALL classify a dynamic n.eko surface as leaseable only after container, n.eko HTTP, CDP, browser process, and stream proxy readiness checks pass.
+The reference implementation SHALL classify a dynamic n.eko surface as leaseable only after container/network, n.eko HTTP, CDP, and browser readiness checks pass. Stream descriptor authorization SHALL remain server-side, and authenticated stream readiness SHALL be verified by the interaction adapter when an interaction starts.
 
 #### Scenario: Surface startup is in progress
 
@@ -57,7 +57,7 @@ The reference implementation SHALL classify a dynamic n.eko surface as leaseable
 
 #### Scenario: Readiness succeeds
 
-- **WHEN** the allocator reports that container, n.eko HTTP, CDP, browser process, and stream proxy readiness checks have passed
+- **WHEN** the allocator reports that container/network, n.eko HTTP, CDP, and browser readiness checks have passed
 - **THEN** the reference SHALL mark the lease `leased`
 - **AND** it SHALL emit browser-surface lease events before spawning the connector child
 

@@ -11,7 +11,7 @@ That static mode is honest but insufficient for SLVP browser-backed collection. 
 - Allocate n.eko browser surfaces dynamically per compatible profile key.
 - Preserve profile isolation with persistent profile storage.
 - Enforce a hard active-surface cap before container start.
-- Gate connector spawn on n.eko, CDP, browser, and stream readiness.
+- Gate connector spawn on n.eko HTTP readiness, CDP readiness, and browser liveness while keeping stream authorization and stream-adapter readiness interaction-scoped.
 - Keep connector code ignorant of Docker/container lifecycle.
 - Stop idle dynamic containers while retaining profile volumes.
 - Reconcile containers, profiles, surfaces, and leases after restart.
@@ -39,7 +39,7 @@ If `extract-remote-surface-streaming-architecture` proceeds in parallel, this ch
 The reference controller SHALL depend on a `NekoSurfaceAllocator` abstraction rather than directly constructing Docker commands inside connector launch code. The allocator owns surface lifecycle operations:
 
 - `ensureSurface(request)` creates or finds a container for a `surface_id` and `profile_key`.
-- `getSurfaceStatus(surface_id)` reports container, n.eko, CDP, browser, and stream readiness.
+- `getSurfaceStatus(surface_id)` reports container, n.eko HTTP, CDP, and browser readiness.
 - `stopSurface(surface_id, reason)` stops an idle dynamic surface without deleting the profile volume.
 - `listSurfaces()` supports boot reconciliation.
 
@@ -76,7 +76,7 @@ A dynamic surface is not leaseable until all required checks pass:
 - n.eko HTTP health endpoint responds.
 - CDP `/json/version` responds through the lease-scoped endpoint.
 - Chromium process is live and attached to the n.eko desktop.
-- The n.eko stream base URL/proxy target is resolvable by the reference streaming route.
+- The stream descriptor is scoped to the leased surface; proxy authorization remains server-side, and the streaming adapter verifies authenticated WebRTC/screenshot readiness when an interaction starts.
 
 The controller SHALL classify readiness failures as runtime-resource failures, not connector authentication or connector output failures.
 

@@ -6,7 +6,7 @@ The static n.eko tranche proves managed browser-surface leasing for one configur
 
 - Add a controller-owned dynamic n.eko surface allocator behind the existing browser-surface lease boundary.
 - Allocate one n.eko container per surface id, with a persistent profile volume or directory keyed by the lease profile key.
-- Gate lease promotion on n.eko HTTP readiness, CDP readiness, browser process liveness, and stream readiness.
+- Gate lease promotion on n.eko HTTP readiness, CDP readiness, and browser process liveness; stream descriptor authorization stays server-side and adapter stream readiness is verified at interaction time.
 - Enforce the configured active-surface cap across static and dynamic surfaces.
 - Preserve queued-run priority/FIFO semantics when capacity is full.
 - Add idle TTL shutdown that stops unused dynamic containers while preserving profile state.
