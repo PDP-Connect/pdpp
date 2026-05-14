@@ -843,6 +843,35 @@ function sleepMs(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+type ConversationDetailLaneEvent = Parameters<
+  NonNullable<Parameters<typeof createAdaptiveLane<ChatGptFetchResult>>[0]["emitProgress"]>
+>[0];
+
+function formatConversationDetailLaneProgress(event: ConversationDetailLaneEvent): string {
+  const parts = [
+    `ChatGPT conversation-detail lane ${event.type}`,
+    `active=${event.activeCount}`,
+    `queued=${event.queueSize}`,
+    `concurrency=${event.concurrency}/${event.maxConcurrency}`,
+  ];
+  if (event.attempt != null) {
+    parts.push(`attempt=${event.attempt}`);
+  }
+  if (event.outcome != null) {
+    parts.push(`outcome=${event.outcome}`);
+  }
+  if (event.delayMs != null) {
+    parts.push(`delay_ms=${event.delayMs}`);
+  }
+  if (event.retryAfterMs != null) {
+    parts.push(`retry_after_ms=${event.retryAfterMs}`);
+  }
+  if (event.errorName != null) {
+    parts.push(`error=${event.errorName}`);
+  }
+  return parts.join(" ");
+}
+
 /**
  * Fetch details one-at-a-time. ChatGPT's private detail endpoint appears to
  * throttle per authenticated account/session, and parallel retry loops keep
@@ -876,6 +905,12 @@ export async function runMessagesAndConversationsWithDetail(
     },
     random,
     sleep,
+    emitProgress: (event) =>
+      deps.emit({
+        type: "PROGRESS",
+        stream: "messages",
+        message: formatConversationDetailLaneProgress(event),
+      }),
   });
   await lane.runAll(convosToSync, async (c) => {
     if (!c) {

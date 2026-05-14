@@ -482,8 +482,25 @@ test("runMessagesAndConversationsWithDetail: fetches detail through adaptive lan
     (m): m is Extract<EmittedMessage, { type: "PROGRESS" }> => m.type === "PROGRESS" && m.stream === "messages"
   );
   assert.deepEqual(
-    progressMessages.map((m) => m.message),
+    progressMessages.filter((m) => m.message.startsWith("Synced ")).map((m) => m.message),
     ["Synced 1 / 2 conversations", "Synced 2 / 2 conversations"]
+  );
+  const laneMessages = progressMessages.filter((m) => m.message.startsWith("ChatGPT conversation-detail lane "));
+  assert.deepEqual(
+    laneMessages.map((m) => m.message.replace(/ active=\d+ queued=\d+ concurrency=1\/1.*/, "")),
+    [
+      "ChatGPT conversation-detail lane queued",
+      "ChatGPT conversation-detail lane started",
+      "ChatGPT conversation-detail lane queued",
+      "ChatGPT conversation-detail lane completed",
+      "ChatGPT conversation-detail lane started",
+      "ChatGPT conversation-detail lane completed",
+    ]
+  );
+  assert.equal(
+    laneMessages.some((m) => m.message.includes("/conversation/")),
+    false,
+    "lane progress must not expose raw API paths"
   );
 });
 
@@ -512,6 +529,21 @@ test("runConversationsAndMessagesStreams: detail failure rejects before conversa
 
   await assert.rejects(runConversationsAndMessagesStreams(deps, {}), /required detail fetch failed/);
 
+  const laneMessages = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "PROGRESS" }> =>
+      m.type === "PROGRESS" && m.stream === "messages" && m.message.startsWith("ChatGPT conversation-detail lane ")
+  );
+  assert.ok(
+    laneMessages.some((m) => m.message.includes("completed") && m.message.includes("error=Error")),
+    "failed detail work should emit a safe lane terminal event"
+  );
+  assert.equal(
+    laneMessages.some(
+      (m) => m.message.includes("required detail fetch failed") || m.message.includes("/conversation/")
+    ),
+    false,
+    "lane progress must not expose raw error messages or API paths"
+  );
   assert.equal(
     harness.protocolMessages.some((m) => m.type === "STATE" && m.stream === "conversations"),
     false,
