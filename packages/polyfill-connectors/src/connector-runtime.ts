@@ -750,6 +750,8 @@ async function runInBrowser(args: {
   const visibility = resolveBrowserRuntimeVisibility(browser, name);
   const browserSendInteraction = makeBrowserInteractionKeepalive({
     context: ctx,
+    diagnostics: process.env.PDPP_BROWSER_SURFACE_DIAGNOSTICS === "1",
+    progress,
     sendInteraction: (req) => sendInteraction(decorateBrowserManualAction(req, visibility)),
   });
   // Prevention layer (Layer A): register a SIGTERM/SIGINT handler that
@@ -788,49 +790,208 @@ async function runInBrowser(args: {
 
 const BROWSER_INTERACTION_KEEPALIVE_INTERVAL_MS = 15_000;
 
+interface BrowserSurfaceDiagnosticContext {
+  browser: BrowserContext["browser"];
+  pages?: BrowserContext["pages"];
+}
+
+interface BrowserConnectionKeepaliveSummary {
+  browserConnectedAtStart: boolean;
+  browserConnectedAtStop: boolean;
+  elapsedMs: number;
+  lastError?: string;
+  pingAttempts: number;
+  pingFailures: number;
+  pingInFlight: boolean;
+  pingSuccesses: number;
+  skippedDisconnected: number;
+}
+
+interface BrowserConnectionKeepaliveHandle {
+  stop: () => BrowserConnectionKeepaliveSummary;
+}
+
 export function makeBrowserInteractionKeepalive(args: {
-  context: Pick<BrowserContext, "browser">;
+  context: BrowserSurfaceDiagnosticContext;
+  diagnostics?: boolean;
   intervalMs?: number;
+  progress?: BaseCollectContext["progress"];
   sendInteraction: BaseCollectContext["sendInteraction"];
 }): BaseCollectContext["sendInteraction"] {
-  const { context, intervalMs = BROWSER_INTERACTION_KEEPALIVE_INTERVAL_MS, sendInteraction } = args;
+  const {
+    context,
+    diagnostics = false,
+    intervalMs = BROWSER_INTERACTION_KEEPALIVE_INTERVAL_MS,
+    progress,
+    sendInteraction,
+  } = args;
   return async (req) => {
-    const stop = startBrowserConnectionKeepalive(context, intervalMs);
+    await emitBrowserSurfaceDiagnostic({ context, diagnostics, phase: "interaction_start", progress, req });
+    const keepalive = startBrowserConnectionKeepalive(context, intervalMs);
     try {
-      return await sendInteraction(req);
-    } finally {
-      stop();
+      const response = await sendInteraction(req);
+      await emitBrowserSurfaceDiagnostic({
+        context,
+        diagnostics,
+        keepalive: keepalive.stop(),
+        phase: "interaction_response",
+        progress,
+        req,
+        responseStatus: response.status,
+      });
+      return response;
+    } catch (err) {
+      await emitBrowserSurfaceDiagnostic({
+        context,
+        diagnostics,
+        error: err,
+        keepalive: keepalive.stop(),
+        phase: "interaction_error",
+        progress,
+        req,
+      });
+      throw err;
     }
   };
 }
 
-function startBrowserConnectionKeepalive(context: Pick<BrowserContext, "browser">, intervalMs: number): () => void {
-  if (intervalMs <= 0) {
-    return (): void => undefined;
+async function emitBrowserSurfaceDiagnostic(args: {
+  context: BrowserSurfaceDiagnosticContext;
+  diagnostics: boolean;
+  error?: unknown;
+  keepalive?: BrowserConnectionKeepaliveSummary;
+  phase: "interaction_error" | "interaction_response" | "interaction_start";
+  progress: BaseCollectContext["progress"] | undefined;
+  req: InteractionRequest;
+  responseStatus?: InteractionResponse["status"];
+}): Promise<void> {
+  const { context, diagnostics, error, keepalive, phase, progress, req, responseStatus } = args;
+  if (!(diagnostics && progress)) {
+    return;
   }
+  let errorMessage: string | null = null;
+  if (error instanceof Error) {
+    errorMessage = error.message;
+  } else if (error != null) {
+    errorMessage = String(error);
+  }
+  const payload = {
+    phase,
+    interaction_kind: req.kind,
+    request_id: req.request_id ?? null,
+    response_status: responseStatus ?? null,
+    surface: describeBrowserSurface(context),
+    keepalive: keepalive ?? null,
+    error: errorMessage,
+  };
+  try {
+    await progress(`browser_surface.diagnostic ${JSON.stringify(payload)}`);
+  } catch (progressError) {
+    const message = progressError instanceof Error ? progressError.message : String(progressError);
+    process.stderr.write(`[browser-surface-diagnostics] progress emit failed: ${message}\n`);
+  }
+}
+
+function describeBrowserSurface(context: BrowserSurfaceDiagnosticContext): {
+  browser_connected: boolean;
+  page_count: number | null;
+  pages: Array<{ closed: boolean; url: string | null }>;
+} {
   const browser = context.browser();
-  if (!browser?.isConnected()) {
-    return (): void => undefined;
+  let pages: Page[] = [];
+  try {
+    pages = typeof context.pages === "function" ? context.pages() : [];
+  } catch {
+    pages = [];
+  }
+  return {
+    browser_connected: Boolean(browser?.isConnected()),
+    page_count: typeof context.pages === "function" ? pages.length : null,
+    pages: pages.slice(0, 5).map((page) => ({
+      closed: page.isClosed(),
+      url: sanitizeDiagnosticUrl(page),
+    })),
+  };
+}
+
+function sanitizeDiagnosticUrl(page: Page): string | null {
+  if (page.isClosed()) {
+    return null;
+  }
+  try {
+    const rawUrl = page.url();
+    if (!rawUrl || rawUrl === "about:blank") {
+      return rawUrl || null;
+    }
+    const url = new URL(rawUrl);
+    return `${url.origin}${url.pathname}`;
+  } catch {
+    return "unparseable";
+  }
+}
+
+function normalizeDiagnosticError(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  return raw.slice(0, 300);
+}
+
+function summarizeInactiveKeepalive(
+  browser: ReturnType<BrowserContext["browser"]> | null | undefined,
+  startedAt: number
+): BrowserConnectionKeepaliveSummary {
+  return {
+    browserConnectedAtStart: Boolean(browser?.isConnected()),
+    browserConnectedAtStop: Boolean(browser?.isConnected()),
+    elapsedMs: Date.now() - startedAt,
+    pingAttempts: 0,
+    pingFailures: 0,
+    pingInFlight: false,
+    pingSuccesses: 0,
+    skippedDisconnected: 0,
+  };
+}
+
+function startBrowserConnectionKeepalive(
+  context: BrowserSurfaceDiagnosticContext,
+  intervalMs: number
+): BrowserConnectionKeepaliveHandle {
+  const startedAt = Date.now();
+  const browser = context.browser();
+  if (intervalMs <= 0 || !browser?.isConnected()) {
+    return { stop: () => summarizeInactiveKeepalive(browser, startedAt) };
   }
   let sessionPromise: Promise<CDPSession> | null = null;
   let pingInFlight = false;
+  let pingAttempts = 0;
+  let pingFailures = 0;
+  let pingSuccesses = 0;
+  let skippedDisconnected = 0;
   let stopped = false;
+  let lastError: string | undefined;
+  const browserConnectedAtStart = browser.isConnected();
   const sessionFor = (connectedBrowser: Browser): Promise<CDPSession> => {
     sessionPromise ??= connectedBrowser.newBrowserCDPSession();
     return sessionPromise;
   };
   const ping = async (): Promise<void> => {
-    if (stopped || pingInFlight || !browser.isConnected()) {
+    if (stopped || pingInFlight) {
+      return;
+    }
+    if (!browser.isConnected()) {
+      skippedDisconnected++;
       return;
     }
     pingInFlight = true;
+    pingAttempts++;
     try {
       const session = await sessionFor(browser);
       await session.send("Browser.getVersion");
+      pingSuccesses++;
     } catch (err) {
       sessionPromise = null;
-      const message = err instanceof Error ? err.message : String(err);
-      process.stderr.write(`[browser-keepalive] Browser.getVersion failed: ${message}\n`);
+      pingFailures++;
+      lastError = normalizeDiagnosticError(err);
+      process.stderr.write(`[browser-keepalive] Browser.getVersion failed: ${lastError}\n`);
     } finally {
       pingInFlight = false;
     }
@@ -838,10 +999,23 @@ function startBrowserConnectionKeepalive(context: Pick<BrowserContext, "browser"
   const timer = setInterval(ping, intervalMs);
   timer.unref?.();
   ping().catch((): undefined => undefined);
-  return (): void => {
-    stopped = true;
-    clearInterval(timer);
-    sessionPromise?.then((session) => session.detach()).catch((): undefined => undefined);
+  return {
+    stop: () => {
+      stopped = true;
+      clearInterval(timer);
+      sessionPromise?.then((session) => session.detach()).catch((): undefined => undefined);
+      return {
+        browserConnectedAtStart,
+        browserConnectedAtStop: browser.isConnected(),
+        elapsedMs: Date.now() - startedAt,
+        pingAttempts,
+        pingFailures,
+        pingInFlight,
+        pingSuccesses,
+        skippedDisconnected,
+        ...(lastError ? { lastError } : {}),
+      };
+    },
   };
 }
 

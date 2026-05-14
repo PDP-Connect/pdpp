@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { BrowserContext } from "playwright";
+import type { BrowserContext, Page } from "playwright";
 import {
   type BrowserLaunchSource,
   type BrowserRuntimeVisibility,
@@ -31,10 +31,22 @@ interface KeepaliveTestBrowser {
   }>;
 }
 
-function makeKeepaliveContext(browser: KeepaliveTestBrowser): Pick<BrowserContext, "browser"> {
+function makeKeepaliveContext(
+  browser: KeepaliveTestBrowser,
+  pages: Page[] = []
+): Pick<BrowserContext, "browser" | "pages"> {
   return {
     browser: () => browser as ReturnType<BrowserContext["browser"]>,
+    pages: () => pages,
   };
+}
+
+function makeDiagnosticPage(url: string, closed = false): Page {
+  const fake: Pick<Page, "isClosed" | "url"> = {
+    isClosed: () => closed,
+    url: () => url,
+  };
+  return fake as Page;
 }
 
 test("resolveBrowserRuntimeVisibility defaults browser connectors to headless unless env disables it", () => {
@@ -283,6 +295,59 @@ test("makeBrowserInteractionKeepalive ignores CDP ping errors without failing in
 
   assert.equal((await wrapped({ kind: "otp", message: "Enter OTP" })).status, "success");
   assert.ok(pingCalls > 0);
+});
+
+test("makeBrowserInteractionKeepalive emits gated browser-surface diagnostics around interactions", async () => {
+  const progressMessages: string[] = [];
+  let resolveInteraction:
+    | ((value: { request_id: string; status: "success"; type: "INTERACTION_RESPONSE" }) => void)
+    | undefined;
+  const wrapped = makeBrowserInteractionKeepalive({
+    context: makeKeepaliveContext(
+      {
+        isConnected: () => true,
+        newBrowserCDPSession: () =>
+          Promise.resolve({
+            detach: () => Promise.resolve(),
+            send: () => Promise.resolve({}),
+          }),
+      },
+      [makeDiagnosticPage("https://secure.chase.com/web/auth/?secret=redacted")]
+    ),
+    diagnostics: true,
+    intervalMs: 5,
+    progress: (message) => {
+      progressMessages.push(message);
+      return Promise.resolve();
+    },
+    sendInteraction: (req) =>
+      new Promise((resolve) => {
+        assert.equal(req.kind, "otp");
+        resolveInteraction = resolve;
+      }),
+  });
+
+  const responsePromise = wrapped({ kind: "otp", message: "Enter OTP", request_id: "int_test" });
+  await delay(15);
+  resolveInteraction?.({ request_id: "int_test", status: "success", type: "INTERACTION_RESPONSE" });
+  assert.equal((await responsePromise).status, "success");
+
+  assert.equal(progressMessages.length, 2);
+  const diagnostics = progressMessages.map((message) => {
+    assert.match(message, /^browser_surface\.diagnostic /u);
+    return JSON.parse(message.replace(/^browser_surface\.diagnostic /u, "")) as {
+      keepalive: null | { pingAttempts: number; pingSuccesses: number };
+      phase: string;
+      response_status: string | null;
+      surface: { pages: Array<{ url: string | null }> };
+    };
+  });
+  assert.equal(diagnostics[0]?.phase, "interaction_start");
+  assert.equal(diagnostics[0]?.keepalive, null);
+  assert.equal(diagnostics[1]?.phase, "interaction_response");
+  assert.equal(diagnostics[1]?.response_status, "success");
+  assert.ok((diagnostics[1]?.keepalive?.pingAttempts ?? 0) > 0);
+  assert.equal(diagnostics[1]?.surface.pages[0]?.url, "https://secure.chase.com/web/auth/");
 });
 
 function delay(ms: number): Promise<void> {
