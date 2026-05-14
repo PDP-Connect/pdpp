@@ -2,7 +2,8 @@
 
 ## 1. Design And Dependency Gate
 
-- [ ] Confirm the queue substrate choice (`p-queue`, `Bottleneck`, or internal queue) against package Node version, ESM, dependency policy, and testability.
+- [x] Confirm the queue substrate choice (`p-queue`, `Bottleneck`, or internal queue) against package Node version, ESM, dependency policy, and testability.
+- [x] Document the queue substrate rationale in `design.md`.
 - [ ] Document the final algorithm constants and rationale in `design.md`.
 - [ ] Decide where lane telemetry is emitted and update this change if the surface becomes durable or user-facing.
 - [ ] Decide whether distributed lane enforcement is out of scope for the current single-process reference target or needs a follow-up design.

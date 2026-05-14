@@ -19,6 +19,8 @@ The design uses high-adoption queue/retry primitives as references but does not 
 
 Conclusion: use a hardened queue primitive for mechanics if it materially reduces code, but own the PDPP-specific lane policy: connector bucket naming, result classification, owner-visible progress, cursor-safety boundaries, cancellation semantics, fixture-friendly telemetry, and conservative defaults for opaque private APIs. The OpenSpec requirement should define lane semantics, not vendor-specific package APIs.
 
+Decision 2026-05-14: use `p-queue` for the first implementation's local queue mechanics. It is current, high-adoption, native ESM, and directly supports mutable concurrency, per-operation timeouts, `AbortSignal` cancellation, queue introspection, saturation/backpressure signals, and strict interval caps if needed later. This is not a commitment to expose `p-queue` as the connector API; it remains an implementation detail behind PDPP lane semantics.
+
 ## Model
 
 An adaptive lane is a connector-local scheduler for one upstream throttle bucket.
@@ -186,7 +188,6 @@ Deferred. That is a separate durability design with harder correctness implicati
 
 ## Open Questions
 
-- Should the first implementation depend on `p-queue` immediately or start with a tiny internal queue to avoid dependency surface until the API stabilizes?
 - Should lane telemetry be emitted as connector `PROGRESS` messages, local fixture telemetry, or both?
 - Should adaptive lane config eventually be manifest-declared, or remain connector-code configuration?
 - Should distributed lane enforcement be required if the reference later runs multiple connector workers for the same owner/source, or is single-process correctness enough for the current reference target?
