@@ -28,7 +28,12 @@ import {
   type ValidateRecord,
 } from "../../src/connector-runtime.ts";
 import type { CaptureSession } from "../../src/fixture-capture.ts";
-import { RetryExhaustedError, retryHttp, TerminalHttpStatusError } from "../../src/http-retry.ts";
+import {
+  RetryExhaustedError,
+  retryAfterMsFromHeaders,
+  retryHttp,
+  TerminalHttpStatusError,
+} from "../../src/http-retry.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
 import {
   buildConversationRecord,
@@ -136,18 +141,40 @@ const CHATGPT_RATE_LIMIT_MAX_RETRY_AFTER_MS = 15 * 60_000;
 const CHATGPT_LONG_SLEEP_PROGRESS_THRESHOLD_MS = 5000;
 export const CHATGPT_RETRYABLE_ERROR_PATTERN = /ECONN|ETIMEDOUT|fetch failed|429|retry budget exhausted/i;
 const CHATGPT_SIDE_EFFECT_PROBE_ENV = "PDPP_CHATGPT_SIDE_EFFECT_PROBE";
+const CHATGPT_CONVERSATION_DETAIL_PATH_PATTERN = /^\/conversation\/[^/?#]+(?:[?#].*)?$/;
+const URL_QUERY_OR_FRAGMENT_PATTERN = /[?#].*$/;
 
 export type ChatGptRetryExhaustedClass = "rate_limited" | "temporary_unavailable" | "upstream_pressure";
+
+export interface ChatGptNetworkPressureDiagnostic {
+  attempt?: number;
+  endpoint_route: string;
+  error_class: string;
+  max_attempts?: number;
+  method: string;
+  retry_after_ms?: number;
+  safe_headers?: Record<string, string | number>;
+  status?: number;
+}
 
 export class ChatGptRecoverableRetryExhaustedError extends Error {
   readonly class: ChatGptRetryExhaustedClass;
   readonly httpStatus: number | null;
+  readonly networkPressure: ChatGptNetworkPressureDiagnostic | undefined;
 
-  constructor(message: string, details: { class: ChatGptRetryExhaustedClass; httpStatus?: number | null }) {
+  constructor(
+    message: string,
+    details: {
+      class: ChatGptRetryExhaustedClass;
+      httpStatus?: number | null;
+      networkPressure?: ChatGptNetworkPressureDiagnostic;
+    }
+  ) {
     super(message);
     this.name = "ChatGptRecoverableRetryExhaustedError";
     this.class = details.class;
     this.httpStatus = details.httpStatus ?? null;
+    this.networkPressure = details.networkPressure;
   }
 }
 
@@ -172,6 +199,38 @@ function classifyRetryExhaustedStatus(status: number | null): ChatGptRetryExhaus
     return "temporary_unavailable";
   }
   return "upstream_pressure";
+}
+
+function chatGptEndpointRoute(path: string): string {
+  if (CHATGPT_CONVERSATION_DETAIL_PATH_PATTERN.test(path)) {
+    return "/conversation/{conversation_id}";
+  }
+  return path.replace(URL_QUERY_OR_FRAGMENT_PATTERN, "");
+}
+
+function makeChatGptNetworkPressureDiagnostic({
+  attempts,
+  cause,
+  method,
+  path,
+}: {
+  attempts?: number;
+  cause: unknown;
+  method: string;
+  path: string;
+}): ChatGptNetworkPressureDiagnostic {
+  const response =
+    cause && typeof cause === "object" ? (cause as { headers?: Record<string, string>; status?: number }) : {};
+  const status = typeof response.status === "number" ? response.status : undefined;
+  const retryAfterMs = retryAfterMsFromHeaders(response.headers);
+  return {
+    endpoint_route: `${method} ${chatGptEndpointRoute(path)}`,
+    error_class: status === undefined ? "network_error" : `http_${status}`,
+    method,
+    ...(attempts === undefined ? {} : { attempt: attempts, max_attempts: attempts }),
+    ...(status === undefined ? {} : { status }),
+    ...(retryAfterMs == null ? {} : { retry_after_ms: retryAfterMs, safe_headers: { "retry-after-ms": retryAfterMs } }),
+  };
 }
 
 function createChatGptApi({
@@ -266,7 +325,7 @@ function createChatGptApi({
               : `server Retry-After, capped at ${formatSleepDuration(CHATGPT_RATE_LIMIT_MAX_RETRY_AFTER_MS)}`;
           await emit?.({
             type: "PROGRESS",
-            message: `ChatGPT rate limit/backoff on ${method} ${path}: ${status}; waiting ${formatSleepDuration(delayMs)} before ${attempt + 1 === maxAttempts ? "final " : ""}retry ${attempt + 1}/${maxAttempts} (${policy})`,
+            message: `ChatGPT rate limit/backoff on ${method} ${chatGptEndpointRoute(path)}: ${status}; waiting ${formatSleepDuration(delayMs)} before ${attempt + 1 === maxAttempts ? "final " : ""}retry ${attempt + 1}/${maxAttempts} (${policy})`,
           });
         },
         request: async () => {
@@ -303,7 +362,16 @@ function createChatGptApi({
             status
               ? `apiFetch got ${status} on ${method} ${path} after retry budget exhausted`
               : `apiFetch retry budget exhausted on ${method} ${path}: ${err.message}`,
-            { class: classifyRetryExhaustedStatus(status), httpStatus: status }
+            {
+              class: classifyRetryExhaustedStatus(status),
+              httpStatus: status,
+              networkPressure: makeChatGptNetworkPressureDiagnostic({
+                attempts: err.attempts,
+                cause,
+                method,
+                path,
+              }),
+            }
           );
         }
         throw err;
@@ -963,6 +1031,7 @@ function makeConversationDetailGap(
     detail: {
       class: error.class,
       ...(error.httpStatus == null ? {} : { http_status: error.httpStatus }),
+      ...(error.networkPressure == null ? {} : { network_pressure: error.networkPressure }),
     },
   };
 }

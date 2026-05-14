@@ -96,6 +96,8 @@ The owner must be able to distinguish:
 
 The first tranche may expose this through reference-only `_ref` timeline or summary surfaces. Those surfaces must be labeled reference-only. They should avoid raw upstream identifiers unless the connector supplies a safe label.
 
+ChatGPT conversation-detail pressure also emits a reference-only sanitized network-pressure diagnostic on recoverable detail gaps. The diagnostic is metadata only: safe endpoint route template such as `GET /conversation/{conversation_id}`, low-cardinality error/status class, attempt budget metadata, HTTP status, and bounded retry-after metadata when safely available. It must not include cookies, bearer tokens, authorization headers, raw URLs, request bodies, response bodies, raw `/conversation/<id>` paths, or private payload fragments. Retry-path progress uses the same route-template rule.
+
 ## Collection Profile Boundary
 
 Reference-only in the first tranche:

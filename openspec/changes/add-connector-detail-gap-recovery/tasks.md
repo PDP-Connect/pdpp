@@ -24,6 +24,7 @@
 - [x] Expose pending, in-progress, recovered, and terminal detail-gap state through reference-only observability.
 - [x] Label all new surfaces or events as reference-only rather than Collection Profile protocol.
 - [x] Redact secret-bearing URLs, cookies, bearer tokens, request bodies, and private payload fragments from gap observability.
+- [x] Add sanitized ChatGPT conversation-detail network-pressure diagnostics with route templates, status/error class, attempt budget, and safe retry-after metadata.
 
 ## 5. Tests and Fixtures
 
@@ -31,6 +32,7 @@
 - [x] Add recovery coverage proving a later run fetches the pending detail without replaying the full tranche.
 - [x] Add negative coverage proving cursor commit is rejected when required detail is missing without a durable gap.
 - [x] Add redaction coverage for gap locators and last-error metadata.
+- [x] Add redaction coverage for ChatGPT 429/retry-exhaustion pressure diagnostics.
 
 ## 6. Acceptance Checks
 

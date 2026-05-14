@@ -128,6 +128,16 @@ export interface DetailGapMessage {
   detail?: {
     class?: string;
     http_status?: number;
+    network_pressure?: {
+      attempt?: number;
+      endpoint_route: string;
+      error_class: string;
+      max_attempts?: number;
+      method: string;
+      retry_after_ms?: number;
+      safe_headers?: Record<string, string | number>;
+      status?: number;
+    };
   };
   detail_locator: {
     kind: string;

@@ -650,7 +650,20 @@ test("runConversationsAndMessagesStreams: recoverable detail exhaustion emits DE
         return Promise.reject(
           new ChatGptRecoverableRetryExhaustedError(
             "apiFetch got 429 on GET /conversation/convo-gap after retry budget exhausted bearer secret",
-            { class: "rate_limited", httpStatus: 429 }
+            {
+              class: "rate_limited",
+              httpStatus: 429,
+              networkPressure: {
+                endpoint_route: "GET /conversation/{conversation_id}",
+                error_class: "http_429",
+                method: "GET",
+                attempt: 12,
+                max_attempts: 12,
+                status: 429,
+                retry_after_ms: 120_000,
+                safe_headers: { "retry-after-ms": 120_000 },
+              },
+            }
           )
         );
       }
@@ -715,10 +728,29 @@ test("runConversationsAndMessagesStreams: recoverable detail exhaustion emits DE
     },
     retryable: true,
     reference_only: true,
-    detail: { class: "rate_limited", http_status: 429 },
+    detail: {
+      class: "rate_limited",
+      http_status: 429,
+      network_pressure: {
+        endpoint_route: "GET /conversation/{conversation_id}",
+        error_class: "http_429",
+        method: "GET",
+        attempt: 12,
+        max_attempts: 12,
+        status: 429,
+        retry_after_ms: 120_000,
+        safe_headers: { "retry-after-ms": 120_000 },
+      },
+    },
   });
   const serializedGap = JSON.stringify(gap);
-  assert.equal(serializedGap.includes("/conversation/"), false, "gap must not expose raw API paths");
+  assert.equal(serializedGap.includes("/conversation/convo-gap"), false, "gap must not expose raw API paths");
+  assert.equal(
+    serializedGap.includes("GET /conversation/{conversation_id}"),
+    true,
+    "gap should expose a safe route template"
+  );
+  assert.equal(serializedGap.includes("retry-after-ms"), true, "gap should expose safe retry-after metadata");
   assert.equal(serializedGap.includes("bearer"), false, "gap must not expose raw error text or tokens");
   assert.equal(serializedGap.includes("secret"), false, "gap must not expose raw error text or tokens");
 
@@ -857,7 +889,11 @@ test("runConversationsAndMessagesStreams: 30/278 pressure exhaustion records a d
     detail: { class: "rate_limited", http_status: 429 },
   });
   const serializedGap = JSON.stringify(gap);
-  assert.equal(serializedGap.includes("/conversation/"), false, "gap diagnostic must not expose raw API paths");
+  assert.equal(
+    serializedGap.includes(`/conversation/${pressureItem.id}`),
+    false,
+    "gap diagnostic must not expose raw API paths"
+  );
   assert.equal(serializedGap.includes("bearer"), false, "gap diagnostic must not expose raw auth text");
   assert.equal(serializedGap.includes("secret"), false, "gap diagnostic must not expose raw auth text");
 
