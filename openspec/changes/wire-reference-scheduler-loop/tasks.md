@@ -8,29 +8,29 @@
 
 ## 2. Scheduler Manager
 
-- [ ] Add a server-owned scheduler manager that creates `createScheduler(...)`
+- [x] Add a server-owned scheduler manager that creates `createScheduler(...)`
   from persisted enabled schedules after AS/RS loopback URLs are known.
-- [ ] Reuse controller/runtime helpers for connector path resolution, owner
+- [x] Reuse controller/runtime helpers for connector path resolution, owner
   token issuance, connector state, needs-human state, and active-run protection.
-- [ ] Refresh or restart the live scheduler manager when owner schedule
+- [x] Refresh or restart the live scheduler manager when owner schedule
   mutations change the persisted schedule set.
-- [ ] Stop the scheduler manager during graceful shutdown before connector drain
+- [x] Stop the scheduler manager during graceful shutdown before connector drain
   waits for active runs.
 
 ## 3. Validation
 
-- [ ] Add an integration test proving an enabled persisted schedule triggers an
+- [x] Add an integration test proving an enabled persisted schedule triggers an
   automatic run after server startup.
-- [ ] Add regression coverage proving paused/deleted schedules do not trigger
+- [x] Add regression coverage proving paused/deleted schedules do not trigger
   automatic runs.
-- [ ] Add shutdown coverage proving `stop()` suppresses retry/backoff launches.
-- [ ] Add or document a Docker/Compose smoke harness for enabled schedule
+- [x] Add shutdown coverage proving `stop()` suppresses retry/backoff launches.
+- [x] Add or document a Docker/Compose smoke harness for enabled schedule
   execution in the reference service.
 
 ## 4. Acceptance Checks
 
-- [ ] Run `node --test --test-force-exit reference-implementation/test/scheduler.test.js`.
-- [ ] Run the schedule lifecycle/control-plane tests that cover `_ref` schedule
+- [x] Run `node --test --test-force-exit reference-implementation/test/scheduler.test.js`.
+- [x] Run the schedule lifecycle/control-plane tests that cover `_ref` schedule
   mutations.
-- [ ] Run any new scheduler-manager/server-startup tests.
-- [ ] Run `openspec validate wire-reference-scheduler-loop --strict`.
+- [x] Run any new scheduler-manager/server-startup tests.
+- [x] Run `openspec validate wire-reference-scheduler-loop --strict`.

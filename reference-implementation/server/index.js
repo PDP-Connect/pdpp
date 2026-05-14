@@ -45,6 +45,10 @@ import { createConsentStore } from './stores/consent-store.js';
 import { createOwnerDeviceAuthStore } from './stores/owner-device-auth-store.js';
 import { DeviceBatchConflictError, createDeviceExporterStore } from './stores/device-exporter-store.js';
 import {
+  defaultWebPushSubscriptionStore,
+  resolveWebPushConfig,
+} from './web-push-notifications.js';
+import {
   ingestRecord, queryRecords, aggregateRecords, getRecord, deleteRecord, deleteAllRecords,
   listStreams, listAllStreams, getSyncState, putSyncState,
   getDatasetRecordsAggregate, getDatasetRecordChangesBytes, getDatasetBlobBytes,
@@ -71,7 +75,9 @@ import { createDefaultStreamingCompanionFactory } from './streaming/companion-fa
 import { registerStreamingRoutes } from './streaming/routes.js';
 import { createRunTargetRegistry } from './streaming/run-target-registry.js';
 import { createPlayground } from './streaming/playground.js';
-import { createController } from '../runtime/controller.ts';
+import { createController, resolveDefaultConnectorPath } from '../runtime/controller.ts';
+import { createScheduler } from '../runtime/scheduler.ts';
+import { getDefaultSchedulerStore } from './stores/scheduler-store.ts';
 import {
   BrowserSurfaceLeaseManager,
   parseNekoBrowserSurfaceRuntimeConfig,
@@ -1760,6 +1766,8 @@ function buildAsApp(opts = {}) {
   const consentStore = createConsentStore();
   const ownerDeviceAuthStore = createOwnerDeviceAuthStore();
   const deviceExporterStore = opts.deviceExporterStore || createDeviceExporterStore();
+  const webPushStore = opts.webPushSubscriptionStore || defaultWebPushSubscriptionStore;
+  const webPushConfig = opts.webPushConfig || resolveWebPushConfig();
   const dynamicClientRegistrationEnabled = resolveDynamicClientRegistrationEnabled(opts);
   const dynamicClientRegistrationInitialAccessTokens = resolveDynamicClientRegistrationInitialAccessTokens(opts);
   const publicDcrRateLimiter = createPublicDcrRateLimiter(opts.publicDynamicClientRegistrationRateLimit);
@@ -2743,6 +2751,54 @@ function buildAsApp(opts = {}) {
     }
   });
 
+  app.get('/_ref/web-push/config', ownerAuth.requireOwnerSession, async (req, res) => {
+    res.json({
+      object: 'web_push_config',
+      enabled: webPushConfig.enabled,
+      public_key: webPushConfig.enabled ? webPushConfig.publicKey : null,
+      unavailable_reason: webPushConfig.enabled ? null : webPushConfig.unavailableReason,
+    });
+  });
+
+  app.get('/_ref/web-push/subscriptions', ownerAuth.requireOwnerSession, async (req, res) => {
+    const ownerSubjectId = getOwnerSubjectId(req);
+    res.json({
+      object: 'list',
+      data: webPushStore.list(ownerSubjectId),
+      has_more: false,
+    });
+  });
+
+  app.post('/_ref/web-push/subscriptions', ownerAuth.requireOwnerSession, async (req, res) => {
+    try {
+      if (!webPushConfig.enabled) {
+        return pdppError(res, 503, 'web_push_unavailable', webPushConfig.unavailableReason);
+      }
+      const ownerSubjectId = getOwnerSubjectId(req);
+      const record = webPushStore.upsert(ownerSubjectId, req.body?.subscription || req.body, {
+        user_agent: req.get('user-agent') || null,
+        platform: req.body?.platform || null,
+        device_label: req.body?.device_label || null,
+      });
+      res.status(201).json({ object: 'web_push_subscription', subscription: record });
+    } catch (err) {
+      if (err?.status === 400) {
+        return pdppError(res, 400, err.code || 'invalid_request', err.message);
+      }
+      handleError(res, err);
+    }
+  });
+
+  app.delete('/_ref/web-push/subscriptions', ownerAuth.requireOwnerSession, async (req, res) => {
+    const endpoint = typeof req.body?.endpoint === 'string' ? req.body.endpoint : null;
+    if (!endpoint) {
+      return pdppError(res, 400, 'invalid_request', 'endpoint is required');
+    }
+    const ownerSubjectId = getOwnerSubjectId(req);
+    const revoked = webPushStore.revoke(ownerSubjectId, endpoint);
+    res.json({ object: 'web_push_subscription_deleted', deleted: Boolean(revoked) });
+  });
+
   // Reference-only — not the public lexical retrieval surface.
   // /_ref/search is a spine-only artifact/id-jump helper for the operator
   // console. The public lexical retrieval contract lives at GET /v1/search;
@@ -3564,6 +3620,7 @@ function buildAsApp(opts = {}) {
         const connectorId = decodeURIComponent(req.params.connectorId);
         await resolveRegisteredConnectorManifest(connectorId);
         const result = await controller.upsertSchedule(connectorId, req.body || {});
+        await opts.onScheduleMutation?.();
         // Include policy_warning in the response so dashboard can surface it
         // without a second round-trip.
         const responseBody = result.policy_warning
@@ -3584,6 +3641,7 @@ function buildAsApp(opts = {}) {
       try {
         const connectorId = decodeURIComponent(req.params.connectorId);
         const schedule = await controller.setScheduleEnabled(connectorId, false);
+        await opts.onScheduleMutation?.();
         res.json(schedule);
       } catch (err) {
         handleError(res, err);
@@ -3599,6 +3657,7 @@ function buildAsApp(opts = {}) {
       try {
         const connectorId = decodeURIComponent(req.params.connectorId);
         const schedule = await controller.setScheduleEnabled(connectorId, true);
+        await opts.onScheduleMutation?.();
         res.json(schedule);
       } catch (err) {
         handleError(res, err);
@@ -3617,6 +3676,7 @@ function buildAsApp(opts = {}) {
         if (!deleted) {
           return pdppError(res, 404, 'not_found', `Schedule not found for connector: ${connectorId}`);
         }
+        await opts.onScheduleMutation?.();
         res.status(204).end();
       } catch (err) {
         handleError(res, err);
@@ -5841,6 +5901,8 @@ export async function startServer(opts = {}) {
     // PDPP_REFERENCE_ORIGIN.
     referenceBaseUrl: configuredAsPublicUrl || null,
   };
+  const ownerAuthSubjectId =
+    resolveOwnerAuthPlaceholderConfig(opts).subjectId || OWNER_AUTH_DEFAULT_SUBJECT_ID;
   // Reference-internal run-target registry, lifted out of buildAsApp so the
   // controller can hand the same instance the per-run nonce hooks it needs
   // for Mode-A (in-process runtime) streaming registration. The buildAsApp
@@ -5858,7 +5920,7 @@ export async function startServer(opts = {}) {
   });
   const controller = createController({
     asPublicUrl: configuredAsPublicUrl,
-    ownerSubjectId: opts.ownerAuthSubjectId,
+    ownerSubjectId: ownerAuthSubjectId,
     connectorPathResolver: opts.connectorPathResolver,
     ...browserSurfaceControllerOptions,
     runtimeContext,
@@ -5868,6 +5930,7 @@ export async function startServer(opts = {}) {
     },
   });
   await controller.reconcileBrowserSurfaceLeasesAfterBoot();
+  let schedulerManager = null;
   const asApp = buildAsApp({
     nativeManifest: nativeConfig?.nativeManifest || null,
     controller,
@@ -5895,6 +5958,7 @@ export async function startServer(opts = {}) {
     isNekoProxyTargetApproved: opts.isNekoProxyTargetApproved,
     browserSurfaceLeaseManager: browserSurfaceControllerOptions.browserSurfaceLeaseManager,
     runTargetRegistry,
+    onScheduleMutation: () => schedulerManager?.refresh(),
     logger,
   });
 
@@ -5970,6 +6034,13 @@ export async function startServer(opts = {}) {
   runtimeContext.rsUrl = `http://localhost:${rsPort}`;
   await controller.promoteBrowserSurfaceLeasesAfterBoot();
   logger.info({ port: rsPort, url: `http://localhost:${rsPort}` }, 'resource server listening');
+  schedulerManager = createReferenceSchedulerManager({
+    controller,
+    logger,
+    runtimeContext,
+    connectorPathResolver: opts.connectorPathResolver || resolveDefaultConnectorPath,
+  });
+  await schedulerManager.start();
   const startupBackfillAbortController = new AbortController();
   const startupBackfillDone = scheduleRetrievalStartupBackfill({
     manifests: startupBackfillManifests,
@@ -5987,6 +6058,7 @@ export async function startServer(opts = {}) {
     logger,
     startupBackfillDone,
     abortStartupBackfill: (reason) => startupBackfillAbortController.abort(reason),
+    schedulerManager,
     // Exposed for the CLI entrypoint's graceful-shutdown path
     // (`exitOnSignal`). The controller's `drainActiveRuns` awaits all
     // in-flight `runConnector` promises within a bounded window so
@@ -6069,6 +6141,110 @@ export function isManagedNekoSurfaceApproved(target, { runId, interactionId, bro
   return normalizedUrlWithoutTrailingSlash(surface.stream_base_url) === baseUrl;
 }
 
+function createReferenceSchedulerManager({
+  controller,
+  logger,
+  runtimeContext,
+  schedulerStore = getDefaultSchedulerStore(),
+  connectorPathResolver = resolveDefaultConnectorPath,
+} = {}) {
+  let scheduler = null;
+  let stopped = false;
+  let refreshChain = Promise.resolve();
+
+  async function buildConnectors() {
+    const schedules = await Promise.resolve(schedulerStore.listSchedules());
+    const enabledSchedules = schedules.filter((schedule) => schedule?.enabled === true);
+    const connectors = [];
+    for (const schedule of enabledSchedules) {
+      try {
+        const manifest = await getConnectorManifest(schedule.connector_id);
+        if (!manifest) {
+          continue;
+        }
+        const connectorPath = await Promise.resolve(
+          connectorPathResolver(schedule.connector_id, manifest, { priorityClass: 'scheduled_refresh' }),
+        );
+        if (!connectorPath) {
+          logger?.warn?.(
+            { connector_id: schedule.connector_id },
+            'skipping scheduled connector without runnable implementation',
+          );
+          continue;
+        }
+        connectors.push({
+          connectorId: schedule.connector_id,
+          connectorPath,
+          manifest,
+          intervalMs: Math.max(1, schedule.interval_seconds) * 1000,
+          ownerToken: await controller.issueRuntimeOwnerToken(),
+        });
+      } catch (err) {
+        logger?.warn?.(
+          { err, connector_id: schedule?.connector_id },
+          'skipping scheduled connector during scheduler refresh',
+        );
+      }
+    }
+    return connectors;
+  }
+
+  async function restart() {
+    if (stopped) {
+      return;
+    }
+    scheduler?.stop();
+    scheduler = null;
+    const connectors = await buildConnectors();
+    if (stopped || connectors.length === 0) {
+      return;
+    }
+    scheduler = createScheduler({
+      connectors,
+      rsUrl: runtimeContext.rsUrl,
+      referenceBaseUrl: runtimeContext.referenceBaseUrl,
+      schedulerStore,
+      getState: async (connectorId) => {
+        const stored = await getSyncState(connectorId);
+        return stored?.state || null;
+      },
+      setState: async (connectorId, state) => {
+        await putSyncState(connectorId, state && typeof state === 'object' && !Array.isArray(state) ? state : {});
+      },
+      markNeedsHuman: (connectorId) => controller.markNeedsHuman(connectorId),
+      isNeedsHuman: (connectorId) =>
+        controller.isNeedsHuman(connectorId) || Boolean(controller.getActiveRun(connectorId)),
+      onInteraction: async () => ({ status: 'cancelled' }),
+      onRunComplete: (record) => {
+        logger?.info?.(
+          {
+            connector_id: record.connectorId,
+            status: record.status,
+            run_id: record.runId || null,
+            trace_id: record.traceId || null,
+          },
+          'scheduled connector run completed',
+        );
+      },
+    });
+    scheduler.start();
+    logger?.info?.({ schedules: connectors.length }, 'reference scheduler started');
+  }
+
+  function refresh() {
+    refreshChain = refreshChain.then(restart, restart);
+    return refreshChain;
+  }
+
+  function stop() {
+    stopped = true;
+    scheduler?.stop();
+    scheduler = null;
+  }
+
+  return { refresh, start: refresh, stop };
+}
+
 // ─── CLI entrypoint ──────────────────────────────────────────────────────────
 //
 // Process-level handlers (uncaughtException, unhandledRejection, SIGTERM,
@@ -6112,7 +6288,7 @@ if (process.argv[1] && process.argv[1].endsWith('server/index.js')) {
   process.on('uncaughtException', handleUncaught);
   process.on('unhandledRejection', exitOnFatal('unhandledRejection'));
 
-  const server = { asServer: null, rsServer: null, abortStartupBackfill: null, startupBackfillDone: null, controller: null };
+  const server = { asServer: null, rsServer: null, abortStartupBackfill: null, startupBackfillDone: null, schedulerManager: null, controller: null };
   const exitOnSignal = (signal) => async () => {
     if (shuttingDown) return;
     shuttingDown = true;
@@ -6154,6 +6330,7 @@ if (process.argv[1] && process.argv[1].endsWith('server/index.js')) {
     const awaitBackfill = server.startupBackfillDone
       ? Promise.resolve(server.startupBackfillDone).catch(() => {})
       : Promise.resolve();
+    try { server.schedulerManager?.stop?.(); } catch {}
     // Drain in-flight connector children IN PARALLEL with the HTTP /
     // backfill drains. Children received their own SIGTERM from Docker
     // and are running their Layer A shutdown-hook to release Chromium.
@@ -6193,6 +6370,7 @@ if (process.argv[1] && process.argv[1].endsWith('server/index.js')) {
     server.rsServer = result.rsServer;
     server.abortStartupBackfill = result.abortStartupBackfill;
     server.startupBackfillDone = result.startupBackfillDone;
+    server.schedulerManager = result.schedulerManager;
     server.controller = result.controller;
   }).catch(err => {
     closePostgresStorage().finally(() => closeDb());

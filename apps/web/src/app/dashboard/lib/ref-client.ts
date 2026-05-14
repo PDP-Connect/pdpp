@@ -222,6 +222,30 @@ export interface RefConnectorSummary {
   total_records: number;
 }
 
+export interface WebPushConfig {
+  enabled: boolean;
+  object: "web_push_config";
+  public_key: string | null;
+  unavailable_reason: string | null;
+}
+
+export interface WebPushSubscriptionSummary {
+  created_at: string;
+  device_label: string | null;
+  endpoint: string;
+  endpoint_redacted: string | null;
+  id: string;
+  last_failure_at: string | null;
+  last_failure_reason: string | null;
+  last_success_at: string | null;
+  last_used_at: string | null;
+  owner_subject_id: string;
+  platform: string | null;
+  revoked_at: string | null;
+  updated_at: string;
+  user_agent: string | null;
+}
+
 class RefNotFoundError extends Error {
   readonly status = 404;
 }
@@ -345,6 +369,14 @@ export async function listRuns(opts: ListQuery = {}): Promise<ListResponse<RunSu
     "/_ref/runs",
     opts as Record<string, string | number | undefined>
   )) as ListResponse<RunSummary>;
+}
+
+export async function getWebPushConfig(): Promise<WebPushConfig> {
+  return (await refFetch("/_ref/web-push/config")) as WebPushConfig;
+}
+
+export async function listWebPushSubscriptions(): Promise<ListResponse<WebPushSubscriptionSummary>> {
+  return (await refFetch("/_ref/web-push/subscriptions")) as ListResponse<WebPushSubscriptionSummary>;
 }
 
 export async function listConnectorSummaries(): Promise<ListResponse<RefConnectorSummary>> {

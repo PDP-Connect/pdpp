@@ -1,8 +1,10 @@
 import { PageHeader } from "./components/primitives.tsx";
 import { DashboardShell, ServerUnreachable } from "./components/shell.tsx";
+import { WebPushSettings } from "./components/web-push-settings.tsx";
 import { OverviewView, type OverviewViewData } from "./components/views/overview-view.tsx";
 import { dashboardRoutes } from "./components/views/routes.ts";
 import { liveDashboardDataSource } from "./lib/data-source.ts";
+import { getWebPushConfig, listWebPushSubscriptions } from "./lib/ref-client.ts";
 import { ReferenceServerUnreachableError } from "./lib/owner-token.ts";
 
 export const dynamic = "force-dynamic";
@@ -45,8 +47,14 @@ async function loadOverview(): Promise<OverviewViewData> {
 
 export default async function DashboardPage() {
   let data: OverviewViewData;
+  let webPush;
+  let subscriptions;
   try {
-    data = await loadOverview();
+    [data, webPush, subscriptions] = await Promise.all([
+      loadOverview(),
+      getWebPushConfig(),
+      listWebPushSubscriptions(),
+    ]);
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
@@ -66,6 +74,7 @@ export default async function DashboardPage() {
         description="A local-first operator console for the PDPP reference stack. Inspect traces, grants, runs, and retained records."
         routes={dashboardRoutes}
       />
+      <WebPushSettings config={webPush} subscriptions={subscriptions.data} />
     </DashboardShell>
   );
 }

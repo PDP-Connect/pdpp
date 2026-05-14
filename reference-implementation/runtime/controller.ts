@@ -277,6 +277,8 @@ export interface Controller {
   getActiveRun(connectorId: string): ActiveRun | null;
   getPendingInteraction(runId: string): PendingInteractionProjection | null;
   getSchedule(connectorId: string): Promise<ScheduleApi | null>;
+  isNeedsHuman(connectorId: string): boolean;
+  issueRuntimeOwnerToken(): Promise<string>;
   listSchedules(): Promise<ScheduleApi[]>;
   markNeedsHuman(connectorId: string): void;
   promoteBrowserSurfaceLeasesAfterBoot(): Promise<void>;
@@ -736,11 +738,35 @@ async function fireNtfy(
   }
 }
 
+async function fireWebPush(
+  args: {
+    interaction: RuntimeInteraction;
+    connectorDisplayName: string;
+    ownerSubjectId: string;
+    runId: string;
+    log: ControllerLogger;
+  }
+): Promise<void> {
+  try {
+    const { fanoutPendingInteractionWebPush } = await import("../server/web-push-notifications.js");
+    await fanoutPendingInteractionWebPush({
+      interaction: args.interaction,
+      connectorDisplayName: args.connectorDisplayName,
+      ownerSubjectId: args.ownerSubjectId,
+      runId: args.runId,
+      log: args.log as Console,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    args.log.warn?.(`[controller] web push fire for run ${args.runId} failed: ${message}`);
+  }
+}
+
 function brokerInteraction(
   runId: string,
   connectorId: string,
   interaction: RuntimeInteraction,
-  notifyArgs?: { connectorDisplayName: string; log: ControllerLogger }
+  notifyArgs?: { connectorDisplayName: string; log: ControllerLogger; ownerSubjectId: string }
 ): Promise<InteractionResponse> {
   return new Promise((resolve) => {
     const entry = activeRunInteractions.get(runId) ?? { connector_id: connectorId, pending: null };
@@ -770,6 +796,13 @@ function brokerInteraction(
       void fireNtfy({
         interaction,
         connectorDisplayName: notifyArgs.connectorDisplayName,
+        runId,
+        log: notifyArgs.log,
+      });
+      void fireWebPush({
+        interaction,
+        connectorDisplayName: notifyArgs.connectorDisplayName,
+        ownerSubjectId: notifyArgs.ownerSubjectId,
         runId,
         log: notifyArgs.log,
       });
@@ -1699,6 +1732,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
       brokerInteraction(runId, connectorId, interaction as RuntimeInteraction, {
         connectorDisplayName,
         log,
+        ownerSubjectId,
       });
 
     // runNow returns the run handle immediately; the actual connector
@@ -1873,6 +1907,8 @@ export function createController(opts: ControllerOptions = {}): Controller {
     promoteBrowserSurfaceLeasesAfterBoot,
     reconcileBrowserSurfaceLeasesAfterBoot,
     getPendingInteraction,
+    isNeedsHuman: (connectorId: string) => needsHumanAttention.has(connectorId),
+    issueRuntimeOwnerToken,
     respondToInteraction,
     runNow,
     markNeedsHuman,

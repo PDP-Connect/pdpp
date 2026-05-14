@@ -517,6 +517,13 @@ browser origin, checks that public metadata does not leak Docker service names,
 and confirms `/dashboard` redirects to `/owner/login` when owner auth is
 configured.
 
+Scheduler startup uses the same `reference-implementation/server/index.js`
+entrypoint in Docker as local long-lived startup. To smoke enabled schedule
+execution in Compose, seed a connector and enabled `connector_schedules` row in
+the mounted reference database, restart only the `reference` service, then
+confirm a new `scheduler_run_history` row appears for that connector without
+pressing Run now. Disabled or deleted rows should not add history after restart.
+
 For Docker-based development with hot reload, run:
 
 ```bash

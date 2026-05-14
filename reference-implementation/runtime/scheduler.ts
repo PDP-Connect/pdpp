@@ -154,6 +154,7 @@ export interface SchedulerOptions {
   markNeedsHuman?: NeedsHumanHandler;
   onInteraction: InteractionHandler;
   onRunComplete?: RunCompleteHandler;
+  referenceBaseUrl?: string | null;
   rsUrl?: string;
   schedulerStore?: Pick<
     SchedulerStore,
@@ -481,6 +482,7 @@ interface RunConnectorCall {
   onProgress: () => void;
   ownerToken: string;
   persistState: boolean;
+  referenceBaseUrl?: string | null;
   rsUrl: string;
   state: Record<string, unknown> | null;
 }
@@ -512,6 +514,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
   const {
     connectors,
     rsUrl = process.env.RS_URL || "http://localhost:7663",
+    referenceBaseUrl = null,
     onInteraction,
     onRunComplete = () => {
       // no-op
@@ -785,6 +788,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
         state,
         collectionMode,
         persistState,
+        referenceBaseUrl,
         rsUrl,
         onInteraction: wrappedInteraction,
         onProgress: () => {

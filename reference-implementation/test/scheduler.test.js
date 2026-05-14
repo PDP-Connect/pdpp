@@ -7,12 +7,14 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 import { startServer } from '../server/index.js';
+import { closeDb } from '../server/db.js';
 import { createScheduler } from '../runtime/scheduler.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, '..');
 
 async function closeServer(server) {
+  server.schedulerManager?.stop?.();
   server.asServer.closeAllConnections();
   server.rsServer.closeAllConnections();
 
@@ -36,6 +38,40 @@ async function closeServer(server) {
     closeWithTimeout(server.asServer),
     closeWithTimeout(server.rsServer),
   ]);
+}
+
+function writeLoggingConnector(tmpDir, name = 'scheduled-connector.mjs') {
+  const attemptsPath = join(tmpDir, 'scheduled-attempts.log');
+  const connectorPath = join(tmpDir, name);
+  writeFileSync(connectorPath, `
+import { appendFileSync } from 'node:fs';
+import { createInterface } from 'node:readline';
+
+const attemptsPath = ${JSON.stringify(attemptsPath)};
+const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
+
+rl.on('line', (line) => {
+  const msg = JSON.parse(line);
+  if (msg.type !== 'START') return;
+  appendFileSync(attemptsPath, 'attempt\\n', 'utf8');
+  process.stdout.write(JSON.stringify({
+    type: 'DONE',
+    status: 'succeeded',
+    records_emitted: 0
+  }) + '\\n');
+  rl.close();
+  process.exit(0);
+});
+`, 'utf8');
+  return { attemptsPath, connectorPath };
+}
+
+function readAttempts(path) {
+  try {
+    return readFileSync(path, 'utf8').trim().split('\n').filter(Boolean);
+  } catch {
+    return [];
+  }
 }
 
 async function closeHttpServer(server) {
@@ -88,6 +124,152 @@ async function waitFor(condition, timeoutMs = 5000) {
   }
   throw new Error('Timed out waiting for scheduler run to complete');
 }
+
+test('server-owned scheduler starts persisted enabled schedules after startup', async () => {
+  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
+  const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-server-scheduler-enabled-'));
+  const dbPath = join(tmpDir, 'pdpp.sqlite');
+  const { attemptsPath, connectorPath } = writeLoggingConnector(tmpDir);
+  let server = null;
+
+  try {
+    server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath });
+    const asUrl = `http://localhost:${server.asPort}`;
+    const registerResp = await fetchJson(`${asUrl}/connectors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(spotifyManifest),
+    });
+    assert.equal(registerResp.status, 201);
+    await server.controller.upsertSchedule(spotifyManifest.connector_id, {
+      interval_seconds: 60,
+      jitter_seconds: 0,
+      enabled: true,
+    });
+    await closeServer(server);
+    closeDb();
+    server = null;
+
+    server = await startServer({
+      quiet: true,
+      asPort: 0,
+      rsPort: 0,
+      dbPath,
+      connectorPathResolver: () => connectorPath,
+    });
+
+    await waitFor(() => readAttempts(attemptsPath).length === 1, 5000);
+  } finally {
+    if (server) {
+      await closeServer(server);
+    }
+    closeDb();
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('server-owned scheduler refreshes after schedule route mutations', async () => {
+  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
+  const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-server-scheduler-route-refresh-'));
+  const { attemptsPath, connectorPath } = writeLoggingConnector(tmpDir);
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+    connectorPathResolver: () => connectorPath,
+  });
+  const asUrl = `http://localhost:${server.asPort}`;
+
+  try {
+    const registerResp = await fetchJson(`${asUrl}/connectors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(spotifyManifest),
+    });
+    assert.equal(registerResp.status, 201);
+
+    const putResp = await fetch(`${asUrl}/_ref/connectors/${encodeURIComponent(spotifyManifest.connector_id)}/schedule`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ interval_seconds: 60, jitter_seconds: 0, enabled: true }),
+    });
+    assert.equal(putResp.status, 200);
+    await waitFor(() => readAttempts(attemptsPath).length === 1, 5000);
+
+    const pauseResp = await fetch(`${asUrl}/_ref/connectors/${encodeURIComponent(spotifyManifest.connector_id)}/schedule/pause`, {
+      method: 'POST',
+    });
+    assert.equal(pauseResp.status, 200);
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.equal(readAttempts(attemptsPath).length, 1, 'paused route mutation should stop the live scheduler');
+  } finally {
+    await closeServer(server);
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('server-owned scheduler ignores paused and deleted persisted schedules', async () => {
+  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
+  const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-server-scheduler-paused-deleted-'));
+  const dbPath = join(tmpDir, 'pdpp.sqlite');
+  const { attemptsPath, connectorPath } = writeLoggingConnector(tmpDir);
+  let server = null;
+
+  try {
+    server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath });
+    const asUrl = `http://localhost:${server.asPort}`;
+    const registerResp = await fetchJson(`${asUrl}/connectors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(spotifyManifest),
+    });
+    assert.equal(registerResp.status, 201);
+    await server.controller.upsertSchedule(spotifyManifest.connector_id, {
+      interval_seconds: 60,
+      jitter_seconds: 0,
+      enabled: true,
+    });
+    await server.controller.setScheduleEnabled(spotifyManifest.connector_id, false);
+    await closeServer(server);
+    closeDb();
+    server = null;
+
+    server = await startServer({
+      quiet: true,
+      asPort: 0,
+      rsPort: 0,
+      dbPath,
+      connectorPathResolver: () => connectorPath,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.equal(readAttempts(attemptsPath).length, 0, 'paused schedule should not run after startup');
+
+    await closeServer(server);
+    closeDb();
+    server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath });
+    await server.controller.deleteSchedule(spotifyManifest.connector_id);
+    await closeServer(server);
+    closeDb();
+    server = null;
+
+    server = await startServer({
+      quiet: true,
+      asPort: 0,
+      rsPort: 0,
+      dbPath,
+      connectorPathResolver: () => connectorPath,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.equal(readAttempts(attemptsPath).length, 0, 'deleted schedule should not run after startup');
+  } finally {
+    if (server) {
+      await closeServer(server);
+    }
+    closeDb();
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
 
 test('scheduler history records checkpoint summaries from runConnector results', async () => {
   const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
