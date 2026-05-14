@@ -31,6 +31,15 @@ const OTHER_MANAGED_MANIFEST = {
   },
 };
 
+const DISTINCT_PROFILE_MANIFEST = {
+  ...OTHER_MANAGED_MANIFEST,
+  capabilities: {
+    browser_surface: {
+      profile_key: "other-managed-profile",
+    },
+  },
+};
+
 function tempDbPath() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pdpp-controller-bsl-"));
   return path.join(dir, "pdpp.sqlite");
@@ -87,31 +96,33 @@ function createDynamicManager(options = {}) {
 }
 
 function createReadyAllocator() {
+  const ensureRequests = [];
+  const surfaces = new Map();
   return {
-    ensureSurface: async (request) => ({
-      surface_id: request.surfaceId,
-      backend: "neko",
-      profile_key: request.profileKey,
-      connector_id: request.connectorId,
-      cdp_url: `http://127.0.0.1:9222/${request.surfaceId}`,
-      stream_base_url: `http://127.0.0.1:8080/${request.surfaceId}`,
-      health: "ready",
-      created_at: "2026-05-12T12:00:00.000Z",
-      last_used_at: "2026-05-12T12:00:00.000Z",
-    }),
-    getSurfaceStatus: async (surfaceId) => ({
-      surface_id: surfaceId,
-      backend: "neko",
-      profile_key: "managed-profile",
-      connector_id: "managed",
-      cdp_url: `http://127.0.0.1:9222/${surfaceId}`,
-      stream_base_url: `http://127.0.0.1:8080/${surfaceId}`,
-      health: "ready",
-      created_at: "2026-05-12T12:00:00.000Z",
-      last_used_at: "2026-05-12T12:00:00.000Z",
-    }),
-    stopSurface: async () => null,
-    listSurfaces: async () => [],
+    ensureRequests,
+    ensureSurface: async (request) => {
+      ensureRequests.push(request);
+      const surface = {
+        surface_id: request.surfaceId,
+        backend: "neko",
+        profile_key: request.profileKey,
+        connector_id: request.connectorId,
+        cdp_url: `http://127.0.0.1:9222/${request.surfaceId}`,
+        stream_base_url: `http://127.0.0.1:8080/${request.surfaceId}`,
+        health: "ready",
+        created_at: "2026-05-12T12:00:00.000Z",
+        last_used_at: "2026-05-12T12:00:00.000Z",
+      };
+      surfaces.set(request.surfaceId, surface);
+      return surface;
+    },
+    getSurfaceStatus: async (surfaceId) => surfaces.get(surfaceId) ?? null,
+    stopSurface: async (request) => {
+      const surface = surfaces.get(request.surfaceId) ?? null;
+      surfaces.delete(request.surfaceId);
+      return surface;
+    },
+    listSurfaces: async () => [...surfaces.values()],
   };
 }
 
@@ -346,6 +357,93 @@ test("dynamic immediate-ready allocator leases then starts connector", async (t)
   assert.equal(calls.runConnector, 1);
   assert.equal(manager.getLease("lease_1").status, "released");
   assert.ok(eventTypes.indexOf("run.browser_surface_leased") < eventTypes.indexOf("run.started") || !eventTypes.includes("run.started"));
+});
+
+test("dynamic managed runs with distinct profile keys allocate separate ready surfaces", async (t) => {
+  let releaseFirst;
+  const allocator = createReadyAllocator();
+  const manager = createDynamicManager({ surfaceCap: 2 });
+  const runConnectorImpl = (opts) => {
+    if (opts.runId === "run_distinct_first") {
+      return new Promise((resolve) => {
+        releaseFirst = () => resolve({ status: "completed", records_emitted: 0, state: null, checkpoint_summary: null });
+      });
+    }
+    return Promise.resolve({ status: "completed", records_emitted: 0, state: null, checkpoint_summary: null });
+  };
+  const { calls, controller } = setup(t, { manager, browserSurfaceAllocator: allocator, runConnectorImpl });
+
+  const first = await controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_distinct_first",
+  });
+  const second = await controller.runNow("other-managed", {
+    manifest: DISTINCT_PROFILE_MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_distinct_second",
+  });
+  await waitFor(() => calls.runConnector === 2, "both distinct-profile dynamic runs should spawn under cap 2");
+
+  assert.equal(first.status, "started");
+  assert.equal(second.status, "started");
+  assert.deepEqual(
+    allocator.ensureRequests.map((request) => request.profileKey),
+    ["managed-profile", "other-managed-profile"]
+  );
+  assert.equal(new Set(allocator.ensureRequests.map((request) => request.surfaceId)).size, 2);
+  assert.notEqual(calls.runConnectorOpts[0].browserSurfaceEnv.PDPP_BROWSER_SURFACE_ID, calls.runConnectorOpts[1].browserSurfaceEnv.PDPP_BROWSER_SURFACE_ID);
+  assert.deepEqual(
+    calls.runConnectorOpts.map((opts) => opts.browserSurfaceEnv.PDPP_BROWSER_SURFACE_PROFILE_KEY),
+    ["managed-profile", "other-managed-profile"]
+  );
+
+  releaseFirst();
+  await controller.drainActiveRuns(1000);
+  assert.equal(manager.getLease("lease_1").status, "released");
+  assert.equal(manager.getLease("lease_2").status, "released");
+});
+
+test("dynamic cap queues distinct-profile managed run before allocating a second surface", async (t) => {
+  let releaseFirst;
+  const allocator = createReadyAllocator();
+  const manager = createDynamicManager({ surfaceCap: 1 });
+  const runConnectorImpl = (opts) => {
+    if (opts.runId === "run_dynamic_cap_first") {
+      return new Promise((resolve) => {
+        releaseFirst = () => resolve({ status: "completed", records_emitted: 0, state: null, checkpoint_summary: null });
+      });
+    }
+    return Promise.resolve({ status: "completed", records_emitted: 0, state: null, checkpoint_summary: null });
+  };
+  const { calls, controller } = setup(t, { manager, browserSurfaceAllocator: allocator, runConnectorImpl });
+
+  await controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_dynamic_cap_first",
+  });
+  const queued = await controller.runNow("other-managed", {
+    manifest: DISTINCT_PROFILE_MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_dynamic_cap_second",
+  });
+
+  assert.equal(queued.status, "waiting_for_browser_surface");
+  assert.equal(queued.browser_surface.browser_surface_wait_reason, "capacity_full");
+  assert.equal(calls.runConnector, 1);
+  assert.equal(allocator.ensureRequests.length, 1);
+  assert.equal(allocator.ensureRequests[0].profileKey, "managed-profile");
+  assert.equal(controller.getActiveRun("other-managed"), null);
+  assert.equal(listRunEventTypes("run_dynamic_cap_second").includes("run.started"), false);
+
+  releaseFirst();
+  await controller.drainActiveRuns(1000);
+
+  assert.equal(allocator.ensureRequests.length, 1);
+  assert.equal(calls.runConnector, 1);
+  assert.equal(manager.getLease("lease_1").status, "released");
+  assert.equal(manager.getLease("lease_2").status, "waiting_for_browser_surface");
 });
 
 test("dynamic allocator failure emits browser-surface failed without spawning connector", async (t) => {
