@@ -25,6 +25,7 @@ const DEFAULT_NEKO_PROFILE_GID = 1000;
 const PROFILE_DIRECTORY_MODE = 0o700;
 const LEADING_SLASH_RE = /^\//;
 const TRAILING_SLASHES_RE = /\/+$/;
+const DOCKER_HTTP_404_RE = /\bHTTP 404\b/;
 
 type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
@@ -265,7 +266,7 @@ export class NekoSurfaceAllocatorService {
       if (!isInspectRunning(existing)) {
         await this.#startContainer(existing.Id);
       }
-      return this.#surfaceFromInspect(await this.#inspectContainer(existing.Id), request);
+      return this.#surfaceFromInspect(await this.#inspectContainer(existing.Id), { request });
     }
 
     const port = await this.#allocateHostPort();
@@ -298,7 +299,7 @@ export class NekoSurfaceAllocatorService {
     });
     const containerId = readCreatedContainerId(created);
     await this.#startContainer(containerId);
-    return this.#surfaceFromInspect(await this.#inspectContainer(containerId), request);
+    return this.#surfaceFromInspect(await this.#inspectContainer(containerId), { request });
   }
 
   async getSurfaceStatus(surfaceId: string): Promise<BrowserSurface | null> {
@@ -317,7 +318,19 @@ export class NekoSurfaceAllocatorService {
       method: "POST",
       okStatuses: [204, 304],
     });
-    return this.#surfaceFromInspect(await this.#inspectContainer(inspect.Id));
+    try {
+      return this.#surfaceFromInspect(await this.#inspectContainer(inspect.Id), {
+        allowLabelHostPort: true,
+      });
+    } catch (cause) {
+      if (!isDockerNotFoundError(cause)) {
+        throw cause;
+      }
+      return this.#surfaceFromInspect(inspect, {
+        allowLabelHostPort: true,
+        readiness: { health: "stopping", reason: "container_removed" },
+      });
+    }
   }
 
   async listSurfaces(): Promise<BrowserSurface[]> {
@@ -330,7 +343,14 @@ export class NekoSurfaceAllocatorService {
     return this.#surfaceFromInspect(await this.#inspectContainer(containerId));
   }
 
-  async #surfaceFromInspect(inspect: DockerContainerInspect, request?: SurfaceRequest): Promise<BrowserSurface> {
+  async #surfaceFromInspect(
+    inspect: DockerContainerInspect,
+    options: {
+      readonly allowLabelHostPort?: boolean;
+      readonly readiness?: { readonly health: BrowserSurfaceHealth; readonly reason: string };
+      readonly request?: SurfaceRequest;
+    } = {}
+  ): Promise<BrowserSurface> {
     const labels = this.#ownedLabels(inspect);
     const surfaceId = labels[`${this.#options.labelNamespace}.surface_id`];
     const profileKey = labels[`${this.#options.labelNamespace}.profile_key`];
@@ -341,13 +361,15 @@ export class NekoSurfaceAllocatorService {
         "managed container is missing required PDPP labels"
       );
     }
-    const hostPort = readHostPort(inspect, Number(labels[`${this.#options.labelNamespace}.webrtc_host_port`]));
+    const hostPort = readHostPort(inspect, Number(labels[`${this.#options.labelNamespace}.webrtc_host_port`]), {
+      allowLabelFallback: options.allowLabelHostPort === true,
+    });
     const containerName = inspect.Name?.replace(LEADING_SLASH_RE, "") ?? "";
     const cdpUrl = this.#expandTemplate(this.#options.cdpBaseUrlTemplate, surfaceId, hostPort, containerName);
     const streamBaseUrl = this.#expandTemplate(this.#options.streamBaseUrlTemplate, surfaceId, hostPort, containerName);
-    const readiness = await this.#readiness({ inspect, cdpUrl, streamBaseUrl });
+    const readiness = options.readiness ?? (await this.#readiness({ inspect, cdpUrl, streamBaseUrl }));
     const now = this.#options.now().toISOString();
-    const accountKey = request?.accountKey ?? labels[`${this.#options.labelNamespace}.account_key`];
+    const accountKey = options.request?.accountKey ?? labels[`${this.#options.labelNamespace}.account_key`];
     const surface: BrowserSurface = {
       surface_id: surfaceId,
       backend: BROWSER_SURFACE_BACKEND_NEKO,
@@ -809,17 +831,32 @@ function readCreatedContainerId(value: unknown): string {
   return value.Id;
 }
 
-function readHostPort(inspect: DockerContainerInspect, containerPort: number): number {
+function readHostPort(
+  inspect: DockerContainerInspect,
+  containerPort: number,
+  options: { readonly allowLabelFallback?: boolean } = {}
+): number {
   const bindings = inspect.NetworkSettings?.Ports?.[`${String(containerPort)}/tcp`];
   const hostPort = bindings?.[0]?.HostPort;
   const parsed = hostPort === undefined ? Number.NaN : Number.parseInt(hostPort, 10);
-  if (!Number.isInteger(parsed) || parsed < 1) {
-    throw new NekoSurfaceAllocatorServiceError(
-      "docker_malformed_response",
-      "managed container is missing host port binding"
-    );
+  if (Number.isInteger(parsed) && parsed > 0) {
+    return parsed;
   }
-  return parsed;
+  if (options.allowLabelFallback === true && Number.isInteger(containerPort) && containerPort > 0) {
+    return containerPort;
+  }
+  throw new NekoSurfaceAllocatorServiceError(
+    "docker_malformed_response",
+    "managed container is missing host port binding"
+  );
+}
+
+function isDockerNotFoundError(value: unknown): boolean {
+  return (
+    value instanceof NekoSurfaceAllocatorServiceError &&
+    value.code === "docker_http_error" &&
+    DOCKER_HTTP_404_RE.test(value.message)
+  );
 }
 
 function isInspectRunning(inspect: DockerContainerInspect): boolean {

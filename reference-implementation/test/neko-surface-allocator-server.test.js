@@ -239,6 +239,37 @@ test("gets, lists, and stops only PDPP-owned surfaces", async () => {
   assert.equal(docker.containers.get("container_1").running, false);
 });
 
+test("stopSurface tolerates post-stop inspect without Docker host port bindings", async () => {
+  const docker = new FakeDocker();
+  docker.omitPortBindingsWhenStopped = true;
+  const service = new NekoSurfaceAllocatorService({ ...BASE_OPTIONS, docker, fetchImpl: readyFetch() });
+  await service.ensureSurface({ surfaceId: "surface_1", connectorId: "chatgpt", profileKey: "profile_1" });
+
+  const stopped = await service.stopSurface({ surfaceId: "surface_1", reason: "idle_ttl" });
+
+  assert.equal(stopped?.surface_id, "surface_1");
+  assert.equal(stopped?.health, "starting");
+  assert.equal(stopped?.allocator_metadata.host_port, "59000");
+});
+
+test("HTTP DELETE returns a stopped surface when Docker removes the owned container before post-stop inspect", async () => {
+  const docker = new FakeDocker();
+  docker.removeOnStop = true;
+  const server = await startNekoSurfaceAllocatorServer({ ...BASE_OPTIONS, docker, fetchImpl: readyFetch() });
+  try {
+    const client = new NekoSurfaceAllocatorClient({ baseUrl: server.url });
+    await client.ensureSurface({ surfaceId: "surface_1", connectorId: "chatgpt", profileKey: "profile_1" });
+
+    const stopped = await client.stopSurface({ surfaceId: "surface_1", reason: "operator" });
+
+    assert.equal(stopped?.surface_id, "surface_1");
+    assert.equal(stopped?.health, "stopping");
+    assert.equal(stopped?.allocator_metadata.readiness, "container_removed");
+  } finally {
+    await server.close();
+  }
+});
+
 test("rejects an inspected unlabeled or foreign Docker resource", async () => {
   const docker = new FakeDocker();
   docker.addOwnedSummaryForForeignInspect("foreign_inspect", "surface_1");
@@ -305,6 +336,8 @@ class FakeDocker {
   containers = new Map();
   nextId = 1;
   foreignInspectIds = new Set();
+  omitPortBindingsWhenStopped = false;
+  removeOnStop = false;
 
   async requestJson(path, init = {}) {
     this.calls.push({ path, init });
@@ -345,20 +378,35 @@ class FakeDocker {
     }
     const stopMatch = path.match(/^\/containers\/([^/]+)\/stop$/);
     if (stopMatch) {
-      this.containers.get(stopMatch[1]).running = false;
+      const container = this.containers.get(stopMatch[1]);
+      if (this.removeOnStop) {
+        this.containers.delete(stopMatch[1]);
+      } else {
+        container.running = false;
+      }
       return null;
     }
     const inspectMatch = path.match(/^\/containers\/([^/]+)\/json$/);
     if (inspectMatch) {
       const id = inspectMatch[1];
       const container = this.containers.get(id);
+      if (container === undefined) {
+        throw new NekoSurfaceAllocatorServiceError(
+          "docker_http_error",
+          `Docker GET /containers/${id}/json returned HTTP 404`,
+        );
+      }
+      const ports =
+        this.omitPortBindingsWhenStopped && !container.running
+          ? {}
+          : { [`${String(container.hostPort)}/tcp`]: [{ HostPort: String(container.hostPort) }] };
       return {
         Id: id,
         Name: `/${container.name}`,
         Config: { Labels: this.foreignInspectIds.has(id) ? { "other.owner": "someone-else" } : container.labels },
         State: { Running: container.running, Status: container.running ? "running" : "exited" },
         NetworkSettings: {
-          Ports: { [`${String(container.hostPort)}/tcp`]: [{ HostPort: String(container.hostPort) }] },
+          Ports: ports,
           Networks: { [container.network]: {} },
         },
       };
