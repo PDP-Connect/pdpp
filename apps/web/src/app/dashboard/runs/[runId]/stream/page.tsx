@@ -8,7 +8,11 @@ import {
   type SpineEvent,
   type TimelineEnvelope,
 } from "../../../lib/ref-client.ts";
-import { getCurrentBrowserSurfaceAssistance } from "../../../lib/run-assistance.ts";
+import {
+  getCurrentBrowserSurfaceAssistance,
+  getCurrentRunAssistance,
+  requiresBrowserSurfaceAssistance,
+} from "../../../lib/run-assistance.ts";
 import { ResolvedSurface, StreamSurface } from "./stream-viewer.tsx";
 
 export const dynamic = "force-dynamic";
@@ -122,10 +126,14 @@ export default async function RunInteractionStreamPage({
   }
 
   const streamableAssistance = getCurrentBrowserSurfaceAssistance(envelope.events);
+  const currentAssistance = getCurrentRunAssistance(envelope.events);
   const connectorId = getConnectorIdFromTimeline(envelope.events);
   const connector = await resolveConnectorContext(connectorId);
 
   if (!streamableAssistance) {
+    if (currentAssistance && requiresBrowserSurfaceAssistance(currentAssistance)) {
+      return <UnavailableStreamSurface connector={connector} runId={runId} />;
+    }
     return <ResolvedSurface connector={connector} />;
   }
 
@@ -137,5 +145,27 @@ export default async function RunInteractionStreamPage({
       interactionMessage={streamableAssistance.message}
       runId={runId}
     />
+  );
+}
+
+function UnavailableStreamSurface({ connector, runId }: { connector: ConnectorContext | null; runId: string }) {
+  return (
+    <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col justify-center px-5 py-8">
+      <section className="rounded-3xl border border-[color:var(--warning)] bg-[color:var(--warning-wash)] p-6 shadow-2xl shadow-black/10">
+        <p className="pdpp-eyebrow text-muted-foreground">stream unavailable</p>
+        <h1 className="mt-3 text-balance font-semibold text-2xl text-foreground">Waiting for a browser surface</h1>
+        <p className="mt-3 text-muted-foreground text-sm leading-6">
+          {connector ? `${connector.displayName} needs browser control, but ` : "This run needs browser control, but "}
+          no current stream target is registered for this assistance request. Keep the run open while the runtime
+          registers a browser surface, then return to the run detail page.
+        </p>
+        <a
+          className="mt-5 inline-flex rounded-full bg-foreground px-4 py-2 font-medium text-background text-sm"
+          href={`/dashboard/runs/${encodeURIComponent(runId)}`}
+        >
+          Back to run detail
+        </a>
+      </section>
+    </main>
   );
 }

@@ -9,7 +9,8 @@ import { getRunTimeline, type SpineEvent, type TimelineEnvelope } from "../../li
 import {
   type CurrentRunAssistance,
   getCurrentRunAssistance,
-  hasBrowserSurfaceAttachment,
+  hasAvailableBrowserSurfaceAttachment,
+  requiresBrowserSurfaceAssistance,
 } from "../../lib/run-assistance.ts";
 import {
   classifyKnownGaps,
@@ -163,15 +164,15 @@ function CurrentAssistanceSection({
   }
   const supportsStreaming =
     active &&
-    currentAssistance.progressPosture === "blocked" &&
-    currentAssistance.ownerAction === "operate_attachment" &&
-    currentAssistance.responseContract === "response_required" &&
-    hasBrowserSurfaceAttachment(currentAssistance);
+    requiresBrowserSurfaceAssistance(currentAssistance) &&
+    hasAvailableBrowserSurfaceAttachment(currentAssistance);
   const supportsSubmit =
     active &&
     currentAssistance.progressPosture === "blocked" &&
     currentAssistance.responseContract === "response_required" &&
-    (currentAssistance.ownerAction === "provide_value" || currentAssistance.ownerAction === "operate_attachment");
+    (currentAssistance.ownerAction === "provide_value" ||
+      (currentAssistance.ownerAction === "operate_attachment" &&
+        (!requiresBrowserSurfaceAssistance(currentAssistance) || supportsStreaming)));
 
   return (
     <Callout
@@ -201,7 +202,7 @@ function CurrentAssistanceSection({
         {currentAssistance.attachments.length > 0 ? (
           <>
             <dt className="text-muted-foreground">attachments</dt>
-            <dd>{currentAssistance.attachments.map((attachment) => attachment.kind).join(", ")}</dd>
+            <dd>{formatAssistanceAttachments(currentAssistance)}</dd>
           </>
         ) : null}
         {currentAssistance.timeoutLabel ? (
@@ -271,7 +272,24 @@ function getAssistanceDescription(
   if (supportsStreaming) {
     return "This run is blocked until the requested browser-surface action is completed.";
   }
+  if (requiresBrowserSurfaceAssistance(assistance)) {
+    return "This run is waiting for a browser surface or stream target to register before browser control can open.";
+  }
   return "This run is blocked until the requested response is submitted.";
+}
+
+function formatAssistanceAttachments(assistance: CurrentRunAssistance): string {
+  return assistance.attachments
+    .map((attachment) => {
+      if (attachment.kind !== "browser_surface") {
+        return attachment.kind;
+      }
+      if (hasAvailableBrowserSurfaceAttachment(assistance)) {
+        return "browser_surface available";
+      }
+      return "browser_surface waiting for stream target";
+    })
+    .join(", ");
 }
 
 function LatestProgressSection({

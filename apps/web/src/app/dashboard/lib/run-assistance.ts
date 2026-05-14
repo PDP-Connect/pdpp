@@ -8,6 +8,7 @@ export interface AssistanceAttachment {
   kind: string;
   label: string | null;
   ref: string | null;
+  status: string | null;
 }
 
 export interface AssistanceField {
@@ -159,13 +160,21 @@ export function hasBrowserSurfaceAttachment(assistance: CurrentRunAssistance): b
   return assistance.attachments.some((attachment) => attachment.kind === "browser_surface");
 }
 
-function isStreamableBrowserSurfaceAssistance(assistance: CurrentRunAssistance): boolean {
+export function hasAvailableBrowserSurfaceAttachment(assistance: CurrentRunAssistance): boolean {
+  return assistance.attachments.some(isAvailableBrowserSurfaceAttachment);
+}
+
+export function requiresBrowserSurfaceAssistance(assistance: CurrentRunAssistance): boolean {
   return (
     assistance.progressPosture === "blocked" &&
     assistance.ownerAction === "operate_attachment" &&
     assistance.responseContract === "response_required" &&
     hasBrowserSurfaceAttachment(assistance)
   );
+}
+
+function isStreamableBrowserSurfaceAssistance(assistance: CurrentRunAssistance): boolean {
+  return requiresBrowserSurfaceAssistance(assistance) && hasAvailableBrowserSurfaceAttachment(assistance);
 }
 
 function assistanceFromEvent(event: SpineEvent, id: string): CurrentRunAssistance {
@@ -196,7 +205,7 @@ function assistanceFromLegacyInteraction(event: SpineEvent, id: string): Current
     progressPosture: "blocked",
     ownerAction: isManualAction ? "operate_attachment" : "provide_value",
     responseContract: "response_required",
-    attachments: isManualAction ? [{ kind: "browser_surface", label: null, ref: null }] : [],
+    attachments: isManualAction ? [{ kind: "browser_surface", label: null, ref: null, status: null }] : [],
     fields: parseFields(data.schema),
     timeoutLabel: timeoutLabel(data.timeout_seconds),
   };
@@ -229,9 +238,23 @@ function parseAttachments(value: unknown): AssistanceAttachment[] {
         kind,
         label: stringField(item.label ?? item.title),
         ref: stringField(item.ref ?? item.id ?? item.surface_id),
+        status: stringField(item.status ?? item.availability),
       };
     })
     .filter((attachment): attachment is AssistanceAttachment => attachment !== null);
+}
+
+function isAvailableBrowserSurfaceAttachment(attachment: AssistanceAttachment): boolean {
+  if (attachment.kind !== "browser_surface") {
+    return false;
+  }
+  if (attachment.ref) {
+    return true;
+  }
+  if (!attachment.status) {
+    return true;
+  }
+  return attachment.status === "available" || attachment.status === "current" || attachment.status === "registered";
 }
 
 function parseFields(schema: unknown): AssistanceField[] {

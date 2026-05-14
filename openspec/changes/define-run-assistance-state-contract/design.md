@@ -158,6 +158,21 @@ If the Collection Profile later standardizes assistance, it should standardize t
 
 Rollback is straightforward while compatibility remains: keep existing `INTERACTION` handling and ignore new assistance events in older UI surfaces.
 
+## Connector Assistance Audit
+
+This audit records the migration decision for implemented connectors. It is not a claim that every connector is live-proven in Docker; it separates assistance-contract readiness from browser/runtime deployment readiness.
+
+| Connector | Current mode | Assistance mapping | Docker deployment decision |
+| --- | --- | --- | --- |
+| ChatGPT | Playwright plus browser-session API calls | Migrated to structured nonblocking app-push assistance; OTP and manual fallbacks remain supported | Use as the reference browser-backed connector; requires managed n.eko/remote surface or local collector browser |
+| USAA | Playwright browser with persistent profile and downloads | OTP maps through compatibility; manual login fallback should move to the browser-handoff helper before being considered polished | Defer full Docker proof until browser-surface fallback is migrated |
+| Chase | Playwright headed-browser connector | OTP maps through compatibility; app-push, if observed, should use nonblocking assistance | Defer provider-Docker proof; run through local collector or managed remote surface |
+| Amazon | Playwright browser with bot/CAPTCHA risk | OTP maps through compatibility; CAPTCHA/manual remediation should become explicit browser-surface assistance | Defer full Docker proof until CAPTCHA/manual fallback is modeled |
+| Reddit | Playwright login plus page-context fetch | OTP/manual compatibility exists, but manifest assistance declarations need correction | Defer full Docker proof until manifest and manual fallback are aligned |
+| Gmail | Network-only IMAP | Credential prompt maps through compatibility, though the connector should eventually use the shared helper | Docker-ready when app password/env or an explicit credential response is available |
+| claude-code | Local filesystem collector | No owner assistance expected | Keep local-collector only; Docker needs mounted user filesystem |
+| codex | Local filesystem/CLI-state collector | No owner assistance expected | Keep local-collector only; Docker needs mounted user filesystem |
+
 ## Open Questions
 
 - Should the connector-facing message be a new stdout message type, an extension of `INTERACTION`, or a runtime helper that emits existing messages plus structured timeline metadata?

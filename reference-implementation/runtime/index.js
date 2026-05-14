@@ -766,6 +766,42 @@ function safeAttachmentString(value, maxLength = 160) {
   return trimmed;
 }
 
+function sanitizeAssistanceTimelineString(value, maxLength = GAP_STRING_MAX) {
+  const redacted = boundGapString(value);
+  if (!redacted) return null;
+  const sanitized = redacted
+    .replace(/\b(?:https?|wss?):\/\/[^\s<>"')]+/gi, '[REDACTED_URL]')
+    .replace(/\b((?:qr[_-]?)?(?:secret|token|password|passwd|cookie|otp|bearer))\b\s*[:=]\s*["']?[^"',\s}]+/gi, '$1=[REDACTED]')
+    .replace(/\b((?:cdp|playwright|webrtc|neko)[_-]?(?:url|uri|endpoint|token|secret))\b\s*[:=]\s*["']?[^"',\s}]+/gi, '$1=[REDACTED]');
+  if (sanitized.length <= maxLength) return sanitized;
+  return sanitized.slice(0, maxLength - 1) + '…';
+}
+
+function sanitizeAssistanceInputSchema(value, depth = 0) {
+  if (depth > 8) return '[REDACTED]';
+  if (Array.isArray(value)) {
+    return value.slice(0, 50).map((entry) => sanitizeAssistanceInputSchema(entry, depth + 1));
+  }
+  if (!value || typeof value !== 'object') {
+    return typeof value === 'string' ? sanitizeAssistanceTimelineString(value, 200) || '' : value;
+  }
+  const out = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (/^(?:default|example|examples|const|enum)$/i.test(key)) {
+      out[key] = '[REDACTED]';
+      continue;
+    }
+    if (/(?:password|passwd|secret|token|bearer|cookie|credential|otp|qr)/i.test(key)) {
+      out[key] = entry && typeof entry === 'object' && !Array.isArray(entry)
+        ? sanitizeAssistanceInputSchema(entry, depth + 1)
+        : '[REDACTED]';
+      continue;
+    }
+    out[key] = sanitizeAssistanceInputSchema(entry, depth + 1);
+  }
+  return out;
+}
+
 function safeOpaqueAttachmentRef(value) {
   const ref = safeAttachmentString(value, 200);
   if (!ref) return null;
@@ -779,12 +815,17 @@ function sanitizeAssistanceAttachments(attachments) {
   if (!Array.isArray(attachments)) return [];
   return attachments.map((attachment) => {
     const result = { kind: attachment.kind };
-    const role = safeAttachmentString(attachment.role, 80);
-    const label = safeAttachmentString(attachment.label || attachment.title, 160);
+    const rawRole = safeAttachmentString(attachment.role, 80);
+    const rawLabel = safeAttachmentString(attachment.label || attachment.title, 160);
+    const role = rawRole ? sanitizeAssistanceTimelineString(rawRole, 80) : null;
+    const label = rawLabel ? sanitizeAssistanceTimelineString(rawLabel, 160) : null;
     const ref = safeOpaqueAttachmentRef(attachment.ref || attachment.id || attachment.surface_id);
+    const rawStatus = safeAttachmentString(attachment.status || attachment.availability, 80);
+    const status = rawStatus ? sanitizeAssistanceTimelineString(rawStatus, 80) : null;
     if (role) result.role = role;
     if (label) result.label = label;
     if (ref) result.ref = ref;
+    if (status) result.status = status;
     return result;
   });
 }
@@ -829,6 +870,8 @@ function validateAssistanceMessage(msg, scopeByStream) {
         throw new Error(`Connector emitted invalid ASSISTANCE.attachments.kind: ${attachment.kind}`);
       }
       requireOptionalNonEmptyString(attachment.role, 'ASSISTANCE.attachments.role');
+      requireOptionalNonEmptyString(attachment.status, 'ASSISTANCE.attachments.status');
+      requireOptionalNonEmptyString(attachment.availability, 'ASSISTANCE.attachments.availability');
     }
   }
 }
@@ -842,11 +885,11 @@ function buildAssistanceRequestedDataFromInteraction(msg, runSource) {
     owner_action: msg.kind === 'manual_action' ? 'operate_attachment' : 'provide_value',
     response_contract: 'response_required',
     sensitivity: isSecretValue ? 'secret' : 'non_secret',
-    message: msg.message,
+    message: sanitizeAssistanceTimelineString(msg.message) || 'Owner assistance requested.',
     kind: msg.kind,
     stream: msg.stream || null,
     ...(msg.timeout_seconds == null ? {} : { timeout_seconds: msg.timeout_seconds }),
-    ...(isSecretValue && msg.schema != null ? { input_schema: msg.schema } : {}),
+    ...(isSecretValue && msg.schema != null ? { input_schema: sanitizeAssistanceInputSchema(msg.schema) } : {}),
     ...(msg.kind === 'manual_action'
       ? { attachments: [{ kind: 'browser_surface', role: 'streaming_companion' }] }
       : {}),
@@ -871,10 +914,10 @@ function buildAssistanceRequestedDataFromMessage(msg, runSource) {
     owner_action: msg.owner_action,
     response_contract: msg.response_contract,
     sensitivity: msg.sensitivity || 'none',
-    message: msg.message,
+    message: sanitizeAssistanceTimelineString(msg.message) || 'Owner assistance requested.',
     stream: msg.stream || null,
     ...(msg.timeout_seconds == null ? {} : { timeout_seconds: msg.timeout_seconds }),
-    ...(msg.input_schema == null ? {} : { input_schema: msg.input_schema }),
+    ...(msg.input_schema == null ? {} : { input_schema: sanitizeAssistanceInputSchema(msg.input_schema) }),
     ...(msg.attachments == null ? {} : { attachments: sanitizeAssistanceAttachments(msg.attachments) }),
   };
 }
@@ -1276,8 +1319,8 @@ export async function runConnector(opts) {
         response_contract: activeAssistance.response_contract,
         stream: activeAssistance.stream || null,
         ...(activeAssistance.kind ? { kind: activeAssistance.kind } : {}),
-        ...(extra.message ? { message: extra.message } : {}),
-        ...(extra.reason ? { reason: extra.reason } : {}),
+        ...(extra.message ? { message: sanitizeAssistanceTimelineString(extra.message) || '[REDACTED]' } : {}),
+        ...(extra.reason ? { reason: sanitizeAssistanceTimelineString(extra.reason) || '[REDACTED]' } : {}),
       },
     });
     return true;

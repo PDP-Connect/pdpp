@@ -2821,31 +2821,47 @@ rl.on('line', (line) => {
   const msg = JSON.parse(line);
   if (msg.type === 'START' && !started) {
     started = true;
-	    process.stdout.write(JSON.stringify({
-	      type: 'ASSISTANCE',
-	      assistance_request_id: 'asst_1',
-	      progress_posture: 'running',
-	      owner_action: 'act_elsewhere',
-	      response_contract: 'none',
-	      sensitivity: 'non_secret',
-	      message: 'Approve the sign-in prompt in the mobile app.',
-	      timeout_seconds: 120,
-	      attachments: [{
-	        kind: 'url',
-	        role: 'approval',
-	        label: 'Open approval page',
-	        ref: 'approval_ref_1',
-	        url: 'https://example.com/sensitive?token=secret',
-	        cdp_url: 'ws://example.com/devtools/browser/secret'
-	      }]
-	    }) + '\\n');
-	    process.stdout.write(JSON.stringify({
-	      type: 'ASSISTANCE_STATUS',
-	      assistance_request_id: 'asst_1',
-	      status: 'resolved',
-	      message: 'Approval accepted.'
-	    }) + '\\n');
-	    process.stdout.write(JSON.stringify({ type: 'RECORD', stream: 'items', key: 'after_assistance', data: { id: 'after_assistance', value: 'continued' }, emitted_at: new Date().toISOString() }) + '\\n');
+    process.stdout.write(JSON.stringify({
+      type: 'ASSISTANCE',
+      assistance_request_id: 'asst_1',
+      progress_posture: 'running',
+      owner_action: 'act_elsewhere',
+      response_contract: 'none',
+      sensitivity: 'non_secret',
+      message: 'Approve at https://example.com/sensitive?token=secret with qr_secret=raw-qr-secret.',
+      timeout_seconds: 120,
+      input_schema: {
+        type: 'object',
+        properties: {
+          otp: { type: 'string', default: '654321' },
+          password: { type: 'string', format: 'password', examples: ['durable-password'] },
+          note: { type: 'string', default: 'safe-default-also-redacted' }
+        }
+      },
+      attachments: [{
+        kind: 'url',
+        role: 'approval',
+        label: 'Open approval page https://example.com/sensitive?token=label-secret',
+        ref: 'approval_ref_1',
+        url: 'https://example.com/sensitive?token=secret',
+        cdp_url: 'ws://example.com/devtools/browser/secret'
+      }, {
+        kind: 'qr',
+        role: 'approval',
+        label: 'Scan QR qr_secret=label-qr-secret',
+        ref: 'qr_ref_1',
+        status: 'available qr_secret=status-qr-secret',
+        payload: 'otpauth://totp/example?secret=RAWQRSECRET',
+        image_data: 'data:image/png;base64,RAWQRSECRET'
+      }]
+    }) + '\\n');
+    process.stdout.write(JSON.stringify({
+      type: 'ASSISTANCE_STATUS',
+      assistance_request_id: 'asst_1',
+      status: 'resolved',
+      message: 'Approval accepted at https://example.com/done?bearer=secret.'
+    }) + '\\n');
+    process.stdout.write(JSON.stringify({ type: 'RECORD', stream: 'items', key: 'after_assistance', data: { id: 'after_assistance', value: 'continued' }, emitted_at: new Date().toISOString() }) + '\\n');
     process.stdout.write(JSON.stringify({ type: 'DONE', status: 'succeeded', records_emitted: 1 }) + '\\n');
     rl.close();
     process.exit(0);
@@ -2880,22 +2896,38 @@ rl.on('line', (line) => {
       assert.equal(assistanceRequested.data.assistance_request_id, 'asst_1');
       assert.equal(assistanceRequested.data.progress_posture, 'running');
       assert.equal(assistanceRequested.data.owner_action, 'act_elsewhere');
-	      assert.equal(assistanceRequested.data.response_contract, 'none');
-	      assert.equal(assistanceRequested.data.message, 'Approve the sign-in prompt in the mobile app.');
-	      assert.deepEqual(assistanceRequested.data.attachments, [{
-	        kind: 'url',
-	        role: 'approval',
-	        label: 'Open approval page',
-	        ref: 'approval_ref_1',
-	      }]);
-	      assert.ok(!JSON.stringify(assistanceRequested.data).includes('token=secret'));
-	      assert.ok(!JSON.stringify(assistanceRequested.data).includes('devtools/browser/secret'));
-	      const assistanceResolved = (runTimeline.data || []).find((event) => event.event_type === 'run.assistance_resolved');
-	      assert.ok(assistanceResolved, 'expected run.assistance_resolved event');
-	      assert.equal(assistanceResolved.data.assistance_request_id, 'asst_1');
-	      assert.equal(assistanceResolved.data.status, 'resolved');
-	      assert.ok(!(runTimeline.data || []).some((event) => event.event_type === 'run.interaction_required'));
-	      assert.ok(!(runTimeline.data || []).some((event) => event.event_type === 'run.interaction_completed'));
+      assert.equal(assistanceRequested.data.response_contract, 'none');
+      assert.equal(assistanceRequested.data.message, 'Approve at [REDACTED_URL] with qr_secret=[REDACTED]');
+      assert.deepEqual(assistanceRequested.data.attachments, [{
+        kind: 'url',
+        role: 'approval',
+        label: 'Open approval page [REDACTED_URL]',
+        ref: 'approval_ref_1',
+      }, {
+        kind: 'qr',
+        role: 'approval',
+        label: 'Scan QR qr_secret=[REDACTED]',
+        ref: 'qr_ref_1',
+        status: 'available qr_secret=[REDACTED]',
+      }]);
+      assert.deepEqual(assistanceRequested.data.input_schema, {
+        type: 'object',
+        properties: {
+          otp: { type: 'string', default: '[REDACTED]' },
+          password: { type: 'string', format: 'password', examples: '[REDACTED]' },
+          note: { type: 'string', default: '[REDACTED]' },
+        },
+      });
+      const assistanceResolved = (runTimeline.data || []).find((event) => event.event_type === 'run.assistance_resolved');
+      assert.ok(assistanceResolved, 'expected run.assistance_resolved event');
+      assert.equal(assistanceResolved.data.assistance_request_id, 'asst_1');
+      assert.equal(assistanceResolved.data.status, 'resolved');
+      assert.equal(assistanceResolved.data.message, 'Approval accepted at [REDACTED_URL]');
+      assert.ok(!(runTimeline.data || []).some((event) => event.event_type === 'run.interaction_required'));
+      assert.ok(!(runTimeline.data || []).some((event) => event.event_type === 'run.interaction_completed'));
+      const serializedTimeline = JSON.stringify(runTimeline.data || []);
+      assert.doesNotMatch(serializedTimeline, /token=secret|token=label-secret|devtools\/browser\/secret|RAWQRSECRET|raw-qr-secret|label-qr-secret|status-qr-secret|654321|durable-password|bearer=secret/);
+      assert.ok(!assistanceRequested.data.attachments.some((attachment) => attachment.kind === 'browser_surface'));
     } finally {
       rmSync(tmpDir, { recursive: true, force: true });
       await closeServer(server);
@@ -2953,6 +2985,76 @@ rl.on('line', (line) => {
       const { body: runTimeline } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(rejected.run_id)}/timeline`);
       assert.ok(!(runTimeline.data || []).some((event) => event.event_type === 'run.assistance_requested'));
       assert.ok((runTimeline.data || []).some((event) => event.event_type === 'run.failed'));
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+      await closeServer(server);
+    }
+  });
+
+  await t.test('nonblocking ASSISTANCE records retry/backoff and explicit escalation transitions', async () => {
+    const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+    const { asPort, rsPort } = server;
+    const { ownerToken, connectorId } = await setupConnector(server, asPort);
+    const asUrl = `http://localhost:${asPort}`;
+
+    const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-test-assistance-escalation-'));
+    const connectorPath = join(tmpDir, 'connector.mjs');
+    writeFileSync(connectorPath, `
+import { createInterface } from 'readline';
+const rl = createInterface({ input: process.stdin });
+rl.on('line', (line) => {
+  const msg = JSON.parse(line);
+  if (msg.type === 'START') {
+    process.stdout.write(JSON.stringify({
+      type: 'ASSISTANCE',
+      assistance_request_id: 'asst_retry',
+      progress_posture: 'waiting_retry',
+      owner_action: 'none',
+      response_contract: 'none',
+      sensitivity: 'none',
+      message: 'Waiting for upstream retry window.'
+    }) + '\\n');
+    process.stdout.write(JSON.stringify({
+      type: 'ASSISTANCE_STATUS',
+      assistance_request_id: 'asst_retry',
+      status: 'escalated',
+      message: 'Retry window expired; owner action is now required.'
+    }) + '\\n');
+    process.stdout.write(JSON.stringify({ type: 'DONE', status: 'succeeded', records_emitted: 0 }) + '\\n');
+    rl.close();
+    process.exit(0);
+  }
+});
+`, 'utf-8');
+
+    try {
+      const result = await runConnector({
+        connectorPath,
+        connectorId,
+        ownerToken,
+        manifest: MINIMAL_MANIFEST,
+        state: null,
+        collectionMode: 'full_refresh',
+        persistState: true,
+        rsUrl: `http://localhost:${rsPort}`,
+      });
+
+      assert.equal(result.status, 'succeeded');
+
+      const { body: runTimeline } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(result.run_id)}/timeline`);
+      const assistanceRequested = (runTimeline.data || []).find((event) => event.event_type === 'run.assistance_requested');
+      assert.ok(assistanceRequested, 'expected run.assistance_requested event');
+      assert.equal(assistanceRequested.data.progress_posture, 'waiting_retry');
+      assert.equal(assistanceRequested.data.owner_action, 'none');
+      assert.equal(assistanceRequested.data.response_contract, 'none');
+      assert.ok(!('attachments' in assistanceRequested.data), 'retry/backoff assistance should not imply a browser attachment');
+
+      const assistanceEscalated = (runTimeline.data || []).find((event) => event.event_type === 'run.assistance_escalated');
+      assert.ok(assistanceEscalated, 'expected run.assistance_escalated event');
+      assert.equal(assistanceEscalated.data.assistance_request_id, 'asst_retry');
+      assert.equal(assistanceEscalated.data.progress_posture, 'waiting_retry');
+      assert.equal(assistanceEscalated.data.owner_action, 'none');
+      assert.equal(assistanceEscalated.data.response_contract, 'none');
     } finally {
       rmSync(tmpDir, { recursive: true, force: true });
       await closeServer(server);
