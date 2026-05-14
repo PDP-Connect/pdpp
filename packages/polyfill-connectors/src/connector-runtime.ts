@@ -111,6 +111,24 @@ export interface AssistanceCompletion {
   status: AssistanceCompletionStatus;
 }
 
+export interface DetailGapMessage {
+  detail?: {
+    class?: string;
+    http_status?: number;
+  };
+  key: string | number;
+  locator: {
+    kind: string;
+    [field: string]: string | number | boolean | null;
+  };
+  reason: "rate_limited" | "retry_exhausted" | "temporary_unavailable" | "upstream_pressure";
+  reference_only: true;
+  retryable: true;
+  status: "pending";
+  stream: string;
+  type: "DETAIL_GAP";
+}
+
 /** All messages a connector emits over stdout. */
 export type EmittedMessage =
   | {
@@ -132,6 +150,7 @@ export type EmittedMessage =
       message: string;
       diagnostics?: unknown;
     }
+  | DetailGapMessage
   | {
       type: "DONE";
       status: "succeeded" | "failed";

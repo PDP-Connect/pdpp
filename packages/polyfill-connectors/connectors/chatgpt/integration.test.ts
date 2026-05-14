@@ -52,6 +52,7 @@ import type { EmittedMessage } from "../../src/connector-runtime.ts";
 import { type EmittedRecord, makeRecordingEmit, type SkippedRecord } from "../../src/test-harness.ts";
 import {
   CHATGPT_RETRYABLE_ERROR_PATTERN,
+  ChatGptRecoverableRetryExhaustedError,
   processConversationDetail,
   runConversationsAndMessagesStreams,
   runCustomGptsStream,
@@ -610,6 +611,133 @@ test("runConversationsAndMessagesStreams: detail failure rejects before conversa
     harness.protocolMessages.some((m) => m.type === "STATE" && m.stream === "conversations"),
     false,
     "required detail failure must not emit conversations STATE"
+  );
+});
+
+test("runConversationsAndMessagesStreams: recoverable detail exhaustion emits DETAIL_GAP and then STATE", async () => {
+  const harness = makeRecordingEmit(validateRecord);
+  const listItems = [
+    makeConvo({ id: "convo-gap", update_time: 1_700_000_100 }),
+    makeConvo({ id: "convo-after-gap", update_time: 1_700_000_200 }),
+  ];
+  const fetches: string[] = [];
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: (path: string): Promise<ChatGptFetchResult> => {
+      fetches.push(path);
+      if (path.startsWith("/conversations")) {
+        return Promise.resolve({
+          status: 200,
+          json: { items: listItems, has_missing_conversations: false, total: listItems.length },
+        });
+      }
+      if (path === "/conversation/convo-gap") {
+        return Promise.reject(
+          new ChatGptRecoverableRetryExhaustedError(
+            "apiFetch got 429 on GET /conversation/convo-gap after retry budget exhausted bearer secret",
+            { class: "rate_limited", httpStatus: 429 }
+          )
+        );
+      }
+      return Promise.resolve(makeDetailOk());
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  await runConversationsAndMessagesStreams(deps, {});
+
+  assert.deepEqual(fetches, [
+    "/conversations?offset=0&limit=100&order=updated",
+    "/conversation/convo-gap",
+    "/conversation/convo-after-gap",
+  ]);
+  assert.equal(
+    harness.emitted.some((r) => r.stream === "conversations" && r.data.id === "convo-gap"),
+    false,
+    "recoverable required detail gaps must not emit list-only conversation records"
+  );
+  assert.equal(
+    harness.emitted.some((r) => r.stream === "messages" && r.data.conversation_id === "convo-gap"),
+    false,
+    "recoverable required detail gaps must not emit fake empty messages"
+  );
+  assert.equal(
+    harness.emitted.some((r) => r.stream === "conversations" && r.data.id === "convo-after-gap"),
+    true,
+    "detail gap must not stop later conversations in the tranche"
+  );
+
+  const gap = harness.protocolMessages.find(
+    (m): m is Extract<EmittedMessage, { type: "DETAIL_GAP" }> => m.type === "DETAIL_GAP"
+  );
+  assert.ok(gap, "recoverable exhaustion should emit a durable detail-gap signal");
+  assert.deepEqual(gap, {
+    type: "DETAIL_GAP",
+    stream: "messages",
+    key: "convo-gap",
+    status: "pending",
+    reason: "rate_limited",
+    locator: { kind: "chatgpt.conversation", conversation_id: "convo-gap" },
+    retryable: true,
+    reference_only: true,
+    detail: { class: "rate_limited", http_status: 429 },
+  });
+  const serializedGap = JSON.stringify(gap);
+  assert.equal(serializedGap.includes("/conversation/"), false, "gap must not expose raw API paths");
+  assert.equal(serializedGap.includes("bearer"), false, "gap must not expose raw error text or tokens");
+  assert.equal(serializedGap.includes("secret"), false, "gap must not expose raw error text or tokens");
+
+  const gapIdx = harness.events.findIndex((e) => e.kind === "message" && e.message.type === "DETAIL_GAP");
+  const laterRecordIdx = harness.events.findIndex(
+    (e) => e.kind === "record" && e.stream === "conversations" && e.data.id === "convo-after-gap"
+  );
+  const stateIdx = harness.events.findIndex(
+    (e) => e.kind === "message" && e.message.type === "STATE" && e.message.stream === "conversations"
+  );
+  assert.ok(gapIdx !== -1 && laterRecordIdx > gapIdx, "later detail work should continue after the gap");
+  assert.ok(stateIdx > gapIdx && stateIdx > laterRecordIdx, "STATE must emit after gap and all detail work settle");
+});
+
+test("runConversationsAndMessagesStreams: terminal detail http failure remains fail-closed", async () => {
+  const harness = makeRecordingEmit(validateRecord);
+  const listItem = makeConvo({ id: "convo-terminal-404" });
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: (path: string): Promise<ChatGptFetchResult> => {
+      if (path.startsWith("/conversations")) {
+        return Promise.resolve({
+          status: 200,
+          json: { items: [listItem], has_missing_conversations: false, total: 1 },
+        });
+      }
+      return Promise.resolve({ status: 404, json: null });
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  await assert.rejects(runConversationsAndMessagesStreams(deps, {}), /required conversation detail convo-terminal-404/);
+
+  assert.equal(
+    harness.protocolMessages.some((m) => m.type === "DETAIL_GAP"),
+    false,
+    "terminal detail failures must not be converted to recoverable gaps"
+  );
+  assert.equal(
+    harness.protocolMessages.some((m) => m.type === "STATE" && m.stream === "conversations"),
+    false,
+    "terminal detail failures must not advance conversations STATE"
   );
 });
 

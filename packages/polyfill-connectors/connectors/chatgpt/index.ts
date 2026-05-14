@@ -20,6 +20,7 @@ import { ensureChatGptSession } from "../../src/auto-login/chatgpt.ts";
 import {
   type BrowserCollectContext,
   type CollectContext,
+  type DetailGapMessage,
   nowIso,
   type RecordData,
   runConnector,
@@ -135,6 +136,20 @@ const CHATGPT_LONG_SLEEP_PROGRESS_THRESHOLD_MS = 5000;
 export const CHATGPT_RETRYABLE_ERROR_PATTERN = /ECONN|ETIMEDOUT|fetch failed|429|retry budget exhausted/i;
 const CHATGPT_SIDE_EFFECT_PROBE_ENV = "PDPP_CHATGPT_SIDE_EFFECT_PROBE";
 
+export type ChatGptRetryExhaustedClass = "rate_limited" | "temporary_unavailable" | "upstream_pressure";
+
+export class ChatGptRecoverableRetryExhaustedError extends Error {
+  readonly class: ChatGptRetryExhaustedClass;
+  readonly httpStatus: number | null;
+
+  constructor(message: string, details: { class: ChatGptRetryExhaustedClass; httpStatus?: number | null }) {
+    super(message);
+    this.name = "ChatGptRecoverableRetryExhaustedError";
+    this.class = details.class;
+    this.httpStatus = details.httpStatus ?? null;
+  }
+}
+
 function formatSleepDuration(ms: number): string {
   if (ms < 1000) {
     return `${ms}ms`;
@@ -146,6 +161,16 @@ function formatSleepDuration(ms: number): string {
   const minutes = Math.floor(seconds / 60);
   const remainderSeconds = seconds % 60;
   return remainderSeconds ? `${minutes}m ${remainderSeconds}s` : `${minutes}m`;
+}
+
+function classifyRetryExhaustedStatus(status: number | null): ChatGptRetryExhaustedClass {
+  if (status === 429) {
+    return "rate_limited";
+  }
+  if (status === 502 || status === 503 || status === 504) {
+    return "temporary_unavailable";
+  }
+  return "upstream_pressure";
 }
 
 function createChatGptApi({
@@ -273,10 +298,11 @@ function createChatGptApi({
             cause && typeof cause === "object" && "status" in cause && typeof cause.status === "number"
               ? cause.status
               : null;
-          throw new Error(
+          throw new ChatGptRecoverableRetryExhaustedError(
             status
               ? `apiFetch got ${status} on ${method} ${path} after retry budget exhausted`
-              : `apiFetch retry budget exhausted on ${method} ${path}: ${err.message}`
+              : `apiFetch retry budget exhausted on ${method} ${path}: ${err.message}`,
+            { class: classifyRetryExhaustedStatus(status), httpStatus: status }
           );
         }
         throw err;
@@ -880,6 +906,26 @@ function formatConversationDetailLaneProgress(event: AdaptiveLaneEvent): string 
   return parts.join(" ");
 }
 
+function makeConversationDetailGap(
+  c: ConversationListItem,
+  error: ChatGptRecoverableRetryExhaustedError
+): DetailGapMessage {
+  return {
+    type: "DETAIL_GAP",
+    stream: "messages",
+    key: c.id,
+    status: "pending",
+    reason: error.class,
+    locator: { kind: "chatgpt.conversation", conversation_id: c.id },
+    retryable: true,
+    reference_only: true,
+    detail: {
+      class: error.class,
+      ...(error.httpStatus == null ? {} : { http_status: error.httpStatus }),
+    },
+  };
+}
+
 /**
  * Fetch details one-at-a-time. ChatGPT's private detail endpoint appears to
  * throttle per authenticated account/session, and parallel retry loops keep
@@ -937,7 +983,19 @@ export async function runMessagesAndConversationsWithDetail(
     if (!c) {
       return { status: 404, json: null };
     }
-    const detail = await deps.api.fetch(`/conversation/${encodeURIComponent(c.id)}`);
+    let detail: ChatGptFetchResult;
+    try {
+      detail = await deps.api.fetch(`/conversation/${encodeURIComponent(c.id)}`);
+    } catch (err) {
+      if (err instanceof ChatGptRecoverableRetryExhaustedError) {
+        await deps.emit(makeConversationDetailGap(c, err));
+        return { status: 200, json: null };
+      }
+      throw err;
+    }
+    if (detail.status !== 200) {
+      throw new Error(`required conversation detail ${c.id} failed with http ${detail.status}`);
+    }
     await processConversationDetail(deps, c, detail, emitConversation);
     const synced = convosToSync.indexOf(c) + 1;
     const progressMsg = {
