@@ -29,6 +29,7 @@ import {
 
 const VALID_WS = "ws://127.0.0.1:9222/devtools/page/abc123XYZ";
 const VALID_WSS = "wss://localhost:9223/devtools/page/xyz";
+const VALID_NEKO_WS = "ws://neko:9223/devtools/page/neko123";
 const VALID_NEKO_DESCRIPTOR = {
   connection_token: "neko-session-token",
   session_url: "http://127.0.0.1:8080/",
@@ -240,6 +241,20 @@ test("register accepts wss: loopback URLs", async () => {
   assert.equal(seen.length, 1);
 });
 
+test("register accepts managed n.eko CDP URLs", async () => {
+  const { fetchImpl, seen } = makeFakeFetch([new Response("{}", { status: 200 })]);
+  const client = createRegistrationClient({
+    baseUrl: "http://127.0.0.1:7662",
+    deviceToken: "tok",
+    fetch: fetchImpl,
+  });
+  const ok = await client.register({ runId: "run_neko_cdp", interactionId: "int_neko_cdp", wsUrl: VALID_NEKO_WS });
+
+  assert.equal(ok, true);
+  assert.equal(seen.length, 1);
+  assert.deepEqual(seen[0]?.body ? JSON.parse(seen[0].body) : null, { ws_url: VALID_NEKO_WS });
+});
+
 test("register URL-encodes runId AND interactionId in the path", async () => {
   const { fetchImpl, seen } = makeFakeFetch([new Response("{}", { status: 200 })]);
   const client = createRegistrationClient({
@@ -276,7 +291,7 @@ test("register returns false and does NOT call fetch when interactionId is empty
   );
 });
 
-test("register returns false and does NOT call fetch when wsUrl is not loopback", async () => {
+test("register returns false and does NOT call fetch when wsUrl host is not allowed", async () => {
   const { fetchImpl, seen } = makeFakeFetch([]);
   const { logger, entries } = makeCapturingLogger();
   const client = createRegistrationClient({
@@ -293,7 +308,7 @@ test("register returns false and does NOT call fetch when wsUrl is not loopback"
   });
 
   assert.equal(ok, false);
-  assert.equal(seen.length, 0, "fetch must not be called for a non-loopback wsUrl");
+  assert.equal(seen.length, 0, "fetch must not be called for a disallowed wsUrl host");
   // Critically: never log the wsUrl itself (path encodes the secret).
   const serialized = JSON.stringify(entries);
   assert.equal(serialized.includes("example.com"), false);

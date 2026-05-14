@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { InteractionResponse } from "../connector-runtime.ts";
-import { interactionResponseCode, isLikelyChatGptPushApprovalText } from "./chatgpt.ts";
+import {
+  CHATGPT_PUSH_APPROVAL_FALLBACK_MESSAGE,
+  CHATGPT_PUSH_APPROVAL_PROGRESS_MESSAGE,
+  interactionResponseCode,
+  isLikelyChatGptPushApprovalText,
+} from "./chatgpt.ts";
 
 function response(extra: Partial<InteractionResponse>): InteractionResponse {
   return {
@@ -38,4 +43,10 @@ test("isLikelyChatGptPushApprovalText ignores ordinary login copy", () => {
 
 test("isLikelyChatGptPushApprovalText requires supporting push-approval copy", () => {
   assert.equal(isLikelyChatGptPushApprovalText("Approve sign-in"), false);
+});
+
+test("ChatGPT push approval copy separates external approval from browser control", () => {
+  assert.match(CHATGPT_PUSH_APPROVAL_PROGRESS_MESSAGE, /continue automatically/i);
+  assert.doesNotMatch(CHATGPT_PUSH_APPROVAL_PROGRESS_MESSAGE, /streaming companion|run interaction controls/i);
+  assert.match(CHATGPT_PUSH_APPROVAL_FALLBACK_MESSAGE, /click Continue here/i);
 });

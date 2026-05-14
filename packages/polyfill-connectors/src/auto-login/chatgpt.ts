@@ -21,6 +21,7 @@ interface EnsureChatGptSessionArgs {
   capture?: CaptureSession | null;
   context: BrowserContext;
   page: Page;
+  progress?: (message: string, extra?: { stream?: string }) => Promise<void>;
   sendInteraction: (req: InteractionRequest) => Promise<InteractionResponse>;
 }
 
@@ -35,6 +36,12 @@ const LOG_IN_NAME = /^log in$/i;
 const RESEND_PROMPT_TEXT = /resend prompt/i;
 const SENT_NOTIFICATION_TEXT = /sent a notification/i;
 const TRY_WITH_EMAIL_TEXT = /try with email/i;
+export const CHATGPT_PUSH_APPROVAL_PROGRESS_MESSAGE =
+  "ChatGPT sent an app approval notification. Approve it in the ChatGPT app; PDPP will continue automatically after ChatGPT confirms the session.";
+export const CHATGPT_PUSH_APPROVAL_FALLBACK_MESSAGE =
+  "ChatGPT sent an app approval notification, but the session did not continue automatically. Approve it in the ChatGPT app if you have not already, then click Continue here.";
+const PUSH_APPROVAL_POLL_ATTEMPTS = 36;
+const PUSH_APPROVAL_POLL_INTERVAL_MS = 5000;
 
 export function interactionResponseCode(resp: InteractionResponse): string | null {
   return resp.data?.code ?? resp.value ?? null;
@@ -232,18 +239,28 @@ async function continueWithPasswordIfPresent(page: Page): Promise<void> {
 async function handlePushApproval({
   capture,
   page,
+  progress,
   sendInteraction,
-}: Pick<EnsureChatGptSessionArgs, "capture" | "page" | "sendInteraction">): Promise<boolean> {
+}: Pick<EnsureChatGptSessionArgs, "capture" | "page" | "progress" | "sendInteraction">): Promise<boolean> {
   if (!(await isLikelyChatGptPushApprovalPage(page))) {
     return false;
+  }
+
+  await capture?.captureDom(page, "auth-push-approval-detected");
+  await progress?.(CHATGPT_PUSH_APPROVAL_PROGRESS_MESSAGE);
+  for (let attempt = 0; attempt < PUSH_APPROVAL_POLL_ATTEMPTS; attempt++) {
+    await page.waitForTimeout(PUSH_APPROVAL_POLL_INTERVAL_MS);
+    if (await isChatGptSessionActive(page)) {
+      await progress?.("ChatGPT app approval accepted; continuing collection.");
+      return true;
+    }
   }
 
   await manualAction(
     {
       ...(capture ? { capture } : {}),
       page,
-      message:
-        "ChatGPT is waiting for app push approval. Approve the sign-in notification in the ChatGPT app, then use the run interaction controls to continue.",
+      message: CHATGPT_PUSH_APPROVAL_FALLBACK_MESSAGE,
       reason: "2fa",
       timeoutSeconds: 1800,
     },
@@ -285,8 +302,9 @@ async function submitPasswordAndHandleSecondFactor({
   capture,
   page,
   password,
+  progress,
   sendInteraction,
-}: Pick<EnsureChatGptSessionArgs, "capture" | "page" | "sendInteraction"> & {
+}: Pick<EnsureChatGptSessionArgs, "capture" | "page" | "progress" | "sendInteraction"> & {
   readonly password: string;
 }): Promise<boolean> {
   const passwordIn = page.locator('input[type="password"]').first();
@@ -303,7 +321,14 @@ async function submitPasswordAndHandleSecondFactor({
   await page.waitForTimeout(5000);
   await capture?.captureDom(page, "auth-after-password-submit");
 
-  if (await handlePushApproval({ ...(capture ? { capture } : {}), page, sendInteraction })) {
+  if (
+    await handlePushApproval({
+      ...(capture ? { capture } : {}),
+      page,
+      ...(progress ? { progress } : {}),
+      sendInteraction,
+    })
+  ) {
     return true;
   }
 
@@ -346,6 +371,7 @@ export async function ensureChatGptSession({
   capture,
   context: _context,
   page,
+  progress,
   sendInteraction,
 }: EnsureChatGptSessionArgs): Promise<boolean> {
   if (await navigateAndProbeSession(page)) {
@@ -363,7 +389,15 @@ export async function ensureChatGptSession({
   await findAndFillEmail({ ...(capture ? { capture } : {}), email, page, sendInteraction });
   await continueWithPasswordIfPresent(page);
 
-  if (await submitPasswordAndHandleSecondFactor({ ...(capture ? { capture } : {}), page, password, sendInteraction })) {
+  if (
+    await submitPasswordAndHandleSecondFactor({
+      ...(capture ? { capture } : {}),
+      page,
+      password,
+      ...(progress ? { progress } : {}),
+      sendInteraction,
+    })
+  ) {
     return true;
   }
 

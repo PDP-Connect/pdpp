@@ -37,7 +37,10 @@
 const REGISTRATION_PATH = (runId: string, interactionId: string): string =>
   `/admin/runs/${encodeURIComponent(runId)}/interactions/${encodeURIComponent(interactionId)}/streaming-target`;
 
-const ALLOWED_LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost"]);
+// The connector process runs inside the Docker network for managed n.eko
+// surfaces, so its CDP endpoint is addressed by the internal service name.
+// Keep this list intentionally narrow and mirrored with the server registry.
+const ALLOWED_CDP_TARGET_HOSTS = new Set(["127.0.0.1", "localhost", "neko"]);
 
 export interface RegistrationLogger {
   /**
@@ -104,9 +107,10 @@ export interface CdpRegisterArgs extends BaseRegisterArgs {
    */
   readonly backend?: "cdp";
   /**
-   * Page-target CDP WebSocket URL. MUST be loopback (`127.0.0.1` or
-   * `localhost`) or the registration is short-circuited locally; the
-   * server enforces the same constraint.
+   * Page-target CDP WebSocket URL. MUST target an allowed local/container
+   * CDP host (`127.0.0.1`, `localhost`, or managed n.eko host `neko`) or
+   * the registration is short-circuited locally; the server enforces the
+   * same constraint.
    */
   readonly wsUrl: string;
 }
@@ -117,7 +121,7 @@ export interface NekoRegisterArgs extends BaseRegisterArgs {
   readonly backend: "neko";
   /**
    * Opaque n.eko target descriptor owned by the reference server. It is not
-   * a CDP bearer URL, so the client forwards it without loopback wsUrl
+   * a CDP bearer URL, so the client forwards it without CDP wsUrl
    * validation.
    */
   readonly descriptor: NekoTargetDescriptor;
@@ -162,14 +166,14 @@ const defaultLogger: RegistrationLogger = {
 };
 
 /**
- * Defensive check: refuse to ship a non-loopback wsUrl across the wire.
+ * Defensive check: refuse to ship an unexpected wsUrl across the wire.
  * The reference server validates this too (and also strips path / scheme
  * leakage from logs), but doing it here avoids paying a network round-trip
  * to discover an obvious mistake AND avoids the path component (which
- * encodes the page-target id, treated as a bearer secret) ever leaving
- * this process for a non-loopback destination.
+ * encodes the page-target id, treated as a bearer secret) ever leaving this
+ * process for a destination outside the known local/container CDP boundary.
  */
-function isLoopbackWsUrl(wsUrl: string): boolean {
+function isAllowedCdpWsUrl(wsUrl: string): boolean {
   let parsed: URL;
   try {
     parsed = new URL(wsUrl);
@@ -179,7 +183,7 @@ function isLoopbackWsUrl(wsUrl: string): boolean {
   if (parsed.protocol !== "ws:" && parsed.protocol !== "wss:") {
     return false;
   }
-  return ALLOWED_LOOPBACK_HOSTS.has(parsed.hostname);
+  return ALLOWED_CDP_TARGET_HOSTS.has(parsed.hostname);
 }
 
 function isDescriptorObject(value: unknown): value is Record<string, unknown> {
@@ -244,10 +248,10 @@ export function createRegistrationClient(options: CreateRegistrationClientOption
         body = { backend: "neko", descriptor: args.descriptor };
       } else {
         const { wsUrl } = args;
-        if (!isLoopbackWsUrl(wsUrl)) {
+        if (!isAllowedCdpWsUrl(wsUrl)) {
           // We deliberately do NOT log the rejected URL — the path component
           // is a bearer secret. Just say what failed.
-          logger.warn("register skipped: wsUrl is not loopback ws:/wss:", { runId, interactionId });
+          logger.warn("register skipped: wsUrl host is not allowed", { runId, interactionId });
           return false;
         }
         method = "PUT";
@@ -322,7 +326,7 @@ export function createRegistrationClient(options: CreateRegistrationClientOption
 }
 
 /** Exported for tests that want to validate URL shapes without a server. */
-export { ALLOWED_LOOPBACK_HOSTS, REGISTRATION_PATH };
+export { ALLOWED_CDP_TARGET_HOSTS, REGISTRATION_PATH };
 
 /**
  * Two env var names exist for the bearer credential the registration
