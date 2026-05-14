@@ -468,6 +468,8 @@ function classifyRuntimeFailure(err) {
     || message.startsWith('Connector emitted invalid STATE.')
     || message.startsWith('Connector emitted INTERACTION for undeclared stream:')
     || message.startsWith('Connector emitted invalid PROGRESS.')
+    || message.startsWith('Connector emitted invalid ASSISTANCE.')
+    || message.startsWith('Connector emitted unsupported ASSISTANCE.')
     || message.startsWith('Connector emitted invalid SKIP_RESULT.')
     || message.startsWith('Connector emitted PROGRESS for undeclared stream:')
     || message.startsWith('Connector emitted SKIP_RESULT for undeclared stream:')
@@ -748,6 +750,143 @@ function validateInteractionMessage(msg, scopeByStream) {
   if (msg.timeout_seconds != null && (!Number.isFinite(msg.timeout_seconds) || msg.timeout_seconds <= 0)) {
     throw new Error(`Connector emitted invalid INTERACTION.timeout_seconds: ${msg.timeout_seconds}`);
   }
+}
+
+const ASSISTANCE_PROGRESS_POSTURES = new Set(['running', 'blocked', 'waiting_retry']);
+const ASSISTANCE_OWNER_ACTIONS = new Set(['none', 'act_elsewhere', 'provide_value', 'operate_attachment']);
+const ASSISTANCE_RESPONSE_CONTRACTS = new Set(['none', 'response_required']);
+const ASSISTANCE_SENSITIVITIES = new Set(['none', 'secret', 'non_secret']);
+const ASSISTANCE_ATTACHMENT_KINDS = new Set(['browser_surface', 'url', 'qr', 'file', 'fixture']);
+const ASSISTANCE_TERMINAL_STATUSES = new Set(['resolved', 'cancelled', 'timed_out', 'escalated']);
+
+function safeAttachmentString(value, maxLength = 160) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > maxLength) return null;
+  return trimmed;
+}
+
+function safeOpaqueAttachmentRef(value) {
+  const ref = safeAttachmentString(value, 200);
+  if (!ref) return null;
+  // Attachment refs are durable opaque handles. Raw http/ws URLs can carry
+  // bearer authority and must stay behind the attachment provider.
+  if (!/^[A-Za-z0-9._:-]+$/.test(ref)) return null;
+  return ref;
+}
+
+function sanitizeAssistanceAttachments(attachments) {
+  if (!Array.isArray(attachments)) return [];
+  return attachments.map((attachment) => {
+    const result = { kind: attachment.kind };
+    const role = safeAttachmentString(attachment.role, 80);
+    const label = safeAttachmentString(attachment.label || attachment.title, 160);
+    const ref = safeOpaqueAttachmentRef(attachment.ref || attachment.id || attachment.surface_id);
+    if (role) result.role = role;
+    if (label) result.label = label;
+    if (ref) result.ref = ref;
+    return result;
+  });
+}
+
+function validateAssistanceMessage(msg, scopeByStream) {
+  requireOptionalNonEmptyString(msg.assistance_request_id, 'ASSISTANCE.assistance_request_id');
+  requireOptionalNonEmptyString(msg.stream, 'ASSISTANCE.stream');
+  validateOptionalScopedStream(msg.stream, 'ASSISTANCE', scopeByStream);
+  if (!ASSISTANCE_PROGRESS_POSTURES.has(msg.progress_posture)) {
+    throw new Error(`Connector emitted invalid ASSISTANCE.progress_posture: ${msg.progress_posture}`);
+  }
+  if (!ASSISTANCE_OWNER_ACTIONS.has(msg.owner_action)) {
+    throw new Error(`Connector emitted invalid ASSISTANCE.owner_action: ${msg.owner_action}`);
+  }
+  if (!ASSISTANCE_RESPONSE_CONTRACTS.has(msg.response_contract)) {
+    throw new Error(`Connector emitted invalid ASSISTANCE.response_contract: ${msg.response_contract}`);
+  }
+  if (msg.response_contract !== 'none') {
+    throw new Error('Connector emitted unsupported ASSISTANCE.response_contract: response_required is not supported by the nonblocking ASSISTANCE path');
+  }
+  if (typeof msg.message !== 'string' || !msg.message.trim()) {
+    throw new Error('Connector emitted invalid ASSISTANCE.message: expected non-empty string');
+  }
+  if (msg.sensitivity != null && !ASSISTANCE_SENSITIVITIES.has(msg.sensitivity)) {
+    throw new Error(`Connector emitted invalid ASSISTANCE.sensitivity: ${msg.sensitivity}`);
+  }
+  if (msg.timeout_seconds != null && (!Number.isFinite(msg.timeout_seconds) || msg.timeout_seconds <= 0)) {
+    throw new Error(`Connector emitted invalid ASSISTANCE.timeout_seconds: ${msg.timeout_seconds}`);
+  }
+  if (msg.input_schema != null && (typeof msg.input_schema !== 'object' || Array.isArray(msg.input_schema))) {
+    throw new Error('Connector emitted invalid ASSISTANCE.input_schema: expected object');
+  }
+  if (msg.attachments != null) {
+    if (!Array.isArray(msg.attachments)) {
+      throw new Error('Connector emitted invalid ASSISTANCE.attachments: expected array');
+    }
+    for (const attachment of msg.attachments) {
+      if (!attachment || typeof attachment !== 'object' || Array.isArray(attachment)) {
+        throw new Error('Connector emitted invalid ASSISTANCE.attachments: expected object entries');
+      }
+      if (!ASSISTANCE_ATTACHMENT_KINDS.has(attachment.kind)) {
+        throw new Error(`Connector emitted invalid ASSISTANCE.attachments.kind: ${attachment.kind}`);
+      }
+      requireOptionalNonEmptyString(attachment.role, 'ASSISTANCE.attachments.role');
+    }
+  }
+}
+
+function buildAssistanceRequestedDataFromInteraction(msg, runSource) {
+  const isSecretValue = msg.kind === 'credentials' || msg.kind === 'otp';
+  return {
+    source: runSource,
+    assistance_request_id: msg.request_id,
+    progress_posture: 'blocked',
+    owner_action: msg.kind === 'manual_action' ? 'operate_attachment' : 'provide_value',
+    response_contract: 'response_required',
+    sensitivity: isSecretValue ? 'secret' : 'non_secret',
+    message: msg.message,
+    kind: msg.kind,
+    stream: msg.stream || null,
+    ...(msg.timeout_seconds == null ? {} : { timeout_seconds: msg.timeout_seconds }),
+    ...(isSecretValue && msg.schema != null ? { input_schema: msg.schema } : {}),
+    ...(msg.kind === 'manual_action'
+      ? { attachments: [{ kind: 'browser_surface', role: 'streaming_companion' }] }
+      : {}),
+  };
+}
+
+function validateAssistanceStatusMessage(msg) {
+  if (typeof msg.assistance_request_id !== 'string' || !msg.assistance_request_id.trim()) {
+    throw new Error('Connector emitted invalid ASSISTANCE_STATUS.assistance_request_id: expected non-empty string');
+  }
+  if (!ASSISTANCE_TERMINAL_STATUSES.has(msg.status)) {
+    throw new Error(`Connector emitted invalid ASSISTANCE_STATUS.status: ${msg.status}`);
+  }
+  requireOptionalNonEmptyString(msg.message, 'ASSISTANCE_STATUS.message');
+}
+
+function buildAssistanceRequestedDataFromMessage(msg, runSource) {
+  return {
+    source: runSource,
+    assistance_request_id: msg.assistance_request_id,
+    progress_posture: msg.progress_posture,
+    owner_action: msg.owner_action,
+    response_contract: msg.response_contract,
+    sensitivity: msg.sensitivity || 'none',
+    message: msg.message,
+    stream: msg.stream || null,
+    ...(msg.timeout_seconds == null ? {} : { timeout_seconds: msg.timeout_seconds }),
+    ...(msg.input_schema == null ? {} : { input_schema: msg.input_schema }),
+    ...(msg.attachments == null ? {} : { attachments: sanitizeAssistanceAttachments(msg.attachments) }),
+  };
+}
+
+function assistanceResolutionEventType(responseStatus) {
+  if (responseStatus === 'success') return 'run.assistance_resolved';
+  if (responseStatus === 'resolved') return 'run.assistance_resolved';
+  if (responseStatus === 'cancelled') return 'run.assistance_cancelled';
+  if (responseStatus === 'timeout') return 'run.assistance_timed_out';
+  if (responseStatus === 'timed_out') return 'run.assistance_timed_out';
+  if (responseStatus === 'escalated') return 'run.assistance_escalated';
+  return null;
 }
 
 /**
@@ -1101,6 +1240,53 @@ export async function runConnector(opts) {
       lastValidSpineEvent = { event_id: record.event_id, event_type: record.event_type };
     }
     return record;
+  }
+
+  let assistanceCounter = 0;
+  const openStructuredAssistance = new Map();
+  const nextAssistanceRequestId = () => `asst_${Date.now()}_${++assistanceCounter}`;
+
+  async function closeStructuredAssistance(assistanceRequestId, status, extra = {}) {
+    const activeAssistance = openStructuredAssistance.get(assistanceRequestId);
+    if (!activeAssistance) {
+      return false;
+    }
+    openStructuredAssistance.delete(assistanceRequestId);
+    const eventType = assistanceResolutionEventType(status);
+    if (!eventType) {
+      throw new Error(`Invalid assistance terminal status: ${status}`);
+    }
+    await emitSpineEventTracked({
+      event_type: eventType,
+      trace_id: traceContext.trace_id,
+      scenario_id: traceContext.scenario_id,
+      actor_type: 'runtime',
+      actor_id: connectorId,
+      object_type: 'run',
+      object_id: runId,
+      status,
+      run_id: runId,
+      stream_id: activeAssistance.stream || null,
+      data: {
+        source: runSource,
+        assistance_request_id: assistanceRequestId,
+        status,
+        progress_posture: activeAssistance.progress_posture,
+        owner_action: activeAssistance.owner_action,
+        response_contract: activeAssistance.response_contract,
+        stream: activeAssistance.stream || null,
+        ...(activeAssistance.kind ? { kind: activeAssistance.kind } : {}),
+        ...(extra.message ? { message: extra.message } : {}),
+        ...(extra.reason ? { reason: extra.reason } : {}),
+      },
+    });
+    return true;
+  }
+
+  async function closeOpenStructuredAssistance(status, extra = {}) {
+    for (const assistanceRequestId of [...openStructuredAssistance.keys()]) {
+      await closeStructuredAssistance(assistanceRequestId, status, extra);
+    }
   }
 
   // Stamp `run.started` with the current process's boot epoch so the
@@ -1487,6 +1673,7 @@ export async function runConnector(opts) {
 
         if (!terminalEventRecorded) {
           try {
+            await closeOpenStructuredAssistance('cancelled', { reason: failureReason });
             await emitSpineEvent({
               event_type: 'run.failed',
               trace_id: traceContext.trace_id,
@@ -1643,6 +1830,20 @@ export async function runConnector(opts) {
             },
           });
 
+          await emitSpineEventTracked({
+            event_type: 'run.assistance_requested',
+            trace_id: traceContext.trace_id,
+            scenario_id: traceContext.scenario_id,
+            actor_type: 'runtime',
+            actor_id: connectorId,
+            object_type: 'run',
+            object_id: runId,
+            status: 'started',
+            run_id: runId,
+            interaction_id: msg.request_id,
+            data: buildAssistanceRequestedDataFromInteraction(msg, runSource),
+          });
+
           let timeoutHandle = null;
           let response;
           try {
@@ -1697,6 +1898,29 @@ export async function runConnector(opts) {
             },
           });
 
+          const assistanceEventType = assistanceResolutionEventType(responseStatus);
+          if (assistanceEventType) {
+            await emitSpineEventTracked({
+              event_type: assistanceEventType,
+              trace_id: traceContext.trace_id,
+              scenario_id: traceContext.scenario_id,
+              actor_type: 'runtime',
+              actor_id: connectorId,
+              object_type: 'run',
+              object_id: runId,
+              status: responseStatus,
+              run_id: runId,
+              interaction_id: msg.request_id,
+              data: {
+                source: runSource,
+                assistance_request_id: msg.request_id,
+                status: responseStatus,
+                kind: msg.kind,
+                stream: msg.stream || null,
+              },
+            });
+          }
+
           if (responseStatus !== 'success') {
             const interactionRecoveryHint = msg.kind === 'manual_action' || msg.kind === 'otp'
               ? 'manual_action_required'
@@ -1720,6 +1944,49 @@ export async function runConnector(opts) {
             });
           }
           pendingInteractionViolationReject = null;
+          break;
+        }
+
+        case 'ASSISTANCE': {
+          const assistanceRequestId = msg.assistance_request_id || nextAssistanceRequestId();
+          const assistanceMsg = { ...msg, assistance_request_id: assistanceRequestId };
+          validateAssistanceMessage(assistanceMsg, scopeByStream);
+          if (openStructuredAssistance.has(assistanceRequestId)) {
+            throw new Error(`Connector emitted duplicate ASSISTANCE.assistance_request_id: ${assistanceRequestId}`);
+          }
+          openStructuredAssistance.set(assistanceRequestId, {
+            kind: assistanceMsg.kind || 'assistance',
+            owner_action: assistanceMsg.owner_action,
+            progress_posture: assistanceMsg.progress_posture,
+            response_contract: assistanceMsg.response_contract,
+            stream: assistanceMsg.stream || null,
+          });
+          await emitSpineEventTracked({
+            event_type: 'run.assistance_requested',
+            trace_id: traceContext.trace_id,
+            scenario_id: traceContext.scenario_id,
+            actor_type: 'runtime',
+            actor_id: connectorId,
+            object_type: 'run',
+            object_id: runId,
+            status: 'started',
+            run_id: runId,
+            stream_id: assistanceMsg.stream || null,
+            data: buildAssistanceRequestedDataFromMessage(assistanceMsg, runSource),
+          });
+          onProgress(assistanceMsg);
+          break;
+        }
+
+        case 'ASSISTANCE_STATUS': {
+          validateAssistanceStatusMessage(msg);
+          const closed = await closeStructuredAssistance(msg.assistance_request_id, msg.status, {
+            ...(msg.message == null ? {} : { message: msg.message }),
+          });
+          if (!closed) {
+            throw new Error(`Connector emitted ASSISTANCE_STATUS for unknown assistance_request_id: ${msg.assistance_request_id}`);
+          }
+          onProgress(msg);
           break;
         }
 
@@ -1867,6 +2134,7 @@ export async function runConnector(opts) {
               exitCodeMismatch.records_emitted = doneMessage.records_emitted;
               exitCodeMismatch.reported_records_emitted = doneMessage.records_emitted;
 
+              await closeOpenStructuredAssistance('cancelled', { reason: failureReason });
               await emitSpineEvent({
                 event_type: 'run.failed',
                 trace_id: traceContext.trace_id,
@@ -1911,6 +2179,7 @@ export async function runConnector(opts) {
               recordsEmittedMismatch.records_emitted = totalEmitted;
               recordsEmittedMismatch.reported_records_emitted = doneMessage.records_emitted;
 
+              await closeOpenStructuredAssistance('cancelled', { reason: failureReason });
               await emitSpineEvent({
                 event_type: 'run.failed',
                 trace_id: traceContext.trace_id,
@@ -1948,6 +2217,9 @@ export async function runConnector(opts) {
                 await commitState(stream, cursor);
               }
             }
+            await closeOpenStructuredAssistance(doneMessage.status === 'succeeded' ? 'resolved' : 'cancelled', {
+              reason: doneMessage.status === 'succeeded' ? 'run_completed' : 'connector_reported_failed',
+            });
             await emitSpineEvent({
               event_type: doneMessage.status === 'succeeded' ? 'run.completed' : 'run.failed',
               trace_id: traceContext.trace_id,
@@ -1987,6 +2259,7 @@ export async function runConnector(opts) {
             const connectorDiagnostics = stderrTailDiagnostic
               ? { stderr_tail: stderrTailDiagnostic }
               : null;
+            await closeOpenStructuredAssistance('cancelled', { reason: closeFailureReason });
             await emitSpineEvent({
               event_type: 'run.failed',
               trace_id: traceContext.trace_id,
@@ -2084,6 +2357,7 @@ export async function runConnector(opts) {
 
         if (!terminalEventRecorded) {
           try {
+            await closeOpenStructuredAssistance('cancelled', { reason: failureReason });
             await emitSpineEvent({
               event_type: 'run.failed',
               trace_id: traceContext.trace_id,

@@ -30,14 +30,11 @@ function makeLeaseManager({ surfaceHealth = 'ready', initialActiveLease = false 
     config: {
       managedConnectors: new Set(['chatgpt']),
       surfaceCap: 1,
-      staticProfileKey: 'profile_dynamic_1',
-      staticCdpHttpUrl: 'http://neko:9222',
-      staticStreamBaseUrl: 'http://neko:8080',
       leaseWaitTimeoutMs: 60_000,
       idleTtlMs: 300_000,
       defaultPriorityClass: 'scheduled_refresh',
       priorityRanks: DEFAULT_NEKO_PRIORITY_RANKS,
-      surfaceMode: 'static',
+      surfaceMode: 'dynamic',
     },
     now: () => new Date('2026-05-12T12:00:00.000Z'),
     makeLeaseId: () => 'lease_dynamic_1',
@@ -326,6 +323,16 @@ test('mint requires a pending manual_action interaction', async () => {
   await withHarness({}, async ({ asUrl, spotifyManifest }) => {
     const started = await startRun(asUrl, spotifyManifest.connector_id);
     const pending = await waitForPendingInteraction(asUrl, started.run_id);
+    const beforeMint = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(started.run_id)}/timeline`);
+    const assistanceRequested = beforeMint.body.data.find((event) => event.event_type === 'run.assistance_requested');
+    assert.ok(assistanceRequested, 'manual_action should project to run.assistance_requested');
+    assert.equal(assistanceRequested.interaction_id, pending.interaction_id);
+    assert.equal(assistanceRequested.data.assistance_request_id, pending.interaction_id);
+    assert.equal(assistanceRequested.data.progress_posture, 'blocked');
+    assert.equal(assistanceRequested.data.owner_action, 'operate_attachment');
+    assert.equal(assistanceRequested.data.response_contract, 'response_required');
+    assert.equal(assistanceRequested.data.sensitivity, 'non_secret');
+    assert.deepEqual(assistanceRequested.data.attachments, [{ kind: 'browser_surface', role: 'streaming_companion' }]);
 
     const mint = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(started.run_id)}/run-interaction-stream`, {
       method: 'POST',
@@ -342,6 +349,11 @@ test('mint requires a pending manual_action interaction', async () => {
     assert.ok(mint.body.viewer_path.startsWith('/_ref/run-interaction-streams/'));
 
     await cancelRun(asUrl, started.run_id, pending.interaction_id);
+    const afterCancel = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(started.run_id)}/timeline`);
+    const assistanceCancelled = afterCancel.body.data.find((event) => event.event_type === 'run.assistance_cancelled');
+    assert.ok(assistanceCancelled, 'manual_action cancellation should project to run.assistance_cancelled');
+    assert.equal(assistanceCancelled.interaction_id, pending.interaction_id);
+    assert.equal(assistanceCancelled.data.status, 'cancelled');
   });
 });
 

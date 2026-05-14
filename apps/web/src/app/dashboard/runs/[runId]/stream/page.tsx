@@ -8,6 +8,7 @@ import {
   type SpineEvent,
   type TimelineEnvelope,
 } from "../../../lib/ref-client.ts";
+import { getCurrentBrowserSurfaceAssistance } from "../../../lib/run-assistance.ts";
 import { ResolvedSurface, StreamSurface } from "./stream-viewer.tsx";
 
 export const dynamic = "force-dynamic";
@@ -18,40 +19,9 @@ export const viewport: Viewport = {
   width: "device-width",
 };
 
-interface PendingInteractionSummary {
-  interactionId: string;
-  kind: string;
-  message: string;
-}
-
 interface ConnectorContext {
   connectorId: string;
   displayName: string;
-}
-
-function getPendingInteraction(events: SpineEvent[]): PendingInteractionSummary | null {
-  const completed = new Set(
-    events
-      .filter((event) => event.event_type === "run.interaction_completed")
-      .map((event) => event.interaction_id)
-      .filter((value): value is string => typeof value === "string" && value.length > 0)
-  );
-  const pending = [...events]
-    .reverse()
-    .find(
-      (event) =>
-        event.event_type === "run.interaction_required" &&
-        typeof event.interaction_id === "string" &&
-        !completed.has(event.interaction_id)
-    );
-  if (!pending || typeof pending.interaction_id !== "string") {
-    return null;
-  }
-  return {
-    interactionId: pending.interaction_id,
-    kind: String(pending.data?.kind ?? "interaction"),
-    message: String(pending.data?.message ?? "Awaiting your response."),
-  };
 }
 
 function getConnectorIdFromTimeline(events: SpineEvent[]): string | null {
@@ -151,20 +121,20 @@ export default async function RunInteractionStreamPage({
     return null;
   }
 
-  const pending = getPendingInteraction(envelope.events);
+  const streamableAssistance = getCurrentBrowserSurfaceAssistance(envelope.events);
   const connectorId = getConnectorIdFromTimeline(envelope.events);
   const connector = await resolveConnectorContext(connectorId);
 
-  if (!pending) {
+  if (!streamableAssistance) {
     return <ResolvedSurface connector={connector} />;
   }
 
   return (
     <StreamSurface
       connector={connector}
-      interactionId={pending.interactionId}
-      interactionKind={pending.kind}
-      interactionMessage={pending.message}
+      interactionId={streamableAssistance.id}
+      interactionKind="manual_action"
+      interactionMessage={streamableAssistance.message}
       runId={runId}
     />
   );

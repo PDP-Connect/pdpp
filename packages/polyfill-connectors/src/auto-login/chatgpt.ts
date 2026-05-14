@@ -14,11 +14,22 @@
 
 import type { BrowserContext, Locator, Page } from "playwright";
 import { manualAction } from "../browser-handoff.ts";
-import type { InteractionRequest, InteractionResponse } from "../connector-runtime.ts";
+import type {
+  AssistanceCompletionStatus,
+  AssistanceRequest,
+  InteractionRequest,
+  InteractionResponse,
+} from "../connector-runtime.ts";
 import type { CaptureSession } from "../fixture-capture.ts";
 
 interface EnsureChatGptSessionArgs {
+  assist?: (req: AssistanceRequest) => Promise<string>;
   capture?: CaptureSession | null;
+  completeAssistance?: (
+    assistanceRequestId: string,
+    status: AssistanceCompletionStatus,
+    extra?: { message?: string }
+  ) => Promise<void>;
   context: BrowserContext;
   page: Page;
   progress?: (message: string, extra?: { stream?: string }) => Promise<void>;
@@ -36,12 +47,24 @@ const LOG_IN_NAME = /^log in$/i;
 const RESEND_PROMPT_TEXT = /resend prompt/i;
 const SENT_NOTIFICATION_TEXT = /sent a notification/i;
 const TRY_WITH_EMAIL_TEXT = /try with email/i;
-export const CHATGPT_PUSH_APPROVAL_PROGRESS_MESSAGE =
+export const CHATGPT_PUSH_APPROVAL_ASSISTANCE_MESSAGE =
   "ChatGPT sent an app approval notification. Approve it in the ChatGPT app; PDPP will continue automatically after ChatGPT confirms the session.";
+export const CHATGPT_PUSH_APPROVAL_PROGRESS_MESSAGE = CHATGPT_PUSH_APPROVAL_ASSISTANCE_MESSAGE;
 export const CHATGPT_PUSH_APPROVAL_FALLBACK_MESSAGE =
   "ChatGPT sent an app approval notification, but the session did not continue automatically. Approve it in the ChatGPT app if you have not already, then click Continue here.";
 const PUSH_APPROVAL_POLL_ATTEMPTS = 36;
 const PUSH_APPROVAL_POLL_INTERVAL_MS = 5000;
+
+export function chatGptPushApprovalAssistance(): AssistanceRequest {
+  return {
+    message: CHATGPT_PUSH_APPROVAL_ASSISTANCE_MESSAGE,
+    progress_posture: "running",
+    owner_action: "act_elsewhere",
+    response_contract: "none",
+    sensitivity: "non_secret",
+    timeout_seconds: Math.ceil((PUSH_APPROVAL_POLL_ATTEMPTS * PUSH_APPROVAL_POLL_INTERVAL_MS) / 1000),
+  };
+}
 
 export function interactionResponseCode(resp: InteractionResponse): string | null {
   return resp.data?.code ?? resp.value ?? null;
@@ -237,23 +260,44 @@ async function continueWithPasswordIfPresent(page: Page): Promise<void> {
 }
 
 async function handlePushApproval({
+  assist,
   capture,
+  completeAssistance,
   page,
   progress,
   sendInteraction,
-}: Pick<EnsureChatGptSessionArgs, "capture" | "page" | "progress" | "sendInteraction">): Promise<boolean> {
+}: Pick<
+  EnsureChatGptSessionArgs,
+  "assist" | "capture" | "completeAssistance" | "page" | "progress" | "sendInteraction"
+>): Promise<boolean> {
   if (!(await isLikelyChatGptPushApprovalPage(page))) {
     return false;
   }
 
   await capture?.captureDom(page, "auth-push-approval-detected");
-  await progress?.(CHATGPT_PUSH_APPROVAL_PROGRESS_MESSAGE);
+  let assistanceRequestId: string | null = null;
+  if (assist) {
+    assistanceRequestId = await assist(chatGptPushApprovalAssistance());
+  } else {
+    await progress?.(CHATGPT_PUSH_APPROVAL_PROGRESS_MESSAGE);
+  }
   for (let attempt = 0; attempt < PUSH_APPROVAL_POLL_ATTEMPTS; attempt++) {
     await page.waitForTimeout(PUSH_APPROVAL_POLL_INTERVAL_MS);
     if (await isChatGptSessionActive(page)) {
+      if (assistanceRequestId && completeAssistance) {
+        await completeAssistance(assistanceRequestId, "resolved", {
+          message: "The external approval completed and the connector is continuing.",
+        });
+      }
       await progress?.("ChatGPT app approval accepted; continuing collection.");
       return true;
     }
+  }
+
+  if (assistanceRequestId && completeAssistance) {
+    await completeAssistance(assistanceRequestId, "escalated", {
+      message: "External approval did not complete automatically; falling back to browser confirmation.",
+    });
   }
 
   await manualAction(
@@ -299,12 +343,17 @@ async function handleOtpIfPresent({
 }
 
 async function submitPasswordAndHandleSecondFactor({
+  assist,
   capture,
+  completeAssistance,
   page,
   password,
   progress,
   sendInteraction,
-}: Pick<EnsureChatGptSessionArgs, "capture" | "page" | "progress" | "sendInteraction"> & {
+}: Pick<
+  EnsureChatGptSessionArgs,
+  "assist" | "capture" | "completeAssistance" | "page" | "progress" | "sendInteraction"
+> & {
   readonly password: string;
 }): Promise<boolean> {
   const passwordIn = page.locator('input[type="password"]').first();
@@ -323,7 +372,9 @@ async function submitPasswordAndHandleSecondFactor({
 
   if (
     await handlePushApproval({
+      ...(assist ? { assist } : {}),
       ...(capture ? { capture } : {}),
+      ...(completeAssistance ? { completeAssistance } : {}),
       page,
       ...(progress ? { progress } : {}),
       sendInteraction,
@@ -368,7 +419,9 @@ async function fallbackForPostSubmitLogin({
 }
 
 export async function ensureChatGptSession({
+  assist,
   capture,
+  completeAssistance,
   context: _context,
   page,
   progress,
@@ -391,7 +444,9 @@ export async function ensureChatGptSession({
 
   if (
     await submitPasswordAndHandleSecondFactor({
+      ...(assist ? { assist } : {}),
       ...(capture ? { capture } : {}),
+      ...(completeAssistance ? { completeAssistance } : {}),
       page,
       password,
       ...(progress ? { progress } : {}),

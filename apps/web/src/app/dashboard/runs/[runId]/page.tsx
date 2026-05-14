@@ -7,6 +7,11 @@ import { TimelineDetailView } from "../../components/views/timeline-detail-view.
 import { getAsInternalUrl, ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
 import { getRunTimeline, type SpineEvent, type TimelineEnvelope } from "../../lib/ref-client.ts";
 import {
+  type CurrentRunAssistance,
+  getCurrentRunAssistance,
+  hasBrowserSurfaceAttachment,
+} from "../../lib/run-assistance.ts";
+import {
   classifyKnownGaps,
   extractTerminalKnownGaps,
   formatGapReason,
@@ -78,13 +83,13 @@ export default async function RunDetailPage({
   const interactions = summarizeInteractions(events);
   const terminalStatus = getTerminalRunStatus(events);
   const active = terminalStatus == null;
-  const pendingInteraction = active ? getPendingInteraction(events) : null;
+  const currentAssistance = active ? getCurrentRunAssistance(events) : null;
   const latestProgress = getLatestProgress(events);
   const failure = events.find((e) => e.event_type === "run.failed");
   const terminalKnownGaps = extractTerminalKnownGaps(events);
   const gapClassification = classifyKnownGaps(terminalKnownGaps.gaps);
-  const stateTone = getRunStateTone({ active, pendingInteraction: Boolean(pendingInteraction), terminalStatus });
-  const stateValue = getRunStateValue({ active, pendingInteraction: Boolean(pendingInteraction), terminalStatus });
+  const stateTone = getRunStateTone({ active, currentAssistance, terminalStatus });
+  const stateValue = getRunStateValue({ active, currentAssistance, terminalStatus });
   const failureRows = summarizeFailure(failure);
 
   return (
@@ -93,7 +98,7 @@ export default async function RunDetailPage({
       <TimelineDetailView
         beforeTimeline={
           <>
-            <PendingInteractionSection active={active} pendingInteraction={pendingInteraction} runId={runId} />
+            <CurrentAssistanceSection active={active} currentAssistance={currentAssistance} runId={runId} />
             <LatestProgressSection active={active} latestProgress={latestProgress} terminalStatus={terminalStatus} />
             <StatsGrid
               checkpoints={checkpoints}
@@ -144,31 +149,37 @@ export default async function RunDetailPage({
   );
 }
 
-function PendingInteractionSection({
+function CurrentAssistanceSection({
   active,
-  pendingInteraction,
+  currentAssistance,
   runId,
 }: {
   active: boolean;
-  pendingInteraction: PendingInteraction | null;
+  currentAssistance: CurrentRunAssistance | null;
   runId: string;
 }) {
-  if (!pendingInteraction) {
+  if (!currentAssistance) {
     return null;
   }
-  const supportsStreaming = pendingInteraction.kind === "manual_action" && active;
+  const supportsStreaming =
+    active &&
+    currentAssistance.progressPosture === "blocked" &&
+    currentAssistance.ownerAction === "operate_attachment" &&
+    currentAssistance.responseContract === "response_required" &&
+    hasBrowserSurfaceAttachment(currentAssistance);
+  const supportsSubmit =
+    active &&
+    currentAssistance.progressPosture === "blocked" &&
+    currentAssistance.responseContract === "response_required" &&
+    (currentAssistance.ownerAction === "provide_value" || currentAssistance.ownerAction === "operate_attachment");
 
   return (
     <Callout
       action={<StatusBadge inline status={active ? "pending" : "cancelled"} />}
       className="mb-6 border border-[color:var(--warning)] border-l-4 bg-[color:var(--warning-wash)]"
-      description={
-        active
-          ? "This run is alive, but it cannot continue until the requested interaction is satisfied."
-          : "This interaction was unanswered when the run ended."
-      }
+      description={getAssistanceDescription(currentAssistance, active, supportsStreaming)}
       surface="human"
-      title={active ? "Waiting on operator input" : "Interaction abandoned"}
+      title={getAssistanceTitle(currentAssistance, active)}
     >
       {supportsStreaming ? (
         <p className="pdpp-caption mb-2">
@@ -179,25 +190,88 @@ function PendingInteractionSection({
         </p>
       ) : null}
       <dl className="pdpp-caption grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+        <dt className="text-muted-foreground">message</dt>
+        <dd>{currentAssistance.message}</dd>
+        <dt className="text-muted-foreground">state</dt>
+        <dd>
+          {currentAssistance.progressPosture} · {currentAssistance.ownerAction} · {currentAssistance.responseContract}
+        </dd>
         <dt className="text-muted-foreground">kind</dt>
-        <dd>{pendingInteraction.kind}</dd>
-        {pendingInteraction.timeoutLabel ? (
+        <dd>{currentAssistance.kind}</dd>
+        {currentAssistance.attachments.length > 0 ? (
+          <>
+            <dt className="text-muted-foreground">attachments</dt>
+            <dd>{currentAssistance.attachments.map((attachment) => attachment.kind).join(", ")}</dd>
+          </>
+        ) : null}
+        {currentAssistance.timeoutLabel ? (
           <>
             <dt className="text-muted-foreground">timeout</dt>
-            <dd>{pendingInteraction.timeoutLabel}</dd>
+            <dd>{currentAssistance.timeoutLabel}</dd>
           </>
         ) : null}
       </dl>
-      <RunInteractionForm
-        fields={pendingInteraction.fields}
-        interactionId={pendingInteraction.interactionId}
-        key={pendingInteraction.interactionId}
-        kind={pendingInteraction.kind}
-        message={pendingInteraction.message}
-        runId={runId}
-      />
+      {supportsSubmit ? (
+        <RunInteractionForm
+          fields={currentAssistance.fields}
+          interactionId={currentAssistance.id}
+          key={currentAssistance.id}
+          kind={currentAssistance.ownerAction === "operate_attachment" ? "manual_action" : currentAssistance.kind}
+          message={currentAssistance.message}
+          runId={runId}
+        />
+      ) : null}
     </Callout>
   );
+}
+
+function getAssistanceTitle(assistance: CurrentRunAssistance, active: boolean): string {
+  if (!active) {
+    return "Assistance abandoned";
+  }
+  if (
+    assistance.progressPosture === "running" &&
+    assistance.ownerAction === "act_elsewhere" &&
+    assistance.responseContract === "none"
+  ) {
+    return "Waiting for external approval";
+  }
+  if (
+    assistance.progressPosture === "waiting_retry" &&
+    assistance.ownerAction === "none" &&
+    assistance.responseContract === "none"
+  ) {
+    return "Waiting before retry";
+  }
+  return "Waiting on operator input";
+}
+
+function getAssistanceDescription(
+  assistance: CurrentRunAssistance,
+  active: boolean,
+  supportsStreaming: boolean
+): string {
+  if (!active) {
+    return "This assistance request was still open when the run ended.";
+  }
+  if (
+    assistance.progressPosture === "running" &&
+    assistance.ownerAction === "act_elsewhere" &&
+    assistance.responseContract === "none"
+  ) {
+    return "The connector is still running and watching for completion. No dashboard response is required.";
+  }
+  if (
+    assistance.progressPosture === "waiting_retry" &&
+    assistance.ownerAction === "none" &&
+    assistance.responseContract === "none"
+  ) {
+    return "The connector is waiting before retrying. No owner action is required right now.";
+  }
+  if (supportsStreaming) {
+    return "This run is blocked until the requested browser-surface action is completed.";
+  }
+  return "This run is blocked until the requested response is submitted.";
 }
 
 function LatestProgressSection({
@@ -599,14 +673,14 @@ function Stat({ title, rows, emphasis }: { title: string; rows: [string, string]
 
 function getRunStateTone({
   active,
-  pendingInteraction,
+  currentAssistance,
   terminalStatus,
 }: {
   active: boolean;
-  pendingInteraction: boolean;
+  currentAssistance: CurrentRunAssistance | null;
   terminalStatus: TerminalRunStatus;
 }): RunStateTone {
-  if (pendingInteraction) {
+  if (currentAssistance?.progressPosture === "blocked") {
     return "human";
   }
   if (active) {
@@ -617,17 +691,26 @@ function getRunStateTone({
 
 function getRunStateValue({
   active,
-  pendingInteraction,
+  currentAssistance,
   terminalStatus,
 }: {
   active: boolean;
-  pendingInteraction: boolean;
+  currentAssistance: CurrentRunAssistance | null;
   terminalStatus: TerminalRunStatus;
 }): string | null {
   if (!active) {
     return terminalStatus;
   }
-  return pendingInteraction ? "awaiting input" : "running";
+  if (!currentAssistance) {
+    return "running";
+  }
+  if (currentAssistance.progressPosture === "blocked") {
+    return "awaiting input";
+  }
+  if (currentAssistance.progressPosture === "waiting_retry") {
+    return "waiting retry";
+  }
+  return "running";
 }
 
 function summarizeCheckpoints(events: SpineEvent[]): [string, string][] {
@@ -714,91 +797,4 @@ function getLatestProgress(events: SpineEvent[]): LatestProgress | null {
     total,
     percentLabel,
   };
-}
-
-interface InteractionField {
-  format: "password" | "text";
-  label: string | null;
-  name: string;
-  required: boolean;
-}
-
-interface PendingInteraction {
-  fields: InteractionField[];
-  interactionId: string;
-  kind: string;
-  message: string;
-  timeoutLabel: string | null;
-}
-
-function getPendingInteraction(events: SpineEvent[]): PendingInteraction | null {
-  const completed = new Set(
-    events
-      .filter((event) => event.event_type === "run.interaction_completed")
-      .map((event) => event.interaction_id)
-      .filter((value): value is string => typeof value === "string" && value.length > 0)
-  );
-
-  const pending = [...events]
-    .reverse()
-    .find(
-      (event) =>
-        event.event_type === "run.interaction_required" &&
-        typeof event.interaction_id === "string" &&
-        !completed.has(event.interaction_id)
-    );
-  if (!pending || typeof pending.interaction_id !== "string") {
-    return null;
-  }
-
-  const schema = pending.data?.schema;
-  const requiredFields = new Set(
-    schema &&
-      typeof schema === "object" &&
-      !Array.isArray(schema) &&
-      Array.isArray((schema as { required?: unknown }).required)
-      ? ((schema as { required: unknown[] }).required.filter((value) => typeof value === "string") as string[])
-      : []
-  );
-  const properties =
-    schema && typeof schema === "object" && !Array.isArray(schema) && "properties" in schema
-      ? (schema as { properties?: unknown }).properties
-      : null;
-  const fields: InteractionField[] =
-    properties && typeof properties === "object" && !Array.isArray(properties)
-      ? Object.entries(properties as Record<string, unknown>)
-          .map(([name, rawDef]): InteractionField => {
-            const def = rawDef && typeof rawDef === "object" ? (rawDef as Record<string, unknown>) : {};
-            const format = def.format === "password" ? "password" : "text";
-            const label = typeof def.title === "string" && def.title ? def.title : null;
-            return {
-              name,
-              label,
-              format,
-              required: requiredFields.has(name),
-            };
-          })
-          .sort((left, right) => left.name.localeCompare(right.name))
-      : [];
-  const timeoutSeconds =
-    typeof pending.data?.timeout_seconds === "number" && pending.data.timeout_seconds > 0
-      ? pending.data.timeout_seconds
-      : null;
-
-  return {
-    interactionId: pending.interaction_id,
-    kind: String(pending.data?.kind ?? "interaction"),
-    message: String(pending.data?.message ?? "Awaiting operator response."),
-    fields,
-    timeoutLabel: timeoutSeconds == null ? null : formatTimeout(timeoutSeconds),
-  };
-}
-
-function formatTimeout(seconds: number): string {
-  if (seconds < 60) {
-    return `${seconds}s`;
-  }
-  const minutes = Math.floor(seconds / 60);
-  const remainder = seconds % 60;
-  return remainder === 0 ? `${minutes}m` : `${minutes}m ${remainder}s`;
 }

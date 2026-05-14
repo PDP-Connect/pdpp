@@ -2767,6 +2767,22 @@ rl.on('line', (line) => {
       });
       assert.equal(interactionRequired.data.timeout_seconds, 300);
 
+      const assistanceRequested = (runTimeline.data || []).find((event) => event.event_type === 'run.assistance_requested');
+      assert.ok(assistanceRequested, 'expected run.assistance_requested event');
+      assert.equal(assistanceRequested.interaction_id, 'int_1');
+      assert.equal(assistanceRequested.data.assistance_request_id, 'int_1');
+      assert.equal(assistanceRequested.data.progress_posture, 'blocked');
+      assert.equal(assistanceRequested.data.owner_action, 'provide_value');
+      assert.equal(assistanceRequested.data.response_contract, 'response_required');
+      assert.equal(assistanceRequested.data.sensitivity, 'secret');
+      assert.equal(assistanceRequested.data.kind, 'credentials');
+      assert.equal(assistanceRequested.data.message, 'Enter password');
+      assert.deepEqual(assistanceRequested.data.input_schema, {
+        type: 'object',
+        properties: { password: { type: 'string', format: 'password' } },
+        required: ['password'],
+      });
+
       const interactionCompleted = (runTimeline.data || []).find((event) => event.event_type === 'run.interaction_completed');
       assert.ok(interactionCompleted, 'expected run.interaction_completed event');
       assert.equal(interactionCompleted.status, 'success');
@@ -2774,8 +2790,169 @@ rl.on('line', (line) => {
       assert.equal(interactionCompleted.data.kind, 'credentials');
       assert.equal(interactionCompleted.data.stream, null);
 
+      const assistanceResolved = (runTimeline.data || []).find((event) => event.event_type === 'run.assistance_resolved');
+      assert.ok(assistanceResolved, 'expected run.assistance_resolved event');
+      assert.equal(assistanceResolved.interaction_id, 'int_1');
+      assert.equal(assistanceResolved.data.assistance_request_id, 'int_1');
+      assert.equal(assistanceResolved.data.status, 'success');
+      assert.equal(assistanceResolved.data.kind, 'credentials');
+
       const serializedTimeline = JSON.stringify(runTimeline.data || []);
       assert.ok(!serializedTimeline.includes('test123'), 'run timelines should not persist INTERACTION_RESPONSE secret values');
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+      await closeServer(server);
+    }
+  });
+
+  await t.test('nonblocking ASSISTANCE records assistance without interaction-required behavior', async () => {
+    const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+    const { asPort, rsPort } = server;
+    const { ownerToken, connectorId } = await setupConnector(server, asPort);
+    const asUrl = `http://localhost:${asPort}`;
+
+    const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-test-assistance-nonblocking-'));
+    const connectorPath = join(tmpDir, 'connector.mjs');
+    writeFileSync(connectorPath, `
+import { createInterface } from 'readline';
+const rl = createInterface({ input: process.stdin });
+let started = false;
+rl.on('line', (line) => {
+  const msg = JSON.parse(line);
+  if (msg.type === 'START' && !started) {
+    started = true;
+	    process.stdout.write(JSON.stringify({
+	      type: 'ASSISTANCE',
+	      assistance_request_id: 'asst_1',
+	      progress_posture: 'running',
+	      owner_action: 'act_elsewhere',
+	      response_contract: 'none',
+	      sensitivity: 'non_secret',
+	      message: 'Approve the sign-in prompt in the mobile app.',
+	      timeout_seconds: 120,
+	      attachments: [{
+	        kind: 'url',
+	        role: 'approval',
+	        label: 'Open approval page',
+	        ref: 'approval_ref_1',
+	        url: 'https://example.com/sensitive?token=secret',
+	        cdp_url: 'ws://example.com/devtools/browser/secret'
+	      }]
+	    }) + '\\n');
+	    process.stdout.write(JSON.stringify({
+	      type: 'ASSISTANCE_STATUS',
+	      assistance_request_id: 'asst_1',
+	      status: 'resolved',
+	      message: 'Approval accepted.'
+	    }) + '\\n');
+	    process.stdout.write(JSON.stringify({ type: 'RECORD', stream: 'items', key: 'after_assistance', data: { id: 'after_assistance', value: 'continued' }, emitted_at: new Date().toISOString() }) + '\\n');
+    process.stdout.write(JSON.stringify({ type: 'DONE', status: 'succeeded', records_emitted: 1 }) + '\\n');
+    rl.close();
+    process.exit(0);
+  }
+});
+`, 'utf-8');
+
+    try {
+      let onInteractionCalled = false;
+      const result = await runConnector({
+        connectorPath,
+        connectorId,
+        ownerToken,
+        manifest: MINIMAL_MANIFEST,
+        state: null,
+        collectionMode: 'full_refresh',
+        persistState: true,
+        rsUrl: `http://localhost:${rsPort}`,
+        onInteraction: async () => {
+          onInteractionCalled = true;
+          return { type: 'INTERACTION_RESPONSE', request_id: 'unexpected', status: 'success' };
+        },
+      });
+
+      assert.equal(result.status, 'succeeded');
+      assert.equal(result.records_emitted, 1);
+      assert.equal(onInteractionCalled, false, 'nonblocking ASSISTANCE must not wait for interaction input');
+
+      const { body: runTimeline } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(result.run_id)}/timeline`);
+      const assistanceRequested = (runTimeline.data || []).find((event) => event.event_type === 'run.assistance_requested');
+      assert.ok(assistanceRequested, 'expected run.assistance_requested event');
+      assert.equal(assistanceRequested.data.assistance_request_id, 'asst_1');
+      assert.equal(assistanceRequested.data.progress_posture, 'running');
+      assert.equal(assistanceRequested.data.owner_action, 'act_elsewhere');
+	      assert.equal(assistanceRequested.data.response_contract, 'none');
+	      assert.equal(assistanceRequested.data.message, 'Approve the sign-in prompt in the mobile app.');
+	      assert.deepEqual(assistanceRequested.data.attachments, [{
+	        kind: 'url',
+	        role: 'approval',
+	        label: 'Open approval page',
+	        ref: 'approval_ref_1',
+	      }]);
+	      assert.ok(!JSON.stringify(assistanceRequested.data).includes('token=secret'));
+	      assert.ok(!JSON.stringify(assistanceRequested.data).includes('devtools/browser/secret'));
+	      const assistanceResolved = (runTimeline.data || []).find((event) => event.event_type === 'run.assistance_resolved');
+	      assert.ok(assistanceResolved, 'expected run.assistance_resolved event');
+	      assert.equal(assistanceResolved.data.assistance_request_id, 'asst_1');
+	      assert.equal(assistanceResolved.data.status, 'resolved');
+	      assert.ok(!(runTimeline.data || []).some((event) => event.event_type === 'run.interaction_required'));
+	      assert.ok(!(runTimeline.data || []).some((event) => event.event_type === 'run.interaction_completed'));
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+      await closeServer(server);
+    }
+  });
+
+  await t.test('runtime rejects response-required ASSISTANCE without compatibility path', async () => {
+    const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+    const { asPort, rsPort } = server;
+    const { ownerToken, connectorId } = await setupConnector(server, asPort);
+    const asUrl = `http://localhost:${asPort}`;
+
+    const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-test-assistance-response-required-'));
+    const connectorPath = join(tmpDir, 'connector.mjs');
+    writeFileSync(connectorPath, `
+import { createInterface } from 'readline';
+const rl = createInterface({ input: process.stdin });
+rl.on('line', (line) => {
+  const msg = JSON.parse(line);
+  if (msg.type === 'START') {
+    process.stdout.write(JSON.stringify({
+      type: 'ASSISTANCE',
+      progress_posture: 'blocked',
+      owner_action: 'provide_value',
+      response_contract: 'response_required',
+      message: 'Enter the code.'
+    }) + '\\n');
+  }
+});
+`, 'utf-8');
+
+    try {
+      let rejected = null;
+      await assert.rejects(
+        () => runConnector({
+          connectorPath,
+          connectorId,
+          ownerToken,
+          manifest: MINIMAL_MANIFEST,
+          state: null,
+          collectionMode: 'full_refresh',
+          persistState: true,
+          rsUrl: `http://localhost:${rsPort}`,
+        }),
+        (err) => {
+          rejected = err;
+          assert.equal(
+            err.message,
+            'Connector emitted unsupported ASSISTANCE.response_contract: response_required is not supported by the nonblocking ASSISTANCE path',
+          );
+          return true;
+        },
+      );
+
+      const { body: runTimeline } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(rejected.run_id)}/timeline`);
+      assert.ok(!(runTimeline.data || []).some((event) => event.event_type === 'run.assistance_requested'));
+      assert.ok((runTimeline.data || []).some((event) => event.event_type === 'run.failed'));
     } finally {
       rmSync(tmpDir, { recursive: true, force: true });
       await closeServer(server);

@@ -79,6 +79,38 @@ export interface InteractionResponse {
 
 export type InteractionKind = "credentials" | "otp" | "manual_action";
 
+export type AssistanceProgressPosture = "running" | "blocked" | "waiting_retry";
+export type AssistanceOwnerAction = "none" | "act_elsewhere" | "provide_value" | "operate_attachment";
+export type AssistanceResponseContract = "none";
+export type AssistanceSensitivity = "none" | "non_secret" | "secret";
+export type AssistanceAttachmentKind = "browser_surface" | "url" | "qr" | "file" | "fixture";
+export type AssistanceCompletionStatus = "cancelled" | "escalated" | "resolved" | "timed_out";
+
+export interface AssistanceAttachment {
+  kind: AssistanceAttachmentKind;
+  label?: string;
+  ref?: string;
+  role?: string;
+}
+
+export interface AssistanceRequest {
+  assistance_request_id?: string;
+  attachments?: AssistanceAttachment[];
+  input_schema?: Record<string, unknown>;
+  message: string;
+  owner_action: AssistanceOwnerAction;
+  progress_posture: AssistanceProgressPosture;
+  response_contract: AssistanceResponseContract;
+  sensitivity?: AssistanceSensitivity;
+  timeout_seconds?: number;
+}
+
+export interface AssistanceCompletion {
+  assistance_request_id: string;
+  message?: string;
+  status: AssistanceCompletionStatus;
+}
+
 /** All messages a connector emits over stdout. */
 export type EmittedMessage =
   | {
@@ -91,6 +123,8 @@ export type EmittedMessage =
     }
   | { type: "STATE"; stream: string; cursor: unknown }
   | { type: "PROGRESS"; message: string; stream?: string }
+  | ({ type: "ASSISTANCE" } & AssistanceRequest)
+  | ({ type: "ASSISTANCE_STATUS" } & AssistanceCompletion)
   | {
       type: "SKIP_RESULT";
       stream: string;
@@ -134,7 +168,13 @@ export type ValidateRecord = (
 type Credentials = Record<string, string>;
 
 interface BaseCollectContext {
+  assist: (req: AssistanceRequest) => Promise<string>;
   capture: CaptureSession | null;
+  completeAssistance: (
+    assistanceRequestId: string,
+    status: AssistanceCompletionStatus,
+    extra?: { message?: string }
+  ) => Promise<void>;
   credentials: Credentials;
   emit: (msg: EmittedMessage) => Promise<void>;
   emitRecord: (stream: string, data: RecordData) => Promise<void>;
@@ -181,7 +221,9 @@ export type BrowserLaunchSource =
   | { readonly kind: "isolated_local" };
 
 export interface EnsureSessionArgs {
+  assist: BaseCollectContext["assist"];
   capture: CaptureSession | null;
+  completeAssistance: BaseCollectContext["completeAssistance"];
   context: BrowserContext;
   page: Page;
   progress: BaseCollectContext["progress"];
@@ -359,6 +401,8 @@ export function runConnector(config: RunConnectorConfig): void {
 
   let interactionCounter = 0;
   const nextInteractionId = (): string => `int_${Date.now()}_${++interactionCounter}`;
+  let assistanceCounter = 0;
+  const nextAssistanceId = (): string => `asst_${Date.now()}_${++assistanceCounter}`;
 
   const sendInteraction = (req: InteractionRequest): Promise<InteractionResponse> => {
     const request_id = req.request_id ?? nextInteractionId();
@@ -401,6 +445,13 @@ export function runConnector(config: RunConnectorConfig): void {
 
   const progress = (message: string, extra: { stream?: string } = {}): Promise<void> =>
     emit({ type: "PROGRESS", message, ...extra });
+  const assist = async (req: AssistanceRequest): Promise<string> => {
+    const assistance_request_id = req.assistance_request_id ?? nextAssistanceId();
+    await emit({ type: "ASSISTANCE", ...req, assistance_request_id });
+    return assistance_request_id;
+  };
+  const completeAssistance: BaseCollectContext["completeAssistance"] = (assistanceRequestId, status, extra = {}) =>
+    emit({ type: "ASSISTANCE_STATUS", assistance_request_id: assistanceRequestId, status, ...extra });
 
   // Kick off the run. The outer catch distinguishes TerminalError (which
   // the runtime threw deliberately with an explicit retryable bit) from
@@ -439,6 +490,8 @@ export function runConnector(config: RunConnectorConfig): void {
       credentials,
       emit,
       emitRecord: emitRecord.emit,
+      assist,
+      completeAssistance,
       progress,
       capture,
       sendInteraction,
@@ -451,6 +504,8 @@ export function runConnector(config: RunConnectorConfig): void {
         name,
         emit,
         sendInteraction,
+        assist,
+        completeAssistance,
         progress,
         ensureSession,
         probeSession,
@@ -581,13 +636,27 @@ async function runInBrowser(args: {
   name: string;
   emit: (msg: EmittedMessage) => Promise<void>;
   sendInteraction: BaseCollectContext["sendInteraction"];
+  assist: BaseCollectContext["assist"];
+  completeAssistance: BaseCollectContext["completeAssistance"];
   progress: BaseCollectContext["progress"];
   ensureSession: BrowserConnectorConfig["ensureSession"];
   probeSession: BrowserConnectorConfig["probeSession"];
   collect: BrowserConnectorConfig["collect"];
   baseCtx: BaseCollectContext;
 }): Promise<void> {
-  const { browser, name, emit, sendInteraction, progress, ensureSession, probeSession, collect, baseCtx } = args;
+  const {
+    browser,
+    name,
+    emit,
+    sendInteraction,
+    assist,
+    completeAssistance,
+    progress,
+    ensureSession,
+    probeSession,
+    collect,
+    baseCtx,
+  } = args;
   const visibility = resolveBrowserRuntimeVisibility(browser, name);
   const browserSendInteraction: BaseCollectContext["sendInteraction"] = (req) =>
     sendInteraction(decorateBrowserManualAction(req, visibility));
@@ -607,7 +676,16 @@ async function runInBrowser(args: {
     const page = await ctx.newPage();
     await establishSession(
       { ensureSession, probeSession },
-      { capture: baseCtx.capture, context: ctx, page, name, progress, sendInteraction: browserSendInteraction }
+      {
+        assist,
+        capture: baseCtx.capture,
+        completeAssistance,
+        context: ctx,
+        page,
+        name,
+        progress,
+        sendInteraction: browserSendInteraction,
+      }
     );
     await collect({ ...baseCtx, context: ctx, page, sendInteraction: browserSendInteraction });
   } finally {
@@ -769,7 +847,9 @@ async function acquireBrowser(browser: BrowserConfig, name: string): Promise<Acq
 }
 
 interface SessionEstablishArgs {
+  assist: BaseCollectContext["assist"];
   capture: CaptureSession | null;
+  completeAssistance: BaseCollectContext["completeAssistance"];
   context: BrowserContext;
   name: string;
   page: Page;
@@ -792,11 +872,11 @@ async function establishSession(
   args: SessionEstablishArgs
 ): Promise<void> {
   const { ensureSession, probeSession } = hooks;
-  const { capture, context, page, name, sendInteraction, progress } = args;
+  const { assist, capture, completeAssistance, context, page, name, sendInteraction, progress } = args;
 
   if (typeof ensureSession === "function") {
     try {
-      await ensureSession({ capture, context, page, sendInteraction, progress });
+      await ensureSession({ assist, capture, completeAssistance, context, page, sendInteraction, progress });
       return;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
