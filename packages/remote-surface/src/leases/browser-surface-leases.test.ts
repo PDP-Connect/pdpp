@@ -58,8 +58,10 @@ function manager(options: {
 class FakeBrowserSurfaceAllocator implements BrowserSurfaceAllocator {
   readonly #surfaces = new Map<string, BrowserSurface>();
   readonly ensureRequests: EnsureBrowserSurfaceRequest[] = [];
+  readonly stopRequests: StopBrowserSurfaceRequest[] = [];
 
   failEnsure = false;
+  failStop = false;
 
   async ensureSurface(request: EnsureBrowserSurfaceRequest): Promise<BrowserSurface> {
     this.ensureRequests.push(request);
@@ -88,6 +90,10 @@ class FakeBrowserSurfaceAllocator implements BrowserSurfaceAllocator {
   }
 
   async stopSurface(request: StopBrowserSurfaceRequest): Promise<BrowserSurface | null> {
+    this.stopRequests.push(request);
+    if (this.failStop) {
+      throw new Error("allocator stop failed");
+    }
     const surface = this.#surfaces.get(request.surfaceId);
     if (!surface) {
       return null;
@@ -116,6 +122,10 @@ class FakeBrowserSurfaceAllocator implements BrowserSurfaceAllocator {
     const surface = this.#surfaces.get(surfaceId);
     assert.ok(surface);
     this.#surfaces.set(surfaceId, { ...surface, health: "unhealthy" });
+  }
+
+  setSurface(surface: BrowserSurface): void {
+    this.#surfaces.set(surface.surface_id, surface);
   }
 }
 
@@ -278,6 +288,96 @@ test("stale release fencing cannot release a promoted lease", async () => {
   assert.equal(stale.released, false);
   assert.equal(stale.stale, true);
   assert.equal(leases.getLease(queued.lease.lease_id)?.status, "leased");
+});
+
+test("failed idle cleanup keeps surface counted against cap and does not promote queued leases", async () => {
+  const idleSurface: BrowserSurface = {
+    surface_id: "surface_idle",
+    backend: "neko",
+    profile_key: "idle_profile",
+    connector_id: "chatgpt",
+    cdp_url: "http://neko:9222",
+    stream_base_url: "http://neko:8080",
+    health: "ready",
+    created_at: "2026-05-12T11:00:00.000Z",
+    last_used_at: "2026-05-12T11:00:00.000Z",
+  };
+  const { leases } = manager({
+    initialSurfaces: [idleSurface],
+    initialLeases: [
+      {
+        lease_id: "lease_waiting",
+        connector_id: "chatgpt",
+        profile_key: "queued_profile",
+        run_id: "run_waiting",
+        status: "waiting_for_browser_surface",
+        priority_class: "scheduled_refresh",
+        requested_at: "2026-05-12T12:00:00.000Z",
+        expires_at: "2026-05-12T12:01:00.000Z",
+        fencing_token: 1,
+        wait_reason: "capacity_full",
+      },
+    ],
+  });
+  const allocator = new FakeBrowserSurfaceAllocator();
+  allocator.setSurface(idleSurface);
+  allocator.failStop = true;
+
+  await assert.rejects(() => leases.cleanupIdleSurfaces(allocator), /allocator stop failed/);
+
+  assert.equal(allocator.stopRequests.length, 1);
+  assert.equal(leases.getSurface("surface_idle")?.health, "ready");
+  assert.equal(leases.getLease("lease_waiting")?.status, "waiting_for_browser_surface");
+  assert.deepEqual(leases.pumpQueuedLeases(), []);
+  assert.equal(leases.getLease("lease_waiting")?.status, "waiting_for_browser_surface");
+  assert.equal(leases.listSurfaces().length, 1);
+});
+
+test("successful idle cleanup deletes surface and promotes queued leases", async () => {
+  const idleSurface: BrowserSurface = {
+    surface_id: "surface_idle",
+    backend: "neko",
+    profile_key: "idle_profile",
+    connector_id: "chatgpt",
+    cdp_url: "http://neko:9222",
+    stream_base_url: "http://neko:8080",
+    health: "ready",
+    created_at: "2026-05-12T11:00:00.000Z",
+    last_used_at: "2026-05-12T11:00:00.000Z",
+  };
+  const { leases } = manager({
+    initialSurfaces: [idleSurface],
+    initialLeases: [
+      {
+        lease_id: "lease_waiting",
+        connector_id: "chatgpt",
+        profile_key: "queued_profile",
+        run_id: "run_waiting",
+        status: "waiting_for_browser_surface",
+        priority_class: "scheduled_refresh",
+        requested_at: "2026-05-12T12:00:00.000Z",
+        expires_at: "2026-05-12T12:01:00.000Z",
+        fencing_token: 1,
+        wait_reason: "capacity_full",
+      },
+    ],
+  });
+  const allocator = new FakeBrowserSurfaceAllocator();
+  allocator.setSurface(idleSurface);
+
+  const result = await leases.cleanupIdleSurfaces(allocator);
+
+  assert.equal(allocator.stopRequests.length, 1);
+  assert.deepEqual(
+    allocator.stopRequests.map((request) => request.reason),
+    ["idle_ttl"],
+  );
+  assert.equal(result.stopped[0]?.surface_id, "surface_idle");
+  assert.equal(result.promoted[0]?.lease_id, "lease_waiting");
+  assert.equal(result.promoted[0]?.status, "starting_surface");
+  assert.equal(leases.getSurface("surface_idle"), undefined);
+  assert.equal(leases.getLease("lease_waiting")?.status, "starting_surface");
+  assert.equal(leases.listSurfaces().length, 1);
 });
 
 test("restart reconciliation defers expired queued leases", () => {
