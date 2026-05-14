@@ -66,3 +66,4 @@ Promote the immediate retry utility to an OpenSpec change only if it changes the
 
 - 2026-05-13: Captured after ChatGPT `run_1778641079040`. Decision: fix `429` as connector-side recoverable backoff first; do not weaken bounded-run cursor finality.
 - 2026-05-14: Clarified that retry/backoff is not enough by itself for ChatGPT. Immediate fix includes source-specific pacing: one detail request at a time with jittered delay. This is still not sub-run checkpointing, partial-success checkpointing, or resumable segment semantics.
+- 2026-05-14: Promoted the deferred alternative into OpenSpec change `openspec/changes/add-connector-detail-gap-recovery/`. The promoted design keeps bounded-run cursor honesty by requiring explicit recoverable detail-gap/backlog entries before list-level cursor progress can commit past missing required detail.
