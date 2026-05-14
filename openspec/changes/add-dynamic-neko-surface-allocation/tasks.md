@@ -40,8 +40,8 @@
 
 - [x] 6.1 Add Docker Compose wiring for the allocator sidecar and dynamic n.eko network/resource labels.
 - [x] 6.2 Add `.env.docker.example` settings for dynamic mode without enabling multi-surface mode by accident.
-- [ ] 6.3 Document the resource/security tradeoff of the allocator sidecar and Docker Engine access.
-- [ ] 6.4 Document how to enable ChatGPT first, then add Chase/USAA after dynamic smoke passes.
+- [x] 6.3 Document the resource/security tradeoff of the allocator sidecar and Docker Engine access.
+- [x] 6.4 Document how to enable ChatGPT first, then add Chase/USAA after dynamic smoke passes.
 
 ## 7. Verification
 
@@ -49,5 +49,5 @@
 - [x] 7.2 Add lease-manager tests for starting-surface cap accounting, readiness promotion, failure classification, idle cleanup, and restart reconciliation.
 - [x] 7.3 Add controller tests proving no `run.started` event is emitted until a dynamic surface is ready and leased.
 - [x] 7.4 Add allocator contract tests using the fake allocator.
-- [ ] 7.5 Add a gated Docker smoke that starts two managed connector runs with distinct profile keys and proves separate dynamic n.eko surfaces are allocated or queued according to cap.
+- [x] 7.5 Add a gated Docker smoke that starts two managed connector runs with distinct profile keys and proves separate dynamic n.eko surfaces are allocated or queued according to cap. (`pnpm docker:neko:dynamic-allocator-smoke` is an allocator-level gated smoke: it creates two managed dynamic surfaces with distinct dummy profile keys and proves distinct containers/ports/profile paths when the two-port range allows; it does not exercise controller-level run queueing.)
 - [x] 7.6 Run `openspec validate add-dynamic-neko-surface-allocation --strict`.
