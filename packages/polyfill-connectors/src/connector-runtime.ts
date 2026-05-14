@@ -147,6 +147,16 @@ export interface DetailGapMessage {
     class?: string;
     http_status?: number;
     message?: string;
+    network_pressure?: {
+      attempt?: number;
+      endpoint_route: string;
+      error_class: string;
+      max_attempts?: number;
+      method: string;
+      retry_after_ms?: number;
+      safe_headers?: Record<string, string | number>;
+      status?: number;
+    };
   };
   list_cursor?: unknown;
   parent_stream?: string;

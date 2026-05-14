@@ -742,6 +742,20 @@ test("runConversationsAndMessagesStreams: recoverable detail exhaustion emits DE
         safe_headers: { "retry-after-ms": 120_000 },
       },
     },
+    last_error: {
+      class: "rate_limited",
+      http_status: 429,
+      network_pressure: {
+        endpoint_route: "GET /conversation/{conversation_id}",
+        error_class: "http_429",
+        method: "GET",
+        attempt: 12,
+        max_attempts: 12,
+        status: 429,
+        retry_after_ms: 120_000,
+        safe_headers: { "retry-after-ms": 120_000 },
+      },
+    },
   });
   const serializedGap = JSON.stringify(gap);
   assert.equal(serializedGap.includes("/conversation/convo-gap"), false, "gap must not expose raw API paths");
@@ -887,6 +901,7 @@ test("runConversationsAndMessagesStreams: 30/278 pressure exhaustion records a d
     retryable: true,
     reference_only: true,
     detail: { class: "rate_limited", http_status: 429 },
+    last_error: { class: "rate_limited", http_status: 429 },
   });
   const serializedGap = JSON.stringify(gap);
   assert.equal(

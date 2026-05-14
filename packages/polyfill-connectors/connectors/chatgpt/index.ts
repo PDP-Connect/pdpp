@@ -1033,6 +1033,11 @@ function makeConversationDetailGap(
       ...(error.httpStatus == null ? {} : { http_status: error.httpStatus }),
       ...(error.networkPressure == null ? {} : { network_pressure: error.networkPressure }),
     },
+    last_error: {
+      class: error.class,
+      ...(error.httpStatus == null ? {} : { http_status: error.httpStatus }),
+      ...(error.networkPressure == null ? {} : { network_pressure: error.networkPressure }),
+    },
   };
 }
 

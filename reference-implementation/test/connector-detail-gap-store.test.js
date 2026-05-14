@@ -159,6 +159,16 @@ test('sanitizeDetailGapMetadata does not preserve full URLs or secret-bearing fi
 
 test('runtime records DETAIL_GAP before successful terminal handling', withTempDb(async () => {
   const calls = [];
+  const networkPressure = {
+    endpoint_route: 'GET /conversation/{conversation_id}',
+    error_class: 'http_429',
+    method: 'GET',
+    attempt: 12,
+    max_attempts: 12,
+    status: 429,
+    retry_after_ms: 120000,
+    safe_headers: { 'retry-after-ms': 120000 },
+  };
   const detailGapStore = {
     async listPendingGaps() {
       return [];
@@ -174,7 +184,7 @@ test('runtime records DETAIL_GAP before successful terminal handling', withTempD
         status: 'pending',
         detail_locator: { conversation_id: 'conv_1' },
         list_cursor: { after: 'cursor_30' },
-        last_error: { message: 'pressure' },
+        last_error: input.lastError,
       };
     },
   };
@@ -188,11 +198,15 @@ test('runtime records DETAIL_GAP before successful terminal handling', withTempD
       list_cursor: { after: 'cursor_30' },
       reason: 'upstream_pressure',
       retryable: true,
-      last_error: { message: 'pressure' },
+      last_error: {
+        message: 'pressure',
+        network_pressure: networkPressure,
+      },
     },
     { type: 'DONE', status: 'succeeded', records_emitted: 0 },
   ]);
 
+  const progressMessages = [];
   try {
     const result = await runConnector({
       connectorPath,
@@ -201,12 +215,17 @@ test('runtime records DETAIL_GAP before successful terminal handling', withTempD
       manifest: { streams: [{ name: 'conversations' }] },
       persistState: false,
       detailGapStore,
-      onProgress: () => {},
+      onProgress: (msg) => {
+        progressMessages.push(msg);
+      },
     });
     assert.equal(result.status, 'succeeded');
     assert.equal(calls.length, 1);
     assert.equal(calls[0].stream, 'conversations');
+    assert.deepEqual(calls[0].lastError.network_pressure, networkPressure);
     assert.equal(result.detail_gaps[0].gap_id, 'gap_test');
+    const progressGap = progressMessages.find((msg) => msg.type === 'DETAIL_GAP');
+    assert.deepEqual(progressGap.last_error.network_pressure, networkPressure);
   } finally {
     cleanup();
   }
