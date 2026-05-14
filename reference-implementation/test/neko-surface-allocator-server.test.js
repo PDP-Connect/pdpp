@@ -20,14 +20,17 @@ const BASE_OPTIONS = Object.freeze({
   streamBaseUrlTemplate: "http://127.0.0.1:{host_port}/neko",
   cdpBaseUrlTemplate: "http://127.0.0.1:{host_port}/cdp/{surface_id}/",
   now: () => new Date("2026-05-13T12:00:00.000Z"),
+  profileFilesystem: noopProfileFilesystem(),
 });
 
 test("creates and starts an owned n.eko container with sanitized profile storage and readiness metadata", async () => {
   const docker = new FakeDocker();
+  const profileFilesystem = recordingProfileFilesystem();
   const service = new NekoSurfaceAllocatorService({
     ...BASE_OPTIONS,
     docker,
     fetchImpl: readyFetch(),
+    profileFilesystem,
     extraEnv: { NEKO_PASSWORD: "dev-password" },
   });
 
@@ -59,6 +62,12 @@ test("creates and starts an owned n.eko container with sanitized profile storage
   assert.match(create.init.query.name, /^pdpp-neko-chatgpt-[a-f0-9]{16}$/);
   assert.match(create.init.body.Labels[`${LABEL}.profile_slug`], /^chatgpt-[a-f0-9]{16}$/);
   assert.match(create.init.body.Labels[`${LABEL}.profile_path`], /^\/var\/lib\/pdpp\/neko-profiles\/chatgpt-[a-f0-9]{16}$/);
+  const profilePath = create.init.body.Labels[`${LABEL}.profile_path`];
+  assert.deepEqual(profileFilesystem.calls, [
+    { method: "mkdir", path: profilePath, options: { mode: 0o700, recursive: true } },
+    { method: "chown", path: profilePath, uid: 1000, gid: 1000 },
+    { method: "chmod", path: profilePath, mode: 0o700 },
+  ]);
   assert.doesNotMatch(create.init.query.name, /https|the owner|example\.com|registry/);
   assert.doesNotMatch(create.init.body.Labels[`${LABEL}.profile_slug`], /https|the owner|example\.com|registry/);
   assert.ok(create.init.body.Env.includes("NEKO_PASSWORD=dev-password"));
@@ -86,6 +95,8 @@ test("parses env-driven HTTP listen config and allocator defaults", () => {
   assert.equal(options.profileRoot, "/srv/pdpp/neko-profiles");
   assert.equal(options.listenHost, "0.0.0.0");
   assert.equal(options.listenPort, 7331);
+  assert.equal(options.profileOwnerUid, 1000);
+  assert.equal(options.profileOwnerGid, 1000);
   assert.equal(options.streamBaseUrlTemplate, "http://{container_name}:8080/neko");
   assert.equal(options.cdpBaseUrlTemplate, "http://{container_name}:9223/");
   assert.equal(options.extraEnv.NEKO_DESKTOP_SCREEN, "1440x900@30");
@@ -99,8 +110,49 @@ test("compose dynamic allocator command and stream template match reference imag
     compose,
     /PDPP_NEKO_STREAM_BASE_URL_TEMPLATE: \$\{PDPP_NEKO_STREAM_BASE_URL_TEMPLATE:-http:\/\/\{container_name\}:8080\/neko\}/,
   );
+  assert.match(compose, /PDPP_NEKO_PROFILE_OWNER_UID: \$\{PDPP_NEKO_PROFILE_OWNER_UID:-1000\}/);
+  assert.match(compose, /PDPP_NEKO_PROFILE_OWNER_GID: \$\{PDPP_NEKO_PROFILE_OWNER_GID:-1000\}/);
+  assert.match(
+    compose,
+    /\$\{PDPP_NEKO_PROFILE_STORAGE_ROOT:-\/var\/lib\/pdpp\/neko-profiles\}:\$\{PDPP_NEKO_PROFILE_STORAGE_ROOT:-\/var\/lib\/pdpp\/neko-profiles\}/,
+  );
   assert.doesNotMatch(compose, /command: \["node", "server\/neko-surface-allocator-server\.ts"\]/);
   assert.doesNotMatch(compose, /8080\/neko\/\{surface_id\}/);
+});
+
+test("parses explicit n.eko profile owner uid and gid overrides", () => {
+  const options = readNekoSurfaceAllocatorOptionsFromEnv({
+    NEKO_IMAGE: "pdpp-neko:local",
+    PDPP_NEKO_DOCKER_NETWORK: "pdpp_default",
+    PDPP_NEKO_PROFILE_STORAGE_ROOT: "/srv/pdpp/neko-profiles",
+    PDPP_NEKO_PROFILE_OWNER_UID: "1001",
+    PDPP_NEKO_PROFILE_OWNER_GID: "1002",
+  });
+
+  assert.equal(options.profileOwnerUid, 1001);
+  assert.equal(options.profileOwnerGid, 1002);
+});
+
+test("does not create a Docker container when profile directory preparation fails", async () => {
+  const docker = new FakeDocker();
+  const service = new NekoSurfaceAllocatorService({
+    ...BASE_OPTIONS,
+    docker,
+    fetchImpl: readyFetch(),
+    profileFilesystem: {
+      async mkdir() {},
+      async chown() {
+        throw new Error("chown failed");
+      },
+      async chmod() {},
+    },
+  });
+
+  await assert.rejects(
+    () => service.ensureSurface({ surfaceId: "surface_1", connectorId: "chatgpt", profileKey: "profile_1" }),
+    /chown failed/,
+  );
+  assert.equal(docker.calls.some((call) => call.path === "/containers/create"), false);
 });
 
 test("rejects relative profile roots because Docker bind mounts resolve on the host", () => {
@@ -347,5 +399,29 @@ function selectiveFetch(predicate) {
       return Response.json({ Browser: "Chrome/126.0.0.0", webSocketDebuggerUrl: "ws://127.0.0.1/devtools/browser/1" });
     }
     return new Response("ok", { status: 200 });
+  };
+}
+
+function noopProfileFilesystem() {
+  return {
+    async mkdir() {},
+    async chown() {},
+    async chmod() {},
+  };
+}
+
+function recordingProfileFilesystem() {
+  const calls = [];
+  return {
+    calls,
+    async mkdir(path, options) {
+      calls.push({ method: "mkdir", path, options });
+    },
+    async chown(path, uid, gid) {
+      calls.push({ method: "chown", path, uid, gid });
+    },
+    async chmod(path, mode) {
+      calls.push({ method: "chmod", path, mode });
+    },
   };
 }

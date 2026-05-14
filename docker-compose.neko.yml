@@ -83,6 +83,8 @@ services:
       PDPP_NEKO_ALLOCATOR_PORT: ${PDPP_NEKO_ALLOCATOR_PORT:-7331}
       PDPP_NEKO_DOCKER_NETWORK: ${COMPOSE_PROJECT_NAME:-pdpp}_default
       PDPP_NEKO_PROFILE_STORAGE_ROOT: ${PDPP_NEKO_PROFILE_STORAGE_ROOT:-/var/lib/pdpp/neko-profiles}
+      PDPP_NEKO_PROFILE_OWNER_UID: ${PDPP_NEKO_PROFILE_OWNER_UID:-1000}
+      PDPP_NEKO_PROFILE_OWNER_GID: ${PDPP_NEKO_PROFILE_OWNER_GID:-1000}
       PDPP_NEKO_WEBRTC_HOST_PORT_START: ${PDPP_NEKO_WEBRTC_HOST_PORT_START:-59001}
       PDPP_NEKO_WEBRTC_HOST_PORT_END: ${PDPP_NEKO_WEBRTC_HOST_PORT_END:-59010}
       PDPP_NEKO_STREAM_BASE_URL_TEMPLATE: ${PDPP_NEKO_STREAM_BASE_URL_TEMPLATE:-http://{container_name}:8080/neko}
@@ -99,6 +101,10 @@ services:
       # Dynamic allocation requires Docker control of sibling n.eko containers.
       # Do not enable this profile unless the allocator image is trusted.
       - /var/run/docker.sock:/var/run/docker.sock
+      # Bind the host profile root at the same absolute path so allocator
+      # mkdir/chown/chmod calls affect the Docker bind source, not sidecar-only
+      # storage. Docker-created bind sources are root-owned and break Chromium.
+      - ${PDPP_NEKO_PROFILE_STORAGE_ROOT:-/var/lib/pdpp/neko-profiles}:${PDPP_NEKO_PROFILE_STORAGE_ROOT:-/var/lib/pdpp/neko-profiles}
 
   coturn:
     image: ${TURN_IMAGE:-coturn/coturn:4.6.3-alpine}

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { chmod, chown, mkdir } from "node:fs/promises";
 import { createServer, request as httpRequest, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { isAbsolute } from "node:path";
@@ -20,6 +21,9 @@ const DEFAULT_STREAM_HEALTH_PATH = "/api/room/screen/cast.jpg";
 const DEFAULT_CDP_VERSION_PATH = "/json/version";
 const DEFAULT_ALLOCATOR_HOST = "0.0.0.0";
 const DEFAULT_ALLOCATOR_PORT = 7331;
+const DEFAULT_NEKO_PROFILE_UID = 1000;
+const DEFAULT_NEKO_PROFILE_GID = 1000;
+const PROFILE_DIRECTORY_MODE = 0o700;
 const LEADING_SLASH_RE = /^\//;
 const TRAILING_SLASHES_RE = /\/+$/;
 
@@ -71,6 +75,12 @@ export interface DockerEngineRequestInit {
   readonly query?: Readonly<Record<string, string>>;
 }
 
+export interface ProfileFilesystem {
+  chmod(path: string, mode: number): Promise<void>;
+  chown(path: string, uid: number, gid: number): Promise<void>;
+  mkdir(path: string, options: { mode: number; recursive: true }): Promise<void>;
+}
+
 export interface NekoSurfaceAllocatorServerOptions {
   readonly cdpBaseUrlTemplate: string;
   readonly cdpVersionPath?: string;
@@ -87,6 +97,9 @@ export interface NekoSurfaceAllocatorServerOptions {
   readonly nekoHealthPath?: string;
   readonly network: string;
   readonly now?: () => Date;
+  readonly profileFilesystem?: ProfileFilesystem;
+  readonly profileOwnerGid?: number;
+  readonly profileOwnerUid?: number;
   readonly profileRoot: string;
   readonly streamBaseUrlTemplate: string;
   readonly streamHealthPath?: string;
@@ -202,6 +215,9 @@ export class NekoSurfaceAllocatorService {
       | "fetchImpl"
       | "labelNamespace"
       | "nekoHealthPath"
+      | "profileFilesystem"
+      | "profileOwnerGid"
+      | "profileOwnerUid"
       | "streamHealthPath"
       | "cdpVersionPath"
       | "now"
@@ -214,6 +230,9 @@ export class NekoSurfaceAllocatorService {
       | "fetchImpl"
       | "labelNamespace"
       | "nekoHealthPath"
+      | "profileFilesystem"
+      | "profileOwnerGid"
+      | "profileOwnerUid"
       | "streamHealthPath"
       | "cdpVersionPath"
       | "now"
@@ -229,6 +248,9 @@ export class NekoSurfaceAllocatorService {
       fetchImpl: options.fetchImpl ?? globalThis.fetch.bind(globalThis),
       labelNamespace: options.labelNamespace ?? DEFAULT_LABEL_NAMESPACE,
       nekoHealthPath: options.nekoHealthPath ?? DEFAULT_NEKO_HEALTH_PATH,
+      profileFilesystem: options.profileFilesystem ?? nodeProfileFilesystem,
+      profileOwnerGid: options.profileOwnerGid ?? DEFAULT_NEKO_PROFILE_GID,
+      profileOwnerUid: options.profileOwnerUid ?? DEFAULT_NEKO_PROFILE_UID,
       streamHealthPath: options.streamHealthPath ?? DEFAULT_STREAM_HEALTH_PATH,
       cdpVersionPath: options.cdpVersionPath ?? DEFAULT_CDP_VERSION_PATH,
       now: options.now ?? (() => new Date()),
@@ -253,6 +275,7 @@ export class NekoSurfaceAllocatorService {
 
     const port = await this.#allocateHostPort();
     const names = this.#resourceNames(request);
+    await this.#prepareProfileDirectory(names.profilePath);
     const labels = this.#labelsForRequest(request, names, port);
     const created = await this.#docker.requestJson("/containers/create", {
       method: "POST",
@@ -430,6 +453,19 @@ export class NekoSurfaceAllocatorService {
       method: "POST",
       okStatuses: [204, 304],
     });
+  }
+
+  async #prepareProfileDirectory(profilePath: string): Promise<void> {
+    await this.#options.profileFilesystem.mkdir(profilePath, {
+      mode: PROFILE_DIRECTORY_MODE,
+      recursive: true,
+    });
+    await this.#options.profileFilesystem.chown(
+      profilePath,
+      this.#options.profileOwnerUid,
+      this.#options.profileOwnerGid
+    );
+    await this.#options.profileFilesystem.chmod(profilePath, PROFILE_DIRECTORY_MODE);
   }
 
   async #allocateHostPort(): Promise<number> {
@@ -649,6 +685,8 @@ function assertAllocatorOptions(options: NekoSurfaceAllocatorServerOptions): voi
       "profileRoot must be a host absolute path because Docker bind mounts are resolved by the Docker daemon"
     );
   }
+  assertNonNegativeInteger(options.profileOwnerUid, "profileOwnerUid");
+  assertNonNegativeInteger(options.profileOwnerGid, "profileOwnerGid");
 }
 
 function assertSurfaceRequest(request: SurfaceRequest): void {
@@ -660,6 +698,15 @@ function assertSurfaceRequest(request: SurfaceRequest): void {
 function assertNonEmpty(value: string | undefined, label: string): void {
   if (typeof value !== "string" || value.length === 0) {
     throw new NekoSurfaceAllocatorServiceError("bad_request", `${label} must be a non-empty string`);
+  }
+}
+
+function assertNonNegativeInteger(value: number | undefined, label: string): void {
+  if (value === undefined) {
+    return;
+  }
+  if (!Number.isInteger(value) || value < 0) {
+    throw new NekoSurfaceAllocatorServiceError("bad_request", `${label} must be a non-negative integer`);
   }
 }
 
@@ -857,6 +904,8 @@ export function readNekoSurfaceAllocatorOptionsFromEnv(
     cdpBaseUrlTemplate: env.PDPP_NEKO_CDP_BASE_URL_TEMPLATE ?? "http://{container_name}:9223/",
     listenHost: env.PDPP_NEKO_ALLOCATOR_HOST ?? DEFAULT_ALLOCATOR_HOST,
     listenPort: readIntegerEnv(env, "PDPP_NEKO_ALLOCATOR_PORT", DEFAULT_ALLOCATOR_PORT),
+    profileOwnerUid: readIntegerEnv(env, "PDPP_NEKO_PROFILE_OWNER_UID", DEFAULT_NEKO_PROFILE_UID),
+    profileOwnerGid: readIntegerEnv(env, "PDPP_NEKO_PROFILE_OWNER_GID", DEFAULT_NEKO_PROFILE_GID),
     extraEnv: compactEnv({
       NEKO_DESKTOP_SCREEN: env.NEKO_DESKTOP_SCREEN,
       NEKO_WEBRTC_NAT1TO1: env.NEKO_WEBRTC_NAT1TO1,
@@ -866,6 +915,14 @@ export function readNekoSurfaceAllocatorOptionsFromEnv(
     }),
   };
 }
+
+const nodeProfileFilesystem: ProfileFilesystem = {
+  chmod,
+  chown,
+  async mkdir(path, options) {
+    await mkdir(path, options);
+  },
+};
 
 function compactEnv(values: Readonly<Record<string, string | undefined>>): Record<string, string> {
   return Object.fromEntries(
