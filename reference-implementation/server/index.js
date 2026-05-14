@@ -2846,6 +2846,14 @@ function buildAsApp(opts = {}) {
     makeBrowserSessionId: opts.makeStreamingBrowserSessionId,
     nekoProxyAllowedHosts:
       opts.nekoProxyAllowedHosts || process.env.PDPP_NEKO_PROXY_ALLOWED_HOSTS || '',
+    isNekoProxyTargetApproved: (target, { session }) =>
+      (typeof opts.isNekoProxyTargetApproved === 'function' &&
+        opts.isNekoProxyTargetApproved(target, { session }) === true) ||
+      isManagedNekoSurfaceApproved(target, {
+        runId: session?.run_id,
+        interactionId: session?.interaction_id,
+        browserSurfaceLeaseManager: opts.browserSurfaceLeaseManager,
+      }),
     nekoProxyAutoLogin:
       opts.nekoProxyAutoLogin !== undefined
         ? opts.nekoProxyAutoLogin
@@ -5838,8 +5846,16 @@ export async function startServer(opts = {}) {
   // for Mode-A (in-process runtime) streaming registration. The buildAsApp
   // call below receives the same instance; routes are attached there as
   // before. See reference-implementation/server/streaming/run-target-registry.js.
-  const runTargetRegistry = createRunTargetRegistry({ logger: opts.streamingLogger });
   const browserSurfaceControllerOptions = await resolveNekoBrowserSurfaceControllerOptions();
+  const runTargetRegistry = createRunTargetRegistry({
+    logger: opts.streamingLogger,
+    isNekoDescriptorApproved: (descriptor, context) =>
+      isManagedNekoSurfaceApproved(descriptor, {
+        runId: context?.runId,
+        interactionId: context?.interactionId,
+        browserSurfaceLeaseManager: browserSurfaceControllerOptions.browserSurfaceLeaseManager,
+      }),
+  });
   const controller = createController({
     asPublicUrl: configuredAsPublicUrl,
     ownerSubjectId: opts.ownerAuthSubjectId,
@@ -5876,6 +5892,8 @@ export async function startServer(opts = {}) {
     makeStreamingBrowserSessionId: opts.makeStreamingBrowserSessionId,
     nekoProxyAllowedHosts: opts.nekoProxyAllowedHosts,
     nekoProxyAutoLogin: opts.nekoProxyAutoLogin,
+    isNekoProxyTargetApproved: opts.isNekoProxyTargetApproved,
+    browserSurfaceLeaseManager: browserSurfaceControllerOptions.browserSurfaceLeaseManager,
     runTargetRegistry,
     logger,
   });
@@ -6010,6 +6028,40 @@ export async function resolveNekoBrowserSurfaceControllerOptions({
   }
 
   return options;
+}
+
+function normalizedUrlWithoutTrailingSlash(value) {
+  if (typeof value !== 'string' || value.length === 0) return null;
+  try {
+    const parsed = new URL(value);
+    return parsed.href.endsWith('/') ? parsed.href.slice(0, -1) : parsed.href;
+  } catch {
+    return null;
+  }
+}
+
+function isManagedNekoSurfaceApproved(target, { runId, interactionId, browserSurfaceLeaseManager } = {}) {
+  if (!browserSurfaceLeaseManager || !target || typeof target !== 'object') return false;
+  const surfaceId = typeof target.surface_id === 'string' ? target.surface_id : null;
+  const leaseId = typeof target.lease_id === 'string' ? target.lease_id : null;
+  const profileKey = typeof target.profile_key === 'string' ? target.profile_key : null;
+  const baseUrl = normalizedUrlWithoutTrailingSlash(target.base_url || target.origin);
+  if (!surfaceId || !leaseId || !profileKey || !baseUrl) return false;
+
+  const lease = typeof browserSurfaceLeaseManager.getLease === 'function'
+    ? browserSurfaceLeaseManager.getLease(leaseId)
+    : null;
+  const surface = typeof browserSurfaceLeaseManager.getSurface === 'function'
+    ? browserSurfaceLeaseManager.getSurface(surfaceId)
+    : null;
+  if (!lease || !surface) return false;
+  if (lease.status !== 'leased') return false;
+  if (surface.health !== 'ready') return false;
+  if (lease.surface_id !== surfaceId) return false;
+  if (surface.active_lease_id !== leaseId) return false;
+  if (lease.profile_key !== profileKey || surface.profile_key !== profileKey) return false;
+  if (runId && lease.run_id !== runId) return false;
+  return normalizedUrlWithoutTrailingSlash(surface.stream_base_url) === baseUrl;
 }
 
 // ─── CLI entrypoint ──────────────────────────────────────────────────────────

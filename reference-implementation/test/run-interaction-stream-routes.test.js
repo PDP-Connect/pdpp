@@ -183,6 +183,7 @@ async function withHarness(options, fn) {
     connectorPathResolver: () => connectorPath,
     streamingCompanionFactory,
     nekoProxyAutoLogin: harnessOptions.nekoProxyAutoLogin,
+    isNekoProxyTargetApproved: harnessOptions.isNekoProxyTargetApproved,
   });
   const asUrl = `http://localhost:${server.asPort}`;
   const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
@@ -595,6 +596,94 @@ test('n.eko backend emits iframe path and proxies only after stream-token entry'
   } finally {
     await new Promise((resolve) => upstream.close(resolve));
   }
+});
+
+test('n.eko client config allows allocator-approved dynamic origin without exposing backend URLs', async () => {
+  const dynamicOrigin = 'http://10.88.0.4:6080/neko';
+  await withHarness(
+    {
+      makeCompanion: ({ browser_session_id }) => ({
+        ...makeMockNekoCompanion(dynamicOrigin)({ browser_session_id }),
+        getNekoProxyTarget() {
+          return {
+            origin: dynamicOrigin,
+            surface_id: 'surf_dynamic_1',
+            lease_id: 'lease_dynamic_1',
+            profile_key: 'profile_dynamic_1',
+          };
+        },
+      }),
+      isNekoProxyTargetApproved(target, { session }) {
+        return (
+          session?.run_id &&
+          target.origin === dynamicOrigin &&
+          target.surface_id === 'surf_dynamic_1' &&
+          target.lease_id === 'lease_dynamic_1' &&
+          target.profile_key === 'profile_dynamic_1'
+        );
+      },
+    },
+    async ({ asUrl, spotifyManifest }) => {
+      const started = await startRun(asUrl, spotifyManifest.connector_id);
+      const pending = await waitForPendingInteraction(asUrl, started.run_id);
+      const mint = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(started.run_id)}/run-interaction-stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ interaction_id: pending.interaction_id }),
+      });
+      assert.equal(mint.status, 201);
+
+      const ac = new AbortController();
+      const sseResp = await fetch(`${asUrl}${mint.body.viewer_path}`, { signal: ac.signal });
+      assert.equal(sseResp.status, 200);
+      try {
+        const clientConfig = await fetchJson(
+          `${asUrl}/_ref/run-interaction-streams/${encodeURIComponent(mint.body.token)}/neko/session`,
+        );
+        assert.equal(clientConfig.status, 200);
+        assert.equal(clientConfig.body.server_path, '/neko');
+        assertNoRawBackendAuthority(clientConfig.body);
+      } finally {
+        ac.abort();
+        await cancelRun(asUrl, started.run_id, pending.interaction_id);
+      }
+    },
+  );
+});
+
+test('n.eko client config rejects unapproved dynamic origin', async () => {
+  await withHarness(
+    {
+      makeCompanion: makeMockNekoCompanion('http://10.88.0.9:6080/neko'),
+      isNekoProxyTargetApproved() {
+        return false;
+      },
+    },
+    async ({ asUrl, spotifyManifest }) => {
+      const started = await startRun(asUrl, spotifyManifest.connector_id);
+      const pending = await waitForPendingInteraction(asUrl, started.run_id);
+      const mint = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(started.run_id)}/run-interaction-stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ interaction_id: pending.interaction_id }),
+      });
+      assert.equal(mint.status, 201);
+
+      const ac = new AbortController();
+      const sseResp = await fetch(`${asUrl}${mint.body.viewer_path}`, { signal: ac.signal });
+      assert.equal(sseResp.status, 200);
+      try {
+        const rejected = await fetchJson(
+          `${asUrl}/_ref/run-interaction-streams/${encodeURIComponent(mint.body.token)}/neko/session`,
+        );
+        assert.equal(rejected.status, 401);
+        assert.equal(rejected.body.error.code, 'neko_origin_not_allowed');
+      } finally {
+        ac.abort();
+        await cancelRun(asUrl, started.run_id, pending.interaction_id);
+      }
+    },
+  );
 });
 
 test('n.eko viewport dispatch uses one native coordinate space for video and input', async () => {

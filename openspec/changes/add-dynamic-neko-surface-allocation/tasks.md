@@ -23,10 +23,10 @@
 
 ## 4. Streaming And Proxy Wiring
 
-- [ ] 4.1 Allow registered n.eko stream descriptors to carry per-surface stream origins instead of relying on one global `PDPP_NEKO_BASE_URL`.
-- [ ] 4.2 Ensure owner-facing stream routes proxy only to allocator-approved n.eko origins.
-- [ ] 4.3 Keep raw CDP URLs out of browser/client-visible stream config.
-- [ ] 4.4 Verify interaction-scoped streaming still works for static mode and dynamic mode.
+- [x] 4.1 Allow registered n.eko stream descriptors to carry per-surface stream origins instead of relying on one global `PDPP_NEKO_BASE_URL`.
+- [x] 4.2 Ensure owner-facing stream routes proxy only to allocator-approved n.eko origins.
+- [x] 4.3 Keep raw CDP URLs out of browser/client-visible stream config.
+- [x] 4.4 Verify interaction-scoped streaming still works for static mode and dynamic mode.
 
 ## 5. Cleanup And Reconciliation
 

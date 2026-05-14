@@ -86,7 +86,7 @@ function isLoopbackHost(hostname) {
   return host === 'localhost' || host === '::1' || host === '0:0:0:0:0:0:0:1' || host.startsWith('127.');
 }
 
-function assertAllowedNekoOrigin(origin, allowedHosts) {
+function assertAllowedNekoOrigin(origin, allowedHosts, approvedOrigin) {
   let parsed;
   try {
     parsed = new URL(origin);
@@ -102,6 +102,7 @@ function assertAllowedNekoOrigin(origin, allowedHosts) {
   }
   const host = parsed.hostname.toLowerCase();
   const hostPort = `${host}:${parsed.port || (parsed.protocol === 'https:' ? '443' : '80')}`;
+  if (typeof approvedOrigin === 'function' && approvedOrigin(parsed) === true) return parsed;
   if (isLoopbackHost(host) || allowedHosts.has(host) || allowedHosts.has(hostPort)) return parsed;
   const err = new Error('n.eko proxy target host is not allowlisted');
   err.code = 'neko_origin_not_allowed';
@@ -297,6 +298,7 @@ async function resolveCompanionBackend(companion) {
  * @param {Function} deps.emitTimelineEvent    optional override for tests; defaults to emitSpineEvent
  * @param {string} deps.nekoProxyPath          same-origin n.eko proxy path
  * @param {string|string[]} deps.nekoProxyAllowedHosts non-loopback n.eko hosts allowed for proxying
+ * @param {Function} deps.isNekoProxyTargetApproved dynamic n.eko proxy approval hook
  * @param {{ username: string, password: string }|null} deps.nekoProxyAutoLogin n.eko auto-login query params
  */
 export function registerStreamingRoutes({
@@ -310,6 +312,7 @@ export function registerStreamingRoutes({
   emitTimelineEvent = emitSpineEvent,
   nekoProxyPath = DEFAULT_NEKO_PROXY_PATH,
   nekoProxyAllowedHosts = [],
+  isNekoProxyTargetApproved = null,
   nekoProxyCookieName = NEKO_PROXY_COOKIE,
   nekoProxyAutoLogin = null,
 }) {
@@ -411,7 +414,11 @@ export function registerStreamingRoutes({
       err.code = 'neko_proxy_unavailable';
       throw err;
     }
-    const origin = assertAllowedNekoOrigin(target.origin, allowedNekoHosts);
+    const origin = assertAllowedNekoOrigin(target.origin, allowedNekoHosts, (parsed) =>
+      typeof isNekoProxyTargetApproved === 'function'
+        ? isNekoProxyTargetApproved(target, { session, origin: parsed })
+        : false,
+    );
     return { session, companion, origin };
   }
 

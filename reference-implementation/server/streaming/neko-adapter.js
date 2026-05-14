@@ -1453,7 +1453,12 @@ export function createNekoCompanion(options = {}) {
       // HTTP-polling n.eko screenshots do not use CDP back-pressure.
     },
     getNekoProxyTarget() {
-      return { origin };
+      return {
+        origin,
+        ...(target.surface_id ? { surface_id: target.surface_id } : {}),
+        ...(target.lease_id ? { lease_id: target.lease_id } : {}),
+        ...(target.profile_key ? { profile_key: target.profile_key } : {}),
+      };
     },
     /** test-only escape hatch */
     _internal: {

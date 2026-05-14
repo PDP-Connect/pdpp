@@ -25,7 +25,8 @@
  * Security shape (all enforced here, not by callers):
  *  - CDP `wsUrl` MUST parse as ws:/wss: and remain loopback
  *    (`127.0.0.1`/`localhost`). Neko `base_url` MUST parse as http:/https:
- *    and remain either loopback or the private Compose service host `neko`.
+ *    and remain either loopback, the private Compose service host `neko`, or
+ *    an explicitly approved managed n.eko surface descriptor.
  *  - Full target URLs and auth metadata are never logged, never echoed back
  *    in responses, and never included in error messages. Logs may carry
  *    `runId`, `interactionId`, `backend`, `host`, `port`.
@@ -194,12 +195,6 @@ function validateNekoBaseUrl(baseUrl) {
     );
   }
   const host = parsed.hostname;
-  if (!NEKO_PRIVATE_HOSTS.has(host)) {
-    throw new RunTargetError(
-      'run_target_non_loopback',
-      'base_url host must be 127.0.0.1, localhost, or neko',
-    );
-  }
   const href = parsed.href.endsWith('/') ? parsed.href.slice(0, -1) : parsed.href;
   return {
     baseUrl: href,
@@ -260,7 +255,7 @@ function cloneJson(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
-function normalizeTargetDescriptor(input) {
+function normalizeTargetDescriptor(input, { isNekoDescriptorApproved } = {}) {
   const source = input?.descriptor && typeof input.descriptor === 'object' ? input.descriptor : input;
   const backend = optionalString(source?.backend) || 'cdp';
 
@@ -306,6 +301,21 @@ function normalizeTargetDescriptor(input) {
     if (surfaceId !== undefined) descriptor.surface_id = surfaceId;
     const auth = normalizeAuthMetadata(source.auth ?? input.auth);
     if (auth !== undefined) descriptor.auth = auth;
+    if (
+      !NEKO_PRIVATE_HOSTS.has(host) &&
+      (typeof isNekoDescriptorApproved !== 'function' ||
+        isNekoDescriptorApproved(descriptor, {
+          host,
+          port,
+          runId: input.runId,
+          interactionId: input.interactionId,
+        }) !== true)
+    ) {
+      throw new RunTargetError(
+        'run_target_non_loopback',
+        'base_url host must be 127.0.0.1, localhost, neko, or an approved managed n.eko surface',
+      );
+    }
     return {
       backend: 'neko',
       descriptor,
@@ -331,12 +341,15 @@ function normalizeTargetDescriptor(input) {
  * @param {object}   [opts.logger]                 Pino-style logger.
  * @param {number}   [opts.sweepIntervalMs]        Periodic sweep interval.
  *                                                  Pass 0 to disable.
+ * @param {Function} [opts.isNekoDescriptorApproved] Approval hook for managed
+ *                                                  dynamic n.eko descriptors.
  */
 export function createRunTargetRegistry({
   ttlMs = DEFAULT_TTL_MS,
   now = () => Date.now(),
   logger = null,
   sweepIntervalMs = DEFAULT_SWEEP_INTERVAL_MS,
+  isNekoDescriptorApproved = null,
 } = {}) {
   // Map<compositeKey, Record>. Target URLs/auth are held in memory only; never
   // persisted or logged in full.
@@ -413,7 +426,9 @@ export function createRunTargetRegistry({
       start_url,
       auth,
       descriptor,
-    });
+      runId,
+      interactionId,
+    }, { isNekoDescriptorApproved });
     const { host, port } = target;
 
     evictExpired();

@@ -368,6 +368,49 @@ test('register rejects neko descriptors with non-loopback base_url', () => {
   registry.shutdown();
 });
 
+test('register accepts dynamic managed n.eko descriptor approved by lease metadata', () => {
+  const approved = [];
+  const registry = createRunTargetRegistry({
+    sweepIntervalMs: 0,
+    isNekoDescriptorApproved(descriptor, context) {
+      approved.push({ descriptor, context });
+      return (
+        context.runId === 'run_dynamic_1' &&
+        context.interactionId === 'int_a' &&
+        descriptor.surface_id === 'surf_1' &&
+        descriptor.lease_id === 'lease_1' &&
+        descriptor.profile_key === 'profile_1' &&
+        descriptor.base_url === 'http://10.88.0.4:6080/neko'
+      );
+    },
+  });
+
+  registry.register({
+    runId: 'run_dynamic_1',
+    interactionId: 'int_a',
+    backend: 'neko',
+    base_url: 'http://10.88.0.4:6080/neko/',
+    descriptor: {
+      backend: 'neko',
+      base_url: 'http://10.88.0.4:6080/neko/',
+      surface_id: 'surf_1',
+      lease_id: 'lease_1',
+      profile_key: 'profile_1',
+    },
+    deviceId: 'dev_1',
+  });
+
+  assert.deepEqual(registry.get({ runId: 'run_dynamic_1', interactionId: 'int_a' }), {
+    backend: 'neko',
+    base_url: 'http://10.88.0.4:6080/neko',
+    lease_id: 'lease_1',
+    profile_key: 'profile_1',
+    surface_id: 'surf_1',
+  });
+  assert.equal(approved.length, 1);
+  registry.shutdown();
+});
+
 test('register rejects neko descriptors with non-http base_url schemes', () => {
   const registry = createRunTargetRegistry({ sweepIntervalMs: 0 });
   assert.throws(
