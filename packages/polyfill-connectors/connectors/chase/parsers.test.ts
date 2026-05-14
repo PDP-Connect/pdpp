@@ -342,6 +342,23 @@ test("parseDashboardAccountsDom: synthetic minimal fixture extracts 4 accounts",
   assert.equal(other.last_four, "0000");
 });
 
+test("parseDashboardAccountsDom: current button-shaped account tiles extract accounts", () => {
+  const html = readFixture("dashboard-accounts-button-shape.html");
+  const accounts = parseDashboardAccountsDom(html);
+  assert.equal(accounts.length, 2);
+
+  const card = accounts.find((a) => a.internal_id === "1212486749");
+  assert.ok(card);
+  assert.equal(card.type, "credit_card");
+  assert.equal(card.last_four, "6749");
+  assert.match(card.name, /Freedom Unlimited/);
+
+  const checking = accounts.find((a) => a.internal_id === "222333444");
+  assert.ok(checking);
+  assert.equal(checking.type, "checking");
+  assert.equal(checking.last_four, "3444");
+});
+
 test("parseDashboardAccountsDom: empty page returns []", () => {
   assert.deepEqual(parseDashboardAccountsDom("<!doctype html><html><body></body></html>"), []);
   assert.deepEqual(parseDashboardAccountsDom(""), []);

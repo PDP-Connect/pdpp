@@ -90,6 +90,8 @@ const ERROR_MESSAGE_SLICE = 120;
 const ERROR_MESSAGE_SLICE_LONG = 160;
 const ERROR_MESSAGE_SLICE_MAX = 200;
 const HASH_SHORT_LEN = 16;
+const DASHBOARD_ACCOUNT_SELECTOR =
+  '[id^="accounts-name-link-button-"][id$="-label"], button[id^="accounts-name-link-button-"], button[data-testid^="accounts-name-link-button-"]';
 
 // ─── Dashboard scrape: enumerate accounts ─────────────────────────────────
 
@@ -106,18 +108,19 @@ async function discoverAccounts(page: Page): Promise<ChaseAccount[]> {
   // are both slow and flaky. Fail soft if the selector never appears (returns
   // empty accounts list; caller's SKIP_RESULT diagnostic fires).
   await page
-    .locator('[id^="accounts-name-link-button-"][id$="-label"]')
+    .locator(DASHBOARD_ACCOUNT_SELECTOR)
     .first()
     .waitFor({ state: "attached", timeout: DOM_WAIT_MS })
     .catch((): undefined => undefined);
 
-  // Verified pattern 2026-04-21: Chase renders each account as a
-  // <span class="accessible-text" id="accounts-name-link-button-<INTERNAL_ID>-label">
-  // with text like "Sapphire Preferred (...9241)". The internal id matches
-  // the transactionDetails param and is what the download form's
-  // account-selector expects. DOM parsing now runs in Node via linkedom
-  // (see connectors/chase/parsers.ts#parseDashboardAccountsDom) so it can
-  // be unit-tested offline.
+  // Verified patterns:
+  // - 2026-04-21: span#accounts-name-link-button-<INTERNAL_ID>-label
+  // - 2026-05-14: button#accounts-name-link-button-<INTERNAL_ID>
+  //
+  // The internal id matches the transactionDetails param and is what the
+  // download form's account selector expects. DOM parsing now runs in Node via
+  // linkedom (see parsers.ts#parseDashboardAccountsDom) so it can be tested
+  // offline against captured fixtures.
   try {
     const html = await page.content();
     return parseDashboardAccountsDom(html);
@@ -330,7 +333,7 @@ async function navigateToStatementsPage(page: Page): Promise<void> {
   });
   // Wait for any account label to render before routing onward.
   await page
-    .locator('[id^="accounts-name-link-button-"][id$="-label"]')
+    .locator(DASHBOARD_ACCOUNT_SELECTOR)
     .first()
     .waitFor({ state: "attached", timeout: DOM_WAIT_MS })
     .catch((): undefined => undefined);

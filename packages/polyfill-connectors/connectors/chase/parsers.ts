@@ -31,7 +31,7 @@ const CENTS_MULTIPLIER = 100;
 // at module scope; they previously had to be redeclared inside the
 // browser callback because module-scoped values can't cross the
 // serialization boundary.
-const DASHBOARD_LABEL_ID_RE = /^accounts-name-link-button-(\d+)-label$/;
+const DASHBOARD_ACCOUNT_ID_RE = /^accounts-name-link-button-(\d+)(?:-label)?$/;
 const CARD_RE = /(Sapphire|Freedom|Ink|Amazon|Southwest|United|Hyatt|Disney|Marriott|IHG|Prime|Platinum|Slate)/i;
 const CHECKING_RE = /(Checking|Total Checking|Premier Checking)/i;
 const SAVINGS_RE = /(Savings|Premier Savings)/i;
@@ -230,24 +230,33 @@ function classifyAccountType(displayName: string): ChaseAccountType {
  * the former page.evaluate() callback but runs in Node via linkedom so it
  * can be unit-tested offline.
  *
- * Chase renders each account card as
- *   <span id="accounts-name-link-button-<INTERNAL_ID>-label">
- *     Sapphire Preferred (...9241)
- *   </span>
- * The INTERNAL_ID is stable and is what the download form's account
- * selector expects. We pull every such label, extract the id, name, last
+ * Chase has rendered account cards in two observed shapes:
+ *   <span id="accounts-name-link-button-<INTERNAL_ID>-label">...</span>
+ *   <button id="accounts-name-link-button-<INTERNAL_ID>">...</button>
+ *
+ * The INTERNAL_ID is stable and is what the download form's account selector
+ * expects. We pull every supported label/button, extract the id, name, last
  * four, and heuristic type.
  */
 export function parseDashboardAccountsDom(html: string): ChaseAccount[] {
   const { document } = parseHTML(html);
-  const labels = [...document.querySelectorAll<HTMLElement>('[id^="accounts-name-link-button-"][id$="-label"]')];
+  const labels = [
+    ...document.querySelectorAll<HTMLElement>(
+      '[id^="accounts-name-link-button-"][id$="-label"], button[id^="accounts-name-link-button-"], button[data-testid^="accounts-name-link-button-"]'
+    ),
+  ];
   const results: ChaseAccount[] = [];
+  const seen = new Set<string>();
   for (const el of labels) {
-    const id = el.id ?? "";
-    const idMatch = DASHBOARD_LABEL_ID_RE.exec(id);
+    const id = el.id || el.getAttribute("data-testid") || "";
+    const idMatch = DASHBOARD_ACCOUNT_ID_RE.exec(id);
     if (!idMatch?.[1]) {
       continue;
     }
+    if (seen.has(idMatch[1])) {
+      continue;
+    }
+    seen.add(idMatch[1]);
     const displayName = normWhitespace(textOf(el));
     const lastFourMatch = LAST4_RE.exec(displayName);
     results.push({
