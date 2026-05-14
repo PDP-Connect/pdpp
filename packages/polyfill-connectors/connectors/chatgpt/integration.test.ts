@@ -50,6 +50,7 @@ import { test } from "node:test";
 import type { EmittedMessage } from "../../src/connector-runtime.ts";
 import { type EmittedRecord, makeRecordingEmit, type SkippedRecord } from "../../src/test-harness.ts";
 import {
+  CHATGPT_RETRYABLE_ERROR_PATTERN,
   processConversationDetail,
   runConversationsAndMessagesStreams,
   runCustomGptsStream,
@@ -68,6 +69,15 @@ interface RecordingHarness {
   messages: EmittedMessage[];
   skipped: SkippedRecord[];
 }
+
+test("CHATGPT_RETRYABLE_ERROR_PATTERN treats retry-budget exhaustion as retryable", () => {
+  assert.equal(
+    CHATGPT_RETRYABLE_ERROR_PATTERN.test(
+      "apiFetch retry budget exhausted on GET /conversation/example: HTTP request failed after retry budget was exhausted"
+    ),
+    true
+  );
+});
 
 /** Build a StreamDeps with a configurable fake ChatGptApi. Records every
  *  emit() + emitRecord() call so tests can introspect the protocol. */

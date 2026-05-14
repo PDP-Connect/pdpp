@@ -259,3 +259,23 @@ test("runConnectorProtocolSubprocess: rejects non-zero child exit even after ter
     /exited non-zero after DONE/
   );
 });
+
+test("runConnectorProtocolSubprocess: failed DONE reports records emitted before a retryable failure", async () => {
+  const result = await runConnectorProtocolSubprocess({
+    allowFailedDone: true,
+    cwd: PACKAGE_ROOT,
+    entrypoint: fixturePath("protocol-subprocess-fails-after-record.ts"),
+    start: { type: "START", scope: { streams: [{ name: "items" }] } },
+  });
+
+  assert.equal(result.code, 1);
+  const done = result.messages.at(-1);
+  assert.equal(done?.type, "DONE");
+  if (done?.type !== "DONE") {
+    assert.fail("expected terminal DONE");
+  }
+  assert.equal(done.status, "failed");
+  assert.equal(done.records_emitted, 1);
+  assert.equal(done.error?.retryable, true);
+  assert.match(done.error?.message ?? "", /retry budget exhausted/iu);
+});

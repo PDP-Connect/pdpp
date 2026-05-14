@@ -386,7 +386,13 @@ export function runConnector(config: RunConnectorConfig): void {
     }
   };
 
-  const emitFailed = (message: string, retryable = false, records_emitted = 0): void => {
+  let observedCounters: { totalEmitted: number; totalSkipped: number } | null = null;
+
+  const emitFailed = (
+    message: string,
+    retryable = false,
+    records_emitted = observedCounters?.totalEmitted ?? 0
+  ): void => {
     // Fire-and-forget. emit() resolves after stdout drains; we're about to
     // exit(1) anyway, so we don't need to block. If it rejects (the write
     // fails), the process is dying either way.
@@ -481,6 +487,7 @@ export function runConnector(config: RunConnectorConfig): void {
       isTombstone,
       timeRangeFieldFor,
     });
+    observedCounters = emitRecord.counters;
     const emittedAt = nowIso();
 
     const baseCtx: BaseCollectContext = {

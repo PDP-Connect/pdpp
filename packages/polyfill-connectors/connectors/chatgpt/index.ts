@@ -131,6 +131,7 @@ const CHATGPT_RATE_LIMIT_BASE_DELAY_MS = 2000;
 const CHATGPT_RATE_LIMIT_MAX_DELAY_MS = 15 * 60_000;
 const CHATGPT_RATE_LIMIT_MAX_RETRY_AFTER_MS = 15 * 60_000;
 const CHATGPT_LONG_SLEEP_PROGRESS_THRESHOLD_MS = 5000;
+export const CHATGPT_RETRYABLE_ERROR_PATTERN = /ECONN|ETIMEDOUT|fetch failed|429|retry budget exhausted/i;
 
 function formatSleepDuration(ms: number): string {
   if (ms < 1000) {
@@ -232,7 +233,7 @@ function createChatGptApi({
               : `server Retry-After, capped at ${formatSleepDuration(CHATGPT_RATE_LIMIT_MAX_RETRY_AFTER_MS)}`;
           await emit?.({
             type: "PROGRESS",
-            message: `ChatGPT rate limit/backoff on ${method} ${path}: ${status}; waiting ${formatSleepDuration(delayMs)} before retry ${attempt + 1}/${maxAttempts} (${policy})`,
+            message: `ChatGPT rate limit/backoff on ${method} ${path}: ${status}; waiting ${formatSleepDuration(delayMs)} before ${attempt + 1 === maxAttempts ? "final " : ""}retry ${attempt + 1}/${maxAttempts} (${policy})`,
           });
         },
         request: async () => {
@@ -741,6 +742,6 @@ if (isMainModule(import.meta.url)) {
         await runConversationsAndMessagesStreams(deps, state);
       }
     },
-    retryablePattern: /ECONN|ETIMEDOUT|fetch failed|429/i,
+    retryablePattern: CHATGPT_RETRYABLE_ERROR_PATTERN,
   });
 }

@@ -70,6 +70,7 @@ export interface ConnectorSubprocessResult {
 }
 
 export interface ConnectorSubprocessOptions {
+  allowFailedDone?: boolean;
   cwd: string;
   entrypoint: string;
   env?: NodeJS.ProcessEnv;
@@ -222,6 +223,10 @@ export function runConnectorProtocolSubprocess(
             )
           )
         );
+        return;
+      }
+      if (done.status === "failed" && options.allowFailedDone === true) {
+        finish(() => resolve({ code, signal, stderr, rawStdout, messages }));
         return;
       }
       if (code !== 0 || signal) {
