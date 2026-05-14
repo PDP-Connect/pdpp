@@ -136,6 +136,17 @@ export interface DetailGapMessage {
   type: "DETAIL_GAP";
 }
 
+export interface DetailCoverageMessage {
+  gap_keys?: Array<string | number>;
+  hydrated_keys: Array<string | number>;
+  optional_skip_keys?: Array<string | number>;
+  reference_only: true;
+  required_keys: Array<string | number>;
+  state_stream: string;
+  stream: string;
+  type: "DETAIL_COVERAGE";
+}
+
 /** All messages a connector emits over stdout. */
 export type EmittedMessage =
   | {
@@ -158,6 +169,7 @@ export type EmittedMessage =
       diagnostics?: unknown;
     }
   | DetailGapMessage
+  | DetailCoverageMessage
   | {
       type: "DONE";
       status: "succeeded" | "failed";

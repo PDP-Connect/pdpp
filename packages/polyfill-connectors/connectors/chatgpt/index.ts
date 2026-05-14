@@ -20,6 +20,7 @@ import { ensureChatGptSession } from "../../src/auto-login/chatgpt.ts";
 import {
   type BrowserCollectContext,
   type CollectContext,
+  type DetailCoverageMessage,
   type DetailGapMessage,
   nowIso,
   type RecordData,
@@ -870,6 +871,11 @@ interface ConversationDetailPacingOptions {
   sleep?: (ms: number) => Promise<void> | void;
 }
 
+interface ConversationDetailCoverage {
+  gapKeys: Array<string | number>;
+  hydratedKeys: Array<string | number>;
+}
+
 function sleepMs(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -926,6 +932,22 @@ function makeConversationDetailGap(
   };
 }
 
+function makeConversationDetailCoverage(
+  convosToSync: ConversationListItem[],
+  coverage: ConversationDetailCoverage
+): DetailCoverageMessage {
+  const gapKeys = coverage.gapKeys;
+  return {
+    type: "DETAIL_COVERAGE",
+    reference_only: true,
+    state_stream: "conversations",
+    stream: "messages",
+    required_keys: convosToSync.map((c) => c.id),
+    hydrated_keys: coverage.hydratedKeys,
+    ...(gapKeys.length ? { gap_keys: gapKeys } : {}),
+  };
+}
+
 /**
  * Fetch details one-at-a-time. ChatGPT's private detail endpoint appears to
  * throttle per authenticated account/session, and parallel retry loops keep
@@ -937,9 +959,10 @@ export async function runMessagesAndConversationsWithDetail(
   convosToSync: ConversationListItem[],
   emitConversation: (c: ConversationListItem, detail: ConversationDetail | null) => Promise<void>,
   pacing: ConversationDetailPacingOptions = {}
-): Promise<void> {
+): Promise<ConversationDetailCoverage> {
   const random = pacing.random ?? Math.random;
   const sleep = pacing.sleep ?? sleepMs;
+  const coverage: ConversationDetailCoverage = { gapKeys: [], hydratedKeys: [] };
   let emittedConversationDetailLaneStart = false;
   const lane = createAdaptiveLane<ChatGptFetchResult>({
     name: "chatgpt.conversationDetail",
@@ -989,6 +1012,7 @@ export async function runMessagesAndConversationsWithDetail(
     } catch (err) {
       if (err instanceof ChatGptRecoverableRetryExhaustedError) {
         await deps.emit(makeConversationDetailGap(c, err));
+        coverage.gapKeys.push(c.id);
         return { status: 200, json: null };
       }
       throw err;
@@ -997,6 +1021,7 @@ export async function runMessagesAndConversationsWithDetail(
       throw new Error(`required conversation detail ${c.id} failed with http ${detail.status}`);
     }
     await processConversationDetail(deps, c, detail, emitConversation);
+    coverage.hydratedKeys.push(c.id);
     const synced = convosToSync.indexOf(c) + 1;
     const progressMsg = {
       type: "PROGRESS",
@@ -1008,6 +1033,7 @@ export async function runMessagesAndConversationsWithDetail(
     deps.emit(progressMsg);
     return detail;
   });
+  return coverage;
 }
 
 export async function runConversationsAndMessagesStreams(
@@ -1035,7 +1061,15 @@ export async function runConversationsAndMessagesStreams(
   };
 
   if (deps.requested.has("messages")) {
-    await runMessagesAndConversationsWithDetail(deps, convosToSync, emitConversation, options.detailPacing);
+    const coverage = await runMessagesAndConversationsWithDetail(
+      deps,
+      convosToSync,
+      emitConversation,
+      options.detailPacing
+    );
+    if (convosToSync.length) {
+      await deps.emit(makeConversationDetailCoverage(convosToSync, coverage));
+    }
   } else if (deps.requested.has("conversations")) {
     // Conversations-only sync: emit from list (detail fields stay null).
     for (const c of convosToSync) {

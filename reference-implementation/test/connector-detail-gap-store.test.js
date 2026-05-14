@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { createServer } from 'node:http';
 
 import { closeDb, initDb } from '../server/db.js';
 import {
@@ -40,6 +41,35 @@ rl.on('line', (line) => {
 });
 `, 'utf8');
   return { connectorPath, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+}
+
+async function withStateServer(fn) {
+  const stateWrites = [];
+  const server = createServer(async (req, res) => {
+    if (req.method === 'PUT' && req.url?.startsWith('/v1/state/')) {
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      stateWrites.push(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+    res.writeHead(404, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: 'not found' }));
+  });
+
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const address = server.address();
+    await fn({
+      rsUrl: `http://127.0.0.1:${address.port}`,
+      stateWrites,
+    });
+  } finally {
+    await new Promise((resolve, reject) => {
+      server.close((err) => (err ? reject(err) : resolve()));
+    });
+  }
 }
 
 test('connector detail gap store upserts pending gaps, updates status, and redacts unsafe metadata', withTempDb(async () => {
@@ -184,4 +214,101 @@ test('runtime fails closed when DETAIL_GAP persistence fails', withTempDb(async 
   } finally {
     cleanup();
   }
+}));
+
+test('runtime rejects state commit when required DETAIL_COVERAGE has no hydrated detail or durable gap', withTempDb(async () => {
+  await withStateServer(async ({ rsUrl, stateWrites }) => {
+    const { connectorPath, cleanup } = createConnector([
+      {
+        type: 'DETAIL_COVERAGE',
+        reference_only: true,
+        state_stream: 'conversation_list',
+        stream: 'conversations',
+        required_keys: ['conv_1'],
+        hydrated_keys: [],
+      },
+      { type: 'STATE', stream: 'conversation_list', cursor: { after: 'cursor_30' } },
+      { type: 'DONE', status: 'succeeded', records_emitted: 0 },
+    ]);
+
+    try {
+      await assert.rejects(
+        () => runConnector({
+          connectorPath,
+          connectorId: 'chatgpt',
+          ownerToken: 'owner',
+          manifest: { streams: [{ name: 'conversation_list' }, { name: 'conversations' }] },
+          state: {},
+          rsUrl,
+          onProgress: () => {},
+        }),
+        /Connector detail coverage incomplete: state_stream=conversation_list stream=conversations missing_required_keys=1/,
+      );
+      assert.equal(stateWrites.length, 0);
+    } finally {
+      cleanup();
+    }
+  });
+}));
+
+test('runtime commits state when required DETAIL_COVERAGE is backed by matching pending DETAIL_GAP', withTempDb(async () => {
+  await withStateServer(async ({ rsUrl, stateWrites }) => {
+    const detailGapStore = {
+      async upsertPendingGap(input) {
+        return {
+          gap_id: 'gap_conv_1',
+          stream: input.stream,
+          parent_stream: input.parentStream,
+          record_key: input.recordKey,
+          reason: input.reason,
+          status: 'pending',
+          detail_locator: input.detailLocator,
+          list_cursor: input.listCursor,
+          last_error: input.lastError,
+        };
+      },
+    };
+    const { connectorPath, cleanup } = createConnector([
+      {
+        type: 'DETAIL_GAP',
+        stream: 'conversations',
+        parent_stream: 'conversation_list',
+        record_key: 'conv_1',
+        detail_locator: { conversation_id: 'conv_1' },
+        list_cursor: { after: 'cursor_30' },
+        reason: 'upstream_pressure',
+        retryable: true,
+      },
+      {
+        type: 'DETAIL_COVERAGE',
+        reference_only: true,
+        state_stream: 'conversation_list',
+        stream: 'conversations',
+        required_keys: ['conv_1'],
+        hydrated_keys: [],
+        gap_keys: ['conv_1'],
+      },
+      { type: 'STATE', stream: 'conversation_list', cursor: { after: 'cursor_30' } },
+      { type: 'DONE', status: 'succeeded', records_emitted: 0 },
+    ]);
+
+    try {
+      const result = await runConnector({
+        connectorPath,
+        connectorId: 'chatgpt',
+        ownerToken: 'owner',
+        manifest: { streams: [{ name: 'conversation_list' }, { name: 'conversations' }] },
+        state: {},
+        rsUrl,
+        detailGapStore,
+        onProgress: () => {},
+      });
+
+      assert.equal(result.status, 'succeeded');
+      assert.deepEqual(stateWrites, [{ state: { conversation_list: { after: 'cursor_30' } } }]);
+      assert.deepEqual(result.state, { conversation_list: { after: 'cursor_30' } });
+    } finally {
+      cleanup();
+    }
+  });
 }));

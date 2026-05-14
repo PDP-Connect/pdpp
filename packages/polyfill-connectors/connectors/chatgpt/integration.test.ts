@@ -429,14 +429,29 @@ test("runConversationsAndMessagesStreams: unsafe message text is shape-skipped w
   assert.equal(harness.emitted.filter((r) => r.stream === "conversations").length, 1);
   assert.equal(harness.emitted.filter((r) => r.stream === "messages").length, 1, "safe sibling message still emits");
 
+  const coverage = harness.protocolMessages.find(
+    (m): m is Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }> => m.type === "DETAIL_COVERAGE"
+  );
+  assert.deepEqual(coverage, {
+    type: "DETAIL_COVERAGE",
+    reference_only: true,
+    state_stream: "conversations",
+    stream: "messages",
+    required_keys: ["convo-with-binary-text"],
+    hydrated_keys: ["convo-with-binary-text"],
+  });
+
   const stateEvents = harness.events.filter(
     (e) => e.kind === "message" && e.message.type === "STATE" && e.message.stream === "conversations"
   );
   assert.equal(stateEvents.length, 1, "cursor commits once at normal end-of-stream");
+  const coverageIdx = harness.events.findIndex((e) => e.kind === "message" && e.message.type === "DETAIL_COVERAGE");
   const stateIdx = harness.events.findIndex(
     (e) => e.kind === "message" && e.message.type === "STATE" && e.message.stream === "conversations"
   );
   const lastRecordOrSkipIdx = harness.events.findLastIndex((e) => e.kind === "record" || e.kind === "record-skipped");
+  assert.ok(coverageIdx > lastRecordOrSkipIdx, "DETAIL_COVERAGE must emit after detail lane records settle");
+  assert.ok(stateIdx > coverageIdx, "STATE must emit after DETAIL_COVERAGE");
   assert.ok(stateIdx > lastRecordOrSkipIdx, "STATE must remain after all record attempts, including quarantined rows");
 });
 
@@ -693,15 +708,33 @@ test("runConversationsAndMessagesStreams: recoverable detail exhaustion emits DE
   assert.equal(serializedGap.includes("bearer"), false, "gap must not expose raw error text or tokens");
   assert.equal(serializedGap.includes("secret"), false, "gap must not expose raw error text or tokens");
 
+  const coverage = harness.protocolMessages.find(
+    (m): m is Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }> => m.type === "DETAIL_COVERAGE"
+  );
+  assert.deepEqual(coverage, {
+    type: "DETAIL_COVERAGE",
+    reference_only: true,
+    state_stream: "conversations",
+    stream: "messages",
+    required_keys: ["convo-gap", "convo-after-gap"],
+    hydrated_keys: ["convo-after-gap"],
+    gap_keys: ["convo-gap"],
+  });
+
   const gapIdx = harness.events.findIndex((e) => e.kind === "message" && e.message.type === "DETAIL_GAP");
   const laterRecordIdx = harness.events.findIndex(
     (e) => e.kind === "record" && e.stream === "conversations" && e.data.id === "convo-after-gap"
   );
+  const coverageIdx = harness.events.findIndex((e) => e.kind === "message" && e.message.type === "DETAIL_COVERAGE");
   const stateIdx = harness.events.findIndex(
     (e) => e.kind === "message" && e.message.type === "STATE" && e.message.stream === "conversations"
   );
   assert.ok(gapIdx !== -1 && laterRecordIdx > gapIdx, "later detail work should continue after the gap");
-  assert.ok(stateIdx > gapIdx && stateIdx > laterRecordIdx, "STATE must emit after gap and all detail work settle");
+  assert.ok(
+    coverageIdx > gapIdx && coverageIdx > laterRecordIdx,
+    "DETAIL_COVERAGE must emit after gap and all detail work settle"
+  );
+  assert.ok(stateIdx > coverageIdx, "STATE must emit after DETAIL_COVERAGE");
 });
 
 test("runConversationsAndMessagesStreams: terminal detail http failure remains fail-closed", async () => {

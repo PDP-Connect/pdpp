@@ -473,6 +473,9 @@ function classifyRuntimeFailure(err) {
     || message.startsWith('Connector emitted unsupported ASSISTANCE.')
     || message.startsWith('Connector emitted invalid SKIP_RESULT.')
     || message.startsWith('Connector emitted invalid DETAIL_GAP.')
+    || message.startsWith('Connector emitted invalid DETAIL_COVERAGE.')
+    || message.startsWith('Connector emitted DETAIL_COVERAGE for undeclared stream:')
+    || message.startsWith('Connector detail coverage incomplete:')
     || message.startsWith('Connector emitted PROGRESS for undeclared stream:')
     || message.startsWith('Connector emitted SKIP_RESULT for undeclared stream:')
     || message.startsWith('Connector emitted DETAIL_GAP for undeclared stream:')
@@ -754,6 +757,42 @@ function validateDetailGapMessage(msg, scopeByStream) {
   if (msg.retryable != null && typeof msg.retryable !== 'boolean') {
     throw new Error('Connector emitted invalid DETAIL_GAP.retryable: expected boolean');
   }
+}
+
+function assertCoverageKeyArray(value, fieldName) {
+  if (!Array.isArray(value)) {
+    throw new Error(`Connector emitted invalid DETAIL_COVERAGE.${fieldName}: expected string/number array`);
+  }
+  for (const key of value) {
+    if (typeof key !== 'string' && typeof key !== 'number') {
+      throw new Error(`Connector emitted invalid DETAIL_COVERAGE.${fieldName}: expected string/number array`);
+    }
+  }
+}
+
+function normalizeCoverageKey(key) {
+  return String(key);
+}
+
+function validateDetailCoverageMessage(msg, scopeByStream) {
+  if (msg.reference_only !== true) {
+    throw new Error('Connector emitted invalid DETAIL_COVERAGE.reference_only: expected true');
+  }
+  requireOptionalNonEmptyString(msg.state_stream, 'DETAIL_COVERAGE.state_stream');
+  if (!msg.state_stream) {
+    throw new Error('Connector emitted invalid DETAIL_COVERAGE.state_stream: expected non-empty string');
+  }
+  validateOptionalScopedStream(msg.state_stream, 'DETAIL_COVERAGE', scopeByStream);
+  requireOptionalNonEmptyString(msg.stream, 'DETAIL_COVERAGE.stream');
+  if (!msg.stream) {
+    throw new Error('Connector emitted invalid DETAIL_COVERAGE.stream: expected non-empty string');
+  }
+  validateOptionalScopedStream(msg.stream, 'DETAIL_COVERAGE', scopeByStream);
+
+  assertCoverageKeyArray(msg.required_keys, 'required_keys');
+  assertCoverageKeyArray(msg.hydrated_keys, 'hydrated_keys');
+  if (msg.gap_keys != null) assertCoverageKeyArray(msg.gap_keys, 'gap_keys');
+  if (msg.optional_skip_keys != null) assertCoverageKeyArray(msg.optional_skip_keys, 'optional_skip_keys');
 }
 
 function validateInteractionMessage(msg, scopeByStream) {
@@ -1409,6 +1448,7 @@ export async function runConnector(opts) {
   let doneMessage = null;
   const knownGaps = [];
   const durableDetailGaps = [];
+  const detailCoverageByStateStream = new Map();
 
   // Batch records for ingest
   const recordBatch = {};
@@ -1551,6 +1591,40 @@ export async function runConnector(opts) {
       state_streams_staged: stateStreamsStaged,
       state_streams_committed: stateStreamsCommitted,
     };
+  }
+
+  function trackDetailCoverage(msg) {
+    const entries = detailCoverageByStateStream.get(msg.state_stream) || [];
+    entries.push({
+      stream: msg.stream,
+      requiredKeys: msg.required_keys.map(normalizeCoverageKey),
+      hydratedKeys: new Set(msg.hydrated_keys.map(normalizeCoverageKey)),
+      optionalSkipKeys: new Set((msg.optional_skip_keys || []).map(normalizeCoverageKey)),
+    });
+    detailCoverageByStateStream.set(msg.state_stream, entries);
+  }
+
+  function assertDetailCoverageSatisfiedBeforeCommit() {
+    for (const stateStream of Object.keys(newState)) {
+      const coverageEntries = detailCoverageByStateStream.get(stateStream) || [];
+      for (const coverage of coverageEntries) {
+        const pendingGapKeys = new Set(
+          durableDetailGaps
+            .filter((gap) => gap.stream === coverage.stream && gap.status === 'pending' && gap.record_key != null)
+            .map((gap) => normalizeCoverageKey(gap.record_key)),
+        );
+        const missingKeys = coverage.requiredKeys.filter((key) => (
+          !coverage.hydratedKeys.has(key)
+          && !coverage.optionalSkipKeys.has(key)
+          && !pendingGapKeys.has(key)
+        ));
+        if (!missingKeys.length) continue;
+
+        throw new Error(
+          `Connector detail coverage incomplete: state_stream=${stateStream} stream=${coverage.stream} missing_required_keys=${missingKeys.length}`,
+        );
+      }
+    }
   }
 
   async function flushBatch(stream) {
@@ -2164,6 +2238,41 @@ export async function runConnector(opts) {
           break;
         }
 
+        case 'DETAIL_COVERAGE': {
+          validateDetailCoverageMessage(msg, scopeByStream);
+          trackDetailCoverage(msg);
+          await emitSpineEventTracked({
+            event_type: 'run.detail_coverage_declared',
+            trace_id: traceContext.trace_id,
+            scenario_id: traceContext.scenario_id,
+            actor_type: 'runtime',
+            actor_id: connectorId,
+            object_type: 'run',
+            object_id: runId,
+            status: 'succeeded',
+            run_id: runId,
+            stream_id: msg.stream,
+            data: {
+              reference_only: true,
+              source: runSource,
+              grant_id: grantId,
+              state_stream: msg.state_stream,
+              stream: msg.stream,
+              required_keys: msg.required_keys.length,
+              hydrated_keys: msg.hydrated_keys.length,
+              gap_keys: msg.gap_keys?.length || 0,
+              optional_skip_keys: msg.optional_skip_keys?.length || 0,
+            },
+          });
+          onProgress({
+            type: 'DETAIL_COVERAGE',
+            reference_only: true,
+            state_stream: msg.state_stream,
+            stream: msg.stream,
+          });
+          break;
+        }
+
         case 'PROGRESS':
           validateProgressMessage(msg, scopeByStream);
           await emitSpineEventTracked({
@@ -2353,6 +2462,7 @@ export async function runConnector(opts) {
             }
 
             if (doneMessage.status === 'succeeded' && persistState) {
+              assertDetailCoverageSatisfiedBeforeCommit();
               for (const [stream, cursor] of Object.entries(newState)) {
                 await commitState(stream, cursor);
               }
