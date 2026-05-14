@@ -45,7 +45,7 @@ import { createConsentStore } from './stores/consent-store.js';
 import { createOwnerDeviceAuthStore } from './stores/owner-device-auth-store.js';
 import { DeviceBatchConflictError, createDeviceExporterStore } from './stores/device-exporter-store.js';
 import {
-  defaultWebPushSubscriptionStore,
+  createWebPushSubscriptionStore,
   resolveWebPushConfig,
 } from './web-push-notifications.js';
 import {
@@ -1766,7 +1766,7 @@ function buildAsApp(opts = {}) {
   const consentStore = createConsentStore();
   const ownerDeviceAuthStore = createOwnerDeviceAuthStore();
   const deviceExporterStore = opts.deviceExporterStore || createDeviceExporterStore();
-  const webPushStore = opts.webPushSubscriptionStore || defaultWebPushSubscriptionStore;
+  const webPushStore = opts.webPushSubscriptionStore || createWebPushSubscriptionStore();
   const webPushConfig = opts.webPushConfig || resolveWebPushConfig();
   const dynamicClientRegistrationEnabled = resolveDynamicClientRegistrationEnabled(opts);
   const dynamicClientRegistrationInitialAccessTokens = resolveDynamicClientRegistrationInitialAccessTokens(opts);
@@ -2764,7 +2764,7 @@ function buildAsApp(opts = {}) {
     const ownerSubjectId = getOwnerSubjectId(req);
     res.json({
       object: 'list',
-      data: webPushStore.list(ownerSubjectId),
+      data: await webPushStore.list(ownerSubjectId),
       has_more: false,
     });
   });
@@ -2775,7 +2775,7 @@ function buildAsApp(opts = {}) {
         return pdppError(res, 503, 'web_push_unavailable', webPushConfig.unavailableReason);
       }
       const ownerSubjectId = getOwnerSubjectId(req);
-      const record = webPushStore.upsert(ownerSubjectId, req.body?.subscription || req.body, {
+      const record = await webPushStore.upsert(ownerSubjectId, req.body?.subscription || req.body, {
         user_agent: req.get('user-agent') || null,
         platform: req.body?.platform || null,
         device_label: req.body?.device_label || null,
@@ -2795,7 +2795,7 @@ function buildAsApp(opts = {}) {
       return pdppError(res, 400, 'invalid_request', 'endpoint is required');
     }
     const ownerSubjectId = getOwnerSubjectId(req);
-    const revoked = webPushStore.revoke(ownerSubjectId, endpoint);
+    const revoked = await webPushStore.revoke(ownerSubjectId, endpoint);
     res.json({ object: 'web_push_subscription_deleted', deleted: Boolean(revoked) });
   });
 
@@ -5947,6 +5947,8 @@ export async function startServer(opts = {}) {
     ownerAuthSubjectId: opts.ownerAuthSubjectId,
     ownerAuthForceSecureCookies: opts.ownerAuthForceSecureCookies,
     ownerAuthSameSite: opts.ownerAuthSameSite,
+    webPushConfig: opts.webPushConfig,
+    webPushSubscriptionStore: opts.webPushSubscriptionStore,
     agentConnectTtlMs: opts.agentConnectTtlMs,
     publicDynamicClientRegistrationRateLimit: opts.publicDynamicClientRegistrationRateLimit,
     referenceRevision: opts.referenceRevision,

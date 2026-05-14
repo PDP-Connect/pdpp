@@ -272,6 +272,26 @@ export async function bootstrapPostgresSchema() {
       CREATE INDEX IF NOT EXISTS idx_pg_owner_device_auth_status_expires
         ON owner_device_auth(status, expires_at);
 
+      CREATE TABLE IF NOT EXISTS web_push_subscriptions (
+        id TEXT PRIMARY KEY,
+        owner_subject_id TEXT NOT NULL,
+        endpoint TEXT NOT NULL UNIQUE,
+        p256dh TEXT NOT NULL,
+        auth TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        revoked_at TEXT,
+        last_success_at TEXT,
+        last_failure_at TEXT,
+        last_failure_reason TEXT,
+        last_used_at TEXT,
+        user_agent TEXT,
+        platform TEXT,
+        device_label TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_pg_web_push_subscriptions_owner_active
+        ON web_push_subscriptions(owner_subject_id, revoked_at, updated_at);
+
       CREATE TABLE IF NOT EXISTS device_exporters (
         device_id TEXT PRIMARY KEY,
         owner_subject_id TEXT NOT NULL,

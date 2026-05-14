@@ -1,3 +1,8 @@
+import { createHash } from 'node:crypto';
+
+import { allowUnboundedReadAcknowledged, exec, getOne, referenceQueries } from '../lib/db.ts';
+import { getStorageBackendKind, isPostgresStorageBackend, postgresQuery } from './postgres-storage.js';
+
 const DEFAULT_TTL_SECONDS = 10 * 60;
 
 function nowIso() {
@@ -49,47 +54,75 @@ function normalizePlatform(input = {}) {
   };
 }
 
-export function createWebPushSubscriptionStore() {
-  const byEndpoint = new Map();
+function publicRecord(record, { includeEndpoint = true } = {}) {
+  if (!record) return null;
+  return {
+    id: record.id,
+    owner_subject_id: record.owner_subject_id,
+    endpoint: includeEndpoint ? record.endpoint : redactEndpoint(record.endpoint),
+    endpoint_redacted: redactEndpoint(record.endpoint),
+    created_at: record.created_at,
+    updated_at: record.updated_at,
+    revoked_at: record.revoked_at,
+    last_success_at: record.last_success_at,
+    last_failure_at: record.last_failure_at,
+    last_failure_reason: record.last_failure_reason,
+    last_used_at: record.last_used_at,
+    user_agent: record.user_agent,
+    platform: record.platform,
+    device_label: record.device_label,
+  };
+}
 
-  function publicRecord(record, { includeEndpoint = true } = {}) {
-    return {
-      id: record.id,
-      owner_subject_id: record.owner_subject_id,
-      endpoint: includeEndpoint ? record.endpoint : redactEndpoint(record.endpoint),
-      endpoint_redacted: redactEndpoint(record.endpoint),
-      created_at: record.created_at,
-      updated_at: record.updated_at,
-      revoked_at: record.revoked_at,
-      last_success_at: record.last_success_at,
-      last_failure_at: record.last_failure_at,
-      last_failure_reason: record.last_failure_reason,
-      last_used_at: record.last_used_at,
-      user_agent: record.user_agent,
-      platform: record.platform,
-      device_label: record.device_label,
-    };
-  }
+function rawSubscriptionRecord(record) {
+  if (!record) return null;
+  return {
+    ...record,
+    keys: {
+      p256dh: record.p256dh,
+      auth: record.auth,
+    },
+  };
+}
+
+function buildSubscriptionRecord(ownerSubjectId, subscription, platform = {}) {
+  const normalized = normalizeSubscription(subscription);
+  const metadata = normalizePlatform(platform);
+  const timestamp = nowIso();
+  return {
+    id: `wps_${createHash('sha256').update(normalized.endpoint).digest('base64url').slice(0, 32)}`,
+    owner_subject_id: ownerSubjectId,
+    endpoint: normalized.endpoint,
+    p256dh: normalized.keys.p256dh,
+    auth: normalized.keys.auth,
+    created_at: timestamp,
+    updated_at: timestamp,
+    revoked_at: null,
+    last_success_at: null,
+    last_failure_at: null,
+    last_failure_reason: null,
+    last_used_at: null,
+    ...metadata,
+  };
+}
+
+export function createMemoryWebPushSubscriptionStore() {
+  const byEndpoint = new Map();
 
   return {
     upsert(ownerSubjectId, subscription, platform = {}) {
-      const normalized = normalizeSubscription(subscription);
-      const metadata = normalizePlatform(platform);
-      const existing = byEndpoint.get(normalized.endpoint);
-      const timestamp = nowIso();
+      const recordInput = buildSubscriptionRecord(ownerSubjectId, subscription, platform);
+      const existing = byEndpoint.get(recordInput.endpoint);
       const record = {
-        id: existing?.id || `wps_${Buffer.from(normalized.endpoint).toString('base64url').slice(0, 24)}`,
-        owner_subject_id: ownerSubjectId,
-        endpoint: normalized.endpoint,
-        keys: normalized.keys,
-        created_at: existing?.created_at || timestamp,
-        updated_at: timestamp,
+        ...recordInput,
+        id: existing?.id || recordInput.id,
+        keys: { p256dh: recordInput.p256dh, auth: recordInput.auth },
+        created_at: existing?.created_at || recordInput.created_at,
         revoked_at: null,
         last_success_at: existing?.last_success_at || null,
         last_failure_at: existing?.last_failure_at || null,
         last_failure_reason: existing?.last_failure_reason || null,
         last_used_at: existing?.last_used_at || null,
-        ...metadata,
       };
       byEndpoint.set(record.endpoint, record);
       return publicRecord(record);
@@ -144,7 +177,217 @@ export function createWebPushSubscriptionStore() {
   };
 }
 
-export const defaultWebPushSubscriptionStore = createWebPushSubscriptionStore();
+export function createSqliteWebPushSubscriptionStore() {
+  function getByEndpoint(endpoint) {
+    return getOne(referenceQueries.webPushGetByEndpoint, [endpoint]);
+  }
+
+  return {
+    upsert(ownerSubjectId, subscription, platform = {}) {
+      const record = buildSubscriptionRecord(ownerSubjectId, subscription, platform);
+      exec(referenceQueries.webPushUpsertSubscription, [
+        record.id,
+        record.owner_subject_id,
+        record.endpoint,
+        record.p256dh,
+        record.auth,
+        record.created_at,
+        record.updated_at,
+        record.user_agent,
+        record.platform,
+        record.device_label,
+      ]);
+      return publicRecord(getByEndpoint(record.endpoint));
+    },
+    list(ownerSubjectId, { activeOnly = true, includeEndpoint = true } = {}) {
+      const query = activeOnly ? referenceQueries.webPushListActiveSubscriptions : referenceQueries.webPushListSubscriptions;
+      return allowUnboundedReadAcknowledged(query, [ownerSubjectId]).map((record) =>
+        publicRecord(record, { includeEndpoint }),
+      );
+    },
+    listActiveRaw(ownerSubjectId) {
+      const normalizedOwnerSubjectId = nonEmptyString(ownerSubjectId);
+      if (!normalizedOwnerSubjectId) return [];
+      return allowUnboundedReadAcknowledged(referenceQueries.webPushListActiveSubscriptions, [
+        normalizedOwnerSubjectId,
+      ]).map(rawSubscriptionRecord);
+    },
+    revoke(ownerSubjectId, endpoint) {
+      const normalizedEndpoint = nonEmptyString(endpoint);
+      if (!normalizedEndpoint) return null;
+      const timestamp = nowIso();
+      const result = exec(referenceQueries.webPushRevokeSubscription, [
+        timestamp,
+        timestamp,
+        ownerSubjectId,
+        normalizedEndpoint,
+      ]);
+      if (!result.changes) return null;
+      return publicRecord(getByEndpoint(normalizedEndpoint));
+    },
+    markSuccess(endpoint) {
+      const normalizedEndpoint = nonEmptyString(endpoint);
+      if (!normalizedEndpoint) return;
+      const timestamp = nowIso();
+      exec(referenceQueries.webPushMarkSuccess, [timestamp, timestamp, timestamp, normalizedEndpoint]);
+    },
+    markFailure(endpoint, reason, { revoke = false } = {}) {
+      const normalizedEndpoint = nonEmptyString(endpoint);
+      if (!normalizedEndpoint) return;
+      const timestamp = nowIso();
+      exec(referenceQueries.webPushMarkFailure, [
+        timestamp,
+        String(reason || 'push_send_failed').slice(0, 240),
+        timestamp,
+        revoke ? timestamp : null,
+        timestamp,
+        normalizedEndpoint,
+      ]);
+    },
+    clearForTests() {
+      exec(referenceQueries.webPushDeleteAllForTests, []);
+    },
+  };
+}
+
+export function createPostgresWebPushSubscriptionStore() {
+  async function getByEndpoint(endpoint) {
+    const result = await postgresQuery(
+      `SELECT id, owner_subject_id, endpoint, p256dh, auth, created_at, updated_at, revoked_at, last_success_at, last_failure_at, last_failure_reason, last_used_at, user_agent, platform, device_label
+       FROM web_push_subscriptions
+       WHERE endpoint = $1`,
+      [endpoint],
+    );
+    return result.rows[0] || null;
+  }
+
+  return {
+    async upsert(ownerSubjectId, subscription, platform = {}) {
+      const record = buildSubscriptionRecord(ownerSubjectId, subscription, platform);
+      await postgresQuery(
+        `INSERT INTO web_push_subscriptions(
+           id, owner_subject_id, endpoint, p256dh, auth, created_at, updated_at, revoked_at,
+           user_agent, platform, device_label
+         ) VALUES($1, $2, $3, $4, $5, $6, $7, NULL, $8, $9, $10)
+         ON CONFLICT(endpoint) DO UPDATE SET
+           owner_subject_id = EXCLUDED.owner_subject_id,
+           p256dh = EXCLUDED.p256dh,
+           auth = EXCLUDED.auth,
+           updated_at = EXCLUDED.updated_at,
+           revoked_at = NULL,
+           user_agent = EXCLUDED.user_agent,
+           platform = EXCLUDED.platform,
+           device_label = EXCLUDED.device_label`,
+        [
+          record.id,
+          record.owner_subject_id,
+          record.endpoint,
+          record.p256dh,
+          record.auth,
+          record.created_at,
+          record.updated_at,
+          record.user_agent,
+          record.platform,
+          record.device_label,
+        ],
+      );
+      return publicRecord(await getByEndpoint(record.endpoint));
+    },
+    async list(ownerSubjectId, { activeOnly = true, includeEndpoint = true } = {}) {
+      const result = await postgresQuery(
+        `SELECT id, owner_subject_id, endpoint, p256dh, auth, created_at, updated_at, revoked_at, last_success_at, last_failure_at, last_failure_reason, last_used_at, user_agent, platform, device_label
+         FROM web_push_subscriptions
+         WHERE owner_subject_id = $1
+           AND ($2::boolean = FALSE OR revoked_at IS NULL)
+         ORDER BY updated_at DESC, id ASC`,
+        [ownerSubjectId, Boolean(activeOnly)],
+      );
+      return result.rows.map((record) => publicRecord(record, { includeEndpoint }));
+    },
+    async listActiveRaw(ownerSubjectId) {
+      const normalizedOwnerSubjectId = nonEmptyString(ownerSubjectId);
+      if (!normalizedOwnerSubjectId) return [];
+      const result = await postgresQuery(
+        `SELECT id, owner_subject_id, endpoint, p256dh, auth, created_at, updated_at, revoked_at, last_success_at, last_failure_at, last_failure_reason, last_used_at, user_agent, platform, device_label
+         FROM web_push_subscriptions
+         WHERE owner_subject_id = $1
+           AND revoked_at IS NULL
+         ORDER BY updated_at DESC, id ASC`,
+        [normalizedOwnerSubjectId],
+      );
+      return result.rows.map(rawSubscriptionRecord);
+    },
+    async revoke(ownerSubjectId, endpoint) {
+      const normalizedEndpoint = nonEmptyString(endpoint);
+      if (!normalizedEndpoint) return null;
+      const timestamp = nowIso();
+      const result = await postgresQuery(
+        `UPDATE web_push_subscriptions
+         SET revoked_at = $1, updated_at = $2
+         WHERE owner_subject_id = $3
+           AND endpoint = $4`,
+        [timestamp, timestamp, ownerSubjectId, normalizedEndpoint],
+      );
+      if (!result.rowCount) return null;
+      return publicRecord(await getByEndpoint(normalizedEndpoint));
+    },
+    async markSuccess(endpoint) {
+      const normalizedEndpoint = nonEmptyString(endpoint);
+      if (!normalizedEndpoint) return;
+      const timestamp = nowIso();
+      await postgresQuery(
+        `UPDATE web_push_subscriptions
+         SET last_success_at = $1,
+             last_used_at = $2,
+             last_failure_reason = NULL,
+             updated_at = $3
+         WHERE endpoint = $4`,
+        [timestamp, timestamp, timestamp, normalizedEndpoint],
+      );
+    },
+    async markFailure(endpoint, reason, { revoke = false } = {}) {
+      const normalizedEndpoint = nonEmptyString(endpoint);
+      if (!normalizedEndpoint) return;
+      const timestamp = nowIso();
+      await postgresQuery(
+        `UPDATE web_push_subscriptions
+         SET last_failure_at = $1,
+             last_failure_reason = $2,
+             last_used_at = $3,
+             revoked_at = COALESCE($4, revoked_at),
+             updated_at = $5
+         WHERE endpoint = $6`,
+        [
+          timestamp,
+          String(reason || 'push_send_failed').slice(0, 240),
+          timestamp,
+          revoke ? timestamp : null,
+          timestamp,
+          normalizedEndpoint,
+        ],
+      );
+    },
+    async clearForTests() {
+      await postgresQuery('DELETE FROM web_push_subscriptions');
+    },
+  };
+}
+
+export function createWebPushSubscriptionStore() {
+  return isPostgresStorageBackend() ? createPostgresWebPushSubscriptionStore() : createSqliteWebPushSubscriptionStore();
+}
+
+let defaultWebPushSubscriptionStore = null;
+let defaultWebPushSubscriptionStoreBackend = null;
+
+export function getDefaultWebPushSubscriptionStore() {
+  const backend = getStorageBackendKind();
+  if (!defaultWebPushSubscriptionStore || defaultWebPushSubscriptionStoreBackend !== backend) {
+    defaultWebPushSubscriptionStore = createWebPushSubscriptionStore();
+    defaultWebPushSubscriptionStoreBackend = backend;
+  }
+  return defaultWebPushSubscriptionStore;
+}
 
 export function buildPendingInteractionPushPayload({ interaction, connectorDisplayName, runId }) {
   const kind = typeof interaction?.kind === 'string' ? interaction.kind : 'interaction';
@@ -184,7 +427,7 @@ async function defaultSendNotification(subscription, payload, config) {
 
 export async function fanoutPendingInteractionWebPush({
   config = resolveWebPushConfig(),
-  store = defaultWebPushSubscriptionStore,
+  store = getDefaultWebPushSubscriptionStore(),
   sender = defaultSendNotification,
   interaction,
   connectorDisplayName,
@@ -201,17 +444,17 @@ export async function fanoutPendingInteractionWebPush({
     return { attempted: 0, sent: 0, unavailable: false };
   }
   const payload = buildPendingInteractionPushPayload({ interaction, connectorDisplayName, runId });
-  const subscriptions = store.listActiveRaw(normalizedOwnerSubjectId);
+  const subscriptions = await store.listActiveRaw(normalizedOwnerSubjectId);
   let sent = 0;
   await Promise.all(
     subscriptions.map(async (record) => {
       try {
         await sender({ endpoint: record.endpoint, keys: record.keys }, payload, config);
-        store.markSuccess(record.endpoint);
+        await store.markSuccess(record.endpoint);
         sent += 1;
       } catch (err) {
         const reason = err instanceof Error ? err.message : String(err);
-        store.markFailure(record.endpoint, reason, { revoke: shouldRevokeForWebPushError(err) });
+        await store.markFailure(record.endpoint, reason, { revoke: shouldRevokeForWebPushError(err) });
         log.warn?.(`[controller] web push for run ${runId} failed: ${reason}`);
       }
     }),

@@ -345,6 +345,14 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly spineSearchListGrantSummariesByLike: ReadManyQuery;
   readonly spineSearchListRunSummariesByLike: ReadManyQuery;
   readonly spineSearchListTraceSummariesByLike: ReadManyQuery;
+  readonly webPushDeleteAllForTests: MutationQuery;
+  readonly webPushGetByEndpoint: ReadOneQuery;
+  readonly webPushListActiveSubscriptions: SmallEnumerationQuery;
+  readonly webPushListSubscriptions: SmallEnumerationQuery;
+  readonly webPushMarkFailure: MutationQuery;
+  readonly webPushMarkSuccess: MutationQuery;
+  readonly webPushRevokeSubscription: MutationQuery;
+  readonly webPushUpsertSubscription: MutationQuery;
 }
 
 interface ParsedFrontmatter {
