@@ -130,6 +130,22 @@ function silentProgress(): CollectContext["progress"] {
   return (): Promise<void> => Promise.resolve();
 }
 
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
+async function flush(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
 function makeDeps(
   api: ChatGptApi,
   requested: readonly string[]
@@ -256,6 +272,56 @@ test("runConversationsAndMessagesStreams: STATE cursor reflects max update_time 
     "2026-04-22T11:00:00.000Z",
     "cursor is the max update_time, not the first or last seen"
   );
+});
+
+test("runConversationsAndMessagesStreams: STATE waits for slow required detail lane work", async () => {
+  const list = [makeListItem("conv-A", "2026-04-22T09:00:00Z"), makeListItem("conv-B", "2026-04-22T10:00:00Z")];
+  const convBGate = deferred<ChatGptFetchResult>();
+  const fetches: string[] = [];
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("auth not used in fake")),
+    fetch: (path: string): Promise<ChatGptFetchResult> => {
+      fetches.push(path);
+      if (path.startsWith("/conversations")) {
+        return Promise.resolve({
+          status: 200,
+          json: { items: list, has_missing_conversations: false, total: list.length },
+        });
+      }
+      const id = decodeURIComponent(path.replace(/^\/conversation\//, ""));
+      if (id === "conv-B") {
+        return convBGate.promise;
+      }
+      return Promise.resolve(makeDetail("conv-A", 1));
+    },
+  };
+  const { deps, events, protocolMessages } = makeDeps(api, ["conversations", "messages"]);
+
+  const run = runConversationsAndMessagesStreams(
+    deps,
+    {},
+    { detailPacing: { random: () => 0, sleep: () => undefined } }
+  );
+  await flush();
+  assert.equal(
+    protocolMessages.some((m: EmittedMessage) => m.type === "STATE" && m.stream === "conversations"),
+    false,
+    "STATE must not emit while required detail work is unsettled"
+  );
+
+  convBGate.resolve(makeDetail("conv-B", 1));
+  await run;
+
+  assert.deepEqual(fetches, [
+    "/conversations?offset=0&limit=100&order=updated",
+    "/conversation/conv-A",
+    "/conversation/conv-B",
+  ]);
+  const lastRecordIdx = events.findLastIndex((e) => e.kind === "record");
+  const stateIdx = events.findIndex(
+    (e) => e.kind === "message" && e.message.type === "STATE" && e.message.stream === "conversations"
+  );
+  assert.ok(stateIdx > lastRecordIdx, "STATE must land after all detail lane records settle");
 });
 
 test("runConversationsAndMessagesStreams: conversations-only (no messages scope) — STILL parent-first, no detail fetches, STATE still lands", async () => {

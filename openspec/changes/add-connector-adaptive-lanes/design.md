@@ -93,6 +93,14 @@ The first policy should be conservative loss-based additive-increase/multiplicat
 - Use jitter for inter-launch delays so many connector runs do not synchronize.
 - Prefer slower completion over late-run retry exhaustion for first-run backfills.
 
+Implementation constants for the first tranche:
+
+- Default retry attempts in the lane utility are `1`; connectors may opt into lane-level retries, while ChatGPT keeps `retryHttp` as its per-request retry owner and holds the lane slot during that retry loop.
+- The clean-success window defaults to `max(3, maxConcurrency)` and increases effective concurrency by `1`, capped at `maxConcurrency`.
+- `rate_limited` feedback cuts effective concurrency directly to `minConcurrency`; other retryable/terminal pressure halves effective concurrency, floored at `minConcurrency`.
+- Launch and cooldown delays are bounded by connector-provided `minDelayMs`/`maxDelayMs` and use injected randomness for deterministic tests.
+- The ChatGPT pilot uses `initialConcurrency = 1`, `maxConcurrency = 1`, `minDelayMs = 1500`, and `maxDelayMs = 3000`, preserving the current serialized pressure.
+
 Latency-gradient or Vegas-style algorithms are deferred. They may be useful for well-behaved public APIs, but they can give false confidence against opaque anti-abuse systems where latency is not the signal that matters.
 
 ## Cursor And State Boundaries
@@ -131,6 +139,8 @@ The lane should emit owner-usable progress without leaking secrets:
 - concurrency decrease/increase events
 
 These events are reference/runtime observability artifacts, not Collection Profile messages unless a later change promotes them. If lane events enter `_ref` run timelines, they should be runtime-authored evidence distinct from connector-authored diagnostics.
+
+Decision 2026-05-14: the first implementation exposes lane telemetry/progress as injectable hooks on the utility. It does not create a new durable `_ref` timeline event type and the ChatGPT pilot preserves the existing connector progress messages. Promoting lane decisions into `_ref` timelines remains a follow-up if live pilots show the existing run progress is not enough for operator diagnosis.
 
 ## Cancellation
 
@@ -188,6 +198,8 @@ Deferred. That is a separate durability design with harder correctness implicati
 
 ## Open Questions
 
-- Should lane telemetry be emitted as connector `PROGRESS` messages, local fixture telemetry, or both?
 - Should adaptive lane config eventually be manifest-declared, or remain connector-code configuration?
-- Should distributed lane enforcement be required if the reference later runs multiple connector workers for the same owner/source, or is single-process correctness enough for the current reference target?
+
+## Deferred Questions
+
+- Distributed lane enforcement is out of scope for this first reference implementation. The current target is single-process connector correctness. If the reference later runs multiple connector workers for the same owner/source, add a follow-up design for shared lane state via Redis, database-backed quotas, or a runtime coordinator.

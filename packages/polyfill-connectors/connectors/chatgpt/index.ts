@@ -15,6 +15,7 @@
  */
 
 import type { Page } from "playwright";
+import { createAdaptiveLane } from "../../src/adaptive-lane.ts";
 import { ensureChatGptSession } from "../../src/auto-login/chatgpt.ts";
 import {
   type BrowserCollectContext,
@@ -830,6 +831,8 @@ async function listConversationsSinceCursor(
 
 const CONVO_DETAIL_PAUSE_MIN_MS = 1500;
 const CONVO_DETAIL_PAUSE_MAX_MS = 3000;
+const CONVO_DETAIL_INITIAL_CONCURRENCY = 1;
+const CONVO_DETAIL_MAX_CONCURRENCY = 1;
 
 interface ConversationDetailPacingOptions {
   random?: () => number;
@@ -838,11 +841,6 @@ interface ConversationDetailPacingOptions {
 
 function sleepMs(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function conversationDetailPauseMs(random: () => number = Math.random): number {
-  const span = CONVO_DETAIL_PAUSE_MAX_MS - CONVO_DETAIL_PAUSE_MIN_MS;
-  return CONVO_DETAIL_PAUSE_MIN_MS + Math.floor(random() * (span + 1));
 }
 
 /**
@@ -859,14 +857,33 @@ export async function runMessagesAndConversationsWithDetail(
 ): Promise<void> {
   const random = pacing.random ?? Math.random;
   const sleep = pacing.sleep ?? sleepMs;
-  for (let i = 0; i < convosToSync.length; i++) {
-    const c = convosToSync[i];
+  const lane = createAdaptiveLane<ChatGptFetchResult>({
+    name: "chatgpt.conversationDetail",
+    initialConcurrency: CONVO_DETAIL_INITIAL_CONCURRENCY,
+    maxConcurrency: CONVO_DETAIL_MAX_CONCURRENCY,
+    maxDelayMs: CONVO_DETAIL_PAUSE_MAX_MS,
+    maxQueueSize: Math.max(1, convosToSync.length),
+    minConcurrency: 1,
+    minDelayMs: CONVO_DETAIL_PAUSE_MIN_MS,
+    classifyOutcome: ({ result }) => {
+      if (!result) {
+        return { kind: "retryable" };
+      }
+      if (result.status === 429 || result.status === 502 || result.status === 503 || result.status === 504) {
+        return { kind: "rate_limited" };
+      }
+      return { kind: "ok" };
+    },
+    random,
+    sleep,
+  });
+  await lane.runAll(convosToSync, async (c) => {
     if (!c) {
-      continue;
+      return { status: 404, json: null };
     }
     const detail = await deps.api.fetch(`/conversation/${encodeURIComponent(c.id)}`);
     await processConversationDetail(deps, c, detail, emitConversation);
-    const synced = i + 1;
+    const synced = convosToSync.indexOf(c) + 1;
     const progressMsg = {
       type: "PROGRESS",
       stream: "messages",
@@ -875,15 +892,14 @@ export async function runMessagesAndConversationsWithDetail(
       total: convosToSync.length,
     } as const;
     deps.emit(progressMsg);
-    if (synced < convosToSync.length) {
-      await sleep(conversationDetailPauseMs(random));
-    }
-  }
+    return detail;
+  });
 }
 
 export async function runConversationsAndMessagesStreams(
   deps: StreamDeps,
-  state: CollectContext["state"]
+  state: CollectContext["state"],
+  options: { detailPacing?: ConversationDetailPacingOptions } = {}
 ): Promise<void> {
   const conversationsCursor = state.conversations as { last_update_time?: string | null } | undefined;
   const priorCursor = conversationsCursor?.last_update_time || null;
@@ -905,7 +921,7 @@ export async function runConversationsAndMessagesStreams(
   };
 
   if (deps.requested.has("messages")) {
-    await runMessagesAndConversationsWithDetail(deps, convosToSync, emitConversation);
+    await runMessagesAndConversationsWithDetail(deps, convosToSync, emitConversation, options.detailPacing);
   } else if (deps.requested.has("conversations")) {
     // Conversations-only sync: emit from list (detail fields stay null).
     for (const c of convosToSync) {

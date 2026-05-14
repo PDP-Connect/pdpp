@@ -438,7 +438,7 @@ test("runConversationsAndMessagesStreams: unsafe message text is shape-skipped w
   assert.ok(stateIdx > lastRecordOrSkipIdx, "STATE must remain after all record attempts, including quarantined rows");
 });
 
-test("runMessagesAndConversationsWithDetail: fetches detail serially with jittered pacing", async () => {
+test("runMessagesAndConversationsWithDetail: fetches detail through adaptive lane with serialized jittered pacing", async () => {
   const harness = makeRecordingEmit(validateRecord);
   const fetches: string[] = [];
   const pauses: number[] = [];
@@ -484,6 +484,38 @@ test("runMessagesAndConversationsWithDetail: fetches detail serially with jitter
   assert.deepEqual(
     progressMessages.map((m) => m.message),
     ["Synced 1 / 2 conversations", "Synced 2 / 2 conversations"]
+  );
+});
+
+test("runConversationsAndMessagesStreams: detail failure rejects before conversations STATE", async () => {
+  const harness = makeRecordingEmit(validateRecord);
+  const listItem = makeConvo({ id: "convo-required-detail-fails" });
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: (path: string): Promise<ChatGptFetchResult> => {
+      if (path.startsWith("/conversations")) {
+        return Promise.resolve({
+          status: 200,
+          json: { items: [listItem], has_missing_conversations: false, total: 1 },
+        });
+      }
+      return Promise.reject(new Error("required detail fetch failed"));
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  await assert.rejects(runConversationsAndMessagesStreams(deps, {}), /required detail fetch failed/);
+
+  assert.equal(
+    harness.protocolMessages.some((m) => m.type === "STATE" && m.stream === "conversations"),
+    false,
+    "required detail failure must not emit conversations STATE"
   );
 });
 
