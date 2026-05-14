@@ -3,7 +3,7 @@
 Status: sprint-needed
 Owner: reference implementation maintainer
 Created: 2026-05-13
-Updated: 2026-05-13
+Updated: 2026-05-14
 Related: `openspec/changes/add-polyfill-connector-system/design-notes/partial-run-semantics-open-question.md`, `openspec/changes/add-polyfill-connector-system/design-notes/cursor-finality-and-gap-awareness-open-question.md`, `openspec/changes/add-polyfill-connector-system/design-notes/gap-recovery-execution-open-question.md`, `reference-implementation/runtime/index.js`
 
 ## Question
@@ -36,11 +36,14 @@ Instead, add a shared connector-side retry/backoff helper for recoverable upstre
 - Respect `Retry-After` when the upstream exposes it.
 - Use jittered exponential backoff when it does not.
 - Support a long enough retry budget for large first runs.
+- Pair retry with source-specific pacing/concurrency limits so the connector does not create multiple concurrent retry loops against one account-level throttle bucket.
 - Emit progress/telemetry so the owner sees "waiting for rate limit" rather than a stuck run.
 - Keep retry policy local to the connector/runtime package; it does not change the Collection Profile wire format.
 - Let terminal failure remain terminal when the retry budget is exhausted.
 
 This preserves the bounded-run invariant while making recoverable throttling non-terminal in normal operation.
+
+For ChatGPT specifically, the immediate reference-connector posture is conservative: serialize `/conversation/{id}` detail fetches and add jittered inter-request delay before considering any adaptive parallelism. The old connector used parallel detail fetches and silently tolerated failed details; the current connector surfaces failures correctly, so it must also lower request pressure rather than repeatedly driving the same hot rate-limit bucket.
 
 ## Deferred Alternative
 
@@ -62,3 +65,4 @@ Promote the immediate retry utility to an OpenSpec change only if it changes the
 ## Decision Log
 
 - 2026-05-13: Captured after ChatGPT `run_1778641079040`. Decision: fix `429` as connector-side recoverable backoff first; do not weaken bounded-run cursor finality.
+- 2026-05-14: Clarified that retry/backoff is not enough by itself for ChatGPT. Immediate fix includes source-specific pacing: one detail request at a time with jittered delay. This is still not sub-run checkpointing, partial-success checkpointing, or resumable segment semantics.

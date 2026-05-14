@@ -828,38 +828,56 @@ async function listConversationsSinceCursor(
   return convosToSync;
 }
 
-const CONVO_DETAIL_BATCH = 3; // conservative concurrency
-const CONVO_BATCH_PAUSE_MS = 200;
+const CONVO_DETAIL_PAUSE_MIN_MS = 1500;
+const CONVO_DETAIL_PAUSE_MAX_MS = 3000;
+
+interface ConversationDetailPacingOptions {
+  random?: () => number;
+  sleep?: (ms: number) => Promise<void> | void;
+}
+
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function conversationDetailPauseMs(random: () => number = Math.random): number {
+  const span = CONVO_DETAIL_PAUSE_MAX_MS - CONVO_DETAIL_PAUSE_MIN_MS;
+  return CONVO_DETAIL_PAUSE_MIN_MS + Math.floor(random() * (span + 1));
+}
 
 /**
- * For each listed conversation, fetch detail in small concurrent batches
- * and emit messages + detail-augmented conversation records.
+ * Fetch details one-at-a-time. ChatGPT's private detail endpoint appears to
+ * throttle per authenticated account/session, and parallel retry loops keep
+ * pressure on the same hot bucket. Prefer predictable low pressure over a
+ * faster first-run that fails near the end and cannot commit its cursor.
  */
 export async function runMessagesAndConversationsWithDetail(
   deps: StreamDeps,
   convosToSync: ConversationListItem[],
-  emitConversation: (c: ConversationListItem, detail: ConversationDetail | null) => Promise<void>
+  emitConversation: (c: ConversationListItem, detail: ConversationDetail | null) => Promise<void>,
+  pacing: ConversationDetailPacingOptions = {}
 ): Promise<void> {
-  for (let i = 0; i < convosToSync.length; i += CONVO_DETAIL_BATCH) {
-    const batch = convosToSync.slice(i, i + CONVO_DETAIL_BATCH);
-    const results = await Promise.all(batch.map((c) => deps.api.fetch(`/conversation/${encodeURIComponent(c.id)}`)));
-    for (let j = 0; j < batch.length; j++) {
-      const c = batch[j];
-      const detail = results[j];
-      if (!(c && detail)) {
-        continue;
-      }
-      await processConversationDetail(deps, c, detail, emitConversation);
+  const random = pacing.random ?? Math.random;
+  const sleep = pacing.sleep ?? sleepMs;
+  for (let i = 0; i < convosToSync.length; i++) {
+    const c = convosToSync[i];
+    if (!c) {
+      continue;
     }
+    const detail = await deps.api.fetch(`/conversation/${encodeURIComponent(c.id)}`);
+    await processConversationDetail(deps, c, detail, emitConversation);
+    const synced = i + 1;
     const progressMsg = {
       type: "PROGRESS",
       stream: "messages",
-      message: `Synced ${Math.min(i + CONVO_DETAIL_BATCH, convosToSync.length)} / ${convosToSync.length} conversations`,
-      count: Math.min(i + CONVO_DETAIL_BATCH, convosToSync.length),
+      message: `Synced ${synced} / ${convosToSync.length} conversations`,
+      count: synced,
       total: convosToSync.length,
     } as const;
     deps.emit(progressMsg);
-    await new Promise((r) => setTimeout(r, CONVO_BATCH_PAUSE_MS));
+    if (synced < convosToSync.length) {
+      await sleep(conversationDetailPauseMs(random));
+    }
   }
 }
 

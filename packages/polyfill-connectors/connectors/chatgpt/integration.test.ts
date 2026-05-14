@@ -56,6 +56,7 @@ import {
   runCustomGptsStream,
   runCustomInstructionsStream,
   runMemoriesStream,
+  runMessagesAndConversationsWithDetail,
   runSharedConversationsStream,
   type StreamDeps,
   summarizeChatGptSideEffectProbe,
@@ -435,6 +436,55 @@ test("runConversationsAndMessagesStreams: unsafe message text is shape-skipped w
   );
   const lastRecordOrSkipIdx = harness.events.findLastIndex((e) => e.kind === "record" || e.kind === "record-skipped");
   assert.ok(stateIdx > lastRecordOrSkipIdx, "STATE must remain after all record attempts, including quarantined rows");
+});
+
+test("runMessagesAndConversationsWithDetail: fetches detail serially with jittered pacing", async () => {
+  const harness = makeRecordingEmit(validateRecord);
+  const fetches: string[] = [];
+  const pauses: number[] = [];
+  let activeFetches = 0;
+  let maxActiveFetches = 0;
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: async (path: string): Promise<ChatGptFetchResult> => {
+      fetches.push(path);
+      activeFetches += 1;
+      maxActiveFetches = Math.max(maxActiveFetches, activeFetches);
+      await Promise.resolve();
+      activeFetches -= 1;
+      return makeDetailOk();
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  await runMessagesAndConversationsWithDetail(
+    deps,
+    [makeConvo({ id: "convo-1" }), makeConvo({ id: "convo-2" })],
+    makeEmitConversation(deps),
+    {
+      random: () => 0,
+      sleep: (ms) => {
+        pauses.push(ms);
+      },
+    }
+  );
+
+  assert.deepEqual(fetches, ["/conversation/convo-1", "/conversation/convo-2"]);
+  assert.equal(maxActiveFetches, 1, "conversation detail fetches must not overlap");
+  assert.deepEqual(pauses, [1500], "one deterministic minimum pause between two detail requests");
+  const progressMessages = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "PROGRESS" }> => m.type === "PROGRESS" && m.stream === "messages"
+  );
+  assert.deepEqual(
+    progressMessages.map((m) => m.message),
+    ["Synced 1 / 2 conversations", "Synced 2 / 2 conversations"]
+  );
 });
 
 // ─── Invariant 5: processConversationDetail is faithful to inputs (no hidden dedupe) ─
