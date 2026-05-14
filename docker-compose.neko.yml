@@ -72,22 +72,33 @@ services:
 
   neko-allocator:
     image: ${NEKO_ALLOCATOR_IMAGE:-pdpp-neko-allocator:local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: reference
     profiles: ["neko-dynamic"]
+    command: ["node", "server/neko-surface-allocator-server.ts"]
     environment:
-      PDPP_NEKO_ALLOCATOR_PORT: "7331"
+      PDPP_NEKO_ALLOCATOR_HOST: 0.0.0.0
+      PDPP_NEKO_ALLOCATOR_PORT: ${PDPP_NEKO_ALLOCATOR_PORT:-7331}
+      PDPP_NEKO_DOCKER_NETWORK: ${COMPOSE_PROJECT_NAME:-pdpp}_default
       PDPP_NEKO_PROFILE_STORAGE_ROOT: ${PDPP_NEKO_PROFILE_STORAGE_ROOT:-/var/lib/pdpp/neko-profiles}
+      PDPP_NEKO_WEBRTC_HOST_PORT_START: ${PDPP_NEKO_WEBRTC_HOST_PORT_START:-59001}
+      PDPP_NEKO_WEBRTC_HOST_PORT_END: ${PDPP_NEKO_WEBRTC_HOST_PORT_END:-59010}
+      PDPP_NEKO_STREAM_BASE_URL_TEMPLATE: ${PDPP_NEKO_STREAM_BASE_URL_TEMPLATE:-http://{container_name}:8080/neko/{surface_id}/}
+      PDPP_NEKO_CDP_BASE_URL_TEMPLATE: ${PDPP_NEKO_CDP_BASE_URL_TEMPLATE:-http://{container_name}:9223/}
       NEKO_IMAGE: ${NEKO_IMAGE:-pdpp-neko:local}
-      NEKO_BASE_IMAGE: ${NEKO_BASE_IMAGE:-ghcr.io/m1k1o/neko/chromium:3.0@sha256:13264ee217ecccda06b07aa7543dc12d8f9a423ace344b6bda6ebf6d2ecea193}
       NEKO_DESKTOP_SCREEN: ${NEKO_DESKTOP_SCREEN:-1440x900@30}
       NEKO_WEBRTC_NAT1TO1: ${NEKO_WEBRTC_NAT1TO1:-127.0.0.1}
       NEKO_WEBRTC_ICESERVERS: ${NEKO_WEBRTC_ICESERVERS:-[]}
+      NEKO_USERNAME: operator
+      NEKO_PASSWORD: ${NEKO_PASSWORD:-1}
     expose:
       - "7331"
     volumes:
       # Dynamic allocation requires Docker control of sibling n.eko containers.
       # Do not enable this profile unless the allocator image is trusted.
       - /var/run/docker.sock:/var/run/docker.sock
-      - ${PDPP_NEKO_PROFILE_STORAGE_ROOT:-./tmp/neko-profiles}:/var/lib/pdpp/neko-profiles
 
   coturn:
     image: ${TURN_IMAGE:-coturn/coturn:4.6.3-alpine}

@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { createServer, request as httpRequest, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
+import { isAbsolute } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   BROWSER_SURFACE_BACKEND_NEKO,
   type BrowserSurface,
@@ -12,10 +14,12 @@ import {
 const DEFAULT_DOCKER_SOCKET_PATH = "/var/run/docker.sock";
 const DEFAULT_LABEL_NAMESPACE = "org.pdpp.reference.neko";
 const DEFAULT_CONTAINER_HTTP_PORT = 8080;
-const DEFAULT_CONTAINER_CDP_PORT = 9222;
-const DEFAULT_NEKO_HEALTH_PATH = "/api/health";
+const DEFAULT_CONTAINER_CDP_PORT = 9223;
+const DEFAULT_NEKO_HEALTH_PATH = "/neko/health";
 const DEFAULT_STREAM_HEALTH_PATH = "/api/room/screen/cast.jpg";
 const DEFAULT_CDP_VERSION_PATH = "/json/version";
+const DEFAULT_ALLOCATOR_HOST = "0.0.0.0";
+const DEFAULT_ALLOCATOR_PORT = 7331;
 const LEADING_SLASH_RE = /^\//;
 const TRAILING_SLASHES_RE = /\/+$/;
 
@@ -78,6 +82,8 @@ export interface NekoSurfaceAllocatorServerOptions {
   readonly fetchImpl?: FetchLike;
   readonly image: string;
   readonly labelNamespace?: string;
+  readonly listenHost?: string;
+  readonly listenPort?: number;
   readonly nekoHealthPath?: string;
   readonly network: string;
   readonly now?: () => Date;
@@ -247,7 +253,7 @@ export class NekoSurfaceAllocatorService {
 
     const port = await this.#allocateHostPort();
     const names = this.#resourceNames(request);
-    const labels = this.#labelsForRequest(request, names);
+    const labels = this.#labelsForRequest(request, names, port);
     const created = await this.#docker.requestJson("/containers/create", {
       method: "POST",
       query: { name: names.containerName },
@@ -258,12 +264,15 @@ export class NekoSurfaceAllocatorService {
         ExposedPorts: {
           [`${String(this.#options.containerHttpPort)}/tcp`]: {},
           [`${String(this.#options.containerCdpPort)}/tcp`]: {},
+          [`${String(port)}/tcp`]: {},
+          [`${String(port)}/udp`]: {},
         },
         HostConfig: {
           Binds: [`${names.profilePath}:/home/user/.config/chromium`],
           NetworkMode: this.#options.network,
           PortBindings: {
-            [`${String(this.#options.containerHttpPort)}/tcp`]: [{ HostPort: String(port) }],
+            [`${String(port)}/tcp`]: [{ HostPort: String(port) }],
+            [`${String(port)}/udp`]: [{ HostPort: String(port) }],
           },
         },
       },
@@ -314,9 +323,10 @@ export class NekoSurfaceAllocatorService {
         "managed container is missing required PDPP labels"
       );
     }
-    const hostPort = readHostPort(inspect, this.#options.containerHttpPort);
-    const cdpUrl = this.#expandTemplate(this.#options.cdpBaseUrlTemplate, surfaceId, hostPort);
-    const streamBaseUrl = this.#expandTemplate(this.#options.streamBaseUrlTemplate, surfaceId, hostPort);
+    const hostPort = readHostPort(inspect, Number(labels[`${this.#options.labelNamespace}.webrtc_host_port`]));
+    const containerName = inspect.Name?.replace(LEADING_SLASH_RE, "") ?? "";
+    const cdpUrl = this.#expandTemplate(this.#options.cdpBaseUrlTemplate, surfaceId, hostPort, containerName);
+    const streamBaseUrl = this.#expandTemplate(this.#options.streamBaseUrlTemplate, surfaceId, hostPort, containerName);
     const readiness = await this.#readiness({ inspect, cdpUrl, streamBaseUrl });
     const now = this.#options.now().toISOString();
     const accountKey = request?.accountKey ?? labels[`${this.#options.labelNamespace}.account_key`];
@@ -332,7 +342,7 @@ export class NekoSurfaceAllocatorService {
       last_used_at: now,
       container_id: inspect.Id,
       allocator_metadata: {
-        container_name: inspect.Name?.replace(LEADING_SLASH_RE, "") ?? "",
+        container_name: containerName,
         host_port: String(hostPort),
         image: this.#options.image,
         network: this.#options.network,
@@ -366,7 +376,10 @@ export class NekoSurfaceAllocatorService {
     if (!nekoReady) {
       return { health: "starting", reason: "neko_http_unready" };
     }
-    const cdpVersion = await probeJson(this.#options.fetchImpl, new URL(this.#options.cdpVersionPath, input.cdpUrl));
+    const cdpVersion = await probeJson(
+      this.#options.fetchImpl,
+      joinUrlPath(input.cdpUrl, this.#options.cdpVersionPath)
+    );
     if (!cdpVersion.ok) {
       return { health: "starting", reason: "cdp_unready" };
     }
@@ -375,7 +388,7 @@ export class NekoSurfaceAllocatorService {
     }
     const streamReady = await probeUrl(
       this.#options.fetchImpl,
-      new URL(this.#options.streamHealthPath, input.streamBaseUrl)
+      joinUrlPath(input.streamBaseUrl, this.#options.streamHealthPath)
     );
     if (!streamReady) {
       return { health: "starting", reason: "stream_unready" };
@@ -476,7 +489,7 @@ export class NekoSurfaceAllocatorService {
     };
   }
 
-  #labelsForRequest(request: SurfaceRequest, names: ResourceNames): Record<string, string> {
+  #labelsForRequest(request: SurfaceRequest, names: ResourceNames, webrtcHostPort: number): Record<string, string> {
     const labels: Record<string, string> = {
       [`${this.#options.labelNamespace}.owner`]: "pdpp-reference",
       [`${this.#options.labelNamespace}.backend`]: BROWSER_SURFACE_BACKEND_NEKO,
@@ -486,6 +499,7 @@ export class NekoSurfaceAllocatorService {
       [`${this.#options.labelNamespace}.profile_hash`]: names.profileHash,
       [`${this.#options.labelNamespace}.profile_slug`]: names.profileSlug,
       [`${this.#options.labelNamespace}.profile_path`]: names.profilePath,
+      [`${this.#options.labelNamespace}.webrtc_host_port`]: String(webrtcHostPort),
       [`${this.#options.labelNamespace}.created_at`]: this.#options.now().toISOString(),
     };
     if (request.accountKey !== undefined) {
@@ -496,8 +510,15 @@ export class NekoSurfaceAllocatorService {
 
   #containerEnv(request: SurfaceRequest, hostPort: number): string[] {
     const env = {
-      NEKO_BIND: `:${String(this.#options.containerHttpPort)}`,
-      NEKO_CHROME_FLAGS: `--remote-debugging-address=0.0.0.0 --remote-debugging-port=${String(this.#options.containerCdpPort)}`,
+      NEKO_SERVER_BIND: `0.0.0.0:${String(this.#options.containerHttpPort)}`,
+      NEKO_SERVER_PATH_PREFIX: "/neko",
+      NEKO_SERVER_PROXY: "true",
+      NEKO_MEMBER_PROVIDER: "noauth",
+      NEKO_SESSION_IMPLICIT_HOSTING: "true",
+      NEKO_WEBRTC_UDPMUX: String(hostPort),
+      NEKO_WEBRTC_TCPMUX: String(hostPort),
+      NEKO_WEBRTC_ICELITE: "1",
+      PDPP_NEKO_CDP_PROXY_PORT: String(this.#options.containerCdpPort),
       PDPP_NEKO_SURFACE_ID: request.surfaceId,
       PDPP_NEKO_PROFILE_KEY_HASH: createHash("sha256").update(request.profileKey).digest("hex"),
       PDPP_NEKO_WEBRTC_HOST_PORT: String(hostPort),
@@ -506,10 +527,11 @@ export class NekoSurfaceAllocatorService {
     return Object.entries(env).map(([key, value]) => `${key}=${value}`);
   }
 
-  #expandTemplate(template: string, surfaceId: string, hostPort: number): string {
+  #expandTemplate(template: string, surfaceId: string, hostPort: number, containerName: string): string {
     return template
       .replaceAll("{surface_id}", encodeURIComponent(surfaceId))
-      .replaceAll("{host_port}", String(hostPort));
+      .replaceAll("{host_port}", String(hostPort))
+      .replaceAll("{container_name}", encodeURIComponent(containerName));
   }
 }
 
@@ -590,13 +612,16 @@ export function startNekoSurfaceAllocatorServer(
 ): Promise<{ close: () => Promise<void>; url: string }> {
   const service = new NekoSurfaceAllocatorService(options);
   const server = createServer(createNekoSurfaceAllocatorHttpHandler(service));
+  const listenHost = options.listenHost ?? "127.0.0.1";
+  const listenPort = options.listenPort ?? 0;
   return new Promise((resolve, reject) => {
     server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
+    server.listen(listenPort, listenHost, () => {
       server.off("error", reject);
       const address = server.address() as AddressInfo;
+      const urlHost = listenHost === "0.0.0.0" ? "127.0.0.1" : listenHost;
       resolve({
-        url: `http://127.0.0.1:${String(address.port)}/`,
+        url: `http://${urlHost}:${String(address.port)}/`,
         close: () =>
           new Promise<void>((closeResolve, closeReject) => {
             server.close((error) => (error === undefined ? closeResolve() : closeReject(error)));
@@ -617,6 +642,12 @@ function assertAllocatorOptions(options: NekoSurfaceAllocatorServerOptions): voi
     options.webrtcHostPortStart > options.webrtcHostPortEnd
   ) {
     throw new NekoSurfaceAllocatorServiceError("bad_request", "invalid WebRTC host port range");
+  }
+  if (!isAbsolute(options.profileRoot)) {
+    throw new NekoSurfaceAllocatorServiceError(
+      "bad_request",
+      "profileRoot must be a host absolute path because Docker bind mounts are resolved by the Docker daemon"
+    );
   }
 }
 
@@ -789,6 +820,14 @@ function looksLikeChromiumVersion(value: unknown): boolean {
   return isRecord(value) && (typeof value.Browser === "string" || typeof value.webSocketDebuggerUrl === "string");
 }
 
+function joinUrlPath(base: string, path: string): URL {
+  const url = new URL(base);
+  const basePath = url.pathname.replace(TRAILING_SLASHES_RE, "");
+  const suffix = path.replace(LEADING_SLASH_RE, "");
+  url.pathname = suffix.length === 0 ? `${basePath}/` : `${basePath}/${suffix}`;
+  return url;
+}
+
 function sanitizeResourceSegment(value: string): string {
   const sanitized = value
     .toLowerCase()
@@ -800,4 +839,70 @@ function sanitizeResourceSegment(value: string): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function readNekoSurfaceAllocatorOptionsFromEnv(
+  env: NodeJS.ProcessEnv = process.env
+): NekoSurfaceAllocatorServerOptions {
+  const profileRoot = readRequiredEnv(env, "PDPP_NEKO_PROFILE_STORAGE_ROOT");
+  const hostPortStart = readIntegerEnv(env, "PDPP_NEKO_WEBRTC_HOST_PORT_START", 59_000);
+  const hostPortEnd = readIntegerEnv(env, "PDPP_NEKO_WEBRTC_HOST_PORT_END", 59_010);
+  return {
+    image: readRequiredEnv(env, "NEKO_IMAGE"),
+    network: readRequiredEnv(env, "PDPP_NEKO_DOCKER_NETWORK"),
+    profileRoot,
+    webrtcHostPortStart: hostPortStart,
+    webrtcHostPortEnd: hostPortEnd,
+    streamBaseUrlTemplate: env.PDPP_NEKO_STREAM_BASE_URL_TEMPLATE ?? "http://{container_name}:8080/neko/{surface_id}/",
+    cdpBaseUrlTemplate: env.PDPP_NEKO_CDP_BASE_URL_TEMPLATE ?? "http://{container_name}:9223/",
+    listenHost: env.PDPP_NEKO_ALLOCATOR_HOST ?? DEFAULT_ALLOCATOR_HOST,
+    listenPort: readIntegerEnv(env, "PDPP_NEKO_ALLOCATOR_PORT", DEFAULT_ALLOCATOR_PORT),
+    extraEnv: compactEnv({
+      NEKO_DESKTOP_SCREEN: env.NEKO_DESKTOP_SCREEN,
+      NEKO_WEBRTC_NAT1TO1: env.NEKO_WEBRTC_NAT1TO1,
+      NEKO_WEBRTC_ICESERVERS: env.NEKO_WEBRTC_ICESERVERS,
+      NEKO_PASSWORD: env.NEKO_PASSWORD,
+      NEKO_USERNAME: env.NEKO_USERNAME,
+    }),
+  };
+}
+
+function compactEnv(values: Readonly<Record<string, string | undefined>>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(values).filter((entry): entry is [string, string] => entry[1] !== undefined)
+  );
+}
+
+function readRequiredEnv(env: NodeJS.ProcessEnv, name: string): string {
+  const value = env[name];
+  if (value === undefined || value.length === 0) {
+    throw new NekoSurfaceAllocatorServiceError("bad_request", `${name} is required`);
+  }
+  return value;
+}
+
+function readIntegerEnv(env: NodeJS.ProcessEnv, name: string, fallback: number): number {
+  const value = env[name];
+  if (value === undefined || value.length === 0) {
+    return fallback;
+  }
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isInteger(parsed) || String(parsed) !== value) {
+    throw new NekoSurfaceAllocatorServiceError("bad_request", `${name} must be an integer`);
+  }
+  return parsed;
+}
+
+async function main(): Promise<void> {
+  const options = readNekoSurfaceAllocatorOptionsFromEnv();
+  const server = await startNekoSurfaceAllocatorServer(options);
+  process.stdout.write(`n.eko surface allocator listening at ${server.url}\n`);
+}
+
+if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`n.eko surface allocator failed to start: ${message}\n`);
+    process.exitCode = 1;
+  });
 }

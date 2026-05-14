@@ -5,6 +5,7 @@ import { NekoSurfaceAllocatorClient } from "../runtime/neko-surface-allocator.ts
 import {
   NekoSurfaceAllocatorService,
   NekoSurfaceAllocatorServiceError,
+  readNekoSurfaceAllocatorOptionsFromEnv,
   startNekoSurfaceAllocatorServer,
 } from "../server/neko-surface-allocator-server.ts";
 
@@ -49,7 +50,8 @@ test("creates and starts an owned n.eko container with sanitized profile storage
   assert.equal(create.init.method, "POST");
   assert.equal(create.init.body.Image, BASE_OPTIONS.image);
   assert.equal(create.init.body.HostConfig.NetworkMode, BASE_OPTIONS.network);
-  assert.deepEqual(create.init.body.HostConfig.PortBindings["8080/tcp"], [{ HostPort: "59000" }]);
+  assert.deepEqual(create.init.body.HostConfig.PortBindings["59000/tcp"], [{ HostPort: "59000" }]);
+  assert.deepEqual(create.init.body.HostConfig.PortBindings["59000/udp"], [{ HostPort: "59000" }]);
   assert.equal(create.init.body.Labels[`${LABEL}.owner`], "pdpp-reference");
   assert.equal(create.init.body.Labels[`${LABEL}.surface_id`], "surface:https://chatgpt.example/profile 1");
   assert.equal(create.init.body.Labels[`${LABEL}.profile_key`], "https://registry.pdpp.org/connectors/chatgpt?owner=the owner@example.com");
@@ -59,7 +61,70 @@ test("creates and starts an owned n.eko container with sanitized profile storage
   assert.doesNotMatch(create.init.query.name, /https|the owner|example\.com|registry/);
   assert.doesNotMatch(create.init.body.Labels[`${LABEL}.profile_slug`], /https|the owner|example\.com|registry/);
   assert.ok(create.init.body.Env.includes("NEKO_PASSWORD=dev-password"));
+  assert.ok(create.init.body.Env.includes("NEKO_SERVER_BIND=0.0.0.0:8080"));
+  assert.ok(create.init.body.Env.includes("NEKO_SERVER_PATH_PREFIX=/neko"));
+  assert.ok(create.init.body.Env.includes("PDPP_NEKO_CDP_PROXY_PORT=9223"));
+  assert.ok(create.init.body.Env.includes("NEKO_WEBRTC_UDPMUX=59000"));
+  assert.ok(create.init.body.Env.includes("NEKO_WEBRTC_TCPMUX=59000"));
+  assert.ok(!create.init.body.Env.some((entry) => entry.startsWith("NEKO_BIND=")));
+  assert.ok(!create.init.body.Env.some((entry) => entry.startsWith("NEKO_CHROME_FLAGS=")));
   assert.equal(docker.calls.some((call) => call.path === "/containers/container_1/start"), true);
+});
+
+test("parses env-driven HTTP listen config and allocator defaults", () => {
+  const options = readNekoSurfaceAllocatorOptionsFromEnv({
+    NEKO_IMAGE: "pdpp-neko:local",
+    PDPP_NEKO_DOCKER_NETWORK: "pdpp_default",
+    PDPP_NEKO_PROFILE_STORAGE_ROOT: "/srv/pdpp/neko-profiles",
+    PDPP_NEKO_ALLOCATOR_PORT: "7331",
+    NEKO_DESKTOP_SCREEN: "1440x900@30",
+  });
+
+  assert.equal(options.image, "pdpp-neko:local");
+  assert.equal(options.network, "pdpp_default");
+  assert.equal(options.profileRoot, "/srv/pdpp/neko-profiles");
+  assert.equal(options.listenHost, "0.0.0.0");
+  assert.equal(options.listenPort, 7331);
+  assert.equal(options.streamBaseUrlTemplate, "http://{container_name}:8080/neko/{surface_id}/");
+  assert.equal(options.cdpBaseUrlTemplate, "http://{container_name}:9223/");
+  assert.equal(options.extraEnv.NEKO_DESKTOP_SCREEN, "1440x900@30");
+});
+
+test("rejects relative profile roots because Docker bind mounts resolve on the host", () => {
+  assert.throws(
+    () =>
+      new NekoSurfaceAllocatorService({
+        ...BASE_OPTIONS,
+        profileRoot: "./tmp/neko-profiles",
+        docker: new FakeDocker(),
+        fetchImpl: readyFetch(),
+      }),
+    (error) => error instanceof NekoSurfaceAllocatorServiceError && error.code === "bad_request",
+  );
+});
+
+test("preserves base URL paths when joining readiness probe paths", async () => {
+  const requestedPaths = [];
+  const service = new NekoSurfaceAllocatorService({
+    ...BASE_OPTIONS,
+    docker: new FakeDocker(),
+    cdpVersionPath: "/json/version",
+    streamHealthPath: "/api/room/screen/cast.jpg",
+    fetchImpl: async (input) => {
+      const url = new URL(String(input));
+      requestedPaths.push(url.pathname);
+      if (url.pathname.endsWith("/json/version")) {
+        return Response.json({ Browser: "Chrome/126.0.0.0" });
+      }
+      return new Response("ok", { status: 200 });
+    },
+  });
+
+  await service.ensureSurface({ surfaceId: "surface_1", connectorId: "chatgpt", profileKey: "profile_1" });
+
+  assert.ok(requestedPaths.includes("/neko/health"));
+  assert.ok(requestedPaths.includes("/cdp/surface_1/json/version"));
+  assert.ok(requestedPaths.includes("/neko/surface_1/api/room/screen/cast.jpg"));
 });
 
 test("gets, lists, and stops only PDPP-owned surfaces", async () => {
@@ -156,12 +221,18 @@ class FakeDocker {
           Id: container.id,
           Labels: container.labels,
           State: container.running ? "running" : "exited",
-          Ports: container.hostPort === undefined ? [] : [{ PrivatePort: 8080, PublicPort: container.hostPort, Type: "tcp" }],
+          Ports:
+            container.hostPort === undefined
+              ? []
+              : [
+                  { PrivatePort: container.hostPort, PublicPort: container.hostPort, Type: "tcp" },
+                  { PrivatePort: container.hostPort, PublicPort: container.hostPort, Type: "udp" },
+                ],
         }));
     }
     if (path === "/containers/create") {
       const id = `container_${this.nextId++}`;
-      const hostPort = Number(init.body.HostConfig.PortBindings["8080/tcp"][0].HostPort);
+      const hostPort = Number(init.body.Labels[`${LABEL}.webrtc_host_port`]);
       this.containers.set(id, {
         id,
         labels: init.body.Labels,
@@ -193,7 +264,7 @@ class FakeDocker {
         Config: { Labels: this.foreignInspectIds.has(id) ? { "other.owner": "someone-else" } : container.labels },
         State: { Running: container.running, Status: container.running ? "running" : "exited" },
         NetworkSettings: {
-          Ports: { "8080/tcp": [{ HostPort: String(container.hostPort) }] },
+          Ports: { [`${String(container.hostPort)}/tcp`]: [{ HostPort: String(container.hostPort) }] },
           Networks: { [container.network]: {} },
         },
       };
