@@ -25,7 +25,7 @@ function withTempDb(fn) {
   };
 }
 
-function createConnector(messages) {
+function createConnector(messages, { exitCode = 0 } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'pdpp-detail-gap-connector-'));
   const connectorPath = join(dir, 'connector.mjs');
   writeFileSync(connectorPath, `
@@ -37,7 +37,7 @@ rl.on('line', (line) => {
     process.stdout.write(JSON.stringify(message) + '\\n');
   }
   rl.close();
-  process.stdout.write('', () => process.exit(0));
+  process.stdout.write('', () => process.exit(${JSON.stringify(exitCode)}));
 });
 `, 'utf8');
   return { connectorPath, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
@@ -477,4 +477,74 @@ test('runtime commits state when required DETAIL_COVERAGE is backed by matching 
       cleanup();
     }
   });
+}));
+
+test('runtime preserves no-commit behavior for failed, cancelled, and protocol-violating runs', withTempDb(async () => {
+  const cases = [
+    {
+      name: 'failed',
+      messages: [
+        { type: 'STATE', stream: 'conversation_list', cursor: { after: 'cursor_30' } },
+        {
+          type: 'DONE',
+          status: 'failed',
+          records_emitted: 0,
+          error: { message: 'upstream failure', retryable: true },
+        },
+      ],
+      exitCode: 1,
+      expectReject: false,
+    },
+    {
+      name: 'cancelled',
+      messages: [
+        { type: 'STATE', stream: 'conversation_list', cursor: { after: 'cursor_30' } },
+        {
+          type: 'DONE',
+          status: 'cancelled',
+          records_emitted: 0,
+          error: { message: 'operator cancelled', retryable: false },
+        },
+      ],
+      exitCode: 1,
+      expectReject: false,
+    },
+    {
+      name: 'protocol-violating',
+      messages: [
+        { type: 'STATE', stream: 'conversation_list', cursor: { after: 'cursor_30' } },
+        { type: 'DONE', status: 'succeeded', records_emitted: 1 },
+      ],
+      exitCode: 0,
+      expectReject: /Connector reported records_emitted 1 but runtime observed 0/,
+    },
+  ];
+
+  for (const scenario of cases) {
+    await withStateServer(async ({ rsUrl, stateWrites }) => {
+      const { connectorPath, cleanup } = createConnector(scenario.messages, { exitCode: scenario.exitCode });
+      try {
+        const run = () => runConnector({
+          connectorPath,
+          connectorId: 'chatgpt',
+          ownerToken: 'owner',
+          manifest: { streams: [{ name: 'conversation_list' }] },
+          state: {},
+          rsUrl,
+          onProgress: () => {},
+        });
+
+        if (scenario.expectReject) {
+          await assert.rejects(run, scenario.expectReject);
+        } else {
+          const result = await run();
+          assert.equal(result.status, scenario.name);
+        }
+
+        assert.equal(stateWrites.length, 0, `${scenario.name} run must not persist staged STATE`);
+      } finally {
+        cleanup();
+      }
+    });
+  }
 }));

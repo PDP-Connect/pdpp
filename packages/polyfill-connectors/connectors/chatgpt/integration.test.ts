@@ -665,7 +665,7 @@ test("runConversationsAndMessagesStreams: recoverable detail exhaustion emits DE
     requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
   };
 
-  await runConversationsAndMessagesStreams(deps, {});
+  await runConversationsAndMessagesStreams(deps, {}, { detailPacing: { random: () => 0, sleep: () => undefined } });
 
   assert.deepEqual(fetches, [
     "/conversations?offset=0&limit=100&order=updated",
@@ -749,6 +749,135 @@ test("runConversationsAndMessagesStreams: recoverable detail exhaustion emits DE
     "DETAIL_COVERAGE must emit after gap and all detail work settle"
   );
   assert.ok(stateIdx > coverageIdx, "STATE must emit after DETAIL_COVERAGE");
+});
+
+test("runConversationsAndMessagesStreams: 30/278 pressure exhaustion records a durable gap and honest coverage", async () => {
+  const harness = makeRecordingEmit(validateRecord);
+  const listItems = Array.from({ length: 278 }, (_, index) =>
+    makeConvo({
+      id: `convo-${String(index + 1).padStart(3, "0")}`,
+      title: `Conversation ${index + 1}`,
+      update_time: 1_700_000_000 + index,
+    })
+  );
+  const pressureItem = listItems[29];
+  assert.ok(pressureItem, "fixture must include the 30th list item");
+
+  const fetches: string[] = [];
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: (path: string): Promise<ChatGptFetchResult> => {
+      fetches.push(path);
+      if (path === "/conversations?offset=0&limit=100&order=updated") {
+        return Promise.resolve({
+          status: 200,
+          json: { items: listItems.slice(0, 100), has_missing_conversations: false, total: 278 },
+        });
+      }
+      if (path === "/conversations?offset=100&limit=100&order=updated") {
+        return Promise.resolve({
+          status: 200,
+          json: { items: listItems.slice(100, 200), has_missing_conversations: false, total: 278 },
+        });
+      }
+      if (path === "/conversations?offset=200&limit=100&order=updated") {
+        return Promise.resolve({
+          status: 200,
+          json: { items: listItems.slice(200), has_missing_conversations: false, total: 278 },
+        });
+      }
+      if (path === `/conversation/${pressureItem.id}`) {
+        return Promise.reject(
+          new ChatGptRecoverableRetryExhaustedError(
+            `apiFetch got 429 on GET /conversation/${pressureItem.id} after retry budget exhausted bearer secret`,
+            { class: "rate_limited", httpStatus: 429 }
+          )
+        );
+      }
+      return Promise.resolve(makeDetailOk());
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  await runConversationsAndMessagesStreams(deps, {}, { detailPacing: { random: () => 0, sleep: () => undefined } });
+
+  assert.equal(fetches.filter((path) => path.startsWith("/conversations?")).length, 3);
+  assert.equal(fetches.filter((path) => path.startsWith("/conversation/")).length, 278);
+  assert.deepEqual(fetches.slice(0, 33), [
+    "/conversations?offset=0&limit=100&order=updated",
+    "/conversations?offset=100&limit=100&order=updated",
+    "/conversations?offset=200&limit=100&order=updated",
+    ...listItems.slice(0, 30).map((item) => `/conversation/${item.id}`),
+  ]);
+
+  assert.equal(
+    harness.emitted.some((r) => r.stream === "conversations" && r.data.id === pressureItem.id),
+    false,
+    "the pressure item must not be emitted as a list-only public conversation record"
+  );
+  assert.equal(
+    harness.emitted.filter((r) => r.stream === "conversations").length,
+    277,
+    "all hydrated conversations except the pressure gap should emit"
+  );
+
+  const gap = harness.protocolMessages.find(
+    (m): m is Extract<EmittedMessage, { type: "DETAIL_GAP" }> =>
+      m.type === "DETAIL_GAP" && m.record_key === pressureItem.id
+  );
+  assert.deepEqual(gap, {
+    type: "DETAIL_GAP",
+    stream: "messages",
+    record_key: pressureItem.id,
+    status: "pending",
+    reason: "rate_limited",
+    detail_locator: {
+      kind: "chatgpt.conversation",
+      conversation_id: pressureItem.id,
+      list_item: {
+        id: pressureItem.id,
+        title: pressureItem.title,
+        create_time: pressureItem.create_time,
+        update_time: pressureItem.update_time,
+        current_node: pressureItem.current_node,
+        gizmo_id: null,
+        is_archived: null,
+        is_starred: null,
+        workspace_id: null,
+      },
+    },
+    retryable: true,
+    reference_only: true,
+    detail: { class: "rate_limited", http_status: 429 },
+  });
+  const serializedGap = JSON.stringify(gap);
+  assert.equal(serializedGap.includes("/conversation/"), false, "gap diagnostic must not expose raw API paths");
+  assert.equal(serializedGap.includes("bearer"), false, "gap diagnostic must not expose raw auth text");
+  assert.equal(serializedGap.includes("secret"), false, "gap diagnostic must not expose raw auth text");
+
+  const coverage = harness.protocolMessages.find(
+    (m): m is Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }> => m.type === "DETAIL_COVERAGE"
+  );
+  assert.ok(coverage, "successful cursor progress must include matching detail coverage");
+  assert.equal(coverage.state_stream, "conversations");
+  assert.equal(coverage.stream, "messages");
+  assert.equal(coverage.required_keys.length, 278);
+  assert.equal(coverage.hydrated_keys.length, 277);
+  assert.deepEqual(coverage.gap_keys, [pressureItem.id]);
+  assert.equal(coverage.required_keys[29], pressureItem.id);
+  assert.equal(coverage.hydrated_keys.includes(pressureItem.id), false);
+
+  const stateIdx = harness.events.findIndex(
+    (e) => e.kind === "message" && e.message.type === "STATE" && e.message.stream === "conversations"
+  );
+  const coverageIdx = harness.events.findIndex((e) => e.kind === "message" && e.message.type === "DETAIL_COVERAGE");
+  assert.ok(stateIdx > coverageIdx, "cursor STATE must only emit after coverage accounts for the pressure gap");
 });
 
 test("runConversationsAndMessagesStreams: recovers pending conversation detail gaps before forward list collection", async () => {

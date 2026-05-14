@@ -9,7 +9,7 @@
 - [x] Add runtime handling for connector-reported recoverable detail gaps.
 - [x] Add reference-only detail coverage handling for list-plus-detail cursor boundaries.
 - [x] Enforce that list-level cursor progress can commit only when missing required detail is emitted, explicitly optional/skipped, or durably recorded as a pending gap.
-- [ ] Ensure failed, cancelled, and protocol-violating runs still preserve existing no-commit behavior unless the run reaches the new successful-with-gap condition.
+- [x] Ensure failed, cancelled, and protocol-violating runs still preserve existing no-commit behavior unless the run reaches the new successful-with-gap condition.
 - [x] Add recovery selection so future runs load pending gaps for the same source and requested scope.
 
 ## 3. Connector Pilot
@@ -27,7 +27,7 @@
 
 ## 5. Tests and Fixtures
 
-- [ ] Add deterministic fixture coverage for a ChatGPT-style `30/278` pressure failure that records a pending gap and commits list progress honestly.
+- [x] Add deterministic fixture coverage for a ChatGPT-style `30/278` pressure failure that records a pending gap and commits list progress honestly.
 - [x] Add recovery coverage proving a later run fetches the pending detail without replaying the full tranche.
 - [x] Add negative coverage proving cursor commit is rejected when required detail is missing without a durable gap.
 - [x] Add redaction coverage for gap locators and last-error metadata.
