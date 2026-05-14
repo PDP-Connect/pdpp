@@ -58,7 +58,9 @@ const lane = createAdaptiveLane({
   minConcurrency: 1,
   maxConcurrency: 3,
   minDelayMs: 1500,
-  maxDelayMs: 15 * 60_000,
+  maxDelayMs: 3000,
+  pressureMinDelayMs: CHATGPT_RATE_LIMIT_BASE_DELAY_MS,
+  pressureMaxDelayMs: 15 * 60_000,
   classifyOutcome,
   emitProgress,
   emitTelemetry,
@@ -98,8 +100,9 @@ Implementation constants for the first tranche:
 - Default retry attempts in the lane utility are `1`; connectors may opt into lane-level retries, while ChatGPT keeps `retryHttp` as its per-request retry owner and holds the lane slot during that retry loop.
 - The clean-success window defaults to `max(3, maxConcurrency)` and increases effective concurrency by `1`, capped at `maxConcurrency`.
 - `rate_limited` feedback cuts effective concurrency directly to `minConcurrency`; other retryable/terminal pressure halves effective concurrency, floored at `minConcurrency`.
-- Launch and cooldown delays are bounded by connector-provided `minDelayMs`/`maxDelayMs` and use injected randomness for deterministic tests.
-- The ChatGPT pilot uses `initialConcurrency = 1`, `maxConcurrency = 1`, `minDelayMs = 1500`, and `maxDelayMs = 3000`, preserving the current serialized pressure.
+- Normal launch pacing is bounded by connector-provided `minDelayMs`/`maxDelayMs`; source-pressure cooldown is separately bounded by `pressureMinDelayMs`/`pressureMaxDelayMs` so a connector can keep successful launches paced in seconds while backing off pressured sources in minutes.
+- ChatGPT keeps `retryHttp` as the per-request retry owner, but retry callbacks SHALL report intermediate pressure into the lane so pressure is visible even when the individual request eventually succeeds.
+- The ChatGPT pilot uses `initialConcurrency = 1`, `maxConcurrency = 1`, `minDelayMs = 1500`, `maxDelayMs = 3000`, and ChatGPT rate-limit retry bounds for pressure cooldown, preserving serialized normal fetches while applying meaningful source-pressure cooldown.
 
 Latency-gradient or Vegas-style algorithms are deferred. They may be useful for well-behaved public APIs, but they can give false confidence against opaque anti-abuse systems where latency is not the signal that matters.
 
