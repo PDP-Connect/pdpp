@@ -15,7 +15,7 @@
  */
 
 import type { Page } from "playwright";
-import { type AdaptiveLaneEvent, createAdaptiveLane } from "../../src/adaptive-lane.ts";
+import { type AdaptiveLaneEvent, createAdaptiveLane, currentAdaptiveLaneRunContext } from "../../src/adaptive-lane.ts";
 import { ensureChatGptSession } from "../../src/auto-login/chatgpt.ts";
 import {
   type BrowserCollectContext,
@@ -225,6 +225,10 @@ function createChatGptApi({
         maxDelayMs: CHATGPT_RATE_LIMIT_MAX_DELAY_MS,
         maxRetryAfterMs: CHATGPT_RATE_LIMIT_MAX_RETRY_AFTER_MS,
         onRetry: async ({ attempt, delayMs, maxAttempts, response, retryAfterMs }) => {
+          await currentAdaptiveLaneRunContext()?.reportPressure({
+            kind: response?.status === 429 ? "rate_limited" : "transient_error",
+            ...(retryAfterMs == null ? {} : { retryAfterMs }),
+          });
           if (delayMs < CHATGPT_LONG_SLEEP_PROGRESS_THRESHOLD_MS) {
             return;
           }

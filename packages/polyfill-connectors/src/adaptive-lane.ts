@@ -1,6 +1,13 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import PQueue from "p-queue";
 
 export type AdaptiveLaneOutcomeKind = "ok" | "retryable" | "rate_limited" | "terminal";
+export type AdaptiveLanePressureKind = "rate_limited" | "transient_error";
+
+export interface AdaptiveLanePressure {
+  kind: AdaptiveLanePressureKind;
+  retryAfterMs?: number;
+}
 
 export interface AdaptiveLaneOutcome {
   kind: AdaptiveLaneOutcomeKind;
@@ -41,6 +48,7 @@ type AdaptiveLaneEventInput = Omit<AdaptiveLaneEvent, keyof AdaptiveLaneSnapshot
 
 export interface AdaptiveLaneRunContext {
   attempt: number;
+  reportPressure: (pressure: AdaptiveLanePressure) => Promise<void>;
   signal?: AbortSignal;
 }
 
@@ -105,6 +113,11 @@ export class AdaptiveLaneAttemptTimeoutError extends Error {
 }
 
 const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+const runContextStorage = new AsyncLocalStorage<AdaptiveLaneRunContext>();
+
+export function currentAdaptiveLaneRunContext(): AdaptiveLaneRunContext | undefined {
+  return runContextStorage.getStore();
+}
 
 function errorName(error: unknown): string {
   return error instanceof Error ? error.name : typeof error;
@@ -130,6 +143,7 @@ export function createAdaptiveLane<T>(options: AdaptiveLaneOptions<T>): Adaptive
   let currentConcurrency = initialConcurrency;
   let cleanSuccesses = 0;
   let launchCount = 0;
+  let pendingLaunchCooldownMs = 0;
   let cancelled: AdaptiveLaneCancelledError | null = null;
   const laneController = new AbortController();
   const queued = new Set<{ reject: (error: unknown) => void; started: boolean }>();
@@ -219,6 +233,37 @@ export function createAdaptiveLane<T>(options: AdaptiveLaneOptions<T>): Adaptive
     }
   };
 
+  const pressureOutcome = (pressure: AdaptiveLanePressure): AdaptiveLaneOutcome => {
+    const outcome: AdaptiveLaneOutcome = {
+      kind: pressure.kind === "rate_limited" ? "rate_limited" : "retryable",
+      reason: pressure.kind,
+    };
+    if (pressure.retryAfterMs != null) {
+      outcome.retryAfterMs = pressure.retryAfterMs;
+    }
+    return outcome;
+  };
+
+  const reportPressure = async (
+    pressure: AdaptiveLanePressure,
+    attempt: number,
+    signal?: AbortSignal
+  ): Promise<void> => {
+    ensureNotCancelled(signal);
+    const outcome = pressureOutcome(pressure);
+    await decreaseConcurrency(outcome.kind);
+    const delayMs = boundedDelay(outcome);
+    pendingLaunchCooldownMs = Math.max(pendingLaunchCooldownMs, delayMs);
+    await emit(
+      outcomeEvent({
+        attempt,
+        delayMs,
+        outcome,
+        type: outcome.kind === "rate_limited" ? "cooldown" : "retry_scheduled",
+      })
+    );
+  };
+
   const maybeIncreaseConcurrency = async (): Promise<void> => {
     cleanSuccesses += 1;
     if (cleanSuccesses < successWindow || currentConcurrency >= maxConcurrency) {
@@ -246,15 +291,24 @@ export function createAdaptiveLane<T>(options: AdaptiveLaneOptions<T>): Adaptive
     emitSafely({ reason, type: "cancelled" });
   };
 
-  const runContext = (attempt: number, signal?: AbortSignal): AdaptiveLaneRunContext =>
-    signal ? { attempt, signal } : { attempt };
+  const runContext = (attempt: number, signal?: AbortSignal): AdaptiveLaneRunContext => {
+    const context: AdaptiveLaneRunContext = {
+      attempt,
+      reportPressure: (pressure) => reportPressure(pressure, attempt, signal),
+    };
+    if (signal) {
+      context.signal = signal;
+    }
+    return context;
+  };
 
   const runAttempt = (
     task: (context: AdaptiveLaneRunContext) => T | Promise<T>,
     attempt: number,
     signal?: AbortSignal
   ): Promise<T> => {
-    const attemptPromise = Promise.resolve(task(runContext(attempt, signal)));
+    const context = runContext(attempt, signal);
+    const attemptPromise = runContextStorage.run(context, () => Promise.resolve(task(context)));
     if (options.attemptTimeoutMs == null) {
       return attemptPromise;
     }
@@ -360,9 +414,12 @@ export function createAdaptiveLane<T>(options: AdaptiveLaneOptions<T>): Adaptive
       ensureNotCancelled(signal);
       runOptions.onBeforeStart?.();
       const delayMs = launchDelay();
+      const cooldownMs = pendingLaunchCooldownMs;
+      pendingLaunchCooldownMs = 0;
+      const launchWaitMs = Math.max(delayMs, cooldownMs);
       launchCount += 1;
-      if (delayMs > 0) {
-        await wait(delayMs, signal);
+      if (launchWaitMs > 0) {
+        await wait(launchWaitMs, signal);
       }
       await emit({ type: "started" });
       return await runAttempts(task, signal);

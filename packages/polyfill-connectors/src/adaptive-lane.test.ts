@@ -133,6 +133,56 @@ test("adaptive lane respects bounded Retry-After cooldown with fake sleep", asyn
   );
 });
 
+test("adaptive lane reportPressure delays next queued task even when current task succeeds", async () => {
+  const sleeps: number[] = [];
+  const events: AdaptiveLaneEvent[] = [];
+  const started: string[] = [];
+  const firstGate = deferred<string>();
+  const lane = createAdaptiveLane<string>({
+    name: "test.intermediate-pressure",
+    initialConcurrency: 1,
+    maxAttempts: 1,
+    maxConcurrency: 1,
+    maxDelayMs: 5000,
+    maxQueueSize: 10,
+    minConcurrency: 1,
+    minDelayMs: 100,
+    classifyOutcome: () => ({ kind: "ok" }),
+    emitTelemetry: (event) => {
+      events.push(event);
+    },
+    random: () => 0,
+    sleep: (ms) => {
+      sleeps.push(ms);
+    },
+  });
+
+  const first = lane.run(async (context) => {
+    started.push("first");
+    await context.reportPressure({ kind: "rate_limited", retryAfterMs: 20_000 });
+    await firstGate.promise;
+    return "first-ok";
+  });
+  const second = lane.run(() => {
+    started.push("second");
+    return "second-ok";
+  });
+  await flush();
+  assert.deepEqual(started, ["first"]);
+
+  firstGate.resolve("release");
+  assert.deepEqual(await Promise.all([first, second]), ["first-ok", "second-ok"]);
+  assert.deepEqual(started, ["first", "second"]);
+  assert.deepEqual(sleeps, [5000], "reported pressure sets a capped cooldown before the next launch");
+  assert.equal(lane.snapshot().concurrency, 1, "reported pressure must not raise max-limited concurrency");
+  assert.equal(
+    events.some(
+      (event) => event.type === "cooldown" && event.outcome === "rate_limited" && event.retryAfterMs === 20_000
+    ),
+    true
+  );
+});
+
 test("adaptive lane rate limits reduce cap and clean successes increase only within max", async () => {
   const events: AdaptiveLaneEvent[] = [];
   const lane = createAdaptiveLane<{ status: number }>({

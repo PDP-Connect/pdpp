@@ -47,6 +47,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { currentAdaptiveLaneRunContext } from "../../src/adaptive-lane.ts";
 import type { EmittedMessage } from "../../src/connector-runtime.ts";
 import { type EmittedRecord, makeRecordingEmit, type SkippedRecord } from "../../src/test-harness.ts";
 import {
@@ -494,6 +495,68 @@ test("runMessagesAndConversationsWithDetail: fetches detail through adaptive lan
     laneMessages.some((m) => m.message.includes("/conversation/")),
     false,
     "lane progress must not expose raw API paths"
+  );
+});
+
+test("runMessagesAndConversationsWithDetail: intermediate pressure is bounded and redacted", async () => {
+  const harness = makeRecordingEmit(validateRecord);
+  const pauses: number[] = [];
+  let activeFetches = 0;
+  let maxActiveFetches = 0;
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: async (): Promise<ChatGptFetchResult> => {
+      activeFetches += 1;
+      maxActiveFetches = Math.max(maxActiveFetches, activeFetches);
+      await currentAdaptiveLaneRunContext()?.reportPressure({
+        kind: "rate_limited",
+        retryAfterMs: 99_000,
+      });
+      activeFetches -= 1;
+      return makeDetailOk();
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  await runMessagesAndConversationsWithDetail(
+    deps,
+    [makeConvo({ id: "sensitive-convo-1" }), makeConvo({ id: "sensitive-convo-2" })],
+    makeEmitConversation(deps),
+    {
+      random: () => 0,
+      sleep: (ms) => {
+        pauses.push(ms);
+      },
+    }
+  );
+
+  assert.equal(maxActiveFetches, 1, "intermediate pressure must not raise detail concurrency");
+  assert.deepEqual(pauses, [3000], "reported Retry-After is capped by the lane before the next launch");
+  const progressMessages = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "PROGRESS" }> => m.type === "PROGRESS" && m.stream === "messages"
+  );
+  const laneMessages = progressMessages.filter((m) => m.message.startsWith("ChatGPT conversation-detail lane "));
+  assert.equal(laneMessages.filter((m) => m.message.startsWith("ChatGPT conversation-detail lane started")).length, 1);
+  assert.equal(
+    laneMessages.some((m) => m.message.includes("lane cooldown") && m.message.includes("retry_after_ms=99000")),
+    true,
+    "intermediate pressure should be visible as bounded lane cooldown progress"
+  );
+  assert.equal(
+    laneMessages.every((m) => m.message.includes("concurrency=1/1")),
+    true,
+    "progress must report the configured max concurrency of 1"
+  );
+  assert.equal(
+    laneMessages.some((m) => m.message.includes("sensitive-convo") || m.message.includes("/conversation/")),
+    false,
+    "lane progress must not expose raw conversation ids or API paths"
   );
 });
 
