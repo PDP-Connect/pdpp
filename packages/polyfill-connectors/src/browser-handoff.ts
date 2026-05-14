@@ -38,6 +38,7 @@ import { randomBytes } from "node:crypto";
 import type { Page } from "playwright";
 
 import type { InteractionRequest, InteractionResponse } from "./connector-runtime.ts";
+import type { CaptureSession } from "./fixture-capture.ts";
 import {
   resolveStreamingRegistrationFromEnv,
   type StreamingTargetRegistrationHooks,
@@ -394,6 +395,8 @@ export async function prepareManualAction(args: PrepareManualActionArgs): Promis
 // "the human needs to act on this page", as the advisor recommends.
 
 export interface ManualActionArgs extends PrepareManualActionArgs {
+  /** Optional fixture capture session; when enabled, captures this exact page before notifying the operator. */
+  readonly capture?: CaptureSession | null;
   /** Human-facing prompt the operator sees in the streaming companion / interaction surface. */
   readonly message: string;
   /** Optional schema for the response payload — mirrors INTERACTION.schema. */
@@ -403,6 +406,27 @@ export interface ManualActionArgs extends PrepareManualActionArgs {
 }
 
 export type SendInteraction = (req: InteractionRequest) => Promise<InteractionResponse>;
+
+function captureManualActionFixture(args: {
+  readonly capture?: CaptureSession | null;
+  readonly interactionId: string;
+  readonly page: Page;
+  readonly reason?: ManualActionReason;
+}): void {
+  if (!args.capture) {
+    return;
+  }
+
+  try {
+    const capture = args.capture.captureDom(
+      args.page,
+      `manual-action-${args.reason ?? "manual_action"}-${args.interactionId}`
+    );
+    capture.catch((): undefined => undefined);
+  } catch {
+    // Fixture capture is diagnostic-only and must never delay or block the operator handoff.
+  }
+}
 
 /**
  * Convenience wrapper for the manual-action handoff. Prepares the streaming
@@ -431,6 +455,12 @@ export async function manualAction(
     ...(args.env ? { env: args.env } : {}),
     ...(args.resolveStreamingRegistration ? { resolveStreamingRegistration: args.resolveStreamingRegistration } : {}),
     ...(args.resolveWsUrl ? { resolveWsUrl: args.resolveWsUrl } : {}),
+  });
+  captureManualActionFixture({
+    ...(args.capture ? { capture: args.capture } : {}),
+    interactionId,
+    page: args.page,
+    ...(args.reason ? { reason: args.reason } : {}),
   });
 
   return await sendInteraction({

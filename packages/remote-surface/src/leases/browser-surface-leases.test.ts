@@ -162,6 +162,31 @@ test("compatible idle surface is leased and projected", () => {
   });
 });
 
+test("dynamic mode ignores persisted static surface rows from a previous boot", () => {
+  const { leases } = manager({
+    initialSurfaces: [
+      {
+        surface_id: "neko-static",
+        backend: "neko",
+        profile_key: "chatgpt",
+        connector_id: "chatgpt",
+        cdp_url: "http://neko:9222",
+        stream_base_url: "http://neko:8080",
+        health: "ready",
+        created_at: "2026-05-12T11:00:00.000Z",
+        last_used_at: "2026-05-12T11:00:00.000Z",
+      },
+    ],
+  });
+
+  const result = leases.acquire({ connectorId: "chatgpt", runId: "run_dynamic", profileKey: "chatgpt" });
+
+  assert.equal(leases.getSurface("neko-static"), undefined);
+  assert.equal(result.lease.status, "starting_surface");
+  assert.equal(result.lease.surface_id, "surface_1");
+  assert.equal(result.surface?.health, "starting");
+});
+
 test("dynamic capacity starts a surface before it becomes leased", async () => {
   const { leases } = manager();
   const allocator = new FakeBrowserSurfaceAllocator();
@@ -450,4 +475,41 @@ test("restart reconciliation defers expired queued leases", () => {
   assert.equal(result.deferred.length, 1);
   assert.equal(result.deferred[0]?.status, "deferred");
   assert.equal(result.deferred[0]?.wait_reason, "lease_wait_timeout");
+});
+
+test("dynamic boot drops leases for persisted static surfaces filtered from initial state", () => {
+  const { leases } = manager({
+    config: { surfaceMode: "dynamic" },
+    initialSurfaces: [
+      {
+        surface_id: "neko-static",
+        backend: "neko",
+        profile_key: "chatgpt",
+        connector_id: "chatgpt",
+        cdp_url: "http://neko:9222",
+        stream_base_url: "http://neko:8080",
+        health: "ready",
+        active_lease_id: "lease_static",
+        created_at: "2026-05-12T11:00:00.000Z",
+        last_used_at: "2026-05-12T11:00:00.000Z",
+      },
+    ],
+    initialLeases: [
+      {
+        lease_id: "lease_static",
+        connector_id: "chatgpt",
+        profile_key: "chatgpt",
+        run_id: "run_static",
+        status: "leased",
+        priority_class: "scheduled_refresh",
+        requested_at: "2026-05-12T12:00:00.000Z",
+        expires_at: "2026-05-12T12:01:00.000Z",
+        surface_id: "neko-static",
+        fencing_token: 1,
+      },
+    ],
+  });
+
+  assert.equal(leases.getSurface("neko-static"), undefined);
+  assert.equal(leases.getLease("lease_static"), undefined);
 });

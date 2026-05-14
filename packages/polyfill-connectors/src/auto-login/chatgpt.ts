@@ -12,7 +12,7 @@
  * INTERACTION manual_action so the user can be prompted.
  */
 
-import type { BrowserContext, Page } from "playwright";
+import type { BrowserContext, Locator, Page } from "playwright";
 import { manualAction } from "../browser-handoff.ts";
 import type { InteractionRequest, InteractionResponse } from "../connector-runtime.ts";
 import type { CaptureSession } from "../fixture-capture.ts";
@@ -27,6 +27,14 @@ interface EnsureChatGptSessionArgs {
 interface SessionResponse {
   user?: unknown;
 }
+
+const APPROVE_SIGN_IN_TEXT = /approve sign-in/i;
+const CHATGPT_DEVICE_TEXT = /chatgpt app|your devices/i;
+const CONTINUE_WITH_PASSWORD_NAME = /^continue with password$/i;
+const LOG_IN_NAME = /^log in$/i;
+const RESEND_PROMPT_TEXT = /resend prompt/i;
+const SENT_NOTIFICATION_TEXT = /sent a notification/i;
+const TRY_WITH_EMAIL_TEXT = /try with email/i;
 
 export function interactionResponseCode(resp: InteractionResponse): string | null {
   return resp.data?.code ?? resp.value ?? null;
@@ -83,13 +91,66 @@ async function checkLoggedInViaDOM(page: Page): Promise<boolean> {
   }
 }
 
-export async function ensureChatGptSession({
-  capture,
-  context: _context,
-  page,
-  sendInteraction,
-}: EnsureChatGptSessionArgs): Promise<boolean> {
-  // Probe: can we hit /api/auth/session and get user?
+export function isLikelyChatGptPushApprovalText(text: string): boolean {
+  const normalized = text.toLowerCase().replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return false;
+  }
+  const hasApproveHeading = normalized.includes("approve sign-in");
+  const hasNotificationCopy = normalized.includes("sent a notification");
+  const hasDeviceCopy = normalized.includes("chatgpt app") || normalized.includes("your devices");
+  const hasResendPrompt = normalized.includes("resend prompt");
+  const hasEmailFallback = normalized.includes("try with email");
+  return (
+    (hasApproveHeading && (hasNotificationCopy || hasDeviceCopy || hasResendPrompt)) ||
+    (hasNotificationCopy && hasDeviceCopy) ||
+    (hasResendPrompt && hasEmailFallback && (hasNotificationCopy || hasDeviceCopy))
+  );
+}
+
+async function hasVisibleText(page: Page, text: RegExp): Promise<boolean> {
+  try {
+    await page.getByText(text).first().waitFor({ state: "visible", timeout: 500 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function clickFirstVisible(locators: Locator[], timeoutMs = 1000): Promise<boolean> {
+  for (const locator of locators) {
+    const candidate = locator.first();
+    try {
+      await candidate.waitFor({ state: "visible", timeout: timeoutMs });
+      await candidate.click({ timeout: timeoutMs });
+      return true;
+    } catch {
+      // Try the next bounded, accessible locator.
+    }
+  }
+  return false;
+}
+
+async function isLikelyChatGptPushApprovalPage(page: Page): Promise<boolean> {
+  const [hasApproveHeading, hasNotificationCopy, hasDeviceCopy, hasResendPrompt, hasEmailFallback] = await Promise.all([
+    hasVisibleText(page, APPROVE_SIGN_IN_TEXT),
+    hasVisibleText(page, SENT_NOTIFICATION_TEXT),
+    hasVisibleText(page, CHATGPT_DEVICE_TEXT),
+    hasVisibleText(page, RESEND_PROMPT_TEXT),
+    hasVisibleText(page, TRY_WITH_EMAIL_TEXT),
+  ]);
+  return (
+    (hasApproveHeading && (hasNotificationCopy || hasDeviceCopy || hasResendPrompt)) ||
+    (hasNotificationCopy && hasDeviceCopy) ||
+    (hasResendPrompt && hasEmailFallback && (hasNotificationCopy || hasDeviceCopy))
+  );
+}
+
+async function isChatGptSessionActive(page: Page): Promise<boolean> {
+  return (await checkSession(page)) || (await checkLoggedInViaDOM(page));
+}
+
+async function navigateAndProbeSession(page: Page): Promise<boolean> {
   await page
     .goto("https://chatgpt.com/", {
       waitUntil: "domcontentloaded",
@@ -98,56 +159,57 @@ export async function ensureChatGptSession({
     .catch((): undefined => undefined);
   await page.waitForTimeout(3000);
 
-  if (await checkSession(page)) {
-    return true;
-  }
+  return await checkSession(page);
+}
 
-  // Session dead. Try email/password flow.
-  const email = process.env.CHATGPT_USERNAME;
-  const password = process.env.CHATGPT_PASSWORD;
-  if (!(email && password)) {
-    throw new Error("CHATGPT_USERNAME/PASSWORD not set");
-  }
-
+async function openChatGptLogin(page: Page): Promise<void> {
   await page.goto("https://chatgpt.com/auth/login", {
     waitUntil: "domcontentloaded",
     timeout: 30_000,
   });
   await page.waitForTimeout(2500);
+}
 
-  // Click "Log in" button to reach auth.openai.com
-  await page.evaluate((): boolean => {
-    const buttons = document.querySelectorAll<HTMLElement>("button, a");
-    for (const btn of Array.from(buttons)) {
-      const text = (btn.textContent ?? "").trim().toLowerCase();
-      if (text === "log in") {
-        btn.click();
-        return true;
-      }
-    }
-    return false;
-  });
+async function clickIntermediateLogin(page: Page): Promise<void> {
+  await clickFirstVisible([
+    page.getByRole("button", { name: LOG_IN_NAME }),
+    page.getByRole("link", { name: LOG_IN_NAME }),
+  ]);
   await page.waitForTimeout(3000);
+}
 
-  // Email input
+async function fallbackForUnexpectedLoginUi({
+  capture,
+  page,
+  sendInteraction,
+}: Pick<EnsureChatGptSessionArgs, "capture" | "page" | "sendInteraction">): Promise<never> {
+  await manualAction(
+    {
+      ...(capture ? { capture } : {}),
+      page,
+      message:
+        "ChatGPT auto-login UI is unexpected (possibly Cloudflare challenge). Use the streaming companion to complete login, or rerun on a host desktop with PDPP_CHATGPT_HEADLESS=0.",
+      reason: "captcha",
+      timeoutSeconds: 1800,
+    },
+    sendInteraction
+  );
+  throw new Error("chatgpt_login_unexpected_ui");
+}
+
+async function findAndFillEmail({
+  capture,
+  email,
+  page,
+  sendInteraction,
+}: Pick<EnsureChatGptSessionArgs, "capture" | "page" | "sendInteraction"> & {
+  readonly email: string;
+}): Promise<void> {
   const emailIn = page.locator('input[type="email"], input[name="username"], input[name="email"]').first();
   if (!(await emailIn.count())) {
-    // Register the exact page the human should see, THEN emit the
-    // manual_action interaction. The streaming companion will resolve
-    // by (runId, interactionId) and attach to this specific tab —
-    // not whichever page happened to exist at browser launch.
-    await manualAction(
-      {
-        page,
-        message:
-          "ChatGPT auto-login UI is unexpected (possibly Cloudflare challenge). Use the streaming companion to complete login, or rerun on a host desktop with PDPP_CHATGPT_HEADLESS=0.",
-        reason: "captcha",
-        timeoutSeconds: 1800,
-      },
-      sendInteraction
-    );
-    throw new Error("chatgpt_login_unexpected_ui");
+    await fallbackForUnexpectedLoginUi({ ...(capture ? { capture } : {}), page, sendInteraction });
   }
+
   await emailIn.fill(email);
   await page
     .locator('button[type="submit"], :text-is("Continue")')
@@ -155,68 +217,118 @@ export async function ensureChatGptSession({
     .click()
     .catch((): undefined => undefined);
   await page.waitForTimeout(3000);
+}
 
-  // ChatGPT may default to email-code login; click "Continue with password" if present.
-  const continueWithPw = page.locator(':text-matches("Continue with password", "i")').first();
-  if (await continueWithPw.count()) {
-    await continueWithPw.click();
+async function continueWithPasswordIfPresent(page: Page): Promise<void> {
+  const clicked = await clickFirstVisible([
+    page.getByRole("button", { name: CONTINUE_WITH_PASSWORD_NAME }),
+    page.getByRole("link", { name: CONTINUE_WITH_PASSWORD_NAME }),
+  ]);
+  if (clicked) {
     await page.waitForTimeout(3000);
   }
+}
 
-  // Fill password if the field is present.
+async function handlePushApproval({
+  capture,
+  page,
+  sendInteraction,
+}: Pick<EnsureChatGptSessionArgs, "capture" | "page" | "sendInteraction">): Promise<boolean> {
+  if (!(await isLikelyChatGptPushApprovalPage(page))) {
+    return false;
+  }
+
+  await manualAction(
+    {
+      ...(capture ? { capture } : {}),
+      page,
+      message:
+        "ChatGPT is waiting for app push approval. Approve the sign-in notification in the ChatGPT app, then use the run interaction controls to continue.",
+      reason: "2fa",
+      timeoutSeconds: 1800,
+    },
+    sendInteraction
+  );
+  await page.waitForTimeout(3000);
+  return await isChatGptSessionActive(page);
+}
+
+async function handleOtpIfPresent({
+  page,
+  sendInteraction,
+}: Pick<EnsureChatGptSessionArgs, "page" | "sendInteraction">): Promise<void> {
+  const tfaIn = page.locator('input[name="code"], input[type="tel"], input[inputmode="numeric"]').first();
+  if (!(await tfaIn.count())) {
+    return;
+  }
+
+  const resp = await sendInteraction({
+    kind: "otp",
+    message: "ChatGPT requires a 2FA verification code. Enter the 6-digit code:",
+    timeout_seconds: 300,
+  });
+  const code = interactionResponseCode(resp);
+  if (!code) {
+    return;
+  }
+
+  await tfaIn.fill(code);
+  await page
+    .locator('button[type="submit"]')
+    .first()
+    .click()
+    .catch((): undefined => undefined);
+  await page.waitForTimeout(5000);
+}
+
+async function submitPasswordAndHandleSecondFactor({
+  capture,
+  page,
+  password,
+  sendInteraction,
+}: Pick<EnsureChatGptSessionArgs, "capture" | "page" | "sendInteraction"> & {
+  readonly password: string;
+}): Promise<boolean> {
   const passwordIn = page.locator('input[type="password"]').first();
-  if (await passwordIn.count()) {
-    await passwordIn.fill(password);
-    await page
-      .locator('button[type="submit"], :text-is("Continue")')
-      .first()
-      .click()
-      .catch((): undefined => undefined);
-    await page.waitForTimeout(5000);
-    await capture?.captureDom(page, "auth-after-password-submit");
-
-    // Handle 2FA code entry if prompted (input[name="code"], tel, or numeric).
-    const tfaIn = page.locator('input[name="code"], input[type="tel"], input[inputmode="numeric"]').first();
-    if (await tfaIn.count()) {
-      const resp = await sendInteraction({
-        kind: "otp",
-        message: "ChatGPT requires a 2FA verification code. Enter the 6-digit code:",
-        timeout_seconds: 300,
-      });
-      const code = interactionResponseCode(resp);
-      if (code) {
-        await tfaIn.fill(code);
-        await page
-          .locator('button[type="submit"]')
-          .first()
-          .click()
-          .catch((): undefined => undefined);
-        await page.waitForTimeout(5000);
-      }
-    }
-  } else {
-    // No password field — might be email-code-only or needs manual intervention.
+  if (!(await passwordIn.count())) {
     throw new Error("chatgpt_login_no_password_field");
   }
 
-  // Poll for up to 90s without navigating away — the user may need to approve
-  // a 2FA push notification or complete a Cloudflare challenge in the browser.
+  await passwordIn.fill(password);
+  await page
+    .locator('button[type="submit"], :text-is("Continue")')
+    .first()
+    .click()
+    .catch((): undefined => undefined);
+  await page.waitForTimeout(5000);
+  await capture?.captureDom(page, "auth-after-password-submit");
+
+  if (await handlePushApproval({ ...(capture ? { capture } : {}), page, sendInteraction })) {
+    return true;
+  }
+
+  await handleOtpIfPresent({ page, sendInteraction });
+  return false;
+}
+
+async function waitForSubmittedLogin(page: Page): Promise<boolean> {
   for (let attempt = 0; attempt < 18; attempt++) {
     await page.waitForTimeout(5000);
-    // Check both DOM-based login detection and session API.
-    if (await checkLoggedInViaDOM(page)) {
-      return true;
-    }
-    if (await checkSession(page)) {
+    if (await isChatGptSessionActive(page)) {
       return true;
     }
   }
+  return false;
+}
 
-  // Last resort — ask the user to complete login manually.
-  // Same handoff pattern as above: register this exact page so the
-  // streaming companion attaches to it, then emit the interaction.
+async function fallbackForPostSubmitLogin({
+  capture,
+  page,
+  sendInteraction,
+}: Pick<EnsureChatGptSessionArgs, "capture" | "page" | "sendInteraction">): Promise<boolean> {
   await manualAction(
     {
+      ...(capture ? { capture } : {}),
       page,
       message:
         "ChatGPT login submitted but session still not active after 90s. Use the streaming companion to complete login (Cloudflare challenge, 2FA, etc.).",
@@ -226,9 +338,40 @@ export async function ensureChatGptSession({
     sendInteraction
   );
 
-  // One more check after manual intervention.
   await page.waitForTimeout(3000);
-  if ((await checkSession(page)) || (await checkLoggedInViaDOM(page))) {
+  return await isChatGptSessionActive(page);
+}
+
+export async function ensureChatGptSession({
+  capture,
+  context: _context,
+  page,
+  sendInteraction,
+}: EnsureChatGptSessionArgs): Promise<boolean> {
+  if (await navigateAndProbeSession(page)) {
+    return true;
+  }
+
+  const email = process.env.CHATGPT_USERNAME;
+  const password = process.env.CHATGPT_PASSWORD;
+  if (!(email && password)) {
+    throw new Error("CHATGPT_USERNAME/PASSWORD not set");
+  }
+
+  await openChatGptLogin(page);
+  await clickIntermediateLogin(page);
+  await findAndFillEmail({ ...(capture ? { capture } : {}), email, page, sendInteraction });
+  await continueWithPasswordIfPresent(page);
+
+  if (await submitPasswordAndHandleSecondFactor({ ...(capture ? { capture } : {}), page, password, sendInteraction })) {
+    return true;
+  }
+
+  if (await waitForSubmittedLogin(page)) {
+    return true;
+  }
+
+  if (await fallbackForPostSubmitLogin({ ...(capture ? { capture } : {}), page, sendInteraction })) {
     return true;
   }
 

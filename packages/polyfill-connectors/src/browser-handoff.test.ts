@@ -562,6 +562,85 @@ test("manualAction passes optional schema through to sendInteraction", async () 
   assert.deepEqual(received?.schema, schema);
 });
 
+test("manualAction starts fixture capture before notifying and does not wait for capture completion", async () => {
+  const page = makeMockPage();
+  const captured: Array<{ label: string; page: Page }> = [];
+  let releaseCapture: (() => void) | undefined;
+  let captureStarted = false;
+  let notified = false;
+  const sendInteraction: SendInteraction = (req) => {
+    assert.equal(captureStarted, true, "capture should be started before sendInteraction");
+    notified = true;
+    return Promise.resolve({
+      type: "INTERACTION_RESPONSE",
+      request_id: req.request_id ?? "",
+      status: "success",
+    });
+  };
+  await manualAction(
+    {
+      page,
+      capture: {
+        baseDir: "/tmp/capture",
+        runId: "capture_run",
+        captureDom: (capturedPage: Page, label: string) => {
+          captureStarted = true;
+          captured.push({ label, page: capturedPage });
+          return new Promise<void>((resolve) => {
+            releaseCapture = resolve;
+          });
+        },
+        captureHttp: () => undefined,
+        recordRecord: () => undefined,
+      },
+      message: "Continue when ready.",
+      reason: "2fa",
+      env: {},
+    },
+    sendInteraction
+  );
+
+  assert.equal(captured.length, 1);
+  assert.equal(captured[0]?.page, page);
+  assert.match(captured[0]?.label ?? "", /^manual-action-2fa-int_\d+_[0-9a-f]{8}$/);
+  assert.equal(notified, true);
+  releaseCapture?.();
+});
+
+test("manualAction fixture capture does not block operator notification", async () => {
+  const page = makeMockPage();
+  let releaseCapture: (() => void) | undefined;
+  let received: InteractionRequest | undefined;
+  await manualAction(
+    {
+      page,
+      capture: {
+        baseDir: "/tmp/capture",
+        runId: "capture_run",
+        captureDom: () =>
+          new Promise<void>((resolve) => {
+            releaseCapture = resolve;
+          }),
+        captureHttp: () => undefined,
+        recordRecord: () => undefined,
+      },
+      message: "Continue when ready.",
+      env: {},
+    },
+    (req) => {
+      received = req;
+      return Promise.resolve({
+        type: "INTERACTION_RESPONSE",
+        request_id: req.request_id ?? "",
+        status: "success",
+      });
+    }
+  );
+
+  assert.equal(received?.kind, "manual_action");
+  releaseCapture?.();
+});
+
 test("manualAction omits schema/timeout when not provided", async () => {
   const page = makeMockPage();
   let received: InteractionRequest | undefined;

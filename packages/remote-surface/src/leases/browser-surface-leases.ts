@@ -230,9 +230,14 @@ export class BrowserSurfaceLeaseManager {
       return token;
     });
     for (const surface of options.initialSurfaces ?? []) {
-      this.#surfaces.set(surface.surface_id, surface);
+      if (this.#isCompatibleInitialSurface(surface)) {
+        this.#surfaces.set(surface.surface_id, surface);
+      }
     }
     for (const lease of options.initialLeases ?? []) {
+      if (lease.surface_id && !this.#surfaces.has(lease.surface_id)) {
+        continue;
+      }
       this.#leases.set(lease.lease_id, lease);
     }
   }
@@ -534,12 +539,7 @@ export class BrowserSurfaceLeaseManager {
     const stopped: BrowserSurface[] = [];
     for (const surface of expiredIdle) {
       const stopping = { ...surface, health: "stopping" as const, last_used_at: this.#isoNow() };
-      let stoppedSurface: BrowserSurface | null;
-      try {
-        stoppedSurface = await allocator.stopSurface({ surfaceId: surface.surface_id, reason: "idle_ttl" });
-      } catch (error) {
-        throw error;
-      }
+      const stoppedSurface = await allocator.stopSurface({ surfaceId: surface.surface_id, reason: "idle_ttl" });
       this.#surfaces.delete(surface.surface_id);
       const { active_lease_id: _activeLeaseId, ...stoppedWithoutActiveLease } = stoppedSurface ?? stopping;
       stopped.push({
@@ -713,6 +713,16 @@ export class BrowserSurfaceLeaseManager {
     return [...this.#surfaces.values()].find(
       (surface) => surface.backend === "neko" && surface.health === "ready" && !surface.active_lease_id && surface.profile_key === profileKey,
     );
+  }
+
+  #isCompatibleInitialSurface(surface: BrowserSurface): boolean {
+    if (surface.backend !== "neko") {
+      return false;
+    }
+    if (this.#config.surfaceMode === "static") {
+      return surface.surface_id === "neko-static";
+    }
+    return surface.surface_id !== "neko-static";
   }
 
   #activeSurfaceCount(): number {
