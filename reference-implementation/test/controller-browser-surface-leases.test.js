@@ -66,7 +66,7 @@ function createSchedulerStore(calls) {
 }
 
 function createManager(options = {}) {
-  const { surfaceCap = 1, leaseWaitTimeoutMs = 300_000 } = options;
+  const { surfaceCap = 1, leaseWaitTimeoutMs = 300_000, now = () => new Date("2026-05-12T12:00:00.000Z") } = options;
   const staticProfileKey = Object.hasOwn(options, "staticProfileKey") ? options.staticProfileKey : "managed-profile";
   let leaseSeq = 0;
   let surfaceSeq = 0;
@@ -84,7 +84,7 @@ function createManager(options = {}) {
       priorityRanks: DEFAULT_NEKO_PRIORITY_RANKS,
       surfaceMode: staticProfileKey ? "static" : "dynamic",
     },
-    now: () => new Date("2026-05-12T12:00:00.000Z"),
+    now,
     makeLeaseId: () => `lease_${++leaseSeq}`,
     makeSurfaceId: () => `surface_${++surfaceSeq}`,
     nextFencingToken: () => ++tokenSeq,
@@ -97,9 +97,11 @@ function createDynamicManager(options = {}) {
 
 function createReadyAllocator() {
   const ensureRequests = [];
+  const stopRequests = [];
   const surfaces = new Map();
   return {
     ensureRequests,
+    stopRequests,
     ensureSurface: async (request) => {
       ensureRequests.push(request);
       const surface = {
@@ -118,6 +120,7 @@ function createReadyAllocator() {
     },
     getSurfaceStatus: async (surfaceId) => surfaces.get(surfaceId) ?? null,
     stopSurface: async (request) => {
+      stopRequests.push(request);
       const surface = surfaces.get(request.surfaceId) ?? null;
       surfaces.delete(request.surfaceId);
       return surface;
@@ -404,10 +407,11 @@ test("dynamic managed runs with distinct profile keys allocate separate ready su
   assert.equal(manager.getLease("lease_2").status, "released");
 });
 
-test("dynamic cap queues distinct-profile managed run before allocating a second surface", async (t) => {
+test("dynamic cap queues distinct-profile managed run, then promotes after incompatible idle cleanup", async (t) => {
   let releaseFirst;
+  let now = new Date("2026-05-12T12:00:00.000Z");
   const allocator = createReadyAllocator();
-  const manager = createDynamicManager({ surfaceCap: 1 });
+  const manager = createDynamicManager({ surfaceCap: 1, leaseWaitTimeoutMs: 1_800_000, now: () => now });
   const runConnectorImpl = (opts) => {
     if (opts.runId === "run_dynamic_cap_first") {
       return new Promise((resolve) => {
@@ -444,6 +448,35 @@ test("dynamic cap queues distinct-profile managed run before allocating a second
   assert.equal(calls.runConnector, 1);
   assert.equal(manager.getLease("lease_1").status, "released");
   assert.equal(manager.getLease("lease_2").status, "waiting_for_browser_surface");
+  assert.deepEqual(manager.listSurfaces().map((surface) => ({ id: surface.surface_id, health: surface.health, profile: surface.profile_key, active: surface.active_lease_id ?? null, last: surface.last_used_at })), [
+    {
+      id: "surface_1",
+      health: "ready",
+      profile: "managed-profile",
+      active: null,
+      last: "2026-05-12T12:00:00.000Z",
+    },
+  ]);
+
+  now = new Date("2026-05-12T12:10:01.000Z");
+  const promoted = await controller.cleanupIdleBrowserSurfaces();
+  assert.deepEqual(allocator.stopRequests.map((request) => request.surfaceId), ["surface_1"]);
+  assert.deepEqual(manager.listSurfaces().map((surface) => surface.surface_id), ["surface_2"]);
+  assert.deepEqual(promoted.map((lease) => lease.pending_run_id), ["run_dynamic_cap_second"]);
+
+  await waitFor(() => allocator.ensureRequests.length === 2, "queued dynamic run should allocate after idle cleanup frees cap");
+  await waitFor(() => calls.runConnector === 2, "queued dynamic run should spawn after allocator readiness");
+  await controller.drainActiveRuns(1000);
+
+  assert.deepEqual(allocator.stopRequests.map((request) => request.surfaceId), ["surface_1"]);
+  assert.deepEqual(
+    allocator.ensureRequests.map((request) => request.profileKey),
+    ["managed-profile", "other-managed-profile"]
+  );
+  assert.equal(manager.getLease("lease_2").status, "released");
+  assert.ok(listRunEventTypes("run_dynamic_cap_second").includes("run.browser_surface_starting"));
+  assert.ok(listRunEventTypes("run_dynamic_cap_second").includes("run.browser_surface_leased"));
+  assert.equal(calls.runConnectorOpts[1].runId, "run_dynamic_cap_second");
 });
 
 test("dynamic allocator failure emits browser-surface failed without spawning connector", async (t) => {

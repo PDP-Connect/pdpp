@@ -272,6 +272,7 @@ export interface Controller {
    *     paths A/B couldn't intercept (SIGKILL, OOM, power loss).
    */
   drainActiveRuns(timeoutMs: number): Promise<DrainSummary>;
+  cleanupIdleBrowserSurfaces(): Promise<BrowserSurfaceProjection[]>;
   expireBrowserSurfaceWaits(): Promise<BrowserSurfaceProjection[]>;
   getActiveRun(connectorId: string): ActiveRun | null;
   getPendingInteraction(runId: string): PendingInteractionProjection | null;
@@ -1249,6 +1250,15 @@ export function createController(opts: ControllerOptions = {}): Controller {
     return deferred.map((lease) => projectBrowserSurfaceLease(lease));
   }
 
+  async function cleanupIdleBrowserSurfaces(): Promise<BrowserSurfaceProjection[]> {
+    if (!browserSurfaceLeaseManager || !browserSurfaceAllocator) {
+      return [];
+    }
+    const cleanupResult = await browserSurfaceLeaseManager.cleanupIdleSurfaces(browserSurfaceAllocator);
+    await persistAndPromoteBrowserSurfaceLeases(cleanupResult.promoted, "browser-surface idle cleanup");
+    return cleanupResult.promoted.map((lease) => projectBrowserSurfaceLease(lease));
+  }
+
   async function reconcileBrowserSurfaceLeasesAfterBoot(): Promise<void> {
     await startupControllerRunReconciliation;
     if (!browserSurfaceLeaseManager) {
@@ -1746,6 +1756,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
 
   return {
     cancelBrowserSurfaceRun,
+    cleanupIdleBrowserSurfaces,
     listSchedules,
     getSchedule,
     upsertSchedule,

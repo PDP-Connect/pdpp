@@ -163,6 +163,11 @@ export interface ReconcileBrowserSurfaceLeasesAfterRestartResult {
   readonly promoted: BrowserSurfaceLease[];
 }
 
+export interface CleanupIdleBrowserSurfacesResult {
+  readonly stopped: BrowserSurface[];
+  readonly promoted: BrowserSurfaceLease[];
+}
+
 export interface EnsureBrowserSurfaceRequest {
   readonly surfaceId: string;
   readonly connectorId: string;
@@ -510,6 +515,32 @@ export class BrowserSurfaceLeaseManager {
       promoted.push(lease);
     }
     return promoted;
+  }
+
+  async cleanupIdleSurfaces(allocator: BrowserSurfaceAllocator): Promise<CleanupIdleBrowserSurfacesResult> {
+    if (this.#config.surfaceMode !== "dynamic") {
+      return { stopped: [], promoted: [] };
+    }
+
+    const nowMs = this.#now().getTime();
+    const expiredIdle = [...this.#surfaces.values()].filter(
+      (surface) =>
+        surface.backend === "neko" &&
+        surface.health === "ready" &&
+        !surface.active_lease_id &&
+        nowMs - Date.parse(surface.last_used_at) >= this.#config.idleTtlMs,
+    );
+
+    const stopped: BrowserSurface[] = [];
+    for (const surface of expiredIdle) {
+      const stopping = { ...surface, health: "stopping" as const, last_used_at: this.#isoNow() };
+      this.#surfaces.set(surface.surface_id, stopping);
+      const stoppedSurface = await allocator.stopSurface({ surfaceId: surface.surface_id, reason: "idle_ttl" });
+      this.#surfaces.delete(surface.surface_id);
+      stopped.push(stoppedSurface ?? stopping);
+    }
+
+    return { stopped, promoted: this.pumpQueuedLeases() };
   }
 
   #resolveNewLease(lease: BrowserSurfaceLease, now: string): BrowserSurfaceLease {
