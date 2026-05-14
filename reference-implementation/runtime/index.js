@@ -23,6 +23,17 @@ function buildRunSourceDescriptor(connectorId) {
   return { kind: 'connector', id: connectorId };
 }
 
+function buildStartDetailGap(gap) {
+  return {
+    gap_id: gap.gap_id,
+    stream: gap.stream,
+    record_key: gap.record_key ?? null,
+    status: gap.status,
+    detail_locator: gap.detail_locator ?? null,
+    reference_only: true,
+  };
+}
+
 function appendUniqueFields(fields, extraFields) {
   const normalized = [...fields];
   const seen = new Set(fields);
@@ -474,7 +485,9 @@ function classifyRuntimeFailure(err) {
     || message.startsWith('Connector emitted invalid SKIP_RESULT.')
     || message.startsWith('Connector emitted invalid DETAIL_GAP.')
     || message.startsWith('Connector emitted invalid DETAIL_COVERAGE.')
+    || message.startsWith('Connector emitted invalid DETAIL_GAP_RECOVERED.')
     || message.startsWith('Connector emitted DETAIL_COVERAGE for undeclared stream:')
+    || message.startsWith('Connector emitted DETAIL_GAP_RECOVERED for undeclared stream:')
     || message.startsWith('Connector detail coverage incomplete:')
     || message.startsWith('Connector emitted PROGRESS for undeclared stream:')
     || message.startsWith('Connector emitted SKIP_RESULT for undeclared stream:')
@@ -793,6 +806,24 @@ function validateDetailCoverageMessage(msg, scopeByStream) {
   assertCoverageKeyArray(msg.hydrated_keys, 'hydrated_keys');
   if (msg.gap_keys != null) assertCoverageKeyArray(msg.gap_keys, 'gap_keys');
   if (msg.optional_skip_keys != null) assertCoverageKeyArray(msg.optional_skip_keys, 'optional_skip_keys');
+}
+
+function validateDetailGapRecoveredMessage(msg, scopeByStream) {
+  requireOptionalNonEmptyString(msg.gap_id, 'DETAIL_GAP_RECOVERED.gap_id');
+  if (!msg.gap_id) {
+    throw new Error('Connector emitted invalid DETAIL_GAP_RECOVERED.gap_id: expected non-empty string');
+  }
+  requireOptionalNonEmptyString(msg.stream, 'DETAIL_GAP_RECOVERED.stream');
+  if (!msg.stream) {
+    throw new Error('Connector emitted invalid DETAIL_GAP_RECOVERED.stream: expected non-empty string');
+  }
+  validateOptionalScopedStream(msg.stream, 'DETAIL_GAP_RECOVERED', scopeByStream);
+  if (msg.reference_only !== true) {
+    throw new Error('Connector emitted invalid DETAIL_GAP_RECOVERED.reference_only: expected true');
+  }
+  if (msg.record_key != null && typeof msg.record_key !== 'string' && typeof msg.record_key !== 'number') {
+    throw new Error('Connector emitted invalid DETAIL_GAP_RECOVERED.record_key: expected string or number');
+  }
 }
 
 function validateInteractionMessage(msg, scopeByStream) {
@@ -1319,6 +1350,21 @@ export async function runConnector(opts) {
     try { appendFileSync(_traceAppendFile, line + '\n'); } catch {}
   };
 
+  let startDetailGaps = [];
+  try {
+    const pendingGaps = await detailGapStore.listPendingGaps({
+      connectorId,
+      grantId,
+      streams: startScope.streams.map((stream) => stream.name),
+    });
+    startDetailGaps = pendingGaps.map(buildStartDetailGap);
+  } catch (err) {
+    try {
+      proc.kill();
+    } catch {}
+    throw err;
+  }
+
   // Send START
   const startMsg = {
     type: 'START',
@@ -1327,6 +1373,7 @@ export async function runConnector(opts) {
     scope: startScope,
     state: startState,
     bindings: availableBindings,
+    detail_gaps: startDetailGaps,
   };
   if (!writeChildStdin(JSON.stringify(startMsg) + '\n', 'start')) {
     onProgress({
@@ -2270,6 +2317,36 @@ export async function runConnector(opts) {
             state_stream: msg.state_stream,
             stream: msg.stream,
           });
+          break;
+        }
+
+        case 'DETAIL_GAP_RECOVERED': {
+          validateDetailGapRecoveredMessage(msg, scopeByStream);
+          await flushAll();
+          const recoveredGap = await detailGapStore.markGapStatus(msg.gap_id, 'recovered', { runId });
+          durableDetailGaps.push(recoveredGap);
+          await emitSpineEventTracked({
+            event_type: 'run.detail_gap_recovered',
+            trace_id: traceContext.trace_id,
+            scenario_id: traceContext.scenario_id,
+            actor_type: 'runtime',
+            actor_id: connectorId,
+            object_type: 'run',
+            object_id: runId,
+            status: 'succeeded',
+            run_id: runId,
+            stream_id: msg.stream,
+            data: {
+              reference_only: true,
+              source: runSource,
+              grant_id: grantId,
+              gap_id: recoveredGap.gap_id,
+              stream: recoveredGap.stream,
+              record_key: recoveredGap.record_key,
+              status: recoveredGap.status,
+            },
+          });
+          onProgress({ ...msg, status: 'recovered' });
           break;
         }
 

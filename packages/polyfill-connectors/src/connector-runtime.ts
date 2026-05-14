@@ -63,9 +63,22 @@ export interface StreamScope {
 }
 
 export interface StartMessage {
+  detail_gaps?: readonly DetailGapStartEntry[];
   scope: { streams: readonly StreamScope[] };
   state?: Record<string, unknown>;
   type: "START";
+}
+
+export interface DetailGapStartEntry {
+  detail_locator?: {
+    kind?: string;
+    [field: string]: unknown;
+  } | null;
+  gap_id: string;
+  record_key?: string | number | null;
+  reference_only?: true;
+  status: "pending";
+  stream: string;
 }
 
 export interface InteractionResponse {
@@ -118,7 +131,7 @@ export interface DetailGapMessage {
   };
   detail_locator: {
     kind: string;
-    [field: string]: string | number | boolean | null;
+    [field: string]: string | number | boolean | null | Record<string, string | number | boolean | null>;
   };
   last_error?: {
     class?: string;
@@ -147,6 +160,14 @@ export interface DetailCoverageMessage {
   type: "DETAIL_COVERAGE";
 }
 
+export interface DetailGapRecoveredMessage {
+  gap_id: string;
+  record_key?: string | number;
+  reference_only: true;
+  stream: string;
+  type: "DETAIL_GAP_RECOVERED";
+}
+
 /** All messages a connector emits over stdout. */
 export type EmittedMessage =
   | {
@@ -170,6 +191,7 @@ export type EmittedMessage =
     }
   | DetailGapMessage
   | DetailCoverageMessage
+  | DetailGapRecoveredMessage
   | {
       type: "DONE";
       status: "succeeded" | "failed";
@@ -214,6 +236,7 @@ interface BaseCollectContext {
     extra?: { message?: string }
   ) => Promise<void>;
   credentials: Credentials;
+  detailGaps: readonly DetailGapStartEntry[];
   emit: (msg: EmittedMessage) => Promise<void>;
   emitRecord: (stream: string, data: RecordData) => Promise<void>;
   emittedAt: string;
@@ -541,6 +564,7 @@ export function runConnector(config: RunConnectorConfig): void {
       capture,
       sendInteraction,
       emittedAt,
+      detailGaps: startMsg.detail_gaps ?? [],
     };
 
     if (browser) {

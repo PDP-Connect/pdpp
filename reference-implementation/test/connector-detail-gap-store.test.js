@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createServer } from 'node:http';
@@ -43,6 +43,27 @@ rl.on('line', (line) => {
   return { connectorPath, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
+function createStartCaptureConnector(outputPath, messages = [{ type: 'DONE', status: 'succeeded', records_emitted: 0 }]) {
+  const dir = mkdtempSync(join(tmpdir(), 'pdpp-detail-gap-start-'));
+  const connectorPath = join(dir, 'connector.mjs');
+  writeFileSync(connectorPath, `
+import { createInterface } from 'node:readline';
+import { writeFileSync } from 'node:fs';
+const rl = createInterface({ input: process.stdin });
+rl.on('line', (line) => {
+  const msg = JSON.parse(line);
+  if (msg.type !== 'START') return;
+  writeFileSync(${JSON.stringify(outputPath)}, JSON.stringify(msg), 'utf8');
+  for (const message of ${JSON.stringify(messages)}) {
+    process.stdout.write(JSON.stringify(message) + '\\n');
+  }
+  rl.close();
+  process.stdout.write('', () => process.exit(0));
+});
+`, 'utf8');
+  return { connectorPath, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+}
+
 async function withStateServer(fn) {
   const stateWrites = [];
   const server = createServer(async (req, res) => {
@@ -52,6 +73,12 @@ async function withStateServer(fn) {
       stateWrites.push(JSON.parse(Buffer.concat(chunks).toString('utf8')));
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+    if (req.method === 'POST' && req.url?.startsWith('/v1/ingest/')) {
+      for await (const _chunk of req) {}
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ records_accepted: 1, records_rejected: 0 }));
       return;
     }
     res.writeHead(404, { 'content-type': 'application/json' });
@@ -133,6 +160,9 @@ test('sanitizeDetailGapMetadata does not preserve full URLs or secret-bearing fi
 test('runtime records DETAIL_GAP before successful terminal handling', withTempDb(async () => {
   const calls = [];
   const detailGapStore = {
+    async listPendingGaps() {
+      return [];
+    },
     async upsertPendingGap(input) {
       calls.push(input);
       return {
@@ -182,8 +212,141 @@ test('runtime records DETAIL_GAP before successful terminal handling', withTempD
   }
 }));
 
+test('runtime includes pending detail gaps in START as reference-only safe rows', withTempDb(async (dir) => {
+  const startPath = join(dir, 'start.json');
+  const pendingGap = {
+    gap_id: 'gap_pending',
+    stream: 'messages',
+    record_key: 'conv_1',
+    status: 'pending',
+    detail_locator: {
+      kind: 'chatgpt.conversation',
+      conversation_id: 'conv_1',
+      list_item: { id: 'conv_1', title: 'Safe title' },
+    },
+  };
+  const detailGapStore = {
+    async listPendingGaps(input) {
+      assert.equal(input.connectorId, 'chatgpt');
+      assert.equal(input.grantId, 'grant_1');
+      assert.deepEqual(input.streams, ['messages']);
+      return [pendingGap];
+    },
+    async upsertPendingGap() {
+      throw new Error('unused');
+    },
+  };
+  const { connectorPath, cleanup } = createStartCaptureConnector(startPath);
+
+  try {
+    const result = await runConnector({
+      connectorPath,
+      connectorId: 'chatgpt',
+      grantId: 'grant_1',
+      ownerToken: 'owner',
+      manifest: { streams: [{ name: 'messages' }] },
+      persistState: false,
+      detailGapStore,
+      onProgress: () => {},
+    });
+    assert.equal(result.status, 'succeeded');
+    const start = JSON.parse(readFileSync(startPath, 'utf8'));
+    assert.deepEqual(start.detail_gaps, [{ ...pendingGap, reference_only: true }]);
+  } finally {
+    cleanup();
+  }
+}));
+
+test('runtime fails closed when pending detail gap loading fails before START', withTempDb(async () => {
+  const detailGapStore = {
+    async listPendingGaps() {
+      throw new Error('pending gap load failed');
+    },
+  };
+  const { connectorPath, cleanup } = createConnector([{ type: 'DONE', status: 'succeeded', records_emitted: 0 }]);
+
+  try {
+    await assert.rejects(
+      () => runConnector({
+        connectorPath,
+        connectorId: 'chatgpt',
+        ownerToken: 'owner',
+        manifest: { streams: [{ name: 'messages' }] },
+        persistState: false,
+        detailGapStore,
+        onProgress: () => {},
+      }),
+      /pending gap load failed/,
+    );
+  } finally {
+    cleanup();
+  }
+}));
+
+test('runtime marks DETAIL_GAP_RECOVERED only after prior records flush successfully', withTempDb(async () => {
+  await withStateServer(async ({ rsUrl }) => {
+    const statusCalls = [];
+    const detailGapStore = {
+      async listPendingGaps() {
+        return [];
+      },
+      async markGapStatus(gapId, status, options) {
+        statusCalls.push({ gapId, status, options });
+        return {
+          gap_id: gapId,
+          stream: 'messages',
+          record_key: 'conv_1',
+          reason: 'rate_limited',
+          status,
+        };
+      },
+    };
+    const { connectorPath, cleanup } = createConnector([
+      {
+        type: 'RECORD',
+        stream: 'messages',
+        key: 'msg_1',
+        data: { id: 'msg_1', conversation_id: 'conv_1' },
+        emitted_at: new Date().toISOString(),
+      },
+      {
+        type: 'DETAIL_GAP_RECOVERED',
+        reference_only: true,
+        gap_id: 'gap_conv_1',
+        stream: 'messages',
+        record_key: 'conv_1',
+      },
+      { type: 'DONE', status: 'succeeded', records_emitted: 1 },
+    ]);
+
+    try {
+      const result = await runConnector({
+        connectorPath,
+        connectorId: 'chatgpt',
+        ownerToken: 'owner',
+        manifest: { streams: [{ name: 'messages' }] },
+        rsUrl,
+        persistState: false,
+        detailGapStore,
+        onProgress: () => {},
+      });
+      assert.equal(result.status, 'succeeded');
+      assert.equal(result.records_emitted, 1);
+      assert.equal(statusCalls.length, 1);
+      assert.equal(statusCalls[0].gapId, 'gap_conv_1');
+      assert.equal(statusCalls[0].status, 'recovered');
+      assert.equal(statusCalls[0].options.runId, result.run_id);
+    } finally {
+      cleanup();
+    }
+  });
+}));
+
 test('runtime fails closed when DETAIL_GAP persistence fails', withTempDb(async () => {
   const detailGapStore = {
+    async listPendingGaps() {
+      return [];
+    },
     async upsertPendingGap() {
       throw new Error('durable gap write failed');
     },
@@ -254,6 +417,9 @@ test('runtime rejects state commit when required DETAIL_COVERAGE has no hydrated
 test('runtime commits state when required DETAIL_COVERAGE is backed by matching pending DETAIL_GAP', withTempDb(async () => {
   await withStateServer(async ({ rsUrl, stateWrites }) => {
     const detailGapStore = {
+      async listPendingGaps() {
+        return [];
+      },
       async upsertPendingGap(input) {
         return {
           gap_id: 'gap_conv_1',

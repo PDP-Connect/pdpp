@@ -698,7 +698,21 @@ test("runConversationsAndMessagesStreams: recoverable detail exhaustion emits DE
     record_key: "convo-gap",
     status: "pending",
     reason: "rate_limited",
-    detail_locator: { kind: "chatgpt.conversation", conversation_id: "convo-gap" },
+    detail_locator: {
+      kind: "chatgpt.conversation",
+      conversation_id: "convo-gap",
+      list_item: {
+        id: "convo-gap",
+        title: "Hello world",
+        create_time: 1_700_000_000,
+        update_time: 1_700_000_100,
+        current_node: "a1",
+        gizmo_id: null,
+        is_archived: null,
+        is_starred: null,
+        workspace_id: null,
+      },
+    },
     retryable: true,
     reference_only: true,
     detail: { class: "rate_limited", http_status: 429 },
@@ -735,6 +749,85 @@ test("runConversationsAndMessagesStreams: recoverable detail exhaustion emits DE
     "DETAIL_COVERAGE must emit after gap and all detail work settle"
   );
   assert.ok(stateIdx > coverageIdx, "STATE must emit after DETAIL_COVERAGE");
+});
+
+test("runConversationsAndMessagesStreams: recovers pending conversation detail gaps before forward list collection", async () => {
+  const harness = makeRecordingEmit(validateRecord);
+  const recoveredConvo = makeConvo({ id: "convo-recover", title: "Recover me", update_time: 1_700_000_100 });
+  const forwardConvo = makeConvo({ id: "convo-forward", update_time: 1_700_000_200 });
+  const fetches: string[] = [];
+  const api: ChatGptApi = {
+    auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
+    fetch: (path: string): Promise<ChatGptFetchResult> => {
+      fetches.push(path);
+      if (path === "/conversation/convo-recover") {
+        return Promise.resolve(makeDetailOk());
+      }
+      if (path.startsWith("/conversations")) {
+        return Promise.resolve({
+          status: 200,
+          json: { items: [forwardConvo], has_missing_conversations: false, total: 1 },
+        });
+      }
+      return Promise.resolve(makeDetailOk());
+    },
+  };
+  const deps: StreamDeps = {
+    api,
+    detailGaps: [
+      {
+        gap_id: "gap_recover",
+        stream: "messages",
+        record_key: "convo-recover",
+        status: "pending",
+        reference_only: true,
+        detail_locator: {
+          kind: "chatgpt.conversation",
+          conversation_id: "convo-recover",
+          list_item: {
+            id: recoveredConvo.id,
+            title: recoveredConvo.title,
+            create_time: recoveredConvo.create_time,
+            update_time: recoveredConvo.update_time,
+            current_node: recoveredConvo.current_node,
+            gizmo_id: recoveredConvo.gizmo_id,
+            is_archived: recoveredConvo.is_archived,
+            is_starred: recoveredConvo.is_starred,
+            workspace_id: recoveredConvo.workspace_id,
+          },
+        },
+      },
+    ],
+    emit: harness.emit,
+    emitRecord: harness.emitRecord,
+    progress: (): Promise<void> => Promise.resolve(),
+    requested: new Map(["conversations", "messages"].map((name) => [name, { name }])),
+  };
+
+  await runConversationsAndMessagesStreams(deps, {});
+
+  assert.deepEqual(fetches, [
+    "/conversation/convo-recover",
+    "/conversations?offset=0&limit=100&order=updated",
+    "/conversation/convo-forward",
+  ]);
+  const recoveredIdx = harness.events.findIndex(
+    (e) => e.kind === "message" && e.message.type === "DETAIL_GAP_RECOVERED"
+  );
+  const recoveredRecordIdx = harness.events.findIndex(
+    (e) => e.kind === "record" && e.stream === "conversations" && e.data.id === "convo-recover"
+  );
+  assert.ok(recoveredRecordIdx !== -1 && recoveredIdx > recoveredRecordIdx);
+  assert.deepEqual(
+    harness.protocolMessages.find((m) => m.type === "DETAIL_GAP_RECOVERED"),
+    {
+      type: "DETAIL_GAP_RECOVERED",
+      reference_only: true,
+      gap_id: "gap_recover",
+      stream: "messages",
+      record_key: "convo-recover",
+    }
+  );
 });
 
 test("runConversationsAndMessagesStreams: terminal detail http failure remains fail-closed", async () => {

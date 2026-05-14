@@ -556,6 +556,7 @@ async function runChatGptSideEffectProbe({
  *  orchestration and the helpers are individually testable. */
 export interface StreamDeps {
   api: ChatGptApi;
+  detailGaps?: CollectContext["detailGaps"];
   emit: CollectContext["emit"];
   emitRecord: (stream: string, data: RecordData) => Promise<void>;
   progress: CollectContext["progress"];
@@ -912,6 +913,36 @@ function formatConversationDetailLaneProgress(event: AdaptiveLaneEvent): string 
   return parts.join(" ");
 }
 
+function safeConversationListItemHint(c: ConversationListItem): Record<string, string | number | boolean | null> {
+  return {
+    id: c.id,
+    title: typeof c.title === "string" ? c.title : null,
+    create_time: typeof c.create_time === "string" || typeof c.create_time === "number" ? c.create_time : null,
+    update_time: typeof c.update_time === "string" || typeof c.update_time === "number" ? c.update_time : null,
+    current_node: typeof c.current_node === "string" ? c.current_node : null,
+    gizmo_id: typeof c.gizmo_id === "string" ? c.gizmo_id : null,
+    is_archived: typeof c.is_archived === "boolean" ? c.is_archived : null,
+    is_starred: typeof c.is_starred === "boolean" ? c.is_starred : null,
+    workspace_id: typeof c.workspace_id === "string" ? c.workspace_id : null,
+  };
+}
+
+function conversationListItemFromGap(gap: CollectContext["detailGaps"][number]): ConversationListItem | null {
+  const locator = gap.detail_locator;
+  if (!locator || locator.kind !== "chatgpt.conversation") {
+    return null;
+  }
+  const hint = locator.list_item;
+  if (!hint || typeof hint !== "object" || Array.isArray(hint)) {
+    return null;
+  }
+  const id = typeof locator.conversation_id === "string" ? locator.conversation_id : null;
+  if (!id) {
+    return null;
+  }
+  return { ...(hint as Record<string, unknown>), id } as ConversationListItem;
+}
+
 function makeConversationDetailGap(
   c: ConversationListItem,
   error: ChatGptRecoverableRetryExhaustedError
@@ -922,7 +953,11 @@ function makeConversationDetailGap(
     record_key: c.id,
     status: "pending",
     reason: error.class,
-    detail_locator: { kind: "chatgpt.conversation", conversation_id: c.id },
+    detail_locator: {
+      kind: "chatgpt.conversation",
+      conversation_id: c.id,
+      list_item: safeConversationListItemHint(c),
+    },
     retryable: true,
     reference_only: true,
     detail: {
@@ -1036,6 +1071,43 @@ export async function runMessagesAndConversationsWithDetail(
   return coverage;
 }
 
+async function recoverPendingConversationDetailGaps(
+  deps: StreamDeps,
+  emitConversation: (c: ConversationListItem, detail: ConversationDetail | null) => Promise<void>,
+  pacing: ConversationDetailPacingOptions = {}
+): Promise<void> {
+  const recoveryItems = (deps.detailGaps ?? [])
+    .filter((gap) => gap.stream === "messages")
+    .map((gap) => ({ gap, conversation: conversationListItemFromGap(gap) }))
+    .filter(
+      (item): item is { gap: CollectContext["detailGaps"][number]; conversation: ConversationListItem } =>
+        item.conversation !== null
+    );
+  if (!recoveryItems.length) {
+    return;
+  }
+
+  const coverage = await runMessagesAndConversationsWithDetail(
+    deps,
+    recoveryItems.map((item) => item.conversation),
+    emitConversation,
+    pacing
+  );
+  const hydrated = new Set(coverage.hydratedKeys.map(String));
+  for (const { gap, conversation } of recoveryItems) {
+    if (!hydrated.has(conversation.id)) {
+      continue;
+    }
+    await deps.emit({
+      type: "DETAIL_GAP_RECOVERED",
+      reference_only: true,
+      gap_id: gap.gap_id,
+      stream: "messages",
+      record_key: conversation.id,
+    });
+  }
+}
+
 export async function runConversationsAndMessagesStreams(
   deps: StreamDeps,
   state: CollectContext["state"],
@@ -1043,6 +1115,17 @@ export async function runConversationsAndMessagesStreams(
 ): Promise<void> {
   const conversationsCursor = state.conversations as { last_update_time?: string | null } | undefined;
   const priorCursor = conversationsCursor?.last_update_time || null;
+  const emitConversation = async (c: ConversationListItem, detail: ConversationDetail | null): Promise<void> => {
+    if (!deps.requested.has("conversations")) {
+      return;
+    }
+    await deps.emitRecord("conversations", buildConversationRecord(c, detail));
+  };
+
+  if (deps.requested.has("messages")) {
+    await recoverPendingConversationDetailGaps(deps, emitConversation, options.detailPacing);
+  }
+
   const convosToSync = await listConversationsSinceCursor(deps, priorCursor);
   const foundProgressMsg = {
     type: "PROGRESS",
@@ -1052,13 +1135,6 @@ export async function runConversationsAndMessagesStreams(
     total: convosToSync.length,
   } as const;
   deps.emit(foundProgressMsg);
-
-  const emitConversation = async (c: ConversationListItem, detail: ConversationDetail | null): Promise<void> => {
-    if (!deps.requested.has("conversations")) {
-      return;
-    }
-    await deps.emitRecord("conversations", buildConversationRecord(c, detail));
-  };
 
   if (deps.requested.has("messages")) {
     const coverage = await runMessagesAndConversationsWithDetail(
@@ -1144,7 +1220,7 @@ if (isMainModule(import.meta.url)) {
       const auth = await api.auth();
       progress(`Authenticated to ChatGPT (device_id=${auth.deviceId ? `${auth.deviceId.slice(0, 8)}…` : "unknown"})`);
 
-      const deps: StreamDeps = { api, emit, emitRecord, progress, requested };
+      const deps: StreamDeps = { api, detailGaps: ctx.detailGaps, emit, emitRecord, progress, requested };
 
       if (isChatGptSideEffectProbeEnabled()) {
         await runChatGptSideEffectProbe({ api, emit, page });

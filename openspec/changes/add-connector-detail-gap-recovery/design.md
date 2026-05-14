@@ -52,6 +52,8 @@ The implementation should use an internal reference-only durable representation.
 
 Sensitive upstream URLs, cookies, bearer tokens, request bodies, and raw private payloads must not be stored in the gap record. The locator must be enough for the connector to retry, not a dump of the failed request.
 
+Some sources need more than an opaque detail id to recover faithfully. For ChatGPT, `conversation_id` is enough to retry the detail endpoint, but the connector also needs bounded list-item fallback metadata to rebuild the parent conversation record without replaying list pagination. That fallback metadata may be stored inside the safe locator as primitive list-item hints such as `id`, timestamps, title, current node, archive/star flags, workspace id, and gizmo id. It must not include headers, cookies, bearer tokens, raw detail bodies, message text, or arbitrary upstream payload fragments.
+
 Coverage attestations are internal run messages, not durable public records. They should be small enough to audit the current cursor boundary and should contain only stable list/detail keys, not raw private payloads.
 
 ## Run Semantics
@@ -74,9 +76,10 @@ That rejection is only mechanically enforceable for boundaries where the connect
 Recovery should be connector-general but source-aware:
 
 - A future run for the same source should load pending gaps relevant to the requested scope.
+- The reference runtime should pass pending gaps to the connector in the internal `START.detail_gaps` field.
 - Pending gaps should be attempted before forward collection when they are inside already-committed list cursor boundaries.
 - Gap recovery should use the same adaptive lane, retry, pacing, and cancellation controls as normal detail hydration.
-- Recovery success should emit the hydrated record and mark the gap recovered.
+- Recovery success should emit the hydrated records and then use an internal reference-only recovery-completion signal so the runtime can mark the gap recovered only after records are accepted.
 - Recovery exhaustion may leave the gap pending with updated attempt metadata and `next_attempt_after`.
 - Permanent errors may mark a gap terminal only with explicit evidence, not just a transient pressure timeout.
 
@@ -115,6 +118,8 @@ Not Collection Profile protocol yet:
 This is a non-commitment boundary. The reference implementation may use internal `DETAIL_GAP` and detail-coverage signals to connect connector output to runtime backlog storage and commit validation, but those signals are not portable Collection Profile messages. Protocol readers must not infer that PDPP has standardized a gap schema, a coverage schema, a cursor meaning for incomplete detail hydration, or a cross-runtime recovery contract.
 
 The durable abstraction should be evaluated as pending detail recovery work/backlog. "Detail gap" is useful diagnostic language for the missing-data condition, but it should not become the public primitive unless a later root protocol change proves that naming and contract are the right general model.
+
+Implementation evidence supports keeping this reference-only for now. The current ChatGPT pilot needs connector-specific locator hints and internal `START.detail_gaps` / recovery-completion messages. Those are appropriate for proving the recovery model in the reference runtime, but they are not yet a stable, source-independent Collection Profile interface.
 
 Potential future Collection Profile work:
 
