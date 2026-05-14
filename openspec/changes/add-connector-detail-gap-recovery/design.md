@@ -103,6 +103,10 @@ Not Collection Profile protocol yet:
 - A standard backlog schema for interoperable connectors.
 - Owner-visible protocol fields for gap state.
 
+This is a non-commitment boundary. The reference implementation may use an internal `DETAIL_GAP` signal to connect connector output to runtime backlog storage, but that signal is not a portable Collection Profile message. Protocol readers must not infer that PDPP has standardized a gap schema, a cursor meaning for incomplete detail hydration, or a cross-runtime recovery contract.
+
+The durable abstraction should be evaluated as pending detail recovery work/backlog. "Detail gap" is useful diagnostic language for the missing-data condition, but it should not become the public primitive unless a later root protocol change proves that naming and contract are the right general model.
+
 Potential future Collection Profile work:
 
 - A connector `GAP` or `BACKLOG` message if multiple runtimes need to interoperate.

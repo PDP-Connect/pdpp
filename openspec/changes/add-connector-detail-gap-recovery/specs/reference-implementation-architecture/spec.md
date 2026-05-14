@@ -48,6 +48,7 @@ Connector detail-gap backlog storage, recovery scheduling, and observability SHA
 - **WHEN** a reviewer asks whether detail-gap backlog entries are required Collection Profile messages or fields
 - **THEN** the reference documentation SHALL state that they are not normative Collection Profile protocol in this tranche
 - **AND** it SHALL identify any connector/runtime reporting mechanism as internal reference behavior
+- **AND** portable connectors and protocol readers SHALL NOT rely on the reference `DETAIL_GAP` signal, backlog schema, or cursor interpretation unless a later root protocol change promotes an explicit wire contract
 
 #### Scenario: Gap metadata is stored or displayed
 - **WHEN** the reference stores or displays detail-gap locators, reasons, or errors
