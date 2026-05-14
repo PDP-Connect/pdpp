@@ -53,6 +53,88 @@ interface EnsureChaseSessionArgs {
   sendInteraction: (req: InteractionRequest) => Promise<InteractionResponse>;
 }
 
+interface HandleChaseOtpArgs extends EnsureChaseSessionArgs {
+  page: Page;
+  surface: ChaseBrowserSurfaceMonitor;
+}
+
+type ChaseLoginStage = "before_otp_submit" | "after_otp_submit" | "final_session_probe";
+type ChaseBrowserSurfaceState = "open" | "page_closed" | "context_closed" | "browser_disconnected";
+
+interface ChaseBrowserSurfaceMonitor {
+  browserDisconnected: () => boolean;
+  contextClosed: () => boolean;
+}
+
+function safeErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function chaseStageError(stage: ChaseLoginStage, error: unknown): Error {
+  return new Error(`chase_login_failed_${stage}: ${safeErrorMessage(error)}`);
+}
+
+function chaseSurfaceStageError(stage: ChaseLoginStage, state: ChaseBrowserSurfaceState, error: unknown): Error {
+  return new Error(`chase_login_failed_${stage}: surface=${state}: ${safeErrorMessage(error)}`);
+}
+
+function watchChaseBrowserSurface(context: BrowserContext): ChaseBrowserSurfaceMonitor {
+  let contextClosed = false;
+  const browser = context.browser();
+  let browserDisconnected = browser ? !browser.isConnected() : false;
+
+  context.once("close", (): void => {
+    contextClosed = true;
+  });
+  browser?.once("disconnected", (): void => {
+    browserDisconnected = true;
+  });
+
+  return {
+    browserDisconnected: (): boolean => browserDisconnected || Boolean(browser && !browser.isConnected()),
+    contextClosed: (): boolean => contextClosed,
+  };
+}
+
+export function classifyChaseBrowserSurface(page: Page, surface: ChaseBrowserSurfaceMonitor): ChaseBrowserSurfaceState {
+  if (surface.browserDisconnected()) {
+    return "browser_disconnected";
+  }
+  if (surface.contextClosed()) {
+    return "context_closed";
+  }
+  if (page.isClosed()) {
+    return "page_closed";
+  }
+  return "open";
+}
+
+async function recoverAfterPageClosed(
+  context: BrowserContext,
+  page: Page,
+  stage: ChaseLoginStage,
+  error: unknown
+): Promise<{ loggedIn: boolean; page: Page }> {
+  process.stderr.write(`[chase-login] ${stage}: surface=page_closed; probing session on a usable page\n`);
+  const sessionProbe = await probeChaseSession(context, page);
+  if (sessionProbe.loggedIn) {
+    process.stderr.write(`[chase-login] ${stage}: recovered after page_closed; session is active\n`);
+    return sessionProbe;
+  }
+  throw new Error(
+    `chase_login_failed_${stage}: surface=page_closed; recovery_probe=not_logged_in: ${safeErrorMessage(error)}`
+  );
+}
+
+function usablePage(context: BrowserContext, preferred: Page): Page | Promise<Page> {
+  if (!preferred.isClosed()) {
+    return preferred;
+  }
+
+  const openPage = context.pages().find((candidate): boolean => !candidate.isClosed());
+  return openPage ?? context.newPage();
+}
+
 async function probeSession(page: Page): Promise<boolean> {
   // Auto-wait on "Sign out" being visible (logged in) or the logon form input
   // being visible (logged out), whichever shows first. Race with a timeout to
@@ -67,12 +149,117 @@ async function probeSession(page: Page): Promise<boolean> {
   return signOutVisible;
 }
 
-export async function ensureChaseSession({
-  context: _context,
+export async function probeChaseSession(
+  context: BrowserContext,
+  page: Page
+): Promise<{ loggedIn: boolean; page: Page }> {
+  const probePage = await usablePage(context, page);
+  return {
+    loggedIn: await probeSession(probePage),
+    page: probePage,
+  };
+}
+
+async function submitChaseOtp({
+  context,
   page,
   sendInteraction,
-}: EnsureChaseSessionArgs): Promise<boolean> {
-  if (await probeSession(page)) {
+  surface,
+}: HandleChaseOtpArgs): Promise<{ loggedIn: boolean; page: Page }> {
+  const resp = await sendInteraction({
+    kind: "otp",
+    message: "Chase sent a 2FA code. Reply with it.",
+    schema: {
+      type: "object",
+      properties: { code: { type: "string", pattern: "^[0-9]{4,10}$" } },
+      required: ["code"],
+    },
+    timeout_seconds: 600,
+  });
+  if (resp.status !== "success" || !resp.data?.code) {
+    throw new Error("chase_otp_not_provided");
+  }
+
+  const otpInput = page.locator('input[type="password"]').first();
+  try {
+    await otpInput.click({ timeout: 5000 });
+    await otpInput.fill("");
+    await otpInput.pressSequentially(resp.data.code, { delay: 60 });
+  } catch (error) {
+    const state = classifyChaseBrowserSurface(page, surface);
+    if (state === "page_closed") {
+      return recoverAfterPageClosed(context, page, "before_otp_submit", error);
+    }
+    throw chaseSurfaceStageError("before_otp_submit", state, error);
+  }
+
+  // Best-effort: tick any "remember this device" / "don't ask again"
+  // checkbox before submitting. Chase sets a session-only
+  // `_tmprememberme` cookie by default; it's upgraded to a persistent
+  // trust cookie when the user opts in via a checkbox on the OTP page.
+  // Without this, every run requires a fresh OTP. If the checkbox
+  // isn't present or is already checked, this is a no-op.
+  //
+  // Uses accessibility-tree matching (Playwright's recommended
+  // best practice: https://playwright.dev/docs/locators#locate-by-role).
+  // Verified-on-real-DOM selector TBD — this is a first pass based on
+  // common bank-UI naming conventions. If it doesn't trigger on the
+  // real Chase page, probe the OTP page with the Playwright Inspector
+  // (`PDPP_TRACE=1` + `npx playwright show-trace <zip>`) and add a
+  // more specific selector here based on observation.
+  try {
+    const rememberBox = page
+      .getByRole("checkbox", {
+        name: REMEMBER_DEVICE_TEXT,
+      })
+      .first();
+    const count = await rememberBox.count().catch((): number => 0);
+    if (count > 0 && !(await rememberBox.isChecked().catch((): boolean => true))) {
+      await rememberBox.check({ timeout: 2000 });
+    }
+  } catch {
+    /* no-op on absence or timeout */
+  }
+
+  try {
+    const submitByText = page.locator('text="Next"').first();
+    if (await submitByText.count().catch((): number => 0)) {
+      await submitByText.click({ timeout: 5000 });
+    } else {
+      await page
+        .locator("mds-button#next-content")
+        .click({ timeout: 5000 })
+        .catch(async (): Promise<void> => {
+          await otpInput.press("Enter");
+        });
+    }
+  } catch (error) {
+    const state = classifyChaseBrowserSurface(page, surface);
+    if (state === "page_closed") {
+      return recoverAfterPageClosed(context, page, "after_otp_submit", error);
+    }
+    throw chaseSurfaceStageError("after_otp_submit", state, error);
+  }
+
+  try {
+    await page.getByText(SIGN_OUT_TEXT).first().waitFor({ state: "visible", timeout: 30_000 });
+  } catch (error) {
+    const state = classifyChaseBrowserSurface(page, surface);
+    if (state === "page_closed") {
+      return recoverAfterPageClosed(context, page, "after_otp_submit", error);
+    }
+    throw chaseSurfaceStageError("after_otp_submit", state, error);
+  }
+
+  return { loggedIn: true, page };
+}
+
+export async function ensureChaseSession({ context, page, sendInteraction }: EnsureChaseSessionArgs): Promise<boolean> {
+  const surface = watchChaseBrowserSurface(context);
+  let activePage = page;
+  let sessionProbe = await probeChaseSession(context, activePage);
+  activePage = sessionProbe.page;
+  if (sessionProbe.loggedIn) {
     return true;
   }
 
@@ -82,7 +269,7 @@ export async function ensureChaseSession({
     throw new Error("CHASE_USERNAME/PASSWORD not set");
   }
 
-  await page.goto(LOGON_URL, {
+  await activePage.goto(LOGON_URL, {
     waitUntil: "domcontentloaded",
     timeout: 30_000,
   });
@@ -91,7 +278,7 @@ export async function ensureChaseSession({
   //   old: #userId-text-input-field / #password-text-input-field
   //   new: #userId-input-field-input / #password-input-field-input (+name=username)
   // Accept both so we work across Chase's redesigns without a release.
-  const userField = page
+  const userField = activePage
     .locator(
       'input#userId-input-field-input, input[name="username"], input#userId-text-input-field, input[name="userId"]'
     )
@@ -99,25 +286,25 @@ export async function ensureChaseSession({
   await userField.waitFor({ state: "visible", timeout: 15_000 });
   await userField.fill(username);
 
-  const passField = page
+  const passField = activePage
     .locator(
       'input#password-input-field-input, input#password-text-input-field, input[name="password"], input[type="password"]'
     )
     .first();
   await passField.fill(password);
 
-  await page.locator('button#signin-button, button[type="submit"]').first().click({ timeout: 5000 });
+  await activePage.locator('button#signin-button, button[type="submit"]').first().click({ timeout: 5000 });
 
   // After submit, Chase either advances to the challenge page or loads the
   // dashboard. Wait for a recognizable post-submit state rather than a fixed
   // sleep. Race: challenge indicator OR sign-out visible.
   await Promise.race([
-    page
+    activePage
       .getByText(CHALLENGE_TEXT)
       .first()
       .waitFor({ state: "visible", timeout: 20_000 })
       .catch((): null => null),
-    page
+    activePage
       .getByText(SIGN_OUT_TEXT)
       .first()
       .waitFor({ state: "visible", timeout: 20_000 })
@@ -125,7 +312,7 @@ export async function ensureChaseSession({
   ]);
 
   // Identity challenge — method chooser.
-  const onChallenge = await page
+  const onChallenge = await activePage
     .getByText(CHALLENGE_TEXT)
     .first()
     .isVisible()
@@ -134,24 +321,24 @@ export async function ensureChaseSession({
     const method = (process.env.CHASE_2FA_METHOD ?? "text").toLowerCase();
     const label = METHOD_LABELS[method] ?? METHOD_LABELS.text ?? "Get a text";
 
-    await page
+    await activePage
       .getByRole("link", { name: new RegExp(`^${label}`, "i") })
       .first()
       .click({ timeout: 10_000 });
 
     // Wait for the Next button to be enabled/visible before clicking it.
-    const nextBtn = page.locator('text="Next"').first();
+    const nextBtn = activePage.locator('text="Next"').first();
     await nextBtn.waitFor({ state: "visible", timeout: 10_000 });
     await nextBtn.click({ timeout: 10_000 });
 
     // Wait for either the OTP input page or the dashboard.
     await Promise.race([
-      page
+      activePage
         .getByText(OTP_PROMPT_TEXT)
         .first()
         .waitFor({ state: "visible", timeout: 20_000 })
         .catch((): null => null),
-      page
+      activePage
         .getByText(SIGN_OUT_TEXT)
         .first()
         .waitFor({ state: "visible", timeout: 20_000 })
@@ -160,76 +347,26 @@ export async function ensureChaseSession({
   }
 
   // OTP entry step.
-  const onOtp = await page
+  const onOtp = await activePage
     .getByText(OTP_PROMPT_TEXT_WITH_SENT)
     .first()
     .isVisible()
     .catch((): boolean => false);
   if (onOtp) {
-    const resp = await sendInteraction({
-      kind: "otp",
-      message: "Chase sent a 2FA code. Reply with it.",
-      schema: {
-        type: "object",
-        properties: { code: { type: "string", pattern: "^[0-9]{4,10}$" } },
-        required: ["code"],
-      },
-      timeout_seconds: 600,
-    });
-    if (resp.status !== "success" || !resp.data?.code) {
-      throw new Error("chase_otp_not_provided");
+    sessionProbe = await submitChaseOtp({ context, page: activePage, sendInteraction, surface });
+    activePage = sessionProbe.page;
+    if (sessionProbe.loggedIn) {
+      return true;
     }
-
-    const otpInput = page.locator('input[type="password"]').first();
-    await otpInput.click({ timeout: 5000 });
-    await otpInput.fill("");
-    await otpInput.pressSequentially(resp.data.code, { delay: 60 });
-
-    // Best-effort: tick any "remember this device" / "don't ask again"
-    // checkbox before submitting. Chase sets a session-only
-    // `_tmprememberme` cookie by default; it's upgraded to a persistent
-    // trust cookie when the user opts in via a checkbox on the OTP page.
-    // Without this, every run requires a fresh OTP. If the checkbox
-    // isn't present or is already checked, this is a no-op.
-    //
-    // Uses accessibility-tree matching (Playwright's recommended
-    // best practice: https://playwright.dev/docs/locators#locate-by-role).
-    // Verified-on-real-DOM selector TBD — this is a first pass based on
-    // common bank-UI naming conventions. If it doesn't trigger on the
-    // real Chase page, probe the OTP page with the Playwright Inspector
-    // (`PDPP_TRACE=1` + `npx playwright show-trace <zip>`) and add a
-    // more specific selector here based on observation.
-    try {
-      const rememberBox = page
-        .getByRole("checkbox", {
-          name: REMEMBER_DEVICE_TEXT,
-        })
-        .first();
-      const count = await rememberBox.count().catch((): number => 0);
-      if (count > 0 && !(await rememberBox.isChecked().catch((): boolean => true))) {
-        await rememberBox.check({ timeout: 2000 });
-      }
-    } catch {
-      /* no-op on absence or timeout */
-    }
-
-    const submitByText = page.locator('text="Next"').first();
-    if (await submitByText.count().catch((): number => 0)) {
-      await submitByText.click({ timeout: 5000 }).catch((): undefined => undefined);
-    } else {
-      await page
-        .locator("mds-button#next-content")
-        .click({ timeout: 5000 })
-        .catch(async (): Promise<void> => {
-          await otpInput.press("Enter").catch((): undefined => undefined);
-        });
-    }
-
-    // Wait for redirect to dashboard (Sign out visible).
-    await page.getByText(SIGN_OUT_TEXT).first().waitFor({ state: "visible", timeout: 30_000 });
   }
 
-  if (!(await probeSession(page))) {
+  try {
+    sessionProbe = await probeChaseSession(context, activePage);
+    activePage = sessionProbe.page;
+  } catch (error) {
+    throw chaseStageError("final_session_probe", error);
+  }
+  if (!sessionProbe.loggedIn) {
     throw new Error("chase_login_incomplete_after_submit");
   }
   return true;
