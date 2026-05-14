@@ -565,6 +565,37 @@ CREATE TABLE IF NOT EXISTS grant_connector_state (
   PRIMARY KEY(grant_id, connector_id, stream)
 );
 
+CREATE TABLE IF NOT EXISTS connector_detail_gaps (
+  gap_id              TEXT PRIMARY KEY,
+  connector_id        TEXT NOT NULL,
+  grant_id            TEXT,
+  source_json         TEXT NOT NULL,
+  stream              TEXT NOT NULL,
+  parent_stream       TEXT,
+  record_key          TEXT,
+  detail_locator_json TEXT,
+  list_cursor_json    TEXT,
+  scope_json          TEXT,
+  reason              TEXT,
+  status              TEXT NOT NULL DEFAULT 'pending',
+  attempt_count       INTEGER NOT NULL DEFAULT 0,
+  last_attempt_at     TEXT,
+  next_attempt_after  TEXT,
+  last_error_json     TEXT,
+  discovered_run_id   TEXT,
+  last_run_id         TEXT,
+  recovered_run_id    TEXT,
+  created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
+  CHECK (status IN ('pending', 'in_progress', 'recovered', 'terminal'))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_connector_detail_gaps_identity
+  ON connector_detail_gaps(connector_id, ifnull(grant_id, ''), stream, ifnull(parent_stream, ''), ifnull(record_key, ''), ifnull(detail_locator_json, ''));
+
+CREATE INDEX IF NOT EXISTS idx_connector_detail_gaps_pending
+  ON connector_detail_gaps(connector_id, grant_id, status, stream, next_attempt_after);
+
 CREATE TABLE IF NOT EXISTS version_counter (
   connector_id  TEXT NOT NULL,
   stream        TEXT NOT NULL,

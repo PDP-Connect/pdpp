@@ -365,6 +365,34 @@ export async function bootstrapPostgresSchema() {
         PRIMARY KEY(grant_id, connector_id, stream)
       );
 
+      CREATE TABLE IF NOT EXISTS connector_detail_gaps (
+        gap_id TEXT PRIMARY KEY,
+        connector_id TEXT NOT NULL,
+        grant_id TEXT,
+        source_json JSONB NOT NULL,
+        stream TEXT NOT NULL,
+        parent_stream TEXT,
+        record_key TEXT,
+        detail_locator_json JSONB,
+        list_cursor_json JSONB,
+        scope_json JSONB,
+        reason TEXT,
+        status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'in_progress', 'recovered', 'terminal')),
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        last_attempt_at TEXT,
+        next_attempt_after TEXT,
+        last_error_json JSONB,
+        discovered_run_id TEXT,
+        last_run_id TEXT,
+        recovered_run_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS uniq_pg_connector_detail_gaps_identity
+        ON connector_detail_gaps(connector_id, COALESCE(grant_id, ''), stream, COALESCE(parent_stream, ''), COALESCE(record_key, ''), COALESCE(detail_locator_json::text, ''));
+      CREATE INDEX IF NOT EXISTS idx_pg_connector_detail_gaps_pending
+        ON connector_detail_gaps(connector_id, grant_id, status, stream, next_attempt_after);
+
       CREATE TABLE IF NOT EXISTS connector_schedules (
         connector_id TEXT PRIMARY KEY,
         interval_seconds INTEGER NOT NULL,

@@ -13,6 +13,7 @@ import { isClosedPipeWriteError } from './pipe-errors.js';
 import { deriveTerminalReason } from './terminal-reason.js';
 import { createStderrTailBuffer } from './stderr-tail.js';
 import { redactStderrTail } from './stderr-redact.js';
+import { getDefaultConnectorDetailGapStore } from '../server/stores/connector-detail-gap-store.js';
 
 function encodeScopeResourceKey(key) {
   return Array.isArray(key) ? JSON.stringify(key) : String(key);
@@ -471,8 +472,10 @@ function classifyRuntimeFailure(err) {
     || message.startsWith('Connector emitted invalid ASSISTANCE.')
     || message.startsWith('Connector emitted unsupported ASSISTANCE.')
     || message.startsWith('Connector emitted invalid SKIP_RESULT.')
+    || message.startsWith('Connector emitted invalid DETAIL_GAP.')
     || message.startsWith('Connector emitted PROGRESS for undeclared stream:')
     || message.startsWith('Connector emitted SKIP_RESULT for undeclared stream:')
+    || message.startsWith('Connector emitted DETAIL_GAP for undeclared stream:')
     || message.startsWith('Connector emitted invalid DONE status:')
     || message.startsWith('Connector emitted invalid DONE.error')
     || message.startsWith('Connector emitted invalid DONE.records_emitted:')
@@ -729,6 +732,27 @@ function validateSkipResultMessage(msg, scopeByStream) {
         throw new Error(`Connector emitted invalid SKIP_RESULT.time_range.${fieldName}: expected non-empty string`);
       }
     }
+  }
+}
+
+function validateDetailGapMessage(msg, scopeByStream) {
+  requireOptionalNonEmptyString(msg.stream, 'DETAIL_GAP.stream');
+  if (!msg.stream) {
+    throw new Error('Connector emitted invalid DETAIL_GAP.stream: expected non-empty string');
+  }
+  validateOptionalScopedStream(msg.stream, 'DETAIL_GAP', scopeByStream);
+  requireOptionalNonEmptyString(msg.parent_stream, 'DETAIL_GAP.parent_stream');
+  if (msg.record_key != null && typeof msg.record_key !== 'string' && typeof msg.record_key !== 'number') {
+    throw new Error('Connector emitted invalid DETAIL_GAP.record_key: expected string or number');
+  }
+  for (const fieldName of ['detail_locator', 'list_cursor', 'last_error']) {
+    if (msg[fieldName] != null && (typeof msg[fieldName] !== 'object' || Array.isArray(msg[fieldName]))) {
+      throw new Error(`Connector emitted invalid DETAIL_GAP.${fieldName}: expected object`);
+    }
+  }
+  requireOptionalNonEmptyString(msg.reason, 'DETAIL_GAP.reason');
+  if (msg.retryable != null && typeof msg.retryable !== 'boolean') {
+    throw new Error('Connector emitted invalid DETAIL_GAP.retryable: expected boolean');
   }
 }
 
@@ -1056,6 +1080,7 @@ export async function runConnector(opts) {
   const startState = persistState ? validateStartState(state) : null;
   const scopeByStream = new Map((startScope.streams || []).map((streamScope) => [streamScope.name, streamScope]));
   const manifestByStream = new Map((manifest?.streams || []).map((stream) => [stream.name, stream]));
+  const detailGapStore = opts.detailGapStore || getDefaultConnectorDetailGapStore();
 
   // Compute runId before spawn so it can be threaded into the child env
   // alongside the streaming registration token. The traceContext is
@@ -1383,6 +1408,7 @@ export async function runConnector(opts) {
   let terminalEventRecorded = false;
   let doneMessage = null;
   const knownGaps = [];
+  const durableDetailGaps = [];
 
   // Batch records for ingest
   const recordBatch = {};
@@ -1482,6 +1508,15 @@ export async function runConnector(opts) {
         ? {
             known_gaps: visibleKnownGaps,
             known_gaps_summary: summarizeKnownGaps(terminalKnownGaps),
+          }
+        : {}),
+      ...(durableDetailGaps.length
+        ? {
+            detail_gaps: {
+              reference_only: true,
+              pending_recorded: durableDetailGaps.length,
+              gap_ids: durableDetailGaps.slice(0, KNOWN_GAPS_MAX).map((gap) => gap.gap_id),
+            },
           }
         : {}),
       ...(violation instanceof ProtocolViolation
@@ -2067,6 +2102,68 @@ export async function runConnector(opts) {
           break;
         }
 
+        case 'DETAIL_GAP': {
+          validateDetailGapMessage(msg, scopeByStream);
+          const storedGap = await detailGapStore.upsertPendingGap({
+            connectorId,
+            grantId,
+            source: runSource,
+            stream: msg.stream,
+            parentStream: msg.parent_stream || null,
+            recordKey: msg.record_key ?? null,
+            detailLocator: msg.detail_locator ?? null,
+            listCursor: msg.list_cursor ?? null,
+            scope: startScope,
+            reason: msg.reason || null,
+            retryable: msg.retryable ?? null,
+            lastError: msg.last_error ?? null,
+            discoveredRunId: runId,
+            lastRunId: runId,
+          });
+          durableDetailGaps.push(storedGap);
+          const gap = buildKnownGap({
+            kind: 'detail_gap',
+            stream: msg.stream,
+            reason: msg.reason || null,
+            message: 'Required detail is recorded as a pending reference-only recovery gap.',
+            recoveryHint: msg.retryable === false ? 'not_retriable' : 'retry_by_runtime',
+            scope: {
+              parent_stream: msg.parent_stream || null,
+              record_key: msg.record_key == null ? null : String(msg.record_key),
+            },
+          });
+          appendKnownGap(gap);
+          await emitSpineEventTracked({
+            event_type: 'run.detail_gap_recorded',
+            trace_id: traceContext.trace_id,
+            scenario_id: traceContext.scenario_id,
+            actor_type: 'runtime',
+            actor_id: connectorId,
+            object_type: 'run',
+            object_id: runId,
+            status: 'succeeded',
+            run_id: runId,
+            stream_id: msg.stream,
+            data: {
+              reference_only: true,
+              source: runSource,
+              grant_id: grantId,
+              gap_id: storedGap.gap_id,
+              stream: storedGap.stream,
+              parent_stream: storedGap.parent_stream,
+              record_key: storedGap.record_key,
+              reason: storedGap.reason,
+              status: storedGap.status,
+              detail_locator: storedGap.detail_locator,
+              list_cursor: storedGap.list_cursor,
+              last_error: storedGap.last_error,
+              known_gap: gap,
+            },
+          });
+          onProgress({ ...msg, gap_id: storedGap.gap_id });
+          break;
+        }
+
         case 'PROGRESS':
           validateProgressMessage(msg, scopeByStream);
           await emitSpineEventTracked({
@@ -2365,6 +2462,12 @@ export async function runConnector(opts) {
             closeTerminalReason,
             doneMessage?.error || null,
           ),
+          detail_gaps: durableDetailGaps.map((gap) => ({
+            gap_id: gap.gap_id,
+            stream: gap.stream,
+            status: gap.status,
+            reason: gap.reason,
+          })),
           exit_code: code,
           run_id: runId,
           trace_id: traceContext.trace_id,

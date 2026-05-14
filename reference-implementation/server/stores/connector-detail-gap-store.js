@@ -1,0 +1,348 @@
+import { createHash } from 'node:crypto';
+
+import { execDynamicSqlAcknowledged, iterateDynamicSqlAcknowledged } from '../../lib/db.ts';
+import { getStorageBackendKind, isPostgresStorageBackend, postgresQuery } from '../postgres-storage.js';
+
+const VALID_STATUSES = new Set(['pending', 'in_progress', 'recovered', 'terminal']);
+const SECRET_KEY_PATTERN = /(authorization|bearer|cookie|token|secret|password|credential|request_body|body|payload|raw|private)/i;
+const URL_KEY_PATTERN = /(url|uri|href|endpoint)/i;
+const MAX_STRING_LENGTH = 300;
+const MAX_ARRAY_LENGTH = 20;
+const MAX_OBJECT_KEYS = 40;
+const MAX_DEPTH = 5;
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function nonEmptyString(value) {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function hashIdentity(parts) {
+  return `gap_${createHash('sha256').update(JSON.stringify(parts)).digest('hex').slice(0, 32)}`;
+}
+
+function safeUrlSummary(value) {
+  try {
+    const parsed = new URL(value);
+    return {
+      scheme: parsed.protocol.replace(/:$/, ''),
+      host: parsed.hostname,
+      path_hash: createHash('sha256').update(parsed.pathname || '/').digest('hex').slice(0, 16),
+    };
+  } catch {
+    return '[redacted-url]';
+  }
+}
+
+export function sanitizeDetailGapMetadata(value, depth = 0, keyName = '') {
+  if (value == null || typeof value === 'boolean' || typeof value === 'number') return value;
+  if (typeof value === 'string') {
+    if (/^https?:\/\//i.test(value) || URL_KEY_PATTERN.test(keyName)) return safeUrlSummary(value);
+    return value.length > MAX_STRING_LENGTH ? `${value.slice(0, MAX_STRING_LENGTH - 1)}…` : value;
+  }
+  if (depth >= MAX_DEPTH) return '[truncated]';
+  if (Array.isArray(value)) {
+    return value.slice(0, MAX_ARRAY_LENGTH).map((entry) => sanitizeDetailGapMetadata(entry, depth + 1, keyName));
+  }
+  if (typeof value !== 'object') return null;
+
+  const out = {};
+  for (const [key, entry] of Object.entries(value).slice(0, MAX_OBJECT_KEYS)) {
+    if (SECRET_KEY_PATTERN.test(key)) {
+      out[key] = '[redacted]';
+      continue;
+    }
+    out[key] = sanitizeDetailGapMetadata(entry, depth + 1, key);
+  }
+  return out;
+}
+
+function encodeJson(value) {
+  return value == null ? null : JSON.stringify(value);
+}
+
+function parseJson(value) {
+  if (value == null) return null;
+  if (typeof value === 'object') return value;
+  return JSON.parse(value);
+}
+
+function normalizeGapInput(input) {
+  const connectorId = nonEmptyString(input?.connectorId);
+  const stream = nonEmptyString(input?.stream);
+  if (!connectorId) throw new Error('connector detail gap requires connectorId');
+  if (!stream) throw new Error('connector detail gap requires stream');
+
+  const source = sanitizeDetailGapMetadata(input.source || { kind: 'connector', id: connectorId });
+  const detailLocator = sanitizeDetailGapMetadata(input.detailLocator ?? null);
+  const listCursor = sanitizeDetailGapMetadata(input.listCursor ?? null);
+  const scope = sanitizeDetailGapMetadata(input.scope ?? null);
+  const lastError = sanitizeDetailGapMetadata(input.lastError ?? null);
+  const grantId = nonEmptyString(input.grantId);
+  const parentStream = nonEmptyString(input.parentStream);
+  const recordKey = input.recordKey == null ? null : String(input.recordKey);
+  const reason = nonEmptyString(input.reason) || null;
+  const now = input.now || nowIso();
+  const gapId = input.gapId || hashIdentity([
+    connectorId,
+    grantId || '',
+    stream,
+    parentStream || '',
+    recordKey || '',
+    detailLocator || null,
+  ]);
+
+  return {
+    gapId,
+    connectorId,
+    grantId,
+    source,
+    stream,
+    parentStream,
+    recordKey,
+    detailLocator,
+    listCursor,
+    scope,
+    reason,
+    lastError,
+    discoveredRunId: nonEmptyString(input.discoveredRunId),
+    lastRunId: nonEmptyString(input.lastRunId) || nonEmptyString(input.discoveredRunId),
+    nextAttemptAfter: nonEmptyString(input.nextAttemptAfter),
+    now,
+  };
+}
+
+function rowToGap(row) {
+  if (!row) return null;
+  return {
+    gap_id: row.gap_id,
+    connector_id: row.connector_id,
+    grant_id: row.grant_id ?? null,
+    source: parseJson(row.source_json),
+    stream: row.stream,
+    parent_stream: row.parent_stream ?? null,
+    record_key: row.record_key ?? null,
+    detail_locator: parseJson(row.detail_locator_json),
+    list_cursor: parseJson(row.list_cursor_json),
+    scope: parseJson(row.scope_json),
+    reason: row.reason ?? null,
+    status: row.status,
+    attempt_count: row.attempt_count,
+    last_attempt_at: row.last_attempt_at ?? null,
+    next_attempt_after: row.next_attempt_after ?? null,
+    last_error: parseJson(row.last_error_json),
+    discovered_run_id: row.discovered_run_id ?? null,
+    last_run_id: row.last_run_id ?? null,
+    recovered_run_id: row.recovered_run_id ?? null,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+function firstSqliteRow(sql, params = []) {
+  for (const row of iterateDynamicSqlAcknowledged(sql, params)) {
+    return row;
+  }
+  return null;
+}
+
+export function createSqliteConnectorDetailGapStore() {
+  return {
+    async upsertPendingGap(input) {
+      const gap = normalizeGapInput(input);
+      // REVIEWED-DYNAMIC: connector_detail_gaps is owned by this store and
+      // not yet represented in the static query registry.
+      execDynamicSqlAcknowledged(`
+        INSERT INTO connector_detail_gaps(
+          gap_id, connector_id, grant_id, source_json, stream, parent_stream, record_key,
+          detail_locator_json, list_cursor_json, scope_json, reason, status, attempt_count,
+          next_attempt_after, last_error_json, discovered_run_id, last_run_id, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(gap_id) DO UPDATE SET
+          source_json = excluded.source_json,
+          detail_locator_json = excluded.detail_locator_json,
+          list_cursor_json = excluded.list_cursor_json,
+          scope_json = excluded.scope_json,
+          reason = excluded.reason,
+          status = CASE WHEN connector_detail_gaps.status = 'recovered' THEN 'recovered' ELSE 'pending' END,
+          next_attempt_after = excluded.next_attempt_after,
+          last_error_json = excluded.last_error_json,
+          last_run_id = excluded.last_run_id,
+          updated_at = excluded.updated_at
+      `, [
+        gap.gapId,
+        gap.connectorId,
+        gap.grantId,
+        encodeJson(gap.source),
+        gap.stream,
+        gap.parentStream,
+        gap.recordKey,
+        encodeJson(gap.detailLocator),
+        encodeJson(gap.listCursor),
+        encodeJson(gap.scope),
+        gap.reason,
+        gap.nextAttemptAfter,
+        encodeJson(gap.lastError),
+        gap.discoveredRunId,
+        gap.lastRunId,
+        gap.now,
+        gap.now,
+      ]);
+      // REVIEWED-DYNAMIC: single-row lookup for the store-owned detail-gap table.
+      return rowToGap(firstSqliteRow('SELECT * FROM connector_detail_gaps WHERE gap_id = ? LIMIT 1', [gap.gapId]));
+    },
+
+    async listPendingGaps({ connectorId, grantId = null, streams = null, limit = 100 } = {}) {
+      const streamList = Array.isArray(streams) ? streams.filter((stream) => typeof stream === 'string' && stream) : null;
+      // REVIEWED-DYNAMIC: bounded pending-gap recovery selection over the store-owned table.
+      const rows = [...iterateDynamicSqlAcknowledged(`
+        SELECT * FROM connector_detail_gaps
+        WHERE connector_id = ?
+          AND (? IS NULL OR grant_id = ?)
+          AND status = 'pending'
+        ORDER BY created_at
+        LIMIT ?
+      `, [connectorId, grantId, grantId, Math.max(1, Math.min(limit, 500))])];
+      return rows.map(rowToGap).filter((gap) => !streamList || streamList.includes(gap.stream));
+    },
+
+    async markGapStatus(gapId, status, options = {}) {
+      if (!VALID_STATUSES.has(status)) throw new Error(`Unsupported connector detail gap status: ${status}`);
+      const now = options.now || nowIso();
+      const attemptDelta = status === 'in_progress' ? 1 : 0;
+      const recoveredRunId = status === 'recovered' ? nonEmptyString(options.runId) : null;
+      // REVIEWED-DYNAMIC: status mutation for the store-owned detail-gap table.
+      execDynamicSqlAcknowledged(`
+        UPDATE connector_detail_gaps
+        SET status = ?,
+            attempt_count = attempt_count + ?,
+            last_attempt_at = CASE WHEN ? = 1 THEN ? ELSE last_attempt_at END,
+            next_attempt_after = ?,
+            last_error_json = ?,
+            last_run_id = COALESCE(?, last_run_id),
+            recovered_run_id = COALESCE(?, recovered_run_id),
+            updated_at = ?
+        WHERE gap_id = ?
+      `, [
+        status,
+        attemptDelta,
+        attemptDelta,
+        now,
+        nonEmptyString(options.nextAttemptAfter),
+        encodeJson(sanitizeDetailGapMetadata(options.lastError ?? null)),
+        nonEmptyString(options.runId),
+        recoveredRunId,
+        now,
+        gapId,
+      ]);
+      // REVIEWED-DYNAMIC: single-row lookup for the store-owned detail-gap table.
+      return rowToGap(firstSqliteRow('SELECT * FROM connector_detail_gaps WHERE gap_id = ? LIMIT 1', [gapId]));
+    },
+  };
+}
+
+export function createPostgresConnectorDetailGapStore() {
+  return {
+    async upsertPendingGap(input) {
+      const gap = normalizeGapInput(input);
+      await postgresQuery(`
+        INSERT INTO connector_detail_gaps(
+          gap_id, connector_id, grant_id, source_json, stream, parent_stream, record_key,
+          detail_locator_json, list_cursor_json, scope_json, reason, status, attempt_count,
+          next_attempt_after, last_error_json, discovered_run_id, last_run_id, created_at, updated_at
+        ) VALUES($1, $2, $3, $4::jsonb, $5, $6, $7, $8::jsonb, $9::jsonb, $10::jsonb, $11, 'pending', 0, $12, $13::jsonb, $14, $15, $16, $16)
+        ON CONFLICT (gap_id) DO UPDATE SET
+          source_json = EXCLUDED.source_json,
+          detail_locator_json = EXCLUDED.detail_locator_json,
+          list_cursor_json = EXCLUDED.list_cursor_json,
+          scope_json = EXCLUDED.scope_json,
+          reason = EXCLUDED.reason,
+          status = CASE WHEN connector_detail_gaps.status = 'recovered' THEN 'recovered' ELSE 'pending' END,
+          next_attempt_after = EXCLUDED.next_attempt_after,
+          last_error_json = EXCLUDED.last_error_json,
+          last_run_id = EXCLUDED.last_run_id,
+          updated_at = EXCLUDED.updated_at
+      `, [
+        gap.gapId,
+        gap.connectorId,
+        gap.grantId,
+        JSON.stringify(gap.source),
+        gap.stream,
+        gap.parentStream,
+        gap.recordKey,
+        encodeJson(gap.detailLocator),
+        encodeJson(gap.listCursor),
+        encodeJson(gap.scope),
+        gap.reason,
+        gap.nextAttemptAfter,
+        encodeJson(gap.lastError),
+        gap.discoveredRunId,
+        gap.lastRunId,
+        gap.now,
+      ]);
+      const result = await postgresQuery('SELECT * FROM connector_detail_gaps WHERE gap_id = $1', [gap.gapId]);
+      return rowToGap(result.rows[0]);
+    },
+
+    async listPendingGaps({ connectorId, grantId = null, streams = null, limit = 100 } = {}) {
+      const result = await postgresQuery(`
+        SELECT * FROM connector_detail_gaps
+        WHERE connector_id = $1
+          AND ($2::text IS NULL OR grant_id = $2)
+          AND status = 'pending'
+          AND ($3::text[] IS NULL OR stream = ANY($3::text[]))
+        ORDER BY created_at
+        LIMIT $4
+      `, [connectorId, grantId, Array.isArray(streams) && streams.length ? streams : null, Math.max(1, Math.min(limit, 500))]);
+      return result.rows.map(rowToGap);
+    },
+
+    async markGapStatus(gapId, status, options = {}) {
+      if (!VALID_STATUSES.has(status)) throw new Error(`Unsupported connector detail gap status: ${status}`);
+      const now = options.now || nowIso();
+      const attemptDelta = status === 'in_progress' ? 1 : 0;
+      const recoveredRunId = status === 'recovered' ? nonEmptyString(options.runId) : null;
+      const result = await postgresQuery(`
+        UPDATE connector_detail_gaps
+        SET status = $1,
+            attempt_count = attempt_count + $2,
+            last_attempt_at = CASE WHEN $2 = 1 THEN $3 ELSE last_attempt_at END,
+            next_attempt_after = $4,
+            last_error_json = $5::jsonb,
+            last_run_id = COALESCE($6, last_run_id),
+            recovered_run_id = COALESCE($7, recovered_run_id),
+            updated_at = $3
+        WHERE gap_id = $8
+        RETURNING *
+      `, [
+        status,
+        attemptDelta,
+        now,
+        nonEmptyString(options.nextAttemptAfter),
+        encodeJson(sanitizeDetailGapMetadata(options.lastError ?? null)),
+        nonEmptyString(options.runId),
+        recoveredRunId,
+        gapId,
+      ]);
+      return rowToGap(result.rows[0]);
+    },
+  };
+}
+
+export function createConnectorDetailGapStore() {
+  return isPostgresStorageBackend() ? createPostgresConnectorDetailGapStore() : createSqliteConnectorDetailGapStore();
+}
+
+let defaultStore = null;
+let defaultBackend = null;
+
+export function getDefaultConnectorDetailGapStore() {
+  const backend = getStorageBackendKind();
+  if (!defaultStore || defaultBackend !== backend) {
+    defaultStore = createConnectorDetailGapStore();
+    defaultBackend = backend;
+  }
+  return defaultStore;
+}
