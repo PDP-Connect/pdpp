@@ -24,13 +24,14 @@ No existing `openspec/specs/` capability is a perfect connector-runtime home. `r
 The reference implementation adds a durable detail-gap backlog for connector streams that collect by list-plus-detail:
 
 1. The connector enumerates list items for a bounded cursor tranche.
-2. The connector attempts required detail hydration for each listed item.
+2. The connector attempts required detail hydration for listed items while the upstream detail bucket remains viable.
 3. If detail hydration exhausts recoverable pressure for an item, the connector reports a recoverable detail gap instead of emitting a fake complete record.
-4. Before advancing the list cursor, the connector emits a reference-only coverage attestation for the cursor boundary: which listed keys required detail, which keys were hydrated, which keys were explicitly optional/skipped, and which keys were recorded as pending detail recovery.
-5. The runtime durably records any gap with source, stream, record key or safe upstream locator, list cursor boundary, reason, attempt metadata, and recovery status.
-6. The run may succeed and commit list-level cursor progress only if the declared coverage has no uncovered required detail: every required key is hydrated, explicitly optional/skipped, or backed by a durable recoverable gap entry.
-7. Future runs prioritize pending gap recovery before, or in the same run as, forward list collection.
-8. When recovery succeeds, the runtime marks the gap recovered and the connector emits the real hydrated record.
+4. After observed recoverable pressure in a same-bucket detail tranche, the connector may proactively defer later unattempted items in that tranche as pending recoverable gaps instead of spending the full retry budget on each remaining item.
+5. Before advancing the list cursor, the connector emits a reference-only coverage attestation for the cursor boundary: which listed keys required detail, which keys were hydrated, which keys were explicitly optional/skipped, and which keys were recorded as pending detail recovery.
+6. The runtime durably records any gap with source, stream, record key or safe upstream locator, list cursor boundary, reason, recovery status, and attempt metadata when the item was actually attempted.
+7. The run may succeed and commit list-level cursor progress only if the declared coverage has no uncovered required detail: every required key is hydrated, explicitly optional/skipped, or backed by a durable recoverable gap entry.
+8. Future runs prioritize pending gap recovery before, or in the same run as, forward list collection.
+9. When recovery succeeds, the runtime marks the gap recovered and the connector emits the real hydrated record.
 
 The main cursor remains honest because it no longer means "all detail is present." It means "list enumeration is complete through this boundary and any required missing detail inside the boundary is durably represented as recoverable backlog."
 
@@ -48,7 +49,7 @@ The implementation should use an internal reference-only durable representation.
 - `list_cursor`: cursor boundary or tranche marker that makes the gap's relationship to main cursor advancement auditable.
 - `reason`: low-cardinality class such as `rate_limited`, `retry_exhausted`, `temporary_unavailable`, or `upstream_pressure`.
 - `status`: `pending`, `in_progress`, `recovered`, `terminal`, or equivalent.
-- `attempt_count`, `last_attempt_at`, `next_attempt_after`, and safe last-error metadata.
+- `attempt_count`, `last_attempt_at`, `next_attempt_after`, and safe last-error metadata when the connector has actually attempted recovery or hydration.
 
 Sensitive upstream URLs, cookies, bearer tokens, request bodies, and raw private payloads must not be stored in the gap record. The locator must be enough for the connector to retry, not a dump of the failed request.
 
@@ -96,7 +97,9 @@ The owner must be able to distinguish:
 
 The first tranche may expose this through reference-only `_ref` timeline or summary surfaces. Those surfaces must be labeled reference-only. They should avoid raw upstream identifiers unless the connector supplies a safe label.
 
-ChatGPT conversation-detail pressure also emits a reference-only sanitized network-pressure diagnostic on recoverable detail gaps. The diagnostic is metadata only: safe endpoint route template such as `GET /conversation/{conversation_id}`, low-cardinality error/status class, attempt budget metadata, HTTP status, and bounded retry-after metadata when safely available. It must not include cookies, bearer tokens, authorization headers, raw URLs, request bodies, response bodies, raw `/conversation/<id>` paths, or private payload fragments. Retry-path progress uses the same route-template rule.
+ChatGPT conversation-detail pressure also emits a reference-only sanitized network-pressure diagnostic on recoverable detail gaps. The diagnostic is metadata only: safe endpoint route template such as `GET /conversation/{conversation_id}`, low-cardinality error/status class, HTTP status, bounded retry-after metadata when safely available, and attempt budget metadata only for items that were actually attempted. It must not include cookies, bearer tokens, authorization headers, raw URLs, request bodies, response bodies, raw `/conversation/<id>` paths, or private payload fragments. Retry-path progress uses the same route-template rule.
+
+When ChatGPT observes recoverable detail pressure inside a bounded conversation-detail tranche, it may open a same-bucket circuit for the rest of that tranche. The first attempted item still reports the exhausted-pressure diagnostic for the actual failed fetch. Later unattempted items may be emitted immediately as pending recoverable gaps with an honest deferral class such as `upstream_pressure_deferred` and safe inherited route/status/retry-after metadata. Those deferred diagnostics must not imply that the connector attempted the item or spent the exhausted attempt budget; for example, they must not claim `attempt: 12` or `max_attempts: 12` for an unattempted detail item.
 
 ## Collection Profile Boundary
 
@@ -149,7 +152,7 @@ Rejected for the reference. If the runtime commits the main cursor, the runtime 
 
 ## Acceptance Checks
 
-- A ChatGPT-style fixture can list 278 conversations, exhaust recoverable detail pressure for one item, record a pending detail gap, and commit the list cursor without emitting a fake complete conversation.
+- A ChatGPT-style fixture can list 278 conversations, exhaust recoverable detail pressure for one item around 30/278, defer later same-tranche detail keys as pending gaps without fetching all 278 details, and commit the list cursor without emitting fake complete conversations.
 - A later run can target the pending gap and recover the real detail without replaying the full 278-item list tranche.
 - A run that attempts to commit list progress with missing required detail and no durable gap fails.
 - Optional detail skips remain explicit and do not create required-detail backlog.

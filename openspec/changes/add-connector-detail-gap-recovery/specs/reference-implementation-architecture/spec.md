@@ -8,6 +8,12 @@ The reference implementation SHALL NOT durably advance list-level cursor progres
 - **THEN** the run MAY commit list-level cursor progress only if the missing detail is durably recorded as a pending recoverable detail gap before checkpoint commit
 - **AND** the connector SHALL NOT emit a placeholder record that represents the required detail as complete
 
+#### Scenario: Same-bucket detail pressure defers later tranche items
+- **WHEN** a connector observes recoverable upstream pressure for one required detail item in a same-bucket list-plus-detail tranche
+- **THEN** the connector MAY proactively record later unattempted items in the same tranche as pending recoverable detail gaps without fetching each item
+- **AND** the reference-only detail coverage SHALL include every deferred required key in `gap_keys`
+- **AND** diagnostics for deferred items SHALL NOT imply that those items were attempted or that they exhausted a retry budget
+
 #### Scenario: Required detail is missing without a durable gap
 - **WHEN** a bounded run reaches checkpoint commit with list-level progress whose declared detail coverage includes an item whose required detail was neither hydrated, explicitly optional/skipped, nor durably recorded as a recoverable gap
 - **THEN** the runtime SHALL reject the commit or fail the run

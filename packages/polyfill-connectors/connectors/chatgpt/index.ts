@@ -1041,6 +1041,47 @@ function makeConversationDetailGap(
   };
 }
 
+function omitAttemptBudget(
+  diagnostic: ChatGptNetworkPressureDiagnostic | undefined
+): ChatGptNetworkPressureDiagnostic | undefined {
+  if (!diagnostic) {
+    return;
+  }
+  const { attempt: _attempt, max_attempts: _maxAttempts, ...safeDiagnostic } = diagnostic;
+  return safeDiagnostic;
+}
+
+function makeDeferredConversationDetailGap(
+  c: ConversationListItem,
+  observedPressure: ChatGptRecoverableRetryExhaustedError
+): DetailGapMessage {
+  const networkPressure = omitAttemptBudget(observedPressure.networkPressure);
+  return {
+    type: "DETAIL_GAP",
+    stream: "messages",
+    record_key: c.id,
+    status: "pending",
+    reason: "upstream_pressure",
+    detail_locator: {
+      kind: "chatgpt.conversation",
+      conversation_id: c.id,
+      list_item: safeConversationListItemHint(c),
+    },
+    retryable: true,
+    reference_only: true,
+    detail: {
+      class: "upstream_pressure_deferred",
+      ...(observedPressure.httpStatus == null ? {} : { http_status: observedPressure.httpStatus }),
+      ...(networkPressure == null ? {} : { network_pressure: networkPressure }),
+    },
+    last_error: {
+      class: "upstream_pressure_deferred",
+      ...(observedPressure.httpStatus == null ? {} : { http_status: observedPressure.httpStatus }),
+      ...(networkPressure == null ? {} : { network_pressure: networkPressure }),
+    },
+  };
+}
+
 function makeConversationDetailCoverage(
   convosToSync: ConversationListItem[],
   coverage: ConversationDetailCoverage
@@ -1111,15 +1152,22 @@ export async function runMessagesAndConversationsWithDetail(
       });
     },
   });
+  let observedRecoverablePressure: ChatGptRecoverableRetryExhaustedError | null = null;
   await lane.runAll(convosToSync, async (c) => {
     if (!c) {
       return { status: 404, json: null };
+    }
+    if (observedRecoverablePressure) {
+      await deps.emit(makeDeferredConversationDetailGap(c, observedRecoverablePressure));
+      coverage.gapKeys.push(c.id);
+      return { status: 200, json: null };
     }
     let detail: ChatGptFetchResult;
     try {
       detail = await deps.api.fetch(`/conversation/${encodeURIComponent(c.id)}`);
     } catch (err) {
       if (err instanceof ChatGptRecoverableRetryExhaustedError) {
+        observedRecoverablePressure = err;
         await deps.emit(makeConversationDetailGap(c, err));
         coverage.gapKeys.push(c.id);
         return { status: 200, json: null };

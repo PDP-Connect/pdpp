@@ -629,12 +629,9 @@ test("runConversationsAndMessagesStreams: detail failure rejects before conversa
   );
 });
 
-test("runConversationsAndMessagesStreams: recoverable detail exhaustion emits DETAIL_GAP and then STATE", async () => {
+test("runConversationsAndMessagesStreams: isolated recoverable detail exhaustion emits DETAIL_GAP and then STATE", async () => {
   const harness = makeRecordingEmit(validateRecord);
-  const listItems = [
-    makeConvo({ id: "convo-gap", update_time: 1_700_000_100 }),
-    makeConvo({ id: "convo-after-gap", update_time: 1_700_000_200 }),
-  ];
+  const listItems = [makeConvo({ id: "convo-gap", update_time: 1_700_000_100 })];
   const fetches: string[] = [];
   const api: ChatGptApi = {
     auth: (): Promise<never> => Promise.reject(new Error("fakeApi.auth() unused in this test")),
@@ -680,11 +677,7 @@ test("runConversationsAndMessagesStreams: recoverable detail exhaustion emits DE
 
   await runConversationsAndMessagesStreams(deps, {}, { detailPacing: { random: () => 0, sleep: () => undefined } });
 
-  assert.deepEqual(fetches, [
-    "/conversations?offset=0&limit=100&order=updated",
-    "/conversation/convo-gap",
-    "/conversation/convo-after-gap",
-  ]);
+  assert.deepEqual(fetches, ["/conversations?offset=0&limit=100&order=updated", "/conversation/convo-gap"]);
   assert.equal(
     harness.emitted.some((r) => r.stream === "conversations" && r.data.id === "convo-gap"),
     false,
@@ -694,11 +687,6 @@ test("runConversationsAndMessagesStreams: recoverable detail exhaustion emits DE
     harness.emitted.some((r) => r.stream === "messages" && r.data.conversation_id === "convo-gap"),
     false,
     "recoverable required detail gaps must not emit fake empty messages"
-  );
-  assert.equal(
-    harness.emitted.some((r) => r.stream === "conversations" && r.data.id === "convo-after-gap"),
-    true,
-    "detail gap must not stop later conversations in the tranche"
   );
 
   const gap = harness.protocolMessages.find(
@@ -776,24 +764,18 @@ test("runConversationsAndMessagesStreams: recoverable detail exhaustion emits DE
     reference_only: true,
     state_stream: "conversations",
     stream: "messages",
-    required_keys: ["convo-gap", "convo-after-gap"],
-    hydrated_keys: ["convo-after-gap"],
+    required_keys: ["convo-gap"],
+    hydrated_keys: [],
     gap_keys: ["convo-gap"],
   });
 
   const gapIdx = harness.events.findIndex((e) => e.kind === "message" && e.message.type === "DETAIL_GAP");
-  const laterRecordIdx = harness.events.findIndex(
-    (e) => e.kind === "record" && e.stream === "conversations" && e.data.id === "convo-after-gap"
-  );
   const coverageIdx = harness.events.findIndex((e) => e.kind === "message" && e.message.type === "DETAIL_COVERAGE");
   const stateIdx = harness.events.findIndex(
     (e) => e.kind === "message" && e.message.type === "STATE" && e.message.stream === "conversations"
   );
-  assert.ok(gapIdx !== -1 && laterRecordIdx > gapIdx, "later detail work should continue after the gap");
-  assert.ok(
-    coverageIdx > gapIdx && coverageIdx > laterRecordIdx,
-    "DETAIL_COVERAGE must emit after gap and all detail work settle"
-  );
+  assert.ok(gapIdx !== -1, "gap must emit");
+  assert.ok(coverageIdx > gapIdx, "DETAIL_COVERAGE must emit after gap");
   assert.ok(stateIdx > coverageIdx, "STATE must emit after DETAIL_COVERAGE");
 });
 
@@ -836,7 +818,20 @@ test("runConversationsAndMessagesStreams: 30/278 pressure exhaustion records a d
         return Promise.reject(
           new ChatGptRecoverableRetryExhaustedError(
             `apiFetch got 429 on GET /conversation/${pressureItem.id} after retry budget exhausted bearer secret`,
-            { class: "rate_limited", httpStatus: 429 }
+            {
+              class: "rate_limited",
+              httpStatus: 429,
+              networkPressure: {
+                endpoint_route: "GET /conversation/{conversation_id}",
+                error_class: "http_429",
+                method: "GET",
+                attempt: 12,
+                max_attempts: 12,
+                status: 429,
+                retry_after_ms: 120_000,
+                safe_headers: { "retry-after-ms": 120_000 },
+              },
+            }
           )
         );
       }
@@ -854,7 +849,7 @@ test("runConversationsAndMessagesStreams: 30/278 pressure exhaustion records a d
   await runConversationsAndMessagesStreams(deps, {}, { detailPacing: { random: () => 0, sleep: () => undefined } });
 
   assert.equal(fetches.filter((path) => path.startsWith("/conversations?")).length, 3);
-  assert.equal(fetches.filter((path) => path.startsWith("/conversation/")).length, 278);
+  assert.equal(fetches.filter((path) => path.startsWith("/conversation/")).length, 30);
   assert.deepEqual(fetches.slice(0, 33), [
     "/conversations?offset=0&limit=100&order=updated",
     "/conversations?offset=100&limit=100&order=updated",
@@ -869,8 +864,8 @@ test("runConversationsAndMessagesStreams: 30/278 pressure exhaustion records a d
   );
   assert.equal(
     harness.emitted.filter((r) => r.stream === "conversations").length,
-    277,
-    "all hydrated conversations except the pressure gap should emit"
+    29,
+    "only conversations hydrated before the first pressure item should emit"
   );
 
   const gap = harness.protocolMessages.find(
@@ -900,8 +895,34 @@ test("runConversationsAndMessagesStreams: 30/278 pressure exhaustion records a d
     },
     retryable: true,
     reference_only: true,
-    detail: { class: "rate_limited", http_status: 429 },
-    last_error: { class: "rate_limited", http_status: 429 },
+    detail: {
+      class: "rate_limited",
+      http_status: 429,
+      network_pressure: {
+        endpoint_route: "GET /conversation/{conversation_id}",
+        error_class: "http_429",
+        method: "GET",
+        attempt: 12,
+        max_attempts: 12,
+        status: 429,
+        retry_after_ms: 120_000,
+        safe_headers: { "retry-after-ms": 120_000 },
+      },
+    },
+    last_error: {
+      class: "rate_limited",
+      http_status: 429,
+      network_pressure: {
+        endpoint_route: "GET /conversation/{conversation_id}",
+        error_class: "http_429",
+        method: "GET",
+        attempt: 12,
+        max_attempts: 12,
+        status: 429,
+        retry_after_ms: 120_000,
+        safe_headers: { "retry-after-ms": 120_000 },
+      },
+    },
   });
   const serializedGap = JSON.stringify(gap);
   assert.equal(
@@ -912,6 +933,34 @@ test("runConversationsAndMessagesStreams: 30/278 pressure exhaustion records a d
   assert.equal(serializedGap.includes("bearer"), false, "gap diagnostic must not expose raw auth text");
   assert.equal(serializedGap.includes("secret"), false, "gap diagnostic must not expose raw auth text");
 
+  const deferredGaps = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "DETAIL_GAP" }> =>
+      m.type === "DETAIL_GAP" && m.record_key !== pressureItem.id
+  );
+  assert.equal(deferredGaps.length, 248, "later same-tranche items should be deferred without detail fetches");
+  assert.equal(deferredGaps[0]?.record_key, listItems[30]?.id);
+  assert.equal(deferredGaps[0]?.reason, "upstream_pressure");
+  assert.equal(deferredGaps[0]?.detail?.class, "upstream_pressure_deferred");
+  assert.deepEqual(deferredGaps[0]?.detail?.network_pressure, {
+    endpoint_route: "GET /conversation/{conversation_id}",
+    error_class: "http_429",
+    method: "GET",
+    status: 429,
+    retry_after_ms: 120_000,
+    safe_headers: { "retry-after-ms": 120_000 },
+  });
+  assert.equal(
+    deferredGaps.some(
+      (deferredGap) =>
+        deferredGap.detail?.network_pressure?.attempt !== undefined ||
+        deferredGap.detail?.network_pressure?.max_attempts !== undefined ||
+        deferredGap.last_error?.network_pressure?.attempt !== undefined ||
+        deferredGap.last_error?.network_pressure?.max_attempts !== undefined
+    ),
+    false,
+    "deferred gaps must not claim the exhausted retry attempt budget for unattempted items"
+  );
+
   const coverage = harness.protocolMessages.find(
     (m): m is Extract<EmittedMessage, { type: "DETAIL_COVERAGE" }> => m.type === "DETAIL_COVERAGE"
   );
@@ -919,8 +968,11 @@ test("runConversationsAndMessagesStreams: 30/278 pressure exhaustion records a d
   assert.equal(coverage.state_stream, "conversations");
   assert.equal(coverage.stream, "messages");
   assert.equal(coverage.required_keys.length, 278);
-  assert.equal(coverage.hydrated_keys.length, 277);
-  assert.deepEqual(coverage.gap_keys, [pressureItem.id]);
+  assert.equal(coverage.hydrated_keys.length, 29);
+  assert.deepEqual(
+    coverage.gap_keys,
+    listItems.slice(29).map((item) => item.id)
+  );
   assert.equal(coverage.required_keys[29], pressureItem.id);
   assert.equal(coverage.hydrated_keys.includes(pressureItem.id), false);
 
