@@ -933,6 +933,13 @@ test("runConversationsAndMessagesStreams: 30/278 pressure exhaustion records a d
   assert.equal(serializedGap.includes("bearer"), false, "gap diagnostic must not expose raw auth text");
   assert.equal(serializedGap.includes("secret"), false, "gap diagnostic must not expose raw auth text");
 
+  const circuitMessages = harness.protocolMessages.filter(
+    (m): m is Extract<EmittedMessage, { type: "PROGRESS" }> =>
+      m.type === "PROGRESS" && m.message.includes("opened upstream-pressure circuit")
+  );
+  assert.equal(circuitMessages.length, 1, "operator should see when remaining detail fetches are deferred");
+  assert.equal(JSON.stringify(circuitMessages).includes(`/conversation/${pressureItem.id}`), false);
+
   const deferredGaps = harness.protocolMessages.filter(
     (m): m is Extract<EmittedMessage, { type: "DETAIL_GAP" }> =>
       m.type === "DETAIL_GAP" && m.record_key !== pressureItem.id

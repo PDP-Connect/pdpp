@@ -1168,6 +1168,12 @@ export async function runMessagesAndConversationsWithDetail(
     } catch (err) {
       if (err instanceof ChatGptRecoverableRetryExhaustedError) {
         observedRecoverablePressure = err;
+        await deps.emit({
+          type: "PROGRESS",
+          stream: "messages",
+          message:
+            "ChatGPT conversation-detail lane opened upstream-pressure circuit; deferring remaining conversation details as DETAIL_GAP records",
+        });
         await deps.emit(makeConversationDetailGap(c, err));
         coverage.gapKeys.push(c.id);
         return { status: 200, json: null };
