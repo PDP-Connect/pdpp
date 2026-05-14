@@ -280,6 +280,7 @@ export class NekoSurfaceAllocatorService {
         Image: this.#options.image,
         Labels: labels,
         Env: this.#containerEnv(request, port),
+        Healthcheck: this.#containerHealthcheck(),
         ExposedPorts: {
           [`${String(this.#options.containerHttpPort)}/tcp`]: {},
           [`${String(this.#options.containerCdpPort)}/tcp`]: {},
@@ -571,6 +572,31 @@ export class NekoSurfaceAllocatorService {
       ...(this.#options.extraEnv ?? {}),
     };
     return Object.entries(env).map(([key, value]) => `${key}=${value}`);
+  }
+
+  #containerHealthcheck(): {
+    Interval: number;
+    Retries: number;
+    StartPeriod: number;
+    Test: string[];
+    Timeout: number;
+  } {
+    const healthPath = `/${this.#options.nekoHealthPath.replace(LEADING_SLASH_RE, "")}`;
+    const cdpVersionPath = `/${this.#options.cdpVersionPath.replace(LEADING_SLASH_RE, "")}`;
+    return {
+      Test: [
+        "CMD-SHELL",
+        [
+          `wget -q -O /dev/null http://127.0.0.1:${String(this.#options.containerHttpPort)}${healthPath}`,
+          `wget -q -O /dev/null http://127.0.0.1:${String(this.#options.containerCdpPort)}${cdpVersionPath}`,
+          "supervisorctl status chromium | grep -q RUNNING",
+        ].join(" && "),
+      ],
+      Interval: 10_000_000_000,
+      Timeout: 5_000_000_000,
+      StartPeriod: 20_000_000_000,
+      Retries: 12,
+    };
   }
 
   #expandTemplate(template: string, surfaceId: string, hostPort: number, containerName: string): string {

@@ -76,6 +76,16 @@ test("creates and starts an owned n.eko container with sanitized profile storage
   assert.ok(create.init.body.Env.includes("PDPP_NEKO_CDP_PROXY_PORT=9223"));
   assert.ok(create.init.body.Env.includes("NEKO_WEBRTC_UDPMUX=59000"));
   assert.ok(create.init.body.Env.includes("NEKO_WEBRTC_TCPMUX=59000"));
+  assert.deepEqual(create.init.body.Healthcheck, {
+    Test: [
+      "CMD-SHELL",
+      "wget -q -O /dev/null http://127.0.0.1:8080/neko/health && wget -q -O /dev/null http://127.0.0.1:9223/json/version && supervisorctl status chromium | grep -q RUNNING",
+    ],
+    Interval: 10_000_000_000,
+    Timeout: 5_000_000_000,
+    StartPeriod: 20_000_000_000,
+    Retries: 12,
+  });
   assert.ok(!create.init.body.Env.some((entry) => entry.startsWith("NEKO_BIND=")));
   assert.ok(!create.init.body.Env.some((entry) => entry.startsWith("NEKO_CHROME_FLAGS=")));
   assert.equal(docker.calls.some((call) => call.path === "/containers/container_1/start"), true);
