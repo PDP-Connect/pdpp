@@ -58,6 +58,7 @@ import {
   runMemoriesStream,
   runSharedConversationsStream,
   type StreamDeps,
+  summarizeChatGptSideEffectProbe,
 } from "./index.ts";
 import { buildConversationRecord, type ConversationDetail } from "./parsers.ts";
 import { validateRecord } from "./schemas.ts";
@@ -77,6 +78,48 @@ test("CHATGPT_RETRYABLE_ERROR_PATTERN treats retry-budget exhaustion as retryabl
     ),
     true
   );
+});
+
+test("summarizeChatGptSideEffectProbe reports stable list/detail metadata without content", () => {
+  const summary = summarizeChatGptSideEffectProbe({
+    ok: true,
+    target_id: "conversation-id",
+    before: [{ index: 0, id: "conversation-id", create_time: 1, update_time: 10, current_node: "node-a" }],
+    after1: [{ index: 0, id: "conversation-id", create_time: 1, update_time: 10, current_node: "node-a" }],
+    after2: [{ index: 0, id: "conversation-id", create_time: 1, update_time: 10, current_node: "node-a" }],
+    detail: { status: 200, create_time: 1, update_time: 10, current_node: "node-a" },
+  });
+
+  assert.match(summary, /target=conversation-id/);
+  assert.match(summary, /detail_http=200/);
+  assert.match(summary, /order_changed=false/);
+  assert.match(summary, /update_time_changed=false/);
+  assert.match(summary, /current_node_changed=false/);
+});
+
+test("summarizeChatGptSideEffectProbe reports update and order side effects", () => {
+  const summary = summarizeChatGptSideEffectProbe({
+    ok: true,
+    target_id: "conversation-id",
+    before: [
+      { index: 0, id: "conversation-id", create_time: 1, update_time: 10, current_node: "node-a" },
+      { index: 1, id: "other-id", create_time: 1, update_time: 9, current_node: "node-b" },
+    ],
+    after1: [
+      { index: 0, id: "other-id", create_time: 1, update_time: 9, current_node: "node-b" },
+      { index: 1, id: "conversation-id", create_time: 1, update_time: 11, current_node: "node-a" },
+    ],
+    after2: [
+      { index: 0, id: "other-id", create_time: 1, update_time: 9, current_node: "node-b" },
+      { index: 1, id: "conversation-id", create_time: 1, update_time: 11, current_node: "node-a" },
+    ],
+    detail: { status: 200, create_time: 1, update_time: 11, current_node: "node-a" },
+  });
+
+  assert.match(summary, /index=0>1>1/);
+  assert.match(summary, /update_time=10>11>11/);
+  assert.match(summary, /order_changed=true/);
+  assert.match(summary, /update_time_changed=true/);
 });
 
 /** Build a StreamDeps with a configurable fake ChatGptApi. Records every

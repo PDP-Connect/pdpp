@@ -132,6 +132,7 @@ const CHATGPT_RATE_LIMIT_MAX_DELAY_MS = 15 * 60_000;
 const CHATGPT_RATE_LIMIT_MAX_RETRY_AFTER_MS = 15 * 60_000;
 const CHATGPT_LONG_SLEEP_PROGRESS_THRESHOLD_MS = 5000;
 export const CHATGPT_RETRYABLE_ERROR_PATTERN = /ECONN|ETIMEDOUT|fetch failed|429|retry budget exhausted/i;
+const CHATGPT_SIDE_EFFECT_PROBE_ENV = "PDPP_CHATGPT_SIDE_EFFECT_PROBE";
 
 function formatSleepDuration(ms: number): string {
   if (ms < 1000) {
@@ -276,6 +277,243 @@ function createChatGptApi({
       });
     },
   };
+}
+
+function isChatGptSideEffectProbeEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const value = env[CHATGPT_SIDE_EFFECT_PROBE_ENV]?.trim().toLowerCase();
+  return value === "1" || value === "true" || value === "only";
+}
+
+interface ChatGptConversationProbeItem {
+  create_time: number | null;
+  current_node: string | null;
+  id: string | null;
+  index: number;
+  update_time: number | null;
+}
+
+interface ChatGptSideEffectProbeResult {
+  after1?: ChatGptConversationProbeItem[];
+  after2?: ChatGptConversationProbeItem[];
+  before?: ChatGptConversationProbeItem[];
+  detail?: {
+    create_time: number | null;
+    current_node: string | null;
+    status: number;
+    update_time: number | null;
+  };
+  ok: boolean;
+  stage?: string;
+  status?: number;
+  target_id?: string | null;
+}
+
+function sameOrder(a: ChatGptConversationProbeItem[], b: ChatGptConversationProbeItem[]): boolean {
+  return a.map((item) => item.id).join("\n") === b.map((item) => item.id).join("\n");
+}
+
+function findProbeItem(
+  items: ChatGptConversationProbeItem[] | undefined,
+  id: string | null | undefined
+): ChatGptConversationProbeItem | null {
+  if (!id) {
+    return null;
+  }
+  return items?.find((item) => item.id === id) ?? null;
+}
+
+function formatProbeFailure(result: ChatGptSideEffectProbeResult): string {
+  const status = result.status ? ` (HTTP ${result.status})` : "";
+  return `ChatGPT side-effect probe could not complete at ${result.stage ?? "unknown"}${status}`;
+}
+
+function formatProbeValue(value: number | string | boolean | null): string {
+  return value == null ? "null" : String(value);
+}
+
+function formatProbeIndex(value: number | null): string {
+  return value == null ? "missing" : String(value);
+}
+
+function probeValueChanged<T>(before: T, after1: T, after2: T): boolean {
+  return before !== after1 || before !== after2;
+}
+
+function getProbeTargets(result: ChatGptSideEffectProbeResult): {
+  after1Target: ChatGptConversationProbeItem | null;
+  after2Target: ChatGptConversationProbeItem | null;
+  beforeTarget: ChatGptConversationProbeItem | null;
+  targetId: string | null;
+} {
+  const before = result.before ?? [];
+  const targetId = result.target_id ?? before[0]?.id ?? null;
+  return {
+    targetId,
+    beforeTarget: findProbeItem(before, targetId),
+    after1Target: findProbeItem(result.after1, targetId),
+    after2Target: findProbeItem(result.after2, targetId),
+  };
+}
+
+export function summarizeChatGptSideEffectProbe(result: ChatGptSideEffectProbeResult): string {
+  if (!result.ok) {
+    return formatProbeFailure(result);
+  }
+
+  const before = result.before ?? [];
+  const after1 = result.after1 ?? [];
+  const after2 = result.after2 ?? [];
+  const { after1Target, after2Target, beforeTarget, targetId } = getProbeTargets(result);
+  const beforeUpdate = beforeTarget?.update_time ?? null;
+  const after1Update = after1Target?.update_time ?? null;
+  const after2Update = after2Target?.update_time ?? null;
+  const beforeNode = beforeTarget?.current_node ?? null;
+  const after1Node = after1Target?.current_node ?? null;
+  const after2Node = after2Target?.current_node ?? null;
+  const detailNode = result.detail?.current_node ?? null;
+  const orderChangedAfter1 = !sameOrder(before, after1);
+  const orderChangedAfter2 = !sameOrder(before, after2);
+  const indexBefore = beforeTarget?.index ?? null;
+  const indexAfter1 = after1Target?.index ?? null;
+  const indexAfter2 = after2Target?.index ?? null;
+  const updateChanged = probeValueChanged(beforeUpdate, after1Update, after2Update);
+  const nodeChanged = probeValueChanged(beforeNode, after1Node, after2Node);
+
+  return [
+    "ChatGPT side-effect probe result:",
+    `target=${targetId ?? "none"}`,
+    `detail_http=${result.detail?.status ?? "none"}`,
+    `index=${formatProbeIndex(indexBefore)}>${formatProbeIndex(indexAfter1)}>${formatProbeIndex(indexAfter2)}`,
+    `update_time=${formatProbeValue(beforeUpdate)}>${formatProbeValue(after1Update)}>${formatProbeValue(after2Update)}`,
+    `current_node=${formatProbeValue(beforeNode)}>${formatProbeValue(after1Node)}>${formatProbeValue(after2Node)}`,
+    `detail_current_node=${detailNode ?? "null"}`,
+    `order_changed=${orderChangedAfter1 || orderChangedAfter2}`,
+    `update_time_changed=${updateChanged}`,
+    `current_node_changed=${nodeChanged}`,
+  ].join(" ");
+}
+
+async function runChatGptSideEffectProbe({
+  api,
+  emit,
+  page,
+}: {
+  api: ChatGptApi;
+  emit: CollectContext["emit"];
+  page: Page;
+}): Promise<void> {
+  await emit({
+    type: "PROGRESS",
+    stream: "conversations",
+    message:
+      "ChatGPT side-effect probe enabled; running one GET-only list/detail/list comparison and skipping collection",
+  });
+  const auth = await api.auth();
+  const result = (await page.evaluate(async ({ accessToken, deviceId }) => {
+    const metadata = (value: unknown, index: number): ChatGptConversationProbeItem => {
+      const item = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+      return {
+        index,
+        id: typeof item.id === "string" ? item.id : null,
+        create_time: typeof item.create_time === "number" ? item.create_time : null,
+        update_time: typeof item.update_time === "number" ? item.update_time : null,
+        current_node: typeof item.current_node === "string" ? item.current_node : null,
+      };
+    };
+    const pickList = (json: unknown): ChatGptConversationProbeItem[] => {
+      const body = json && typeof json === "object" ? (json as { items?: unknown }) : {};
+      const items = Array.isArray(body.items) ? body.items : [];
+      return items.slice(0, 5).map((item, index) => metadata(item, index));
+    };
+    const getJson = async (path: string): Promise<{ json: unknown; status: number }> => {
+      const headers: Record<string, string> = {
+        accept: "*/*",
+        authorization: `Bearer ${accessToken}`,
+        "oai-language": "en-US",
+      };
+      if (deviceId) {
+        headers["oai-device-id"] = deviceId;
+      }
+      const res = await fetch(`https://chatgpt.com/backend-api${path}`, {
+        credentials: "include",
+        headers,
+        method: "GET",
+      });
+      let json: unknown = null;
+      if (res.ok) {
+        try {
+          json = await res.json();
+        } catch {
+          json = null;
+        }
+      }
+      return { status: res.status, json };
+    };
+
+    if (!accessToken) {
+      return { ok: false, stage: "auth_extract" } satisfies ChatGptSideEffectProbeResult;
+    }
+
+    const beforeRes = await getJson("/conversations?offset=0&limit=5&order=updated");
+    if (beforeRes.status !== 200) {
+      return { ok: false, stage: "before_list", status: beforeRes.status } satisfies ChatGptSideEffectProbeResult;
+    }
+    const before = pickList(beforeRes.json);
+    const target = before[0];
+    if (!target?.id) {
+      return { ok: false, stage: "select_target", before } satisfies ChatGptSideEffectProbeResult;
+    }
+
+    const detailRes = await getJson(`/conversation/${encodeURIComponent(target.id)}`);
+    const detailBody =
+      detailRes.json && typeof detailRes.json === "object" ? (detailRes.json as Record<string, unknown>) : {};
+    const detail = {
+      status: detailRes.status,
+      create_time: typeof detailBody.create_time === "number" ? detailBody.create_time : null,
+      update_time: typeof detailBody.update_time === "number" ? detailBody.update_time : null,
+      current_node: typeof detailBody.current_node === "string" ? detailBody.current_node : null,
+    };
+
+    const after1Res = await getJson("/conversations?offset=0&limit=5&order=updated");
+    if (after1Res.status !== 200) {
+      return {
+        ok: false,
+        stage: "after1_list",
+        status: after1Res.status,
+        before,
+        detail,
+        target_id: target.id,
+      } satisfies ChatGptSideEffectProbeResult;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    const after2Res = await getJson("/conversations?offset=0&limit=5&order=updated");
+    if (after2Res.status !== 200) {
+      return {
+        ok: false,
+        stage: "after2_list",
+        status: after2Res.status,
+        before,
+        after1: pickList(after1Res.json),
+        detail,
+        target_id: target.id,
+      } satisfies ChatGptSideEffectProbeResult;
+    }
+
+    return {
+      ok: true,
+      before,
+      after1: pickList(after1Res.json),
+      after2: pickList(after2Res.json),
+      detail,
+      target_id: target.id,
+    } satisfies ChatGptSideEffectProbeResult;
+  }, auth)) as ChatGptSideEffectProbeResult;
+
+  await emit({
+    type: "PROGRESS",
+    stream: "conversations",
+    message: summarizeChatGptSideEffectProbe(result),
+  });
 }
 
 // ─── Per-stream helpers ────────────────────────────────────────────────
@@ -725,6 +963,11 @@ if (isMainModule(import.meta.url)) {
       progress(`Authenticated to ChatGPT (device_id=${auth.deviceId ? `${auth.deviceId.slice(0, 8)}…` : "unknown"})`);
 
       const deps: StreamDeps = { api, emit, emitRecord, progress, requested };
+
+      if (isChatGptSideEffectProbeEnabled()) {
+        await runChatGptSideEffectProbe({ api, emit, page });
+        return;
+      }
 
       if (requested.has("memories")) {
         await runMemoriesStream(deps);
