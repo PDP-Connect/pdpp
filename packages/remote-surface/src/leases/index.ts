@@ -28,6 +28,7 @@ export type {
   BrowserSurfaceProjection,
   BrowserSurfaceWaitReason,
   CleanupIdleBrowserSurfacesResult,
+  CompleteBrowserSurfaceCapacityReclaimResult,
   EnsureStartingBrowserSurfaceRequest,
   EnsureBrowserSurfaceRequest,
   ReconcileBrowserSurfaceLeasesAfterRestartRequest,

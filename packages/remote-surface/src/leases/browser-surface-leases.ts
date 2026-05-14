@@ -168,6 +168,11 @@ export interface CleanupIdleBrowserSurfacesResult {
   readonly promoted: BrowserSurfaceLease[];
 }
 
+export interface CompleteBrowserSurfaceCapacityReclaimResult {
+  readonly stopped?: BrowserSurface;
+  readonly promoted?: BrowserSurfaceLease;
+}
+
 export interface EnsureBrowserSurfaceRequest {
   readonly surfaceId: string;
   readonly connectorId: string;
@@ -177,7 +182,7 @@ export interface EnsureBrowserSurfaceRequest {
 
 export interface StopBrowserSurfaceRequest {
   readonly surfaceId: string;
-  readonly reason: "idle_ttl" | "operator" | "reconcile" | "surface_failed";
+  readonly reason: "capacity_pressure" | "idle_ttl" | "operator" | "reconcile" | "surface_failed";
 }
 
 export interface BrowserSurfaceAllocator {
@@ -555,6 +560,40 @@ export class BrowserSurfaceLeaseManager {
     }
 
     return { stopped, promoted: this.pumpQueuedLeases() };
+  }
+
+  planCapacityPressureReclaim(leaseId: string): BrowserSurface | undefined {
+    const lease = this.#leases.get(leaseId);
+    if (
+      this.#config.surfaceMode !== "dynamic" ||
+      !lease ||
+      lease.status !== "waiting_for_browser_surface" ||
+      lease.wait_reason !== "capacity_full" ||
+      this.#findReadyIdleSurface(lease.profile_key) ||
+      this.#activeSurfaceCount() < this.#config.surfaceCap
+    ) {
+      return undefined;
+    }
+    return [...this.#surfaces.values()]
+      .filter(
+        (surface) =>
+          surface.backend === "neko" &&
+          surface.health === "ready" &&
+          !surface.active_lease_id &&
+          surface.profile_key !== lease.profile_key,
+      )
+      .sort((a, b) => Date.parse(a.last_used_at) - Date.parse(b.last_used_at))[0];
+  }
+
+  completeCapacityPressureReclaim(surfaceId: string): CompleteBrowserSurfaceCapacityReclaimResult {
+    const surface = this.#surfaces.get(surfaceId);
+    if (!surface || surface.health !== "ready" || surface.active_lease_id) {
+      return {};
+    }
+    const stopping = { ...surface, health: "stopping" as const, last_used_at: this.#isoNow() };
+    this.#surfaces.set(surfaceId, stopping);
+    const promoted = this.#pumpQueue();
+    return { stopped: stopping, ...(promoted ? { promoted } : {}) };
   }
 
   #resolveNewLease(lease: BrowserSurfaceLease, now: string): BrowserSurfaceLease {

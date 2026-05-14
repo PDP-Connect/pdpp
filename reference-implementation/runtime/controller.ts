@@ -1133,6 +1133,48 @@ export function createController(opts: ControllerOptions = {}): Controller {
     return { lease: current, ...(surface ? { surface } : {}) };
   }
 
+  async function reclaimCapacityAndPromoteLease(
+    lease: BrowserSurfaceLease,
+  ): Promise<{ lease: BrowserSurfaceLease; surface?: BrowserSurface; reclaimed: boolean }> {
+    if (!browserSurfaceLeaseManager || !browserSurfaceAllocator) {
+      return { lease, reclaimed: false };
+    }
+    const reclaimable = browserSurfaceLeaseManager.planCapacityPressureReclaim(lease.lease_id);
+    if (!reclaimable) {
+      return { lease, reclaimed: false };
+    }
+    try {
+      await browserSurfaceAllocator.stopSurface({
+        surfaceId: reclaimable.surface_id,
+        reason: "capacity_pressure",
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      log.warn?.(`[controller] browser-surface capacity reclaim for ${lease.run_id} failed: ${message}`);
+      return { lease, reclaimed: false };
+    }
+
+    const reclaimed = browserSurfaceLeaseManager.completeCapacityPressureReclaim(reclaimable.surface_id);
+    if (reclaimed.stopped) {
+      await persistBrowserSurfaceLeaseMutation(lease, reclaimed.stopped);
+    }
+    if (!reclaimed.promoted) {
+      return { lease, reclaimed: Boolean(reclaimed.stopped) };
+    }
+    await persistBrowserSurfaceLeaseMutation(
+      reclaimed.promoted,
+      reclaimed.promoted.surface_id ? browserSurfaceLeaseManager.getSurface(reclaimed.promoted.surface_id) : undefined,
+    );
+    const surface = reclaimed.promoted.surface_id
+      ? browserSurfaceLeaseManager.getSurface(reclaimed.promoted.surface_id)
+      : undefined;
+    return {
+      lease: reclaimed.promoted,
+      ...(surface ? { surface } : {}),
+      reclaimed: true,
+    };
+  }
+
   function promoteBrowserSurfaceLease(lease: BrowserSurfaceLease, reason: string): void {
     const promotedOptions = pendingBrowserSurfaceLaunches.get(lease.run_id) ?? {};
     pendingBrowserSurfaceLaunches.delete(lease.run_id);
@@ -1465,6 +1507,50 @@ export function createController(opts: ControllerOptions = {}): Controller {
       await emitBrowserSurfaceLeaseEvent("run.browser_surface_requested", connectorId, runId, traceContext, leaseResult.lease);
 
       if (leaseResult.lease.status === "waiting_for_browser_surface") {
+        const reclaimedResult = await reclaimCapacityAndPromoteLease(leaseResult.lease);
+        if (reclaimedResult.lease.run_id === runId && reclaimedResult.lease.status !== "waiting_for_browser_surface") {
+          browserSurfaceLease = reclaimedResult.lease;
+          if (reclaimedResult.lease.status === "starting_surface") {
+            const readyResult = await waitForStartingBrowserSurface(reclaimedResult.lease, connectorId, runId, traceContext);
+            browserSurfaceLease = readyResult.lease;
+            if (readyResult.lease.status === "surface_failed") {
+              pendingBrowserSurfaceLaunches.delete(runId);
+              await emitBrowserSurfaceLeaseEvent("run.browser_surface_failed", connectorId, runId, traceContext, readyResult.lease);
+              return {
+                run_id: runId,
+                trace_id: traceContext.trace_id,
+                status: readyResult.lease.status,
+                browser_surface: projectBrowserSurfaceLease(readyResult.lease),
+              };
+            }
+            const readySurface = readyResult.surface ?? (
+              readyResult.lease.surface_id ? browserSurfaceLeaseManager.getSurface(readyResult.lease.surface_id) : undefined
+            );
+            if (readyResult.lease.status === "leased" && readySurface) {
+              pendingBrowserSurfaceLaunches.delete(readyResult.lease.run_id);
+              await emitBrowserSurfaceLeaseEvent("run.browser_surface_leased", connectorId, runId, traceContext, readyResult.lease);
+              browserSurfaceEnv = browserSurfaceLeaseEnv(readyResult.lease, readySurface);
+            } else {
+              await emitBrowserSurfaceLeaseEvent("run.browser_surface_deferred", connectorId, runId, traceContext, readyResult.lease);
+              return {
+                run_id: runId,
+                trace_id: traceContext.trace_id,
+                status: "deferred",
+                browser_surface: projectBrowserSurfaceLease(readyResult.lease),
+              };
+            }
+          } else if (reclaimedResult.lease.status === "leased" && reclaimedResult.surface) {
+            pendingBrowserSurfaceLaunches.delete(reclaimedResult.lease.run_id);
+            await emitBrowserSurfaceLeaseEvent("run.browser_surface_starting", connectorId, runId, traceContext, reclaimedResult.lease);
+            await emitBrowserSurfaceLeaseEvent("run.browser_surface_leased", connectorId, runId, traceContext, reclaimedResult.lease);
+            browserSurfaceEnv = browserSurfaceLeaseEnv(reclaimedResult.lease, reclaimedResult.surface);
+          }
+        }
+      }
+
+      browserSurfaceLease = browserSurfaceLeaseManager.getLease(browserSurfaceLease?.lease_id ?? "") ?? browserSurfaceLease;
+
+      if (browserSurfaceLease?.status === "waiting_for_browser_surface") {
         pendingBrowserSurfaceLaunches.set(runId, {
           manifest,
           priorityClass,
@@ -1473,28 +1559,28 @@ export function createController(opts: ControllerOptions = {}): Controller {
           ...(options.ownerToken ? { ownerToken: options.ownerToken } : {}),
           ...(options.rsUrl ? { rsUrl: options.rsUrl } : {}),
         });
-        await emitBrowserSurfaceLeaseEvent("run.browser_surface_queued", connectorId, runId, traceContext, leaseResult.lease);
+        await emitBrowserSurfaceLeaseEvent("run.browser_surface_queued", connectorId, runId, traceContext, browserSurfaceLease);
         return {
           run_id: runId,
           trace_id: traceContext.trace_id,
-          status: leaseResult.lease.status,
-          browser_surface: projectBrowserSurfaceLease(leaseResult.lease),
+          status: browserSurfaceLease.status,
+          browser_surface: projectBrowserSurfaceLease(browserSurfaceLease),
         };
       }
 
-      if (leaseResult.lease.status === "deferred") {
+      if (browserSurfaceEnv) {
+        // Capacity-pressure reclaim may have already promoted and readied this lease.
+      } else if (browserSurfaceLease?.status === "deferred") {
         pendingBrowserSurfaceLaunches.delete(runId);
-        await emitBrowserSurfaceLeaseEvent("run.browser_surface_deferred", connectorId, runId, traceContext, leaseResult.lease);
+        await emitBrowserSurfaceLeaseEvent("run.browser_surface_deferred", connectorId, runId, traceContext, browserSurfaceLease);
         return {
           run_id: runId,
           trace_id: traceContext.trace_id,
-          status: leaseResult.lease.status,
-          browser_surface: projectBrowserSurfaceLease(leaseResult.lease),
+          status: browserSurfaceLease.status,
+          browser_surface: projectBrowserSurfaceLease(browserSurfaceLease),
         };
-      }
-
-      if (leaseResult.lease.status === "starting_surface") {
-        const readyResult = await waitForStartingBrowserSurface(leaseResult.lease, connectorId, runId, traceContext);
+      } else if (browserSurfaceLease?.status === "starting_surface") {
+        const readyResult = await waitForStartingBrowserSurface(browserSurfaceLease, connectorId, runId, traceContext);
         browserSurfaceLease = readyResult.lease;
         if (readyResult.lease.status === "surface_failed") {
           pendingBrowserSurfaceLaunches.delete(runId);
@@ -1519,18 +1605,29 @@ export function createController(opts: ControllerOptions = {}): Controller {
             browser_surface: projectBrowserSurfaceLease(readyResult.lease),
           };
         }
-      } else if (leaseResult.lease.status === "leased" && leaseResult.surface) {
-        pendingBrowserSurfaceLaunches.delete(leaseResult.lease.run_id);
-        await emitBrowserSurfaceLeaseEvent("run.browser_surface_starting", connectorId, runId, traceContext, leaseResult.lease);
-        await emitBrowserSurfaceLeaseEvent("run.browser_surface_leased", connectorId, runId, traceContext, leaseResult.lease);
-        browserSurfaceEnv = browserSurfaceLeaseEnv(leaseResult.lease, leaseResult.surface);
+      } else if (browserSurfaceLease?.status === "leased" && browserSurfaceLease.surface_id) {
+        const leasedSurface = browserSurfaceLeaseManager.getSurface(browserSurfaceLease.surface_id);
+        if (!leasedSurface) {
+          await emitBrowserSurfaceLeaseEvent("run.browser_surface_deferred", connectorId, runId, traceContext, browserSurfaceLease);
+          return {
+            run_id: runId,
+            trace_id: traceContext.trace_id,
+            status: "deferred",
+            browser_surface: projectBrowserSurfaceLease(browserSurfaceLease),
+          };
+        }
+        pendingBrowserSurfaceLaunches.delete(browserSurfaceLease.run_id);
+        await emitBrowserSurfaceLeaseEvent("run.browser_surface_starting", connectorId, runId, traceContext, browserSurfaceLease);
+        await emitBrowserSurfaceLeaseEvent("run.browser_surface_leased", connectorId, runId, traceContext, browserSurfaceLease);
+        browserSurfaceEnv = browserSurfaceLeaseEnv(browserSurfaceLease, leasedSurface);
       } else {
-        await emitBrowserSurfaceLeaseEvent("run.browser_surface_deferred", connectorId, runId, traceContext, leaseResult.lease);
+        const terminalLease = browserSurfaceLease ?? leaseResult.lease;
+        await emitBrowserSurfaceLeaseEvent("run.browser_surface_deferred", connectorId, runId, traceContext, terminalLease);
         return {
           run_id: runId,
           trace_id: traceContext.trace_id,
           status: "deferred",
-          browser_surface: projectBrowserSurfaceLease(leaseResult.lease),
+          browser_surface: projectBrowserSurfaceLease(terminalLease),
         };
       }
     }

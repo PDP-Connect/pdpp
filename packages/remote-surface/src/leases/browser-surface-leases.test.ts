@@ -160,6 +160,61 @@ test("compatible idle surface is leased and projected", () => {
     browser_surface_lease_id: "lease_1",
     browser_surface_profile_key: "chatgpt",
   });
+  assert.equal(leases.planCapacityPressureReclaim(result.lease.lease_id), undefined);
+});
+
+test("capacity-pressure planner preserves compatible idle reuse", () => {
+  const { leases } = manager({
+    initialSurfaces: [
+      {
+        surface_id: "surface_compatible",
+        backend: "neko",
+        profile_key: "chatgpt",
+        connector_id: "chatgpt",
+        cdp_url: "http://neko:9222",
+        stream_base_url: "http://neko:8080",
+        health: "ready",
+        created_at: "2026-05-12T11:00:00.000Z",
+        last_used_at: "2026-05-12T11:00:00.000Z",
+      },
+    ],
+  });
+
+  const result = leases.acquire({ connectorId: "chatgpt", runId: "run_compatible", profileKey: "chatgpt" });
+
+  assert.equal(result.lease.status, "leased");
+  assert.equal(leases.planCapacityPressureReclaim(result.lease.lease_id), undefined);
+});
+
+test("capacity-pressure reclaim stops one incompatible idle dynamic surface and promotes waiter", () => {
+  const { leases } = manager({
+    initialSurfaces: [
+      {
+        surface_id: "surface_idle",
+        backend: "neko",
+        profile_key: "old_profile",
+        connector_id: "chatgpt",
+        cdp_url: "http://neko:9222",
+        stream_base_url: "http://neko:8080",
+        health: "ready",
+        created_at: "2026-05-12T11:00:00.000Z",
+        last_used_at: "2026-05-12T11:00:00.000Z",
+      },
+    ],
+  });
+
+  const queued = leases.acquire({ connectorId: "chatgpt", runId: "run_queued", profileKey: "new_profile" });
+  const planned = leases.planCapacityPressureReclaim(queued.lease.lease_id);
+  const reclaimed = leases.completeCapacityPressureReclaim(planned?.surface_id ?? "");
+
+  assert.equal(queued.lease.status, "waiting_for_browser_surface");
+  assert.equal(planned?.surface_id, "surface_idle");
+  assert.equal(reclaimed.stopped?.health, "stopping");
+  assert.equal(reclaimed.stopped?.active_lease_id, undefined);
+  assert.equal(reclaimed.promoted?.lease_id, queued.lease.lease_id);
+  assert.equal(reclaimed.promoted?.status, "starting_surface");
+  assert.equal(leases.getSurface("surface_idle")?.health, "stopping");
+  assert.equal(leases.getLease(queued.lease.lease_id)?.status, "starting_surface");
 });
 
 test("dynamic mode ignores persisted static surface rows from a previous boot", () => {

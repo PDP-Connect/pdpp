@@ -184,6 +184,17 @@ function createFailingAllocator() {
   };
 }
 
+function createStopFailingAllocator() {
+  const allocator = createReadyAllocator();
+  return {
+    ...allocator,
+    stopSurface: async (request) => {
+      allocator.stopRequests.push(request);
+      throw new Error("allocator stop failed");
+    },
+  };
+}
+
 function createBlockedAllocator() {
   let unblock;
   const ready = new Promise((resolve) => {
@@ -451,6 +462,75 @@ test("dynamic managed runs with distinct profile keys allocate separate ready su
   await controller.drainActiveRuns(1000);
   assert.equal(manager.getLease("lease_1").status, "released");
   assert.equal(manager.getLease("lease_2").status, "released");
+});
+
+test("dynamic capacity pressure stops incompatible idle surface and starts distinct-profile run", async (t) => {
+  const allocator = createReadyAllocator();
+  const browserSurfaceLeaseStore = createMemoryBrowserSurfaceLeaseStore();
+  const { calls, controller, manager } = setup(t, {
+    manager: createDynamicManager({ surfaceCap: 1 }),
+    browserSurfaceAllocator: allocator,
+    browserSurfaceLeaseStore,
+  });
+
+  await controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_pressure_first",
+  });
+  await controller.drainActiveRuns(1000);
+
+  const result = await controller.runNow("other-managed", {
+    manifest: DISTINCT_PROFILE_MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_pressure_second",
+  });
+  await controller.drainActiveRuns(1000);
+
+  assert.equal(result.status, "started");
+  assert.deepEqual(allocator.stopRequests.map((request) => request.reason), ["capacity_pressure"]);
+  assert.deepEqual(allocator.stopRequests.map((request) => request.surfaceId), ["surface_1"]);
+  assert.deepEqual(
+    allocator.ensureRequests.map((request) => request.profileKey),
+    ["managed-profile", "other-managed-profile"]
+  );
+  assert.equal(calls.runConnector, 2);
+  assert.equal(manager.getSurface("surface_1").health, "stopping");
+  assert.equal(manager.getLease("lease_2").status, "released");
+  assert.equal((await browserSurfaceLeaseStore.getSurface("surface_1")).health, "stopping");
+  assert.ok(listRunEventTypes("run_pressure_second").includes("run.browser_surface_starting"));
+  assert.ok(listRunEventTypes("run_pressure_second").includes("run.browser_surface_leased"));
+});
+
+test("dynamic capacity-pressure stop failure leaves distinct-profile run queued", async (t) => {
+  const allocator = createStopFailingAllocator();
+  const { calls, controller, manager } = setup(t, {
+    manager: createDynamicManager({ surfaceCap: 1 }),
+    browserSurfaceAllocator: allocator,
+  });
+
+  await controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_stop_failure_first",
+  });
+  await controller.drainActiveRuns(1000);
+
+  const queued = await controller.runNow("other-managed", {
+    manifest: DISTINCT_PROFILE_MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_stop_failure_second",
+  });
+
+  assert.equal(queued.status, "waiting_for_browser_surface");
+  assert.equal(queued.browser_surface.browser_surface_wait_reason, "capacity_full");
+  assert.deepEqual(allocator.stopRequests.map((request) => request.reason), ["capacity_pressure"]);
+  assert.equal(allocator.ensureRequests.length, 1);
+  assert.equal(calls.runConnector, 1);
+  assert.equal(manager.getSurface("surface_1").health, "ready");
+  assert.equal(manager.getLease("lease_2").status, "waiting_for_browser_surface");
+  assert.equal(controller.getActiveRun("other-managed"), null);
+  assert.equal(listRunEventTypes("run_stop_failure_second").includes("run.started"), false);
 });
 
 test("dynamic cap queues distinct-profile managed run, then promotes after incompatible idle cleanup", async (t) => {
