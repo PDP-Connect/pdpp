@@ -140,7 +140,7 @@ The lane should emit owner-usable progress without leaking secrets:
 
 These events are reference/runtime observability artifacts, not Collection Profile messages unless a later change promotes them. If lane events enter `_ref` run timelines, they should be runtime-authored evidence distinct from connector-authored diagnostics.
 
-Decision 2026-05-14: the first implementation exposes lane telemetry/progress as injectable hooks on the utility. It does not create a new durable `_ref` timeline event type and the ChatGPT pilot preserves the existing connector progress messages. Promoting lane decisions into `_ref` timelines remains a follow-up if live pilots show the existing run progress is not enough for operator diagnosis.
+Decision 2026-05-14: the first implementation exposes lane telemetry/progress as injectable hooks on the utility. It does not create a new durable `_ref` timeline event type. The ChatGPT pilot adds low-cardinality lane progress only for lane start, cooldown/retry/concurrency pressure, cancellation, queue rejection, and safe terminal errors; ordinary per-item success remains covered by the existing `Synced X / N conversations` progress. Promoting lane decisions into first-class `_ref` timeline events remains a follow-up if live pilots show connector-authored progress is not enough for operator diagnosis.
 
 ## Cancellation
 

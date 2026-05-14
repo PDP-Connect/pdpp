@@ -15,7 +15,7 @@
  */
 
 import type { Page } from "playwright";
-import { createAdaptiveLane } from "../../src/adaptive-lane.ts";
+import { type AdaptiveLaneEvent, createAdaptiveLane } from "../../src/adaptive-lane.ts";
 import { ensureChatGptSession } from "../../src/auto-login/chatgpt.ts";
 import {
   type BrowserCollectContext,
@@ -843,11 +843,14 @@ function sleepMs(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-type ConversationDetailLaneEvent = Parameters<
-  NonNullable<Parameters<typeof createAdaptiveLane<ChatGptFetchResult>>[0]["emitProgress"]>
->[0];
+function shouldEmitConversationDetailLaneProgress(event: AdaptiveLaneEvent): boolean {
+  if (event.type === "queued" || event.outcome === "ok") {
+    return false;
+  }
+  return true;
+}
 
-function formatConversationDetailLaneProgress(event: ConversationDetailLaneEvent): string {
+function formatConversationDetailLaneProgress(event: AdaptiveLaneEvent): string {
   const parts = [
     `ChatGPT conversation-detail lane ${event.type}`,
     `active=${event.activeCount}`,
@@ -886,6 +889,7 @@ export async function runMessagesAndConversationsWithDetail(
 ): Promise<void> {
   const random = pacing.random ?? Math.random;
   const sleep = pacing.sleep ?? sleepMs;
+  let emittedConversationDetailLaneStart = false;
   const lane = createAdaptiveLane<ChatGptFetchResult>({
     name: "chatgpt.conversationDetail",
     initialConcurrency: CONVO_DETAIL_INITIAL_CONCURRENCY,
@@ -905,12 +909,22 @@ export async function runMessagesAndConversationsWithDetail(
     },
     random,
     sleep,
-    emitProgress: (event) =>
-      deps.emit({
+    emitProgress: (event) => {
+      if (event.type === "started") {
+        if (emittedConversationDetailLaneStart) {
+          return;
+        }
+        emittedConversationDetailLaneStart = true;
+      }
+      if (!shouldEmitConversationDetailLaneProgress(event)) {
+        return;
+      }
+      return deps.emit({
         type: "PROGRESS",
         stream: "messages",
         message: formatConversationDetailLaneProgress(event),
-      }),
+      });
+    },
   });
   await lane.runAll(convosToSync, async (c) => {
     if (!c) {

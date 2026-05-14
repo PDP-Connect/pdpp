@@ -488,14 +488,7 @@ test("runMessagesAndConversationsWithDetail: fetches detail through adaptive lan
   const laneMessages = progressMessages.filter((m) => m.message.startsWith("ChatGPT conversation-detail lane "));
   assert.deepEqual(
     laneMessages.map((m) => m.message.replace(/ active=\d+ queued=\d+ concurrency=1\/1.*/, "")),
-    [
-      "ChatGPT conversation-detail lane queued",
-      "ChatGPT conversation-detail lane started",
-      "ChatGPT conversation-detail lane queued",
-      "ChatGPT conversation-detail lane completed",
-      "ChatGPT conversation-detail lane started",
-      "ChatGPT conversation-detail lane completed",
-    ]
+    ["ChatGPT conversation-detail lane started"]
   );
   assert.equal(
     laneMessages.some((m) => m.message.includes("/conversation/")),
