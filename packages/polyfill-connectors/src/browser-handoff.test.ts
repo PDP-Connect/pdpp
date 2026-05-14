@@ -380,6 +380,7 @@ test("prepareManualAction registers managed n.eko descriptor from lease env with
   assert.deepEqual(args.descriptor, {
     backend: "neko",
     base_url: "http://neko:8080/neko",
+    interaction_id: result.interactionId,
     lease_id: "lease_neko_123",
     profile_key: "chatgpt:owner",
     surface_id: "surface_static_1",

@@ -283,6 +283,9 @@ test('managed n.eko approval is lease, surface, profile, run, interaction, readi
   };
 
   assert.equal(isManagedNekoSurfaceApproved(target, context), true);
+  const targetWithoutInteraction = { ...target };
+  delete targetWithoutInteraction.interaction_id;
+  assert.equal(isManagedNekoSurfaceApproved(targetWithoutInteraction, context), false);
   assert.equal(isManagedNekoSurfaceApproved({ ...target, interaction_id: 'int_b' }, context), false);
   assert.equal(isManagedNekoSurfaceApproved({ ...target, surface_id: 'surface_other' }, context), false);
   assert.equal(isManagedNekoSurfaceApproved({ ...target, lease_id: 'lease_other' }, context), false);

@@ -263,6 +263,7 @@ function registerManagedNekoManualActionTarget(args: {
     interactionId: args.interactionId,
     descriptor: {
       ...nekoDescriptor,
+      interaction_id: args.interactionId,
       ...(args.metadata.pageUrl ? { start_url: args.metadata.pageUrl } : {}),
     },
     ...(args.metadata.pageUrl ? { pageUrl: args.metadata.pageUrl } : {}),
