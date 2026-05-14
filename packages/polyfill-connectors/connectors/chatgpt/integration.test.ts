@@ -509,6 +509,7 @@ test("runMessagesAndConversationsWithDetail: intermediate pressure is bounded an
       activeFetches += 1;
       maxActiveFetches = Math.max(maxActiveFetches, activeFetches);
       await currentAdaptiveLaneRunContext()?.reportPressure({
+        delayMs: 45_000,
         kind: "rate_limited",
         retryAfterMs: 99_000,
       });
@@ -537,7 +538,7 @@ test("runMessagesAndConversationsWithDetail: intermediate pressure is bounded an
   );
 
   assert.equal(maxActiveFetches, 1, "intermediate pressure must not raise detail concurrency");
-  assert.deepEqual(pauses, [3000], "reported Retry-After is capped by the lane before the next launch");
+  assert.deepEqual(pauses, [45_000], "retryHttp delay is mirrored as a pressure cooldown before the next launch");
   const progressMessages = harness.protocolMessages.filter(
     (m): m is Extract<EmittedMessage, { type: "PROGRESS" }> => m.type === "PROGRESS" && m.stream === "messages"
   );
@@ -552,6 +553,11 @@ test("runMessagesAndConversationsWithDetail: intermediate pressure is bounded an
     laneMessages.every((m) => m.message.includes("concurrency=1/1")),
     true,
     "progress must report the configured max concurrency of 1"
+  );
+  assert.equal(
+    laneMessages.some((m) => m.message.includes("delay_ms=45000")),
+    true,
+    "lane progress should expose bounded pressure delay semantics without raw request details"
   );
   assert.equal(
     laneMessages.some((m) => m.message.includes("sensitive-convo") || m.message.includes("/conversation/")),

@@ -183,6 +183,36 @@ test("adaptive lane reportPressure delays next queued task even when current tas
   );
 });
 
+test("adaptive lane reportPressure uses pressure bounds without changing ordinary pacing", async () => {
+  const sleeps: number[] = [];
+  const lane = createAdaptiveLane<string>({
+    name: "test.pressure-bounds",
+    initialConcurrency: 1,
+    maxConcurrency: 1,
+    maxDelayMs: 3000,
+    maxQueueSize: 10,
+    minConcurrency: 1,
+    minDelayMs: 1500,
+    pressureMaxDelayMs: 60_000,
+    pressureMinDelayMs: 10_000,
+    classifyOutcome: () => ({ kind: "ok" }),
+    random: () => 0,
+    sleep: (ms) => {
+      sleeps.push(ms);
+    },
+  });
+
+  await lane.run(() => "ordinary-1");
+  await lane.run(() => "ordinary-2");
+  await lane.run(async (context) => {
+    await context.reportPressure({ delayMs: 45_000, kind: "transient_error" });
+    return "pressured";
+  });
+  await lane.run(() => "after-pressure");
+
+  assert.deepEqual(sleeps, [1500, 1500, 45_000], "only reported pressure uses the wider cooldown bounds");
+});
+
 test("adaptive lane rate limits reduce cap and clean successes increase only within max", async () => {
   const events: AdaptiveLaneEvent[] = [];
   const lane = createAdaptiveLane<{ status: number }>({

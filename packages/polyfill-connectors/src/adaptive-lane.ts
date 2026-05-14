@@ -5,6 +5,7 @@ export type AdaptiveLaneOutcomeKind = "ok" | "retryable" | "rate_limited" | "ter
 export type AdaptiveLanePressureKind = "rate_limited" | "transient_error";
 
 export interface AdaptiveLanePressure {
+  delayMs?: number;
   kind: AdaptiveLanePressureKind;
   retryAfterMs?: number;
 }
@@ -71,6 +72,8 @@ export interface AdaptiveLaneOptions<T> {
   minConcurrency: number;
   minDelayMs: number;
   name: string;
+  pressureMaxDelayMs?: number;
+  pressureMinDelayMs?: number;
   random?: () => number;
   sleep?: (ms: number) => void | Promise<void>;
   successWindow?: number;
@@ -139,6 +142,8 @@ export function createAdaptiveLane<T>(options: AdaptiveLaneOptions<T>): Adaptive
   const successWindow = Math.max(1, Math.floor(options.successWindow ?? Math.max(3, maxConcurrency)));
   const random = options.random ?? Math.random;
   const sleep = options.sleep ?? defaultSleep;
+  const pressureMinDelayMs = Math.max(0, Math.floor(options.pressureMinDelayMs ?? options.minDelayMs));
+  const pressureMaxDelayMs = Math.max(pressureMinDelayMs, Math.floor(options.pressureMaxDelayMs ?? options.maxDelayMs));
   const queue = new PQueue({ concurrency: initialConcurrency });
   let currentConcurrency = initialConcurrency;
   let cleanSuccesses = 0;
@@ -205,14 +210,20 @@ export function createAdaptiveLane<T>(options: AdaptiveLaneOptions<T>): Adaptive
     }
   };
 
-  const boundedDelay = (outcome: AdaptiveLaneOutcome): number => {
+  const boundedDelay = (
+    outcome: AdaptiveLaneOutcome,
+    minDelayMs = options.minDelayMs,
+    maxDelayMs = options.maxDelayMs
+  ): number => {
     const retryAfterMs = outcome.retryAfterMs;
     if (retryAfterMs != null) {
-      return clampInt(retryAfterMs, options.minDelayMs, options.maxDelayMs);
+      return clampInt(retryAfterMs, minDelayMs, maxDelayMs);
     }
-    const span = Math.max(0, options.maxDelayMs - options.minDelayMs);
-    return options.minDelayMs + Math.floor(random() * (span + 1));
+    const span = Math.max(0, maxDelayMs - minDelayMs);
+    return minDelayMs + Math.floor(random() * (span + 1));
   };
+
+  const boundedExplicitDelay = (delayMs: number): number => clampInt(delayMs, pressureMinDelayMs, pressureMaxDelayMs);
 
   const launchDelay = (): number => {
     if (launchCount === 0) {
@@ -252,7 +263,10 @@ export function createAdaptiveLane<T>(options: AdaptiveLaneOptions<T>): Adaptive
     ensureNotCancelled(signal);
     const outcome = pressureOutcome(pressure);
     await decreaseConcurrency(outcome.kind);
-    const delayMs = boundedDelay(outcome);
+    const delayMs =
+      pressure.delayMs == null
+        ? boundedDelay(outcome, pressureMinDelayMs, pressureMaxDelayMs)
+        : boundedExplicitDelay(pressure.delayMs);
     pendingLaunchCooldownMs = Math.max(pendingLaunchCooldownMs, delayMs);
     await emit(
       outcomeEvent({

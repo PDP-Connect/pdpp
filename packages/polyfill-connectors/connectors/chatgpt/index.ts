@@ -226,6 +226,7 @@ function createChatGptApi({
         maxRetryAfterMs: CHATGPT_RATE_LIMIT_MAX_RETRY_AFTER_MS,
         onRetry: async ({ attempt, delayMs, maxAttempts, response, retryAfterMs }) => {
           await currentAdaptiveLaneRunContext()?.reportPressure({
+            delayMs,
             kind: response?.status === 429 ? "rate_limited" : "transient_error",
             ...(retryAfterMs == null ? {} : { retryAfterMs }),
           });
@@ -902,6 +903,8 @@ export async function runMessagesAndConversationsWithDetail(
     maxQueueSize: Math.max(1, convosToSync.length),
     minConcurrency: 1,
     minDelayMs: CONVO_DETAIL_PAUSE_MIN_MS,
+    pressureMaxDelayMs: CHATGPT_RATE_LIMIT_MAX_DELAY_MS,
+    pressureMinDelayMs: CHATGPT_RATE_LIMIT_BASE_DELAY_MS,
     classifyOutcome: ({ result }) => {
       if (!result) {
         return { kind: "retryable" };
