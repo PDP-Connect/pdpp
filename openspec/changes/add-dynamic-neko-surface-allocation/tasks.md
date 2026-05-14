@@ -15,11 +15,11 @@
 
 ## 3. Dynamic Allocator Implementation
 
-- [ ] 3.1 Implement a local allocator/supervisor service with a narrow HTTP API for dynamic n.eko surfaces.
-- [ ] 3.2 Start n.eko containers with reference-owned labels, configured image, configured network, CDP proxy, stream path, and per-surface environment.
-- [ ] 3.3 Mount persistent profile storage derived from sanitized/hashed profile keys.
-- [ ] 3.4 Implement allocator readiness probes for container state/network, n.eko HTTP health, CDP `/json/version`, and Chromium version shape; keep stream descriptor authorization server-side and defer authenticated stream readiness probing to the interaction adapter.
-- [ ] 3.5 Reject allocator operations against unlabeled or foreign Docker resources.
+- [x] 3.1 Implement a local allocator/supervisor service with a narrow HTTP API for dynamic n.eko surfaces.
+- [x] 3.2 Start n.eko containers with reference-owned labels, configured image, configured network, CDP proxy, stream path, and per-surface environment.
+- [x] 3.3 Mount persistent profile storage derived from sanitized/hashed profile keys.
+- [x] 3.4 Implement allocator readiness probes for container state/network, n.eko HTTP health, CDP `/json/version`, and Chromium version shape; keep stream descriptor authorization server-side and defer authenticated stream readiness probing to the interaction adapter.
+- [x] 3.5 Reject allocator operations against unlabeled or foreign Docker resources.
 
 ## 4. Streaming And Proxy Wiring
 
@@ -30,23 +30,23 @@
 
 ## 5. Cleanup And Reconciliation
 
-- [ ] 5.1 Add idle TTL cleanup for ready idle dynamic surfaces while preserving profile storage.
-- [ ] 5.2 Run the queue pump after dynamic surface stop/release/reconcile events.
-- [ ] 5.3 Reconcile persisted leases and surfaces with allocator/container state before accepting new managed n.eko launches.
-- [ ] 5.4 Expire or surface-fail leases for missing/unhealthy containers without deleting profile storage.
-- [ ] 5.5 Keep static mode reconciliation behavior intact.
+- [x] 5.1 Add idle TTL cleanup for ready idle dynamic surfaces while preserving profile storage.
+- [x] 5.2 Run the queue pump after dynamic surface stop/release/reconcile events.
+- [x] 5.3 Reconcile persisted leases and surfaces with allocator/container state before accepting new managed n.eko launches.
+- [x] 5.4 Expire or surface-fail leases for missing/unhealthy containers without deleting profile storage.
+- [x] 5.5 Keep static mode reconciliation behavior intact.
 
 ## 6. Docker And Operator Configuration
 
-- [ ] 6.1 Add Docker Compose wiring for the allocator sidecar and dynamic n.eko network/resource labels.
-- [ ] 6.2 Add `.env.docker.example` settings for dynamic mode without enabling multi-surface mode by accident.
+- [x] 6.1 Add Docker Compose wiring for the allocator sidecar and dynamic n.eko network/resource labels.
+- [x] 6.2 Add `.env.docker.example` settings for dynamic mode without enabling multi-surface mode by accident.
 - [ ] 6.3 Document the resource/security tradeoff of the allocator sidecar and Docker Engine access.
 - [ ] 6.4 Document how to enable ChatGPT first, then add Chase/USAA after dynamic smoke passes.
 
 ## 7. Verification
 
 - [x] 7.1 Add unit tests for dynamic config validation and static/dynamic incompatibilities.
-- [ ] 7.2 Add lease-manager tests for starting-surface cap accounting, readiness promotion, failure classification, idle cleanup, and restart reconciliation.
+- [x] 7.2 Add lease-manager tests for starting-surface cap accounting, readiness promotion, failure classification, idle cleanup, and restart reconciliation.
 - [x] 7.3 Add controller tests proving no `run.started` event is emitted until a dynamic surface is ready and leased.
 - [x] 7.4 Add allocator contract tests using the fake allocator.
 - [ ] 7.5 Add a gated Docker smoke that starts two managed connector runs with distinct profile keys and proves separate dynamic n.eko surfaces are allocated or queued according to cap.
