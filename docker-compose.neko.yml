@@ -77,7 +77,7 @@ services:
       dockerfile: Dockerfile
       target: reference
     profiles: ["neko-dynamic"]
-    command: ["node", "server/neko-surface-allocator-server.ts"]
+    command: ["node", "reference-implementation/server/neko-surface-allocator-server.ts"]
     environment:
       PDPP_NEKO_ALLOCATOR_HOST: 0.0.0.0
       PDPP_NEKO_ALLOCATOR_PORT: ${PDPP_NEKO_ALLOCATOR_PORT:-7331}
@@ -85,7 +85,7 @@ services:
       PDPP_NEKO_PROFILE_STORAGE_ROOT: ${PDPP_NEKO_PROFILE_STORAGE_ROOT:-/var/lib/pdpp/neko-profiles}
       PDPP_NEKO_WEBRTC_HOST_PORT_START: ${PDPP_NEKO_WEBRTC_HOST_PORT_START:-59001}
       PDPP_NEKO_WEBRTC_HOST_PORT_END: ${PDPP_NEKO_WEBRTC_HOST_PORT_END:-59010}
-      PDPP_NEKO_STREAM_BASE_URL_TEMPLATE: ${PDPP_NEKO_STREAM_BASE_URL_TEMPLATE:-http://{container_name}:8080/neko/{surface_id}/}
+      PDPP_NEKO_STREAM_BASE_URL_TEMPLATE: ${PDPP_NEKO_STREAM_BASE_URL_TEMPLATE:-http://{container_name}:8080/neko}
       PDPP_NEKO_CDP_BASE_URL_TEMPLATE: ${PDPP_NEKO_CDP_BASE_URL_TEMPLATE:-http://{container_name}:9223/}
       NEKO_IMAGE: ${NEKO_IMAGE:-pdpp-neko:local}
       NEKO_DESKTOP_SCREEN: ${NEKO_DESKTOP_SCREEN:-1440x900@30}

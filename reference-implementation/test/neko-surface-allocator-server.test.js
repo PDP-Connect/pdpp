@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { NekoSurfaceAllocatorClient } from "../runtime/neko-surface-allocator.ts";
@@ -16,7 +17,7 @@ const BASE_OPTIONS = Object.freeze({
   profileRoot: "/var/lib/pdpp/neko-profiles",
   webrtcHostPortStart: 59000,
   webrtcHostPortEnd: 59002,
-  streamBaseUrlTemplate: "http://127.0.0.1:{host_port}/neko/{surface_id}/",
+  streamBaseUrlTemplate: "http://127.0.0.1:{host_port}/neko",
   cdpBaseUrlTemplate: "http://127.0.0.1:{host_port}/cdp/{surface_id}/",
   now: () => new Date("2026-05-13T12:00:00.000Z"),
 });
@@ -43,7 +44,7 @@ test("creates and starts an owned n.eko container with sanitized profile storage
   assert.equal(surface.account_key, "account_1");
   assert.equal(surface.allocator_metadata.readiness, "ready");
   assert.equal(surface.allocator_metadata.host_port, "59000");
-  assert.match(surface.stream_base_url, /^http:\/\/127\.0\.0\.1:59000\/neko\//);
+  assert.equal(surface.stream_base_url, "http://127.0.0.1:59000/neko");
   assert.match(surface.cdp_url, /^http:\/\/127\.0\.0\.1:59000\/cdp\//);
 
   const create = docker.calls.find((call) => call.path === "/containers/create");
@@ -85,9 +86,21 @@ test("parses env-driven HTTP listen config and allocator defaults", () => {
   assert.equal(options.profileRoot, "/srv/pdpp/neko-profiles");
   assert.equal(options.listenHost, "0.0.0.0");
   assert.equal(options.listenPort, 7331);
-  assert.equal(options.streamBaseUrlTemplate, "http://{container_name}:8080/neko/{surface_id}/");
+  assert.equal(options.streamBaseUrlTemplate, "http://{container_name}:8080/neko");
   assert.equal(options.cdpBaseUrlTemplate, "http://{container_name}:9223/");
   assert.equal(options.extraEnv.NEKO_DESKTOP_SCREEN, "1440x900@30");
+});
+
+test("compose dynamic allocator command and stream template match reference image layout", async () => {
+  const compose = await readFile(new URL("../../docker-compose.neko.yml", import.meta.url), "utf8");
+
+  assert.match(compose, /command: \["node", "reference-implementation\/server\/neko-surface-allocator-server\.ts"\]/);
+  assert.match(
+    compose,
+    /PDPP_NEKO_STREAM_BASE_URL_TEMPLATE: \$\{PDPP_NEKO_STREAM_BASE_URL_TEMPLATE:-http:\/\/\{container_name\}:8080\/neko\}/,
+  );
+  assert.doesNotMatch(compose, /command: \["node", "server\/neko-surface-allocator-server\.ts"\]/);
+  assert.doesNotMatch(compose, /8080\/neko\/\{surface_id\}/);
 });
 
 test("rejects relative profile roots because Docker bind mounts resolve on the host", () => {
@@ -124,6 +137,28 @@ test("preserves base URL paths when joining readiness probe paths", async () => 
 
   assert.ok(requestedPaths.includes("/neko/health"));
   assert.ok(requestedPaths.includes("/cdp/surface_1/json/version"));
+  assert.ok(requestedPaths.includes("/neko/api/room/screen/cast.jpg"));
+});
+
+test("preserves custom pathful stream bases when joining readiness probe paths", async () => {
+  const requestedPaths = [];
+  const service = new NekoSurfaceAllocatorService({
+    ...BASE_OPTIONS,
+    docker: new FakeDocker(),
+    streamBaseUrlTemplate: "http://127.0.0.1:{host_port}/neko/{surface_id}/",
+    fetchImpl: async (input) => {
+      const url = new URL(String(input));
+      requestedPaths.push(url.pathname);
+      if (url.pathname.endsWith("/json/version")) {
+        return Response.json({ Browser: "Chrome/126.0.0.0" });
+      }
+      return new Response("ok", { status: 200 });
+    },
+  });
+
+  await service.ensureSurface({ surfaceId: "surface_1", connectorId: "chatgpt", profileKey: "profile_1" });
+
+  assert.ok(requestedPaths.includes("/neko/health"));
   assert.ok(requestedPaths.includes("/neko/surface_1/api/room/screen/cast.jpg"));
 });
 
