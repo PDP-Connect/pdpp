@@ -25,6 +25,7 @@ import { join } from "node:path";
 
 import type { SchedulerRunHistoryRecord, SchedulerStore } from "../server/stores/scheduler-store.ts";
 import { runConnector } from "./index.js";
+import { type BackoffDecision, computeNextRunWithBackoff } from "./scheduler-backoff.ts";
 
 // ─── Shared domain types ────────────────────────────────────────────────────
 
@@ -295,6 +296,11 @@ function nowIso(): string {
 
 interface SchedulerRuntime {
   readonly activeRuns: Set<string>;
+  // Per-connector reason-class for which we've already emitted a back-off
+  // skip in the current streak. Cleared when the streak breaks (success or
+  // different reason class), which lets the dashboard show one fresh
+  // back-off banner per failure pattern instead of one per interval tick.
+  readonly announcedBackoffClass: Map<string, string>;
   readonly disabledGrantFailures: Map<string, TerminalGrantFailureReason>;
   readonly exhaustedGrants: Set<string>;
   readonly history: RunRecord[];
@@ -312,6 +318,7 @@ interface SchedulerRuntime {
 function buildRuntime(): SchedulerRuntime {
   return {
     activeRuns: new Set(),
+    announcedBackoffClass: new Map(),
     disabledGrantFailures: new Map(),
     exhaustedGrants: new Set(),
     history: [],
@@ -438,6 +445,30 @@ function buildNotReadySkip(connectorId: string, reason: string): RunRecord {
     startedAt: nowIso(),
     completedAt: nowIso(),
     error: `not_ready: ${reason}`,
+    attempt: 0,
+  };
+}
+
+function buildBackoffSkip(connectorId: string, decision: BackoffDecision): RunRecord {
+  // One-shot skip emitted when back-off first engages for the current
+  // failure streak. The error string carries enough context for the
+  // dashboard to render `scheduler_backoff_applied; next attempt at HH:MM`
+  // without re-deriving anything. We keep emitting one record (rather than
+  // suppressing entirely) so the audit log shows *why* the connector went
+  // quiet — silence would look like a healthy run.
+  const reason = decision.reasonClass ?? "unknown";
+  const next = decision.nextRunAt;
+  const failures = decision.consecutiveFailures;
+  return {
+    connectorId,
+    source: buildScheduledRunSource(connectorId),
+    status: "skipped",
+    recordsEmitted: 0,
+    checkpointSummary: null,
+    knownGaps: [],
+    startedAt: nowIso(),
+    completedAt: nowIso(),
+    error: `scheduler_backoff_applied: ${failures} consecutive ${reason} failures; next attempt at ${next}`,
     attempt: 0,
   };
 }
@@ -1032,6 +1063,39 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
       });
   }
 
+  // Pure dispatch-gate: given the current history + lastRun for a
+  // connector, decide whether the next automatic tick should run, skip
+  // silently (already announced), or emit a back-off skip record. Pulled
+  // out so the interval body stays short and so tests can drive it
+  // directly without touching real timers.
+  function evaluateBackoffDispatch(
+    schedule: ConnectorSchedule,
+    now: number
+  ): { decision: BackoffDecision; eligible: boolean; skipToEmit: RunRecord | null } {
+    const connectorId = schedule.connectorId;
+    const lastRun = runtime.lastRunTime.get(connectorId) || 0;
+    const history = runtime.history.filter((r) => r.connectorId === connectorId);
+    const decision = computeNextRunWithBackoff(history, schedule.intervalMs, lastRun);
+
+    const elapsed = now - lastRun;
+    const eligible = elapsed >= decision.effectiveIntervalMs;
+
+    let skipToEmit: RunRecord | null = null;
+    if (decision.backoffApplied && decision.reasonClass) {
+      const announced = runtime.announcedBackoffClass.get(connectorId);
+      if (announced !== decision.reasonClass) {
+        runtime.announcedBackoffClass.set(connectorId, decision.reasonClass);
+        skipToEmit = buildBackoffSkip(connectorId, decision);
+      }
+    } else if (!decision.backoffApplied) {
+      // Streak broken (success or different class): clear the announcement
+      // so the next time back-off engages we emit a fresh skip record.
+      runtime.announcedBackoffClass.delete(connectorId);
+    }
+
+    return { decision, eligible, skipToEmit };
+  }
+
   function startScheduledLoops(): void {
     if (runtime.timers.length > 0) {
       return;
@@ -1051,9 +1115,16 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
           if (!runtime.running) {
             return;
           }
-          const lastRun = runtime.lastRunTime.get(schedule.connectorId) || 0;
-          const elapsed = Date.now() - lastRun;
-          if (elapsed >= schedule.intervalMs) {
+          const { eligible, skipToEmit } = evaluateBackoffDispatch(schedule, Date.now());
+          if (skipToEmit) {
+            // One-shot back-off announcement. We record + persist + notify
+            // exactly like other skip records so the UI/audit can see why
+            // the connector went quiet. We do NOT executeRun in this case
+            // because by definition the back-off window has not elapsed.
+            recordAndNotify(skipToEmit);
+            return;
+          }
+          if (eligible) {
             executeRun(schedule).catch(() => {
               // See note on the immediate executeRun above.
             });
