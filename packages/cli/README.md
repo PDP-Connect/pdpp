@@ -4,12 +4,20 @@ Command-line tools for PDPP providers.
 
 ## Status
 
-This package is the public npm home for the `pdpp` command. The beta CLI supports
-`pdpp connect <provider-url>` for delegated access: the CLI discovers provider
-metadata, self-registers a public client when the AS advertises dynamic
-registration, asks the owner to approve scoped access in the browser, and stores
-scoped client credentials in the project-local `.pdpp/` cache without asking for
-an owner bearer token.
+This package is the public npm home for the `pdpp` command. The beta CLI
+supports two command namespaces:
+
+- **`pdpp connect <provider-url>`** — delegated access: discovers provider
+  metadata, self-registers a public client when the AS advertises dynamic
+  registration, asks the owner to approve scoped access in the browser, and
+  stores scoped client credentials in the project-local `.pdpp/` cache without
+  asking for an owner bearer token.
+
+- **`pdpp ref ...`** — reference operator diagnostics over `_ref` routes on a
+  running reference deployment. Current subcommands: `pdpp ref run timeline
+  <run-id>`, `pdpp ref grant timeline <grant-id>`, `pdpp ref trace show
+  <trace-id>`. Requires `PDPP_OWNER_SESSION_COOKIE` when owner auth is enabled.
+  These are reference-only operator tools, not core PDPP protocol.
 
 ## Install
 

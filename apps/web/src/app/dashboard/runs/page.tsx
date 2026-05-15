@@ -103,7 +103,7 @@ export default async function RunsPage({ searchParams }: { searchParams: Promise
     buildListHref: (overrides) => listHref(params, overrides),
     peekId: params.peek,
     peekEnvelope,
-    peekCliCommand: (id) => `pdpp run timeline ${id}`,
+    peekCliCommand: (id) => `pdpp ref run timeline ${id}`,
     emptyTitle: "No runs yet",
     emptyHint: "Run artifacts appear after connector runs stage, advance, or fail.",
   };

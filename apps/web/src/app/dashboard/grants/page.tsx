@@ -141,7 +141,7 @@ export default async function GrantsPage({ searchParams }: { searchParams: Promi
         Grant request workspace
       </Link>
     ),
-    peekCliCommand: (id) => `pdpp grant timeline ${id}`,
+    peekCliCommand: (id) => `pdpp ref grant timeline ${id}`,
     peekEnvelope,
     peekId: params.peek,
     preHeader,
