@@ -368,6 +368,14 @@ CREATE TABLE IF NOT EXISTS device_ingest_batch_outcomes (
 CREATE INDEX IF NOT EXISTS idx_device_ingest_batch_outcomes_source
   ON device_ingest_batch_outcomes(device_id, source_instance_id, created_at);
 
+CREATE TABLE IF NOT EXISTS source_webhook_events (
+  source_id    TEXT NOT NULL,
+  event_id     TEXT NOT NULL,
+  body_hash    TEXT NOT NULL,
+  received_at  TEXT NOT NULL,
+  PRIMARY KEY(source_id, event_id)
+);
+
 CREATE TABLE IF NOT EXISTS connector_schedules (
   connector_id      TEXT PRIMARY KEY,
   interval_seconds  INTEGER NOT NULL,

@@ -194,6 +194,10 @@ import {
   executeRecordsIngest,
   parseLines as parseIngestLines,
 } from '../operations/rs-records-ingest/index.ts';
+import {
+  SourceWebhookError,
+  executeSourceWebhook,
+} from '../operations/ref-source-webhook-ingest/index.ts';
 import { executeAsDiscoveryIndex } from '../operations/as-discovery-index/index.ts';
 import { executeAsAuthorizationServerMetadata } from '../operations/as-authorization-server-metadata/index.ts';
 import { executeAsDcrRegister, summarizeDcrRegisterRequest } from '../operations/as-dcr-register/index.ts';
@@ -1011,6 +1015,24 @@ function resolveSingleConnectorIdQueryValue(rawConnectorId) {
   if (typeof rawConnectorId !== 'string') return null;
   const trimmed = rawConnectorId.trim();
   return trimmed || null;
+}
+
+function parseSourceWebhookSecrets(raw = process.env.PDPP_SOURCE_WEBHOOK_SECRETS || '') {
+  const map = new Map();
+  for (const entry of raw.split(',')) {
+    const trimmed = entry.trim();
+    if (!trimmed) continue;
+    const separator = trimmed.indexOf(':');
+    if (separator <= 0) continue;
+    const secondSeparator = trimmed.indexOf(':', separator + 1);
+    const sourceId = trimmed.slice(0, separator).trim();
+    const secret = secondSeparator === -1
+      ? trimmed.slice(separator + 1)
+      : trimmed.slice(separator + 1, secondSeparator);
+    const connectorId = secondSeparator === -1 ? sourceId : trimmed.slice(secondSeparator + 1);
+    if (sourceId && secret) map.set(sourceId, { secret, connectorId });
+  }
+  return map;
 }
 
 function resolveOwnerReadScope(req, opts = {}) {
@@ -5574,6 +5596,63 @@ function buildRsApp(opts = {}) {
         res.status(204).end();
       } catch (err) {
         return await rejectMutation(res, req, mutationContext, err);
+      }
+    });
+
+    // POST /_ref/source-webhooks/:sourceId (reference-only runtime ingress)
+    // This is not a PDPP protocol endpoint. It accepts source-specific signed
+    // callbacks and maps them into existing ingest/scheduler semantics.
+    app.post('/_ref/source-webhooks/:sourceId', async (req, res) => {
+      const secrets = parseSourceWebhookSecrets();
+      const body = typeof req.body === 'string'
+        ? req.body
+        : Buffer.isBuffer(req.body)
+          ? req.body.toString('utf8')
+          : JSON.stringify(req.body ?? {});
+      try {
+        const result = await executeSourceWebhook(
+          {
+            sourceId: req.params.sourceId,
+            body,
+            timestamp: req.headers['pdpp-webhook-timestamp'],
+            eventId: req.headers['pdpp-webhook-event-id'],
+            signature: req.headers['pdpp-webhook-signature'],
+          },
+          {
+            nowMs: () => Date.now(),
+            resolveSecret: (sourceId) => secrets.get(sourceId)?.secret,
+            resolveConnectorId: (sourceId) => secrets.get(sourceId)?.connectorId,
+            claimEvent: ({ sourceId, eventId, bodyHash, receivedAt }) => {
+              const insert = getDb().prepare(
+                `INSERT OR IGNORE INTO source_webhook_events(source_id, event_id, body_hash, received_at)
+                 VALUES (?, ?, ?, ?)`,
+              );
+              return insert.run(sourceId, eventId, bodyHash, receivedAt).changes === 1;
+            },
+            ingestRecords: async ({ connectorId, streamName, body: ingestBody }) => {
+              const output = await executeRecordsIngest(
+                { connectorId, streamName, body: ingestBody },
+                {
+                  hasManifestStream: async (cid, name) => {
+                    const manifest = await resolveRegisteredConnectorManifest(cid);
+                    return Boolean((manifest.streams || []).find((stream) => stream.name === name));
+                  },
+                  ingestRecord: (cid, record) => ingestRecord(cid, record),
+                },
+              );
+              return output.envelope;
+            },
+            signalScheduler: ({ connectorId, receivedAt }) => {
+              getDefaultSchedulerStore().upsertLastRunTime(connectorId, Date.parse(receivedAt), receivedAt);
+            },
+          },
+        );
+        res.status(result.duplicate ? 202 : 200).json(result);
+      } catch (err) {
+        if (err instanceof SourceWebhookError) {
+          return pdppError(res, err.status, err.code, err.message);
+        }
+        return handleError(res, err);
       }
     });
 

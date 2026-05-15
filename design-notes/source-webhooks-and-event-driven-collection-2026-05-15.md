@@ -1,10 +1,10 @@
 # Source Webhooks And Event-Driven Collection
 
-Status: decided-defer
+Status: promoted-partial
 Owner: Lane E / protocol architecture
 Created: 2026-05-15
 Updated: 2026-05-15
-Related: `spec-deferred.md`, `spec-core.md`, `docs/research/collection-method-matrix.md`, `docs/archive/2026-04-inbox-retired/webhook-adapter-experiment-memo.md`, `openspec/changes/add-connector-refresh-policy-controls`, `openspec/changes/wire-reference-scheduler-loop`
+Related: `spec-deferred.md`, `spec-core.md`, `docs/research/collection-method-matrix.md`, `docs/archive/2026-04-inbox-retired/webhook-adapter-experiment-memo.md`, `openspec/changes/add-connector-refresh-policy-controls`, `openspec/changes/wire-reference-scheduler-loop`, `openspec/changes/add-source-webhook-ingress`
 
 ## Question
 
@@ -73,3 +73,4 @@ Promotion should require at least one concrete implementation target and an inte
 ## Decision Log
 
 - 2026-05-15: Audited active specs, OpenSpec changes, design notes, and archived webhook/scheduler research. Decision: design-note only. Webhooks are not next for SLVP; scheduled/manual connector refresh remains the implementation-ready path.
+- 2026-05-15: Promoted a narrow reference-only tranche to `openspec/changes/add-source-webhook-ingress`: signed source callback ingress, replay/idempotency guard, record-push mapping into existing ingest semantics, and run-trigger mapping as scheduler input only. Generic PDPP webhook/event-driven collection support remains deferred.
