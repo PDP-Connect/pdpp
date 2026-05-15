@@ -43,6 +43,10 @@ import {
   projectBrowserSurfaceLease,
 } from "@pdpp/remote-surface/leases";
 import { browserSurfaceLeaseEnv } from "./browser-surface-leases.ts";
+import {
+  type BrowserSurfaceReadinessProbe,
+  type BrowserSurfaceReadinessProbeResult,
+} from "./browser-surface-readiness.ts";
 import { type BrowserSurfaceLeaseStore } from "../server/stores/browser-surface-lease-store.ts";
 import { runConnector } from "./index.js";
 
@@ -251,6 +255,16 @@ export interface ControllerOptions {
   browserSurfaceLeaseManager?: BrowserSurfaceLeaseManager;
   browserSurfaceReadinessTimeoutMs?: number;
   browserSurfaceLeaseStore?: BrowserSurfaceLeaseStore;
+  /**
+   * Optional preflight readiness probe. Production wiring installs a default
+   * HTTP-based probe once the lease manager and allocator both report a
+   * surface is "leased + ready", but BEFORE the connector child is spawned.
+   * Failure terminates the run with `surface_failed` and a typed probe code
+   * in the spine timeline, so a single failed live run yields enough evidence
+   * to fix the surface before re-asking the owner for an OTP. When unset or
+   * set to `null`, the gate is disabled.
+   */
+  browserSurfaceReadinessProbe?: BrowserSurfaceReadinessProbe | null;
   runConnectorImpl?: RunConnectorFn;
   // Optional store override; defaults to the configured storage-backed singleton.
   // Tests use this to substitute fakes without touching module-scoped state.
@@ -959,6 +973,13 @@ export function createController(opts: ControllerOptions = {}): Controller {
   const browserSurfaceLeaseManager = opts.browserSurfaceLeaseManager;
   const browserSurfaceReadinessTimeoutMs = opts.browserSurfaceReadinessTimeoutMs;
   const browserSurfaceLeaseStore = opts.browserSurfaceLeaseStore;
+  // Default is `null` — disabled unless explicitly wired. The production
+  // path (`resolveNekoBrowserSurfaceControllerOptions` in server/index.js)
+  // installs the default HTTP probe; tests opt in only when they exercise
+  // probe behavior. This keeps the readiness gate from running against
+  // a fake n.eko url in every controller test.
+  const browserSurfaceReadinessProbe: BrowserSurfaceReadinessProbe | null =
+    opts.browserSurfaceReadinessProbe === undefined ? null : opts.browserSurfaceReadinessProbe;
   const runConnectorImpl = opts.runConnectorImpl || runConnector;
   const pendingBrowserSurfaceLaunches = new Map<string, RunNowOptions>();
   const activeRunTraceContexts = new Map<string, SpineTraceContext>();
@@ -1293,6 +1314,115 @@ export function createController(opts: ControllerOptions = {}): Controller {
     if (releaseResult?.promoted) {
       await persistAndPromoteBrowserSurfaceLeases([releaseResult.promoted], reason);
     }
+  }
+
+  /**
+   * Run the preflight readiness probe against a leased surface. On success,
+   * emits `run.browser_surface_ready` and returns. On failure, emits
+   * `run.browser_surface_probe_failed` with the typed probe code and
+   * detail in the event data, releases the lease, and returns the typed
+   * probe result so the caller can short-circuit the run before the
+   * connector child is spawned.
+   *
+   * This is the gate that prevents the "ask the human for an OTP and
+   * THEN discover the CDP socket was already dead" failure mode.
+   */
+  async function runBrowserSurfaceReadinessGate(
+    lease: BrowserSurfaceLease,
+    surface: BrowserSurface | null,
+    connectorId: string,
+    runId: string,
+    traceContext: SpineTraceContext,
+  ): Promise<BrowserSurfaceReadinessProbeResult> {
+    if (!browserSurfaceReadinessProbe) {
+      return { ok: true, pageTargetCount: 0 };
+    }
+    let result: BrowserSurfaceReadinessProbeResult;
+    if (!surface) {
+      result = {
+        ok: false,
+        code: "browser_surface_not_ready",
+        detail: `lease ${lease.lease_id} references missing surface ${lease.surface_id || "(none)"}`,
+      };
+    } else {
+      try {
+        result = await browserSurfaceReadinessProbe.probe(surface);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        result = {
+          ok: false,
+          code: "browser_surface_cdp_unreachable",
+          detail: `readiness probe threw: ${message}`,
+        };
+      }
+    }
+    if (result.ok) {
+      try {
+        await emitSpineEvent({
+          event_type: "run.browser_surface_ready",
+          trace_id: traceContext.trace_id,
+          scenario_id: traceContext.scenario_id,
+          actor_type: "runtime",
+          actor_id: connectorId,
+          object_type: "run",
+          object_id: runId,
+          status: lease.status,
+          run_id: runId,
+          data: {
+            source: buildRunSource(connectorId),
+            browser_surface: projectBrowserSurfaceLease(lease),
+            browser_surface_probe: {
+              ok: true,
+              page_target_count: result.pageTargetCount,
+              ...(result.browserVersion ? { browser_version: result.browserVersion } : {}),
+            },
+          },
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        log.warn?.(`[controller] failed to emit run.browser_surface_ready for ${runId}: ${message}`);
+      }
+      return result;
+    }
+
+    log.warn?.(
+      `[controller] browser-surface readiness probe failed for ${runId} (${connectorId}): ${result.code}: ${result.detail}`,
+    );
+    try {
+      await emitSpineEvent({
+        event_type: "run.browser_surface_probe_failed",
+        trace_id: traceContext.trace_id,
+        scenario_id: traceContext.scenario_id,
+        actor_type: "runtime",
+        actor_id: connectorId,
+        object_type: "run",
+        object_id: runId,
+        status: "surface_failed",
+        run_id: runId,
+        data: {
+          source: buildRunSource(connectorId),
+          browser_surface: projectBrowserSurfaceLease(lease),
+          browser_surface_probe: {
+            ok: false,
+            code: result.code,
+            detail: result.detail,
+          },
+        },
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      log.warn?.(
+        `[controller] failed to emit run.browser_surface_probe_failed for ${runId}: ${message}`,
+      );
+    }
+    await releaseBrowserSurfaceLease(
+      lease,
+      connectorId,
+      runId,
+      traceContext,
+      `readiness probe failed: ${result.code}`,
+    );
+    return result;
   }
 
   async function cancelBrowserSurfaceRun(runId: string): Promise<BrowserSurfaceProjection | null> {
@@ -1665,6 +1795,26 @@ export function createController(opts: ControllerOptions = {}): Controller {
       } else if (browserSurfaceLease?.status === "leased" && browserSurfaceLease.surface_id) {
         const leasedSurface = browserSurfaceLeaseManager.getSurface(browserSurfaceLease.surface_id);
         if (!leasedSurface) {
+          if (browserSurfaceReadinessProbe) {
+            await runBrowserSurfaceReadinessGate(
+              browserSurfaceLease,
+              null,
+              connectorId,
+              runId,
+              traceContext,
+            );
+            pendingBrowserSurfaceLaunches.delete(runId);
+            const projected = projectBrowserSurfaceLease(browserSurfaceLease);
+            return {
+              run_id: runId,
+              trace_id: traceContext.trace_id,
+              status: "surface_failed",
+              browser_surface: {
+                ...projected,
+                browser_surface_status: "surface_failed",
+              },
+            };
+          }
           await emitBrowserSurfaceLeaseEvent("run.browser_surface_deferred", connectorId, runId, traceContext, browserSurfaceLease);
           return {
             run_id: runId,
@@ -1686,6 +1836,39 @@ export function createController(opts: ControllerOptions = {}): Controller {
           status: "deferred",
           browser_surface: projectBrowserSurfaceLease(terminalLease),
         };
+      }
+
+      // Preflight readiness gate. The allocator + lease manager have agreed
+      // the surface is "leased + ready", but that's bookkeeping — it has not
+      // proven the CDP target is alive RIGHT NOW. Probe before we hand env
+      // to the connector and ask the human for an OTP. On failure, emit a
+      // typed event, release the lease, and return surface_failed.
+      if (browserSurfaceLease && browserSurfaceEnv) {
+        if (browserSurfaceReadinessProbe) {
+          const surfaceForProbe = browserSurfaceLease.surface_id
+            ? (browserSurfaceLeaseManager.getSurface(browserSurfaceLease.surface_id) ?? null)
+            : null;
+          const probeResult = await runBrowserSurfaceReadinessGate(
+            browserSurfaceLease,
+            surfaceForProbe,
+            connectorId,
+            runId,
+            traceContext,
+          );
+          if (!probeResult.ok) {
+            pendingBrowserSurfaceLaunches.delete(runId);
+            const projected = projectBrowserSurfaceLease(browserSurfaceLease);
+            return {
+              run_id: runId,
+              trace_id: traceContext.trace_id,
+              status: "surface_failed",
+              browser_surface: {
+                ...projected,
+                browser_surface_status: "surface_failed",
+              },
+            };
+          }
+        }
       }
     }
 
