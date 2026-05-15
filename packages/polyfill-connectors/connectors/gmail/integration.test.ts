@@ -50,6 +50,7 @@ import {
   resolveGmailAddressFromEnv,
   resolveGmailPasswordFromEnv,
   resolveMaxAttachmentBytes,
+  runtimeBlobUploadAvailable,
   selectAllMailFetchRange,
 } from "./index.ts";
 import type { ProgressMessage, StreamRequest } from "./types.ts";
@@ -436,6 +437,14 @@ test("resolveMaxAttachmentBytes: env override is honored only when positive inte
     DEFAULT_MAX_ATTACHMENT_BYTES,
     "partially numeric override is ignored"
   );
+});
+
+test("runtimeBlobUploadAvailable: requires an RS URL alias and owner token", () => {
+  assert.equal(runtimeBlobUploadAvailable({}), false);
+  assert.equal(runtimeBlobUploadAvailable({ PDPP_RS_URL: "http://rs.local" }), false);
+  assert.equal(runtimeBlobUploadAvailable({ PDPP_OWNER_TOKEN: "token" }), false);
+  assert.equal(runtimeBlobUploadAvailable({ PDPP_RS_URL: "http://rs.local", PDPP_OWNER_TOKEN: "token" }), true);
+  assert.equal(runtimeBlobUploadAvailable({ RS_URL: "http://rs.local", PDPP_OWNER_TOKEN: "token" }), true);
 });
 
 test("Gmail env aliases prefer Docker names while accepting documented names", () => {

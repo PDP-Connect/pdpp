@@ -1035,6 +1035,10 @@ function buildRuntimeBlobUploader(): UploadAttachmentBlobFn {
   return makeReferenceBlobUploader({ ownerToken, rsUrl });
 }
 
+export function runtimeBlobUploadAvailable(env: NodeJS.ProcessEnv = process.env): boolean {
+  return Boolean((env.PDPP_RS_URL || env.RS_URL) && env.PDPP_OWNER_TOKEN);
+}
+
 // ─── Delta pass (flag/label changes since priorModseq) ──────────────────
 
 async function runDeltaPass(
@@ -1203,6 +1207,14 @@ async function runAllMailPasses(
     stream: "messages",
     message: `Collected ${metas.length} headers; beginning body pass`,
   });
+  if (deps.requested.has("attachments") && !runtimeBlobUploadAvailable()) {
+    await emit({
+      type: "PROGRESS",
+      stream: "attachments",
+      message:
+        "Attachment metadata will be emitted with hydration_status=failed because blob upload requires PDPP_RS_URL/RS_URL and PDPP_OWNER_TOKEN.",
+    });
+  }
 
   const fetchBodiesBound: FetchBodiesFn = (msg, selection, wantBodies, wantMessages) =>
     fetchBodies(client, msg, selection, wantBodies, wantMessages);
