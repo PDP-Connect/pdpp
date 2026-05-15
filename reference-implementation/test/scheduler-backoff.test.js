@@ -261,3 +261,36 @@ test('custom threshold of 2 engages back-off earlier', () => {
   assert.equal(decision.backoffApplied, true);
   assert.equal(decision.consecutiveFailures, 2);
 });
+
+test('malformed timing inputs do not throw or emit invalid timestamps', () => {
+  const history = Array.from({ length: 3 }, () =>
+    failedRun({ terminalReason: 'authentication_error' })
+  );
+  const cases = [
+    { baseIntervalMs: Number.NaN, lastRunAtMs: T0 },
+    { baseIntervalMs: Number.POSITIVE_INFINITY, lastRunAtMs: T0 },
+    { baseIntervalMs: BASE_INTERVAL_MS, lastRunAtMs: Number.POSITIVE_INFINITY },
+    { baseIntervalMs: -1, lastRunAtMs: -1 },
+  ];
+
+  for (const c of cases) {
+    const decision = computeNextRunWithBackoff(history, c.baseIntervalMs, c.lastRunAtMs);
+    assert.equal(Number.isFinite(decision.effectiveIntervalMs), true);
+    assert.equal(Number.isNaN(Date.parse(decision.nextRunAt)), false);
+  }
+});
+
+test('malformed tunables fall back to safe defaults', () => {
+  const history = Array.from({ length: 3 }, () =>
+    failedRun({ terminalReason: 'authentication_error' })
+  );
+  const decision = computeNextRunWithBackoff(history, BASE_INTERVAL_MS, T0, {
+    backoffThreshold: Number.NaN,
+    maxBackoffExp: Number.POSITIVE_INFINITY,
+    maxBackoffMs: Number.NaN,
+  });
+
+  assert.equal(decision.backoffApplied, true);
+  assert.equal(decision.effectiveIntervalMs, BASE_INTERVAL_MS);
+  assert.equal(decision.nextRunAt, new Date(T0 + BASE_INTERVAL_MS).toISOString());
+});

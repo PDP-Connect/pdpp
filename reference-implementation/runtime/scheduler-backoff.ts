@@ -164,9 +164,11 @@ export function computeNextRunWithBackoff(
   lastRunAtMs: number,
   options: ComputeBackoffOptions = {}
 ): BackoffDecision {
-  const threshold = options.backoffThreshold ?? DEFAULT_BACKOFF_THRESHOLD;
-  const maxExp = options.maxBackoffExp ?? DEFAULT_MAX_BACKOFF_EXP;
-  const maxMs = options.maxBackoffMs ?? DEFAULT_MAX_BACKOFF_MS;
+  const threshold = normalizePositiveInteger(options.backoffThreshold, DEFAULT_BACKOFF_THRESHOLD);
+  const maxExp = normalizeNonNegativeInteger(options.maxBackoffExp, DEFAULT_MAX_BACKOFF_EXP);
+  const maxMs = normalizeFiniteNonNegativeMs(options.maxBackoffMs ?? DEFAULT_MAX_BACKOFF_MS, DEFAULT_MAX_BACKOFF_MS);
+  const normalizedBaseIntervalMs = normalizeFiniteNonNegativeMs(baseIntervalMs, 0);
+  const normalizedLastRunAtMs = normalizeFiniteNonNegativeMs(lastRunAtMs, 0);
   const manual = options.manual === true;
 
   if (manual) {
@@ -186,8 +188,8 @@ export function computeNextRunWithBackoff(
     return {
       backoffApplied: false,
       consecutiveFailures,
-      effectiveIntervalMs: baseIntervalMs,
-      nextRunAt: new Date(lastRunAtMs + baseIntervalMs).toISOString(),
+      effectiveIntervalMs: normalizedBaseIntervalMs,
+      nextRunAt: toIsoTimestamp(normalizedLastRunAtMs + normalizedBaseIntervalMs),
       reasonClass: consecutiveFailures > 0 ? reasonClass : null,
       recommendedHealthState: null,
     };
@@ -197,7 +199,7 @@ export function computeNextRunWithBackoff(
   // First over-threshold failure (= threshold) yields 2^0 = 1x base interval,
   // then 2^1=2x, 2^2=4x, ...
   const exponent = Math.min(consecutiveFailures - threshold, maxExp);
-  const rawDelay = baseIntervalMs * 2 ** exponent;
+  const rawDelay = normalizedBaseIntervalMs * 2 ** exponent;
   const effectiveIntervalMs = Math.min(rawDelay, maxMs);
 
   // Promote `cooling_off` → `blocked` once the streak has crossed the
@@ -212,10 +214,36 @@ export function computeNextRunWithBackoff(
     backoffApplied: true,
     consecutiveFailures,
     effectiveIntervalMs,
-    nextRunAt: new Date(lastRunAtMs + effectiveIntervalMs).toISOString(),
+    nextRunAt: toIsoTimestamp(normalizedLastRunAtMs + effectiveIntervalMs),
     reasonClass,
     recommendedHealthState,
   };
+}
+
+function normalizeFiniteNonNegativeMs(value: number, fallback: number): number {
+  if (!Number.isFinite(value) || value < 0) {
+    return fallback;
+  }
+  return value;
+}
+
+function normalizePositiveInteger(value: number | undefined, fallback: number): number {
+  if (value === undefined || !Number.isFinite(value) || value < 1) {
+    return fallback;
+  }
+  return Math.floor(value);
+}
+
+function normalizeNonNegativeInteger(value: number | undefined, fallback: number): number {
+  if (value === undefined || !Number.isFinite(value) || value < 0) {
+    return fallback;
+  }
+  return Math.floor(value);
+}
+
+function toIsoTimestamp(epochMs: number): string {
+  const safeEpochMs = normalizeFiniteNonNegativeMs(epochMs, 0);
+  return new Date(safeEpochMs).toISOString();
 }
 
 function countConsecutiveSameClassFailures(history: readonly RunRecord[]): {

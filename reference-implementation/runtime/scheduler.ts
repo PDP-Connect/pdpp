@@ -292,6 +292,20 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+function normalizeScheduleIntervalMs(intervalMs: number): number {
+  if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
+    return 60_000;
+  }
+  return intervalMs;
+}
+
+function normalizeSchedulerEpochMs(epochMs: number | undefined): number {
+  if (epochMs === undefined || !Number.isFinite(epochMs) || epochMs < 0) {
+    return 0;
+  }
+  return epochMs;
+}
+
 // ─── Core runtime state ─────────────────────────────────────────────────────
 
 interface SchedulerRuntime {
@@ -1195,9 +1209,10 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     skipToEmit: RunRecord | null;
   } {
     const connectorId = schedule.connectorId;
-    const lastRun = runtime.lastRunTime.get(connectorId) || 0;
+    const lastRun = normalizeSchedulerEpochMs(runtime.lastRunTime.get(connectorId));
     const history = runtime.history.filter((r) => r.connectorId === connectorId);
-    const decision = computeNextRunWithBackoff(history, schedule.intervalMs, lastRun);
+    const scheduleIntervalMs = normalizeScheduleIntervalMs(schedule.intervalMs);
+    const decision = computeNextRunWithBackoff(history, scheduleIntervalMs, lastRun);
 
     const elapsed = now - lastRun;
     let eligible = elapsed >= decision.effectiveIntervalMs;
@@ -1260,7 +1275,15 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
           if (!runtime.running) {
             return;
           }
-          const { eligible, skipToEmit, eventsToEmit } = evaluateBackoffDispatch(schedule, Date.now());
+          let dispatch;
+          try {
+            dispatch = evaluateBackoffDispatch(schedule, Date.now());
+          } catch (err: unknown) {
+            const message = err instanceof Error ? err.message : String(err);
+            console.error(`[scheduler] failed to evaluate back-off for ${schedule.connectorId}: ${message}`);
+            return;
+          }
+          const { eligible, skipToEmit, eventsToEmit } = dispatch;
           // Emit transition markers (back_off.started, gave_up) before
           // the audit skip so the dashboard sees the lifecycle event
           // ordering: "streak detected → cooling_off pill renders →
@@ -1284,7 +1307,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
             });
           }
         },
-        Math.min(schedule.intervalMs, 60_000)
+        Math.min(normalizeScheduleIntervalMs(schedule.intervalMs), 60_000)
       );
 
       runtime.timers.push(timer);
