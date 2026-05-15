@@ -27,7 +27,7 @@
 
 ## 5. Failure And Gap Reporting
 
-- [x] Add a non-secret gap summary for attachment backfill runs with counts for hydrated, already hydrated, too large, failed, unavailable/skipped, and remaining historical gaps.
+- [x] Add a non-secret gap summary for attachment backfill runs with counts for hydrated, too large, failed, unavailable/skipped, and remaining historical gaps; omit `already_hydrated` until the runtime can measure existing blob/record state directly.
 - [x] Surface the summary in connector output and the reference `_ref` run timeline or existing equivalent run-inspection surface.
 - [x] Do not advance `attachments.all_mail.backfilled_through_uid` past a window until the window's records and gap summary are durable.
 

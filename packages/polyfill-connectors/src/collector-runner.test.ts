@@ -24,6 +24,15 @@ test("buildCollectorStartMessage emits a stream-only START with no owner credent
   assert.equal(JSON.stringify(start).includes("token"), false);
 });
 
+test("buildCollectorStartMessage can request explicit stream backfills", () => {
+  const start = buildCollectorStartMessage(["messages"], ["attachments"]);
+  assert.deepEqual(start, {
+    scope: { streams: [{ name: "messages" }] },
+    streamsToBackfill: ["attachments"],
+    type: "START",
+  });
+});
+
 test("transformRecordsToCollectorEnvelopes uses the given connector id", () => {
   const envelopes = transformRecordsToCollectorEnvelopes({
     batchId: "batch-1",

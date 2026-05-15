@@ -34,19 +34,19 @@ The smallest lovable valuable product is done when a Docker operator can run Gma
 - Historical rehydration: a backfill run revisits historical All Mail UIDs independently of `messages.all_mail.uidnext` and emits attachment records for pre-existing attachment-bearing messages.
 - Idempotent blob persistence: rerunning the backfill does not duplicate blob bytes or create unstable attachment identities; existing hydrated records may be re-emitted with the same record id and content-addressed `blob_id`.
 - Partial failure reporting: inaccessible, oversized, malformed, or transiently failed attachments remain visible as metadata records with `hydration_status` and bounded non-secret diagnostics.
-- Gap reporting: run output and `_ref` timeline surfaces summarize attachment coverage with counts for hydrated, already hydrated, too large, failed, unavailable/skipped, and remaining historical gaps.
+- Gap reporting: run output and `_ref` timeline surfaces summarize attachment coverage with counts for hydrated, too large, failed, unavailable/skipped, and remaining historical gaps. `already_hydrated` is intentionally omitted until the runtime can measure existing blob/record state directly.
 - Resume safety: interrupted backfills resume from the last committed attachment cursor and do not mark a UID range complete until records and any gap summary for that range have been durably emitted.
 - Docker proof: the documented Docker validation path can seed or use a real Gmail account with an old attachment, run backfill after state has advanced, then fetch the attachment through `expand=attachments` and `blob_ref.fetch_url`.
 
 ## Operational Shape
 
-Backfill should be opt-in at first through an explicit run scope or runtime option such as `streamsToBackfill: ["attachments"]`. The scheduler may later automate it, but this change should first make the operation deterministic and auditable.
+Backfill is opt-in through an explicit run scope (`streamsToBackfill: ["attachments"]`) and the collector-runner `--backfill-streams attachments` flag. The scheduler may later automate it, but this change first makes the operation deterministic and auditable.
 
 During a backfill run, the connector should:
 
 1. Read normal Gmail credentials and blob-upload env.
 2. Select All Mail and derive `uidvalidity`.
-3. Determine a bounded UID window from `attachments.all_mail.backfilled_through_uid` and the current mailbox high-water mark.
+3. Determine a bounded UID window from `attachments.all_mail.backfilled_through_uid` and the current mailbox high-water mark. The default window is 500 UIDs and can be overridden with `PDPP_GMAIL_ATTACHMENT_BACKFILL_WINDOW_UIDS`.
 4. Fetch message structures for that window and process only attachment records unless the run scope also requests sibling streams.
 5. Upload bytes through the existing blob seam.
 6. Emit attachment records and progress/gap summaries.

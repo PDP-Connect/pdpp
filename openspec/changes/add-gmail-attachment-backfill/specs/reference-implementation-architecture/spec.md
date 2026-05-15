@@ -53,7 +53,8 @@ The reference Docker path SHALL make Gmail attachment hydration prerequisites an
 #### Scenario: Gmail attachment backfill completes with partial gaps
 
 - **WHEN** a Gmail attachment backfill run completes with some attachments not hydrated
-- **THEN** the run output or reference-only run timeline SHALL expose a non-secret gap summary that distinguishes hydrated, already hydrated, too large, failed, unavailable or skipped, and remaining historical gap counts
+- **THEN** the run output or reference-only run timeline SHALL expose a non-secret gap summary that distinguishes hydrated, too large, failed, unavailable or skipped, and remaining historical gap counts
+- **AND** it SHALL NOT include an `already_hydrated` count unless existing blob or record state is measured directly
 - **AND** the summary SHALL be sufficient for an operator to know that "all mail" is not fully byte-hydrated
 
 #### Scenario: Docker proof validates historical rehydration

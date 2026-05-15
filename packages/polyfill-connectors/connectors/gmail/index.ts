@@ -100,6 +100,8 @@ const BLOB_UPLOAD_ENV_ERROR =
 export const DEFAULT_MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const MAX_ATTACHMENT_BYTES_ENV = "PDPP_GMAIL_MAX_ATTACHMENT_BYTES";
 const POSITIVE_INTEGER_PATTERN = /^\d+$/;
+export const DEFAULT_ATTACHMENT_BACKFILL_WINDOW_UIDS = 500;
+const ATTACHMENT_BACKFILL_WINDOW_UIDS_ENV = "PDPP_GMAIL_ATTACHMENT_BACKFILL_WINDOW_UIDS";
 
 // ─── imapflow interface augmentation ────────────────────────────────────
 
@@ -262,7 +264,6 @@ export type UploadAttachmentBlobFn = (args: {
 export type HydrateAttachmentFn = (msg: FetchMessageObject, attachment: AttachmentRecord) => Promise<AttachmentRecord>;
 
 export interface AttachmentBackfillSummary {
-  already_hydrated: number;
   failed: number;
   hydrated: number;
   remaining_historical_gaps: number;
@@ -272,7 +273,6 @@ export interface AttachmentBackfillSummary {
 
 export function createAttachmentBackfillSummary(): AttachmentBackfillSummary {
   return {
-    already_hydrated: 0,
     failed: 0,
     hydrated: 0,
     remaining_historical_gaps: 0,
@@ -311,7 +311,6 @@ export function addAttachmentBackfillRecordToSummary(
 export function formatAttachmentBackfillSummary(summary: AttachmentBackfillSummary): string {
   return [
     `hydrated=${summary.hydrated}`,
-    `already_hydrated=${summary.already_hydrated}`,
     `too_large=${summary.too_large}`,
     `failed=${summary.failed}`,
     `unavailable_skipped=${summary.unavailable_skipped}`,
@@ -798,6 +797,7 @@ export function isAttachmentBackfillRequested(streamsToBackfill: readonly string
 
 export function selectAttachmentBackfillFetchRange(session: {
   attachmentBackfill: AttachmentAllMailCursor;
+  maxWindowUids?: number;
   priorUidnext: number;
 }): string | null {
   const backfilledThrough = session.attachmentBackfill.backfilled_through_uid ?? 0;
@@ -806,7 +806,24 @@ export function selectAttachmentBackfillFetchRange(session: {
   if (startUid > endUid) {
     return null;
   }
-  return `${startUid}:${endUid}`;
+  const maxWindowUids = normalizeAttachmentBackfillWindowUids(session.maxWindowUids);
+  const windowEndUid = Math.min(endUid, startUid + maxWindowUids - 1);
+  return `${startUid}:${windowEndUid}`;
+}
+
+export function resolveAttachmentBackfillWindowUids(env: NodeJS.ProcessEnv = process.env): number {
+  const value = env[ATTACHMENT_BACKFILL_WINDOW_UIDS_ENV];
+  if (!(value && POSITIVE_INTEGER_PATTERN.test(value))) {
+    return DEFAULT_ATTACHMENT_BACKFILL_WINDOW_UIDS;
+  }
+  return normalizeAttachmentBackfillWindowUids(Number(value));
+}
+
+function normalizeAttachmentBackfillWindowUids(value: number | undefined): number {
+  if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) {
+    return value;
+  }
+  return DEFAULT_ATTACHMENT_BACKFILL_WINDOW_UIDS;
 }
 
 function boundedHydrationError(err: unknown): string {
@@ -1341,8 +1358,12 @@ async function runAllMailPasses(
   await emitMessagesPass(perMessageDeps, metas);
 
   if (attachmentBackfillRequested) {
-    const attachmentBackfillRange = selectAttachmentBackfillFetchRange(session);
+    const attachmentBackfillRange = selectAttachmentBackfillFetchRange({
+      ...session,
+      maxWindowUids: resolveAttachmentBackfillWindowUids(),
+    });
     if (attachmentBackfillRange) {
+      const backfillWindowEndUid = Number(attachmentBackfillRange.split(":")[1]);
       await emit({
         type: "PROGRESS",
         stream: "attachments",
@@ -1376,10 +1397,20 @@ async function runAllMailPasses(
         count: backfillSummary.hydrated,
         total:
           backfillSummary.hydrated +
-          backfillSummary.already_hydrated +
           backfillSummary.too_large +
           backfillSummary.failed +
           backfillSummary.unavailable_skipped,
+      });
+      await emit({
+        type: "STATE",
+        stream: "attachments",
+        cursor: {
+          all_mail: {
+            uidvalidity: session.uidvalidityNum,
+            backfilled_through_uid: backfillWindowEndUid,
+            completed_at: backfillWindowEndUid >= Math.max(0, session.priorUidnext - 1) ? nowIso() : null,
+          },
+        },
       });
     } else {
       await emit({
@@ -1389,18 +1420,18 @@ async function runAllMailPasses(
         count: 0,
         total: 0,
       });
-    }
-    await emit({
-      type: "STATE",
-      stream: "attachments",
-      cursor: {
-        all_mail: {
-          uidvalidity: session.uidvalidityNum,
-          backfilled_through_uid: Math.max(0, session.priorUidnext - 1),
-          completed_at: nowIso(),
+      await emit({
+        type: "STATE",
+        stream: "attachments",
+        cursor: {
+          all_mail: {
+            uidvalidity: session.uidvalidityNum,
+            backfilled_through_uid: Math.max(0, session.priorUidnext - 1),
+            completed_at: nowIso(),
+          },
         },
-      },
-    });
+      });
+    }
   }
 
   // Pass 2: detect flag/label changes on already-seen messages (incremental only)

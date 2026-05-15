@@ -68,6 +68,7 @@ export interface StartMessage {
   detail_gaps?: readonly DetailGapStartEntry[];
   scope: { streams: readonly StreamScope[] };
   state?: Record<string, unknown>;
+  streamsToBackfill?: readonly string[];
   type: "START";
 }
 

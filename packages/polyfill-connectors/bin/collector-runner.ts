@@ -16,6 +16,7 @@
  *   run     --base-url <url> --connector <id>
  *           --device-id <id> --device-token <token>
  *           --source-instance-id <id> [--streams a,b,c]
+ *           [--backfill-streams attachments]
  *           [--command <cmd>] [--args <argv...>] [--run-id <id>]
  *     Run the connector under the collector runtime. Gates the
  *     connector against COLLECTOR_RUNTIME_CAPABILITIES before spawn;
@@ -65,6 +66,7 @@ interface CliOptions {
   runId?: string;
   sourceInstanceId?: string;
   streams?: string[];
+  streamsToBackfill?: string[];
 }
 
 const KNOWN_CONNECTOR_DEFAULTS: Record<
@@ -149,6 +151,7 @@ function buildConnectorSpec(options: CliOptions): CollectorConnectorSpec {
   return {
     connector_id: options.connector,
     streams,
+    ...(options.streamsToBackfill ? { streamsToBackfill: options.streamsToBackfill } : {}),
     command,
     args,
     runtime_requirements: { bindings: defaults?.bindings ?? {} },
@@ -199,6 +202,9 @@ function applyOption(options: CliOptions, arg: string, value: string | undefined
     "--base-url": (next) => {
       options.baseUrl = next;
     },
+    "--backfill-streams": (next) => {
+      options.streamsToBackfill = parseCsv(next);
+    },
     "--code": (next) => {
       options.code = next;
     },
@@ -224,10 +230,7 @@ function applyOption(options: CliOptions, arg: string, value: string | undefined
       options.sourceInstanceId = next;
     },
     "--streams": (next) => {
-      options.streams = next
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean);
+      options.streams = parseCsv(next);
     },
     "--command": (next) => {
       options.entrypointCommand = next;
@@ -241,6 +244,13 @@ function applyOption(options: CliOptions, arg: string, value: string | undefined
     throw new Error(`unknown option: ${arg}`);
   }
   set(value);
+}
+
+function parseCsv(value: string): string[] {
+  return value
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
 main().catch((error: unknown) => {

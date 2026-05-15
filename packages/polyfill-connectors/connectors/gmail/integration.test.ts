@@ -41,6 +41,7 @@ import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts
 import {
   addAttachmentBackfillRecordToSummary,
   createAttachmentBackfillSummary,
+  DEFAULT_ATTACHMENT_BACKFILL_WINDOW_UIDS,
   DEFAULT_MAX_ATTACHMENT_BYTES,
   emitMessagesPass,
   type FetchBodiesFn,
@@ -50,6 +51,7 @@ import {
   makeAttachmentHydrator,
   type PerMessageDeps,
   processMessage,
+  resolveAttachmentBackfillWindowUids,
   resolveGmailAddressFromEnv,
   resolveGmailPasswordFromEnv,
   resolveMaxAttachmentBytes,
@@ -412,7 +414,6 @@ test("attachment backfill summary counts non-secret hydration outcomes", () => {
   addAttachmentBackfillRecordToSummary(summary, { hydration_status: "deferred" });
 
   assert.deepEqual(summary, {
-    already_hydrated: 0,
     failed: 1,
     hydrated: 1,
     remaining_historical_gaps: 3,
@@ -421,7 +422,7 @@ test("attachment backfill summary counts non-secret hydration outcomes", () => {
   });
   assert.equal(
     formatAttachmentBackfillSummary(summary),
-    "hydrated=1 already_hydrated=0 too_large=1 failed=1 unavailable_skipped=1 remaining_historical_gaps=3"
+    "hydrated=1 too_large=1 failed=1 unavailable_skipped=1 remaining_historical_gaps=3"
   );
 });
 
@@ -638,7 +639,7 @@ test("selectAllMailFetchRange: incremental runs use priorUidnext:* regardless of
   assert.equal(selectAllMailFetchRange({ fullResync: true, priorUidnext: 500 }, makeRequested(["messages"])), "1:*");
 });
 
-test("selectAttachmentBackfillFetchRange: historical range is independent of messages uidnext cursor", () => {
+test("selectAttachmentBackfillFetchRange: historical range is bounded and independent of messages uidnext cursor", () => {
   assert.equal(
     selectAttachmentBackfillFetchRange({
       attachmentBackfill: { uidvalidity: 123 },
@@ -649,9 +650,10 @@ test("selectAttachmentBackfillFetchRange: historical range is independent of mes
   assert.equal(
     selectAttachmentBackfillFetchRange({
       attachmentBackfill: { backfilled_through_uid: 250, uidvalidity: 123 },
+      maxWindowUids: 100,
       priorUidnext: 500,
     }),
-    "251:499"
+    "251:350"
   );
   assert.equal(
     selectAttachmentBackfillFetchRange({
@@ -659,6 +661,20 @@ test("selectAttachmentBackfillFetchRange: historical range is independent of mes
       priorUidnext: 500,
     }),
     null
+  );
+});
+
+test("resolveAttachmentBackfillWindowUids: env override must be a positive integer", () => {
+  assert.equal(resolveAttachmentBackfillWindowUids({}), DEFAULT_ATTACHMENT_BACKFILL_WINDOW_UIDS);
+  assert.equal(resolveAttachmentBackfillWindowUids({ PDPP_GMAIL_ATTACHMENT_BACKFILL_WINDOW_UIDS: "1" }), 1);
+  assert.equal(resolveAttachmentBackfillWindowUids({ PDPP_GMAIL_ATTACHMENT_BACKFILL_WINDOW_UIDS: "2000" }), 2000);
+  assert.equal(
+    resolveAttachmentBackfillWindowUids({ PDPP_GMAIL_ATTACHMENT_BACKFILL_WINDOW_UIDS: "0" }),
+    DEFAULT_ATTACHMENT_BACKFILL_WINDOW_UIDS
+  );
+  assert.equal(
+    resolveAttachmentBackfillWindowUids({ PDPP_GMAIL_ATTACHMENT_BACKFILL_WINDOW_UIDS: "12x" }),
+    DEFAULT_ATTACHMENT_BACKFILL_WINDOW_UIDS
   );
 });
 

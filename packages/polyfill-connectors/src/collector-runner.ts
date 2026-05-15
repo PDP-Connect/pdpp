@@ -65,6 +65,8 @@ export interface CollectorConnectorSpec extends ConnectorPlacementInput {
   readonly env?: NodeJS.ProcessEnv;
   /** Streams the collector should request from the connector. */
   readonly streams: readonly string[];
+  /** Optional explicit stream backfills requested from the connector. */
+  readonly streamsToBackfill?: readonly string[];
 }
 
 export interface CollectorRunConfig {
@@ -172,11 +174,18 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
   return { done, enqueuedBatches, recordsQueued, sentBatches, satisfiedBindings };
 }
 
-export function buildCollectorStartMessage(streams: readonly string[]): StartMessage {
-  return {
+export function buildCollectorStartMessage(
+  streams: readonly string[],
+  streamsToBackfill: readonly string[] = []
+): StartMessage {
+  const start: StartMessage = {
     scope: { streams: streams.map((name): StreamScope => ({ name })) },
     type: "START",
   };
+  if (streamsToBackfill.length > 0) {
+    start.streamsToBackfill = [...streamsToBackfill];
+  }
+  return start;
 }
 
 export function transformRecordsToCollectorEnvelopes(input: {
@@ -279,7 +288,7 @@ async function collectConnectorMessages(
   const child = spawnConnector(connector, childContext);
   const messages: EmittedMessage[] = [];
   const stderr: Buffer[] = [];
-  child.stdin.end(`${JSON.stringify(buildCollectorStartMessage(connector.streams))}\n`);
+  child.stdin.end(`${JSON.stringify(buildCollectorStartMessage(connector.streams, connector.streamsToBackfill))}\n`);
   child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
 
   const lines = createInterface({ input: child.stdout, terminal: false });
