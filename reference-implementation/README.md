@@ -474,6 +474,22 @@ persistent browser profiles and remain subject to upstream anti-bot behavior.
 Mount any optional local connector inputs, such as Slack archives, explicitly
 when testing those connectors.
 
+Slack imports additionally require a host-provided `slackdump` executable. The
+stock reference image intentionally does not bundle `slackdump` because it is an
+AGPL-licensed external tool. For Docker runs, set
+`PDPP_DOCKER_SLACKDUMP_DIR` in `.env.docker` to a host directory containing a
+`slackdump` executable, and keep `SLACKDUMP_BIN` pointed at the stable
+in-container path:
+
+```env
+PDPP_DOCKER_SLACKDUMP_DIR=/home/user/go/bin
+SLACKDUMP_BIN=/opt/pdpp-tools/slackdump/slackdump
+```
+
+Alternatively, place or symlink the executable at
+`packages/polyfill-connectors/.pdpp-tools/slackdump/slackdump`; that local
+runtime directory is gitignored and is the default compose mount source.
+
 Update public-image deployments by pulling newer images and restarting the
 stack. This keeps the persisted SQLite DB, embedding cache, and browser profile
 volumes in place:

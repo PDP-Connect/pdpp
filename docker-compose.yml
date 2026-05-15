@@ -52,7 +52,7 @@ services:
       SLACK_WORKSPACE: ${SLACK_WORKSPACE:-}
       SLACK_TOKEN: ${SLACK_TOKEN:-}
       SLACK_COOKIE: ${SLACK_COOKIE:-}
-      SLACKDUMP_BIN: ${SLACKDUMP_BIN:-}
+      SLACKDUMP_BIN: ${SLACKDUMP_BIN:-/opt/pdpp-tools/slackdump/slackdump}
       CHASE_USERNAME: ${CHASE_USERNAME:-}
       CHASE_PASSWORD: ${CHASE_PASSWORD:-}
       AMAZON_USERNAME: ${AMAZON_USERNAME:-}
@@ -90,6 +90,10 @@ services:
       # claude_code or codex inside this Docker service.
       - ${PDPP_DOCKER_CLAUDE_CODE_HOME:-./packages/polyfill-connectors/.pdpp-imports/claude}:/imports/claude:ro
       - ${PDPP_DOCKER_CODEX_HOME:-./packages/polyfill-connectors/.pdpp-imports/codex}:/imports/codex:ro
+      # Optional external-tool mount. slackdump is AGPL-licensed and is not
+      # bundled into the stock reference image; mount a host-provided directory
+      # containing a `slackdump` executable when running the Slack connector.
+      - ${PDPP_DOCKER_SLACKDUMP_DIR:-./packages/polyfill-connectors/.pdpp-tools/slackdump}:/opt/pdpp-tools/slackdump:ro
     # Health = AS and RS are both listening and serving public metadata.
     # Embedding-model download and semantic backfill run in the background
     # after listen and are intentionally NOT part of "healthy".

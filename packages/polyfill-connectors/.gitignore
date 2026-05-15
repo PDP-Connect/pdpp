@@ -5,3 +5,4 @@ fixtures/*/raw/
 
 # Local data + cache
 .pdpp-data/
+.pdpp-tools/

@@ -39,6 +39,20 @@ block = m.group(1)
 if "service_healthy" not in block:
     print("check-compose-health: web.depends_on must use condition: service_healthy", file=sys.stderr)
     sys.exit(1)
+
+reference = re.search(r"^\s*reference:\s*\n((?:\s{4,}.*\n)+)", src, re.MULTILINE)
+if not reference:
+    print("check-compose-health: could not locate reference service block", file=sys.stderr)
+    sys.exit(1)
+reference_block = reference.group(1)
+required = [
+    "SLACKDUMP_BIN: ${SLACKDUMP_BIN:-/opt/pdpp-tools/slackdump/slackdump}",
+    "${PDPP_DOCKER_SLACKDUMP_DIR:-./packages/polyfill-connectors/.pdpp-tools/slackdump}:/opt/pdpp-tools/slackdump:ro",
+]
+for needle in required:
+    if needle not in reference_block:
+        print(f"check-compose-health: missing Slack external-tool Docker wiring: {needle}", file=sys.stderr)
+        sys.exit(1)
 PY
 
 echo "check-compose-health: ok"
