@@ -53,7 +53,9 @@ import { type EmittedRecord, makeRecordingEmit, type SkippedRecord } from "../..
 import {
   CHATGPT_RETRYABLE_ERROR_PATTERN,
   ChatGptRecoverableRetryExhaustedError,
+  chatGptBackendFetchInBrowser,
   processConversationDetail,
+  resolveChatGptBackendFetchTimeoutMs,
   runConversationsAndMessagesStreams,
   runCustomGptsStream,
   runCustomInstructionsStream,
@@ -81,6 +83,41 @@ test("CHATGPT_RETRYABLE_ERROR_PATTERN treats retry-budget exhaustion as retryabl
     ),
     true
   );
+});
+
+test("resolveChatGptBackendFetchTimeoutMs supports small test overrides", () => {
+  assert.equal(resolveChatGptBackendFetchTimeoutMs({ PDPP_CHATGPT_BACKEND_FETCH_TIMEOUT_MS: "7" }), 7);
+  assert.equal(resolveChatGptBackendFetchTimeoutMs({ PDPP_CHATGPT_BACKEND_FETCH_TIMEOUT_MS: "0" }), 45_000);
+  assert.equal(resolveChatGptBackendFetchTimeoutMs({ PDPP_CHATGPT_BACKEND_FETCH_TIMEOUT_MS: "invalid" }), 45_000);
+});
+
+test("chatGptBackendFetchInBrowser aborts a never-resolving backend fetch promptly", async () => {
+  const originalFetch = globalThis.fetch;
+  let observedSignal: AbortSignal | undefined;
+  globalThis.fetch = ((_url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    observedSignal = init?.signal ?? undefined;
+    return new Promise((_resolve, reject) => {
+      observedSignal?.addEventListener("abort", () => reject(new Error("aborted by test signal")), { once: true });
+    });
+  }) as typeof fetch;
+
+  const startedAt = Date.now();
+  try {
+    await assert.rejects(
+      chatGptBackendFetchInBrowser({
+        auth: { accessToken: "redacted-test-token", deviceId: "test-device" },
+        method: "GET",
+        path: "/conversation/test-conversation",
+        timeoutMs: 25,
+      }),
+      /chatgpt_backend_fetch_timeout after 25ms/
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(observedSignal?.aborted, true);
+  assert.ok(Date.now() - startedAt < 1000, "timeout should reject promptly");
 });
 
 test("summarizeChatGptSideEffectProbe reports stable list/detail metadata without content", () => {

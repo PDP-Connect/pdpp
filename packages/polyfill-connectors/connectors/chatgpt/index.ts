@@ -140,6 +140,9 @@ const CHATGPT_RATE_LIMIT_MAX_DELAY_MS = 15 * 60_000;
 const CHATGPT_RATE_LIMIT_MAX_RETRY_AFTER_MS = 15 * 60_000;
 const CHATGPT_LONG_SLEEP_PROGRESS_THRESHOLD_MS = 5000;
 export const CHATGPT_RETRYABLE_ERROR_PATTERN = /ECONN|ETIMEDOUT|fetch failed|429|retry budget exhausted/i;
+const CHATGPT_BACKEND_FETCH_TIMEOUT_ENV = "PDPP_CHATGPT_BACKEND_FETCH_TIMEOUT_MS";
+const CHATGPT_BACKEND_FETCH_TIMEOUT_MS = 45_000;
+const CHATGPT_BACKEND_EVALUATE_TIMEOUT_BUFFER_MS = 5000;
 const CHATGPT_SIDE_EFFECT_PROBE_ENV = "PDPP_CHATGPT_SIDE_EFFECT_PROBE";
 const CHATGPT_CONVERSATION_DETAIL_PATH_PATTERN = /^\/conversation\/[^/?#]+(?:[?#].*)?$/;
 const URL_QUERY_OR_FRAGMENT_PATTERN = /[?#].*$/;
@@ -175,6 +178,98 @@ export class ChatGptRecoverableRetryExhaustedError extends Error {
     this.class = details.class;
     this.httpStatus = details.httpStatus ?? null;
     this.networkPressure = details.networkPressure;
+  }
+}
+
+interface ChatGptBackendFetchArgs {
+  auth: ChatGptAuth;
+  body?: unknown;
+  method: string;
+  path: string;
+  timeoutMs: number;
+}
+
+export function resolveChatGptBackendFetchTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env[CHATGPT_BACKEND_FETCH_TIMEOUT_ENV]?.trim();
+  if (!raw) {
+    return CHATGPT_BACKEND_FETCH_TIMEOUT_MS;
+  }
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return CHATGPT_BACKEND_FETCH_TIMEOUT_MS;
+  }
+  return Math.ceil(parsed);
+}
+
+export async function chatGptBackendFetchInBrowser({
+  auth,
+  body,
+  method,
+  path,
+  timeoutMs,
+}: ChatGptBackendFetchArgs): Promise<ChatGptFetchResult> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const headers: Record<string, string> = {
+      accept: "*/*",
+      authorization: `Bearer ${auth.accessToken}`,
+      "oai-language": "en-US",
+      "content-type": "application/json",
+    };
+    if (auth.deviceId) {
+      headers["oai-device-id"] = auth.deviceId;
+    }
+    // Build RequestInit with body only when present — under
+    // exactOptionalPropertyTypes, spreading {body: undefined} doesn't
+    // match BodyInit | null. This is what the old @ts-expect-error
+    // was papering over.
+    const init: RequestInit = {
+      method,
+      credentials: "include",
+      headers,
+      signal: controller.signal,
+    };
+    if (body) {
+      init.body = JSON.stringify(body);
+    }
+    const res = await fetch(`https://chatgpt.com/backend-api${path}`, init);
+    const status = res.status;
+    const retryAfter = res.headers.get("retry-after") ?? undefined;
+    let json: unknown = null;
+    try {
+      json = await res.json();
+    } catch {
+      json = null;
+    }
+    return {
+      status,
+      json: json as ChatGptFetchResult["json"],
+      ...(retryAfter ? { headers: { "retry-after": retryAfter } } : {}),
+    };
+  } catch (err) {
+    if (controller.signal.aborted) {
+      throw new Error(`chatgpt_backend_fetch_timeout after ${timeoutMs}ms`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timeout: NodeJS.Timeout | null = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
   }
 }
 
@@ -260,42 +355,12 @@ function createChatGptApi({
     { method, body }: { method: string; body?: unknown }
   ): Promise<ChatGptFetchResult> {
     const a = await auth();
-    return (await page.evaluate(
-      async ({ path, method, body, auth }) => {
-        const headers: Record<string, string> = {
-          accept: "*/*",
-          authorization: `Bearer ${auth.accessToken}`,
-          "oai-language": "en-US",
-          "content-type": "application/json",
-        };
-        if (auth.deviceId) {
-          headers["oai-device-id"] = auth.deviceId;
-        }
-        // Build RequestInit with body only when present — under
-        // exactOptionalPropertyTypes, spreading {body: undefined} doesn't
-        // match BodyInit | null. This is what the old @ts-expect-error
-        // was papering over.
-        const init: RequestInit = {
-          method,
-          credentials: "include",
-          headers,
-        };
-        if (body) {
-          init.body = JSON.stringify(body);
-        }
-        const res = await fetch(`https://chatgpt.com/backend-api${path}`, init);
-        const status = res.status;
-        const retryAfter = res.headers.get("retry-after") ?? undefined;
-        let json: unknown = null;
-        try {
-          json = await res.json();
-        } catch {
-          json = null;
-        }
-        return { status, json, headers: retryAfter ? { "retry-after": retryAfter } : undefined };
-      },
-      { path, method, body, auth: a }
-    )) as ChatGptFetchResult;
+    const timeoutMs = resolveChatGptBackendFetchTimeoutMs();
+    return await withTimeout(
+      page.evaluate(chatGptBackendFetchInBrowser, { path, method, body, auth: a, timeoutMs }),
+      timeoutMs + CHATGPT_BACKEND_EVALUATE_TIMEOUT_BUFFER_MS,
+      `chatgpt_backend_fetch_evaluate_timeout after ${timeoutMs + CHATGPT_BACKEND_EVALUATE_TIMEOUT_BUFFER_MS}ms`
+    );
   }
 
   return {
