@@ -6216,7 +6216,11 @@ function createReferenceSchedulerManager({
       markNeedsHuman: (connectorId) => controller.markNeedsHuman(connectorId),
       isNeedsHuman: (connectorId) =>
         controller.isNeedsHuman(connectorId) || Boolean(controller.getActiveRun(connectorId)),
-      onInteraction: async () => ({ status: 'cancelled' }),
+      onInteraction: async (interaction) => ({
+        type: 'INTERACTION_RESPONSE',
+        request_id: interaction.request_id,
+        status: 'cancelled',
+      }),
       onRunComplete: (record) => {
         logger?.info?.(
           {

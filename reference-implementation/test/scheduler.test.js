@@ -125,6 +125,14 @@ async function waitFor(condition, timeoutMs = 5000) {
   throw new Error('Timed out waiting for scheduler run to complete');
 }
 
+function cancelledInteractionResponse(interaction) {
+  return {
+    type: 'INTERACTION_RESPONSE',
+    request_id: interaction.request_id,
+    status: 'cancelled',
+  };
+}
+
 test('server-owned scheduler starts persisted enabled schedules after startup', async () => {
   const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
   const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-server-scheduler-enabled-'));
@@ -299,7 +307,7 @@ test('scheduler history records checkpoint summaries from runConnector results',
         },
       ],
       rsUrl,
-      onInteraction: async () => ({ status: 'cancelled' }),
+      onInteraction: async (interaction) => cancelledInteractionResponse(interaction),
       onRunComplete: (record) => completedRuns.push(record),
       getState: async (connectorId) => stateStore.get(connectorId) || null,
       setState: async (connectorId, state) => {
@@ -402,7 +410,7 @@ test('scheduler hydrates and appends persisted history when a schedulerStore is 
         },
       ],
       rsUrl,
-      onInteraction: async () => ({ status: 'cancelled' }),
+      onInteraction: async (interaction) => cancelledInteractionResponse(interaction),
       onRunComplete: (record) => completedRuns.push(record),
       getState: async () => null,
       setState: async () => {},
@@ -502,7 +510,7 @@ rl.on('line', (line) => {
         },
       ],
       rsUrl,
-      onInteraction: async () => ({ status: 'cancelled' }),
+      onInteraction: async (interaction) => cancelledInteractionResponse(interaction),
       onRunComplete: (record) => completedRuns.push(record),
       getState: async () => null,
       setState: async () => {},
@@ -687,7 +695,7 @@ rl.on('line', (line) => {
         },
       ],
       rsUrl: `http://localhost:${rsPort}`,
-      onInteraction: async () => ({ status: 'cancelled' }),
+      onInteraction: async (interaction) => cancelledInteractionResponse(interaction),
       onRunComplete: (record) => completedRuns.push(record),
       getState: async () => null,
       setState: async () => {
@@ -817,7 +825,7 @@ rl.on('line', (line) => {
         },
       ],
       rsUrl,
-      onInteraction: async () => ({ status: 'cancelled' }),
+      onInteraction: async (interaction) => cancelledInteractionResponse(interaction),
       onRunComplete: (record) => completedRuns.push(record),
       getState: async () => null,
       setState: async () => {
@@ -941,7 +949,7 @@ rl.on('line', (line) => {
         },
       ],
       rsUrl,
-      onInteraction: async () => ({ status: 'cancelled' }),
+      onInteraction: async (interaction) => cancelledInteractionResponse(interaction),
       onRunComplete: (record) => completedRuns.push(record),
       getState: async () => null,
       setState: async () => {},
@@ -1052,7 +1060,7 @@ rl.on('line', (line) => {
         },
       ],
       rsUrl,
-      onInteraction: async () => ({ status: 'cancelled' }),
+      onInteraction: async (interaction) => cancelledInteractionResponse(interaction),
       onRunComplete: (record) => completedRuns.push(record),
       getState: async () => null,
       setState: async () => {},
@@ -1151,7 +1159,7 @@ rl.on('line', (line) => {
         },
       ],
       rsUrl,
-      onInteraction: async () => ({ status: 'cancelled' }),
+      onInteraction: async (interaction) => cancelledInteractionResponse(interaction),
       onRunComplete: (record) => completedRuns.push(record),
       getState: async () => null,
       setState: async () => {},
@@ -1263,7 +1271,7 @@ rl.on('line', (line) => {
         },
       ],
       rsUrl,
-      onInteraction: async () => ({ status: 'cancelled' }),
+      onInteraction: async (interaction) => cancelledInteractionResponse(interaction),
       onRunComplete: (record) => completedRuns.push(record),
       getState: async () => null,
       setState: async () => {},
@@ -1378,7 +1386,7 @@ rl.on('line', (line) => {
         },
       ],
       rsUrl,
-      onInteraction: async () => ({ status: 'cancelled' }),
+      onInteraction: async (interaction) => cancelledInteractionResponse(interaction),
       onRunComplete: (record) => completedRuns.push(record),
       getState: async () => null,
       setState: async () => {},
@@ -1475,7 +1483,7 @@ rl.on('line', (line) => {
         },
       ],
       rsUrl,
-      onInteraction: async () => ({ status: 'cancelled' }),
+      onInteraction: async (interaction) => cancelledInteractionResponse(interaction),
       onRunComplete: (record) => completedRuns.push(record),
       getState: async () => null,
       setState: async () => {},
@@ -1587,7 +1595,7 @@ rl.on('line', (line) => {
         },
       ],
       rsUrl: `http://localhost:${rsPort}`,
-      onInteraction: async () => ({ status: 'cancelled' }),
+      onInteraction: async (interaction) => cancelledInteractionResponse(interaction),
       onRunComplete: (record) => completedRuns.push(record),
       getState: async () => null,
       setState: async () => {},
@@ -1727,7 +1735,7 @@ rl.on('line', (line) => {
         },
       ],
       rsUrl: `http://localhost:${rsPort}`,
-      onInteraction: async () => ({ status: 'cancelled' }),
+      onInteraction: async (interaction) => cancelledInteractionResponse(interaction),
       onRunComplete: (record) => completedRuns.push(record),
       getState: async () => null,
       setState: async () => {},
@@ -1858,7 +1866,7 @@ rl.on('line', (line) => {
         },
       ],
       rsUrl: `http://localhost:${rsPort}`,
-      onInteraction: async () => ({ status: 'cancelled' }),
+      onInteraction: async (interaction) => cancelledInteractionResponse(interaction),
       onRunComplete: (record) => completedRuns.push(record),
       getState: async () => null,
       setState: async () => {},
@@ -1999,7 +2007,7 @@ rl.on('line', (line) => {
         },
       ],
       rsUrl: `http://localhost:${rsPort}`,
-      onInteraction: async () => ({ status: 'cancelled' }),
+      onInteraction: async (interaction) => cancelledInteractionResponse(interaction),
       onRunComplete: (record) => completedRuns.push(record),
       getState: async () => null,
       setState: async () => {},
@@ -2124,7 +2132,7 @@ rl.on('line', (line) => {
         },
       ],
       rsUrl: `http://localhost:${rsPort}`,
-      onInteraction: async () => ({ status: 'cancelled' }),
+      onInteraction: async (interaction) => cancelledInteractionResponse(interaction),
       onRunComplete: (record) => completedRuns.push(record),
       getState: async () => null,
       setState: async () => {},
@@ -2187,7 +2195,7 @@ test('scheduler treats single_use grants as one successful run followed by exhau
         },
       ],
       rsUrl,
-      onInteraction: async () => ({ status: 'cancelled' }),
+      onInteraction: async (interaction) => cancelledInteractionResponse(interaction),
       onRunComplete: (record) => completedRuns.push(record),
       getState: async () => ({ top_artists: { cursor: 'should_not_be_used' } }),
       setState: async (_connectorId, state) => {
@@ -2294,7 +2302,7 @@ rl.on('line', (line) => {
         },
       ],
       rsUrl,
-      onInteraction: async () => ({ status: 'cancelled' }),
+      onInteraction: async (interaction) => cancelledInteractionResponse(interaction),
       onRunComplete: (record) => completedRuns.push(record),
       getState: async () => null,
       setState: async () => {},
@@ -2389,7 +2397,7 @@ rl.on('line', (line) => {
         },
       ],
       rsUrl,
-      onInteraction: async () => ({ status: 'cancelled' }),
+      onInteraction: async (interaction) => cancelledInteractionResponse(interaction),
       onRunComplete: (record) => completedRuns.push(record),
       getState: async () => ({ top_artists: { cursor: 'should_not_be_used' } }),
       setState: async (_connectorId, state) => {
@@ -2488,7 +2496,7 @@ rl.on('line', (line) => {
         },
       ],
       rsUrl,
-      onInteraction: async () => ({ status: 'cancelled' }),
+      onInteraction: async (interaction) => cancelledInteractionResponse(interaction),
       onRunComplete: (record) => completedRuns.push(record),
       getState: async () => null,
       setState: async () => {},
@@ -2550,7 +2558,7 @@ test('scheduler start is idempotent and does not launch a second immediate run',
         },
       ],
       rsUrl,
-      onInteraction: async () => ({ status: 'cancelled' }),
+      onInteraction: async (interaction) => cancelledInteractionResponse(interaction),
       onRunComplete: (record) => completedRuns.push(record),
       getState: async () => null,
       setState: async () => {},
@@ -2658,7 +2666,7 @@ rl.on('line', (line) => {
           },
         ],
         rsUrl: `http://localhost:${rsPort}`,
-        onInteraction: async () => ({ status: 'cancelled' }),
+        onInteraction: async (interaction) => cancelledInteractionResponse(interaction),
         onRunComplete: (record) => completedRuns.push(record),
         getState: async () => null,
         setState: async () => {},
@@ -2720,7 +2728,7 @@ test('scheduler skips automatic run with needs_human_attention when isNeedsHuman
         },
       ],
       rsUrl,
-      onInteraction: async () => ({ status: 'cancelled' }),
+      onInteraction: async (interaction) => cancelledInteractionResponse(interaction),
       onRunComplete: (record) => completedRuns.push(record),
       getState: async () => null,
       setState: async () => {},
@@ -2776,7 +2784,7 @@ const rl = createInterface({ input: process.stdin, terminal: false });
 rl.on('line', (line) => {
   const msg = JSON.parse(line);
   if (msg.type === 'INTERACTION_RESPONSE') {
-    process.stdout.write(JSON.stringify({ type: 'DONE', status: 'succeeded' }) + '\\n');
+    process.stdout.write(JSON.stringify({ type: 'DONE', status: 'succeeded', records_emitted: 0 }) + '\\n');
     process.exit(0);
   }
   if (msg.type !== 'START') return;
@@ -2811,26 +2819,32 @@ rl.on('line', (line) => {
           connectorPath,
           manifest,
           ownerToken,
-          intervalMs: 60_000,
+          intervalMs: 25,
           maxRetries: 0,
         },
       ],
       rsUrl,
-      onInteraction: async () => ({ status: 'cancelled' }),
+      onInteraction: async (interaction) => cancelledInteractionResponse(interaction),
       onRunComplete: (record) => completedRuns.push(record),
       getState: async () => null,
       setState: async () => {},
       markNeedsHuman: (connectorId) => markedConnectors.push(connectorId),
+      isNeedsHuman: (connectorId) => markedConnectors.includes(connectorId),
     });
 
     scheduler.start();
-    await waitFor(() => completedRuns.length >= 1, 8000);
+    await waitFor(() => completedRuns.length >= 2, 8000);
     scheduler.stop();
 
     assert.ok(
       markedConnectors.includes(manifest.connector_id),
       'markNeedsHuman should be called when an automatic run triggers an interaction',
     );
+    const [interactionRun, needsHumanSkip] = completedRuns;
+    assert.equal(interactionRun?.status, 'succeeded');
+    assert.notEqual(interactionRun?.terminalReason, 'interaction_handler_invalid_response');
+    assert.equal(needsHumanSkip?.status, 'skipped');
+    assert.ok(needsHumanSkip?.error?.startsWith('needs_human_attention:'));
   } finally {
     rmSync(tmpDir, { recursive: true, force: true });
     await closeServer(server);
