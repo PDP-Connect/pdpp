@@ -74,6 +74,7 @@ Non-derived tables (will be migrated):
   device_enrollment_codes           0 rows
   device_source_instances           8 rows
   device_ingest_batch_outcomes      0 rows
+  source_webhook_events             0 rows
   connector_state                  12 rows
   grant_connector_state             12 rows
   connector_schedules               0 rows
@@ -186,7 +187,7 @@ node scripts/migrate-storage/cli.mjs execute \
 ```
 Executing sqlite://./data/pdpp.sqlite -> postgres://user:password@localhost:5432/pdpp
 
-Migrating non-derived tables (23 total):
+Migrating non-derived tables (24 total):
   connectors                        12 rows → SUCCESS (45ms)
   oauth_clients                      4 rows → SUCCESS (12ms)
   grants                           218 rows → SUCCESS (87ms)
@@ -198,6 +199,7 @@ Migrating non-derived tables (23 total):
   device_enrollment_codes           0 rows → SUCCESS (6ms)
   device_source_instances           8 rows → SUCCESS (18ms)
   device_ingest_batch_outcomes      0 rows → SUCCESS (7ms)
+  source_webhook_events             0 rows → SUCCESS (5ms)
   connector_state                  12 rows → SUCCESS (22ms)
   grant_connector_state             12 rows → SUCCESS (26ms)
   connector_schedules               0 rows → SUCCESS (5ms)
@@ -400,7 +402,7 @@ node scripts/migrate-storage/cli.mjs plan \
 
 ## What gets migrated, what doesn't
 
-### Migrated tables (23 non-derived)
+### Migrated tables (24 non-derived)
 
 All owner/grant/connector/ingest/scheduling/runtime state:
 
@@ -415,6 +417,7 @@ All owner/grant/connector/ingest/scheduling/runtime state:
 - `device_enrollment_codes` — one-time codes for device bootstrap
 - `device_source_instances` — per-device data source identity
 - `device_ingest_batch_outcomes` — ingest result telemetry
+- `source_webhook_events` — source webhook idempotency decisions
 - `connector_state` — per-connector key-value store (durable config, cursor)
 - `grant_connector_state` — per-grant connector runtime state
 - `connector_schedules` — scheduled run timing
@@ -488,7 +491,7 @@ These are reconstructed by the PDPP runtime on first boot after migration:
 - **Safe:** Truncate the target and re-run:
   ```shell
   # Connect to target Postgres
-  psql postgres://user:password@localhost:5432/pdpp -c "TRUNCATE connectors, oauth_clients, grants, tokens, pending_consents, owner_device_auth, device_exporters, device_ingest_credentials, device_enrollment_codes, device_source_instances, device_ingest_batch_outcomes, connector_state, grant_connector_state, connector_schedules, controller_active_runs, scheduler_run_history, scheduler_last_run_times, version_counter, blobs, blob_bindings, records, record_changes, spine_events CASCADE;"
+  psql postgres://user:password@localhost:5432/pdpp -c "TRUNCATE connectors, oauth_clients, grants, tokens, pending_consents, owner_device_auth, device_exporters, device_ingest_credentials, device_enrollment_codes, device_source_instances, device_ingest_batch_outcomes, source_webhook_events, connector_state, grant_connector_state, connector_schedules, controller_active_runs, scheduler_run_history, scheduler_last_run_times, version_counter, blobs, blob_bindings, records, record_changes, spine_events CASCADE;"
   ```
   Then re-run `execute`.
 - **Risky (if you know what you're doing):** Pass `--allow-non-empty` to `execute` and accept the risk of mixing old and new data:

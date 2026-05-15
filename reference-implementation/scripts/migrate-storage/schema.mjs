@@ -18,6 +18,7 @@ const TABLE_ORDER = [
   'device_enrollment_codes',
   'device_source_instances',
   'device_ingest_batch_outcomes',
+  'source_webhook_events',
   'connector_state',
   'grant_connector_state',
   'connector_schedules',

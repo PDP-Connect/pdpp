@@ -43,6 +43,7 @@ import { createBlobStore } from './stores/blob-store.js';
 import { postgresPersistContentAddressedBlob } from './postgres-records.js';
 import { createConsentStore } from './stores/consent-store.js';
 import { createOwnerDeviceAuthStore } from './stores/owner-device-auth-store.js';
+import { getDefaultSourceWebhookEventStore } from './stores/source-webhook-event-store.ts';
 import { DeviceBatchConflictError, createDeviceExporterStore } from './stores/device-exporter-store.js';
 import {
   createWebPushSubscriptionStore,
@@ -5622,13 +5623,7 @@ function buildRsApp(opts = {}) {
             nowMs: () => Date.now(),
             resolveSecret: (sourceId) => secrets.get(sourceId)?.secret,
             resolveConnectorId: (sourceId) => secrets.get(sourceId)?.connectorId,
-            claimEvent: ({ sourceId, eventId, bodyHash, receivedAt }) => {
-              const insert = getDb().prepare(
-                `INSERT OR IGNORE INTO source_webhook_events(source_id, event_id, body_hash, received_at)
-                 VALUES (?, ?, ?, ?)`,
-              );
-              return insert.run(sourceId, eventId, bodyHash, receivedAt).changes === 1;
-            },
+            claimEvent: (event) => getDefaultSourceWebhookEventStore().claimEvent(event),
             ingestRecords: async ({ connectorId, streamName, body: ingestBody }) => {
               const output = await executeRecordsIngest(
                 { connectorId, streamName, body: ingestBody },
@@ -5642,8 +5637,8 @@ function buildRsApp(opts = {}) {
               );
               return output.envelope;
             },
-            signalScheduler: ({ connectorId, receivedAt }) => {
-              getDefaultSchedulerStore().upsertLastRunTime(connectorId, Date.parse(receivedAt), receivedAt);
+            signalScheduler: async ({ connectorId, receivedAt }) => {
+              await getDefaultSchedulerStore().upsertLastRunTime(connectorId, Date.parse(receivedAt), receivedAt);
             },
           },
         );
