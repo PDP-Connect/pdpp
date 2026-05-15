@@ -88,6 +88,7 @@ import {
   parseNekoBrowserSurfaceRuntimeConfig,
 } from '../runtime/browser-surface-leases.ts';
 import { NekoSurfaceAllocatorClient } from '../runtime/neko-surface-allocator.ts';
+import { createDefaultBrowserSurfaceReadinessProbe } from '../runtime/browser-surface-readiness.ts';
 import { getDefaultBrowserSurfaceLeaseStore } from './stores/browser-surface-lease-store.ts';
 import {
   createPdppCliCommand,
@@ -6192,6 +6193,11 @@ export async function resolveNekoBrowserSurfaceControllerOptions({
   const options = {
     browserSurfaceLeaseManager,
     browserSurfaceLeaseStore,
+    // Preflight readiness gate: proves the managed n.eko / CDP surface is
+    // actually live before the connector child is spawned. Prevents the
+    // "ask the human for an OTP and discover the CDP socket was already
+    // dead" failure mode that has burned Chase and USAA runs.
+    browserSurfaceReadinessProbe: createDefaultBrowserSurfaceReadinessProbe(),
   };
 
   if (runtimeConfig.dynamic) {
