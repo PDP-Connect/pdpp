@@ -1,0 +1,100 @@
+## Context
+
+`connector_id` currently names a connector implementation or manifest, such as Gmail, Claude Code, or Codex. Real owner deployments need more than one configured binding for the same connector type:
+
+- two Gmail accounts for the same owner,
+- Claude Code history collected from a laptop and a desktop,
+- Codex history collected by multiple local collectors,
+- future source bindings that share connector code but have distinct credentials, schedules, and freshness.
+
+If these bindings share `connector_id` as their durable key, they can collide in connector state, record identity, schedule lifecycle, active-run conflict detection, and owner-facing diagnostics.
+
+## Goals
+
+- Make connector instances the durable reference identity for configured connector bindings.
+- Preserve `connector_id` as connector type identity for manifest lookup and source labels.
+- Support multi-account and multi-device collection without record, state, schedule, lease, or UX collisions.
+- Provide migration criteria before runtime code changes.
+- Keep this as a reference implementation design unless a later PDPP/Profile change promotes source-instance semantics.
+
+## Non-Goals
+
+- Do not implement runtime code in this change.
+- Do not update existing runtime schemas directly outside this OpenSpec delta.
+- Do not require a new public PDPP source shape in this tranche.
+- Do not decide whether connector instance identity becomes a normative Collection Profile field.
+- Do not design all credential-vault details beyond instance-scoped ownership and revocation boundaries.
+
+## Design
+
+### Identity Model
+
+`connector_id` remains the stable connector type identifier. It answers "which connector implementation and manifest is this?"
+
+`connector_instance_id` becomes the stable configured binding identifier. It answers "which owner-approved account, device, local binding, or collector source is this?"
+
+A connector instance has at least:
+
+- `owner_id`,
+- `connector_instance_id`,
+- `connector_id`,
+- owner-facing display label,
+- lifecycle status such as active, paused, or revoked,
+- source binding metadata sufficient to distinguish account/device/local binding without exposing secrets.
+
+For server-side account connectors such as Gmail, the instance maps to one configured account authorization. For local collector connectors such as Claude Code or Codex, the instance maps to one enrolled device plus one local binding for that connector. This aligns with the existing local-device exporter design, where a device plus connector plus local binding becomes a source instance.
+
+### Storage And Runtime Boundaries
+
+The storage boundary must treat `connector_instance_id` as part of the namespace for:
+
+- connector state and checkpoints,
+- record identity and idempotency,
+- schedule rows,
+- active-run leases,
+- run history and diagnostics,
+- collector heartbeats and freshness,
+- owner dashboard list/detail routes.
+
+The active-run invariant changes from one active run per connector type to one active run per connector instance unless a later design explicitly allows multiple lanes within one instance. Records from two instances may share `connector_id`, stream, and connector-local key; they must still remain distinct unless an explicit cross-instance deduplication rule is approved.
+
+### Public And Owner-Facing Representation
+
+Reference-internal and owner-facing surfaces should expose connector instance identity. Client-facing PDPP read/disclosure surfaces should continue to use grant-safe source and record views unless a later protocol/Profile change adds source-instance fields.
+
+Owner UX must group by connector type while making configured instances distinct, for example "Gmail - work", "Gmail - personal", "Claude Code - laptop", and "Codex - desktop". Actions such as pause, resume, revoke, refresh, and inspect diagnostics operate on the instance, not every instance of the connector type.
+
+### Migration
+
+Migration must be explicit because existing reference state is connector-keyed. The safe default is to create one connector instance per existing owner/connector binding and move connector-keyed rows under that instance.
+
+Migration needs a deterministic instance id or a persisted generated id. It must not infer that records from two future accounts/devices are the same logical records. Existing single-connector deployments can become one instance per connector without changing visible behavior, but all future writes must use the instance namespace.
+
+Compatibility reads may temporarily accept connector-only identifiers only when they resolve to exactly one instance for that owner. Ambiguous connector-only operations must fail with a clear error rather than choosing an arbitrary instance.
+
+### Relationship To Local Collectors
+
+Device enrollment remains device-scoped. A device is not itself a connector instance because one device can collect multiple connectors or multiple local bindings for the same connector. The collector upload path must resolve each uploaded batch to an authorized connector instance before accepting records, state, health, or diagnostics.
+
+This lets two local Claude/Codex collectors report the same connector type without fighting over checkpoint state, record keys, schedules, or active-run leases.
+
+### Open Questions
+
+- Whether connector instance identity should become Collection Profile vocabulary or remain reference-only.
+- Whether grant-authorized clients should ever be able to filter by connector instance, or whether instance identity remains owner/operator metadata.
+- Whether cross-instance deduplication is desirable for specific connectors such as Gmail message IDs, and where that rule should live.
+
+## Alternatives Considered
+
+- **Keep `connector_id` and append device/account fields ad hoc:** rejected because every store and UI would need bespoke collision rules.
+- **Use `device_id` as the namespace:** rejected because account connectors may have no local device and one device can host multiple connector bindings.
+- **Use account email or local path as the primary key:** rejected because those values can change, may be sensitive, and are not universal across connector types.
+- **Expose instance identity as PDPP public source identity now:** rejected for this tranche because it would prematurely widen protocol/Profile semantics.
+
+## Acceptance Checks
+
+- `openspec validate define-connector-instances --strict`
+- `openspec validate --all --strict`
+- Review confirms no runtime source code or canonical `openspec/specs/**` files were edited directly.
+- The spec delta covers collision isolation for state, records, schedules, active-run leases, diagnostics, and owner UX.
+- The task list includes migration and compatibility criteria before implementation.
