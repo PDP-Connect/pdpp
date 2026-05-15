@@ -57,6 +57,7 @@ import {
   emitTransactionsForAccount,
   emitTransactionsStateIfAny,
   filterAccountsByScope,
+  isLikelyPdfResponseBody,
   runCurrentActivity,
   statementRowOutsideTimeRange,
 } from "./index.ts";
@@ -262,6 +263,16 @@ test("savePlaywrightDownload: persists via saveAs without depending on Playwrigh
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("isLikelyPdfResponseBody: accepts PDF signatures and PDF response headers", () => {
+  assert.equal(isLikelyPdfResponseBody(Buffer.from("%PDF-1.7\nfixture\n"), {}), true);
+  assert.equal(isLikelyPdfResponseBody(Buffer.from("fixture"), { "content-type": "application/pdf" }), true);
+  assert.equal(
+    isLikelyPdfResponseBody(Buffer.from("fixture"), { "content-disposition": 'attachment; filename="statement.pdf"' }),
+    true
+  );
+  assert.equal(isLikelyPdfResponseBody(Buffer.from("<html></html>"), { "content-type": "text/html" }), false);
 });
 
 // ─── Invariant 3: all-streams-disabled emits nothing ─────────────────────

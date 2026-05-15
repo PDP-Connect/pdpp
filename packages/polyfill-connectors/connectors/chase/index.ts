@@ -113,7 +113,7 @@ export function chaseTimeRangeField(stream: string): string {
   return TIME_RANGE_FIELD_BY_STREAM[stream] ?? "date";
 }
 
-interface CapturedQfxResponse {
+interface CapturedBodyResponse {
   body: Buffer;
   contentType: string;
   method: string;
@@ -122,9 +122,11 @@ interface CapturedQfxResponse {
   url: string;
 }
 
-interface QfxResponseQueue {
+type CapturedQfxResponse = CapturedBodyResponse;
+
+interface BodyResponseQueue {
   detach(): void;
-  waitForNextResponse(opts?: { timeoutMs?: number }): Promise<CapturedQfxResponse>;
+  waitForNextResponse(opts?: { timeoutMs?: number }): Promise<CapturedBodyResponse>;
 }
 
 interface NoActivityConfirmation {
@@ -226,11 +228,27 @@ function isLikelyQfxResponseBody(body: Buffer, headers: Record<string, string>):
   return head.includes("OFXHEADER:") || head.includes("<OFX>");
 }
 
-function attachQfxResponseQueue(page: Page): QfxResponseQueue {
-  const pending: CapturedQfxResponse[] = [];
-  const waiters: ((response: CapturedQfxResponse) => void)[] = [];
+export function isLikelyPdfResponseBody(body: Buffer, headers: Record<string, string>): boolean {
+  if (body.length === 0) {
+    return false;
+  }
+  const contentType = headers["content-type"]?.toLowerCase() ?? "";
+  const disposition = headers["content-disposition"]?.toLowerCase() ?? "";
+  if (body.subarray(0, 5).toString("latin1") === "%PDF-") {
+    return true;
+  }
+  return contentType.includes("application/pdf") || disposition.includes(".pdf");
+}
 
-  const enqueue = (response: CapturedQfxResponse): void => {
+function attachBodyResponseQueue(
+  page: Page,
+  shouldInspect: (headers: Record<string, string>) => boolean,
+  isExpectedBody: (body: Buffer, headers: Record<string, string>) => boolean
+): BodyResponseQueue {
+  const pending: CapturedBodyResponse[] = [];
+  const waiters: ((response: CapturedBodyResponse) => void)[] = [];
+
+  const enqueue = (response: CapturedBodyResponse): void => {
     const waiter = waiters.shift();
     if (waiter) {
       waiter(response);
@@ -241,15 +259,14 @@ function attachQfxResponseQueue(page: Page): QfxResponseQueue {
 
   const onResponse = (response: Response): void => {
     const headers = response.headers();
-    const contentDisposition = headers["content-disposition"] ?? "";
     const contentType = headers["content-type"] ?? "";
-    if (!DOWNLOAD_RESPONSE_HINT_RE.test(`${contentDisposition} ${contentType}`)) {
+    if (!shouldInspect(headers)) {
       return;
     }
     response
       .body()
       .then((body) => {
-        if (!isLikelyQfxResponseBody(body, headers)) {
+        if (!isExpectedBody(body, headers)) {
           return;
         }
         enqueue({
@@ -270,12 +287,12 @@ function attachQfxResponseQueue(page: Page): QfxResponseQueue {
     detach(): void {
       page.off("response", onResponse);
     },
-    waitForNextResponse({ timeoutMs = DOWNLOAD_TIMEOUT_MS } = {}): Promise<CapturedQfxResponse> {
+    waitForNextResponse({ timeoutMs = DOWNLOAD_TIMEOUT_MS } = {}): Promise<CapturedBodyResponse> {
       const first = pending.shift();
       if (first) {
         return Promise.resolve(first);
       }
-      return new Promise<CapturedQfxResponse>((resolve, reject) => {
+      return new Promise<CapturedBodyResponse>((resolve, reject) => {
         let settled = false;
         const timer = setTimeout(() => {
           if (settled) {
@@ -303,13 +320,36 @@ function attachQfxResponseQueue(page: Page): QfxResponseQueue {
   };
 }
 
+function attachQfxResponseQueue(page: Page): BodyResponseQueue {
+  return attachBodyResponseQueue(
+    page,
+    (headers) =>
+      DOWNLOAD_RESPONSE_HINT_RE.test(`${headers["content-disposition"] ?? ""} ${headers["content-type"] ?? ""}`),
+    isLikelyQfxResponseBody
+  );
+}
+
+function attachPdfResponseQueue(page: Page): BodyResponseQueue {
+  return attachBodyResponseQueue(
+    page,
+    (headers) => {
+      const contentDisposition = headers["content-disposition"]?.toLowerCase() ?? "";
+      const contentType = headers["content-type"]?.toLowerCase() ?? "";
+      return (
+        contentType.includes("pdf") || contentDisposition.includes(".pdf") || contentDisposition.includes("attachment")
+      );
+    },
+    isLikelyPdfResponseBody
+  );
+}
+
 async function waitForQfxDownloadArtifact(
   page: Page,
   account: ChaseAccount,
   activity: ActivityKind,
   tmpDir: string,
   downloadQueue: ReturnType<typeof attachDownloadQueue>,
-  qfxResponseQueue: QfxResponseQueue,
+  qfxResponseQueue: BodyResponseQueue,
   capture: CaptureSession | null | undefined
 ): Promise<DownloadResult> {
   try {
@@ -661,36 +701,88 @@ async function downloadStatementPdf(
 
   await capturePageCheckpoint(capture, page, `statement-${row.rowAnchorId}-before-download-click`);
   const downloadQueue = attachDownloadQueue(page);
+  const pdfResponseQueue = attachPdfResponseQueue(page);
   try {
     await anchor.click({ timeout: CLICK_TIMEOUT_MS });
   } catch (err) {
     await capturePageCheckpoint(capture, page, `statement-${row.rowAnchorId}-download-click-failed`);
     downloadQueue.detach();
+    pdfResponseQueue.detach();
     return {
       ok: false,
       error: `anchor_click_failed: ${truncate(errMessage(err), ERROR_MESSAGE_SLICE)}`,
     };
   }
 
-  let dl: Awaited<ReturnType<typeof downloadQueue.waitForNextDownload>>;
+  const playwrightDownloadPromise = downloadQueue
+    .waitForNextDownload({ timeoutMs: DOWNLOAD_TIMEOUT_MS })
+    .then((download) => ({
+      download,
+      kind: "playwright_download" as const,
+    }));
+  const pdfResponsePromise = pdfResponseQueue
+    .waitForNextResponse({ timeoutMs: DOWNLOAD_TIMEOUT_MS })
+    .then((response) => ({
+      kind: "pdf_response" as const,
+      response,
+    }));
+  let result: Awaited<typeof playwrightDownloadPromise | typeof pdfResponsePromise>;
   try {
-    dl = await downloadQueue.waitForNextDownload({ timeoutMs: DOWNLOAD_TIMEOUT_MS });
+    result = await Promise.any([playwrightDownloadPromise, pdfResponsePromise]);
   } catch (err) {
     await capturePageCheckpoint(capture, page, `statement-${row.rowAnchorId}-download-event-timeout`);
+    downloadQueue.detach();
+    pdfResponseQueue.detach();
     return {
       ok: false,
       error: `download_event_timeout: ${truncate(errMessage(err), ERROR_MESSAGE_SLICE)}`,
     };
-  } finally {
-    downloadQueue.detach();
   }
 
-  const tmpPdfDir = await mkdtemp(join(tmpdir(), "pdpp-chase-statement-"));
-  const tmpPdfPath = join(tmpPdfDir, `${row.rowAnchorId}.pdf`);
   let buffer: Buffer;
   try {
-    await savePlaywrightDownload(dl, tmpPdfPath);
-    buffer = await readFile(tmpPdfPath);
+    if (result.kind === "pdf_response") {
+      buffer = result.response.body;
+      capture?.captureHttp(
+        `statement-${row.rowAnchorId}-pdf-response`,
+        { bytes: buffer.length, suggestedFilename: result.response.suggestedFilename },
+        {
+          method: result.response.method,
+          path: result.response.url,
+          status: result.response.status,
+          type: result.response.contentType,
+        }
+      );
+    } else {
+      const tmpPdfDir = await mkdtemp(join(tmpdir(), "pdpp-chase-statement-"));
+      const tmpPdfPath = join(tmpPdfDir, `${row.rowAnchorId}.pdf`);
+      try {
+        await savePlaywrightDownload(result.download, tmpPdfPath);
+        buffer = await readFile(tmpPdfPath);
+      } catch (downloadErr) {
+        const responseResult = await pdfResponsePromise.catch((): null => null);
+        if (!responseResult) {
+          throw downloadErr;
+        }
+        buffer = responseResult.response.body;
+        capture?.captureHttp(
+          `statement-${row.rowAnchorId}-pdf-response-fallback`,
+          {
+            bytes: buffer.length,
+            downloadError: truncate(errMessage(downloadErr), ERROR_MESSAGE_SLICE_LONG),
+            suggestedFilename: responseResult.response.suggestedFilename,
+          },
+          {
+            method: responseResult.response.method,
+            path: responseResult.response.url,
+            status: responseResult.response.status,
+            type: responseResult.response.contentType,
+          }
+        );
+      } finally {
+        await rm(tmpPdfDir, { recursive: true, force: true }).catch((): undefined => undefined);
+      }
+    }
   } catch (err) {
     // Capture DOM/screenshot at the moment of save failure — without this,
     // ENOENT-style races (chase run_1778852923848) leave no evidence of the
@@ -701,7 +793,8 @@ async function downloadStatementPdf(
       error: `download_save_failed: ${truncate(errMessage(err), ERROR_MESSAGE_SLICE_LONG)}`,
     };
   } finally {
-    await rm(tmpPdfDir, { recursive: true, force: true }).catch((): undefined => undefined);
+    downloadQueue.detach();
+    pdfResponseQueue.detach();
   }
   const pdfSha256 = sha256Hex(buffer);
 
