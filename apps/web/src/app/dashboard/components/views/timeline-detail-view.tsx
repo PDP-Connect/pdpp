@@ -103,10 +103,23 @@ export function TimelineDetailView({
         <TimelineView events={envelope.events} loadMoreHref={loadMoreHref} />
       </Section>
 
-      <Section title="CLI equivalent">
+      <Section title="Reference CLI">
         <pre className="pdpp-caption overflow-x-auto rounded-md border border-border/80 bg-muted/30 p-3 font-mono">
-          {cliCommand}
+          pnpm exec {cliCommand}
         </pre>
+        <p className="pdpp-caption mt-2 text-muted-foreground">
+          Run this from a PDPP repo checkout. Owner-gated reference reads require{" "}
+          <code className="font-mono">PDPP_OWNER_SESSION_COOKIE</code> when owner auth is enabled. The published{" "}
+          <a
+            className="underline underline-offset-2 hover:text-foreground"
+            href="https://www.npmjs.com/package/@pdpp/cli"
+            rel="noreferrer"
+            target="_blank"
+          >
+            @pdpp/cli
+          </a>{" "}
+          beta currently covers the public connect flow, not these reference-operator commands.
+        </p>
         <p className="pdpp-caption mt-1 break-all text-muted-foreground">
           raw: <code>{rawUrl}</code>
         </p>

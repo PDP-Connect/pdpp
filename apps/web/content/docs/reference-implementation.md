@@ -16,7 +16,8 @@ The live reference implementation is organized around four first-class actors:
 - **Northstar HR**: the native PDPP provider path
 - **Personal-server polyfill path**: the connector/runtime realization for collected sources
 - **Longview**: the reference client application
-- **PDPP CLI**: the owner/debug consumer
+- **Reference operator CLI**: the repo-local owner/debug consumer
+- **Public PDPP CLI**: the installable client/agent connect consumer
 
 Those actors share one engine substrate but expose two different source-realization models:
 
@@ -44,6 +45,13 @@ This remains beta software, but `pdpp_agent_discovery.cli.no_owner_token` is
 `true` when the reference AS token-completion path supports owner-approved
 scoped handoff without an owner bearer token. Treat the command as the
 no-owner-token connect flow while that metadata flag is true.
+
+The reference dashboard also shows repo-local operator commands such as
+`pnpm exec pdpp run timeline <run-id>`. Those are not the same surface as the
+published package: they inspect `_ref` operator routes for a running reference
+deployment. When placeholder owner auth is enabled, set
+`PDPP_OWNER_SESSION_COOKIE` to a valid `pdpp_owner_session` cookie before using
+those commands.
 
 The authorization-server metadata truthfully advertises:
 

@@ -40,8 +40,11 @@ export function PeekPane({
         {children}
         {cliCommand && (
           <div className="mt-3">
-            <div className="pdpp-eyebrow mb-1">CLI equivalent</div>
-            <pre className="pdpp-caption overflow-x-auto rounded bg-muted p-2 font-mono">{cliCommand}</pre>
+            <div className="pdpp-eyebrow mb-1">Reference CLI</div>
+            <pre className="pdpp-caption overflow-x-auto rounded bg-muted p-2 font-mono">pnpm exec {cliCommand}</pre>
+            <p className="pdpp-caption mt-1 text-muted-foreground">
+              Repo-local operator command; public <code className="font-mono">@pdpp/cli</code> is for connect.
+            </p>
           </div>
         )}
       </div>

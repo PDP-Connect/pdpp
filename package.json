@@ -47,6 +47,7 @@
     "@types/node": "^25.6.0",
     "conventional-changelog-conventionalcommits": "^9.3.1",
     "lefthook": "^2.1.6",
+    "pdpp-reference-implementation": "workspace:*",
     "semantic-release": "^25.0.3",
     "tsx": "^4.21.0",
     "typescript": "^6.0.3",
