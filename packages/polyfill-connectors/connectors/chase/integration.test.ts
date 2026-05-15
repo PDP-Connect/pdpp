@@ -250,9 +250,6 @@ test("savePlaywrightDownload: persists via saveAs without depending on Playwrigh
 
     await savePlaywrightDownload(
       {
-        path(): Promise<string> {
-          return Promise.resolve(source);
-        },
         async saveAs(path: string): Promise<void> {
           await writeFile(path, await readFile(source));
         },
