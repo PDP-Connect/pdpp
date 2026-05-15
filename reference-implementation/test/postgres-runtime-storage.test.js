@@ -49,7 +49,10 @@ import {
   postgresQuery,
   resolveStorageBackend,
 } from '../server/postgres-storage.js';
-import { startServer } from '../server/index.js';
+import {
+  shouldAutoReconcilePolyfillManifests,
+  startServer,
+} from '../server/index.js';
 import {
   deleteRecord,
   getDatasetBlobBytes,
@@ -99,6 +102,25 @@ test('Postgres runtime storage config fails fast without PDPP_DATABASE_URL', () 
         env: { PDPP_STORAGE_BACKEND: 'postgres' },
       }),
     /requires PDPP_DATABASE_URL/,
+  );
+});
+
+test('polyfill manifest reconciliation defaults on for Postgres deployments', () => {
+  assert.equal(
+    shouldAutoReconcilePolyfillManifests({
+      dbPath: ':memory:',
+      storageBackendKind: 'postgres',
+    }),
+    true,
+    'Postgres deployments do not have the canonical SQLite path sentinel but still need persisted manifest refresh',
+  );
+  assert.equal(
+    shouldAutoReconcilePolyfillManifests({
+      dbPath: ':memory:',
+      storageBackendKind: 'sqlite',
+    }),
+    false,
+    'SQLite tests and ad-hoc in-memory DBs keep reconciliation opt-in',
   );
 });
 

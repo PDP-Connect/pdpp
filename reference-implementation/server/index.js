@@ -235,10 +235,17 @@ const PUBLIC_DCR_RATE_LIMIT_MAX = 120;
 // The dev script's default
 // (`../packages/polyfill-connectors/.pdpp-data/pdpp.sqlite`) is the
 // authoritative sentinel; overrides use the explicit opts/env knob.
-function looksLikePolyfillDeploymentDbPath(dbPath) {
+export function looksLikePolyfillDeploymentDbPath(dbPath) {
   if (!dbPath || typeof dbPath !== 'string') return false;
   if (dbPath === ':memory:') return false;
   return dbPath.includes('/polyfill-connectors/') && dbPath.endsWith('pdpp.sqlite');
+}
+
+export function shouldAutoReconcilePolyfillManifests({ dbPath, storageBackendKind }) {
+  if (storageBackendKind === 'postgres') {
+    return true;
+  }
+  return looksLikePolyfillDeploymentDbPath(dbPath);
 }
 
 async function collectRetrievalStartupBackfillManifests({ nativeManifest, logger }) {
@@ -5832,7 +5839,10 @@ export async function startServer(opts = {}) {
     const envToggle = process.env.PDPP_RECONCILE_POLYFILL_MANIFESTS;
     const envEnabled =
       envToggle === '1' ? true : envToggle === '0' ? false : undefined;
-    const defaultEnabled = looksLikePolyfillDeploymentDbPath(resolvedDbPath);
+    const defaultEnabled = shouldAutoReconcilePolyfillManifests({
+      dbPath: resolvedDbPath,
+      storageBackendKind: storageBackend.backend,
+    });
     const reconcileEnabled =
       opts.reconcilePolyfillManifests !== undefined
         ? !!opts.reconcilePolyfillManifests
