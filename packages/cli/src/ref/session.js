@@ -16,9 +16,9 @@ export function getOwnerSessionPaths(referenceUrl, opts = {}) {
 function sessionCacheKey(referenceUrl) {
   try {
     const u = new URL(referenceUrl);
-    // u.host already includes ":port" when explicit; normalize the colon
-    // into an underscore so the key is filesystem-safe.
-    return u.host.replace(/[^a-zA-Z0-9.-]/g, '_');
+    // Owner sessions are origin-scoped. Include protocol so an HTTPS login
+    // cannot be silently reused for an HTTP reference URL on the same host.
+    return `${u.protocol}//${u.host}`.replace(/[^a-zA-Z0-9.-]/g, '_');
   } catch {
     return referenceUrl.replace(/[^a-zA-Z0-9.-]/g, '_');
   }

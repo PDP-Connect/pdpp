@@ -74,10 +74,10 @@ test('writeOwnerSession persists cookie with 0600 file mode and gitignore', asyn
   });
 });
 
-test('readOwnerSession returns cached cookie; getOwnerSessionPaths derives host', async () => {
+test('readOwnerSession returns cached cookie; getOwnerSessionPaths derives origin', async () => {
   await withTmpCache(async (cacheRoot) => {
     const { file } = getOwnerSessionPaths('https://ref.test:8443', { cacheRoot });
-    assert.match(file, /ref\.test_8443\.json$/);
+    assert.match(file, /https___ref\.test_8443\.json$/);
 
     writeOwnerSession({
       referenceUrl: 'https://ref.test:8443',
@@ -86,6 +86,8 @@ test('readOwnerSession returns cached cookie; getOwnerSessionPaths derives host'
     });
     const got = readOwnerSession({ referenceUrl: 'https://ref.test:8443', cacheRoot });
     assert.equal(got.cookie, 'pdpp_owner_session=cached');
+
+    assert.equal(readOwnerSession({ referenceUrl: 'http://ref.test:8443', cacheRoot }), null);
   });
 });
 
