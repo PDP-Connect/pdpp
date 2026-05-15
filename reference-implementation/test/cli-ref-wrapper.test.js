@@ -11,6 +11,14 @@ const execFile = promisify(execFileCallback);
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CLI_PATH = join(__dirname, '..', 'cli/index.js');
+const CLI_PACKAGE_LINK_PATH = join(
+  __dirname,
+  '..',
+  '..',
+  'node_modules',
+  'pdpp-reference-implementation',
+  'cli/index.js',
+);
 
 // ---- unit: legacy alias map -------------------------------------------------
 
@@ -48,6 +56,13 @@ test('pdpp ref --help is served by the @pdpp/cli delegate and advertises login',
   assert.match(stdout, /ref run timeline/);
   assert.match(stdout, /ref grant timeline/);
   assert.match(stdout, /ref trace show/);
+});
+
+test('workspace package entrypoint runs through the real CLI guard', async () => {
+  const { stdout, stderr } = await execFile(process.execPath, [CLI_PACKAGE_LINK_PATH, 'ref', '--help']);
+  assert.equal(stderr, '');
+  assert.match(stdout, /ref login/);
+  assert.match(stdout, /ref run timeline/);
 });
 
 test('pdpp run timeline (legacy alias) emits a deprecation hint pointing at "pdpp ref run timeline"', async () => {

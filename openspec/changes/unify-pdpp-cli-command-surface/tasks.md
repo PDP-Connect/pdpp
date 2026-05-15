@@ -28,10 +28,10 @@
 
 ## 5. Dashboard, Docs, And Metadata
 
-- [ ] 5.1 Update dashboard timeline and peek copy to use `pdpp ref ...` commands.
-- [ ] 5.2 Update reference docs and package README to explain public `connect` versus reference `ref` namespaces.
-- [ ] 5.3 Ensure public agent-connect metadata continues to advertise `npx -y @pdpp/cli@beta connect <provider-url>` rather than reference-operator commands.
-- [ ] 5.4 Add or update validation that rejects surfaced legacy examples such as `pdpp run timeline` outside compatibility/help context.
+- [x] 5.1 Update dashboard timeline and peek copy to use `pdpp ref ...` commands.
+- [x] 5.2 Update reference docs and package README to explain public `connect` versus reference `ref` namespaces.
+- [x] 5.3 Ensure public agent-connect metadata continues to advertise `npx -y @pdpp/cli@beta connect <provider-url>` rather than reference-operator commands.
+- [x] 5.4 Add or update validation that rejects surfaced legacy examples such as `pdpp run timeline` outside compatibility/help context.
 
 ## 6. Validation
 
@@ -40,5 +40,5 @@
 - [x] 6.3 Add package-smoke coverage proving `@pdpp/cli` can pack/install with the new `ref` commands and without server-only files.
 - [x] 6.4 Run `pnpm --filter @pdpp/cli test`.
 - [x] 6.5 Run relevant `reference-implementation` CLI tests.
-- [ ] 6.6 Run relevant web checks for dashboard/docs copy.
+- [x] 6.6 Run relevant web checks for dashboard/docs copy.
 - [x] 6.7 Run `openspec validate unify-pdpp-cli-command-surface --strict`.

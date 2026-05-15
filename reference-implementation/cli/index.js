@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 
+import { realpathSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
 import { PdppCliError, PdppUsageError } from './lib/errors.js';
 import { runCli as runPublicCli } from '../../packages/cli/src/index.js';
 import { createPdppCliCommand, PDPP_CLI_BIN_NAME, PDPP_CLI_PACKAGE_NAME } from '../../packages/cli/src/package-info.js';
@@ -130,22 +133,18 @@ async function main() {
   await handler(rest);
 }
 
-export const __test = { LEGACY_ALIAS_HINTS, PUBLIC_DELEGATED_COMMANDS, legacyAliasHint };
+export const __test = { LEGACY_ALIAS_HINTS, PUBLIC_DELEGATED_COMMANDS, isCliEntryPoint, legacyAliasHint };
 
-// Only auto-run main() when invoked as the CLI entry point. This lets tests
-// import the module to read LEGACY_ALIAS_HINTS without firing the dispatcher.
-const isCliEntry = (() => {
+function isCliEntryPoint(invoked = process.argv[1], moduleUrl = import.meta.url) {
   try {
-    const invoked = process.argv[1];
     if (!invoked) return false;
-    const here = new URL(import.meta.url).pathname;
-    return invoked === here || invoked.endsWith('/reference-implementation/cli/index.js');
+    return realpathSync(invoked) === realpathSync(fileURLToPath(moduleUrl));
   } catch {
     return false;
   }
-})();
+}
 
-if (isCliEntry) {
+if (isCliEntryPoint()) {
   main().catch(handleError);
 }
 
