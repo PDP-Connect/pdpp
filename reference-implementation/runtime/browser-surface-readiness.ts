@@ -61,15 +61,15 @@ export const BROWSER_SURFACE_READINESS_PROBE_CODES = [
 export type BrowserSurfaceReadinessProbeCode = (typeof BROWSER_SURFACE_READINESS_PROBE_CODES)[number];
 
 export interface BrowserSurfaceReadinessProbeSuccess {
+  readonly browserVersion?: string;
   readonly ok: true;
   readonly pageTargetCount: number;
-  readonly browserVersion?: string;
 }
 
 export interface BrowserSurfaceReadinessProbeFailure {
-  readonly ok: false;
   readonly code: BrowserSurfaceReadinessProbeCode;
   readonly detail: string;
+  readonly ok: false;
 }
 
 export type BrowserSurfaceReadinessProbeResult =
@@ -92,7 +92,14 @@ interface DevtoolsTargetPayload {
   readonly webSocketDebuggerUrl?: unknown;
 }
 
-export const DEFAULT_BROWSER_SURFACE_READINESS_PROBE_TIMEOUT_MS = 5_000;
+interface UsableDevtoolsPageTarget {
+  readonly id: string;
+  readonly type: "page";
+  readonly url?: unknown;
+  readonly webSocketDebuggerUrl: string;
+}
+
+export const DEFAULT_BROWSER_SURFACE_READINESS_PROBE_TIMEOUT_MS = 5000;
 
 export interface CreateDefaultBrowserSurfaceReadinessProbeOptions {
   readonly fetchImpl?: typeof fetch;
@@ -102,16 +109,17 @@ export interface CreateDefaultBrowserSurfaceReadinessProbeOptions {
 /**
  * Build a probe that talks to the surface's `cdp_url` as a Chrome DevTools
  * HTTP base (the same shape `chrome --remote-debugging-port` exposes and
- * the same shape `n.eko` proxies through its `/cdp` mount). Two GETs:
+ * the same shape `n.eko` proxies through its `/cdp` mount). It performs:
  *
- *   GET <cdp_url>/json/version  →  proves DevTools is live + reachable.
- *   GET <cdp_url>/json/list     →  proves at least one page target exists.
+ *   GET <cdp_url>/json/version          → proves DevTools is live + reachable.
+ *   GET <cdp_url>/json/list             → proves at least one page target exists.
+ *   PUT <cdp_url>/json/new?about:blank  → proves Chromium can create a target.
  *
  * Both must succeed within `timeoutMs` and the response shapes must match
  * the documented DevTools contract. Anything else is fail-closed.
  */
 export function createDefaultBrowserSurfaceReadinessProbe(
-  options: CreateDefaultBrowserSurfaceReadinessProbeOptions = {},
+  options: CreateDefaultBrowserSurfaceReadinessProbeOptions = {}
 ): BrowserSurfaceReadinessProbe {
   const fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
   const timeoutMs = options.timeoutMs ?? DEFAULT_BROWSER_SURFACE_READINESS_PROBE_TIMEOUT_MS;
@@ -119,7 +127,7 @@ export function createDefaultBrowserSurfaceReadinessProbe(
     throw new Error("browser surface readiness probe timeoutMs must be a positive integer");
   }
   return {
-    async probe(surface) {
+    probe(surface) {
       return probeBrowserSurfaceReadinessOverHttp(surface, fetchImpl, timeoutMs);
     },
   };
@@ -128,7 +136,7 @@ export function createDefaultBrowserSurfaceReadinessProbe(
 export async function probeBrowserSurfaceReadinessOverHttp(
   surface: BrowserSurface,
   fetchImpl: typeof fetch,
-  timeoutMs: number,
+  timeoutMs: number
 ): Promise<BrowserSurfaceReadinessProbeResult> {
   const notReady = validateSurfaceShape(surface);
   if (notReady) {
@@ -137,11 +145,7 @@ export async function probeBrowserSurfaceReadinessOverHttp(
 
   const baseUrl = normalizeCdpBase(surface.cdp_url);
 
-  const versionResult = await fetchJsonWithBudget(
-    `${baseUrl}json/version`,
-    fetchImpl,
-    timeoutMs,
-  );
+  const versionResult = await fetchJsonWithBudget(`${baseUrl}json/version`, fetchImpl, timeoutMs);
   if (!versionResult.ok) {
     return versionResult.failure;
   }
@@ -158,11 +162,7 @@ export async function probeBrowserSurfaceReadinessOverHttp(
     };
   }
 
-  const targetsResult = await fetchJsonWithBudget(
-    `${baseUrl}json/list`,
-    fetchImpl,
-    timeoutMs,
-  );
+  const targetsResult = await fetchJsonWithBudget(`${baseUrl}json/list`, fetchImpl, timeoutMs);
   if (!targetsResult.ok) {
     return targetsResult.failure;
   }
@@ -175,7 +175,7 @@ export async function probeBrowserSurfaceReadinessOverHttp(
     };
   }
 
-  const pageTargets = targets.filter((entry): entry is DevtoolsTargetPayload => isUsablePageTarget(entry));
+  const pageTargets = targets.filter((entry): entry is UsableDevtoolsPageTarget => isUsablePageTarget(entry));
   if (pageTargets.length === 0) {
     return {
       ok: false,
@@ -187,8 +187,12 @@ export async function probeBrowserSurfaceReadinessOverHttp(
     };
   }
 
-  const browserVersion =
-    typeof versionPayload.Browser === "string" ? versionPayload.Browser : undefined;
+  const targetCreateResult = await createAndCloseSmokeTarget(baseUrl, fetchImpl, timeoutMs);
+  if (!targetCreateResult.ok) {
+    return targetCreateResult.failure;
+  }
+
+  const browserVersion = typeof versionPayload.Browser === "string" ? versionPayload.Browser : undefined;
 
   return {
     ok: true,
@@ -237,7 +241,7 @@ function normalizeCdpBase(cdpUrl: string): string {
   return cdpUrl.endsWith("/") ? cdpUrl : `${cdpUrl}/`;
 }
 
-function isUsablePageTarget(entry: unknown): entry is DevtoolsTargetPayload {
+function isUsablePageTarget(entry: unknown): entry is UsableDevtoolsPageTarget {
   if (!entry || typeof entry !== "object") {
     return false;
   }
@@ -257,20 +261,62 @@ function isUsablePageTarget(entry: unknown): entry is DevtoolsTargetPayload {
   return true;
 }
 
-type FetchOk = { ok: true; payload: unknown };
-type FetchErr = { ok: false; failure: BrowserSurfaceReadinessProbeFailure };
+async function createAndCloseSmokeTarget(
+  baseUrl: string,
+  fetchImpl: typeof fetch,
+  timeoutMs: number
+): Promise<FetchOk | FetchErr> {
+  const createResult = await fetchJsonWithBudget(`${baseUrl}json/new?about:blank`, fetchImpl, timeoutMs, {
+    method: "PUT",
+  });
+  if (!createResult.ok) {
+    return createResult;
+  }
+  const createdTarget = createResult.payload;
+  if (!isUsablePageTarget(createdTarget)) {
+    return {
+      ok: false,
+      failure: {
+        ok: false,
+        code: "browser_surface_page_stale",
+        detail: `cdp_url ${baseUrl}json/new?about:blank did not return a usable page target`,
+      },
+    };
+  }
+
+  const closeResult = await fetchOkWithBudget(
+    `${baseUrl}json/close/${encodeURIComponent(createdTarget.id)}`,
+    fetchImpl,
+    timeoutMs
+  );
+  if (!closeResult.ok) {
+    return closeResult;
+  }
+  return { ok: true, payload: createdTarget };
+}
+
+interface FetchOk {
+  readonly ok: true;
+  readonly payload: unknown;
+}
+
+interface FetchErr {
+  readonly failure: BrowserSurfaceReadinessProbeFailure;
+  readonly ok: false;
+}
 
 async function fetchJsonWithBudget(
   url: string,
   fetchImpl: typeof fetch,
   timeoutMs: number,
+  init: RequestInit = {}
 ): Promise<FetchOk | FetchErr> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     let response: Response;
     try {
-      response = await fetchImpl(url, { signal: controller.signal });
+      response = await fetchImpl(url, { ...init, signal: controller.signal });
     } catch (cause) {
       if (controller.signal.aborted) {
         return {
@@ -317,6 +363,55 @@ async function fetchJsonWithBudget(
       };
     }
     return { ok: true, payload };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchOkWithBudget(
+  url: string,
+  fetchImpl: typeof fetch,
+  timeoutMs: number,
+  init: RequestInit = {}
+): Promise<FetchOk | FetchErr> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    let response: Response;
+    try {
+      response = await fetchImpl(url, { ...init, signal: controller.signal });
+    } catch (cause) {
+      if (controller.signal.aborted) {
+        return {
+          ok: false,
+          failure: {
+            ok: false,
+            code: "browser_surface_probe_timeout",
+            detail: `GET ${url} exceeded ${String(timeoutMs)}ms budget`,
+          },
+        };
+      }
+      const message = cause instanceof Error ? cause.message : String(cause);
+      return {
+        ok: false,
+        failure: {
+          ok: false,
+          code: "browser_surface_cdp_unreachable",
+          detail: `GET ${url} failed: ${message}`,
+        },
+      };
+    }
+    if (!response.ok) {
+      return {
+        ok: false,
+        failure: {
+          ok: false,
+          code: "browser_surface_cdp_disconnected",
+          detail: `GET ${url} returned HTTP ${String(response.status)}`,
+        },
+      };
+    }
+    return { ok: true, payload: null };
   } finally {
     clearTimeout(timer);
   }

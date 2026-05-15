@@ -72,10 +72,19 @@ const PAGE_TARGET = {
   webSocketDebuggerUrl: "ws://neko:9222/devtools/page/target_1",
 };
 
-test("probe returns ok when DevTools answers and has a usable page target", async () => {
+const SMOKE_TARGET = {
+  id: "target_smoke",
+  type: "page",
+  url: "about:blank",
+  webSocketDebuggerUrl: "ws://neko:9222/devtools/page/target_smoke",
+};
+
+test("probe returns ok when DevTools answers and can create a smoke page target", async () => {
   const { fakeFetch } = makeFetch({
     "http://neko:9222/json/version": jsonResponse(VERSION_OK),
     "http://neko:9222/json/list": jsonResponse([PAGE_TARGET]),
+    "http://neko:9222/json/new?about:blank": jsonResponse(SMOKE_TARGET),
+    "http://neko:9222/json/close/target_smoke": () => new Response("Target is closing", { status: 200 }),
   });
   const result = await probeBrowserSurfaceReadinessOverHttp(readySurface(), fakeFetch, 1000);
   assert.equal(result.ok, true);
@@ -87,11 +96,18 @@ test("probe normalizes cdp_url without trailing slash", async () => {
   const { fakeFetch, calls } = makeFetch({
     "http://neko:9222/json/version": jsonResponse(VERSION_OK),
     "http://neko:9222/json/list": jsonResponse([PAGE_TARGET]),
+    "http://neko:9222/json/new?about:blank": jsonResponse(SMOKE_TARGET),
+    "http://neko:9222/json/close/target_smoke": () => new Response("Target is closing", { status: 200 }),
   });
   await probeBrowserSurfaceReadinessOverHttp(readySurface({ cdp_url: "http://neko:9222" }), fakeFetch, 1000);
   assert.deepEqual(
     calls.map((c) => c.url),
-    ["http://neko:9222/json/version", "http://neko:9222/json/list"],
+    [
+      "http://neko:9222/json/version",
+      "http://neko:9222/json/list",
+      "http://neko:9222/json/new?about:blank",
+      "http://neko:9222/json/close/target_smoke",
+    ],
   );
 });
 
@@ -211,6 +227,29 @@ test("probe returns browser_surface_page_stale when targets exist but none are '
   const result = await probeBrowserSurfaceReadinessOverHttp(readySurface(), fakeFetch, 1000);
   assert.equal(result.ok, false);
   assert.equal(result.code, "browser_surface_page_stale");
+});
+
+test("probe returns browser_surface_cdp_disconnected when smoke target creation fails", async () => {
+  const { fakeFetch } = makeFetch({
+    "http://neko:9222/json/version": jsonResponse(VERSION_OK),
+    "http://neko:9222/json/list": jsonResponse([PAGE_TARGET]),
+    "http://neko:9222/json/new?about:blank": jsonResponse({ error: "Target.createTarget failed" }, 500),
+  });
+  const result = await probeBrowserSurfaceReadinessOverHttp(readySurface(), fakeFetch, 1000);
+  assert.equal(result.ok, false);
+  assert.equal(result.code, "browser_surface_cdp_disconnected");
+  assert.match(result.detail, /HTTP 500/);
+});
+
+test("probe uses PUT for smoke target creation", async () => {
+  const { fakeFetch, calls } = makeFetch({
+    "http://neko:9222/json/version": jsonResponse(VERSION_OK),
+    "http://neko:9222/json/list": jsonResponse([PAGE_TARGET]),
+    "http://neko:9222/json/new?about:blank": jsonResponse(SMOKE_TARGET),
+    "http://neko:9222/json/close/target_smoke": () => new Response("Target is closing", { status: 200 }),
+  });
+  await probeBrowserSurfaceReadinessOverHttp(readySurface(), fakeFetch, 1000);
+  assert.equal(calls.find((c) => c.url.endsWith("/json/new?about:blank"))?.init.method, "PUT");
 });
 
 test("probe returns browser_surface_probe_timeout when fetch is aborted", async () => {
