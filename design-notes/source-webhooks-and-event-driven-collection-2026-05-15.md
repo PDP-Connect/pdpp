@@ -20,10 +20,11 @@ The current protocol and reference posture is pull-first:
 - The archived webhook adapter experiment concluded that the adapter's contract was platform-to-adapter, not PDPP-to-PDPP, and therefore did not warrant a Push Delivery Profile.
 - `openspec/changes/add-connector-refresh-policy-controls` and `openspec/changes/wire-reference-scheduler-loop` already give the reference a non-speculative path for freshness: connector-declared refresh posture plus persisted schedules and a server-owned scheduler loop.
 
-There are two distinct webhook directions that should not be conflated:
+There are three distinct push-like directions that should not be conflated:
 
 - Source-to-personal-server webhooks: a source platform notifies the personal server, and the server either ingests pushed records or starts a connector run.
 - Personal-server-to-client subscriptions: the personal server notifies an authorized client that grant-visible records, freshness, or grants changed. This is tracked separately in `design-notes/client-event-subscriptions-and-freshness-2026-04-26.md`.
+- Owner-device-to-personal-server push: an enrolled local device or collector uploads records, blobs, run events, diagnostics, and heartbeats through reference/control-plane routes. This is already covered by the local device exporter and local collector work; it is not a source-platform webhook and should keep using device-scoped credentials rather than source webhook signatures.
 
 ## Stakes
 
@@ -31,6 +32,14 @@ There are two distinct webhook directions that should not be conflated:
 - Triggering connector runs from source events is not equivalent to ingesting pushed records. It changes scheduler semantics, non-overlap policy, rate-limit posture, and owner-attention handling.
 - A platform-specific adapter can be useful runtime code, but standardizing it prematurely would create a protocol surface around imaginary common webhook payloads.
 - For SLVP, the freshness gap is better served by the existing scheduler and refresh-policy work because the current first-party collection reality is browser/API pull, not cooperative PDPP-formatted push.
+
+If source webhooks are ever implemented, the minimum safe boundary is source-specific until proven otherwise:
+
+- Authenticate each source callback with the source's native mechanism, such as HMAC signatures, mTLS, or source-issued bearer credentials. Do not reuse owner tokens, client grant tokens, or local collector device credentials for unauthenticated internet callbacks.
+- Bind each callback secret or credential to an owner, connector/source account, stream mapping, and subscription id so one source account cannot write as another.
+- Reject stale callbacks with timestamp or nonce replay checks, and persist processed event ids or idempotency keys before record mutation.
+- Normalize accepted events into the existing record ingest path so stream schemas, primary keys, projection, blob handling, tombstones, and grant-visible query behavior remain unchanged.
+- Treat source-triggered connector runs as scheduler input, not as direct run execution, so existing schedule state, non-overlap, backoff, rate limits, owner-attention, and run diagnostics remain the source of truth.
 
 ## Current Leaning
 
