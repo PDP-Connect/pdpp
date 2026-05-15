@@ -15,6 +15,11 @@
   },
   "capabilities": {
     "human_interaction": [],
+    "public_listing": {
+      "listed": false,
+      "status": "unproven",
+      "rationale": "Hidden from the reference dashboard catalog until an operator proves a local macOS Messages database run on this deployment and explicitly opts it into listing."
+    },
     "refresh_policy": {
       "recommended_mode": "manual",
       "recommended_interval_seconds": 3600,

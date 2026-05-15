@@ -37,6 +37,8 @@ test("iMessage is local-device only and not background-safe in provider Docker",
   };
 
   assert.equal(imessage.runtime_requirements?.bindings?.local_device?.required, true);
+  assert.equal(imessage.capabilities?.public_listing?.listed, false);
+  assert.equal(imessage.capabilities?.public_listing?.status, "unproven");
   assert.equal(imessage.capabilities?.refresh_policy?.recommended_mode, "manual");
   assert.equal(imessage.capabilities?.refresh_policy?.background_safe, false);
 });

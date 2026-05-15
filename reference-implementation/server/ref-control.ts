@@ -37,6 +37,9 @@ type ConnectorManifest = {
   display_name?: string;
   profiles?: { id: string }[];
   protocol_version?: string | null;
+  runtime_requirements?: {
+    bindings?: Record<string, unknown>;
+  };
   streams?: ManifestStream[];
   version?: string;
 } & Record<string, unknown>;
@@ -428,7 +431,23 @@ export function isPublicReferenceConnector(row: ConnectorRow, manifest: Connecto
 
   const publicListing = manifest.capabilities?.public_listing;
   if (publicListing && typeof publicListing === "object" && !Array.isArray(publicListing)) {
-    return (publicListing as { listed?: unknown }).listed !== false;
+    const listing = publicListing as { listed?: unknown; status?: unknown };
+    if (listing.listed === true) {
+      return true;
+    }
+    if (listing.listed === false || listing.status === "unproven") {
+      return false;
+    }
+  }
+
+  const localDeviceBinding = manifest.runtime_requirements?.bindings?.local_device;
+  if (
+    localDeviceBinding &&
+    typeof localDeviceBinding === "object" &&
+    !Array.isArray(localDeviceBinding) &&
+    (localDeviceBinding as { required?: unknown }).required === true
+  ) {
+    return false;
   }
 
   return true;

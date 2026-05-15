@@ -101,6 +101,65 @@ test('reference connector catalog hides manifest opt-outs', () => {
   );
 });
 
+test('reference connector catalog hides unproven connectors by default', () => {
+  assert.equal(
+    isPublicReferenceConnector(
+      { connector_id: 'https://registry.pdpp.org/connectors/unproven-source', manifest: '{}' },
+      {
+        connector_id: 'https://registry.pdpp.org/connectors/unproven-source',
+        capabilities: {
+          public_listing: {
+            status: 'unproven',
+          },
+        },
+      },
+    ),
+    false,
+  );
+});
+
+test('reference connector catalog hides local-device connectors unless explicitly listed', () => {
+  const imessageManifest = {
+    connector_id: 'https://registry.pdpp.org/connectors/imessage',
+    runtime_requirements: {
+      bindings: {
+        filesystem: {
+          required: true,
+        },
+        local_device: {
+          required: true,
+        },
+      },
+    },
+  };
+
+  assert.equal(
+    isPublicReferenceConnector(
+      { connector_id: 'https://registry.pdpp.org/connectors/imessage', manifest: '{}' },
+      imessageManifest,
+    ),
+    false,
+    'iMessage must not appear in the default Docker/public connector catalog',
+  );
+
+  assert.equal(
+    isPublicReferenceConnector(
+      { connector_id: 'https://registry.pdpp.org/connectors/imessage', manifest: '{}' },
+      {
+        ...imessageManifest,
+        capabilities: {
+          public_listing: {
+            listed: true,
+            status: 'operator_enabled',
+          },
+        },
+      },
+    ),
+    true,
+    'local-device connectors can be surfaced only after an explicit manifest opt-in',
+  );
+});
+
 test('reference connector catalog hides stub and stream-test connector registrations', () => {
   for (const connectorId of [
     'manual_action_stub',
