@@ -60,3 +60,9 @@ Declared but not realizable from a slackdump archive (see comments in `index.js`
 ## Auth
 
 Requires `SLACK_TOKEN`, `SLACK_COOKIE`, `SLACK_WORKSPACE` in env. Capture `SLACK_TOKEN` (an `xoxc-` token) and `SLACK_COOKIE` (the `d=...` cookie value) from a logged-in browser session against your workspace.
+
+Slackdump resolution:
+
+- Host runs: put `slackdump` on `PATH` or set `SLACKDUMP_BIN` to the binary path.
+- Docker runs: the stock PDPP reference image does not bundle AGPL-3.0 `slackdump`. Build a derived image that installs it, or mount the binary into the container and set `SLACKDUMP_BIN` to that in-container path.
+- Missing binary failures are reported before credentials are printed; do not paste Slack tokens into logs.

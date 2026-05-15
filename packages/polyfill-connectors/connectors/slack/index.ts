@@ -89,6 +89,22 @@ import type {
   WorkspaceRow,
 } from "./types.ts";
 
+function isErrnoException(error: unknown): error is NodeJS.ErrnoException {
+  return typeof error === "object" && error !== null && "code" in error;
+}
+
+function resolveSlackdumpBin(): string {
+  return process.env.SLACKDUMP_BIN || "slackdump";
+}
+
+export function formatSlackdumpMissingError(bin: string): string {
+  return [
+    `slackdump binary not found: ${bin}`,
+    "Install slackdump and either put it on PATH or set SLACKDUMP_BIN to its absolute path.",
+    "Docker: the stock reference image does not bundle AGPL-3.0 slackdump; build a derived image that installs it or mount the binary into the container and set SLACKDUMP_BIN to that in-container path.",
+  ].join(" ");
+}
+
 // safeAll: typed SQL wrapper. Rows returned as unknown[] → caller casts.
 function safeAll<T>(db: DatabaseSync, sql: string): T[] {
   try {
@@ -103,7 +119,7 @@ function safeAll<T>(db: DatabaseSync, sql: string): T[] {
 // and Slack rate-limit bursts. The cost of a too-high default is only "late
 // failure signal" — slackdump will normally finish or error out well before
 // this. Override via `SLACKDUMP_TIMEOUT_MS` env var.
-function runSlackdump(
+export function runSlackdump(
   args: string[],
   {
     env,
@@ -111,7 +127,7 @@ function runSlackdump(
   }: { env: NodeJS.ProcessEnv; timeoutMs?: number }
 ): Promise<SlackdumpRunResult> {
   return new Promise((resolve, reject) => {
-    const bin = process.env.SLACKDUMP_BIN || "slackdump";
+    const bin = resolveSlackdumpBin();
     const child = spawn(bin, args, { env, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
@@ -135,6 +151,10 @@ function runSlackdump(
     });
     child.on("error", (e) => {
       clearTimeout(t);
+      if (isErrnoException(e) && e.code === "ENOENT") {
+        reject(new Error(formatSlackdumpMissingError(bin)));
+        return;
+      }
       reject(e);
     });
   });
