@@ -28,3 +28,15 @@ test("Spotify is not advertised as public or background-safe until proven", () =
   assert.equal(spotify.capabilities?.refresh_policy?.recommended_mode, "manual");
   assert.equal(spotify.capabilities?.refresh_policy?.background_safe, false);
 });
+
+test("iMessage is local-device only and not background-safe in provider Docker", () => {
+  const imessage = readManifest("imessage") as ReturnType<typeof readManifest> & {
+    runtime_requirements?: {
+      bindings?: { local_device?: { required?: unknown } };
+    };
+  };
+
+  assert.equal(imessage.runtime_requirements?.bindings?.local_device?.required, true);
+  assert.equal(imessage.capabilities?.refresh_policy?.recommended_mode, "manual");
+  assert.equal(imessage.capabilities?.refresh_policy?.background_safe, false);
+});

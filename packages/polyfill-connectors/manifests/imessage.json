@@ -7,21 +7,24 @@
     "bindings": {
       "filesystem": {
         "required": true
+      },
+      "local_device": {
+        "required": true
       }
     }
   },
   "capabilities": {
     "human_interaction": [],
     "refresh_policy": {
-      "recommended_mode": "automatic",
+      "recommended_mode": "manual",
       "recommended_interval_seconds": 3600,
       "minimum_interval_seconds": 300,
       "maximum_staleness_seconds": 21600,
       "interaction_posture": "none",
       "rate_limit_sensitivity": "low",
       "bot_detection_sensitivity": "low",
-      "background_safe": true,
-      "rationale": "iMessage history is read from the local chat.db; refresh is a local file read."
+      "background_safe": false,
+      "rationale": "iMessage history is read from the operator's local macOS Messages database. Docker/provider scheduled runs must use a local collector or an explicitly mounted IMESSAGE_DB_PATH."
     }
   },
   "streams": [

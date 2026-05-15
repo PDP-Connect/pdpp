@@ -13,7 +13,6 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-// biome-ignore lint/correctness/noUnresolvedImports: better-sqlite3 is declared in package.json; tsc resolves it correctly
 import Database from "better-sqlite3";
 import { runConnector } from "../../src/connector-runtime.ts";
 
@@ -90,13 +89,7 @@ runConnector({
         .all(since) as MessageRow[];
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      await emit({
-        type: "SKIP_RESULT",
-        stream: "messages",
-        reason: "db_query_failed",
-        message: msg.slice(0, 200),
-      });
-      rows = [];
+      throw new Error(`imessage_db_query_failed: ${msg}`);
     }
 
     let latestApple = since;
