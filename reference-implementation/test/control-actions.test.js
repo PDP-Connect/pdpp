@@ -789,6 +789,99 @@ test('schedule upsert returns policy_warning when interval is below minimum_inte
   }
 });
 
+test('schedule upsert rejects enabling manual or background-unsafe connector policy', async () => {
+  const manifest = {
+    protocol_version: '0.1.0',
+    connector_id: 'https://registry.pdpp.org/connectors/manual-unsafe-test',
+    version: '1.0.0',
+    display_name: 'Manual Unsafe Test',
+    streams: [
+      {
+        name: 'items',
+        semantics: 'append_only',
+        schema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
+        primary_key: ['id'],
+      },
+    ],
+    capabilities: {
+      refresh_policy: {
+        recommended_mode: 'manual',
+        interaction_posture: 'otp_likely',
+        background_safe: false,
+        rationale: 'Requires owner-present login.',
+      },
+    },
+  };
+
+  const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+  const asUrl = `http://localhost:${server.asPort}`;
+  try {
+    await registerConnector(asUrl, manifest);
+
+    const putResp = await fetch(`${asUrl}/_ref/connectors/${encodeURIComponent(manifest.connector_id)}/schedule`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ interval_seconds: 3600, enabled: true }),
+    });
+    assert.equal(putResp.status, 400);
+    const body = await putResp.json();
+    assert.equal(body.error.code, 'invalid_request');
+    assert.match(body.error.message, /manual runs|background-safe|scheduling is disabled/);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('schedule resume rejects a disabled schedule when connector policy is background-unsafe', async () => {
+  const manifest = {
+    protocol_version: '0.1.0',
+    connector_id: 'https://registry.pdpp.org/connectors/background-unsafe-test',
+    version: '1.0.0',
+    display_name: 'Background Unsafe Test',
+    streams: [
+      {
+        name: 'items',
+        semantics: 'append_only',
+        schema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
+        primary_key: ['id'],
+      },
+    ],
+    capabilities: {
+      refresh_policy: {
+        recommended_mode: 'automatic',
+        background_safe: false,
+        rationale: 'Automatic refresh needs an owner-present browser.',
+      },
+    },
+  };
+
+  const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+  const asUrl = `http://localhost:${server.asPort}`;
+  try {
+    await registerConnector(asUrl, manifest);
+
+    const putResp = await fetch(`${asUrl}/_ref/connectors/${encodeURIComponent(manifest.connector_id)}/schedule`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ interval_seconds: 3600, enabled: false }),
+    });
+    assert.equal(putResp.status, 200);
+    const created = await putResp.json();
+    assert.equal(created.enabled, false);
+
+    const resumeResp = await fetch(
+      `${asUrl}/_ref/connectors/${encodeURIComponent(manifest.connector_id)}/schedule/resume`,
+      { method: 'POST' },
+    );
+    assert.equal(resumeResp.status, 400);
+    const body = await resumeResp.json();
+    assert.equal(body.error.code, 'invalid_request');
+    assert.match(body.error.message, /background-safe/);
+  } finally {
+    await closeServer(server);
+  }
+});
+
 test('GET /_ref/approvals surfaces pending provider-connect consents with grant preview', async () => {
   await withHarness(async ({ asUrl, spotifyManifest }) => {
     // Start a PAR request that will be pending until approve/deny.

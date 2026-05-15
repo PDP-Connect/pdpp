@@ -75,7 +75,11 @@ import { createDefaultStreamingCompanionFactory } from './streaming/companion-fa
 import { registerStreamingRoutes } from './streaming/routes.js';
 import { createRunTargetRegistry } from './streaming/run-target-registry.js';
 import { createPlayground } from './streaming/playground.js';
-import { createController, resolveDefaultConnectorPath } from '../runtime/controller.ts';
+import {
+  createController,
+  getScheduleIneligibilityReason,
+  resolveDefaultConnectorPath,
+} from '../runtime/controller.ts';
 import { createScheduler } from '../runtime/scheduler.ts';
 import { getDefaultSchedulerStore } from './stores/scheduler-store.ts';
 import {
@@ -6174,6 +6178,14 @@ function createReferenceSchedulerManager({
       try {
         const manifest = await getConnectorManifest(schedule.connector_id);
         if (!manifest) {
+          continue;
+        }
+        const scheduleIneligibilityReason = getScheduleIneligibilityReason(getManifestRefreshPolicy(manifest));
+        if (scheduleIneligibilityReason) {
+          logger?.warn?.(
+            { connector_id: schedule.connector_id, reason: scheduleIneligibilityReason },
+            'skipping scheduled connector because refresh policy is not background-safe',
+          );
           continue;
         }
         const connectorPath = await Promise.resolve(

@@ -117,6 +117,22 @@ export interface RefreshPolicy {
   readonly session_lifetime_seconds?: number;
 }
 
+export function getScheduleIneligibilityReason(policy: RefreshPolicy | null): string | null {
+  if (!policy) {
+    return null;
+  }
+  if (policy.recommended_mode === "manual") {
+    return "Connector refresh policy recommends manual runs; automatic scheduling is disabled.";
+  }
+  if (policy.recommended_mode === "paused") {
+    return "Connector refresh policy recommends paused refresh; automatic scheduling is disabled.";
+  }
+  if (policy.background_safe === false) {
+    return "Connector refresh policy is not background-safe; automatic scheduling is disabled.";
+  }
+  return null;
+}
+
 export interface ScheduleApi {
   readonly active_run_id: string | null;
   readonly pending_run_id?: string;
@@ -1425,6 +1441,11 @@ export function createController(opts: ControllerOptions = {}): Controller {
   async function upsertSchedule(connectorId: string, input: ConnectorSchedulePatch): Promise<ScheduleUpsertResult> {
     const now = nowIso();
     const validated = validateScheduleInput(input);
+    const policy = await getConnectorRefreshPolicy(connectorId);
+    const ineligibilityReason = validated.enabled ? getScheduleIneligibilityReason(policy) : null;
+    if (ineligibilityReason) {
+      throw new ControllerError(ineligibilityReason, "invalid_request");
+    }
     const existing = await getScheduleRecord(connectorId);
     if (existing) {
       await schedulerStore.updateSchedule(connectorId, {
@@ -1443,7 +1464,6 @@ export function createController(opts: ControllerOptions = {}): Controller {
         updated_at: now,
       });
     }
-    const policy = await getConnectorRefreshPolicy(connectorId);
     const schedule = scheduleToApi(
       await getScheduleRecord(connectorId),
       getRuntimeProjection(connectorId, browserSurfaceLeaseManager),
@@ -1461,8 +1481,12 @@ export function createController(opts: ControllerOptions = {}): Controller {
     if (!existing) {
       throw new ControllerError(`Schedule not found for connector: ${connectorId}`, "not_found");
     }
-    await schedulerStore.setScheduleEnabled(connectorId, enabled, nowIso());
     const policy = await getConnectorRefreshPolicy(connectorId);
+    const ineligibilityReason = enabled ? getScheduleIneligibilityReason(policy) : null;
+    if (ineligibilityReason) {
+      throw new ControllerError(ineligibilityReason, "invalid_request");
+    }
+    await schedulerStore.setScheduleEnabled(connectorId, enabled, nowIso());
     return scheduleToApi(
       await getScheduleRecord(connectorId),
       getRuntimeProjection(connectorId, browserSurfaceLeaseManager),
