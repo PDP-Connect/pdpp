@@ -4,9 +4,9 @@ import test from "node:test";
 
 import type { Page } from "playwright";
 
-import { createCaptureSession } from "./fixture-capture.ts";
+import { createCaptureSession, type LocatorProbePage } from "./fixture-capture.ts";
 
-test("captureDom writes html, page metadata, and screenshot in raw local capture mode", async () => {
+test("captureDom writes html, aria, page metadata, and screenshot in raw local capture mode", async () => {
   const previous = process.env.PDPP_CAPTURE_FIXTURES;
   process.env.PDPP_CAPTURE_FIXTURES = "1";
   const connectorName = `fixture_capture_test_${process.pid}_${Date.now()}`;
@@ -14,7 +14,8 @@ test("captureDom writes html, page metadata, and screenshot in raw local capture
   assert.ok(capture);
 
   try {
-    const page: Pick<Page, "content" | "screenshot" | "title" | "url"> = {
+    const page: Pick<Page, "ariaSnapshot" | "content" | "screenshot" | "title" | "url"> = {
+      ariaSnapshot: () => Promise.resolve('- document:\n  - button "Submit" [ref=e1]'),
       content: () => Promise.resolve("<html><title>Fixture</title><body>ok</body></html>"),
       screenshot: () => Promise.resolve(Buffer.from("png")),
       title: () => Promise.resolve("Fixture"),
@@ -36,7 +37,84 @@ test("captureDom writes html, page metadata, and screenshot in raw local capture
       title: "Fixture",
       url: "https://example.test/current",
     });
+    assert.equal(
+      readFileSync(`${capture.baseDir}/aria/${safe}.aria.yml`, "utf8"),
+      '- document:\n  - button "Submit" [ref=e1]'
+    );
     assert.equal(readFileSync(`${capture.baseDir}/screenshots/${safe}.png`, "utf8"), "png");
+  } finally {
+    rmSync(capture.baseDir, { force: true, recursive: true });
+    if (previous === undefined) {
+      delete process.env.PDPP_CAPTURE_FIXTURES;
+    } else {
+      process.env.PDPP_CAPTURE_FIXTURES = previous;
+    }
+  }
+});
+
+test("captureLocatorProbe writes locator counts and first-match state", async () => {
+  const previous = process.env.PDPP_CAPTURE_FIXTURES;
+  process.env.PDPP_CAPTURE_FIXTURES = "1";
+  const connectorName = `fixture_capture_locator_test_${process.pid}_${Date.now()}`;
+  const capture = createCaptureSession(connectorName);
+  assert.ok(capture);
+
+  try {
+    const fakeLocator = {
+      ariaSnapshot: () => Promise.resolve('- button "Download" [ref=e2]'),
+      count: () => Promise.resolve(1),
+      first() {
+        return this;
+      },
+      isEnabled: () => Promise.resolve(true),
+      isVisible: () => Promise.resolve(true),
+    };
+    const page: Pick<LocatorProbePage, "getByRole" | "locator" | "title" | "url"> = {
+      getByRole: (role: string, options: unknown) => {
+        assert.equal(role, "button");
+        assert.deepEqual(options, {
+          name: "Download",
+        });
+        return fakeLocator;
+      },
+      locator: () => fakeLocator,
+      title: () => Promise.resolve("Fixture"),
+      url: () => "https://example.test/current",
+    };
+
+    await capture.captureLocatorProbe?.(page, "download form", [
+      {
+        description: "Primary download affordance",
+        id: "download-button",
+        kind: "role",
+        name: "Download",
+        role: "button",
+      },
+    ]);
+
+    const report = JSON.parse(readFileSync(`${capture.baseDir}/locators/download_form.json`, "utf8"));
+    const { captured_at: capturedAt, ...stableReport } = report;
+    assert.equal(typeof capturedAt, "string");
+    assert.deepEqual(stableReport, {
+      label: "download form",
+      probes: [
+        {
+          ariaSnapshot: '- button "Download" [ref=e2]',
+          count: 1,
+          description: "Primary download affordance",
+          enabled: true,
+          id: "download-button",
+          kind: "role",
+          probe: {
+            name: "Download",
+            role: "button",
+          },
+          visible: true,
+        },
+      ],
+      title: "Fixture",
+      url: "https://example.test/current",
+    });
   } finally {
     rmSync(capture.baseDir, { force: true, recursive: true });
     if (previous === undefined) {
@@ -60,7 +138,8 @@ test("captureDom invokes an optional trace checkpoint hook after page capture", 
       labels.push(label);
       return Promise.resolve();
     });
-    const page: Pick<Page, "content" | "screenshot" | "title" | "url"> = {
+    const page: Pick<Page, "ariaSnapshot" | "content" | "screenshot" | "title" | "url"> = {
+      ariaSnapshot: () => Promise.resolve("- document"),
       content: () => Promise.resolve("<html><body>ok</body></html>"),
       screenshot: () => Promise.resolve(Buffer.from("png")),
       title: () => Promise.resolve("Fixture"),

@@ -389,6 +389,8 @@ Every connector using `runConnector()` gets capture automatically when `PDPP_CAP
 
 - `records/<stream>.jsonl` — every emitted RECORD.data (free, auto-captured by the runtime's wrapped emit)
 - `dom/<label>.html` — Playwright DOM snapshots, when the connector calls `capture.captureDom(page, label)` at parse checkpoints
+- `aria/<label>.aria.yml` — Playwright `page.ariaSnapshot({ mode: 'ai' })` output for semantic selector design
+- `locators/<label>.json` — connector-supplied locator probe results, when the connector calls `capture.captureLocatorProbe(page, label, probes)`
 - `http/<nnnn>-<label>.json` — HTTP response bodies, when an API connector calls `capture.captureHttp(label, body, meta)`
 
 **Opting into DOM / HTTP capture from a browser connector**
@@ -406,6 +408,17 @@ runConnector({
 ```
 
 The `capture` handle is `null` unless `PDPP_CAPTURE_FIXTURES=1`. Guard with `if (capture)` or use optional chaining (`capture?.captureDom(…)`).
+
+**Using captures to improve selectors**
+
+Captured DOM is enough for parser tests and structural-selector drift checks, but it is not always enough to prove a Playwright semantic locator. Shadow DOM and accessibility-tree behavior can differ from static HTML. When considering a selector change:
+
+1. Prefer the raw run's `aria/<label>.aria.yml` to inspect roles and accessible names.
+2. Add or inspect `locators/<label>.json` probes for the exact semantic candidate and the current structural fallback.
+3. Replace a working structural selector only when the semantic candidate is unique, visible/enabled when needed, and at least as stable in captured evidence.
+4. Keep the structural fallback when the upstream component exposes weak or duplicate accessibility names.
+
+Raw locator and ARIA captures may contain owner data. They follow the same rule as raw DOM: use them locally for debugging, then scrub/review before promoting anything to `fixtures/<connector>/scrubbed/`.
 
 **Scrubbing before commit**
 

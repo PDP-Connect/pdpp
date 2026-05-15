@@ -19,10 +19,10 @@
  *   - statements: per-account monthly statement PDFs, hydrated to disk
  *   - balances: append_only point-in-time snapshots from QFX LEDGERBAL/AVAILBAL
  *
- * Selectors for the download UI are NOT verified live yet. This connector
- * emits diagnostic SKIP_RESULT with a DOM dump + screenshot when it can't
- * find the download affordance, so the first live run produces evidence
- * for the next iteration rather than silently failing with zero records.
+ * Selectors verified live in Docker/n.eko on 2026-05-15. This connector
+ * still emits diagnostic SKIP_RESULT with DOM/screenshot/locator evidence
+ * when affordances drift, so the next repair starts from captured evidence
+ * rather than silently failing with zero records.
  *
  * Auth: CHASE_USERNAME + CHASE_PASSWORD in env. 2FA via INTERACTION kind=otp.
  * CHASE_2FA_METHOD=text|voice|email (default text).
@@ -40,7 +40,7 @@ import {
   type ValidateRecord,
 } from "../../src/connector-runtime.ts";
 import { attachDownloadQueue } from "../../src/download-queue.ts";
-import type { CaptureSession } from "../../src/fixture-capture.ts";
+import type { CaptureSession, LocatorProbe } from "../../src/fixture-capture.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
 import { savePlaywrightDownload } from "../../src/playwright-download.ts";
 import { resourceSet } from "../../src/scope-filters.ts";
@@ -1138,6 +1138,89 @@ async function capturePageCheckpoint(
     return;
   }
   await capture.captureDom(page, label);
+  const probes = chaseLocatorProbesForLabel(label);
+  if (probes.length > 0) {
+    await capture.captureLocatorProbe?.(page, label, probes);
+  }
+}
+
+function chaseLocatorProbesForLabel(label: string): readonly LocatorProbe[] {
+  const probes: LocatorProbe[] = [];
+  if (label.includes("dashboard")) {
+    probes.push({
+      description: "Structural account affordance currently used to discover Chase account ids.",
+      id: "dashboard-account-selector",
+      kind: "css",
+      selector: DASHBOARD_ACCOUNT_SELECTOR,
+    });
+  }
+  if (label.includes("download-qfx")) {
+    probes.push(
+      {
+        description: "QFX activity select host.",
+        id: "qfx-activity-select-host",
+        kind: "css",
+        selector: "#select-downloadActivityOptionId",
+      },
+      {
+        description: "Whether the activity select has a stable accessible combobox name.",
+        id: "qfx-activity-combobox-role",
+        kind: "role",
+        namePattern: "activity",
+        role: "combobox",
+      },
+      {
+        description: "QFX file-type select host.",
+        id: "qfx-file-type-select-host",
+        kind: "css",
+        selector: "#select-downloadFileTypeOption",
+      },
+      {
+        description: "Whether the file-type select has a stable accessible combobox name.",
+        id: "qfx-file-type-combobox-role",
+        kind: "role",
+        namePattern: "file|type|format",
+        role: "combobox",
+      },
+      {
+        description: "Structural download button currently used for the QFX click.",
+        id: "qfx-download-button-host",
+        kind: "css",
+        selector: "mds-button#download",
+      },
+      {
+        description: "Semantic download button candidate.",
+        id: "qfx-download-button-role",
+        kind: "role",
+        namePattern: "download",
+        role: "button",
+      }
+    );
+  }
+  if (label.includes("statement") || label.includes("statements-list")) {
+    probes.push(
+      {
+        description: "Statements accordion trigger.",
+        id: "statement-accordion-button-host",
+        kind: "css",
+        selector: '[id^="button-documentsAccordion-"]',
+      },
+      {
+        description: "Statement download anchors currently used for PDF hydration.",
+        id: "statement-download-anchor-host",
+        kind: "css",
+        selector: 'a[id$="-download"]',
+      },
+      {
+        description: "Semantic statement download link candidate.",
+        id: "statement-download-link-role",
+        kind: "role",
+        namePattern: "download|save|saves document|statement|pdf",
+        role: "link",
+      }
+    );
+  }
+  return probes;
 }
 
 // ─── QFX parsing ──────────────────────────────────────────────────────────
@@ -1688,9 +1771,7 @@ async function runStatements(
       message: "Navigating to Statements & Documents",
     });
     await navigateToStatementsPage(page);
-    if (deps.capture) {
-      await deps.capture.captureDom(page, "statements-list");
-    }
+    await capturePageCheckpoint(deps.capture, page, "statements-list");
     const rows = await enumerateStatementRows(page);
     await deps.emit({
       type: "PROGRESS",
@@ -1800,9 +1881,7 @@ if (isMainModule(import.meta.url)) {
         await progress("Chase session verified; enumerating accounts");
 
         const accounts = await discoverAccounts(page);
-        if (capture) {
-          await capture.captureDom(page, "dashboard-accounts");
-        }
+        await capturePageCheckpoint(capture, page, "dashboard-accounts");
         if (accounts.length === 0) {
           await emitNoAccountsDiagnostic(page, emit);
           return; // runtime emits DONE succeeded
