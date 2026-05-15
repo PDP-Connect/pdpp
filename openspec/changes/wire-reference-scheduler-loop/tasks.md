@@ -25,6 +25,8 @@
   automatic runs.
 - [x] Add regression coverage proving scheduler startup honors persisted
   `last_run_time` instead of bypassing the configured interval.
+- [x] Add regression coverage proving scheduler restart does not re-emit
+  persisted back-off transition markers.
 - [x] Add shutdown coverage proving `stop()` suppresses retry/backoff launches.
 - [x] Add or document a Docker/Compose smoke harness for enabled schedule
   execution in the reference service.

@@ -3395,3 +3395,126 @@ test('scheduler backoff skip uses gave_up phrasing once health-state crosses blo
     await closeServer(server);
   }
 });
+
+test('scheduler does not re-emit persisted backoff transition markers on restart', async () => {
+  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
+  const manifest = {
+    ...spotifyManifest,
+    connector_id: 'https://registry.pdpp.org/connectors/scheduler-backoff-restart-noise',
+  };
+  const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+  const asUrl = `http://localhost:${server.asPort}`;
+  const rsUrl = `http://localhost:${server.rsPort}`;
+  const completedRuns = [];
+  const appendedHistory = [];
+
+  const recentEpochMs = Date.now() - 60_000;
+  const historyRecords = [];
+  for (let i = 0; i < 20; i++) {
+    const startedAtMs = recentEpochMs + i * 1000;
+    historyRecords.push({
+      connectorId: manifest.connector_id,
+      source: { kind: 'connector', id: manifest.connector_id },
+      status: 'failed',
+      recordsEmitted: 0,
+      reportedRecordsEmitted: null,
+      checkpointSummary: null,
+      knownGaps: [],
+      connectorError: { reason: 'reddit_login_unexpected_ui' },
+      runId: null,
+      traceId: null,
+      failureReason: null,
+      terminalReason: null,
+      startedAt: new Date(startedAtMs).toISOString(),
+      completedAt: new Date(startedAtMs + 500).toISOString(),
+      attempt: 1,
+    });
+  }
+
+  const markerBase = {
+    connectorId: manifest.connector_id,
+    source: { kind: 'connector', id: manifest.connector_id },
+    status: 'skipped',
+    recordsEmitted: 0,
+    reportedRecordsEmitted: null,
+    checkpointSummary: null,
+    knownGaps: [],
+    connectorError: null,
+    runId: null,
+    traceId: null,
+    failureReason: null,
+    terminalReason: null,
+    startedAt: new Date(recentEpochMs + 30_000).toISOString(),
+    completedAt: new Date(recentEpochMs + 30_000).toISOString(),
+    attempt: 0,
+  };
+  historyRecords.push({
+    ...markerBase,
+    error:
+      'schedule.back_off.started: {"reason_class":"connector:reddit_login_unexpected_ui","consecutive_failures":20,"next_attempt_at":"2026-05-16T00:00:00.000Z"}',
+  });
+  historyRecords.push({
+    ...markerBase,
+    error:
+      'schedule.gave_up: {"reason_class":"connector:reddit_login_unexpected_ui","final_consecutive_failures":20,"last_success_at":null}',
+  });
+
+  try {
+    const registerResp = await fetchJson(`${asUrl}/connectors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(manifest),
+    });
+    assert.equal(registerResp.status, 201);
+
+    const ownerToken = await issueOwnerToken(asUrl, 'scheduler_backoff_restart_noise_user');
+    const scheduler = createScheduler({
+      connectors: [
+        {
+          connectorId: manifest.connector_id,
+          connectorPath: join(REFERENCE_IMPL_DIR, 'connectors/seed/index.js'),
+          manifest,
+          ownerToken,
+          intervalMs: 25,
+          maxRetries: 0,
+        },
+      ],
+      rsUrl,
+      onInteraction: async (interaction) => cancelledInteractionResponse(interaction),
+      onRunComplete: (record) => completedRuns.push(record),
+      getState: async () => null,
+      setState: async () => {},
+      readinessChecker: async () => ({ ready: false, reason: 'simulated unattended gate' }),
+      schedulerStore: {
+        appendRunHistory: async (record) => appendedHistory.push(record),
+        listLastRunTimes: async () => [],
+        listRunHistory: async () => historyRecords,
+        upsertLastRunTime: async () => {},
+      },
+    });
+
+    scheduler.start();
+    await waitFor(() => scheduler.getHistory().length >= historyRecords.length, 5000);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    scheduler.stop();
+
+    assert.equal(
+      completedRuns.some((r) => r.error?.startsWith('scheduler_backoff_applied:')),
+      false,
+      'restart should not emit a duplicate backoff skip when the persisted streak already has a marker',
+    );
+    assert.equal(
+      completedRuns.some((r) => r.error?.startsWith('schedule.back_off.started:')),
+      false,
+      'restart should not emit a duplicate back_off.started marker',
+    );
+    assert.equal(
+      completedRuns.some((r) => r.error?.startsWith('schedule.gave_up:')),
+      false,
+      'restart should not emit a duplicate gave_up marker',
+    );
+    assert.equal(appendedHistory.length, 0);
+  } finally {
+    await closeServer(server);
+  }
+});

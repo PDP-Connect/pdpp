@@ -554,6 +554,9 @@ function buildBackoffSkip(connectorId: string, decision: BackoffDecision): RunRe
 //   - `schedule.back_off.cleared: <json>`   — one-shot on streak reset
 //   - `schedule.gave_up: <json>`            — one-shot on cooling_off → blocked
 
+const BACKOFF_STARTED_PREFIX = "schedule.back_off.started:";
+const GAVE_UP_PREFIX = "schedule.gave_up:";
+
 function buildBackoffStartedEvent(connectorId: string, decision: BackoffDecision): RunRecord {
   const payload = JSON.stringify({
     reason_class: decision.reasonClass,
@@ -569,7 +572,7 @@ function buildBackoffStartedEvent(connectorId: string, decision: BackoffDecision
     knownGaps: [],
     startedAt: nowIso(),
     completedAt: nowIso(),
-    error: `schedule.back_off.started: ${payload}`,
+    error: `${BACKOFF_STARTED_PREFIX} ${payload}`,
     attempt: 0,
   };
 }
@@ -605,7 +608,7 @@ function buildGaveUpEvent(connectorId: string, decision: BackoffDecision, lastSu
     knownGaps: [],
     startedAt: nowIso(),
     completedAt: nowIso(),
-    error: `schedule.gave_up: ${payload}`,
+    error: `${GAVE_UP_PREFIX} ${payload}`,
     attempt: 0,
   };
 }
@@ -618,6 +621,30 @@ function findLastSuccessAt(history: readonly RunRecord[], connectorId: string): 
     }
   }
   return null;
+}
+
+function readSchedulerEventReasonClass(record: RunRecord, prefix: string): string | null {
+  const error = record.error;
+  if (!error?.startsWith(prefix)) {
+    return null;
+  }
+  try {
+    const payload = JSON.parse(error.slice(prefix.length).trim()) as { reason_class?: unknown };
+    return typeof payload.reason_class === "string" ? payload.reason_class : null;
+  } catch {
+    return null;
+  }
+}
+
+function currentStreakHasSchedulerEvent(
+  history: readonly RunRecord[],
+  prefix: string,
+  reasonClass: string
+): boolean {
+  const lastSuccessIndex = history.findLastIndex((record) => record.status === "succeeded");
+  return history
+    .slice(lastSuccessIndex + 1)
+    .some((record) => readSchedulerEventReasonClass(record, prefix) === reasonClass);
 }
 
 // ─── Automatic-run readiness checks ────────────────────────────────────────
@@ -1309,7 +1336,14 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
 
     if (decision.backoffApplied && decision.reasonClass) {
       const announced = runtime.announcedBackoffClass.get(connectorId);
-      if (announced !== decision.reasonClass) {
+      const persistedBackoffStarted = currentStreakHasSchedulerEvent(
+        history,
+        BACKOFF_STARTED_PREFIX,
+        decision.reasonClass
+      );
+      if (announced === decision.reasonClass || persistedBackoffStarted) {
+        runtime.announcedBackoffClass.set(connectorId, decision.reasonClass);
+      } else {
         runtime.announcedBackoffClass.set(connectorId, decision.reasonClass);
         // The existing back-off skip record (audit log) plus the new
         // one-shot `schedule.back_off.started` transition marker. Both
@@ -1325,7 +1359,10 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
         // `finalizeSuccessOrFailure`) so a future degradation can
         // re-promote and re-announce.
         const blockedAnnounced = runtime.announcedBlockedClass.get(connectorId);
-        if (blockedAnnounced !== decision.reasonClass) {
+        const persistedGaveUp = currentStreakHasSchedulerEvent(history, GAVE_UP_PREFIX, decision.reasonClass);
+        if (blockedAnnounced === decision.reasonClass || persistedGaveUp) {
+          runtime.announcedBlockedClass.set(connectorId, decision.reasonClass);
+        } else {
           runtime.announcedBlockedClass.set(connectorId, decision.reasonClass);
           eventsToEmit.push(buildGaveUpEvent(connectorId, decision, findLastSuccessAt(history, connectorId)));
         }
