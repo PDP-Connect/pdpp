@@ -61,6 +61,15 @@ def close_quietly(sock):
         pass
 
 
+def configure_websocket_tunnel(*sockets):
+    for sock in sockets:
+        sock.settimeout(None)
+        try:
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        except OSError:
+            pass
+
+
 def pump(source, target, *, connection_id, direction):
     bytes_relayed = 0
     try:
@@ -323,6 +332,7 @@ def handle(client):
         client=client_peer,
         upstream=f"{UPSTREAM_HOST}:{UPSTREAM_PORT}",
     )
+    configure_websocket_tunnel(client, upstream)
     for source, target, direction in (
         (client, upstream, "client_to_upstream"),
         (upstream, client, "upstream_to_client"),
