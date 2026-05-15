@@ -80,7 +80,7 @@ const KNOWN_CONNECTOR_DEFAULTS: Record<
   claude_code: {
     command: "tsx",
     args: ["connectors/claude_code/index.ts"],
-    streams: ["sessions", "messages"],
+    streams: ["sessions", "messages", "attachments", "memory_notes", "skills", "slash_commands"],
     bindings: { filesystem: { required: true } },
   },
 };

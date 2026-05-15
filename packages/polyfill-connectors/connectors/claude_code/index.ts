@@ -23,7 +23,7 @@
  */
 
 import { createReadStream, type Dirent, type Stats, statSync } from "node:fs";
-import { readdir, readFile } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { createInterface as createFileReader } from "node:readline";
@@ -821,6 +821,41 @@ export async function scanProjectDirs(args: ScanProjectDirsArgs): Promise<void> 
   }
 }
 
+async function isReadableDirectory(path: string): Promise<boolean> {
+  try {
+    const st = await stat(path);
+    return st.isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+async function assertRequestedClaudeSources(input: {
+  baseDir: string;
+  claudeHome: string;
+  requested: Map<string, StreamScope>;
+}): Promise<void> {
+  const missing: string[] = [];
+  const needsProjects =
+    input.requested.has("sessions") ||
+    input.requested.has("messages") ||
+    input.requested.has("attachments") ||
+    input.requested.has("memory_notes");
+
+  if (needsProjects && !(await isReadableDirectory(input.baseDir))) {
+    missing.push(`CLAUDE_CODE_PROJECTS_DIR=${input.baseDir}`);
+  }
+  if (input.requested.has("skills") && !(await isReadableDirectory(join(input.claudeHome, "skills")))) {
+    missing.push(`CLAUDE_CODE_HOME skills directory=${join(input.claudeHome, "skills")}`);
+  }
+  if (input.requested.has("slash_commands") && !(await isReadableDirectory(join(input.claudeHome, "commands")))) {
+    missing.push(`CLAUDE_CODE_HOME commands directory=${join(input.claudeHome, "commands")}`);
+  }
+  if (missing.length > 0) {
+    throw new Error(`requested Claude Code local source path(s) are missing or unreadable: ${missing.join(", ")}`);
+  }
+}
+
 // ─── collect() wrapper ──────────────────────────────────────────────────
 
 async function runSkillsAndCommands(
@@ -859,6 +894,7 @@ if (isMainModule(import.meta.url)) {
     async collect({ state, requested, emit, emitRecord }) {
       const claudeHome = process.env.CLAUDE_CODE_HOME || join(homedir(), ".claude");
       const baseDir = process.env.CLAUDE_CODE_PROJECTS_DIR || join(claudeHome, "projects");
+      await assertRequestedClaudeSources({ baseDir, claudeHome, requested });
       const typedState = state as ClaudeCodeState;
       // STATE is stream-keyed per Collection Profile: `state` is
       // { <stream>: <cursor>, ... }. This connector emits STATE with
