@@ -76,7 +76,24 @@ const COMMANDS = {
   trace: runTrace,
 };
 
-const PUBLIC_DELEGATED_COMMANDS = new Set(['package-info', 'connect']);
+const PUBLIC_DELEGATED_COMMANDS = new Set(['package-info', 'connect', 'token', 'ref']);
+
+// Legacy top-level operator aliases that the canonical `pdpp ref ...`
+// surface now replaces. They still route through the existing repo-local
+// handler so flags like `--rs-url` keep working for scripts, but we emit a
+// one-line deprecation hint pointing at the canonical command. Dashboard,
+// docs, and `@pdpp/cli` help MUST NOT advertise these aliases.
+const LEGACY_ALIAS_HINTS = new Map([
+  ['run timeline', 'pdpp ref run timeline'],
+  ['grant timeline', 'pdpp ref grant timeline'],
+  ['trace show', 'pdpp ref trace show'],
+]);
+
+export function legacyAliasHint(group, sub) {
+  if (typeof group !== 'string') return null;
+  const key = sub ? `${group} ${sub}` : group;
+  return LEGACY_ALIAS_HINTS.get(key) || null;
+}
 
 async function main() {
   const argv = process.argv.slice(2);
@@ -87,10 +104,22 @@ async function main() {
     return;
   }
 
+  // Delegate the public CLI command surface (including the entire `ref ...`
+  // namespace) to @pdpp/cli. This is the single canonical entry point for
+  // public commands; the wrapper does not re-implement any of them.
   if (PUBLIC_DELEGATED_COMMANDS.has(group)) {
     const exitCode = await runPublicCli(argv, { stdout: process.stdout, stderr: process.stderr });
     process.exitCode = exitCode;
     return;
+  }
+
+  // Legacy operator aliases: emit a deprecation hint, then run the existing
+  // repo-local handler so `--rs-url` and other historical flags keep working.
+  const canonical = legacyAliasHint(group, rest[0]);
+  if (canonical) {
+    process.stderr.write(
+      `warning: "pdpp ${group} ${rest[0]}" is deprecated; use "${canonical}" instead.\n`,
+    );
   }
 
   const handler = COMMANDS[group];
@@ -101,7 +130,26 @@ async function main() {
   await handler(rest);
 }
 
-main().catch((error) => {
+export const __test = { LEGACY_ALIAS_HINTS, PUBLIC_DELEGATED_COMMANDS, legacyAliasHint };
+
+// Only auto-run main() when invoked as the CLI entry point. This lets tests
+// import the module to read LEGACY_ALIAS_HINTS without firing the dispatcher.
+const isCliEntry = (() => {
+  try {
+    const invoked = process.argv[1];
+    if (!invoked) return false;
+    const here = new URL(import.meta.url).pathname;
+    return invoked === here || invoked.endsWith('/reference-implementation/cli/index.js');
+  } catch {
+    return false;
+  }
+})();
+
+if (isCliEntry) {
+  main().catch(handleError);
+}
+
+function handleError(error) {
   if (error instanceof PdppCliError) {
     process.stderr.write(`${error.message}\n`);
     if (error.details?.request_id) {
@@ -118,4 +166,4 @@ main().catch((error) => {
 
   process.stderr.write(`${error?.stack || error?.message || String(error)}\n`);
   process.exit(1);
-});
+}

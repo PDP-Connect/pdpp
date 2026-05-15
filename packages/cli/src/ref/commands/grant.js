@@ -12,9 +12,10 @@ export async function runRefGrant(argv, io = {}, fetchImpl = globalThis.fetch) {
     const grantId = requirePositional(positionals, 0, 'grant-id');
     const asUrl = resolveReferenceUrl(flags);
     const ownerSession = flags['owner-session'] || '';
+    const cacheRoot = flags['cache-root'];
     const { body } = await fetchJson(
       `${asUrl}/_ref/grants/${encodeURIComponent(grantId)}/timeline`,
-      { headers: { ...ownerSessionHeaders({ ownerSession }) } },
+      { headers: { ...ownerSessionHeaders({ ownerSession, referenceUrl: asUrl, cacheRoot }) } },
       fetchImpl
     );
     const format = resolveFormat(flags, 'table', 'json');

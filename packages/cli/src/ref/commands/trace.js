@@ -12,9 +12,10 @@ export async function runRefTrace(argv, io = {}, fetchImpl = globalThis.fetch) {
     const traceId = requirePositional(positionals, 0, 'trace-id');
     const asUrl = resolveReferenceUrl(flags);
     const ownerSession = flags['owner-session'] || '';
+    const cacheRoot = flags['cache-root'];
     const { body } = await fetchJson(
       `${asUrl}/_ref/traces/${encodeURIComponent(traceId)}`,
-      { headers: { ...ownerSessionHeaders({ ownerSession }) } },
+      { headers: { ...ownerSessionHeaders({ ownerSession, referenceUrl: asUrl, cacheRoot }) } },
       fetchImpl
     );
     const format = resolveFormat(flags, 'table', 'json');

@@ -1,4 +1,7 @@
 import { PdppCliError, PdppHttpError } from './errors.js';
+import { readOwnerSession } from './session.js';
+
+export const OWNER_SESSION_COOKIE_NAME = 'pdpp_owner_session';
 
 export async function fetchJson(url, opts = {}, fetchImpl = globalThis.fetch) {
   let resp;
@@ -30,16 +33,30 @@ export async function fetchJson(url, opts = {}, fetchImpl = globalThis.fetch) {
   return { status: resp.status, body, headers: resp.headers };
 }
 
-// Resolves owner session cookie from --owner-session flag or PDPP_OWNER_SESSION_COOKIE env var.
-// Returns headers object with Cookie set, or empty object if no session provided.
+// Resolves owner session cookie with precedence:
+//   1. opts.ownerSession (e.g. --owner-session flag)
+//   2. PDPP_OWNER_SESSION_COOKIE env var
+//   3. project-local cached session (when opts.referenceUrl is provided)
+// Returns headers object with Cookie set, or empty object if no session found.
 export function ownerSessionHeaders(opts = {}) {
   const fromOpts = typeof opts.ownerSession === 'string' ? opts.ownerSession : '';
-  const fromEnv = typeof process.env.PDPP_OWNER_SESSION_COOKIE === 'string'
-    ? process.env.PDPP_OWNER_SESSION_COOKIE
-    : '';
-  const value = (fromOpts || fromEnv).trim();
+  const fromEnv =
+    typeof process.env.PDPP_OWNER_SESSION_COOKIE === 'string'
+      ? process.env.PDPP_OWNER_SESSION_COOKIE
+      : '';
+
+  let value = (fromOpts || fromEnv).trim();
+
+  if (!value && opts.referenceUrl) {
+    const cached = readOwnerSession({
+      referenceUrl: opts.referenceUrl,
+      cacheRoot: opts.cacheRoot,
+    });
+    if (cached) value = cached.cookie;
+  }
+
   if (!value) return {};
-  const cookie = value.includes('=') ? value : `pdpp_owner_session=${value}`;
+  const cookie = value.includes('=') ? value : `${OWNER_SESSION_COOKIE_NAME}=${value}`;
   return { Cookie: cookie };
 }
 
