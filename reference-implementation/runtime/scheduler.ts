@@ -470,7 +470,7 @@ async function canAccessPath(path: string): Promise<boolean> {
   }
 }
 
-function runDetectCommand(command: string, expectedExitCode: number): Promise<boolean> {
+function runCommand(command: string, expectedExitCode: number): Promise<boolean> {
   return new Promise((resolve) => {
     const child = spawn(command, { shell: true, stdio: "ignore" });
     const timeout = setTimeout(() => {
@@ -488,6 +488,38 @@ function runDetectCommand(command: string, expectedExitCode: number): Promise<bo
   });
 }
 
+function runExecutable(file: string, args: readonly string[], expectedExitCode: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const child = spawn(file, args, { stdio: "ignore" });
+    const timeout = setTimeout(() => {
+      child.kill();
+      resolve(false);
+    }, 5000);
+    child.once("error", () => {
+      clearTimeout(timeout);
+      resolve(false);
+    });
+    child.once("exit", (code) => {
+      clearTimeout(timeout);
+      resolve(code === expectedExitCode);
+    });
+  });
+}
+
+function runDetectCommand(tool: NonNullable<RuntimeRequirements["external_tools"]>[number]): Promise<boolean> {
+  const expectedExitCode = Number.isInteger(tool.detect?.exit_code) ? Number(tool.detect?.exit_code) : 0;
+  const slackdumpBin = process.env.SLACKDUMP_BIN?.trim();
+  if (tool.name === "slackdump" && slackdumpBin) {
+    return runExecutable(slackdumpBin, ["--help"], expectedExitCode);
+  }
+
+  const command = tool.detect?.command;
+  if (!command) {
+    return Promise.resolve(true);
+  }
+  return runCommand(command, expectedExitCode);
+}
+
 function formatMissingToolReason(tool: NonNullable<RuntimeRequirements["external_tools"]>[number]): string {
   const name = tool.name || "required external tool";
   const hint = tool.install_hint ? ` ${tool.install_hint}` : "";
@@ -502,10 +534,10 @@ function browserSurfaceConfigured(): boolean {
   if (process.env.PDPP_BROWSER_SURFACE_REMOTE_CDP_URL?.trim()) {
     return true;
   }
-  if (process.env.PATCHRIGHT_CDP?.trim() || process.env.NEKO_CDP?.trim()) {
+  if (process.env.PDPP_ALLOW_UNMANAGED_BROWSER_SCHEDULES === "1") {
     return true;
   }
-  return process.env.PDPP_BROWSER_SURFACE_REQUIRED !== "neko";
+  return false;
 }
 
 async function checkFirstPartyLocalSourceReadiness(
@@ -544,12 +576,7 @@ async function checkFirstPartyLocalSourceReadiness(
 async function defaultReadinessChecker(schedule: ConnectorSchedule): Promise<SchedulerReadinessResult> {
   const requirements = getRuntimeRequirements(schedule.manifest);
   for (const tool of requirements.external_tools || []) {
-    const command = tool.detect?.command;
-    if (!command) {
-      continue;
-    }
-    const expectedExitCode = Number.isInteger(tool.detect?.exit_code) ? Number(tool.detect?.exit_code) : 0;
-    if (!(await runDetectCommand(command, expectedExitCode))) {
+    if (!(await runDetectCommand(tool))) {
       return { ready: false, reason: formatMissingToolReason(tool) };
     }
   }

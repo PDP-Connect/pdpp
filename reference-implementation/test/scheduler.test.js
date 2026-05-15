@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -2938,6 +2938,146 @@ test('scheduler default readiness checker skips missing manifest-declared extern
     assert.match(first.error, /^not_ready: required external tool definitely-missing-tool is not available\./);
     assert.equal(readAttempts(attemptsPath).length, 0, 'not-ready scheduler runs must not spawn the connector');
   } finally {
+    await closeServer(server);
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('scheduler default readiness checker honors SLACKDUMP_BIN for Slack tool detection', async () => {
+  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
+  const manifest = {
+    ...spotifyManifest,
+    connector_id: 'https://registry.pdpp.org/connectors/scheduler-slackdump-bin-test',
+    runtime_requirements: {
+      bindings: { network: { required: true } },
+      external_tools: [
+        {
+          name: 'slackdump',
+          license: 'AGPL-3.0',
+          purpose: 'Session-token Slack archive export',
+          install_hint: 'mount slackdump and set SLACKDUMP_BIN',
+          detect: { command: 'slackdump --help', exit_code: 0 },
+        },
+      ],
+    },
+  };
+  const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-scheduler-slackdump-bin-'));
+  const fakeSlackdumpPath = join(tmpDir, 'mounted-slackdump');
+  writeFileSync(fakeSlackdumpPath, '#!/bin/sh\nexit 0\n', 'utf8');
+  chmodSync(fakeSlackdumpPath, 0o755);
+  const { attemptsPath, connectorPath } = writeLoggingConnector(tmpDir);
+  const previousSlackdumpBin = process.env.SLACKDUMP_BIN;
+  const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+  const asUrl = `http://localhost:${server.asPort}`;
+  const rsUrl = `http://localhost:${server.rsPort}`;
+
+  try {
+    process.env.SLACKDUMP_BIN = fakeSlackdumpPath;
+    const registerResp = await fetchJson(`${asUrl}/connectors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(manifest),
+    });
+    assert.equal(registerResp.status, 201);
+
+    const ownerToken = await issueOwnerToken(asUrl, 'scheduler_slackdump_bin_user');
+    const scheduler = createScheduler({
+      connectors: [
+        {
+          connectorId: manifest.connector_id,
+          connectorPath,
+          manifest,
+          ownerToken,
+          intervalMs: 60_000,
+          maxRetries: 0,
+        },
+      ],
+      rsUrl,
+      onInteraction: async (interaction) => cancelledInteractionResponse(interaction),
+      getState: async () => null,
+      setState: async () => {},
+    });
+
+    scheduler.start();
+    await waitFor(() => readAttempts(attemptsPath).length === 1, 5000);
+    scheduler.stop();
+  } finally {
+    if (previousSlackdumpBin === undefined) {
+      delete process.env.SLACKDUMP_BIN;
+    } else {
+      process.env.SLACKDUMP_BIN = previousSlackdumpBin;
+    }
+    await closeServer(server);
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('scheduler default readiness checker does not treat browser bindings as ready by default', async () => {
+  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
+  const manifest = {
+    ...spotifyManifest,
+    connector_id: 'https://registry.pdpp.org/connectors/scheduler-browser-not-ready-test',
+    runtime_requirements: {
+      bindings: { browser: { required: true }, network: { required: true } },
+    },
+  };
+  const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-scheduler-browser-not-ready-'));
+  const { attemptsPath, connectorPath } = writeLoggingConnector(tmpDir);
+  const previousRemoteCdp = process.env.PDPP_BROWSER_SURFACE_REMOTE_CDP_URL;
+  const previousUnmanagedOptIn = process.env.PDPP_ALLOW_UNMANAGED_BROWSER_SCHEDULES;
+  const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+  const asUrl = `http://localhost:${server.asPort}`;
+  const rsUrl = `http://localhost:${server.rsPort}`;
+  const completedRuns = [];
+
+  try {
+    delete process.env.PDPP_BROWSER_SURFACE_REMOTE_CDP_URL;
+    delete process.env.PDPP_ALLOW_UNMANAGED_BROWSER_SCHEDULES;
+    const registerResp = await fetchJson(`${asUrl}/connectors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(manifest),
+    });
+    assert.equal(registerResp.status, 201);
+
+    const ownerToken = await issueOwnerToken(asUrl, 'scheduler_browser_not_ready_user');
+    const scheduler = createScheduler({
+      connectors: [
+        {
+          connectorId: manifest.connector_id,
+          connectorPath,
+          manifest,
+          ownerToken,
+          intervalMs: 25,
+          maxRetries: 0,
+        },
+      ],
+      rsUrl,
+      onInteraction: async (interaction) => cancelledInteractionResponse(interaction),
+      onRunComplete: (record) => completedRuns.push(record),
+      getState: async () => null,
+      setState: async () => {},
+    });
+
+    scheduler.start();
+    await waitFor(() => completedRuns.length >= 1, 5000);
+    scheduler.stop();
+
+    const [first] = completedRuns;
+    assert.equal(first.status, 'skipped');
+    assert.equal(first.error, 'not_ready: required browser runtime is not configured for unattended scheduled runs');
+    assert.equal(readAttempts(attemptsPath).length, 0);
+  } finally {
+    if (previousRemoteCdp === undefined) {
+      delete process.env.PDPP_BROWSER_SURFACE_REMOTE_CDP_URL;
+    } else {
+      process.env.PDPP_BROWSER_SURFACE_REMOTE_CDP_URL = previousRemoteCdp;
+    }
+    if (previousUnmanagedOptIn === undefined) {
+      delete process.env.PDPP_ALLOW_UNMANAGED_BROWSER_SCHEDULES;
+    } else {
+      process.env.PDPP_ALLOW_UNMANAGED_BROWSER_SCHEDULES = previousUnmanagedOptIn;
+    }
     await closeServer(server);
     rmSync(tmpDir, { recursive: true, force: true });
   }

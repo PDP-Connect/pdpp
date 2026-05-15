@@ -37,9 +37,12 @@ Eligibility is intentionally narrow and easy to audit:
 Readiness is intentionally runtime-local and narrow:
 
 - Missing manifest-declared `external_tools[].detect` commands make automatic
-  runs not-ready.
-- Browser-required connectors are not-ready when the deployment explicitly
-  requires a managed browser surface but has not provided a remote CDP endpoint.
+  runs not-ready. Slack's `SLACKDUMP_BIN` deployment override is honored before
+  falling back to the manifest `slackdump --help` command so mounted Docker
+  binaries are not skipped incorrectly.
+- Browser-required connectors are not-ready unless the deployment explicitly
+  provides a managed browser surface remote CDP endpoint or opts into unmanaged
+  local scheduled browser runs.
 - First-party local CLI connectors with filesystem requirements are not-ready
   when their required source paths are absent or unreadable.
 - A not-ready reason is a skip, not a failure, because no connector process was
