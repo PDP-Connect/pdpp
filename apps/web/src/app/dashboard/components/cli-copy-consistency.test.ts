@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = new URL("../../../../../../", import.meta.url);
 
-async function read(relPath: string): Promise<string> {
+function read(relPath: string): Promise<string> {
   return readFile(fileURLToPath(new URL(relPath, ROOT)), "utf8");
 }
 
@@ -41,6 +41,8 @@ const SURFACED_FILES = [
 const CANONICAL_REF_RUN = /pdpp ref run timeline/;
 const CANONICAL_REF_GRANT = /pdpp ref grant timeline/;
 const CANONICAL_REF_TRACE = /pdpp ref trace show/;
+const PDPP_REF_NAMESPACE = /pdpp ref/;
+const PDPP_CONNECT_COMMAND = /pdpp connect/;
 
 test("no surfaced file advertises legacy bare pdpp run/grant/trace aliases", async () => {
   for (const relPath of SURFACED_FILES) {
@@ -48,17 +50,17 @@ test("no surfaced file advertises legacy bare pdpp run/grant/trace aliases", asy
     assert.equal(
       LEGACY_RUN_TIMELINE.test(src),
       false,
-      `${relPath}: found legacy 'pdpp run timeline' — use 'pdpp ref run timeline'`,
+      `${relPath}: found legacy 'pdpp run timeline' - use 'pdpp ref run timeline'`
     );
     assert.equal(
       LEGACY_GRANT_TIMELINE.test(src),
       false,
-      `${relPath}: found legacy 'pdpp grant timeline' — use 'pdpp ref grant timeline'`,
+      `${relPath}: found legacy 'pdpp grant timeline' - use 'pdpp ref grant timeline'`
     );
     assert.equal(
       LEGACY_TRACE_SHOW.test(src),
       false,
-      `${relPath}: found legacy 'pdpp trace show' — use 'pdpp ref trace show'`,
+      `${relPath}: found legacy 'pdpp trace show' - use 'pdpp ref trace show'`
     );
   }
 });
@@ -72,6 +74,6 @@ test("reference-implementation.md advertises canonical pdpp ref commands", async
 
 test("cli README advertises pdpp ref namespace", async () => {
   const src = await read("packages/cli/README.md");
-  assert.match(src, /pdpp ref/);
-  assert.match(src, /pdpp connect/);
+  assert.match(src, PDPP_REF_NAMESPACE);
+  assert.match(src, PDPP_CONNECT_COMMAND);
 });
