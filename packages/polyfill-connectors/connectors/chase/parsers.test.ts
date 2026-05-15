@@ -421,6 +421,75 @@ test("parseCurrentActivityDom: ignores ancestor activity containers and emits on
   );
 });
 
+// ─── Surface routing pins ────────────────────────────────────────────────
+//
+// The connector's `runCurrentActivity` (index.ts) routes current_activity
+// scraping to the Chase dashboard OVERVIEW DOM, NOT to the QFX
+// "Download account activity" form. The pre-fix wiring tried to nav back to
+// the overview after the download form had loaded — but that's a
+// same-document hash change which doesn't re-render the SPA, so the
+// download form's DOM was still in `page.content()`. These two tests pin
+// the surface decision: the parser must produce rows from the overview
+// shape, and zero rows from the broken-surface shape, so any future
+// re-routing regression fails loudly here.
+
+test("parseCurrentActivityDom: real dashboard overview shape (committed extract) yields all 5 MDS rows", () => {
+  const rows = parseCurrentActivityDom(readFixture("current-activity-dashboard-overview-real.html"), "2026-05-15");
+  // 2 pending rows + 3 May-14 posted rows = 5 (matches the real captured run).
+  assert.equal(rows.length, 5);
+  const pending = rows.filter((r) => r.status === "pending");
+  const posted = rows.filter((r) => r.status === "posted");
+  assert.equal(pending.length, 2);
+  assert.equal(posted.length, 3);
+  assert.deepEqual(
+    rows.map((r) => r.amount_cents),
+    [15_804, 10_124, 3908, 9884, 7099]
+  );
+  for (const r of rows) {
+    assert.match(
+      r.ui_transaction_id ?? "",
+      /^ovd-recent-activity-table-dataTableId-row-\d+$/,
+      "MDS row tr#id should propagate as ui_transaction_id"
+    );
+  }
+});
+
+test("parseCurrentActivityDom: QFX download form (broken surface) yields zero rows", () => {
+  // This is the surface the pre-fix wiring was scraping for current_activity.
+  // The parser correctly produces zero rows here; the bug was upstream in
+  // index.ts (re-navigating to the overview hash route after the download
+  // form had loaded is a no-op SPA-route change). Pinning this here means
+  // any future routing regression that points current_activity back at the
+  // download form will visibly emit `selectors_pending` instead of
+  // silently succeeding.
+  const rows = parseCurrentActivityDom(readFixture("current-activity-download-form-no-rows.html"), "2026-05-15");
+  assert.equal(rows.length, 0);
+});
+
+test("parseCurrentActivityDom: local real capture — dashboard-accounts.html parses ≥1 MDS row", {
+  skip: latestLocalRawDir() === null,
+}, () => {
+  const dir = latestLocalRawDir();
+  if (!dir) {
+    return;
+  }
+  // The dashboard-accounts.html capture (taken during discoverAccounts, while
+  // the page is on the overview SPA route) contains the MDS recent-activity
+  // table. The current-activity-<accountId>.html capture from older runs is
+  // the BROKEN surface — see the run report. This gate proves the right
+  // surface, not the wrong one.
+  const path = join(dir, "dashboard-accounts.html");
+  if (!existsSync(path)) {
+    return;
+  }
+  const html = readFileSync(path, "utf8");
+  const rows = parseCurrentActivityDom(html, "2026-05-15");
+  assert.ok(
+    rows.length >= 1,
+    `expected ≥1 MDS current_activity row from local dashboard-accounts.html, got ${rows.length}`
+  );
+});
+
 test("parseCurrentActivityDom: extracts Chase MDS dashboard rows from data-values", () => {
   const rows = parseCurrentActivityDom(readFixture("current-activity-mds-overview.html"), "2026-05-15");
   assert.equal(rows.length, 3);

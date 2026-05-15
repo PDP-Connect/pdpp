@@ -100,11 +100,8 @@ const NO_ACTIVITY_CONFIRMATION_RE = /we couldn't find any activity that matched 
 const FILENAME_PLAIN_RE = /filename="?([^";]+)"?/iu;
 const FILENAME_UTF8_RE = /filename\*=UTF-8''([^;]+)/iu;
 const SURROUNDING_QUOTES_RE = /^"|"$/g;
-const DASHBOARD_OVERVIEW_URL = "https://secure.chase.com/web/auth/dashboard#/dashboard/overview";
 const DASHBOARD_ACCOUNT_SELECTOR =
   '[id^="accounts-name-link-button-"][id$="-label"], button[id^="accounts-name-link-button-"], button[data-testid^="accounts-name-link-button-"]';
-const ACCOUNT_ACTIVITY_DOM_WAIT_SELECTOR =
-  'tr[data-values], [data-testid*="transaction" i], [data-testid*="activity" i], [id*="transaction" i], [id*="activity" i], tr';
 const TIME_RANGE_FIELD_BY_STREAM: Record<string, string> = {
   balances: "as_of",
   current_activity: "activity_date",
@@ -1110,77 +1107,93 @@ async function runTransactionsAndBalances(
   }
 }
 
-async function runCurrentActivity(
+/**
+ * Emit current_activity rows scraped from the Chase dashboard overview MDS
+ * activity table (`<tr class="mds-activity-table__row" data-values=...>`),
+ * which is the surface that visibly contains pending and recent posted
+ * rows — verified against the captured run on 2026-05-15 in
+ * `fixtures/chase/raw/2026-05-15T13-48-45-588Z/dom/dashboard-accounts.html`
+ * (5 MDS rows). The QFX download page does not contain these rows; the
+ * pre-fix code re-navigated to the overview hash-route after the download
+ * form had already loaded, which is a same-document hash change that does
+ * NOT re-render the SPA — so it ended up scraping the download form's DOM
+ * and emitting `selectors_pending` against the wrong surface.
+ *
+ * Attribution policy:
+ *   - 1 filtered account: overview rows belong to that account.
+ *   - >1 filtered accounts: rows from the overview table mix activity
+ *     across all visible accounts and cannot be safely attributed
+ *     without a per-account activity surface. Emit a single SKIP_RESULT
+ *     `ambiguous_multi_account_overview` instead of guessing.
+ *   - 0 parseable rows: emit `selectors_pending` with a message that
+ *     references the dashboard overview (the actual surface), not the
+ *     account-activity DOM.
+ *
+ * Takes pre-captured dashboard HTML (Page is no longer required) so this
+ * helper is unit-testable and avoids fragile SPA re-routing. The caller
+ * is responsible for grabbing `page.content()` while the dashboard
+ * overview is still loaded — see collect().
+ */
+export async function runCurrentActivity(
   deps: EmitDeps,
-  page: Page,
+  dashboardHtml: string,
   filteredAccounts: readonly ChaseAccount[]
 ): Promise<void> {
-  for (let i = 0; i < filteredAccounts.length; i++) {
-    const account = filteredAccounts[i];
-    if (!account) {
-      continue;
-    }
-    const progressMsg = {
+  if (filteredAccounts.length === 0) {
+    return;
+  }
+
+  if (filteredAccounts.length > 1) {
+    await deps.emit({
       type: "PROGRESS",
       stream: "current_activity",
-      message: `${account.name}: opening Chase account activity`,
-      count: i + 1,
-      total: filteredAccounts.length,
-    } as const;
-    await deps.emit(progressMsg);
-    await page.goto(DASHBOARD_OVERVIEW_URL, {
-      waitUntil: "domcontentloaded",
-      timeout: NAV_TIMEOUT_MS,
+      message: `Skipping current_activity for ${filteredAccounts.length} accounts (overview attribution is ambiguous)`,
     });
-    const overviewAccountIds = await page
-      .locator(DASHBOARD_ACCOUNT_SELECTOR)
-      .evaluateAll((els): string[] =>
-        els
-          .map((el) => el.id || el.getAttribute("data-testid") || "")
-          .map((id) => {
-            const prefix = "accounts-name-link-button-";
-            if (!id.startsWith(prefix)) {
-              return null;
-            }
-            let digits = "";
-            for (const ch of id.slice(prefix.length)) {
-              if (ch < "0" || ch > "9") {
-                break;
-              }
-              digits += ch;
-            }
-            return digits || null;
-          })
-          .filter((id): id is string => Boolean(id))
-      )
-      .catch((): string[] => []);
-    if (overviewAccountIds.length > 1) {
-      await deps.emit({
-        type: "SKIP_RESULT",
-        stream: "current_activity",
-        reason: "ambiguous_multi_account_overview",
-        message: `${account.name}: Chase dashboard overview shows multiple accounts; current activity rows cannot yet be safely attributed without a per-account activity surface`,
-      });
-      continue;
-    }
-    await page
-      .locator(ACCOUNT_ACTIVITY_DOM_WAIT_SELECTOR)
-      .first()
-      .waitFor({ state: "attached", timeout: DOM_WAIT_MS })
-      .catch((): undefined => undefined);
-    if (deps.capture) {
-      await deps.capture.captureDom(page, `current-activity-${account.internal_id}`);
-    }
-    const emitted = await emitCurrentActivityForAccount(deps, account, await page.content());
-    if (emitted === 0) {
-      await deps.emit({
-        type: "SKIP_RESULT",
-        stream: "current_activity",
-        reason: "selectors_pending",
-        message: `${account.name}: no parseable current activity rows found in Chase account activity DOM; need saved HTML after expanding a row that visibly contains date, description, amount, and pending/posted status`,
-      });
-    }
+    await deps.emit({
+      type: "SKIP_RESULT",
+      stream: "current_activity",
+      reason: "ambiguous_multi_account_overview",
+      message:
+        "Chase dashboard overview aggregates recent activity across multiple accounts and provides no per-row account attribution; current_activity collection requires a per-account activity surface (not yet wired)",
+    });
+    await deps.emit({
+      type: "STATE",
+      stream: "current_activity",
+      cursor: { fetched_at: deps.emittedAt },
+    });
+    return;
   }
+
+  const account = filteredAccounts[0];
+  if (!account) {
+    return;
+  }
+
+  const progressMsg = {
+    type: "PROGRESS",
+    stream: "current_activity",
+    message: `${account.name}: parsing dashboard overview MDS activity rows`,
+    count: 1,
+    total: 1,
+  } as const;
+  await deps.emit(progressMsg);
+
+  const emitted = await emitCurrentActivityForAccount(deps, account, dashboardHtml);
+  if (emitted === 0) {
+    await deps.emit({
+      type: "SKIP_RESULT",
+      stream: "current_activity",
+      reason: "selectors_pending",
+      message: `${account.name}: no parseable MDS activity rows (tr.mds-activity-table__row[data-values]) found in the Chase dashboard overview DOM; either the dashboard rendered without the recent-activity table or the row markup has drifted — see captured fixture for this run`,
+    });
+  } else {
+    await deps.emit({
+      type: "PROGRESS",
+      stream: "current_activity",
+      message: `${account.name}: emitted ${emitted} current_activity row(s) from dashboard overview`,
+    });
+  }
+
   await deps.emit({
     type: "STATE",
     stream: "current_activity",
@@ -1386,6 +1399,19 @@ if (isMainModule(import.meta.url)) {
           return; // runtime emits DONE succeeded
         }
 
+        // Snapshot the dashboard overview DOM now while the page is still on
+        // it — the MDS recent-activity table (tr.mds-activity-table__row
+        // [data-values]) is only present here, NOT on the QFX download form
+        // the connector navigates to next. The earlier implementation tried
+        // to re-navigate back to the overview hash route after the download
+        // page loaded, but `page.goto(<same-path>#<other-fragment>)` is a
+        // same-document hash change and does NOT re-render the SPA. Capture
+        // the bytes here so current_activity can be parsed even when later
+        // phases (downloads, statements) leave the page elsewhere.
+        const dashboardHtmlForCurrentActivity = deps.wantsCurrentActivity
+          ? await page.content().catch((): string => "")
+          : "";
+
         await progress(`Found ${accounts.length} account(s)`);
 
         const { accountsResFilter, filteredAccounts } = filterAccountsByScope(accounts, resFilters);
@@ -1403,7 +1429,7 @@ if (isMainModule(import.meta.url)) {
         }
 
         if (deps.wantsCurrentActivity) {
-          await runCurrentActivity(deps, page, filteredAccounts);
+          await runCurrentActivity(deps, dashboardHtmlForCurrentActivity, filteredAccounts);
         }
 
         // Statements: navigate to Statements & Documents, enumerate rows,

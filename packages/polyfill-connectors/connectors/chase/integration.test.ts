@@ -57,6 +57,7 @@ import {
   emitTransactionsForAccount,
   emitTransactionsStateIfAny,
   filterAccountsByScope,
+  runCurrentActivity,
   statementRowOutsideTimeRange,
 } from "./index.ts";
 import { validateRecord } from "./schemas.ts";
@@ -461,4 +462,118 @@ test("emitTransactionsStateIfAny: skipped when wantsTransactions=false (avoids c
   });
   await emitTransactionsStateIfAny(deps);
   assert.equal(messages.length, 0, "don't emit STATE when the client didn't ask for transactions");
+});
+
+// ─── Invariant 9: current_activity routing on dashboard overview ─────────
+//
+// `runCurrentActivity` is the wiring under audit for the failing run on
+// 2026-05-15. It takes pre-captured dashboard HTML (no Page) so the routing
+// decision can be unit-tested without Playwright. Three cases must be
+// distinguished, with different observable outputs.
+
+test("runCurrentActivity: single account + parseable overview HTML → emits rows and STATE", async () => {
+  const { deps, emitted, messages } = makeHarness({
+    requestedStreams: [{ name: "current_activity" }],
+    wantsAccounts: false,
+    wantsBalances: false,
+    wantsStatements: false,
+    wantsTransactions: false,
+  });
+  const html = readFileSync(join(FIXTURE_DIR, "current-activity-dashboard-overview-real.html"), "utf8");
+  const account = makeAccount({ internal_id: "1212486749", name: "Sapphire Preferred (...9241)" });
+  await runCurrentActivity(deps, html, [account]);
+
+  // Records: one per MDS row (5 from the real-capture extract).
+  const activityRecords = emitted.filter((r) => r.stream === "current_activity");
+  assert.equal(activityRecords.length, 5, "expected 5 emitted rows from the dashboard overview extract");
+  for (const r of activityRecords) {
+    assert.equal(r.data.account_id, "1212486749", "all overview rows attributed to the single filtered account");
+    assert.equal(r.data.source, "chase_activity_ui");
+  }
+
+  // No SKIP_RESULT in this branch; STATE must be present.
+  const skips = messages.filter((m) => m.type === "SKIP_RESULT");
+  assert.equal(skips.length, 0, "single-account + parseable rows: no SKIP_RESULT");
+  const state = messages.find((m) => m.type === "STATE" && m.stream === "current_activity");
+  assert.ok(state, "STATE for current_activity must emit at end of branch");
+});
+
+test("runCurrentActivity: multiple filtered accounts → ambiguous_multi_account_overview SKIP, zero records", async () => {
+  const { deps, emitted, messages } = makeHarness({
+    requestedStreams: [{ name: "current_activity" }],
+    wantsAccounts: false,
+    wantsBalances: false,
+    wantsStatements: false,
+    wantsTransactions: false,
+  });
+  const html = readFileSync(join(FIXTURE_DIR, "current-activity-dashboard-overview-real.html"), "utf8");
+  // Two accounts present; even though the overview HTML has rows, attribution
+  // is ambiguous because the MDS table aggregates across accounts.
+  const a = makeAccount({ internal_id: "A1", name: "Account A" });
+  const b = makeAccount({ internal_id: "B2", name: "Account B" });
+  await runCurrentActivity(deps, html, [a, b]);
+
+  assert.equal(
+    emitted.filter((r) => r.stream === "current_activity").length,
+    0,
+    "must NOT emit records when attribution is ambiguous (no false-attribution to first account)"
+  );
+  const skip = messages.find(
+    (m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> =>
+      m.type === "SKIP_RESULT" && m.stream === "current_activity"
+  );
+  assert.ok(skip, "expected SKIP_RESULT for current_activity in multi-account case");
+  assert.equal(skip.reason, "ambiguous_multi_account_overview");
+  assert.match(skip.message, /multiple accounts/i);
+  // STATE still emits so the run records that current_activity was visited.
+  const state = messages.find((m) => m.type === "STATE" && m.stream === "current_activity");
+  assert.ok(state);
+});
+
+test("runCurrentActivity: empty filteredAccounts → no-op (no SKIP, no STATE)", async () => {
+  const { deps, emitted, messages } = makeHarness({
+    requestedStreams: [{ name: "current_activity" }],
+    wantsAccounts: false,
+    wantsBalances: false,
+    wantsStatements: false,
+    wantsTransactions: false,
+  });
+  await runCurrentActivity(deps, "<html><body></body></html>", []);
+  assert.equal(emitted.length, 0);
+  assert.equal(messages.length, 0);
+});
+
+test("runCurrentActivity: single account + broken-surface HTML → selectors_pending SKIP with overview-accurate message", async () => {
+  const { deps, emitted, messages } = makeHarness({
+    requestedStreams: [{ name: "current_activity" }],
+    wantsAccounts: false,
+    wantsBalances: false,
+    wantsStatements: false,
+    wantsTransactions: false,
+  });
+  // Broken surface fixture mirrors the QFX-download-page DOM that the pre-fix
+  // wiring was scraping. parseCurrentActivityDom returns 0 rows from it; the
+  // SKIP_RESULT must reference the dashboard OVERVIEW (the actual target
+  // surface), not the old misleading "Chase account activity DOM" wording.
+  const html = readFileSync(join(FIXTURE_DIR, "current-activity-download-form-no-rows.html"), "utf8");
+  const account = makeAccount({ internal_id: "1212486749", name: "Sapphire Preferred (...9241)" });
+  await runCurrentActivity(deps, html, [account]);
+
+  assert.equal(emitted.filter((r) => r.stream === "current_activity").length, 0);
+  const skip = messages.find(
+    (m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> =>
+      m.type === "SKIP_RESULT" && m.stream === "current_activity"
+  );
+  assert.ok(skip);
+  assert.equal(skip.reason, "selectors_pending");
+  assert.match(
+    skip.message,
+    /dashboard overview/i,
+    "selectors_pending must reference the dashboard overview (the actual scraped surface)"
+  );
+  assert.doesNotMatch(
+    skip.message,
+    /account activity DOM/i,
+    "the misleading 'Chase account activity DOM' wording must be gone"
+  );
 });

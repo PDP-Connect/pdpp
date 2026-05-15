@@ -1,0 +1,32 @@
+<!doctype html>
+<!--
+  Shape of the BROKEN surface the connector used to scrape for
+  current_activity: the Chase "Download account activity" page. This is what
+  page.content() returned when the pre-fix code called
+    page.goto("...#/dashboard/overview")
+  after the download form had already loaded — a same-document hash change
+  does not re-render the Chase SPA, so the download form's DOM was still
+  present and the recent-activity MDS table was NOT.
+
+  Real captured shape:
+    fixtures/chase/raw/2026-05-15T13-48-45-588Z/dom/current-activity-1212486749.html
+    <title>Download account activity - chase.com</title>
+    grep -c data-values → 0
+    grep -c mds-activity-table → 0
+
+  This trimmed fixture preserves the surface signature (download dropdowns,
+  no MDS activity table) and is the regression pin: if a future "fix" routes
+  current_activity back to this surface, parseCurrentActivityDom returning 0
+  rows here proves the routing decision in runCurrentActivity is wrong.
+-->
+<html>
+  <head><title>Download account activity - chase.com</title></head>
+  <body>
+    <h1>Download account activity</h1>
+    <form>
+      <mds-select id="select-downloadActivityOptionId" label="Activity"></mds-select>
+      <mds-select id="select-downloadFileTypeOption" label="File type"></mds-select>
+      <mds-button id="download" label="Download"></mds-button>
+    </form>
+  </body>
+</html>
