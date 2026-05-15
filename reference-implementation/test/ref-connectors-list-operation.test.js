@@ -13,6 +13,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { executeRefConnectorsList } from '../operations/ref-connectors-list/index.ts';
+import { isPublicReferenceConnector } from '../server/ref-control.ts';
 
 function makeItem(connectorId, overrides = {}) {
   return {
@@ -80,4 +81,36 @@ test('ref.connectors.list yields empty envelope when dependency returns empty', 
     listConnectorSummaries: () => [],
   });
   assert.deepEqual(envelope, { object: 'list', data: [] });
+});
+
+test('reference connector catalog hides manifest opt-outs', () => {
+  assert.equal(
+    isPublicReferenceConnector(
+      { connector_id: 'https://registry.pdpp.org/connectors/spotify', manifest: '{}' },
+      {
+        connector_id: 'https://registry.pdpp.org/connectors/spotify',
+        capabilities: {
+          public_listing: {
+            listed: false,
+            status: 'unproven',
+          },
+        },
+      },
+    ),
+    false,
+  );
+});
+
+test('reference connector catalog hides stub and stream-test connector registrations', () => {
+  for (const connectorId of [
+    'manual_action_stub',
+    'https://registry.pdpp.org/connectors/manual-action-stub',
+    'https://registry.pdpp.org/connectors/stream-test-stub',
+  ]) {
+    assert.equal(
+      isPublicReferenceConnector({ connector_id: connectorId, manifest: '{}' }, { connector_id: connectorId }),
+      false,
+      `${connectorId} must not appear in the user-facing reference connector catalog`,
+    );
+  }
 });

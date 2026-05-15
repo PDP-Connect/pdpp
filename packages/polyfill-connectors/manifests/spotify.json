@@ -14,16 +14,21 @@
     "human_interaction": [
       "credentials"
     ],
+    "public_listing": {
+      "listed": false,
+      "status": "unproven",
+      "rationale": "Hidden from the reference dashboard catalog until a credentialed run proves useful records in the deployment."
+    },
     "refresh_policy": {
-      "recommended_mode": "automatic",
+      "recommended_mode": "manual",
       "recommended_interval_seconds": 21600,
       "minimum_interval_seconds": 3600,
       "maximum_staleness_seconds": 86400,
       "interaction_posture": "credentials",
       "rate_limit_sensitivity": "medium",
       "bot_detection_sensitivity": "low",
-      "background_safe": true,
-      "rationale": "Spotify v0.1 requires a user-provided SPOTIFY_ACCESS_TOKEN. Once credentials are configured, saved-tracks/top-artists/recently-played update slowly; six-hourly refresh is sufficient."
+      "background_safe": false,
+      "rationale": "Spotify v0.1 requires a user-provided SPOTIFY_ACCESS_TOKEN and is not yet proven in the reference deployment; do not schedule it as an automatic background connector until a credentialed run succeeds."
     }
   },
   "streams": [

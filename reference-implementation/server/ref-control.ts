@@ -33,6 +33,7 @@ interface ManifestStream extends ManifestStreamLike {
 
 type ConnectorManifest = {
   connector_id?: string;
+  capabilities?: Record<string, unknown>;
   display_name?: string;
   profiles?: { id: string }[];
   protocol_version?: string | null;
@@ -44,6 +45,8 @@ interface ConnectorRow {
   readonly connector_id: string;
   readonly manifest: string;
 }
+
+const NON_PUBLIC_CONNECTOR_ID_PARTS = ["manual_action_stub", "manual-action-stub", "stream-test-stub"];
 
 interface StreamAggregateRow {
   readonly last_updated: string | null;
@@ -417,6 +420,20 @@ async function listRegisteredConnectorRows(): Promise<readonly ConnectorRow[]> {
   return allowUnboundedReadAcknowledged<ConnectorRow>(referenceQueries.listRegisteredConnectors);
 }
 
+export function isPublicReferenceConnector(row: ConnectorRow, manifest: ConnectorManifest): boolean {
+  const connectorId = row.connector_id || manifest.connector_id || "";
+  if (NON_PUBLIC_CONNECTOR_ID_PARTS.some((part) => connectorId.includes(part))) {
+    return false;
+  }
+
+  const publicListing = manifest.capabilities?.public_listing;
+  if (publicListing && typeof publicListing === "object" && !Array.isArray(publicListing)) {
+    return (publicListing as { listed?: unknown }).listed !== false;
+  }
+
+  return true;
+}
+
 function getScheduleFrom(controller: ControllerLike | null | undefined, connectorId: string): Promise<unknown> {
   if (controller && typeof controller.getSchedule === "function") {
     return (controller as ScheduleLike).getSchedule(connectorId);
@@ -465,6 +482,9 @@ export function listConnectorSummaries(controller?: ControllerLike | null): Prom
     Promise.all(
       rows.map(async (row) => {
         const manifest = parseManifest(row.manifest, row.connector_id);
+        if (!isPublicReferenceConnector(row, manifest)) {
+          return null;
+        }
         const live = await getConnectorRecordProjection(row.connector_id);
         const [schedule, lastRun, lastSuccessfulRun] = await Promise.all([
           getScheduleFrom(controller, row.connector_id),
@@ -491,7 +511,7 @@ export function listConnectorSummaries(controller?: ControllerLike | null): Prom
           last_successful_run: lastSuccessfulRun,
         };
       })
-    )
+    ).then((summaries) => summaries.filter((summary): summary is ConnectorSummary => summary !== null))
   );
 }
 

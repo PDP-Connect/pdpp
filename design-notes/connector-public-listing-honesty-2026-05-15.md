@@ -1,6 +1,6 @@
 # Connector Public Listing Honesty
 
-Status: captured
+Status: decided
 Owner: connector fleet reliability
 Created: 2026-05-15
 Updated: 2026-05-15
@@ -43,3 +43,4 @@ Promote to OpenSpec before implementing any catalog, schedule, API, or dashboard
 ## Decision Log
 
 - 2026-05-15: Captured during Lane A connector fleet reliability audit. No connector was removed. Spotify manifest was updated only to declare its existing credential requirement honestly.
+- 2026-05-15: Implemented a narrow reference-dashboard honesty guard: manifests may opt out of public catalog listing with `capabilities.public_listing.listed: false`, known e2e stub IDs are hidden from the reference connector catalog, and Spotify is marked `unproven` plus non-background-safe until a credentialed run proves useful records. This is reference/operator listing behavior, not a PDPP protocol contract.
