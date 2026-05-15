@@ -68,6 +68,17 @@ When a change is fully implemented and accepted, the Requirement deltas in `chan
 - If you change the protocol or a durable contract, update `openspec/specs/<capability>/spec.md` via a proper delta. Drive-by edits to that file are not OK.
 - If you are proposing multiple loosely related things, split them into separate changes rather than fattening one proposal.
 
+## Token-efficient agent work
+
+Use these only when they materially reduce repeated exploration or browser work:
+
+- Start by reading the latest handoff/reverse-handoff docs, `git status --short`, and recent commits before re-discovering context.
+- Prefer compact machine-readable inspection over dashboard/browser spelunking. For run evidence, use `pnpm exec pdpp run timeline <run-id> --format json`; when owner auth is enabled, supply `PDPP_OWNER_SESSION_COOKIE` without printing its value.
+- Batch repo/context searches with `rg`, `ctx_batch_execute`, or small scripts that print only the answer. Do not paste large logs, fixtures, timelines, or generated files into the chat when a filtered summary will do.
+- When delegation is explicitly in scope, use low-cost subagents for bounded data gathering or isolated implementation lanes. Give them exact read/write scope, ask for a concise report under `tmp/workstreams/`, and close/reuse agents rather than spawning redundant ones.
+- Before asking for another human live run, exhaust existing timeline events, fixtures, telemetry, container logs, and local reproducible checks. A new run should either validate a concrete fix or capture specifically missing evidence.
+- Commit verified tranches as you go, but never use broad restore/checkout commands over files with uncommitted user or worker edits.
+
 ## Design notes
 
 Design notes are not official OpenSpec artifacts. Use them for requirements discovery: questions, research, options, and decisions that should not be forgotten but are not yet approved changes.
