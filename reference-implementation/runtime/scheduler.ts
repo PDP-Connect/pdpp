@@ -169,13 +169,13 @@ export interface SchedulerOptions {
   markNeedsHuman?: NeedsHumanHandler;
   onInteraction: InteractionHandler;
   onRunComplete?: RunCompleteHandler;
+  readinessChecker?: SchedulerReadinessChecker;
   referenceBaseUrl?: string | null;
   rsUrl?: string;
   schedulerStore?: Pick<
     SchedulerStore,
     "appendRunHistory" | "listLastRunTimes" | "listRunHistory" | "upsertLastRunTime"
   >;
-  readinessChecker?: SchedulerReadinessChecker;
   setState?: SetStateHandler;
 }
 
@@ -301,6 +301,11 @@ interface SchedulerRuntime {
   // different reason class), which lets the dashboard show one fresh
   // back-off banner per failure pattern instead of one per interval tick.
   readonly announcedBackoffClass: Map<string, string>;
+  // Per-connector reason-class for which we've already emitted a
+  // `schedule.gave_up` spine event. Parallel to `announcedBackoffClass`:
+  // cleared on a successful run for the connector so a future
+  // degradation can re-promote (and re-announce) blocked status.
+  readonly announcedBlockedClass: Map<string, string>;
   readonly disabledGrantFailures: Map<string, TerminalGrantFailureReason>;
   readonly exhaustedGrants: Set<string>;
   readonly history: RunRecord[];
@@ -319,6 +324,7 @@ function buildRuntime(): SchedulerRuntime {
   return {
     activeRuns: new Set(),
     announcedBackoffClass: new Map(),
+    announcedBlockedClass: new Map(),
     disabledGrantFailures: new Map(),
     exhaustedGrants: new Set(),
     history: [],
@@ -473,6 +479,86 @@ function buildBackoffSkip(connectorId: string, decision: BackoffDecision): RunRe
   };
 }
 
+// ─── Spine-event transition markers ─────────────────────────────────────────
+//
+// Per brief §3.6, three new one-shot spine event types augment (do not
+// replace) the existing back-off skip records. In this runtime the spine
+// surface is the `RunRecord` history that's persisted via
+// `appendRunHistory` and fanned out through `onRunComplete` — adding new
+// `error` prefixes is the schema-free way to slot in new event types
+// (the brief explicitly chose this path; no DB migration required).
+//
+// Marker prefixes:
+//   - `schedule.back_off.started: <json>`   — one-shot on streak start
+//   - `schedule.back_off.cleared: <json>`   — one-shot on streak reset
+//   - `schedule.gave_up: <json>`            — one-shot on cooling_off → blocked
+
+function buildBackoffStartedEvent(connectorId: string, decision: BackoffDecision): RunRecord {
+  const payload = JSON.stringify({
+    reason_class: decision.reasonClass,
+    consecutive_failures: decision.consecutiveFailures,
+    next_attempt_at: decision.nextRunAt,
+  });
+  return {
+    connectorId,
+    source: buildScheduledRunSource(connectorId),
+    status: "skipped",
+    recordsEmitted: 0,
+    checkpointSummary: null,
+    knownGaps: [],
+    startedAt: nowIso(),
+    completedAt: nowIso(),
+    error: `schedule.back_off.started: ${payload}`,
+    attempt: 0,
+  };
+}
+
+function buildBackoffClearedEvent(connectorId: string, resumedAt: string): RunRecord {
+  const payload = JSON.stringify({ resumed_at: resumedAt });
+  return {
+    connectorId,
+    source: buildScheduledRunSource(connectorId),
+    status: "skipped",
+    recordsEmitted: 0,
+    checkpointSummary: null,
+    knownGaps: [],
+    startedAt: nowIso(),
+    completedAt: nowIso(),
+    error: `schedule.back_off.cleared: ${payload}`,
+    attempt: 0,
+  };
+}
+
+function buildGaveUpEvent(connectorId: string, decision: BackoffDecision, lastSuccessAt: string | null): RunRecord {
+  const payload = JSON.stringify({
+    reason_class: decision.reasonClass,
+    final_consecutive_failures: decision.consecutiveFailures,
+    last_success_at: lastSuccessAt,
+  });
+  return {
+    connectorId,
+    source: buildScheduledRunSource(connectorId),
+    status: "skipped",
+    recordsEmitted: 0,
+    checkpointSummary: null,
+    knownGaps: [],
+    startedAt: nowIso(),
+    completedAt: nowIso(),
+    error: `schedule.gave_up: ${payload}`,
+    attempt: 0,
+  };
+}
+
+function findLastSuccessAt(history: readonly RunRecord[], connectorId: string): string | null {
+  for (let i = history.length - 1; i >= 0; i--) {
+    const record = history[i];
+    if (record && record.connectorId === connectorId && record.status === "succeeded") {
+      return record.completedAt;
+    }
+  }
+  return null;
+}
+
 // ─── Automatic-run readiness checks ────────────────────────────────────────
 
 interface RuntimeRequirements {
@@ -590,9 +676,7 @@ async function checkFirstPartyLocalSourceReadiness(
         missing.push(path);
       }
     }
-    return missing.length > 0
-      ? `Codex local source path(s) are missing or unreadable: ${missing.join(", ")}`
-      : null;
+    return missing.length > 0 ? `Codex local source path(s) are missing or unreadable: ${missing.join(", ")}` : null;
   }
   if (connectorId === "https://registry.pdpp.org/connectors/claude-code") {
     const claudeHome = process.env.CLAUDE_CODE_HOME || join(homedir(), ".claude");
@@ -854,6 +938,14 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     const { connectorId, grantAccessMode = "continuous" } = schedule;
     const record = buildSuccessOrFailureRecord({ connectorId, result, startedAt, attempt });
 
+    // Capture pre-success streak state so we can emit a one-shot
+    // `schedule.back_off.cleared` transition marker iff this success
+    // ended an announced back-off (or blocked) streak. The marker is
+    // emitted AFTER the success record itself so the chronological
+    // order on the timeline is: success → cleared.
+    const wasAnnouncedBackoff = runtime.announcedBackoffClass.has(connectorId);
+    const wasAnnouncedBlocked = runtime.announcedBlockedClass.has(connectorId);
+
     runtime.history.push(record);
     if (schedulerStore) {
       Promise.resolve(schedulerStore.appendRunHistory(toStoredRunRecord(record))).catch((err: unknown) => {
@@ -875,6 +967,19 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     }
 
     onRunComplete(record);
+
+    // Streak-cleared transition. Resets both announce-once maps so a
+    // future degradation can re-promote (and re-announce). The
+    // `evaluateBackoffDispatch` gate also clears `announcedBackoffClass`
+    // when it next observes no back-off applied, but doing it here
+    // keeps the timeline event ordering tight (success → cleared in
+    // the same tick).
+    if (result.status === "succeeded" && (wasAnnouncedBackoff || wasAnnouncedBlocked)) {
+      runtime.announcedBackoffClass.delete(connectorId);
+      runtime.announcedBlockedClass.delete(connectorId);
+      recordAndNotify(buildBackoffClearedEvent(connectorId, record.completedAt));
+    }
+
     return record;
   }
 
@@ -1068,24 +1173,64 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
   // silently (already announced), or emit a back-off skip record. Pulled
   // out so the interval body stays short and so tests can drive it
   // directly without touching real timers.
+  //
+  // In addition to the always-firing back-off skip record (one per
+  // streak), this gate may emit two transition spine-event markers:
+  //   - `schedule.back_off.started` — once when a fresh streak engages.
+  //   - `schedule.gave_up`          — once when the streak crosses the
+  //                                   `BLOCKED_PROMOTION_THRESHOLD` and
+  //                                   the scheduler stops auto-dispatching.
+  // The auto-dispatch suppression on `blocked` is the one behavioural
+  // change relative to Worker C: manual `runNow` still works (the brief
+  // is explicit about this), but the interval loop will not call
+  // `executeRun` for a connector whose `recommendedHealthState` is
+  // `"blocked"`.
   function evaluateBackoffDispatch(
     schedule: ConnectorSchedule,
     now: number
-  ): { decision: BackoffDecision; eligible: boolean; skipToEmit: RunRecord | null } {
+  ): {
+    decision: BackoffDecision;
+    eligible: boolean;
+    eventsToEmit: RunRecord[];
+    skipToEmit: RunRecord | null;
+  } {
     const connectorId = schedule.connectorId;
     const lastRun = runtime.lastRunTime.get(connectorId) || 0;
     const history = runtime.history.filter((r) => r.connectorId === connectorId);
     const decision = computeNextRunWithBackoff(history, schedule.intervalMs, lastRun);
 
     const elapsed = now - lastRun;
-    const eligible = elapsed >= decision.effectiveIntervalMs;
+    let eligible = elapsed >= decision.effectiveIntervalMs;
 
     let skipToEmit: RunRecord | null = null;
+    const eventsToEmit: RunRecord[] = [];
+
     if (decision.backoffApplied && decision.reasonClass) {
       const announced = runtime.announcedBackoffClass.get(connectorId);
       if (announced !== decision.reasonClass) {
         runtime.announcedBackoffClass.set(connectorId, decision.reasonClass);
+        // The existing back-off skip record (audit log) plus the new
+        // one-shot `schedule.back_off.started` transition marker. Both
+        // are tied to the *first* skip of the streak; subsequent ticks
+        // are suppressed by the `announcedBackoffClass` gate above.
         skipToEmit = buildBackoffSkip(connectorId, decision);
+        eventsToEmit.push(buildBackoffStartedEvent(connectorId, decision));
+      }
+
+      if (decision.recommendedHealthState === "blocked") {
+        // One-shot `schedule.gave_up` per (connector, reason_class)
+        // streak. Cleared by a successful run (see
+        // `finalizeSuccessOrFailure`) so a future degradation can
+        // re-promote and re-announce.
+        const blockedAnnounced = runtime.announcedBlockedClass.get(connectorId);
+        if (blockedAnnounced !== decision.reasonClass) {
+          runtime.announcedBlockedClass.set(connectorId, decision.reasonClass);
+          eventsToEmit.push(buildGaveUpEvent(connectorId, decision, findLastSuccessAt(history, connectorId)));
+        }
+        // Auto-dispatch is suppressed for blocked connectors. Manual
+        // `runNow` still works (it bypasses this evaluator entirely via
+        // `controller.ts::runNow` → `executeRun(schedule, true)`).
+        eligible = false;
       }
     } else if (!decision.backoffApplied) {
       // Streak broken (success or different class): clear the announcement
@@ -1093,7 +1238,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
       runtime.announcedBackoffClass.delete(connectorId);
     }
 
-    return { decision, eligible, skipToEmit };
+    return { decision, eligible, skipToEmit, eventsToEmit };
   }
 
   function startScheduledLoops(): void {
@@ -1115,7 +1260,16 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
           if (!runtime.running) {
             return;
           }
-          const { eligible, skipToEmit } = evaluateBackoffDispatch(schedule, Date.now());
+          const { eligible, skipToEmit, eventsToEmit } = evaluateBackoffDispatch(schedule, Date.now());
+          // Emit transition markers (back_off.started, gave_up) before
+          // the audit skip so the dashboard sees the lifecycle event
+          // ordering: "streak detected → cooling_off pill renders →
+          // (maybe) blocked pill renders → audit skip explains why we
+          // went quiet". Each entry is one-shot per streak so the
+          // history doesn't drown in duplicates on every tick.
+          for (const event of eventsToEmit) {
+            recordAndNotify(event);
+          }
           if (skipToEmit) {
             // One-shot back-off announcement. We record + persist + notify
             // exactly like other skip records so the UI/audit can see why

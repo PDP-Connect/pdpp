@@ -25,6 +25,7 @@
  * the counter resets.
  */
 
+import { BLOCKED_PROMOTION_THRESHOLD } from "./connector-health.ts";
 import type { RunRecord, RunStatus } from "./scheduler.ts";
 
 // ─── Tunables ──────────────────────────────────────────────────────────────
@@ -75,6 +76,22 @@ export interface BackoffDecision {
   readonly nextRunAt: string;
   /** Stable identifier of the failure class, or null when not backing off. */
   readonly reasonClass: string | null;
+  /**
+   * Health-state recommendation for the dashboard pill when the scheduler
+   * is in a back-off-engaged shape:
+   *   - `"cooling_off"`  — streak is over threshold but under the
+   *                        `BLOCKED_PROMOTION_THRESHOLD`; system still
+   *                        retries on the back-off curve.
+   *   - `"blocked"`      — streak crossed the promotion threshold; the
+   *                        scheduler should stop dispatching automatic
+   *                        runs entirely until the streak breaks (via
+   *                        successful manual run-now) or the owner
+   *                        intervenes.
+   *
+   * `null` when no back-off is engaged (the dashboard derives `healthy`,
+   * `degraded`, `idle`, or `needs_attention` from other signals).
+   */
+  readonly recommendedHealthState: "blocked" | "cooling_off" | null;
 }
 
 // ─── Reason-class classifier ────────────────────────────────────────────────
@@ -159,6 +176,7 @@ export function computeNextRunWithBackoff(
       effectiveIntervalMs: 0,
       nextRunAt: new Date().toISOString(),
       reasonClass: null,
+      recommendedHealthState: null,
     };
   }
 
@@ -171,6 +189,7 @@ export function computeNextRunWithBackoff(
       effectiveIntervalMs: baseIntervalMs,
       nextRunAt: new Date(lastRunAtMs + baseIntervalMs).toISOString(),
       reasonClass: consecutiveFailures > 0 ? reasonClass : null,
+      recommendedHealthState: null,
     };
   }
 
@@ -181,12 +200,21 @@ export function computeNextRunWithBackoff(
   const rawDelay = baseIntervalMs * 2 ** exponent;
   const effectiveIntervalMs = Math.min(rawDelay, maxMs);
 
+  // Promote `cooling_off` → `blocked` once the streak has crossed the
+  // ceiling. Worker C's curve plateaus at the 24h cap, so a connector
+  // hitting `consecutiveFailures = BLOCKED_PROMOTION_THRESHOLD` has been
+  // failing daily for at least a week — it is not "cooling off", it is
+  // broken. See brief §1.3.
+  const recommendedHealthState: "blocked" | "cooling_off" =
+    consecutiveFailures >= BLOCKED_PROMOTION_THRESHOLD ? "blocked" : "cooling_off";
+
   return {
     backoffApplied: true,
     consecutiveFailures,
     effectiveIntervalMs,
     nextRunAt: new Date(lastRunAtMs + effectiveIntervalMs).toISOString(),
     reasonClass,
+    recommendedHealthState,
   };
 }
 
