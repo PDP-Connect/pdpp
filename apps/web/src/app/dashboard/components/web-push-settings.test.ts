@@ -40,7 +40,7 @@ test("dashboard exposes installable PWA manifest for mobile Web Push setup", asy
   assert.match(src, /theme_color:\s*"#[0-9a-f]{6}"/i);
   assert.match(src, /\/apple-icon\.png/);
   assert.match(src, /sizes:\s*"180x180"/);
-  assert.match(src, /purpose:\s*"any maskable"/);
+  assert.match(src, /purpose:\s*"maskable"/);
   assert.match(src, /\/icon\.svg/);
   assert.match(src, /sizes:\s*"any"/);
 });
