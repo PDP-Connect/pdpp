@@ -30,8 +30,8 @@
 
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
-import type { Page, Response } from "playwright";
+import { dirname, join } from "node:path";
+import type { Download, Page, Response } from "playwright";
 import { ensureChaseSession } from "../../src/auto-login/chase.ts";
 import {
   type BrowserCollectContext,
@@ -131,6 +131,13 @@ interface QfxResponseQueue {
 interface NoActivityConfirmation {
   bodyPreview: string;
   url: string;
+}
+
+type DownloadLike = Pick<Download, "saveAs">;
+
+export async function savePlaywrightDownload(download: DownloadLike, targetPath: string): Promise<void> {
+  await mkdir(dirname(targetPath), { recursive: true });
+  await download.saveAs(targetPath);
 }
 
 // ─── Dashboard scrape: enumerate accounts ─────────────────────────────────
@@ -314,15 +321,21 @@ async function waitForQfxDownloadArtifact(
   capture: CaptureSession | null | undefined
 ): Promise<DownloadResult> {
   try {
-    const result = await Promise.any([
-      downloadQueue.waitForNextDownload({ timeoutMs: DOWNLOAD_TIMEOUT_MS }).then((download) => ({
+    const playwrightDownloadPromise = downloadQueue
+      .waitForNextDownload({ timeoutMs: DOWNLOAD_TIMEOUT_MS })
+      .then((download) => ({
         download,
         kind: "playwright_download" as const,
-      })),
-      qfxResponseQueue.waitForNextResponse({ timeoutMs: DOWNLOAD_TIMEOUT_MS }).then((response) => ({
+      }));
+    const qfxResponsePromise = qfxResponseQueue
+      .waitForNextResponse({ timeoutMs: DOWNLOAD_TIMEOUT_MS })
+      .then((response) => ({
         kind: "qfx_response" as const,
         response,
-      })),
+      }));
+    const result = await Promise.any([
+      playwrightDownloadPromise,
+      qfxResponsePromise,
       waitForNoActivityConfirmation(page, { timeoutMs: DOWNLOAD_TIMEOUT_MS }).then((confirmation) => ({
         confirmation,
         kind: "no_activity" as const,
@@ -344,7 +357,29 @@ async function waitForQfxDownloadArtifact(
     }
     const qfxPath = join(tmpDir, `chase-${account.internal_id}-${activity}-${Date.now()}.qfx`);
     if (result.kind === "playwright_download") {
-      await result.download.saveAs(qfxPath);
+      try {
+        await savePlaywrightDownload(result.download, qfxPath);
+      } catch (downloadErr) {
+        const responseResult = await qfxResponsePromise.catch((): null => null);
+        if (!responseResult) {
+          throw downloadErr;
+        }
+        await writeFile(qfxPath, responseResult.response.body);
+        capture?.captureHttp(
+          `download-qfx-${account.internal_id}-${activity}-qfx-response-after-download-save-failed`,
+          {
+            bytes: responseResult.response.body.length,
+            downloadError: truncate(errMessage(downloadErr), ERROR_MESSAGE_SLICE_LONG),
+            suggestedFilename: responseResult.response.suggestedFilename,
+          },
+          {
+            method: responseResult.response.method,
+            path: responseResult.response.url,
+            status: responseResult.response.status,
+            type: responseResult.response.contentType,
+          }
+        );
+      }
     } else {
       await writeFile(qfxPath, result.response.body);
       capture?.captureHttp(
@@ -658,11 +693,20 @@ async function downloadStatementPdf(
     downloadQueue.detach();
   }
 
-  const internalPath = await dl.path();
-  if (!internalPath) {
-    return { ok: false, error: "download_no_path" };
+  const tmpPdfDir = await mkdtemp(join(tmpdir(), "pdpp-chase-statement-"));
+  const tmpPdfPath = join(tmpPdfDir, `${row.rowAnchorId}.pdf`);
+  let buffer: Buffer;
+  try {
+    await savePlaywrightDownload(dl, tmpPdfPath);
+    buffer = await readFile(tmpPdfPath);
+  } catch (err) {
+    return {
+      ok: false,
+      error: `download_save_failed: ${truncate(errMessage(err), ERROR_MESSAGE_SLICE_LONG)}`,
+    };
+  } finally {
+    await rm(tmpPdfDir, { recursive: true, force: true }).catch((): undefined => undefined);
   }
-  const buffer = await readFile(internalPath);
   const pdfSha256 = sha256Hex(buffer);
 
   const isoDate = parseDateDelivered(row.date_delivered_raw);
@@ -1107,7 +1151,7 @@ async function runCurrentActivity(
         type: "SKIP_RESULT",
         stream: "current_activity",
         reason: "selectors_pending",
-        message: `${account.name}: no parseable current activity rows found in Chase account activity DOM`,
+        message: `${account.name}: no parseable current activity rows found in Chase account activity DOM; need saved HTML after expanding a row that visibly contains date, description, amount, and pending/posted status`,
       });
     }
   }

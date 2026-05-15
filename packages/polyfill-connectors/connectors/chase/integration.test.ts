@@ -38,7 +38,9 @@
  */
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -54,6 +56,7 @@ import {
   emitTransactionsForAccount,
   emitTransactionsStateIfAny,
   filterAccountsByScope,
+  savePlaywrightDownload,
   statementRowOutsideTimeRange,
 } from "./index.ts";
 import { validateRecord } from "./schemas.ts";
@@ -234,6 +237,29 @@ test("chase manifest: current_activity nullable fields are required-present", ()
   const required = new Set(stream.schema?.required ?? []);
   for (const field of ["account_name", "posted_date", "memo", "ui_transaction_id"]) {
     assert.ok(required.has(field), `${field} must be required in manifest because Zod requires a present nullable key`);
+  }
+});
+
+test("savePlaywrightDownload: persists via saveAs without depending on Playwright temp artifact path", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pdpp-chase-download-test-"));
+  try {
+    const source = join(dir, "source.pdf");
+    const target = join(dir, "nested", "statement.pdf");
+    await writeFile(source, Buffer.from("%PDF-1.7\nfixture\n"));
+
+    await savePlaywrightDownload(
+      {
+        async saveAs(path: string): Promise<void> {
+          await writeFile(path, await readFile(source));
+        },
+      },
+      target
+    );
+
+    assert.equal(existsSync(target), true);
+    assert.equal(await readFile(target, "utf8"), "%PDF-1.7\nfixture\n");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });
 
