@@ -35,6 +35,7 @@ import {
 } from "../../src/connector-runtime.ts";
 import { attachDownloadQueue, type DownloadQueue } from "../../src/download-queue.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
+import { savePlaywrightDownload } from "../../src/playwright-download.ts";
 import {
   buildAccountRecord,
   buildCandidateStarts,
@@ -592,7 +593,9 @@ async function driveExport(
   const download = outcome.d;
   const suggested = download.suggestedFilename() || "usaa-export.csv";
   const targetPath = join(tempDir, suggested);
-  await download.saveAs(targetPath);
+  // Use the shared helper so saveAs waits for Chromium's artifact-finalize
+  // before copying — same race fixed for Chase in run_1778852923848.
+  await savePlaywrightDownload(download, targetPath);
   return targetPath;
 }
 

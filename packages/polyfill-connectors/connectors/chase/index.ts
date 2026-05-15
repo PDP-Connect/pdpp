@@ -30,8 +30,8 @@
 
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import type { Download, Page, Response } from "playwright";
+import { join } from "node:path";
+import type { Page, Response } from "playwright";
 import { ensureChaseSession } from "../../src/auto-login/chase.ts";
 import {
   type BrowserCollectContext,
@@ -42,6 +42,7 @@ import {
 import { attachDownloadQueue } from "../../src/download-queue.ts";
 import type { CaptureSession } from "../../src/fixture-capture.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
+import { savePlaywrightDownload } from "../../src/playwright-download.ts";
 import { resourceSet } from "../../src/scope-filters.ts";
 import {
   ACTIVITY_LABELS,
@@ -132,13 +133,6 @@ interface QfxResponseQueue {
 interface NoActivityConfirmation {
   bodyPreview: string;
   url: string;
-}
-
-type DownloadLike = Pick<Download, "saveAs">;
-
-export async function savePlaywrightDownload(download: DownloadLike, targetPath: string): Promise<void> {
-  await mkdir(dirname(targetPath), { recursive: true });
-  await download.saveAs(targetPath);
 }
 
 // ─── Dashboard scrape: enumerate accounts ─────────────────────────────────
@@ -701,6 +695,10 @@ async function downloadStatementPdf(
     await savePlaywrightDownload(dl, tmpPdfPath);
     buffer = await readFile(tmpPdfPath);
   } catch (err) {
+    // Capture DOM/screenshot at the moment of save failure — without this,
+    // ENOENT-style races (chase run_1778852923848) leave no evidence of the
+    // failure instant, only the pre-click checkpoint.
+    await capturePageCheckpoint(capture, page, `statement-${row.rowAnchorId}-download-save-failed`);
     return {
       ok: false,
       error: `download_save_failed: ${truncate(errMessage(err), ERROR_MESSAGE_SLICE_LONG)}`,

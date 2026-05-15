@@ -45,6 +45,7 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { EmittedMessage, StreamScope } from "../../src/connector-runtime.ts";
+import { savePlaywrightDownload } from "../../src/playwright-download.ts";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
 import {
   chaseTimeRangeField,
@@ -56,7 +57,6 @@ import {
   emitTransactionsForAccount,
   emitTransactionsStateIfAny,
   filterAccountsByScope,
-  savePlaywrightDownload,
   statementRowOutsideTimeRange,
 } from "./index.ts";
 import { validateRecord } from "./schemas.ts";
@@ -249,6 +249,9 @@ test("savePlaywrightDownload: persists via saveAs without depending on Playwrigh
 
     await savePlaywrightDownload(
       {
+        path(): Promise<string> {
+          return Promise.resolve(source);
+        },
         async saveAs(path: string): Promise<void> {
           await writeFile(path, await readFile(source));
         },
