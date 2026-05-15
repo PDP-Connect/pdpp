@@ -4,6 +4,7 @@ import type { BrowserContext, Page } from "playwright";
 import {
   type BrowserLaunchSource,
   type BrowserRuntimeVisibility,
+  closeBrowserContextPages,
   decorateBrowserManualAction,
   type InteractionRequest,
   makeBrowserInteractionKeepalive,
@@ -50,6 +51,40 @@ function makeDiagnosticPage(url: string, closed = false): Page {
   };
   return fake as Page;
 }
+
+function makeClosablePage(closed = false): { closeCalls: number; page: Page } {
+  let isClosed = closed;
+  let closeCalls = 0;
+  const fake: Pick<Page, "close" | "isClosed"> = {
+    close: () => {
+      closeCalls++;
+      isClosed = true;
+      return Promise.resolve();
+    },
+    isClosed: () => isClosed,
+  };
+  return {
+    get closeCalls() {
+      return closeCalls;
+    },
+    page: fake as Page,
+  };
+}
+
+test("closeBrowserContextPages closes existing open pages and ignores already closed pages", async () => {
+  const first = makeClosablePage(false);
+  const alreadyClosed = makeClosablePage(true);
+  const second = makeClosablePage(false);
+
+  const closedCount = await closeBrowserContextPages({
+    pages: () => [first.page, alreadyClosed.page, second.page],
+  });
+
+  assert.equal(closedCount, 2);
+  assert.equal(first.closeCalls, 1);
+  assert.equal(alreadyClosed.closeCalls, 0);
+  assert.equal(second.closeCalls, 1);
+});
 
 test("resolveBrowserRuntimeVisibility defaults browser connectors to headless unless env disables it", () => {
   assert.deepEqual(resolveBrowserRuntimeVisibility({}, "reddit", {}), {

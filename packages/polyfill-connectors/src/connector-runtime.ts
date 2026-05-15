@@ -765,8 +765,10 @@ async function runInBrowser(args: {
   const disposeShutdownHook = withShutdownRelease(release);
   const tracer = makeTracer(ctx, name, emit);
   await tracer.start();
+  let page: Page | null = null;
   try {
-    const page = await ctx.newPage();
+    await closeBrowserContextPages(ctx);
+    page = await ctx.newPage();
     await establishSession(
       { ensureSession, probeSession },
       {
@@ -783,9 +785,36 @@ async function runInBrowser(args: {
     await collect({ ...baseCtx, context: ctx, page, sendInteraction: browserSendInteraction });
   } finally {
     await tracer.stop();
+    if (page && !page.isClosed()) {
+      await page.close().catch((): undefined => undefined);
+    }
     await release().catch((): undefined => undefined);
     disposeShutdownHook();
   }
+}
+
+export async function closeBrowserContextPages(context: Pick<BrowserContext, "pages">): Promise<number> {
+  let pages: Page[];
+  try {
+    pages = context.pages();
+  } catch {
+    return 0;
+  }
+
+  let closed = 0;
+  for (const page of pages) {
+    if (page.isClosed()) {
+      continue;
+    }
+    try {
+      await page.close();
+      closed++;
+    } catch {
+      // Stale remote-CDP pages are best-effort cleanup. The working page is
+      // created after this pass, so a close failure should not abort a run.
+    }
+  }
+  return closed;
 }
 
 const BROWSER_INTERACTION_KEEPALIVE_INTERVAL_MS = 15_000;
