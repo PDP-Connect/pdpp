@@ -100,6 +100,12 @@ The dashboard SHALL expose Web Push only when the current browser context can su
 - **THEN** the dashboard SHALL present that limitation as a caveat or setup requirement
 - **AND** it SHALL not imply that Web Push delivery is guaranteed before those platform requirements are met.
 
+#### Scenario: Owner installs the dashboard
+
+- **WHEN** the owner opens the dashboard from a mobile browser that supports installable web apps
+- **THEN** the web application manifest SHALL identify the dashboard as a standalone installable app
+- **AND** the manifest SHALL start installed sessions at the owner dashboard rather than at public documentation or marketing pages.
+
 ### Requirement: Web Push SHALL augment rather than replace existing channels
 
 The reference implementation SHALL treat Web Push as a best-effort additional channel. Web Push failure, expiration, unavailability, or rejection SHALL NOT hide pending interactions and SHALL NOT prevent ntfy/current notification channels from being used.

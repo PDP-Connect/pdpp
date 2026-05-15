@@ -31,3 +31,11 @@ test("dashboard service worker fails closed and click-through targets dashboard-
   assert.doesNotMatch(src, /password|cookie|token|otp|answer/i);
 });
 
+test("dashboard exposes installable PWA manifest for mobile Web Push setup", async () => {
+  const src = await readFile(join(APP_ROOT, "src", "app", "manifest.ts"), "utf8");
+  assert.match(src, /start_url:\s*"\/dashboard"/);
+  assert.match(src, /display:\s*"standalone"/);
+  assert.match(src, /scope:\s*"\/"/);
+  assert.match(src, /\/apple-icon\.png/);
+  assert.match(src, /\/icon\.svg/);
+});

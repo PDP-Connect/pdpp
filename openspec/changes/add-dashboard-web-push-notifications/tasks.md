@@ -9,6 +9,7 @@
 - [x] 2.1 Add dashboard feature detection for Push API, Notification API, service worker support, permission state, secure context, and VAPID availability.
 - [x] 2.2 Add explicit owner opt-in, unsubscribe, and status UI with PWA/iOS caveat copy.
 - [x] 2.3 Add a service worker push handler that renders safe notifications and handles click-through to the run/interaction UI.
+- [x] 2.4 Add an installable dashboard PWA manifest so mobile browsers can save the owner dashboard as a standalone app.
 
 ## 3. Notification Delivery
 
