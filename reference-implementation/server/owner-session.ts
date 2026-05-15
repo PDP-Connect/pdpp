@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 
 export const OWNER_SESSION_COOKIE_NAME = "pdpp_owner_session";
-export const OWNER_SESSION_DEFAULT_TTL_SECONDS = 12 * 60 * 60; // 12 hours
+export const OWNER_SESSION_DEFAULT_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days
 export const OWNER_SESSION_DEFAULT_SUBJECT_ID = "owner_local";
 
 export const OWNER_AUTH_COOKIE_NAME = OWNER_SESSION_COOKIE_NAME;

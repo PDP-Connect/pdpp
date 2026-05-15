@@ -36,6 +36,23 @@ test("dashboard exposes installable PWA manifest for mobile Web Push setup", asy
   assert.match(src, /start_url:\s*"\/dashboard"/);
   assert.match(src, /display:\s*"standalone"/);
   assert.match(src, /scope:\s*"\/"/);
+  assert.match(src, /background_color:\s*"#[0-9a-f]{6}"/i);
+  assert.match(src, /theme_color:\s*"#[0-9a-f]{6}"/i);
   assert.match(src, /\/apple-icon\.png/);
+  assert.match(src, /sizes:\s*"180x180"/);
+  assert.match(src, /purpose:\s*"any maskable"/);
   assert.match(src, /\/icon\.svg/);
+  assert.match(src, /sizes:\s*"any"/);
+});
+
+test("dashboard PWA install metadata uses one App Router manifest source", async () => {
+  const src = await readFile(join(APP_ROOT, "src", "app", "manifest.ts"), "utf8");
+  assert.match(src, /export default function manifest\(\)/);
+  await assert.rejects(readFile(join(APP_ROOT, "public", "manifest.json"), "utf8"));
+});
+
+test("dashboard notification setup registers the dashboard service worker explicitly", async () => {
+  const src = await readFile(join(HERE, "web-push-settings.tsx"), "utf8");
+  assert.match(src, /navigator\.serviceWorker\.register\("\/pdpp-dashboard-sw\.js"\)/);
+  assert.match(src, /registration\.pushManager\.subscribe/);
 });

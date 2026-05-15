@@ -71,6 +71,28 @@ export const HOSTED_UI_CSS = `:root {
   --human: oklch(0.52 0.09 45);
   --human-wash: oklch(0.52 0.09 45 / 0.07);
   --radius: 0.5rem;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: oklch(0.16 0.005 260);
+    --foreground: oklch(0.985 0.004 85);
+    --card: oklch(0.205 0.006 260);
+    --primary: oklch(0.68 0.15 253.7);
+    --primary-foreground: oklch(0.11 0.008 260);
+    --muted: oklch(0.25 0.007 260);
+    --muted-foreground: oklch(0.72 0.01 260);
+    --destructive: oklch(0.70 0.18 27);
+    --destructive-foreground: oklch(0.11 0.008 260);
+    --border: oklch(1 0 0 / 0.12);
+    --input: oklch(1 0 0 / 0.18);
+    --success: oklch(0.70 0.14 150);
+    --warning: oklch(0.78 0.13 78);
+    --human: oklch(0.68 0.10 45);
+    --human-wash: oklch(0.68 0.10 45 / 0.14);
+    color-scheme: dark;
+  }
 }
 
 *, *::before, *::after { box-sizing: border-box; }
@@ -91,6 +113,14 @@ body {
     linear-gradient(180deg, oklch(1 0 0) 0%, var(--background) 14rem);
   color: var(--foreground);
   font-family: var(--font-sans);
+}
+
+@media (prefers-color-scheme: dark) {
+  body {
+    background:
+      radial-gradient(circle at top left, oklch(0.68 0.10 45 / 0.12), transparent 28rem),
+      linear-gradient(180deg, oklch(0.22 0.006 260) 0%, var(--background) 14rem);
+  }
 }
 
 a { color: inherit; }

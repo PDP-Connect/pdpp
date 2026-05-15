@@ -78,6 +78,11 @@ docker compose --env-file .env.docker pull
 docker compose --env-file .env.docker up -d
 ```
 
+Owner sessions are finite signed cookies. The default placeholder session lasts
+7 days to avoid interrupting long-running personal dashboard operation; set
+`PDPP_OWNER_SESSION_TTL_SECONDS` to a positive number of seconds to shorten or
+extend that tradeoff for a deployment.
+
 Then open `http://localhost:3002`. The Compose stack keeps the browser-facing
 origin on host `:3002` by default and runs the reference AS/RS internally as the same AS
 `:7662` / RS `:7663` process pair used by local development. Secrets belong in

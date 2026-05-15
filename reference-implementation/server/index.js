@@ -1197,7 +1197,18 @@ function resolveOwnerAuthPlaceholderConfig(opts = {}) {
       ? opts.ownerAuthSameSite
       : process.env.PDPP_OWNER_SAMESITE;
   const sameSite = sameSiteRaw === 'strict' ? 'strict' : 'lax';
-  return { password, subjectId, forceSecureCookies: Boolean(forceSecureCookies), sameSite };
+  const sessionTtlRaw =
+    opts.ownerAuthSessionTtlSeconds ??
+    (typeof process.env.PDPP_OWNER_SESSION_TTL_SECONDS === 'string'
+      ? process.env.PDPP_OWNER_SESSION_TTL_SECONDS
+      : null);
+  const sessionTtlSeconds =
+    typeof sessionTtlRaw === 'number' && Number.isInteger(sessionTtlRaw) && sessionTtlRaw > 0
+      ? sessionTtlRaw
+      : typeof sessionTtlRaw === 'string' && /^[1-9]\d*$/.test(sessionTtlRaw.trim())
+        ? Number(sessionTtlRaw.trim())
+        : undefined;
+  return { password, subjectId, forceSecureCookies: Boolean(forceSecureCookies), sameSite, sessionTtlSeconds };
 }
 
 function buildSourceDescriptor(sourceBinding = null) {
@@ -1775,6 +1786,7 @@ function buildAsApp(opts = {}) {
   const ownerAuth = createOwnerAuthPlaceholder({
     password: ownerAuthConfig.password,
     subjectId: ownerAuthConfig.subjectId,
+    sessionTtlSeconds: ownerAuthConfig.sessionTtlSeconds,
     forceSecureCookies: ownerAuthConfig.forceSecureCookies,
     sameSite: ownerAuthConfig.sameSite,
     providerName,

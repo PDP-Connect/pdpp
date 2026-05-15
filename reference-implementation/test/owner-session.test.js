@@ -14,6 +14,10 @@ import {
   readOwnerSessionFromCookieHeader,
 } from '../server/owner-session.ts';
 
+test('owner-session default lifetime balances dashboard persistence with finite expiry', () => {
+  assert.equal(OWNER_SESSION_DEFAULT_TTL_SECONDS, 7 * 24 * 60 * 60);
+});
+
 test('owner-session primitives round-trip signed sessions through cookie headers', () => {
   const nowSeconds = Math.floor(Date.now() / 1000);
   const secret = deriveOwnerSessionSecret('placeholder-test-password');
