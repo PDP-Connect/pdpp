@@ -94,6 +94,24 @@ export const transactionSchema = z.object({
   fetched_at: isoTimestamp,
 });
 
+// ─── current_activity ───────────────────────────────────────────────────
+
+export const currentActivitySchema = z.object({
+  id: z.string().min(3).max(200).regex(/\|/, "must be <account_id>|<source-or-fallback-key>"),
+  account_id: accountIdSchema,
+  account_name: cleanString(120).nullable(),
+  status: z.enum(["pending", "posted", "unknown"]),
+  activity_date: dateString,
+  posted_date: dateString.nullable(),
+  amount: cents,
+  currency: z.string().regex(/^[A-Z]{3}$/, "must be ISO-4217 3-letter code"),
+  description: cleanString(240),
+  memo: cleanString(500).nullable(),
+  ui_transaction_id: z.string().min(1).max(160).nullable(),
+  source: z.literal("chase_activity_ui"),
+  fetched_at: isoTimestamp,
+});
+
 // ─── statements ─────────────────────────────────────────────────────────
 
 export const statementSchema = z.object({
@@ -127,6 +145,7 @@ export const balanceSchema = z.object({
 export const SCHEMAS: Record<string, z.ZodTypeAny> = {
   accounts: accountSchema,
   transactions: transactionSchema,
+  current_activity: currentActivitySchema,
   statements: statementSchema,
   balances: balanceSchema,
 };

@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import {
   accountSlug,
   chooseActivity,
+  currentActivityId,
   extractFromQfx,
   fileUrl,
   isOfxRecord,
@@ -15,6 +16,7 @@ import {
   ofxGet,
   ofxNumber,
   ofxString,
+  parseCurrentActivityDom,
   parseDashboardAccountsDom,
   parseDateDelivered,
   parseStatementsListDom,
@@ -369,6 +371,41 @@ test("parseDashboardAccountsDom: label without numeric id is skipped", () => {
     <span id="accounts-name-link-button-not-a-number-label">Junk</span>
   </body></html>`;
   assert.deepEqual(parseDashboardAccountsDom(html), []);
+});
+
+// ─── parseCurrentActivityDom ────────────────────────────────────────────
+
+test("parseCurrentActivityDom: extracts pending and posted UI-visible rows", () => {
+  const rows = parseCurrentActivityDom(readFixture("current-activity-minimal.html"), "2026-05-15");
+  assert.equal(rows.length, 2);
+
+  const pending = rows[0];
+  assert.ok(pending);
+  assert.equal(pending.status, "pending");
+  assert.equal(pending.activity_date, "2026-05-14");
+  assert.equal(pending.posted_date, null);
+  assert.equal(pending.amount_cents, -4217);
+  assert.equal(pending.description, "Whole Foods Market");
+  assert.equal(pending.ui_transaction_id, "txn_20260514_A1");
+
+  const posted = rows[1];
+  assert.ok(posted);
+  assert.equal(posted.status, "posted");
+  assert.equal(posted.activity_date, "2026-05-13");
+  assert.equal(posted.posted_date, "2026-05-13");
+  assert.equal(posted.amount_cents, 125_000);
+  assert.equal(posted.description, "ACH Deposit Payroll");
+  assert.equal(posted.ui_transaction_id, null);
+});
+
+test("currentActivityId: prefers UI id and otherwise uses deterministic fallback", () => {
+  const [withUiId, withoutUiId] = parseCurrentActivityDom(readFixture("current-activity-minimal.html"), "2026-05-15");
+  assert.ok(withUiId);
+  assert.ok(withoutUiId);
+  assert.equal(currentActivityId("ACC", withUiId), "ACC|txn_20260514_A1");
+  const fallback = currentActivityId("ACC", withoutUiId);
+  assert.match(fallback, /^ACC\|fallback:[0-9a-f]{32}$/);
+  assert.equal(currentActivityId("ACC", withoutUiId), fallback);
 });
 
 // ─── parseStatementsListDom ──────────────────────────────────────────────

@@ -38,12 +38,16 @@
  */
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import type { EmittedMessage, StreamScope } from "../../src/connector-runtime.ts";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
 import {
   type EmitDeps,
   emitAccountsStream,
+  emitCurrentActivityForAccount,
   emitNoActivityProgress,
   emitStatementIndexOnly,
   emitTransactionsForAccount,
@@ -61,6 +65,8 @@ interface RecordingHarness {
 }
 
 const FROZEN_EMITTED_AT = "2026-04-22T12:00:00.000Z";
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const FIXTURE_DIR = join(__dirname, "__fixtures__");
 
 interface HarnessOverrides {
   maxSeenByAccount?: Record<string, TransactionCursor>;
@@ -69,6 +75,7 @@ interface HarnessOverrides {
   txState?: TransactionsStateShape;
   wantsAccounts?: boolean;
   wantsBalances?: boolean;
+  wantsCurrentActivity?: boolean;
   wantsStatements?: boolean;
   wantsTransactions?: boolean;
 }
@@ -98,6 +105,7 @@ function makeHarness(overrides: HarnessOverrides = {}): RecordingHarness {
     txState: overrides.txState ?? {},
     wantsAccounts: overrides.wantsAccounts ?? true,
     wantsBalances: overrides.wantsBalances ?? true,
+    wantsCurrentActivity: overrides.wantsCurrentActivity ?? true,
     wantsStatements: overrides.wantsStatements ?? true,
     wantsTransactions: overrides.wantsTransactions ?? true,
   };
@@ -174,6 +182,7 @@ test("emitAccountsStream: still emits when only accounts stream is in scope", as
   const { deps, emitted } = makeHarness({
     requestedStreams: [{ name: "accounts" }],
     wantsBalances: false,
+    wantsCurrentActivity: false,
     wantsStatements: false,
     wantsTransactions: false,
   });
@@ -182,6 +191,30 @@ test("emitAccountsStream: still emits when only accounts stream is in scope", as
   assert.equal(accountRecords.length, 2, "both accounts emit when only that stream is requested");
   assert.equal(accountRecords[0]?.data.id, "INTACC123");
   assert.equal(accountRecords[1]?.data.id, "INTACC456");
+});
+
+test("emitCurrentActivityForAccount: emits pending and posted rows only to current_activity", async () => {
+  const { deps, emitted } = makeHarness({
+    requestedStreams: [{ name: "current_activity" }],
+    wantsAccounts: false,
+    wantsBalances: false,
+    wantsStatements: false,
+    wantsTransactions: false,
+  });
+  const account = makeAccount();
+  const count = await emitCurrentActivityForAccount(
+    deps,
+    account,
+    readFileSync(join(FIXTURE_DIR, "current-activity-minimal.html"), "utf8")
+  );
+  assert.equal(count, 2);
+  assert.equal(emitted.filter((r) => r.stream === "current_activity").length, 2);
+  assert.equal(emitted.filter((r) => r.stream === "transactions").length, 0);
+  const pending = emitted.find((r) => r.stream === "current_activity" && r.data.status === "pending");
+  assert.ok(pending);
+  assert.equal(pending.data.id, `${account.internal_id}|txn_20260514_A1`);
+  assert.equal(pending.data.posted_date, null);
+  assert.equal(pending.data.source, "chase_activity_ui");
 });
 
 // ─── Invariant 3: all-streams-disabled emits nothing ─────────────────────

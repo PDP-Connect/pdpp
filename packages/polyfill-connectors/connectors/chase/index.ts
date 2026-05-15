@@ -47,11 +47,13 @@ import {
   ACTIVITY_LABELS,
   accountSlug,
   chooseActivity,
+  currentActivityId,
   errMessage,
   extractFromQfx,
   fileUrl,
   isOfxRecord,
   isoToPacked,
+  parseCurrentActivityDom,
   parseDashboardAccountsDom,
   parseDateDelivered,
   parseStatementsListDom,
@@ -99,6 +101,8 @@ const FILENAME_UTF8_RE = /filename\*=UTF-8''([^;]+)/iu;
 const SURROUNDING_QUOTES_RE = /^"|"$/g;
 const DASHBOARD_ACCOUNT_SELECTOR =
   '[id^="accounts-name-link-button-"][id$="-label"], button[id^="accounts-name-link-button-"], button[data-testid^="accounts-name-link-button-"]';
+const ACCOUNT_ACTIVITY_DOM_WAIT_SELECTOR =
+  '[data-testid*="transaction" i], [data-testid*="activity" i], [id*="transaction" i], [id*="activity" i], tr';
 
 interface CapturedQfxResponse {
   body: Buffer;
@@ -737,6 +741,7 @@ export interface EmitDeps {
   txState: TransactionsStateShape;
   wantsAccounts: boolean;
   wantsBalances: boolean;
+  wantsCurrentActivity: boolean;
   wantsStatements: boolean;
   wantsTransactions: boolean;
 }
@@ -754,7 +759,11 @@ export function filterAccountsByScope(
   resFilters: Map<string, ReadonlySet<string> | null>
 ): { accountsResFilter: ReadonlySet<string> | null; filteredAccounts: ChaseAccount[] } {
   const accountsResFilter =
-    resFilters.get("accounts") ?? resFilters.get("transactions") ?? resFilters.get("balances") ?? null;
+    resFilters.get("accounts") ??
+    resFilters.get("current_activity") ??
+    resFilters.get("transactions") ??
+    resFilters.get("balances") ??
+    null;
   const filteredAccounts: ChaseAccount[] = accountsResFilter?.size
     ? accounts.filter((a) => accountsResFilter.has(a.internal_id))
     : accounts;
@@ -837,6 +846,32 @@ export async function emitTransactionsForAccount(
       last_fetched_at: deps.emittedAt,
     };
   }
+}
+
+export async function emitCurrentActivityForAccount(
+  deps: EmitDeps,
+  account: ChaseAccount,
+  html: string
+): Promise<number> {
+  const rows = parseCurrentActivityDom(html, deps.emittedAt.slice(0, 10));
+  for (const row of rows) {
+    await deps.emitRecord("current_activity", {
+      id: currentActivityId(account.internal_id, row),
+      account_id: account.internal_id,
+      account_name: account.name,
+      status: row.status,
+      activity_date: row.activity_date,
+      posted_date: row.posted_date,
+      amount: row.amount_cents,
+      currency: "USD",
+      description: row.description,
+      memo: row.memo,
+      ui_transaction_id: row.ui_transaction_id,
+      source: "chase_activity_ui",
+      fetched_at: deps.emittedAt,
+    });
+  }
+  return rows.length;
 }
 
 /**
@@ -1022,6 +1057,57 @@ async function runTransactionsAndBalances(
   }
 }
 
+async function runCurrentActivity(
+  deps: EmitDeps,
+  page: Page,
+  filteredAccounts: readonly ChaseAccount[]
+): Promise<void> {
+  for (let i = 0; i < filteredAccounts.length; i++) {
+    const account = filteredAccounts[i];
+    if (!account) {
+      continue;
+    }
+    const progressMsg = {
+      type: "PROGRESS",
+      stream: "current_activity",
+      message: `${account.name}: opening Chase account activity`,
+      count: i + 1,
+      total: filteredAccounts.length,
+    } as const;
+    await deps.emit(progressMsg);
+    const paramsFragment = encodeURIComponent(JSON.stringify({ accountId: account.internal_id }));
+    await page.goto(
+      `https://secure.chase.com/web/auth/dashboard#/dashboard/accountDetails/summary/index;params=${paramsFragment}`,
+      {
+        waitUntil: "domcontentloaded",
+        timeout: NAV_TIMEOUT_MS,
+      }
+    );
+    await page
+      .locator(ACCOUNT_ACTIVITY_DOM_WAIT_SELECTOR)
+      .first()
+      .waitFor({ state: "attached", timeout: DOM_WAIT_MS })
+      .catch((): undefined => undefined);
+    if (deps.capture) {
+      await deps.capture.captureDom(page, `current-activity-${account.internal_id}`);
+    }
+    const emitted = await emitCurrentActivityForAccount(deps, account, await page.content());
+    if (emitted === 0) {
+      await deps.emit({
+        type: "SKIP_RESULT",
+        stream: "current_activity",
+        reason: "selectors_pending",
+        message: `${account.name}: no parseable current activity rows found in Chase account activity DOM`,
+      });
+    }
+  }
+  await deps.emit({
+    type: "STATE",
+    stream: "current_activity",
+    cursor: { fetched_at: deps.emittedAt },
+  });
+}
+
 async function processStatementRow(
   deps: EmitDeps,
   page: Page,
@@ -1202,6 +1288,7 @@ if (isMainModule(import.meta.url)) {
         txState,
         wantsAccounts: requested.has("accounts"),
         wantsBalances: requested.has("balances"),
+        wantsCurrentActivity: requested.has("current_activity"),
         wantsStatements: requested.has("statements"),
         wantsTransactions: requested.has("transactions"),
       };
@@ -1232,6 +1319,10 @@ if (isMainModule(import.meta.url)) {
         // Transactions + balances: download QFX per account, parse, emit.
         if (deps.wantsTransactions || deps.wantsBalances) {
           await runTransactionsAndBalances(deps, page, filteredAccounts);
+        }
+
+        if (deps.wantsCurrentActivity) {
+          await runCurrentActivity(deps, page, filteredAccounts);
         }
 
         // Statements: navigate to Statements & Documents, enumerate rows,

@@ -11,6 +11,8 @@ import type {
   ActivityKind,
   ChaseAccount,
   ChaseAccountType,
+  CurrentActivityRow,
+  CurrentActivityStatus,
   OfxRecord,
   OfxValue,
   QfxBalance,
@@ -45,6 +47,52 @@ const STATEMENT_RE = /statement/i;
 
 const ACCOUNT_SLUG_SAFE_RE = /^[A-Za-z0-9_-]+$/;
 const STATEMENT_LAST_FOUR_RE = /\.\.\.(\d{3,4})/;
+const AMOUNT_RE = /(?:[-+]?\s*\$\s*\d[\d,]*(?:\.\d{2})?|\(\s*\$?\s*\d[\d,]*(?:\.\d{2})?\s*\))/;
+const DATE_NUMERIC_RE = /\b(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\b/;
+const DATE_MONTH_RE =
+  /\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+(\d{1,2})(?:,\s*(\d{4}))?\b/i;
+const ACTIVITY_DEBIT_RE = /-|\(|\bwithdrawal\b|\bpurchase\b|\bdebit\b/i;
+const PENDING_RE = /\bpending\b/i;
+const POSTED_RE = /\bposted\b|\bcompleted\b/i;
+const MONTH_DOT_RE = /\.$/;
+const DIGIT_RE = /\d/;
+const CURRENT_ACTIVITY_SELECTOR =
+  '[data-testid*="transaction" i], [data-testid*="activity" i], [id*="transaction" i], [id*="activity" i], tr';
+const UI_TRANSACTION_ID_ATTRS = [
+  "data-transaction-id",
+  "data-transactionid",
+  "data-activity-id",
+  "data-id",
+  "id",
+] as const;
+const HASHED_ID_RE = /^(?:row-|transaction-|activity-)?[A-Za-z0-9_-]{8,}$/;
+
+const MONTH_INDEX: Record<string, string> = {
+  jan: "01",
+  january: "01",
+  feb: "02",
+  february: "02",
+  mar: "03",
+  march: "03",
+  apr: "04",
+  april: "04",
+  may: "05",
+  jun: "06",
+  june: "06",
+  jul: "07",
+  july: "07",
+  aug: "08",
+  august: "08",
+  sep: "09",
+  sept: "09",
+  september: "09",
+  oct: "10",
+  october: "10",
+  nov: "11",
+  november: "11",
+  dec: "12",
+  december: "12",
+};
 
 // ─── Text helpers ─────────────────────────────────────────────────────────
 
@@ -267,6 +315,120 @@ export function parseDashboardAccountsDom(html: string): ChaseAccount[] {
     });
   }
   return results;
+}
+
+function parseVisibleAmount(text: string): number | null {
+  const match = AMOUNT_RE.exec(text.replace(/\u2212/g, "-"));
+  if (!match?.[0]) {
+    return null;
+  }
+  const raw = match[0];
+  const sign = ACTIVITY_DEBIT_RE.test(text) ? -1 : 1;
+  const normalized = raw.replace(/[$,\s+-]/g, "");
+  const n = Number(normalized);
+  return Number.isFinite(n) ? Math.round(n * CENTS_MULTIPLIER) * sign : null;
+}
+
+function inferActivityStatus(text: string): CurrentActivityStatus {
+  if (PENDING_RE.test(text)) {
+    return "pending";
+  }
+  if (POSTED_RE.test(text)) {
+    return "posted";
+  }
+  return "unknown";
+}
+
+function parseVisibleDate(text: string, referenceDateIso: string): string | null {
+  const month = DATE_MONTH_RE.exec(text);
+  if (month?.[1] && month[2]) {
+    const monthNum = MONTH_INDEX[month[1].toLowerCase().replace(MONTH_DOT_RE, "")];
+    const year = month[3] ?? referenceDateIso.slice(0, 4);
+    if (monthNum) {
+      return `${year.padStart(4, "20")}-${monthNum}-${month[2].padStart(2, "0")}`;
+    }
+  }
+  const numeric = DATE_NUMERIC_RE.exec(text);
+  if (numeric?.[1] && numeric[2]) {
+    const yearRaw = numeric[3] ?? referenceDateIso.slice(0, 4);
+    const year = yearRaw.length === 2 ? `20${yearRaw}` : yearRaw;
+    return `${year}-${numeric[1].padStart(2, "0")}-${numeric[2].padStart(2, "0")}`;
+  }
+  return null;
+}
+
+function extractUiTransactionId(el: Element): string | null {
+  for (const attr of UI_TRANSACTION_ID_ATTRS) {
+    const value = el.getAttribute(attr);
+    if (value && HASHED_ID_RE.test(value)) {
+      return value;
+    }
+  }
+  return null;
+}
+
+function normalizeDescription(text: string): string {
+  return normWhitespace(
+    text
+      .replace(AMOUNT_RE, " ")
+      .replace(DATE_MONTH_RE, " ")
+      .replace(DATE_NUMERIC_RE, " ")
+      .replace(/\b(Pending|Posted|Completed)\b/gi, " ")
+  );
+}
+
+export function currentActivityId(accountId: string, row: CurrentActivityRow): string {
+  if (row.ui_transaction_id) {
+    return `${accountId}|${row.ui_transaction_id}`;
+  }
+  return `${accountId}|fallback:${shortHash(
+    [row.status, row.activity_date, row.posted_date ?? "", row.amount_cents, row.description.toLowerCase()].join("|")
+  )}`;
+}
+
+/**
+ * Parse Chase account-activity DOM visible to the signed-in UI. This parser is
+ * intentionally conservative: a candidate row must contain both a recognizable
+ * date and amount, and the remaining text becomes the visible descriptor.
+ */
+export function parseCurrentActivityDom(html: string, referenceDateIso: string): CurrentActivityRow[] {
+  const { document } = parseHTML(html);
+  const rows: CurrentActivityRow[] = [];
+  const seen = new Set<string>();
+  for (const el of document.querySelectorAll<HTMLElement>(CURRENT_ACTIVITY_SELECTOR)) {
+    const text = normWhitespace(textOf(el));
+    if (!(text && DIGIT_RE.test(text))) {
+      continue;
+    }
+    const activityDate = parseVisibleDate(text, referenceDateIso);
+    const amountCents = parseVisibleAmount(text);
+    if (!(activityDate && amountCents !== null)) {
+      continue;
+    }
+    const description = normalizeDescription(text);
+    if (!description || description.length > 240) {
+      continue;
+    }
+    const uiTransactionId = extractUiTransactionId(el);
+    const row: CurrentActivityRow = {
+      activity_date: activityDate,
+      amount_cents: amountCents,
+      description,
+      memo: null,
+      posted_date: inferActivityStatus(text) === "posted" ? activityDate : null,
+      status: inferActivityStatus(text),
+      ui_transaction_id: uiTransactionId,
+    };
+    const dedupeKey = [uiTransactionId ?? "", row.status, row.activity_date, row.amount_cents, row.description].join(
+      "|"
+    );
+    if (seen.has(dedupeKey)) {
+      continue;
+    }
+    seen.add(dedupeKey);
+    rows.push(row);
+  }
+  return rows;
 }
 
 // ─── Statements DOM parsing ──────────────────────────────────────────────

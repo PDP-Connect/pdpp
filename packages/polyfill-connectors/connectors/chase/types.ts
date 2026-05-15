@@ -98,6 +98,18 @@ export interface QfxExtracted {
   transactions: QfxTransaction[];
 }
 
+export type CurrentActivityStatus = "pending" | "posted" | "unknown";
+
+export interface CurrentActivityRow {
+  activity_date: string;
+  amount_cents: number;
+  description: string;
+  memo: string | null;
+  posted_date: string | null;
+  status: CurrentActivityStatus;
+  ui_transaction_id: string | null;
+}
+
 export interface DashboardDiagnostics {
   body_preview: string;
   title: string;

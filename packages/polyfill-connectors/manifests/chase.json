@@ -353,6 +353,140 @@
       }
     },
     {
+      "name": "current_activity",
+      "description": "Chase UI-visible account activity at scrape time. This mutable freshness stream can include pending rows and recently posted current-cycle rows from the signed-in Chase activity UI. It is not the settled QFX ledger; pending rows may change, disappear, or later post under a different QFX FITID.",
+      "display": {
+        "label": "Your current Chase activity",
+        "detail": "Pending and current-cycle activity visible in Chase's account UI. Use this for freshness, not reconciliation. Posted ledger identity remains in the QFX-only transactions stream."
+      },
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "${account_id}|${ui_transaction_id} when Chase exposes a UI id; otherwise ${account_id}|fallback:${hash(status|activity_date|posted_date|amount|description)}. Fallback keys do not promise pending-to-posted continuity."
+          },
+          "account_id": {
+            "type": "string"
+          },
+          "account_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "description": "pending | posted | unknown"
+          },
+          "activity_date": {
+            "type": "string",
+            "format": "date"
+          },
+          "posted_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date"
+          },
+          "amount": {
+            "type": "integer",
+            "description": "Signed amount in cents. Negative for visible debits, positive for visible credits."
+          },
+          "currency": {
+            "type": "string",
+            "description": "Always 'USD' for Chase retail account UI rows in this connector."
+          },
+          "description": {
+            "type": "string"
+          },
+          "memo": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ui_transaction_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Source-provided Chase UI transaction/activity id when present in DOM; null when the connector used the deterministic fallback key."
+          },
+          "source": {
+            "type": "string",
+            "description": "Always 'chase_activity_ui'."
+          },
+          "fetched_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "account_id",
+          "status",
+          "activity_date",
+          "amount",
+          "currency",
+          "description",
+          "source",
+          "fetched_at"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "activity_date",
+      "consent_time_field": "activity_date",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false,
+      "relationships": [
+        {
+          "name": "account",
+          "stream": "accounts",
+          "foreign_key": "account_id",
+          "cardinality": "has_one"
+        }
+      ],
+      "query": {
+        "search": {
+          "lexical_fields": [
+            "account_name",
+            "description",
+            "memo",
+            "status",
+            "source"
+          ]
+        },
+        "range_filters": {
+          "activity_date": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "posted_date": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ],
+          "amount": [
+            "gte",
+            "gt",
+            "lte",
+            "lt"
+          ]
+        }
+      }
+    },
+    {
       "name": "statements",
       "description": "Monthly statement PDFs per account from Chase's Statements & Documents page. Each record carries the document's title, delivery date, account reference, and — when the PDF is hydrated on-device — a content-addressed path + sha256. PDFs themselves live on the owner's disk under ~/.pdpp/chase-statements/<account>/<YYYY-MM>-<sha8>.pdf rather than in the RS, keeping blob storage out of SQLite per `design-notes/blob-hydration-open-question.md`.",
       "display": {
