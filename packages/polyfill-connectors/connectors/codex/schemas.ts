@@ -116,6 +116,30 @@ export const skillsSchema = z.object({
   mtime_epoch: z.number().int().nullable(),
 });
 
+const inventoryClassificationSchema = z.enum(["inventory_only", "defer"]);
+const inventoryTypeSchema = z.enum(["directory", "file", "missing", "other"]);
+const coverageStatusSchema = z.enum(["collected", "inventory_only", "excluded", "deferred", "missing", "unsupported"]);
+
+export const inventorySchema = z.object({
+  id: pdppSafeText,
+  store: pdppSafeText,
+  relative_path: pdppSafeText.max(2048),
+  path_hash: z.string().regex(/^[a-f0-9]{64}$/),
+  type: inventoryTypeSchema,
+  size_bytes: z.number().int().min(0).nullable(),
+  mtime_epoch: z.number().int().min(0).nullable(),
+  classification: inventoryClassificationSchema,
+  reason: pdppSafeText.max(512),
+});
+
+export const coverageDiagnosticsSchema = z.object({
+  id: pdppSafeText,
+  store: pdppSafeText,
+  stream: pdppSafeText.nullable(),
+  status: coverageStatusSchema,
+  reason: pdppSafeText.max(512),
+});
+
 /** Map stream name → schema. Single source of truth for what streams this
  *  connector produces at shape-check time. */
 export const SCHEMAS: Record<string, z.ZodTypeAny> = {
@@ -125,6 +149,15 @@ export const SCHEMAS: Record<string, z.ZodTypeAny> = {
   rules: rulesSchema,
   prompts: promptsSchema,
   skills: skillsSchema,
+  history: inventorySchema,
+  session_index: inventorySchema,
+  logs: inventorySchema,
+  shell_snapshots: inventorySchema,
+  memories: inventorySchema,
+  context_mode: inventorySchema,
+  config_inventory: inventorySchema,
+  cache_inventory: inventorySchema,
+  coverage_diagnostics: coverageDiagnosticsSchema,
 };
 
 export const validateRecord = makeValidateRecord(SCHEMAS);

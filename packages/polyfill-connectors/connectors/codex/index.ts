@@ -40,10 +40,14 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface as createFileReader, createInterface } from "node:readline";
-// biome-ignore lint/correctness/noUnresolvedImports: node:sqlite is a Node 22.5+ built-in module; Biome's resolver doesn't see built-ins
 import { DatabaseSync } from "node:sqlite";
 import type { EmittedMessage, RecordData, StreamScope } from "../../src/connector-runtime.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
+import {
+  buildLocalSourceInventory,
+  type KnownLocalStore,
+  listDirectoryInventory,
+} from "../../src/local-source-inventory.ts";
 import { stringifyForJsonl } from "../../src/safe-emit.ts";
 import { resourceSet } from "../../src/scope-filters.ts";
 import {
@@ -86,6 +90,107 @@ const fail = (m: string, r = false): void => {
   });
   flushAndExit(1);
 };
+
+export const CODEX_KNOWN_LOCAL_STORES: KnownLocalStore[] = [
+  {
+    store: "sessions",
+    relativePath: "sessions",
+    stream: "sessions",
+    classification: "collect",
+    reason: "declared rollout source",
+  },
+  {
+    store: "state_db",
+    relativePath: "state_5.sqlite",
+    stream: "sessions",
+    classification: "collect",
+    reason: "declared thread metadata source opened read-only",
+  },
+  {
+    store: "rules",
+    relativePath: "rules",
+    stream: "rules",
+    classification: "collect",
+    reason: "declared user-authored rules source",
+  },
+  {
+    store: "prompts",
+    relativePath: "prompts",
+    stream: "prompts",
+    classification: "collect",
+    reason: "declared user-authored prompts source",
+  },
+  {
+    store: "skills",
+    relativePath: "skills",
+    stream: "skills",
+    classification: "collect",
+    reason: "declared user-authored skills source",
+  },
+  {
+    store: "history",
+    relativePath: "history.jsonl",
+    stream: "history",
+    classification: "inventory_only",
+    reason: "metadata-only until prompt-history payload contract is approved",
+  },
+  {
+    store: "session_index",
+    relativePath: "session_index.jsonl",
+    stream: "session_index",
+    classification: "inventory_only",
+    reason: "metadata-only until session-index payload contract is approved",
+  },
+  {
+    store: "shell_snapshots",
+    relativePath: "shell-snapshots",
+    stream: "shell_snapshots",
+    classification: "inventory_only",
+    reason: "shell content requires redaction review before payload collection",
+  },
+  {
+    store: "memories",
+    relativePath: "memories",
+    stream: "memories",
+    classification: "inventory_only",
+    reason: "metadata-only until memory file shapes are approved",
+  },
+  {
+    store: "context_mode",
+    relativePath: "context-mode",
+    stream: "context_mode",
+    classification: "inventory_only",
+    reason: "file shapes are not stable enough for content collection",
+  },
+  {
+    store: "logs",
+    relativePath: "logs",
+    stream: "logs",
+    classification: "defer",
+    reason: "logs require deterministic redaction before collection",
+  },
+  {
+    store: "config",
+    relativePath: "config.toml",
+    stream: "config_inventory",
+    classification: "inventory_only",
+    reason: "configuration is inventoried without payload content",
+  },
+  {
+    store: "cache",
+    relativePath: "cache",
+    stream: "cache_inventory",
+    classification: "inventory_only",
+    reason: "raw cache payloads may contain sensitive tool output",
+  },
+  {
+    store: "auth",
+    relativePath: "auth.json",
+    stream: null,
+    classification: "exclude",
+    reason: "auth-adjacent credential material is never emitted",
+  },
+];
 
 // ─── JSONL line iteration ───────────────────────────────────────────────
 
@@ -754,6 +859,7 @@ async function readStartMessage(): Promise<StartMessage> {
 
 interface CodexDirs {
   baseDir: string;
+  codexHome: string;
   promptsDir: string;
   rulesDir: string;
   skillsDir: string;
@@ -763,6 +869,7 @@ interface CodexDirs {
 function resolveCodexDirs(): CodexDirs {
   const codexHome = process.env.CODEX_HOME || join(homedir(), ".codex");
   return {
+    codexHome,
     baseDir: process.env.CODEX_SESSIONS_DIR || join(codexHome, "sessions"),
     stateDbPath: process.env.CODEX_STATE_DB || join(codexHome, "state_5.sqlite"),
     rulesDir: process.env.CODEX_RULES_DIR || join(codexHome, "rules"),
@@ -867,6 +974,68 @@ function emitStateCursors({ requested, newMtimes, nowIso }: EmitStateCursorsArgs
       emit({ type: "STATE", stream: s, cursor: { fetched_at: nowIso() } });
     }
   }
+  for (const s of [
+    "history",
+    "session_index",
+    "logs",
+    "shell_snapshots",
+    "memories",
+    "context_mode",
+    "config_inventory",
+    "cache_inventory",
+    "coverage_diagnostics",
+  ]) {
+    if (requested.has(s)) {
+      emit({ type: "STATE", stream: s, cursor: { fetched_at: nowIso() } });
+    }
+  }
+}
+
+async function emitLocalInventoryStreams(input: {
+  codexHome: string;
+  emitRecord: (stream: string, data: RecordData) => void;
+  requested: Map<string, StreamScope>;
+}): Promise<void> {
+  const inventory = await buildLocalSourceInventory("codex", input.codexHome, CODEX_KNOWN_LOCAL_STORES);
+  for (const [stream, records] of inventory.recordsByStream) {
+    if (!input.requested.has(stream)) {
+      continue;
+    }
+    for (const record of records) {
+      input.emitRecord(stream, record);
+    }
+  }
+  for (const directoryStream of [
+    {
+      relativeRoot: "shell-snapshots",
+      store: "shell_snapshots",
+      stream: "shell_snapshots",
+      reason: "shell content requires redaction review before payload collection",
+    },
+    {
+      relativeRoot: "memories",
+      store: "memories",
+      stream: "memories",
+      reason: "metadata-only until memory file shapes are approved",
+    },
+  ]) {
+    if (!input.requested.has(directoryStream.stream)) {
+      continue;
+    }
+    const records = await listDirectoryInventory({
+      tool: "codex",
+      sourceHome: input.codexHome,
+      ...directoryStream,
+    });
+    for (const record of records) {
+      input.emitRecord(directoryStream.stream, record);
+    }
+  }
+  if (input.requested.has("coverage_diagnostics")) {
+    for (const record of inventory.coverage) {
+      input.emitRecord("coverage_diagnostics", record);
+    }
+  }
 }
 
 // ─── main ───────────────────────────────────────────────────────────────
@@ -925,6 +1094,8 @@ async function main(): Promise<void> {
   // function_call_count even when state_5 provides the canonical metadata).
   const rolloutAggregates = new Map<string, RolloutAggregate>();
   const newMtimes: Record<string, number> = { ...fileMtimes };
+
+  await emitLocalInventoryStreams({ codexHome: dirs.codexHome, requested, emitRecord });
 
   if (needRollouts) {
     await scanRollouts({

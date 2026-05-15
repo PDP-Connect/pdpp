@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -22,6 +22,50 @@ test("codex connector fails instead of succeeding when requested local sources a
   assert.match(done?.error?.message ?? "", /requested Codex local source path\(s\) are missing or unreadable/);
   assert.match(done?.error?.message ?? "", /CODEX_SESSIONS_DIR=/);
   assert.match(done?.error?.message ?? "", /CODEX_RULES_DIR=/);
+});
+
+test("codex inventory streams emit safe metadata and exclude auth payloads", async () => {
+  const codexHome = await mkdtemp(join(tmpdir(), "pdpp-codex-inventory-"));
+  await mkdir(join(codexHome, "cache"), { recursive: true });
+  await writeFile(join(codexHome, "history.jsonl"), '{"prompt":"hello"}\n');
+  await writeFile(join(codexHome, "session_index.jsonl"), '{"id":"session"}\n');
+  await writeFile(join(codexHome, "cache", "response.json"), "cache payload");
+  await writeFile(join(codexHome, "auth.json"), '{"api_key":"secret-token"}');
+
+  const result = await runConnectorProcess({
+    env: { CODEX_HOME: codexHome },
+    start: {
+      scope: {
+        streams: [
+          { name: "history" },
+          { name: "session_index" },
+          { name: "cache_inventory" },
+          { name: "coverage_diagnostics" },
+        ],
+      },
+      type: "START",
+    },
+  });
+
+  assert.equal(result.exitCode, 0);
+  const records = result.messages.filter(
+    (msg): msg is Extract<EmittedMessage, { type: "RECORD" }> => msg.type === "RECORD"
+  );
+  assert(records.some((record) => record.stream === "history" && record.data.relative_path === "history.jsonl"));
+  assert(
+    records.some((record) => record.stream === "session_index" && record.data.relative_path === "session_index.jsonl")
+  );
+  assert(records.some((record) => record.stream === "cache_inventory" && record.data.relative_path === "cache"));
+  assert(!records.some((record) => JSON.stringify(record).includes("secret-token")));
+  assert(
+    !records.some((record) => record.stream !== "coverage_diagnostics" && record.data.relative_path === "auth.json")
+  );
+  assert(
+    records.some(
+      (record) =>
+        record.stream === "coverage_diagnostics" && record.data.store === "auth" && record.data.status === "excluded"
+    )
+  );
 });
 
 async function runConnectorProcess(input: {

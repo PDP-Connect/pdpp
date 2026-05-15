@@ -622,6 +622,536 @@
           ]
         }
       }
+    },
+    {
+      "name": "history",
+      "description": "Metadata-only inventory for Codex history.jsonl. Prompt-history payloads are not collected in this tranche.",
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "store": {
+            "type": "string"
+          },
+          "relative_path": {
+            "type": "string"
+          },
+          "path_hash": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "mtime_epoch": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "classification": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "store",
+          "relative_path",
+          "path_hash",
+          "type",
+          "classification",
+          "reason"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "mtime_epoch",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false
+    },
+    {
+      "name": "session_index",
+      "description": "Metadata-only inventory for Codex session_index.jsonl.",
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "store": {
+            "type": "string"
+          },
+          "relative_path": {
+            "type": "string"
+          },
+          "path_hash": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "mtime_epoch": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "classification": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "store",
+          "relative_path",
+          "path_hash",
+          "type",
+          "classification",
+          "reason"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "mtime_epoch",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false
+    },
+    {
+      "name": "coverage_diagnostics",
+      "description": "Safe coverage status for known Codex local stores, including excluded auth-adjacent stores without payloads or raw absolute paths.",
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "store": {
+            "type": "string"
+          },
+          "stream": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "store",
+          "status",
+          "reason"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false
+    },
+    {
+      "name": "logs",
+      "description": "Deferred Codex logs inventory; log payloads require deterministic redaction before collection.",
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "store": {
+            "type": "string"
+          },
+          "relative_path": {
+            "type": "string"
+          },
+          "path_hash": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "mtime_epoch": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "classification": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "store",
+          "relative_path",
+          "path_hash",
+          "type",
+          "classification",
+          "reason"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "mtime_epoch",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false
+    },
+    {
+      "name": "shell_snapshots",
+      "description": "Metadata-only inventory for Codex shell snapshots; shell content is not collected.",
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "store": {
+            "type": "string"
+          },
+          "relative_path": {
+            "type": "string"
+          },
+          "path_hash": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "mtime_epoch": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "classification": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "store",
+          "relative_path",
+          "path_hash",
+          "type",
+          "classification",
+          "reason"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "mtime_epoch",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false
+    },
+    {
+      "name": "memories",
+      "description": "Metadata-only inventory for Codex memory files until payload contract is approved.",
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "store": {
+            "type": "string"
+          },
+          "relative_path": {
+            "type": "string"
+          },
+          "path_hash": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "mtime_epoch": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "classification": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "store",
+          "relative_path",
+          "path_hash",
+          "type",
+          "classification",
+          "reason"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "mtime_epoch",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false
+    },
+    {
+      "name": "context_mode",
+      "description": "Metadata-only inventory for Codex context-mode state while file shapes remain under review.",
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "store": {
+            "type": "string"
+          },
+          "relative_path": {
+            "type": "string"
+          },
+          "path_hash": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "mtime_epoch": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "classification": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "store",
+          "relative_path",
+          "path_hash",
+          "type",
+          "classification",
+          "reason"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "mtime_epoch",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false
+    },
+    {
+      "name": "config_inventory",
+      "description": "Metadata-only inventory for non-secret Codex configuration; raw config payloads are not collected.",
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "store": {
+            "type": "string"
+          },
+          "relative_path": {
+            "type": "string"
+          },
+          "path_hash": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "mtime_epoch": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "classification": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "store",
+          "relative_path",
+          "path_hash",
+          "type",
+          "classification",
+          "reason"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "mtime_epoch",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false
+    },
+    {
+      "name": "cache_inventory",
+      "description": "Metadata-only inventory for Codex cache stores; raw cache payloads are not collected.",
+      "semantics": "mutable_state",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "store": {
+            "type": "string"
+          },
+          "relative_path": {
+            "type": "string"
+          },
+          "path_hash": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "mtime_epoch": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "classification": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "store",
+          "relative_path",
+          "path_hash",
+          "type",
+          "classification",
+          "reason"
+        ]
+      },
+      "primary_key": [
+        "id"
+      ],
+      "cursor_field": "mtime_epoch",
+      "selection": {
+        "fields": true,
+        "resources": true
+      },
+      "incremental": false
     }
   ],
   "profiles": [

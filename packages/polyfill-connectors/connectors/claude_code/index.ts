@@ -29,6 +29,11 @@ import { basename, join } from "node:path";
 import { createInterface as createFileReader } from "node:readline";
 import { type CollectContext, type RecordData, runConnector, type StreamScope } from "../../src/connector-runtime.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
+import {
+  buildLocalSourceInventory,
+  type KnownLocalStore,
+  listDirectoryInventory,
+} from "../../src/local-source-inventory.ts";
 import { safeTextPreview } from "../../src/safe-text-preview.ts";
 import {
   ATTACHMENT_PREVIEW_CHARS,
@@ -54,6 +59,86 @@ import type { ClaudeCodeState, JsonlObject, SessionAccumulator } from "./types.t
 
 const nowIso = (): string => new Date().toISOString();
 const MD_FILE_RE = /\.md$/i;
+
+export const CLAUDE_CODE_KNOWN_LOCAL_STORES: KnownLocalStore[] = [
+  {
+    store: "projects",
+    relativePath: "projects",
+    stream: "sessions",
+    classification: "collect",
+    reason: "declared transcript source",
+  },
+  {
+    store: "skills",
+    relativePath: "skills",
+    stream: "skills",
+    classification: "collect",
+    reason: "declared user-authored skills source",
+  },
+  {
+    store: "commands",
+    relativePath: "commands",
+    stream: "slash_commands",
+    classification: "collect",
+    reason: "declared user-authored slash commands source",
+  },
+  {
+    store: "file_history",
+    relativePath: "file-history",
+    stream: "file_history",
+    classification: "inventory_only",
+    reason: "metadata-only until payload contract is approved",
+  },
+  {
+    store: "context_mode",
+    relativePath: "context-mode",
+    stream: "context_mode",
+    classification: "inventory_only",
+    reason: "file shapes are not stable enough for content collection",
+  },
+  {
+    store: "cache",
+    relativePath: "cache",
+    stream: "cache_inventory",
+    classification: "inventory_only",
+    reason: "raw cache payloads may contain sensitive tool output",
+  },
+  {
+    store: "backups",
+    relativePath: "backups",
+    stream: "backup_inventory",
+    classification: "inventory_only",
+    reason: "backup payloads require owner review before collection",
+  },
+  {
+    store: "config",
+    relativePath: "settings.json",
+    stream: "config_inventory",
+    classification: "inventory_only",
+    reason: "configuration is inventoried without payload content",
+  },
+  {
+    store: "debug",
+    relativePath: "debug",
+    stream: "debug_artifacts",
+    classification: "defer",
+    reason: "debug payloads require deterministic redaction before collection",
+  },
+  {
+    store: "downloads",
+    relativePath: "downloads",
+    stream: "downloads",
+    classification: "defer",
+    reason: "download payloads require owner approval before collection",
+  },
+  {
+    store: "auth",
+    relativePath: "auth.json",
+    stream: null,
+    classification: "exclude",
+    reason: "auth-adjacent credential material is never emitted",
+  },
+];
 
 async function* iterJsonlLines(path: string): AsyncGenerator<JsonlObject> {
   const r = createFileReader({
@@ -856,6 +941,40 @@ async function assertRequestedClaudeSources(input: {
   }
 }
 
+async function emitLocalInventoryStreams(input: {
+  claudeHome: string;
+  emitRecord: (stream: string, data: RecordData) => Promise<void>;
+  requested: Map<string, StreamScope>;
+}): Promise<void> {
+  const inventory = await buildLocalSourceInventory("claude_code", input.claudeHome, CLAUDE_CODE_KNOWN_LOCAL_STORES);
+  for (const [stream, records] of inventory.recordsByStream) {
+    if (!input.requested.has(stream)) {
+      continue;
+    }
+    for (const record of records) {
+      await input.emitRecord(stream, record);
+    }
+  }
+  if (input.requested.has("file_history")) {
+    const records = await listDirectoryInventory({
+      tool: "claude_code",
+      sourceHome: input.claudeHome,
+      relativeRoot: "file-history",
+      store: "file_history",
+      stream: "file_history",
+      reason: "metadata-only until payload contract is approved",
+    });
+    for (const record of records) {
+      await input.emitRecord("file_history", record);
+    }
+  }
+  if (input.requested.has("coverage_diagnostics")) {
+    for (const record of inventory.coverage) {
+      await input.emitRecord("coverage_diagnostics", record);
+    }
+  }
+}
+
 // ─── collect() wrapper ──────────────────────────────────────────────────
 
 async function runSkillsAndCommands(
@@ -901,6 +1020,8 @@ if (isMainModule(import.meta.url)) {
       // stream='messages', cursor={file_mtimes:{...}}, so reads must
       // qualify by that stream. Fall back to top-level for pre-fix state.
       const fileMtimes: Record<string, number> = typedState.messages?.file_mtimes || typedState.file_mtimes || {};
+
+      await emitLocalInventoryStreams({ claudeHome, requested, emitRecord });
 
       await runSkillsAndCommands(claudeHome, requested, emit, emitRecord);
 
