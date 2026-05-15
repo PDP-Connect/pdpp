@@ -36,7 +36,7 @@
  *   - Auth strategy resolution before collect() runs
  */
 
-import { writeFileSync } from "node:fs";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import type { Browser, BrowserContext, CDPSession, Page } from "playwright";
@@ -788,6 +788,10 @@ async function runInBrowser(args: {
     await captureBrowserPage(baseCtx.capture, page, "runtime-collect-start");
     await collect({ ...baseCtx, context: ctx, page, sendInteraction: browserSendInteraction });
     await captureBrowserPage(baseCtx.capture, page, "runtime-collect-complete");
+    // Mark success before the finally so tracer.stop() deletes chunks on a
+    // clean run. Anything thrown after this point (only release/page-close)
+    // is treated as benign teardown and does not flip the trace to retained.
+    tracer.markSucceeded();
   } catch (err) {
     if (page) {
       await captureBrowserPage(baseCtx.capture, page, "runtime-error");
@@ -1332,6 +1336,7 @@ async function establishSession(
 
 interface Tracer {
   checkpoint(label: string): Promise<void>;
+  markSucceeded(): void;
   start(): Promise<void>;
   stop(): Promise<void>;
 }
@@ -1340,6 +1345,11 @@ interface Tracer {
  * Start/stop Playwright tracing. With raw fixture capture active, traces are
  * flushed as chunks at every fixture checkpoint so a later browser/context
  * closure does not destroy the entire diagnostic artifact.
+ *
+ * Storage note: traces with screenshots+snapshots+sources can be 20–100 MB per
+ * run. To keep the on-disk footprint bounded, written trace chunks are deleted
+ * after a clean run (markSucceeded() called before stop()) and retained on
+ * failure for post-mortem debugging.
  */
 function makeTracer(context: BrowserContext, name: string, capture: CaptureSession | null): Tracer {
   const enabled = process.env.PDPP_TRACE === "1" || capture !== null;
@@ -1353,6 +1363,8 @@ function makeTracer(context: BrowserContext, name: string, capture: CaptureSessi
   let started = false;
   let chunkStarted = false;
   let chunkSeq = 0;
+  let succeeded = false;
+  const writtenTraceFiles: string[] = [];
 
   const safeChunkLabel = (label: string): string =>
     String(label)
@@ -1404,11 +1416,23 @@ function makeTracer(context: BrowserContext, name: string, capture: CaptureSessi
     const path = join(traceBaseDir, `${traceName}-${String(chunkSeq).padStart(3, "0")}-${safeChunkLabel(label)}.zip`);
     try {
       await tracing.stopChunk({ path });
+      writtenTraceFiles.push(path);
     } catch (err) {
       writeTraceDiagnostic(`stop-chunk-${safeChunkLabel(label)}`, err);
     } finally {
       chunkStarted = false;
     }
+  };
+
+  const deleteWrittenTraces = (): void => {
+    for (const path of writtenTraceFiles) {
+      try {
+        rmSync(path, { force: true });
+      } catch (err) {
+        writeTraceDiagnostic("delete-on-success", err);
+      }
+    }
+    writtenTraceFiles.length = 0;
   };
 
   return {
@@ -1417,6 +1441,8 @@ function makeTracer(context: BrowserContext, name: string, capture: CaptureSessi
         return;
       }
       try {
+        // Max-fidelity flags: screenshots+snapshots+sources. Expect ~20–100 MB
+        // per run; retain-on-failure (see stop()) keeps the disk cost bounded.
         await context.tracing.start({
           name: traceName,
           screenshots: true,
@@ -1440,6 +1466,9 @@ function makeTracer(context: BrowserContext, name: string, capture: CaptureSessi
       await stopChunk(label);
       await startChunk(label);
     },
+    markSucceeded(): void {
+      succeeded = true;
+    },
     async stop(): Promise<void> {
       if (!(enabled && started)) {
         return;
@@ -1448,11 +1477,25 @@ function makeTracer(context: BrowserContext, name: string, capture: CaptureSessi
         if (traceBaseDir && typeof tracing.stopChunk === "function") {
           await stopChunk("final");
           await context.tracing.stop();
-          process.stderr.write(`[trace] trace chunks written under ${traceBaseDir}\n`);
+          if (succeeded) {
+            deleteWrittenTraces();
+            process.stderr.write(`[trace] run succeeded; trace chunks deleted from ${traceBaseDir}\n`);
+          } else {
+            process.stderr.write(`[trace] run failed; trace chunks retained under ${traceBaseDir}\n`);
+          }
           return;
         }
         await context.tracing.stop({ path: tracePath });
-        process.stderr.write(`[trace] trace written to ${tracePath}\n`);
+        if (succeeded) {
+          try {
+            rmSync(tracePath, { force: true });
+            process.stderr.write(`[trace] run succeeded; trace deleted (${tracePath})\n`);
+          } catch (err) {
+            writeTraceDiagnostic("delete-on-success", err);
+          }
+        } else {
+          process.stderr.write(`[trace] run failed; trace retained at ${tracePath}\n`);
+        }
       } catch (err) {
         writeTraceDiagnostic("stop", err);
       }
