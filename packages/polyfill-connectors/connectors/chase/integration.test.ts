@@ -44,6 +44,7 @@ import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts
 import {
   type EmitDeps,
   emitAccountsStream,
+  emitNoActivityProgress,
   emitStatementIndexOnly,
   emitTransactionsForAccount,
   emitTransactionsStateIfAny,
@@ -243,6 +244,33 @@ test("emitTransactionsForAccount: tx with date=null is skipped (no emit, no curs
   await emitTransactionsForAccount(deps, account, "all", [makeTx({ date: null, fitid: "DATELESS" })]);
   assert.equal(emitted.filter((r) => r.stream === "transactions").length, 0);
   assert.equal(deps.maxSeenByAccount[account.internal_id], undefined, "no cursor write for a dateless-only batch");
+});
+
+test("emitNoActivityProgress: reports checked/no-activity without advancing cursor or SKIP_RESULT", async () => {
+  const { deps, emitted, messages } = makeHarness({
+    maxSeenByAccount: {
+      INTACC123: { max_seen_date: "2026-04-10", last_activity: "since_last_statement" },
+    },
+  });
+  await emitNoActivityProgress(deps, makeAccount(), "date_range");
+
+  assert.equal(emitted.length, 0, "no transaction records emit for a Chase no-activity confirmation");
+  assert.equal(deps.maxSeenByAccount.INTACC123?.max_seen_date, "2026-04-10", "no-activity must not advance max_seen");
+  assert.equal(
+    messages.filter((m) => m.type === "SKIP_RESULT").length,
+    0,
+    "no-activity is a checked empty result, not a failure"
+  );
+  assert.ok(
+    messages.some(
+      (m) =>
+        m.type === "PROGRESS" &&
+        m.stream === "transactions" &&
+        m.message.includes("no activity found") &&
+        m.message.includes("activity=date_range")
+    ),
+    "expected a no-activity progress diagnostic"
+  );
 });
 
 // ─── Invariant 6: emittedAt propagates into every record's fetched_at ────

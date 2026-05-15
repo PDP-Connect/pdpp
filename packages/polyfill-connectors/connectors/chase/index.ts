@@ -93,6 +93,7 @@ const ERROR_MESSAGE_SLICE_LONG = 160;
 const ERROR_MESSAGE_SLICE_MAX = 200;
 const HASH_SHORT_LEN = 16;
 const DOWNLOAD_RESPONSE_HINT_RE = /filename|attachment|octet-stream|x-ofx|qfx/iu;
+const NO_ACTIVITY_CONFIRMATION_RE = /we couldn't find any activity that matched the date range you chose/iu;
 const FILENAME_PLAIN_RE = /filename="?([^";]+)"?/iu;
 const FILENAME_UTF8_RE = /filename\*=UTF-8''([^;]+)/iu;
 const SURROUNDING_QUOTES_RE = /^"|"$/g;
@@ -111,6 +112,11 @@ interface CapturedQfxResponse {
 interface QfxResponseQueue {
   detach(): void;
   waitForNextResponse(opts?: { timeoutMs?: number }): Promise<CapturedQfxResponse>;
+}
+
+interface NoActivityConfirmation {
+  bodyPreview: string;
+  url: string;
 }
 
 // ─── Dashboard scrape: enumerate accounts ─────────────────────────────────
@@ -303,7 +309,25 @@ async function waitForQfxDownloadArtifact(
         kind: "qfx_response" as const,
         response,
       })),
+      waitForNoActivityConfirmation(page, { timeoutMs: DOWNLOAD_TIMEOUT_MS }).then((confirmation) => ({
+        confirmation,
+        kind: "no_activity" as const,
+      })),
     ]);
+    if (result.kind === "no_activity") {
+      capture?.captureHttp(
+        `download-qfx-${account.internal_id}-${activity}-no-activity-confirmation`,
+        { bodyPreview: result.confirmation.bodyPreview },
+        {
+          method: "DOM",
+          path: result.confirmation.url,
+          status: 200,
+          type: "text/html",
+        }
+      );
+      await capturePageCheckpoint(capture, page, `download-qfx-${account.internal_id}-${activity}-no-activity`);
+      return { activity, noActivity: true };
+    }
     const qfxPath = join(tmpDir, `chase-${account.internal_id}-${activity}-${Date.now()}.qfx`);
     if (result.kind === "playwright_download") {
       await result.download.saveAs(qfxPath);
@@ -332,6 +356,29 @@ async function waitForQfxDownloadArtifact(
       error: `download_event_timeout: ${truncate(errMessage(err), ERROR_MESSAGE_SLICE)}`,
     };
   }
+}
+
+async function waitForNoActivityConfirmation(
+  page: Page,
+  { timeoutMs = DOWNLOAD_TIMEOUT_MS }: { timeoutMs?: number } = {}
+): Promise<NoActivityConfirmation> {
+  await page.waitForFunction(
+    (messagePattern) => {
+      const bodyText = document.body?.innerText ?? "";
+      return (
+        location.href.includes("confirmDownloadAccountActivity") && new RegExp(messagePattern, "iu").test(bodyText)
+      );
+    },
+    NO_ACTIVITY_CONFIRMATION_RE.source,
+    { timeout: timeoutMs }
+  );
+  return page.evaluate((): NoActivityConfirmation => {
+    const WS = /\s+/g;
+    return {
+      bodyPreview: (document.body?.innerText ?? "").replace(WS, " ").slice(0, 500),
+      url: location.href,
+    };
+  });
 }
 
 /** Drive a single QFX download. */
@@ -854,6 +901,18 @@ export async function emitTransactionsStateIfAny(deps: EmitDeps): Promise<void> 
   await deps.emit(stateMsg);
 }
 
+export async function emitNoActivityProgress(
+  deps: Pick<EmitDeps, "emit">,
+  account: ChaseAccount,
+  activity: ActivityKind
+): Promise<void> {
+  await deps.emit({
+    type: "PROGRESS",
+    stream: "transactions",
+    message: `${account.name}: no activity found for QFX download (activity=${activity})`,
+  });
+}
+
 async function emitNoAccountsDiagnostic(page: Page, emit: EmitFn): Promise<void> {
   const diag = await page
     .evaluate((): DashboardDiagnostics => {
@@ -898,6 +957,10 @@ async function processAccountDownload(
     ? { activity: activityChoice.activity, dateRange: activityChoice.dateRange }
     : { activity: activityChoice.activity };
   const result = await downloadQfx(page, account, deps.tmpDir, deps.capture, downloadOpts);
+  if ("noActivity" in result) {
+    await emitNoActivityProgress(deps, account, result.activity);
+    return;
+  }
   if (!result.downloaded) {
     await deps.emit({
       type: "SKIP_RESULT",

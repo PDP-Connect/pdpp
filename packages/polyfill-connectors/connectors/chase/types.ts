@@ -34,7 +34,12 @@ export interface DownloadFailure {
   error: string;
 }
 
-export type DownloadResult = DownloadSuccess | DownloadFailure;
+export interface DownloadNoActivity {
+  activity: ActivityKind;
+  noActivity: true;
+}
+
+export type DownloadResult = DownloadSuccess | DownloadFailure | DownloadNoActivity;
 
 export interface DateFillOk {
   ok: true;
