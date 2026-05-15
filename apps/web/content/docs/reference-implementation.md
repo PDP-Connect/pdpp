@@ -46,12 +46,13 @@ This remains beta software, but `pdpp_agent_discovery.cli.no_owner_token` is
 scoped handoff without an owner bearer token. Treat the command as the
 no-owner-token connect flow while that metadata flag is true.
 
-The reference dashboard also shows repo-local operator commands such as
-`pnpm exec pdpp run timeline <run-id>`. Those are not the same surface as the
-published package: they inspect `_ref` operator routes for a running reference
-deployment. When placeholder owner auth is enabled, set
-`PDPP_OWNER_SESSION_COOKIE` to a valid `pdpp_owner_session` cookie before using
-those commands.
+The reference dashboard also shows reference operator diagnostics such as
+`pdpp ref run timeline <run-id>`, `pdpp ref grant timeline <grant-id>`, and
+`pdpp ref trace show <trace-id>`. These use the `pdpp ref` namespace from the
+same `@pdpp/cli` package (`npx -y @pdpp/cli@beta --help`) and inspect `_ref`
+operator routes for a running reference deployment. When placeholder owner auth
+is enabled, set `PDPP_OWNER_SESSION_COOKIE` to a valid `pdpp_owner_session`
+cookie before using those commands.
 
 The authorization-server metadata truthfully advertises:
 

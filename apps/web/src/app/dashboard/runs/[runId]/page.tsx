@@ -127,7 +127,7 @@ export default async function RunDetailPage({
           </>
         }
         breadcrumbs={[{ label: "Runs", href: dashboardRoutes.section.runs }, { label: "Run" }]}
-        cliCommand={`pdpp run timeline ${runId}`}
+        cliCommand={`pdpp ref run timeline ${runId}`}
         description={
           <>
             {connectorId ? (

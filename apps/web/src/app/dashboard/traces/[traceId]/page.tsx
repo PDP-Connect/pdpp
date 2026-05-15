@@ -53,7 +53,7 @@ export default async function TraceDetailPage({
     <DashboardShell active="traces">
       <TimelineDetailView
         breadcrumbs={[{ label: "Traces", href: "/dashboard/traces" }, { label: "Trace" }]}
-        cliCommand={`pdpp trace show ${traceId}`}
+        cliCommand={`pdpp ref trace show ${traceId}`}
         description={
           <>
             {envelope.events.length} events

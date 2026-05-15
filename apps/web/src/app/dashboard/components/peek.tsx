@@ -41,9 +41,11 @@ export function PeekPane({
         {cliCommand && (
           <div className="mt-3">
             <div className="pdpp-eyebrow mb-1">Reference CLI</div>
-            <pre className="pdpp-caption overflow-x-auto rounded bg-muted p-2 font-mono">pnpm exec {cliCommand}</pre>
+            <pre className="pdpp-caption overflow-x-auto rounded bg-muted p-2 font-mono">{cliCommand}</pre>
             <p className="pdpp-caption mt-1 text-muted-foreground">
-              Repo-local operator command; public <code className="font-mono">@pdpp/cli</code> is for connect.
+              Reference operator diagnostic via <code className="font-mono">pdpp ref</code>. Install with{" "}
+              <code className="font-mono">npx -y @pdpp/cli@beta --help</code>. Set{" "}
+              <code className="font-mono">PDPP_OWNER_SESSION_COOKIE</code> when owner auth is enabled.
             </p>
           </div>
         )}

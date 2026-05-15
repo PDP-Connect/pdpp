@@ -94,7 +94,7 @@ export default async function TracesPage({ searchParams }: { searchParams: Promi
     buildListHref: (overrides) => listHref(params, overrides),
     peekId: params.peek,
     peekEnvelope,
-    peekCliCommand: (id) => `pdpp trace show ${id}`,
+    peekCliCommand: (id) => `pdpp ref trace show ${id}`,
     emptyTitle: "No traces yet",
     emptyHint: "Trace artifacts appear as provider-connect, owner-device, or /v1 read flows run.",
   };

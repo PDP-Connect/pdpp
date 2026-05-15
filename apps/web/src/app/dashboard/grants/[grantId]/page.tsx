@@ -54,7 +54,7 @@ export default async function GrantDetailPage({
     <DashboardShell active="grants">
       <TimelineDetailView
         breadcrumbs={[{ label: "Grants", href: "/dashboard/grants" }, { label: "Grant" }]}
-        cliCommand={`pdpp grant timeline ${grantId}`}
+        cliCommand={`pdpp ref grant timeline ${grantId}`}
         count={`${envelope.events.length} events${revoked ? " · revoked" : ""}`}
         envelope={envelope}
         id={grantId}
