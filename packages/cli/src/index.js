@@ -7,6 +7,7 @@ import { ConnectError, connectProvider, normalizeProviderUrl, readStoredCredenti
 import { runRefRun } from './ref/commands/run.js';
 import { runRefGrant } from './ref/commands/grant.js';
 import { runRefTrace } from './ref/commands/trace.js';
+import { runRefLogin } from './ref/commands/login.js';
 import { PdppCliError, PdppUsageError } from './ref/errors.js';
 
 const HELP = `PDPP CLI
@@ -21,6 +22,7 @@ Agent access:
   ${createPdppCliCommand()}
 
 Reference diagnostics (reference server only):
+  ${PDPP_CLI_BIN_NAME} ref login <reference-url>
   ${PDPP_CLI_BIN_NAME} ref run timeline <run-id> --as-url <url>
   ${PDPP_CLI_BIN_NAME} ref grant timeline <grant-id> --as-url <url>
   ${PDPP_CLI_BIN_NAME} ref trace show <trace-id> --as-url <url>
@@ -28,6 +30,9 @@ Reference diagnostics (reference server only):
 Notes:
   Do not ask users for owner bearer tokens for routine delegated access.
   "pdpp ref" commands require a running PDPP reference server and an owner session.
+  "pdpp ref login" caches an owner session in project-local .pdpp/ with mode 0600;
+  later "pdpp ref" commands use the cache when --owner-session and
+  PDPP_OWNER_SESSION_COOKIE are absent.
 `;
 
 export async function runCli(argv, io = { stdout: process.stdout, stderr: process.stderr }) {
@@ -90,13 +95,19 @@ export async function runCli(argv, io = { stdout: process.stdout, stderr: proces
 
     if (!refCommand || refCommand === '--help' || refCommand === '-h') {
       io.stdout.write(`Reference diagnostics (reference server only):\n`);
+      io.stdout.write(`  ${PDPP_CLI_BIN_NAME} ref login <reference-url> [--password-stdin] [--cache-root <dir>]\n`);
       io.stdout.write(`  ${PDPP_CLI_BIN_NAME} ref run timeline <run-id> --as-url <url> [--owner-session <cookie>] [--format json|table]\n`);
       io.stdout.write(`  ${PDPP_CLI_BIN_NAME} ref grant timeline <grant-id> --as-url <url> [--owner-session <cookie>] [--format json|table]\n`);
       io.stdout.write(`  ${PDPP_CLI_BIN_NAME} ref trace show <trace-id> --as-url <url> [--owner-session <cookie>] [--format json|table]\n`);
+      io.stdout.write(`\nNotes:\n`);
+      io.stdout.write(`  "ref login" prompts the reference server's owner-login route and caches the\n`);
+      io.stdout.write(`  resulting session in .pdpp/owner-sessions/ (mode 0600). The cookie value is\n`);
+      io.stdout.write(`  never printed. The password must come from --password-stdin or\n`);
+      io.stdout.write(`  PDPP_OWNER_PASSWORD; it is not accepted on the command line.\n`);
       return 0;
     }
 
-    const refDispatch = { run: runRefRun, grant: runRefGrant, trace: runRefTrace };
+    const refDispatch = { login: runRefLogin, run: runRefRun, grant: runRefGrant, trace: runRefTrace };
     const handler = refDispatch[refCommand];
     if (!handler) {
       io.stderr.write(`Unknown ref command: ${refCommand}\n`);

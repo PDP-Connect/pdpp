@@ -12,9 +12,10 @@ export async function runRefRun(argv, io = {}, fetchImpl = globalThis.fetch) {
     const runId = requirePositional(positionals, 0, 'run-id');
     const asUrl = resolveReferenceUrl(flags);
     const ownerSession = flags['owner-session'] || '';
+    const cacheRoot = flags['cache-root'];
     const { body } = await fetchJson(
       `${asUrl}/_ref/runs/${encodeURIComponent(runId)}/timeline`,
-      { headers: { ...ownerSessionHeaders({ ownerSession }) } },
+      { headers: { ...ownerSessionHeaders({ ownerSession, referenceUrl: asUrl, cacheRoot }) } },
       fetchImpl
     );
     const format = resolveFormat(flags, 'table', 'json');
