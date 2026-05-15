@@ -408,6 +408,19 @@ test("currentActivityId: prefers UI id and otherwise uses deterministic fallback
   assert.equal(currentActivityId("ACC", withoutUiId), fallback);
 });
 
+test("parseCurrentActivityDom: ignores ancestor activity containers and emits only leaf rows", () => {
+  const rows = parseCurrentActivityDom(readFixture("current-activity-wrapped-rows.html"), "2026-05-15");
+  assert.equal(rows.length, 2);
+  assert.deepEqual(
+    rows.map((r) => r.description),
+    ["Whole Foods Market", "ACH Deposit Payroll"]
+  );
+  assert.deepEqual(
+    rows.map((r) => r.amount_cents),
+    [-4217, 125_000]
+  );
+});
+
 // ─── parseStatementsListDom ──────────────────────────────────────────────
 
 test("parseStatementsListDom: extracts statement rows (tax documents skipped)", () => {

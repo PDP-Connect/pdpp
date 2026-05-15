@@ -103,6 +103,16 @@ const DASHBOARD_ACCOUNT_SELECTOR =
   '[id^="accounts-name-link-button-"][id$="-label"], button[id^="accounts-name-link-button-"], button[data-testid^="accounts-name-link-button-"]';
 const ACCOUNT_ACTIVITY_DOM_WAIT_SELECTOR =
   '[data-testid*="transaction" i], [data-testid*="activity" i], [id*="transaction" i], [id*="activity" i], tr';
+const TIME_RANGE_FIELD_BY_STREAM: Record<string, string> = {
+  balances: "as_of",
+  current_activity: "activity_date",
+  statements: "date_delivered",
+  transactions: "date",
+};
+
+export function chaseTimeRangeField(stream: string): string {
+  return TIME_RANGE_FIELD_BY_STREAM[stream] ?? "date";
+}
 
 interface CapturedQfxResponse {
   body: Buffer;
@@ -1242,6 +1252,7 @@ if (isMainModule(import.meta.url)) {
     // `design-notes/chase-anti-bot.md`. Isolated-per-connector profile works.
     // Headful by default so Chase's login accepts the submission.
     browser: { profileName: "chase", headless: false },
+    timeRangeField: chaseTimeRangeField,
     async ensureSession({ context, page, sendInteraction }): Promise<void> {
       await ensureChaseSession({
         context,

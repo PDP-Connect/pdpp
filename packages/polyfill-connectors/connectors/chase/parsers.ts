@@ -377,6 +377,21 @@ function normalizeDescription(text: string): string {
   );
 }
 
+function isParseableCurrentActivityText(text: string, referenceDateIso: string): boolean {
+  return Boolean(
+    text && DIGIT_RE.test(text) && parseVisibleDate(text, referenceDateIso) && parseVisibleAmount(text) !== null
+  );
+}
+
+function hasParseableCurrentActivityDescendant(el: Element, referenceDateIso: string): boolean {
+  for (const child of el.querySelectorAll<HTMLElement>(CURRENT_ACTIVITY_SELECTOR)) {
+    if (isParseableCurrentActivityText(normWhitespace(textOf(child)), referenceDateIso)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function currentActivityId(accountId: string, row: CurrentActivityRow): string {
   if (row.ui_transaction_id) {
     return `${accountId}|${row.ui_transaction_id}`;
@@ -397,7 +412,13 @@ export function parseCurrentActivityDom(html: string, referenceDateIso: string):
   const seen = new Set<string>();
   for (const el of document.querySelectorAll<HTMLElement>(CURRENT_ACTIVITY_SELECTOR)) {
     const text = normWhitespace(textOf(el));
-    if (!(text && DIGIT_RE.test(text))) {
+    if (!isParseableCurrentActivityText(text, referenceDateIso)) {
+      continue;
+    }
+    // Chase activity tables often put broad "activity" ids/testids on
+    // containers. Only parse leaf candidates so a wrapper around multiple
+    // rows cannot synthesize duplicate aggregate rows.
+    if (hasParseableCurrentActivityDescendant(el, referenceDateIso)) {
       continue;
     }
     const activityDate = parseVisibleDate(text, referenceDateIso);

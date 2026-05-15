@@ -427,11 +427,15 @@
         "required": [
           "id",
           "account_id",
+          "account_name",
           "status",
           "activity_date",
+          "posted_date",
           "amount",
           "currency",
           "description",
+          "memo",
+          "ui_transaction_id",
           "source",
           "fetched_at"
         ]

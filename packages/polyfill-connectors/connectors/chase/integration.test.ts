@@ -45,6 +45,7 @@ import { fileURLToPath } from "node:url";
 import type { EmittedMessage, StreamScope } from "../../src/connector-runtime.ts";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
 import {
+  chaseTimeRangeField,
   type EmitDeps,
   emitAccountsStream,
   emitCurrentActivityForAccount,
@@ -67,6 +68,7 @@ interface RecordingHarness {
 const FROZEN_EMITTED_AT = "2026-04-22T12:00:00.000Z";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURE_DIR = join(__dirname, "__fixtures__");
+const CHASE_MANIFEST_PATH = join(__dirname, "..", "..", "manifests", "chase.json");
 
 interface HarnessOverrides {
   maxSeenByAccount?: Record<string, TransactionCursor>;
@@ -215,6 +217,24 @@ test("emitCurrentActivityForAccount: emits pending and posted rows only to curre
   assert.equal(pending.data.id, `${account.internal_id}|txn_20260514_A1`);
   assert.equal(pending.data.posted_date, null);
   assert.equal(pending.data.source, "chase_activity_ui");
+});
+
+test("chaseTimeRangeField: current_activity filters by activity_date without changing transactions", () => {
+  assert.equal(chaseTimeRangeField("current_activity"), "activity_date");
+  assert.equal(chaseTimeRangeField("transactions"), "date");
+  assert.equal(chaseTimeRangeField("unknown_stream"), "date");
+});
+
+test("chase manifest: current_activity nullable fields are required-present", () => {
+  const manifest = JSON.parse(readFileSync(CHASE_MANIFEST_PATH, "utf8")) as {
+    streams?: Array<{ name?: string; schema?: { required?: string[] } }>;
+  };
+  const stream = manifest.streams?.find((s) => s.name === "current_activity");
+  assert.ok(stream);
+  const required = new Set(stream.schema?.required ?? []);
+  for (const field of ["account_name", "posted_date", "memo", "ui_transaction_id"]) {
+    assert.ok(required.has(field), `${field} must be required in manifest because Zod requires a present nullable key`);
+  }
 });
 
 // ─── Invariant 3: all-streams-disabled emits nothing ─────────────────────
