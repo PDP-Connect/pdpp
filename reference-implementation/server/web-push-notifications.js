@@ -426,8 +426,13 @@ function shouldRevokeForWebPushError(err) {
   return status === 404 || status === 410;
 }
 
+export function resolveWebPushModuleApi(webPushModule) {
+  return webPushModule?.default ?? webPushModule;
+}
+
 async function defaultSendNotification(subscription, payload, config) {
-  const webPush = await import('web-push');
+  const webPushModule = await import('web-push');
+  const webPush = resolveWebPushModuleApi(webPushModule);
   webPush.setVapidDetails(config.subject, config.publicKey, config.privateKey);
   return webPush.sendNotification(subscription, JSON.stringify(payload), {
     TTL: DEFAULT_TTL_SECONDS,

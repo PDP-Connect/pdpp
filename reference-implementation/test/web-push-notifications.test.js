@@ -16,6 +16,7 @@ import {
   createSqliteWebPushSubscriptionStore,
   fanoutPendingInteractionWebPush,
   fanoutTestWebPush,
+  resolveWebPushModuleApi,
 } from '../server/web-push-notifications.js';
 
 const TEST_PASSWORD = 'web-push-owner-test-password';
@@ -55,6 +56,17 @@ function sampleSubscription(endpoint = 'https://push.example.invalid/sub/one') {
     },
   };
 }
+
+test('web-push module normalization supports CommonJS default import shape', async () => {
+  const actualModule = await import('web-push');
+  const actualApi = resolveWebPushModuleApi(actualModule);
+  assert.equal(typeof actualApi.setVapidDetails, 'function');
+  assert.equal(typeof actualApi.sendNotification, 'function');
+
+  const api = { setVapidDetails() {}, sendNotification() {} };
+  assert.equal(resolveWebPushModuleApi(api), api);
+  assert.equal(resolveWebPushModuleApi({ default: api }), api);
+});
 
 async function runWebPushSubscriptionStoreConformance(makeStore, prefix = 'store') {
   const store = await makeStore();
