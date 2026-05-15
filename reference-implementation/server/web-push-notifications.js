@@ -389,6 +389,16 @@ export function getDefaultWebPushSubscriptionStore() {
   return defaultWebPushSubscriptionStore;
 }
 
+export function buildTestPushPayload({ now = nowIso() } = {}) {
+  return {
+    type: 'pdpp.test_notification',
+    title: 'PDPP test notification',
+    body: 'Your dashboard browser can receive Web Push alerts.',
+    timestamp: now,
+    url: '/dashboard',
+  };
+}
+
 export function buildPendingInteractionPushPayload({ interaction, connectorDisplayName, routeTo = 'interaction', runId }) {
   const kind = typeof interaction?.kind === 'string' ? interaction.kind : 'interaction';
   const interactionId = typeof interaction?.request_id === 'string' ? interaction.request_id : '';
@@ -425,6 +435,33 @@ async function defaultSendNotification(subscription, payload, config) {
   });
 }
 
+async function sendPayloadToOwnerSubscriptions({
+  config,
+  store,
+  sender,
+  ownerSubjectId,
+  payload,
+  log,
+  logContext,
+}) {
+  const subscriptions = await store.listActiveRaw(ownerSubjectId);
+  let sent = 0;
+  await Promise.all(
+    subscriptions.map(async (record) => {
+      try {
+        await sender({ endpoint: record.endpoint, keys: record.keys }, payload, config);
+        await store.markSuccess(record.endpoint);
+        sent += 1;
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        await store.markFailure(record.endpoint, reason, { revoke: shouldRevokeForWebPushError(err) });
+        log.warn?.(`[controller] web push ${logContext} failed: ${reason}`);
+      }
+    }),
+  );
+  return { attempted: subscriptions.length, sent, unavailable: false };
+}
+
 export async function fanoutPendingInteractionWebPush({
   config = resolveWebPushConfig(),
   store = getDefaultWebPushSubscriptionStore(),
@@ -445,20 +482,39 @@ export async function fanoutPendingInteractionWebPush({
     return { attempted: 0, sent: 0, unavailable: false };
   }
   const payload = buildPendingInteractionPushPayload({ interaction, connectorDisplayName, routeTo, runId });
-  const subscriptions = await store.listActiveRaw(normalizedOwnerSubjectId);
-  let sent = 0;
-  await Promise.all(
-    subscriptions.map(async (record) => {
-      try {
-        await sender({ endpoint: record.endpoint, keys: record.keys }, payload, config);
-        await store.markSuccess(record.endpoint);
-        sent += 1;
-      } catch (err) {
-        const reason = err instanceof Error ? err.message : String(err);
-        await store.markFailure(record.endpoint, reason, { revoke: shouldRevokeForWebPushError(err) });
-        log.warn?.(`[controller] web push for run ${runId} failed: ${reason}`);
-      }
-    }),
-  );
-  return { attempted: subscriptions.length, sent, unavailable: false };
+  return sendPayloadToOwnerSubscriptions({
+    config,
+    store,
+    sender,
+    ownerSubjectId: normalizedOwnerSubjectId,
+    payload,
+    log,
+    logContext: `for run ${runId}`,
+  });
+}
+
+export async function fanoutTestWebPush({
+  config = resolveWebPushConfig(),
+  store = getDefaultWebPushSubscriptionStore(),
+  sender = defaultSendNotification,
+  ownerSubjectId,
+  log = console,
+}) {
+  if (!config.enabled) {
+    return { attempted: 0, sent: 0, unavailable: true };
+  }
+  const normalizedOwnerSubjectId = nonEmptyString(ownerSubjectId);
+  if (!normalizedOwnerSubjectId) {
+    return { attempted: 0, sent: 0, unavailable: false };
+  }
+  const payload = buildTestPushPayload();
+  return sendPayloadToOwnerSubscriptions({
+    config,
+    store,
+    sender,
+    ownerSubjectId: normalizedOwnerSubjectId,
+    payload,
+    log,
+    logContext: `test notification for ${normalizedOwnerSubjectId}`,
+  });
 }

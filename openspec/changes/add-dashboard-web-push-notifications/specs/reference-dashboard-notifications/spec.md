@@ -56,6 +56,29 @@ Dashboard Web Push notifications for pending connector interactions SHALL includ
 - **THEN** the push payload SHALL NOT include those values
 - **AND** the notification text SHALL NOT require the owner to infer or expose secret values on a lock screen.
 
+### Requirement: Dashboard SHALL allow owner-initiated Web Push delivery proof
+
+The reference dashboard SHALL expose an owner-authenticated way for a subscribed browser to verify that Web Push delivery reaches it, without inducing a connector run. The proof path SHALL not relax authentication or payload-privacy constraints.
+
+#### Scenario: Subscribed owner requests a test notification
+
+- **WHEN** an authenticated owner with at least one active subscription requests a test notification
+- **THEN** the reference SHALL send a non-secret test payload to that owner's active subscriptions
+- **AND** the response SHALL report attempted, sent, and unavailable counts
+- **AND** the notification click SHALL route to the owner dashboard.
+
+#### Scenario: Test notification is requested without VAPID configuration
+
+- **WHEN** an authenticated owner requests a test notification while VAPID is not configured
+- **THEN** the reference SHALL refuse with an unavailable status
+- **AND** no subscription state SHALL be modified.
+
+#### Scenario: Unauthenticated test notification is attempted
+
+- **WHEN** owner authentication is enabled and a request triggers a test notification without a valid owner session
+- **THEN** the request SHALL be rejected
+- **AND** no push SHALL be sent.
+
 ### Requirement: Service worker behavior SHALL be safe and click-through oriented
 
 The dashboard service worker SHALL handle push events by showing safe notifications and SHALL handle notification clicks by focusing or opening the dashboard run/interaction URL.

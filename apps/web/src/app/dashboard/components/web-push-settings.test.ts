@@ -5,8 +5,10 @@ import test from "node:test";
 
 const HERE = new URL(".", import.meta.url).pathname;
 const APP_ROOT = join(HERE, "..", "..", "..", "..");
-const SERVICE_WORKER_PAYLOAD_TYPE_PATTERN = /payload\.type !== "pdpp\.pending_interaction"/;
-const SERVICE_WORKER_DASHBOARD_URL_PATTERN = /rawUrl\.startsWith\("\/dashboard\/"\)/;
+const SERVICE_WORKER_KNOWN_TYPES_PATTERN = /PDPP_KNOWN_PUSH_TYPES\.has\(payload\.type\)/;
+const SERVICE_WORKER_PENDING_TYPE_ALLOWED_PATTERN = /pdpp\.pending_interaction/;
+const SERVICE_WORKER_TEST_TYPE_ALLOWED_PATTERN = /pdpp\.test_notification/;
+const SERVICE_WORKER_DASHBOARD_URL_PATTERN = /rawUrl\.startsWith\("\/dashboard"\)/;
 const SERVICE_WORKER_MATCH_CLIENTS_PATTERN = /clients\.matchAll/;
 const SERVICE_WORKER_OPEN_WINDOW_PATTERN = /clients\.openWindow\(url\)/;
 const SENSITIVE_WORD_PATTERN = /password|cookie|token|otp|answer/i;
@@ -47,7 +49,9 @@ test("WebPushSettings renders unsupported, denied-permission, insecure-context, 
 
 test("dashboard service worker fails closed and click-through targets dashboard-relative URLs", async () => {
   const src = await readFile(join(APP_ROOT, "public", "pdpp-dashboard-sw.js"), "utf8");
-  assert.match(src, SERVICE_WORKER_PAYLOAD_TYPE_PATTERN);
+  assert.match(src, SERVICE_WORKER_KNOWN_TYPES_PATTERN);
+  assert.match(src, SERVICE_WORKER_PENDING_TYPE_ALLOWED_PATTERN);
+  assert.match(src, SERVICE_WORKER_TEST_TYPE_ALLOWED_PATTERN);
   assert.match(src, SERVICE_WORKER_DASHBOARD_URL_PATTERN);
   assert.match(src, SERVICE_WORKER_MATCH_CLIENTS_PATTERN);
   assert.match(src, SERVICE_WORKER_OPEN_WINDOW_PATTERN);
@@ -83,4 +87,13 @@ test("dashboard notification setup registers, posts, reuses, and deletes browser
   assert.match(src, WEB_PUSH_POST_PATTERN);
   assert.match(src, WEB_PUSH_DELETE_PATTERN);
   assert.doesNotMatch(src, FIRST_SAVED_ENDPOINT_PATTERN);
+});
+
+test("dashboard test notification button posts to /_ref/web-push/test and gates on subscription", async () => {
+  const src = await readFile(join(HERE, "web-push-settings.tsx"), "utf8");
+  assert.match(src, /fetch\("\/_ref\/web-push\/test"/);
+  assert.match(src, /method:\s*"POST"/);
+  assert.match(src, />\s*Send test\s*</);
+  assert.match(src, /disabled=\{busy \|\| !endpoint \|\| Boolean\(unavailable\)\}/);
+  assert.match(src, /No active subscriptions for this owner/);
 });

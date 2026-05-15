@@ -10,10 +10,12 @@ import { startServer } from '../server/index.js';
 import { closePostgresStorage, initPostgresStorage, postgresQuery } from '../server/postgres-storage.js';
 import {
   buildPendingInteractionPushPayload,
+  buildTestPushPayload,
   createMemoryWebPushSubscriptionStore,
   createPostgresWebPushSubscriptionStore,
   createSqliteWebPushSubscriptionStore,
   fanoutPendingInteractionWebPush,
+  fanoutTestWebPush,
 } from '../server/web-push-notifications.js';
 
 const TEST_PASSWORD = 'web-push-owner-test-password';
@@ -378,4 +380,107 @@ test('reference scheduler Web Push fanout uses the server subscription store and
   assert.match(src, /ownerSubjectId: ownerAuthSubjectId/);
   assert.match(src, /store: webPushSubscriptionStore/);
   assert.match(src, /routeTo: 'run'/);
+});
+
+test('test notification Web Push payload carries no secrets and routes to /dashboard', () => {
+  const payload = buildTestPushPayload();
+  assert.equal(payload.type, 'pdpp.test_notification');
+  assert.equal(payload.url, '/dashboard');
+  assert.equal(typeof payload.title, 'string');
+  assert.equal(typeof payload.body, 'string');
+  const serialized = JSON.stringify(payload);
+  for (const forbidden of ['password', 'cookie', 'token', 'otp', 'answer', 'credential', 'secret']) {
+    assert.equal(serialized.toLowerCase().includes(forbidden), false, `payload leaked ${forbidden}`);
+  }
+});
+
+test('test Web Push fanout is scoped to the requesting owner subject', async () => {
+  const store = createMemoryWebPushSubscriptionStore();
+  await store.upsert('owner_local', sampleSubscription('https://push.example.invalid/sub/test-local'), {});
+  await store.upsert('owner_other', sampleSubscription('https://push.example.invalid/sub/test-other'), {});
+
+  const endpoints = [];
+  const result = await fanoutTestWebPush({
+    config: {
+      enabled: true,
+      publicKey: VAPID_PUBLIC,
+      privateKey: VAPID_PRIVATE,
+      subject: 'mailto:test@example.invalid',
+    },
+    store,
+    ownerSubjectId: 'owner_local',
+    log: { warn() {} },
+    sender: async (subscription, payload) => {
+      assert.equal(payload.type, 'pdpp.test_notification');
+      endpoints.push(subscription.endpoint);
+    },
+  });
+
+  assert.deepEqual(endpoints, ['https://push.example.invalid/sub/test-local']);
+  assert.equal(result.attempted, 1);
+  assert.equal(result.sent, 1);
+  assert.equal(result.unavailable, false);
+});
+
+test('test Web Push fanout reports unavailable when VAPID is not configured', async () => {
+  const store = createMemoryWebPushSubscriptionStore();
+  await store.upsert('owner_local', sampleSubscription('https://push.example.invalid/sub/test-unavail'), {});
+
+  const result = await fanoutTestWebPush({
+    config: { enabled: false, publicKey: null, privateKey: null, subject: 'mailto:test@example.invalid' },
+    store,
+    ownerSubjectId: 'owner_local',
+    log: { warn() {} },
+    sender: async () => {
+      throw new Error('sender should not be invoked when VAPID is disabled');
+    },
+  });
+
+  assert.deepEqual(result, { attempted: 0, sent: 0, unavailable: true });
+});
+
+test('POST /_ref/web-push/test requires owner session when owner auth is enabled', async () => {
+  await withServer(
+    {
+      ownerAuthPassword: TEST_PASSWORD,
+      webPushSubscriptionStore: createMemoryWebPushSubscriptionStore(),
+      webPushConfig: {
+        enabled: true,
+        publicKey: VAPID_PUBLIC,
+        privateKey: VAPID_PRIVATE,
+        subject: 'mailto:test@example.invalid',
+        unavailableReason: null,
+      },
+    },
+    async ({ asUrl }) => {
+      const response = await fetch(`${asUrl}/_ref/web-push/test`, {
+        method: 'POST',
+        headers: { Accept: 'application/json' },
+        redirect: 'manual',
+      });
+      assert.equal(response.status, 401);
+    },
+  );
+});
+
+test('POST /_ref/web-push/test returns 503 when VAPID is unconfigured', async () => {
+  await withServer(
+    {
+      webPushSubscriptionStore: createMemoryWebPushSubscriptionStore(),
+      webPushConfig: {
+        enabled: false,
+        publicKey: null,
+        privateKey: null,
+        subject: 'mailto:test@example.invalid',
+        unavailableReason: 'VAPID public/private keys are not configured',
+      },
+    },
+    async ({ asUrl }) => {
+      const response = await fetch(`${asUrl}/_ref/web-push/test`, {
+        method: 'POST',
+        headers: { Accept: 'application/json' },
+      });
+      assert.equal(response.status, 503);
+    },
+  );
 });

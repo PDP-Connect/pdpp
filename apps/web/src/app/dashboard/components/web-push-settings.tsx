@@ -44,6 +44,7 @@ export function WebPushSettings({
   const [busy, setBusy] = useState(false);
   const [endpoint, setEndpoint] = useState<string | null>(null);
   const [unavailable, setUnavailable] = useState<string | null>(null);
+  const [testStatus, setTestStatus] = useState<string | null>(null);
 
   useEffect(() => {
     const reason = detectSupport(config);
@@ -116,6 +117,39 @@ export function WebPushSettings({
     }
   }
 
+  async function sendTest() {
+    setBusy(true);
+    setTestStatus("Sending test notification...");
+    try {
+      const response = await fetch("/_ref/web-push/test", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+      });
+      if (!response.ok) {
+        throw new Error(`Test notification failed (${response.status})`);
+      }
+      const body = (await response.json()) as {
+        attempted?: number;
+        sent?: number;
+        unavailable?: boolean;
+      };
+      if (body.unavailable) {
+        setTestStatus("Web Push is unavailable on the server.");
+      } else if ((body.sent ?? 0) > 0) {
+        setTestStatus(`Test notification sent to ${body.sent} subscription${body.sent === 1 ? "" : "s"}.`);
+      } else if ((body.attempted ?? 0) === 0) {
+        setTestStatus("No active subscriptions for this owner. Enable Web Push first.");
+      } else {
+        setTestStatus("Push provider did not accept the test notification. Re-enable Web Push for this browser.");
+      }
+    } catch (err) {
+      setTestStatus(err instanceof Error ? err.message : "Failed to send test notification.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function disable() {
     setBusy(true);
     try {
@@ -176,8 +210,17 @@ export function WebPushSettings({
             >
               Disable
             </button>
+            <button
+              className="rounded-md border border-border px-3 py-1.5 text-sm disabled:opacity-50"
+              disabled={busy || !endpoint || Boolean(unavailable)}
+              onClick={sendTest}
+              type="button"
+            >
+              Send test
+            </button>
           </div>
         </div>
+        {testStatus ? <p className="pdpp-caption mt-3 text-muted-foreground">{testStatus}</p> : null}
         {subscriptions.length > 0 ? (
           <p className="pdpp-caption mt-3 text-muted-foreground">
             {subscriptions.length} saved browser subscription{subscriptions.length === 1 ? "" : "s"}. Last status:{" "}

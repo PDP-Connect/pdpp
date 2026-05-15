@@ -48,6 +48,7 @@ import { DeviceBatchConflictError, createDeviceExporterStore } from './stores/de
 import {
   createWebPushSubscriptionStore,
   fanoutPendingInteractionWebPush,
+  fanoutTestWebPush,
   resolveWebPushConfig,
 } from './web-push-notifications.js';
 import {
@@ -2845,6 +2846,28 @@ function buildAsApp(opts = {}) {
     const ownerSubjectId = getOwnerSubjectId(req);
     const revoked = await webPushStore.revoke(ownerSubjectId, endpoint);
     res.json({ object: 'web_push_subscription_deleted', deleted: Boolean(revoked) });
+  });
+
+  app.post('/_ref/web-push/test', ownerAuth.requireOwnerSession, async (req, res) => {
+    try {
+      if (!webPushConfig.enabled) {
+        return pdppError(res, 503, 'web_push_unavailable', webPushConfig.unavailableReason);
+      }
+      const ownerSubjectId = getOwnerSubjectId(req);
+      const result = await fanoutTestWebPush({
+        config: webPushConfig,
+        store: webPushStore,
+        ownerSubjectId,
+      });
+      res.json({
+        object: 'web_push_test_notification',
+        attempted: result.attempted,
+        sent: result.sent,
+        unavailable: Boolean(result.unavailable),
+      });
+    } catch (err) {
+      handleError(res, err);
+    }
   });
 
   // Reference-only — not the public lexical retrieval surface.
