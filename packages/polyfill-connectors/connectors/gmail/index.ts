@@ -61,12 +61,14 @@ import {
 import { validateRecord } from "./schemas.ts";
 import type {
   AllMailCursor,
+  AttachmentAllMailCursor,
   AttachmentHydrationStatus,
   AttachmentRecord,
   BlobRef,
   EmittedMessage,
   InteractionMessage,
   InteractionResponse,
+  PriorAttachmentsState,
   PriorMessagesState,
   ProgressMessage,
   StartMessage,
@@ -520,6 +522,7 @@ async function findAllMailbox(client: ImapFlow): Promise<ListResponse | null> {
 }
 
 interface AllMailSession {
+  attachmentBackfill: AttachmentAllMailCursor;
   fullResync: boolean;
   highestModseqCursor: number | string | null;
   priorModseq: number | string | null | undefined;
@@ -548,10 +551,20 @@ function deriveAllMailSession(mailbox: MailboxObject, state: Record<string, unkn
   // but every run did a full 1:* fetch. Also accept the legacy top-level
   // shape in case any historical state was written before this fix.
   const messagesState = (state.messages ?? {}) as PriorMessagesState;
+  const attachmentsState = (state.attachments ?? {}) as PriorAttachmentsState;
   const legacyState = state as { all_mail?: AllMailCursor };
   const priorAllMail: AllMailCursor = messagesState.all_mail ?? legacyState.all_mail ?? {};
+  const priorAttachmentAllMail: AttachmentAllMailCursor = attachmentsState.all_mail ?? {};
   const priorUidvalidity = priorAllMail.uidvalidity;
+  const attachmentBackfill =
+    priorAttachmentAllMail.uidvalidity === uidvalidityNum
+      ? priorAttachmentAllMail
+      : {
+          completed_at: null,
+          uidvalidity: uidvalidityNum,
+        };
   return {
+    attachmentBackfill,
     fullResync: !priorUidvalidity || priorUidvalidity !== uidvalidityNum,
     highestModseqCursor: bigintToCursor(mailbox.highestModseq),
     priorModseq: priorAllMail.highest_modseq,
@@ -719,6 +732,23 @@ export function selectAllMailFetchRange(
     return "1:*";
   }
   return `${session.priorUidnext}:*`;
+}
+
+export function isAttachmentBackfillRequested(streamsToBackfill: readonly string[] | undefined): boolean {
+  return Array.isArray(streamsToBackfill) && streamsToBackfill.includes("attachments");
+}
+
+export function selectAttachmentBackfillFetchRange(session: {
+  attachmentBackfill: AttachmentAllMailCursor;
+  priorUidnext: number;
+}): string | null {
+  const backfilledThrough = session.attachmentBackfill.backfilled_through_uid ?? 0;
+  const startUid = Math.max(1, backfilledThrough + 1);
+  const endUid = Math.max(0, session.priorUidnext - 1);
+  if (startUid > endUid) {
+    return null;
+  }
+  return `${startUid}:${endUid}`;
 }
 
 function boundedHydrationError(err: unknown): string {
@@ -1039,6 +1069,28 @@ export function runtimeBlobUploadAvailable(env: NodeJS.ProcessEnv = process.env)
   return Boolean((env.PDPP_RS_URL || env.RS_URL) && env.PDPP_OWNER_TOKEN);
 }
 
+export function validateAttachmentHydrationPreflight(args: {
+  env?: NodeJS.ProcessEnv;
+  requested: Map<string, StreamRequest>;
+  streamsToBackfill?: readonly string[] | undefined;
+}): string | null {
+  const env = args.env ?? process.env;
+  const hydrationRequested = args.requested.has("attachments") || isAttachmentBackfillRequested(args.streamsToBackfill);
+  if (!hydrationRequested) {
+    return null;
+  }
+  if (!resolveGmailAddressFromEnv(env)) {
+    return "Gmail attachment hydration requires GMAIL_ADDRESS or GMAIL_USER";
+  }
+  if (!resolveGmailPasswordFromEnv(env)) {
+    return "Gmail attachment hydration requires GOOGLE_APP_PASSWORD_PDPP or GMAIL_APP_PASSWORD";
+  }
+  if (!runtimeBlobUploadAvailable(env)) {
+    return BLOB_UPLOAD_ENV_ERROR;
+  }
+  return null;
+}
+
 // ─── Delta pass (flag/label changes since priorModseq) ──────────────────
 
 async function runDeltaPass(
@@ -1148,6 +1200,7 @@ interface AllMailDeps {
   emitRecord: EmitRecordFn;
   emittedAt: string;
   requested: Map<string, StreamRequest>;
+  streamsToBackfill?: readonly string[] | undefined;
 }
 
 /**
@@ -1178,6 +1231,7 @@ async function runAllMailPasses(
   //   (CHANGEDSINCE priorModseq).
   const timeRange = deps.requested.get("messages")?.time_range || deps.requested.get("attachments")?.time_range;
   const fetchRange = selectAllMailFetchRange(session, deps.requested);
+  const attachmentBackfillRequested = isAttachmentBackfillRequested(deps.streamsToBackfill);
   await emit({
     type: "PROGRESS",
     message: `Fetching ${session.fullResync ? "all" : "new"} messages (${fetchRange}) from ${allMail.path}`,
@@ -1207,15 +1261,6 @@ async function runAllMailPasses(
     stream: "messages",
     message: `Collected ${metas.length} headers; beginning body pass`,
   });
-  if (deps.requested.has("attachments") && !runtimeBlobUploadAvailable()) {
-    await emit({
-      type: "PROGRESS",
-      stream: "attachments",
-      message:
-        "Attachment metadata will be emitted with hydration_status=failed because blob upload requires PDPP_RS_URL/RS_URL and PDPP_OWNER_TOKEN.",
-    });
-  }
-
   const fetchBodiesBound: FetchBodiesFn = (msg, selection, wantBodies, wantMessages) =>
     fetchBodies(client, msg, selection, wantBodies, wantMessages);
   const hydrateAttachment = makeAttachmentHydrator({
@@ -1236,6 +1281,43 @@ async function runAllMailPasses(
     wantMessages: deps.requested.has("messages"),
   };
   await emitMessagesPass(perMessageDeps, metas);
+
+  if (attachmentBackfillRequested) {
+    const attachmentBackfillRange = selectAttachmentBackfillFetchRange(session);
+    if (attachmentBackfillRange) {
+      await emit({
+        type: "PROGRESS",
+        stream: "attachments",
+        message: `Backfilling historical attachment UIDs (${attachmentBackfillRange}) from ${allMail.path}`,
+      });
+      const backfillMetas = await collectMetadata(client, attachmentBackfillRange);
+      await emitMessagesPass(
+        {
+          emitProgress: (m) => emit({ ...m, stream: "attachments" }),
+          emitRecord: deps.emitRecord,
+          fetchBodies: fetchBodiesBound,
+          hydrateAttachment,
+          nowIso,
+          requested: new Map([["attachments", { name: "attachments" }]]),
+          timeRange: deps.requested.get("attachments")?.time_range,
+          wantBodies: false,
+          wantMessages: false,
+        },
+        backfillMetas
+      );
+    }
+    await emit({
+      type: "STATE",
+      stream: "attachments",
+      cursor: {
+        all_mail: {
+          uidvalidity: session.uidvalidityNum,
+          backfilled_through_uid: Math.max(0, session.priorUidnext - 1),
+          completed_at: nowIso(),
+        },
+      },
+    });
+  }
 
   // Pass 2: detect flag/label changes on already-seen messages (incremental only)
   await runDeltaPass(client, session, deps.requested, deps.emitRecord, deps.emittedAt);
@@ -1321,6 +1403,14 @@ async function main(): Promise<void> {
     fail("START.scope.streams is required");
     return;
   }
+  const preflightError = validateAttachmentHydrationPreflight({
+    requested,
+    streamsToBackfill: startMsg.streamsToBackfill,
+  });
+  if (preflightError) {
+    fail(preflightError);
+    return;
+  }
 
   const resFilters = new Map<string, Set<string> | null>();
   for (const [n, r] of requested) {
@@ -1363,6 +1453,7 @@ async function main(): Promise<void> {
         emitRecord,
         emittedAt,
         requested,
+        streamsToBackfill: startMsg.streamsToBackfill,
       });
     } finally {
       lock.release();

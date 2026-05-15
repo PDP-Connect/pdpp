@@ -52,6 +52,8 @@ import {
   resolveMaxAttachmentBytes,
   runtimeBlobUploadAvailable,
   selectAllMailFetchRange,
+  selectAttachmentBackfillFetchRange,
+  validateAttachmentHydrationPreflight,
 } from "./index.ts";
 import type { ProgressMessage, StreamRequest } from "./types.ts";
 
@@ -447,6 +449,59 @@ test("runtimeBlobUploadAvailable: requires an RS URL alias and owner token", () 
   assert.equal(runtimeBlobUploadAvailable({ RS_URL: "http://rs.local", PDPP_OWNER_TOKEN: "token" }), true);
 });
 
+test("validateAttachmentHydrationPreflight: fails attachment hydration before mailbox work when prerequisites are missing", () => {
+  assert.equal(
+    validateAttachmentHydrationPreflight({
+      env: {},
+      requested: makeRequested(["attachments"]),
+    }),
+    "Gmail attachment hydration requires GMAIL_ADDRESS or GMAIL_USER"
+  );
+  assert.equal(
+    validateAttachmentHydrationPreflight({
+      env: { GMAIL_ADDRESS: "me@example.com" },
+      requested: makeRequested(["attachments"]),
+    }),
+    "Gmail attachment hydration requires GOOGLE_APP_PASSWORD_PDPP or GMAIL_APP_PASSWORD"
+  );
+  assert.equal(
+    validateAttachmentHydrationPreflight({
+      env: {
+        GMAIL_ADDRESS: "me@example.com",
+        GOOGLE_APP_PASSWORD_PDPP: "app-password",
+      },
+      requested: makeRequested(["attachments"]),
+    }),
+    "blob upload unavailable: PDPP_RS_URL and PDPP_OWNER_TOKEN must be provided by the runtime"
+  );
+  assert.equal(
+    validateAttachmentHydrationPreflight({
+      env: {
+        GMAIL_ADDRESS: "me@example.com",
+        GOOGLE_APP_PASSWORD_PDPP: "app-password",
+        PDPP_OWNER_TOKEN: "owner-token",
+        PDPP_RS_URL: "http://127.0.0.1:4000",
+      },
+      requested: makeRequested(["attachments"]),
+    }),
+    null
+  );
+});
+
+test("validateAttachmentHydrationPreflight: explicit backfill requires upload config even when attachments stream is not requested", () => {
+  assert.equal(
+    validateAttachmentHydrationPreflight({
+      env: {
+        GMAIL_ADDRESS: "me@example.com",
+        GOOGLE_APP_PASSWORD_PDPP: "app-password",
+      },
+      requested: makeRequested(["messages"]),
+      streamsToBackfill: ["attachments"],
+    }),
+    "blob upload unavailable: PDPP_RS_URL and PDPP_OWNER_TOKEN must be provided by the runtime"
+  );
+});
+
 test("Gmail env aliases prefer Docker names while accepting documented names", () => {
   assert.equal(
     resolveGmailPasswordFromEnv({
@@ -491,6 +546,30 @@ test("selectAllMailFetchRange: incremental runs use priorUidnext:* regardless of
   // Full resync (no prior uidvalidity or uidvalidity changed): still 1:*.
   assert.equal(selectAllMailFetchRange({ fullResync: true, priorUidnext: 500 }, makeRequested(["attachments"])), "1:*");
   assert.equal(selectAllMailFetchRange({ fullResync: true, priorUidnext: 500 }, makeRequested(["messages"])), "1:*");
+});
+
+test("selectAttachmentBackfillFetchRange: historical range is independent of messages uidnext cursor", () => {
+  assert.equal(
+    selectAttachmentBackfillFetchRange({
+      attachmentBackfill: { uidvalidity: 123 },
+      priorUidnext: 500,
+    }),
+    "1:499"
+  );
+  assert.equal(
+    selectAttachmentBackfillFetchRange({
+      attachmentBackfill: { backfilled_through_uid: 250, uidvalidity: 123 },
+      priorUidnext: 500,
+    }),
+    "251:499"
+  );
+  assert.equal(
+    selectAttachmentBackfillFetchRange({
+      attachmentBackfill: { backfilled_through_uid: 499, uidvalidity: 123 },
+      priorUidnext: 500,
+    }),
+    null
+  );
 });
 
 test("processMessage: attachment bytes are not inlined into message_bodies", async () => {

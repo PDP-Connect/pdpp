@@ -2,22 +2,22 @@
 
 ## 1. Preflight And Configuration
 
-- [ ] Add a Gmail attachment hydration/backfill preflight that checks Gmail credentials, `PDPP_RS_URL`, `PDPP_OWNER_TOKEN`, and blob upload availability before attachment backfill starts.
+- [x] Add a Gmail attachment hydration/backfill preflight that checks Gmail credentials, `PDPP_RS_URL`, `PDPP_OWNER_TOKEN`, and blob upload availability before attachment backfill starts.
 - [ ] Make Docker documentation or scripts expose the required env and fail with a clear message when attachment hydration is requested without upload capability.
 - [ ] Preserve the existing `PDPP_GMAIL_MAX_ATTACHMENT_BYTES` policy and document that it applies to both incremental hydration and historical backfill.
 
 ## 2. Backfill State Model
 
-- [ ] Add an `attachments.all_mail` cursor with `uidvalidity`, `backfilled_through_uid`, and completion metadata without changing `messages.all_mail.uidnext` semantics.
-- [ ] Reset or invalidate the attachment backfill cursor safely when Gmail `UIDVALIDITY` changes.
-- [ ] Ensure normal incremental sync hydrates new attachments while the explicit backfill cursor covers historical UIDs.
+- [x] Add an `attachments.all_mail` cursor with `uidvalidity`, `backfilled_through_uid`, and completion metadata without changing `messages.all_mail.uidnext` semantics.
+- [x] Reset or invalidate the attachment backfill cursor safely when Gmail `UIDVALIDITY` changes.
+- [x] Ensure normal incremental sync hydrates new attachments while the explicit backfill cursor covers historical UIDs.
 
 ## 3. Historical Rehydration
 
-- [ ] Implement an explicit attachment backfill run scope, for example `streamsToBackfill: ["attachments"]`, that revisits historical All Mail UIDs independently of the messages cursor.
-- [ ] Fetch message bodystructure and attachment bytes for historical attachment-bearing messages without emitting unrelated streams unless requested.
-- [ ] Re-emit existing attachment records with stable ids and populated `blob_ref` when hydration succeeds.
-- [ ] Keep metadata-only attachment records with truthful `hydration_status` when bytes cannot be fetched.
+- [x] Implement an explicit attachment backfill run scope, for example `streamsToBackfill: ["attachments"]`, that revisits historical All Mail UIDs independently of the messages cursor.
+- [x] Fetch message bodystructure and attachment bytes for historical attachment-bearing messages without emitting unrelated streams unless requested.
+- [x] Re-emit existing attachment records with stable ids and populated `blob_ref` when hydration succeeds.
+- [x] Keep metadata-only attachment records with truthful `hydration_status` when bytes cannot be fetched.
 
 ## 4. Idempotency And Persistence
 
@@ -41,7 +41,7 @@
 
 ## 7. Acceptance Checks
 
-- [ ] Run `openspec validate add-gmail-attachment-backfill --strict`.
-- [ ] Run the Gmail connector test suite.
+- [x] Run `openspec validate add-gmail-attachment-backfill --strict`.
+- [x] Run the Gmail connector test suite.
 - [ ] Run relevant blob/query/reference tests touched by the implementation.
 - [ ] Run the Docker acceptance path, or record the exact missing env/credential blocker and the local test substitute used.

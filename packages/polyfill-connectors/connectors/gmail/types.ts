@@ -10,6 +10,7 @@ export interface StreamRequest {
 export interface StartMessage {
   scope?: { streams?: readonly StreamRequest[] };
   state?: Record<string, unknown>;
+  streamsToBackfill?: readonly string[];
   type: "START";
 }
 
@@ -94,6 +95,16 @@ export interface AllMailCursor {
 
 export interface PriorMessagesState {
   all_mail?: AllMailCursor;
+}
+
+export interface AttachmentAllMailCursor {
+  backfilled_through_uid?: number;
+  completed_at?: string | null;
+  uidvalidity?: number;
+}
+
+export interface PriorAttachmentsState {
+  all_mail?: AttachmentAllMailCursor;
 }
 
 export interface ThreadAggregate {
