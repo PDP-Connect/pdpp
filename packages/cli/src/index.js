@@ -4,6 +4,10 @@ import {
   PDPP_CLI_BIN_NAME,
 } from './package-info.js';
 import { ConnectError, connectProvider, normalizeProviderUrl, readStoredCredential } from './connect/flow.js';
+import { runRefRun } from './ref/commands/run.js';
+import { runRefGrant } from './ref/commands/grant.js';
+import { runRefTrace } from './ref/commands/trace.js';
+import { PdppCliError, PdppUsageError } from './ref/errors.js';
 
 const HELP = `PDPP CLI
 
@@ -16,8 +20,14 @@ Usage:
 Agent access:
   ${createPdppCliCommand()}
 
+Reference diagnostics (reference server only):
+  ${PDPP_CLI_BIN_NAME} ref run timeline <run-id> --as-url <url>
+  ${PDPP_CLI_BIN_NAME} ref grant timeline <grant-id> --as-url <url>
+  ${PDPP_CLI_BIN_NAME} ref trace show <trace-id> --as-url <url>
+
 Notes:
   Do not ask users for owner bearer tokens for routine delegated access.
+  "pdpp ref" commands require a running PDPP reference server and an owner session.
 `;
 
 export async function runCli(argv, io = { stdout: process.stdout, stderr: process.stderr }) {
@@ -68,6 +78,39 @@ export async function runCli(argv, io = { stdout: process.stdout, stderr: proces
       return 0;
     } catch (error) {
       if (error instanceof ConnectError) {
+        io.stderr.write(`${error.message}\n`);
+        return error.exitCode;
+      }
+      throw error;
+    }
+  }
+
+  if (command === 'ref') {
+    const [refCommand, ...refRest] = rest;
+
+    if (!refCommand || refCommand === '--help' || refCommand === '-h') {
+      io.stdout.write(`Reference diagnostics (reference server only):\n`);
+      io.stdout.write(`  ${PDPP_CLI_BIN_NAME} ref run timeline <run-id> --as-url <url> [--owner-session <cookie>] [--format json|table]\n`);
+      io.stdout.write(`  ${PDPP_CLI_BIN_NAME} ref grant timeline <grant-id> --as-url <url> [--owner-session <cookie>] [--format json|table]\n`);
+      io.stdout.write(`  ${PDPP_CLI_BIN_NAME} ref trace show <trace-id> --as-url <url> [--owner-session <cookie>] [--format json|table]\n`);
+      return 0;
+    }
+
+    const refDispatch = { run: runRefRun, grant: runRefGrant, trace: runRefTrace };
+    const handler = refDispatch[refCommand];
+    if (!handler) {
+      io.stderr.write(`Unknown ref command: ${refCommand}\n`);
+      return 64;
+    }
+
+    try {
+      return await handler(refRest, io);
+    } catch (error) {
+      if (error instanceof PdppUsageError) {
+        io.stderr.write(`${error.message}\n`);
+        return error.exitCode;
+      }
+      if (error instanceof PdppCliError) {
         io.stderr.write(`${error.message}\n`);
         return error.exitCode;
       }

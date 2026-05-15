@@ -41,6 +41,13 @@ test('npm package contents stay narrowly allowlisted', () => {
     'src/index.js',
     'src/package-info.d.ts',
     'src/package-info.js',
+    'src/ref/args.js',
+    'src/ref/commands/grant.js',
+    'src/ref/commands/run.js',
+    'src/ref/commands/trace.js',
+    'src/ref/errors.js',
+    'src/ref/fetch.js',
+    'src/ref/output.js',
   ]);
 
   for (const file of files) {
