@@ -510,8 +510,7 @@ function runDetectCommand(tool: NonNullable<RuntimeRequirements["external_tools"
   const expectedExitCode = Number.isInteger(tool.detect?.exit_code) ? Number(tool.detect?.exit_code) : 0;
   const slackdumpBin = process.env.SLACKDUMP_BIN?.trim();
   if (tool.name === "slackdump" && slackdumpBin) {
-    const [, ...args] = (tool.detect?.command || "slackdump version").trim().split(/\s+/u);
-    return runExecutable(slackdumpBin, args.length > 0 ? args : ["version"], expectedExitCode);
+    return runExecutable(slackdumpBin, ["version"], expectedExitCode);
   }
 
   const command = tool.detect?.command;

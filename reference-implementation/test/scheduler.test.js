@@ -2943,7 +2943,7 @@ test('scheduler default readiness checker skips missing manifest-declared extern
   }
 });
 
-test('scheduler default readiness checker honors SLACKDUMP_BIN for Slack tool detection', async () => {
+test('scheduler default readiness checker probes SLACKDUMP_BIN with version despite stale manifest command', async () => {
   const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
   const manifest = {
     ...spotifyManifest,
@@ -2956,7 +2956,7 @@ test('scheduler default readiness checker honors SLACKDUMP_BIN for Slack tool de
           license: 'AGPL-3.0',
           purpose: 'Session-token Slack archive export',
           install_hint: 'mount slackdump and set SLACKDUMP_BIN',
-          detect: { command: 'slackdump version', exit_code: 0 },
+          detect: { command: 'slackdump stale-detect-command', exit_code: 0 },
         },
       ],
     },
