@@ -2758,6 +2758,191 @@ test('scheduler skips automatic run with needs_human_attention when isNeedsHuman
   }
 });
 
+test('scheduler records one not-ready skip for automatic runs when runtime prerequisites are absent', async () => {
+  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
+  const manifest = {
+    ...spotifyManifest,
+    connector_id: 'https://registry.pdpp.org/connectors/scheduler-not-ready-test',
+  };
+  const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+  const asUrl = `http://localhost:${server.asPort}`;
+  const rsUrl = `http://localhost:${server.rsPort}`;
+  const completedRuns = [];
+  const readinessCalls = [];
+
+  try {
+    const registerResp = await fetchJson(`${asUrl}/connectors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(manifest),
+    });
+    assert.equal(registerResp.status, 201);
+
+    const ownerToken = await issueOwnerToken(asUrl, 'scheduler_not_ready_skip_user');
+    const scheduler = createScheduler({
+      connectors: [
+        {
+          connectorId: manifest.connector_id,
+          connectorPath: join(REFERENCE_IMPL_DIR, 'connectors/seed/index.js'),
+          manifest,
+          ownerToken,
+          intervalMs: 25,
+          maxRetries: 0,
+        },
+      ],
+      rsUrl,
+      onInteraction: async (interaction) => cancelledInteractionResponse(interaction),
+      onRunComplete: (record) => completedRuns.push(record),
+      getState: async () => null,
+      setState: async () => {},
+      readinessChecker: async () => {
+        readinessCalls.push(Date.now());
+        return { ready: false, reason: 'missing docker prerequisite for test' };
+      },
+    });
+
+    scheduler.start();
+    await waitFor(() => completedRuns.length >= 1, 5000);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    scheduler.stop();
+
+    const [first] = completedRuns;
+    assert.equal(first.status, 'skipped');
+    assert.equal(first.attempt, 0);
+    assert.equal(first.error, 'not_ready: missing docker prerequisite for test');
+    assert.equal(completedRuns.length, 1, 'stable not-ready skips should be emitted once, not spammed');
+    assert.ok(readinessCalls.length > 1, 'scheduler should keep probing readiness on later ticks');
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('scheduler emits a fresh not-ready skip when readiness reason changes', async () => {
+  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
+  const manifest = {
+    ...spotifyManifest,
+    connector_id: 'https://registry.pdpp.org/connectors/scheduler-not-ready-changing-test',
+  };
+  const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+  const asUrl = `http://localhost:${server.asPort}`;
+  const rsUrl = `http://localhost:${server.rsPort}`;
+  const completedRuns = [];
+  let readinessCalls = 0;
+
+  try {
+    const registerResp = await fetchJson(`${asUrl}/connectors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(manifest),
+    });
+    assert.equal(registerResp.status, 201);
+
+    const ownerToken = await issueOwnerToken(asUrl, 'scheduler_not_ready_changing_user');
+    const scheduler = createScheduler({
+      connectors: [
+        {
+          connectorId: manifest.connector_id,
+          connectorPath: join(REFERENCE_IMPL_DIR, 'connectors/seed/index.js'),
+          manifest,
+          ownerToken,
+          intervalMs: 25,
+          maxRetries: 0,
+        },
+      ],
+      rsUrl,
+      onInteraction: async (interaction) => cancelledInteractionResponse(interaction),
+      onRunComplete: (record) => completedRuns.push(record),
+      getState: async () => null,
+      setState: async () => {},
+      readinessChecker: async () => {
+        readinessCalls += 1;
+        return {
+          ready: false,
+          reason: readinessCalls < 3 ? 'missing prerequisite A' : 'missing prerequisite B',
+        };
+      },
+    });
+
+    scheduler.start();
+    await waitFor(() => completedRuns.length >= 2, 5000);
+    scheduler.stop();
+
+    assert.deepEqual(
+      completedRuns.map((record) => record.error),
+      ['not_ready: missing prerequisite A', 'not_ready: missing prerequisite B'],
+    );
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('scheduler default readiness checker skips missing manifest-declared external tools', async () => {
+  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
+  const manifest = {
+    ...spotifyManifest,
+    connector_id: 'https://registry.pdpp.org/connectors/scheduler-missing-tool-test',
+    runtime_requirements: {
+      bindings: { network: { required: true } },
+      external_tools: [
+        {
+          name: 'definitely-missing-tool',
+          license: 'test-only',
+          purpose: 'Prove scheduler readiness gating',
+          install_hint: 'install definitely-missing-tool',
+          detect: { command: 'definitely-missing-tool-pdpp-test --help', exit_code: 0 },
+        },
+      ],
+    },
+  };
+  const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-scheduler-missing-tool-'));
+  const { attemptsPath, connectorPath } = writeLoggingConnector(tmpDir);
+  const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+  const asUrl = `http://localhost:${server.asPort}`;
+  const rsUrl = `http://localhost:${server.rsPort}`;
+  const completedRuns = [];
+
+  try {
+    const registerResp = await fetchJson(`${asUrl}/connectors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(manifest),
+    });
+    assert.equal(registerResp.status, 201);
+
+    const ownerToken = await issueOwnerToken(asUrl, 'scheduler_missing_tool_user');
+    const scheduler = createScheduler({
+      connectors: [
+        {
+          connectorId: manifest.connector_id,
+          connectorPath,
+          manifest,
+          ownerToken,
+          intervalMs: 25,
+          maxRetries: 0,
+        },
+      ],
+      rsUrl,
+      onInteraction: async (interaction) => cancelledInteractionResponse(interaction),
+      onRunComplete: (record) => completedRuns.push(record),
+      getState: async () => null,
+      setState: async () => {},
+    });
+
+    scheduler.start();
+    await waitFor(() => completedRuns.length >= 1, 5000);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    scheduler.stop();
+
+    const [first] = completedRuns;
+    assert.equal(first.status, 'skipped');
+    assert.match(first.error, /^not_ready: required external tool definitely-missing-tool is not available\./);
+    assert.equal(readAttempts(attemptsPath).length, 0, 'not-ready scheduler runs must not spawn the connector');
+  } finally {
+    await closeServer(server);
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
 test('scheduler marks connector as needs-human when automatic run triggers interaction', async () => {
   const manifest = {
     protocol_version: '0.1.0',

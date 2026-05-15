@@ -11,6 +11,9 @@ scheduler path despite their manifest posture.
 - Reject enabling schedules for manual, paused, or explicitly background-unsafe
   connectors.
 - Skip legacy enabled schedules that no longer pass the eligibility gate.
+- Skip automatic scheduled runs when the current runtime deployment cannot
+  satisfy connector prerequisites, recording a not-ready reason instead of
+  starting a doomed run.
 
 ## Capabilities
 
@@ -27,4 +30,6 @@ Removed:
 
 - Affects `_ref/connectors/:connectorId/schedule` create/update/resume behavior.
 - Affects scheduler-manager refresh selection for persisted schedule rows.
+- Affects scheduler automatic run execution and history for connectors with
+  missing deployment prerequisites.
 - Does not change connector manifests or manual `run now` behavior.

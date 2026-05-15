@@ -18,6 +18,11 @@
  * new wire-level contract, or is it purely a runtime concern?
  */
 
+import { spawn } from "node:child_process";
+import { access } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
 import type { SchedulerRunHistoryRecord, SchedulerStore } from "../server/stores/scheduler-store.ts";
 import { runConnector } from "./index.js";
 
@@ -111,6 +116,15 @@ export interface ConnectorSchedule {
   readonly ownerToken: string;
 }
 
+export interface SchedulerReadinessResult {
+  readonly ready: boolean;
+  readonly reason?: string;
+}
+
+export type SchedulerReadinessChecker = (
+  schedule: ConnectorSchedule
+) => Promise<SchedulerReadinessResult | null | undefined> | SchedulerReadinessResult | null | undefined;
+
 export interface RunRecord {
   readonly attempt: number;
   readonly checkpointSummary: Record<string, unknown> | null;
@@ -160,6 +174,7 @@ export interface SchedulerOptions {
     SchedulerStore,
     "appendRunHistory" | "listLastRunTimes" | "listRunHistory" | "upsertLastRunTime"
   >;
+  readinessChecker?: SchedulerReadinessChecker;
   setState?: SetStateHandler;
 }
 
@@ -289,6 +304,7 @@ interface SchedulerRuntime {
   // record this cycle. Cleared when the owner clears the needs-human flag via
   // clearNeedsHuman / runNow so the next automatic tick emits a fresh skip.
   readonly notifiedNeedsHumanSkips: Set<string>;
+  readonly notifiedNotReadySkips: Map<string, string>;
   running: boolean;
   readonly timers: NodeJS.Timeout[];
 }
@@ -302,6 +318,7 @@ function buildRuntime(): SchedulerRuntime {
     lastRunTime: new Map(),
     notifiedDisabledGrantFailures: new Set(),
     notifiedNeedsHumanSkips: new Set(),
+    notifiedNotReadySkips: new Map(),
     running: false,
     timers: [],
   };
@@ -408,6 +425,148 @@ function buildNeedsHumanSkip(connectorId: string): RunRecord {
     error: "needs_human_attention: automatic run skipped until owner provides input",
     attempt: 0,
   };
+}
+
+function buildNotReadySkip(connectorId: string, reason: string): RunRecord {
+  return {
+    connectorId,
+    source: buildScheduledRunSource(connectorId),
+    status: "skipped",
+    recordsEmitted: 0,
+    checkpointSummary: null,
+    knownGaps: [],
+    startedAt: nowIso(),
+    completedAt: nowIso(),
+    error: `not_ready: ${reason}`,
+    attempt: 0,
+  };
+}
+
+// ─── Automatic-run readiness checks ────────────────────────────────────────
+
+interface RuntimeRequirements {
+  readonly bindings?: Record<string, { readonly required?: boolean } | undefined>;
+  readonly external_tools?: readonly {
+    readonly detect?: { readonly command?: string; readonly exit_code?: number };
+    readonly install_hint?: string;
+    readonly name?: string;
+  }[];
+}
+
+function getRuntimeRequirements(manifest: SchedulerManifest): RuntimeRequirements {
+  const requirements = manifest.runtime_requirements;
+  if (requirements && typeof requirements === "object") {
+    return requirements as RuntimeRequirements;
+  }
+  return {};
+}
+
+async function canAccessPath(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function runDetectCommand(command: string, expectedExitCode: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const child = spawn(command, { shell: true, stdio: "ignore" });
+    const timeout = setTimeout(() => {
+      child.kill();
+      resolve(false);
+    }, 5000);
+    child.once("error", () => {
+      clearTimeout(timeout);
+      resolve(false);
+    });
+    child.once("exit", (code) => {
+      clearTimeout(timeout);
+      resolve(code === expectedExitCode);
+    });
+  });
+}
+
+function formatMissingToolReason(tool: NonNullable<RuntimeRequirements["external_tools"]>[number]): string {
+  const name = tool.name || "required external tool";
+  const hint = tool.install_hint ? ` ${tool.install_hint}` : "";
+  return `required external tool ${name} is not available.${hint}`;
+}
+
+function requiredBindingEnabled(manifest: SchedulerManifest, binding: string): boolean {
+  return getRuntimeRequirements(manifest).bindings?.[binding]?.required === true;
+}
+
+function browserSurfaceConfigured(): boolean {
+  if (process.env.PDPP_BROWSER_SURFACE_REMOTE_CDP_URL?.trim()) {
+    return true;
+  }
+  if (process.env.PATCHRIGHT_CDP?.trim() || process.env.NEKO_CDP?.trim()) {
+    return true;
+  }
+  return process.env.PDPP_BROWSER_SURFACE_REQUIRED !== "neko";
+}
+
+async function checkFirstPartyLocalSourceReadiness(
+  connectorId: string,
+  manifest: SchedulerManifest
+): Promise<string | null> {
+  if (!requiredBindingEnabled(manifest, "filesystem")) {
+    return null;
+  }
+  if (connectorId === "https://registry.pdpp.org/connectors/codex") {
+    const codexHome = process.env.CODEX_HOME || join(homedir(), ".codex");
+    const requiredPaths = [
+      process.env.CODEX_SESSIONS_DIR || join(codexHome, "sessions"),
+      process.env.CODEX_STATE_DB || join(codexHome, "state_5.sqlite"),
+    ];
+    const missing = [];
+    for (const path of requiredPaths) {
+      if (!(await canAccessPath(path))) {
+        missing.push(path);
+      }
+    }
+    return missing.length > 0
+      ? `Codex local source path(s) are missing or unreadable: ${missing.join(", ")}`
+      : null;
+  }
+  if (connectorId === "https://registry.pdpp.org/connectors/claude-code") {
+    const claudeHome = process.env.CLAUDE_CODE_HOME || join(homedir(), ".claude");
+    const projectsDir = process.env.CLAUDE_CODE_PROJECTS_DIR || join(claudeHome, "projects");
+    return (await canAccessPath(projectsDir))
+      ? null
+      : `Claude Code local source path is missing or unreadable: ${projectsDir}`;
+  }
+  return null;
+}
+
+async function defaultReadinessChecker(schedule: ConnectorSchedule): Promise<SchedulerReadinessResult> {
+  const requirements = getRuntimeRequirements(schedule.manifest);
+  for (const tool of requirements.external_tools || []) {
+    const command = tool.detect?.command;
+    if (!command) {
+      continue;
+    }
+    const expectedExitCode = Number.isInteger(tool.detect?.exit_code) ? Number(tool.detect?.exit_code) : 0;
+    if (!(await runDetectCommand(command, expectedExitCode))) {
+      return { ready: false, reason: formatMissingToolReason(tool) };
+    }
+  }
+
+  if (requiredBindingEnabled(schedule.manifest, "browser") && !browserSurfaceConfigured()) {
+    return {
+      ready: false,
+      reason: "required browser runtime is not configured for unattended scheduled runs",
+    };
+  }
+
+  const localSourceReason = await checkFirstPartyLocalSourceReadiness(schedule.connectorId, schedule.manifest);
+  if (localSourceReason) {
+    return { ready: false, reason: localSourceReason };
+  }
+
+  return { ready: true };
 }
 
 // ─── Result → record ────────────────────────────────────────────────────────
@@ -520,6 +679,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
       // no-op
     },
     schedulerStore,
+    readinessChecker = defaultReadinessChecker,
     getState = async () => null,
     setState = async () => {
       // no-op
@@ -586,6 +746,22 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
       return null;
     }
     return recordAndNotify(buildSingleUseExhaustedSkip(connectorId));
+  }
+
+  type NotReadyDecision = "proceed" | "silent-skip" | RunRecord;
+
+  async function decideNotReady(schedule: ConnectorSchedule): Promise<NotReadyDecision> {
+    const readiness = await readinessChecker(schedule);
+    if (!readiness || readiness.ready) {
+      runtime.notifiedNotReadySkips.delete(schedule.connectorId);
+      return "proceed";
+    }
+    const reason = readiness.reason || "scheduled connector runtime prerequisites are not currently satisfied";
+    if (runtime.notifiedNotReadySkips.get(schedule.connectorId) === reason) {
+      return "silent-skip";
+    }
+    runtime.notifiedNotReadySkips.set(schedule.connectorId, reason);
+    return recordAndNotify(buildNotReadySkip(schedule.connectorId, reason));
   }
 
   // Returns a sentinel that tells executeRun what to do next:
@@ -738,6 +914,13 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
       // interaction. Manual runs (isManual=true) bypass this gate so the owner
       // can resolve the issue. The controller also clears the flag on runNow.
       if (!isManual) {
+        const notReadyDecision = await decideNotReady(schedule);
+        if (notReadyDecision === "silent-skip") {
+          return null;
+        }
+        if (notReadyDecision !== "proceed") {
+          return notReadyDecision;
+        }
         if (isNeedsHuman(connectorId)) {
           // Emit one inspectable skip record, then suppress further skips on
           // subsequent ticks (mirrors the terminal-grant disabled pattern).
