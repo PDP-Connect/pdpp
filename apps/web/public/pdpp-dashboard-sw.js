@@ -21,6 +21,10 @@ function pdppDefaultBody(type) {
     : "A connector run needs owner attention.";
 }
 
+function pdppIsAllowedDashboardUrl(url) {
+  return url === "/dashboard" || url.startsWith("/dashboard/");
+}
+
 self.addEventListener("push", (event) => {
   event.waitUntil(
     (async () => {
@@ -33,7 +37,7 @@ self.addEventListener("push", (event) => {
       if (!PDPP_KNOWN_PUSH_TYPES.has(payload.type)) return;
       const fallbackUrl = pdppDefaultFallbackUrl(payload.type);
       const rawUrl = typeof payload.url === "string" ? payload.url : fallbackUrl;
-      const targetUrl = rawUrl.startsWith("/dashboard") ? rawUrl : fallbackUrl;
+      const targetUrl = pdppIsAllowedDashboardUrl(rawUrl) ? rawUrl : fallbackUrl;
       const title = typeof payload.title === "string" ? payload.title : pdppDefaultTitle(payload.type);
       const body = typeof payload.body === "string" ? payload.body : pdppDefaultBody(payload.type);
       await self.registration.showNotification(title, {
@@ -52,7 +56,7 @@ self.addEventListener("notificationclick", (event) => {
       const rawUrl = event.notification.data && typeof event.notification.data.url === "string"
         ? event.notification.data.url
         : "/dashboard/runs";
-      const targetUrl = rawUrl.startsWith("/dashboard") ? rawUrl : "/dashboard/runs";
+      const targetUrl = pdppIsAllowedDashboardUrl(rawUrl) ? rawUrl : "/dashboard/runs";
       const url = new URL(targetUrl, self.location.origin).href;
       const clientList = await clients.matchAll({ type: "window", includeUncontrolled: true });
       for (const client of clientList) {

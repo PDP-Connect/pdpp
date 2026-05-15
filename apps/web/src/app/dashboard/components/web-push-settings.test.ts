@@ -8,7 +8,10 @@ const APP_ROOT = join(HERE, "..", "..", "..", "..");
 const SERVICE_WORKER_KNOWN_TYPES_PATTERN = /PDPP_KNOWN_PUSH_TYPES\.has\(payload\.type\)/;
 const SERVICE_WORKER_PENDING_TYPE_ALLOWED_PATTERN = /pdpp\.pending_interaction/;
 const SERVICE_WORKER_TEST_TYPE_ALLOWED_PATTERN = /pdpp\.test_notification/;
-const SERVICE_WORKER_DASHBOARD_URL_PATTERN = /rawUrl\.startsWith\("\/dashboard"\)/;
+const SERVICE_WORKER_DASHBOARD_URL_ALLOWLIST_PATTERN =
+  /url === "\/dashboard" \|\| url\.startsWith\("\/dashboard\/"\)/;
+const SERVICE_WORKER_DASHBOARD_URL_HELPER_USE_PATTERN = /pdppIsAllowedDashboardUrl\(rawUrl\)/;
+const SERVICE_WORKER_DASHBOARD_PREFIX_TRAVERSAL_PATTERN = /rawUrl\.startsWith\("\/dashboard"\)/;
 const SERVICE_WORKER_MATCH_CLIENTS_PATTERN = /clients\.matchAll/;
 const SERVICE_WORKER_OPEN_WINDOW_PATTERN = /clients\.openWindow\(url\)/;
 const SENSITIVE_WORD_PATTERN = /password|cookie|token|otp|answer/i;
@@ -52,7 +55,10 @@ test("dashboard service worker fails closed and click-through targets dashboard-
   assert.match(src, SERVICE_WORKER_KNOWN_TYPES_PATTERN);
   assert.match(src, SERVICE_WORKER_PENDING_TYPE_ALLOWED_PATTERN);
   assert.match(src, SERVICE_WORKER_TEST_TYPE_ALLOWED_PATTERN);
-  assert.match(src, SERVICE_WORKER_DASHBOARD_URL_PATTERN);
+  assert.match(src, SERVICE_WORKER_DASHBOARD_URL_ALLOWLIST_PATTERN);
+  assert.match(src, SERVICE_WORKER_DASHBOARD_URL_HELPER_USE_PATTERN);
+  // Reject the looser prefix check that would also accept e.g. "/dashboardevil".
+  assert.doesNotMatch(src, SERVICE_WORKER_DASHBOARD_PREFIX_TRAVERSAL_PATTERN);
   assert.match(src, SERVICE_WORKER_MATCH_CLIENTS_PATTERN);
   assert.match(src, SERVICE_WORKER_OPEN_WINDOW_PATTERN);
   assert.doesNotMatch(src, SENSITIVE_WORD_PATTERN);
