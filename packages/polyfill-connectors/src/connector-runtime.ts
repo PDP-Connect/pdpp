@@ -795,6 +795,7 @@ async function runInBrowser(args: {
   } finally {
     baseCtx.capture?.setTraceCheckpointHook?.(null);
     await tracer.stop();
+    await closeBrowserPage(page);
     await release().catch((): undefined => undefined);
     disposeShutdownHook();
   }
@@ -832,6 +833,20 @@ export async function closeBrowserContextPagesExcept(
     }
   }
   return closed;
+}
+
+export async function closeBrowserPage(page: Page | null): Promise<boolean> {
+  if (!page || page.isClosed()) {
+    return false;
+  }
+  try {
+    await page.close();
+    return true;
+  } catch {
+    // Remote-CDP targets can disappear underneath us during banking OTP/manual
+    // waits. Cleanup must never mask the connector's real terminal reason.
+    return false;
+  }
 }
 
 const BROWSER_INTERACTION_KEEPALIVE_INTERVAL_MS = 15_000;

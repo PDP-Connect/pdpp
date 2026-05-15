@@ -5,6 +5,7 @@ import {
   type BrowserLaunchSource,
   type BrowserRuntimeVisibility,
   closeBrowserContextPagesExcept,
+  closeBrowserPage,
   decorateBrowserManualAction,
   type InteractionRequest,
   makeBrowserInteractionKeepalive,
@@ -87,6 +88,29 @@ test("closeBrowserContextPagesExcept closes stale open pages while keeping the w
   assert.equal(first.closeCalls, 1);
   assert.equal(alreadyClosed.closeCalls, 0);
   assert.equal(working.closeCalls, 0);
+});
+
+test("closeBrowserPage closes the runtime-owned working page best-effort", async () => {
+  const working = makeClosablePage(false);
+
+  assert.equal(await closeBrowserPage(working.page), true);
+  assert.equal(working.closeCalls, 1);
+  assert.equal(await closeBrowserPage(working.page), false);
+  assert.equal(working.closeCalls, 1);
+});
+
+test("closeBrowserPage ignores remote target cleanup errors", async () => {
+  let closeCalls = 0;
+  const page = {
+    close: () => {
+      closeCalls++;
+      return Promise.reject(new Error("Target page has been closed"));
+    },
+    isClosed: () => false,
+  } as Page;
+
+  assert.equal(await closeBrowserPage(page), false);
+  assert.equal(closeCalls, 1);
 });
 
 test("resolveBrowserRuntimeVisibility defaults browser connectors to headless unless env disables it", () => {
