@@ -11,17 +11,19 @@
     }
   },
   "capabilities": {
-    "human_interaction": [],
+    "human_interaction": [
+      "credentials"
+    ],
     "refresh_policy": {
       "recommended_mode": "automatic",
       "recommended_interval_seconds": 21600,
       "minimum_interval_seconds": 3600,
       "maximum_staleness_seconds": 86400,
-      "interaction_posture": "none",
+      "interaction_posture": "credentials",
       "rate_limit_sensitivity": "medium",
       "bot_detection_sensitivity": "low",
       "background_safe": true,
-      "rationale": "Spotify saved-tracks/top-artists/recently-played update slowly; six-hourly refresh is sufficient."
+      "rationale": "Spotify v0.1 requires a user-provided SPOTIFY_ACCESS_TOKEN. Once credentials are configured, saved-tracks/top-artists/recently-played update slowly; six-hourly refresh is sufficient."
     }
   },
   "streams": [
