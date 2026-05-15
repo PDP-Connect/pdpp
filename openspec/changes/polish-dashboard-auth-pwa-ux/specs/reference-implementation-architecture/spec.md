@@ -13,5 +13,10 @@ Debugging, replay, trace, and operator-control surfaces that are useful for the 
 
 #### Scenario: Hosted owner login renders in dark mode
 
-- **WHEN** an owner opens a reference-hosted owner page such as `/owner/login` in an OS dark-mode context
-- **THEN** the page SHALL render readable dark-mode colors without requiring dashboard JavaScript or website-only theme state.
+- **WHEN** an owner opens a reference-hosted owner page such as `/owner/login` with an explicit `pdpp-theme=dark` cookie
+- **THEN** the page SHALL render readable dark-mode colors without requiring dashboard JavaScript.
+
+#### Scenario: Hosted owner login falls back to system theme
+
+- **WHEN** an owner opens a reference-hosted owner page such as `/owner/login` without an explicit theme cookie in an OS dark-mode context
+- **THEN** the page SHALL render readable dark-mode colors without requiring dashboard JavaScript.

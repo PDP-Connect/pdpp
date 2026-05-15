@@ -18,6 +18,7 @@
 import crypto from "node:crypto";
 import {
   escapeHtml as hostedEscape,
+  readHostedThemeChoiceFromCookieHeader,
   renderActionRow,
   renderHostedDocument,
   renderKeyValueList,
@@ -97,16 +98,19 @@ interface LoginPageOptions {
   error: string | null;
   providerName: string;
   returnTo: string;
+  themeChoice?: string;
 }
 
 interface DisabledPageOptions {
   providerName: string;
+  themeChoice?: string;
 }
 
 interface SignedInPageOptions {
   csrfToken: string;
   providerName: string;
   subjectId: string;
+  themeChoice?: string;
 }
 
 export interface OwnerAuthPlaceholderOptions {
@@ -181,7 +185,7 @@ function wantsHtml(req: AuthRequest): boolean {
   return accept.includes("text/html");
 }
 
-function renderLoginPage({ providerName, error, returnTo, csrfToken }: LoginPageOptions): string {
+function renderLoginPage({ providerName, error, returnTo, csrfToken, themeChoice }: LoginPageOptions): string {
   const safeReturnTo = typeof returnTo === "string" ? returnTo : "";
   const errorBlock = error ? `<div class="hosted-ui-error" role="alert">${hostedEscape(error)}</div>` : "";
   const form = `<form class="hosted-ui-surface" method="POST" action="/owner/login" data-surface="human" aria-label="Owner sign-in">
@@ -211,10 +215,11 @@ function renderLoginPage({ providerName, error, returnTo, csrfToken }: LoginPage
     title: `${providerName} — Owner sign-in`,
     providerName,
     body,
+    themeChoice,
   });
 }
 
-function renderOwnerAuthDisabledPage({ providerName }: DisabledPageOptions): string {
+function renderOwnerAuthDisabledPage({ providerName, themeChoice }: DisabledPageOptions): string {
   const body = [
     renderPageIntro({
       eyebrow: "Owner approval UI",
@@ -251,10 +256,11 @@ function renderOwnerAuthDisabledPage({ providerName }: DisabledPageOptions): str
     title: `${providerName} — Owner access`,
     providerName,
     body,
+    themeChoice,
   });
 }
 
-function renderSignedInOwnerPage({ providerName, subjectId, csrfToken }: SignedInPageOptions): string {
+function renderSignedInOwnerPage({ providerName, subjectId, csrfToken, themeChoice }: SignedInPageOptions): string {
   const body = [
     renderPageIntro({
       eyebrow: "Owner approval UI",
@@ -289,6 +295,7 @@ function renderSignedInOwnerPage({ providerName, subjectId, csrfToken }: SignedI
     title: `${providerName} — Owner access`,
     providerName,
     body,
+    themeChoice,
   });
 }
 
@@ -614,7 +621,12 @@ export function createOwnerAuthPlaceholder({
   function replyDisabledLogin(req: AuthRequest, res: AuthResponse): void {
     if (wantsHtml(req)) {
       res.setHeader("Content-Type", "text/html; charset=utf-8");
-      res.status(400).send(renderOwnerAuthDisabledPage({ providerName }));
+      res.status(400).send(
+        renderOwnerAuthDisabledPage({
+          providerName,
+          themeChoice: readHostedThemeChoiceFromCookieHeader(req.headers.cookie),
+        })
+      );
       return;
     }
     res
@@ -664,7 +676,12 @@ export function createOwnerAuthPlaceholder({
       res.setHeader("Content-Type", "text/html; charset=utf-8");
 
       if (!enabled) {
-        res.status(200).send(renderOwnerAuthDisabledPage({ providerName }));
+        res.status(200).send(
+          renderOwnerAuthDisabledPage({
+            providerName,
+            themeChoice: readHostedThemeChoiceFromCookieHeader(req.headers.cookie),
+          })
+        );
         return;
       }
 
@@ -675,12 +692,27 @@ export function createOwnerAuthPlaceholder({
           return;
         }
         const csrfToken = ensureCsrfToken(req, res);
-        res.status(200).send(renderSignedInOwnerPage({ providerName, subjectId: resolvedSubjectId, csrfToken }));
+        res.status(200).send(
+          renderSignedInOwnerPage({
+            providerName,
+            subjectId: resolvedSubjectId,
+            csrfToken,
+            themeChoice: readHostedThemeChoiceFromCookieHeader(req.headers.cookie),
+          })
+        );
         return;
       }
 
       const csrfToken = ensureCsrfToken(req, res);
-      res.status(200).send(renderLoginPage({ providerName, error: null, returnTo, csrfToken }));
+      res.status(200).send(
+        renderLoginPage({
+          providerName,
+          error: null,
+          returnTo,
+          csrfToken,
+          themeChoice: readHostedThemeChoiceFromCookieHeader(req.headers.cookie),
+        })
+      );
     });
 
     app.post("/owner/login", (req, res) => {
@@ -710,6 +742,7 @@ export function createOwnerAuthPlaceholder({
             error: "Session expired or form replay detected. Please try again.",
             returnTo,
             csrfToken,
+            themeChoice: readHostedThemeChoiceFromCookieHeader(req.headers.cookie),
           })
         );
         return;
@@ -725,6 +758,7 @@ export function createOwnerAuthPlaceholder({
             error: "Incorrect password.",
             returnTo,
             csrfToken,
+            themeChoice: readHostedThemeChoiceFromCookieHeader(req.headers.cookie),
           })
         );
         return;

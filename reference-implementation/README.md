@@ -248,7 +248,7 @@ Routes gated by the placeholder (when enabled):
 Stable owner-entry routes:
 
 - `GET /owner/login` — owner access page (supports a safe same-origin `return_to` query parameter). When placeholder auth is disabled it renders an honest disabled-state landing page; when enabled it renders either the sign-in form or a signed-in landing page.
-- `POST /owner/login` — when placeholder auth is enabled, submits the owner password; on success sets a signed HTTP-only session cookie (`pdpp_owner_session`, 12 hour lifetime, `SameSite=Lax`, `Secure` when served over HTTPS) and redirects to `return_to`
+- `POST /owner/login` — when placeholder auth is enabled, submits the owner password; on success sets a signed HTTP-only session cookie (`pdpp_owner_session`, 7 day lifetime by default, configurable with `PDPP_OWNER_SESSION_TTL_SECONDS`, `SameSite=Lax`, `Secure` when served over HTTPS) and redirects to `return_to`
 - `POST /owner/logout` — clears the session cookie when present
 
 Unauthenticated HTML requests to the protected routes redirect to `/owner/login?return_to=...`; non-HTML callers receive an honest `401` with error code `owner_session_required`.

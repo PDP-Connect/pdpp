@@ -12,6 +12,7 @@
 
 export const HOSTED_UI_CSS_PATH: string;
 export const HOSTED_UI_BRAND_MARKER: string;
+export const HOSTED_UI_THEME_COOKIE_NAME: string;
 export const HOSTED_UI_CSS: string;
 
 export function escapeHtml(input: unknown): string;
@@ -26,8 +27,13 @@ export function renderPdppMark(options?: PdppMarkOptions): string;
 export interface HostedDocumentOptions {
   body: string;
   providerName: string;
+  themeChoice?: string | undefined;
   title: string;
 }
+
+export function normalizeHostedThemeChoice(value: unknown): "light" | "dark" | "system";
+
+export function readHostedThemeChoiceFromCookieHeader(cookieHeader?: string | null): "light" | "dark" | "system";
 
 export function renderHostedDocument(options: HostedDocumentOptions): string;
 

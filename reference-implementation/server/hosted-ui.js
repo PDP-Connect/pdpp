@@ -18,6 +18,7 @@
 
 export const HOSTED_UI_CSS_PATH = '/__pdpp/hosted-ui.css';
 export const HOSTED_UI_BRAND_MARKER = 'data-pdpp-hosted-ui';
+export const HOSTED_UI_THEME_COOKIE_NAME = 'pdpp-theme';
 
 export function escapeHtml(input) {
   return String(input ?? '')
@@ -74,8 +75,27 @@ export const HOSTED_UI_CSS = `:root {
   color-scheme: light;
 }
 
+html[data-theme="dark"] {
+  --background: oklch(0.16 0.005 260);
+  --foreground: oklch(0.985 0.004 85);
+  --card: oklch(0.205 0.006 260);
+  --primary: oklch(0.68 0.15 253.7);
+  --primary-foreground: oklch(0.11 0.008 260);
+  --muted: oklch(0.25 0.007 260);
+  --muted-foreground: oklch(0.72 0.01 260);
+  --destructive: oklch(0.70 0.18 27);
+  --destructive-foreground: oklch(0.11 0.008 260);
+  --border: oklch(1 0 0 / 0.12);
+  --input: oklch(1 0 0 / 0.18);
+  --success: oklch(0.70 0.14 150);
+  --warning: oklch(0.78 0.13 78);
+  --human: oklch(0.68 0.10 45);
+  --human-wash: oklch(0.68 0.10 45 / 0.14);
+  color-scheme: dark;
+}
+
 @media (prefers-color-scheme: dark) {
-  :root {
+  html[data-theme="system"] {
     --background: oklch(0.16 0.005 260);
     --foreground: oklch(0.985 0.004 85);
     --card: oklch(0.205 0.006 260);
@@ -115,8 +135,14 @@ body {
   font-family: var(--font-sans);
 }
 
+html[data-theme="dark"] body {
+  background:
+    radial-gradient(circle at top left, oklch(0.68 0.10 45 / 0.12), transparent 28rem),
+    linear-gradient(180deg, oklch(0.22 0.006 260) 0%, var(--background) 14rem);
+}
+
 @media (prefers-color-scheme: dark) {
-  body {
+  html[data-theme="system"] body {
     background:
       radial-gradient(circle at top left, oklch(0.68 0.10 45 / 0.12), transparent 28rem),
       linear-gradient(180deg, oklch(0.22 0.006 260) 0%, var(--background) 14rem);
@@ -436,10 +462,38 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
  * Render a complete hosted HTML document. All hosted reference pages go
  * through this so they share head, CSS, and brand header.
  */
-export function renderHostedDocument({ title, providerName, body }) {
+export function normalizeHostedThemeChoice(value) {
+  return value === 'light' || value === 'dark' || value === 'system' ? value : 'system';
+}
+
+export function readHostedThemeChoiceFromCookieHeader(cookieHeader) {
+  if (typeof cookieHeader !== 'string' || !cookieHeader) {
+    return 'system';
+  }
+  for (const part of cookieHeader.split(';')) {
+    const eq = part.indexOf('=');
+    if (eq < 0) {
+      continue;
+    }
+    const name = part.slice(0, eq).trim();
+    if (name !== HOSTED_UI_THEME_COOKIE_NAME) {
+      continue;
+    }
+    const raw = part.slice(eq + 1).trim();
+    try {
+      return normalizeHostedThemeChoice(decodeURIComponent(raw));
+    } catch {
+      return normalizeHostedThemeChoice(raw);
+    }
+  }
+  return 'system';
+}
+
+export function renderHostedDocument({ title, providerName, body, themeChoice = 'system' }) {
   const safeTitle = escapeHtml(title);
+  const safeThemeChoice = normalizeHostedThemeChoice(themeChoice);
   return `<!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="${safeThemeChoice}">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
