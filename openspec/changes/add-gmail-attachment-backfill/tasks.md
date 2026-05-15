@@ -21,15 +21,15 @@
 
 ## 4. Idempotency And Persistence
 
-- [ ] Prove rerunning backfill for the same attachment produces the same record id, `content_sha256`, and content-addressed `blob_id`.
-- [ ] Prove the blob store does not duplicate bytes and retains correct `(blob_id, connector_id, stream, record_key)` bindings across repeated backfill runs.
-- [ ] Ensure backfill does not inline attachment bytes into records, logs, stdout diagnostics, or run timelines.
+- [x] Prove rerunning backfill for the same attachment produces the same record id, `content_sha256`, and content-addressed `blob_id`.
+- [x] Prove the blob store does not duplicate bytes and retains correct `(blob_id, connector_id, stream, record_key)` bindings across repeated backfill runs.
+- [x] Ensure backfill does not inline attachment bytes into records, logs, stdout diagnostics, or run timelines.
 
 ## 5. Failure And Gap Reporting
 
-- [ ] Add a non-secret gap summary for attachment backfill runs with counts for hydrated, already hydrated, too large, failed, unavailable/skipped, and remaining historical gaps.
-- [ ] Surface the summary in connector output and the reference `_ref` run timeline or existing equivalent run-inspection surface.
-- [ ] Do not advance `attachments.all_mail.backfilled_through_uid` past a window until the window's records and gap summary are durable.
+- [x] Add a non-secret gap summary for attachment backfill runs with counts for hydrated, already hydrated, too large, failed, unavailable/skipped, and remaining historical gaps.
+- [x] Surface the summary in connector output and the reference `_ref` run timeline or existing equivalent run-inspection surface.
+- [x] Do not advance `attachments.all_mail.backfilled_through_uid` past a window until the window's records and gap summary are durable.
 
 ## 6. Tests And Docker Proof
 
@@ -43,5 +43,5 @@
 
 - [x] Run `openspec validate add-gmail-attachment-backfill --strict`.
 - [x] Run the Gmail connector test suite.
-- [ ] Run relevant blob/query/reference tests touched by the implementation.
+- [x] Run relevant blob/query/reference tests touched by the implementation.
 - [ ] Run the Docker acceptance path, or record the exact missing env/credential blocker and the local test substitute used.

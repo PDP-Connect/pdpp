@@ -39,10 +39,13 @@ import type {
 } from "imapflow";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
 import {
+  addAttachmentBackfillRecordToSummary,
+  createAttachmentBackfillSummary,
   DEFAULT_MAX_ATTACHMENT_BYTES,
   emitMessagesPass,
   type FetchBodiesFn,
   type FetchedBodies,
+  formatAttachmentBackfillSummary,
   type HydrateAttachmentFn,
   makeAttachmentHydrator,
   type PerMessageDeps,
@@ -333,6 +336,93 @@ test("processMessage: rerun hydration preserves attachment identity and idempote
   assert.equal(firstAttachment.data.id, secondAttachment.data.id);
   assert.equal(blobRefBlobId(firstAttachment), blobRefBlobId(secondAttachment));
   assert.equal(uploadCount, 2, "reruns may re-upload, but blob identity remains content-addressed and stable");
+});
+
+test("processMessage: repeated backfill preserves record id, content hash, blob id, and binding tuple", async () => {
+  const bytes = Buffer.from("historical invoice bytes");
+  const expectedSha = createHash("sha256").update(bytes).digest("hex");
+  const bindings = new Set<string>();
+  const storedPayloads = new Map<string, Buffer>();
+  const hydrateAttachment = makeAttachmentHydrator({
+    connectorId: "https://registry.pdpp.org/connectors/gmail",
+    fetchAttachment: () =>
+      Promise.resolve({
+        content: Readable.from([bytes]),
+        expectedSize: bytes.length,
+        mimeType: "application/pdf",
+      }),
+    uploadBlob: async ({ connectorId, content, mimeType, recordKey, stream }) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of content) {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
+      const uploaded = Buffer.concat(chunks);
+      const sha256 = createHash("sha256").update(uploaded).digest("hex");
+      const blobId = `blob_sha256_${sha256}`;
+      if (!storedPayloads.has(blobId)) {
+        storedPayloads.set(blobId, uploaded);
+      }
+      bindings.add(`${blobId}|${connectorId}|${stream}|${recordKey}`);
+      return {
+        blob_id: blobId,
+        mime_type: mimeType,
+        sha256,
+        size_bytes: uploaded.byteLength,
+      };
+    },
+  });
+  const first = makeHarness({
+    hydrateAttachment,
+    requested: makeRequested(["attachments"]),
+    wantBodies: false,
+    wantMessages: false,
+  });
+  const second = makeHarness({
+    hydrateAttachment,
+    requested: makeRequested(["attachments"]),
+    wantBodies: false,
+    wantMessages: false,
+  });
+
+  await processMessage(first.deps, makeAttachmentMsg());
+  await processMessage(second.deps, makeAttachmentMsg());
+
+  const firstAttachment = first.emitted.find((record) => record.stream === "attachments");
+  const secondAttachment = second.emitted.find((record) => record.stream === "attachments");
+  assert.ok(firstAttachment);
+  assert.ok(secondAttachment);
+  assert.equal(firstAttachment.data.id, "gmmsgid-1111:2");
+  assert.equal(secondAttachment.data.id, firstAttachment.data.id);
+  assert.equal(firstAttachment.data.content_sha256, expectedSha);
+  assert.equal(secondAttachment.data.content_sha256, expectedSha);
+  assert.equal(blobRefBlobId(firstAttachment), `blob_sha256_${expectedSha}`);
+  assert.equal(blobRefBlobId(secondAttachment), blobRefBlobId(firstAttachment));
+  assert.equal(storedPayloads.size, 1, "content-addressed store keeps one payload for repeated bytes");
+  assert.deepEqual(
+    bindings,
+    new Set([`blob_sha256_${expectedSha}|https://registry.pdpp.org/connectors/gmail|attachments|gmmsgid-1111:2`])
+  );
+});
+
+test("attachment backfill summary counts non-secret hydration outcomes", () => {
+  const summary = createAttachmentBackfillSummary();
+  addAttachmentBackfillRecordToSummary(summary, { hydration_status: "hydrated" });
+  addAttachmentBackfillRecordToSummary(summary, { hydration_status: "too_large", hydration_error: "size only" });
+  addAttachmentBackfillRecordToSummary(summary, { hydration_status: "failed", hydration_error: "download failed" });
+  addAttachmentBackfillRecordToSummary(summary, { hydration_status: "deferred" });
+
+  assert.deepEqual(summary, {
+    already_hydrated: 0,
+    failed: 1,
+    hydrated: 1,
+    remaining_historical_gaps: 3,
+    too_large: 1,
+    unavailable_skipped: 1,
+  });
+  assert.equal(
+    formatAttachmentBackfillSummary(summary),
+    "hydrated=1 already_hydrated=0 too_large=1 failed=1 unavailable_skipped=1 remaining_historical_gaps=3"
+  );
 });
 
 test("processMessage: refuses hydration when source-reported size exceeds the bounded cap (declared size)", async () => {

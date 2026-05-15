@@ -261,6 +261,64 @@ export type UploadAttachmentBlobFn = (args: {
 
 export type HydrateAttachmentFn = (msg: FetchMessageObject, attachment: AttachmentRecord) => Promise<AttachmentRecord>;
 
+export interface AttachmentBackfillSummary {
+  already_hydrated: number;
+  failed: number;
+  hydrated: number;
+  remaining_historical_gaps: number;
+  too_large: number;
+  unavailable_skipped: number;
+}
+
+export function createAttachmentBackfillSummary(): AttachmentBackfillSummary {
+  return {
+    already_hydrated: 0,
+    failed: 0,
+    hydrated: 0,
+    remaining_historical_gaps: 0,
+    too_large: 0,
+    unavailable_skipped: 0,
+  };
+}
+
+export function addAttachmentBackfillRecordToSummary(
+  summary: AttachmentBackfillSummary,
+  data: Record<string, unknown>
+): void {
+  switch (data.hydration_status) {
+    case "hydrated":
+      summary.hydrated += 1;
+      break;
+    case "too_large":
+      summary.too_large += 1;
+      summary.remaining_historical_gaps += 1;
+      break;
+    case "failed":
+      summary.failed += 1;
+      summary.remaining_historical_gaps += 1;
+      break;
+    case "deferred":
+      summary.unavailable_skipped += 1;
+      summary.remaining_historical_gaps += 1;
+      break;
+    default:
+      summary.unavailable_skipped += 1;
+      summary.remaining_historical_gaps += 1;
+      break;
+  }
+}
+
+export function formatAttachmentBackfillSummary(summary: AttachmentBackfillSummary): string {
+  return [
+    `hydrated=${summary.hydrated}`,
+    `already_hydrated=${summary.already_hydrated}`,
+    `too_large=${summary.too_large}`,
+    `failed=${summary.failed}`,
+    `unavailable_skipped=${summary.unavailable_skipped}`,
+    `remaining_historical_gaps=${summary.remaining_historical_gaps}`,
+  ].join(" ");
+}
+
 export interface PerMessageDeps {
   emitProgress: ProgressEmitter;
   emitRecord: EmitRecordFn;
@@ -1291,10 +1349,16 @@ async function runAllMailPasses(
         message: `Backfilling historical attachment UIDs (${attachmentBackfillRange}) from ${allMail.path}`,
       });
       const backfillMetas = await collectMetadata(client, attachmentBackfillRange);
+      const backfillSummary = createAttachmentBackfillSummary();
       await emitMessagesPass(
         {
           emitProgress: (m) => emit({ ...m, stream: "attachments" }),
-          emitRecord: deps.emitRecord,
+          emitRecord: async (stream, data, keyField) => {
+            await deps.emitRecord(stream, data, keyField);
+            if (stream === "attachments") {
+              addAttachmentBackfillRecordToSummary(backfillSummary, data);
+            }
+          },
           fetchBodies: fetchBodiesBound,
           hydrateAttachment,
           nowIso,
@@ -1305,6 +1369,26 @@ async function runAllMailPasses(
         },
         backfillMetas
       );
+      await emit({
+        type: "PROGRESS",
+        stream: "attachments",
+        message: `Gmail attachment backfill summary: ${formatAttachmentBackfillSummary(backfillSummary)}`,
+        count: backfillSummary.hydrated,
+        total:
+          backfillSummary.hydrated +
+          backfillSummary.already_hydrated +
+          backfillSummary.too_large +
+          backfillSummary.failed +
+          backfillSummary.unavailable_skipped,
+      });
+    } else {
+      await emit({
+        type: "PROGRESS",
+        stream: "attachments",
+        message: `Gmail attachment backfill summary: ${formatAttachmentBackfillSummary(createAttachmentBackfillSummary())}`,
+        count: 0,
+        total: 0,
+      });
     }
     await emit({
       type: "STATE",
