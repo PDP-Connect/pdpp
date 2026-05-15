@@ -12,12 +12,24 @@ function urlBase64ToUint8Array(base64String: string) {
 }
 
 function detectSupport(config: WebPushConfig) {
-  if (!window.isSecureContext) return "Web Push needs HTTPS or localhost.";
-  if (!("serviceWorker" in navigator)) return "This browser does not support service workers.";
-  if (!("PushManager" in window)) return "This browser does not support the Push API.";
-  if (!("Notification" in window)) return "This browser does not support browser notifications.";
-  if (!config.enabled || !config.public_key) return config.unavailable_reason || "Server VAPID keys are not configured.";
-  if (Notification.permission === "denied") return "Notifications are denied. Change browser or OS notification settings to opt in.";
+  if (!window.isSecureContext) {
+    return "Web Push needs HTTPS or localhost.";
+  }
+  if (!("serviceWorker" in navigator)) {
+    return "This browser does not support service workers.";
+  }
+  if (!("PushManager" in window)) {
+    return "This browser does not support the Push API.";
+  }
+  if (!("Notification" in window)) {
+    return "This browser does not support browser notifications.";
+  }
+  if (!(config.enabled && config.public_key)) {
+    return config.unavailable_reason || "Server VAPID keys are not configured.";
+  }
+  if (Notification.permission === "denied") {
+    return "Notifications are denied. Change browser or OS notification settings to opt in.";
+  }
   return null;
 }
 
@@ -30,29 +42,58 @@ export function WebPushSettings({
 }) {
   const [status, setStatus] = useState("Checking this browser...");
   const [busy, setBusy] = useState(false);
-  const [endpoint, setEndpoint] = useState<string | null>(subscriptions[0]?.endpoint ?? null);
+  const [endpoint, setEndpoint] = useState<string | null>(null);
   const [unavailable, setUnavailable] = useState<string | null>(null);
 
   useEffect(() => {
     const reason = detectSupport(config);
     setUnavailable(reason);
     setStatus(reason ? "Unavailable in this browser" : `Permission: ${Notification.permission}`);
+    if (reason) {
+      return;
+    }
+    let cancelled = false;
+    navigator.serviceWorker
+      .getRegistration("/")
+      .then(async (registration) => {
+        const existing = await registration?.pushManager.getSubscription();
+        if (!(cancelled || existing == null)) {
+          setEndpoint(existing.endpoint);
+          setStatus("Web Push is enabled for this browser.");
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setStatus("Could not inspect this browser's Web Push subscription.");
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [config]);
 
   async function enable() {
-    if (!config.public_key) return;
+    if (!config.public_key) {
+      return;
+    }
     setBusy(true);
     try {
       const registration = await navigator.serviceWorker.register("/pdpp-dashboard-sw.js");
       const permission = await Notification.requestPermission();
       if (permission !== "granted") {
-        setStatus(permission === "denied" ? "Permission denied. Enable notifications in browser settings." : "Permission was not granted.");
+        setStatus(
+          permission === "denied"
+            ? "Permission denied. Enable notifications in browser settings."
+            : "Permission was not granted."
+        );
         return;
       }
-      const subscription = await registration.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: urlBase64ToUint8Array(config.public_key),
-      });
+      const subscription =
+        (await registration.pushManager.getSubscription()) ??
+        (await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(config.public_key),
+        }));
       const response = await fetch("/_ref/web-push/subscriptions", {
         method: "POST",
         credentials: "same-origin",
@@ -63,7 +104,9 @@ export function WebPushSettings({
           device_label: "Dashboard browser",
         }),
       });
-      if (!response.ok) throw new Error(`Subscription failed (${response.status})`);
+      if (!response.ok) {
+        throw new Error(`Subscription failed (${response.status})`);
+      }
       setEndpoint(subscription.endpoint);
       setStatus("Web Push is enabled for this browser.");
     } catch (err) {
@@ -76,17 +119,22 @@ export function WebPushSettings({
   async function disable() {
     setBusy(true);
     try {
-      const registration = await navigator.serviceWorker.getRegistration("/pdpp-dashboard-sw.js");
+      const registration = await navigator.serviceWorker.getRegistration("/");
       const subscription = await registration?.pushManager.getSubscription();
-      const targetEndpoint = subscription?.endpoint || endpoint;
-      if (subscription) await subscription.unsubscribe();
+      const targetEndpoint = subscription?.endpoint ?? endpoint;
+      if (subscription) {
+        await subscription.unsubscribe();
+      }
       if (targetEndpoint) {
-        await fetch("/_ref/web-push/subscriptions", {
+        const response = await fetch("/_ref/web-push/subscriptions", {
           method: "DELETE",
           credentials: "same-origin",
           headers: { "Content-Type": "application/json", Accept: "application/json" },
           body: JSON.stringify({ endpoint: targetEndpoint }),
         });
+        if (!response.ok) {
+          throw new Error(`Unsubscribe failed (${response.status})`);
+        }
       }
       setEndpoint(null);
       setStatus("Web Push is disabled for this browser.");
@@ -101,7 +149,10 @@ export function WebPushSettings({
     "iOS and some mobile browsers require installing this dashboard as a PWA and enabling OS notifications. Delivery is best-effort; ntfy/current and in-dashboard pending interactions stay available.";
 
   return (
-    <Section description="Optional browser-native alerts for pending connector interactions." title="Browser notifications">
+    <Section
+      description="Optional browser-native alerts for pending connector interactions."
+      title="Browser notifications"
+    >
       <div className="rounded-lg border border-border/80 bg-card/60 p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
@@ -137,4 +188,3 @@ export function WebPushSettings({
     </Section>
   );
 }
-
