@@ -47,6 +47,7 @@ import { getDefaultSourceWebhookEventStore } from './stores/source-webhook-event
 import { DeviceBatchConflictError, createDeviceExporterStore } from './stores/device-exporter-store.js';
 import {
   createWebPushSubscriptionStore,
+  fanoutPendingInteractionWebPush,
   resolveWebPushConfig,
 } from './web-push-notifications.js';
 import {
@@ -6004,6 +6005,8 @@ export async function startServer(opts = {}) {
   };
   const ownerAuthSubjectId =
     resolveOwnerAuthPlaceholderConfig(opts).subjectId || OWNER_AUTH_DEFAULT_SUBJECT_ID;
+  const webPushConfig = opts.webPushConfig || resolveWebPushConfig();
+  const webPushStore = opts.webPushSubscriptionStore || createWebPushSubscriptionStore();
   // Reference-internal run-target registry, lifted out of buildAsApp so the
   // controller can hand the same instance the per-run nonce hooks it needs
   // for Mode-A (in-process runtime) streaming registration. The buildAsApp
@@ -6048,8 +6051,8 @@ export async function startServer(opts = {}) {
     ownerAuthSubjectId: opts.ownerAuthSubjectId,
     ownerAuthForceSecureCookies: opts.ownerAuthForceSecureCookies,
     ownerAuthSameSite: opts.ownerAuthSameSite,
-    webPushConfig: opts.webPushConfig,
-    webPushSubscriptionStore: opts.webPushSubscriptionStore,
+    webPushConfig,
+    webPushSubscriptionStore: webPushStore,
     agentConnectTtlMs: opts.agentConnectTtlMs,
     publicDynamicClientRegistrationRateLimit: opts.publicDynamicClientRegistrationRateLimit,
     referenceRevision: opts.referenceRevision,
@@ -6142,6 +6145,9 @@ export async function startServer(opts = {}) {
     logger,
     runtimeContext,
     connectorPathResolver: opts.connectorPathResolver || resolveDefaultConnectorPath,
+    ownerSubjectId: ownerAuthSubjectId,
+    webPushConfig,
+    webPushSubscriptionStore: webPushStore,
   });
   await schedulerManager.start();
   const startupBackfillAbortController = new AbortController();
@@ -6255,6 +6261,9 @@ function createReferenceSchedulerManager({
   runtimeContext,
   schedulerStore = getDefaultSchedulerStore(),
   connectorPathResolver = resolveDefaultConnectorPath,
+  ownerSubjectId = OWNER_AUTH_DEFAULT_SUBJECT_ID,
+  webPushConfig = resolveWebPushConfig(),
+  webPushSubscriptionStore = createWebPushSubscriptionStore(),
 } = {}) {
   let scheduler = null;
   let stopped = false;
@@ -6330,11 +6339,41 @@ function createReferenceSchedulerManager({
       markNeedsHuman: (connectorId) => controller.markNeedsHuman(connectorId),
       isNeedsHuman: (connectorId) =>
         controller.isNeedsHuman(connectorId) || Boolean(controller.getActiveRun(connectorId)),
-      onInteraction: async (interaction) => ({
-        type: 'INTERACTION_RESPONSE',
-        request_id: interaction.request_id,
-        status: 'cancelled',
-      }),
+      onInteraction: async (interaction) => {
+        const connectorDisplayName =
+          typeof interaction?.connector_display_name === 'string' && interaction.connector_display_name.trim()
+            ? interaction.connector_display_name.trim()
+            : typeof interaction?.connector_id === 'string' && interaction.connector_id.trim()
+              ? interaction.connector_id.trim()
+              : 'Connector';
+        const runId = typeof interaction?.run_id === 'string' ? interaction.run_id : null;
+        if (runId) {
+          try {
+            await fanoutPendingInteractionWebPush({
+              config: webPushConfig,
+              store: webPushSubscriptionStore,
+              interaction,
+              connectorDisplayName,
+              ownerSubjectId,
+              // Scheduled interactions are immediately marked needs-human and
+              // cancelled so the scheduler does not wait unattended. Notify the
+              // owner, but route to the durable run context rather than a
+              // transient stream that may already be closed.
+              routeTo: 'run',
+              runId,
+              log: logger,
+            });
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            logger?.warn?.(`[scheduler] web push fire for run ${runId} failed: ${message}`);
+          }
+        }
+        return {
+          type: 'INTERACTION_RESPONSE',
+          request_id: interaction.request_id,
+          status: 'cancelled',
+        };
+      },
       onRunComplete: (record) => {
         logger?.info?.(
           {

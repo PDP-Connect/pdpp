@@ -3126,6 +3126,7 @@ rl.on('line', (line) => {
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
   const completedRuns = [];
+  const interactions = [];
   const markedConnectors = [];
 
   try {
@@ -3149,7 +3150,10 @@ rl.on('line', (line) => {
         },
       ],
       rsUrl,
-      onInteraction: async (interaction) => cancelledInteractionResponse(interaction),
+      onInteraction: async (interaction) => {
+        interactions.push(interaction);
+        return cancelledInteractionResponse(interaction);
+      },
       onRunComplete: (record) => completedRuns.push(record),
       getState: async () => null,
       setState: async () => {},
@@ -3168,6 +3172,9 @@ rl.on('line', (line) => {
     const [interactionRun, needsHumanSkip] = completedRuns;
     assert.equal(interactionRun?.status, 'succeeded');
     assert.notEqual(interactionRun?.terminalReason, 'interaction_handler_invalid_response');
+    assert.equal(interactions[0]?.connector_id, manifest.connector_id);
+    assert.equal(interactions[0]?.connector_display_name, manifest.display_name);
+    assert.equal(interactions[0]?.run_id, interactionRun?.runId);
     assert.equal(needsHumanSkip?.status, 'skipped');
     assert.ok(needsHumanSkip?.error?.startsWith('needs_human_attention:'));
   } finally {

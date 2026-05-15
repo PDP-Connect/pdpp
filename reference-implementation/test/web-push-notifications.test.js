@@ -179,6 +179,35 @@ test('pending interaction Web Push payload omits sensitive connector and interac
   assert.equal(payload.interaction_id, 'int_secret');
 });
 
+test('scheduled interaction Web Push payload can route to durable run context instead of transient stream', () => {
+  const payload = buildPendingInteractionPushPayload({
+    runId: 'run_scheduled',
+    connectorDisplayName: 'Scheduled connector',
+    routeTo: 'run',
+    interaction: {
+      kind: 'manual_action',
+      request_id: 'int_scheduled',
+      message: 'Log in manually',
+    },
+  });
+
+  assert.equal(payload.url, '/dashboard/runs/run_scheduled');
+  assert.equal(payload.interaction_id, 'int_scheduled');
+});
+
+test('manual run Web Push payload still routes manual_action interactions to the stream', () => {
+  const payload = buildPendingInteractionPushPayload({
+    runId: 'run_manual',
+    connectorDisplayName: 'Manual connector',
+    interaction: {
+      kind: 'manual_action',
+      request_id: 'int_manual',
+    },
+  });
+
+  assert.equal(payload.url, '/dashboard/runs/run_manual/stream?interaction_id=int_manual');
+});
+
 test('web push send failures mark subscriptions without blocking successful fallback work', async () => {
   const store = createMemoryWebPushSubscriptionStore();
   await store.upsert('owner_local', sampleSubscription('https://push.example.invalid/sub/gone'), {});
@@ -333,4 +362,20 @@ test('controller keeps ntfy and Web Push as independent best-effort notification
   assert.match(src, /void fireWebPush\(/);
   assert.match(src, /ntfy fire for run .* failed/);
   assert.match(src, /web push fire for run .* failed/);
+});
+
+test('scheduler interactions carry run context needed for server-side Web Push fanout', async () => {
+  const src = await readFile(new URL('../runtime/scheduler.ts', import.meta.url), 'utf8');
+  assert.match(src, /onStarted: \(run\) =>/);
+  assert.match(src, /connector_display_name: connectorDisplayName/);
+  assert.match(src, /run_id:\s*runId/);
+});
+
+test('reference scheduler Web Push fanout uses the server subscription store and owner subject', async () => {
+  const src = await readFile(new URL('../server/index.js', import.meta.url), 'utf8');
+  assert.match(src, /fanoutPendingInteractionWebPush/);
+  assert.match(src, /webPushSubscriptionStore: webPushStore/);
+  assert.match(src, /ownerSubjectId: ownerAuthSubjectId/);
+  assert.match(src, /store: webPushSubscriptionStore/);
+  assert.match(src, /routeTo: 'run'/);
 });

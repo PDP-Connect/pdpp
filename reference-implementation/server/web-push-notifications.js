@@ -389,13 +389,13 @@ export function getDefaultWebPushSubscriptionStore() {
   return defaultWebPushSubscriptionStore;
 }
 
-export function buildPendingInteractionPushPayload({ interaction, connectorDisplayName, runId }) {
+export function buildPendingInteractionPushPayload({ interaction, connectorDisplayName, routeTo = 'interaction', runId }) {
   const kind = typeof interaction?.kind === 'string' ? interaction.kind : 'interaction';
   const interactionId = typeof interaction?.request_id === 'string' ? interaction.request_id : '';
   const encodedRunId = encodeURIComponent(runId);
   const encodedInteractionId = encodeURIComponent(interactionId);
   const url =
-    kind === 'manual_action'
+    routeTo === 'interaction' && kind === 'manual_action'
       ? `/dashboard/runs/${encodedRunId}/stream?interaction_id=${encodedInteractionId}`
       : `/dashboard/runs/${encodedRunId}`;
   return {
@@ -432,6 +432,7 @@ export async function fanoutPendingInteractionWebPush({
   interaction,
   connectorDisplayName,
   ownerSubjectId,
+  routeTo = 'interaction',
   runId,
   log = console,
 }) {
@@ -443,7 +444,7 @@ export async function fanoutPendingInteractionWebPush({
     log.warn?.(`[controller] web push for run ${runId} skipped: missing owner subject`);
     return { attempted: 0, sent: 0, unavailable: false };
   }
-  const payload = buildPendingInteractionPushPayload({ interaction, connectorDisplayName, runId });
+  const payload = buildPendingInteractionPushPayload({ interaction, connectorDisplayName, routeTo, runId });
   const subscriptions = await store.listActiveRaw(normalizedOwnerSubjectId);
   let sent = 0;
   await Promise.all(

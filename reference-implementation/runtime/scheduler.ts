@@ -842,6 +842,7 @@ interface RunConnectorCall {
   manifest: SchedulerManifest;
   onInteraction: InteractionHandler;
   onProgress: () => void;
+  onStarted?: (run: { run_id?: string | null; trace_id?: string | null }) => void;
   ownerToken: string;
   persistState: boolean;
   referenceBaseUrl?: string | null;
@@ -865,6 +866,31 @@ function narrowState(state: unknown): Record<string, unknown> | null {
     return state as Record<string, unknown>;
   }
   return null;
+}
+
+function displayNameForScheduledConnector(manifest: SchedulerManifest, connectorId: string): string {
+  return typeof manifest?.display_name === "string" && manifest.display_name.trim()
+    ? manifest.display_name.trim()
+    : connectorId;
+}
+
+function withSchedulerInteractionContext(
+  interaction: unknown,
+  {
+    connectorDisplayName,
+    connectorId,
+    runId,
+  }: { connectorDisplayName: string; connectorId: string; runId: string | null }
+): unknown {
+  if (!interaction || typeof interaction !== "object" || Array.isArray(interaction)) {
+    return interaction;
+  }
+  return {
+    ...interaction,
+    connector_id: connectorId,
+    connector_display_name: connectorDisplayName,
+    run_id: runId,
+  };
 }
 
 // ─── createScheduler ────────────────────────────────────────────────────────
@@ -1175,6 +1201,8 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
       const persistState = grantAccessMode !== "single_use";
       const state = narrowState(await getState(connectorId));
       const collectionMode: "full_refresh" | "incremental" = state ? "incremental" : "full_refresh";
+      let currentRunId: string | null = null;
+      const connectorDisplayName = displayNameForScheduledConnector(manifest, connectorId);
 
       // Wrap onInteraction to detect when an automatic run surfaces a
       // human-attention interaction. We mark the connector as needs-human
@@ -1184,7 +1212,9 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
         if (!isManual) {
           markNeedsHuman(connectorId);
         }
-        return onInteraction(interaction);
+        return onInteraction(
+          withSchedulerInteractionContext(interaction, { connectorDisplayName, connectorId, runId: currentRunId })
+        );
       };
 
       return await runWithRetries(schedule, {
@@ -1198,6 +1228,9 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
         referenceBaseUrl,
         rsUrl,
         onInteraction: wrappedInteraction,
+        onStarted: (run) => {
+          currentRunId = typeof run?.run_id === "string" ? run.run_id : null;
+        },
         onProgress: () => {
           // no-op; progress is driven by the runtime's own logging.
         },
