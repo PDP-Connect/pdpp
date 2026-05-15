@@ -31,7 +31,7 @@
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Page } from "playwright";
+import type { Page, Response } from "playwright";
 import { ensureChaseSession } from "../../src/auto-login/chase.ts";
 import {
   type BrowserCollectContext,
@@ -92,8 +92,26 @@ const ERROR_MESSAGE_SLICE = 120;
 const ERROR_MESSAGE_SLICE_LONG = 160;
 const ERROR_MESSAGE_SLICE_MAX = 200;
 const HASH_SHORT_LEN = 16;
+const DOWNLOAD_RESPONSE_HINT_RE = /filename|attachment|octet-stream|x-ofx|qfx/iu;
+const FILENAME_PLAIN_RE = /filename="?([^";]+)"?/iu;
+const FILENAME_UTF8_RE = /filename\*=UTF-8''([^;]+)/iu;
+const SURROUNDING_QUOTES_RE = /^"|"$/g;
 const DASHBOARD_ACCOUNT_SELECTOR =
   '[id^="accounts-name-link-button-"][id$="-label"], button[id^="accounts-name-link-button-"], button[data-testid^="accounts-name-link-button-"]';
+
+interface CapturedQfxResponse {
+  body: Buffer;
+  contentType: string;
+  method: string;
+  status: number;
+  suggestedFilename: string | null;
+  url: string;
+}
+
+interface QfxResponseQueue {
+  detach(): void;
+  waitForNextResponse(opts?: { timeoutMs?: number }): Promise<CapturedQfxResponse>;
+}
 
 // ─── Dashboard scrape: enumerate accounts ─────────────────────────────────
 
@@ -162,6 +180,158 @@ async function selectFileType(page: Page, label: string): Promise<void> {
   });
   await opt.waitFor({ state: "visible", timeout: OPTION_WAIT_MS });
   await opt.click({ timeout: OPTION_WAIT_MS });
+}
+
+function suggestedFilenameFromHeaders(headers: Record<string, string>): string | null {
+  const disposition = headers["content-disposition"];
+  if (!disposition) {
+    return null;
+  }
+  const utf8 = disposition.match(FILENAME_UTF8_RE);
+  if (utf8?.[1]) {
+    return decodeURIComponent(utf8[1].replace(SURROUNDING_QUOTES_RE, ""));
+  }
+  const plain = disposition.match(FILENAME_PLAIN_RE);
+  return plain?.[1] ?? null;
+}
+
+function isLikelyQfxResponseBody(body: Buffer, headers: Record<string, string>): boolean {
+  if (body.length === 0) {
+    return false;
+  }
+  const contentType = headers["content-type"]?.toLowerCase() ?? "";
+  if (contentType.includes("text/html") || contentType.includes("application/json")) {
+    return false;
+  }
+  const head = body.subarray(0, 1024).toString("utf8").toUpperCase();
+  return head.includes("OFXHEADER:") || head.includes("<OFX>");
+}
+
+function attachQfxResponseQueue(page: Page): QfxResponseQueue {
+  const pending: CapturedQfxResponse[] = [];
+  const waiters: ((response: CapturedQfxResponse) => void)[] = [];
+
+  const enqueue = (response: CapturedQfxResponse): void => {
+    const waiter = waiters.shift();
+    if (waiter) {
+      waiter(response);
+      return;
+    }
+    pending.push(response);
+  };
+
+  const onResponse = (response: Response): void => {
+    const headers = response.headers();
+    const contentDisposition = headers["content-disposition"] ?? "";
+    const contentType = headers["content-type"] ?? "";
+    if (!DOWNLOAD_RESPONSE_HINT_RE.test(`${contentDisposition} ${contentType}`)) {
+      return;
+    }
+    response
+      .body()
+      .then((body) => {
+        if (!isLikelyQfxResponseBody(body, headers)) {
+          return;
+        }
+        enqueue({
+          body,
+          contentType,
+          method: response.request().method(),
+          status: response.status(),
+          suggestedFilename: suggestedFilenameFromHeaders(headers),
+          url: response.url(),
+        });
+      })
+      .catch((): undefined => undefined);
+  };
+
+  page.on("response", onResponse);
+
+  return {
+    detach(): void {
+      page.off("response", onResponse);
+    },
+    waitForNextResponse({ timeoutMs = DOWNLOAD_TIMEOUT_MS } = {}): Promise<CapturedQfxResponse> {
+      const first = pending.shift();
+      if (first) {
+        return Promise.resolve(first);
+      }
+      return new Promise<CapturedQfxResponse>((resolve, reject) => {
+        let settled = false;
+        const timer = setTimeout(() => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          const idx = waiters.indexOf(resolveOnce);
+          if (idx >= 0) {
+            waiters.splice(idx, 1);
+          }
+          reject(new Error(`qfx_response_timeout after ${timeoutMs}ms`));
+        }, timeoutMs);
+        const resolveOnce = (response: CapturedQfxResponse): void => {
+          if (settled) {
+            pending.unshift(response);
+            return;
+          }
+          settled = true;
+          clearTimeout(timer);
+          resolve(response);
+        };
+        waiters.push(resolveOnce);
+      });
+    },
+  };
+}
+
+async function waitForQfxDownloadArtifact(
+  page: Page,
+  account: ChaseAccount,
+  activity: ActivityKind,
+  tmpDir: string,
+  downloadQueue: ReturnType<typeof attachDownloadQueue>,
+  qfxResponseQueue: QfxResponseQueue,
+  capture: CaptureSession | null | undefined
+): Promise<DownloadResult> {
+  try {
+    const result = await Promise.any([
+      downloadQueue.waitForNextDownload({ timeoutMs: DOWNLOAD_TIMEOUT_MS }).then((download) => ({
+        download,
+        kind: "playwright_download" as const,
+      })),
+      qfxResponseQueue.waitForNextResponse({ timeoutMs: DOWNLOAD_TIMEOUT_MS }).then((response) => ({
+        kind: "qfx_response" as const,
+        response,
+      })),
+    ]);
+    const qfxPath = join(tmpDir, `chase-${account.internal_id}-${activity}-${Date.now()}.qfx`);
+    if (result.kind === "playwright_download") {
+      await result.download.saveAs(qfxPath);
+    } else {
+      await writeFile(qfxPath, result.response.body);
+      capture?.captureHttp(
+        `download-qfx-${account.internal_id}-${activity}-qfx-response`,
+        { bytes: result.response.body.length, suggestedFilename: result.response.suggestedFilename },
+        {
+          method: result.response.method,
+          path: result.response.url,
+          status: result.response.status,
+          type: result.response.contentType,
+        }
+      );
+    }
+    return { downloaded: true, qfxPath, activity };
+  } catch (err) {
+    await capturePageCheckpoint(
+      capture,
+      page,
+      `download-qfx-${account.internal_id}-${activity}-download-event-timeout`
+    );
+    return {
+      downloaded: false,
+      error: `download_event_timeout: ${truncate(errMessage(err), ERROR_MESSAGE_SLICE)}`,
+    };
+  }
 }
 
 /** Drive a single QFX download. */
@@ -261,11 +431,13 @@ async function downloadQfx(
   await page.locator("mds-button#download").waitFor({ state: "visible", timeout: OPTION_WAIT_MS });
 
   const downloadQueue = attachDownloadQueue(page);
+  const qfxResponseQueue = attachQfxResponseQueue(page);
   try {
     await page.locator("mds-button#download").click({ timeout: CLICK_TIMEOUT_MS });
   } catch (err) {
     await capturePageCheckpoint(capture, page, `download-qfx-${account.internal_id}-${activity}-download-click-failed`);
     downloadQueue.detach();
+    qfxResponseQueue.detach();
     return {
       downloaded: false,
       error: `download_button_click_failed: ${truncate(errMessage(err), ERROR_MESSAGE_SLICE)}`,
@@ -273,22 +445,10 @@ async function downloadQfx(
   }
 
   try {
-    const dl = await downloadQueue.waitForNextDownload({ timeoutMs: DOWNLOAD_TIMEOUT_MS });
-    const qfxPath = join(tmpDir, `chase-${account.internal_id}-${activity}-${Date.now()}.qfx`);
-    await dl.saveAs(qfxPath);
-    return { downloaded: true, qfxPath, activity };
-  } catch (err) {
-    await capturePageCheckpoint(
-      capture,
-      page,
-      `download-qfx-${account.internal_id}-${activity}-download-event-timeout`
-    );
-    return {
-      downloaded: false,
-      error: `download_event_timeout: ${truncate(errMessage(err), ERROR_MESSAGE_SLICE)}`,
-    };
+    return await waitForQfxDownloadArtifact(page, account, activity, tmpDir, downloadQueue, qfxResponseQueue, capture);
   } finally {
     downloadQueue.detach();
+    qfxResponseQueue.detach();
   }
 }
 
@@ -486,7 +646,6 @@ async function parseQfxFile(path: string): Promise<unknown> {
   // bare parse). types/ofx-js.d.ts shims the module as `unknown`; we
   // narrow structurally at runtime (see hasParse below) instead of
   // claiming a fixed module shape.
-  // biome-ignore lint/correctness/noUnresolvedImports: ofx-js resolves via types/ofx-js.d.ts; Biome's resolver doesn't walk ambient declaration shims
   const mod: unknown = await import("ofx-js");
   const modObj = isOfxRecord(mod) ? mod : {};
   const defaultExport = modObj.default;
