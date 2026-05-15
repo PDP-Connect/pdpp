@@ -47,6 +47,39 @@ test("captureDom writes html, page metadata, and screenshot in raw local capture
   }
 });
 
+test("captureDom invokes an optional trace checkpoint hook after page capture", async () => {
+  const previous = process.env.PDPP_CAPTURE_FIXTURES;
+  process.env.PDPP_CAPTURE_FIXTURES = "1";
+  const connectorName = `fixture_capture_hook_test_${process.pid}_${Date.now()}`;
+  const capture = createCaptureSession(connectorName);
+  assert.ok(capture);
+
+  try {
+    const labels: string[] = [];
+    capture.setTraceCheckpointHook?.((label) => {
+      labels.push(label);
+      return Promise.resolve();
+    });
+    const page: Pick<Page, "content" | "screenshot" | "title" | "url"> = {
+      content: () => Promise.resolve("<html><body>ok</body></html>"),
+      screenshot: () => Promise.resolve(Buffer.from("png")),
+      title: () => Promise.resolve("Fixture"),
+      url: () => "https://example.test/current",
+    };
+
+    await capture.captureDom(page as Page, "after download click");
+
+    assert.deepEqual(labels, ["after download click"]);
+  } finally {
+    rmSync(capture.baseDir, { force: true, recursive: true });
+    if (previous === undefined) {
+      delete process.env.PDPP_CAPTURE_FIXTURES;
+    } else {
+      process.env.PDPP_CAPTURE_FIXTURES = previous;
+    }
+  }
+});
+
 test("createCaptureSession returns null when raw capture mode is disabled", () => {
   const previous = process.env.PDPP_CAPTURE_FIXTURES;
   delete process.env.PDPP_CAPTURE_FIXTURES;

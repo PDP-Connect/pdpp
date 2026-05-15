@@ -264,6 +264,7 @@ export const RUN_LIFECYCLE_VOCABULARY: StatusVocabulary = {
   pending: { label: "pending", tone: "warning" },
   staged: { label: "staged", tone: "warning" },
   verification_pending: { label: "verification pending", tone: "warning" },
+  succeeded_with_gaps: { label: "partial", tone: "warning" },
 };
 
 // Change/spec authoring lifecycle: maturity states of durable artifacts.

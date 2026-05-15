@@ -25,7 +25,7 @@ import { RunDetailPoller } from "./run-detail-poller.tsx";
 
 export const dynamic = "force-dynamic";
 
-type TerminalRunStatus = "succeeded" | "failed" | "cancelled" | null;
+type TerminalRunStatus = "succeeded" | "succeeded_with_gaps" | "failed" | "cancelled" | null;
 type RunStateTone = "protocol" | "human" | "success" | "danger";
 
 interface LatestProgress {
@@ -89,8 +89,12 @@ export default async function RunDetailPage({
   const failure = events.find((e) => e.event_type === "run.failed");
   const terminalKnownGaps = extractTerminalKnownGaps(events);
   const gapClassification = classifyKnownGaps(terminalKnownGaps.gaps);
-  const stateTone = getRunStateTone({ active, currentAssistance, terminalStatus });
-  const stateValue = getRunStateValue({ active, currentAssistance, terminalStatus });
+  const displayTerminalStatus =
+    terminalStatus === "succeeded" && gapClassification.coverageGaps.length > 0
+      ? "succeeded_with_gaps"
+      : terminalStatus;
+  const stateTone = getRunStateTone({ active, currentAssistance, terminalStatus: displayTerminalStatus });
+  const stateValue = getRunStateValue({ active, currentAssistance, terminalStatus: displayTerminalStatus });
   const failureRows = summarizeFailure(failure);
 
   return (
@@ -100,7 +104,11 @@ export default async function RunDetailPage({
         beforeTimeline={
           <>
             <CurrentAssistanceSection active={active} currentAssistance={currentAssistance} runId={runId} />
-            <LatestProgressSection active={active} latestProgress={latestProgress} terminalStatus={terminalStatus} />
+            <LatestProgressSection
+              active={active}
+              latestProgress={latestProgress}
+              terminalStatus={displayTerminalStatus}
+            />
             <StatsGrid
               checkpoints={checkpoints}
               failure={failure}
@@ -704,6 +712,9 @@ function getRunStateTone({
   if (active) {
     return "protocol";
   }
+  if (terminalStatus === "succeeded_with_gaps") {
+    return "human";
+  }
   return terminalStatus === "failed" ? "danger" : "success";
 }
 
@@ -743,7 +754,7 @@ function summarizeCheckpoints(events: SpineEvent[]): [string, string][] {
 }
 
 function summarizeProgress(events: SpineEvent[]): [string, string][] {
-  const progressEvents = events.filter((e) => e.event_type === "run.progress_reported");
+  const progressEvents = events.filter((e) => e.event_type === "run.progress_reported" && isUserFacingProgressEvent(e));
   const skipped = events.filter((e) => e.event_type === "run.stream_skipped").length;
   const last = progressEvents.at(-1);
   return [
@@ -796,7 +807,9 @@ function getTerminalRunStatus(events: SpineEvent[]): TerminalRunStatus {
 }
 
 function getLatestProgress(events: SpineEvent[]): LatestProgress | null {
-  const latest = [...events].reverse().find((event) => event.event_type === "run.progress_reported");
+  const latest = [...events]
+    .reverse()
+    .find((event) => event.event_type === "run.progress_reported" && isUserFacingProgressEvent(event));
   if (!latest) {
     return null;
   }
@@ -815,4 +828,13 @@ function getLatestProgress(events: SpineEvent[]): LatestProgress | null {
     total,
     percentLabel,
   };
+}
+
+function isUserFacingProgressEvent(event: SpineEvent): boolean {
+  const message = typeof event.data?.message === "string" ? event.data.message : "";
+  return !(
+    message.startsWith("tracing enabled;") ||
+    message.startsWith("trace written to ") ||
+    message.startsWith("failed to write trace:")
+  );
 }

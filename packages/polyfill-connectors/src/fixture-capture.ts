@@ -57,6 +57,7 @@ export interface CaptureSession {
   captureHttp(label: string, body: unknown, meta?: HttpCaptureMeta): void;
   recordRecord(msg: { stream: string; data: RecordData }): void;
   readonly runId: string;
+  setTraceCheckpointHook?(hook: ((label: string) => Promise<void>) | null): void;
 }
 
 export function createCaptureSession(connectorName: string): CaptureSession | null {
@@ -79,10 +80,14 @@ export function createCaptureSession(connectorName: string): CaptureSession | nu
   }
 
   let httpSeq = 0;
+  let traceCheckpointHook: ((label: string) => Promise<void>) | null = null;
 
   return {
     runId,
     baseDir,
+    setTraceCheckpointHook(hook): void {
+      traceCheckpointHook = hook;
+    },
     recordRecord(msg): void {
       try {
         const file = join(baseDir, "records", `${safeLabel(msg.stream)}.jsonl`);
@@ -126,6 +131,12 @@ export function createCaptureSession(connectorName: string): CaptureSession | nu
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         process.stderr.write(`[capture] screenshot write failed for ${label}: ${message}\n`);
+      }
+      if (traceCheckpointHook) {
+        await traceCheckpointHook(label).catch((err: unknown): undefined => {
+          const message = err instanceof Error ? err.message : String(err);
+          process.stderr.write(`[capture] trace checkpoint failed for ${label}: ${message}\n`);
+        });
       }
     },
     captureHttp(label, body, meta = {}): void {

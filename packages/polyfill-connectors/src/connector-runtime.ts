@@ -36,6 +36,7 @@
  *   - Auth strategy resolution before collect() runs
  */
 
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import type { Browser, BrowserContext, CDPSession, Page } from "playwright";
@@ -592,7 +593,6 @@ export function runConnector(config: RunConnectorConfig): void {
       await runInBrowser({
         browser,
         name,
-        emit,
         sendInteraction,
         assist,
         completeAssistance,
@@ -724,7 +724,6 @@ function makeEmitRecord(deps: {
 async function runInBrowser(args: {
   browser: BrowserConfig;
   name: string;
-  emit: (msg: EmittedMessage) => Promise<void>;
   sendInteraction: BaseCollectContext["sendInteraction"];
   assist: BaseCollectContext["assist"];
   completeAssistance: BaseCollectContext["completeAssistance"];
@@ -737,7 +736,6 @@ async function runInBrowser(args: {
   const {
     browser,
     name,
-    emit,
     sendInteraction,
     assist,
     completeAssistance,
@@ -764,8 +762,9 @@ async function runInBrowser(args: {
   // correction-layer counterpart.
   const { withShutdownRelease } = await import("./shutdown-hook.ts");
   const disposeShutdownHook = withShutdownRelease(release);
-  const tracer = makeTracer(ctx, name, emit, baseCtx.capture);
+  const tracer = makeTracer(ctx, name, baseCtx.capture);
   await tracer.start();
+  baseCtx.capture?.setTraceCheckpointHook?.((label) => tracer.checkpoint(label));
   let page: Page | null = null;
   try {
     page = await ctx.newPage();
@@ -794,6 +793,7 @@ async function runInBrowser(args: {
     }
     throw err;
   } finally {
+    baseCtx.capture?.setTraceCheckpointHook?.(null);
     await tracer.stop();
     await release().catch((): undefined => undefined);
     disposeShutdownHook();
@@ -1315,56 +1315,130 @@ async function establishSession(
 // ─── Playwright tracing helper ──────────────────────────────────────────
 
 interface Tracer {
+  checkpoint(label: string): Promise<void>;
   start(): Promise<void>;
   stop(): Promise<void>;
 }
 
 /**
- * Start/stop Playwright tracing, gated on PDPP_TRACE=1. Produces a
- * replayable .zip for debugging silent scraper failures. See §9.
+ * Start/stop Playwright tracing. With raw fixture capture active, traces are
+ * flushed as chunks at every fixture checkpoint so a later browser/context
+ * closure does not destroy the entire diagnostic artifact.
  */
-function makeTracer(
-  context: BrowserContext,
-  name: string,
-  emit: (msg: EmittedMessage) => Promise<void>,
-  capture: CaptureSession | null
-): Tracer {
+function makeTracer(context: BrowserContext, name: string, capture: CaptureSession | null): Tracer {
   const enabled = process.env.PDPP_TRACE === "1" || capture !== null;
   const traceName = `${name}-${new Date().toISOString().replace(TRACE_TIMESTAMP_UNSAFE, "-")}`;
   const tracePath = capture ? join(capture.baseDir, "traces", `${traceName}.zip`) : `/tmp/${traceName}.zip`;
+  const traceBaseDir = capture ? join(capture.baseDir, "traces") : null;
+  const tracing = context.tracing as BrowserContext["tracing"] & {
+    startChunk?: (options?: { title?: string }) => Promise<void>;
+    stopChunk?: (options?: { path?: string }) => Promise<void>;
+  };
+  let started = false;
+  let chunkStarted = false;
+  let chunkSeq = 0;
+
+  const safeChunkLabel = (label: string): string =>
+    String(label)
+      .replace(/[^A-Za-z0-9_.-]/g, "_")
+      .slice(0, 80);
+
+  const writeTraceDiagnostic = (phase: string, err: unknown): void => {
+    const message = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`[trace] ${phase} failed: ${message}\n`);
+    if (!traceBaseDir) {
+      return;
+    }
+    try {
+      writeFileSync(
+        join(traceBaseDir, `${traceName}-${String(chunkSeq).padStart(3, "0")}-${safeChunkLabel(phase)}.error.json`),
+        JSON.stringify(
+          {
+            captured_at: new Date().toISOString(),
+            error: message,
+            phase,
+          },
+          null,
+          2
+        )
+      );
+    } catch {
+      // Diagnostics must never affect the connector outcome.
+    }
+  };
+
+  const startChunk = async (label: string): Promise<void> => {
+    if (!traceBaseDir || typeof tracing.startChunk !== "function") {
+      return;
+    }
+    try {
+      await tracing.startChunk({ title: `${traceName}:${label}` });
+      chunkStarted = true;
+    } catch (err) {
+      chunkStarted = false;
+      writeTraceDiagnostic("start-chunk", err);
+    }
+  };
+
+  const stopChunk = async (label: string): Promise<void> => {
+    if (!(traceBaseDir && chunkStarted) || typeof tracing.stopChunk !== "function") {
+      return;
+    }
+    chunkSeq += 1;
+    const path = join(traceBaseDir, `${traceName}-${String(chunkSeq).padStart(3, "0")}-${safeChunkLabel(label)}.zip`);
+    try {
+      await tracing.stopChunk({ path });
+    } catch (err) {
+      writeTraceDiagnostic(`stop-chunk-${safeChunkLabel(label)}`, err);
+    } finally {
+      chunkStarted = false;
+    }
+  };
+
   return {
     async start(): Promise<void> {
       if (!enabled) {
         return;
       }
-      await context.tracing
-        .start({
+      try {
+        await context.tracing.start({
           name: traceName,
           screenshots: true,
           snapshots: true,
           sources: true,
-        })
-        .catch((): undefined => undefined);
-      await emit({
-        type: "PROGRESS",
-        message: `tracing enabled; will write ${tracePath} on exit`,
-      });
+        });
+        started = true;
+      } catch (err) {
+        writeTraceDiagnostic("start", err);
+        return;
+      }
+      await startChunk("start");
+      process.stderr.write(
+        `[trace] tracing enabled; ${traceBaseDir ? `writing chunks under ${traceBaseDir}` : `will write ${tracePath} on exit`}\n`
+      );
+    },
+    async checkpoint(label: string): Promise<void> {
+      if (!(enabled && started && traceBaseDir) || typeof tracing.startChunk !== "function") {
+        return;
+      }
+      await stopChunk(label);
+      await startChunk(label);
     },
     async stop(): Promise<void> {
-      if (!enabled) {
+      if (!(enabled && started)) {
         return;
       }
       try {
+        if (traceBaseDir && typeof tracing.stopChunk === "function") {
+          await stopChunk("final");
+          await context.tracing.stop();
+          process.stderr.write(`[trace] trace chunks written under ${traceBaseDir}\n`);
+          return;
+        }
         await context.tracing.stop({ path: tracePath });
-        await emit({
-          type: "PROGRESS",
-          message: `trace written to ${tracePath} — replay with: npx playwright show-trace ${tracePath}`,
-        });
+        process.stderr.write(`[trace] trace written to ${tracePath}\n`);
       } catch (err) {
-        await emit({
-          type: "PROGRESS",
-          message: `failed to write trace: ${err instanceof Error ? err.message : String(err)}`,
-        });
+        writeTraceDiagnostic("stop", err);
       }
     },
   };
