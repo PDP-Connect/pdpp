@@ -421,6 +421,32 @@ test("parseCurrentActivityDom: ignores ancestor activity containers and emits on
   );
 });
 
+test("parseCurrentActivityDom: extracts Chase MDS dashboard rows from data-values", () => {
+  const rows = parseCurrentActivityDom(readFixture("current-activity-mds-overview.html"), "2026-05-15");
+  assert.equal(rows.length, 3);
+
+  assert.deepEqual(
+    rows.map((r) => r.status),
+    ["pending", "posted", "posted"]
+  );
+  assert.deepEqual(
+    rows.map((r) => r.activity_date),
+    ["2026-05-15", "2026-05-14", "2026-05-14"]
+  );
+  assert.deepEqual(
+    rows.map((r) => r.posted_date),
+    [null, "2026-05-14", "2026-05-14"]
+  );
+  assert.deepEqual(
+    rows.map((r) => r.description),
+    ["CARD MERCHANT", "STORE MERCHANT", "COMMA, MERCHANT"]
+  );
+  assert.deepEqual(
+    rows.map((r) => r.amount_cents),
+    [15_804, 3908, 9884]
+  );
+});
+
 // ─── parseStatementsListDom ──────────────────────────────────────────────
 
 test("parseStatementsListDom: extracts statement rows (tax documents skipped)", () => {

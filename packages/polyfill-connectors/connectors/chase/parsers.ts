@@ -4,7 +4,6 @@
 
 import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
-// biome-ignore lint/correctness/noUnresolvedImports: linkedom is declared in package.json; Biome's resolver can't follow its conditional exports
 import { parseHTML } from "linkedom";
 import type {
   ActivityChoice,
@@ -58,6 +57,7 @@ const MONTH_DOT_RE = /\.$/;
 const DIGIT_RE = /\d/;
 const CURRENT_ACTIVITY_SELECTOR =
   '[data-testid*="transaction" i], [data-testid*="activity" i], [id*="transaction" i], [id*="activity" i], tr';
+const CURRENT_ACTIVITY_MDS_ROW_SELECTOR = 'tr.mds-activity-table__row[data-values], tr[id*="activity" i][data-values]';
 const UI_TRANSACTION_ID_ATTRS = [
   "data-transaction-id",
   "data-transactionid",
@@ -377,6 +377,76 @@ function normalizeDescription(text: string): string {
   );
 }
 
+function firstVisibleAmountIndex(parts: readonly string[]): number {
+  for (let i = parts.length - 1; i >= 0; i--) {
+    if (AMOUNT_RE.test(parts[i] ?? "")) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+function parseMdsActivityDataValues(
+  raw: string,
+  referenceDateIso: string
+): Omit<CurrentActivityRow, "ui_transaction_id"> | null {
+  const parts = raw
+    .split(",")
+    .map((part) => normWhitespace(part))
+    .filter(Boolean);
+  if (parts.length < 3) {
+    return null;
+  }
+
+  const amountIndex = firstVisibleAmountIndex(parts);
+  if (amountIndex < 0) {
+    return null;
+  }
+
+  let activityDate: string | null = null;
+  let descriptionStart = 1;
+  let status = inferActivityStatus(parts[0] ?? "");
+  const first = parts[0] ?? "";
+  const second = parts[1] ?? "";
+
+  if (status === "pending") {
+    // Chase's dashboard activity table renders pending authorizations with
+    // "Pending (N)" in the Date column and no per-row date. Use the fetch date
+    // as the UI-visible activity date while keeping status=pending.
+    activityDate = referenceDateIso;
+  } else if (DATE_MONTH_RE.test(`${first}, ${second}`)) {
+    activityDate = parseVisibleDate(`${first}, ${second}`, referenceDateIso);
+    descriptionStart = 2;
+    status = "posted";
+  } else {
+    activityDate = parseVisibleDate(first, referenceDateIso);
+    status = activityDate ? "posted" : status;
+  }
+
+  if (!activityDate) {
+    return null;
+  }
+
+  const amountCents = parseVisibleAmount(parts[amountIndex] ?? "");
+  if (amountCents === null) {
+    return null;
+  }
+
+  const description = normalizeDescription(parts.slice(descriptionStart, amountIndex).join(", "));
+  if (!description || description.length > 240) {
+    return null;
+  }
+
+  return {
+    activity_date: activityDate,
+    amount_cents: amountCents,
+    description,
+    memo: null,
+    posted_date: status === "posted" ? activityDate : null,
+    status,
+  };
+}
+
 function isParseableCurrentActivityText(text: string, referenceDateIso: string): boolean {
   return Boolean(
     text && DIGIT_RE.test(text) && parseVisibleDate(text, referenceDateIso) && parseVisibleAmount(text) !== null
@@ -401,6 +471,62 @@ export function currentActivityId(accountId: string, row: CurrentActivityRow): s
   )}`;
 }
 
+function currentActivityDedupeKey(row: CurrentActivityRow): string {
+  return [row.ui_transaction_id ?? "", row.status, row.activity_date, row.amount_cents, row.description].join("|");
+}
+
+function addCurrentActivityRow(rows: CurrentActivityRow[], seen: Set<string>, row: CurrentActivityRow): void {
+  const dedupeKey = currentActivityDedupeKey(row);
+  if (seen.has(dedupeKey)) {
+    return;
+  }
+  seen.add(dedupeKey);
+  rows.push(row);
+}
+
+function parseMdsCurrentActivityRow(el: Element, referenceDateIso: string): CurrentActivityRow | null {
+  const parsed = parseMdsActivityDataValues(el.getAttribute("data-values") ?? "", referenceDateIso);
+  if (!parsed) {
+    return null;
+  }
+  return {
+    ...parsed,
+    ui_transaction_id: extractUiTransactionId(el),
+  };
+}
+
+function parseGenericCurrentActivityRow(el: Element, referenceDateIso: string): CurrentActivityRow | null {
+  const text = normWhitespace(textOf(el));
+  if (!isParseableCurrentActivityText(text, referenceDateIso)) {
+    return null;
+  }
+  if (hasParseableCurrentActivityDescendant(el, referenceDateIso)) {
+    return null;
+  }
+
+  const activityDate = parseVisibleDate(text, referenceDateIso);
+  const amountCents = parseVisibleAmount(text);
+  if (!(activityDate && amountCents !== null)) {
+    return null;
+  }
+
+  const description = normalizeDescription(text);
+  if (!description || description.length > 240) {
+    return null;
+  }
+
+  const status = inferActivityStatus(text);
+  return {
+    activity_date: activityDate,
+    amount_cents: amountCents,
+    description,
+    memo: null,
+    posted_date: status === "posted" ? activityDate : null,
+    status,
+    ui_transaction_id: extractUiTransactionId(el),
+  };
+}
+
 /**
  * Parse Chase account-activity DOM visible to the signed-in UI. This parser is
  * intentionally conservative: a candidate row must contain both a recognizable
@@ -410,44 +536,24 @@ export function parseCurrentActivityDom(html: string, referenceDateIso: string):
   const { document } = parseHTML(html);
   const rows: CurrentActivityRow[] = [];
   const seen = new Set<string>();
+  for (const el of document.querySelectorAll<HTMLElement>(CURRENT_ACTIVITY_MDS_ROW_SELECTOR)) {
+    const row = parseMdsCurrentActivityRow(el, referenceDateIso);
+    if (row) {
+      addCurrentActivityRow(rows, seen, row);
+    }
+  }
+
   for (const el of document.querySelectorAll<HTMLElement>(CURRENT_ACTIVITY_SELECTOR)) {
-    const text = normWhitespace(textOf(el));
-    if (!isParseableCurrentActivityText(text, referenceDateIso)) {
+    if (el.matches(CURRENT_ACTIVITY_MDS_ROW_SELECTOR)) {
       continue;
     }
     // Chase activity tables often put broad "activity" ids/testids on
     // containers. Only parse leaf candidates so a wrapper around multiple
     // rows cannot synthesize duplicate aggregate rows.
-    if (hasParseableCurrentActivityDescendant(el, referenceDateIso)) {
-      continue;
+    const row = parseGenericCurrentActivityRow(el, referenceDateIso);
+    if (row) {
+      addCurrentActivityRow(rows, seen, row);
     }
-    const activityDate = parseVisibleDate(text, referenceDateIso);
-    const amountCents = parseVisibleAmount(text);
-    if (!(activityDate && amountCents !== null)) {
-      continue;
-    }
-    const description = normalizeDescription(text);
-    if (!description || description.length > 240) {
-      continue;
-    }
-    const uiTransactionId = extractUiTransactionId(el);
-    const row: CurrentActivityRow = {
-      activity_date: activityDate,
-      amount_cents: amountCents,
-      description,
-      memo: null,
-      posted_date: inferActivityStatus(text) === "posted" ? activityDate : null,
-      status: inferActivityStatus(text),
-      ui_transaction_id: uiTransactionId,
-    };
-    const dedupeKey = [uiTransactionId ?? "", row.status, row.activity_date, row.amount_cents, row.description].join(
-      "|"
-    );
-    if (seen.has(dedupeKey)) {
-      continue;
-    }
-    seen.add(dedupeKey);
-    rows.push(row);
   }
   return rows;
 }

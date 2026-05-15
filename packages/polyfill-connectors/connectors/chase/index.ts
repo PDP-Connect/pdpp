@@ -99,10 +99,11 @@ const NO_ACTIVITY_CONFIRMATION_RE = /we couldn't find any activity that matched 
 const FILENAME_PLAIN_RE = /filename="?([^";]+)"?/iu;
 const FILENAME_UTF8_RE = /filename\*=UTF-8''([^;]+)/iu;
 const SURROUNDING_QUOTES_RE = /^"|"$/g;
+const DASHBOARD_OVERVIEW_URL = "https://secure.chase.com/web/auth/dashboard#/dashboard/overview";
 const DASHBOARD_ACCOUNT_SELECTOR =
   '[id^="accounts-name-link-button-"][id$="-label"], button[id^="accounts-name-link-button-"], button[data-testid^="accounts-name-link-button-"]';
 const ACCOUNT_ACTIVITY_DOM_WAIT_SELECTOR =
-  '[data-testid*="transaction" i], [data-testid*="activity" i], [id*="transaction" i], [id*="activity" i], tr';
+  'tr[data-values], [data-testid*="transaction" i], [data-testid*="activity" i], [id*="transaction" i], [id*="activity" i], tr';
 const TIME_RANGE_FIELD_BY_STREAM: Record<string, string> = {
   balances: "as_of",
   current_activity: "activity_date",
@@ -1129,14 +1130,41 @@ async function runCurrentActivity(
       total: filteredAccounts.length,
     } as const;
     await deps.emit(progressMsg);
-    const paramsFragment = encodeURIComponent(JSON.stringify({ accountId: account.internal_id }));
-    await page.goto(
-      `https://secure.chase.com/web/auth/dashboard#/dashboard/accountDetails/summary/index;params=${paramsFragment}`,
-      {
-        waitUntil: "domcontentloaded",
-        timeout: NAV_TIMEOUT_MS,
-      }
-    );
+    await page.goto(DASHBOARD_OVERVIEW_URL, {
+      waitUntil: "domcontentloaded",
+      timeout: NAV_TIMEOUT_MS,
+    });
+    const overviewAccountIds = await page
+      .locator(DASHBOARD_ACCOUNT_SELECTOR)
+      .evaluateAll((els): string[] =>
+        els
+          .map((el) => el.id || el.getAttribute("data-testid") || "")
+          .map((id) => {
+            const prefix = "accounts-name-link-button-";
+            if (!id.startsWith(prefix)) {
+              return null;
+            }
+            let digits = "";
+            for (const ch of id.slice(prefix.length)) {
+              if (ch < "0" || ch > "9") {
+                break;
+              }
+              digits += ch;
+            }
+            return digits || null;
+          })
+          .filter((id): id is string => Boolean(id))
+      )
+      .catch((): string[] => []);
+    if (overviewAccountIds.length > 1) {
+      await deps.emit({
+        type: "SKIP_RESULT",
+        stream: "current_activity",
+        reason: "ambiguous_multi_account_overview",
+        message: `${account.name}: Chase dashboard overview shows multiple accounts; current activity rows cannot yet be safely attributed without a per-account activity surface`,
+      });
+      continue;
+    }
     await page
       .locator(ACCOUNT_ACTIVITY_DOM_WAIT_SELECTOR)
       .first()

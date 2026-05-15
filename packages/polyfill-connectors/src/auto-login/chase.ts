@@ -18,16 +18,18 @@
  *      `<a href="javascript:void(0)">` with aria-label starting with the
  *      short label ("Get a text" / "Call me" / "Email me").
  *   4. OTP — an `mds-text-input-secure#otpInput` wraps a shadow-DOM
- *      `<input type="password">`. Playwright's CSS engine pierces open
- *      shadow roots, so `input[type="password"]` finds the inner input.
+ *      `<input type="password">`. Target that component explicitly:
+ *      generic password selectors can hit the login password field or
+ *      stale hidden controls.
  *      `pressSequentially` fires per-character events that the framework's
  *      validation listens for (bulk fill() did not trigger validation).
- *   5. Submit — `text="Next"` (pierces shadow to the inner button label).
+ *   5. Submit — click the rendered button inside `mds-button#next-content`.
+ *      Text locators can resolve to Chase's hidden accessibility label.
  *
  * Selectors verified live 2026-04-21. Detailed probe history lives in git.
  */
 
-import type { BrowserContext, Page } from "playwright";
+import type { BrowserContext, Locator, Page } from "playwright";
 import type { InteractionRequest, InteractionResponse } from "../connector-runtime.ts";
 
 const DASHBOARD_URL = "https://secure.chase.com/web/auth/dashboard";
@@ -38,6 +40,9 @@ const CHALLENGE_TEXT = /Confirm Your Identity|Choose a confirmation method/i;
 const OTP_PROMPT_TEXT = /Enter (the|your) code|identification code|verification code/i;
 const OTP_PROMPT_TEXT_WITH_SENT = /Enter (the|your) code|identification code|verification code|we sent/i;
 const REMEMBER_DEVICE_TEXT = /remember|trust|don't ask/i;
+const NEXT_BUTTON_TEXT = /^Next$/i;
+const OTP_INPUT_SELECTOR =
+  'mds-text-input-secure#otpInput input, #otpInput-input, input[autocomplete="one-time-code"], input[name*="otp" i], input[id*="otp" i]';
 
 const METHOD_LABELS: Record<string, string> = {
   text: "Get a text",
@@ -135,6 +140,43 @@ function usablePage(context: BrowserContext, preferred: Page): Page | Promise<Pa
   return openPage ?? context.newPage();
 }
 
+async function isOnChaseOtpPage(page: Page): Promise<boolean> {
+  const textVisible = await page
+    .getByText(OTP_PROMPT_TEXT_WITH_SENT)
+    .first()
+    .isVisible()
+    .catch((): boolean => false);
+  if (textVisible) {
+    return true;
+  }
+  return page
+    .locator(OTP_INPUT_SELECTOR)
+    .first()
+    .isVisible()
+    .catch((): boolean => false);
+}
+
+async function clickChaseNext(page: Page, fallbackInput?: Locator): Promise<void> {
+  const mdsNext = page.locator("mds-button#next-content button").first();
+  if ((await mdsNext.count().catch((): number => 0)) > 0) {
+    await mdsNext.click({ timeout: 10_000 });
+    return;
+  }
+
+  const roleNext = page.getByRole("button", { name: NEXT_BUTTON_TEXT }).first();
+  if ((await roleNext.count().catch((): number => 0)) > 0) {
+    await roleNext.click({ timeout: 10_000 });
+    return;
+  }
+
+  if (fallbackInput) {
+    await fallbackInput.press("Enter");
+    return;
+  }
+
+  throw new Error("chase_next_button_not_found");
+}
+
 async function probeSession(page: Page): Promise<boolean> {
   // Auto-wait on "Sign out" being visible (logged in) or the logon form input
   // being visible (logged out), whichever shows first. Race with a timeout to
@@ -180,8 +222,9 @@ async function submitChaseOtp({
     throw new Error("chase_otp_not_provided");
   }
 
-  const otpInput = page.locator('input[type="password"]').first();
+  const otpInput = page.locator(OTP_INPUT_SELECTOR).first();
   try {
+    await otpInput.waitFor({ state: "visible", timeout: 10_000 });
     await otpInput.click({ timeout: 5000 });
     await otpInput.fill("");
     await otpInput.pressSequentially(resp.data.code, { delay: 60 });
@@ -222,17 +265,7 @@ async function submitChaseOtp({
   }
 
   try {
-    const submitByText = page.locator('text="Next"').first();
-    if (await submitByText.count().catch((): number => 0)) {
-      await submitByText.click({ timeout: 5000 });
-    } else {
-      await page
-        .locator("mds-button#next-content")
-        .click({ timeout: 5000 })
-        .catch(async (): Promise<void> => {
-          await otpInput.press("Enter");
-        });
-    }
+    await clickChaseNext(page, otpInput);
   } catch (error) {
     const state = classifyChaseBrowserSurface(page, surface);
     if (state === "page_closed") {
@@ -327,14 +360,17 @@ export async function ensureChaseSession({ context, page, sendInteraction }: Ens
       .click({ timeout: 10_000 });
 
     // Wait for the Next button to be enabled/visible before clicking it.
-    const nextBtn = activePage.locator('text="Next"').first();
-    await nextBtn.waitFor({ state: "visible", timeout: 10_000 });
-    await nextBtn.click({ timeout: 10_000 });
+    await clickChaseNext(activePage);
 
     // Wait for either the OTP input page or the dashboard.
     await Promise.race([
       activePage
         .getByText(OTP_PROMPT_TEXT)
+        .first()
+        .waitFor({ state: "visible", timeout: 20_000 })
+        .catch((): null => null),
+      activePage
+        .locator(OTP_INPUT_SELECTOR)
         .first()
         .waitFor({ state: "visible", timeout: 20_000 })
         .catch((): null => null),
@@ -347,11 +383,7 @@ export async function ensureChaseSession({ context, page, sendInteraction }: Ens
   }
 
   // OTP entry step.
-  const onOtp = await activePage
-    .getByText(OTP_PROMPT_TEXT_WITH_SENT)
-    .first()
-    .isVisible()
-    .catch((): boolean => false);
+  const onOtp = await isOnChaseOtpPage(activePage);
   if (onOtp) {
     sessionProbe = await submitChaseOtp({ context, page: activePage, sendInteraction, surface });
     activePage = sessionProbe.page;
