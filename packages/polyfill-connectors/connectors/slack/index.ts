@@ -53,12 +53,11 @@ import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-// biome-ignore lint/correctness/noUnresolvedImports: node:sqlite is a built-in Node 22.5+ module; Biome's resolver doesn't see built-ins here
 import { DatabaseSync } from "node:sqlite";
 import { readOptions } from "../../src/connector-options.ts";
 import { type CollectContext, nowIso, type RecordData, runConnector } from "../../src/connector-runtime.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
-import { passesTimeRange, resourceSet } from "../../src/scope-filters.ts";
+import { resourceSet } from "../../src/scope-filters.ts";
 import {
   buildCanvasRecord,
   buildChannelCanvasIndex,
@@ -732,42 +731,6 @@ function emitStateCheckpoints(deps: StateEmitDeps): void {
   }
 }
 
-/**
- * Build the per-connector emitRecord. Slack has custom rules that the
- * runtime's default emitRecord doesn't apply today:
- *   - drop records with null id
- *   - resource filter (channel ID allowlist)
- *   - sent_at time_range filter (PDPP scope.streams[].time_range)
- */
-function makeEmitRecord(ctx: CollectContext, resFilters: Map<string, ReadonlySet<string> | null>) {
-  const { emit, requested, emittedAt } = ctx;
-  return async function emitRecord(s: string, d: RecordData): Promise<void> {
-    if (d.id == null) {
-      return;
-    }
-    const rs = resFilters.get(s);
-    if (rs?.size && !rs.has(String(d.id))) {
-      return;
-    }
-    const streamScope = requested.get(s);
-    const tr = streamScope?.time_range as { since?: string; until?: string } | undefined;
-    if (tr) {
-      const sentAt = d.sent_at;
-      const sentAtStr = typeof sentAt === "string" ? sentAt : null;
-      if (!passesTimeRange(sentAtStr, tr)) {
-        return;
-      }
-    }
-    await emit({
-      type: "RECORD",
-      stream: s,
-      key: d.id as string | number,
-      data: d,
-      emitted_at: emittedAt,
-    });
-  };
-}
-
 interface EnsureArchiveDeps {
   archivePath: string;
   childEnv: NodeJS.ProcessEnv;
@@ -881,6 +844,7 @@ if (isMainModule(import.meta.url)) {
   runConnector({
     name: "slack",
     retryablePattern: /ECONN|timeout/i,
+    timeRangeField: "sent_at",
     validateRecord,
     auth: {
       kind: "env",
@@ -897,7 +861,6 @@ if (isMainModule(import.meta.url)) {
       for (const [n, r] of requested) {
         resFilters.set(n, resourceSet(r));
       }
-      const emitRecord = makeEmitRecord(ctx, resFilters);
 
       const messagesScope = requested.get("messages");
       const { archivePath, dumpDir, sqlitePath } = resolveArchivePaths(workspace);
@@ -934,7 +897,7 @@ if (isMainModule(import.meta.url)) {
       const db = new DatabaseSync(sqlitePath, { readOnly: true });
       const deps: StreamDeps = {
         db,
-        emitRecord,
+        emitRecord: ctx.emitRecord,
         emittedAt: ctx.emittedAt,
         progress,
         requested,
