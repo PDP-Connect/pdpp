@@ -2956,14 +2956,14 @@ test('scheduler default readiness checker honors SLACKDUMP_BIN for Slack tool de
           license: 'AGPL-3.0',
           purpose: 'Session-token Slack archive export',
           install_hint: 'mount slackdump and set SLACKDUMP_BIN',
-          detect: { command: 'slackdump --help', exit_code: 0 },
+          detect: { command: 'slackdump version', exit_code: 0 },
         },
       ],
     },
   };
   const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-scheduler-slackdump-bin-'));
   const fakeSlackdumpPath = join(tmpDir, 'mounted-slackdump');
-  writeFileSync(fakeSlackdumpPath, '#!/bin/sh\nexit 0\n', 'utf8');
+  writeFileSync(fakeSlackdumpPath, '#!/bin/sh\n[ "$1" = "version" ] || exit 2\nexit 0\n', 'utf8');
   chmodSync(fakeSlackdumpPath, 0o755);
   const { attemptsPath, connectorPath } = writeLoggingConnector(tmpDir);
   const previousSlackdumpBin = process.env.SLACKDUMP_BIN;

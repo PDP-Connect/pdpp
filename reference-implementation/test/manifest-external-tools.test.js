@@ -89,7 +89,7 @@ test('valid external tool declaration is accepted', async () => {
           license: 'AGPL-3.0',
           purpose: 'Session-token Slack archive export',
           install_hint: 'go install github.com/rusq/slackdump/v4/cmd/slackdump@latest',
-          detect: { command: 'slackdump --help', exit_code: 0 },
+          detect: { command: 'slackdump version', exit_code: 0 },
         },
       ]),
     );

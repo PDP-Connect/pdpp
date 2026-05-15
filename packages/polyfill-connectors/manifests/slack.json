@@ -19,7 +19,7 @@
         "purpose": "Session-token Slack archive export",
         "install_hint": "go install github.com/rusq/slackdump/v4/cmd/slackdump@latest",
         "detect": {
-          "command": "slackdump --help",
+          "command": "slackdump version",
           "exit_code": 0
         }
       }
