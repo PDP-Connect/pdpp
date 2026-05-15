@@ -213,6 +213,21 @@ That pair lets a caller correlate a live query response to `GET /_ref/traces/:tr
 
 These `_ref` endpoints are intentionally reference-only artifacts, not core PDPP protocol requirements.
 
+Use `pdpp ref ...` for CLI inspection, for example:
+
+```bash
+pdpp ref run timeline <run-id>
+pdpp ref grant timeline <grant-id>
+pdpp ref trace show <trace-id>
+```
+
+From a local repo shell, prefix those examples with `pnpm exec` unless you have
+linked or installed a `pdpp` binary into PATH:
+
+```bash
+pnpm exec pdpp ref run timeline <run-id>
+```
+
 `GET /_ref/dataset/summary` returns a live aggregate description of what the
 substrate is holding: connector count, stream count, live record count, and
 three separately-labeled byte totals (`record_json_bytes` for live payloads,

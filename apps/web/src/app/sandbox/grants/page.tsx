@@ -82,7 +82,7 @@ export default async function SandboxGrantsPage({ searchParams }: { searchParams
     buildListHref: (overrides) => listHref(params, overrides),
     peekId: params.peek,
     peekEnvelope,
-    peekCliCommand: (id) => `pdpp grant timeline ${id}`,
+    peekCliCommand: (id) => `pdpp ref grant timeline ${id}`,
     emptyTitle: "No grants",
     emptyHint: "No grants match this filter.",
   };

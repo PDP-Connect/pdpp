@@ -28,6 +28,16 @@ npx -y @pdpp/cli@beta --help
 Use the `beta` dist-tag until PDPP intentionally enables stable `latest`
 publication.
 
+When working from this monorepo without installing or linking the binary, use
+the workspace executable:
+
+```bash
+pnpm exec pdpp ref run timeline <run-id>
+```
+
+The public command surface is still the `pdpp` binary; `pnpm exec` is only the
+local workspace launcher.
+
 ## Ownership And Publishing
 
 The intended npm scope is `@pdpp`, owned by the durable PDPP/Vana project

@@ -184,6 +184,17 @@ loopback, private LAN, link-local, and CGNAT IPv4 interface addresses reported
 by the OS. If you access the dev server through a custom DNS name or reverse
 proxy, set `PDPP_WEB_ALLOWED_DEV_ORIGINS` explicitly.
 
+Local repo shells do not put the workspace `pdpp` binary on PATH by default.
+When dashboard or docs copy shows a command such as
+`pdpp ref run timeline <run-id>`, run it from this repo as:
+
+```bash
+pnpm exec pdpp ref run timeline <run-id>
+```
+
+Use the bare `pdpp ...` spelling only after installing `@pdpp/cli` from npm or
+linking the workspace binary into your shell PATH.
+
 When accessing Docker dev through a LAN IP or reverse proxy, add the browser
 hostnames to `PDPP_WEB_ALLOWED_DEV_ORIGINS` in `.env.docker`, for example:
 

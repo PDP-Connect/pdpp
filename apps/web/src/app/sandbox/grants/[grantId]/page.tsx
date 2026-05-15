@@ -18,7 +18,7 @@ export default async function SandboxGrantDetailPage({ params }: { params: Promi
     <DashboardShell active="grants" mode="mock-owner">
       <TimelineDetailView
         breadcrumbs={[{ label: "Grants", href: sandboxRoutes.section.grants }, { label: "Grant" }]}
-        cliCommand={`pdpp grant timeline ${grantId}`}
+        cliCommand={`pdpp ref grant timeline ${grantId}`}
         count={`${envelope.events.length} events${revoked ? " · revoked" : ""}`}
         envelope={envelope}
         id={grantId}

@@ -18,7 +18,7 @@ export default async function SandboxTraceDetailPage({ params }: { params: Promi
     <DashboardShell active="traces" mode="mock-owner">
       <TimelineDetailView
         breadcrumbs={[{ label: "Traces", href: sandboxRoutes.section.traces }, { label: "Trace" }]}
-        cliCommand={`pdpp trace show ${traceId}`}
+        cliCommand={`pdpp ref trace show ${traceId}`}
         description={
           <>
             {envelope.events.length} events

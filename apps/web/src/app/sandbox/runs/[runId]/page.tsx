@@ -18,7 +18,7 @@ export default async function SandboxRunDetailPage({ params }: { params: Promise
     <DashboardShell active="runs" mode="mock-owner">
       <TimelineDetailView
         breadcrumbs={[{ label: "Runs", href: sandboxRoutes.section.runs }, { label: "Run" }]}
-        cliCommand={`pdpp run timeline ${runId}`}
+        cliCommand={`pdpp ref run timeline ${runId}`}
         description={
           <>
             {connectorId ? (

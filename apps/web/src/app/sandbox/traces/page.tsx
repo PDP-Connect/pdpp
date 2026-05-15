@@ -89,7 +89,7 @@ export default async function SandboxTracesPage({ searchParams }: { searchParams
     buildListHref: (overrides) => listHref(params, overrides),
     peekId: params.peek,
     peekEnvelope,
-    peekCliCommand: (id) => `pdpp trace show ${id}`,
+    peekCliCommand: (id) => `pdpp ref trace show ${id}`,
     emptyTitle: "No traces",
     emptyHint: "No traces match this filter.",
   };

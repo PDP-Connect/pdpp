@@ -96,7 +96,7 @@ export default async function SandboxRunsPage({ searchParams }: { searchParams: 
     buildListHref: (overrides) => listHref(params, overrides),
     peekId: params.peek,
     peekEnvelope,
-    peekCliCommand: (id) => `pdpp run timeline ${id}`,
+    peekCliCommand: (id) => `pdpp ref run timeline ${id}`,
     emptyTitle: "No runs",
     emptyHint: "No runs match this filter.",
   };
