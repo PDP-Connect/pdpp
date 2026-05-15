@@ -3175,3 +3175,215 @@ rl.on('line', (line) => {
     await closeServer(server);
   }
 });
+
+// ─── Regression: 1970 next_attempt_at on back-off skips ─────────────────────
+//
+// Symptom from production probe: Reddit `scheduler_backoff_applied` skip
+// rows surfaced `next attempt at 1970-01-02T00:00:00.000Z`. Cause: hydrated
+// history contained 3+ same-class failures, but `scheduler_last_run_times`
+// had no row for the connector (separate write; can drop on process crash
+// or older runtime). `evaluateBackoffDispatch` then computed
+// `nextRunAt = 0 + effectiveIntervalMs`, surfacing an epoch-derived
+// timestamp. Fix derives `lastRun` from the newest history record when
+// the last-run map is empty, and the skip-message formatter substitutes
+// safe phrasing if the resolved timestamp is still epoch-suspicious.
+test('scheduler backoff skip derives next_attempt_at from history when last_run_time is missing', async () => {
+  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
+  const manifest = {
+    ...spotifyManifest,
+    connector_id: 'https://registry.pdpp.org/connectors/scheduler-backoff-1970-regression',
+  };
+  const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+  const asUrl = `http://localhost:${server.asPort}`;
+  const rsUrl = `http://localhost:${server.rsPort}`;
+  const completedRuns = [];
+
+  const recentEpochMs = Date.now() - 60_000;
+  const historyRecords = [];
+  for (let i = 0; i < 4; i++) {
+    const startedAtMs = recentEpochMs + i * 1000;
+    historyRecords.push({
+      connectorId: manifest.connector_id,
+      source: { kind: 'connector', id: manifest.connector_id },
+      status: 'failed',
+      recordsEmitted: 0,
+      reportedRecordsEmitted: null,
+      checkpointSummary: null,
+      knownGaps: [],
+      connectorError: { reason: 'reddit_login_unexpected_ui' },
+      runId: null,
+      traceId: null,
+      failureReason: null,
+      terminalReason: null,
+      startedAt: new Date(startedAtMs).toISOString(),
+      completedAt: new Date(startedAtMs + 500).toISOString(),
+      attempt: 1,
+    });
+  }
+
+  try {
+    const registerResp = await fetchJson(`${asUrl}/connectors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(manifest),
+    });
+    assert.equal(registerResp.status, 201);
+
+    const ownerToken = await issueOwnerToken(asUrl, 'scheduler_backoff_1970_user');
+    const scheduler = createScheduler({
+      connectors: [
+        {
+          connectorId: manifest.connector_id,
+          connectorPath: join(REFERENCE_IMPL_DIR, 'connectors/seed/index.js'),
+          manifest,
+          ownerToken,
+          intervalMs: 25,
+          maxRetries: 0,
+        },
+      ],
+      rsUrl,
+      onInteraction: async (interaction) => cancelledInteractionResponse(interaction),
+      onRunComplete: (record) => completedRuns.push(record),
+      getState: async () => null,
+      setState: async () => {},
+      readinessChecker: async () => ({ ready: false, reason: 'simulated unattended gate' }),
+      schedulerStore: {
+        appendRunHistory: async () => {},
+        listLastRunTimes: async () => [],
+        listRunHistory: async () => historyRecords,
+        upsertLastRunTime: async () => {},
+      },
+    });
+
+    scheduler.start();
+    await waitFor(
+      () => completedRuns.some((r) => r.error?.startsWith('scheduler_backoff_applied:')),
+      5000,
+    );
+    scheduler.stop();
+
+    const backoffSkip = completedRuns.find((r) => r.error?.startsWith('scheduler_backoff_applied:'));
+    assert.ok(backoffSkip, 'expected a scheduler_backoff_applied skip event');
+    assert.equal(backoffSkip.status, 'skipped');
+    assert.doesNotMatch(
+      backoffSkip.error,
+      /1970/,
+      `backoff skip must never reference 1970 epoch; got: ${backoffSkip.error}`,
+    );
+    const nextAttemptMatch = backoffSkip.error.match(/next attempt at (.+)$/);
+    assert.ok(nextAttemptMatch, `expected explicit next-attempt phrase, got: ${backoffSkip.error}`);
+    const nextAttemptPhrase = nextAttemptMatch[1];
+    if (/^\d{4}-/.test(nextAttemptPhrase)) {
+      const parsed = Date.parse(nextAttemptPhrase);
+      assert.ok(Number.isFinite(parsed), `parseable ISO timestamp, got: ${nextAttemptPhrase}`);
+      assert.ok(
+        parsed >= recentEpochMs,
+        `next_attempt_at should be at or after the most recent failure (${new Date(recentEpochMs).toISOString()}); got: ${nextAttemptPhrase}`,
+      );
+    } else {
+      // Acceptable alternate: explicit safe phrasing when no anchor is
+      // available. Should not be hit with history present.
+      assert.match(nextAttemptPhrase, /unknown|not scheduled/);
+    }
+  } finally {
+    await closeServer(server);
+  }
+});
+
+// ─── Regression: blocked-state backoff skip messaging ───────────────────────
+//
+// When a streak crosses the BLOCKED_PROMOTION_THRESHOLD, the scheduler
+// suppresses auto-dispatch entirely. A timestamp in the skip message is
+// then misleading — no retry is planned. Verify the skip uses explicit
+// `gave_up` phrasing instead, and a one-shot `schedule.gave_up` event
+// fires.
+test('scheduler backoff skip uses gave_up phrasing once health-state crosses blocked threshold', async () => {
+  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
+  const manifest = {
+    ...spotifyManifest,
+    connector_id: 'https://registry.pdpp.org/connectors/scheduler-backoff-blocked-msg',
+  };
+  const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+  const asUrl = `http://localhost:${server.asPort}`;
+  const rsUrl = `http://localhost:${server.rsPort}`;
+  const completedRuns = [];
+
+  const recentEpochMs = Date.now() - 60_000;
+  const historyRecords = [];
+  for (let i = 0; i < 20; i++) {
+    const startedAtMs = recentEpochMs + i * 1000;
+    historyRecords.push({
+      connectorId: manifest.connector_id,
+      source: { kind: 'connector', id: manifest.connector_id },
+      status: 'failed',
+      recordsEmitted: 0,
+      reportedRecordsEmitted: null,
+      checkpointSummary: null,
+      knownGaps: [],
+      connectorError: { reason: 'reddit_login_unexpected_ui' },
+      runId: null,
+      traceId: null,
+      failureReason: null,
+      terminalReason: null,
+      startedAt: new Date(startedAtMs).toISOString(),
+      completedAt: new Date(startedAtMs + 500).toISOString(),
+      attempt: 1,
+    });
+  }
+
+  try {
+    const registerResp = await fetchJson(`${asUrl}/connectors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(manifest),
+    });
+    assert.equal(registerResp.status, 201);
+
+    const ownerToken = await issueOwnerToken(asUrl, 'scheduler_backoff_blocked_msg_user');
+    const scheduler = createScheduler({
+      connectors: [
+        {
+          connectorId: manifest.connector_id,
+          connectorPath: join(REFERENCE_IMPL_DIR, 'connectors/seed/index.js'),
+          manifest,
+          ownerToken,
+          intervalMs: 25,
+          maxRetries: 0,
+        },
+      ],
+      rsUrl,
+      onInteraction: async (interaction) => cancelledInteractionResponse(interaction),
+      onRunComplete: (record) => completedRuns.push(record),
+      getState: async () => null,
+      setState: async () => {},
+      readinessChecker: async () => ({ ready: false, reason: 'simulated unattended gate' }),
+      schedulerStore: {
+        appendRunHistory: async () => {},
+        listLastRunTimes: async () => [],
+        listRunHistory: async () => historyRecords,
+        upsertLastRunTime: async () => {},
+      },
+    });
+
+    scheduler.start();
+    await waitFor(
+      () => completedRuns.some((r) => r.error?.startsWith('scheduler_backoff_applied:')),
+      5000,
+    );
+    scheduler.stop();
+
+    const backoffSkip = completedRuns.find((r) => r.error?.startsWith('scheduler_backoff_applied:'));
+    assert.ok(backoffSkip, 'expected a scheduler_backoff_applied skip event');
+    assert.doesNotMatch(backoffSkip.error, /1970/);
+    assert.match(
+      backoffSkip.error,
+      /not scheduled \(gave_up/,
+      `blocked-state skip should say gave_up, not a misleading retry time. got: ${backoffSkip.error}`,
+    );
+
+    const gaveUpEvent = completedRuns.find((r) => r.error?.startsWith('schedule.gave_up:'));
+    assert.ok(gaveUpEvent, 'expected a one-shot schedule.gave_up spine event');
+  } finally {
+    await closeServer(server);
+  }
+});

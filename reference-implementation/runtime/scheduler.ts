@@ -306,6 +306,32 @@ function normalizeSchedulerEpochMs(epochMs: number | undefined): number {
   return epochMs;
 }
 
+function newestHistoryEpochMs(history: readonly RunRecord[]): number {
+  let newest = 0;
+  for (let i = history.length - 1; i >= 0; i--) {
+    const record = history[i];
+    if (!record) {
+      continue;
+    }
+    const parsed = Date.parse(record.completedAt || record.startedAt || "");
+    if (Number.isFinite(parsed) && parsed > newest) {
+      newest = parsed;
+    }
+  }
+  return newest;
+}
+
+function resolveLastRunEpochMs(
+  lastRunTimeMs: number | undefined,
+  history: readonly RunRecord[]
+): number {
+  const fromMap = normalizeSchedulerEpochMs(lastRunTimeMs);
+  if (fromMap > 0) {
+    return fromMap;
+  }
+  return newestHistoryEpochMs(history);
+}
+
 // ─── Core runtime state ─────────────────────────────────────────────────────
 
 interface SchedulerRuntime {
@@ -469,6 +495,27 @@ function buildNotReadySkip(connectorId: string, reason: string): RunRecord {
   };
 }
 
+// `next_attempt_at` values that resolve to the unix epoch (or anywhere in
+// 1970) are operator-hostile: they mean "we never knew when the connector
+// last ran" rather than "we plan to retry at midnight Jan 1 1970". We guard
+// the audit string against that shape so a hydration gap (history rows
+// without a matching `scheduler_last_run_times` row) doesn't surface as
+// `next attempt at 1970-01-02T00:00:00.000Z` on the dashboard. The
+// underlying ISO field is still emitted in the `schedule.back_off.started`
+// structured event for machine consumers; humans see the safe phrasing.
+const EPOCH_SUSPICION_CUTOFF_MS = Date.UTC(2000, 0, 1);
+
+function formatNextAttempt(decision: BackoffDecision): string {
+  if (decision.recommendedHealthState === "blocked") {
+    return "not scheduled (gave_up — manual run-now required)";
+  }
+  const parsed = Date.parse(decision.nextRunAt);
+  if (!Number.isFinite(parsed) || parsed < EPOCH_SUSPICION_CUTOFF_MS) {
+    return "unknown (no recorded last-run time)";
+  }
+  return decision.nextRunAt;
+}
+
 function buildBackoffSkip(connectorId: string, decision: BackoffDecision): RunRecord {
   // One-shot skip emitted when back-off first engages for the current
   // failure streak. The error string carries enough context for the
@@ -477,8 +524,8 @@ function buildBackoffSkip(connectorId: string, decision: BackoffDecision): RunRe
   // suppressing entirely) so the audit log shows *why* the connector went
   // quiet — silence would look like a healthy run.
   const reason = decision.reasonClass ?? "unknown";
-  const next = decision.nextRunAt;
   const failures = decision.consecutiveFailures;
+  const next = formatNextAttempt(decision);
   return {
     connectorId,
     source: buildScheduledRunSource(connectorId),
@@ -1209,8 +1256,15 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     skipToEmit: RunRecord | null;
   } {
     const connectorId = schedule.connectorId;
-    const lastRun = normalizeSchedulerEpochMs(runtime.lastRunTime.get(connectorId));
     const history = runtime.history.filter((r) => r.connectorId === connectorId);
+    // `scheduler_last_run_times` and `scheduler_run_history` are persisted
+    // through separate writes. If a process is killed between them — or if
+    // an older runtime never wrote `last_run_time` at all — we hydrate
+    // history with failed records but no last-run timestamp. Computing
+    // `nextRunAt = 0 + effectiveIntervalMs` then surfaces a 1970 date in
+    // the audit log. Fall back to the newest history record's
+    // `completedAt` so the next-attempt math has a real anchor.
+    const lastRun = resolveLastRunEpochMs(runtime.lastRunTime.get(connectorId), history);
     const scheduleIntervalMs = normalizeScheduleIntervalMs(schedule.intervalMs);
     const decision = computeNextRunWithBackoff(history, scheduleIntervalMs, lastRun);
 
