@@ -57,6 +57,7 @@ import {
   emitTransactionsForAccount,
   emitTransactionsStateIfAny,
   filterAccountsByScope,
+  isLikelyChaseQfxResponse,
   isLikelyPdfResponseBody,
   runCurrentActivity,
   statementRowOutsideTimeRange,
@@ -273,6 +274,21 @@ test("isLikelyPdfResponseBody: accepts PDF signatures and PDF response headers",
     true
   );
   assert.equal(isLikelyPdfResponseBody(Buffer.from("<html></html>"), { "content-type": "text/html" }), false);
+});
+
+test("isLikelyChaseQfxResponse: accepts attachment headers and Chase download routes", () => {
+  assert.equal(isLikelyChaseQfxResponse({ "content-disposition": 'attachment; filename="activity.qfx"' }), true);
+  assert.equal(
+    isLikelyChaseQfxResponse(
+      { "content-type": "text/html" },
+      "https://secure.chase.com/web/auth/dashboard#/dashboard/accountDetails/downloadAccountTransactions/confirmDownloadAccountActivity;params=CARD,BAC,1212486749"
+    ),
+    true
+  );
+  assert.equal(
+    isLikelyChaseQfxResponse({ "content-type": "text/html" }, "https://secure.chase.com/web/auth/dashboard"),
+    false
+  );
 });
 
 // ─── Invariant 3: all-streams-disabled emits nothing ─────────────────────
