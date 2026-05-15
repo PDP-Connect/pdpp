@@ -39,6 +39,7 @@ import {
   runConnector,
   type ValidateRecord,
 } from "../../src/connector-runtime.ts";
+import { attachDownloadQueue } from "../../src/download-queue.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
 import { resourceSet } from "../../src/scope-filters.ts";
 import {
@@ -238,12 +239,11 @@ async function downloadQfx(
   // Wait for the Download button to be enabled before clicking.
   await page.locator("mds-button#download").waitFor({ state: "visible", timeout: OPTION_WAIT_MS });
 
-  const downloadPromise = page.waitForEvent("download", {
-    timeout: DOWNLOAD_TIMEOUT_MS,
-  });
+  const downloadQueue = attachDownloadQueue(page);
   try {
     await page.locator("mds-button#download").click({ timeout: CLICK_TIMEOUT_MS });
   } catch (err) {
+    downloadQueue.detach();
     return {
       downloaded: false,
       error: `download_button_click_failed: ${truncate(errMessage(err), ERROR_MESSAGE_SLICE)}`,
@@ -251,7 +251,7 @@ async function downloadQfx(
   }
 
   try {
-    const dl = await downloadPromise;
+    const dl = await downloadQueue.waitForNextDownload({ timeoutMs: DOWNLOAD_TIMEOUT_MS });
     const qfxPath = join(tmpDir, `chase-${account.internal_id}-${activity}-${Date.now()}.qfx`);
     await dl.saveAs(qfxPath);
     return { downloaded: true, qfxPath, activity };
@@ -260,6 +260,8 @@ async function downloadQfx(
       downloaded: false,
       error: `download_event_timeout: ${truncate(errMessage(err), ERROR_MESSAGE_SLICE)}`,
     };
+  } finally {
+    downloadQueue.detach();
   }
 }
 
@@ -380,26 +382,27 @@ async function downloadStatementPdf(
     return { ok: false, error: "anchor_not_found" };
   }
 
-  const downloadPromise = page.waitForEvent("download", {
-    timeout: DOWNLOAD_TIMEOUT_MS,
-  });
+  const downloadQueue = attachDownloadQueue(page);
   try {
     await anchor.click({ timeout: CLICK_TIMEOUT_MS });
   } catch (err) {
+    downloadQueue.detach();
     return {
       ok: false,
       error: `anchor_click_failed: ${truncate(errMessage(err), ERROR_MESSAGE_SLICE)}`,
     };
   }
 
-  let dl: Awaited<typeof downloadPromise>;
+  let dl: Awaited<ReturnType<typeof downloadQueue.waitForNextDownload>>;
   try {
-    dl = await downloadPromise;
+    dl = await downloadQueue.waitForNextDownload({ timeoutMs: DOWNLOAD_TIMEOUT_MS });
   } catch (err) {
     return {
       ok: false,
       error: `download_event_timeout: ${truncate(errMessage(err), ERROR_MESSAGE_SLICE)}`,
     };
+  } finally {
+    downloadQueue.detach();
   }
 
   const internalPath = await dl.path();

@@ -67,12 +67,19 @@ else
   CHROME_BIN="/usr/bin/chromium"
 fi
 
-# The disabled-features list is verbatim from chromiumSwitches.js:24-52
-# (the non-assistantMode path). AutomationControlled is deliberately
-# absent from --disable-features — it's disabled via --disable-blink-features
-# below, which flips the runtime feature gate without leaving the
-# variation-trial fingerprint that --disable-features would.
-DISABLED_FEATURES="AvoidUnnecessaryBeforeUnloadCheckSync,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding,ThirdPartyStoragePartitioning,Translate,AutoDeElevate,RenderDocument,OptimizationHints"
+# The base disabled-features list mirrors chromiumSwitches.js:24-52 (the
+# non-assistantMode path). AutomationControlled is deliberately absent from
+# --disable-features — it's disabled via --disable-blink-features below, which
+# flips the runtime feature gate without leaving the variation-trial
+# fingerprint that --disable-features would.
+PATCHRIGHT_DISABLED_FEATURES="AvoidUnnecessaryBeforeUnloadCheckSync,BoundaryEventDispatchTracksNodeRemoval,DestroyProfileOnBrowserClose,DialMediaRouteProvider,GlobalMediaControls,HttpsUpgrades,LensOverlay,MediaRouter,PaintHolding,ThirdPartyStoragePartitioning,Translate,AutoDeElevate,RenderDocument,OptimizationHints"
+
+# Match the local headed launcher workaround for microsoft/playwright#40158:
+# headed Chrome's download bubble can race CDP download interception. This is
+# environmental launch parity with browser-launch.ts, not a connector-specific
+# Chase workaround.
+DOWNLOAD_DISABLED_FEATURES="DownloadBubble,DownloadBubbleV2,DownloadBubbleV3"
+DISABLED_FEATURES="${PATCHRIGHT_DISABLED_FEATURES},${DOWNLOAD_DISABLED_FEATURES}"
 
 # Enabled features mirror chromiumSwitches.js:74 (CDPScreenshotNewSurface
 # is enabled unless PLAYWRIGHT_LEGACY_SCREENSHOT is set).
