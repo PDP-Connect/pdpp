@@ -767,8 +767,8 @@ async function runInBrowser(args: {
   await tracer.start();
   let page: Page | null = null;
   try {
-    await closeBrowserContextPages(ctx);
     page = await ctx.newPage();
+    await closeBrowserContextPagesExcept(ctx, page);
     await establishSession(
       { ensureSession, probeSession },
       {
@@ -785,15 +785,15 @@ async function runInBrowser(args: {
     await collect({ ...baseCtx, context: ctx, page, sendInteraction: browserSendInteraction });
   } finally {
     await tracer.stop();
-    if (page && !page.isClosed()) {
-      await page.close().catch((): undefined => undefined);
-    }
     await release().catch((): undefined => undefined);
     disposeShutdownHook();
   }
 }
 
-export async function closeBrowserContextPages(context: Pick<BrowserContext, "pages">): Promise<number> {
+export async function closeBrowserContextPagesExcept(
+  context: Pick<BrowserContext, "pages">,
+  keepPage: Page
+): Promise<number> {
   let pages: Page[];
   try {
     pages = context.pages();
@@ -803,15 +803,15 @@ export async function closeBrowserContextPages(context: Pick<BrowserContext, "pa
 
   let closed = 0;
   for (const page of pages) {
-    if (page.isClosed()) {
+    if (page === keepPage || page.isClosed()) {
       continue;
     }
     try {
       await page.close();
       closed++;
     } catch {
-      // Stale remote-CDP pages are best-effort cleanup. The working page is
-      // created after this pass, so a close failure should not abort a run.
+      // Stale remote-CDP pages are best-effort cleanup. Keep the working page
+      // open so n.eko always has a live target while older tabs are pruned.
     }
   }
   return closed;

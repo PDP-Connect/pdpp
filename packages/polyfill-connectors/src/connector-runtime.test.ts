@@ -4,7 +4,7 @@ import type { BrowserContext, Page } from "playwright";
 import {
   type BrowserLaunchSource,
   type BrowserRuntimeVisibility,
-  closeBrowserContextPages,
+  closeBrowserContextPagesExcept,
   decorateBrowserManualAction,
   type InteractionRequest,
   makeBrowserInteractionKeepalive,
@@ -71,19 +71,22 @@ function makeClosablePage(closed = false): { closeCalls: number; page: Page } {
   };
 }
 
-test("closeBrowserContextPages closes existing open pages and ignores already closed pages", async () => {
+test("closeBrowserContextPagesExcept closes stale open pages while keeping the working page alive", async () => {
   const first = makeClosablePage(false);
   const alreadyClosed = makeClosablePage(true);
-  const second = makeClosablePage(false);
+  const working = makeClosablePage(false);
 
-  const closedCount = await closeBrowserContextPages({
-    pages: () => [first.page, alreadyClosed.page, second.page],
-  });
+  const closedCount = await closeBrowserContextPagesExcept(
+    {
+      pages: () => [first.page, alreadyClosed.page, working.page],
+    },
+    working.page
+  );
 
-  assert.equal(closedCount, 2);
+  assert.equal(closedCount, 1);
   assert.equal(first.closeCalls, 1);
   assert.equal(alreadyClosed.closeCalls, 0);
-  assert.equal(second.closeCalls, 1);
+  assert.equal(working.closeCalls, 0);
 });
 
 test("resolveBrowserRuntimeVisibility defaults browser connectors to headless unless env disables it", () => {
