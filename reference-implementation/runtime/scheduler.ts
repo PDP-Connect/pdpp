@@ -1347,52 +1347,54 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     if (runtime.timers.length > 0) {
       return;
     }
+    function dispatchIfDue(schedule: ConnectorSchedule): void {
+      let dispatch;
+      try {
+        dispatch = evaluateBackoffDispatch(schedule, Date.now());
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[scheduler] failed to evaluate back-off for ${schedule.connectorId}: ${message}`);
+        return;
+      }
+      const { eligible, skipToEmit, eventsToEmit } = dispatch;
+      // Emit transition markers (back_off.started, gave_up) before
+      // the audit skip so the dashboard sees the lifecycle event
+      // ordering: "streak detected → cooling_off pill renders →
+      // (maybe) blocked pill renders → audit skip explains why we
+      // went quiet". Each entry is one-shot per streak so the
+      // history doesn't drown in duplicates on every tick.
+      for (const event of eventsToEmit) {
+        recordAndNotify(event);
+      }
+      if (skipToEmit) {
+        // One-shot back-off announcement. We record + persist + notify
+        // exactly like other skip records so the UI/audit can see why
+        // the connector went quiet. We do NOT executeRun in this case
+        // because by definition the back-off window has not elapsed.
+        recordAndNotify(skipToEmit);
+        return;
+      }
+      if (eligible) {
+        executeRun(schedule).catch(() => {
+          // Errors are already surfaced into the run record via onRunComplete;
+          // swallow here so the scheduler loop doesn't bubble an unhandled
+          // rejection out of the interval callback.
+        });
+      }
+    }
+
     for (const schedule of connectors) {
-      // Run immediately, then on interval. Fire-and-forget is intentional:
-      // the callback handles its own errors via `onRunComplete`, and the
-      // scheduler's state machine tracks activeRuns to prevent overlap.
-      executeRun(schedule).catch(() => {
-        // Errors are already surfaced into the run record via onRunComplete;
-        // swallow here so the scheduler loop doesn't bubble an unhandled
-        // rejection out of the interval callback.
-      });
+      // Check immediately, then on interval. Startup uses the same persisted
+      // last-run/back-off gate as every later tick; restarting the server must
+      // not bypass a connector's configured interval.
+      dispatchIfDue(schedule);
 
       const timer = setInterval(
         () => {
           if (!runtime.running) {
             return;
           }
-          let dispatch;
-          try {
-            dispatch = evaluateBackoffDispatch(schedule, Date.now());
-          } catch (err: unknown) {
-            const message = err instanceof Error ? err.message : String(err);
-            console.error(`[scheduler] failed to evaluate back-off for ${schedule.connectorId}: ${message}`);
-            return;
-          }
-          const { eligible, skipToEmit, eventsToEmit } = dispatch;
-          // Emit transition markers (back_off.started, gave_up) before
-          // the audit skip so the dashboard sees the lifecycle event
-          // ordering: "streak detected → cooling_off pill renders →
-          // (maybe) blocked pill renders → audit skip explains why we
-          // went quiet". Each entry is one-shot per streak so the
-          // history doesn't drown in duplicates on every tick.
-          for (const event of eventsToEmit) {
-            recordAndNotify(event);
-          }
-          if (skipToEmit) {
-            // One-shot back-off announcement. We record + persist + notify
-            // exactly like other skip records so the UI/audit can see why
-            // the connector went quiet. We do NOT executeRun in this case
-            // because by definition the back-off window has not elapsed.
-            recordAndNotify(skipToEmit);
-            return;
-          }
-          if (eligible) {
-            executeRun(schedule).catch(() => {
-              // See note on the immediate executeRun above.
-            });
-          }
+          dispatchIfDue(schedule);
         },
         Math.min(normalizeScheduleIntervalMs(schedule.intervalMs), 60_000)
       );

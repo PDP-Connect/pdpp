@@ -361,7 +361,7 @@ test('scheduler history records checkpoint summaries from runConnector results',
   }
 });
 
-test('scheduler hydrates and appends persisted history when a schedulerStore is supplied', async () => {
+test('scheduler hydrates persisted history without bypassing a fresh persisted last-run interval', async () => {
   const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
   const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
   const asUrl = `http://localhost:${server.asPort}`;
@@ -431,13 +431,14 @@ test('scheduler hydrates and appends persisted history when a schedulerStore is 
     });
 
     scheduler.start();
-    await waitFor(() => appendedHistory.length >= 1 && lastRunUpserts.length >= 1, 8000);
+    await waitFor(() => scheduler.getHistory().length >= 1, 8000);
+    await new Promise((resolve) => setTimeout(resolve, 150));
     scheduler.stop();
 
     assert.equal(scheduler.getHistory()[0].connectorId, persistedHistory.connectorId);
-    assert.equal(appendedHistory[0].connectorId, spotifyManifest.connector_id);
-    assert.equal(lastRunUpserts[0].connectorId, spotifyManifest.connector_id);
-    assert.equal(completedRuns.length, 1);
+    assert.equal(appendedHistory.length, 0);
+    assert.equal(lastRunUpserts.length, 0);
+    assert.equal(completedRuns.length, 0);
   } finally {
     await closeServer(server);
   }

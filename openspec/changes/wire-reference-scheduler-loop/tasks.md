@@ -23,6 +23,8 @@
   automatic run after server startup.
 - [x] Add regression coverage proving paused/deleted schedules do not trigger
   automatic runs.
+- [x] Add regression coverage proving scheduler startup honors persisted
+  `last_run_time` instead of bypassing the configured interval.
 - [x] Add shutdown coverage proving `stop()` suppresses retry/backoff launches.
 - [x] Add or document a Docker/Compose smoke harness for enabled schedule
   execution in the reference service.
