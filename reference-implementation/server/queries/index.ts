@@ -181,6 +181,12 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   // Blobs — content-addressed blob persistence + binding maintenance.
   readonly blobsInsertBlob: MutationQuery;
   readonly blobsListBindingsById: ReadManyQuery;
+  readonly connectorInstancesGetByBinding: ReadOneQuery;
+  readonly connectorInstancesGetById: ReadOneQuery;
+  readonly connectorInstancesInsert: MutationQuery;
+  readonly connectorInstancesListActiveByOwnerConnector: ReadManyQuery;
+  readonly connectorInstancesListByOwner: ReadManyQuery;
+  readonly connectorInstancesUpdateStatus: MutationQuery;
   readonly controllerDeleteActiveRun: MutationQuery;
   readonly controllerDeleteSchedule: MutationQuery;
   readonly controllerGetScheduleByConnector: ReadOneQuery;

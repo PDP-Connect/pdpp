@@ -7,6 +7,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // Canonical table ordering respecting FK dependencies
 const TABLE_ORDER = [
   'connectors',
+  'connector_instances',
   'oauth_clients',
   'grants',
   'tokens',

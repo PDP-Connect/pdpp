@@ -163,6 +163,25 @@ CREATE TABLE IF NOT EXISTS connectors (
   created_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS connector_instances (
+  connector_instance_id TEXT PRIMARY KEY,
+  owner_subject_id      TEXT NOT NULL,
+  connector_id          TEXT NOT NULL,
+  display_name          TEXT NOT NULL,
+  status                TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'paused', 'revoked')),
+  source_kind           TEXT NOT NULL CHECK (source_kind IN ('account', 'local_device', 'manual', 'legacy')),
+  source_binding_key    TEXT NOT NULL,
+  source_binding_json   TEXT NOT NULL DEFAULT '{}',
+  created_at            TEXT NOT NULL,
+  updated_at            TEXT NOT NULL,
+  revoked_at            TEXT,
+  UNIQUE(owner_subject_id, connector_id, source_kind, source_binding_key),
+  FOREIGN KEY(connector_id) REFERENCES connectors(connector_id) ON DELETE RESTRICT
+);
+
+CREATE INDEX IF NOT EXISTS idx_connector_instances_owner_connector_status
+  ON connector_instances(owner_subject_id, connector_id, status);
+
 CREATE TABLE IF NOT EXISTS grants (
   grant_id       TEXT PRIMARY KEY,
   subject_id     TEXT NOT NULL,

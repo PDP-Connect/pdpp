@@ -19,8 +19,7 @@ If these bindings share `connector_id` as their durable key, they can collide in
 
 ## Non-Goals
 
-- Do not implement runtime code in this change.
-- Do not update existing runtime schemas directly outside this OpenSpec delta.
+- Do not move connector state, records, schedules, active-run leases, diagnostics, search indexes, or dashboard UX to instance identity in the first substrate tranche.
 - Do not require a new public PDPP source shape in this tranche.
 - Do not decide whether connector instance identity becomes a normative Collection Profile field.
 - Do not design all credential-vault details beyond instance-scoped ownership and revocation boundaries.
@@ -84,6 +83,8 @@ This lets two local Claude/Codex collectors report the same connector type witho
 - Whether grant-authorized clients should ever be able to filter by connector instance, or whether instance identity remains owner/operator metadata.
 - Whether cross-instance deduplication is desirable for specific connectors such as Gmail message IDs, and where that rule should live.
 
+These questions are deferred for the first implementation tranche. The tranche only creates reference-owned instance registry storage and single-instance compatibility resolution; it does not expose instance identity to grant-authorized client reads, public protocol routes, or cross-instance record identity rules.
+
 ## Alternatives Considered
 
 - **Keep `connector_id` and append device/account fields ad hoc:** rejected because every store and UI would need bespoke collision rules.
@@ -95,6 +96,6 @@ This lets two local Claude/Codex collectors report the same connector type witho
 
 - `openspec validate define-connector-instances --strict`
 - `openspec validate --all --strict`
-- Review confirms no runtime source code or canonical `openspec/specs/**` files were edited directly.
+- Review confirms the first implementation tranche only touches instance registry schema/store/test surfaces and does not alter dashboard UX or connector runtime behavior.
 - The spec delta covers collision isolation for state, records, schedules, active-run leases, diagnostics, and owner UX.
 - The task list includes migration and compatibility criteria before implementation.
