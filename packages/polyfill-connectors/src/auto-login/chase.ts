@@ -41,8 +41,8 @@ const OTP_PROMPT_TEXT = /Enter (the|your) code|identification code|verification 
 const OTP_PROMPT_TEXT_WITH_SENT = /Enter (the|your) code|identification code|verification code|we sent/i;
 const REMEMBER_DEVICE_TEXT = /remember|trust|don't ask/i;
 const NEXT_BUTTON_TEXT = /^Next$/i;
-const OTP_INPUT_SELECTOR =
-  'mds-text-input-secure#otpInput input, #otpInput-input, input[autocomplete="one-time-code"], input[name*="otp" i], input[id*="otp" i]';
+const OTP_INPUT_FALLBACK_SELECTOR =
+  'input#otpInput-input, input[autocomplete="one-time-code"]:not([type="hidden"]):not([disabled]), input[name*="otp" i]:not([type="hidden"]):not([disabled]), input[id*="otp" i]:not([type="hidden"]):not([disabled])';
 
 const METHOD_LABELS: Record<string, string> = {
   text: "Get a text",
@@ -149,15 +149,13 @@ async function isOnChaseOtpPage(page: Page): Promise<boolean> {
   if (textVisible) {
     return true;
   }
-  return page
-    .locator(OTP_INPUT_SELECTOR)
-    .first()
+  return findChaseOtpInput(page)
     .isVisible()
     .catch((): boolean => false);
 }
 
 async function clickChaseNext(page: Page, fallbackInput?: Locator): Promise<void> {
-  const mdsNext = page.locator("mds-button#next-content button").first();
+  const mdsNext = page.locator("mds-button#next-content").locator("button").first();
   if ((await mdsNext.count().catch((): number => 0)) > 0) {
     await mdsNext.click({ timeout: 10_000 });
     return;
@@ -175,6 +173,18 @@ async function clickChaseNext(page: Page, fallbackInput?: Locator): Promise<void
   }
 
   throw new Error("chase_next_button_not_found");
+}
+
+function findChaseOtpInput(page: Page): Locator {
+  // Chase's visible OTP input is inside the open shadow root of
+  // mds-text-input-secure#otpInput, while the light DOM also contains a
+  // disabled hidden input named otp-input. Use a host-then-shadow locator so
+  // the hidden form mirror cannot win document-order matching.
+  return page
+    .locator("mds-text-input-secure#otpInput")
+    .locator("input#otpInput-input, input[autocomplete='one-time-code']")
+    .or(page.locator(OTP_INPUT_FALLBACK_SELECTOR))
+    .first();
 }
 
 async function probeSession(page: Page): Promise<boolean> {
@@ -222,7 +232,7 @@ async function submitChaseOtp({
     throw new Error("chase_otp_not_provided");
   }
 
-  const otpInput = page.locator(OTP_INPUT_SELECTOR).first();
+  const otpInput = findChaseOtpInput(page);
   try {
     await otpInput.waitFor({ state: "visible", timeout: 10_000 });
     await otpInput.click({ timeout: 5000 });
@@ -370,8 +380,8 @@ export async function ensureChaseSession({ context, page, sendInteraction }: Ens
         .waitFor({ state: "visible", timeout: 20_000 })
         .catch((): null => null),
       activePage
-        .locator(OTP_INPUT_SELECTOR)
-        .first()
+        .locator("mds-text-input-secure#otpInput")
+        .locator("input#otpInput-input, input[autocomplete='one-time-code']")
         .waitFor({ state: "visible", timeout: 20_000 })
         .catch((): null => null),
       activePage
