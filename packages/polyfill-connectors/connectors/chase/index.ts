@@ -40,6 +40,7 @@ import {
   type ValidateRecord,
 } from "../../src/connector-runtime.ts";
 import { attachDownloadQueue } from "../../src/download-queue.ts";
+import type { CaptureSession } from "../../src/fixture-capture.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
 import { resourceSet } from "../../src/scope-filters.ts";
 import {
@@ -168,6 +169,7 @@ async function downloadQfx(
   page: Page,
   account: ChaseAccount,
   tmpDir: string,
+  capture: CaptureSession | null | undefined,
   opts: DownloadOptions = {}
 ): Promise<DownloadResult> {
   const activity: ActivityKind = opts.activity ?? "all";
@@ -190,6 +192,7 @@ async function downloadQfx(
     timeout: NAV_TIMEOUT_MS,
   });
   await page.locator("#downloadFileTypeOption").waitFor({ state: "attached", timeout: DOM_WAIT_MS });
+  await capturePageCheckpoint(capture, page, `download-qfx-${account.internal_id}-${activity}-form-loaded`);
 
   // Select activity option FIRST so the Date-Range pickers render before we
   // set file type. Chase's form re-renders when Activity changes; doing file
@@ -199,7 +202,13 @@ async function downloadQfx(
   if (activity !== "current") {
     try {
       await selectActivity(page, label);
+      await capturePageCheckpoint(capture, page, `download-qfx-${account.internal_id}-${activity}-activity-selected`);
     } catch (err) {
+      await capturePageCheckpoint(
+        capture,
+        page,
+        `download-qfx-${account.internal_id}-${activity}-activity-select-failed`
+      );
       return {
         downloaded: false,
         error: `activity_select_failed (${label}): ${truncate(errMessage(err), ERROR_MESSAGE_SLICE)}`,
@@ -217,11 +226,17 @@ async function downloadQfx(
       }
       const ok = await fillDateRange(page, from, to);
       if (!ok.ok) {
+        await capturePageCheckpoint(
+          capture,
+          page,
+          `download-qfx-${account.internal_id}-${activity}-date-range-fill-failed`
+        );
         return {
           downloaded: false,
           error: `date_range_fill_failed: ${ok.error}`,
         };
       }
+      await capturePageCheckpoint(capture, page, `download-qfx-${account.internal_id}-${activity}-date-range-filled`);
     }
   }
 
@@ -229,7 +244,13 @@ async function downloadQfx(
   // by Activity re-renders).
   try {
     await selectFileType(page, "Quicken Web Connect");
+    await capturePageCheckpoint(capture, page, `download-qfx-${account.internal_id}-${activity}-file-type-selected`);
   } catch (err) {
+    await capturePageCheckpoint(
+      capture,
+      page,
+      `download-qfx-${account.internal_id}-${activity}-file-type-select-failed`
+    );
     return {
       downloaded: false,
       error: `file_type_select_failed: ${truncate(errMessage(err), ERROR_MESSAGE_SLICE)}`,
@@ -243,6 +264,7 @@ async function downloadQfx(
   try {
     await page.locator("mds-button#download").click({ timeout: CLICK_TIMEOUT_MS });
   } catch (err) {
+    await capturePageCheckpoint(capture, page, `download-qfx-${account.internal_id}-${activity}-download-click-failed`);
     downloadQueue.detach();
     return {
       downloaded: false,
@@ -256,6 +278,11 @@ async function downloadQfx(
     await dl.saveAs(qfxPath);
     return { downloaded: true, qfxPath, activity };
   } catch (err) {
+    await capturePageCheckpoint(
+      capture,
+      page,
+      `download-qfx-${account.internal_id}-${activity}-download-event-timeout`
+    );
     return {
       downloaded: false,
       error: `download_event_timeout: ${truncate(errMessage(err), ERROR_MESSAGE_SLICE)}`,
@@ -371,7 +398,8 @@ async function enumerateStatementRows(page: Page): Promise<StatementRow[]> {
 async function downloadStatementPdf(
   page: Page,
   row: StatementRow,
-  accountId: string | null
+  accountId: string | null,
+  capture: CaptureSession | null | undefined
 ): Promise<StatementDownloadResult> {
   // Chase's anchor ids are safe ASCII (only letters, digits, hyphens) so
   // we can inline them into a CSS selector without CSS.escape (which is
@@ -379,13 +407,16 @@ async function downloadStatementPdf(
   const anchor = page.locator(`#${row.rowAnchorId}`);
   const exists = await anchor.count().catch((): number => 0);
   if (!exists) {
+    await capturePageCheckpoint(capture, page, `statement-${row.rowAnchorId}-anchor-not-found`);
     return { ok: false, error: "anchor_not_found" };
   }
 
+  await capturePageCheckpoint(capture, page, `statement-${row.rowAnchorId}-before-download-click`);
   const downloadQueue = attachDownloadQueue(page);
   try {
     await anchor.click({ timeout: CLICK_TIMEOUT_MS });
   } catch (err) {
+    await capturePageCheckpoint(capture, page, `statement-${row.rowAnchorId}-download-click-failed`);
     downloadQueue.detach();
     return {
       ok: false,
@@ -397,6 +428,7 @@ async function downloadStatementPdf(
   try {
     dl = await downloadQueue.waitForNextDownload({ timeoutMs: DOWNLOAD_TIMEOUT_MS });
   } catch (err) {
+    await capturePageCheckpoint(capture, page, `statement-${row.rowAnchorId}-download-event-timeout`);
     return {
       ok: false,
       error: `download_event_timeout: ${truncate(errMessage(err), ERROR_MESSAGE_SLICE)}`,
@@ -425,6 +457,17 @@ async function downloadStatementPdf(
   }
 
   return { ok: true, pdfPath, pdfSha256 };
+}
+
+async function capturePageCheckpoint(
+  capture: CaptureSession | null | undefined,
+  page: Page,
+  label: string
+): Promise<void> {
+  if (!capture) {
+    return;
+  }
+  await capture.captureDom(page, label);
 }
 
 // ─── QFX parsing ──────────────────────────────────────────────────────────
@@ -695,7 +738,7 @@ async function processAccountDownload(
   const downloadOpts: DownloadOptions = activityChoice.dateRange
     ? { activity: activityChoice.activity, dateRange: activityChoice.dateRange }
     : { activity: activityChoice.activity };
-  const result = await downloadQfx(page, account, deps.tmpDir, downloadOpts);
+  const result = await downloadQfx(page, account, deps.tmpDir, deps.capture, downloadOpts);
   if (!result.downloaded) {
     await deps.emit({
       type: "SKIP_RESULT",
@@ -786,7 +829,7 @@ async function processStatementRow(
       message: `Downloading ${row.title}`,
     });
 
-    const dlResult = await downloadStatementPdf(page, row, accountId);
+    const dlResult = await downloadStatementPdf(page, row, accountId, deps.capture);
     if (!dlResult.ok) {
       await deps.emit({
         type: "SKIP_RESULT",

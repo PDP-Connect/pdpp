@@ -36,6 +36,7 @@
  *   - Auth strategy resolution before collect() runs
  */
 
+import { join } from "node:path";
 import { createInterface } from "node:readline";
 import type { Browser, BrowserContext, CDPSession, Page } from "playwright";
 
@@ -763,11 +764,12 @@ async function runInBrowser(args: {
   // correction-layer counterpart.
   const { withShutdownRelease } = await import("./shutdown-hook.ts");
   const disposeShutdownHook = withShutdownRelease(release);
-  const tracer = makeTracer(ctx, name, emit);
+  const tracer = makeTracer(ctx, name, emit, baseCtx.capture);
   await tracer.start();
   let page: Page | null = null;
   try {
     page = await ctx.newPage();
+    await captureBrowserPage(baseCtx.capture, page, "runtime-new-page");
     await closeBrowserContextPagesExcept(ctx, page);
     await establishSession(
       { ensureSession, probeSession },
@@ -782,12 +784,27 @@ async function runInBrowser(args: {
         sendInteraction: browserSendInteraction,
       }
     );
+    await captureBrowserPage(baseCtx.capture, page, "runtime-session-established");
+    await captureBrowserPage(baseCtx.capture, page, "runtime-collect-start");
     await collect({ ...baseCtx, context: ctx, page, sendInteraction: browserSendInteraction });
+    await captureBrowserPage(baseCtx.capture, page, "runtime-collect-complete");
+  } catch (err) {
+    if (page) {
+      await captureBrowserPage(baseCtx.capture, page, "runtime-error");
+    }
+    throw err;
   } finally {
     await tracer.stop();
     await release().catch((): undefined => undefined);
     disposeShutdownHook();
   }
+}
+
+async function captureBrowserPage(capture: CaptureSession | null, page: Page, label: string): Promise<void> {
+  if (!capture) {
+    return;
+  }
+  await capture.captureDom(page, label);
 }
 
 export async function closeBrowserContextPagesExcept(
@@ -1306,15 +1323,20 @@ interface Tracer {
  * Start/stop Playwright tracing, gated on PDPP_TRACE=1. Produces a
  * replayable .zip for debugging silent scraper failures. See §9.
  */
-function makeTracer(context: BrowserContext, name: string, emit: (msg: EmittedMessage) => Promise<void>): Tracer {
-  const enabled = process.env.PDPP_TRACE === "1";
+function makeTracer(
+  context: BrowserContext,
+  name: string,
+  emit: (msg: EmittedMessage) => Promise<void>,
+  capture: CaptureSession | null
+): Tracer {
+  const enabled = process.env.PDPP_TRACE === "1" || capture !== null;
+  const traceName = `${name}-${new Date().toISOString().replace(TRACE_TIMESTAMP_UNSAFE, "-")}`;
+  const tracePath = capture ? join(capture.baseDir, "traces", `${traceName}.zip`) : `/tmp/${traceName}.zip`;
   return {
     async start(): Promise<void> {
       if (!enabled) {
         return;
       }
-      const ts = new Date().toISOString().replace(TRACE_TIMESTAMP_UNSAFE, "-");
-      const traceName = `${name}-${ts}`;
       await context.tracing
         .start({
           name: traceName,
@@ -1325,15 +1347,13 @@ function makeTracer(context: BrowserContext, name: string, emit: (msg: EmittedMe
         .catch((): undefined => undefined);
       await emit({
         type: "PROGRESS",
-        message: `tracing enabled (PDPP_TRACE=1); will write /tmp/${traceName}.zip on exit`,
+        message: `tracing enabled; will write ${tracePath} on exit`,
       });
     },
     async stop(): Promise<void> {
       if (!enabled) {
         return;
       }
-      const ts = new Date().toISOString().replace(TRACE_TIMESTAMP_UNSAFE, "-");
-      const tracePath = `/tmp/${name}-trace-${ts}.zip`;
       try {
         await context.tracing.stop({ path: tracePath });
         await emit({

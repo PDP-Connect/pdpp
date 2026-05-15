@@ -2,7 +2,7 @@
  * Fixture capture for connector runs.
  *
  * Gated on PDPP_CAPTURE_FIXTURES=1. When active, writes under
- * `packages/polyfill-connectors/fixtures/<connector>/raw/<runId>/` three
+ * `packages/polyfill-connectors/fixtures/<connector>/raw/<runId>/` local raw
  * kinds of capture:
  *
  *   records/<stream>.jsonl     one JSON per emitted RECORD.data (generic,
@@ -10,6 +10,10 @@
  *                               runtime — emit() is wrapped to append)
  *   dom/<label>.html           Playwright page.content() snapshots at
  *                               connector-chosen checkpoints
+ *   pages/<label>.json         URL/title/timestamp metadata for page captures
+ *   screenshots/<label>.png    best-effort viewport screenshots for visual
+ *                               debugging
+ *   traces/*.zip               Playwright traces when a browser connector runs
  *   http/<nnnn>-<label>.json   HTTP response bodies for API connectors
  *
  * The "raw" side is gitignored. A companion scrubber (bin/scrub-fixtures.mjs)
@@ -64,6 +68,9 @@ export function createCaptureSession(connectorName: string): CaptureSession | nu
   try {
     mkdirSync(join(baseDir, "records"), { recursive: true });
     mkdirSync(join(baseDir, "dom"), { recursive: true });
+    mkdirSync(join(baseDir, "pages"), { recursive: true });
+    mkdirSync(join(baseDir, "screenshots"), { recursive: true });
+    mkdirSync(join(baseDir, "traces"), { recursive: true });
     mkdirSync(join(baseDir, "http"), { recursive: true });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -86,12 +93,39 @@ export function createCaptureSession(connectorName: string): CaptureSession | nu
       }
     },
     async captureDom(page, label): Promise<void> {
+      const safe = safeLabel(label);
       try {
         const html = await page.content();
-        writeFileSync(join(baseDir, "dom", `${safeLabel(label)}.html`), html);
+        writeFileSync(join(baseDir, "dom", `${safe}.html`), html);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         process.stderr.write(`[capture] dom write failed for ${label}: ${message}\n`);
+      }
+      try {
+        const title = await page.title().catch(() => "");
+        writeFileSync(
+          join(baseDir, "pages", `${safe}.json`),
+          JSON.stringify(
+            {
+              captured_at: new Date().toISOString(),
+              label,
+              title,
+              url: page.url(),
+            },
+            null,
+            2
+          )
+        );
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`[capture] page metadata write failed for ${label}: ${message}\n`);
+      }
+      try {
+        const screenshot = await page.screenshot({ fullPage: false, type: "png" });
+        writeFileSync(join(baseDir, "screenshots", `${safe}.png`), screenshot);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`[capture] screenshot write failed for ${label}: ${message}\n`);
       }
     },
     captureHttp(label, body, meta = {}): void {
