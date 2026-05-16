@@ -131,7 +131,7 @@ test('blank or whitespace-only env value is treated as missing', async () => {
   assert.equal(controller.schedules.size, 0);
 });
 
-test('alias arrays accept whichever variant is set', async () => {
+test('alias-array entry is satisfied when the fallback alias is set', async () => {
   const controller = createFakeController();
   const m = manifest({
     capabilities: {
@@ -139,13 +139,94 @@ test('alias arrays accept whichever variant is set', async () => {
       auth: { kind: 'env', required: [['WIDGET_TOKEN', 'WIDGET_PAT']] },
     },
   });
-  // Only the fallback alias is set; the canonical primary is empty.
+  // Only the fallback alias is set; the first-listed alias is empty.
+  // Runtime first-set-wins says this is enough credential; the enrollment
+  // gate must agree.
   const summary = await autoEnrollEligibleSchedules({
     controller,
     env: { WIDGET_PAT: 'alt-set' },
     listConnectors: singleManifestList(m),
   });
   assert.equal(summary.enrolled, 1);
+  assert.equal(summary.skipped_env, 0);
+});
+
+test('alias-array entry is satisfied when the first-listed alias is set', async () => {
+  const controller = createFakeController();
+  const m = manifest({
+    capabilities: {
+      ...manifest().capabilities,
+      auth: { kind: 'env', required: [['WIDGET_TOKEN', 'WIDGET_PAT']] },
+    },
+  });
+  const summary = await autoEnrollEligibleSchedules({
+    controller,
+    env: { WIDGET_TOKEN: 'primary-set' },
+    listConnectors: singleManifestList(m),
+  });
+  assert.equal(summary.enrolled, 1);
+});
+
+test('alias-array entry is unsatisfied only when EVERY alias is absent or empty', async () => {
+  const controller = createFakeController();
+  const m = manifest({
+    capabilities: {
+      ...manifest().capabilities,
+      auth: { kind: 'env', required: [['WIDGET_TOKEN', 'WIDGET_PAT']] },
+    },
+  });
+  // Both aliases present-but-empty count as unsatisfied (whitespace is
+  // treated as missing, same as the runtime).
+  const summary = await autoEnrollEligibleSchedules({
+    controller,
+    env: { WIDGET_TOKEN: '', WIDGET_PAT: '   ' },
+    listConnectors: singleManifestList(m),
+  });
+  assert.equal(summary.enrolled, 0);
+  assert.equal(summary.skipped_env, 1);
+});
+
+test('mixed string + alias-array entries each apply their own rule', async () => {
+  const controller = createFakeController();
+  const m = manifest({
+    capabilities: {
+      ...manifest().capabilities,
+      auth: {
+        kind: 'env',
+        required: ['WIDGET_TOKEN', ['WIDGET_REGION', 'WIDGET_DEFAULT_REGION']],
+      },
+    },
+  });
+  // String entry: WIDGET_TOKEN must itself be non-empty.
+  // Alias entry: any one of WIDGET_REGION / WIDGET_DEFAULT_REGION suffices.
+  const satisfied = await autoEnrollEligibleSchedules({
+    controller,
+    env: { WIDGET_TOKEN: 'set', WIDGET_DEFAULT_REGION: 'us-east-1' },
+    listConnectors: singleManifestList(m),
+  });
+  assert.equal(satisfied.enrolled, 1);
+
+  const controller2 = createFakeController();
+  // String entry missing -> whole requirement fails, even though the
+  // alias is satisfied.
+  const stringMissing = await autoEnrollEligibleSchedules({
+    controller: controller2,
+    env: { WIDGET_DEFAULT_REGION: 'us-east-1' },
+    listConnectors: singleManifestList(m),
+  });
+  assert.equal(stringMissing.skipped_env, 1);
+  assert.equal(stringMissing.enrolled, 0);
+
+  const controller3 = createFakeController();
+  // Alias entirely absent -> requirement fails, even though the string
+  // is satisfied.
+  const aliasMissing = await autoEnrollEligibleSchedules({
+    controller: controller3,
+    env: { WIDGET_TOKEN: 'set' },
+    listConnectors: singleManifestList(m),
+  });
+  assert.equal(aliasMissing.skipped_env, 1);
+  assert.equal(aliasMissing.enrolled, 0);
 });
 
 test('manual refresh policy is never auto-enrolled even when env is present', async () => {

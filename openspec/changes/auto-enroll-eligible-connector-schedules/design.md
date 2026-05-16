@@ -24,8 +24,11 @@ schedule eligibility gate:
 - `capabilities.refresh_policy.background_safe !== false`.
 - `capabilities.public_listing.listed === true`.
 - `capabilities.public_listing.status === "proven"`.
-- `capabilities.auth.required` is declared, non-empty, and every named env
-  variable is present in `process.env` with a non-empty value.
+- `capabilities.auth.required` is declared and non-empty, and every entry
+  is satisfied against `process.env`. A string entry is satisfied when its
+  named env value is non-empty. An alias-array entry is satisfied when
+  **any one** of its listed env names is non-empty (first-set-wins, same as
+  the runtime auth resolver).
 
 The first four facts already live in shipped manifests. The fifth is new.
 Connector modules already declare `auth: { kind: "env", required: [...] }`
@@ -43,7 +46,14 @@ shape mirrors the runtime config:
 ```
 
 Alias arrays (`[["GITHUB_PERSONAL_ACCESS_TOKEN", "GITHUB_TOKEN"]]`) are
-permitted but not used by the proven connectors in this change.
+permitted but not used by the proven connectors in this change. An alias
+array is satisfied when **any** of its listed env names is non-empty in
+`process.env`, mirroring the first-set-wins resolution performed by the
+runtime auth strategy in `packages/polyfill-connectors/src/auth.ts`
+(`resolveEnvEntry`). The enrollment gate must agree with the runtime
+resolution: if the runtime would resolve a working credential from a
+fallback alias, the enrollment gate must also accept that fallback as
+sufficient evidence that the deployment is wired.
 
 The enrollment pass runs once on boot, after `reconcilePolyfillManifests`
 and before the scheduler manager hydrates persisted schedules. It iterates

@@ -130,9 +130,13 @@ function getListingFacts(caps: ManifestCapabilities): ListingFacts {
 
 /**
  * Manifest `capabilities.auth.required` entries are either a string env name
- * or an alias array (`[primary, ...fallbacks]`). The runtime uses
- * first-set-wins; here we only need primary names so the resolved
- * declaration mirrors `auth.ts::resolveEnvEntry`.
+ * or an alias array (`[primary, ...fallbacks]`). The runtime auth resolver in
+ * `packages/polyfill-connectors/src/auth.ts::resolveEnvEntry` uses first-set-
+ * wins: any one alias being non-empty is enough to satisfy the requirement.
+ * The enrollment gate must agree with that resolution so we never refuse to
+ * enroll a connector that the runtime would happily authenticate from a
+ * fallback alias. Alias arrays are encoded here as a `"a|b|c"` token; the
+ * presence check downstream splits on `|` and tests for any non-empty value.
  */
 function extractEnvRequirement(caps: ManifestCapabilities): readonly string[] | null {
   const auth = caps.auth;
@@ -154,10 +158,10 @@ function extractEnvRequirement(caps: ManifestCapabilities): readonly string[] | 
       continue;
     }
     if (Array.isArray(entry)) {
-      // First entry of an alias array is the canonical primary name; the
-      // runtime walks the whole list at run time, but for enrollment we
-      // only care whether at least one variant is set. We check the whole
-      // list later.
+      // Alias-array entry: encode as a `|`-joined any-of token so the
+      // downstream presence check accepts the requirement when any one
+      // variant is non-empty, matching the runtime's first-set-wins
+      // semantics.
       const variants: string[] = [];
       for (const v of entry) {
         if (typeof v === "string" && v.trim().length > 0) {

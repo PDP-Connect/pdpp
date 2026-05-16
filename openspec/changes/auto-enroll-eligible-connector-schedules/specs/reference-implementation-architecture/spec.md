@@ -11,13 +11,13 @@ non-empty `capabilities.auth.required` list of environment variable names.
 
 #### Scenario: Eligible connector with deployment env is enrolled on boot
 - **WHEN** the reference server starts, manifest reconciliation has completed, and a registered first-party manifest satisfies the five-fact eligibility test
-- **AND** every name listed in `capabilities.auth.required` (single string or first entry of an alias array) resolves to a non-empty `process.env` value
+- **AND** every entry of `capabilities.auth.required` is satisfied: a string entry SHALL be satisfied when its named `process.env` value is non-empty, and an alias-array entry SHALL be satisfied when **any** of its listed env names is non-empty in `process.env` (matching the runtime first-set-wins resolution in `packages/polyfill-connectors/src/auth.ts`)
 - **AND** no persisted schedule row exists for that connector
 - **THEN** the reference SHALL insert a new schedule row with `enabled=true`, `interval_seconds=capabilities.refresh_policy.recommended_interval_seconds` (falling back to 3600 when the manifest omits an interval), and `jitter_seconds=0`
 - **AND** the reference SHALL NOT inspect, copy, or log the env variable values
 
 #### Scenario: Missing env keeps the connector honestly unscheduled
-- **WHEN** a registered first-party manifest is otherwise auto-enroll eligible but at least one declared env name is absent or empty in `process.env`
+- **WHEN** a registered first-party manifest is otherwise auto-enroll eligible but at least one entry of `capabilities.auth.required` is unsatisfied (the named `process.env` value is absent or empty for a string entry, or every alias in an alias-array entry is absent or empty in `process.env`)
 - **THEN** the reference SHALL NOT create a schedule row for that connector
 - **AND** the connector SHALL continue to surface as `NOSCHED` in `scheduler-doctor` and the dashboard SHALL NOT claim the connector is currently runnable
 
