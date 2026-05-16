@@ -56,6 +56,19 @@ Dashboard Web Push notifications for pending connector interactions SHALL includ
 - **THEN** the push payload SHALL NOT include those values
 - **AND** the notification text SHALL NOT require the owner to infer or expose secret values on a lock screen.
 
+#### Scenario: Nonblocking owner-assistance is requested during a manual run
+
+- **WHEN** a manual connector run emits an `ASSISTANCE` progress message with `response_contract: "none"` and `owner_action` other than `none` and `progress_posture` of `running` or `blocked`
+- **THEN** the reference SHALL fan out a Web Push notification to the owner's active subscriptions
+- **AND** the notification SHALL route the owner to the durable run page (e.g. `/dashboard/runs/{run_id}`), not the interaction stream URL, because the owner-side action happens outside PDPP
+- **AND** the payload SHALL NOT include the connector-supplied assistance message, attachments, or any other free-form connector data.
+
+#### Scenario: Manual-run progress does not require owner attention
+
+- **WHEN** a manual connector run emits ordinary progress (non-`ASSISTANCE`) or an `ASSISTANCE` message with `owner_action: "none"` or `response_contract: "response_required"`
+- **THEN** the reference SHALL NOT fan out a Web Push for that progress event
+- **AND** existing blocking `INTERACTION` Web Push behavior SHALL remain unchanged.
+
 ### Requirement: Dashboard SHALL allow owner-initiated Web Push delivery proof
 
 The reference dashboard SHALL expose an owner-authenticated way for a subscribed browser to verify that Web Push delivery reaches it, without inducing a connector run. The proof path SHALL not relax authentication or payload-privacy constraints.

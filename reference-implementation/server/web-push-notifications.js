@@ -421,6 +421,39 @@ export function buildPendingInteractionPushPayload({ interaction, connectorDispl
   };
 }
 
+// Predicate: should this connector progress message trigger a nonblocking
+// owner-assistance Web Push? We only fan out for ASSISTANCE messages that
+// actually require owner attention but expect no PDPP response (e.g. "approve
+// the ChatGPT push in your phone app"). Blocking INTERACTION messages route
+// through the existing brokerInteraction path.
+export function shouldFanoutAssistanceProgress(message) {
+  if (!message || message.type !== 'ASSISTANCE') return false;
+  if (message.response_contract !== 'none') return false;
+  if (message.owner_action === 'none') return false;
+  return message.progress_posture === 'running' || message.progress_posture === 'blocked';
+}
+
+export function buildAssistancePushPayload({ assistance, connectorDisplayName, runId }) {
+  const assistanceRequestId =
+    typeof assistance?.assistance_request_id === 'string' ? assistance.assistance_request_id : '';
+  // Routing: assistance work happens outside PDPP, so we always send the
+  // owner to the durable run page rather than a transient interaction stream.
+  // Body copy is intentionally generic — assistance.message can carry
+  // connector-supplied free text that we MUST NOT echo on a lock screen.
+  return {
+    type: 'pdpp.assistance_requested',
+    title: `PDPP ${connectorDisplayName}: action needed`,
+    body: 'A connector needs you to act in another app.',
+    connector_display_name: connectorDisplayName,
+    run_id: runId,
+    assistance_request_id: assistanceRequestId,
+    owner_action: typeof assistance?.owner_action === 'string' ? assistance.owner_action : null,
+    response_contract: 'none',
+    timestamp: nowIso(),
+    url: `/dashboard/runs/${encodeURIComponent(runId)}`,
+  };
+}
+
 function shouldRevokeForWebPushError(err) {
   const status = Number(err?.statusCode || err?.status);
   return status === 404 || status === 410;
@@ -495,6 +528,36 @@ export async function fanoutPendingInteractionWebPush({
     payload,
     log,
     logContext: `for run ${runId}`,
+  });
+}
+
+export async function fanoutAssistanceWebPush({
+  config = resolveWebPushConfig(),
+  store = getDefaultWebPushSubscriptionStore(),
+  sender = defaultSendNotification,
+  assistance,
+  connectorDisplayName,
+  ownerSubjectId,
+  runId,
+  log = console,
+}) {
+  if (!config.enabled) {
+    return { attempted: 0, sent: 0, unavailable: true };
+  }
+  const normalizedOwnerSubjectId = nonEmptyString(ownerSubjectId);
+  if (!normalizedOwnerSubjectId) {
+    log.warn?.(`[controller] web push assistance for run ${runId} skipped: missing owner subject`);
+    return { attempted: 0, sent: 0, unavailable: false };
+  }
+  const payload = buildAssistancePushPayload({ assistance, connectorDisplayName, runId });
+  return sendPayloadToOwnerSubscriptions({
+    config,
+    store,
+    sender,
+    ownerSubjectId: normalizedOwnerSubjectId,
+    payload,
+    log,
+    logContext: `assistance for run ${runId}`,
   });
 }
 

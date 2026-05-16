@@ -792,6 +792,43 @@ async function fireWebPush(
   }
 }
 
+async function fireAssistanceWebPush(
+  args: {
+    assistance: Record<string, unknown>;
+    connectorDisplayName: string;
+    ownerSubjectId: string;
+    runId: string;
+    log: ControllerLogger;
+  }
+): Promise<void> {
+  try {
+    const { fanoutAssistanceWebPush } = await import("../server/web-push-notifications.js");
+    await fanoutAssistanceWebPush({
+      assistance: args.assistance,
+      connectorDisplayName: args.connectorDisplayName,
+      ownerSubjectId: args.ownerSubjectId,
+      runId: args.runId,
+      log: args.log as Console,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    args.log.warn?.(`[controller] web push assistance fire for run ${args.runId} failed: ${message}`);
+  }
+}
+
+// Decide whether a manual-run progress message should fan out a nonblocking
+// owner-assistance Web Push. Mirrors `shouldFanoutAssistanceProgress` in the
+// server module so we can filter without paying the dynamic-import cost on
+// every progress tick.
+export function shouldFanoutAssistanceProgressForControllerTests(message: unknown): boolean {
+  if (!message || typeof message !== "object") return false;
+  const m = message as Record<string, unknown>;
+  if (m.type !== "ASSISTANCE") return false;
+  if (m.response_contract !== "none") return false;
+  if (m.owner_action === "none") return false;
+  return m.progress_posture === "running" || m.progress_posture === "blocked";
+}
+
 function brokerInteraction(
   runId: string,
   connectorId: string,
@@ -1964,8 +2001,21 @@ export function createController(opts: ControllerOptions = {}): Controller {
           runId,
           traceContext,
           onInteraction: interactionHandler,
-          onProgress: () => {
-            // no-op; progress is persisted via the event spine, not this callback.
+          onProgress: (msg: unknown) => {
+            // Progress is persisted via the event spine, not this callback.
+            // The one exception is nonblocking ASSISTANCE: the owner has to
+            // act somewhere outside PDPP (e.g. approve a ChatGPT push in the
+            // app) and we want their subscribed PWA to ring. INTERACTION
+            // pushes still flow through brokerInteraction → fireWebPush.
+            if (shouldFanoutAssistanceProgressForControllerTests(msg)) {
+              void fireAssistanceWebPush({
+                assistance: msg as Record<string, unknown>,
+                connectorDisplayName,
+                ownerSubjectId,
+                runId,
+                log,
+              });
+            }
           },
           // Mode-A streaming registration env. Both fields must be present for
           // runConnector to thread them into the spawn env; either omitted is

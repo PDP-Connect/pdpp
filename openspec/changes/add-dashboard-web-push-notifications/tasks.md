@@ -14,6 +14,7 @@
 ## 3. Notification Delivery
 
 - [x] 3.1 Fan out pending connector-interaction notifications to subscribed Web Push endpoints without replacing ntfy/current channels.
+- [x] 3.1.1 Fan out nonblocking owner-action `ASSISTANCE` progress messages from manual runs to the same Web Push channel, routed to the run page rather than the interaction stream.
 - [x] 3.2 Ensure push payloads carry only non-secret routing/display metadata.
 - [x] 3.3 Disable, prune, or mark subscriptions when push providers report expired or rejected endpoints.
 - [x] 3.4 Add an owner-authenticated test-notification path so subscribed browsers can verify delivery without inducing a connector run.

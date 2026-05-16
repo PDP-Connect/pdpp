@@ -9,14 +9,17 @@ import { closeDb, initDb } from '../server/db.js';
 import { startServer } from '../server/index.js';
 import { closePostgresStorage, initPostgresStorage, postgresQuery } from '../server/postgres-storage.js';
 import {
+  buildAssistancePushPayload,
   buildPendingInteractionPushPayload,
   buildTestPushPayload,
   createMemoryWebPushSubscriptionStore,
   createPostgresWebPushSubscriptionStore,
   createSqliteWebPushSubscriptionStore,
+  fanoutAssistanceWebPush,
   fanoutPendingInteractionWebPush,
   fanoutTestWebPush,
   resolveWebPushModuleApi,
+  shouldFanoutAssistanceProgress,
 } from '../server/web-push-notifications.js';
 
 const TEST_PASSWORD = 'web-push-owner-test-password';
@@ -368,6 +371,203 @@ test('web push subscriptions persist across reference server restarts', async ()
     closeDb();
     rmSync(tmpDir, { recursive: true, force: true });
   }
+});
+
+test('shouldFanoutAssistanceProgress accepts only nonblocking owner-action ASSISTANCE messages', () => {
+  assert.equal(
+    shouldFanoutAssistanceProgress({
+      type: 'ASSISTANCE',
+      assistance_request_id: 'asst_1',
+      owner_action: 'act_elsewhere',
+      progress_posture: 'running',
+      response_contract: 'none',
+      message: 'Approve the push in your phone app.',
+    }),
+    true,
+  );
+  assert.equal(
+    shouldFanoutAssistanceProgress({
+      type: 'ASSISTANCE',
+      owner_action: 'provide_value',
+      progress_posture: 'blocked',
+      response_contract: 'none',
+    }),
+    true,
+  );
+  // INTERACTION still flows through brokerInteraction → fireWebPush, not here.
+  assert.equal(
+    shouldFanoutAssistanceProgress({
+      type: 'INTERACTION',
+      owner_action: 'act_elsewhere',
+      progress_posture: 'blocked',
+      response_contract: 'none',
+    }),
+    false,
+  );
+  // Non-attention assistance (e.g. pure timeline narration) MUST NOT push.
+  assert.equal(
+    shouldFanoutAssistanceProgress({
+      type: 'ASSISTANCE',
+      owner_action: 'none',
+      progress_posture: 'running',
+      response_contract: 'none',
+    }),
+    false,
+  );
+  // response_required is handled by the blocking interaction broker.
+  assert.equal(
+    shouldFanoutAssistanceProgress({
+      type: 'ASSISTANCE',
+      owner_action: 'provide_value',
+      progress_posture: 'blocked',
+      response_contract: 'response_required',
+    }),
+    false,
+  );
+  // Ordinary progress ticks must not push.
+  assert.equal(
+    shouldFanoutAssistanceProgress({ type: 'log', message: 'doing things' }),
+    false,
+  );
+  assert.equal(shouldFanoutAssistanceProgress(null), false);
+});
+
+test('assistance Web Push payload routes to the run page and omits raw assistance text', () => {
+  const payload = buildAssistancePushPayload({
+    runId: 'run_assist',
+    connectorDisplayName: 'ChatGPT',
+    assistance: {
+      type: 'ASSISTANCE',
+      assistance_request_id: 'asst_secret_42',
+      owner_action: 'act_elsewhere',
+      progress_posture: 'running',
+      response_contract: 'none',
+      // Connector free text and any future fields must NOT appear in the
+      // push payload — locked screens are an untrusted surface.
+      message: 'Approve the ChatGPT push notification — code 482913.',
+      sensitivity: 'non_secret',
+    },
+  });
+
+  assert.equal(payload.type, 'pdpp.assistance_requested');
+  assert.equal(payload.url, '/dashboard/runs/run_assist');
+  assert.equal(payload.assistance_request_id, 'asst_secret_42');
+  assert.equal(payload.owner_action, 'act_elsewhere');
+  assert.equal(payload.response_contract, 'none');
+
+  const serialized = JSON.stringify(payload);
+  for (const forbidden of [
+    '482913',
+    'Approve the ChatGPT push notification',
+  ]) {
+    assert.equal(serialized.includes(forbidden), false, `assistance payload leaked ${forbidden}`);
+  }
+});
+
+test('assistance Web Push fanout targets the owner and surfaces failures as marked subscriptions', async () => {
+  const store = createMemoryWebPushSubscriptionStore();
+  await store.upsert('owner_local', sampleSubscription('https://push.example.invalid/sub/assist-local'), {});
+  await store.upsert('owner_local', sampleSubscription('https://push.example.invalid/sub/assist-gone'), {});
+  await store.upsert('owner_other', sampleSubscription('https://push.example.invalid/sub/assist-other'), {});
+
+  const sent = [];
+  const result = await fanoutAssistanceWebPush({
+    config: {
+      enabled: true,
+      publicKey: VAPID_PUBLIC,
+      privateKey: VAPID_PRIVATE,
+      subject: 'mailto:test@example.invalid',
+    },
+    store,
+    assistance: {
+      type: 'ASSISTANCE',
+      assistance_request_id: 'asst_1',
+      owner_action: 'act_elsewhere',
+      progress_posture: 'running',
+      response_contract: 'none',
+    },
+    connectorDisplayName: 'ChatGPT',
+    ownerSubjectId: 'owner_local',
+    runId: 'run_assist',
+    log: { warn() {} },
+    sender: async (subscription, payload) => {
+      sent.push({ endpoint: subscription.endpoint, type: payload.type });
+      if (subscription.endpoint.endsWith('/assist-gone')) {
+        const err = new Error('Gone');
+        err.statusCode = 410;
+        throw err;
+      }
+    },
+  });
+
+  assert.equal(result.attempted, 2);
+  assert.equal(result.sent, 1);
+  assert.equal(result.unavailable, false);
+  assert.equal(
+    sent.every((entry) => entry.type === 'pdpp.assistance_requested'),
+    true,
+  );
+  assert.equal(
+    sent.some((entry) => entry.endpoint === 'https://push.example.invalid/sub/assist-other'),
+    false,
+    'assistance fanout must remain scoped to the owning subject',
+  );
+  const active = await store.list('owner_local');
+  assert.equal(active.length, 1);
+  assert.equal(active[0].endpoint, 'https://push.example.invalid/sub/assist-local');
+});
+
+test('assistance Web Push fanout reports unavailable when VAPID is unconfigured', async () => {
+  const store = createMemoryWebPushSubscriptionStore();
+  await store.upsert('owner_local', sampleSubscription('https://push.example.invalid/sub/assist-noop'), {});
+
+  const result = await fanoutAssistanceWebPush({
+    config: { enabled: false, publicKey: null, privateKey: null, subject: 'mailto:test@example.invalid' },
+    store,
+    assistance: {
+      type: 'ASSISTANCE',
+      assistance_request_id: 'asst_x',
+      owner_action: 'act_elsewhere',
+      progress_posture: 'running',
+      response_contract: 'none',
+    },
+    connectorDisplayName: 'ChatGPT',
+    ownerSubjectId: 'owner_local',
+    runId: 'run_assist_unavail',
+    log: { warn() {} },
+    sender: async () => {
+      throw new Error('sender should not be invoked when VAPID is disabled');
+    },
+  });
+
+  assert.deepEqual(result, { attempted: 0, sent: 0, unavailable: true });
+});
+
+test('manual-run controller progress handler fans out assistance Web Push without forwarding raw assistance text', async () => {
+  // Smallest-surface end-to-end check that the controller's manual-run
+  // onProgress wiring actually invokes the assistance fanout for qualifying
+  // ASSISTANCE messages, ignores ordinary progress, and never echoes
+  // connector-supplied prose. We assert against the controller source rather
+  // than spinning the full controller; this matches the existing
+  // "controller keeps ntfy and Web Push as independent best-effort
+  // notification channels" assertion style.
+  const src = await readFile(new URL('../runtime/controller.ts', import.meta.url), 'utf8');
+  // Manual-run onProgress is no longer a no-op.
+  assert.equal(
+    /onProgress: \(\) => \{\s*\/\/ no-op; progress is persisted via the event spine, not this callback\.\s*\},/.test(src),
+    false,
+    'manual-run onProgress must wire ASSISTANCE fanout, not stay a no-op',
+  );
+  // It must filter by the documented predicate.
+  assert.match(src, /shouldFanoutAssistanceProgressForControllerTests\(msg\)/);
+  // And it must call fireAssistanceWebPush — not fireWebPush — for ASSISTANCE.
+  assert.match(src, /void fireAssistanceWebPush\(\{/);
+  // The fanout helper must thread runId/ownerSubjectId from controller scope.
+  assert.match(
+    src,
+    /fireAssistanceWebPush\([\s\S]*?ownerSubjectId,[\s\S]*?runId,/,
+    'fireAssistanceWebPush must receive ownerSubjectId and runId from the manual-run scope',
+  );
 });
 
 test('controller keeps ntfy and Web Push as independent best-effort notification channels', async () => {
