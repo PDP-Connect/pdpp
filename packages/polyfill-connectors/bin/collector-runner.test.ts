@@ -4,10 +4,13 @@ import { test } from "node:test";
 import { buildCollectorStartMessage } from "../src/collector-runner.ts";
 import { buildConnectorSpec, parseArgs } from "./collector-runner.ts";
 
-// These tests pin the operator path for stream backfill end-to-end:
+// These tests pin the START wire for stream backfill:
 // CLI argv → parseArgs → buildConnectorSpec → buildCollectorStartMessage.
-// They are the proof that `--backfill-streams attachments` actually
-// reaches the connector subprocess as `START.streamsToBackfill`.
+// They prove that `--backfill-streams attachments` reaches the connector
+// subprocess as `START.streamsToBackfill`. They do NOT prove a
+// resumable operator loop — `runCollectorConnector` currently discards
+// connector STATE messages, so re-running the CLI does not continue
+// from a previous window. That is a separate, larger contract change.
 
 test("CLI run --connector gmail uses bundled defaults so operators don't need --command/--args/--streams", () => {
   const options = parseArgs([
@@ -38,7 +41,7 @@ test("CLI run --connector gmail uses bundled defaults so operators don't need --
   assert.equal(spec.streamsToBackfill, undefined);
 });
 
-test("CLI --backfill-streams reaches the connector as START.streamsToBackfill (operator path for historical attachment backfill)", () => {
+test("CLI --backfill-streams reaches the connector as START.streamsToBackfill (START wire only; resumable loop requires future STATE plumbing)", () => {
   const options = parseArgs([
     "run",
     "--base-url",
@@ -62,6 +65,9 @@ test("CLI --backfill-streams reaches the connector as START.streamsToBackfill (o
   // in collectConnectorMessages — emitting a START line that the
   // Gmail connector reads and routes into runAllMailPasses, which
   // honors streamsToBackfill to walk a bounded historical UID window.
+  // Note: this asserts the START envelope shape only. Whether the
+  // subprocess's STATE emit is persisted/replayed by future runs is
+  // separately gated on STATE-handling in `runCollectorConnector`.
   const start = buildCollectorStartMessage(spec.streams, spec.streamsToBackfill);
   assert.deepEqual(start.streamsToBackfill, ["attachments"]);
   assert.equal(start.type, "START");

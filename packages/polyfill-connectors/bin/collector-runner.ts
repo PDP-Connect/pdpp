@@ -29,18 +29,29 @@
  *     reference server's run-target registry for streaming-companion
  *     resolution. Omit `--run-id` for runs that don't need streaming.
  *
- *     `--backfill-streams` is the operator path for explicit per-stream
- *     historical rehydration that is independent of the incremental
- *     cursor. For Gmail, `--connector gmail --backfill-streams attachments`
- *     drives one bounded UID window of attachment backfill across
- *     historical messages whose `messages.all_mail.uidnext` cursor has
- *     already advanced. Window size is governed by
- *     PDPP_GMAIL_ATTACHMENT_BACKFILL_WINDOW_UIDS; STATE only advances
- *     to the window end once that window's records are durable, so the
- *     operator re-runs until `remaining_historical_gaps` is reported
- *     as zero in the backfill summary. Attachment backfill also requires
- *     PDPP_RS_URL and PDPP_OWNER_TOKEN for blob upload — preflight fails
- *     before mailbox work when those are missing.
+ *     `--backfill-streams` lets the operator opt a connector run into
+ *     explicit per-stream historical rehydration that is independent
+ *     of the incremental cursor. For Gmail, `--connector gmail
+ *     --backfill-streams attachments` requests one bounded UID window
+ *     of historical attachment backfill in the connector's START
+ *     envelope; window size is governed by
+ *     `PDPP_GMAIL_ATTACHMENT_BACKFILL_WINDOW_UIDS`. Attachment backfill
+ *     also requires `PDPP_RS_URL` and `PDPP_OWNER_TOKEN` for blob
+ *     upload — the Gmail connector's preflight fails before mailbox
+ *     work when those are missing.
+ *
+ *     Important limitation: this CLI does NOT yet persist or replay
+ *     connector STATE. `runCollectorConnector` filters only RECORD
+ *     messages into the device-exporter ingest queue and discards
+ *     STATE entirely (see `src/collector-runner.ts`). That means a
+ *     single invocation submits one window's worth of records, but
+ *     re-running the CLI does NOT pick up where the previous run
+ *     left off — every run is a fresh START with no `state.cursor`.
+ *     A multi-window resumable operator loop needs a state
+ *     load/replay/put contract added to `LocalDeviceClient` and the
+ *     reference device-exporter endpoints; that is tracked as a
+ *     separate OpenSpec change. Today's scope: prove the
+ *     `streamsToBackfill` wire reaches the connector.
  *
  *   advertise
  *     Print the collector runtime's advertised capabilities as JSON.

@@ -868,7 +868,7 @@ test("emitMessagesPass: progress includes count and total when metadata count is
   assert.equal(progress[0]?.total, 500);
 });
 
-// ─── Historical attachment backfill: prove the operator path is honest ───
+// ─── Historical attachment backfill: pin the per-UID hydration shape ────
 //
 // The connector's runAllMailPasses, when START.streamsToBackfill includes
 // "attachments", drives emitMessagesPass over the bounded historical UID
@@ -877,8 +877,12 @@ test("emitMessagesPass: progress includes count and total when metadata count is
 // `attachments` record. These tests pin that mode without IMAP: a
 // "historical" UID below priorUidnext is fed through the same code path
 // and we verify hydration, idempotency, and summary accounting.
+// Scope note: this asserts per-UID behavior and summary shape; it does
+// not exercise window selection, cursor advancement, or replay across
+// invocations (those require either an IMAP double or collector-runner
+// STATE plumbing, which is out of scope for this branch).
 
-test("backfill mode: historical UID below priorUidnext still hydrates attachment bytes via the operator path", async () => {
+test("backfill mode: historical UID below priorUidnext hydrates attachment bytes in attachment-only mode", async () => {
   const historicalPayload = Buffer.from("ancient invoice bytes");
   const expectedSha = createHash("sha256").update(historicalPayload).digest("hex");
   const hydrateAttachment = makeAttachmentHydrator({
