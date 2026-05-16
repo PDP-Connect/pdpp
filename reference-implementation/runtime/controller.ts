@@ -694,7 +694,7 @@ interface ScheduleHistoryFacts {
   readonly latestStatus: "failed" | "skipped" | "succeeded" | null;
   /** Most recent `succeeded` record's `completedAt`. */
   readonly latestSuccessfulAt: string | null;
-  /** Best-effort error code: `terminalReason` ?? `failureReason`. */
+  /** Error/skip code for the most recent terminal row, when that row was not successful. */
   readonly latestErrorCode: string | null;
 }
 
@@ -1732,6 +1732,9 @@ export function createController(opts: ControllerOptions = {}): Controller {
       const entry = ensure(row.connectorId);
       if (entry.latestStatus === null) {
         entry.latestStatus = row.status;
+        if (row.status === "failed" || row.status === "skipped") {
+          entry.latestErrorCode = row.terminalReason ?? row.failureReason ?? row.error ?? null;
+        }
       }
       if (!entry.latestFinishedAt || row.completedAt > entry.latestFinishedAt) {
         entry.latestFinishedAt = row.completedAt;
@@ -1752,9 +1755,6 @@ export function createController(opts: ControllerOptions = {}): Controller {
       }
       if (entry.latestSuccessfulAt === null && row.status === "succeeded") {
         entry.latestSuccessfulAt = row.completedAt;
-      }
-      if (entry.latestErrorCode === null && row.status === "failed") {
-        entry.latestErrorCode = row.terminalReason ?? row.failureReason ?? null;
       }
     }
     return facts;

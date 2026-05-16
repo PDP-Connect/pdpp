@@ -490,6 +490,27 @@ test('controller.listSchedules projects persisted history when no active run is 
     const store = getDefaultSchedulerStore();
     const startedAt = new Date(Date.now() - 120_000).toISOString();
     const completedAt = new Date(Date.now() - 60_000).toISOString();
+    const olderFailedStartedAt = new Date(Date.now() - 240_000).toISOString();
+    const olderFailedCompletedAt = new Date(Date.now() - 180_000).toISOString();
+    await Promise.resolve(
+      store.appendRunHistory({
+        connectorId: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
+        status: 'failed',
+        recordsEmitted: 0,
+        reportedRecordsEmitted: 0,
+        checkpointSummary: null,
+        knownGaps: [],
+        connectorError: { code: 'older_failure', message: 'older failure' },
+        runId: 'run_test_history_older_failure',
+        traceId: 'trace_test_history_older_failure',
+        failureReason: 'older_failure',
+        terminalReason: 'older_terminal_failure',
+        startedAt: olderFailedStartedAt,
+        completedAt: olderFailedCompletedAt,
+        attempt: 1,
+      }),
+    );
     await Promise.resolve(
       store.appendRunHistory({
         connectorId: spotifyManifest.connector_id,
@@ -525,7 +546,7 @@ test('controller.listSchedules projects persisted history when no active run is 
     assert.equal(spotify.last_started_at, startedAt, 'projected from history row');
     assert.equal(spotify.last_finished_at, completedAt, 'projected from history row');
     assert.equal(spotify.last_successful_at, completedAt, 'projected from history row');
-    assert.equal(spotify.last_error_code, null, 'last run succeeded');
+    assert.equal(spotify.last_error_code, null, 'newer success clears older failure code');
     assert.equal(spotify.next_due_at, new Date(Date.parse(completedAt) + 3600_000).toISOString());
 
     // `getSchedule` (single-row read) must surface the same projection.
