@@ -26,6 +26,10 @@
     "public_listing": {
       "listed": true,
       "status": "proven"
+    },
+    "auth": {
+      "kind": "env",
+      "required": ["NOTION_API_TOKEN"]
     }
   },
   "streams": [

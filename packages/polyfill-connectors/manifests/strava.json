@@ -26,6 +26,10 @@
     "public_listing": {
       "listed": true,
       "status": "proven"
+    },
+    "auth": {
+      "kind": "env",
+      "required": ["STRAVA_ACCESS_TOKEN"]
     }
   },
   "streams": [
