@@ -7,7 +7,7 @@
 //   - FIRE    enabled schedule, manifest-eligible, and currently inside
 //             its dispatch window (last_finished_at + interval has elapsed)
 //   - IDLE    enabled, manifest-eligible, but interval has not elapsed
-//             since the last persisted run — not currently due to fire
+//             since the last persisted run, so not currently due to fire
 //   - GATE    enabled schedule whose connector manifest has since drifted
 //             to manual/paused/background-unsafe (ineligibility_reason set)
 //   - PAUS    persisted schedule explicitly disabled
@@ -108,7 +108,7 @@ const summary = {
   // honest tick-window-aware count.
   automatic: persistedVerdicts.filter((v) => v.would_fire).length,
   // `ineligible`: enabled persisted rows that cannot fire under the
-  // current manifest policy. Preserved verbatim — does not include
+  // current manifest policy. Preserved verbatim; does not include
   // "enabled but interval has not elapsed" (that's just normal idle).
   ineligible: persistedVerdicts.filter(
     (v) =>

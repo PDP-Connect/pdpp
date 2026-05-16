@@ -731,7 +731,7 @@ function getRuntimeProjection(
       ...(browserSurfaceProjection ?? {}),
       // No active run: durable scheduler history is the source of truth
       // for whether this connector has *ever* run. When history is empty,
-      // every field stays null — preserving the "never_ran" classification
+      // every field stays null, preserving the "never_ran" classification
       // for genuinely never-fired schedules.
       last_started_at: historyFacts.latestStartedAt,
       last_finished_at: historyFacts.latestFinishedAt,
@@ -1677,11 +1677,11 @@ export function createController(opts: ControllerOptions = {}): Controller {
 
   async function loadScheduleHistoryIndex(): Promise<ScheduleHistoryIndex> {
     // One bounded read of recent run history, grouped per connector. The
-    // store returns rows in chronological order (oldest → newest); we walk
+    // store returns rows in chronological order (oldest to newest); we walk
     // newest-first so the first row we see for each (connector, kind)
     // wins. `listLastRunTimes` covers connectors that have a persisted
     // last-run timestamp but whose history rows have rolled off the
-    // bounded window — it surfaces `last_finished_at` honestly in that
+    // bounded window; it surfaces `last_finished_at` honestly in that
     // case so the dashboard does not regress to "never ran".
     const [history, lastRunTimes] = await Promise.all([
       Promise.resolve(schedulerStore.listRunHistory(SCHEDULE_HISTORY_PROJECTION_LIMIT)),
@@ -1719,7 +1719,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
         entry.latestFinishedAt = new Date(row.last_run_time_ms).toISOString();
       }
     }
-    // Walk newest → oldest. The store's chronological order means the
+    // Walk newest to oldest. The store's chronological order means the
     // last array element is the newest record overall; iterating in
     // reverse keeps "first sighting wins" semantics for both
     // `latest{Started,Successful}At` so we never overwrite a newer fact

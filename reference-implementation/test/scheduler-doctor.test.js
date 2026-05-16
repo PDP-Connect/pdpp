@@ -446,7 +446,7 @@ test('controller.listSchedules projects persisted history when no active run is 
   // Live durable contract test: prove `ScheduleApi.last_*` and `next_due_at`
   // are sourced from `scheduler_run_history` + `scheduler_last_run_times`
   // when the in-memory active-run row is absent. This is the operator-API
-  // contract — the doctor, the dashboard, and any future consumer of
+  // contract: the doctor, the dashboard, and any future consumer of
   // `/_ref/schedules` rely on it. Without this, an operator who restarts
   // the reference server sees null last-run timestamps even when history
   // is intact.
