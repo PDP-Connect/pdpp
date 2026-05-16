@@ -111,6 +111,7 @@ export interface ReconcileSummary {
   errors: number;
   invalidatedConnectors: number;
   invalidatedRecords: number;
+  registered: number;
   scanned: number;
   skipped: number;
   unchanged: number;
@@ -219,6 +220,7 @@ const EMPTY_SUMMARY: ReconcileSummary = {
   errors: 0,
   invalidatedConnectors: 0,
   invalidatedRecords: 0,
+  registered: 0,
 };
 
 function errorMessage(err: unknown): string {
@@ -241,6 +243,7 @@ interface EntryDelta {
   errors?: number;
   invalidatedConnectors?: number;
   invalidatedRecords?: number;
+  registered?: number;
   skipped?: number;
   unchanged?: number;
   updated?: number;
@@ -250,6 +253,7 @@ function applyDelta(summary: ReconcileSummary, delta: EntryDelta): void {
   summary.errors += delta.errors ?? 0;
   summary.invalidatedConnectors += delta.invalidatedConnectors ?? 0;
   summary.invalidatedRecords += delta.invalidatedRecords ?? 0;
+  summary.registered += delta.registered ?? 0;
   summary.skipped += delta.skipped ?? 0;
   summary.unchanged += delta.unchanged ?? 0;
   summary.updated += delta.updated ?? 0;
@@ -342,6 +346,31 @@ function isFixtureToPolyfillTransition(
   return !fingerprintsEqual(shippedFp, fixtureFp);
 }
 
+/**
+ * A shipped first-party manifest is "publicly listed" when it explicitly
+ * declares `capabilities.public_listing.listed === true`. That is the same
+ * boolean the operator catalog filter (`isPublicReferenceConnector` in
+ * `ref-control.ts`) requires for a manifest to surface on
+ * `GET /_ref/connectors`.
+ *
+ * Catalog honesty: listed=true manifests must be visible in the catalog
+ * even on a fresh database, before any schedule or run row exists. Hidden
+ * or unproven manifests stay opaque to the operator until they are
+ * explicitly promoted by a manifest edit. See
+ * openspec/changes/add-connector-public-listing-honesty/.
+ */
+function isPubliclyListedShippedManifest(manifest: PolyfillManifest): boolean {
+  const capabilitiesRaw = (manifest as { capabilities?: unknown }).capabilities;
+  if (!capabilitiesRaw || typeof capabilitiesRaw !== "object" || Array.isArray(capabilitiesRaw)) {
+    return false;
+  }
+  const publicListingRaw = (capabilitiesRaw as { public_listing?: unknown }).public_listing;
+  if (!publicListingRaw || typeof publicListingRaw !== "object" || Array.isArray(publicListingRaw)) {
+    return false;
+  }
+  return (publicListingRaw as { listed?: unknown }).listed === true;
+}
+
 async function reconcileEntry(entryName: string, ctx: EntryContext): Promise<EntryDelta> {
   const shipped = await loadShippedManifest(ctx.manifestsDir, entryName, ctx.log);
   if (!shipped) {
@@ -360,9 +389,30 @@ async function reconcileEntry(entryName: string, ctx: EntryContext): Promise<Ent
     return { errors: 1 };
   }
   if (!persisted) {
-    // Connector not yet registered. Reconciliation is about repairing
-    // existing DB rows, not seeding new ones.
-    return { skipped: 1 };
+    // Connector not yet registered. Reconciliation is primarily about
+    // repairing existing DB rows, but the operator catalog must also be
+    // honest about which first-party manifests claim to be listable.
+    // Register listed=true shipped manifests so the operator catalog can
+    // show them on a fresh database before any schedule or run row
+    // exists. Hidden / unproven manifests stay unregistered until they
+    // are exercised (or explicitly promoted to listed=true via a future
+    // manifest edit).
+    //
+    // Safety: this branch only runs for files inside the first-party
+    // shipped manifests dir, so user-custom connectors are never
+    // auto-seeded by reconciliation. Registration is NOT schedule
+    // enablement — schedules still require an explicit operator action,
+    // and the scheduler eligibility filter (refresh_policy.background_safe)
+    // continues to gate background runs independently.
+    if (!isPubliclyListedShippedManifest(shipped)) {
+      return { skipped: 1 };
+    }
+    const registration = await applyShippedManifest(shipped, connectorId, entryName, ctx.log);
+    if (!registration.ok) {
+      return { errors: 1 };
+    }
+    ctx.log(`[manifest-reconcile] registered listed first-party manifest ${connectorId} from ${entryName}`);
+    return { registered: 1 };
   }
   if (manifestsEqual(shipped, persisted)) {
     return { unchanged: 1 };

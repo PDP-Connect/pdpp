@@ -59,18 +59,56 @@ test("every manifest declares capabilities.public_listing.listed as a boolean", 
   );
 });
 
-test('manifests with listed=false declare status="unproven"', () => {
+test("manifests with listed=false declare a hidden-by-design status", () => {
+  // listed=false must be paired with a status value that explains why the
+  // manifest is hidden. "unproven" covers connectors we have not yet
+  // exercised against a real deployment; "deprecated_upstream" covers
+  // connectors whose upstream API has been shut down (e.g. Pocket after
+  // Mozilla's 2025-07-08 sunset). Both are absolute: a deprecated_upstream
+  // manifest also cannot be background-safe or automatic (asserted below).
+  const HIDDEN_STATUSES = new Set(["unproven", "deprecated_upstream"]);
   const offenders: string[] = [];
   for (const name of MANIFEST_NAMES) {
     const listing = readManifest(name).capabilities?.public_listing;
-    if (listing?.listed === false && listing?.status !== "unproven") {
+    if (listing?.listed !== false) {
+      continue;
+    }
+    const status = typeof listing?.status === "string" ? listing.status : null;
+    if (!(status && HIDDEN_STATUSES.has(status))) {
       offenders.push(`${name} (status=${String(listing?.status)})`);
     }
   }
   assert.deepEqual(
     offenders,
     [],
-    `manifests with listed=false must declare status="unproven": ${offenders.join(", ")}`
+    `manifests with listed=false must declare status="unproven" or "deprecated_upstream": ${offenders.join(", ")}`
+  );
+});
+
+test("deprecated-upstream manifests are hidden, manual, and not background-safe", () => {
+  // An upstream-deprecated connector cannot run at all; the manifest must
+  // surface that honestly. listed=true would advertise a working
+  // connector; background_safe=true or recommended_mode="automatic" would
+  // queue scheduled failures against an API that no longer exists.
+  const offenders: string[] = [];
+  for (const name of MANIFEST_NAMES) {
+    const caps = readManifest(name).capabilities;
+    if (caps?.public_listing?.status !== "deprecated_upstream") {
+      continue;
+    }
+    const listed = caps?.public_listing?.listed === true;
+    const backgroundSafe = caps?.refresh_policy?.background_safe === true;
+    const automatic = caps?.refresh_policy?.recommended_mode === "automatic";
+    if (listed || backgroundSafe || automatic) {
+      offenders.push(
+        `${name} (listed=${String(caps?.public_listing?.listed)}, background_safe=${String(caps?.refresh_policy?.background_safe)}, recommended_mode=${String(caps?.refresh_policy?.recommended_mode)})`
+      );
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    `manifests with status="deprecated_upstream" must be listed=false, manual, and not background-safe: ${offenders.join(", ")}`
   );
 });
 
