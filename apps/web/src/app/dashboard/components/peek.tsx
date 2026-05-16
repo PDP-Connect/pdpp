@@ -1,5 +1,6 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
+import { pdppCliNoInstallCommand } from "@/lib/pdpp-cli-command.ts";
 import type { SpineEvent, TimelineEnvelope } from "../lib/ref-client.ts";
 import { TimelineView } from "./timeline-view.tsx";
 
@@ -42,10 +43,22 @@ export function PeekPane({
           <div className="mt-3">
             <div className="pdpp-eyebrow mb-1">Reference CLI</div>
             <pre className="pdpp-caption overflow-x-auto rounded bg-muted p-2 font-mono">{cliCommand}</pre>
+            {(() => {
+              const noInstall = pdppCliNoInstallCommand(cliCommand);
+              return noInstall ? (
+                <pre
+                  className="pdpp-caption mt-1 overflow-x-auto rounded bg-muted/60 p-2 font-mono"
+                  data-testid="peek-cli-no-install"
+                >
+                  {noInstall}
+                </pre>
+              ) : null;
+            })()}
             <p className="pdpp-caption mt-1 text-muted-foreground">
-              Reference operator diagnostic via <code className="font-mono">pdpp ref</code>. Install with{" "}
-              <code className="font-mono">npx -y @pdpp/cli@beta --help</code>. Set{" "}
-              <code className="font-mono">PDPP_OWNER_SESSION_COOKIE</code> when owner auth is enabled.
+              Top form requires <code className="font-mono">@pdpp/cli</code> installed (or{" "}
+              <code className="font-mono">pnpm exec</code> in this monorepo). Bottom form runs without an install via{" "}
+              <code className="font-mono">npx</code>. Set <code className="font-mono">PDPP_OWNER_SESSION_COOKIE</code>{" "}
+              when owner auth is enabled.
             </p>
           </div>
         )}
