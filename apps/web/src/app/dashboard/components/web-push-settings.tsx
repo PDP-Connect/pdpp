@@ -11,10 +11,8 @@ function urlBase64ToUint8Array(base64String: string) {
   return Uint8Array.from([...rawData].map((char) => char.charCodeAt(0)));
 }
 
-// Each row in the diagnostic checklist. A precondition for a working push.
-// `ok: null` means "indeterminate" — surfaced as a neutral marker so the
-// owner can tell the difference between "we checked and it's fine" and
-// "we couldn't tell from this surface".
+// Each row in the diagnostic checklist. Unknown state means indeterminate,
+// so the owner can distinguish "checked and fine" from "could not tell here".
 type DiagnosticState = "ok" | "warn" | "fail" | "unknown";
 interface DiagnosticRow {
   detail: string;
