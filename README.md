@@ -216,22 +216,30 @@ provider via device-scoped enrollment. See
 design.
 
 ```bash
-# 1. On the operator's host, pair the collector to the provider.
-pnpm --dir packages/polyfill-connectors exec tsx \
-  bin/collector-runner.ts enroll \
+# 0. From a checkout of this repo on the operator's host: pnpm install.
+
+# 1. Check the runtime profile the collector will advertise.
+pnpm exec pdpp collector advertise
+
+# 2. Pair the collector to the provider.
+pnpm exec pdpp collector enroll \
   --base-url http://localhost:7662 \
   --code <enrollment-code-from-provider>
 # The collector prints a device id + token; persist them somewhere safe.
 
-# 2. Run the connector through the collector. The collector advertises a
+# 3. Run a connector through the collector. The collector advertises a
 #    `browser` capability and uses the host's isolated Patchright profile.
 PDPP_LOCAL_DEVICE_ID=<id> PDPP_LOCAL_DEVICE_TOKEN=<token> \
 PDPP_SOURCE_INSTANCE_ID=<source-instance> \
-pnpm --dir packages/polyfill-connectors exec tsx \
-  bin/collector-runner.ts run \
+pnpm exec pdpp collector run \
   --base-url http://localhost:7662 \
   --connector chatgpt
 ```
+
+`pdpp collector ...` is a thin wrapper over
+`packages/polyfill-connectors/bin/collector-runner.ts`. The runner currently
+ships in the workspace package, so the wrapper needs a monorepo checkout —
+when invoked from a pure npm install it fails fast with instructions.
 
 When a HEADED browser-backed connector is attempted inside the
 provider/control-plane container, headed acquisitions fail closed before
@@ -251,7 +259,7 @@ Current Docker connector-support posture:
 | OpenAI Codex CLI, Claude Code | Filesystem-only; supported in same-host Docker when host agent state is mounted read-only. | Add a local Compose override such as `${HOME}/.codex:/root/.codex:ro` and `${HOME}/.claude:/root/.claude:ro`; no extra env vars are needed because the connectors default to `~/.codex` and `~/.claude`. | Default Compose uses a named `pdpp-home` volume, which exposes `/root/.pdpp` but **not** `/root/.codex` or `/root/.claude`. Multi-device collection belongs to the proposed `design-local-device-exporter-collection` topology. |
 | WhatsApp, Google Takeout, Twitter archive, Apple Health, iCal | Filesystem-only; supported in Docker via the `pdpp-home` named volume. | Drop extracted exports into the volume at `/root/.pdpp/imports/<connector>/`, or override the connector-specific `*_DIR` env var. iCal also accepts `ICAL_SUBSCRIPTION_URL` (pure HTTP, no mount needed). | Defaults already point at `~/.pdpp/imports/<connector>/` which the named volume covers; `docker cp` or a one-time bind-mount is the simplest way to seed the volume. |
 | iMessage | Filesystem-only; **not supported in Linux Docker**. | iMessage is hardcoded to `~/Library/Messages/chat.db` (macOS-format SQLite). | Effectively macOS-only; runs on the host, not in Linux containers. |
-| Amazon, Chase, ChatGPT, Reddit, USAA + scaffolded browser-scrapers (Anthropic, Shopify, HEB, Whole Foods, LinkedIn, Meta, Loom, Uber, DoorDash) | Browser-backed; Docker needs the local collector runner on a visible-browser host. | Pair the collector with `bin/collector-runner.ts enroll`, then run connectors via the collector. | Inside the provider/control-plane container, headed-browser acquisitions fail closed with `headed_browser_unavailable` (`packages/polyfill-connectors/src/browser-launch.ts:decideContainerHeadedBrowserGate`); browser-backed connectors must run in a local collector runtime that advertises a `browser` binding. The four "verified" entries are end-to-end maintainer-verified; the rest are scaffolded and need DOM selectors before they're usable. |
+| Amazon, Chase, ChatGPT, Reddit, USAA + scaffolded browser-scrapers (Anthropic, Shopify, HEB, Whole Foods, LinkedIn, Meta, Loom, Uber, DoorDash) | Browser-backed; Docker needs the local collector runner on a visible-browser host. | Pair the collector with `pdpp collector enroll`, then run connectors via `pdpp collector run`. | Inside the provider/control-plane container, headed-browser acquisitions fail closed with `headed_browser_unavailable` (`packages/polyfill-connectors/src/browser-launch.ts:decideContainerHeadedBrowserGate`); browser-backed connectors must run in a local collector runtime that advertises a `browser` binding. The four "verified" entries are end-to-end maintainer-verified; the rest are scaffolded and need DOM selectors before they're usable. |
 | Spotify, Pocket | Blocked upstream. | n/a | Spotify's OAuth app registration is frozen as of Feb 2026; Pocket sunset 2025-07-08. |
 
 CI builds Docker targets on pull requests without pushing images. On `main`,
