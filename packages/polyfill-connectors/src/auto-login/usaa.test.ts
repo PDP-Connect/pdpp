@@ -6,6 +6,12 @@ import { ensureUsaaSession } from "./usaa.ts";
 
 const DASHBOARD_URL = "https://www.usaa.com/my/usaa";
 const LOGIN_URL = "https://www.usaa.com/my/logon";
+const STREAMING_ENV_KEYS = [
+  "PDPP_RUN_ID",
+  "PDPP_REFERENCE_BASE_URL",
+  "PDPP_STREAMING_REGISTRATION_TOKEN",
+  "PDPP_LOCAL_DEVICE_TOKEN",
+] as const;
 
 type BrowserCookie = Awaited<ReturnType<BrowserContext["cookies"]>>[number];
 
@@ -85,6 +91,11 @@ function makeInteractionHarness(status: InteractionResponse["status"] = "success
 async function withUsaaCredentials(run: () => Promise<void>): Promise<void> {
   const priorUsername = process.env.USAA_USERNAME;
   const priorPassword = process.env.USAA_PASSWORD;
+  const priorStreamingEnv = new Map<(typeof STREAMING_ENV_KEYS)[number], string | undefined>();
+  for (const key of STREAMING_ENV_KEYS) {
+    priorStreamingEnv.set(key, process.env[key]);
+    delete process.env[key];
+  }
   process.env.USAA_USERNAME = "test-user";
   process.env.USAA_PASSWORD = "test-password";
   try {
@@ -99,6 +110,14 @@ async function withUsaaCredentials(run: () => Promise<void>): Promise<void> {
       delete process.env.USAA_PASSWORD;
     } else {
       process.env.USAA_PASSWORD = priorPassword;
+    }
+    for (const key of STREAMING_ENV_KEYS) {
+      const value = priorStreamingEnv.get(key);
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
     }
   }
 }

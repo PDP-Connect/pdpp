@@ -11,6 +11,7 @@
  */
 
 import type { BrowserContext, Page } from "playwright";
+import { manualAction } from "../browser-handoff.ts";
 import type { InteractionRequest, InteractionResponse } from "../connector-runtime.ts";
 
 const DASHBOARD_URL = "https://www.usaa.com/my/usaa";
@@ -77,15 +78,19 @@ async function requestManualLoginAfterNavigationFailure({
   reason,
   sendInteraction,
 }: EnsureUsaaSessionArgs & { reason: string }): Promise<boolean> {
-  const response = await sendInteraction({
-    kind: "manual_action",
-    message:
-      `USAA login page failed to load automatically (${reason}). ` +
-      "This often means USAA is rejecting the current automated browser mode. " +
-      "If this run opened a visible browser, complete USAA login there and respond success. " +
-      "If it is headless, cancel this interaction and rerun USAA headed (for example with PDPP_USAA_HEADLESS=0 on a desktop or under xvfb-run).",
-    timeout_seconds: 1800,
-  });
+  const response = await manualAction(
+    {
+      page,
+      reason: "login",
+      message:
+        `USAA login page failed to load automatically (${reason}). ` +
+        "This often means USAA is rejecting the current automated browser mode. " +
+        "If this run opened a visible browser, complete USAA login there and respond success. " +
+        "If it is headless, cancel this interaction and rerun USAA headed (for example with PDPP_USAA_HEADLESS=0 on a desktop or under xvfb-run).",
+      timeoutSeconds: 1800,
+    },
+    sendInteraction
+  );
   if (response.status !== "success") {
     throw new Error(`USAA login navigation needs manual browser action; interaction status=${response.status}`);
   }

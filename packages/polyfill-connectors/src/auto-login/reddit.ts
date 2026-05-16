@@ -18,6 +18,7 @@
  */
 
 import type { BrowserContext, Page } from "playwright";
+import { manualAction } from "../browser-handoff.ts";
 import type { InteractionRequest, InteractionResponse } from "../connector-runtime.ts";
 
 const LOGIN_URL = "https://www.reddit.com/login/";
@@ -79,12 +80,16 @@ export async function ensureRedditSession({ context, page, sendInteraction }: En
   const userIn = page.locator(USERNAME_SELECTOR).first();
   if (!(await userIn.count().catch(() => 0))) {
     // Cloudflare challenge, shadow DOM change, or redirect loop — hand off.
-    await sendInteraction({
-      kind: "manual_action",
-      message:
-        "Reddit login page did not render expected inputs (possible Cloudflare challenge). Log in to reddit.com in the browser window and re-run.",
-      timeout_seconds: 1800,
-    });
+    await manualAction(
+      {
+        page,
+        reason: "captcha",
+        message:
+          "Reddit login page did not render expected inputs (possible Cloudflare challenge). Log in to reddit.com in the browser window and re-run.",
+        timeoutSeconds: 1800,
+      },
+      sendInteraction
+    );
     if (!(await isSessionLive(page))) {
       throw new Error("reddit_login_unexpected_ui");
     }
