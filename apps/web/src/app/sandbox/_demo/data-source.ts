@@ -164,6 +164,7 @@ function buildDemoSchedule(connectorId: string, kind: string): RefSchedule {
     last_successful_at: null,
     effective_mode: kind === "manual" ? "manual" : "automatic",
     human_attention_needed: false,
+    ineligibility_reason: null,
     recommended_policy: null,
     minimum_interval_warning: null,
   };

@@ -149,6 +149,18 @@ export interface ScheduleApi {
   readonly effective_mode: "automatic" | "manual" | "paused";
   readonly enabled: boolean;
   readonly human_attention_needed: boolean;
+  /**
+   * Reason the persisted schedule is not eligible for automatic background
+   * refresh under the connector's *current* manifest policy. Computed from
+   * `recommended_policy` via the same gate the scheduler uses to skip stale
+   * unsafe rows. `null` means the persisted `enabled` flag is the authority:
+   * if `enabled=true` the schedule actually runs; if `enabled=false` it is
+   * paused as operator intent. Set when `enabled=true` but the manifest has
+   * since changed to `manual` / `paused` / `background_safe: false` — the row
+   * persists as operator intent, but the runtime will not start automatic runs
+   * for it. Resuming is rejected with this same reason.
+   */
+  readonly ineligibility_reason: string | null;
   readonly interval_seconds: number;
   readonly jitter_seconds: number;
   readonly last_error_code: string | null;
@@ -963,6 +975,12 @@ function scheduleToApi(
   const effectiveMode = computeEffectiveMode(schedule, runtimeProjection);
   const humanAttentionNeeded = runtimeProjection?.human_attention_needed ?? false;
   const minimumIntervalWarning = buildMinimumIntervalWarning(schedule.interval_seconds, policy);
+  // If the row is enabled but the connector's current manifest policy makes
+  // automatic runs ineligible, surface the same reason the controller uses
+  // when rejecting create/resume and the scheduler uses when skipping. This
+  // keeps persisted operator intent visible while making it explicit that
+  // the row will not actually run under the current policy.
+  const ineligibilityReason = schedule.enabled ? getScheduleIneligibilityReason(policy) : null;
   return {
     object: "schedule",
     connector_id: schedule.connector_id,
@@ -990,6 +1008,7 @@ function scheduleToApi(
     last_successful_at: runtimeProjection?.last_successful_at || null,
     effective_mode: effectiveMode,
     human_attention_needed: humanAttentionNeeded,
+    ineligibility_reason: ineligibilityReason,
     recommended_policy: policy,
     minimum_interval_warning: minimumIntervalWarning,
   };

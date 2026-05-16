@@ -4,6 +4,7 @@
 - [x] 1.2 Reject create/update/resume attempts that would enable unsafe schedules.
 - [x] 1.3 Skip legacy unsafe enabled schedules during scheduler-manager refresh.
 - [x] 1.4 Skip automatic scheduler runs when deployment/runtime prerequisites are not ready.
+- [x] 1.5 Surface `ineligibility_reason` for stale enabled rows on schedule list/get API and dashboard.
 
 ## 2. Tests
 
@@ -11,6 +12,7 @@
 - [x] 2.2 Cover resume rejection for an unsafe disabled schedule.
 - [x] 2.3 Verify automatic/background-safe schedule behavior still works.
 - [x] 2.4 Verify scheduler not-ready skips are recorded once per stable reason.
+- [x] 2.5 Cover schedule list/get API surfacing `ineligibility_reason` for a stale enabled row.
 
 ## 3. Acceptance Checks
 
