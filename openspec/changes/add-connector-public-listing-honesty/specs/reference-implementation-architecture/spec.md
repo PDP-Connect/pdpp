@@ -109,3 +109,25 @@ A connector manifest whose `capabilities.public_listing.status` is `"broken_in_c
   `capabilities.refresh_policy.recommended_mode: "automatic"`
 - **THEN** the manifest set's honesty test SHALL fail, and the
   reference deployment SHALL treat the manifest as misconfigured.
+
+### Requirement: Needs-human-auth manifests SHALL NOT auto-schedule
+
+A connector manifest whose `capabilities.public_listing.status` is `"needs_human_auth"` SHALL NOT declare `capabilities.refresh_policy.background_safe: true` and SHALL NOT declare `capabilities.refresh_policy.recommended_mode: "automatic"`. A manifest that requires human-supplied credentials, OTP confirmation, or a manual browser action cannot honestly run unattended. The reference today models no durable no-human unattended auth capability, so until such a capability is explicitly modeled, `needs_human_auth` is incompatible with automatic background refresh.
+
+#### Scenario: Needs-human-auth manifest with background-safe refresh policy
+
+- **WHEN** a manifest declares
+  `capabilities.public_listing.status: "needs_human_auth"`
+- **AND** that same manifest declares
+  `capabilities.refresh_policy.background_safe: true`
+- **THEN** the manifest set's honesty test SHALL fail, and the
+  reference deployment SHALL treat the manifest as misconfigured.
+
+#### Scenario: Needs-human-auth manifest with automatic recommended mode
+
+- **WHEN** a manifest declares
+  `capabilities.public_listing.status: "needs_human_auth"`
+- **AND** that same manifest declares
+  `capabilities.refresh_policy.recommended_mode: "automatic"`
+- **THEN** the manifest set's honesty test SHALL fail, and the
+  reference deployment SHALL treat the manifest as misconfigured.

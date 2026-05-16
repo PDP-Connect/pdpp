@@ -37,6 +37,14 @@ cannot distinguish "proven working" from "manifested but never run."
   `refresh_policy.recommended_mode: "automatic"`, so a known-broken
   connector cannot keep advertising itself as automatically
   schedulable.
+- Forbid the schedule-dishonest combination of "needs human auth" plus
+  "background-safe" or "automatic": a manifest whose
+  `public_listing.status` is `"needs_human_auth"` SHALL NOT declare
+  `refresh_policy.background_safe: true` and SHALL NOT declare
+  `refresh_policy.recommended_mode: "automatic"`. No durable
+  no-human unattended auth capability is modeled today, so a connector
+  that needs a human in the loop to authenticate cannot honestly
+  advertise itself as automatically schedulable.
 - Replace the single-connector spot tests
   (`public-listing-manifest-honesty.test.ts`) with a data-driven test
   over the whole manifest set.

@@ -42,6 +42,11 @@
         `refresh_policy.background_safe !== true` and
         `refresh_policy.recommended_mode !== "automatic"`
         (the broken+auto-schedule interlock).
+      - if `status === "needs_human_auth"`,
+        `refresh_policy.background_safe !== true` and
+        `refresh_policy.recommended_mode !== "automatic"`
+        (the needs-human-auth+auto-schedule interlock — no durable
+        no-human unattended auth capability is modeled today).
 - [x] 3.3 Keep the local-device sub-check on iMessage as a targeted
       scenario test alongside the data-driven matrix so the
       local-device codepath in the reference catalog stays covered.

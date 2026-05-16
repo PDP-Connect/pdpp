@@ -113,6 +113,33 @@ test("broken-in-current-deployment manifests are not background-safe or auto-sch
   );
 });
 
+test("needs-human-auth manifests are not background-safe or auto-scheduled", () => {
+  // A manifest that needs human-supplied credentials, OTP, or a manual
+  // browser action cannot honestly run unattended. The reference today has
+  // no modeled durable no-human unattended auth capability, so this rule
+  // is absolute: if public_listing.status is "needs_human_auth" the
+  // manifest MUST stay manual and MUST NOT be background-safe.
+  const offenders: string[] = [];
+  for (const name of MANIFEST_NAMES) {
+    const caps = readManifest(name).capabilities;
+    if (caps?.public_listing?.status !== "needs_human_auth") {
+      continue;
+    }
+    const backgroundSafe = caps?.refresh_policy?.background_safe === true;
+    const automatic = caps?.refresh_policy?.recommended_mode === "automatic";
+    if (backgroundSafe || automatic) {
+      offenders.push(
+        `${name} (background_safe=${String(caps?.refresh_policy?.background_safe)}, recommended_mode=${String(caps?.refresh_policy?.recommended_mode)})`
+      );
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    `manifests marked needs_human_auth must not be background-safe or recommended_mode="automatic": ${offenders.join(", ")}`
+  );
+});
+
 test("iMessage local-device binding stays hidden and not background-safe", () => {
   const imessage = readManifest("imessage");
   assert.equal(imessage.runtime_requirements?.bindings?.local_device?.required, true);

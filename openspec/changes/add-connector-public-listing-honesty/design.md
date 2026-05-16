@@ -51,7 +51,22 @@ The policy is the minimum that makes the existing filter trustworthy.
    on every tick. So the policy SHALL forbid the combination at the
    manifest layer, surfacing the breakage as manual-only until the
    underlying issue is resolved.
-4. The data-driven test over the whole manifest set is the cheapest
+4. A parallel dishonesty appears when a manifest declares
+   `public_listing.status: "needs_human_auth"` while keeping
+   `refresh_policy.background_safe: true` or
+   `recommended_mode: "automatic"`. The reference today models no
+   durable no-human unattended auth capability — every connector in
+   this bucket (Amazon, Chase, ChatGPT, Reddit, USAA) needs an
+   operator to supply credentials, complete an OTP challenge, or
+   perform a manual browser action before a run can succeed. Letting
+   any of these enter the automatic scheduler guarantees consecutive
+   failures (Reddit reached 12 in a row in the 2026-05-15 reference
+   deployment before this rule was added). So the policy SHALL forbid
+   the combination at the manifest layer. The rule remains conditional
+   on the absent capability: if a future manifest models a durable
+   unattended auth path explicitly, that capability can lift the
+   restriction.
+5. The data-driven test over the whole manifest set is the cheapest
    ongoing enforcement: new manifests fail loudly if they skip the
    declaration.
 
@@ -103,6 +118,9 @@ Out of scope:
 - No manifest has `public_listing.status:
   "broken_in_current_deployment"` together with
   `refresh_policy.background_safe: true` or
+  `refresh_policy.recommended_mode: "automatic"`.
+- No manifest has `public_listing.status: "needs_human_auth"`
+  together with `refresh_policy.background_safe: true` or
   `refresh_policy.recommended_mode: "automatic"`.
 - `node --test packages/polyfill-connectors/src/public-listing-manifest-honesty.test.ts`
   iterates the manifest set and passes.
