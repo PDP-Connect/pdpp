@@ -25,6 +25,10 @@
       "bot_detection_sensitivity": "high",
       "background_safe": false,
       "rationale": "ChatGPT conversations are browser-scraped behind a login wall; background polling risks lockouts."
+    },
+    "public_listing": {
+      "listed": true,
+      "status": "needs_human_auth"
     }
   },
   "streams": [

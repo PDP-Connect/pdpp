@@ -25,6 +25,10 @@
       "bot_detection_sensitivity": "high",
       "background_safe": false,
       "rationale": "USAA requires interactive login and short sessions; refresh manually so the owner is present."
+    },
+    "public_listing": {
+      "listed": true,
+      "status": "needs_human_auth"
     }
   },
   "streams": [

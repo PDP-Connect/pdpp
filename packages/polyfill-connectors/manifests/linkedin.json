@@ -25,6 +25,10 @@
       "bot_detection_sensitivity": "high",
       "background_safe": false,
       "rationale": "LinkedIn aggressively blocks automated access; profile refresh is manual-only."
+    },
+    "public_listing": {
+      "listed": false,
+      "status": "unproven"
     }
   },
   "streams": [

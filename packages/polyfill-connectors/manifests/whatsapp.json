@@ -22,6 +22,10 @@
       "bot_detection_sensitivity": "low",
       "background_safe": false,
       "rationale": "WhatsApp data comes from a manual chat export; refresh requires a new export."
+    },
+    "public_listing": {
+      "listed": false,
+      "status": "unproven"
     }
   },
   "streams": [

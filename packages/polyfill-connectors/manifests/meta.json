@@ -25,6 +25,10 @@
       "bot_detection_sensitivity": "high",
       "background_safe": false,
       "rationale": "Instagram (Meta) blocks repeated automated access; refresh manually."
+    },
+    "public_listing": {
+      "listed": false,
+      "status": "unproven"
     }
   },
   "streams": [

@@ -25,6 +25,10 @@
       "bot_detection_sensitivity": "medium",
       "background_safe": true,
       "rationale": "Reddit limits unauthenticated traffic; refresh user history a few times per day, not minutely."
+    },
+    "public_listing": {
+      "listed": true,
+      "status": "needs_human_auth"
     }
   },
   "streams": [

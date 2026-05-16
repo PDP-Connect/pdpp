@@ -25,6 +25,10 @@
       "bot_detection_sensitivity": "high",
       "background_safe": false,
       "rationale": "DoorDash order history is browser-scraped; treat as manual to avoid bot-detection signals."
+    },
+    "public_listing": {
+      "listed": false,
+      "status": "unproven"
     }
   },
   "streams": [

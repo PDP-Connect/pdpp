@@ -25,6 +25,10 @@
       "bot_detection_sensitivity": "high",
       "background_safe": false,
       "rationale": "Shopify Shop order history requires a logged-in browser session; refresh manually."
+    },
+    "public_listing": {
+      "listed": false,
+      "status": "unproven"
     }
   },
   "streams": [

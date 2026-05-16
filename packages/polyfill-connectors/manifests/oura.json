@@ -22,6 +22,10 @@
       "bot_detection_sensitivity": "low",
       "background_safe": true,
       "rationale": "Oura sleep/readiness/activity data updates a few times per day; six-hourly refresh is enough."
+    },
+    "public_listing": {
+      "listed": true,
+      "status": "proven"
     }
   },
   "streams": [

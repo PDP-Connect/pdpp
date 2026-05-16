@@ -22,6 +22,10 @@
       "bot_detection_sensitivity": "low",
       "background_safe": true,
       "rationale": "Codex CLI session state lives on local disk; re-reading it is cheap."
+    },
+    "public_listing": {
+      "listed": true,
+      "status": "proven"
     }
   },
   "streams": [

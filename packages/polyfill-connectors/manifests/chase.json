@@ -26,6 +26,10 @@
       "bot_detection_sensitivity": "high",
       "background_safe": false,
       "rationale": "Chase requires OTP and short-lived browser sessions; never run a bank refresh in the background."
+    },
+    "public_listing": {
+      "listed": true,
+      "status": "needs_human_auth"
     }
   },
   "streams": [

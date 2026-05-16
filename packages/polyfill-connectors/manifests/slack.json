@@ -39,6 +39,10 @@
       "bot_detection_sensitivity": "low",
       "background_safe": true,
       "rationale": "Slack credentials are durable but the API has tier-based rate limits; refresh moderately."
+    },
+    "public_listing": {
+      "listed": true,
+      "status": "broken_in_current_deployment"
     }
   },
   "streams": [

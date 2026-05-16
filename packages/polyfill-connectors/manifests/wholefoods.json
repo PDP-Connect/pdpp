@@ -26,6 +26,10 @@
       "bot_detection_sensitivity": "high",
       "background_safe": false,
       "rationale": "Whole Foods (via Amazon) frequently requires OTP and triggers bot-detection; refresh manually."
+    },
+    "public_listing": {
+      "listed": false,
+      "status": "unproven"
     }
   },
   "streams": [

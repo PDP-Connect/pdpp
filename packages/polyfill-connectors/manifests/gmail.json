@@ -24,6 +24,10 @@
       "bot_detection_sensitivity": "low",
       "background_safe": true,
       "rationale": "Gmail uses durable IMAP credentials and tolerates frequent background polling."
+    },
+    "public_listing": {
+      "listed": true,
+      "status": "proven"
     }
   },
   "streams": [

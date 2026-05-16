@@ -19,6 +19,10 @@
       "bot_detection_sensitivity": "low",
       "background_safe": false,
       "rationale": "Calendar imports come from .ics exports the owner provides; refresh requires a new file."
+    },
+    "public_listing": {
+      "listed": false,
+      "status": "unproven"
     }
   },
   "streams": [

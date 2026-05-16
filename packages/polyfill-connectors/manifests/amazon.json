@@ -26,6 +26,10 @@
       "bot_detection_sensitivity": "high",
       "background_safe": false,
       "rationale": "Amazon retail orders frequently require OTP and trigger bot-detection; refresh manually."
+    },
+    "public_listing": {
+      "listed": true,
+      "status": "needs_human_auth"
     }
   },
   "streams": [
