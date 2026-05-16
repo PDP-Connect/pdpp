@@ -60,6 +60,7 @@ import {
 import { getLexicalIndexBackfillProgress, lexicalIndexBackfillForManifest, runLexicalSearch } from './search.js';
 import { runHybridSearch } from './search-hybrid.js';
 import { reconcilePolyfillManifests } from './polyfill-manifest-reconcile.ts';
+import { autoEnrollEligibleSchedules } from './auto-enroll-eligible-schedules.ts';
 import { emitControllerBootedAndStashEpoch, reconcileOrphanedRunsAtBoot } from '../lib/controller-boot.ts';
 import {
   computeIndexState as computeSemanticIndexState,
@@ -6255,6 +6256,37 @@ export async function startServer(opts = {}) {
   runtimeContext.rsUrl = `http://localhost:${rsPort}`;
   await controller.promoteBrowserSurfaceLeasesAfterBoot();
   logger.info({ port: rsPort, url: `http://localhost:${rsPort}` }, 'resource server listening');
+
+  // Auto-enroll proven, env-wired connectors before the scheduler manager
+  // hydrates. Idempotent: never overrides an existing schedule row, never
+  // inspects secret env values, only checks presence and non-emptiness.
+  // See openspec/changes/auto-enroll-eligible-connector-schedules/.
+  if (!nativeConfig?.nativeManifest) {
+    const autoEnrollOptOut = process.env.PDPP_SKIP_AUTO_SCHEDULE_ENROLLMENT === '1';
+    const autoEnrollEnabled =
+      opts.autoEnrollEligibleSchedules !== undefined
+        ? !!opts.autoEnrollEligibleSchedules
+        : !autoEnrollOptOut;
+    const enrollmentSummary = await autoEnrollEligibleSchedules({
+      enabled: autoEnrollEnabled,
+      controller,
+      listConnectors: async () => {
+        const ids = await listRegisteredConnectorIds();
+        const rows = await Promise.all(
+          ids.map(async (connectorId) => ({
+            connector_id: connectorId,
+            manifest: await getConnectorManifest(connectorId),
+          })),
+        );
+        return rows;
+      },
+      log: (msg) => logger.info(msg),
+    });
+    if (enrollmentSummary.scanned > 0) {
+      logger.info(enrollmentSummary, 'auto-enroll eligible schedules summary');
+    }
+  }
+
   schedulerManager = createReferenceSchedulerManager({
     controller,
     logger,

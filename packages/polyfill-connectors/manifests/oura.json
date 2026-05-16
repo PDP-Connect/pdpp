@@ -26,6 +26,10 @@
     "public_listing": {
       "listed": true,
       "status": "proven"
+    },
+    "auth": {
+      "kind": "env",
+      "required": ["OURA_PERSONAL_ACCESS_TOKEN"]
     }
   },
   "streams": [
