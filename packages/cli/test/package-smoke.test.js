@@ -37,6 +37,9 @@ test('npm package contents stay narrowly allowlisted', () => {
     'bin/pdpp.js',
     'package.json',
     'src/cache-layout.js',
+    'src/collector/commands.js',
+    'src/collector/errors.js',
+    'src/collector/runner.js',
     ...(files.includes('src/connect/flow.js') ? ['src/connect/flow.js'] : []),
     'src/index.js',
     'src/package-info.d.ts',
@@ -108,6 +111,17 @@ test('packed CLI installs and starts in an empty project', () => {
     });
     assert.equal(helpResult.status, 0, helpResult.stderr);
     assert.match(helpResult.stdout, /PDPP CLI/);
+
+    // Outside the monorepo, the collector wrapper cannot find the workspace
+    // runner. It must fail fast with an actionable, non-internal error.
+    const collectorResult = spawnSync(
+      join(packageDir, 'node_modules/.bin/pdpp'),
+      ['collector', 'advertise'],
+      { encoding: 'utf8' },
+    );
+    assert.notEqual(collectorResult.status, 0);
+    assert.match(collectorResult.stderr, /local collector runner ships with the PDPP monorepo/);
+    assert.match(collectorResult.stderr, /git clone https:\/\/github.com\/vana-com\/pdpp\.git/);
   } finally {
     rmSync(tempRoot, { force: true, recursive: true });
   }

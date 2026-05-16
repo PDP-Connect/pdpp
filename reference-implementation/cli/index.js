@@ -27,6 +27,7 @@ Public commands delegated to ${PDPP_CLI_PACKAGE_NAME}:
   ${PDPP_CLI_BIN_NAME} --help
   ${PDPP_CLI_BIN_NAME} package-info [--provider-url <url>]
   ${PDPP_CLI_BIN_NAME} connect <provider-url>  (gated)
+  ${PDPP_CLI_BIN_NAME} collector <advertise|enroll|run> ...  (run connectors from a host you control)
 
 Agent access (project-local grant management for coding agents):
   pdpp agent bootstrap [--rs-url <url>] [--as-url <url>] [--initial-access-token <tok>]  (reference-only)
@@ -79,7 +80,7 @@ const COMMANDS = {
   trace: runTrace,
 };
 
-const PUBLIC_DELEGATED_COMMANDS = new Set(['package-info', 'connect', 'token', 'ref']);
+const PUBLIC_DELEGATED_COMMANDS = new Set(['package-info', 'connect', 'token', 'ref', 'collector']);
 
 // Legacy top-level operator aliases that the canonical `pdpp ref ...`
 // surface now replaces. They still route through the existing repo-local

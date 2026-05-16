@@ -694,7 +694,7 @@ export async function acquireBrowserForConnector(options: AcquireIsolatedBrowser
       message:
         "Headed (visible) browser-backed connector requested in a container with no local collector runtime to render it. " +
         "Run this connector in a local collector runtime that advertises a `browser` binding " +
-        "(`pnpm --dir packages/polyfill-connectors exec tsx bin/collector-runner.ts`), " +
+        "(`pdpp collector enroll --base-url <url> --code <code>` then `pdpp collector run --base-url <url> --connector <id> ...`), " +
         "or run the provider/control-plane outside the container so the host-direct launcher can open a visible browser. " +
         "Headless container browsers are unaffected; interactive flows must use a local collector so the operator can complete login/OTP/Cloudflare.",
     });

@@ -68,7 +68,8 @@ services:
       # etc.) cannot run inside this container — see
       # `openspec/changes/introduce-local-collector-runner`. Run them via the
       # local collector runner on a host that can render a visible Chromium:
-      #   pnpm --dir packages/polyfill-connectors exec tsx bin/collector-runner.ts
+      #   pnpm exec pdpp collector enroll --base-url <url> --code <code>
+      #   pnpm exec pdpp collector run    --base-url <url> --connector <id> ...
     ports:
       - "7662:7662"
       - "7663:7663"

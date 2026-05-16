@@ -5,13 +5,23 @@ Command-line tools for PDPP providers.
 ## Status
 
 This package is the public npm home for the `pdpp` command. The beta CLI
-supports two command namespaces:
+supports three command namespaces:
 
 - **`pdpp connect <provider-url>`** — delegated access: discovers provider
   metadata, self-registers a public client when the AS advertises dynamic
   registration, asks the owner to approve scoped access in the browser, and
   stores scoped client credentials in the project-local `.pdpp/` cache without
   asking for an owner bearer token.
+
+- **`pdpp collector <advertise|enroll|run>`** — operator surface for the
+  local collector runner. Pairs a host the operator controls (Claude Code or
+  Codex CLI data, a visible-browser desktop) with a remote PDPP reference
+  deployment via device-scoped enrollment, then runs connectors that the
+  provider/control-plane container cannot run on its own. The runner itself
+  ships with `@pdpp/polyfill-connectors` in the monorepo today — this command
+  is a thin wrapper that locates and spawns it, and fails fast with
+  instructions when invoked outside a checkout. See
+  `openspec/changes/introduce-local-collector-runner/design.md`.
 
 - **`pdpp ref ...`** — reference operator diagnostics over `_ref` routes on a
   running reference deployment. Current subcommands: `pdpp ref run timeline

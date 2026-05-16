@@ -4,6 +4,7 @@ import {
   PDPP_CLI_BIN_NAME,
 } from './package-info.js';
 import { ConnectError, connectProvider, normalizeProviderUrl, readStoredCredential } from './connect/flow.js';
+import { runCollector } from './collector/commands.js';
 import { runRefRun } from './ref/commands/run.js';
 import { runRefGrant } from './ref/commands/grant.js';
 import { runRefTrace } from './ref/commands/trace.js';
@@ -21,6 +22,11 @@ Usage:
 Agent access:
   ${createPdppCliCommand()}
 
+Local collector (run browser/local-device connectors on a host you control):
+  ${PDPP_CLI_BIN_NAME} collector advertise
+  ${PDPP_CLI_BIN_NAME} collector enroll --base-url <url> --code <code>
+  ${PDPP_CLI_BIN_NAME} collector run    --base-url <url> --connector <id> ...
+
 Reference diagnostics (reference server only):
   ${PDPP_CLI_BIN_NAME} ref login <reference-url>
   ${PDPP_CLI_BIN_NAME} ref run timeline <run-id> --as-url <url>
@@ -29,6 +35,8 @@ Reference diagnostics (reference server only):
 
 Notes:
   Do not ask users for owner bearer tokens for routine delegated access.
+  "pdpp collector" pairs a local host with a remote reference deployment so it
+  can run connectors the provider/control-plane container cannot run itself.
   "pdpp ref" commands require a running PDPP reference server and an owner session.
   "pdpp ref login" caches an owner session in project-local .pdpp/ with mode 0600;
   later "pdpp ref" commands use the cache when --owner-session and
@@ -88,6 +96,10 @@ export async function runCli(argv, io = { stdout: process.stdout, stderr: proces
       }
       throw error;
     }
+  }
+
+  if (command === 'collector') {
+    return await runCollector(rest, io);
   }
 
   if (command === 'ref') {
