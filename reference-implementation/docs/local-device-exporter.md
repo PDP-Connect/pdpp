@@ -4,21 +4,39 @@ Status: reference-experimental. This is an RI owner/operator surface, not a PDPP
 
 The local device exporter lets a user run a connector on a separate machine and push batches into a reference server without granting that machine an owner token. The server issues a short-lived enrollment code from the owner dashboard, exchanges it for a device-scoped ingest credential, and only accepts heartbeat or ingest on `/_ref/device-exporters/*`.
 
+For the end-to-end operator path against the Docker reference deployment (Claude Code and Codex sources, with resumable state via `design-local-collector-state-sync`), see [`docs/operator/local-collector-runbook.md`](../../docs/operator/local-collector-runbook.md). It uses the canonical `pdpp collector` surface and is the supported operator path going forward.
+
 ## Run
 
 1. Open `/dashboard/device-exporters`.
-2. Create an enrollment code for a connector id and local binding name.
-3. On the device that has the local data, run:
+2. Create an enrollment code for a connector id and local binding name. The dashboard then renders the matching `pdpp collector enroll` and `pdpp collector run` commands pre-filled with the public reference base URL and the freshly minted code.
+3. On the device that has the local data, run the canonical collector flow (preferred &mdash; this is the only path that exercises STATE load/replay/persist through the device-scoped state route):
+
+```bash
+pnpm exec pdpp collector enroll \
+  --base-url http://127.0.0.1:7662 \
+  --code <enrollment-code>
+```
+
+4. Use the returned `device_id`, `device_token`, and `source_instance_id` to run a connector pass:
+
+```bash
+PDPP_LOCAL_DEVICE_ID=<device_id> \
+PDPP_LOCAL_DEVICE_TOKEN=<device_token> \
+PDPP_SOURCE_INSTANCE_ID=<source_instance_id> \
+  pnpm exec pdpp collector run --base-url http://127.0.0.1:7662 --connector claude_code
+```
+
+Swap `--connector claude_code` for `codex` (or any other in-runtime-profile connector) to run a different lane. Re-running is safe: prior STATE replays into the next `START` envelope and emitted STATE is only persisted after records are durably accepted.
+
+### Legacy lane (no STATE sync)
+
+The older single-purpose script under `packages/polyfill-connectors/bin/local-device-exporter.ts` is still present as a compatibility shim. It does not participate in STATE sync and is being retired by `introduce-local-collector-runner`. Prefer the `pdpp collector` flow above.
 
 ```bash
 pnpm --dir packages/polyfill-connectors exec tsx bin/local-device-exporter.ts enroll \
   --base-url http://127.0.0.1:7662 \
   --code <enrollment-code>
-```
-
-4. Use the returned `device_id`, `device_token`, and `source_instance_id` to run Codex export:
-
-```bash
 pnpm --dir packages/polyfill-connectors exec tsx bin/local-device-exporter.ts run \
   --base-url http://127.0.0.1:7662 \
   --device-id <device-id> \
@@ -32,7 +50,9 @@ Environment equivalents:
 - `PDPP_LOCAL_DEVICE_ID`: enrolled device id.
 - `PDPP_LOCAL_DEVICE_TOKEN`: device-scoped ingest token.
 - `PDPP_SOURCE_INSTANCE_ID`: source instance id returned by enrollment.
-- `PDPP_LOCAL_DEVICE_QUEUE`: durable queue path. Defaults to `packages/polyfill-connectors/.pdpp-data/local-device-exporter-queue.json`.
+- `PDPP_RUN_ID`: optional stable run id for streaming-companion target registration.
+- `PDPP_COLLECTOR_QUEUE`: durable queue path for `pdpp collector`. Defaults to `packages/polyfill-connectors/.pdpp-data/collector-runner-queue.json`.
+- `PDPP_LOCAL_DEVICE_QUEUE`: durable queue path for the legacy lane. Defaults to `packages/polyfill-connectors/.pdpp-data/local-device-exporter-queue.json`.
 
 ## Boundaries
 

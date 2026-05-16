@@ -2,7 +2,7 @@ import { Button } from "@/components/ui/button.tsx";
 import { CopyButton } from "../components/copy-button.tsx";
 import { DataList, MetaPill, PageHeader, Section, StatusBadge } from "../components/primitives.tsx";
 import { DashboardShell, EmptyState, ServerUnreachable } from "../components/shell.tsx";
-import { ReferenceServerUnreachableError } from "../lib/owner-token.ts";
+import { getReferencePublicOrigin, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import {
   type DeviceExporter,
   type DeviceSourceInstance,
@@ -33,9 +33,10 @@ const DEVICE_STATUS_VOCABULARY = {
 
 export default async function DeviceExportersPage() {
   try {
-    const [diagnostics, sourceInstances] = await Promise.all([
+    const [diagnostics, sourceInstances, referenceBaseUrl] = await Promise.all([
       listDeviceExporterDiagnostics(),
       listDeviceExporterSourceInstances(),
+      getReferencePublicOrigin(),
     ]);
     const devices = diagnostics.data;
 
@@ -54,7 +55,7 @@ export default async function DeviceExportersPage() {
         />
 
         <Section>
-          <EnrollmentForm />
+          <EnrollmentForm referenceBaseUrl={referenceBaseUrl} />
         </Section>
 
         <Section

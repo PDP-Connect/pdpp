@@ -3,7 +3,10 @@
 import { revalidatePath } from "next/cache";
 import { createDeviceEnrollmentCode, type DeviceEnrollmentCode, revokeDeviceExporter } from "../lib/ref-client.ts";
 
-type EnrollmentActionState = { ok: false; message: string } | { code: DeviceEnrollmentCode; ok: true } | { ok: null };
+type EnrollmentActionState =
+  | { ok: false; message: string }
+  | { code: DeviceEnrollmentCode; deviceLabel: string | null; ok: true }
+  | { ok: null };
 
 export async function createEnrollmentCodeAction(
   _previous: EnrollmentActionState,
@@ -31,7 +34,7 @@ export async function createEnrollmentCodeAction(
       local_binding_name: localBindingName,
     });
     revalidatePath("/dashboard/device-exporters");
-    return { ok: true, code };
+    return { code, deviceLabel: displayName || null, ok: true };
   } catch (err) {
     return { ok: false, message: err instanceof Error ? err.message : String(err) };
   }

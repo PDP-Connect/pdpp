@@ -8,8 +8,11 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  pdppCliCollectorEnrollCommand,
+  pdppCliCollectorRunCommand,
   pdppCliConnectCommand,
   pdppCliInstallCommand,
+  pdppCliMonorepoCommand,
   pdppCliNoInstallCommand,
   pdppCliPackageInfo,
 } from "./pdpp-cli-command.ts";
@@ -45,4 +48,56 @@ test("pdppCliNoInstallCommand rewrites pdpp ref invocations to npx form", () => 
 test("pdppCliNoInstallCommand returns null for non-pdpp commands", () => {
   assert.equal(pdppCliNoInstallCommand("ls -la"), null);
   assert.equal(pdppCliNoInstallCommand(""), null);
+});
+
+test("pdppCliCollectorEnrollCommand renders the canonical enroll form", () => {
+  assert.equal(
+    pdppCliCollectorEnrollCommand({ baseUrl: "http://127.0.0.1:7662", code: "abc-123" }),
+    "pdpp collector enroll --base-url http://127.0.0.1:7662 --code abc-123"
+  );
+});
+
+test("pdppCliCollectorEnrollCommand appends a quoted --device-label when provided", () => {
+  assert.equal(
+    pdppCliCollectorEnrollCommand({
+      baseUrl: "https://ref.example.com",
+      code: "code-1",
+      deviceLabel: "the owner's laptop",
+    }),
+    'pdpp collector enroll --base-url https://ref.example.com --code code-1 --device-label "the owner\'s laptop"'
+  );
+});
+
+test("pdppCliCollectorEnrollCommand ignores empty device labels", () => {
+  assert.equal(
+    pdppCliCollectorEnrollCommand({
+      baseUrl: "https://ref.example.com",
+      code: "code-1",
+      deviceLabel: "   ",
+    }),
+    "pdpp collector enroll --base-url https://ref.example.com --code code-1"
+  );
+});
+
+test("pdppCliCollectorRunCommand renders the canonical run form", () => {
+  assert.equal(
+    pdppCliCollectorRunCommand({ baseUrl: "http://127.0.0.1:7662", connectorId: "claude_code" }),
+    "pdpp collector run --base-url http://127.0.0.1:7662 --connector claude_code"
+  );
+  assert.equal(
+    pdppCliCollectorRunCommand({ baseUrl: "https://ref.example.com", connectorId: "codex" }),
+    "pdpp collector run --base-url https://ref.example.com --connector codex"
+  );
+});
+
+test("pdppCliMonorepoCommand wraps pdpp invocations with pnpm exec", () => {
+  assert.equal(
+    pdppCliMonorepoCommand("pdpp collector enroll --base-url http://x --code y"),
+    "pnpm exec pdpp collector enroll --base-url http://x --code y"
+  );
+});
+
+test("pdppCliMonorepoCommand returns null for non-pdpp commands", () => {
+  assert.equal(pdppCliMonorepoCommand("ls -la"), null);
+  assert.equal(pdppCliMonorepoCommand(""), null);
 });
