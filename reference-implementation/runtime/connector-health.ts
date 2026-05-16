@@ -104,8 +104,8 @@ export interface ComputeConnectorHealthInput {
  *   3. `activeAssistance != null` → `needs_attention`
  *   4. `backoffState.consecutiveFailures >= BLOCKED_PROMOTION_THRESHOLD` → `blocked`
  *   5. `backoffState.backoffApplied === true` → `cooling_off`
- *   6. Last run `succeeded_with_gaps` (i.e. `succeeded` + non-empty `knownGaps`)
- *      → `degraded`
+ *   6. Last run `succeeded_with_gaps` (i.e. `succeeded` + actionable/transient
+ *      `knownGaps`) → `degraded`
  *   7. Last run `succeeded` → `healthy`
  *   8. Last run `failed` (no back-off applied yet) → `degraded`
  *
@@ -246,9 +246,8 @@ function succeededSnapshot(
   backoffState: BackoffState | null,
   lastSuccessAt: string | null
 ): HealthSnapshot {
-  const hasGaps = (latest.knownGaps?.length ?? 0) > 0;
-  if (hasGaps) {
-    const reason = firstKnownGapReason(latest);
+  const reason = firstDegradingKnownGapReason(latest);
+  if (reason) {
     return {
       state: "degraded",
       reason_code: reason,
@@ -300,9 +299,12 @@ function findLastSuccessAt(recentRuns: readonly RunRecord[]): string | null {
   return null;
 }
 
-function firstKnownGapReason(record: RunRecord): string | null {
+function firstDegradingKnownGapReason(record: RunRecord): string | null {
   for (const gap of record.knownGaps) {
     if (gap && typeof gap === "object") {
+      if (!isDegradingKnownGap(gap as Record<string, unknown>)) {
+        continue;
+      }
       const reason = (gap as { reason?: unknown }).reason;
       if (typeof reason === "string" && reason.length > 0) {
         return reason;
@@ -310,6 +312,19 @@ function firstKnownGapReason(record: RunRecord): string | null {
     }
   }
   return null;
+}
+
+function isDegradingKnownGap(gap: Record<string, unknown>): boolean {
+  const severity = gap.severity;
+  if (severity === "informational" || severity === "recoverable") {
+    return false;
+  }
+  if (severity === "actionable" || severity === "transient") {
+    return true;
+  }
+  // Historical gaps lacked severity; treat them conservatively until a newer
+  // classified run supersedes them.
+  return true;
 }
 
 function lastRunReasonCode(record: RunRecord | undefined): string | null {

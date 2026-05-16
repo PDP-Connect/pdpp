@@ -1075,6 +1075,7 @@ rl.on('line', (line) => {
     assert.equal(record.status, 'succeeded');
     assert.equal(record.knownGaps.length, 1);
     assert.equal(record.knownGaps[0].kind, 'skip_result');
+    assert.equal(record.knownGaps[0].severity, 'transient');
     assert.equal(record.knownGaps[0].recovery_hint.action, 'retry_by_runtime');
     assert.deepEqual(record.knownGaps[0].scope.resource_ids, ['item_1']);
 

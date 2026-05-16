@@ -22,6 +22,12 @@ test("classifyKnownGaps keeps protocol violations distinct from source coverage 
       reason: "connector_protocol_violation",
       recovery_hint: { action: "not_retriable", retryable: false },
     },
+    {
+      kind: "skip_result",
+      reason: "not_available",
+      severity: "informational",
+      stream: "stars",
+    },
   ];
 
   const classified = classifyKnownGaps(gaps);
@@ -34,7 +40,11 @@ test("classifyKnownGaps keeps protocol violations distinct from source coverage 
     classified.protocolViolationGaps.map((gap) => gap.reason),
     ["connector_protocol_violation"]
   );
-  assert.equal(classified.summary?.count, 2);
+  assert.deepEqual(
+    classified.informationalGaps.map((gap) => gap.reason),
+    ["not_available"]
+  );
+  assert.equal(classified.summary?.count, 3);
 });
 
 test("connectorHasPartialCoverageHint requires produced records and a non-protocol coverage gap", () => {
@@ -56,6 +66,13 @@ test("connectorHasPartialCoverageHint requires produced records and a non-protoc
     connectorHasPartialCoverageHint({
       totalRecords: 12,
       lastRunKnownGaps: [{ kind: "run_failed", reason: "connector_protocol_violation" }],
+    }),
+    false
+  );
+  assert.equal(
+    connectorHasPartialCoverageHint({
+      totalRecords: 12,
+      lastRunKnownGaps: [{ kind: "skip_result", reason: "not_available", severity: "informational" }],
     }),
     false
   );
@@ -117,6 +134,10 @@ test("normalizeKnownGaps and formatRecoveryHint tolerate unknown payloads", () =
 
   assert.equal(gaps.length, 1);
   assert.equal(gaps[0]?.stream, "messages");
+  assert.equal(
+    normalizeKnownGaps([{ kind: "skip_result", reason: "not_available", severity: "informational" }])[0]?.severity,
+    "informational"
+  );
   const [gap] = gaps;
   assert.ok(gap);
   assert.equal(formatRecoveryHint(gap), "manual action required");

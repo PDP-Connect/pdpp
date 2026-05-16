@@ -1565,6 +1565,14 @@
         "label": "Your starred and saved items",
         "detail": "Messages, files, and channels you starred or saved in Slack. Not available from slackdump archives today; this stream is declared but will skip at runtime."
       },
+      "availability": {
+        "state": "unsupported_in_mode",
+        "mode": "slackdump_archive",
+        "reason": "slackdump archive mode does not call stars.list",
+        "future_modes": [
+          "slack_api"
+        ]
+      },
       "semantics": "mutable_state",
       "schema": {
         "type": "object",
@@ -1646,6 +1654,14 @@
       "display": {
         "label": "Slack user groups",
         "detail": "Group handles like @engineering, their names, descriptions, and membership. Not available from slackdump archives today; this stream is declared but will skip at runtime."
+      },
+      "availability": {
+        "state": "unsupported_in_mode",
+        "mode": "slackdump_archive",
+        "reason": "slackdump archive mode does not call usergroups.list",
+        "future_modes": [
+          "slack_api"
+        ]
       },
       "semantics": "mutable_state",
       "schema": {
@@ -1767,6 +1783,14 @@
         "label": "Your Slack reminders",
         "detail": "Reminders you set in Slack: text, trigger time, target user or channel, completion state. Not available from slackdump archives today; this stream is declared but will skip at runtime."
       },
+      "availability": {
+        "state": "unsupported_in_mode",
+        "mode": "slackdump_archive",
+        "reason": "slackdump archive mode does not call reminders.list",
+        "future_modes": [
+          "slack_api"
+        ]
+      },
       "semantics": "mutable_state",
       "schema": {
         "type": "object",
@@ -1869,6 +1893,14 @@
       "display": {
         "label": "DM read states",
         "detail": "For each direct message or multi-party DM, the last message timestamp the user has read and the unread count. Not available from slackdump archives today; this stream is declared but will skip at runtime."
+      },
+      "availability": {
+        "state": "unsupported_in_mode",
+        "mode": "slackdump_archive",
+        "reason": "slackdump archive mode strips conversations.info read-state fields",
+        "future_modes": [
+          "slack_api"
+        ]
       },
       "semantics": "mutable_state",
       "schema": {

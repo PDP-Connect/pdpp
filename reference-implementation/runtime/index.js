@@ -221,6 +221,16 @@ const VIOLATION_LIST_MAX = 20;
 const GAP_STRING_MAX = 200;
 const GAP_LIST_MAX = 20;
 const KNOWN_GAPS_MAX = 50;
+const GAP_SEVERITIES = new Set(['actionable', 'informational', 'recoverable', 'transient']);
+const INFORMATIONAL_GAP_REASONS = new Set(['not_available_in_mode', 'out_of_scope', 'user_disabled']);
+const TRANSIENT_GAP_REASONS = new Set([
+  'http_429',
+  'rate_limited',
+  'retry_exhausted',
+  'temporary_unavailable',
+  'upstream_pressure',
+  'upstream_pressure_deferred',
+]);
 
 const RECOVERY_ACTIONS = new Set([
   'retry_by_runtime',
@@ -373,6 +383,51 @@ function normalizeGapScope(msg) {
   return Object.keys(scope).length ? scope : null;
 }
 
+function streamUnsupportedInDefaultScope(stream) {
+  return stream?.availability?.state === 'unsupported_in_mode';
+}
+
+function classifyKnownGapSeverity({
+  kind,
+  reason,
+  recoveryHint,
+  explicitSelection = false,
+  severity = null,
+  unsupportedInDefaultScope = false,
+}) {
+  if (typeof severity === 'string' && GAP_SEVERITIES.has(severity)) {
+    return severity;
+  }
+  if (kind === 'detail_gap') {
+    return 'recoverable';
+  }
+  if (kind === 'run_failed' || kind === 'checkpoint_commit' || kind === 'interaction_required') {
+    return 'actionable';
+  }
+  if (reason === 'not_available' && unsupportedInDefaultScope && !explicitSelection) {
+    return 'informational';
+  }
+  if (explicitSelection && INFORMATIONAL_GAP_REASONS.has(reason)) {
+    return 'actionable';
+  }
+  if (INFORMATIONAL_GAP_REASONS.has(reason)) {
+    return 'informational';
+  }
+  if (TRANSIENT_GAP_REASONS.has(reason)) {
+    return 'transient';
+  }
+  const action =
+    typeof recoveryHint === 'string'
+      ? recoveryHint
+      : recoveryHint && typeof recoveryHint === 'object'
+        ? recoveryHint.action
+        : null;
+  if (action === 'retry_by_runtime') {
+    return 'transient';
+  }
+  return 'actionable';
+}
+
 function buildKnownGap({
   kind,
   stream = null,
@@ -381,13 +436,25 @@ function buildKnownGap({
   recoveryHint = null,
   scope = null,
   interactionKind = null,
+  explicitSelection = false,
+  severity = null,
+  unsupportedInDefaultScope = false,
 }) {
   const safeReason = boundGapString(reason) || 'unknown';
   const safeMessage = boundGapString(message);
+  const normalizedSeverity = classifyKnownGapSeverity({
+    kind,
+    reason: safeReason,
+    recoveryHint,
+    explicitSelection,
+    severity,
+    unsupportedInDefaultScope,
+  });
   return {
     kind,
     stream: boundGapString(stream),
     reason: safeReason,
+    severity: normalizedSeverity,
     ...(safeMessage ? { message: safeMessage } : {}),
     ...(scope ? { scope } : {}),
     recovery_hint: normalizeRecoveryHint(recoveryHint, {
@@ -564,7 +631,9 @@ function buildStartScope(manifest, providedScope) {
     };
   }
 
-  const streams = (manifest?.streams || []).map((stream) => ({ name: stream.name }));
+  const streams = (manifest?.streams || [])
+    .filter((stream) => !streamUnsupportedInDefaultScope(stream))
+    .map((stream) => ({ name: stream.name }));
   if (!streams.length) {
     throw new Error('START.scope requires at least one stream');
   }
@@ -1145,6 +1214,9 @@ export async function runConnector(opts) {
     }
   }
 
+  const explicitlyRequestedStreams = providedScope?.streams
+    ? new Set(providedScope.streams.map((streamScope) => streamScope?.name).filter((name) => typeof name === 'string'))
+    : null;
   const startScope = buildStartScope(manifest, providedScope);
   const startCollectionMode = validateCollectionMode(collectionMode);
   const startState = persistState ? validateStartState(state) : null;
@@ -2191,6 +2263,7 @@ export async function runConnector(opts) {
 
         case 'SKIP_RESULT': {
           validateSkipResultMessage(msg, scopeByStream);
+          const skippedManifestStream = msg.stream ? manifestByStream.get(msg.stream) : null;
           const gap = buildKnownGap({
             kind: 'skip_result',
             stream: msg.stream || null,
@@ -2198,6 +2271,8 @@ export async function runConnector(opts) {
             message: msg.message || null,
             recoveryHint: msg.recovery_hint || null,
             scope: normalizeGapScope(msg),
+            explicitSelection: Boolean(msg.stream && explicitlyRequestedStreams?.has(msg.stream)),
+            unsupportedInDefaultScope: streamUnsupportedInDefaultScope(skippedManifestStream),
           });
           appendKnownGap(gap);
           await emitSpineEventTracked({

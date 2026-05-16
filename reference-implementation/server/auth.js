@@ -1678,6 +1678,8 @@ const REFRESH_POLICY_ALLOWED_KEYS = new Set([
   'rationale',
 ]);
 const RUNTIME_REQUIREMENT_BINDINGS = new Set(['browser', 'filesystem', 'interactive', 'network']);
+const STREAM_AVAILABILITY_STATES = new Set(['supported', 'unsupported_in_mode', 'experimental', 'deprecated']);
+const STREAM_AVAILABILITY_ALLOWED_KEYS = new Set(['future_modes', 'mode', 'reason', 'state']);
 
 function validateRuntimeRequirements(manifest, code) {
   const requirements = manifest.runtime_requirements;
@@ -1926,6 +1928,49 @@ function validateStreamExpandDeclarations({
   }
 }
 
+function validateStreamAvailabilityDeclaration(stream, code) {
+  const availability = stream.availability;
+  if (availability === undefined || availability === null) return;
+  if (typeof availability !== 'object' || Array.isArray(availability)) {
+    throw invalidConnectorManifest(`Stream '${stream.name}' availability must be an object`, code);
+  }
+  const unknownKeys = Object.keys(availability).filter((key) => !STREAM_AVAILABILITY_ALLOWED_KEYS.has(key));
+  if (unknownKeys.length) {
+    throw invalidConnectorManifest(
+      `Stream '${stream.name}' availability has unsupported keys: ${unknownKeys.join(', ')}`,
+      code,
+    );
+  }
+  if (!isNonEmptyString(availability.state) || !STREAM_AVAILABILITY_STATES.has(availability.state)) {
+    throw invalidConnectorManifest(
+      `Stream '${stream.name}' availability.state must be one of: supported, unsupported_in_mode, experimental, deprecated`,
+      code,
+    );
+  }
+  if (availability.state === 'unsupported_in_mode' && !isNonEmptyString(availability.mode)) {
+    throw invalidConnectorManifest(
+      `Stream '${stream.name}' availability.mode must be a non-empty string when state is unsupported_in_mode`,
+      code,
+    );
+  }
+  for (const fieldName of ['mode', 'reason']) {
+    if (availability[fieldName] !== undefined && !isNonEmptyString(availability[fieldName])) {
+      throw invalidConnectorManifest(`Stream '${stream.name}' availability.${fieldName} must be a non-empty string`, code);
+    }
+  }
+  if (
+    availability.future_modes !== undefined
+    && (!Array.isArray(availability.future_modes)
+      || availability.future_modes.length === 0
+      || availability.future_modes.some((mode) => !isNonEmptyString(mode)))
+  ) {
+    throw invalidConnectorManifest(
+      `Stream '${stream.name}' availability.future_modes must be a non-empty array of strings`,
+      code,
+    );
+  }
+}
+
 function validateConnectorManifest(manifest = {}, code = 'invalid_request', opts = {}) {
   if (!isNonEmptyString(manifest.connector_id)) {
     throw invalidConnectorManifest('connector_id is required', code);
@@ -1957,6 +2002,7 @@ function validateConnectorManifest(manifest = {}, code = 'invalid_request', opts
       throw invalidConnectorManifest(`Duplicate stream name: ${stream.name}`, code);
     }
     seenStreamNames.add(stream.name);
+    validateStreamAvailabilityDeclaration(stream, code);
 
     const schemaProperties = stream?.schema?.properties;
     if (!schemaProperties || typeof schemaProperties !== 'object' || Array.isArray(schemaProperties)) {

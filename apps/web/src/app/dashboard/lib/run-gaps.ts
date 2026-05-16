@@ -10,6 +10,7 @@ export interface KnownGap {
     [key: string]: unknown;
   };
   scope?: Record<string, unknown>;
+  severity?: "actionable" | "informational" | "recoverable" | "transient";
   stream?: string | null;
 }
 
@@ -21,22 +22,27 @@ export interface KnownGapSummary {
 
 export interface GapClassification {
   coverageGaps: KnownGap[];
+  informationalGaps: KnownGap[];
   protocolViolationGaps: KnownGap[];
   summary: KnownGapSummary | null;
 }
 
 export function classifyKnownGaps(gaps: readonly KnownGap[]): GapClassification {
+  const informationalGaps: KnownGap[] = [];
   const protocolViolationGaps: KnownGap[] = [];
   const coverageGaps: KnownGap[] = [];
   for (const gap of gaps) {
     if (isProtocolViolationGap(gap)) {
       protocolViolationGaps.push(gap);
+    } else if (isInformationalGap(gap)) {
+      informationalGaps.push(gap);
     } else {
       coverageGaps.push(gap);
     }
   }
   return {
     coverageGaps,
+    informationalGaps,
     protocolViolationGaps,
     summary: gaps.length > 0 ? summarizeKnownGaps(gaps) : null,
   };
@@ -113,6 +119,10 @@ function isProtocolViolationGap(gap: KnownGap): boolean {
   return gap.kind === "run_failed" && gap.reason === "connector_protocol_violation";
 }
 
+function isInformationalGap(gap: KnownGap): boolean {
+  return gap.severity === "informational";
+}
+
 function normalizeKnownGapSummary(raw: unknown): KnownGapSummary | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     return null;
@@ -148,6 +158,7 @@ function normalizeKnownGapEntry(entry: unknown): KnownGap[] {
     {
       kind: nonEmptyString(record.kind) ?? "unknown",
       reason: nonEmptyString(record.reason) ?? "unknown",
+      ...optionalSeverityField(record.severity),
       ...optionalStringField("stream", record.stream),
       ...optionalStringField("message", record.message),
       ...optionalObjectField("recovery_hint", record.recovery_hint),
@@ -163,6 +174,18 @@ function nonEmptyString(value: unknown): string | null {
 function optionalStringField<Key extends "message" | "stream">(key: Key, value: unknown): Partial<Pick<KnownGap, Key>> {
   const normalized = nonEmptyString(value);
   return normalized ? ({ [key]: normalized } as Partial<Pick<KnownGap, Key>>) : {};
+}
+
+function optionalSeverityField(value: unknown): Pick<KnownGap, "severity"> | {} {
+  if (
+    value === "actionable"
+    || value === "informational"
+    || value === "recoverable"
+    || value === "transient"
+  ) {
+    return { severity: value };
+  }
+  return {};
 }
 
 function optionalObjectField<Key extends "recovery_hint" | "scope">(

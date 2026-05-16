@@ -653,7 +653,7 @@ async function runCanvasesStream(deps: StreamDeps): Promise<void> {
   }
 }
 
-const UNAVAILABLE_STREAMS: ReadonlyArray<{ name: string; reason: string }> = [
+export const UNAVAILABLE_STREAMS: ReadonlyArray<{ name: string; reason: string }> = [
   {
     name: "stars",
     reason: "slackdump does not archive starred/saved items (stars.list is not called in archive mode)",

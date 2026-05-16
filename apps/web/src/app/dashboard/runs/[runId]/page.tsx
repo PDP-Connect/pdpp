@@ -118,6 +118,7 @@ export default async function RunDetailPage({
             />
             <KnownGapsSection
               coverageGaps={gapClassification.coverageGaps}
+              informationalGaps={gapClassification.informationalGaps}
               protocolViolationCount={gapClassification.protocolViolationGaps.length}
               skippedCount={events.filter((e) => e.event_type === "run.stream_skipped").length}
               summary={terminalKnownGaps.summary ?? gapClassification.summary}
@@ -378,16 +379,18 @@ function StatsGrid({
 
 function KnownGapsSection({
   coverageGaps,
+  informationalGaps,
   protocolViolationCount,
   skippedCount,
   summary,
 }: {
   coverageGaps: KnownGap[];
+  informationalGaps: KnownGap[];
   protocolViolationCount: number;
   skippedCount: number;
   summary: KnownGapSummary | null;
 }) {
-  if (coverageGaps.length === 0 && protocolViolationCount === 0 && skippedCount === 0) {
+  if (coverageGaps.length === 0 && informationalGaps.length === 0 && protocolViolationCount === 0 && skippedCount === 0) {
     return null;
   }
 
@@ -435,6 +438,34 @@ function KnownGapsSection({
           No partial source-coverage gaps were reported. Protocol failures are shown separately below.
         </p>
       )}
+
+      {informationalGaps.length > 0 ? (
+        <div className="mt-3">
+          <p className="pdpp-caption mb-2 text-muted-foreground">
+            Informational limitations reported by the connector:
+          </p>
+          <ul className="space-y-2">
+            {informationalGaps.map((gap) => (
+              <li className="rounded-md border border-border/70 bg-background/70 px-3 py-2" key={knownGapKey(gap)}>
+                <div className="pdpp-caption flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                  <span className="font-medium text-foreground">{formatGapReason(gap.kind)}</span>
+                  <span className="text-muted-foreground">reason</span>
+                  <code>{formatGapReason(gap.reason)}</code>
+                  {gap.stream ? (
+                    <>
+                      <span className="text-muted-foreground">stream</span>
+                      <code>{gap.stream}</code>
+                    </>
+                  ) : null}
+                </div>
+                <div className="pdpp-caption mt-1 text-muted-foreground">
+                  {gap.message ? gap.message : "This limitation does not mean selected data was lost."}
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
 
       {protocolViolationCount > 0 ? (
         <p className="pdpp-caption mt-3 text-muted-foreground">

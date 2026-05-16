@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -7,11 +7,12 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { EmittedMessage } from "../../src/connector-runtime.ts";
 import { runConnectorProtocolSubprocess } from "../../src/test-harness.ts";
-import { formatSlackdumpMissingError, runSlackdump } from "./index.ts";
+import { formatSlackdumpMissingError, runSlackdump, UNAVAILABLE_STREAMS } from "./index.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = resolve(__dirname, "../..");
 const SLACK_ENTRYPOINT = join(PACKAGE_ROOT, "connectors", "slack", "index.ts");
+const SLACK_MANIFEST = join(PACKAGE_ROOT, "manifests", "slack.json");
 
 test("formatSlackdumpMissingError: describes path contract and Docker remediation", () => {
   const message = formatSlackdumpMissingError("/opt/bin/slackdump");
@@ -38,6 +39,23 @@ test("runSlackdump: maps ENOENT to actionable missing-binary guidance", async ()
       process.env.SLACKDUMP_BIN = prior;
     }
   }
+});
+
+test("slack manifest unsupported-in-mode streams match connector safety-net skips", async () => {
+  const manifest = JSON.parse(await readFile(SLACK_MANIFEST, "utf8")) as {
+    streams?: Array<{ name?: string; availability?: { state?: string; mode?: string } }>;
+  };
+  const manifestUnavailable = (manifest.streams || [])
+    .filter((stream) => stream.availability?.state === "unsupported_in_mode")
+    .map((stream) => `${stream.name}:${stream.availability?.mode}`)
+    .sort();
+  const connectorUnavailable = UNAVAILABLE_STREAMS.map((stream) => `${stream.name}:slackdump_archive`).sort();
+
+  assert.deepEqual(
+    manifestUnavailable,
+    connectorUnavailable,
+    "Slack manifest unsupported-in-mode declarations must stay aligned with emitted SKIP_RESULT safety-net streams"
+  );
 });
 
 test("slack connector reports DONE.records_emitted from runtime-counted RECORDs", async () => {

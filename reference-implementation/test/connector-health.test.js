@@ -98,7 +98,7 @@ test('healthy: last run succeeded with no gaps', () => {
   assert.equal(snap.last_success_at, '2026-05-15T00:00:00.000Z');
 });
 
-test('degraded: last run succeeded_with_gaps (succeeded + knownGaps non-empty)', () => {
+test('degraded: last run succeeded_with_gaps (succeeded + unclassified knownGaps defaults actionable)', () => {
   const snap = computeConnectorHealth(
     input({
       recentRuns: [run({ status: 'succeeded', knownGaps: [{ reason: 'not_available' }] })],
@@ -107,6 +107,49 @@ test('degraded: last run succeeded_with_gaps (succeeded + knownGaps non-empty)',
   assert.equal(snap.state, 'degraded');
   assert.equal(snap.reason_code, 'not_available');
   assert.equal(snap.display_message, DISPLAY_MESSAGES.not_available);
+});
+
+test('healthy: informational known gaps do not degrade connector health', () => {
+  const snap = computeConnectorHealth(
+    input({
+      recentRuns: [
+        run({
+          status: 'succeeded',
+          knownGaps: [{ reason: 'not_available', severity: 'informational' }],
+        }),
+      ],
+    })
+  );
+  assert.equal(snap.state, 'healthy');
+  assert.equal(snap.reason_code, null);
+});
+
+test('degraded: transient/actionable known gaps still degrade connector health', () => {
+  const transient = computeConnectorHealth(
+    input({
+      recentRuns: [
+        run({
+          status: 'succeeded',
+          knownGaps: [{ reason: 'http_429', severity: 'transient' }],
+        }),
+      ],
+    })
+  );
+  assert.equal(transient.state, 'degraded');
+  assert.equal(transient.reason_code, 'http_429');
+
+  const actionable = computeConnectorHealth(
+    input({
+      recentRuns: [
+        run({
+          status: 'succeeded',
+          knownGaps: [{ reason: 'scope_not_supported', severity: 'actionable' }],
+        }),
+      ],
+    })
+  );
+  assert.equal(actionable.state, 'degraded');
+  assert.equal(actionable.reason_code, 'scope_not_supported');
 });
 
 test('needs_attention: active assistance event takes priority over outcome', () => {
