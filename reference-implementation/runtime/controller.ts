@@ -1043,8 +1043,30 @@ function scheduleToApi(
   // is honest about "we ran X seconds ago, the row is not yet due to fire
   // again". `null` only when there is no persisted last-run anchor at all,
   // which the doctor / dashboard read as "never_ran".
+  //
+  // When `ineligibilityReason` is set, the scheduler manager filters this
+  // connector out of the runnable set: no automatic run will fire under
+  // the current manifest policy. Suppressing `next_due_at` here keeps the
+  // schedule envelope honest (operators are not told a row will fire at
+  // some future timestamp that the runtime has no intention of honoring),
+  // and pairs with `last_error_code` suppression below: the gate is the
+  // current authoritative status, not whatever historical failure code
+  // happens to sit at the top of the persisted history.
   const lastFinishedAt = runtimeProjection?.last_finished_at || null;
-  const nextDueAt = schedule.enabled ? computeNextDueAt(schedule, lastFinishedAt) : null;
+  const nextDueAt =
+    schedule.enabled && !ineligibilityReason ? computeNextDueAt(schedule, lastFinishedAt) : null;
+  // Historical run timestamps (`last_started_at`, `last_finished_at`,
+  // `last_successful_at`) remain truthful audit anchors and stay surfaced
+  // even for a gated row -- they describe what already happened, not
+  // what is about to happen. `last_error_code`, however, advertises a
+  // *current* failure mode to the dashboard amber chip and the doctor
+  // JSON. Once a manifest gate has taken over as the active reason the
+  // row will not run, the prior `schedule.gave_up` / `not_ready` /
+  // backoff code is stale operator-misleading state: it implies the
+  // scheduler is still actively failing this connector when in fact it
+  // has been administratively benched. Suppress it for ineligible rows.
+  const lastErrorCode =
+    ineligibilityReason ? null : runtimeProjection?.last_error_code || null;
   return {
     object: "schedule",
     connector_id: schedule.connector_id,
@@ -1068,7 +1090,7 @@ function scheduleToApi(
       : {}),
     last_started_at: runtimeProjection?.last_started_at || null,
     last_finished_at: runtimeProjection?.last_finished_at || null,
-    last_error_code: runtimeProjection?.last_error_code || null,
+    last_error_code: lastErrorCode,
     last_successful_at: runtimeProjection?.last_successful_at || null,
     effective_mode: effectiveMode,
     human_attention_needed: humanAttentionNeeded,

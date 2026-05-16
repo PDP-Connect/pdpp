@@ -577,6 +577,194 @@ test('controller.listSchedules projects persisted history when no active run is 
   }
 });
 
+test('controller.listSchedules suppresses stale error code and next_due_at when manifest has gated the schedule', async () => {
+  // Reddit-shape regression: an enabled schedule row exists from before
+  // the connector's manifest was tightened to `background_safe: false`.
+  // The persisted history carries `schedule.gave_up` and `not_ready`
+  // entries from the doomed automatic runs the runtime attempted before
+  // the gate landed. After gating:
+  //   - the scheduler manager filters the row out of the runnable set;
+  //   - `ineligibility_reason` reflects the current gate;
+  //   - `last_error_code` MUST NOT continue to advertise the old
+  //     `schedule.gave_up` / `not_ready` failure mode as if the
+  //     scheduler were still actively failing the connector;
+  //   - `next_due_at` MUST be null (no automatic run will fire).
+  // Historical timestamps remain because they describe what already
+  // happened. This is the contract the scheduler-doctor GATE verdict and
+  // the dashboard "not runnable" chip both rely on.
+  const { startServer } = await import('../server/index.js');
+  const { getDefaultSchedulerStore } = await import('../server/stores/scheduler-store.ts');
+  const { closeDb } = await import('../server/db.js');
+  const { readFileSync } = await import('node:fs');
+  const REFERENCE_IMPL_DIR = join(__dirname, '..');
+  // Use the polyfill Reddit manifest directly — it is the live shape
+  // the manifest reconcile installs at startup, with refresh_policy
+  // {recommended_mode: 'manual', background_safe: false}. Pinning the
+  // test to the shipped manifest also fails closed if a future edit
+  // ever relaxes Reddit's policy back to automatic without owner intent.
+  const POLYFILL_MANIFESTS_DIR = join(REFERENCE_IMPL_DIR, '..', 'packages', 'polyfill-connectors', 'manifests');
+  const redditManifest = JSON.parse(
+    readFileSync(join(POLYFILL_MANIFESTS_DIR, 'reddit.json'), 'utf8'),
+  );
+  const ownerPassword = 'scheduler-doctor-reddit-gate-pw';
+
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+    ownerAuthPassword: ownerPassword,
+  });
+
+  try {
+    const asUrl = `http://localhost:${server.asPort}`;
+    const registerResp = await fetch(`${asUrl}/connectors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(redditManifest),
+    });
+    assert.equal(registerResp.status, 201);
+
+    // Insert a persisted enabled schedule row directly through the
+    // store, bypassing the controller's eligibility check. This is the
+    // exact shape of a row that was enabled before the manifest gate
+    // landed.
+    const store = getDefaultSchedulerStore();
+    const now = new Date().toISOString();
+    await Promise.resolve(
+      store.createSchedule({
+        connector_id: redditManifest.connector_id,
+        interval_seconds: 1800,
+        jitter_seconds: 0,
+        enabled: true,
+        created_at: now,
+        updated_at: now,
+      }),
+    );
+
+    // Persist a history shape matching the task brief: prior `not_ready`
+    // skips and a terminal `schedule.gave_up` event. The most recent row
+    // is a `skipped` with the gave_up payload — exactly what the brief
+    // describes ("historical schedule.gave_up from 12 terminal failures",
+    // "not_ready: required browser runtime is not configured...").
+    const olderFailedStartedAt = new Date(Date.now() - 600_000).toISOString();
+    const olderFailedCompletedAt = new Date(Date.now() - 540_000).toISOString();
+    const skipCompletedAt = new Date(Date.now() - 60_000).toISOString();
+    await Promise.resolve(
+      store.appendRunHistory({
+        connectorId: redditManifest.connector_id,
+        source: { kind: 'connector', id: redditManifest.connector_id },
+        status: 'failed',
+        recordsEmitted: 0,
+        reportedRecordsEmitted: 0,
+        checkpointSummary: null,
+        knownGaps: [],
+        connectorError: null,
+        runId: 'run_test_reddit_failed',
+        traceId: 'trace_test_reddit_failed',
+        failureReason: 'browser_runtime_not_configured',
+        terminalReason: 'browser_runtime_not_configured',
+        startedAt: olderFailedStartedAt,
+        completedAt: olderFailedCompletedAt,
+        attempt: 12,
+      }),
+    );
+    await Promise.resolve(
+      store.appendRunHistory({
+        connectorId: redditManifest.connector_id,
+        source: { kind: 'connector', id: redditManifest.connector_id },
+        status: 'skipped',
+        recordsEmitted: 0,
+        reportedRecordsEmitted: null,
+        checkpointSummary: null,
+        knownGaps: [],
+        connectorError: null,
+        runId: null,
+        traceId: null,
+        failureReason: null,
+        terminalReason: null,
+        error: 'schedule.gave_up: {"reason_class":"not_ready","final_consecutive_failures":12,"last_success_at":null}',
+        startedAt: skipCompletedAt,
+        completedAt: skipCompletedAt,
+        attempt: 0,
+      }),
+    );
+    await Promise.resolve(
+      store.upsertLastRunTime(
+        redditManifest.connector_id,
+        Date.parse(skipCompletedAt),
+        new Date().toISOString(),
+      ),
+    );
+
+    const schedules = await server.controller.listSchedules();
+    assert.equal(schedules.length, 1, 'reddit schedule row is listed');
+    const reddit = schedules[0];
+
+    assert.equal(reddit.connector_id, redditManifest.connector_id);
+    assert.equal(reddit.enabled, true, 'persisted operator intent is preserved');
+    assert.match(
+      reddit.ineligibility_reason ?? '',
+      /background-safe|manual/,
+      'gated by manifest refresh_policy',
+    );
+
+    // The core repair: under a manifest gate, the row is administratively
+    // benched. The stale `schedule.gave_up` / `not_ready` error code from
+    // the prior automatic regime must not continue to advertise itself
+    // as the current failure mode.
+    assert.equal(
+      reddit.last_error_code,
+      null,
+      'gated row does not surface stale historical error code as current state',
+    );
+    assert.equal(
+      reddit.next_due_at,
+      null,
+      'gated row will not fire automatically; next_due_at is fiction',
+    );
+
+    // Historical anchors stay truthful — they describe events that
+    // really happened, regardless of whether the row can fire again.
+    assert.equal(reddit.last_finished_at, skipCompletedAt);
+    assert.equal(
+      reddit.last_started_at,
+      olderFailedStartedAt,
+      'last terminal run that actually started is preserved',
+    );
+    assert.equal(reddit.last_successful_at, null);
+
+    // Single-row read must agree.
+    const single = await server.controller.getSchedule(redditManifest.connector_id);
+    assert.ok(single);
+    assert.equal(single.last_error_code, null);
+    assert.equal(single.next_due_at, null);
+    assert.match(single.ineligibility_reason ?? '', /background-safe|manual/);
+
+    // End-to-end doctor probe: GATE, not FIRE; would_fire=false; no
+    // stale last_error_code leaks through the JSON surface either.
+    const { code, stdout, stderr } = await runProbe(asUrl, { PDPP_OWNER_PASSWORD: ownerPassword });
+    assert.equal(code, 0, `probe failed; stderr: ${stderr}`);
+    const summary = JSON.parse(stdout.trim());
+    assert.equal(summary.total, 1);
+    assert.equal(summary.enabled, 1);
+    assert.equal(summary.ineligible, 1, 'reddit is enabled-but-ineligible');
+    assert.equal(summary.automatic, 0, 'gated row does not fire');
+    assert.equal(summary.never_ran, 0, 'reddit has run history');
+    const probedReddit = summary.schedules[0];
+    assert.equal(probedReddit.would_fire, false);
+    assert.equal(probedReddit.last_error_code, null);
+    assert.equal(probedReddit.next_due_at, null);
+  } finally {
+    server.schedulerManager?.stop?.();
+    server.asServer.closeAllConnections();
+    server.rsServer.closeAllConnections();
+    await new Promise((resolve) => server.asServer.close(resolve));
+    await new Promise((resolve) => server.rsServer.close(resolve));
+    closeDb();
+  }
+});
+
 test('controller.listSchedules projects last failure code from history when no active run', async () => {
   // Companion to the success-projection test: a connector whose latest
   // history row is `failed` must surface `last_error_code` from the
