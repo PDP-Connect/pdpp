@@ -8,8 +8,7 @@ const APP_ROOT = join(HERE, "..", "..", "..", "..");
 const SERVICE_WORKER_KNOWN_TYPES_PATTERN = /PDPP_KNOWN_PUSH_TYPES\.has\(payload\.type\)/;
 const SERVICE_WORKER_PENDING_TYPE_ALLOWED_PATTERN = /pdpp\.pending_interaction/;
 const SERVICE_WORKER_TEST_TYPE_ALLOWED_PATTERN = /pdpp\.test_notification/;
-const SERVICE_WORKER_DASHBOARD_URL_ALLOWLIST_PATTERN =
-  /url === "\/dashboard" \|\| url\.startsWith\("\/dashboard\/"\)/;
+const SERVICE_WORKER_DASHBOARD_URL_ALLOWLIST_PATTERN = /url === "\/dashboard" \|\| url\.startsWith\("\/dashboard\/"\)/;
 const SERVICE_WORKER_DASHBOARD_URL_HELPER_USE_PATTERN = /pdppIsAllowedDashboardUrl\(rawUrl\)/;
 const SERVICE_WORKER_DASHBOARD_PREFIX_TRAVERSAL_PATTERN = /rawUrl\.startsWith\("\/dashboard"\)/;
 const SERVICE_WORKER_MATCH_CLIENTS_PATTERN = /clients\.matchAll/;
@@ -33,6 +32,16 @@ const PUSH_EXISTING_SUBSCRIPTION_PATTERN = /registration\.pushManager\.getSubscr
 const WEB_PUSH_POST_PATTERN = /fetch\("\/_ref\/web-push\/subscriptions"/;
 const WEB_PUSH_DELETE_PATTERN = /method:\s*"DELETE"/;
 const FIRST_SAVED_ENDPOINT_PATTERN = /subscriptions\[0\]\?\.endpoint/;
+const DIAGNOSTICS_TOGGLE_SHOW_PATTERN = /Show diagnostics/;
+const DIAGNOSTICS_TOGGLE_HIDE_PATTERN = /Hide diagnostics/;
+const DIAGNOSTICS_ARIA_LABEL_PATTERN = /aria-label="Web Push diagnostics"/;
+const DIAGNOSTICS_PWA_INSTALL_PATTERN = /installing the PWA alone does not subscribe/;
+const DIAGNOSTICS_PER_DEVICE_ENABLE_PATTERN = /Each device must tap Enable here once/;
+const DIAGNOSTICS_TEST_PUSH_PATTERN = /fetch\("\/_ref\/web-push\/test"/;
+const DIAGNOSTICS_TEST_PUSH_METHOD_PATTERN = /method:\s*"POST"/;
+const DIAGNOSTICS_SEND_TEST_BUTTON_PATTERN = />\s*Send test\s*</;
+const DIAGNOSTICS_SEND_DISABLED_PATTERN = /disabled=\{busy \|\| !endpoint \|\| Boolean\(unavailable\)\}/;
+const DIAGNOSTICS_NO_SUBSCRIPTIONS_PATTERN = /No active subscriptions for this owner/;
 
 test("WebPushSettings renders unsupported, denied-permission, insecure-context, VAPID, and iOS/PWA caveat states", async () => {
   const src = await readFile(join(HERE, "web-push-settings.tsx"), "utf8");
@@ -97,9 +106,32 @@ test("dashboard notification setup registers, posts, reuses, and deletes browser
 
 test("dashboard test notification button posts to /_ref/web-push/test and gates on subscription", async () => {
   const src = await readFile(join(HERE, "web-push-settings.tsx"), "utf8");
-  assert.match(src, /fetch\("\/_ref\/web-push\/test"/);
-  assert.match(src, /method:\s*"POST"/);
-  assert.match(src, />\s*Send test\s*</);
-  assert.match(src, /disabled=\{busy \|\| !endpoint \|\| Boolean\(unavailable\)\}/);
-  assert.match(src, /No active subscriptions for this owner/);
+  assert.match(src, DIAGNOSTICS_TEST_PUSH_PATTERN);
+  assert.match(src, DIAGNOSTICS_TEST_PUSH_METHOD_PATTERN);
+  assert.match(src, DIAGNOSTICS_SEND_TEST_BUTTON_PATTERN);
+  assert.match(src, DIAGNOSTICS_SEND_DISABLED_PATTERN);
+  assert.match(src, DIAGNOSTICS_NO_SUBSCRIPTIONS_PATTERN);
+});
+
+test("dashboard exposes diagnostic checklist covering every web push precondition", async () => {
+  const src = await readFile(join(HERE, "web-push-settings.tsx"), "utf8");
+  assert.match(src, DIAGNOSTICS_TOGGLE_SHOW_PATTERN);
+  assert.match(src, DIAGNOSTICS_TOGGLE_HIDE_PATTERN);
+  assert.match(src, DIAGNOSTICS_ARIA_LABEL_PATTERN);
+  for (const label of [
+    "Secure context (HTTPS/localhost)",
+    "Service Worker API available",
+    "Push API (PushManager) available",
+    "Notification API available",
+    "Server VAPID keys configured",
+    "Service worker registered",
+    "Notification permission granted",
+    "Browser push subscription active",
+    "Server-tracked subscriptions for this owner",
+    "Last delivery health",
+  ]) {
+    assert.ok(src.includes(label), `diagnostics missing label: ${label}`);
+  }
+  assert.match(src, DIAGNOSTICS_PWA_INSTALL_PATTERN);
+  assert.match(src, DIAGNOSTICS_PER_DEVICE_ENABLE_PATTERN);
 });
