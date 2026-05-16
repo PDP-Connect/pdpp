@@ -678,9 +678,40 @@ export function __resetControllerPathResolverCachesForTests(): void {
 
 // ─── Schedule helpers ───────────────────────────────────────────────────────
 
+/**
+ * Per-connector projection of the durable scheduler history + last-run-time
+ * tables. Built once per `listSchedules()` (or `getSchedule()`) call by
+ * `loadScheduleHistoryIndex` and threaded into `getRuntimeProjection` so a
+ * persisted schedule whose in-memory active-run row has already cleared
+ * still surfaces honest last-run facts to the dashboard and `scheduler-
+ * doctor`. The index is purely additive: when the controller knows the
+ * connector is currently running, the in-memory active-run row still wins.
+ */
+interface ScheduleHistoryFacts {
+  /** Most recent run that actually started (status in {succeeded, failed}). */
+  readonly latestStartedAt: string | null;
+  readonly latestFinishedAt: string | null;
+  readonly latestStatus: "failed" | "skipped" | "succeeded" | null;
+  /** Most recent `succeeded` record's `completedAt`. */
+  readonly latestSuccessfulAt: string | null;
+  /** Best-effort error code: `terminalReason` ?? `failureReason`. */
+  readonly latestErrorCode: string | null;
+}
+
+type ScheduleHistoryIndex = ReadonlyMap<string, ScheduleHistoryFacts>;
+
+const EMPTY_SCHEDULE_HISTORY_FACTS: ScheduleHistoryFacts = {
+  latestStartedAt: null,
+  latestFinishedAt: null,
+  latestStatus: null,
+  latestSuccessfulAt: null,
+  latestErrorCode: null,
+};
+
 function getRuntimeProjection(
   connectorId: string,
   browserSurfaceLeaseManager?: BrowserSurfaceLeaseManager,
+  historyIndex?: ScheduleHistoryIndex,
 ): RuntimeProjection {
   const active = activeRuns.get(connectorId) || null;
   const pendingBrowserSurfaceLease = browserSurfaceLeaseManager
@@ -693,24 +724,33 @@ function getRuntimeProjection(
   const browserSurfaceProjection = pendingBrowserSurfaceLease
     ? projectBrowserSurfaceLease(pendingBrowserSurfaceLease)
     : null;
+  const historyFacts = historyIndex?.get(connectorId) ?? EMPTY_SCHEDULE_HISTORY_FACTS;
   if (!active) {
     return {
       active_run_id: null,
       ...(browserSurfaceProjection ?? {}),
-      last_started_at: null,
-      last_finished_at: null,
-      last_error_code: null,
-      last_successful_at: null,
+      // No active run: durable scheduler history is the source of truth
+      // for whether this connector has *ever* run. When history is empty,
+      // every field stays null — preserving the "never_ran" classification
+      // for genuinely never-fired schedules.
+      last_started_at: historyFacts.latestStartedAt,
+      last_finished_at: historyFacts.latestFinishedAt,
+      last_error_code: historyFacts.latestErrorCode,
+      last_successful_at: historyFacts.latestSuccessfulAt,
       human_attention_needed: needsHumanAttention.has(connectorId),
     };
   }
   return {
     active_run_id: active.run_id,
     ...(browserSurfaceProjection ?? {}),
+    // In-memory active-run row wins for `last_started_at` (so a freshly
+    // dispatched run shows immediately, before history is appended), but
+    // we still surface the most recent succeeded/finished facts from
+    // durable history so a restart mid-run doesn't lose context.
     last_started_at: active.started_at,
-    last_finished_at: null,
-    last_error_code: null,
-    last_successful_at: null,
+    last_finished_at: historyFacts.latestFinishedAt,
+    last_error_code: historyFacts.latestErrorCode,
+    last_successful_at: historyFacts.latestSuccessfulAt,
     human_attention_needed: needsHumanAttention.has(connectorId),
   };
 }
@@ -964,6 +1004,21 @@ function buildMinimumIntervalWarning(intervalSeconds: number, policy: RefreshPol
   return null;
 }
 
+function computeNextDueAt(
+  schedule: Schedule,
+  lastFinishedAt: string | null
+): string | null {
+  if (!lastFinishedAt) {
+    return null;
+  }
+  const lastMs = Date.parse(lastFinishedAt);
+  if (!Number.isFinite(lastMs)) {
+    return null;
+  }
+  const intervalMs = Math.max(1, schedule.interval_seconds) * 1000;
+  return new Date(lastMs + intervalMs).toISOString();
+}
+
 function scheduleToApi(
   schedule: Schedule | null,
   runtimeProjection: RuntimeProjection | null = null,
@@ -981,6 +1036,15 @@ function scheduleToApi(
   // keeps persisted operator intent visible while making it explicit that
   // the row will not actually run under the current policy.
   const ineligibilityReason = schedule.enabled ? getScheduleIneligibilityReason(policy) : null;
+  // Projected next-due timestamp: `last_finished_at + interval_seconds`.
+  // The runtime scheduler computes the real dispatch instant from its own
+  // back-off state machine, which can push next-due further out under a
+  // failing streak; this projection is the floor under those decisions and
+  // is honest about "we ran X seconds ago, the row is not yet due to fire
+  // again". `null` only when there is no persisted last-run anchor at all,
+  // which the doctor / dashboard read as "never_ran".
+  const lastFinishedAt = runtimeProjection?.last_finished_at || null;
+  const nextDueAt = schedule.enabled ? computeNextDueAt(schedule, lastFinishedAt) : null;
   return {
     object: "schedule",
     connector_id: schedule.connector_id,
@@ -989,7 +1053,7 @@ function scheduleToApi(
     enabled: schedule.enabled,
     created_at: schedule.created_at,
     updated_at: schedule.updated_at,
-    next_due_at: null,
+    next_due_at: nextDueAt,
     active_run_id: runtimeProjection?.active_run_id || null,
     ...(runtimeProjection?.browser_surface_status
       ? {
@@ -1604,12 +1668,114 @@ export function createController(opts: ControllerOptions = {}): Controller {
     }
   }
 
+  // Bounded once-per-call slice of recent run history. 500 is the same
+  // upper bound the scheduler runtime uses when hydrating its in-memory
+  // history projection (`scheduler.ts::hydratePersistence`), so the
+  // controller's read tracks the same operator-visible window without
+  // pulling unbounded rows.
+  const SCHEDULE_HISTORY_PROJECTION_LIMIT = 500;
+
+  async function loadScheduleHistoryIndex(): Promise<ScheduleHistoryIndex> {
+    // One bounded read of recent run history, grouped per connector. The
+    // store returns rows in chronological order (oldest → newest); we walk
+    // newest-first so the first row we see for each (connector, kind)
+    // wins. `listLastRunTimes` covers connectors that have a persisted
+    // last-run timestamp but whose history rows have rolled off the
+    // bounded window — it surfaces `last_finished_at` honestly in that
+    // case so the dashboard does not regress to "never ran".
+    const [history, lastRunTimes] = await Promise.all([
+      Promise.resolve(schedulerStore.listRunHistory(SCHEDULE_HISTORY_PROJECTION_LIMIT)),
+      Promise.resolve(schedulerStore.listLastRunTimes()),
+    ]);
+    const facts = new Map<string, {
+      latestStartedAt: string | null;
+      latestFinishedAt: string | null;
+      latestStatus: "failed" | "skipped" | "succeeded" | null;
+      latestSuccessfulAt: string | null;
+      latestErrorCode: string | null;
+    }>();
+    function ensure(connectorId: string) {
+      let entry = facts.get(connectorId);
+      if (!entry) {
+        entry = {
+          latestStartedAt: null,
+          latestFinishedAt: null,
+          latestStatus: null,
+          latestSuccessfulAt: null,
+          latestErrorCode: null,
+        };
+        facts.set(connectorId, entry);
+      }
+      return entry;
+    }
+    // Hydrate `latestFinishedAt` from the `scheduler_last_run_times`
+    // table first so a connector that has rolled out of the bounded
+    // history window still has a non-null `last_finished_at`. History
+    // rows below will overwrite with a more precise per-status anchor
+    // when they exist.
+    for (const row of lastRunTimes) {
+      const entry = ensure(row.connector_id);
+      if (!entry.latestFinishedAt && Number.isFinite(row.last_run_time_ms)) {
+        entry.latestFinishedAt = new Date(row.last_run_time_ms).toISOString();
+      }
+    }
+    // Walk newest → oldest. The store's chronological order means the
+    // last array element is the newest record overall; iterating in
+    // reverse keeps "first sighting wins" semantics for both
+    // `latest{Started,Successful}At` so we never overwrite a newer fact
+    // with an older one.
+    for (let i = history.length - 1; i >= 0; i--) {
+      const row = history[i];
+      if (!row || typeof row.connectorId !== "string") {
+        continue;
+      }
+      const entry = ensure(row.connectorId);
+      if (entry.latestStatus === null) {
+        entry.latestStatus = row.status;
+      }
+      if (!entry.latestFinishedAt || row.completedAt > entry.latestFinishedAt) {
+        entry.latestFinishedAt = row.completedAt;
+      }
+      // Only `succeeded`/`failed` records correspond to a run that
+      // actually started. `skipped` records carry a `startedAt` for
+      // bookkeeping but the connector child never spawned, so we hold
+      // `last_started_at` back. This is what lets the dashboard and the
+      // doctor probe distinguish "ran but is currently idle" from
+      // "currently being skipped (not_ready / needs_human / disabled
+      // grant)".
+      if (
+        entry.latestStartedAt === null &&
+        (row.status === "succeeded" || row.status === "failed") &&
+        typeof row.startedAt === "string"
+      ) {
+        entry.latestStartedAt = row.startedAt;
+      }
+      if (entry.latestSuccessfulAt === null && row.status === "succeeded") {
+        entry.latestSuccessfulAt = row.completedAt;
+      }
+      if (entry.latestErrorCode === null && row.status === "failed") {
+        entry.latestErrorCode = row.terminalReason ?? row.failureReason ?? null;
+      }
+    }
+    return facts;
+  }
+
   async function listSchedules(): Promise<ScheduleApi[]> {
     const schedules = await schedulerStore.listSchedules();
+    // Single bounded read of run history + last-run-time map, indexed once
+    // per `listSchedules()` call so per-connector projection avoids N+1
+    // queries. The same indexer is reused by the single-row `getSchedule`
+    // path with a smaller history slice.
+    const historyIndex = await loadScheduleHistoryIndex();
     const apis = await Promise.all(
       schedules.map(async (schedule) => {
         const policy = await getConnectorRefreshPolicy(schedule.connector_id);
-        return scheduleToApi(schedule, getRuntimeProjection(schedule.connector_id, browserSurfaceLeaseManager), policy);
+        const runtimeProjection = getRuntimeProjection(
+          schedule.connector_id,
+          browserSurfaceLeaseManager,
+          historyIndex
+        );
+        return scheduleToApi(schedule, runtimeProjection, policy);
       })
     );
     return apis.flatMap((api) => (api ? [api] : []));
@@ -1621,7 +1787,13 @@ export function createController(opts: ControllerOptions = {}): Controller {
       return null;
     }
     const policy = await getConnectorRefreshPolicy(connectorId);
-    return scheduleToApi(schedule, getRuntimeProjection(connectorId, browserSurfaceLeaseManager), policy);
+    const historyIndex = await loadScheduleHistoryIndex();
+    const runtimeProjection = getRuntimeProjection(
+      connectorId,
+      browserSurfaceLeaseManager,
+      historyIndex
+    );
+    return scheduleToApi(schedule, runtimeProjection, policy);
   }
 
   async function upsertSchedule(connectorId: string, input: ConnectorSchedulePatch): Promise<ScheduleUpsertResult> {
@@ -1650,9 +1822,10 @@ export function createController(opts: ControllerOptions = {}): Controller {
         updated_at: now,
       });
     }
+    const historyIndex = await loadScheduleHistoryIndex();
     const schedule = scheduleToApi(
       await getScheduleRecord(connectorId),
-      getRuntimeProjection(connectorId, browserSurfaceLeaseManager),
+      getRuntimeProjection(connectorId, browserSurfaceLeaseManager, historyIndex),
       policy
     );
     if (!schedule) {
@@ -1673,9 +1846,10 @@ export function createController(opts: ControllerOptions = {}): Controller {
       throw new ControllerError(ineligibilityReason, "invalid_request");
     }
     await schedulerStore.setScheduleEnabled(connectorId, enabled, nowIso());
+    const historyIndex = await loadScheduleHistoryIndex();
     return scheduleToApi(
       await getScheduleRecord(connectorId),
-      getRuntimeProjection(connectorId, browserSurfaceLeaseManager),
+      getRuntimeProjection(connectorId, browserSurfaceLeaseManager, historyIndex),
       policy
     );
   }

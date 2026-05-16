@@ -4,7 +4,10 @@
 // Hits the running reference server's `/_ref/schedules` listing and cross-
 // references it against `/_ref/connectors` so an agent can grep or parse
 // the structured verdict and tell the difference between:
-//   - FIRE    enabled schedule, currently auto-eligible (would actually fire)
+//   - FIRE    enabled schedule, manifest-eligible, and currently inside
+//             its dispatch window (last_finished_at + interval has elapsed)
+//   - IDLE    enabled, manifest-eligible, but interval has not elapsed
+//             since the last persisted run — not currently due to fire
 //   - GATE    enabled schedule whose connector manifest has since drifted
 //             to manual/paused/background-unsafe (ineligibility_reason set)
 //   - PAUS    persisted schedule explicitly disabled
@@ -97,9 +100,35 @@ const summary = {
   as_url: asUrl,
   total: persistedVerdicts.length,
   enabled: persistedVerdicts.filter((v) => v.enabled).length,
+  // `automatic`: enabled, manifest-eligible, and currently inside its
+  // dispatch window (i.e. would fire on the next tick). A schedule whose
+  // last run was 30s ago with a 1h interval is enabled+automatic but is
+  // NOT currently due, so it's not counted here. The previous-tick
+  // dashboard read "automatic" as "manifest-eligible" only; this is the
+  // honest tick-window-aware count.
   automatic: persistedVerdicts.filter((v) => v.would_fire).length,
-  ineligible: persistedVerdicts.filter((v) => v.enabled && !v.would_fire).length,
-  never_ran: persistedVerdicts.filter((v) => v.would_fire && !v.last_started_at).length,
+  // `ineligible`: enabled persisted rows that cannot fire under the
+  // current manifest policy. Preserved verbatim — does not include
+  // "enabled but interval has not elapsed" (that's just normal idle).
+  ineligible: persistedVerdicts.filter(
+    (v) =>
+      v.enabled && (v.effective_mode !== 'automatic' || Boolean(v.ineligibility_reason)),
+  ).length,
+  // `never_ran` now reflects durable history. A persisted enabled,
+  // manifest-eligible schedule with neither `last_started_at` nor
+  // `last_finished_at` populated is genuinely never-ran. A connector
+  // that has merely been skipped (skip records carry `started_at` but
+  // not `last_started_at` since the runtime never spawned the child)
+  // still surfaces `last_finished_at` from the persisted last-run-time
+  // table, so it does not show up here.
+  never_ran: persistedVerdicts.filter(
+    (v) =>
+      v.enabled &&
+      v.effective_mode === 'automatic' &&
+      !v.ineligibility_reason &&
+      !v.last_started_at &&
+      !v.last_finished_at,
+  ).length,
   has_active_run: persistedVerdicts.filter((v) => Boolean(v.active_run_id)).length,
   eligible_unscheduled: enrollmentVerdicts.filter((v) => v.kind === 'no_schedule_eligible').length,
   manual_unscheduled: enrollmentVerdicts.filter((v) => v.kind === 'no_schedule_manual').length,
@@ -149,7 +178,20 @@ function verdictFor(entry) {
   const effectiveMode = typeof entry?.effective_mode === 'string' ? entry.effective_mode : null;
   const ineligibilityReason =
     typeof entry?.ineligibility_reason === 'string' ? entry.ineligibility_reason : null;
-  const wouldFire = enabled && effectiveMode === 'automatic' && !ineligibilityReason;
+  const lastStartedAt = entry?.last_started_at ?? null;
+  const lastFinishedAt = entry?.last_finished_at ?? null;
+  const nextDueAt = entry?.next_due_at ?? null;
+  // `would_fire` historically meant "enabled, automatic, and not gated by
+  // manifest". After the controller projects history into the schedule
+  // listing, the doctor can refine it: a connector whose interval has
+  // not elapsed since `next_due_at` is not currently due, so we report
+  // it as not firing right now. This keeps "would_fire" honest after a
+  // restart instead of treating every recently-completed schedule as if
+  // it were about to fire immediately.
+  const now = Date.now();
+  const nextDueMs = nextDueAt ? Date.parse(nextDueAt) : NaN;
+  const dueElapsed = !Number.isFinite(nextDueMs) || nextDueMs <= now;
+  const wouldFire = enabled && effectiveMode === 'automatic' && !ineligibilityReason && dueElapsed;
   return {
     kind: 'persisted',
     connector_id: entry?.connector_id ?? null,
@@ -157,10 +199,11 @@ function verdictFor(entry) {
     effective_mode: effectiveMode,
     ineligibility_reason: ineligibilityReason,
     interval_seconds: entry?.interval_seconds ?? null,
-    last_started_at: entry?.last_started_at ?? null,
+    last_started_at: lastStartedAt,
+    last_finished_at: lastFinishedAt,
     last_successful_at: entry?.last_successful_at ?? null,
     last_error_code: entry?.last_error_code ?? null,
-    next_due_at: entry?.next_due_at ?? null,
+    next_due_at: nextDueAt,
     active_run_id: entry?.active_run_id ?? null,
     would_fire: wouldFire,
   };
@@ -182,6 +225,7 @@ function enrollmentVerdictFor(connector) {
     ineligibility_reason: eligible ? null : enrollmentIneligibilityReason(mode, backgroundSafe),
     interval_seconds: null,
     last_started_at: null,
+    last_finished_at: null,
     last_successful_at: null,
     last_error_code: null,
     next_due_at: null,
@@ -203,7 +247,7 @@ function enrollmentIneligibilityReason(mode, backgroundSafe) {
 function renderAscii(s, stream) {
   stream.write(`scheduler-doctor → ${s.as_url}\n`);
   stream.write(
-    `  total=${s.total} enabled=${s.enabled} would-fire=${s.automatic} ineligible-when-enabled=${s.ineligible} never-ran=${s.never_ran} active=${s.has_active_run} eligible-unscheduled=${s.eligible_unscheduled} manual-unscheduled=${s.manual_unscheduled}\n`,
+    `  total=${s.total} enabled=${s.enabled} would-fire-now=${s.automatic} ineligible-when-enabled=${s.ineligible} never-ran=${s.never_ran} active=${s.has_active_run} eligible-unscheduled=${s.eligible_unscheduled} manual-unscheduled=${s.manual_unscheduled}\n`,
   );
   if (s.schedules.length === 0) {
     stream.write('  (no persisted schedules and no registered connectors)\n');
@@ -213,9 +257,14 @@ function renderAscii(s, stream) {
     const tag = verdictTag(v);
     const reason = v.ineligibility_reason ? `  ineligible="${v.ineligibility_reason}"` : '';
     if (v.kind === 'persisted') {
-      const last = v.last_started_at ?? 'never';
+      // Prefer `last_started_at` (the connector child actually spawned)
+      // for the human-readable "last=" anchor; fall back to
+      // `last_finished_at` so persisted skip-only history still surfaces
+      // a real timestamp instead of "never".
+      const last = v.last_started_at ?? v.last_finished_at ?? 'never';
+      const nextDue = v.next_due_at ? `  next_due=${v.next_due_at}` : '';
       stream.write(
-        `  [${tag}] ${v.connector_id ?? '?'}  every ${v.interval_seconds}s  last=${last}  mode=${v.effective_mode ?? '?'}${reason}\n`,
+        `  [${tag}] ${v.connector_id ?? '?'}  every ${v.interval_seconds}s  last=${last}${nextDue}  mode=${v.effective_mode ?? '?'}${reason}\n`,
       );
     } else {
       stream.write(
@@ -229,6 +278,17 @@ function verdictTag(v) {
   if (v.kind === 'no_schedule_eligible') return 'NOSCHED';
   if (v.kind === 'no_schedule_manual') return 'MANUAL';
   if (v.would_fire) return 'FIRE';
+  // Enabled, manifest-eligible, but not currently due (next_due_at is in
+  // the future). Distinguishes "ran but is currently idle" from a
+  // genuine manifest GATE.
+  if (
+    v.enabled &&
+    v.effective_mode === 'automatic' &&
+    !v.ineligibility_reason &&
+    (v.last_started_at || v.last_finished_at)
+  ) {
+    return 'IDLE';
+  }
   if (v.enabled) return 'GATE';
   return 'PAUS';
 }

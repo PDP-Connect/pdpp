@@ -73,3 +73,20 @@ runs in long-lived local and Docker deployments.
   `reference-implementation/server/index.js` entrypoint
 - **THEN** enabled persisted schedules SHALL execute through the same server-owned
   scheduler lifecycle as non-Docker long-lived startup
+
+#### Scenario: Schedule projection reflects durable history after restart
+- **WHEN** an operator-facing schedule projection is built for a persisted
+  connector schedule (e.g. via `controller.listSchedules` or
+  `controller.getSchedule`)
+- **AND** no in-memory active-run row currently exists for that connector
+- **THEN** the projection's `last_started_at`, `last_finished_at`,
+  `last_successful_at`, and `last_error_code` fields SHALL reflect the
+  durable `scheduler_run_history` (and `scheduler_last_run_times`) records
+  for that connector when they exist
+- **AND** the projection's `next_due_at` field SHALL be the projected next
+  dispatch instant computed from the persisted last-run timestamp plus the
+  configured interval whenever the persisted last-run anchor exists and the
+  schedule is enabled
+- **AND** a persisted schedule with neither an active run nor any persisted
+  history SHALL retain null last-run/next-due fields so consumers can still
+  identify genuinely never-fired schedules
