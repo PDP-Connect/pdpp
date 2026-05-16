@@ -14,11 +14,20 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROBE_PATH = join(__dirname, '..', 'scripts', 'scheduler-doctor.mjs');
 
 function startFakeAs(listing) {
+  return startFakeAsWith({ schedules: listing });
+}
+
+function startFakeAsWith({ schedules, connectors = null }) {
   return new Promise((resolve) => {
     const server = http.createServer((req, res) => {
       if (req.url === '/_ref/schedules') {
         res.setHeader('content-type', 'application/json');
-        res.end(JSON.stringify(listing));
+        res.end(JSON.stringify(schedules));
+        return;
+      }
+      if (req.url === '/_ref/connectors' && connectors) {
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify(connectors));
         return;
       }
       res.statusCode = 404;
@@ -134,6 +143,99 @@ test('scheduler-doctor handles an empty schedules listing without crashing', asy
     assert.equal(summary.total, 0);
     assert.equal(summary.automatic, 0);
     assert.equal(summary.schedules.length, 0);
+  } finally {
+    server.close();
+  }
+});
+
+test('scheduler-doctor surfaces NOSCHED for auto-eligible registered connectors with no persisted row', async () => {
+  // Cross-references /_ref/connectors against /_ref/schedules so an
+  // operator can see registered, background-safe, automatic connectors
+  // that simply have no schedule row yet (e.g., notion/oura/strava in
+  // SLVP Docker before the operator enrolls them). MANUAL flags rows
+  // that are correctly absent because the manifest gates them.
+  const schedules = { object: 'list', data: [] };
+  const connectors = {
+    object: 'list',
+    data: [
+      {
+        connector_id: 'notion',
+        refresh_policy: {
+          recommended_mode: 'automatic',
+          background_safe: true,
+        },
+      },
+      {
+        connector_id: 'amazon',
+        refresh_policy: {
+          recommended_mode: 'manual',
+          background_safe: false,
+        },
+      },
+      {
+        connector_id: 'reddit',
+        refresh_policy: {
+          recommended_mode: 'manual',
+          background_safe: false,
+        },
+      },
+    ],
+  };
+  const { server, url } = await startFakeAsWith({ schedules, connectors });
+  try {
+    const { code, stdout, stderr } = await runProbe(url);
+    assert.equal(code, 0, `probe failed; stderr: ${stderr}`);
+    const summary = JSON.parse(stdout.trim());
+    assert.equal(summary.total, 0, 'no persisted schedule rows');
+    assert.equal(summary.eligible_unscheduled, 1, 'one auto-eligible connector lacks a schedule row');
+    assert.equal(summary.manual_unscheduled, 2, 'amazon and reddit are correctly unscheduled');
+
+    const byId = new Map(summary.schedules.map((s) => [s.connector_id, s]));
+    assert.equal(byId.get('notion').kind, 'no_schedule_eligible');
+    assert.equal(byId.get('notion').would_fire, false, 'no row means no automatic fire');
+    assert.equal(byId.get('notion').ineligibility_reason, null);
+    assert.equal(byId.get('amazon').kind, 'no_schedule_manual');
+    assert.match(byId.get('amazon').ineligibility_reason, /background-safe|manual|paused/);
+    assert.equal(byId.get('reddit').kind, 'no_schedule_manual');
+  } finally {
+    server.close();
+  }
+});
+
+test('scheduler-doctor does not duplicate connectors that have a persisted schedule row', async () => {
+  const schedules = {
+    object: 'list',
+    data: [
+      {
+        connector_id: 'spotify',
+        enabled: true,
+        effective_mode: 'automatic',
+        ineligibility_reason: null,
+        interval_seconds: 3600,
+        last_started_at: null,
+        next_due_at: null,
+        active_run_id: null,
+      },
+    ],
+  };
+  const connectors = {
+    object: 'list',
+    data: [
+      {
+        connector_id: 'spotify',
+        refresh_policy: { recommended_mode: 'automatic', background_safe: true },
+      },
+    ],
+  };
+  const { server, url } = await startFakeAsWith({ schedules, connectors });
+  try {
+    const { code, stdout } = await runProbe(url);
+    assert.equal(code, 0);
+    const summary = JSON.parse(stdout.trim());
+    assert.equal(summary.total, 1);
+    assert.equal(summary.eligible_unscheduled, 0, 'spotify is not double-counted');
+    assert.equal(summary.schedules.length, 1);
+    assert.equal(summary.schedules[0].kind, 'persisted');
   } finally {
     server.close();
   }
