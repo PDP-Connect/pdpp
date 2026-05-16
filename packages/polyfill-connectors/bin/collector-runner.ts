@@ -29,6 +29,30 @@
  *     reference server's run-target registry for streaming-companion
  *     resolution. Omit `--run-id` for runs that don't need streaming.
  *
+ *     `--backfill-streams` lets the operator opt a connector run into
+ *     explicit per-stream historical rehydration that is independent
+ *     of the incremental cursor. For Gmail, `--connector gmail
+ *     --backfill-streams attachments` requests one bounded UID window
+ *     of historical attachment backfill in the connector's START
+ *     envelope; window size is governed by
+ *     `PDPP_GMAIL_ATTACHMENT_BACKFILL_WINDOW_UIDS`. Attachment backfill
+ *     also requires `PDPP_RS_URL` and `PDPP_OWNER_TOKEN` for blob
+ *     upload — the Gmail connector's preflight fails before mailbox
+ *     work when those are missing.
+ *
+ *     Important limitation: this CLI does NOT yet persist or replay
+ *     connector STATE. `runCollectorConnector` filters only RECORD
+ *     messages into the device-exporter ingest queue and discards
+ *     STATE entirely (see `src/collector-runner.ts`). That means a
+ *     single invocation submits one window's worth of records, but
+ *     re-running the CLI does NOT pick up where the previous run
+ *     left off — every run is a fresh START with no `state.cursor`.
+ *     A multi-window resumable operator loop needs a state
+ *     load/replay/put contract added to `LocalDeviceClient` and the
+ *     reference device-exporter endpoints; that is tracked as a
+ *     separate OpenSpec change. Today's scope: prove the
+ *     `streamsToBackfill` wire reaches the connector.
+ *
  *   advertise
  *     Print the collector runtime's advertised capabilities as JSON.
  *     Useful for operator scripts that want to verify what the runtime
@@ -47,7 +71,7 @@ const DEFAULT_QUEUE_PATH = join(
   "collector-runner-queue.json"
 );
 
-interface CliOptions {
+export interface CliOptions {
   args?: string[];
   baseUrl: string;
   code?: string;
@@ -84,6 +108,12 @@ const KNOWN_CONNECTOR_DEFAULTS: Record<
     args: ["connectors/claude_code/index.ts"],
     streams: ["sessions", "messages", "attachments", "memory_notes", "skills", "slash_commands"],
     bindings: { filesystem: { required: true } },
+  },
+  gmail: {
+    command: "tsx",
+    args: ["connectors/gmail/index.ts"],
+    streams: ["messages", "message_bodies", "attachments", "threads", "labels"],
+    bindings: { network: { required: true } },
   },
 };
 
@@ -137,7 +167,7 @@ async function main(): Promise<void> {
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }
 
-function buildConnectorSpec(options: CliOptions): CollectorConnectorSpec {
+export function buildConnectorSpec(options: CliOptions): CollectorConnectorSpec {
   if (!options.connector) {
     throw new Error("connector required");
   }
@@ -158,7 +188,7 @@ function buildConnectorSpec(options: CliOptions): CollectorConnectorSpec {
   };
 }
 
-function parseArgs(args: string[]): CliOptions {
+export function parseArgs(args: string[]): CliOptions {
   const [command, ...rest] = args;
   if (command !== "enroll" && command !== "run" && command !== "advertise") {
     throw new Error("usage: collector-runner <enroll|run|advertise> --base-url <url> [options]");
@@ -253,7 +283,13 @@ function parseCsv(value: string): string[] {
     .filter(Boolean);
 }
 
-main().catch((error: unknown) => {
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-  process.exit(1);
-});
+// Run the CLI only when invoked directly (`tsx bin/collector-runner.ts`),
+// not when imported by tests. Compares the resolved entry argv against
+// the current module's path; identical means "this file is the entry."
+const SELF_PATH = fileURLToPath(import.meta.url);
+if (process.argv[1] === SELF_PATH) {
+  main().catch((error: unknown) => {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.exit(1);
+  });
+}
