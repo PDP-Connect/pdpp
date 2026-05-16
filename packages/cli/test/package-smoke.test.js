@@ -114,14 +114,20 @@ test('packed CLI installs and starts in an empty project', () => {
 
     // Outside the monorepo, the collector wrapper cannot find the workspace
     // runner. It must fail fast with an actionable, non-internal error.
+    // Distributing the runner inside @pdpp/cli is an explicit follow-up
+    // (see openspec/changes/introduce-local-collector-runner/design.md
+    // § "Distribution follow-up"). The error walks operators through the
+    // monorepo path until the contract exists.
     const collectorResult = spawnSync(
       join(packageDir, 'node_modules/.bin/pdpp'),
       ['collector', 'advertise'],
       { encoding: 'utf8' },
     );
     assert.notEqual(collectorResult.status, 0);
-    assert.match(collectorResult.stderr, /local collector runner ships with the PDPP monorepo/);
+    assert.match(collectorResult.stderr, /not distributed with @pdpp\/cli yet/);
+    assert.match(collectorResult.stderr, /Distribution follow-up/);
     assert.match(collectorResult.stderr, /git clone https:\/\/github.com\/vana-com\/pdpp\.git/);
+    assert.match(collectorResult.stderr, /pdpp collector enroll/);
   } finally {
     rmSync(tempRoot, { force: true, recursive: true });
   }

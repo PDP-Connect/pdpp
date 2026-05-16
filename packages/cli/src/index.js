@@ -22,7 +22,8 @@ Usage:
 Agent access:
   ${createPdppCliCommand()}
 
-Local collector (run browser/local-device connectors on a host you control):
+Local collector (run browser/local-device connectors on a host you control;
+  currently requires a PDPP monorepo checkout — see "pdpp collector --help"):
   ${PDPP_CLI_BIN_NAME} collector advertise
   ${PDPP_CLI_BIN_NAME} collector enroll --base-url <url> --code <code>
   ${PDPP_CLI_BIN_NAME} collector run    --base-url <url> --connector <id> ...

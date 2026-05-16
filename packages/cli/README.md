@@ -19,9 +19,11 @@ supports three command namespaces:
   deployment via device-scoped enrollment, then runs connectors that the
   provider/control-plane container cannot run on its own. The runner itself
   ships with `@pdpp/polyfill-connectors` in the monorepo today — this command
-  is a thin wrapper that locates and spawns it, and fails fast with
-  instructions when invoked outside a checkout. See
-  `openspec/changes/introduce-local-collector-runner/design.md`.
+  is a thin wrapper that locates and spawns it, and fails fast with the
+  monorepo-flow instructions when invoked outside a checkout. Distributing
+  the runner from npm is an explicit follow-up; see
+  `openspec/changes/introduce-local-collector-runner/design.md`
+  § "Distribution follow-up".
 
 - **`pdpp ref ...`** — reference operator diagnostics over `_ref` routes on a
   running reference deployment. Current subcommands: `pdpp ref run timeline
