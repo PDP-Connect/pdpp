@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { test } from "node:test";
 
 import {
@@ -169,6 +169,90 @@ test("buildCollectorStartMessage produces no owner-token surface", () => {
   assert.equal(message.type, "START");
   assert.equal("owner_token" in message, false);
   assert.equal("authorization" in message, false);
+});
+
+test("runCollectorConnector spawns connectors from the package root with workspace tools on PATH", async () => {
+  const harness = await startCollectorHarness({ priorState: {} });
+  try {
+    const packageRoot = join(import.meta.dirname, "..");
+    const packageBin = join(packageRoot, "node_modules", ".bin");
+    const repoBin = join(packageRoot, "..", "..", "node_modules", ".bin");
+    const queuePath = await tempQueuePath();
+    const fixture = await writeFixtureConnector({
+      script: `
+        let buf = "";
+        await new Promise((r) => process.stdin.on("data", (c) => {
+          buf += c;
+          if (buf.includes("\\n")) r();
+        }));
+        process.stdout.write(JSON.stringify({
+          type: "RECORD",
+          stream: "messages",
+          key: "spawn-context",
+          data: { cwd: process.cwd(), path: process.env.PATH ?? "" },
+          emitted_at: new Date().toISOString(),
+        }) + "\\n");
+        process.stdout.write(JSON.stringify({
+          type: "DONE",
+          status: "succeeded",
+          records_emitted: 1,
+        }) + "\\n");
+      `,
+    });
+
+    await runCollectorConnector({
+      baseUrl: harness.url,
+      connector: {
+        args: [fixture],
+        command: process.execPath,
+        connector_id: "fixture-spawn-context",
+        env: { PATH: "operator-bin" },
+        runtime_requirements: { bindings: {} },
+        streams: ["messages"],
+      },
+      deviceId: "device-1",
+      deviceToken: "device-token",
+      queuePath,
+      sourceInstanceId: "src-1",
+    });
+
+    const data = harness.ingestedBatches[0]?.records?.[0]?.data;
+    assert.equal(data?.cwd, packageRoot);
+    const pathParts = String(data?.path).split(delimiter);
+    assert.equal(pathParts[0], packageBin);
+    assert.equal(pathParts[1], repoBin);
+    assert.ok(pathParts.includes("operator-bin"));
+  } finally {
+    await harness.close();
+  }
+});
+
+test("runCollectorConnector rejects promptly when the connector command is missing", async () => {
+  const harness = await startCollectorHarness({ priorState: {} });
+  try {
+    const queuePath = await tempQueuePath();
+    await assert.rejects(
+      () =>
+        runCollectorConnector({
+          baseUrl: harness.url,
+          connector: {
+            args: ["connectors/claude_code/index.ts"],
+            command: "__pdpp_missing_connector_command__",
+            connector_id: "fixture-missing-command",
+            env: { PATH: "operator-bin" },
+            runtime_requirements: { bindings: {} },
+            streams: ["messages"],
+          },
+          deviceId: "device-1",
+          deviceToken: "device-token",
+          queuePath,
+          sourceInstanceId: "src-1",
+        }),
+      /fixture-missing-command connector failed to start or stream output:.*ENOENT/
+    );
+  } finally {
+    await harness.close();
+  }
 });
 
 async function tempQueuePath(): Promise<string> {

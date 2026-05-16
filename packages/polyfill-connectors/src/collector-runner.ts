@@ -22,7 +22,7 @@
 
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { dirname } from "node:path";
+import { delimiter, join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
@@ -40,6 +40,9 @@ import {
   type ConnectorPlacementInput,
   type RuntimeBindingName,
 } from "./runtime-capabilities.ts";
+
+const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));
+const REPO_ROOT = join(PACKAGE_ROOT, "..", "..");
 
 export interface CollectorEnrollmentConfig {
   baseUrl: string;
@@ -416,20 +419,39 @@ async function collectConnectorMessages(
   const child = spawnConnector(connector, childContext);
   const messages: EmittedMessage[] = [];
   const stderr: Buffer[] = [];
+  const exitPromise = new Promise<number | null>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", resolve);
+  });
+  const outputPromise = (async () => {
+    const lines = createInterface({ input: child.stdout, terminal: false });
+    for await (const line of lines) {
+      if (!line.trim()) {
+        continue;
+      }
+      messages.push(JSON.parse(line) as EmittedMessage);
+    }
+  })();
+  child.stdin.on("error", () => {
+    // Missing commands or early child exits can close stdin before the
+    // START line is accepted. The child error/exit path below is the
+    // actionable diagnostic; do not mask it with EPIPE.
+  });
+  child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
   child.stdin.end(
     `${JSON.stringify(buildCollectorStartMessage(connector.streams, connector.streamsToBackfill, priorState))}\n`
   );
-  child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
 
-  const lines = createInterface({ input: child.stdout, terminal: false });
-  for await (const line of lines) {
-    if (!line.trim()) {
-      continue;
-    }
-    messages.push(JSON.parse(line) as EmittedMessage);
+  let exitCode: number | null;
+  try {
+    [exitCode] = await Promise.all([exitPromise, outputPromise]);
+  } catch (error) {
+    throw new Error(
+      `${connector.connector_id} connector failed to start or stream output: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
   }
-
-  const exitCode = await new Promise<number | null>((resolve) => child.once("close", resolve));
   if (exitCode !== 0) {
     throw new Error(
       `${connector.connector_id} connector exited ${exitCode}: ${Buffer.concat(stderr).toString("utf8").trim()}`
@@ -442,10 +464,18 @@ function spawnConnector(
   connector: CollectorConnectorSpec,
   childContext: CollectorChildContext
 ): ChildProcessWithoutNullStreams {
+  const env = { ...process.env, ...buildCollectorChildEnv(childContext), ...connector.env };
+  env.PATH = buildCollectorChildPath(env.PATH);
   return spawn(connector.command, [...connector.args], {
-    cwd: dirname(fileURLToPath(new URL("..", import.meta.url))),
-    env: { ...process.env, ...buildCollectorChildEnv(childContext), ...connector.env },
+    cwd: PACKAGE_ROOT,
+    env,
   });
+}
+
+function buildCollectorChildPath(pathValue: string | undefined): string {
+  return [join(PACKAGE_ROOT, "node_modules", ".bin"), join(REPO_ROOT, "node_modules", ".bin"), pathValue]
+    .filter((part): part is string => Boolean(part))
+    .join(delimiter);
 }
 
 function chunkRecords<T>(records: readonly T[], size: number): T[][] {

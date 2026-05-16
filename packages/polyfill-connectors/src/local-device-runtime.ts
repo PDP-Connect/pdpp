@@ -1,6 +1,6 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { dirname } from "node:path";
+import { delimiter, join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import type { EmittedMessage, StartMessage, StreamScope } from "./connector-runtime.ts";
@@ -14,6 +14,8 @@ import { LocalDeviceQueue, type LocalDeviceQueueItem } from "./local-device-queu
 
 export const CODEX_CONNECTOR_ID = "codex";
 export const DEFAULT_CODEX_STREAMS = ["sessions", "messages", "function_calls", "rules", "prompts", "skills"] as const;
+const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));
+const REPO_ROOT = join(PACKAGE_ROOT, "..", "..");
 
 export interface LocalDeviceEnrollmentConfig {
   baseUrl: string;
@@ -179,18 +181,34 @@ async function collectCodexMessages(config: LocalDeviceRuntimeConfig): Promise<E
   const child = spawnCodex(config);
   const messages: EmittedMessage[] = [];
   const stderr: Buffer[] = [];
-  child.stdin.end(`${JSON.stringify(buildCodexStartMessage(config.streams))}\n`);
-  child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
-
-  const lines = createInterface({ input: child.stdout, terminal: false });
-  for await (const line of lines) {
-    if (!line.trim()) {
-      continue;
+  const exitPromise = new Promise<number | null>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", resolve);
+  });
+  const outputPromise = (async () => {
+    const lines = createInterface({ input: child.stdout, terminal: false });
+    for await (const line of lines) {
+      if (!line.trim()) {
+        continue;
+      }
+      messages.push(JSON.parse(line) as EmittedMessage);
     }
-    messages.push(JSON.parse(line) as EmittedMessage);
-  }
+  })();
+  child.stdin.on("error", () => {
+    // Missing commands or early child exits can close stdin before START
+    // is accepted. Preserve the child error/exit diagnostic.
+  });
+  child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+  child.stdin.end(`${JSON.stringify(buildCodexStartMessage(config.streams))}\n`);
 
-  const exitCode = await new Promise<number | null>((resolve) => child.once("close", resolve));
+  let exitCode: number | null;
+  try {
+    [exitCode] = await Promise.all([exitPromise, outputPromise]);
+  } catch (error) {
+    throw new Error(
+      `codex connector failed to start or stream output: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
   if (exitCode !== 0) {
     throw new Error(`codex connector exited ${exitCode}: ${Buffer.concat(stderr).toString("utf8").trim()}`);
   }
@@ -198,10 +216,18 @@ async function collectCodexMessages(config: LocalDeviceRuntimeConfig): Promise<E
 }
 
 function spawnCodex(config: LocalDeviceRuntimeConfig): ChildProcessWithoutNullStreams {
+  const env = { ...process.env, ...config.codexEnv };
+  env.PATH = buildLocalDeviceChildPath(env.PATH);
   return spawn(config.codexCommand ?? "tsx", config.codexArgs ?? ["connectors/codex/index.ts"], {
-    cwd: dirname(fileURLToPath(new URL("..", import.meta.url))),
-    env: { ...process.env, ...config.codexEnv },
+    cwd: PACKAGE_ROOT,
+    env,
   });
+}
+
+function buildLocalDeviceChildPath(pathValue: string | undefined): string {
+  return [join(PACKAGE_ROOT, "node_modules", ".bin"), join(REPO_ROOT, "node_modules", ".bin"), pathValue]
+    .filter((part): part is string => Boolean(part))
+    .join(delimiter);
 }
 
 function chunkRecords<T>(records: readonly T[], size: number): T[][] {
