@@ -91,6 +91,28 @@ test("hidden manifests are not background-safe", () => {
   );
 });
 
+test("broken-in-current-deployment manifests are not background-safe or auto-scheduled", () => {
+  const offenders: string[] = [];
+  for (const name of MANIFEST_NAMES) {
+    const caps = readManifest(name).capabilities;
+    if (caps?.public_listing?.status !== "broken_in_current_deployment") {
+      continue;
+    }
+    const backgroundSafe = caps?.refresh_policy?.background_safe === true;
+    const automatic = caps?.refresh_policy?.recommended_mode === "automatic";
+    if (backgroundSafe || automatic) {
+      offenders.push(
+        `${name} (background_safe=${String(caps?.refresh_policy?.background_safe)}, recommended_mode=${String(caps?.refresh_policy?.recommended_mode)})`
+      );
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    `manifests marked broken_in_current_deployment must not be background-safe or recommended_mode="automatic": ${offenders.join(", ")}`
+  );
+});
+
 test("iMessage local-device binding stays hidden and not background-safe", () => {
   const imessage = readManifest("imessage");
   assert.equal(imessage.runtime_requirements?.bindings?.local_device?.required, true);

@@ -87,3 +87,25 @@ A connector manifest that is not publicly listed in the reference catalog SHALL 
   `capabilities.refresh_policy.background_safe: true`
 - **THEN** the manifest is eligible for the reference scheduler under
   the existing scheduler eligibility filter.
+
+### Requirement: Broken-in-current-deployment manifests SHALL NOT auto-schedule
+
+A connector manifest whose `capabilities.public_listing.status` is `"broken_in_current_deployment"` SHALL NOT declare `capabilities.refresh_policy.background_safe: true` and SHALL NOT declare `capabilities.refresh_policy.recommended_mode: "automatic"`. A manifest that the reference deployment already knows is broken at the runtime layer MUST NOT advertise itself as automatically schedulable; the operator surfaces SHALL require manual operator action until the underlying breakage is resolved.
+
+#### Scenario: Broken manifest with background-safe refresh policy
+
+- **WHEN** a manifest declares
+  `capabilities.public_listing.status: "broken_in_current_deployment"`
+- **AND** that same manifest declares
+  `capabilities.refresh_policy.background_safe: true`
+- **THEN** the manifest set's honesty test SHALL fail, and the
+  reference deployment SHALL treat the manifest as misconfigured.
+
+#### Scenario: Broken manifest with automatic recommended mode
+
+- **WHEN** a manifest declares
+  `capabilities.public_listing.status: "broken_in_current_deployment"`
+- **AND** that same manifest declares
+  `capabilities.refresh_policy.recommended_mode: "automatic"`
+- **THEN** the manifest set's honesty test SHALL fail, and the
+  reference deployment SHALL treat the manifest as misconfigured.

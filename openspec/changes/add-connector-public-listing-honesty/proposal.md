@@ -30,6 +30,13 @@ cannot distinguish "proven working" from "manifested but never run."
   scheduler eligibility filter
   (`reference-implementation/server/index.js:6309`) cannot quietly run
   a hidden connector on a schedule.
+- Forbid the schedule-dishonest combination of "broken in current
+  deployment" plus "background-safe" or "automatic": a manifest whose
+  `public_listing.status` is `"broken_in_current_deployment"` SHALL NOT
+  declare `refresh_policy.background_safe: true` and SHALL NOT declare
+  `refresh_policy.recommended_mode: "automatic"`, so a known-broken
+  connector cannot keep advertising itself as automatically
+  schedulable.
 - Replace the single-connector spot tests
   (`public-listing-manifest-honesty.test.ts`) with a data-driven test
   over the whole manifest set.

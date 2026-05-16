@@ -30,15 +30,15 @@
       "credentials"
     ],
     "refresh_policy": {
-      "recommended_mode": "automatic",
+      "recommended_mode": "manual",
       "recommended_interval_seconds": 1800,
       "minimum_interval_seconds": 600,
       "maximum_staleness_seconds": 7200,
       "interaction_posture": "credentials",
       "rate_limit_sensitivity": "medium",
       "bot_detection_sensitivity": "low",
-      "background_safe": true,
-      "rationale": "Slack credentials are durable but the API has tier-based rate limits; refresh moderately."
+      "background_safe": false,
+      "rationale": "Slack credentials are durable but the current reference deployment is missing the slackdump runtime; keep refresh manual and not background-safe until the deployment runtime is restored."
     },
     "public_listing": {
       "listed": true,

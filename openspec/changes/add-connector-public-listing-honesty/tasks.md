@@ -37,6 +37,10 @@
       - if `listed === false`, `status === "unproven"`.
       - if `listed !== true`, `refresh_policy.background_safe !== true`
         (the hidden+background-safe interlock).
+      - if `status === "broken_in_current_deployment"`,
+        `refresh_policy.background_safe !== true` and
+        `refresh_policy.recommended_mode !== "automatic"`
+        (the broken+auto-schedule interlock).
 - [x] 3.3 Keep the local-device sub-check on iMessage as a targeted
       scenario test alongside the data-driven matrix so the
       local-device codepath in the reference catalog stays covered.
