@@ -30,19 +30,19 @@
       "credentials"
     ],
     "refresh_policy": {
-      "recommended_mode": "manual",
+      "recommended_mode": "automatic",
       "recommended_interval_seconds": 1800,
       "minimum_interval_seconds": 600,
       "maximum_staleness_seconds": 7200,
       "interaction_posture": "credentials",
       "rate_limit_sensitivity": "medium",
       "bot_detection_sensitivity": "low",
-      "background_safe": false,
-      "rationale": "Slack credentials are durable but the current reference deployment is missing the slackdump runtime; keep refresh manual and not background-safe until the deployment runtime is restored."
+      "background_safe": true,
+      "rationale": "Slack credentials are durable and the Docker reference deployment includes the slackdump runtime; refresh moderately."
     },
     "public_listing": {
       "listed": true,
-      "status": "broken_in_current_deployment"
+      "status": "proven"
     }
   },
   "streams": [

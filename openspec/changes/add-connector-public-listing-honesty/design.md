@@ -45,12 +45,12 @@ The policy is the minimum that makes the existing filter trustworthy.
    `public_listing.status: "broken_in_current_deployment"` while
    keeping `refresh_policy.background_safe: true` or
    `recommended_mode: "automatic"`. The reference deployment already
-   knows the runtime is broken (slackdump missing, Cloudflare
-   assistance unavailable, etc.); advertising an automatic schedule
-   under those conditions guarantees zero-record failures on every
-   tick. So the policy SHALL forbid the combination at the manifest
-   layer, surfacing the breakage as manual-only until the underlying
-   issue is resolved.
+   knows the runtime is broken (missing external tool, unresolved
+   browser challenge, invalid deployment binding, etc.); advertising an
+   automatic schedule under those conditions guarantees noisy failures
+   on every tick. So the policy SHALL forbid the combination at the
+   manifest layer, surfacing the breakage as manual-only until the
+   underlying issue is resolved.
 4. The data-driven test over the whole manifest set is the cheapest
    ongoing enforcement: new manifests fail loudly if they skip the
    declaration.
@@ -73,10 +73,8 @@ Out of scope:
 - Any change to scheduler eligibility semantics for already-proven
   connectors. `reddit` keeps its current
   `refresh_policy.background_safe: true` because it is a real
-  connector blocked only on credentials, not on a runtime breakage;
-  its schedule honesty is a separate workstream. `slack`, by contrast,
-  is `status: "broken_in_current_deployment"` and so falls under the
-  broken-in-current-deployment interlock added by this tranche.
+  connector blocked only on credentials, not on a runtime breakage; its
+  schedule honesty is a separate workstream.
 - A `connector_maturity` enum at the spec layer. The design note's
   five-bucket taxonomy is informative; this tranche encodes only the
   two states the catalog filter uses today (`listed` and `status`).

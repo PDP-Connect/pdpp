@@ -20,12 +20,13 @@
       to each unproven manifest. Do not change `refresh_policy` for
       these manifests; the audit confirms they are already
       `background_safe: false`.
-- [x] 2.3 Add `public_listing: { listed: true, status: "proven" }` to
-      each proven manifest so the declaration-mandatory rule applies
+- [x] 2.3 Add `public_listing: { listed: true, status: <maturity> }`
+      to each listed manifest so the declaration-mandatory rule applies
       uniformly. Do not change `refresh_policy.background_safe` for
-      any proven manifest. The proven set is `github`, `gmail`, `ynab`,
-      `notion`, `pocket`, `strava`, `oura`, `claude_code`, `codex`,
-      `chase`, `chatgpt`, `usaa`, `amazon`, `reddit`, `slack`.
+      already-proven manifests. The listed set is `github`, `gmail`,
+      `ynab`, `notion`, `pocket`, `strava`, `oura`, `claude_code`,
+      `codex`, `chase`, `chatgpt`, `usaa`, `amazon`, `reddit`,
+      `slack`.
 
 ## 3. Data-Driven Test
 
