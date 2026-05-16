@@ -42,6 +42,13 @@ const DIAGNOSTICS_TEST_PUSH_METHOD_PATTERN = /method:\s*"POST"/;
 const DIAGNOSTICS_SEND_TEST_BUTTON_PATTERN = />\s*Send test\s*</;
 const DIAGNOSTICS_SEND_DISABLED_PATTERN = /disabled=\{busy \|\| !endpoint \|\| Boolean\(unavailable\)\}/;
 const DIAGNOSTICS_NO_SUBSCRIPTIONS_PATTERN = /No active subscriptions for this owner/;
+const SSR_SAFE_WINDOW_HELPER_DEF_PATTERN = /function hasWindowFeature\(/;
+const SSR_SAFE_NAVIGATOR_HELPER_DEF_PATTERN = /function hasNavigatorFeature\(/;
+const SSR_SAFE_WINDOW_HELPER_GUARD_PATTERN = /typeof window !== "undefined"/;
+const SSR_SAFE_NAVIGATOR_HELPER_GUARD_PATTERN = /typeof navigator !== "undefined"/;
+const SSR_SAFE_DIAGNOSTIC_PUSHMANAGER_PATTERN = /hasWindowFeature\("PushManager"\)/;
+const SSR_SAFE_DIAGNOSTIC_NOTIFICATION_PATTERN = /hasWindowFeature\("Notification"\)/;
+const SSR_SAFE_DIAGNOSTIC_SERVICE_WORKER_PATTERN = /hasNavigatorFeature\("serviceWorker"\)/;
 
 test("WebPushSettings renders unsupported, denied-permission, insecure-context, VAPID, and iOS/PWA caveat states", async () => {
   const src = await readFile(join(HERE, "web-push-settings.tsx"), "utf8");
@@ -134,4 +141,18 @@ test("dashboard exposes diagnostic checklist covering every web push preconditio
   }
   assert.match(src, DIAGNOSTICS_PWA_INSTALL_PATTERN);
   assert.match(src, DIAGNOSTICS_PER_DEVICE_ENABLE_PATTERN);
+});
+
+test("diagnostics feature probes are SSR-safe and called via typed helpers", async () => {
+  const src = await readFile(join(HERE, "web-push-settings.tsx"), "utf8");
+  // The render-time diagnostic builder must never touch window/navigator
+  // directly — buildDiagnostics() runs during render and Next can pre-render
+  // a client component on the server, where window/navigator are undefined.
+  assert.match(src, SSR_SAFE_WINDOW_HELPER_DEF_PATTERN);
+  assert.match(src, SSR_SAFE_NAVIGATOR_HELPER_DEF_PATTERN);
+  assert.match(src, SSR_SAFE_WINDOW_HELPER_GUARD_PATTERN);
+  assert.match(src, SSR_SAFE_NAVIGATOR_HELPER_GUARD_PATTERN);
+  assert.match(src, SSR_SAFE_DIAGNOSTIC_PUSHMANAGER_PATTERN);
+  assert.match(src, SSR_SAFE_DIAGNOSTIC_NOTIFICATION_PATTERN);
+  assert.match(src, SSR_SAFE_DIAGNOSTIC_SERVICE_WORKER_PATTERN);
 });

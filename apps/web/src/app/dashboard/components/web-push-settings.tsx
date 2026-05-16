@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import type { WebPushConfig, WebPushSubscriptionSummary } from "../lib/ref-client.ts";
 import { Section } from "./primitives.tsx";
 
@@ -46,15 +46,23 @@ function detectSupport(config: WebPushConfig) {
 
 function diagnosticMarker(state: DiagnosticState) {
   if (state === "ok") {
-    return "✓";
+    return "[ok]";
   }
   if (state === "warn") {
-    return "⚠";
+    return "[!]";
   }
   if (state === "fail") {
-    return "✕";
+    return "[x]";
   }
-  return "·";
+  return "[?]";
+}
+
+function hasWindowFeature(feature: string) {
+  return typeof window !== "undefined" && feature in window;
+}
+
+function hasNavigatorFeature(feature: string) {
+  return typeof navigator !== "undefined" && feature in navigator;
 }
 
 function diagnosticToneClass(state: DiagnosticState) {
@@ -109,7 +117,7 @@ function swRow(swState: "registered" | "absent" | "unknown" | "unsupported"): Di
     return { label, state: "ok", detail: "/pdpp-dashboard-sw.js controls /" };
   }
   if (swState === "absent") {
-    return { label, state: "warn", detail: "Not registered yet — tap Enable." };
+    return { label, state: "warn", detail: "Not registered yet - tap Enable." };
   }
   if (swState === "unsupported") {
     return { label, state: "fail", detail: "Browser lacks serviceWorker." };
@@ -126,11 +134,11 @@ function permissionRow(permission: NotificationPermission | "unknown"): Diagnost
     return {
       label,
       state: "fail",
-      detail: 'Notification.permission === "denied" — change browser/OS notification settings to opt in.',
+      detail: 'Notification.permission === "denied" - change browser/OS notification settings to opt in.',
     };
   }
   if (permission === "default") {
-    return { label, state: "warn", detail: "Permission has not been requested on this device — tap Enable." };
+    return { label, state: "warn", detail: "Permission has not been requested on this device - tap Enable." };
   }
   return { label, state: "unknown", detail: "Notification API not available." };
 }
@@ -142,7 +150,7 @@ function browserSubscriptionRow(endpoint: string | null, matchesThisBrowser: boo
       label,
       state: "warn",
       detail:
-        "No active subscription on this device — tap Enable to create one (installing the PWA alone does not subscribe).",
+        "No active subscription on this device - tap Enable to create one (installing the PWA alone does not subscribe).",
     };
   }
   if (matchesThisBrowser) {
@@ -151,7 +159,7 @@ function browserSubscriptionRow(endpoint: string | null, matchesThisBrowser: boo
   return {
     label,
     state: "warn",
-    detail: "Browser has a subscription but the server does not list it for this owner — tap Enable to re-register.",
+    detail: "Browser has a subscription but the server does not list it for this owner - tap Enable to re-register.",
   };
 }
 
@@ -191,19 +199,19 @@ function buildDiagnostics({
     secureContextRow(),
     featureRow(
       "Service Worker API available",
-      "serviceWorker" in navigator,
+      hasNavigatorFeature("serviceWorker"),
       "navigator.serviceWorker present",
       "Browser does not expose serviceWorker."
     ),
     featureRow(
       "Push API (PushManager) available",
-      "PushManager" in window,
+      hasWindowFeature("PushManager"),
       "window.PushManager present",
       "Browser does not expose PushManager."
     ),
     featureRow(
       "Notification API available",
-      "Notification" in window,
+      hasWindowFeature("Notification"),
       "window.Notification present",
       "Browser does not expose Notification."
     ),
@@ -239,8 +247,8 @@ export function WebPushSettings({
   const [swState, setSwState] = useState<"registered" | "absent" | "unknown" | "unsupported">("unknown");
   const [showDetails, setShowDetails] = useState(false);
 
-  const refreshSubscriptionState = useCallback(async () => {
-    if (!("serviceWorker" in navigator)) {
+  async function refreshSubscriptionState() {
+    if (!hasNavigatorFeature("serviceWorker")) {
       setSwState("unsupported");
       return;
     }
@@ -252,7 +260,7 @@ export function WebPushSettings({
     } catch {
       setSwState("unknown");
     }
-  }, []);
+  }
 
   useEffect(() => {
     const reason = detectSupport(config);
@@ -487,7 +495,7 @@ export function WebPushSettings({
                 <li className="pdpp-caption flex items-start gap-2" key={row.label}>
                   <span
                     aria-hidden="true"
-                    className={`inline-block w-4 shrink-0 font-mono ${diagnosticToneClass(row.state)}`}
+                    className={`inline-block w-10 shrink-0 font-mono ${diagnosticToneClass(row.state)}`}
                   >
                     {diagnosticMarker(row.state)}
                   </span>
