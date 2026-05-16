@@ -299,6 +299,8 @@ test('GET /_ref/connectors projects schedule when one is configured', async () =
     assert.ok(entry.schedule, 'schedule should be projected when configured');
     assert.equal(entry.schedule.interval_seconds, 900);
     assert.equal(entry.schedule.enabled, true);
+    assert.equal(entry.schedule.trigger_kind, 'scheduled');
+    assert.equal(entry.schedule.automation_mode, 'unattended');
   });
 });
 
@@ -452,6 +454,9 @@ test('POST /_ref/connectors/:connectorId/run starts an async background run and 
     const started = await runResp.json();
     assert.ok(started.run_id?.startsWith('run_'));
     assert.ok(started.trace_id?.startsWith('trc_'));
+    assert.equal(started.trigger_kind, 'manual');
+    assert.equal(typeof started.automation_summary, 'string');
+    assert.match(started.automation_mode, /^(assisted|manual_only|unattended)$/);
 
     const timeline = await waitForRunTerminal(asUrl, started.run_id);
     const completed = (timeline.data || []).find((event) => event.event_type === 'run.completed');
@@ -666,6 +671,8 @@ test('schedule lifecycle: upsert → list → pause → resume → delete', asyn
     assert.equal(upserted.interval_seconds, 1800);
     assert.equal(upserted.jitter_seconds, 30);
     assert.equal(upserted.enabled, true);
+    assert.equal(upserted.trigger_kind, 'scheduled');
+    assert.equal(upserted.automation_mode, 'unattended');
 
     // List shows it.
     const { body: listed } = await fetchJson(`${asUrl}/_ref/schedules`);

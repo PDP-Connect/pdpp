@@ -49,6 +49,13 @@ import {
 } from "./browser-surface-readiness.ts";
 import { type BrowserSurfaceLeaseStore } from "../server/stores/browser-surface-lease-store.ts";
 import { runConnector } from "./index.js";
+import {
+  automaticIneligibilityReason,
+  automationModeCopy,
+  type RunAutomationMode,
+  type RunTriggerKind,
+  projectRunAutomationPolicy,
+} from "./run-automation-policy.ts";
 
 // ─── Path constants ─────────────────────────────────────────────────────────
 
@@ -122,23 +129,13 @@ export interface RefreshPolicy {
 }
 
 export function getScheduleIneligibilityReason(policy: RefreshPolicy | null): string | null {
-  if (!policy) {
-    return null;
-  }
-  if (policy.recommended_mode === "manual") {
-    return "Connector refresh policy recommends manual runs; automatic scheduling is disabled.";
-  }
-  if (policy.recommended_mode === "paused") {
-    return "Connector refresh policy recommends paused refresh; automatic scheduling is disabled.";
-  }
-  if (policy.background_safe === false) {
-    return "Connector refresh policy is not background-safe; automatic scheduling is disabled.";
-  }
-  return null;
+  return automaticIneligibilityReason(policy);
 }
 
 export interface ScheduleApi {
   readonly active_run_id: string | null;
+  readonly automation_mode: RunAutomationMode;
+  readonly automation_summary: string;
   readonly pending_run_id?: string;
   readonly browser_surface_lease_id?: string;
   readonly browser_surface_profile_key?: string;
@@ -168,9 +165,11 @@ export interface ScheduleApi {
   readonly last_started_at: string | null;
   readonly last_successful_at: string | null;
   readonly minimum_interval_warning: string | null;
+  readonly notification_posture: "action_required" | "informational" | "none";
   readonly next_due_at: string | null;
   readonly object: "schedule";
   readonly recommended_policy: RefreshPolicy | null;
+  readonly trigger_kind: "scheduled";
   readonly updated_at: string;
 }
 
@@ -189,13 +188,35 @@ export interface RunNowOptions {
   runId?: string;
   scenarioId?: string;
   traceContext?: SpineTraceContext;
+  triggerKind?: Extract<RunTriggerKind, "manual" | "webhook">;
 }
 
 export interface RunNowResult {
+  readonly automation_mode?: RunAutomationMode;
+  readonly automation_summary?: string;
   readonly browser_surface?: BrowserSurfaceProjection;
   readonly run_id: string;
   readonly status?: "started" | BrowserSurfaceProjection["browser_surface_status"];
   readonly trace_id: string;
+  readonly trigger_kind?: RunTriggerKind;
+}
+
+function runAutomationMetadata(
+  policy: RefreshPolicy | null,
+  triggerKind: Extract<RunTriggerKind, "manual" | "webhook">,
+): Pick<
+  RunNowResult,
+  "automation_mode" | "automation_summary" | "trigger_kind"
+> {
+  const projection = projectRunAutomationPolicy({
+    triggerKind,
+    refreshPolicy: policy,
+  });
+  return {
+    automation_mode: projection.automation_mode,
+    automation_summary: automationModeCopy(projection.automation_mode),
+    trigger_kind: projection.trigger_kind,
+  };
 }
 
 export interface RunInteractionResponseInput {
@@ -520,6 +541,18 @@ function readManifestDisplayName(manifest: ConnectorManifest | null | undefined)
     return name.trim();
   }
   return null;
+}
+
+function readManifestRefreshPolicy(manifest: ConnectorManifest | null | undefined): RefreshPolicy | null {
+  if (!manifest || typeof manifest !== "object") {
+    return null;
+  }
+  const capabilities = (manifest as { capabilities?: unknown }).capabilities;
+  if (!capabilities || typeof capabilities !== "object" || Array.isArray(capabilities)) {
+    return null;
+  }
+  const policy = (capabilities as { refresh_policy?: unknown }).refresh_policy;
+  return policy && typeof policy === "object" && !Array.isArray(policy) ? (policy as RefreshPolicy) : null;
 }
 
 function readBrowserSurfaceProfileKey(
@@ -1029,6 +1062,11 @@ function scheduleToApi(
   }
   const effectiveMode = computeEffectiveMode(schedule, runtimeProjection);
   const humanAttentionNeeded = runtimeProjection?.human_attention_needed ?? false;
+  const automationPolicy = projectRunAutomationPolicy({
+    triggerKind: "scheduled",
+    refreshPolicy: policy,
+    humanAttentionNeeded,
+  });
   const minimumIntervalWarning = buildMinimumIntervalWarning(schedule.interval_seconds, policy);
   // If the row is enabled but the connector's current manifest policy makes
   // automatic runs ineligible, surface the same reason the controller uses
@@ -1070,12 +1108,15 @@ function scheduleToApi(
   return {
     object: "schedule",
     connector_id: schedule.connector_id,
+    automation_mode: automationPolicy.automation_mode,
+    automation_summary: automationModeCopy(automationPolicy.automation_mode),
     interval_seconds: schedule.interval_seconds,
     jitter_seconds: schedule.jitter_seconds,
     enabled: schedule.enabled,
     created_at: schedule.created_at,
     updated_at: schedule.updated_at,
     next_due_at: nextDueAt,
+    notification_posture: automationPolicy.notification_posture,
     active_run_id: runtimeProjection?.active_run_id || null,
     ...(runtimeProjection?.browser_surface_status
       ? {
@@ -1097,6 +1138,7 @@ function scheduleToApi(
     ineligibility_reason: ineligibilityReason,
     recommended_policy: policy,
     minimum_interval_warning: minimumIntervalWarning,
+    trigger_kind: "scheduled",
   };
 }
 
@@ -1905,6 +1947,8 @@ export function createController(opts: ControllerOptions = {}): Controller {
     if (!manifest) {
       throw new ControllerError(`Unknown connector: ${connectorId}`, "not_found");
     }
+    const triggerKind = options.triggerKind ?? "manual";
+    const automationMetadata = runAutomationMetadata(readManifestRefreshPolicy(manifest), triggerKind);
     const managedBrowserSurfaceRun = browserSurfaceLeaseManager?.isManagedConnector(connectorId) ?? false;
     if (existing) {
       throw new ControllerError(`Connector already has an active run: ${existing.run_id}`, "run_already_active", {
@@ -1960,6 +2004,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
                 trace_id: traceContext.trace_id,
                 status: readyResult.lease.status,
                 browser_surface: projectBrowserSurfaceLease(readyResult.lease),
+                ...automationMetadata,
               };
             }
             const readySurface = readyResult.surface ?? (
@@ -1976,6 +2021,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
                 trace_id: traceContext.trace_id,
                 status: "deferred",
                 browser_surface: projectBrowserSurfaceLease(readyResult.lease),
+                ...automationMetadata,
               };
             }
           } else if (reclaimedResult.lease.status === "leased" && reclaimedResult.surface) {
@@ -2004,6 +2050,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
           trace_id: traceContext.trace_id,
           status: browserSurfaceLease.status,
           browser_surface: projectBrowserSurfaceLease(browserSurfaceLease),
+          ...automationMetadata,
         };
       }
 
@@ -2017,6 +2064,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
           trace_id: traceContext.trace_id,
           status: browserSurfaceLease.status,
           browser_surface: projectBrowserSurfaceLease(browserSurfaceLease),
+          ...automationMetadata,
         };
       } else if (browserSurfaceLease?.status === "starting_surface") {
         const readyResult = await waitForStartingBrowserSurface(browserSurfaceLease, connectorId, runId, traceContext);
@@ -2029,6 +2077,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
             trace_id: traceContext.trace_id,
             status: readyResult.lease.status,
             browser_surface: projectBrowserSurfaceLease(readyResult.lease),
+            ...automationMetadata,
           };
         }
         if (readyResult.lease.status === "leased" && readyResult.surface) {
@@ -2042,6 +2091,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
             trace_id: traceContext.trace_id,
             status: "deferred",
             browser_surface: projectBrowserSurfaceLease(readyResult.lease),
+            ...automationMetadata,
           };
         }
       } else if (browserSurfaceLease?.status === "leased" && browserSurfaceLease.surface_id) {
@@ -2065,6 +2115,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
                 ...projected,
                 browser_surface_status: "surface_failed",
               },
+              ...automationMetadata,
             };
           }
           await emitBrowserSurfaceLeaseEvent("run.browser_surface_deferred", connectorId, runId, traceContext, browserSurfaceLease);
@@ -2073,6 +2124,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
             trace_id: traceContext.trace_id,
             status: "deferred",
             browser_surface: projectBrowserSurfaceLease(browserSurfaceLease),
+            ...automationMetadata,
           };
         }
         pendingBrowserSurfaceLaunches.delete(browserSurfaceLease.run_id);
@@ -2087,6 +2139,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
           trace_id: traceContext.trace_id,
           status: "deferred",
           browser_surface: projectBrowserSurfaceLease(terminalLease),
+          ...automationMetadata,
         };
       }
 
@@ -2118,6 +2171,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
                 ...projected,
                 browser_surface_status: "surface_failed",
               },
+              ...automationMetadata,
             };
           }
         }
@@ -2133,9 +2187,12 @@ export function createController(opts: ControllerOptions = {}): Controller {
     const collectionMode: "full_refresh" | "incremental" = state ? "incremental" : "full_refresh";
     const ownerToken = options.ownerToken || (await issueRuntimeOwnerToken());
 
-    // Manual run initiated by the owner: clear any pending human-attention flag
-    // so the scheduler can resume automatic runs after this interaction resolves.
-    needsHumanAttention.delete(connectorId);
+    // Manual owner gestures clear any pending human-attention flag so the
+    // scheduler can resume after the owner resolves the issue. Webhook
+    // triggers are external automation and must not silently clear this gate.
+    if (triggerKind === "manual") {
+      needsHumanAttention.delete(connectorId);
+    }
 
     let streamingNonce: string | null = null;
     try {
@@ -2215,6 +2272,8 @@ export function createController(opts: ControllerOptions = {}): Controller {
           rsUrl: currentRsUrl(options.rsUrl),
           runId,
           traceContext,
+          triggerKind,
+          automationMode: automationMetadata.automation_mode,
           onInteraction: interactionHandler,
           onProgress: (msg: unknown) => {
             // Progress is persisted via the event spine, not this callback.
@@ -2282,7 +2341,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
       });
     activeRunPromises.set(runId, runPromise);
 
-    return { run_id: runId, trace_id: traceContext.trace_id, status: "started" };
+    return { run_id: runId, trace_id: traceContext.trace_id, status: "started", ...automationMetadata };
   }
 
   // ─── Graceful-shutdown drain ────────────────────────────────────────────

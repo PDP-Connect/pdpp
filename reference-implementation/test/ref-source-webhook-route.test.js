@@ -39,12 +39,29 @@ async function withHarness(fn) {
       body: JSON.stringify(spotifyManifest),
     });
     assert.equal(registerResp.status, 201);
-    await fn({ rsUrl, secret, sourceId: 'spotify' });
+    await fn({ asUrl, rsUrl, secret, sourceId: 'spotify' });
   } finally {
     if (oldSecrets === undefined) delete process.env.PDPP_SOURCE_WEBHOOK_SECRETS;
     else process.env.PDPP_SOURCE_WEBHOOK_SECRETS = oldSecrets;
     await closeServer(server);
   }
+}
+
+async function waitForRunTerminal(asUrl, runId, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const resp = await fetch(`${asUrl}/_ref/runs/${encodeURIComponent(runId)}/timeline`);
+    if (resp.status === 200) {
+      const body = await resp.json();
+      if (Array.isArray(body.data) && body.data.some((event) =>
+        event.event_type === 'run.completed' || event.event_type === 'run.failed'
+      )) {
+        return body;
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`Timed out waiting for webhook run ${runId}`);
 }
 
 async function postWebhook(rsUrl, sourceId, secret, eventId, body) {
@@ -96,11 +113,17 @@ test('source webhook route ingests signed records and dedupes event id', async (
   });
 });
 
-test('source webhook route accepts schedule_run as scheduler input only', async () => {
-  await withHarness(async ({ rsUrl, secret, sourceId }) => {
+test('source webhook route accepts schedule_run as a webhook-classified run request', async () => {
+  await withHarness(async ({ asUrl, rsUrl, secret, sourceId }) => {
     const result = await postWebhook(rsUrl, sourceId, secret, 'evt_schedule_1', '{"action":"schedule_run"}');
     assert.equal(result.status, 200);
     assert.equal(result.body.action, 'schedule_run');
     assert.equal(result.body.accepted, true);
+    assert.equal(result.body.trigger_kind, 'webhook');
+    assert.equal(result.body.run.trigger_kind, 'webhook');
+    assert.ok(result.body.run.run_id?.startsWith('run_'));
+    const timeline = await waitForRunTerminal(asUrl, result.body.run.run_id);
+    const started = timeline.data.find((event) => event.event_type === 'run.started');
+    assert.equal(started.data.trigger_kind, 'webhook');
   });
 });

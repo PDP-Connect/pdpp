@@ -474,6 +474,7 @@ test('assistance Web Push payload routes to the run page and omits raw assistanc
   assert.equal(payload.url, '/dashboard/runs/run_assist');
   assert.equal(payload.assistance_request_id, 'asst_secret_42');
   assert.equal(payload.owner_action, 'act_elsewhere');
+  assert.equal(payload.notification_tier, 'action_required');
   assert.equal(payload.response_contract, 'none');
 
   const serialized = JSON.stringify(payload);

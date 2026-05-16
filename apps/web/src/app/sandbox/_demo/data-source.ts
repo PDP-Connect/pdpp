@@ -151,6 +151,11 @@ function buildDemoSchedule(connectorId: string, kind: string): RefSchedule {
   return {
     object: "schedule",
     connector_id: connectorId,
+    automation_mode: kind === "manual" ? "manual_only" : "unattended",
+    automation_summary:
+      kind === "manual"
+        ? "Starts only from an owner gesture."
+        : "Can refresh in the background without expected owner action.",
     interval_seconds: interval,
     jitter_seconds: 0,
     enabled: kind !== "manual",
@@ -165,8 +170,10 @@ function buildDemoSchedule(connectorId: string, kind: string): RefSchedule {
     effective_mode: kind === "manual" ? "manual" : "automatic",
     human_attention_needed: false,
     ineligibility_reason: null,
+    notification_posture: "none",
     recommended_policy: null,
     minimum_interval_warning: null,
+    trigger_kind: "scheduled",
   };
 }
 

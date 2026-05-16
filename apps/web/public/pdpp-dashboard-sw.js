@@ -1,4 +1,8 @@
-const PDPP_KNOWN_PUSH_TYPES = new Set(["pdpp.pending_interaction", "pdpp.test_notification"]);
+const PDPP_KNOWN_PUSH_TYPES = new Set([
+  "pdpp.assistance_requested",
+  "pdpp.pending_interaction",
+  "pdpp.test_notification",
+]);
 const PDPP_TEST_NOTIFICATION_URL = "/dashboard";
 
 function pdppDefaultFallbackUrl(type) {
@@ -7,6 +11,7 @@ function pdppDefaultFallbackUrl(type) {
 
 function pdppDefaultTag(payload) {
   if (payload.type === "pdpp.test_notification") return "pdpp-test-notification";
+  if (typeof payload.assistance_request_id === "string") return `pdpp-${payload.assistance_request_id}`;
   if (typeof payload.interaction_id === "string") return `pdpp-${payload.interaction_id}`;
   return "pdpp-pending-interaction";
 }
@@ -70,4 +75,3 @@ self.addEventListener("notificationclick", (event) => {
     })()
   );
 });
-

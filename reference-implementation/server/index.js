@@ -84,6 +84,7 @@ import {
   getScheduleIneligibilityReason,
   resolveDefaultConnectorPath,
 } from '../runtime/controller.ts';
+import { projectRunAutomationPolicy } from '../runtime/run-automation-policy.ts';
 import { createScheduler } from '../runtime/scheduler.ts';
 import { getDefaultSchedulerStore } from './stores/scheduler-store.ts';
 import {
@@ -5757,9 +5758,27 @@ function buildRsApp(opts = {}) {
             },
             signalScheduler: async ({ connectorId, receivedAt }) => {
               await getDefaultSchedulerStore().upsertLastRunTime(connectorId, Date.parse(receivedAt), receivedAt);
-            },
           },
-        );
+          projectAutomationPolicy: async ({ connectorId, triggerKind }) => {
+            const manifest = await resolveRegisteredConnectorManifest(connectorId);
+            return projectRunAutomationPolicy({
+              triggerKind,
+              refreshPolicy: getManifestRefreshPolicy(manifest),
+            });
+          },
+          requestRun: async ({ connectorId, triggerKind }) => {
+            if (!opts.controller) {
+              return null;
+            }
+            const manifest = await resolveRegisteredConnectorManifest(connectorId);
+            return opts.controller.runNow(connectorId, {
+              manifest,
+              priorityClass: 'scheduled_refresh',
+              triggerKind,
+            });
+          },
+        },
+      );
         res.status(result.duplicate ? 202 : 200).json(result);
       } catch (err) {
         if (err instanceof SourceWebhookError) {
@@ -6222,6 +6241,7 @@ export async function startServer(opts = {}) {
 
   const rsApp = buildRsApp({
     asPort,
+    controller,
     nativeManifest: nativeConfig?.nativeManifest || null,
     providerName,
     asPublicUrl,

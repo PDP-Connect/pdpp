@@ -176,6 +176,40 @@ test('server-owned scheduler starts persisted enabled schedules after startup', 
   }
 });
 
+test('scheduler enforces automation policy before starting an unsafe automatic run', async () => {
+  const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-scheduler-automation-policy-'));
+  const { attemptsPath, connectorPath } = writeLoggingConnector(tmpDir);
+  const scheduler = createScheduler({
+    connectors: [{
+      connectorId: 'unsafe-automatic',
+      connectorPath,
+      manifest: {
+        capabilities: {
+          refresh_policy: { background_safe: false },
+        },
+      },
+      intervalMs: 1,
+      ownerToken: 'owner-token',
+    }],
+    rsUrl: 'http://localhost.invalid',
+    onInteraction: cancelledInteractionResponse,
+  });
+
+  try {
+    scheduler.start();
+    await waitFor(() => scheduler.getHistory().length >= 1, 5000);
+    scheduler.stop();
+    assert.deepEqual(readAttempts(attemptsPath), []);
+    const [record] = scheduler.getHistory();
+    assert.equal(record.status, 'skipped');
+    assert.match(record.error, /automation_policy_blocked/);
+    assert.match(record.error, /not background-safe/);
+  } finally {
+    scheduler.stop();
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
 test('server-owned scheduler refreshes after schedule route mutations', async () => {
   const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
   const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-server-scheduler-route-refresh-'));

@@ -45,6 +45,46 @@ export interface SourceWebhookDependencies {
     eventId: string;
     receivedAt: string;
   }) => void | Promise<void>;
+  readonly projectAutomationPolicy?: (input: {
+    connectorId: string;
+    triggerKind: "webhook";
+  }) => Promise<{
+    readonly allowed_to_start?: boolean;
+    readonly automation_mode?: string;
+    readonly reason?: string | null;
+    readonly trigger_kind: "webhook";
+  }> | {
+    readonly allowed_to_start?: boolean;
+    readonly automation_mode?: string;
+    readonly reason?: string | null;
+    readonly trigger_kind: "webhook";
+  };
+  readonly requestRun?: (input: {
+    automationPolicy: {
+      readonly allowed_to_start?: boolean;
+      readonly automation_mode?: string;
+      readonly reason?: string | null;
+      readonly trigger_kind: "webhook";
+    };
+    connectorId: string;
+    eventId: string;
+    receivedAt: string;
+    triggerKind: "webhook";
+  }) => Promise<{
+    readonly automation_mode?: string;
+    readonly automation_summary?: string;
+    readonly run_id: string;
+    readonly status?: string;
+    readonly trace_id: string;
+    readonly trigger_kind?: string;
+  } | null> | {
+    readonly automation_mode?: string;
+    readonly automation_summary?: string;
+    readonly run_id: string;
+    readonly status?: string;
+    readonly trace_id: string;
+    readonly trigger_kind?: string;
+  } | null;
 }
 
 export interface SourceWebhookResult {
@@ -59,6 +99,21 @@ export interface SourceWebhookResult {
     readonly records_rejected: number;
     readonly errors: readonly string[];
   };
+  readonly automation_policy?: {
+    readonly allowed_to_start?: boolean;
+    readonly automation_mode?: string;
+    readonly reason?: string | null;
+    readonly trigger_kind: "webhook";
+  };
+  readonly run?: {
+    readonly automation_mode?: string;
+    readonly automation_summary?: string;
+    readonly run_id: string;
+    readonly status?: string;
+    readonly trace_id: string;
+    readonly trigger_kind?: string;
+  } | null;
+  readonly trigger_kind?: "webhook";
 }
 
 const DEFAULT_TOLERANCE_MS = 5 * 60 * 1000;
@@ -137,8 +192,27 @@ export async function executeSourceWebhook(
   }
 
   if (payload.action === "schedule_run") {
-    await deps.signalScheduler({ connectorId, eventId, receivedAt });
-    return { accepted: true, duplicate: false, source_id: sourceId, event_id: eventId, action: "schedule_run" };
+    const automationPolicy = deps.projectAutomationPolicy
+      ? await deps.projectAutomationPolicy({ connectorId, triggerKind: "webhook" })
+      : { trigger_kind: "webhook" as const };
+    const run = automationPolicy.allowed_to_start === false
+      ? null
+      : deps.requestRun
+        ? await deps.requestRun({ connectorId, eventId, receivedAt, triggerKind: "webhook", automationPolicy })
+        : null;
+    if (!deps.requestRun) {
+      await deps.signalScheduler({ connectorId, eventId, receivedAt });
+    }
+    return {
+      accepted: true,
+      duplicate: false,
+      source_id: sourceId,
+      event_id: eventId,
+      action: "schedule_run",
+      trigger_kind: "webhook",
+      automation_policy: automationPolicy,
+      run,
+    };
   }
 
   throw new SourceWebhookError("invalid_payload", "unsupported webhook action");

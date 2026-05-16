@@ -1,6 +1,11 @@
 import { createHash } from 'node:crypto';
 
 import { allowUnboundedReadAcknowledged, exec, getOne, referenceQueries } from '../lib/db.ts';
+import {
+  NOTIFICATION_TIERS,
+  classifyAssistanceNotification,
+  projectNotificationDelivery,
+} from './notification-policy.js';
 import { getStorageBackendKind, isPostgresStorageBackend, postgresQuery } from './postgres-storage.js';
 
 const DEFAULT_TTL_SECONDS = 10 * 60;
@@ -429,8 +434,7 @@ export function buildPendingInteractionPushPayload({ interaction, connectorDispl
 export function shouldFanoutAssistanceProgress(message) {
   if (!message || message.type !== 'ASSISTANCE') return false;
   if (message.response_contract !== 'none') return false;
-  if (typeof message.owner_action !== 'string' || message.owner_action === 'none') return false;
-  return message.progress_posture === 'running' || message.progress_posture === 'blocked';
+  return classifyAssistanceNotification(message) === NOTIFICATION_TIERS.ACTION_REQUIRED;
 }
 
 export function buildAssistancePushPayload({ assistance, connectorDisplayName, runId }) {
@@ -448,6 +452,7 @@ export function buildAssistancePushPayload({ assistance, connectorDisplayName, r
     run_id: runId,
     assistance_request_id: assistanceRequestId,
     owner_action: typeof assistance?.owner_action === 'string' ? assistance.owner_action : null,
+    notification_tier: NOTIFICATION_TIERS.ACTION_REQUIRED,
     response_contract: 'none',
     timestamp: nowIso(),
     url: `/dashboard/runs/${encodeURIComponent(runId)}`,
@@ -513,6 +518,13 @@ export async function fanoutPendingInteractionWebPush({
 }) {
   if (!config.enabled) {
     return { attempted: 0, sent: 0, unavailable: true };
+  }
+  const delivery = projectNotificationDelivery({
+    channelOptedIn: true,
+    tier: NOTIFICATION_TIERS.ACTION_REQUIRED,
+  });
+  if (!delivery.interruptive_eligible) {
+    return { attempted: 0, sent: 0, unavailable: false, suppressed: true };
   }
   const normalizedOwnerSubjectId = nonEmptyString(ownerSubjectId);
   if (!normalizedOwnerSubjectId) {

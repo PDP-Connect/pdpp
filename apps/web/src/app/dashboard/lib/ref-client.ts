@@ -188,8 +188,13 @@ export interface RefreshPolicy {
   session_lifetime_seconds?: number;
 }
 
+export type RefRunAutomationMode = "ask_before_run" | "assisted" | "manual_only" | "unattended";
+export type RefNotificationPosture = "action_required" | "informational" | "none";
+
 export interface RefSchedule {
   active_run_id: string | null;
+  automation_mode: RefRunAutomationMode;
+  automation_summary: string;
   connector_id: string;
   created_at: string;
   effective_mode: "automatic" | "manual" | "paused";
@@ -210,9 +215,11 @@ export interface RefSchedule {
   last_successful_at: string | null;
   minimum_interval_warning: string | null;
   next_due_at: string | null;
+  notification_posture: RefNotificationPosture;
   object: "schedule";
   policy_warning?: string | null;
   recommended_policy: RefreshPolicy | null;
+  trigger_kind: "scheduled";
   updated_at: string;
 }
 

@@ -6,6 +6,7 @@ import test from "node:test";
 const HERE = new URL(".", import.meta.url).pathname;
 const APP_ROOT = join(HERE, "..", "..", "..", "..");
 const SERVICE_WORKER_KNOWN_TYPES_PATTERN = /PDPP_KNOWN_PUSH_TYPES\.has\(payload\.type\)/;
+const SERVICE_WORKER_ASSISTANCE_TYPE_ALLOWED_PATTERN = /pdpp\.assistance_requested/;
 const SERVICE_WORKER_PENDING_TYPE_ALLOWED_PATTERN = /pdpp\.pending_interaction/;
 const SERVICE_WORKER_TEST_TYPE_ALLOWED_PATTERN = /pdpp\.test_notification/;
 const SERVICE_WORKER_DASHBOARD_URL_ALLOWLIST_PATTERN = /url === "\/dashboard" \|\| url\.startsWith\("\/dashboard\/"\)/;
@@ -69,6 +70,7 @@ test("WebPushSettings renders unsupported, denied-permission, insecure-context, 
 test("dashboard service worker fails closed and click-through targets dashboard-relative URLs", async () => {
   const src = await readFile(join(APP_ROOT, "public", "pdpp-dashboard-sw.js"), "utf8");
   assert.match(src, SERVICE_WORKER_KNOWN_TYPES_PATTERN);
+  assert.match(src, SERVICE_WORKER_ASSISTANCE_TYPE_ALLOWED_PATTERN);
   assert.match(src, SERVICE_WORKER_PENDING_TYPE_ALLOWED_PATTERN);
   assert.match(src, SERVICE_WORKER_TEST_TYPE_ALLOWED_PATTERN);
   assert.match(src, SERVICE_WORKER_DASHBOARD_URL_ALLOWLIST_PATTERN);

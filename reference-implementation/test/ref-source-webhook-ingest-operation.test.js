@@ -110,12 +110,77 @@ test('ref.source-webhook maps run trigger to scheduler signal only', async () =>
   const result = await executeSourceWebhook(
     input('{"action":"schedule_run"}'),
     deps({
+      projectAutomationPolicy: ({ connectorId, triggerKind }) => ({
+        trigger_kind: triggerKind,
+        automation_mode: connectorId === 'gmail' ? 'assisted' : 'unattended',
+        allowed_to_start: true,
+      }),
       signalScheduler: (payload) => {
         captured = payload;
       },
     }),
   );
   assert.equal(result.action, 'schedule_run');
+  assert.equal(result.trigger_kind, 'webhook');
+  assert.equal(result.automation_policy.trigger_kind, 'webhook');
+  assert.equal(result.automation_policy.automation_mode, 'assisted');
   assert.equal(captured.connectorId, 'gmail');
   assert.equal(captured.eventId, 'evt_1');
+});
+
+test('ref.source-webhook starts webhook-classified run when run dependency is available', async () => {
+  let signaled = false;
+  let capturedRunRequest;
+  const result = await executeSourceWebhook(
+    input('{"action":"schedule_run"}'),
+    deps({
+      projectAutomationPolicy: () => ({
+        trigger_kind: 'webhook',
+        automation_mode: 'unattended',
+        allowed_to_start: true,
+      }),
+      signalScheduler: () => {
+        signaled = true;
+      },
+      requestRun: (payload) => {
+        capturedRunRequest = payload;
+        return {
+          run_id: 'run_webhook',
+          trace_id: 'trc_webhook',
+          status: 'started',
+          trigger_kind: 'webhook',
+          automation_mode: 'unattended',
+        };
+      },
+    }),
+  );
+
+  assert.equal(signaled, false);
+  assert.equal(capturedRunRequest.triggerKind, 'webhook');
+  assert.equal(capturedRunRequest.automationPolicy.trigger_kind, 'webhook');
+  assert.equal(result.run.run_id, 'run_webhook');
+  assert.equal(result.run.trigger_kind, 'webhook');
+});
+
+test('ref.source-webhook does not start webhook run when automation policy blocks it', async () => {
+  let requested = false;
+  const result = await executeSourceWebhook(
+    input('{"action":"schedule_run"}'),
+    deps({
+      projectAutomationPolicy: () => ({
+        trigger_kind: 'webhook',
+        automation_mode: 'manual_only',
+        allowed_to_start: false,
+        reason: 'manual-only',
+      }),
+      requestRun: () => {
+        requested = true;
+        return null;
+      },
+    }),
+  );
+
+  assert.equal(requested, false);
+  assert.equal(result.automation_policy.automation_mode, 'manual_only');
+  assert.equal(result.run, null);
 });

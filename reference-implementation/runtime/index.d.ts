@@ -9,6 +9,8 @@
  */
 
 export type RuntimeCollectionMode = "full_refresh" | "incremental";
+export type RuntimeRunAutomationMode = "ask_before_run" | "assisted" | "manual_only" | "unattended";
+export type RuntimeRunTriggerKind = "manual" | "retry" | "scheduled" | "webhook";
 
 export interface RuntimeTraceContext {
   readonly request_id: string;
@@ -52,6 +54,7 @@ export interface RuntimeRunConnectorOptions {
   collectionMode?: RuntimeCollectionMode;
   connectorId: string;
   connectorPath: string;
+  automationMode?: RuntimeRunAutomationMode | null;
   grantId?: string | null;
   manifest: Record<string, unknown>;
   onInteraction?: (...args: unknown[]) => unknown;
@@ -82,6 +85,7 @@ export interface RuntimeRunConnectorOptions {
    */
   streamingRegistrationToken?: string | null;
   traceContext?: RuntimeTraceContext;
+  triggerKind?: RuntimeRunTriggerKind | null;
 }
 
 /**
@@ -111,6 +115,7 @@ export type RuntimeFailureOrigin = "connector" | "runtime" | "transport" | "stor
 
 export interface RuntimeRunConnectorResult {
   checkpoint_summary?: Record<string, unknown> | null;
+  automation_mode?: RuntimeRunAutomationMode | null;
   connector_diagnostics?: ConnectorRunDiagnostics;
   connector_error?: { message?: string; retryable?: boolean | null } | null;
   failure_message?: string;
@@ -124,6 +129,7 @@ export interface RuntimeRunConnectorResult {
   status: "failed" | "skipped" | "succeeded";
   terminal_reason?: string | null;
   trace_id?: string | null;
+  trigger_kind?: RuntimeRunTriggerKind | null;
 }
 
 export function runConnector(opts: RuntimeRunConnectorOptions): Promise<RuntimeRunConnectorResult>;

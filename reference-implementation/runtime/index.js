@@ -1202,6 +1202,8 @@ export async function runConnector(opts) {
     referenceBaseUrl = null,
     browserSurfaceLease = null,
     browserSurfaceEnv = null,
+    triggerKind = null,
+    automationMode = null,
   } = opts;
 
   // Check binding requirements
@@ -1544,6 +1546,8 @@ export async function runConnector(opts) {
       grant_id: grantId,
       persist_state: persistState,
       state_commit_intent: persistState ? 'commit_on_success' : 'do_not_persist',
+      ...(triggerKind ? { trigger_kind: triggerKind } : {}),
+      ...(automationMode ? { automation_mode: automationMode } : {}),
       bindings: availableBindings,
       scope: startScope,
       scope_streams: startScope.streams.map((stream) => stream.name),
@@ -1642,6 +1646,8 @@ export async function runConnector(opts) {
     return {
       source: runSource,
       grant_id: grantId,
+      ...(triggerKind ? { trigger_kind: triggerKind } : {}),
+      ...(automationMode ? { automation_mode: automationMode } : {}),
       records_emitted: recordsEmitted,
       records_flushed: totalFlushed,
       buffered_records_dropped: countBufferedRecords(),
@@ -2734,6 +2740,8 @@ export async function runConnector(opts) {
           run_id: runId,
           trace_id: traceContext.trace_id,
           terminal_reason: closeTerminalReason,
+          ...(triggerKind ? { trigger_kind: triggerKind } : {}),
+          ...(automationMode ? { automation_mode: automationMode } : {}),
           ...(closeTerminalReason === 'connector_stdin_closed'
             ? { stdin_closed_at_phase: closeTerminalPhase }
             : {}),

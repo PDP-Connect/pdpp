@@ -58,6 +58,13 @@ function modeLabel(mode: RefSchedule["effective_mode"]): string {
   return "manual";
 }
 
+function automationModeLabel(mode: RefSchedule["automation_mode"]): string {
+  if (mode === "unattended") return "unattended";
+  if (mode === "assisted") return "assisted";
+  if (mode === "ask_before_run") return "ask before run";
+  return "manual only";
+}
+
 export function ScheduleRow({ summary, runsHref }: ScheduleRowProps) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -219,6 +226,9 @@ export function ScheduleRow({ summary, runsHref }: ScheduleRowProps) {
               <span>
                 Mode: <span className="text-foreground">{modeLabel(schedule.effective_mode)}</span>
               </span>
+              <span title={schedule.automation_summary}>
+                Automation: <span className="text-foreground">{automationModeLabel(schedule.automation_mode)}</span>
+              </span>
               <span>
                 Every: <span className="text-foreground tabular-nums">{formatInterval(schedule.interval_seconds)}</span>
               </span>
@@ -251,7 +261,8 @@ export function ScheduleRow({ summary, runsHref }: ScheduleRowProps) {
         {/* Ineligibility reason: stale enabled row + manifest policy changed */}
         {ineligibilityReason && (
           <p className="pdpp-caption text-amber-700 dark:text-amber-400">
-            <strong>Not running automatically.</strong> {ineligibilityReason} Pause or delete this schedule to reflect that.
+            <strong>Not running automatically.</strong> {ineligibilityReason} Manual run remains available; pause or delete this
+            schedule to reflect operator intent.
           </p>
         )}
 

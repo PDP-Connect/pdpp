@@ -25,6 +25,12 @@ import { join } from "node:path";
 
 import type { SchedulerRunHistoryRecord, SchedulerStore } from "../server/stores/scheduler-store.ts";
 import { runConnector } from "./index.js";
+import {
+  type AutomationRefreshPolicy,
+  type RunAutomationMode,
+  type RunTriggerKind,
+  projectRunAutomationPolicy,
+} from "./run-automation-policy.ts";
 import { type BackoffDecision, computeNextRunWithBackoff } from "./scheduler-backoff.ts";
 
 // ─── Shared domain types ────────────────────────────────────────────────────
@@ -253,6 +259,15 @@ function isTerminalGrantFailure(reason: string | null | undefined): reason is Te
 
 function buildScheduledRunSource(connectorId: string): RunSource {
   return { kind: "connector", id: connectorId };
+}
+
+function getManifestRefreshPolicy(manifest: SchedulerManifest | null | undefined): AutomationRefreshPolicy | null {
+  const capabilities = manifest && typeof manifest === "object" ? (manifest as { capabilities?: unknown }).capabilities : null;
+  if (!capabilities || typeof capabilities !== "object" || Array.isArray(capabilities)) {
+    return null;
+  }
+  const policy = (capabilities as { refresh_policy?: unknown }).refresh_policy;
+  return policy && typeof policy === "object" && !Array.isArray(policy) ? (policy as AutomationRefreshPolicy) : null;
 }
 
 function describeFailedRunResult(result: RunConnectorResult): RunConnectorError {
@@ -491,6 +506,21 @@ function buildNotReadySkip(connectorId: string, reason: string): RunRecord {
     startedAt: nowIso(),
     completedAt: nowIso(),
     error: `not_ready: ${reason}`,
+    attempt: 0,
+  };
+}
+
+function buildAutomationPolicySkip(connectorId: string, reason: string | null): RunRecord {
+  return {
+    connectorId,
+    source: buildScheduledRunSource(connectorId),
+    status: "skipped",
+    recordsEmitted: 0,
+    checkpointSummary: null,
+    knownGaps: [],
+    startedAt: nowIso(),
+    completedAt: nowIso(),
+    error: `automation_policy_blocked: ${reason || "automatic run is not allowed by connector policy"}`,
     attempt: 0,
   };
 }
@@ -875,6 +905,8 @@ interface RunConnectorCall {
   referenceBaseUrl?: string | null;
   rsUrl: string;
   state: Record<string, unknown> | null;
+  triggerKind?: RunTriggerKind;
+  automationMode?: RunAutomationMode;
 }
 
 async function invokeRunConnector(call: RunConnectorCall): Promise<RunConnectorResult> {
@@ -1012,7 +1044,15 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
       runtime.notifiedNotReadySkips.delete(schedule.connectorId);
       return "proceed";
     }
-    const reason = readiness.reason || "scheduled connector runtime prerequisites are not currently satisfied";
+    const projection = projectRunAutomationPolicy({
+      triggerKind: "scheduled",
+      refreshPolicy: getManifestRefreshPolicy(schedule.manifest),
+      deploymentReadiness: {
+        ready: false,
+        reason: readiness.reason || "scheduled connector runtime prerequisites are not currently satisfied",
+      },
+    });
+    const reason = projection.reason || "scheduled connector runtime prerequisites are not currently satisfied";
     if (runtime.notifiedNotReadySkips.get(schedule.connectorId) === reason) {
       return "silent-skip";
     }
@@ -1050,7 +1090,12 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     attempt: number
   ): Promise<RunRecord> {
     const { connectorId, grantAccessMode = "continuous" } = schedule;
-    const record = buildSuccessOrFailureRecord({ connectorId, result, startedAt, attempt });
+    const record = buildSuccessOrFailureRecord({
+      connectorId,
+      result,
+      startedAt,
+      attempt,
+    });
 
     // Capture pre-success streak state so we can emit a one-shot
     // `schedule.back_off.cleared` transition marker iff this success
@@ -1148,7 +1193,17 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
       }
       attempt++;
 
-      const outcome = await runSingleAttempt(schedule, call, attempt);
+      const attemptTriggerKind: RunTriggerKind = attempt === 1 ? (call.triggerKind ?? "scheduled") : "retry";
+      const attemptPolicy = projectRunAutomationPolicy({
+        triggerKind: attemptTriggerKind,
+        refreshPolicy: getManifestRefreshPolicy(schedule.manifest),
+      });
+      const attemptCall: RunConnectorCall = {
+        ...call,
+        triggerKind: attemptPolicy.trigger_kind,
+        automationMode: attemptPolicy.automation_mode,
+      };
+      const outcome = await runSingleAttempt(schedule, attemptCall, attempt);
       if (outcome.kind === "done") {
         return outcome.record;
       }
@@ -1164,7 +1219,11 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
       }
     }
 
-    const failRecord = buildExhaustedFailureRecord({ connectorId, lastError, attempt });
+    const failRecord = buildExhaustedFailureRecord({
+      connectorId,
+      lastError,
+      attempt,
+    });
     runtime.history.push(failRecord);
     if (schedulerStore) {
       Promise.resolve(schedulerStore.appendRunHistory(toStoredRunRecord(failRecord))).catch((err: unknown) => {
@@ -1180,6 +1239,12 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
 
   async function executeRun(schedule: ConnectorSchedule, isManual = false): Promise<RunRecord | null> {
     const { connectorId, connectorPath, manifest, ownerToken, grantAccessMode = "continuous" } = schedule;
+    const triggerKind: RunTriggerKind = isManual ? "manual" : "scheduled";
+    const refreshPolicy = getManifestRefreshPolicy(manifest);
+    const automationPolicy = projectRunAutomationPolicy({
+      triggerKind,
+      refreshPolicy,
+    });
 
     if (runtime.activeRuns.has(connectorId)) {
       return null;
@@ -1191,6 +1256,15 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
       // interaction. Manual runs (isManual=true) bypass this gate so the owner
       // can resolve the issue. The controller also clears the flag on runNow.
       if (!isManual) {
+        if (!automationPolicy.allowed_to_start) {
+          const reason = automationPolicy.reason || "automatic run is not allowed by connector policy";
+          const dedupeReason = `automation_policy_blocked:${reason}`;
+          if (runtime.notifiedNotReadySkips.get(connectorId) === dedupeReason) {
+            return null;
+          }
+          runtime.notifiedNotReadySkips.set(connectorId, dedupeReason);
+          return recordAndNotify(buildAutomationPolicySkip(connectorId, reason));
+        }
         const notReadyDecision = await decideNotReady(schedule);
         if (notReadyDecision === "silent-skip") {
           return null;
@@ -1254,6 +1328,8 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
         persistState,
         referenceBaseUrl,
         rsUrl,
+        triggerKind: automationPolicy.trigger_kind,
+        automationMode: automationPolicy.automation_mode,
         onInteraction: wrappedInteraction,
         onStarted: (run) => {
           currentRunId = typeof run?.run_id === "string" ? run.run_id : null;
