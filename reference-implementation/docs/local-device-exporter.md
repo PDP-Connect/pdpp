@@ -39,4 +39,5 @@ Environment equivalents:
 - Device credentials are not owner or client grant tokens.
 - Owner-token and client-token routes do not accept device credentials.
 - Device ingest uses a reference-internal storage connector id derived from connector id plus source instance id to avoid overwriting same stream/key records from different devices.
+- Device-scoped local collector STATE read/write is available through the same device-exporter authority at `GET|PUT /_ref/device-exporters/:deviceId/source-instances/:sourceInstanceId/state`. The route uses the existing device bearer credential, stores state under the same internal storage connector id used by device ingest, and never collides with the owner-auth `/v1/state/:connectorId` route (which remains keyed by public connector id plus grant). See OpenSpec `design-local-collector-state-sync` for the load/replay/persist contract.
 - The public/source-instance vocabulary remains an open protocol question owned outside the RI. See `design-notes/source-authority-vs-schema-identity-2026-04-30.md`.

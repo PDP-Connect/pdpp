@@ -403,6 +403,38 @@ const DeviceIngestBatchResponseSchema = {
   ],
 };
 
+const DeviceSourceInstanceStateParamSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    deviceId: { type: "string", minLength: 1 },
+    sourceInstanceId: { type: "string", minLength: 1 },
+  },
+  required: ["deviceId", "sourceInstanceId"],
+};
+
+const DeviceSourceInstanceStatePutBodySchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    state: { type: "object", additionalProperties: true },
+  },
+  required: ["state"],
+};
+
+const DeviceSourceInstanceStateResponseSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    object: { const: "device_source_instance_state" },
+    device_id: { type: "string" },
+    source_instance_id: { type: "string" },
+    state: { type: "object", additionalProperties: true },
+    updated_at: { type: ["string", "null"] },
+  },
+  required: ["object", "device_id", "source_instance_id", "state", "updated_at"],
+};
+
 export const referenceManifests = [
   {
     id: "refSearch",
@@ -629,6 +661,37 @@ export const referenceManifests = [
     responses: {
       200: { schema: DeviceIngestBatchResponseSchema },
       201: { schema: DeviceIngestBatchResponseSchema, description: "Created" },
+      ...DeviceExporterErrors,
+    },
+  },
+  {
+    id: "refGetDeviceExporterSourceInstanceState",
+    method: "GET",
+    path: "/_ref/device-exporters/{deviceId}/source-instances/{sourceInstanceId}/state",
+    surface: "reference",
+    tags: ["reference", "device-exporters"],
+    summary:
+      "Read device-scoped local collector state for a source instance. Owner-token and client-token routes do not accept device credentials and vice versa.",
+    request: { params: DeviceSourceInstanceStateParamSchema },
+    responses: {
+      200: { schema: DeviceSourceInstanceStateResponseSchema },
+      ...DeviceExporterErrors,
+    },
+  },
+  {
+    id: "refPutDeviceExporterSourceInstanceState",
+    method: "PUT",
+    path: "/_ref/device-exporters/{deviceId}/source-instances/{sourceInstanceId}/state",
+    surface: "reference",
+    tags: ["reference", "device-exporters"],
+    summary:
+      "Persist device-scoped local collector state for a source instance. State is a stream-keyed map; existing streams are merged with last-write-wins semantics.",
+    request: {
+      params: DeviceSourceInstanceStateParamSchema,
+      body: { schema: DeviceSourceInstanceStatePutBodySchema },
+    },
+    responses: {
+      200: { schema: DeviceSourceInstanceStateResponseSchema },
       ...DeviceExporterErrors,
     },
   },

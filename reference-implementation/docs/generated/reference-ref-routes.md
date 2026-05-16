@@ -16,6 +16,8 @@ Generated from `packages/reference-contract/src/reference/`. Reference-designate
 | **POST** | `/_ref/device-exporters/{deviceId}/revoke` | `refRevokeDeviceExporter` | Revoke a local device exporter credential and stop future heartbeats or ingest from that device. |
 | **POST** | `/_ref/device-exporters/{deviceId}/heartbeat` | `refHeartbeatDeviceExporter` | Accept a heartbeat from a device-scoped local exporter credential. |
 | **POST** | `/_ref/device-exporters/{deviceId}/ingest-batches` | `refIngestDeviceExporterBatch` | Accept an idempotent source-instance-aware ingest batch from a local device exporter. |
+| **GET** | `/_ref/device-exporters/{deviceId}/source-instances/{sourceInstanceId}/state` | `refGetDeviceExporterSourceInstanceState` | Read device-scoped local collector state for a source instance. Owner-token and client-token routes do not accept device credentials and vice versa. |
+| **PUT** | `/_ref/device-exporters/{deviceId}/source-instances/{sourceInstanceId}/state` | `refPutDeviceExporterSourceInstanceState` | Persist device-scoped local collector state for a source instance. State is a stream-keyed map; existing streams are merged with last-write-wins semantics. |
 | **GET** | `/_ref/schedules` | `refListSchedules` | List all configured schedules with runtime status. |
 | **POST** | `/_ref/connectors/{connectorId}/run` | `refRunConnector` | Start a connector run asynchronously. Returns 202 with run_id + trace_id, or 409 run_already_active. |
 | **PUT** | `/_ref/connectors/{connectorId}/schedule` | `refPutConnectorSchedule` | Create or replace the single schedule for a connector. |
@@ -259,6 +261,51 @@ Accept an idempotent source-instance-aware ingest batch from a local device expo
 
 - `200` — JSON body
 - `201` — Created
+- `400` — Invalid request
+- `401` — Authentication required
+- `403` — Permission denied
+- `404` — Not found
+- `409` — Conflict (e.g. run_already_active)
+
+## refGetDeviceExporterSourceInstanceState
+
+`GET /_ref/device-exporters/{deviceId}/source-instances/{sourceInstanceId}/state`
+
+Read device-scoped local collector state for a source instance. Owner-token and client-token routes do not accept device credentials and vice versa.
+
+### Path parameters
+
+- `deviceId` — string
+- `sourceInstanceId` — string
+
+### Responses
+
+- `200` — JSON body
+- `400` — Invalid request
+- `401` — Authentication required
+- `403` — Permission denied
+- `404` — Not found
+- `409` — Conflict (e.g. run_already_active)
+
+## refPutDeviceExporterSourceInstanceState
+
+`PUT /_ref/device-exporters/{deviceId}/source-instances/{sourceInstanceId}/state`
+
+Persist device-scoped local collector state for a source instance. State is a stream-keyed map; existing streams are merged with last-write-wins semantics.
+
+### Path parameters
+
+- `deviceId` — string
+- `sourceInstanceId` — string
+
+### Request body
+
+`application/json`
+- `state` (required) — object
+
+### Responses
+
+- `200` — JSON body
 - `400` — Invalid request
 - `401` — Authentication required
 - `403` — Permission denied

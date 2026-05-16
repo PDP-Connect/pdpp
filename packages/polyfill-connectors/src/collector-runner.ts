@@ -95,9 +95,26 @@ export interface CollectorRunConfig {
 export interface CollectorRunResult {
   done: Extract<EmittedMessage, { type: "DONE" }> | null;
   enqueuedBatches: number;
+  /**
+   * Map of stream → cursor for STATE messages flushed to the server this pass.
+   * Null when STATE was buffered but the flush was skipped because the queue
+   * still held unsent items, or when no in-scope STATE was emitted.
+   */
+  flushedState: Readonly<Record<string, unknown>> | null;
+  /** Prior state replayed into the START message (empty when first run). */
+  priorState: Readonly<Record<string, unknown>>;
   recordsQueued: number;
   satisfiedBindings: readonly RuntimeBindingName[];
   sentBatches: number;
+  /** True when the runner failed to persist accumulated STATE after a successful drain. */
+  statePutFailed: boolean;
+}
+
+export class CollectorStateReadError extends Error {
+  constructor(message: string, cause: unknown) {
+    super(message, { cause });
+    this.name = "CollectorStateReadError";
+  }
 }
 
 /**
@@ -126,6 +143,28 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
     deviceToken: config.deviceToken,
   });
 
+  let priorState: Readonly<Record<string, unknown>> = Object.freeze({});
+  try {
+    const projection = await client.getSourceInstanceState({ sourceInstanceId: config.sourceInstanceId });
+    if (projection.state && typeof projection.state === "object") {
+      priorState = Object.freeze({ ...projection.state });
+    }
+  } catch (error) {
+    // Honest-crash: we cannot safely advance without knowing prior state.
+    // Surface the failure via heartbeat and bail before spawning the child,
+    // so the operator can see the blocker on the dashboard.
+    await safeHeartbeat(client, {
+      connector_id: config.connector.connector_id,
+      records_pending: (await queue.list()).filter((item) => item.status !== "sent").length,
+      source_instance_id: config.sourceInstanceId,
+      status: "blocked",
+    });
+    throw new CollectorStateReadError(
+      `failed to read prior state for ${config.sourceInstanceId}: ${error instanceof Error ? error.message : String(error)}`,
+      error
+    );
+  }
+
   await client.heartbeat({
     connector_id: config.connector.connector_id,
     records_pending: (await queue.list()).filter((item) => item.status !== "sent").length,
@@ -133,14 +172,21 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
     status: "starting",
   });
 
-  const messages = await collectConnectorMessages(config.connector, {
-    baseUrl: config.baseUrl,
-    deviceToken: config.deviceToken,
-    ...(config.runId ? { runId: config.runId } : {}),
-  });
+  const messages = await collectConnectorMessages(
+    config.connector,
+    {
+      baseUrl: config.baseUrl,
+      deviceToken: config.deviceToken,
+      ...(config.runId ? { runId: config.runId } : {}),
+    },
+    priorState
+  );
   const records = messages.filter((msg): msg is Extract<EmittedMessage, { type: "RECORD" }> => msg.type === "RECORD");
   const done =
     messages.findLast((msg): msg is Extract<EmittedMessage, { type: "DONE" }> => msg.type === "DONE") ?? null;
+
+  const inScopeStreams = new Set(config.connector.streams);
+  const bufferedState = projectEmittedState(messages, inScopeStreams, config.connector.connector_id);
 
   let recordsQueued = 0;
   let enqueuedBatches = 0;
@@ -164,19 +210,97 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
   }
 
   const sentBatches = await drainCollectorQueue({ client, queue });
-  await client.heartbeat({
-    connector_id: config.connector.connector_id,
-    records_pending: (await queue.list()).filter((item) => item.status !== "sent").length,
-    source_instance_id: config.sourceInstanceId,
-    status: "healthy",
-  });
+  const pendingAfterDrain = (await queue.list()).filter((item) => item.status !== "sent").length;
 
-  return { done, enqueuedBatches, recordsQueued, sentBatches, satisfiedBindings };
+  let flushedState: Readonly<Record<string, unknown>> | null = null;
+  let statePutFailed = false;
+  if (pendingAfterDrain === 0 && Object.keys(bufferedState).length > 0) {
+    try {
+      await client.putSourceInstanceState({
+        sourceInstanceId: config.sourceInstanceId,
+        state: bufferedState,
+      });
+      flushedState = Object.freeze({ ...bufferedState });
+    } catch (error) {
+      statePutFailed = true;
+      // Surface via heartbeat. Next pass re-reads state from the server and
+      // re-emits records; device-ingest idempotency absorbs duplicates.
+      await safeHeartbeat(client, {
+        connector_id: config.connector.connector_id,
+        records_pending: pendingAfterDrain,
+        source_instance_id: config.sourceInstanceId,
+        status: "retrying",
+      });
+      process.stderr.write(
+        `${config.connector.connector_id} state PUT failed: ${error instanceof Error ? error.message : String(error)}\n`
+      );
+    }
+  }
+
+  if (!statePutFailed) {
+    await client.heartbeat({
+      connector_id: config.connector.connector_id,
+      records_pending: pendingAfterDrain,
+      source_instance_id: config.sourceInstanceId,
+      status: pendingAfterDrain > 0 ? "retrying" : "healthy",
+    });
+  }
+
+  return {
+    done,
+    enqueuedBatches,
+    flushedState,
+    priorState,
+    recordsQueued,
+    satisfiedBindings,
+    sentBatches,
+    statePutFailed,
+  };
+}
+
+/**
+ * Project emitted STATE messages into a stream-keyed map.
+ *
+ * - Per-stream last-wins ordering (matches `connector-state-store` semantics).
+ * - Drops STATE for streams that were not in `START.scope.streams` and emits a
+ *   stderr warning identifying the offending stream. Mirrors the in-process
+ *   runtime's strictness on stream membership.
+ */
+function projectEmittedState(
+  messages: readonly EmittedMessage[],
+  inScopeStreams: Set<string>,
+  connectorId: string
+): Record<string, unknown> {
+  const projected: Record<string, unknown> = {};
+  for (const message of messages) {
+    if (message.type !== "STATE") {
+      continue;
+    }
+    if (!inScopeStreams.has(message.stream)) {
+      process.stderr.write(`${connectorId} dropped out-of-scope STATE for stream '${message.stream}'\n`);
+      continue;
+    }
+    projected[message.stream] = message.cursor;
+  }
+  return projected;
+}
+
+async function safeHeartbeat(
+  client: Pick<LocalDeviceClient, "heartbeat">,
+  request: Parameters<LocalDeviceClient["heartbeat"]>[0]
+): Promise<void> {
+  try {
+    await client.heartbeat(request);
+  } catch {
+    // Heartbeat is best-effort here; the caller is already handling a more
+    // important failure and we do not want to mask it with a heartbeat error.
+  }
 }
 
 export function buildCollectorStartMessage(
   streams: readonly string[],
-  streamsToBackfill: readonly string[] = []
+  streamsToBackfill: readonly string[] = [],
+  priorState?: Readonly<Record<string, unknown>> | null
 ): StartMessage {
   const start: StartMessage = {
     scope: { streams: streams.map((name): StreamScope => ({ name })) },
@@ -184,6 +308,9 @@ export function buildCollectorStartMessage(
   };
   if (streamsToBackfill.length > 0) {
     start.streamsToBackfill = [...streamsToBackfill];
+  }
+  if (priorState && Object.keys(priorState).length > 0) {
+    start.state = { ...priorState };
   }
   return start;
 }
@@ -283,12 +410,15 @@ function buildCollectorChildEnv(context: CollectorChildContext): Record<string, 
 
 async function collectConnectorMessages(
   connector: CollectorConnectorSpec,
-  childContext: CollectorChildContext
+  childContext: CollectorChildContext,
+  priorState?: Readonly<Record<string, unknown>>
 ): Promise<EmittedMessage[]> {
   const child = spawnConnector(connector, childContext);
   const messages: EmittedMessage[] = [];
   const stderr: Buffer[] = [];
-  child.stdin.end(`${JSON.stringify(buildCollectorStartMessage(connector.streams, connector.streamsToBackfill))}\n`);
+  child.stdin.end(
+    `${JSON.stringify(buildCollectorStartMessage(connector.streams, connector.streamsToBackfill, priorState))}\n`
+  );
   child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
 
   const lines = createInterface({ input: child.stdout, terminal: false });

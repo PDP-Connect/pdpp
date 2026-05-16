@@ -40,18 +40,17 @@
  *     upload — the Gmail connector's preflight fails before mailbox
  *     work when those are missing.
  *
- *     Important limitation: this CLI does NOT yet persist or replay
- *     connector STATE. `runCollectorConnector` filters only RECORD
- *     messages into the device-exporter ingest queue and discards
- *     STATE entirely (see `src/collector-runner.ts`). That means a
- *     single invocation submits one window's worth of records, but
- *     re-running the CLI does NOT pick up where the previous run
- *     left off — every run is a fresh START with no `state.cursor`.
- *     A multi-window resumable operator loop needs a state
- *     load/replay/put contract added to `LocalDeviceClient` and the
- *     reference device-exporter endpoints; that is tracked as a
- *     separate OpenSpec change. Today's scope: prove the
- *     `streamsToBackfill` wire reaches the connector.
+ *     STATE handling: this CLI now persists and replays connector STATE
+ *     through the device-scoped state route under
+ *     `/_ref/device-exporters/:deviceId/source-instances/:sourceInstanceId/state`.
+ *     `runCollectorConnector` fetches prior state before spawning the
+ *     connector child, populates `START.state`, buffers emitted STATE
+ *     messages per stream (last-wins, in-scope only), and flushes the
+ *     resulting map back to the server only after every queued record
+ *     batch has been durably accepted. See OpenSpec
+ *     `design-local-collector-state-sync` for the load/replay/persist
+ *     contract and the honest-crash semantics (state never advances past
+ *     records the server has acknowledged).
  *
  *   advertise
  *     Print the collector runtime's advertised capabilities as JSON.

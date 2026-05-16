@@ -4,6 +4,8 @@ export const LOCAL_DEVICE_ENDPOINTS = {
   exchangeEnrollment: "/_ref/device-exporters/enroll",
   heartbeat: (deviceId: string) => `/_ref/device-exporters/${encodeURIComponent(deviceId)}/heartbeat`,
   ingestBatch: (deviceId: string) => `/_ref/device-exporters/${encodeURIComponent(deviceId)}/ingest-batches`,
+  sourceInstanceState: (deviceId: string, sourceInstanceId: string) =>
+    `/_ref/device-exporters/${encodeURIComponent(deviceId)}/source-instances/${encodeURIComponent(sourceInstanceId)}/state`,
 } as const;
 
 export interface LocalDeviceClientOptions {
@@ -43,6 +45,23 @@ export interface IngestBatchRequest {
   source_instance_id: string;
 }
 
+export interface GetSourceInstanceStateRequest {
+  sourceInstanceId: string;
+}
+
+export interface PutSourceInstanceStateRequest {
+  sourceInstanceId: string;
+  state: Record<string, unknown>;
+}
+
+export interface SourceInstanceStateResponse {
+  device_id: string;
+  object: "device_source_instance_state";
+  source_instance_id: string;
+  state: Record<string, unknown>;
+  updated_at: string | null;
+}
+
 export class LocalDeviceHttpError extends Error {
   readonly body: string;
   readonly status: number;
@@ -69,15 +88,41 @@ export class LocalDeviceClient {
   }
 
   exchangeEnrollment(request: EnrollmentExchangeRequest): Promise<EnrollmentExchangeResponse> {
-    return this.#post(LOCAL_DEVICE_ENDPOINTS.exchangeEnrollment, request, false);
+    return this.#request(LOCAL_DEVICE_ENDPOINTS.exchangeEnrollment, {
+      authenticate: false,
+      body: request,
+      method: "POST",
+    });
   }
 
   heartbeat(request: HeartbeatRequest): Promise<{ ok: true }> {
-    return this.#post(LOCAL_DEVICE_ENDPOINTS.heartbeat(this.#requireDeviceId()), request, true);
+    return this.#request(LOCAL_DEVICE_ENDPOINTS.heartbeat(this.#requireDeviceId()), {
+      authenticate: true,
+      body: request,
+      method: "POST",
+    });
   }
 
   ingestBatch(request: IngestBatchRequest): Promise<{ ok: true }> {
-    return this.#post(LOCAL_DEVICE_ENDPOINTS.ingestBatch(this.#requireDeviceId()), request, true);
+    return this.#request(LOCAL_DEVICE_ENDPOINTS.ingestBatch(this.#requireDeviceId()), {
+      authenticate: true,
+      body: request,
+      method: "POST",
+    });
+  }
+
+  getSourceInstanceState(request: GetSourceInstanceStateRequest): Promise<SourceInstanceStateResponse> {
+    const path = LOCAL_DEVICE_ENDPOINTS.sourceInstanceState(this.#requireDeviceId(), request.sourceInstanceId);
+    return this.#request(path, { authenticate: true, method: "GET" });
+  }
+
+  putSourceInstanceState(request: PutSourceInstanceStateRequest): Promise<SourceInstanceStateResponse> {
+    const path = LOCAL_DEVICE_ENDPOINTS.sourceInstanceState(this.#requireDeviceId(), request.sourceInstanceId);
+    return this.#request(path, {
+      authenticate: true,
+      body: { state: request.state },
+      method: "PUT",
+    });
   }
 
   #requireDeviceId(): string {
@@ -87,23 +132,28 @@ export class LocalDeviceClient {
     return this.#deviceId;
   }
 
-  async #post<TResponse>(path: string, body: unknown, authenticate: boolean): Promise<TResponse> {
+  async #request<TResponse>(
+    path: string,
+    options: { authenticate: boolean; body?: unknown; method: "GET" | "POST" | "PUT" }
+  ): Promise<TResponse> {
     const headers: Record<string, string> = {
       accept: "application/json",
-      "content-type": "application/json",
     };
-    if (authenticate) {
+    if (options.body !== undefined) {
+      headers["content-type"] = "application/json";
+    }
+    if (options.authenticate) {
       if (!this.#deviceToken) {
         throw new Error("device token required for authenticated local device request");
       }
       headers.authorization = `Bearer ${this.#deviceToken}`;
     }
 
-    const response = await this.#fetch(new URL(path, this.#baseUrl), {
-      body: JSON.stringify(body),
-      headers,
-      method: "POST",
-    });
+    const init: RequestInit = { headers, method: options.method };
+    if (options.body !== undefined) {
+      init.body = JSON.stringify(options.body);
+    }
+    const response = await this.#fetch(new URL(path, this.#baseUrl), init);
 
     const text = await response.text();
     if (!response.ok) {
