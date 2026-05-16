@@ -6,6 +6,7 @@
 - [x] 1.4 Skip automatic scheduler runs when deployment/runtime prerequisites are not ready.
 - [x] 1.5 Surface `ineligibility_reason` for stale enabled rows on schedule list/get API and dashboard.
 - [x] 1.6 Extend `scheduler-doctor` to cross-reference `/_ref/connectors` against `/_ref/schedules` and surface `NOSCHED` (auto-eligible, not enrolled) and `MANUAL` (gated, correctly unscheduled) verdicts so operators can tell enrollment gaps from gated connectors at a glance.
+- [x] 1.7 Suppress `next_due_at` and `last_error_code` on an enabled-but-ineligible schedule projection so the manifest gate replaces the prior failure mode as the authoritative current state, while preserving historical run timestamps.
 
 ## 2. Tests
 
@@ -15,6 +16,7 @@
 - [x] 2.4 Verify scheduler not-ready skips are recorded once per stable reason.
 - [x] 2.5 Cover schedule list/get API surfacing `ineligibility_reason` for a stale enabled row.
 - [x] 2.6 Cover `scheduler-doctor` `NOSCHED`/`MANUAL` cross-reference verdicts and verify connectors that have a persisted row are not double-counted.
+- [x] 2.7 Cover an enabled-but-ineligible schedule (Reddit-shape: prior `schedule.gave_up` / `not_ready` history under `background_safe: false`) and prove `next_due_at` and `last_error_code` are both suppressed in the controller projection and the `scheduler-doctor` JSON.
 
 ## 3. Acceptance Checks
 

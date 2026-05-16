@@ -18,6 +18,9 @@ The reference implementation SHALL keep the Collection boundary explicit across 
 - **THEN** the reference controller SHALL NOT silently delete or mutate the persisted row
 - **AND** the schedule listing API SHALL expose an `ineligibility_reason` string carrying the same reason the controller uses when rejecting create/resume and the scheduler manager uses when skipping
 - **AND** the schedule listing API SHALL return `ineligibility_reason: null` for rows that are either disabled or whose connector's current manifest policy permits automatic refresh
+- **AND** the schedule listing API SHALL return `next_due_at: null` for an enabled-but-ineligible row, because no automatic run will fire under the current manifest policy
+- **AND** the schedule listing API SHALL return `last_error_code: null` for an enabled-but-ineligible row, because the manifest gate is the current authoritative reason the row is benched, and surfacing the historical failure code from the prior automatic regime advertises a runtime failure mode that is no longer active
+- **AND** historical run anchors (`last_started_at`, `last_finished_at`, `last_successful_at`) on an enabled-but-ineligible row SHALL continue to reflect the persisted run history truthfully, because those describe events that already happened
 
 #### Scenario: Not-ready runtime prerequisites are skipped automatically
 - **WHEN** the scheduler evaluates an automatic connector run whose current deployment cannot satisfy required runtime prerequisites
