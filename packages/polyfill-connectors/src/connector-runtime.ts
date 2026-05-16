@@ -30,7 +30,8 @@
  *   - Counters (emitted + skipped)
  *   - Browser acquire + release + finally cleanup
  *   - Playwright tracing lifecycle (PDPP_TRACE=1)
- *   - Fixture capture lifecycle (PDPP_CAPTURE_FIXTURES=1)
+ *   - Fixture capture lifecycle (PDPP_CAPTURE_FIXTURES=1 always-retain;
+ *     PDPP_CAPTURE_ON_FAILURE=1 retain-on-failure with on-success cleanup)
  *   - Terminal DONE + flushAndExit on both success and throw
  *   - Retryable-error detection via retryablePattern regex
  *   - Auth strategy resolution before collect() runs
@@ -459,7 +460,10 @@ export function runConnector(config: RunConnectorConfig): void {
   };
 
   if (capture) {
-    process.stderr.write(`[capture] PDPP_CAPTURE_FIXTURES=1; writing to ${capture.baseDir}\n`);
+    const modeLabel = capture.keepOnSuccess
+      ? "PDPP_CAPTURE_FIXTURES=1 (always retain)"
+      : "PDPP_CAPTURE_ON_FAILURE=1 (retain on failure only)";
+    process.stderr.write(`[capture] ${modeLabel}; writing to ${capture.baseDir}\n`);
   }
 
   const flushAndExit = (code: number): void => {
@@ -763,8 +767,20 @@ async function runInBrowser(args: {
   // `shutdown-hook.ts` for the design and `profile-lock.ts` for the
   // correction-layer counterpart.
   const { withShutdownRelease } = await import("./shutdown-hook.ts");
-  const disposeShutdownHook = withShutdownRelease(release);
   const tracer = makeTracer(ctx, name, baseCtx.capture);
+  // Finalization runs before release(). On SIGTERM/SIGINT this is what
+  // gives the operator a usable trace/capture artifact for the in-flight
+  // run; without it, Docker stop / scheduler restart drops the trace.
+  let traceFinalized = false;
+  const finalizeDiagnostics = async (): Promise<void> => {
+    if (traceFinalized) {
+      return;
+    }
+    traceFinalized = true;
+    baseCtx.capture?.setTraceCheckpointHook?.(null);
+    await tracer.stop();
+  };
+  const disposeShutdownHook = withShutdownRelease(release, { finalize: finalizeDiagnostics });
   await tracer.start();
   baseCtx.capture?.setTraceCheckpointHook?.((label) => tracer.checkpoint(label));
   let page: Page | null = null;
@@ -790,25 +806,36 @@ async function runInBrowser(args: {
     await collect({ ...baseCtx, context: ctx, page, sendInteraction: browserSendInteraction });
     await captureBrowserPage(baseCtx.capture, page, "runtime-collect-complete");
     // Mark success before the finally so tracer.stop() deletes chunks on a
-    // clean run. Anything thrown after this point (only release/page-close)
-    // is treated as benign teardown and does not flip the trace to retained.
+    // clean run, and capture.finalize() can scrub the raw dir in
+    // PDPP_CAPTURE_ON_FAILURE mode. Anything thrown after this point (only
+    // release/page-close) is treated as benign teardown.
     tracer.markSucceeded();
+    baseCtx.capture?.markSucceeded?.();
   } catch (err) {
     if (page) {
       await captureBrowserPage(baseCtx.capture, page, "runtime-error");
     }
     throw err;
   } finally {
-    baseCtx.capture?.setTraceCheckpointHook?.(null);
-    await tracer.stop();
+    await finalizeDiagnostics();
     await closeBrowserPage(page);
     await release().catch((): undefined => undefined);
     disposeShutdownHook();
+    baseCtx.capture?.finalize?.();
   }
 }
 
-async function captureBrowserPage(capture: CaptureSession | null, page: Page, label: string): Promise<void> {
+export async function captureBrowserPage(capture: CaptureSession | null, page: Page, label: string): Promise<void> {
   if (!capture) {
+    return;
+  }
+  // After a CDP transport drop / remote target loss the page may already
+  // be closed by the time we try to capture (`runtime-error` is the
+  // common case). Skipping cleanly here keeps a bounded diagnostic line
+  // out of Playwright's noisy "Target page, context or browser has been
+  // closed" exception path.
+  if (page.isClosed()) {
+    process.stderr.write(`[capture] page already closed at ${label}; skipping dom snapshot\n`);
     return;
   }
   await capture.captureDom(page, label);
@@ -1347,6 +1374,28 @@ interface Tracer {
 }
 
 /**
+ * Best-effort check that the underlying browser is still connected.
+ * Patchright exposes `context.browser()?.isConnected()`; we tolerate any
+ * shape by treating an unknown answer as "connected" so this guard never
+ * silently disables a working trace stop.
+ */
+export function isContextDisconnected(context: Pick<BrowserContext, "browser">): boolean {
+  try {
+    const browser = context.browser?.();
+    if (!browser) {
+      return false;
+    }
+    if (typeof browser.isConnected === "function") {
+      return browser.isConnected() === false;
+    }
+  } catch {
+    // If the bridge itself throws, treat that as a disconnect signal.
+    return true;
+  }
+  return false;
+}
+
+/**
  * Start/stop Playwright tracing. With raw fixture capture active, traces are
  * flushed as chunks at every fixture checkpoint so a later browser/context
  * closure does not destroy the entire diagnostic artifact.
@@ -1356,7 +1405,7 @@ interface Tracer {
  * after a clean run (markSucceeded() called before stop()) and retained on
  * failure for post-mortem debugging.
  */
-function makeTracer(context: BrowserContext, name: string, capture: CaptureSession | null): Tracer {
+export function makeTracer(context: BrowserContext, name: string, capture: CaptureSession | null): Tracer {
   const enabled = process.env.PDPP_TRACE === "1" || capture !== null;
   const traceName = `${name}-${new Date().toISOString().replace(TRACE_TIMESTAMP_UNSAFE, "-")}`;
   const tracePath = capture ? join(capture.baseDir, "traces", `${traceName}.zip`) : `/tmp/${traceName}.zip`;
@@ -1478,32 +1527,64 @@ function makeTracer(context: BrowserContext, name: string, capture: CaptureSessi
       if (!(enabled && started)) {
         return;
       }
+      started = false; // idempotent: SIGTERM finalize + finally block both call stop().
+      // If the browser is already disconnected (CDP transport drop), the
+      // server has buffered events we can't retrieve. Skip the stop call
+      // and keep the chunks we've already written rather than throwing a
+      // noisy "Target page, context or browser has been closed".
+      if (isContextDisconnected(context)) {
+        finalizeDisconnected();
+        return;
+      }
       try {
         if (traceBaseDir && typeof tracing.stopChunk === "function") {
-          await stopChunk("final");
-          await context.tracing.stop();
-          if (succeeded) {
-            deleteWrittenTraces();
-            process.stderr.write(`[trace] run succeeded; trace chunks deleted from ${traceBaseDir}\n`);
-          } else {
-            process.stderr.write(`[trace] run failed; trace chunks retained under ${traceBaseDir}\n`);
-          }
+          await stopChunkedTrace();
           return;
         }
-        await context.tracing.stop({ path: tracePath });
-        if (succeeded) {
-          try {
-            rmSync(tracePath, { force: true });
-            process.stderr.write(`[trace] run succeeded; trace deleted (${tracePath})\n`);
-          } catch (err) {
-            writeTraceDiagnostic("delete-on-success", err);
-          }
-        } else {
-          process.stderr.write(`[trace] run failed; trace retained at ${tracePath}\n`);
-        }
+        await stopSingleTrace();
       } catch (err) {
         writeTraceDiagnostic("stop", err);
       }
     },
   };
+
+  function finalizeDisconnected(): void {
+    writeTraceDiagnostic("stop-disconnected", new Error("browser disconnected before trace stop"));
+    if (!traceBaseDir) {
+      return;
+    }
+    if (succeeded) {
+      deleteWrittenTraces();
+      process.stderr.write(
+        `[trace] run succeeded but browser disconnected; trace chunks deleted from ${traceBaseDir}\n`
+      );
+    } else {
+      process.stderr.write(`[trace] browser disconnected before stop; chunks retained under ${traceBaseDir}\n`);
+    }
+  }
+
+  async function stopChunkedTrace(): Promise<void> {
+    await stopChunk("final");
+    await context.tracing.stop();
+    if (succeeded) {
+      deleteWrittenTraces();
+      process.stderr.write(`[trace] run succeeded; trace chunks deleted from ${traceBaseDir}\n`);
+    } else {
+      process.stderr.write(`[trace] run failed; trace chunks retained under ${traceBaseDir}\n`);
+    }
+  }
+
+  async function stopSingleTrace(): Promise<void> {
+    await context.tracing.stop({ path: tracePath });
+    if (!succeeded) {
+      process.stderr.write(`[trace] run failed; trace retained at ${tracePath}\n`);
+      return;
+    }
+    try {
+      rmSync(tracePath, { force: true });
+      process.stderr.write(`[trace] run succeeded; trace deleted (${tracePath})\n`);
+    } catch (err) {
+      writeTraceDiagnostic("delete-on-success", err);
+    }
+  }
 }

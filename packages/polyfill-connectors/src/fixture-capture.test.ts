@@ -1,10 +1,33 @@
 import assert from "node:assert/strict";
-import { readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import test from "node:test";
 
 import type { Page } from "playwright";
 
 import { createCaptureSession, type LocatorProbePage } from "./fixture-capture.ts";
+
+function withEnv<T>(vars: Record<string, string | undefined>, body: () => T): T {
+  const previous: Record<string, string | undefined> = {};
+  for (const [k, v] of Object.entries(vars)) {
+    previous[k] = process.env[k];
+    if (v === undefined) {
+      delete process.env[k];
+    } else {
+      process.env[k] = v;
+    }
+  }
+  try {
+    return body();
+  } finally {
+    for (const [k, v] of Object.entries(previous)) {
+      if (v === undefined) {
+        delete process.env[k];
+      } else {
+        process.env[k] = v;
+      }
+    }
+  }
+}
 
 test("captureDom writes html, aria, page metadata, and screenshot in raw local capture mode", async () => {
   const previous = process.env.PDPP_CAPTURE_FIXTURES;
@@ -160,13 +183,99 @@ test("captureDom invokes an optional trace checkpoint hook after page capture", 
 });
 
 test("createCaptureSession returns null when raw capture mode is disabled", () => {
-  const previous = process.env.PDPP_CAPTURE_FIXTURES;
-  delete process.env.PDPP_CAPTURE_FIXTURES;
-  try {
+  withEnv({ PDPP_CAPTURE_FIXTURES: undefined, PDPP_CAPTURE_ON_FAILURE: undefined }, () => {
     assert.equal(createCaptureSession(`fixture_capture_disabled_${process.pid}_${Date.now()}`), null);
-  } finally {
-    if (previous !== undefined) {
-      process.env.PDPP_CAPTURE_FIXTURES = previous;
+  });
+});
+
+test("createCaptureSession honors PDPP_CAPTURE_ON_FAILURE=1 with keepOnSuccess=false", () => {
+  withEnv({ PDPP_CAPTURE_FIXTURES: undefined, PDPP_CAPTURE_ON_FAILURE: "1" }, () => {
+    const capture = createCaptureSession(`fixture_capture_on_failure_${process.pid}_${Date.now()}`);
+    assert.ok(capture);
+    try {
+      assert.equal(capture.keepOnSuccess, false);
+    } finally {
+      rmSync(capture.baseDir, { force: true, recursive: true });
     }
-  }
+  });
+});
+
+test("PDPP_CAPTURE_FIXTURES wins over PDPP_CAPTURE_ON_FAILURE (always retain)", () => {
+  withEnv({ PDPP_CAPTURE_FIXTURES: "1", PDPP_CAPTURE_ON_FAILURE: "1" }, () => {
+    const capture = createCaptureSession(`fixture_capture_both_${process.pid}_${Date.now()}`);
+    assert.ok(capture);
+    try {
+      assert.equal(capture.keepOnSuccess, true);
+      capture.markSucceeded();
+      capture.finalize();
+      // Always-retain mode never deletes on success.
+      assert.equal(existsSync(capture.baseDir), true);
+    } finally {
+      rmSync(capture.baseDir, { force: true, recursive: true });
+    }
+  });
+});
+
+test("PDPP_CAPTURE_ON_FAILURE finalize() deletes raw dir on success", async () => {
+  await withEnv({ PDPP_CAPTURE_FIXTURES: undefined, PDPP_CAPTURE_ON_FAILURE: "1" }, async () => {
+    const capture = createCaptureSession(`fixture_capture_on_failure_success_${process.pid}_${Date.now()}`);
+    assert.ok(capture);
+    const page: Pick<Page, "ariaSnapshot" | "content" | "screenshot" | "title" | "url"> = {
+      ariaSnapshot: () => Promise.resolve("- document"),
+      content: () => Promise.resolve("<html><body>ok</body></html>"),
+      screenshot: () => Promise.resolve(Buffer.from("png")),
+      title: () => Promise.resolve("Fixture"),
+      url: () => "https://example.test/page",
+    };
+    await capture.captureDom(page as Page, "before-success");
+    assert.equal(existsSync(capture.baseDir), true);
+    assert.equal(existsSync(`${capture.baseDir}/dom/before-success.html`), true);
+
+    capture.markSucceeded();
+    capture.finalize();
+    assert.equal(existsSync(capture.baseDir), false);
+
+    // Second finalize() is a no-op (still no dir, no throw).
+    capture.finalize();
+    assert.equal(existsSync(capture.baseDir), false);
+  });
+});
+
+test("PDPP_CAPTURE_ON_FAILURE finalize() retains raw dir when markSucceeded was not called", async () => {
+  await withEnv({ PDPP_CAPTURE_FIXTURES: undefined, PDPP_CAPTURE_ON_FAILURE: "1" }, async () => {
+    const capture = createCaptureSession(`fixture_capture_on_failure_fail_${process.pid}_${Date.now()}`);
+    assert.ok(capture);
+    try {
+      const page: Pick<Page, "ariaSnapshot" | "content" | "screenshot" | "title" | "url"> = {
+        ariaSnapshot: () => Promise.resolve("- document"),
+        content: () => Promise.resolve("<html><body>ok</body></html>"),
+        screenshot: () => Promise.resolve(Buffer.from("png")),
+        title: () => Promise.resolve("Fixture"),
+        url: () => "https://example.test/page",
+      };
+      await capture.captureDom(page as Page, "before-fail");
+      assert.equal(existsSync(`${capture.baseDir}/dom/before-fail.html`), true);
+
+      // markSucceeded() NOT called — simulating a failure.
+      capture.finalize();
+      assert.equal(existsSync(capture.baseDir), true);
+      assert.equal(existsSync(`${capture.baseDir}/dom/before-fail.html`), true);
+    } finally {
+      rmSync(capture.baseDir, { force: true, recursive: true });
+    }
+  });
+});
+
+test("PDPP_CAPTURE_FIXTURES finalize() retains raw dir on success (always-retain)", () => {
+  withEnv({ PDPP_CAPTURE_FIXTURES: "1", PDPP_CAPTURE_ON_FAILURE: undefined }, () => {
+    const capture = createCaptureSession(`fixture_capture_always_retain_${process.pid}_${Date.now()}`);
+    assert.ok(capture);
+    try {
+      capture.markSucceeded();
+      capture.finalize();
+      assert.equal(existsSync(capture.baseDir), true);
+    } finally {
+      rmSync(capture.baseDir, { force: true, recursive: true });
+    }
+  });
 });

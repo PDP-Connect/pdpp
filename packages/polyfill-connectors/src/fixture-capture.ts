@@ -1,7 +1,25 @@
 /**
  * Fixture capture for connector runs.
  *
- * Gated on PDPP_CAPTURE_FIXTURES=1. When active, writes under
+ * Two activation modes:
+ *
+ *   PDPP_CAPTURE_FIXTURES=1   — always retain raw capture (developer mode).
+ *                                Used for fixture-scrubber input and explicit
+ *                                live-capture sessions.
+ *
+ *   PDPP_CAPTURE_ON_FAILURE=1 — capture during the run but delete the raw
+ *                                directory on success; retain on failure.
+ *                                Default mode for scheduler/docker runs so
+ *                                the first time a connector fails the
+ *                                operator already has DOM/ARIA/screenshots/
+ *                                trace chunks for post-mortem debugging
+ *                                without paying storage on success.
+ *
+ * When both are set, PDPP_CAPTURE_FIXTURES wins (always retain). When
+ * neither is set, `createCaptureSession` returns null and the runtime
+ * makes no automatic capture calls.
+ *
+ * Active sessions write under
  * `packages/polyfill-connectors/fixtures/<connector>/raw/<runId>/` local raw
  * kinds of capture:
  *
@@ -30,7 +48,7 @@
  * never make a connector fail.
  */
 
-import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -141,6 +159,22 @@ export interface CaptureSession {
   captureDom(page: Page, label: string): Promise<void>;
   captureHttp(label: string, body: unknown, meta?: HttpCaptureMeta): void;
   captureLocatorProbe?(page: LocatorProbePage, label: string, probes: readonly LocatorProbe[]): Promise<void>;
+  /**
+   * Apply post-run retention policy:
+   *   - PDPP_CAPTURE_FIXTURES mode: no-op (always retain).
+   *   - PDPP_CAPTURE_ON_FAILURE mode: if markSucceeded() was called,
+   *     delete the raw run directory. Otherwise retain.
+   * Safe to call multiple times; the second call is a no-op.
+   */
+  finalize(): void;
+  /** True when this session retains raw fixtures on success. */
+  readonly keepOnSuccess: boolean;
+  /**
+   * Mark the run as successful. Combined with `finalize()`, this drives
+   * the failure-only retention policy. With `keepOnSuccess=true` (the
+   * always-retain default), calling this has no effect.
+   */
+  markSucceeded(): void;
   recordRecord(msg: { stream: string; data: RecordData }): void;
   readonly runId: string;
   setTraceCheckpointHook?(hook: ((label: string) => Promise<void>) | null): void;
@@ -311,9 +345,14 @@ async function writeLocatorProbeReport(
 }
 
 export function createCaptureSession(connectorName: string): CaptureSession | null {
-  if (process.env.PDPP_CAPTURE_FIXTURES !== "1") {
+  const alwaysRetain = process.env.PDPP_CAPTURE_FIXTURES === "1";
+  const onFailureOnly = process.env.PDPP_CAPTURE_ON_FAILURE === "1";
+  if (!(alwaysRetain || onFailureOnly)) {
     return null;
   }
+  // PDPP_CAPTURE_FIXTURES wins over PDPP_CAPTURE_ON_FAILURE if both set —
+  // explicit always-retain trumps conditional retain.
+  const keepOnSuccess = alwaysRetain;
   const runId = new Date().toISOString().replace(/[:.]/g, "-");
   const baseDir = join(PACKAGE_ROOT, "fixtures", connectorName, "raw", runId);
   try {
@@ -333,12 +372,34 @@ export function createCaptureSession(connectorName: string): CaptureSession | nu
 
   let httpSeq = 0;
   let traceCheckpointHook: ((label: string) => Promise<void>) | null = null;
+  let succeeded = false;
+  let finalized = false;
 
   return {
     runId,
     baseDir,
+    keepOnSuccess,
     setTraceCheckpointHook(hook): void {
       traceCheckpointHook = hook;
+    },
+    markSucceeded(): void {
+      succeeded = true;
+    },
+    finalize(): void {
+      if (finalized) {
+        return;
+      }
+      finalized = true;
+      if (keepOnSuccess || !succeeded) {
+        return;
+      }
+      try {
+        rmSync(baseDir, { force: true, recursive: true });
+        process.stderr.write(`[capture] run succeeded; raw capture deleted (${baseDir})\n`);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`[capture] cleanup failed for ${baseDir}: ${message}\n`);
+      }
     },
     recordRecord(msg): void {
       try {

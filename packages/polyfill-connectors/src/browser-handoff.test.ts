@@ -584,6 +584,7 @@ test("manualAction starts fixture capture before notifying and does not wait for
       capture: {
         baseDir: "/tmp/capture",
         runId: "capture_run",
+        keepOnSuccess: true,
         captureDom: (capturedPage: Page, label: string) => {
           captureStarted = true;
           captured.push({ label, page: capturedPage });
@@ -592,6 +593,8 @@ test("manualAction starts fixture capture before notifying and does not wait for
           });
         },
         captureHttp: () => undefined,
+        finalize: () => undefined,
+        markSucceeded: () => undefined,
         recordRecord: () => undefined,
       },
       message: "Continue when ready.",
@@ -618,11 +621,14 @@ test("manualAction fixture capture does not block operator notification", async 
       capture: {
         baseDir: "/tmp/capture",
         runId: "capture_run",
+        keepOnSuccess: true,
         captureDom: () =>
           new Promise<void>((resolve) => {
             releaseCapture = resolve;
           }),
         captureHttp: () => undefined,
+        finalize: () => undefined,
+        markSucceeded: () => undefined,
         recordRecord: () => undefined,
       },
       message: "Continue when ready.",
