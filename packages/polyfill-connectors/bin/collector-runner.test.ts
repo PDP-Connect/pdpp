@@ -7,10 +7,11 @@ import { buildConnectorSpec, parseArgs } from "./collector-runner.ts";
 // These tests pin the START wire for stream backfill:
 // CLI argv → parseArgs → buildConnectorSpec → buildCollectorStartMessage.
 // They prove that `--backfill-streams attachments` reaches the connector
-// subprocess as `START.streamsToBackfill`. They do NOT prove a
-// resumable operator loop — `runCollectorConnector` currently discards
-// connector STATE messages, so re-running the CLI does not continue
-// from a previous window. That is a separate, larger contract change.
+// subprocess as `START.streamsToBackfill`.
+//
+// The resumable operator loop now lives in `runCollectorConnector` and
+// `LocalDeviceClient` (state GET/PUT) — see
+// `src/collector-runner.test.ts` for the load/replay/persist regression.
 
 test("CLI run --connector gmail uses bundled defaults so operators don't need --command/--args/--streams", () => {
   const options = parseArgs([
@@ -65,9 +66,9 @@ test("CLI --backfill-streams reaches the connector as START.streamsToBackfill (S
   // in collectConnectorMessages — emitting a START line that the
   // Gmail connector reads and routes into runAllMailPasses, which
   // honors streamsToBackfill to walk a bounded historical UID window.
-  // Note: this asserts the START envelope shape only. Whether the
-  // subprocess's STATE emit is persisted/replayed by future runs is
-  // separately gated on STATE-handling in `runCollectorConnector`.
+  // The subprocess's STATE emit is now persisted/replayed by future
+  // runs through `runCollectorConnector` per OpenSpec
+  // `design-local-collector-state-sync`.
   const start = buildCollectorStartMessage(spec.streams, spec.streamsToBackfill);
   assert.deepEqual(start.streamsToBackfill, ["attachments"]);
   assert.equal(start.type, "START");

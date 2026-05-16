@@ -3635,6 +3635,98 @@ function buildAsApp(opts = {}) {
     }
   });
 
+  // GET /_ref/device-exporters/:deviceId/source-instances/:sourceInstanceId/state
+  // Device-scoped local collector state read. Reference-only; not part of the
+  // public PDPP contract. State is stored under the same internal storage
+  // connector id used by device ingest (`referenceLocalDeviceStorageConnectorId`)
+  // so device state rows never collide with owner-auth /v1/state rows for the
+  // public connector id. See OpenSpec `design-local-collector-state-sync`.
+  app.get(
+    '/_ref/device-exporters/:deviceId/source-instances/:sourceInstanceId/state',
+    { contract: 'refGetDeviceExporterSourceInstanceState' },
+    requireDeviceExporterCredential,
+    async (req, res) => {
+      try {
+        const deviceId = decodeURIComponent(req.params.deviceId);
+        if (deviceId !== req.deviceExporter.deviceId) {
+          return pdppError(res, 403, 'permission_error', 'Device credential is not valid for this device');
+        }
+        const sourceInstanceId = decodeURIComponent(req.params.sourceInstanceId);
+        const sourceInstance = await deviceExporterStore.getSourceInstance(deviceId, sourceInstanceId);
+        if (!sourceInstance || sourceInstance.status !== 'active') {
+          return pdppError(
+            res,
+            404,
+            'not_found',
+            `Unknown source_instance_id '${sourceInstanceId}'`,
+            'source_instance_id',
+          );
+        }
+        const storageConnectorId = referenceLocalDeviceStorageConnectorId(
+          sourceInstance.connectorId,
+          sourceInstanceId,
+        );
+        const projection = await getSyncState(storageConnectorId, { grantId: null });
+        res.json({
+          object: 'device_source_instance_state',
+          device_id: deviceId,
+          source_instance_id: sourceInstanceId,
+          state: projection.state ?? {},
+          updated_at: projection.updated_at ?? null,
+        });
+      } catch (err) {
+        handleError(res, err);
+      }
+    },
+  );
+
+  // PUT /_ref/device-exporters/:deviceId/source-instances/:sourceInstanceId/state
+  // Device-scoped local collector state write. Body shape: { state: { [stream]: cursor } }.
+  // Last-write-wins per stream; full replacement of all streams is NOT performed
+  // because the underlying ConnectorStateStore is stream-keyed merge.
+  app.put(
+    '/_ref/device-exporters/:deviceId/source-instances/:sourceInstanceId/state',
+    { contract: 'refPutDeviceExporterSourceInstanceState' },
+    requireDeviceExporterCredential,
+    async (req, res) => {
+      try {
+        const deviceId = decodeURIComponent(req.params.deviceId);
+        if (deviceId !== req.deviceExporter.deviceId) {
+          return pdppError(res, 403, 'permission_error', 'Device credential is not valid for this device');
+        }
+        const sourceInstanceId = decodeURIComponent(req.params.sourceInstanceId);
+        const sourceInstance = await deviceExporterStore.getSourceInstance(deviceId, sourceInstanceId);
+        if (!sourceInstance || sourceInstance.status !== 'active') {
+          return pdppError(
+            res,
+            404,
+            'not_found',
+            `Unknown source_instance_id '${sourceInstanceId}'`,
+            'source_instance_id',
+          );
+        }
+        const stateMap = optionalObject(req.body?.state);
+        if (!stateMap) {
+          return pdppError(res, 400, 'invalid_request', 'state body must be an object map of streams to cursors', 'state');
+        }
+        const storageConnectorId = referenceLocalDeviceStorageConnectorId(
+          sourceInstance.connectorId,
+          sourceInstanceId,
+        );
+        const projection = await putSyncState(storageConnectorId, stateMap, { grantId: null });
+        res.json({
+          object: 'device_source_instance_state',
+          device_id: deviceId,
+          source_instance_id: sourceInstanceId,
+          state: projection.state ?? {},
+          updated_at: projection.updated_at ?? null,
+        });
+      } catch (err) {
+        handleError(res, err);
+      }
+    },
+  );
+
   // Operator-issued client listing. Backs the dashboard Tokens page so an
   // operator can see and revoke the credentials they registered. Returns
   // only dynamic clients whose `metadata.issuer_subject_id` matches the

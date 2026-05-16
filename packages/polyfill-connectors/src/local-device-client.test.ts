@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { test } from "node:test";
-import { LOCAL_DEVICE_ENDPOINTS, LocalDeviceClient } from "./local-device-client.ts";
+import { LOCAL_DEVICE_ENDPOINTS, LocalDeviceClient, LocalDeviceHttpError } from "./local-device-client.ts";
 
 test("LocalDeviceClient sends enrollment exchange without bearer token", async () => {
   const seen: SeenRequest[] = [];
@@ -70,25 +70,136 @@ test("LocalDeviceClient sends bearer-authenticated heartbeat and ingest batch sh
   }
 });
 
+test("LocalDeviceClient GET source-instance state hits the device-scoped state route with the bearer", async () => {
+  const seen: SeenRequest[] = [];
+  const server = await startJsonServer(seen);
+  try {
+    const client = new LocalDeviceClient({ baseUrl: server.url, deviceId: "device-1", deviceToken: "device-token" });
+    const response = await client.getSourceInstanceState({ sourceInstanceId: "source-1" });
+    assert.equal(response.object, "device_source_instance_state");
+    assert.equal(response.device_id, "device-1");
+    assert.equal(response.source_instance_id, "source-1");
+    assert.deepEqual(response.state, { messages: { cursor: "abc" } });
+    assert.equal(seen[0]?.method, "GET");
+    assert.equal(seen[0]?.path, LOCAL_DEVICE_ENDPOINTS.sourceInstanceState("device-1", "source-1"));
+    assert.equal(seen[0]?.authorization, "Bearer device-token");
+    // No body on GET.
+    assert.equal(seen[0]?.body, null);
+  } finally {
+    await server.close();
+  }
+});
+
+test("LocalDeviceClient PUT source-instance state sends bearer + JSON body", async () => {
+  const seen: SeenRequest[] = [];
+  const server = await startJsonServer(seen);
+  try {
+    const client = new LocalDeviceClient({ baseUrl: server.url, deviceId: "device-1", deviceToken: "device-token" });
+    await client.putSourceInstanceState({
+      sourceInstanceId: "source-1",
+      state: { messages: { cursor: "next" } },
+    });
+    assert.equal(seen[0]?.method, "PUT");
+    assert.equal(seen[0]?.path, LOCAL_DEVICE_ENDPOINTS.sourceInstanceState("device-1", "source-1"));
+    assert.equal(seen[0]?.authorization, "Bearer device-token");
+    assert.deepEqual(seen[0]?.body, { state: { messages: { cursor: "next" } } });
+  } finally {
+    await server.close();
+  }
+});
+
+test("LocalDeviceClient state methods reject 401/403 with LocalDeviceHttpError", async () => {
+  const server = await startStatusServer(401, "denied");
+  try {
+    const client = new LocalDeviceClient({ baseUrl: server.url, deviceId: "device-1", deviceToken: "device-token" });
+    await assert.rejects(
+      () => client.getSourceInstanceState({ sourceInstanceId: "source-1" }),
+      (err: unknown) => {
+        assert.ok(err instanceof LocalDeviceHttpError);
+        if (err instanceof LocalDeviceHttpError) {
+          assert.equal(err.status, 401);
+        }
+        return true;
+      }
+    );
+  } finally {
+    await server.close();
+  }
+});
+
+test("LocalDeviceClient state methods surface 404 unknown source instance", async () => {
+  const server = await startStatusServer(404, '{"error":{"code":"not_found"}}');
+  try {
+    const client = new LocalDeviceClient({ baseUrl: server.url, deviceId: "device-1", deviceToken: "device-token" });
+    await assert.rejects(
+      () => client.getSourceInstanceState({ sourceInstanceId: "missing" }),
+      (err: unknown) => {
+        assert.ok(err instanceof LocalDeviceHttpError);
+        if (err instanceof LocalDeviceHttpError) {
+          assert.equal(err.status, 404);
+          assert.ok(err.body.includes("not_found"));
+        }
+        return true;
+      }
+    );
+  } finally {
+    await server.close();
+  }
+});
+
 interface SeenRequest {
   authorization: string | undefined;
   body: unknown;
+  method: string;
   path: string;
 }
 
 async function startJsonServer(seen: SeenRequest[]): Promise<{ close: () => Promise<void>; url: string }> {
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const body = await readRequestBody(req);
+    const path = req.url ?? "";
     seen.push({
       authorization: req.headers.authorization,
       body: body ? JSON.parse(body) : null,
-      path: req.url ?? "",
+      method: req.method ?? "",
+      path,
     });
-    if (req.url === LOCAL_DEVICE_ENDPOINTS.exchangeEnrollment) {
+    if (path === LOCAL_DEVICE_ENDPOINTS.exchangeEnrollment) {
       sendJson(res, 200, { device_id: "device-1", device_token: "token-1", source_instance_id: "source-1" });
       return;
     }
+    // Match either GET or PUT against the state route, regardless of which
+    // sourceInstanceId the test used.
+    if (path.endsWith("/state")) {
+      const parts = path.split("/");
+      const sourceInstanceId = decodeURIComponent(parts.at(-2) ?? "");
+      sendJson(res, 200, {
+        object: "device_source_instance_state",
+        device_id: "device-1",
+        source_instance_id: sourceInstanceId,
+        state:
+          req.method === "GET"
+            ? { messages: { cursor: "abc" } }
+            : ((body ? JSON.parse(body) : { state: {} }).state ?? {}),
+        updated_at: "2026-04-30T12:00:00.000Z",
+      });
+      return;
+    }
     sendJson(res, 200, { ok: true });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  return {
+    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    url: `http://127.0.0.1:${address.port}`,
+  };
+}
+
+async function startStatusServer(status: number, body: string): Promise<{ close: () => Promise<void>; url: string }> {
+  const server = createServer((_req: IncomingMessage, res: ServerResponse) => {
+    res.writeHead(status, { "content-type": "application/json" });
+    res.end(body);
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
