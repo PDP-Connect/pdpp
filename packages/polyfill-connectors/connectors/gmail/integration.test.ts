@@ -31,12 +31,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
 import { mock, test } from "node:test";
-import type {
-  FetchMessageObject,
-  MessageEnvelopeObject,
-  MessageStructureObject,
-  // biome-ignore lint/correctness/noUnresolvedImports: imapflow is declared in package.json; Biome's resolver doesn't see it here
-} from "imapflow";
+import type { FetchMessageObject, MessageEnvelopeObject, MessageStructureObject } from "imapflow";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
 import {
   addAttachmentBackfillRecordToSummary,
