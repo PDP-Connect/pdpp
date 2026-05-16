@@ -50,6 +50,13 @@ const CANONICAL_REF_TRACE = /pdpp ref trace show/;
 const PDPP_REF_NAMESPACE = /pdpp ref/;
 const PDPP_CONNECT_COMMAND = /pdpp connect/;
 
+// Patterns asserting the zero-install npx invocation is surfaced alongside
+// the canonical `pdpp ref ...` copy so users without a globally-installed
+// binary still have a runnable form to copy.
+const NO_INSTALL_HELPER = /pdppCliNoInstallCommand/;
+const PEEK_NO_INSTALL_HOOK = /peek-cli-no-install/;
+const DETAIL_NO_INSTALL_HOOK = /cli-no-install-command/;
+
 test("no surfaced file advertises legacy bare pdpp run/grant/trace aliases", async () => {
   for (const relPath of SURFACED_FILES) {
     const src = await read(relPath);
@@ -82,4 +89,20 @@ test("cli README advertises pdpp ref namespace", async () => {
   const src = await read("packages/cli/README.md");
   assert.match(src, PDPP_REF_NAMESPACE);
   assert.match(src, PDPP_CONNECT_COMMAND);
+});
+
+// The dashboard previously told users to "Install with `npx -y @pdpp/cli@beta
+// --help`" next to a bare `pdpp ref ...` command. Users who copied that bare
+// command got `command not found: pdpp`. The peek + detail surfaces must now
+// also render a zero-install one-shot form (`npx -y @pdpp/cli@beta ref ...`).
+test("peek pane surfaces a zero-install npx invocation", async () => {
+  const src = await read("apps/web/src/app/dashboard/components/peek.tsx");
+  assert.match(src, NO_INSTALL_HELPER, "peek pane must derive the no-install form via the shared helper");
+  assert.match(src, PEEK_NO_INSTALL_HOOK, "peek pane must render the no-install form with a stable test hook");
+});
+
+test("timeline detail view surfaces a zero-install npx invocation", async () => {
+  const src = await read("apps/web/src/app/dashboard/components/views/timeline-detail-view.tsx");
+  assert.match(src, NO_INSTALL_HELPER);
+  assert.match(src, DETAIL_NO_INSTALL_HOOK);
 });

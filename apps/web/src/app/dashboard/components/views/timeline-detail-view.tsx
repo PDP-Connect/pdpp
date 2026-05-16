@@ -10,6 +10,7 @@
  */
 
 import Link from "next/link";
+import { pdppCliNoInstallCommand } from "@/lib/pdpp-cli-command.ts";
 import type { TimelineEnvelope } from "../../lib/ref-client.ts";
 import { PageHeader, Section } from "../primitives.tsx";
 import { TimelineView } from "../timeline-view.tsx";
@@ -107,8 +108,19 @@ export function TimelineDetailView({
         <pre className="pdpp-caption overflow-x-auto rounded-md border border-border/80 bg-muted/30 p-3 font-mono">
           {cliCommand}
         </pre>
+        {(() => {
+          const noInstall = pdppCliNoInstallCommand(cliCommand);
+          return noInstall ? (
+            <pre
+              className="pdpp-caption mt-2 overflow-x-auto rounded-md border border-border/80 bg-muted/20 p-3 font-mono"
+              data-testid="cli-no-install-command"
+            >
+              {noInstall}
+            </pre>
+          ) : null;
+        })()}
         <p className="pdpp-caption mt-2 text-muted-foreground">
-          Reference operator diagnostic via{" "}
+          The top form requires{" "}
           <a
             className="underline underline-offset-2 hover:text-foreground"
             href="https://www.npmjs.com/package/@pdpp/cli"
@@ -117,7 +129,8 @@ export function TimelineDetailView({
           >
             @pdpp/cli
           </a>{" "}
-          (<code className="font-mono">npx -y @pdpp/cli@beta --help</code>). Set{" "}
+          on PATH (or <code className="font-mono">pnpm exec</code> in this monorepo). The bottom form runs without an
+          install via <code className="font-mono">npx</code>. Set{" "}
           <code className="font-mono">PDPP_OWNER_SESSION_COOKIE</code> when owner auth is enabled.
         </p>
         <p className="pdpp-caption mt-1 break-all text-muted-foreground">
