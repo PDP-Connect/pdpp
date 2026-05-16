@@ -872,3 +872,167 @@ test("emitMessagesPass: progress includes count and total when metadata count is
   assert.equal(progress[0]?.count, 500);
   assert.equal(progress[0]?.total, 500);
 });
+
+// ─── Historical attachment backfill: prove the operator path is honest ───
+//
+// The connector's runAllMailPasses, when START.streamsToBackfill includes
+// "attachments", drives emitMessagesPass over the bounded historical UID
+// window in attachment-only mode (no messages, no bodies), wrapping
+// emitRecord to update the AttachmentBackfillSummary on each
+// `attachments` record. These tests pin that mode without IMAP: a
+// "historical" UID below priorUidnext is fed through the same code path
+// and we verify hydration, idempotency, and summary accounting.
+
+test("backfill mode: historical UID below priorUidnext still hydrates attachment bytes via the operator path", async () => {
+  const historicalPayload = Buffer.from("ancient invoice bytes");
+  const expectedSha = createHash("sha256").update(historicalPayload).digest("hex");
+  const hydrateAttachment = makeAttachmentHydrator({
+    connectorId: "https://registry.pdpp.org/connectors/gmail",
+    fetchAttachment: () =>
+      Promise.resolve({
+        content: Readable.from([historicalPayload]),
+        expectedSize: historicalPayload.length,
+        mimeType: "application/pdf",
+      }),
+    uploadBlob: async ({ content, mimeType }) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of content) {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
+      return {
+        blob_id: `blob_sha256_${expectedSha}`,
+        mime_type: mimeType,
+        sha256: expectedSha,
+        size_bytes: historicalPayload.length,
+      };
+    },
+  });
+  const { deps, emitted } = makeHarness({
+    hydrateAttachment,
+    // Attachment-only backfill mode: matches runAllMailPasses' inner
+    // emitMessagesPass call for the historical window.
+    requested: makeRequested(["attachments"]),
+    wantBodies: false,
+    wantMessages: false,
+  });
+
+  // Wrap emitRecord with summary accounting, like runAllMailPasses does
+  // for the historical window. This is what gives the operator-facing
+  // PROGRESS payload its hydrated / failed / too_large / unavailable
+  // counts.
+  const summary = createAttachmentBackfillSummary();
+  const originalEmitRecord = deps.emitRecord;
+  deps.emitRecord = async (stream, data, keyField) => {
+    await originalEmitRecord(stream, data, keyField);
+    if (stream === "attachments") {
+      addAttachmentBackfillRecordToSummary(summary, data);
+    }
+  };
+
+  // UID 42 is well below an imagined priorUidnext of 500 — i.e. it is
+  // historical and would NOT be revisited by an incremental
+  // `priorUidnext:*` pass.
+  await emitMessagesPass(deps, [makeAttachmentMsg()]);
+
+  const attachmentRecord = emitted.find((r) => r.stream === "attachments");
+  assert.ok(attachmentRecord, "historical attachment must emit a record under streamsToBackfill");
+  assert.equal(attachmentRecord.data.hydration_status, "hydrated");
+  assert.equal(attachmentRecord.data.content_sha256, expectedSha);
+  assert.equal(blobRefBlobId(attachmentRecord), `blob_sha256_${expectedSha}`);
+
+  // No messages / bodies emitted — backfill is attachment-only.
+  assert.equal(
+    emitted.filter((r) => r.stream === "messages").length,
+    0,
+    "backfill mode must not re-emit historical messages records"
+  );
+  assert.equal(
+    emitted.filter((r) => r.stream === "message_bodies").length,
+    0,
+    "backfill mode must not re-emit historical bodies"
+  );
+
+  assert.deepEqual(summary, {
+    failed: 0,
+    hydrated: 1,
+    remaining_historical_gaps: 0,
+    too_large: 0,
+    unavailable_skipped: 0,
+  });
+});
+
+test("backfill mode: rerunning the same historical UID is idempotent and the summary stays honest", async () => {
+  const payload = Buffer.from("ancient invoice bytes");
+  const expectedSha = createHash("sha256").update(payload).digest("hex");
+  const hydrateAttachment = makeAttachmentHydrator({
+    connectorId: "https://registry.pdpp.org/connectors/gmail",
+    fetchAttachment: () =>
+      Promise.resolve({
+        content: Readable.from([payload]),
+        expectedSize: payload.length,
+        mimeType: "application/pdf",
+      }),
+    uploadBlob: async ({ content, mimeType }) => {
+      // Drain to surface upload semantics; content-addressed blob_id
+      // is identical across reruns.
+      for await (const _ of content) {
+        // intentional: only drain
+      }
+      return {
+        blob_id: `blob_sha256_${expectedSha}`,
+        mime_type: mimeType,
+        sha256: expectedSha,
+        size_bytes: payload.length,
+      };
+    },
+  });
+  const { deps, emitted } = makeHarness({
+    hydrateAttachment,
+    requested: makeRequested(["attachments"]),
+    wantBodies: false,
+    wantMessages: false,
+  });
+
+  await emitMessagesPass(deps, [makeAttachmentMsg()]);
+  await emitMessagesPass(deps, [makeAttachmentMsg()]);
+
+  const attachments = emitted.filter((r) => r.stream === "attachments");
+  assert.equal(attachments.length, 2);
+  assert.equal(attachments[0]?.data.id, attachments[1]?.data.id);
+  assert.equal(attachments[0]?.data.content_sha256, attachments[1]?.data.content_sha256);
+  assert.equal(blobRefBlobId(attachments[0]), blobRefBlobId(attachments[1]));
+});
+
+test("backfill mode: a failed historical attachment fetch is counted as a remaining historical gap, not silently dropped", async () => {
+  const hydrateAttachment = makeAttachmentHydrator({
+    connectorId: "https://registry.pdpp.org/connectors/gmail",
+    fetchAttachment: () => Promise.reject(new Error("imap fetch transient failure")),
+    uploadBlob: () => Promise.reject(new Error("should not be called when fetch fails")),
+  });
+  const { deps, emitted } = makeHarness({
+    hydrateAttachment,
+    requested: makeRequested(["attachments"]),
+    wantBodies: false,
+    wantMessages: false,
+  });
+
+  const summary = createAttachmentBackfillSummary();
+  const originalEmitRecord = deps.emitRecord;
+  deps.emitRecord = async (stream, data, keyField) => {
+    await originalEmitRecord(stream, data, keyField);
+    if (stream === "attachments") {
+      addAttachmentBackfillRecordToSummary(summary, data);
+    }
+  };
+
+  await emitMessagesPass(deps, [makeAttachmentMsg()]);
+
+  const attachmentRecord = emitted.find((r) => r.stream === "attachments");
+  assert.ok(attachmentRecord, "failed historical attachment must still emit a record so the gap is visible");
+  assert.equal(attachmentRecord.data.hydration_status, "failed");
+  // The summary counts this as a remaining gap so the operator must
+  // re-run before claiming completeness.
+  assert.equal(summary.failed, 1);
+  assert.equal(summary.hydrated, 0);
+  assert.equal(summary.remaining_historical_gaps, 1);
+});

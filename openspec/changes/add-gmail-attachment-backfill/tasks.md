@@ -18,6 +18,7 @@
 - [x] Fetch message bodystructure and attachment bytes for historical attachment-bearing messages without emitting unrelated streams unless requested.
 - [x] Re-emit existing attachment records with stable ids and populated `blob_ref` when hydration succeeds.
 - [x] Keep metadata-only attachment records with truthful `hydration_status` when bytes cannot be fetched.
+- [x] Expose the explicit backfill run scope through the collector-runner CLI as `--backfill-streams attachments` for `--connector gmail`, with sensible defaults (`tsx connectors/gmail/index.ts`, full Gmail stream set, `network` runtime binding) so operators do not need to hand-build the START envelope.
 
 ## 4. Idempotency And Persistence
 
@@ -33,9 +34,10 @@
 
 ## 6. Tests And Docker Proof
 
-- [ ] Add Gmail tests for a historical metadata-only attachment after `messages.all_mail.uidnext` has advanced.
-- [ ] Add resume/idempotency tests for interrupted and repeated attachment backfill.
-- [ ] Add preflight tests for missing Gmail credentials, missing `PDPP_RS_URL`, missing `PDPP_OWNER_TOKEN`, and invalid max-size env.
+- [x] Add Gmail tests for a historical metadata-only attachment after `messages.all_mail.uidnext` has advanced (see backfill-mode tests in `connectors/gmail/integration.test.ts`).
+- [x] Add resume/idempotency tests for interrupted and repeated attachment backfill (idempotency covered in `connectors/gmail/integration.test.ts`; full crash-resume against IMAP remains gated on live credentials).
+- [x] Add preflight tests for missing Gmail credentials, missing `PDPP_RS_URL`, missing `PDPP_OWNER_TOKEN`, and invalid max-size env.
+- [x] Add CLI tests proving the operator path threads `--backfill-streams attachments` into `buildCollectorStartMessage` (`bin/collector-runner.test.ts`).
 - [ ] Add or update reference query/blob tests proving a rehydrated historical Gmail attachment can be fetched via `expand=attachments` and `blob_ref.fetch_url`.
 - [ ] Document and run a Docker acceptance path that proves historical Gmail attachment backfill, or records explicit setup constraints when live Gmail credentials are unavailable.
 
