@@ -429,7 +429,7 @@ export function buildPendingInteractionPushPayload({ interaction, connectorDispl
 export function shouldFanoutAssistanceProgress(message) {
   if (!message || message.type !== 'ASSISTANCE') return false;
   if (message.response_contract !== 'none') return false;
-  if (message.owner_action === 'none') return false;
+  if (typeof message.owner_action !== 'string' || message.owner_action === 'none') return false;
   return message.progress_posture === 'running' || message.progress_posture === 'blocked';
 }
 

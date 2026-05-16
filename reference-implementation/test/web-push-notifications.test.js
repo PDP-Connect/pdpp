@@ -414,6 +414,27 @@ test('shouldFanoutAssistanceProgress accepts only nonblocking owner-action ASSIS
     }),
     false,
   );
+  // Missing owner_action MUST NOT push — the predicate must require a
+  // declared owner_action string before fanning out, not just reject the
+  // sentinel "none". A malformed/incomplete connector message that omits
+  // owner_action would otherwise silently ring the owner's phone.
+  assert.equal(
+    shouldFanoutAssistanceProgress({
+      type: 'ASSISTANCE',
+      progress_posture: 'running',
+      response_contract: 'none',
+    }),
+    false,
+  );
+  assert.equal(
+    shouldFanoutAssistanceProgress({
+      type: 'ASSISTANCE',
+      owner_action: null,
+      progress_posture: 'running',
+      response_contract: 'none',
+    }),
+    false,
+  );
   // response_required is handled by the blocking interaction broker.
   assert.equal(
     shouldFanoutAssistanceProgress({
@@ -559,7 +580,7 @@ test('manual-run controller progress handler fans out assistance Web Push withou
     'manual-run onProgress must wire ASSISTANCE fanout, not stay a no-op',
   );
   // It must filter by the documented predicate.
-  assert.match(src, /shouldFanoutAssistanceProgressForControllerTests\(msg\)/);
+  assert.match(src, /shouldFanoutAssistanceProgressMessage\(msg\)/);
   // And it must call fireAssistanceWebPush — not fireWebPush — for ASSISTANCE.
   assert.match(src, /void fireAssistanceWebPush\(\{/);
   // The fanout helper must thread runId/ownerSubjectId from controller scope.

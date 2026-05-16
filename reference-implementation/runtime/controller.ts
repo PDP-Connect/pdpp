@@ -820,12 +820,12 @@ async function fireAssistanceWebPush(
 // owner-assistance Web Push. Mirrors `shouldFanoutAssistanceProgress` in the
 // server module so we can filter without paying the dynamic-import cost on
 // every progress tick.
-export function shouldFanoutAssistanceProgressForControllerTests(message: unknown): boolean {
+export function shouldFanoutAssistanceProgressMessage(message: unknown): boolean {
   if (!message || typeof message !== "object") return false;
   const m = message as Record<string, unknown>;
   if (m.type !== "ASSISTANCE") return false;
   if (m.response_contract !== "none") return false;
-  if (m.owner_action === "none") return false;
+  if (typeof m.owner_action !== "string" || m.owner_action === "none") return false;
   return m.progress_posture === "running" || m.progress_posture === "blocked";
 }
 
@@ -2007,7 +2007,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
             // act somewhere outside PDPP (e.g. approve a ChatGPT push in the
             // app) and we want their subscribed PWA to ring. INTERACTION
             // pushes still flow through brokerInteraction → fireWebPush.
-            if (shouldFanoutAssistanceProgressForControllerTests(msg)) {
+            if (shouldFanoutAssistanceProgressMessage(msg)) {
               void fireAssistanceWebPush({
                 assistance: msg as Record<string, unknown>,
                 connectorDisplayName,
