@@ -42,12 +42,31 @@ export interface InteractionResponseInner {
   value?: string;
 }
 
+// The runtime envelope validator (reference-implementation/runtime/index.js
+// ~line 2074) only accepts these three terminal statuses on
+// INTERACTION_RESPONSE. Anything else trips
+// `interaction_handler_invalid_response`, which terminates the run before any
+// pending owner action can be recorded — see the live ChatGPT failure mode
+// repaired in commit e0dfb8f and tracked in tmp/workstreams/pwa-scheduler-status-memo.md.
+export type InteractionResponseStatus = "success" | "cancelled" | "timeout";
+
 export interface InteractionResponse {
   data?: Record<string, string>;
   error?: { code?: string; message?: string };
-  request_id: string | undefined;
-  status: string;
+  request_id: string;
+  status: InteractionResponseStatus;
   type: "INTERACTION_RESPONSE";
+}
+
+// Normalize any free-form status (legacy file-drop responses or
+// handler-internal failure paths) to one of the contract-allowed terminal
+// statuses. Unknown / "failed" / "error" map to "cancelled" so the runtime
+// can record a clean terminal state instead of throwing.
+function normalizeStatus(raw: string | undefined): InteractionResponseStatus {
+  if (raw === "success" || raw === "cancelled" || raw === "timeout") {
+    return raw;
+  }
+  return "cancelled";
 }
 
 function pathFor(id: string, suffix: string): string {
@@ -189,7 +208,7 @@ export async function handleInteraction(
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     response = {
-      status: "failed",
+      status: "timeout",
       error: { code: "timeout", message },
     };
   }
@@ -198,15 +217,22 @@ export async function handleInteraction(
 
   if (!response) {
     response = {
-      status: "failed",
+      status: "cancelled",
       error: { code: "no_response", message: "no response received" },
     };
   }
 
+  // The runtime validator requires `request_id === msg.request_id` AND a
+  // status in {success, cancelled, timeout}. msg.request_id can in principle
+  // be undefined (the InteractionMessage type allows it), but the runtime
+  // already rejects INTERACTION envelopes without a non-empty request_id, so
+  // we only ever reach this point when msg.request_id is a string. Falling
+  // back to the generated `id` keeps the envelope valid even if a future
+  // caller relaxes that upstream contract.
   const out: InteractionResponse = {
     type: "INTERACTION_RESPONSE",
-    request_id: msg.request_id,
-    status: response.status || "success",
+    request_id: msg.request_id ?? id,
+    status: normalizeStatus(response.status),
   };
   if (response.data !== undefined) {
     out.data = response.data;
@@ -217,4 +243,4 @@ export async function handleInteraction(
   return out;
 }
 
-export const __testing = { buildClickUrl };
+export const __testing = { buildClickUrl, normalizeStatus };
