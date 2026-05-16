@@ -134,6 +134,46 @@ Open `/dashboard/device-exporters`. The device row updates with:
 - **`status: blocked` with `state_get_failed`**: the runner refuses to advance without prior state to avoid over-collecting. Inspect the dashboard for the underlying error (typically a transient AS reach issue or a removed source instance) before retrying.
 - **`status: retrying` with `state_put_failed`**: benign; the next pass re-reads state and re-emits records the connector child considered consumed. Server-side idempotency absorbs the duplicates.
 
+## Coverage and excluded stores
+
+A successful Claude Code or Codex run **does not** mean every file in your
+`~/.claude` or `~/.codex` directory was collected. The connectors intentionally
+classify each known local store into one of five buckets before emitting anything:
+
+| Status            | What you see in dashboards                  | What the connector does                                 |
+|-------------------|---------------------------------------------|---------------------------------------------------------|
+| `collected`       | Real records on the records page            | Reads and emits content into a payload-bearing stream   |
+| `inventory_only`  | Records with `relative_path`, size, mtime   | Emits a safe inventory entry, never the file's content  |
+| `excluded`        | Only a `coverage_diagnostics` row           | Never reads or emits the file. Used for auth-adjacent files like `auth.json` |
+| `deferred`        | Only a `coverage_diagnostics` row           | Known store; not yet collected because redaction or owner review is pending |
+| `missing`         | Only a `coverage_diagnostics` row           | Known store not present in your source home for this run |
+
+**Why excluded and inventory-only stores are not collection failures.**
+A run is "complete" when every *known* local store is *accounted for*, not when
+every file is copied to the server. Auth-adjacent files like `auth.json` are
+deliberately never read &mdash; copying them into reference storage before a
+security review would itself be the privacy risk we are guarding against. Raw
+cache, backup, and configuration files are inventoried (path hash, size,
+mtime) without payload so you can see they exist without exposing their
+contents. The dashboard's coverage view counts both `collected` and accounted-for
+non-collected statuses as "complete"; only `missing` (known store gone) and
+`unsupported` (a future tool release added a store the connector does not yet
+know about) count against completeness.
+
+If a connector reports a store as `deferred`, that is a deliberate "we know it's
+there, we have not yet decided how to surface it safely" signal &mdash; not a
+bug. The current deferred set is documented in
+`openspec/changes/complete-local-agent-collectors/design-notes/stream-contracts.md`.
+
+**Requesting the coverage diagnostic.** Coverage is opt-in per run via the
+`coverage_diagnostics` stream in `START.scope.streams`. The scheduler-driven
+flows enroll this stream alongside the declared content streams; ad-hoc
+`pdpp collector run` invocations that pass an explicit `--streams` list need to
+include `coverage_diagnostics` to see the per-store status. See
+`docs/operator/local-collector-runbook.md`§"Step 4" above for the standard
+invocation, which is unscoped and therefore exercises everything declared in
+the manifest.
+
 ## Open packaging follow-up
 
 The collector runner is not yet distributed via the `@pdpp/cli` npm tarball, because shipping Playwright/Patchright/Chromium and the full connector source tree would bloat a public CLI install. From an npm-only install of `@pdpp/cli`, `pdpp collector` exits non-zero with the same monorepo-flow instructions used in step 3 here.
