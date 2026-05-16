@@ -7,9 +7,11 @@
  * runs — Chromium dies with its profile lock held, and the next launch
  * fails with the "appears to be in use" error.
  *
- * `withShutdownRelease(release)` registers a one-shot SIGTERM/SIGINT
- * handler that awaits `release()` and then calls `process.exit` with the
- * conventional shell exit code for that signal (128 + signum).
+ * `withShutdownRelease(release, { finalize })` registers a one-shot
+ * SIGTERM/SIGINT handler that, when fired, awaits the optional
+ * `finalize()` (e.g. trace/capture finalization that needs a live
+ * browser context), then `release()`, then calls `process.exit` with
+ * the conventional shell exit code for that signal (128 + signum).
  *
  * The first signal received wins; subsequent signals during cleanup are
  * ignored (otherwise a double-Ctrl-C would abort `release()` mid-flight
@@ -47,9 +49,43 @@ const SIGNAL_EXIT_CODES: Record<HookableSignal, number> = {
  *
  * Safe to register multiple times concurrently for different `release`s —
  * each registration adds an independent listener.
+ *
+ * `options.finalize`: optional callback that runs BEFORE `release()`. This
+ * lets the caller flush diagnostics (trace chunks, fixture cleanup) that
+ * depend on the browser/context still being live. A finalize failure is
+ * logged and swallowed — it must not block shutdown.
  */
-export function withShutdownRelease(release: () => Promise<unknown>): () => void {
+function writeShutdownStderr(message: string): void {
+  try {
+    process.stderr.write(message);
+  } catch {
+    // stderr may be closed; nothing to do.
+  }
+}
+
+async function runStepSwallowing(
+  fn: (() => Promise<unknown>) | undefined,
+  label: string,
+  signal: HookableSignal
+): Promise<void> {
+  if (!fn) {
+    return;
+  }
+  try {
+    await fn();
+  } catch (err) {
+    writeShutdownStderr(
+      `[shutdown-hook] ${label}() rejected during ${signal}: ${err instanceof Error ? err.message : String(err)}\n`
+    );
+  }
+}
+
+export function withShutdownRelease(
+  release: () => Promise<unknown>,
+  options: { finalize?: () => Promise<unknown> } = {}
+): () => void {
   let firing = false;
+  const { finalize } = options;
 
   const handle = (signal: HookableSignal) => async () => {
     if (firing) {
@@ -57,17 +93,8 @@ export function withShutdownRelease(release: () => Promise<unknown>): () => void
     }
     firing = true;
     try {
-      await release();
-    } catch (err) {
-      // Don't block exit on a release failure. Surface to stderr so the
-      // operator can see it; the SIGTERM-driven exit is more important.
-      try {
-        process.stderr.write(
-          `[shutdown-hook] release() rejected during ${signal}: ${err instanceof Error ? err.message : String(err)}\n`
-        );
-      } catch {
-        // stderr may be closed; nothing to do.
-      }
+      await runStepSwallowing(finalize, "finalize", signal);
+      await runStepSwallowing(release, "release", signal);
     } finally {
       process.exit(SIGNAL_EXIT_CODES[signal]);
     }

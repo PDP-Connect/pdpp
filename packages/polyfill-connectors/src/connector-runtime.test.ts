@@ -4,14 +4,18 @@ import type { BrowserContext, Page } from "playwright";
 import {
   type BrowserLaunchSource,
   type BrowserRuntimeVisibility,
+  captureBrowserPage,
   closeBrowserContextPagesExcept,
   closeBrowserPage,
   decorateBrowserManualAction,
   type InteractionRequest,
+  isContextDisconnected,
   makeBrowserInteractionKeepalive,
+  makeTracer,
   resolveBrowserLaunchSource,
   resolveBrowserRuntimeVisibility,
 } from "./connector-runtime.ts";
+import type { CaptureSession } from "./fixture-capture.ts";
 
 const HEADLESS: BrowserRuntimeVisibility = {
   envKey: "PDPP_REDDIT_HEADLESS",
@@ -495,3 +499,193 @@ test("makeBrowserInteractionKeepalive records browser disconnect timing in diagn
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+function makeFakeCapture(): {
+  captureDomCalls: { label: string; closed: boolean }[];
+  session: CaptureSession;
+} {
+  const captureDomCalls: { label: string; closed: boolean }[] = [];
+  const session: CaptureSession = {
+    baseDir: "/tmp/fake-capture",
+    keepOnSuccess: false,
+    runId: "fake-run",
+    captureDom: (page, label) => {
+      captureDomCalls.push({ label, closed: page.isClosed() });
+      return Promise.resolve();
+    },
+    captureHttp: () => {
+      /* no-op */
+    },
+    finalize: () => {
+      /* no-op */
+    },
+    markSucceeded: () => {
+      /* no-op */
+    },
+    recordRecord: () => {
+      /* no-op */
+    },
+  };
+  return { captureDomCalls, session };
+}
+
+test("captureBrowserPage skips capture when the page is already closed", async () => {
+  const { captureDomCalls, session } = makeFakeCapture();
+  const closedPage = {
+    isClosed: () => true,
+  } as Page;
+
+  await captureBrowserPage(session, closedPage, "runtime-error");
+
+  assert.equal(captureDomCalls.length, 0);
+});
+
+test("captureBrowserPage forwards live pages to capture.captureDom", async () => {
+  const { captureDomCalls, session } = makeFakeCapture();
+  const livePage = {
+    isClosed: () => false,
+  } as Page;
+
+  await captureBrowserPage(session, livePage, "runtime-collect-start");
+
+  assert.deepEqual(captureDomCalls, [{ label: "runtime-collect-start", closed: false }]);
+});
+
+test("captureBrowserPage no-ops when capture session is null", async () => {
+  await captureBrowserPage(null, { isClosed: () => false } as Page, "label");
+  // Reaching here without throw is the assertion.
+});
+
+type DisconnectableBrowser = Pick<NonNullable<ReturnType<BrowserContext["browser"]>>, "isConnected">;
+interface DisconnectableContext {
+  browser: () => DisconnectableBrowser | null;
+}
+
+test("isContextDisconnected reports disconnected when browser.isConnected() returns false", () => {
+  const ctx: DisconnectableContext = {
+    browser: () => ({ isConnected: () => false }) as DisconnectableBrowser,
+  };
+  assert.equal(isContextDisconnected(ctx as Pick<BrowserContext, "browser">), true);
+});
+
+test("isContextDisconnected reports connected when browser.isConnected() returns true", () => {
+  const ctx: DisconnectableContext = {
+    browser: () => ({ isConnected: () => true }) as DisconnectableBrowser,
+  };
+  assert.equal(isContextDisconnected(ctx as Pick<BrowserContext, "browser">), false);
+});
+
+test("isContextDisconnected treats missing browser as connected (best-effort fallback)", () => {
+  const ctx: DisconnectableContext = {
+    browser: () => null,
+  };
+  assert.equal(isContextDisconnected(ctx as Pick<BrowserContext, "browser">), false);
+});
+
+test("isContextDisconnected treats throwing bridges as disconnected", () => {
+  const ctx: DisconnectableContext = {
+    browser: () => {
+      throw new Error("ipc lost");
+    },
+  };
+  assert.equal(isContextDisconnected(ctx as Pick<BrowserContext, "browser">), true);
+});
+
+interface FakeTracingShape {
+  start: (options: { name: string }) => Promise<void>;
+  startChunk?: (options?: { title?: string }) => Promise<void>;
+  stop: (options?: { path?: string }) => Promise<void>;
+  stopChunk?: (options?: { path?: string }) => Promise<void>;
+}
+
+function makeTracingContext(tracing: FakeTracingShape, browser: { isConnected: () => boolean } | null): BrowserContext {
+  // BrowserContext has dozens of methods we don't need for the trace
+  // lifecycle test. Cast through the structurally-sufficient subset.
+  const partial: Pick<BrowserContext, "browser" | "tracing"> = {
+    browser: () => browser as ReturnType<BrowserContext["browser"]>,
+    tracing: tracing as BrowserContext["tracing"],
+  };
+  return partial as BrowserContext;
+}
+
+test("makeTracer.stop() short-circuits when the browser is already disconnected", async () => {
+  const previousFixtures = process.env.PDPP_CAPTURE_FIXTURES;
+  const previousOnFailure = process.env.PDPP_CAPTURE_ON_FAILURE;
+  const previousTrace = process.env.PDPP_TRACE;
+  process.env.PDPP_TRACE = "1";
+  delete process.env.PDPP_CAPTURE_FIXTURES;
+  delete process.env.PDPP_CAPTURE_ON_FAILURE;
+  try {
+    let stopCalled = false;
+    let stopChunkCalled = false;
+    const tracing: FakeTracingShape = {
+      start: () => Promise.resolve(),
+      startChunk: () => Promise.resolve(),
+      stop: () => {
+        stopCalled = true;
+        return Promise.reject(new Error("Target page, context or browser has been closed"));
+      },
+      stopChunk: () => {
+        stopChunkCalled = true;
+        return Promise.resolve();
+      },
+    };
+    let connected = true;
+    const ctx = makeTracingContext(tracing, { isConnected: () => connected });
+    const tracer = makeTracer(ctx, "fake-connector", null);
+    await tracer.start();
+    // Now the browser drops.
+    connected = false;
+    // stop() should not reach tracing.stop() / tracing.stopChunk() — they
+    // would throw and the disconnect guard prevents the noisy Playwright
+    // error from surfacing.
+    await tracer.stop();
+    assert.equal(stopCalled, false);
+    assert.equal(stopChunkCalled, false);
+  } finally {
+    if (previousFixtures === undefined) {
+      delete process.env.PDPP_CAPTURE_FIXTURES;
+    } else {
+      process.env.PDPP_CAPTURE_FIXTURES = previousFixtures;
+    }
+    if (previousOnFailure === undefined) {
+      delete process.env.PDPP_CAPTURE_ON_FAILURE;
+    } else {
+      process.env.PDPP_CAPTURE_ON_FAILURE = previousOnFailure;
+    }
+    if (previousTrace === undefined) {
+      delete process.env.PDPP_TRACE;
+    } else {
+      process.env.PDPP_TRACE = previousTrace;
+    }
+  }
+});
+
+test("makeTracer.stop() is idempotent — second call does not retry against a disconnected context", async () => {
+  const previousTrace = process.env.PDPP_TRACE;
+  process.env.PDPP_TRACE = "1";
+  try {
+    let stopCallCount = 0;
+    const tracing: FakeTracingShape = {
+      start: () => Promise.resolve(),
+      startChunk: () => Promise.resolve(),
+      stop: () => {
+        stopCallCount += 1;
+        return Promise.resolve();
+      },
+      stopChunk: () => Promise.resolve(),
+    };
+    const ctx = makeTracingContext(tracing, { isConnected: () => true });
+    const tracer = makeTracer(ctx, "idempotent", null);
+    await tracer.start();
+    await tracer.stop();
+    await tracer.stop();
+    assert.equal(stopCallCount, 1);
+  } finally {
+    if (previousTrace === undefined) {
+      delete process.env.PDPP_TRACE;
+    } else {
+      process.env.PDPP_TRACE = previousTrace;
+    }
+  }
+});

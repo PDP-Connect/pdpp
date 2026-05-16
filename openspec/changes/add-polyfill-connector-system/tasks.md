@@ -99,6 +99,7 @@ entire connector program forward at once:
   - 2026-04-24 worker pass patched bounded counters for ynab, gmail, github PR search, chase, usaa statement hydration, and chatgpt conversation detail batches; compacted duplicate Claude Code line progress. Audit captured in `design-notes/core-connector-progress-audit-2026-04-24.md`.
 - [x] **Nightly status summary via ntfy** — scheduler-runner now exposes `scheduleNightlySummary()` with injectable clock/notifier; `notifySummary()` and scheduled sends keep ntfy failures non-fatal. Evidence: `pnpm exec node --test --test-timeout=30000 --import tsx src/scheduler-runner.test.ts`.
 - [x] **Partial-run honesty mechanism** transferred to `define-partial-run-honesty` (SKIP_RESULT taxonomy, known gaps, and recovery contract). The three linked `*-open-question.md` notes remain as source context.
+- [x] **Harden connector failure capture (2026-05-15)** — added `PDPP_CAPTURE_ON_FAILURE=1` mode (retain-on-failure with success cleanup), SIGTERM-aware trace finalization, and page-closed/browser-disconnected guards on `captureBrowserPage` and `tracer.stop()`. Capability is opt-in, not wired as a default in Docker/scheduler. Evidence: `pnpm --filter @pdpp/polyfill-connectors exec npx tsx --test --test-reporter=spec src/connector-runtime.test.ts src/fixture-capture.test.ts src/shutdown-hook.test.ts`. See `design-notes/harden-connector-failure-capture-2026-05-15.md`.
 
 ## Spec-conformance work (delivered today)
 
