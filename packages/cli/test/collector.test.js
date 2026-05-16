@@ -41,6 +41,29 @@ test('collector help lists the three subcommands and operator flow', async () =>
   assert.match(io.stdout, /device-scoped/);
 });
 
+test('collector help states the monorepo requirement and Distribution follow-up', async () => {
+  const io = makeIo();
+  const code = await runCollector([], io.io);
+  assert.equal(code, 0);
+  // Operators must know the runner is not in the @pdpp/cli tarball.
+  assert.match(io.stdout, /Distribution requirement/);
+  assert.match(io.stdout, /requires a PDPP monorepo checkout/);
+  assert.match(io.stdout, /not in the @pdpp\/cli npm/);
+  assert.match(io.stdout, /Distribution follow-up/);
+  assert.match(io.stdout, /openspec\/changes\/introduce-local-collector-runner\/design\.md/);
+});
+
+test('collector help names device_id, device_token, and source_instance_id from enroll', async () => {
+  const io = makeIo();
+  const code = await runCollector([], io.io);
+  assert.equal(code, 0);
+  // Enrollment returns three values; help must surface all three so
+  // operators don't hit "<source_instance_id>" later with no provenance.
+  assert.match(io.stdout, /device_id/);
+  assert.match(io.stdout, /device_token/);
+  assert.match(io.stdout, /source_instance_id/);
+});
+
 test('top-level help advertises the collector namespace', async () => {
   const result = spawnSync(process.execPath, [binPath, '--help'], { encoding: 'utf8' });
   assert.equal(result.status, 0);
@@ -91,6 +114,11 @@ test('spawnCollectorRunner throws actionable error when runner is missing', asyn
       assert.match(err.message, /pdpp collector advertise/);
       assert.match(err.message, /pdpp collector enroll/);
       assert.match(err.message, /pdpp collector run --connector claude_code/);
+      // Enrollment returns three values, not two — name all of them so
+      // the later <source_instance_id> placeholder has provenance.
+      assert.match(err.message, /device_id/);
+      assert.match(err.message, /device_token/);
+      assert.match(err.message, /source_instance_id/);
       return true;
     },
   );

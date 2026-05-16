@@ -75,7 +75,8 @@ const RUNNER_MISSING_MESSAGE =
   '  4. pnpm exec pdpp collector enroll \\\n' +
   '       --base-url https://<your-reference-deployment> \\\n' +
   '       --code <one-time-code-from-dashboard>\n' +
-  '       # capture device_id + device_token from the JSON output\n' +
+  '       # The JSON response returns device_id, device_token, and\n' +
+  '       # source_instance_id — capture all three.\n' +
   '  5. PDPP_REFERENCE_BASE_URL=https://<your-reference-deployment> \\\n' +
   '     PDPP_LOCAL_DEVICE_ID=<device_id> \\\n' +
   '     PDPP_LOCAL_DEVICE_TOKEN=<device_token> \\\n' +
