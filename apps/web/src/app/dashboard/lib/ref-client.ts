@@ -195,6 +195,13 @@ export interface RefSchedule {
   effective_mode: "automatic" | "manual" | "paused";
   enabled: boolean;
   human_attention_needed: boolean;
+  /**
+   * Non-null when the row is enabled but the connector's current manifest
+   * policy makes it ineligible for automatic background refresh. The schedule
+   * persists as operator intent, but the scheduler will not run it and the
+   * dashboard should surface this reason instead of implying it is running.
+   */
+  ineligibility_reason: string | null;
   interval_seconds: number;
   jitter_seconds: number;
   last_error_code: string | null;

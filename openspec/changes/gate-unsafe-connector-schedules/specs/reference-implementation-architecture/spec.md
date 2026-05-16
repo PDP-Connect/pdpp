@@ -13,6 +13,12 @@ The reference implementation SHALL keep the Collection boundary explicit across 
 - **AND** it SHALL NOT enable or auto-run that schedule when the connector manifest declares `capabilities.refresh_policy.background_safe: false`
 - **AND** disabled schedule rows MAY remain stored for operator intent without becoming eligible for automatic execution
 
+#### Scenario: Stale enabled schedules surface effective ineligibility
+- **WHEN** a persisted schedule row has `enabled: true` but the connector's current manifest refresh policy makes automatic refresh ineligible (manual, paused, or `background_safe: false`)
+- **THEN** the reference controller SHALL NOT silently delete or mutate the persisted row
+- **AND** the schedule listing API SHALL expose an `ineligibility_reason` string carrying the same reason the controller uses when rejecting create/resume and the scheduler manager uses when skipping
+- **AND** the schedule listing API SHALL return `ineligibility_reason: null` for rows that are either disabled or whose connector's current manifest policy permits automatic refresh
+
 #### Scenario: Not-ready runtime prerequisites are skipped automatically
 - **WHEN** the scheduler evaluates an automatic connector run whose current deployment cannot satisfy required runtime prerequisites
 - **THEN** it SHALL NOT start the connector process for that automatic run

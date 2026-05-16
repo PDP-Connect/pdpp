@@ -882,6 +882,187 @@ test('schedule resume rejects a disabled schedule when connector policy is backg
   }
 });
 
+test('GET /_ref/schedules surfaces ineligibility_reason for a stale enabled row whose manifest now declares unsafe policy', async () => {
+  // An enabled schedule was created under a previous manifest that permitted
+  // automatic refresh. The manifest is later updated to declare manual /
+  // background-unsafe policy. The persisted row remains as operator intent —
+  // we do not delete it — but the scheduler skips it and the listing API
+  // must surface an explicit reason so the dashboard does not imply the row
+  // is running.
+  const connectorId = 'https://registry.pdpp.org/connectors/stale-unsafe-reconcile-test';
+  const baseManifest = {
+    protocol_version: '0.1.0',
+    connector_id: connectorId,
+    version: '1.0.0',
+    display_name: 'Stale Unsafe Reconcile Test',
+    streams: [
+      {
+        name: 'items',
+        semantics: 'append_only',
+        schema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
+        primary_key: ['id'],
+      },
+    ],
+    capabilities: {
+      refresh_policy: {
+        recommended_mode: 'automatic',
+        background_safe: true,
+        interaction_posture: 'credentials',
+        rationale: 'API refresh; safe to background.',
+      },
+    },
+  };
+  const unsafeManifest = {
+    ...baseManifest,
+    version: '1.1.0',
+    capabilities: {
+      refresh_policy: {
+        recommended_mode: 'manual',
+        background_safe: false,
+        interaction_posture: 'otp_likely',
+        rationale: 'Now requires owner-present login.',
+      },
+    },
+  };
+
+  const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+  const asUrl = `http://localhost:${server.asPort}`;
+  try {
+    await registerConnector(asUrl, baseManifest);
+
+    // Persist an enabled schedule under the original (eligible) manifest.
+    const putResp = await fetch(`${asUrl}/_ref/connectors/${encodeURIComponent(connectorId)}/schedule`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ interval_seconds: 86400, enabled: true }),
+    });
+    assert.equal(putResp.status, 200);
+    const initial = await putResp.json();
+    assert.equal(initial.enabled, true);
+    assert.equal(initial.ineligibility_reason, null, 'fresh enabled row under safe policy should have no ineligibility reason');
+
+    // Manifest changes underneath us: connector is now manual / background-unsafe.
+    await registerConnector(asUrl, unsafeManifest);
+
+    // Single-schedule GET surfaces the reason without mutating the persisted row.
+    const { status: getStatus, body: scheduleBody } = await fetchJson(
+      `${asUrl}/_ref/connectors/${encodeURIComponent(connectorId)}/schedule`,
+    );
+    assert.equal(getStatus, 200);
+    assert.equal(scheduleBody.enabled, true, 'persisted operator intent must remain visible');
+    assert.ok(
+      typeof scheduleBody.ineligibility_reason === 'string' && scheduleBody.ineligibility_reason.length > 0,
+      'expected ineligibility_reason on stale enabled row',
+    );
+    assert.match(scheduleBody.ineligibility_reason, /manual runs|background-safe|paused/);
+
+    // List endpoint exposes the same reason for the same row.
+    const { status: listStatus, body: listBody } = await fetchJson(`${asUrl}/_ref/schedules`);
+    assert.equal(listStatus, 200);
+    const entry = listBody.data.find((s) => s.connector_id === connectorId);
+    assert.ok(entry, 'expected stale connector to appear in list-schedules');
+    assert.equal(entry.enabled, true);
+    assert.equal(entry.ineligibility_reason, scheduleBody.ineligibility_reason);
+
+    // Resuming this row must still be rejected with the same gate.
+    const resumeResp = await fetch(
+      `${asUrl}/_ref/connectors/${encodeURIComponent(connectorId)}/schedule/resume`,
+      { method: 'POST' },
+    );
+    assert.ok(resumeResp.status === 400, `expected 400 on resume of unsafe row, got ${resumeResp.status}`);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('GET /_ref/schedules omits ineligibility_reason when persisted row is disabled or policy is safe', async () => {
+  const safeId = 'https://registry.pdpp.org/connectors/eligible-schedule-listing-test';
+  const safeManifest = {
+    protocol_version: '0.1.0',
+    connector_id: safeId,
+    version: '1.0.0',
+    display_name: 'Eligible Schedule Listing Test',
+    streams: [
+      {
+        name: 'items',
+        semantics: 'append_only',
+        schema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
+        primary_key: ['id'],
+      },
+    ],
+    capabilities: {
+      refresh_policy: {
+        recommended_mode: 'automatic',
+        background_safe: true,
+        interaction_posture: 'credentials',
+        rationale: 'API refresh; safe to background.',
+      },
+    },
+  };
+
+  const disabledId = 'https://registry.pdpp.org/connectors/disabled-unsafe-listing-test';
+  const disabledManifest = {
+    protocol_version: '0.1.0',
+    connector_id: disabledId,
+    version: '1.0.0',
+    display_name: 'Disabled Unsafe Listing Test',
+    streams: [
+      {
+        name: 'items',
+        semantics: 'append_only',
+        schema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
+        primary_key: ['id'],
+      },
+    ],
+    capabilities: {
+      refresh_policy: {
+        recommended_mode: 'manual',
+        background_safe: false,
+        interaction_posture: 'otp_likely',
+        rationale: 'Owner-present login required.',
+      },
+    },
+  };
+
+  const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+  const asUrl = `http://localhost:${server.asPort}`;
+  try {
+    await registerConnector(asUrl, safeManifest);
+    await registerConnector(asUrl, disabledManifest);
+
+    // Safe + enabled schedule: no ineligibility reason.
+    const safePut = await fetch(`${asUrl}/_ref/connectors/${encodeURIComponent(safeId)}/schedule`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ interval_seconds: 86400, enabled: true }),
+    });
+    assert.equal(safePut.status, 200);
+    const safeBody = await safePut.json();
+    assert.equal(safeBody.enabled, true);
+    assert.equal(safeBody.ineligibility_reason, null);
+
+    // Unsafe but disabled: persisted intent only, not eligible to resume, but
+    // ineligibility_reason should be null because the row is not claiming to run.
+    const disabledPut = await fetch(`${asUrl}/_ref/connectors/${encodeURIComponent(disabledId)}/schedule`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ interval_seconds: 86400, enabled: false }),
+    });
+    assert.equal(disabledPut.status, 200);
+    const disabledBody = await disabledPut.json();
+    assert.equal(disabledBody.enabled, false);
+    assert.equal(disabledBody.ineligibility_reason, null);
+
+    const { body: listBody } = await fetchJson(`${asUrl}/_ref/schedules`);
+    const safeEntry = listBody.data.find((s) => s.connector_id === safeId);
+    const disabledEntry = listBody.data.find((s) => s.connector_id === disabledId);
+    assert.equal(safeEntry.ineligibility_reason, null);
+    assert.equal(disabledEntry.ineligibility_reason, null);
+  } finally {
+    await closeServer(server);
+  }
+});
+
 test('GET /_ref/approvals surfaces pending provider-connect consents with grant preview', async () => {
   await withHarness(async ({ asUrl, spotifyManifest }) => {
     // Start a PAR request that will be pending until approve/deny.

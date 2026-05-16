@@ -132,6 +132,11 @@ export function ScheduleRow({ summary, runsHref }: ScheduleRowProps) {
   const recInterval = recommendedIntervalLabel(policy);
   const recMode = policy?.recommended_mode;
   const rationale = policy?.rationale;
+  // Stale unsafe schedule: row persists as operator intent (`enabled=true`),
+  // but the connector's current manifest policy makes automatic refresh
+  // ineligible, so the scheduler skips it. Surface the reason instead of
+  // implying the row is running.
+  const ineligibilityReason = schedule?.ineligibility_reason ?? null;
 
   return (
     <li>
@@ -151,6 +156,14 @@ export function ScheduleRow({ summary, runsHref }: ScheduleRowProps) {
 
           {/* Status + action buttons */}
           <div className="flex shrink-0 flex-wrap items-center gap-2">
+            {ineligibilityReason && (
+              <span
+                className="pdpp-caption rounded-full bg-amber-100 px-2 py-0.5 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400"
+                title={ineligibilityReason}
+              >
+                not runnable
+              </span>
+            )}
             {needsHuman && (
               <span className="pdpp-caption rounded-full bg-amber-100 px-2 py-0.5 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400">
                 needs human input
@@ -234,6 +247,13 @@ export function ScheduleRow({ summary, runsHref }: ScheduleRowProps) {
           )}
           <span>{summary.total_records.toLocaleString()} records</span>
         </div>
+
+        {/* Ineligibility reason: stale enabled row + manifest policy changed */}
+        {ineligibilityReason && (
+          <p className="pdpp-caption text-amber-700 dark:text-amber-400">
+            <strong>Not running automatically.</strong> {ineligibilityReason} Pause or delete this schedule to reflect that.
+          </p>
+        )}
 
         {/* Recommended rationale */}
         {rationale && <p className="pdpp-caption text-muted-foreground italic">{rationale}</p>}

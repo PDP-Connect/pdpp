@@ -14,6 +14,9 @@ scheduler path despite their manifest posture.
 - Skip automatic scheduled runs when the current runtime deployment cannot
   satisfy connector prerequisites, recording a not-ready reason instead of
   starting a doomed run.
+- Surface an `ineligibility_reason` on the schedule listing API so operators
+  see that a persisted enabled row will not actually run under the
+  connector's current manifest policy, without deleting operator intent.
 
 ## Capabilities
 

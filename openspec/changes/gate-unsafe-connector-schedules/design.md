@@ -51,6 +51,17 @@ Readiness is intentionally runtime-local and narrow:
 Disabled schedule rows may still be stored for operator intent, but they must
 not be resumed until the manifest posture becomes eligible.
 
+For *enabled* legacy rows whose connector manifest has since shifted to a
+manual / paused / background-unsafe policy, the persisted row remains: deleting
+operator configuration is more destructive than refusing to run it. The
+scheduler manager already filters such rows from the runnable set with a
+log warning. To keep operator state honest at the API/dashboard layer too,
+the schedule listing API surfaces a non-null `ineligibility_reason` carrying
+the same string `getScheduleIneligibilityReason()` produces. The dashboard
+renders this as a "not runnable" badge plus the reason text, so an operator
+who sees `enabled: true` for Reddit (or any newly-unsafe connector) is told
+explicitly that the row is operator intent rather than a running schedule.
+
 ## Alternatives
 
 - Dashboard-only warning: rejected because the runtime would still auto-run a
@@ -65,6 +76,9 @@ not be resumed until the manifest posture becomes eligible.
 - Amazon and other `background_safe: false` or manual-policy connectors cannot
   create or resume enabled schedules.
 - Existing enabled unsafe schedule rows are skipped by scheduler refresh.
+- Schedule list/get API surfaces a non-null `ineligibility_reason` for those
+  same rows, and `null` for rows that are either disabled or whose connector
+  policy permits automatic refresh.
 - Automatic runs with missing runtime prerequisites are skipped with a not-ready
   reason in scheduler history.
 - Manual runs still fail closed through normal connector/runtime errors.
