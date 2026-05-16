@@ -32,6 +32,7 @@
 - [x] 5.2 Update reference docs and package README to explain public `connect` versus reference `ref` namespaces.
 - [x] 5.3 Ensure public agent-connect metadata continues to advertise `npx -y @pdpp/cli@beta connect <provider-url>` rather than reference-operator commands.
 - [x] 5.4 Add or update validation that rejects surfaced legacy examples such as `pdpp run timeline` outside compatibility/help context.
+- [x] 5.5 Surface a zero-install runnable form (`npx -y @pdpp/cli@beta ref ...`) alongside the canonical `pdpp ref ...` copy in dashboard peek and timeline-detail views so users without a global install can still copy and run the command.
 
 ## 6. Validation
 
