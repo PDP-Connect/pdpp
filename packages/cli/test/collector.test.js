@@ -82,9 +82,15 @@ test('spawnCollectorRunner throws actionable error when runner is missing', asyn
       }),
     (err) => {
       assert.ok(err instanceof CollectorUsageError);
+      // Names the distribution-contract follow-up so operators know it's intentional.
+      assert.match(err.message, /Distribution follow-up/);
+      assert.match(err.message, /introduce-local-collector-runner/);
+      // Walks the operator through the remote-deployment monorepo flow.
       assert.match(err.message, /git clone https:\/\/github.com\/vana-com\/pdpp\.git/);
       assert.match(err.message, /pnpm install/);
-      assert.match(err.message, /pnpm exec pdpp collector --help/);
+      assert.match(err.message, /pdpp collector advertise/);
+      assert.match(err.message, /pdpp collector enroll/);
+      assert.match(err.message, /pdpp collector run --connector claude_code/);
       return true;
     },
   );

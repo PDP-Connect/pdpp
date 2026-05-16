@@ -75,6 +75,53 @@ Open questions requiring human-owner collaboration:
 - Whether runtime capability advertisement becomes Collection Profile vocabulary or remains reference manifest/runtime metadata.
 - Whether schedules and request-refresh semantics should standardize around collector availability.
 
+## Distribution follow-up
+
+This change generalized the device-exporter into a collector runner and added
+a `pdpp collector` namespace in `@pdpp/cli`. The runner itself still ships
+inside the monorepo as part of `@pdpp/polyfill-connectors`
+(`bin/collector-runner.ts` + `src/collector-runner.ts`), and the
+`@pdpp/cli` collector command is a thin wrapper that locates and `tsx`-spawns
+that script through a workspace walk. From an `npm install -g @pdpp/cli`
+the wrapper fails fast with an actionable message and points the operator
+at the monorepo flow.
+
+Packaging the collector runner cleanly inside `@pdpp/cli` is intentionally
+not part of this change. The blocking constraints are:
+
+- `@pdpp/polyfill-connectors` is `private: true`, includes a `postinstall`
+  that downloads Chromium via Patchright, and depends on `playwright`,
+  `better-sqlite3`, `pdf-parse`, `imapflow`, `linkedom`, and others. None of
+  those belong in the public `@pdpp/cli` tarball.
+- The Codex and Claude Code connector entrypoints reach into
+  `src/connector-runtime.ts`, which imports `playwright` types at the top
+  level. Even filesystem-only connectors transitively reference the heavy
+  surface today, so naive copy-into-CLI is not viable.
+- `publish-pdpp-cli` design explicitly excludes the connector runtime from
+  the CLI tarball, and `unify-pdpp-cli-command-surface` keeps server-coupled
+  and local-dev commands repo-local until each command has a publishability
+  review.
+
+A future OpenSpec change SHOULD define the distribution contract before the
+`pdpp collector` namespace is advertised as npm-installable. Open questions
+for that change:
+
+- Is the collector runner published as a separate npm package
+  (e.g. `@pdpp/local-collector`) that depends on a narrow runtime subset, or
+  as a thin shim in `@pdpp/cli` that pulls a runner package on demand?
+- What is the minimum slice of `connector-runtime.ts` that filesystem-only
+  Claude/Codex collectors actually need, and can that slice be extracted
+  without splitting Playwright-bound connectors from filesystem-only ones?
+- Does the distribution package include connector entrypoints
+  (Claude Code, Codex), or does it accept `--command`/`--args` and rely on
+  the operator to install connector packages separately?
+- How does the published runner pin or negotiate compatibility with the
+  reference server's device-exporter ingest contract?
+
+Until that contract exists, the supported operator path is the monorepo
+flow documented in `pdpp collector` help output and in the npm-missing
+fail-fast message in `packages/cli/src/collector/runner.js`.
+
 ## Alternatives Considered
 
 - **Host-browser bridge:** rejected. It creates Docker GUI, XAUTHORITY, browser profile, and security surface complexity without solving remote-provider cases.
