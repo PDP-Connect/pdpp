@@ -51,8 +51,52 @@
       scenario test alongside the data-driven matrix so the
       local-device codepath in the reference catalog stays covered.
 
-## 4. Acceptance Checks
+## 4. Pocket Deprecated Upstream
 
-- [x] 4.1 `node --test packages/polyfill-connectors/src/public-listing-manifest-honesty.test.ts`
-- [x] 4.2 `node --test reference-implementation/test/ref-connectors-list-operation.test.js`
-- [x] 4.3 `openspec validate add-connector-public-listing-honesty --strict`
+- [x] 4.1 `packages/polyfill-connectors/CONNECTORS.md` notes that
+      Pocket was shut down by Mozilla on 2025-07-08, yet
+      `manifests/pocket.json` declared
+      `listed: true, status: "proven", background_safe: true,
+      recommended_mode: "automatic"`. The audit on 2026-05-15 picks
+      this up as a catalog-honesty contradiction.
+- [x] 4.2 Flip `manifests/pocket.json` to
+      `listed: false, status: "deprecated_upstream",
+      background_safe: false, recommended_mode: "manual"`. Record the
+      reason in both `public_listing.rationale` and
+      `refresh_policy.rationale`.
+- [x] 4.3 Extend the manifest honesty test set with a
+      `deprecated_upstream` rule that asserts
+      `listed=false`, `background_safe=false`, and
+      `recommended_mode!=="automatic"`.
+
+## 5. Catalog Completeness
+
+- [x] 5.1 Extend `reference-implementation/server/polyfill-manifest-reconcile.ts`
+      so the not-yet-registered branch auto-registers shipped
+      first-party manifests with
+      `capabilities.public_listing.listed: true`. Unlisted manifests
+      stay skipped. Custom user-authored connectors stay untouched
+      because reconciliation only scans the shipped first-party dir.
+- [x] 5.2 Surface a new `registered` counter on the reconcile summary
+      so the boot log records which listed manifests were seeded.
+- [x] 5.3 Pin the contract with a fresh end-to-end test
+      (`reference-implementation/test/connector-public-catalog-completeness.test.js`)
+      that runs `reconcilePolyfillManifests` against the real shipped
+      manifests dir and asserts:
+      - every listed=true first-party manifest is visible on
+        `listConnectorSummaries()` on a fresh DB
+      - every hidden manifest stays invisible
+- [x] 5.4 Extend
+      `reference-implementation/test/polyfill-manifest-reconcile-invalidation.test.js`
+      with positive and negative cases for the listed/unlisted gate.
+      Keep the existing "skips unregistered" expectation (now scoped
+      to unlisted manifests) so the original safety contract is
+      preserved.
+
+## 6. Acceptance Checks
+
+- [x] 6.1 `node --test packages/polyfill-connectors/src/public-listing-manifest-honesty.test.ts`
+- [x] 6.2 `node --test reference-implementation/test/ref-connectors-list-operation.test.js`
+- [x] 6.3 `node --test reference-implementation/test/polyfill-manifest-reconcile-invalidation.test.js`
+- [x] 6.4 `node --test reference-implementation/test/connector-public-catalog-completeness.test.js`
+- [x] 6.5 `openspec validate add-connector-public-listing-honesty --strict`

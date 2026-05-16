@@ -385,7 +385,13 @@ test('a direct registerConnector call with a different manifest does not delete 
   );
 }));
 
-test('reconciliation skips connectors that are not yet registered (no record invalidation on first registration)', withTmpDb(async ({ dir }) => {
+test('reconciliation skips unlisted connectors that are not yet registered (no record invalidation, no auto-seed)', withTmpDb(async ({ dir }) => {
+  // The shipped fixture used here does not declare
+  // `capabilities.public_listing.listed: true`, so reconciliation MUST
+  // NOT auto-seed it. This preserves the long-standing "don't surprise
+  // owners with a custom-looking connector_id" guarantee for unlisted /
+  // unproven manifests and keeps the destructive invalidation path
+  // unreachable on first registration.
   const manifestsDir = writeManifestsDir(dir, 'polyfill', { 'seed-flip.json': shippedPolyfillManifest() });
   const referenceFixturesDir = writeManifestsDir(dir, 'reference', {
     'seed-flip.json': referenceFixtureManifest(),
@@ -397,8 +403,87 @@ test('reconciliation skips connectors that are not yet registered (no record inv
     log: () => {},
   });
 
-  assert.equal(summary.skipped, 1, 'connector with no persisted manifest is skipped');
+  assert.equal(summary.skipped, 1, 'unlisted connector with no persisted manifest is skipped');
+  assert.equal(summary.registered, 0, 'unlisted manifests are not auto-registered');
   assert.equal(summary.updated, 0);
   assert.equal(summary.invalidatedConnectors, 0);
   assert.equal(summary.invalidatedRecords, 0);
+
+  const persisted = await getConnectorManifest(CONNECTOR_ID);
+  assert.equal(persisted, null, 'no connectors row is created for an unlisted shipped manifest');
+}));
+
+test('reconciliation auto-registers listed=true first-party manifests so the operator catalog can show them on a fresh DB', withTmpDb(async ({ dir }) => {
+  // Catalog completeness: a first-party manifest that declares
+  // `capabilities.public_listing.listed: true` must be present in the
+  // connectors table on startup so `GET /_ref/connectors` and the
+  // reference dashboard can surface it before the first schedule or run
+  // row exists. See
+  // openspec/changes/add-connector-public-listing-honesty/.
+  const listedManifest = shippedPolyfillManifest({
+    capabilities: {
+      public_listing: { listed: true, status: 'proven' },
+      refresh_policy: {
+        recommended_mode: 'manual',
+        background_safe: false,
+        rationale: 'Listed first-party manifest must be visible on the operator catalog even with no schedule.',
+      },
+    },
+  });
+  const manifestsDir = writeManifestsDir(dir, 'polyfill', { 'seed-flip.json': listedManifest });
+  const referenceFixturesDir = writeManifestsDir(dir, 'reference', {});
+
+  const lines = [];
+  const summary = await reconcilePolyfillManifests({
+    enabled: true,
+    manifestsDir,
+    referenceFixturesDir,
+    log: (line) => lines.push(line),
+  });
+
+  assert.equal(summary.registered, 1, 'listed first-party manifest is auto-registered');
+  assert.equal(summary.skipped, 0, 'not skipped — the listed gate fires');
+  assert.equal(summary.updated, 0, 'registration is not an update');
+  assert.equal(summary.invalidatedConnectors, 0, 'first-time registration must not invalidate records');
+  assert.equal(summary.invalidatedRecords, 0);
+  assert.equal(summary.errors, 0);
+
+  const persisted = await getConnectorManifest(CONNECTOR_ID);
+  assert.ok(persisted, 'connector is persisted in the DB after reconciliation');
+  assert.equal(persisted.connector_id, CONNECTOR_ID);
+  assert.equal(persisted.capabilities?.public_listing?.listed, true);
+
+  const registeredLine = lines.find((line) => line.includes('registered listed first-party manifest'));
+  assert.ok(registeredLine, 'reconciliation emits a register log line');
+  assert.match(registeredLine, /seed-flip/);
+}));
+
+test('reconciliation does not auto-register hidden manifests even when the file is shipped', withTmpDb(async ({ dir }) => {
+  // The hidden/unproven half of the catalog-completeness rule: a manifest
+  // shipped under packages/polyfill-connectors/manifests/ with
+  // listed=false stays invisible to the operator catalog on a fresh DB.
+  const hiddenManifest = shippedPolyfillManifest({
+    capabilities: {
+      public_listing: { listed: false, status: 'unproven' },
+      refresh_policy: {
+        recommended_mode: 'manual',
+        background_safe: false,
+        rationale: 'Unproven; hidden from the operator catalog until a credentialed run.',
+      },
+    },
+  });
+  const manifestsDir = writeManifestsDir(dir, 'polyfill', { 'seed-flip.json': hiddenManifest });
+  const referenceFixturesDir = writeManifestsDir(dir, 'reference', {});
+
+  const summary = await reconcilePolyfillManifests({
+    enabled: true,
+    manifestsDir,
+    referenceFixturesDir,
+    log: () => {},
+  });
+
+  assert.equal(summary.registered, 0, 'hidden manifest is not auto-registered');
+  assert.equal(summary.skipped, 1, 'hidden manifest is skipped');
+  const persisted = await getConnectorManifest(CONNECTOR_ID);
+  assert.equal(persisted, null, 'no connectors row is created for a hidden shipped manifest');
 }));

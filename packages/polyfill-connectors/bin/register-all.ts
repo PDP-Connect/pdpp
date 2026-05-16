@@ -47,7 +47,6 @@ const CONNECTORS = [
   "doordash",
   "whatsapp",
   "slack",
-  "pocket",
   "google_takeout",
   "twitter_archive",
   "imessage",
@@ -58,7 +57,9 @@ const CONNECTORS = [
   "codex",
   "apple_health",
   "ical",
-  // 'pocket' intentionally excluded — Mozilla shut Pocket down 2025-07-08. See
+  // 'pocket' intentionally excluded — Mozilla shut Pocket down 2025-07-08; the
+  // shipped manifest is now public_listing.listed=false /
+  // status=deprecated_upstream / recommended_mode=manual. See
   // openspec/changes/add-polyfill-connector-system/design-notes/platform-bootstrap-research.md
 ];
 

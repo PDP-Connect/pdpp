@@ -13,19 +13,20 @@
   "capabilities": {
     "human_interaction": [],
     "refresh_policy": {
-      "recommended_mode": "automatic",
+      "recommended_mode": "manual",
       "recommended_interval_seconds": 21600,
       "minimum_interval_seconds": 3600,
       "maximum_staleness_seconds": 86400,
       "interaction_posture": "none",
       "rate_limit_sensitivity": "low",
       "bot_detection_sensitivity": "low",
-      "background_safe": true,
-      "rationale": "Pocket save-list changes infrequently; six-hourly refresh is safe."
+      "background_safe": false,
+      "rationale": "Pocket upstream API was shut down by Mozilla on 2025-07-08; the connector cannot run regardless of refresh mode."
     },
     "public_listing": {
-      "listed": true,
-      "status": "proven"
+      "listed": false,
+      "status": "deprecated_upstream",
+      "rationale": "Mozilla shut Pocket down on 2025-07-08; no upstream API remains to fetch from."
     }
   },
   "streams": [

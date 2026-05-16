@@ -69,18 +69,61 @@ The policy is the minimum that makes the existing filter trustworthy.
 5. The data-driven test over the whole manifest set is the cheapest
    ongoing enforcement: new manifests fail loudly if they skip the
    declaration.
+6. The catalog filter only ever sees connectors that are *registered*
+   in the connectors table. Today that table is populated lazily —
+   `pdpp seed`, scheduler bootstrap, or a manual run is what creates a
+   row. As a result, listed=true first-party manifests that no
+   operator has yet exercised (e.g. `notion`, `oura`, `strava`) never
+   reach `GET /_ref/connectors`. The catalog is therefore *not*
+   honestly complete: the catalog filter says "we are showing every
+   listed manifest" but actually shows only the subset the operator
+   has already touched. The minimum repair is to make
+   `reconcilePolyfillManifests` register shipped manifests with
+   `public_listing.listed: true` on startup. This stays narrow:
+       - Only the shipped first-party manifests dir is scanned, so
+         custom user-authored connectors are still left alone.
+       - Only listed=true manifests are registered, so unproven and
+         hidden manifests stay invisible (and the existing
+         fixture→polyfill invalidation guarantee, which fires only on
+         persisted-record diffs, remains unreachable on first
+         registration).
+       - Registration is not schedule enablement; the scheduler
+         eligibility filter and the operator-driven schedule path
+         continue to gate background runs on their own terms.
+7. Pocket is the load-bearing motivating case for the
+   `deprecated_upstream` status. `CONNECTORS.md` already documents
+   that Mozilla shut Pocket down on 2025-07-08, but the manifest still
+   declared `listed: true, status: "proven", background_safe: true,
+   recommended_mode: "automatic"`. The existing `unproven` status was
+   the wrong fit (we have nothing to prove against a dead API; it is
+   not a "we never tried" case), so the spec gains a distinct
+   `deprecated_upstream` status that pairs with `listed: false` and
+   bans the background-safe / automatic combinations.
 
 ## Scope
 
 In scope:
 - `reference-implementation-architecture` capability requirements that
-  describe the reference catalog filter and the catalog/scheduler
-  interlock.
+  describe the reference catalog filter, the catalog/scheduler
+  interlock, the catalog-completeness rule for listed first-party
+  manifests, and the `deprecated_upstream` honesty rules.
 - A data-driven test in
   `packages/polyfill-connectors/src/public-listing-manifest-honesty.test.ts`
   that iterates all manifests.
 - Manifest edits for the 14 unproven first-party manifests so each
   declares `public_listing.listed: false, status: "unproven"`.
+- A manifest edit for Pocket to flip from the stale
+  `listed: true, status: "proven", background_safe: true,
+  recommended_mode: "automatic"` shape to
+  `listed: false, status: "deprecated_upstream",
+  background_safe: false, recommended_mode: "manual"`, reflecting
+  Mozilla's 2025-07-08 shutdown documented in
+  `packages/polyfill-connectors/CONNECTORS.md`.
+- A narrow extension to `reconcilePolyfillManifests` that
+  auto-registers shipped first-party manifests with
+  `public_listing.listed: true` so the operator catalog can show them
+  on a fresh DB; an end-to-end test that pins both the
+  listed-visible and hidden-invisible paths.
 
 Out of scope:
 - Any change to PDPP protocol fields. `public_listing` and
@@ -122,10 +165,22 @@ Out of scope:
 - No manifest has `public_listing.status: "needs_human_auth"`
   together with `refresh_policy.background_safe: true` or
   `refresh_policy.recommended_mode: "automatic"`.
+- No manifest has `public_listing.status: "deprecated_upstream"`
+  together with `listed: true`, `refresh_policy.background_safe: true`,
+  or `refresh_policy.recommended_mode: "automatic"`.
+- Every first-party manifest with
+  `capabilities.public_listing.listed: true` appears in
+  `listConnectorSummaries()` after
+  `reconcilePolyfillManifests` runs against the shipped manifests dir
+  on a fresh database, and every hidden manifest stays invisible.
 - `node --test packages/polyfill-connectors/src/public-listing-manifest-honesty.test.ts`
   iterates the manifest set and passes.
 - `node --test reference-implementation/test/ref-connectors-list-operation.test.js`
   continues to pass.
+- `node --test reference-implementation/test/polyfill-manifest-reconcile-invalidation.test.js`
+  passes with the listed/unlisted catalog-completeness cases.
+- `node --test reference-implementation/test/connector-public-catalog-completeness.test.js`
+  passes against the real shipped manifests.
 - `openspec validate add-connector-public-listing-honesty --strict`
   passes.
 
