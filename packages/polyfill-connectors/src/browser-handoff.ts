@@ -4,8 +4,8 @@
  * This module is the browser binding's bridge between an in-flight
  * `manual_action` interaction and the streaming-companion's per-interaction
  * page-target registry. It intentionally lives next to `browser-launch.ts`
- * (the patchright launcher) and is imported by browser-driven connectors
- * — the generic connector runtime never sees it.
+ * (the patchright launcher) and is imported by browser-driven connectors or
+ * the browser branch of the generic connector runtime.
  *
  * Architecture (see openspec/changes/add-run-interaction-streaming-companion/
  * design-notes/ and tmp/answer.md):

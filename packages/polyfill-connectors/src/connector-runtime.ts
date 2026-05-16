@@ -42,6 +42,7 @@ import { createInterface } from "node:readline";
 import type { Browser, BrowserContext, CDPSession, Page } from "playwright";
 
 import { type AuthConfig, resolveAuth } from "./auth.ts";
+import { manualAction } from "./browser-handoff.ts";
 import { type CaptureSession, createCaptureSession } from "./fixture-capture.ts";
 import { emitToStdout } from "./safe-emit.ts";
 import { resourceSet } from "./scope-filters.ts";
@@ -1320,11 +1321,15 @@ async function establishSession(
     return;
   }
 
-  await sendInteraction({
-    kind: "manual_action",
-    message: `${name} session expired. Open the browser and re-authenticate, then continue.`,
-    timeout_seconds: 1800,
-  });
+  await manualAction(
+    {
+      page,
+      reason: "login",
+      message: `${name} session expired. Open the browser and re-authenticate, then continue.`,
+      timeoutSeconds: 1800,
+    },
+    sendInteraction
+  );
   if (await probeSession({ context, page })) {
     return;
   }
