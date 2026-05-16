@@ -1,7 +1,7 @@
 /**
  * Fixture capture for connector runs.
  *
- * Two activation modes:
+ * Two activation modes, both opt-in:
  *
  *   PDPP_CAPTURE_FIXTURES=1   — always retain raw capture (developer mode).
  *                                Used for fixture-scrubber input and explicit
@@ -9,11 +9,11 @@
  *
  *   PDPP_CAPTURE_ON_FAILURE=1 — capture during the run but delete the raw
  *                                directory on success; retain on failure.
- *                                Default mode for scheduler/docker runs so
- *                                the first time a connector fails the
- *                                operator already has DOM/ARIA/screenshots/
- *                                trace chunks for post-mortem debugging
- *                                without paying storage on success.
+ *                                Intended for scheduler/docker contexts where
+ *                                operators want a no-cost "first failure has
+ *                                artifacts" guarantee, but nothing in this
+ *                                repo wires it on automatically — enabling
+ *                                it is a deliberate per-environment step.
  *
  * When both are set, PDPP_CAPTURE_FIXTURES wins (always retain). When
  * neither is set, `createCaptureSession` returns null and the runtime
