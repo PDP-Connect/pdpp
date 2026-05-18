@@ -12,6 +12,7 @@ If these bindings share `connector_id` as their durable key, they can collide in
 ## Goals
 
 - Make connector instances the durable reference identity for configured connector bindings.
+- Use `connection` as the owner-facing product noun for a configured connector instance.
 - Preserve `connector_id` as connector type identity for manifest lookup and source labels.
 - Support multi-account and multi-device collection without record, state, schedule, lease, or UX collisions.
 - Provide migration criteria before runtime code changes.
@@ -32,6 +33,8 @@ If these bindings share `connector_id` as their durable key, they can collide in
 
 `connector_instance_id` becomes the stable configured binding identifier. It answers "which owner-approved account, device, local binding, or collector source is this?"
 
+`connection` is the owner-facing product noun for the same configured binding. User-facing copy should prefer "connection" when the owner can add, pause, refresh, inspect, schedule, or revoke the configured source. Technical reference APIs may continue to use `connector_instance_id` until an accepted UI/API naming change chooses a different wire name.
+
 A connector instance has at least:
 
 - `owner_id`,
@@ -43,15 +46,22 @@ A connector instance has at least:
 
 For server-side account connectors such as Gmail, the instance maps to one configured account authorization. For local collector connectors such as Claude Code or Codex, the instance maps to one enrolled device plus one local binding for that connector. This aligns with the existing local-device exporter design, where a device plus connector plus local binding becomes a source instance.
 
+`source_instance_id` is not promoted as a peer top-level noun by default. Source/account/profile/device details remain structured binding metadata under the connector instance unless a future invariant requires independent lifecycle, authority, schedule, health, grant, or storage namespaces below the connection.
+
 ### Storage And Runtime Boundaries
 
 The storage boundary must treat `connector_instance_id` as part of the namespace for:
 
 - connector state and checkpoints,
 - record identity and idempotency,
+- blob bindings,
 - schedule rows,
 - active-run leases,
 - run history and diagnostics,
+- scheduler backoff and last-run gates,
+- detail gaps and recovery state,
+- search index rows and backfill progress,
+- browser-surface profile/lease ownership,
 - collector heartbeats and freshness,
 - owner dashboard list/detail routes.
 
@@ -77,11 +87,24 @@ Device enrollment remains device-scoped. A device is not itself a connector inst
 
 This lets two local Claude/Codex collectors report the same connector type without fighting over checkpoint state, record keys, schedules, or active-run leases.
 
+### 2026-05-18 Namespace Audit
+
+Read-only audit reports under `tmp/workstreams/connector-id-namespace-audit-*.md` confirmed the current reference is not multi-connection-ready beyond the instance registry substrate:
+
+- records, record changes, stream versions, blob bindings, connector state, schedules, active runs, run history, last-run gates, detail gaps, search indexes, and several conformance tests still use bare `connector_id` as a durable namespace;
+- runtime maps for active runs, human-attention gates, scheduler backoff, schedule eligibility, browser surface leases, and in-process state reads/writes still key by connector type;
+- owner-facing dashboard records/schedules and `_ref/connectors/:connectorId/...` routes still treat connector type as the configured source;
+- the local device/exporter path already synthesizes a source-instance storage namespace, but that workaround should migrate into first-class connector-instance columns rather than overloading `connector_id`;
+- the CLI/device-exporter use of `source_instance_id` should be treated as a device-binding detail or legacy compatibility field once connection identity is wired.
+
+This audit changes the implementation order: do not claim multi-account or multi-device support until the storage/runtime/UI namespaces above are instance-scoped or reject ambiguous connector-only operations.
+
 ### Open Questions
 
 - Whether connector instance identity should become Collection Profile vocabulary or remain reference-only.
 - Whether grant-authorized clients should ever be able to filter by connector instance, or whether instance identity remains owner/operator metadata.
 - Whether cross-instance deduplication is desirable for specific connectors such as Gmail message IDs, and where that rule should live.
+- Whether any source binding below a connection deserves promotion to a first-class object after evidence shows independent lifecycle, authority, schedule, health, grant, or storage semantics.
 
 These questions are deferred for the first implementation tranche. The tranche only creates reference-owned instance registry storage and single-instance compatibility resolution; it does not expose instance identity to grant-authorized client reads, public protocol routes, or cross-instance record identity rules.
 
@@ -99,3 +122,4 @@ These questions are deferred for the first implementation tranche. The tranche o
 - Review confirms the first implementation tranche only touches instance registry schema/store/test surfaces and does not alter dashboard UX or connector runtime behavior.
 - The spec delta covers collision isolation for state, records, schedules, active-run leases, diagnostics, and owner UX.
 - The task list includes migration and compatibility criteria before implementation.
+- The implementation plan is checked against the 2026-05-18 namespace audit before any multi-account/multi-device claim is made.
