@@ -4,6 +4,7 @@
 -- so in-memory scheduler projections preserve append order after restart.
 SELECT
   id,
+  connector_instance_id,
   connector_id,
   source_json,
   status,

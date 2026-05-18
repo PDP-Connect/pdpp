@@ -443,7 +443,8 @@ export async function bootstrapPostgresSchema() {
         ON connector_detail_gaps(connector_id, grant_id, status, stream, next_attempt_after);
 
       CREATE TABLE IF NOT EXISTS connector_schedules (
-        connector_id TEXT PRIMARY KEY,
+        connector_instance_id TEXT PRIMARY KEY,
+        connector_id TEXT NOT NULL,
         interval_seconds INTEGER NOT NULL,
         jitter_seconds INTEGER NOT NULL DEFAULT 0,
         enabled BOOLEAN NOT NULL DEFAULT TRUE,
@@ -452,7 +453,8 @@ export async function bootstrapPostgresSchema() {
       );
 
       CREATE TABLE IF NOT EXISTS controller_active_runs (
-        connector_id TEXT PRIMARY KEY,
+        connector_instance_id TEXT PRIMARY KEY,
+        connector_id TEXT NOT NULL,
         run_id TEXT NOT NULL UNIQUE,
         trace_id TEXT NOT NULL,
         scenario_id TEXT NOT NULL,
@@ -576,6 +578,7 @@ export async function bootstrapPostgresSchema() {
 
       CREATE TABLE IF NOT EXISTS scheduler_run_history (
         id BIGSERIAL PRIMARY KEY,
+        connector_instance_id TEXT NOT NULL,
         connector_id TEXT NOT NULL,
         source_json JSONB NOT NULL,
         status TEXT NOT NULL,
@@ -598,7 +601,8 @@ export async function bootstrapPostgresSchema() {
         ON scheduler_run_history(connector_id, completed_at, id);
 
       CREATE TABLE IF NOT EXISTS scheduler_last_run_times (
-        connector_id TEXT PRIMARY KEY,
+        connector_instance_id TEXT PRIMARY KEY,
+        connector_id TEXT NOT NULL,
         last_run_time_ms BIGINT NOT NULL,
         updated_at TEXT NOT NULL
       );
@@ -799,6 +803,7 @@ export async function bootstrapPostgresSchema() {
     await migratePostgresDeviceExporterColumns(client);
     await migratePostgresBlobBindingsJsonPath(client);
     await migratePostgresConnectorSyncStateInstanceColumns(client);
+    await migratePostgresSchedulerInstanceColumns(client);
   } finally {
     client.release();
   }
@@ -897,6 +902,90 @@ async function migratePostgresConnectorSyncStateInstanceColumns(client) {
       await client.query('ALTER TABLE grant_connector_state ADD CONSTRAINT grant_connector_state_pkey PRIMARY KEY (grant_id, connector_instance_id, stream)');
     }
 
+    await client.query('COMMIT');
+  } catch (err) {
+    try {
+      await client.query('ROLLBACK');
+    } catch {}
+    throw err;
+  }
+}
+
+async function migratePostgresSchedulerInstanceColumns(client) {
+  const scheduleHasInstance = await hasPostgresColumn(client, 'connector_schedules', 'connector_instance_id');
+  const activeRunHasInstance = await hasPostgresColumn(client, 'controller_active_runs', 'connector_instance_id');
+  const historyHasInstance = await hasPostgresColumn(client, 'scheduler_run_history', 'connector_instance_id');
+  const lastRunHasInstance = await hasPostgresColumn(client, 'scheduler_last_run_times', 'connector_instance_id');
+  if (scheduleHasInstance && activeRunHasInstance && historyHasInstance && lastRunHasInstance) {
+    return;
+  }
+
+  await client.query('BEGIN');
+  try {
+    const instanceIds = new Map();
+    const resolveInstanceId = async (connectorId) => {
+      if (!instanceIds.has(connectorId)) {
+        instanceIds.set(connectorId, await legacySyncStateConnectorInstanceId(client, connectorId));
+      }
+      return instanceIds.get(connectorId);
+    };
+
+    if (!scheduleHasInstance) {
+      const rows = await client.query('SELECT connector_id FROM connector_schedules ORDER BY connector_id');
+      await client.query('ALTER TABLE connector_schedules DROP CONSTRAINT IF EXISTS connector_schedules_pkey');
+      await client.query('ALTER TABLE connector_schedules ADD COLUMN connector_instance_id TEXT');
+      for (const row of rows.rows) {
+        await client.query(
+          'UPDATE connector_schedules SET connector_instance_id = $1 WHERE connector_id = $2',
+          [await resolveInstanceId(row.connector_id), row.connector_id],
+        );
+      }
+      await client.query('ALTER TABLE connector_schedules ALTER COLUMN connector_instance_id SET NOT NULL');
+      await client.query('ALTER TABLE connector_schedules ADD CONSTRAINT connector_schedules_pkey PRIMARY KEY (connector_instance_id)');
+    }
+
+    if (!activeRunHasInstance) {
+      const rows = await client.query('SELECT connector_id FROM controller_active_runs ORDER BY connector_id');
+      await client.query('ALTER TABLE controller_active_runs DROP CONSTRAINT IF EXISTS controller_active_runs_pkey');
+      await client.query('ALTER TABLE controller_active_runs ADD COLUMN connector_instance_id TEXT');
+      for (const row of rows.rows) {
+        await client.query(
+          'UPDATE controller_active_runs SET connector_instance_id = $1 WHERE connector_id = $2',
+          [await resolveInstanceId(row.connector_id), row.connector_id],
+        );
+      }
+      await client.query('ALTER TABLE controller_active_runs ALTER COLUMN connector_instance_id SET NOT NULL');
+      await client.query('ALTER TABLE controller_active_runs ADD CONSTRAINT controller_active_runs_pkey PRIMARY KEY (connector_instance_id)');
+    }
+
+    if (!historyHasInstance) {
+      const rows = await client.query('SELECT id, connector_id FROM scheduler_run_history ORDER BY id');
+      await client.query('ALTER TABLE scheduler_run_history ADD COLUMN connector_instance_id TEXT');
+      for (const row of rows.rows) {
+        await client.query(
+          'UPDATE scheduler_run_history SET connector_instance_id = $1 WHERE id = $2',
+          [await resolveInstanceId(row.connector_id), row.id],
+        );
+      }
+      await client.query('ALTER TABLE scheduler_run_history ALTER COLUMN connector_instance_id SET NOT NULL');
+    }
+
+    if (!lastRunHasInstance) {
+      const rows = await client.query('SELECT connector_id FROM scheduler_last_run_times ORDER BY connector_id');
+      await client.query('ALTER TABLE scheduler_last_run_times DROP CONSTRAINT IF EXISTS scheduler_last_run_times_pkey');
+      await client.query('ALTER TABLE scheduler_last_run_times ADD COLUMN connector_instance_id TEXT');
+      for (const row of rows.rows) {
+        await client.query(
+          'UPDATE scheduler_last_run_times SET connector_instance_id = $1 WHERE connector_id = $2',
+          [await resolveInstanceId(row.connector_id), row.connector_id],
+        );
+      }
+      await client.query('ALTER TABLE scheduler_last_run_times ALTER COLUMN connector_instance_id SET NOT NULL');
+      await client.query('ALTER TABLE scheduler_last_run_times ADD CONSTRAINT scheduler_last_run_times_pkey PRIMARY KEY (connector_instance_id)');
+    }
+
+    await client.query('DROP INDEX IF EXISTS idx_pg_scheduler_run_history_connector_completed');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_pg_scheduler_run_history_connector_completed ON scheduler_run_history(connector_instance_id, completed_at, id)');
     await client.query('COMMIT');
   } catch (err) {
     try {

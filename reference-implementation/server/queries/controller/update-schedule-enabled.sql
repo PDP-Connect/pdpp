@@ -4,4 +4,4 @@
 -- the pause/resume action.
 UPDATE connector_schedules
 SET enabled = ?, updated_at = ?
-WHERE connector_id = ?
+WHERE connector_instance_id = ?

@@ -379,7 +379,8 @@ CREATE TABLE IF NOT EXISTS source_webhook_events (
 );
 
 CREATE TABLE IF NOT EXISTS connector_schedules (
-  connector_id      TEXT PRIMARY KEY,
+  connector_instance_id TEXT PRIMARY KEY,
+  connector_id      TEXT NOT NULL,
   interval_seconds  INTEGER NOT NULL,
   jitter_seconds    INTEGER NOT NULL DEFAULT 0,
   enabled           INTEGER NOT NULL DEFAULT 1,
@@ -388,7 +389,8 @@ CREATE TABLE IF NOT EXISTS connector_schedules (
 );
 
 CREATE TABLE IF NOT EXISTS controller_active_runs (
-  connector_id  TEXT PRIMARY KEY,
+  connector_instance_id TEXT PRIMARY KEY,
+  connector_id  TEXT NOT NULL,
   run_id        TEXT NOT NULL UNIQUE,
   trace_id      TEXT NOT NULL,
   scenario_id   TEXT NOT NULL,
@@ -485,6 +487,7 @@ CREATE INDEX IF NOT EXISTS idx_browser_surface_leases_non_terminal
 
 CREATE TABLE IF NOT EXISTS scheduler_run_history (
   id                         INTEGER PRIMARY KEY AUTOINCREMENT,
+  connector_instance_id      TEXT NOT NULL,
   connector_id               TEXT NOT NULL,
   source_json                TEXT NOT NULL,
   status                     TEXT NOT NULL,
@@ -507,7 +510,8 @@ CREATE INDEX IF NOT EXISTS idx_scheduler_run_history_connector_completed
   ON scheduler_run_history(connector_id, completed_at, id);
 
 CREATE TABLE IF NOT EXISTS scheduler_last_run_times (
-  connector_id       TEXT PRIMARY KEY,
+  connector_instance_id TEXT PRIMARY KEY,
+  connector_id       TEXT NOT NULL,
   last_run_time_ms   INTEGER NOT NULL,
   updated_at         TEXT NOT NULL
 );
@@ -1107,6 +1111,95 @@ function migrateConnectorSyncStateInstanceColumns(raw, opts = {}) {
   return result;
 }
 
+function migrateSchedulerInstanceColumns(raw) {
+  const schedulesHaveInstance = hasTableColumn(raw, 'connector_schedules', 'connector_instance_id');
+  const activeRunsHaveInstance = hasTableColumn(raw, 'controller_active_runs', 'connector_instance_id');
+  const historyHaveInstance = hasTableColumn(raw, 'scheduler_run_history', 'connector_instance_id');
+  const lastRunHaveInstance = hasTableColumn(raw, 'scheduler_last_run_times', 'connector_instance_id');
+  if (schedulesHaveInstance && activeRunsHaveInstance && historyHaveInstance && lastRunHaveInstance) return;
+
+  raw.transaction(() => {
+    const schedules = raw.prepare(`SELECT ${schedulesHaveInstance ? 'connector_instance_id,' : ''} connector_id, interval_seconds, jitter_seconds, enabled, created_at, updated_at FROM connector_schedules ORDER BY connector_id`).all();
+    const activeRuns = raw.prepare(`SELECT ${activeRunsHaveInstance ? 'connector_instance_id,' : ''} connector_id, run_id, trace_id, scenario_id, started_at FROM controller_active_runs ORDER BY connector_id`).all();
+    const history = raw.prepare(`SELECT id, ${historyHaveInstance ? 'connector_instance_id,' : ''} connector_id, source_json, status, records_emitted, reported_records_emitted, checkpoint_summary_json, known_gaps_json, connector_error_json, run_id, trace_id, failure_reason, terminal_reason, started_at, completed_at, error, attempt FROM scheduler_run_history ORDER BY id`).all();
+    const lastRuns = raw.prepare(`SELECT ${lastRunHaveInstance ? 'connector_instance_id,' : ''} connector_id, last_run_time_ms, updated_at FROM scheduler_last_run_times ORDER BY connector_id`).all();
+    const instanceIds = new Map();
+    const resolveInstanceId = (row) => {
+      if (typeof row.connector_instance_id === 'string' && row.connector_instance_id.trim()) return row.connector_instance_id.trim();
+      if (!instanceIds.has(row.connector_id)) instanceIds.set(row.connector_id, legacySyncStateConnectorInstanceId(raw, row.connector_id));
+      return instanceIds.get(row.connector_id);
+    };
+
+    raw.exec(`
+DROP TABLE connector_schedules;
+CREATE TABLE connector_schedules (
+  connector_instance_id TEXT PRIMARY KEY,
+  connector_id      TEXT NOT NULL,
+  interval_seconds  INTEGER NOT NULL,
+  jitter_seconds    INTEGER NOT NULL DEFAULT 0,
+  enabled           INTEGER NOT NULL DEFAULT 1,
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL
+);
+
+DROP TABLE controller_active_runs;
+CREATE TABLE controller_active_runs (
+  connector_instance_id TEXT PRIMARY KEY,
+  connector_id  TEXT NOT NULL,
+  run_id        TEXT NOT NULL UNIQUE,
+  trace_id      TEXT NOT NULL,
+  scenario_id   TEXT NOT NULL,
+  started_at    TEXT NOT NULL
+);
+
+DROP TABLE scheduler_run_history;
+CREATE TABLE scheduler_run_history (
+  id                         INTEGER PRIMARY KEY AUTOINCREMENT,
+  connector_instance_id      TEXT NOT NULL,
+  connector_id               TEXT NOT NULL,
+  source_json                TEXT NOT NULL,
+  status                     TEXT NOT NULL,
+  records_emitted            INTEGER NOT NULL DEFAULT 0,
+  reported_records_emitted   INTEGER,
+  checkpoint_summary_json    TEXT,
+  known_gaps_json            TEXT NOT NULL DEFAULT '[]',
+  connector_error_json       TEXT,
+  run_id                     TEXT,
+  trace_id                   TEXT,
+  failure_reason             TEXT,
+  terminal_reason            TEXT,
+  started_at                 TEXT NOT NULL,
+  completed_at               TEXT NOT NULL,
+  error                      TEXT,
+  attempt                    INTEGER NOT NULL
+);
+
+DROP TABLE scheduler_last_run_times;
+CREATE TABLE scheduler_last_run_times (
+  connector_instance_id TEXT PRIMARY KEY,
+  connector_id       TEXT NOT NULL,
+  last_run_time_ms   INTEGER NOT NULL,
+  updated_at         TEXT NOT NULL
+);
+`);
+
+    const insertSchedule = raw.prepare(`INSERT INTO connector_schedules(connector_instance_id, connector_id, interval_seconds, jitter_seconds, enabled, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?)`);
+    for (const row of schedules) insertSchedule.run(resolveInstanceId(row), row.connector_id, row.interval_seconds, row.jitter_seconds, row.enabled, row.created_at, row.updated_at);
+    const insertActiveRun = raw.prepare(`INSERT INTO controller_active_runs(connector_instance_id, connector_id, run_id, trace_id, scenario_id, started_at) VALUES(?, ?, ?, ?, ?, ?)`);
+    for (const row of activeRuns) insertActiveRun.run(resolveInstanceId(row), row.connector_id, row.run_id, row.trace_id, row.scenario_id, row.started_at);
+    const insertHistory = raw.prepare(`INSERT INTO scheduler_run_history(id, connector_instance_id, connector_id, source_json, status, records_emitted, reported_records_emitted, checkpoint_summary_json, known_gaps_json, connector_error_json, run_id, trace_id, failure_reason, terminal_reason, started_at, completed_at, error, attempt) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    for (const row of history) insertHistory.run(row.id, resolveInstanceId(row), row.connector_id, row.source_json, row.status, row.records_emitted, row.reported_records_emitted, row.checkpoint_summary_json, row.known_gaps_json, row.connector_error_json, row.run_id, row.trace_id, row.failure_reason, row.terminal_reason, row.started_at, row.completed_at, row.error, row.attempt);
+    const insertLastRun = raw.prepare(`INSERT INTO scheduler_last_run_times(connector_instance_id, connector_id, last_run_time_ms, updated_at) VALUES(?, ?, ?, ?)`);
+    for (const row of lastRuns) insertLastRun.run(resolveInstanceId(row), row.connector_id, row.last_run_time_ms, row.updated_at);
+  })();
+
+  raw.exec(`
+DROP INDEX IF EXISTS idx_scheduler_run_history_connector_completed;
+CREATE INDEX IF NOT EXISTS idx_controller_active_runs_run_id ON controller_active_runs(run_id);
+CREATE INDEX IF NOT EXISTS idx_scheduler_run_history_connector_completed ON scheduler_run_history(connector_instance_id, completed_at, id);
+`);
+}
+
 function isSourceKind(value) {
   return value === 'connector' || value === 'provider_native';
 }
@@ -1401,6 +1494,7 @@ export function initDb(path = ':memory:', opts = {}) {
   // backfill with '@record' (their existing record-level semantics).
   runWithSqliteBusyRetrySync(() => migrateBlobBindingsJsonPath(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateConnectorSyncStateInstanceColumns(raw, opts));
+  runWithSqliteBusyRetrySync(() => migrateSchedulerInstanceColumns(raw));
   raw.exec(
     `CREATE INDEX IF NOT EXISTS idx_spine_events_run_terminal
       ON spine_events(run_id, event_type, event_seq DESC)

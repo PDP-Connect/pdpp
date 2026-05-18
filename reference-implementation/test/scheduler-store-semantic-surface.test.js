@@ -21,10 +21,14 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
-import { closeDb, initDb } from '../server/db.js';
+import { closeDb, getDb, initDb } from '../server/db.js';
 import { registerConnector } from '../server/auth.js';
 import { createSqliteSchedulerStore } from '../server/stores/scheduler-store.ts';
+import { makeLegacyConnectorInstanceId } from '../server/stores/connector-instance-store.js';
 
 const SEMANTIC_CONNECTOR = 'https://test.pdpp.org/connectors/semantic-surface';
 
@@ -178,6 +182,7 @@ test('scheduler run history and last-run time round-trip through semantic method
     assert.equal(history.length, 1);
     assert.deepEqual(history[0], {
       connectorId: SEMANTIC_CONNECTOR,
+      connectorInstanceId: SEMANTIC_CONNECTOR,
       source: { kind: 'connector', id: SEMANTIC_CONNECTOR },
       status: 'succeeded',
       recordsEmitted: 7,
@@ -196,12 +201,153 @@ test('scheduler run history and last-run time round-trip through semantic method
 
     assert.deepEqual(store.listLastRunTimes(), [
       {
+        connector_instance_id: SEMANTIC_CONNECTOR,
         connector_id: SEMANTIC_CONNECTOR,
         last_run_time_ms: 1_776_000_001_000,
         updated_at: completedAt,
       },
     ]);
   });
+});
+
+test('same connector instances keep separate schedules, active runs, and last-run times', async () => {
+  await withFreshStore((store) => {
+    const now = '2026-04-29T02:00:00.000Z';
+    const work = 'cin_semantic_work';
+    const personal = 'cin_semantic_personal';
+
+    store.createSchedule({
+      connector_instance_id: work,
+      connector_id: SEMANTIC_CONNECTOR,
+      interval_seconds: 600,
+      jitter_seconds: 10,
+      enabled: true,
+      created_at: now,
+      updated_at: now,
+    });
+    store.createSchedule({
+      connector_instance_id: personal,
+      connector_id: SEMANTIC_CONNECTOR,
+      interval_seconds: 1800,
+      jitter_seconds: 60,
+      enabled: false,
+      created_at: now,
+      updated_at: now,
+    });
+
+    store.upsertActiveRun({
+      connector_instance_id: work,
+      connector_id: SEMANTIC_CONNECTOR,
+      run_id: 'run_work',
+      trace_id: 'trc_work',
+      scenario_id: 'scn_work',
+      started_at: now,
+    });
+    store.upsertActiveRun({
+      connector_instance_id: personal,
+      connector_id: SEMANTIC_CONNECTOR,
+      run_id: 'run_personal',
+      trace_id: 'trc_personal',
+      scenario_id: 'scn_personal',
+      started_at: now,
+    });
+    store.upsertLastRunTime(work, 1_776_000_002_000, now, SEMANTIC_CONNECTOR);
+    store.upsertLastRunTime(personal, 1_776_000_003_000, now, SEMANTIC_CONNECTOR);
+
+    assert.equal(store.listSchedules().length, 2);
+    assert.deepEqual(
+      store.listSchedules().map((row) => [row.connector_instance_id, row.connector_id, row.interval_seconds, row.enabled]),
+      [
+        [personal, SEMANTIC_CONNECTOR, 1800, false],
+        [work, SEMANTIC_CONNECTOR, 600, true],
+      ],
+    );
+    assert.deepEqual(
+      store.listActiveRuns().map((row) => [row.connector_instance_id, row.connector_id, row.run_id]).sort(),
+      [
+        [personal, SEMANTIC_CONNECTOR, 'run_personal'],
+        [work, SEMANTIC_CONNECTOR, 'run_work'],
+      ],
+    );
+    assert.deepEqual(
+      store.listLastRunTimes().map((row) => [row.connector_instance_id, row.connector_id, row.last_run_time_ms]),
+      [
+        [personal, SEMANTIC_CONNECTOR, 1_776_000_003_000],
+        [work, SEMANTIC_CONNECTOR, 1_776_000_002_000],
+      ],
+    );
+  });
+});
+
+test('scheduler storage migration backfills legacy rows to deterministic legacy instance id', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'pdpp-scheduler-store-'));
+  const dbPath = join(dir, 'reference.sqlite');
+  initDb(dbPath);
+  await registerConnector(SEMANTIC_MANIFEST);
+  const legacyInstanceId = makeLegacyConnectorInstanceId('owner_local', SEMANTIC_CONNECTOR);
+  try {
+    const db = getDb();
+    db.exec(`
+      DROP TABLE connector_schedules;
+      CREATE TABLE connector_schedules (
+        connector_id TEXT PRIMARY KEY,
+        interval_seconds INTEGER NOT NULL,
+        jitter_seconds INTEGER NOT NULL DEFAULT 0,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      DROP TABLE controller_active_runs;
+      CREATE TABLE controller_active_runs (
+        connector_id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL UNIQUE,
+        trace_id TEXT NOT NULL,
+        scenario_id TEXT NOT NULL,
+        started_at TEXT NOT NULL
+      );
+      DROP TABLE scheduler_run_history;
+      CREATE TABLE scheduler_run_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        connector_id TEXT NOT NULL,
+        source_json TEXT NOT NULL,
+        status TEXT NOT NULL,
+        records_emitted INTEGER NOT NULL DEFAULT 0,
+        reported_records_emitted INTEGER,
+        checkpoint_summary_json TEXT,
+        known_gaps_json TEXT NOT NULL DEFAULT '[]',
+        connector_error_json TEXT,
+        run_id TEXT,
+        trace_id TEXT,
+        failure_reason TEXT,
+        terminal_reason TEXT,
+        started_at TEXT NOT NULL,
+        completed_at TEXT NOT NULL,
+        error TEXT,
+        attempt INTEGER NOT NULL
+      );
+      DROP TABLE scheduler_last_run_times;
+      CREATE TABLE scheduler_last_run_times (
+        connector_id TEXT PRIMARY KEY,
+        last_run_time_ms INTEGER NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+    `);
+    db.prepare('INSERT INTO connector_schedules(connector_id, interval_seconds, jitter_seconds, enabled, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?)').run(SEMANTIC_CONNECTOR, 900, 0, 1, '2026-04-29T03:00:00.000Z', '2026-04-29T03:00:00.000Z');
+    db.prepare('INSERT INTO controller_active_runs(connector_id, run_id, trace_id, scenario_id, started_at) VALUES(?, ?, ?, ?, ?)').run(SEMANTIC_CONNECTOR, 'run_legacy', 'trc_legacy', 'scn_legacy', '2026-04-29T03:00:01.000Z');
+    db.prepare('INSERT INTO scheduler_last_run_times(connector_id, last_run_time_ms, updated_at) VALUES(?, ?, ?)').run(SEMANTIC_CONNECTOR, 1_776_000_004_000, '2026-04-29T03:00:02.000Z');
+    db.prepare('INSERT INTO scheduler_run_history(connector_id, source_json, status, records_emitted, known_gaps_json, started_at, completed_at, attempt) VALUES(?, ?, ?, ?, ?, ?, ?, ?)').run(SEMANTIC_CONNECTOR, '{}', 'succeeded', 1, '[]', '2026-04-29T03:00:01.000Z', '2026-04-29T03:00:02.000Z', 1);
+    closeDb();
+
+    initDb(dbPath);
+    const store = createSqliteSchedulerStore();
+    assert.equal(store.getSchedule(legacyInstanceId)?.connector_instance_id, legacyInstanceId);
+    assert.equal(store.listActiveRuns()[0]?.connector_instance_id, legacyInstanceId);
+    assert.equal(store.listLastRunTimes()[0]?.connector_instance_id, legacyInstanceId);
+    assert.equal(store.listRunHistory(10)[0]?.connectorInstanceId, legacyInstanceId);
+  } finally {
+    closeDb();
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test('listSchedules entries each surface enabled as a boolean', async () => {

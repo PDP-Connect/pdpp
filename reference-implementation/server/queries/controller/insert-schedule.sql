@@ -4,5 +4,5 @@
 -- site (controller.ts upsertSchedule); the two-query pattern is kept so
 -- the existence check can drive logging / projection differences.
 INSERT INTO connector_schedules(
-  connector_id, interval_seconds, jitter_seconds, enabled, created_at, updated_at
-) VALUES(?, ?, ?, ?, ?, ?)
+  connector_instance_id, connector_id, interval_seconds, jitter_seconds, enabled, created_at, updated_at
+) VALUES(?, ?, ?, ?, ?, ?, ?)

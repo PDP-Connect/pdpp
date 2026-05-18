@@ -3,4 +3,4 @@
 -- so the dashboard can show the most recent edit timestamp.
 UPDATE connector_schedules
 SET interval_seconds = ?, jitter_seconds = ?, enabled = ?, updated_at = ?
-WHERE connector_id = ?
+WHERE connector_instance_id = ?

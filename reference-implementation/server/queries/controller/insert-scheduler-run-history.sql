@@ -3,6 +3,7 @@
 -- Payload-shaped fields stay JSON so the store surface can remain semantic
 -- and avoid leaking table columns to the runtime scheduler.
 INSERT INTO scheduler_run_history(
+  connector_instance_id,
   connector_id,
   source_json,
   status,
@@ -19,4 +20,4 @@ INSERT INTO scheduler_run_history(
   completed_at,
   error,
   attempt
-) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)

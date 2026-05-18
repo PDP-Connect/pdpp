@@ -6,6 +6,6 @@
 -- registered connectors. Each row gets joined to in-memory runtime
 -- projections downstream so callers cannot stream this — the page is
 -- materialized in full.
-SELECT connector_id, interval_seconds, jitter_seconds, enabled, created_at, updated_at
+SELECT connector_instance_id, connector_id, interval_seconds, jitter_seconds, enabled, created_at, updated_at
 FROM connector_schedules
-ORDER BY connector_id ASC
+ORDER BY connector_id ASC, connector_instance_id ASC

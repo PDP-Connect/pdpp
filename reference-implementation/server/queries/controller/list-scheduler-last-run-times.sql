@@ -3,6 +3,6 @@
 -- @table: scheduler_last_run_times
 -- @max_rows: 128
 -- One row per scheduled connector; bounded by connector count.
-SELECT connector_id, last_run_time_ms, updated_at
+SELECT connector_instance_id, connector_id, last_run_time_ms, updated_at
 FROM scheduler_last_run_times
-ORDER BY connector_id ASC
+ORDER BY connector_id ASC, connector_instance_id ASC

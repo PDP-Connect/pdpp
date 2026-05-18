@@ -3,4 +3,4 @@
 -- existed before calling delete; subsequent calls return false because
 -- the existence check fires before the DELETE.
 DELETE FROM connector_schedules
-WHERE connector_id = ?
+WHERE connector_instance_id = ?
