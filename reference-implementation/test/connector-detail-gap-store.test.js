@@ -145,6 +145,53 @@ test('connector detail gap store upserts pending gaps, updates status, and redac
   assert.equal(recovered.recovered_run_id, 'run_b');
 }));
 
+test('connector detail gaps are isolated by connector instance', withTempDb(async () => {
+  const store = createSqliteConnectorDetailGapStore();
+  const first = await store.upsertPendingGap({
+    connectorId: 'chatgpt',
+    connectorInstanceId: 'cin_chatgpt_work',
+    grantId: 'grant_1',
+    stream: 'conversations',
+    recordKey: 'conv_1',
+    detailLocator: { conversation_id: 'conv_1' },
+  });
+  const second = await store.upsertPendingGap({
+    connectorId: 'chatgpt',
+    connectorInstanceId: 'cin_chatgpt_personal',
+    grantId: 'grant_1',
+    stream: 'conversations',
+    recordKey: 'conv_1',
+    detailLocator: { conversation_id: 'conv_1' },
+  });
+
+  assert.notEqual(first.gap_id, second.gap_id);
+  assert.equal(first.connector_instance_id, 'cin_chatgpt_work');
+  assert.equal(second.connector_instance_id, 'cin_chatgpt_personal');
+
+  assert.deepEqual(
+    (await store.listPendingGaps({ connectorId: 'chatgpt', connectorInstanceId: 'cin_chatgpt_work', grantId: 'grant_1' }))
+      .map((gap) => gap.gap_id),
+    [first.gap_id],
+  );
+  assert.deepEqual(
+    (await store.listPendingGaps({ connectorId: 'chatgpt', connectorInstanceId: 'cin_chatgpt_personal', grantId: 'grant_1' }))
+      .map((gap) => gap.gap_id),
+    [second.gap_id],
+  );
+
+  await store.markGapStatus(first.gap_id, 'recovered', { runId: 'run_recovery_a' });
+  assert.deepEqual(
+    (await store.listPendingGaps({ connectorId: 'chatgpt', connectorInstanceId: 'cin_chatgpt_work', grantId: 'grant_1' }))
+      .map((gap) => gap.gap_id),
+    [],
+  );
+  assert.deepEqual(
+    (await store.listPendingGaps({ connectorId: 'chatgpt', connectorInstanceId: 'cin_chatgpt_personal', grantId: 'grant_1' }))
+      .map((gap) => gap.gap_id),
+    [second.gap_id],
+  );
+}));
+
 test('sanitizeDetailGapMetadata does not preserve full URLs or secret-bearing fields', () => {
   const sanitized = sanitizeDetailGapMetadata({
     href: 'https://example.test/path/to/private?id=123',
@@ -277,6 +324,48 @@ test('runtime includes pending detail gaps in START as reference-only safe rows'
     assert.equal(result.status, 'succeeded');
     const start = JSON.parse(readFileSync(startPath, 'utf8'));
     assert.deepEqual(start.detail_gaps, [{ ...pendingGap, reference_only: true }]);
+  } finally {
+    cleanup();
+  }
+}));
+
+test('runtime loads pending detail gaps only for the requested connector instance', withTempDb(async (dir) => {
+  const store = createSqliteConnectorDetailGapStore();
+  await store.upsertPendingGap({
+    connectorId: 'chatgpt',
+    connectorInstanceId: 'cin_chatgpt_work',
+    grantId: 'grant_1',
+    stream: 'messages',
+    recordKey: 'work_conv',
+    detailLocator: { conversation_id: 'work_conv' },
+  });
+  const personalGap = await store.upsertPendingGap({
+    connectorId: 'chatgpt',
+    connectorInstanceId: 'cin_chatgpt_personal',
+    grantId: 'grant_1',
+    stream: 'messages',
+    recordKey: 'personal_conv',
+    detailLocator: { conversation_id: 'personal_conv' },
+  });
+  const startPath = join(dir, 'start-instance.json');
+  const { connectorPath, cleanup } = createStartCaptureConnector(startPath);
+
+  try {
+    const result = await runConnector({
+      connectorPath,
+      connectorId: 'chatgpt',
+      connectorInstanceId: 'cin_chatgpt_personal',
+      grantId: 'grant_1',
+      ownerToken: 'owner',
+      manifest: { streams: [{ name: 'messages' }] },
+      persistState: false,
+      detailGapStore: store,
+      onProgress: () => {},
+    });
+    assert.equal(result.status, 'succeeded');
+    const start = JSON.parse(readFileSync(startPath, 'utf8'));
+    assert.deepEqual(start.detail_gaps.map((gap) => gap.gap_id), [personalGap.gap_id]);
+    assert.deepEqual(start.detail_gaps.map((gap) => gap.record_key), ['personal_conv']);
   } finally {
     cleanup();
   }

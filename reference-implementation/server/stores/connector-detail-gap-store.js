@@ -1,7 +1,9 @@
 import { createHash } from 'node:crypto';
 
 import { execDynamicSqlAcknowledged, iterateDynamicSqlAcknowledged } from '../../lib/db.ts';
+import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from '../owner-auth.ts';
 import { getStorageBackendKind, isPostgresStorageBackend, postgresQuery } from '../postgres-storage.js';
+import { makeLegacyConnectorInstanceId } from './connector-instance-store.js';
 
 const VALID_STATUSES = new Set(['pending', 'in_progress', 'recovered', 'terminal']);
 const SECRET_KEY_PATTERN = /(authorization|bearer|cookie|token|secret|password|credential|request_body|body|payload|raw|private)/i;
@@ -23,6 +25,10 @@ function nonEmptyString(value) {
 
 function hashIdentity(parts) {
   return `gap_${createHash('sha256').update(JSON.stringify(parts)).digest('hex').slice(0, 32)}`;
+}
+
+function defaultConnectorInstanceId(connectorId) {
+  return makeLegacyConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId);
 }
 
 function safeUrlSummary(value) {
@@ -82,8 +88,10 @@ function parseJson(value) {
 
 function normalizeGapInput(input) {
   const connectorId = nonEmptyString(input?.connectorId);
+  const connectorInstanceId = nonEmptyString(input?.connectorInstanceId) || (connectorId ? defaultConnectorInstanceId(connectorId) : null);
   const stream = nonEmptyString(input?.stream);
   if (!connectorId) throw new Error('connector detail gap requires connectorId');
+  if (!connectorInstanceId) throw new Error('connector detail gap requires connectorInstanceId');
   if (!stream) throw new Error('connector detail gap requires stream');
 
   const source = sanitizeDetailGapMetadata(input.source || { kind: 'connector', id: connectorId });
@@ -98,6 +106,7 @@ function normalizeGapInput(input) {
   const now = input.now || nowIso();
   const gapId = input.gapId || hashIdentity([
     connectorId,
+    connectorInstanceId,
     grantId || '',
     stream,
     parentStream || '',
@@ -108,6 +117,7 @@ function normalizeGapInput(input) {
   return {
     gapId,
     connectorId,
+    connectorInstanceId,
     grantId,
     source,
     stream,
@@ -130,6 +140,7 @@ function rowToGap(row) {
   return {
     gap_id: row.gap_id,
     connector_id: row.connector_id,
+    connector_instance_id: row.connector_instance_id,
     grant_id: row.grant_id ?? null,
     source: parseJson(row.source_json),
     stream: row.stream,
@@ -167,10 +178,10 @@ export function createSqliteConnectorDetailGapStore() {
       // not yet represented in the static query registry.
       execDynamicSqlAcknowledged(`
         INSERT INTO connector_detail_gaps(
-          gap_id, connector_id, grant_id, source_json, stream, parent_stream, record_key,
+          gap_id, connector_id, connector_instance_id, grant_id, source_json, stream, parent_stream, record_key,
           detail_locator_json, list_cursor_json, scope_json, reason, status, attempt_count,
           next_attempt_after, last_error_json, discovered_run_id, last_run_id, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(gap_id) DO UPDATE SET
           source_json = excluded.source_json,
           detail_locator_json = excluded.detail_locator_json,
@@ -185,6 +196,7 @@ export function createSqliteConnectorDetailGapStore() {
       `, [
         gap.gapId,
         gap.connectorId,
+        gap.connectorInstanceId,
         gap.grantId,
         encodeJson(gap.source),
         gap.stream,
@@ -206,16 +218,18 @@ export function createSqliteConnectorDetailGapStore() {
     },
 
     async listPendingGaps({ connectorId, grantId = null, streams = null, limit = 100 } = {}) {
+      const connectorInstanceId = nonEmptyString(arguments[0]?.connectorInstanceId) || defaultConnectorInstanceId(connectorId);
       const streamList = Array.isArray(streams) ? streams.filter((stream) => typeof stream === 'string' && stream) : null;
       // REVIEWED-DYNAMIC: bounded pending-gap recovery selection over the store-owned table.
       const rows = [...iterateDynamicSqlAcknowledged(`
         SELECT * FROM connector_detail_gaps
-        WHERE connector_id = ?
+        WHERE connector_instance_id = ?
+          AND connector_id = ?
           AND (? IS NULL OR grant_id = ?)
           AND status = 'pending'
         ORDER BY created_at
         LIMIT ?
-      `, [connectorId, grantId, grantId, Math.max(1, Math.min(limit, 500))])];
+      `, [connectorInstanceId, connectorId, grantId, grantId, Math.max(1, Math.min(limit, 500))])];
       return rows.map(rowToGap).filter((gap) => !streamList || streamList.includes(gap.stream));
     },
 
@@ -260,10 +274,10 @@ export function createPostgresConnectorDetailGapStore() {
       const gap = normalizeGapInput(input);
       await postgresQuery(`
         INSERT INTO connector_detail_gaps(
-          gap_id, connector_id, grant_id, source_json, stream, parent_stream, record_key,
+          gap_id, connector_id, connector_instance_id, grant_id, source_json, stream, parent_stream, record_key,
           detail_locator_json, list_cursor_json, scope_json, reason, status, attempt_count,
           next_attempt_after, last_error_json, discovered_run_id, last_run_id, created_at, updated_at
-        ) VALUES($1, $2, $3, $4::jsonb, $5, $6, $7, $8::jsonb, $9::jsonb, $10::jsonb, $11, 'pending', 0, $12, $13::jsonb, $14, $15, $16, $16)
+        ) VALUES($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9::jsonb, $10::jsonb, $11::jsonb, $12, 'pending', 0, $13, $14::jsonb, $15, $16, $17, $17)
         ON CONFLICT (gap_id) DO UPDATE SET
           source_json = EXCLUDED.source_json,
           detail_locator_json = EXCLUDED.detail_locator_json,
@@ -278,6 +292,7 @@ export function createPostgresConnectorDetailGapStore() {
       `, [
         gap.gapId,
         gap.connectorId,
+        gap.connectorInstanceId,
         gap.grantId,
         JSON.stringify(gap.source),
         gap.stream,
@@ -298,15 +313,17 @@ export function createPostgresConnectorDetailGapStore() {
     },
 
     async listPendingGaps({ connectorId, grantId = null, streams = null, limit = 100 } = {}) {
+      const connectorInstanceId = nonEmptyString(arguments[0]?.connectorInstanceId) || defaultConnectorInstanceId(connectorId);
       const result = await postgresQuery(`
         SELECT * FROM connector_detail_gaps
-        WHERE connector_id = $1
-          AND ($2::text IS NULL OR grant_id = $2)
+        WHERE connector_instance_id = $1
+          AND connector_id = $2
+          AND ($3::text IS NULL OR grant_id = $3)
           AND status = 'pending'
-          AND ($3::text[] IS NULL OR stream = ANY($3::text[]))
+          AND ($4::text[] IS NULL OR stream = ANY($4::text[]))
         ORDER BY created_at
-        LIMIT $4
-      `, [connectorId, grantId, Array.isArray(streams) && streams.length ? streams : null, Math.max(1, Math.min(limit, 500))]);
+        LIMIT $5
+      `, [connectorInstanceId, connectorId, grantId, Array.isArray(streams) && streams.length ? streams : null, Math.max(1, Math.min(limit, 500))]);
       return result.rows.map(rowToGap);
     },
 

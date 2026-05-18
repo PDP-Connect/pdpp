@@ -1434,6 +1434,7 @@ export async function runConnector(opts) {
   try {
     const pendingGaps = await detailGapStore.listPendingGaps({
       connectorId,
+      connectorInstanceId: normalizedConnectorInstanceId,
       grantId,
       streams: startScope.streams.map((stream) => stream.name),
     });
@@ -2317,6 +2318,7 @@ export async function runConnector(opts) {
           validateDetailGapMessage(msg, scopeByStream);
           const storedGap = await detailGapStore.upsertPendingGap({
             connectorId,
+            connectorInstanceId: normalizedConnectorInstanceId,
             grantId,
             source: runSource,
             stream: msg.stream,

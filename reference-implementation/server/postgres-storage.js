@@ -417,6 +417,7 @@ export async function bootstrapPostgresSchema() {
       CREATE TABLE IF NOT EXISTS connector_detail_gaps (
         gap_id TEXT PRIMARY KEY,
         connector_id TEXT NOT NULL,
+        connector_instance_id TEXT NOT NULL,
         grant_id TEXT,
         source_json JSONB NOT NULL,
         stream TEXT NOT NULL,
@@ -821,6 +822,7 @@ export async function bootstrapPostgresSchema() {
     await migratePostgresDeviceExporterColumns(client);
     await migratePostgresBlobBindingsJsonPath(client);
     await migratePostgresConnectorSyncStateInstanceColumns(client);
+    await migratePostgresConnectorDetailGapInstanceColumns(client);
     await migratePostgresSchedulerInstanceColumns(client);
     await migratePostgresRecordsBlobSearchInstanceColumns(client);
   } finally {
@@ -928,6 +930,39 @@ async function migratePostgresConnectorSyncStateInstanceColumns(client) {
     } catch {}
     throw err;
   }
+}
+
+async function migratePostgresConnectorDetailGapInstanceColumns(client) {
+  const hasInstance = await hasPostgresColumn(client, 'connector_detail_gaps', 'connector_instance_id');
+  if (!hasInstance) {
+    await client.query('ALTER TABLE connector_detail_gaps ADD COLUMN connector_instance_id TEXT');
+    const rows = await client.query('SELECT gap_id, connector_id FROM connector_detail_gaps ORDER BY gap_id');
+    const instanceIds = new Map();
+    const resolveInstanceId = async (connectorId) => {
+      if (!instanceIds.has(connectorId)) {
+        instanceIds.set(connectorId, await legacySyncStateConnectorInstanceId(client, connectorId));
+      }
+      return instanceIds.get(connectorId);
+    };
+    for (const row of rows.rows) {
+      await client.query(
+        'UPDATE connector_detail_gaps SET connector_instance_id = $1 WHERE gap_id = $2',
+        [await resolveInstanceId(row.connector_id), row.gap_id],
+      );
+    }
+    await client.query('ALTER TABLE connector_detail_gaps ALTER COLUMN connector_instance_id SET NOT NULL');
+  }
+
+  await client.query('DROP INDEX IF EXISTS uniq_pg_connector_detail_gaps_identity');
+  await client.query('DROP INDEX IF EXISTS idx_pg_connector_detail_gaps_pending');
+  await client.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS uniq_pg_connector_detail_gaps_identity
+      ON connector_detail_gaps(connector_instance_id, COALESCE(grant_id, ''), stream, COALESCE(parent_stream, ''), COALESCE(record_key, ''), COALESCE(detail_locator_json::text, ''))
+  `);
+  await client.query(`
+    CREATE INDEX IF NOT EXISTS idx_pg_connector_detail_gaps_pending
+      ON connector_detail_gaps(connector_instance_id, grant_id, status, stream, next_attempt_after)
+  `);
 }
 
 async function migratePostgresSchedulerInstanceColumns(client) {
