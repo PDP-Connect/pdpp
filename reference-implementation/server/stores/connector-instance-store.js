@@ -101,6 +101,103 @@ function resolveSingleActive(rows, ownerSubjectId, connectorId) {
   return rows[0];
 }
 
+function namespaceFromInstance(instance, { selector, createdLegacyDefault = false } = {}) {
+  return {
+    ownerSubjectId: instance.ownerSubjectId,
+    connectorId: instance.connectorId,
+    connectorInstanceId: instance.connectorInstanceId,
+    displayName: instance.displayName,
+    status: instance.status,
+    sourceKind: instance.sourceKind,
+    sourceBindingKey: instance.sourceBindingKey,
+    sourceBinding: instance.sourceBinding,
+    selector,
+    createdLegacyDefault,
+  };
+}
+
+export async function resolveOwnerConnectorInstanceNamespace({
+  ownerSubjectId,
+  connectorId = null,
+  connectorInstanceId = null,
+  connectorInstanceStore,
+  allowLegacyDefault = false,
+  displayName = null,
+  now = new Date().toISOString(),
+}) {
+  if (!ownerSubjectId) {
+    throw new ConnectorInstanceResolutionError(
+      'owner_subject_required',
+      'ownerSubjectId is required to resolve a connector instance namespace.',
+    );
+  }
+  if (!connectorInstanceStore) {
+    throw new ConnectorInstanceResolutionError(
+      'connector_instance_store_required',
+      'connectorInstanceStore is required to resolve a connector instance namespace.',
+      { ownerSubjectId, connectorId, connectorInstanceId },
+    );
+  }
+
+  if (connectorInstanceId) {
+    const instance = await connectorInstanceStore.get(connectorInstanceId);
+    if (!instance) {
+      throw new ConnectorInstanceResolutionError(
+        'connector_instance_not_found',
+        `Connector instance '${connectorInstanceId}' does not exist.`,
+        { ownerSubjectId, connectorId, connectorInstanceId },
+      );
+    }
+    if (instance.ownerSubjectId !== ownerSubjectId) {
+      throw new ConnectorInstanceResolutionError(
+        'connector_instance_owner_mismatch',
+        `Connector instance '${connectorInstanceId}' does not belong to owner '${ownerSubjectId}'.`,
+        { ownerSubjectId, actualOwnerSubjectId: instance.ownerSubjectId, connectorId, connectorInstanceId },
+      );
+    }
+    if (connectorId && instance.connectorId !== connectorId) {
+      throw new ConnectorInstanceResolutionError(
+        'connector_instance_connector_mismatch',
+        `Connector instance '${connectorInstanceId}' belongs to connector '${instance.connectorId}', not '${connectorId}'.`,
+        { ownerSubjectId, connectorId, actualConnectorId: instance.connectorId, connectorInstanceId },
+      );
+    }
+    if (instance.status !== 'active') {
+      throw new ConnectorInstanceResolutionError(
+        'connector_instance_inactive',
+        `Connector instance '${connectorInstanceId}' is '${instance.status}', not active.`,
+        { ownerSubjectId, connectorId: instance.connectorId, connectorInstanceId, status: instance.status },
+      );
+    }
+    return namespaceFromInstance(instance, { selector: 'connector_instance_id' });
+  }
+
+  if (!connectorId) {
+    throw new ConnectorInstanceResolutionError(
+      'connector_instance_selector_required',
+      'Provide connector_instance_id or connector_id to resolve a connector instance namespace.',
+      { ownerSubjectId },
+    );
+  }
+
+  try {
+    const instance = await connectorInstanceStore.resolveActiveByConnector(ownerSubjectId, connectorId);
+    return namespaceFromInstance(instance, { selector: 'connector_id' });
+  } catch (err) {
+    if (!allowLegacyDefault || !(err instanceof ConnectorInstanceResolutionError) || err.code !== 'connector_instance_not_found') {
+      throw err;
+    }
+  }
+
+  const instance = await connectorInstanceStore.ensureLegacyDefault({
+    ownerSubjectId,
+    connectorId,
+    displayName: displayName ?? connectorId,
+    now,
+  });
+  return namespaceFromInstance(instance, { selector: 'connector_id', createdLegacyDefault: true });
+}
+
 export function createSqliteConnectorInstanceStore() {
   return {
     upsert(record) {
