@@ -41,7 +41,5 @@
 
 - [x] 4.1 Run focused enrollment + scheduler-doctor tests.
 - [x] 4.2 Run `openspec validate auto-enroll-eligible-connector-schedules --strict`.
-- [x] 4.3 Run `openspec validate --all --strict` (pre-existing failures on
-  `reconcile-browser-binding-launch-direction` and
-  `refine-spine-status-semantics-for-mixed-correlations` are unrelated to
-  this change).
+- [x] 4.3 Run `openspec validate --all --strict`. The prior no-delta note
+  proposals were moved to `design-notes/`, so full validation is now green.

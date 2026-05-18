@@ -107,7 +107,7 @@ This refactor is **fully spec-consistent**:
 - The spec at `spec-collection-profile.md:18-20` already states: "The runtime does not standardize the connector's source-specific collection logic; it standardizes only the runtime contract around bindings, scope, state, and emitted messages." The advisor's "generic runtime doesn't know about Page" is the spec's stated architecture — today's reference *violates* it; this refactor brings it into compliance.
 - INTERACTION envelope, manual_action kind, run lifecycle — all unchanged. No spec mutation.
 - Streaming target registration is reference-internal admin surface; no protocol vocabulary added.
-- One latent question (separate openspec change at `reconcile-browser-binding-launch-direction`): the spec's `browser_automation` binding describes *runtime-provided* CDP, but the reference *connector self-launches* its browser. Orthogonal to this refactor; called out for spec-owner consideration.
+- One latent question (captured in `design-notes/browser-binding-launch-direction-2026-05-18.md`): the spec's `browser_automation` binding describes *runtime-provided* CDP, but the reference *connector self-launches* its browser. Orthogonal to this refactor; called out for spec-owner consideration.
 
 ### Endpoints, registry, auth
 
