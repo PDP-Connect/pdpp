@@ -47,6 +47,15 @@ export function projectBrowserSurfaceLease(lease) {
         ...(lease.wait_reason ? { browser_surface_wait_reason: lease.wait_reason } : {}),
     };
 }
+export function projectSurfaceLease(lease) {
+    return {
+        surface_session_id: lease.run_id,
+        surface_lease_status: lease.status,
+        surface_lease_id: lease.lease_id,
+        surface_profile_key: lease.profile_key,
+        ...(lease.wait_reason ? { surface_wait_reason: lease.wait_reason } : {}),
+    };
+}
 export class BrowserSurfaceLeaseManager {
     #config;
     #now;
@@ -123,6 +132,15 @@ export class BrowserSurfaceLeaseManager {
         const surface = this.#surfaceForLease(lease);
         return { lease, ...(surface ? { surface } : {}) };
     }
+    acquireSurfaceLease(request) {
+        return this.acquire({
+            connectorId: request.connectorId,
+            runId: request.sessionId,
+            ...(request.profileKey ? { profileKey: request.profileKey } : {}),
+            ...(request.accountKey ? { accountKey: request.accountKey } : {}),
+            ...(request.priorityClass ? { priorityClass: request.priorityClass } : {}),
+        });
+    }
     cancel(runId) {
         return this.cancelAndPump(runId).lease;
     }
@@ -140,6 +158,12 @@ export class BrowserSurfaceLeaseManager {
             promoted = this.#pumpQueue(surface?.surface_id);
         }
         return { stale: false, lease: cancelled, ...(surface ? { surface } : {}), ...(promoted ? { promoted } : {}) };
+    }
+    cancelSurfaceSession(sessionId) {
+        return this.cancelSurfaceSessionAndPump(sessionId).lease;
+    }
+    cancelSurfaceSessionAndPump(sessionId) {
+        return this.cancelAndPump(sessionId);
     }
     expireWaitingLeases() {
         const nowMs = this.#now().getTime();
@@ -311,6 +335,12 @@ export class BrowserSurfaceLeaseManager {
             result.promoted.push(...this.pumpQueuedLeases());
         }
         return result;
+    }
+    reconcileSurfaceSessionsAfterRestart(request = {}) {
+        return this.reconcileAfterRestart({
+            ...(request.activeSessionIds ? { activeRunIds: request.activeSessionIds } : {}),
+            ...(typeof request.promoteQueued === "boolean" ? { promoteQueued: request.promoteQueued } : {}),
+        });
     }
     pumpQueuedLeases() {
         const promoted = [];

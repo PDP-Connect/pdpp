@@ -122,6 +122,14 @@ export interface AcquireBrowserSurfaceLeaseRequest {
   readonly priorityClass?: BrowserSurfacePriorityClass;
 }
 
+export interface AcquireSurfaceLeaseRequest {
+  readonly connectorId: string;
+  readonly sessionId: string;
+  readonly profileKey?: string;
+  readonly accountKey?: string;
+  readonly priorityClass?: BrowserSurfacePriorityClass;
+}
+
 export interface BrowserSurfaceLeaseResult {
   readonly lease: BrowserSurfaceLease;
   readonly surface?: BrowserSurface;
@@ -150,6 +158,11 @@ export interface TerminalBrowserSurfaceLeaseResult {
 
 export interface ReconcileBrowserSurfaceLeasesAfterRestartRequest {
   readonly activeRunIds?: ReadonlySet<string>;
+  readonly promoteQueued?: boolean;
+}
+
+export interface ReconcileSurfaceLeasesAfterRestartRequest {
+  readonly activeSessionIds?: ReadonlySet<string>;
   readonly promoteQueued?: boolean;
 }
 
@@ -209,6 +222,24 @@ export function projectBrowserSurfaceLease(lease: BrowserSurfaceLease): BrowserS
     browser_surface_lease_id: lease.lease_id,
     browser_surface_profile_key: lease.profile_key,
     ...(lease.wait_reason ? { browser_surface_wait_reason: lease.wait_reason } : {}),
+  };
+}
+
+export interface SurfaceLeaseProjection {
+  readonly surface_session_id: string;
+  readonly surface_lease_status: BrowserSurfaceLeaseStatus;
+  readonly surface_lease_id: string;
+  readonly surface_profile_key: string;
+  readonly surface_wait_reason?: BrowserSurfaceWaitReason;
+}
+
+export function projectSurfaceLease(lease: BrowserSurfaceLease): SurfaceLeaseProjection {
+  return {
+    surface_session_id: lease.run_id,
+    surface_lease_status: lease.status,
+    surface_lease_id: lease.lease_id,
+    surface_profile_key: lease.profile_key,
+    ...(lease.wait_reason ? { surface_wait_reason: lease.wait_reason } : {}),
   };
 }
 
@@ -299,6 +330,16 @@ export class BrowserSurfaceLeaseManager {
     return { lease, ...(surface ? { surface } : {}) };
   }
 
+  acquireSurfaceLease(request: AcquireSurfaceLeaseRequest): BrowserSurfaceLeaseResult {
+    return this.acquire({
+      connectorId: request.connectorId,
+      runId: request.sessionId,
+      ...(request.profileKey ? { profileKey: request.profileKey } : {}),
+      ...(request.accountKey ? { accountKey: request.accountKey } : {}),
+      ...(request.priorityClass ? { priorityClass: request.priorityClass } : {}),
+    });
+  }
+
   cancel(runId: string): BrowserSurfaceLease | undefined {
     return this.cancelAndPump(runId).lease;
   }
@@ -317,6 +358,14 @@ export class BrowserSurfaceLeaseManager {
       promoted = this.#pumpQueue(surface?.surface_id);
     }
     return { stale: false, lease: cancelled, ...(surface ? { surface } : {}), ...(promoted ? { promoted } : {}) };
+  }
+
+  cancelSurfaceSession(sessionId: string): BrowserSurfaceLease | undefined {
+    return this.cancelSurfaceSessionAndPump(sessionId).lease;
+  }
+
+  cancelSurfaceSessionAndPump(sessionId: string): TerminalBrowserSurfaceLeaseResult {
+    return this.cancelAndPump(sessionId);
   }
 
   expireWaitingLeases(): BrowserSurfaceLease[] {
@@ -513,6 +562,15 @@ export class BrowserSurfaceLeaseManager {
     }
 
     return result;
+  }
+
+  reconcileSurfaceSessionsAfterRestart(
+    request: ReconcileSurfaceLeasesAfterRestartRequest = {},
+  ): ReconcileBrowserSurfaceLeasesAfterRestartResult {
+    return this.reconcileAfterRestart({
+      ...(request.activeSessionIds ? { activeRunIds: request.activeSessionIds } : {}),
+      ...(typeof request.promoteQueued === "boolean" ? { promoteQueued: request.promoteQueued } : {}),
+    });
   }
 
   pumpQueuedLeases(): BrowserSurfaceLease[] {

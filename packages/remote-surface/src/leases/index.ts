@@ -11,9 +11,11 @@ export {
   TERMINAL_BROWSER_SURFACE_LEASE_STATUSES,
   isTerminalBrowserSurfaceLeaseStatus,
   projectBrowserSurfaceLease,
+  projectSurfaceLease,
 } from "./browser-surface-leases.ts";
 export type {
   AcquireBrowserSurfaceLeaseRequest,
+  AcquireSurfaceLeaseRequest,
   BrowserSurface,
   BrowserSurfaceAllocator,
   BrowserSurfaceBackend,
@@ -33,8 +35,10 @@ export type {
   EnsureBrowserSurfaceRequest,
   ReconcileBrowserSurfaceLeasesAfterRestartRequest,
   ReconcileBrowserSurfaceLeasesAfterRestartResult,
+  ReconcileSurfaceLeasesAfterRestartRequest,
   ReleaseBrowserSurfaceLeaseRequest,
   ReleaseBrowserSurfaceLeaseResult,
   StopBrowserSurfaceRequest,
+  SurfaceLeaseProjection,
   TerminalBrowserSurfaceLeaseResult,
 } from "./browser-surface-leases.ts";

@@ -11,6 +11,7 @@ import {
   type StopBrowserSurfaceRequest,
   DEFAULT_NEKO_PRIORITY_RANKS,
   projectBrowserSurfaceLease,
+  projectSurfaceLease,
 } from "./browser-surface-leases.ts";
 
 function config(overrides: Partial<BrowserSurfaceLeaseConfig> = {}): BrowserSurfaceLeaseConfig {
@@ -161,6 +162,48 @@ test("compatible idle surface is leased and projected", () => {
     browser_surface_profile_key: "chatgpt",
   });
   assert.equal(leases.planCapacityPressureReclaim(result.lease.lease_id), undefined);
+});
+
+test("host-neutral lease API acquires, projects, cancels, and reconciles by session id", () => {
+  const { leases } = manager({
+    initialSurfaces: [
+      {
+        surface_id: "surface_idle",
+        backend: "neko",
+        profile_key: "chatgpt",
+        connector_id: "chatgpt",
+        cdp_url: "http://neko:9222",
+        stream_base_url: "http://neko:8080",
+        health: "ready",
+        created_at: "2026-05-12T11:00:00.000Z",
+        last_used_at: "2026-05-12T11:00:00.000Z",
+      },
+    ],
+  });
+
+  const result = leases.acquireSurfaceLease({
+    connectorId: "chatgpt",
+    sessionId: "session_1",
+    profileKey: "chatgpt",
+  });
+
+  assert.equal(result.lease.run_id, "session_1");
+  assert.deepEqual(projectSurfaceLease(result.lease), {
+    surface_session_id: "session_1",
+    surface_lease_status: "leased",
+    surface_lease_id: "lease_1",
+    surface_profile_key: "chatgpt",
+  });
+  assert.deepEqual(
+    leases.reconcileSurfaceSessionsAfterRestart({ activeSessionIds: new Set(["session_1"]) }).activeLeased.map(
+      (lease) => lease.lease_id,
+    ),
+    ["lease_1"],
+  );
+
+  const cancelled = leases.cancelSurfaceSessionAndPump("session_1");
+  assert.equal(cancelled.stale, false);
+  assert.equal(cancelled.lease?.status, "cancelled");
 });
 
 test("capacity-pressure planner preserves compatible idle reuse", () => {
