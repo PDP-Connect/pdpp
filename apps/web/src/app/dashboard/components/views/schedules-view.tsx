@@ -36,7 +36,7 @@ export function SchedulesView({
       {needsHumanCount > 0 && (
         <div className="pdpp-caption mb-6 rounded border border-amber-300 bg-amber-50 px-4 py-3 text-amber-800 dark:border-amber-700 dark:bg-amber-900/20 dark:text-amber-300">
           <strong>
-            {needsHumanCount} connector{needsHumanCount === 1 ? "" : "s"} need human attention.
+            {needsHumanCount} connection{needsHumanCount === 1 ? "" : "s"} need human attention.
           </strong>{" "}
           Automatic runs are paused until you run them manually and provide the required input.
         </div>
@@ -44,16 +44,16 @@ export function SchedulesView({
 
       {readOnlyNotice}
 
-      <Section title={`Scheduled connectors (${withSchedule.length})`}>
+      <Section title={`Scheduled connections (${withSchedule.length})`}>
         {withSchedule.length === 0 ? (
-          <EmptyState hint={scheduledEmptyHint} title="No scheduled connectors yet" />
+          <EmptyState hint={scheduledEmptyHint} title="No scheduled connections yet" />
         ) : (
           <DataList>{withSchedule.map((summary) => renderRow(summary))}</DataList>
         )}
       </Section>
 
       {unscheduled.length > 0 && (
-        <Section description={unscheduledDescription} title={`Unscheduled connectors (${unscheduled.length})`}>
+        <Section description={unscheduledDescription} title={`Unscheduled connections (${unscheduled.length})`}>
           <DataList>{unscheduled.map((summary) => renderRow(summary))}</DataList>
         </Section>
       )}

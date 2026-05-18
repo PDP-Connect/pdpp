@@ -98,17 +98,17 @@ export function RecordsListView({
             Activity timeline →
           </Link>
         }
-        count={`${totalRecords.toLocaleString()} records · ${totalStreams} streams · ${withData.length} connectors`}
+        count={`${totalRecords.toLocaleString()} records · ${totalStreams} streams · ${withData.length} connections`}
         description={
           interactive
-            ? "Owner control plane for your connectors. Click Sync now to pull fresh data; drill in to browse streams and records."
-            : "Sandbox demo: deterministic mock connectors. Click into a connector to browse streams and records."
+            ? "Owner control plane for your connections. Click Sync now to pull fresh data; drill in to browse streams and records."
+            : "Sandbox demo: deterministic mock connections. Click into a connection to browse streams and records."
         }
         title="Records"
       />
 
-      <section aria-label="Connector health summary" className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
-        <HealthStat label="Connectors" tone="neutral" value={withData.length.toLocaleString()} />
+      <section aria-label="Connection health summary" className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
+        <HealthStat label="Connections" tone="neutral" value={withData.length.toLocaleString()} />
         <HealthStat
           label="Synced last 24h"
           tone={syncedRecently > 0 ? "success" : "neutral"}
@@ -126,12 +126,12 @@ export function RecordsListView({
         />
       </section>
 
-      <Section title={`Connectors (${withData.length})`}>
+      <Section title={`Connections (${withData.length})`}>
         {withData.length === 0 ? (
           <EmptyState
             hint={
               interactive
-                ? "Click Sync now on a connector below to pull your first records."
+                ? "Click Sync now on a connection below to pull your first records."
                 : "This sandbox has no seeded data."
             }
             title="No data ingested yet"
@@ -153,8 +153,8 @@ export function RecordsListView({
         <Section
           description={
             interactive
-              ? "These connectors are registered and can be synced. Click Sync now to pull initial data."
-              : "These mock connectors are registered but have no seeded records."
+              ? "These connections are registered and can be synced. Click Sync now to pull initial data."
+              : "These mock connections are registered but have no seeded records."
           }
           title={`Registered but never run (${empty.length})`}
         >

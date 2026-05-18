@@ -12,6 +12,7 @@ const REFERENCE_IMPL_DIR = join(__dirname, '..');
 const NOW = '2026-05-18T12:00:00.000Z';
 
 async function closeServer(server) {
+  server.schedulerManager?.stop?.();
   server.asServer.closeAllConnections();
   server.rsServer.closeAllConnections();
   await Promise.allSettled([
@@ -192,6 +193,82 @@ test('reference run and schedule actions reject ambiguous connector-only admissi
     });
     assert.equal(scheduleResp.status, 400);
     assert.equal(scheduleResp.body.error.code, 'ambiguous_connector_instance');
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('reference connections list and detail expose owner-facing instance labels', async () => {
+  const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+  try {
+    const asUrl = `http://localhost:${server.asPort}`;
+    const manifest = await registerSpotify(asUrl);
+    const connectorId = manifest.connector_id;
+    await seedTwoSpotifyInstances(connectorId);
+
+    const listResp = await fetchJson(`${asUrl}/_ref/connections?connector_id=${encodeURIComponent(connectorId)}`);
+    assert.equal(listResp.status, 200);
+    assert.equal(listResp.body.object, 'list');
+    assert.deepEqual(
+      listResp.body.data.map((connection) => [connection.connector_instance_id, connection.display_name]),
+      [
+        ['cin_spotify_personal', 'Spotify - personal'],
+        ['cin_spotify_work', 'Spotify - work'],
+      ],
+    );
+
+    const detailResp = await fetchJson(`${asUrl}/_ref/connections/cin_spotify_work`);
+    assert.equal(detailResp.status, 200);
+    assert.equal(detailResp.body.object, 'ref_connection');
+    assert.equal(detailResp.body.connector_id, connectorId);
+    assert.equal(detailResp.body.connector_instance_id, 'cin_spotify_work');
+    assert.equal(detailResp.body.display_name, 'Spotify - work');
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('reference connection schedule actions target one connector instance', async () => {
+  const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+  try {
+    const asUrl = `http://localhost:${server.asPort}`;
+    const manifest = await registerSpotify(asUrl);
+    const connectorId = manifest.connector_id;
+    await seedTwoSpotifyInstances(connectorId);
+
+    const personalPut = await fetchJson(`${asUrl}/_ref/connections/cin_spotify_personal/schedule`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ interval_seconds: 3600, enabled: true }),
+    });
+    assert.equal(personalPut.status, 200);
+    assert.equal(personalPut.body.connector_id, connectorId);
+    assert.equal(personalPut.body.connector_instance_id, 'cin_spotify_personal');
+    assert.equal(personalPut.body.enabled, true);
+
+    const workPut = await fetchJson(`${asUrl}/_ref/connections/cin_spotify_work/schedule`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ interval_seconds: 7200, enabled: true }),
+    });
+    assert.equal(workPut.status, 200);
+    assert.equal(workPut.body.connector_instance_id, 'cin_spotify_work');
+
+    const pauseResp = await fetchJson(`${asUrl}/_ref/connections/cin_spotify_work/schedule/pause`, {
+      method: 'POST',
+    });
+    assert.equal(pauseResp.status, 200);
+    assert.equal(pauseResp.body.connector_instance_id, 'cin_spotify_work');
+    assert.equal(pauseResp.body.enabled, false);
+
+    const listResp = await fetchJson(`${asUrl}/_ref/connections?connector_id=${encodeURIComponent(connectorId)}`);
+    assert.equal(listResp.status, 200);
+    const schedules = new Map(listResp.body.data.map((connection) => [
+      connection.connector_instance_id,
+      connection.schedule,
+    ]));
+    assert.equal(schedules.get('cin_spotify_personal').enabled, true);
+    assert.equal(schedules.get('cin_spotify_work').enabled, false);
   } finally {
     await closeServer(server);
   }

@@ -1048,7 +1048,9 @@ function createRequestConnectorInstanceStore() {
 }
 
 async function resolveOwnerConnectorNamespace(req, connectorId, options = {}) {
-  const explicitConnectorInstanceId = resolveSingleConnectorIdQueryValue(req.query?.connector_instance_id);
+  const explicitConnectorInstanceId =
+    resolveSingleConnectorIdQueryValue(options.connectorInstanceId) ||
+    resolveSingleConnectorIdQueryValue(req.query?.connector_instance_id);
   if (explicitConnectorInstanceId && options.allowExplicitConnectorInstanceId === false) {
     const err = new Error(
       'connector_instance_id is not accepted on this path until storage is migrated to connector_instance_id',
@@ -1950,6 +1952,41 @@ function buildAsApp(opts = {}) {
       ownerSubjectId: getOwnerSubjectId(req),
       allowExplicitConnectorInstanceId: true,
     });
+  }
+
+  async function resolveRefConnectionNamespace(req, connectorInstanceId) {
+    return resolveOwnerConnectorNamespace(req, null, {
+      ownerSubjectId: getOwnerSubjectId(req),
+      allowExplicitConnectorInstanceId: true,
+      allowLegacyDefault: false,
+      connectorInstanceId,
+    });
+  }
+
+  function projectRefConnection(instance, schedulesByInstanceId = new Map()) {
+    return {
+      object: 'ref_connection',
+      connector_instance_id: instance.connectorInstanceId,
+      connector_id: instance.connectorId,
+      display_name: instance.displayName,
+      status: instance.status,
+      source_kind: instance.sourceKind,
+      source_binding: instance.sourceBinding,
+      created_at: instance.createdAt,
+      updated_at: instance.updatedAt,
+      revoked_at: instance.revokedAt,
+      schedule: schedulesByInstanceId.get(instance.connectorInstanceId) || null,
+    };
+  }
+
+  async function sendRefConnectionDetail(req, res, connectorInstanceId) {
+    const namespace = await resolveRefConnectionNamespace(req, connectorInstanceId);
+    const store = createRequestConnectorInstanceStore();
+    const instance = await store.get(namespace.connectorInstanceId);
+    const schedule = controller
+      ? await controller.getSchedule(namespace.connectorId, { connectorInstanceId: namespace.connectorInstanceId })
+      : null;
+    res.json(projectRefConnection(instance || namespace, new Map(schedule ? [[namespace.connectorInstanceId, schedule]] : [])));
   }
 
   async function requireDeviceExporterCredential(req, res, next) {
@@ -3399,6 +3436,64 @@ function buildAsApp(opts = {}) {
     }
   });
 
+  app.get('/_ref/connections', ownerAuth.requireOwnerSession, async (req, res) => {
+    try {
+      const ownerSubjectId = getOwnerSubjectId(req);
+      const connectorId = resolveSingleConnectorIdQueryValue(req.query.connector_id);
+      const status = resolveSingleConnectorIdQueryValue(req.query.status);
+      const store = createRequestConnectorInstanceStore();
+      const instances = await store.listByOwner(ownerSubjectId);
+      const schedules = controller ? await controller.listSchedules() : [];
+      const schedulesByInstanceId = new Map(
+        schedules
+          .filter((schedule) => schedule?.connector_instance_id)
+          .map((schedule) => [schedule.connector_instance_id, schedule]),
+      );
+      const data = instances
+        .filter((instance) => !connectorId || instance.connectorId === connectorId)
+        .filter((instance) => !status || instance.status === status)
+        .map((instance) => projectRefConnection(instance, schedulesByInstanceId));
+      res.json({ object: 'list', data });
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
+  app.get('/_ref/connector-instances', ownerAuth.requireOwnerSession, async (req, res) => {
+    try {
+      const ownerSubjectId = getOwnerSubjectId(req);
+      const connectorId = resolveSingleConnectorIdQueryValue(req.query.connector_id);
+      const status = resolveSingleConnectorIdQueryValue(req.query.status);
+      const store = createRequestConnectorInstanceStore();
+      const instances = await store.listByOwner(ownerSubjectId);
+      const data = instances
+        .filter((instance) => !connectorId || instance.connectorId === connectorId)
+        .filter((instance) => !status || instance.status === status)
+        .map((instance) => projectRefConnection(instance));
+      res.json({ object: 'list', data });
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
+  app.get('/_ref/connections/:connectorInstanceId', ownerAuth.requireOwnerSession, async (req, res) => {
+    try {
+      const connectorInstanceId = decodeURIComponent(req.params.connectorInstanceId);
+      await sendRefConnectionDetail(req, res, connectorInstanceId);
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
+  app.get('/_ref/connector-instances/:connectorInstanceId', ownerAuth.requireOwnerSession, async (req, res) => {
+    try {
+      const connectorInstanceId = decodeURIComponent(req.params.connectorInstanceId);
+      await sendRefConnectionDetail(req, res, connectorInstanceId);
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
   // /_ref/deployment — reference operator diagnostics. Not a PDPP protocol
   // surface; the dashboard's /dashboard/deployment page reads this. The
   // canonical `ref.deployment` operation owns the public envelope and a
@@ -3856,6 +3951,19 @@ function buildAsApp(opts = {}) {
     }
   );
 
+  app.post('/_ref/connections/:connectorInstanceId/run', ownerAuth.requireOwnerSession, async (req, res) => {
+    try {
+      const connectorInstanceId = decodeURIComponent(req.params.connectorInstanceId);
+      const namespace = await resolveRefConnectionNamespace(req, connectorInstanceId);
+      const started = await controller.runNow(namespace.connectorId, {
+        connectorInstanceId: namespace.connectorInstanceId,
+      });
+      res.status(202).json(started);
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
   app.put(
     '/_ref/connectors/:connectorId/schedule',
     { contract: 'refPutConnectorSchedule' },
@@ -3881,6 +3989,24 @@ function buildAsApp(opts = {}) {
     }
   );
 
+  app.put('/_ref/connections/:connectorInstanceId/schedule', ownerAuth.requireOwnerSession, async (req, res) => {
+    try {
+      const connectorInstanceId = decodeURIComponent(req.params.connectorInstanceId);
+      const namespace = await resolveRefConnectionNamespace(req, connectorInstanceId);
+      await resolveRegisteredConnectorManifest(namespace.connectorId);
+      const result = await controller.upsertSchedule(namespace.connectorId, req.body || {}, {
+        connectorInstanceId: namespace.connectorInstanceId,
+      });
+      await opts.onScheduleMutation?.();
+      const responseBody = result.policy_warning
+        ? { ...result.schedule, policy_warning: result.policy_warning }
+        : result.schedule;
+      res.json(responseBody);
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
   app.post(
     '/_ref/connectors/:connectorId/schedule/pause',
     { contract: 'refPauseConnectorSchedule' },
@@ -3900,6 +4026,20 @@ function buildAsApp(opts = {}) {
     }
   );
 
+  app.post('/_ref/connections/:connectorInstanceId/schedule/pause', ownerAuth.requireOwnerSession, async (req, res) => {
+    try {
+      const connectorInstanceId = decodeURIComponent(req.params.connectorInstanceId);
+      const namespace = await resolveRefConnectionNamespace(req, connectorInstanceId);
+      const schedule = await controller.setScheduleEnabled(namespace.connectorId, false, {
+        connectorInstanceId: namespace.connectorInstanceId,
+      });
+      await opts.onScheduleMutation?.();
+      res.json(schedule);
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
   app.post(
     '/_ref/connectors/:connectorId/schedule/resume',
     { contract: 'refResumeConnectorSchedule' },
@@ -3918,6 +4058,20 @@ function buildAsApp(opts = {}) {
       }
     }
   );
+
+  app.post('/_ref/connections/:connectorInstanceId/schedule/resume', ownerAuth.requireOwnerSession, async (req, res) => {
+    try {
+      const connectorInstanceId = decodeURIComponent(req.params.connectorInstanceId);
+      const namespace = await resolveRefConnectionNamespace(req, connectorInstanceId);
+      const schedule = await controller.setScheduleEnabled(namespace.connectorId, true, {
+        connectorInstanceId: namespace.connectorInstanceId,
+      });
+      await opts.onScheduleMutation?.();
+      res.json(schedule);
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
 
   app.delete(
     '/_ref/connectors/:connectorId/schedule',
@@ -3940,6 +4094,23 @@ function buildAsApp(opts = {}) {
       }
     }
   );
+
+  app.delete('/_ref/connections/:connectorInstanceId/schedule', ownerAuth.requireOwnerSession, async (req, res) => {
+    try {
+      const connectorInstanceId = decodeURIComponent(req.params.connectorInstanceId);
+      const namespace = await resolveRefConnectionNamespace(req, connectorInstanceId);
+      const deleted = await controller.deleteSchedule(namespace.connectorId, {
+        connectorInstanceId: namespace.connectorInstanceId,
+      });
+      if (!deleted) {
+        return pdppError(res, 404, 'not_found', `Schedule not found for connection: ${connectorInstanceId}`);
+      }
+      await opts.onScheduleMutation?.();
+      res.status(204).end();
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
 
   if (!nativeMode) {
     // Polyfill-only connector registry: register/detail semantics live in
