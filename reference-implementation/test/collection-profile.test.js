@@ -125,6 +125,45 @@ rl.on('line', (line) => {
   return { connectorPath, cleanup: () => rmSync(tmpDir, { recursive: true, force: true }) };
 }
 
+function createEnvCaptureStateConnector(capturePath) {
+  const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-env-state-capture-'));
+  const connectorPath = join(tmpDir, 'connector.mjs');
+
+  const script = `
+import { createInterface } from 'readline';
+import { writeFileSync } from 'node:fs';
+
+const rl = createInterface({ input: process.stdin, terminal: false });
+
+rl.on('line', (line) => {
+  const msg = JSON.parse(line);
+  if (msg.type !== 'START') return;
+  writeFileSync(${JSON.stringify(capturePath)}, JSON.stringify({
+    connectorId: process.env.PDPP_CONNECTOR_ID || null,
+    connectorInstanceId: process.env.PDPP_CONNECTOR_INSTANCE_ID || null,
+  }, null, 2));
+  process.stdout.write(JSON.stringify({
+    type: 'RECORD',
+    stream: 'items',
+    key: 'instance_item',
+    data: { id: 'instance_item', value: 'instance value' },
+    emitted_at: new Date().toISOString(),
+  }) + '\\n');
+  process.stdout.write(JSON.stringify({
+    type: 'STATE',
+    stream: 'items',
+    cursor: { cursor: 'instance_cursor' },
+  }) + '\\n');
+  process.stdout.write(JSON.stringify({ type: 'DONE', status: 'succeeded', records_emitted: 1 }) + '\\n');
+  rl.close();
+  process.exit(0);
+});
+`;
+
+  writeFileSync(connectorPath, script, 'utf-8');
+  return { connectorPath, cleanup: () => rmSync(tmpDir, { recursive: true, force: true }) };
+}
+
 function createCollectionModeBranchConnector() {
   const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-collection-mode-branch-'));
   const connectorPath = join(tmpDir, 'connector.mjs');
@@ -1069,6 +1108,116 @@ test('Collection Profile conformance', async (t) => {
     } finally {
       cleanup();
       await closeServer(server);
+    }
+  });
+
+  await t.test('loadSyncState includes connector_instance_id when provided', async () => {
+    const connectorId = 'instance_state_connector';
+    const connectorInstanceId = 'cin_instance_state_work';
+    const ownerToken = 'owner_state_token';
+    const requests = [];
+    const rsServer = http.createServer(async (req, res) => {
+      const url = new URL(req.url, 'http://localhost');
+      requests.push({
+        method: req.method,
+        pathname: url.pathname,
+        connectorInstanceId: url.searchParams.get('connector_instance_id'),
+        grantId: url.searchParams.get('grant_id'),
+        authorization: req.headers.authorization,
+      });
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ state: { items: { cursor: 'loaded_instance_cursor' } } }));
+    });
+
+    await new Promise((resolve) => rsServer.listen(0, resolve));
+    try {
+      const state = await loadSyncState(connectorId, ownerToken, {
+        rsUrl: `http://localhost:${rsServer.address().port}`,
+        connectorInstanceId,
+        grantId: 'grant_instance_state',
+      });
+
+      assert.deepEqual(state, { items: { cursor: 'loaded_instance_cursor' } });
+      assert.equal(requests.length, 1);
+      assert.equal(requests[0].method, 'GET');
+      assert.equal(requests[0].pathname, `/v1/state/${encodeURIComponent(connectorId)}`);
+      assert.equal(requests[0].connectorInstanceId, connectorInstanceId);
+      assert.equal(requests[0].grantId, 'grant_instance_state');
+      assert.equal(requests[0].authorization, `Bearer ${ownerToken}`);
+    } finally {
+      await closeHttpServer(rsServer);
+    }
+  });
+
+  await t.test('runConnector scopes checkpoint PUTs by connector_instance_id without changing ingest URLs', async () => {
+    const connectorId = 'instance_runtime_connector';
+    const connectorInstanceId = 'cin_instance_runtime_work';
+    const ownerToken = 'owner_runtime_token';
+    const envCapturePath = join(mkdtempSync(join(tmpdir(), 'pdpp-env-capture-')), 'env.json');
+    const { connectorPath, cleanup } = createEnvCaptureStateConnector(envCapturePath);
+    const requests = [];
+
+    const rsServer = http.createServer(async (req, res) => {
+      const url = new URL(req.url, 'http://localhost');
+      requests.push({
+        method: req.method,
+        pathname: url.pathname,
+        connectorId: url.searchParams.get('connector_id'),
+        connectorInstanceId: url.searchParams.get('connector_instance_id'),
+      });
+
+      if (req.method === 'POST' && url.pathname === '/v1/ingest/items') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ records_accepted: 1, records_rejected: 0 }));
+        return;
+      }
+
+      if (req.method === 'PUT' && url.pathname === `/v1/state/${encodeURIComponent(connectorId)}`) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+        return;
+      }
+
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'not_found' }));
+    });
+
+    await new Promise((resolve) => rsServer.listen(0, resolve));
+    try {
+      const result = await runConnector({
+        connectorPath,
+        connectorId,
+        connectorInstanceId,
+        ownerToken,
+        manifest: MINIMAL_MANIFEST,
+        state: null,
+        collectionMode: 'incremental',
+        persistState: true,
+        rsUrl: `http://localhost:${rsServer.address().port}`,
+        onInteraction: async () => ({}),
+      });
+
+      assert.equal(result.status, 'succeeded');
+      const envCapture = JSON.parse(readFileSync(envCapturePath, 'utf-8'));
+      assert.equal(envCapture.connectorId, connectorId);
+      assert.equal(envCapture.connectorInstanceId, connectorInstanceId);
+
+      const ingestRequest = requests.find((request) => request.method === 'POST');
+      assert.ok(ingestRequest);
+      assert.equal(ingestRequest.pathname, '/v1/ingest/items');
+      assert.equal(ingestRequest.connectorId, connectorId);
+      assert.equal(ingestRequest.connectorInstanceId, null);
+
+      const stateRequest = requests.find((request) => request.method === 'PUT');
+      assert.ok(stateRequest);
+      assert.equal(stateRequest.pathname, `/v1/state/${encodeURIComponent(connectorId)}`);
+      assert.equal(stateRequest.connectorId, null);
+      assert.equal(stateRequest.connectorInstanceId, connectorInstanceId);
+    } finally {
+      cleanup();
+      rmSync(dirname(envCapturePath), { recursive: true, force: true });
+      await closeHttpServer(rsServer);
     }
   });
 

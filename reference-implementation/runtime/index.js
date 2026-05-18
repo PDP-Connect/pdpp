@@ -1177,6 +1177,7 @@ export async function runConnector(opts) {
   const {
     connectorPath,
     connectorId,
+    connectorInstanceId = null,
     ownerToken,
     manifest,
     scope: providedScope = null,
@@ -1247,6 +1248,10 @@ export async function runConnector(opts) {
         }
       : {};
   const browserSurfaceLaunchEnv = buildBrowserSurfaceLaunchEnv({ browserSurfaceLease, browserSurfaceEnv });
+  const normalizedConnectorInstanceId = optionalNonEmptyEnv(connectorInstanceId);
+  const connectorInstanceEnv = normalizedConnectorInstanceId
+    ? { PDPP_CONNECTOR_INSTANCE_ID: normalizedConnectorInstanceId }
+    : {};
 
   // Spawn connector process. Connectors may be .ts (source-only) or .js
   // (migrated or third-party). For .ts, use `node --import tsx/esm`, which
@@ -1263,6 +1268,7 @@ export async function runConnector(opts) {
     env: {
       ...process.env,
       PDPP_CONNECTOR_ID: connectorId,
+      ...connectorInstanceEnv,
       PDPP_OWNER_TOKEN: ownerToken,
       PDPP_RS_URL: rsUrl,
       ...streamingRegistrationEnv,
@@ -1801,6 +1807,9 @@ export async function runConnector(opts) {
   async function commitState(stream, cursor) {
     newState[stream] = cursor;
     const stateUrl = new URL(`/v1/state/${encodeURIComponent(connectorId)}`, rsUrl);
+    if (connectorInstanceEnv.PDPP_CONNECTOR_INSTANCE_ID) {
+      stateUrl.searchParams.set('connector_instance_id', connectorInstanceEnv.PDPP_CONNECTOR_INSTANCE_ID);
+    }
     if (grantId) stateUrl.searchParams.set('grant_id', grantId);
     const url = stateUrl.toString();
     try {
@@ -2855,8 +2864,10 @@ async function defaultInteractionHandler(interaction) {
  * Load prior sync state for a connector from the RS.
  *
  * Accepts either:
- *   (connectorId, ownerToken, { rsUrl?, grantId? })   — legacy positional
- *   ({ connectorId, ownerToken, rsUrl?, grantId? })    — object form (what
+ *   (connectorId, ownerToken, { rsUrl?, grantId?, connectorInstanceId? })
+ *                                                       — legacy positional
+ *   ({ connectorId, ownerToken, rsUrl?, grantId?, connectorInstanceId? })
+ *                                                       — object form (what
  *                                                       all current callers
  *                                                       actually use)
  *
@@ -2880,7 +2891,9 @@ export async function loadSyncState(connectorIdOrOpts, ownerToken, opts = {}) {
     o = opts;
   }
   const rsUrl = o.rsUrl || process.env.RS_URL || 'http://localhost:7663';
+  const connectorInstanceId = optionalNonEmptyEnv(o.connectorInstanceId);
   const stateUrl = new URL(`/v1/state/${encodeURIComponent(connectorId)}`, rsUrl);
+  if (connectorInstanceId) stateUrl.searchParams.set('connector_instance_id', connectorInstanceId);
   if (o.grantId) stateUrl.searchParams.set('grant_id', o.grantId);
   const url = stateUrl.toString();
   const resp = await fetch(url, {
