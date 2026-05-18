@@ -62,6 +62,65 @@ This package must not import `reference-implementation`, `apps/web`,
 - `@pdpp/remote-surface/testing` — fake broker and deterministic test
   capabilities for package/host conformance tests.
 
+## What Is Extracted
+
+The reusable streaming architecture is extracted as package primitives, not as
+a complete hosted streaming service.
+
+| Area | Package-owned | Host-owned |
+| --- | --- | --- |
+| Session lifecycle | Token hashing, TTL, idempotent minting, attach/authorize/revoke semantics, and host-neutral `SurfaceSessionStore` APIs. | Auth checks, route names, persistence durability, process lifecycle, and event emission. |
+| Protocol | JSON-safe event, input, viewport, clipboard, diagnostics, target, capability, and safe backend descriptors. | HTTP/SSE/WebSocket envelopes and any product-specific wire compatibility. |
+| Client/viewer | DOM controllers, viewport/control policies, IME helpers, clipboard policy, media settle, visual-quality, and telemetry interfaces. | React components, URL construction, copy, styling, owner affordances, and dashboard actions. |
+| Backends | n.eko/CDP capability contracts and safe client descriptor validation that prevents raw automation endpoints from reaching the browser. | Browser processes, CDP/n.eko upstream authority, Docker/sidecar allocation, profiles, and credentials. |
+| Diagnostics | Redacted event helpers and bounded buffers. | Log sinks, timelines, retention, correlation IDs, and operator dashboards. |
+
+This means a host can build its own remote-surface route adapter around the
+package, but must still provide routing, authorization, persistence, backend
+process ownership, and product UX.
+
+## Minimal Consumer Shape
+
+Install from a packed artifact during local release validation:
+
+```bash
+pnpm add /path/to/pdpp/packages/remote-surface/pdpp-remote-surface-0.0.1.tgz
+```
+
+Create a host-owned session store and map it to your own routes:
+
+```ts
+import { createSurfaceSessionStore } from "@pdpp/remote-surface/server";
+
+const sessions = createSurfaceSessionStore();
+
+const issued = sessions.mint({
+  surfaceSessionId: "surface-session-123",
+  actionId: "owner-approval-456",
+  browserSessionId: "browser-tab-789",
+});
+
+sessions.attach({
+  token: issued.token,
+  surfaceSessionId: "surface-session-123",
+  actionId: "owner-approval-456",
+});
+```
+
+Validate browser-visible backend descriptors before returning them to a client:
+
+```ts
+import { buildNekoSafeClientDescriptor } from "@pdpp/remote-surface/backends/neko";
+
+const descriptor = buildNekoSafeClientDescriptor({
+  proxyPath: "/remote-surface/surface-session-123/neko",
+  sessionPath: "/remote-surface/surface-session-123/neko/session",
+});
+```
+
+The package intentionally does not create these HTTP routes. Your host maps the
+token/session/action to its own authorization model and backend process.
+
 ## Package validation
 
 The package remains `private: true` until release preparation. Maintainers can
