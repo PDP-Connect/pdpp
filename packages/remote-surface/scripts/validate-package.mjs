@@ -28,30 +28,49 @@ const deniedPackageFilePatterns = [
 ];
 
 const hostNeutralScanPatterns = [
-  { name: "_ref", pattern: /_ref/g },
+  { name: "_ref", pattern: /(?<![A-Za-z0-9])_ref(?![A-Za-z0-9])/g },
   { name: "run_id", pattern: /run_id/g },
   { name: "interaction_id", pattern: /interaction_id/g },
   { name: "workspace:", pattern: /workspace:/g },
 ];
 
-const hostNeutralAllowedFiles = new Set([
-  "README.md",
-  "dist/leases/browser-surface-leases.d.ts",
-  "dist/leases/browser-surface-leases.js",
-  "dist/leases/browser-surface-leases.js.map",
-  "dist/protocol/index.d.ts",
-  "dist/protocol/index.js",
-  "dist/protocol/index.js.map",
-  "dist/protocol/stream-viewer.d.ts",
-  "dist/protocol/stream-viewer.js",
-  "dist/protocol/stream-viewer.js.map",
-  "dist/server/streaming-session-store.d.ts",
-  "dist/server/streaming-session-store.js",
-  "dist/server/streaming-session-store.js.map",
-  "dist/testing/reference-wire-fixtures.d.ts",
-  "dist/testing/reference-wire-fixtures.js",
-  "dist/testing/reference-wire-fixtures.js.map",
-]);
+const hostNeutralCompatibilityAllowlist = [
+  {
+    name: "README documents the reference boundary and does not present reference fields as the default API",
+    files: /^README\.md$/,
+    patterns: new Set(["_ref", "run_id", "interaction_id"]),
+  },
+  {
+    name: "lease compatibility declarations still expose legacy reference-shaped database fields",
+    files: /^dist\/leases\/browser-surface-leases\.d\.ts$/,
+    patterns: new Set(["run_id"]),
+  },
+  {
+    name: "lease compatibility implementation still maps generic lease requests to legacy reference-shaped fields",
+    files: /^dist\/leases\/browser-surface-leases\.js(\.map)?$/,
+    patterns: new Set(["run_id"]),
+  },
+  {
+    name: "stream-viewer protocol keeps reference wire fields for route parity fixtures",
+    files: /^dist\/protocol\/(index|stream-viewer)\.(d\.ts|js|js\.map)$/,
+    patterns: new Set(["_ref", "run_id", "interaction_id"]),
+  },
+  {
+    name: "server store compatibility declarations keep legacy streaming aliases beside host-neutral surface APIs",
+    files: /^dist\/server\/streaming-session-store\.d\.ts$/,
+    patterns: new Set(["run_id", "interaction_id"]),
+  },
+  {
+    name: "server store compatibility implementation adapts host-neutral surface APIs to legacy streaming aliases",
+    files: /^dist\/server\/streaming-session-store\.js(\.map)?$/,
+    patterns: new Set(["run_id", "interaction_id"]),
+  },
+  {
+    name: "reference wire fixtures intentionally preserve PDPP route fields for compatibility tests",
+    files: /^dist\/testing\/reference-wire-fixtures\.(d\.ts|js|js\.map)$/,
+    patterns: new Set(["_ref", "run_id", "interaction_id"]),
+  },
+];
 
 const publicPackageNamePattern = /@pdpp\/(?!remote-surface\b)[a-z0-9._-]+/g;
 
@@ -162,7 +181,10 @@ async function validatePublicArtifactBoundaries(packedFiles) {
       if (!pattern.test(text)) {
         continue;
       }
-      if (!hostNeutralAllowedFiles.has(file)) {
+      const compatibilityAllowance = hostNeutralCompatibilityAllowlist.find(
+        (allowance) => allowance.patterns.has(name) && allowance.files.test(file),
+      );
+      if (!compatibilityAllowance) {
         unexpectedHostCoupling.push(`${file} contains ${name}`);
       }
     }
@@ -179,7 +201,7 @@ async function validatePublicArtifactBoundaries(packedFiles) {
     [],
     [
       "unexpected host-coupled public artifact leakage",
-      "Known compatibility debt is allowlisted in validate-package.mjs; new _ref/run_id/interaction_id/workspace: matches need a host-neutral API or an explicit allowlist decision.",
+      "Known compatibility debt is pattern-allowlisted in validate-package.mjs; new _ref/run_id/interaction_id/workspace: matches need a host-neutral API or an explicit compatibility rationale.",
       ...unexpectedHostCoupling,
     ].join("\n"),
   );

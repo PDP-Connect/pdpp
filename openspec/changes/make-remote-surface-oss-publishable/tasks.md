@@ -52,4 +52,4 @@
 - [x] 7.6 Confirm `private: true` remains allowed until release prep and no task treats actual npm publication as required for this change.
 - [x] 7.7 Run relevant CI-equivalent checks.
 - [x] 7.8 Run `openspec validate make-remote-surface-oss-publishable --strict`.
-- [ ] 7.9 Run `openspec validate --all --strict`.
+- [x] 7.9 Run `openspec validate --all --strict`.

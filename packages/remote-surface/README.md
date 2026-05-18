@@ -77,6 +77,12 @@ workspace/private dependency leakage, verifies declarations for every exported
 entrypoint, and installs/imports/typechecks the packed artifact from a clean
 consumer fixture.
 
+The packed-artifact scan treats `_ref`, `run_id`, and `interaction_id` as
+host-coupled terms. Any remaining matches must be pattern-allowlisted in
+`scripts/validate-package.mjs` with a compatibility rationale, such as
+reference wire fixtures or transitional adapters that sit behind the
+host-neutral `SurfaceSessionStore` API.
+
 Release preparation is still responsible for the final `private: false` switch,
 registry metadata, polished cookbook examples, and the actual publish command.
 
