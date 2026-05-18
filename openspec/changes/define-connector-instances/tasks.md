@@ -28,8 +28,8 @@
 
 - [ ] Update record ingest, idempotency, and indexing to distinguish records with the same connector type, stream, and connector-local key from different instances.
 - [ ] Update local collector/device ingest so every batch, heartbeat, run event, and diagnostic is authorized for a connector instance.
-- [ ] Replace or subordinate `source_instance_id` in CLI/device-exporter UX with connection / connector-instance terminology while preserving compatibility for existing local device bindings.
-- [ ] Scope local collector default queue durability by source binding or add locking/diagnostics proving concurrent local connections cannot corrupt the shared queue.
+- [x] Replace or subordinate `source_instance_id` in CLI/device-exporter UX with connection / connector-instance terminology while preserving compatibility for existing local device bindings.
+- [x] Scope local collector default queue durability by source binding or add locking/diagnostics proving concurrent local connections cannot corrupt the shared queue.
 - [ ] Add multi-account tests proving two Gmail instances do not share state, records, schedules, leases, or diagnostics.
 - [ ] Add multi-device tests proving Claude/Codex collectors on two devices do not overwrite each other's checkpoints or records.
 
