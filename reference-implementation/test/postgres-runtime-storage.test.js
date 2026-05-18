@@ -324,14 +324,15 @@ if (!POSTGRES_URL) {
       assert.equal(tokenInfo.grant_id, approved.grant.grant_id);
 
       const stateStore = createConnectorStateStore();
-      await stateStore.putState({ connectorId }, { [stream]: { cursor: '2026-04-02T00:00:00.000Z' } });
-      const connectorState = await stateStore.getState({ connectorId });
+      const connectorInstanceId = `cin_${connectorId}`;
+      await stateStore.putState({ connectorId, connectorInstanceId }, { [stream]: { cursor: '2026-04-02T00:00:00.000Z' } });
+      const connectorState = await stateStore.getState({ connectorId, connectorInstanceId });
       assert.deepEqual(connectorState.state[stream], { cursor: '2026-04-02T00:00:00.000Z' });
       await stateStore.putState(
-        { connectorId, grantId: approved.grant.grant_id },
+        { connectorId, connectorInstanceId, grantId: approved.grant.grant_id },
         { [stream]: { cursor: 'grant-scoped' } },
       );
-      const grantState = await stateStore.getState({ connectorId, grantId: approved.grant.grant_id });
+      const grantState = await stateStore.getState({ connectorId, connectorInstanceId, grantId: approved.grant.grant_id });
       assert.deepEqual(grantState.state[stream], { cursor: 'grant-scoped' });
 
       const schedulerStore = createSchedulerStore();

@@ -8,8 +8,8 @@
 //
 // The SQLite-backed implementation preserves the current
 // `getSyncState`/`putSyncState` behavior verbatim:
-//   - Owner-scoped state is keyed by `(connector_id, stream)`; grant-scoped
-//     state is keyed by `(grant_id, connector_id, stream)`.
+//   - Owner-scoped state is keyed by `(connector_instance_id, stream)`;
+//     grant-scoped state is keyed by `(grant_id, connector_instance_id, stream)`.
 //   - Reads narrow to `allowedStreams` without deleting unmatched rows.
 //   - The projection's `updated_at` is the max `updated_at` across all
 //     surfaced streams; null when no rows match.
@@ -23,6 +23,7 @@ import { getStorageBackendKind, isPostgresStorageBackend, postgresQuery } from "
 
 export interface ConnectorStateScope {
   readonly connectorId: string;
+  readonly connectorInstanceId: string;
   readonly grantId?: string | null;
 }
 
@@ -34,6 +35,7 @@ export type ConnectorStateMap = Readonly<Record<string, unknown>>;
 
 export interface ConnectorStateProjection {
   readonly connector_id: string;
+  readonly connector_instance_id: string;
   readonly grant_id: string | null;
   readonly object: "stream_state";
   readonly state: ConnectorStateMap;
@@ -65,9 +67,18 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+function requireConnectorInstanceId(scope: ConnectorStateScope): string {
+  const connectorInstanceId = scope.connectorInstanceId?.trim();
+  if (!connectorInstanceId) {
+    throw new Error("connectorInstanceId is required for connector sync state.");
+  }
+  return connectorInstanceId;
+}
+
 export function createSqliteConnectorStateStore(): ConnectorStateStore {
   function getStateSync(scope: ConnectorStateScope, options: ConnectorStateReadOptions = {}): ConnectorStateProjection {
     const { connectorId } = scope;
+    const connectorInstanceId = requireConnectorInstanceId(scope);
     const grantId = scope.grantId ?? null;
     const allowedStreamSet = normalizeAllowedStreams(options.allowedStreams);
 
@@ -76,10 +87,12 @@ export function createSqliteConnectorStateStore(): ConnectorStateStore {
     const rows = grantId
       ? allowUnboundedReadAcknowledged<SyncStateRow>(referenceQueries.recordsSyncStateListGrantConnectorState, [
           connectorId,
+          connectorInstanceId,
           grantId,
         ])
       : allowUnboundedReadAcknowledged<SyncStateRow>(referenceQueries.recordsSyncStateListConnectorState, [
           connectorId,
+          connectorInstanceId,
         ]);
 
     const state: { [stream: string]: unknown } = {};
@@ -97,6 +110,7 @@ export function createSqliteConnectorStateStore(): ConnectorStateStore {
     return {
       object: "stream_state",
       connector_id: connectorId,
+      connector_instance_id: connectorInstanceId,
       grant_id: grantId,
       state,
       updated_at: updatedAt,
@@ -105,6 +119,7 @@ export function createSqliteConnectorStateStore(): ConnectorStateStore {
 
   function putStateSync(scope: ConnectorStateScope, stateByStream: ConnectorStateMap): ConnectorStateProjection {
     const { connectorId } = scope;
+    const connectorInstanceId = requireConnectorInstanceId(scope);
     const grantId = scope.grantId ?? null;
     const now = nowIso();
 
@@ -113,16 +128,23 @@ export function createSqliteConnectorStateStore(): ConnectorStateStore {
         exec(referenceQueries.recordsSyncStateUpsertGrantConnectorState, [
           grantId,
           connectorId,
+          connectorInstanceId,
           stream,
           JSON.stringify(cursor),
           now,
         ]);
         continue;
       }
-      exec(referenceQueries.recordsSyncStateUpsertConnectorState, [connectorId, stream, JSON.stringify(cursor), now]);
+      exec(referenceQueries.recordsSyncStateUpsertConnectorState, [
+        connectorId,
+        connectorInstanceId,
+        stream,
+        JSON.stringify(cursor),
+        now,
+      ]);
     }
 
-    return getStateSync({ connectorId, grantId });
+    return getStateSync({ connectorId, connectorInstanceId, grantId });
   }
 
   return {
@@ -137,22 +159,23 @@ export function createPostgresConnectorStateStore(): ConnectorStateStore {
     options: ConnectorStateReadOptions = {}
   ): Promise<ConnectorStateProjection> {
     const { connectorId } = scope;
+    const connectorInstanceId = requireConnectorInstanceId(scope);
     const grantId = scope.grantId ?? null;
     const allowedStreamSet = normalizeAllowedStreams(options.allowedStreams);
     const result = grantId
       ? await postgresQuery(
           `SELECT stream, state_json, updated_at
            FROM grant_connector_state
-           WHERE connector_id = $1 AND grant_id = $2
+           WHERE connector_id = $1 AND connector_instance_id = $2 AND grant_id = $3
            ORDER BY stream`,
-          [connectorId, grantId]
+          [connectorId, connectorInstanceId, grantId]
         )
       : await postgresQuery(
           `SELECT stream, state_json, updated_at
            FROM connector_state
-           WHERE connector_id = $1
+           WHERE connector_id = $1 AND connector_instance_id = $2
            ORDER BY stream`,
-          [connectorId]
+          [connectorId, connectorInstanceId]
         );
 
     const state: { [stream: string]: unknown } = {};
@@ -170,6 +193,7 @@ export function createPostgresConnectorStateStore(): ConnectorStateStore {
     return {
       object: "stream_state",
       connector_id: connectorId,
+      connector_instance_id: connectorInstanceId,
       grant_id: grantId,
       state,
       updated_at: updatedAt,
@@ -180,30 +204,31 @@ export function createPostgresConnectorStateStore(): ConnectorStateStore {
     getState,
     async putState(scope, stateByStream) {
       const { connectorId } = scope;
+      const connectorInstanceId = requireConnectorInstanceId(scope);
       const grantId = scope.grantId ?? null;
       const now = nowIso();
       for (const [stream, cursor] of Object.entries(stateByStream)) {
         if (grantId) {
           await postgresQuery(
-            `INSERT INTO grant_connector_state(grant_id, connector_id, stream, state_json, updated_at)
-             VALUES($1, $2, $3, $4::jsonb, $5)
-             ON CONFLICT (grant_id, connector_id, stream) DO UPDATE
+            `INSERT INTO grant_connector_state(grant_id, connector_id, connector_instance_id, stream, state_json, updated_at)
+             VALUES($1, $2, $3, $4, $5::jsonb, $6)
+             ON CONFLICT (grant_id, connector_instance_id, stream) DO UPDATE
                SET state_json = EXCLUDED.state_json,
                    updated_at = EXCLUDED.updated_at`,
-            [grantId, connectorId, stream, JSON.stringify(cursor), now]
+            [grantId, connectorId, connectorInstanceId, stream, JSON.stringify(cursor), now]
           );
           continue;
         }
         await postgresQuery(
-          `INSERT INTO connector_state(connector_id, stream, state_json, updated_at)
-           VALUES($1, $2, $3::jsonb, $4)
-           ON CONFLICT (connector_id, stream) DO UPDATE
+          `INSERT INTO connector_state(connector_id, connector_instance_id, stream, state_json, updated_at)
+           VALUES($1, $2, $3, $4::jsonb, $5)
+           ON CONFLICT (connector_instance_id, stream) DO UPDATE
              SET state_json = EXCLUDED.state_json,
                  updated_at = EXCLUDED.updated_at`,
-          [connectorId, stream, JSON.stringify(cursor), now]
+          [connectorId, connectorInstanceId, stream, JSON.stringify(cursor), now]
         );
       }
-      return getState({ connectorId, grantId });
+      return getState({ connectorId, connectorInstanceId, grantId });
     },
   };
 }

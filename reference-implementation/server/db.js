@@ -17,9 +17,11 @@
  */
 
 import Database from 'better-sqlite3';
+import { createHash } from 'node:crypto';
 import * as sqliteVec from 'sqlite-vec';
 
 const DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 30_000;
+const LEGACY_SYNC_STATE_OWNER_SUBJECT_ID = 'owner_local';
 
 let db;
 
@@ -598,19 +600,21 @@ CREATE UNIQUE INDEX IF NOT EXISTS uniq_blobs_sha256
 
 CREATE TABLE IF NOT EXISTS connector_state (
   connector_id  TEXT NOT NULL,
+  connector_instance_id TEXT NOT NULL,
   stream        TEXT NOT NULL,
   state_json    TEXT NOT NULL,
   updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
-  PRIMARY KEY(connector_id, stream)
+  PRIMARY KEY(connector_instance_id, stream)
 );
 
 CREATE TABLE IF NOT EXISTS grant_connector_state (
   grant_id      TEXT NOT NULL,
   connector_id  TEXT NOT NULL,
+  connector_instance_id TEXT NOT NULL,
   stream        TEXT NOT NULL,
   state_json    TEXT NOT NULL,
   updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
-  PRIMARY KEY(grant_id, connector_id, stream)
+  PRIMARY KEY(grant_id, connector_instance_id, stream)
 );
 
 CREATE TABLE IF NOT EXISTS connector_detail_gaps (
@@ -988,6 +992,121 @@ function hasTableColumn(raw, table, column) {
   return tableColumns(raw, table).includes(column);
 }
 
+function makeLegacyConnectorInstanceId(ownerSubjectId, connectorId) {
+  const hash = createHash('sha256').update(`${ownerSubjectId}\n${connectorId}`).digest('hex');
+  return `cin_legacy_${hash.slice(0, 24)}`;
+}
+
+function legacySyncStateConnectorInstanceId(raw, connectorId) {
+  const rows = raw.prepare(
+    `SELECT connector_instance_id
+       FROM connector_instances
+      WHERE connector_id = ?
+      ORDER BY connector_instance_id`
+  ).all(connectorId);
+  if (rows.length === 1) {
+    return rows[0].connector_instance_id;
+  }
+  return makeLegacyConnectorInstanceId(LEGACY_SYNC_STATE_OWNER_SUBJECT_ID, connectorId);
+}
+
+function migrateConnectorSyncStateInstanceColumns(raw, opts = {}) {
+  const ownerHasInstanceColumn = hasTableColumn(raw, 'connector_state', 'connector_instance_id');
+  const grantHasInstanceColumn = hasTableColumn(raw, 'grant_connector_state', 'connector_instance_id');
+  if (ownerHasInstanceColumn && grantHasInstanceColumn) {
+    return { rebuilt: false, backfilledRows: 0 };
+  }
+
+  const migration = raw.transaction(() => {
+    const ownerRows = raw.prepare(
+      `SELECT connector_id,
+              ${ownerHasInstanceColumn ? 'connector_instance_id,' : ''}
+              stream,
+              state_json,
+              updated_at
+         FROM connector_state
+        ORDER BY connector_id, stream`
+    ).all();
+    const grantRows = raw.prepare(
+      `SELECT grant_id,
+              connector_id,
+              ${grantHasInstanceColumn ? 'connector_instance_id,' : ''}
+              stream,
+              state_json,
+              updated_at
+         FROM grant_connector_state
+        ORDER BY grant_id, connector_id, stream`
+    ).all();
+    const byConnector = new Map();
+    const resolveInstanceId = (row) => {
+      if (typeof row.connector_instance_id === 'string' && row.connector_instance_id.trim()) {
+        return row.connector_instance_id.trim();
+      }
+      const connectorId = row.connector_id;
+      if (!byConnector.has(connectorId)) {
+        byConnector.set(connectorId, legacySyncStateConnectorInstanceId(raw, connectorId));
+      }
+      return byConnector.get(connectorId);
+    };
+
+    raw.exec(`
+      DROP TABLE connector_state;
+      CREATE TABLE connector_state (
+        connector_id  TEXT NOT NULL,
+        connector_instance_id TEXT NOT NULL,
+        stream        TEXT NOT NULL,
+        state_json    TEXT NOT NULL,
+        updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY(connector_instance_id, stream)
+      );
+
+      DROP TABLE grant_connector_state;
+      CREATE TABLE grant_connector_state (
+        grant_id      TEXT NOT NULL,
+        connector_id  TEXT NOT NULL,
+        connector_instance_id TEXT NOT NULL,
+        stream        TEXT NOT NULL,
+        state_json    TEXT NOT NULL,
+        updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY(grant_id, connector_instance_id, stream)
+      );
+    `);
+
+    const insertOwner = raw.prepare(
+      `INSERT INTO connector_state(connector_id, connector_instance_id, stream, state_json, updated_at)
+       VALUES(?, ?, ?, ?, ?)`
+    );
+    const insertGrant = raw.prepare(
+      `INSERT INTO grant_connector_state(grant_id, connector_id, connector_instance_id, stream, state_json, updated_at)
+       VALUES(?, ?, ?, ?, ?, ?)`
+    );
+    for (const row of ownerRows) {
+      insertOwner.run(row.connector_id, resolveInstanceId(row), row.stream, row.state_json, row.updated_at);
+    }
+    for (const row of grantRows) {
+      insertGrant.run(
+        row.grant_id,
+        row.connector_id,
+        resolveInstanceId(row),
+        row.stream,
+        row.state_json,
+        row.updated_at
+      );
+    }
+
+    return {
+      rebuilt: true,
+      backfilledRows: (ownerHasInstanceColumn ? 0 : ownerRows.length) + (grantHasInstanceColumn ? 0 : grantRows.length),
+    };
+  });
+
+  const result = migration();
+  if (typeof opts.onSchemaMigration === 'function') {
+    opts.onSchemaMigration({ name: 'connector_sync_state_instance_columns', ...result });
+  }
+  return result;
+}
+
 function isSourceKind(value) {
   return value === 'connector' || value === 'provider_native';
 }
@@ -1281,6 +1400,7 @@ export function initDb(path = ':memory:', opts = {}) {
   // docs/binary-content-invariant-design-brief.md §4.6. Legacy rows
   // backfill with '@record' (their existing record-level semantics).
   runWithSqliteBusyRetrySync(() => migrateBlobBindingsJsonPath(raw, opts));
+  runWithSqliteBusyRetrySync(() => migrateConnectorSyncStateInstanceColumns(raw, opts));
   raw.exec(
     `CREATE INDEX IF NOT EXISTS idx_spine_events_run_terminal
       ON spine_events(run_id, event_type, event_seq DESC)

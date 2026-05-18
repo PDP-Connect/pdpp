@@ -44,6 +44,8 @@ import {
 } from './postgres-records.js';
 import { isPostgresStorageBackend } from './postgres-storage.js';
 import { getDefaultConnectorStateStore } from './stores/connector-state-store.ts';
+import { makeLegacyConnectorInstanceId } from './stores/connector-instance-store.js';
+import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from './owner-auth.ts';
 
 function nowIso() {
   return new Date().toISOString();
@@ -57,6 +59,23 @@ function resolveStorageConnectorId(storageTarget) {
     return storageTarget.connector_id.trim();
   }
   return null;
+}
+
+function resolveStorageConnectorInstanceId(storageTarget, connectorId) {
+  if (
+    storageTarget
+    && typeof storageTarget === 'object'
+    && typeof storageTarget.connector_instance_id === 'string'
+    && storageTarget.connector_instance_id.trim()
+  ) {
+    return storageTarget.connector_instance_id.trim();
+  }
+  if (typeof connectorId !== 'string' || !connectorId.trim()) {
+    const err = new Error('connector_id is required for connector sync state.');
+    err.code = 'invalid_connector_id';
+    throw err;
+  }
+  return makeLegacyConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId);
 }
 
 function getChangeHistoryLimit() {
@@ -2151,19 +2170,21 @@ export async function listStreams(storageTarget, grant, manifest = null) {
  */
 export async function getSyncState(storageTarget, opts = {}) {
   const connectorId = resolveStorageConnectorId(storageTarget);
+  const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
   const { grantId = null, allowedStreams = null } = opts;
   return getDefaultConnectorStateStore().getState(
-    { connectorId, grantId },
+    { connectorId, connectorInstanceId, grantId },
     { allowedStreams },
   );
 }
 
 export async function putSyncState(storageTarget, stateMap, opts = {}) {
   const connectorId = resolveStorageConnectorId(storageTarget);
+  const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
   const { grantId = null, allowedStreams = null } = opts;
   const store = getDefaultConnectorStateStore();
-  await store.putState({ connectorId, grantId }, stateMap);
-  return store.getState({ connectorId, grantId }, { allowedStreams });
+  await store.putState({ connectorId, connectorInstanceId, grantId }, stateMap);
+  return store.getState({ connectorId, connectorInstanceId, grantId }, { allowedStreams });
 }
 
 /**

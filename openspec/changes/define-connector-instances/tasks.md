@@ -17,7 +17,8 @@
 
 - [ ] Migrate existing connector-keyed records, record changes, stream version counters, blob bindings, connector state, schedules, active-run rows, run history, last-run gates, detail gaps, diagnostics, search indexes, and freshness into single-instance namespaces per owner/connector.
 - [ ] Update owner-auth ingest and blob upload/read paths to accept connector instance identity, with connector-only compatibility only when exactly one active instance exists.
-- [ ] Update connector state and checkpoint reads/writes to require connector instance identity for proactive/global state and preserve grant-scoped state without cross-instance collision.
+- [x] Migrate connector state storage and owner-auth `/v1/state` reads/writes to connector-instance namespaces without exposing instance metadata on the public state response.
+- [ ] Update runtime checkpoint reads/writes so connector execution supplies connector instance identity rather than legacy connector-only fallback.
 - [ ] Update schedules, scheduler backoff, last-run gates, human-attention gates, and active-run leases so pause/resume/refresh/conflict checks operate per connector instance.
 - [ ] Update browser-surface leases and default profile keys so browser-backed connections isolate profiles and queued leases by connector instance rather than connector type.
 - [ ] Add migration tests proving existing single-connector deployments become one instance per owner/connector without data loss.
@@ -43,6 +44,6 @@
 ## Acceptance Checks
 
 - [x] `openspec validate define-connector-instances --strict`
-- [ ] `openspec validate --all --strict`
+- [x] `openspec validate --all --strict`
 - [x] Relevant runtime tests pass once implementation tasks are started.
 - [ ] Grep confirms no remaining connector state, schedule, active-run lease, or owner mutation path uses `connector_id` alone as a durable instance key.

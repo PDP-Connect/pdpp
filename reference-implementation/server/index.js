@@ -1076,6 +1076,17 @@ function storageTargetForConnectorNamespace(namespace) {
   };
 }
 
+function toPublicConnectorStateProjection(state) {
+  if (!state || typeof state !== 'object') return state;
+  return {
+    object: state.object,
+    connector_id: state.connector_id,
+    grant_id: state.grant_id,
+    state: state.state,
+    updated_at: state.updated_at,
+  };
+}
+
 function parseSourceWebhookSecrets(raw = process.env.PDPP_SOURCE_WEBHOOK_SECRETS || '') {
   const map = new Map();
   for (const entry of raw.split(',')) {
@@ -5965,9 +5976,7 @@ function buildRsApp(opts = {}) {
           {
             resolveRegisteredConnectorManifest: async (id) => {
               const manifest = await resolveRegisteredConnectorManifest(id);
-              storageNamespace = await resolveOwnerConnectorNamespace(req, id, {
-                allowExplicitConnectorInstanceId: false,
-              });
+              storageNamespace = await resolveOwnerConnectorNamespace(req, id);
               return manifest;
             },
             resolveGrantScope: (id, gid) => resolveGrantScopedStateGrant(id, gid),
@@ -5980,9 +5989,7 @@ function buildRsApp(opts = {}) {
               await emitStateRequested(req, stateContext);
             },
             getSyncState: async (id, args) => {
-              const namespace = storageNamespace ?? await resolveOwnerConnectorNamespace(req, id, {
-                allowExplicitConnectorInstanceId: false,
-              });
+              const namespace = storageNamespace ?? await resolveOwnerConnectorNamespace(req, id);
               return getSyncState(storageTargetForConnectorNamespace(namespace), args);
             },
           },
@@ -5991,7 +5998,7 @@ function buildRsApp(opts = {}) {
           visible_streams: Object.keys(state?.state || {}),
           updated_at: state?.updated_at || null,
         });
-        res.json(state);
+        res.json(toPublicConnectorStateProjection(state));
       } catch (err) {
         return await rejectState(res, req, stateContext, err);
       }
@@ -6025,9 +6032,7 @@ function buildRsApp(opts = {}) {
           {
             resolveRegisteredConnectorManifest: async (id) => {
               const manifest = await resolveRegisteredConnectorManifest(id);
-              storageNamespace = await resolveOwnerConnectorNamespace(req, id, {
-                allowExplicitConnectorInstanceId: false,
-              });
+              storageNamespace = await resolveOwnerConnectorNamespace(req, id);
               return manifest;
             },
             resolveGrantScope: (id, gid) => resolveGrantScopedStateGrant(id, gid),
@@ -6040,9 +6045,7 @@ function buildRsApp(opts = {}) {
               await emitStateRequested(req, stateContext);
             },
             putSyncState: async (id, map, args) => {
-              const namespace = storageNamespace ?? await resolveOwnerConnectorNamespace(req, id, {
-                allowExplicitConnectorInstanceId: false,
-              });
+              const namespace = storageNamespace ?? await resolveOwnerConnectorNamespace(req, id);
               return putSyncState(storageTargetForConnectorNamespace(namespace), map, args);
             },
           },
@@ -6051,7 +6054,7 @@ function buildRsApp(opts = {}) {
           persisted_streams: Object.keys(state?.state || {}),
           updated_at: state?.updated_at || null,
         });
-        res.json(state);
+        res.json(toPublicConnectorStateProjection(state));
       } catch (err) {
         if (err instanceof RsConnectorStatePutValidationError) {
           // Translate the operation-typed validation error into the plain

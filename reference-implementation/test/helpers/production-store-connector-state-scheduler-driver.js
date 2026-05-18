@@ -24,6 +24,7 @@ import { closeDb, initDb } from '../../server/db.js';
 import { registerConnector } from '../../server/auth.js';
 import { getOne, referenceQueries } from '../../lib/db.ts';
 import { createSqliteConnectorStateStore } from '../../server/stores/connector-state-store.ts';
+import { makeLegacyConnectorInstanceId } from '../../server/stores/connector-instance-store.js';
 import { createSqliteSchedulerStore } from '../../server/stores/scheduler-store.ts';
 import { createController } from '../../runtime/controller.ts';
 
@@ -132,7 +133,11 @@ export function createProductionStoreConnectorStateSchedulerDriver() {
 
     async putConnectorState(scope, stateByStream) {
       return stateStore.putState(
-        { connectorId: scope.connectorId, grantId: scope.grantId || null },
+        {
+          connectorId: scope.connectorId,
+          connectorInstanceId: makeLegacyConnectorInstanceId('owner_local', scope.connectorId),
+          grantId: scope.grantId || null,
+        },
         stateByStream,
       );
     },
@@ -140,7 +145,11 @@ export function createProductionStoreConnectorStateSchedulerDriver() {
     async getConnectorState(scope, opts = {}) {
       const allowedStreams = Array.isArray(opts.allowedStreams) ? opts.allowedStreams : null;
       return stateStore.getState(
-        { connectorId: scope.connectorId, grantId: scope.grantId || null },
+        {
+          connectorId: scope.connectorId,
+          connectorInstanceId: makeLegacyConnectorInstanceId('owner_local', scope.connectorId),
+          grantId: scope.grantId || null,
+        },
         { allowedStreams },
       );
     },

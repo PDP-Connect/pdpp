@@ -8,10 +8,12 @@
  */
 
 import pg from 'pg';
+import { createHash } from 'node:crypto';
 
 const { Pool } = pg;
 
 const VALID_BACKENDS = new Set(['sqlite', 'postgres']);
+const LEGACY_SYNC_STATE_OWNER_SUBJECT_ID = 'owner_local';
 
 let activeBackend = 'sqlite';
 let pool = null;
@@ -395,19 +397,21 @@ export async function bootstrapPostgresSchema() {
 
       CREATE TABLE IF NOT EXISTS connector_state (
         connector_id TEXT NOT NULL,
+        connector_instance_id TEXT NOT NULL,
         stream TEXT NOT NULL,
         state_json JSONB NOT NULL,
         updated_at TEXT NOT NULL,
-        PRIMARY KEY(connector_id, stream)
+        PRIMARY KEY(connector_instance_id, stream)
       );
 
       CREATE TABLE IF NOT EXISTS grant_connector_state (
         grant_id TEXT NOT NULL,
         connector_id TEXT NOT NULL,
+        connector_instance_id TEXT NOT NULL,
         stream TEXT NOT NULL,
         state_json JSONB NOT NULL,
         updated_at TEXT NOT NULL,
-        PRIMARY KEY(grant_id, connector_id, stream)
+        PRIMARY KEY(grant_id, connector_instance_id, stream)
       );
 
       CREATE TABLE IF NOT EXISTS connector_detail_gaps (
@@ -794,6 +798,7 @@ export async function bootstrapPostgresSchema() {
     await migratePostgresSpineSourceColumns(client);
     await migratePostgresDeviceExporterColumns(client);
     await migratePostgresBlobBindingsJsonPath(client);
+    await migratePostgresConnectorSyncStateInstanceColumns(client);
   } finally {
     client.release();
   }
@@ -810,6 +815,95 @@ async function hasPostgresColumn(client, table, column) {
     [table, column],
   );
   return result.rowCount > 0;
+}
+
+function makeLegacyConnectorInstanceId(ownerSubjectId, connectorId) {
+  const hash = createHash('sha256').update(`${ownerSubjectId}\n${connectorId}`).digest('hex');
+  return `cin_legacy_${hash.slice(0, 24)}`;
+}
+
+async function legacySyncStateConnectorInstanceId(client, connectorId) {
+  const result = await client.query(
+    `SELECT connector_instance_id
+       FROM connector_instances
+      WHERE connector_id = $1
+      ORDER BY connector_instance_id`,
+    [connectorId],
+  );
+  if (result.rows.length === 1) {
+    return result.rows[0].connector_instance_id;
+  }
+  return makeLegacyConnectorInstanceId(LEGACY_SYNC_STATE_OWNER_SUBJECT_ID, connectorId);
+}
+
+async function migratePostgresConnectorSyncStateInstanceColumns(client) {
+  const hasOwnerColumn = await hasPostgresColumn(client, 'connector_state', 'connector_instance_id');
+  const hasGrantColumn = await hasPostgresColumn(client, 'grant_connector_state', 'connector_instance_id');
+  if (hasOwnerColumn && hasGrantColumn) {
+    return;
+  }
+
+  await client.query('BEGIN');
+  try {
+    const ownerRows = hasOwnerColumn
+      ? { rows: [] }
+      : await client.query(
+          `SELECT connector_id, stream, state_json, updated_at
+             FROM connector_state
+            ORDER BY connector_id, stream`
+        );
+    const grantRows = hasGrantColumn
+      ? { rows: [] }
+      : await client.query(
+          `SELECT grant_id, connector_id, stream, state_json, updated_at
+             FROM grant_connector_state
+            ORDER BY grant_id, connector_id, stream`
+        );
+    const instanceIds = new Map();
+    const resolveInstanceId = async (connectorId) => {
+      if (!instanceIds.has(connectorId)) {
+        instanceIds.set(connectorId, await legacySyncStateConnectorInstanceId(client, connectorId));
+      }
+      return instanceIds.get(connectorId);
+    };
+
+    if (!hasOwnerColumn) {
+      await client.query('ALTER TABLE connector_state DROP CONSTRAINT IF EXISTS connector_state_pkey');
+      await client.query('ALTER TABLE connector_state ADD COLUMN connector_instance_id TEXT');
+      for (const row of ownerRows.rows) {
+        await client.query(
+          `UPDATE connector_state
+              SET connector_instance_id = $1
+            WHERE connector_id = $2 AND stream = $3`,
+          [await resolveInstanceId(row.connector_id), row.connector_id, row.stream],
+        );
+      }
+      await client.query('ALTER TABLE connector_state ALTER COLUMN connector_instance_id SET NOT NULL');
+      await client.query('ALTER TABLE connector_state ADD CONSTRAINT connector_state_pkey PRIMARY KEY (connector_instance_id, stream)');
+    }
+
+    if (!hasGrantColumn) {
+      await client.query('ALTER TABLE grant_connector_state DROP CONSTRAINT IF EXISTS grant_connector_state_pkey');
+      await client.query('ALTER TABLE grant_connector_state ADD COLUMN connector_instance_id TEXT');
+      for (const row of grantRows.rows) {
+        await client.query(
+          `UPDATE grant_connector_state
+              SET connector_instance_id = $1
+            WHERE grant_id = $2 AND connector_id = $3 AND stream = $4`,
+          [await resolveInstanceId(row.connector_id), row.grant_id, row.connector_id, row.stream],
+        );
+      }
+      await client.query('ALTER TABLE grant_connector_state ALTER COLUMN connector_instance_id SET NOT NULL');
+      await client.query('ALTER TABLE grant_connector_state ADD CONSTRAINT grant_connector_state_pkey PRIMARY KEY (grant_id, connector_instance_id, stream)');
+    }
+
+    await client.query('COMMIT');
+  } catch (err) {
+    try {
+      await client.query('ROLLBACK');
+    } catch {}
+    throw err;
+  }
 }
 
 async function migratePostgresSpineSourceColumns(client) {

@@ -114,7 +114,7 @@ test('owner-auth state route rejects ambiguous connector-only admission', async 
   }
 });
 
-test('owner-auth state route rejects explicit connector_instance_id until storage is migrated', async () => {
+test('owner-auth state route uses explicit connector_instance_id for migrated sync state', async () => {
   const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
   try {
     const asUrl = `http://localhost:${server.asPort}`;
@@ -124,15 +124,48 @@ test('owner-auth state route rejects explicit connector_instance_id until storag
     await seedTwoSpotifyInstances(connectorId);
     const ownerToken = await issueOwnerToken(asUrl);
 
-    const resp = await fetchJson(
-      `${rsUrl}/v1/state/${encodeURIComponent(connectorId)}?connector_instance_id=cin_spotify_work`,
-      {
-        headers: { Authorization: `Bearer ${ownerToken}` },
-      },
-    );
+    const workUrl =
+      `${rsUrl}/v1/state/${encodeURIComponent(connectorId)}?connector_instance_id=cin_spotify_work`;
+    const personalUrl =
+      `${rsUrl}/v1/state/${encodeURIComponent(connectorId)}?connector_instance_id=cin_spotify_personal`;
 
-    assert.equal(resp.status, 400);
-    assert.equal(resp.body.error.code, 'connector_instance_storage_not_migrated');
+    const workPut = await fetchJson(workUrl, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${ownerToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ state: { top_artists: { cursor: 'work' } } }),
+    });
+    assert.equal(workPut.status, 200);
+    assert.equal(workPut.body.connector_instance_id, undefined);
+    assert.deepEqual(workPut.body.state.top_artists, { cursor: 'work' });
+
+    const personalPut = await fetchJson(personalUrl, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${ownerToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ state: { top_artists: { cursor: 'personal' } } }),
+    });
+    assert.equal(personalPut.status, 200);
+    assert.equal(personalPut.body.connector_instance_id, undefined);
+    assert.deepEqual(personalPut.body.state.top_artists, { cursor: 'personal' });
+
+    const workGet = await fetchJson(workUrl, {
+      headers: { Authorization: `Bearer ${ownerToken}` },
+    });
+    assert.equal(workGet.status, 200);
+    assert.equal(workGet.body.connector_instance_id, undefined);
+    assert.deepEqual(workGet.body.state.top_artists, { cursor: 'work' });
+
+    const personalGet = await fetchJson(personalUrl, {
+      headers: { Authorization: `Bearer ${ownerToken}` },
+    });
+    assert.equal(personalGet.status, 200);
+    assert.equal(personalGet.body.connector_instance_id, undefined);
+    assert.deepEqual(personalGet.body.state.top_artists, { cursor: 'personal' });
   } finally {
     await closeServer(server);
   }
