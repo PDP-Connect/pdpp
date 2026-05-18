@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 
 import { closeDb, getDb, initDb } from '../server/db.js';
 import { getRecord, ingestRecord, queryRecords } from '../server/records.js';
+import { registerConnector } from '../server/auth.js';
+import { lexicalIndexBackfillForManifest } from '../server/search.js';
 
 const CONNECTOR_ID = 'https://test.pdpp.org/connectors/instance-records';
 const WORK_INSTANCE_ID = 'cin_test_records_work';
@@ -14,6 +16,11 @@ const grant = {
 };
 
 const manifest = {
+  protocol_version: '0.1.0',
+  connector_id: CONNECTOR_ID,
+  version: '1.0.0',
+  display_name: 'Instance Records',
+  capabilities: { human_interaction: [] },
   streams: [
     {
       name: STREAM,
@@ -26,6 +33,7 @@ const manifest = {
           subject: { type: 'string' },
         },
       },
+      query: { search: { lexical_fields: ['subject'] } },
     },
   ],
 };
@@ -60,6 +68,7 @@ function upsert(subject) {
 test('records with the same connector type, stream, and key are isolated by connector instance', async () => {
   setup();
   try {
+    await registerConnector(manifest);
     const work = target(WORK_INSTANCE_ID);
     const personal = target(PERSONAL_INSTANCE_ID);
 
@@ -114,6 +123,49 @@ test('records with the same connector type, stream, and key are isolated by conn
 
     assert.equal(workRecord.data.subject, 'work account updated');
     assert.equal(personalRecord.data.subject, 'personal account');
+
+    await lexicalIndexBackfillForManifest({
+      manifest: { ...manifest, storage_binding: { connector_instance_id: WORK_INSTANCE_ID } },
+    });
+    await lexicalIndexBackfillForManifest({
+      manifest: { ...manifest, storage_binding: { connector_instance_id: PERSONAL_INSTANCE_ID } },
+    });
+
+    const lexicalRows = getDb()
+      .prepare(
+        `SELECT connector_instance_id, record_key, field, text
+          FROM lexical_search_index
+          WHERE connector_id = ? AND stream = ? AND record_key = ?
+            AND connector_instance_id IN (?, ?)
+          ORDER BY connector_instance_id`
+      )
+      .all(CONNECTOR_ID, STREAM, 'same-key', PERSONAL_INSTANCE_ID, WORK_INSTANCE_ID);
+
+    assert.deepEqual(
+      lexicalRows.map((row) => [row.connector_instance_id, row.record_key, row.field, row.text]),
+      [
+        [PERSONAL_INSTANCE_ID, 'same-key', 'subject', 'personal account'],
+        [WORK_INSTANCE_ID, 'same-key', 'subject', 'work account updated'],
+      ],
+    );
+
+    const lexicalMeta = getDb()
+      .prepare(
+        `SELECT connector_instance_id, fields_fingerprint
+          FROM lexical_search_meta
+          WHERE connector_id = ? AND stream = ?
+            AND connector_instance_id IN (?, ?)
+          ORDER BY connector_instance_id`
+      )
+      .all(CONNECTOR_ID, STREAM, PERSONAL_INSTANCE_ID, WORK_INSTANCE_ID);
+
+    assert.deepEqual(
+      lexicalMeta.map((row) => [row.connector_instance_id, row.fields_fingerprint]),
+      [
+        [PERSONAL_INSTANCE_ID, '["subject"]'],
+        [WORK_INSTANCE_ID, '["subject"]'],
+      ],
+    );
   } finally {
     teardown();
   }
