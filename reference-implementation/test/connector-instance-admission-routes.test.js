@@ -137,3 +137,29 @@ test('owner-auth state route rejects explicit connector_instance_id until storag
     await closeServer(server);
   }
 });
+
+test('reference run and schedule actions reject ambiguous connector-only admission', async () => {
+  const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+  try {
+    const asUrl = `http://localhost:${server.asPort}`;
+    const manifest = await registerSpotify(asUrl);
+    const connectorId = manifest.connector_id;
+    await seedTwoSpotifyInstances(connectorId);
+
+    const runResp = await fetchJson(`${asUrl}/_ref/connectors/${encodeURIComponent(connectorId)}/run`, {
+      method: 'POST',
+    });
+    assert.equal(runResp.status, 400);
+    assert.equal(runResp.body.error.code, 'ambiguous_connector_instance');
+
+    const scheduleResp = await fetchJson(`${asUrl}/_ref/connectors/${encodeURIComponent(connectorId)}/schedule`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ interval_seconds: 3600 }),
+    });
+    assert.equal(scheduleResp.status, 400);
+    assert.equal(scheduleResp.body.error.code, 'ambiguous_connector_instance');
+  } finally {
+    await closeServer(server);
+  }
+});

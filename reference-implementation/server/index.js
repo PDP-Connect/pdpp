@@ -1934,6 +1934,13 @@ function buildAsApp(opts = {}) {
     return req.ownerSession?.sub || ownerAuth.subjectId || OWNER_AUTH_DEFAULT_SUBJECT_ID;
   }
 
+  async function resolveRefConnectorNamespace(req, connectorId) {
+    return resolveOwnerConnectorNamespace(req, connectorId, {
+      ownerSubjectId: getOwnerSubjectId(req),
+      allowExplicitConnectorInstanceId: false,
+    });
+  }
+
   async function requireDeviceExporterCredential(req, res, next) {
     try {
       const auth = req.headers.authorization;
@@ -3360,6 +3367,7 @@ function buildAsApp(opts = {}) {
   app.get('/_ref/connectors/:connectorId/schedule', ownerAuth.requireOwnerSession, async (req, res) => {
     const connectorId = decodeURIComponent(req.params.connectorId);
     try {
+      await resolveRefConnectorNamespace(req, connectorId);
       const schedule = await executeRefConnectorScheduleGet(
         { connectorId },
         {
@@ -3821,6 +3829,7 @@ function buildAsApp(opts = {}) {
     async (req, res) => {
       try {
         const connectorId = decodeURIComponent(req.params.connectorId);
+        await resolveRefConnectorNamespace(req, connectorId);
         const started = await controller.runNow(connectorId);
         res.status(202).json(started);
       } catch (err) {
@@ -3837,6 +3846,7 @@ function buildAsApp(opts = {}) {
       try {
         const connectorId = decodeURIComponent(req.params.connectorId);
         await resolveRegisteredConnectorManifest(connectorId);
+        await resolveRefConnectorNamespace(req, connectorId);
         const result = await controller.upsertSchedule(connectorId, req.body || {});
         await opts.onScheduleMutation?.();
         // Include policy_warning in the response so dashboard can surface it
@@ -3858,6 +3868,7 @@ function buildAsApp(opts = {}) {
     async (req, res) => {
       try {
         const connectorId = decodeURIComponent(req.params.connectorId);
+        await resolveRefConnectorNamespace(req, connectorId);
         const schedule = await controller.setScheduleEnabled(connectorId, false);
         await opts.onScheduleMutation?.();
         res.json(schedule);
@@ -3874,6 +3885,7 @@ function buildAsApp(opts = {}) {
     async (req, res) => {
       try {
         const connectorId = decodeURIComponent(req.params.connectorId);
+        await resolveRefConnectorNamespace(req, connectorId);
         const schedule = await controller.setScheduleEnabled(connectorId, true);
         await opts.onScheduleMutation?.();
         res.json(schedule);
@@ -3890,6 +3902,7 @@ function buildAsApp(opts = {}) {
     async (req, res) => {
       try {
         const connectorId = decodeURIComponent(req.params.connectorId);
+        await resolveRefConnectorNamespace(req, connectorId);
         const deleted = await controller.deleteSchedule(connectorId);
         if (!deleted) {
           return pdppError(res, 404, 'not_found', `Schedule not found for connector: ${connectorId}`);
