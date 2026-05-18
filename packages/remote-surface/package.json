@@ -4,24 +4,76 @@
   "private": true,
   "type": "module",
   "description": "RemoteSurface abstraction layer for PDPP manual-action interactions over n.eko (preferred) and CDP (fallback).",
-  "main": "./src/index.ts",
+  "license": "ISC",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "exports": {
-    ".": "./src/index.ts",
-    "./protocol": "./src/protocol/index.ts",
-    "./server": "./src/server/index.ts",
-    "./client": "./src/client/index.ts",
-    "./backends/neko": "./src/backends/neko/index.ts",
-    "./backends/cdp": "./src/backends/cdp/index.ts",
-    "./diagnostics": "./src/diagnostics/index.ts",
-    "./leases": "./src/leases/index.ts",
-    "./testing": "./src/testing/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./adapters": {
+      "types": "./dist/adapters/index.d.ts",
+      "import": "./dist/adapters/index.js"
+    },
+    "./backends/cdp": {
+      "types": "./dist/backends/cdp/index.d.ts",
+      "import": "./dist/backends/cdp/index.js"
+    },
+    "./backends/neko": {
+      "types": "./dist/backends/neko/index.d.ts",
+      "import": "./dist/backends/neko/index.js"
+    },
+    "./backends/types": {
+      "types": "./dist/backends/types.d.ts",
+      "import": "./dist/backends/types.js"
+    },
+    "./client": {
+      "types": "./dist/client/index.d.ts",
+      "import": "./dist/client/index.js"
+    },
+    "./controllers": {
+      "types": "./dist/controllers/index.d.ts",
+      "import": "./dist/controllers/index.js"
+    },
+    "./diagnostics": {
+      "types": "./dist/diagnostics/index.d.ts",
+      "import": "./dist/diagnostics/index.js"
+    },
+    "./ime": {
+      "types": "./dist/ime/index.d.ts",
+      "import": "./dist/ime/index.js"
+    },
+    "./leases": {
+      "types": "./dist/leases/index.d.ts",
+      "import": "./dist/leases/index.js"
+    },
+    "./protocol": {
+      "types": "./dist/protocol/index.d.ts",
+      "import": "./dist/protocol/index.js"
+    },
+    "./server": {
+      "types": "./dist/server/index.d.ts",
+      "import": "./dist/server/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "import": "./dist/testing/index.js"
+    }
   },
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
     "check": "ultracite check",
     "fix": "ultracite fix",
+    "prepack": "pnpm build",
+    "validate:package": "pnpm build && node ./scripts/validate-package.mjs",
     "test": "node --test --test-timeout=15000 --import tsx 'src/**/*.test.ts'",
     "typecheck": "tsc --noEmit",
-    "verify": "pnpm typecheck && pnpm check && pnpm test"
+    "verify": "pnpm typecheck && pnpm check && pnpm test && pnpm validate:package"
   },
   "dependencies": {
     "transformation-matrix": "^3.1.0"

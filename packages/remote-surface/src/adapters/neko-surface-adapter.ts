@@ -67,7 +67,7 @@ export interface NekoClientApi {
   focusKeyboard?(): void;
   blurKeyboard?(): void;
   setRemoteInputFocused?(focused: boolean): void;
-  sendText?(text: string): Promise<boolean | void> | boolean | void;
+  sendText?(text: string): Promise<boolean | undefined> | boolean | undefined;
   pasteText?(text: string): Promise<boolean> | boolean;
   copyRemoteSelection?(): Promise<boolean> | boolean;
   /**

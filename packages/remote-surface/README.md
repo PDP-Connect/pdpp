@@ -33,6 +33,8 @@ This package must not import `reference-implementation`, `apps/web`,
 
 - `@pdpp/remote-surface` — facade for current public types, leases, early
   adapters/controllers, and host-neutral API types.
+- `@pdpp/remote-surface/adapters` — concrete `RemoteSurface` adapter classes
+  and their dependency-injection contracts.
 - `@pdpp/remote-surface/protocol` — JSON-safe session, token, target,
   capability, event, input, viewport, clipboard, diagnostics, and safe backend
   descriptor shapes plus descriptor safety helpers.
@@ -45,15 +47,36 @@ This package must not import `reference-implementation`, `apps/web`,
   same-origin client descriptor shapes.
 - `@pdpp/remote-surface/backends/cdp` — CDP fallback contracts that keep raw
   CDP HTTP/WebSocket authority server-side.
-- `@pdpp/remote-surface/backends/types` (via package facade) — generic backend
+- `@pdpp/remote-surface/backends/types` — generic backend
   adapter/lifecycle contracts plus future-backend seams for VNC/Kasm-like
   adapters. The package names those kinds but does not implement them in this
   tranche.
+- `@pdpp/remote-surface/controllers` — pointer controller primitives shared by
+  adapters.
 - `@pdpp/remote-surface/diagnostics` — redacted diagnostics event helpers and
   bounded in-memory buffers.
+- `@pdpp/remote-surface/ime` — mobile text-input and keysym helpers.
 - `@pdpp/remote-surface/leases` — browser-surface lease substrate.
 - `@pdpp/remote-surface/testing` — fake broker and deterministic test
   capabilities for package/host conformance tests.
+
+## Package validation
+
+The package remains `private: true` until release preparation. Maintainers can
+still validate the publish shape locally:
+
+```bash
+pnpm --filter @pdpp/remote-surface verify
+```
+
+That command typechecks, lints, runs package-local tests, builds `dist`, packs
+the package without publishing, checks the tarball allowlist, rejects
+workspace/private dependency leakage, verifies declarations for every exported
+entrypoint, and installs/imports/typechecks the packed artifact from a clean
+consumer fixture.
+
+Release preparation is still responsible for the final `private: false` switch,
+registry metadata, polished cookbook examples, and the actual publish command.
 
 ## Adapters
 
