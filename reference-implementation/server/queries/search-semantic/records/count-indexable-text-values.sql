@@ -4,7 +4,7 @@
 -- json_type assertion, once for the length check.
 SELECT COUNT(*) AS n
 FROM records
-WHERE connector_id = ?
+WHERE connector_instance_id = ?
   AND stream = ?
   AND deleted = 0
   AND json_type(record_json, ?) = 'text'

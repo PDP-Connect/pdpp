@@ -247,14 +247,14 @@ async function approveClientGrant(asUrl, params) {
   return approved;
 }
 
-async function ingest(rsUrl, ownerToken, connectorId, stream, records) {
+async function ingest(rsUrl, ownerToken, connectorId, stream, records, connectorInstanceId = null) {
   const ndjson = records.map((r) => JSON.stringify({
     key: r.id,
     data: r,
     emitted_at: r.emitted_at || r.source_created_at,
   })).join('\n');
   const resp = await fetch(
-    `${rsUrl}/v1/ingest/${encodeURIComponent(stream)}?connector_id=${encodeURIComponent(connectorId)}`,
+    `${rsUrl}/v1/ingest/${encodeURIComponent(stream)}?connector_id=${encodeURIComponent(connectorId)}${connectorInstanceId ? `&connector_instance_id=${encodeURIComponent(connectorInstanceId)}` : ''}`,
     {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${ownerToken}`, 'Content-Type': 'application/x-ndjson' },
@@ -1250,6 +1250,80 @@ test('semantic upsert with an empty field deletes only that record, not the whol
   });
 });
 
+test('semantic index metadata isolates records with same connector stream and key across instances', async () => {
+  await withHarness({}, async ({ asUrl, rsUrl }) => {
+    const ownerToken = await issueOwnerToken(asUrl);
+
+    const db = getDb();
+    const now = new Date().toISOString();
+    const insertInstance = db.prepare(`
+      INSERT INTO connector_instances(
+        connector_instance_id, owner_subject_id, connector_id, display_name,
+        status, source_kind, source_binding_key, source_binding_json, created_at, updated_at
+      ) VALUES(?, 'owner_local', ?, ?, 'active', 'account', ?, '{}', ?, ?)
+    `);
+    insertInstance.run('cin_semantic_work', MANIFEST_A.connector_id, 'Semantic A work', 'work', now, now);
+    insertInstance.run('cin_semantic_personal', MANIFEST_A.connector_id, 'Semantic A personal', 'personal', now, now);
+
+    const baseRecord = {
+      id: 'shared-record-key',
+      title: 'semantic connector instance collision sentinel',
+      selftext: '',
+      subreddit: 'pdpp',
+      score: 1,
+      source_created_at: '2026-04-01T00:00:00Z',
+    };
+    await ingest(rsUrl, ownerToken, MANIFEST_A.connector_id, 'posts', [baseRecord], 'cin_semantic_work');
+    await ingest(rsUrl, ownerToken, MANIFEST_A.connector_id, 'posts', [baseRecord], 'cin_semantic_personal');
+
+    const vectorTable = db.vectorIndexKind === 'sqlite-vec' ? 'semantic_search_rowid' : 'semantic_search_blob';
+    const indexed = db.prepare(`
+      SELECT connector_instance_id, connector_id, scope_key, record_key
+      FROM ${vectorTable}
+      WHERE connector_id = ? AND record_key = ?
+      ORDER BY connector_instance_id
+    `).all(MANIFEST_A.connector_id, 'shared-record-key');
+    assert.deepEqual(
+      indexed.map((row) => row.connector_instance_id),
+      ['cin_semantic_personal', 'cin_semantic_work'],
+      'semantic vector identity includes connector_instance_id',
+    );
+
+    const metaRows = db.prepare(`
+      SELECT connector_instance_id
+      FROM semantic_search_meta
+      WHERE connector_id = ? AND stream = 'posts'
+      ORDER BY connector_instance_id
+    `).all(MANIFEST_A.connector_id);
+    assert.deepEqual(
+      metaRows.map((row) => row.connector_instance_id),
+      ['cin_semantic_personal', 'cin_semantic_work'],
+      'semantic metadata is per connector instance',
+    );
+
+    const approved = await approveClientGrant(asUrl, {
+      client_id: 'longview',
+      connector_id: MANIFEST_A.connector_id,
+      purpose_code: 'analytics',
+      purpose_description: 'semantic instance isolation test',
+      access_mode: 'continuous',
+      streams: [{ name: 'posts', fields: ['id', 'title', 'source_created_at'] }],
+    });
+    const { status, body } = await fetchJson(
+      `${rsUrl}/v1/search/semantic?q=${encodeURIComponent(baseRecord.title)}&streams[]=posts`,
+      { headers: { Authorization: `Bearer ${approved.token}` } },
+    );
+    assert.equal(status, 200);
+    const hits = body.data.filter((row) =>
+      row.connector_id === MANIFEST_A.connector_id
+      && row.stream === 'posts'
+      && row.record_key === 'shared-record-key'
+    );
+    assert.equal(hits.length, 2, 'same connector-local record key from two instances yields two semantic hits');
+    assert.equal(hits[0].connector_instance_id, undefined, 'public search_result shape remains unchanged');
+  });
+});
+
 test('interrupted semantic backfill with existing meta resumes instead of rebuilding from scratch', async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pdpp-semantic-meta-resume-'));
   const dbPath = path.join(tmpDir, 'pdpp.sqlite');
@@ -1303,15 +1377,16 @@ test('interrupted semantic backfill with existing meta resumes instead of rebuil
 
         const db = getDb();
         const meta = db.prepare(`
-          SELECT fields_fingerprint, model_id, dimensions, distance_metric
+          SELECT connector_instance_id, fields_fingerprint, model_id, dimensions, distance_metric
           FROM semantic_search_meta
           WHERE connector_id = ? AND stream = 'posts'
         `).get(MANIFEST_A.connector_id);
         assert.ok(meta, 'completed meta exists before simulated interrupted resume');
         db.prepare(`
-          INSERT INTO semantic_search_backfill_progress(connector_id, stream, fields_fingerprint, model_id, dimensions, distance_metric, updated_at)
-          VALUES(?, 'posts', ?, ?, ?, ?, ?)
+          INSERT INTO semantic_search_backfill_progress(connector_instance_id, connector_id, stream, fields_fingerprint, model_id, dimensions, distance_metric, updated_at)
+          VALUES(?, ?, 'posts', ?, ?, ?, ?, ?)
         `).run(
+          meta.connector_instance_id,
           MANIFEST_A.connector_id,
           meta.fields_fingerprint,
           meta.model_id,

@@ -629,6 +629,7 @@ CREATE TABLE IF NOT EXISTS grant_connector_state (
 CREATE TABLE IF NOT EXISTS connector_detail_gaps (
   gap_id              TEXT PRIMARY KEY,
   connector_id        TEXT NOT NULL,
+  connector_instance_id TEXT NOT NULL,
   grant_id            TEXT,
   source_json         TEXT NOT NULL,
   stream              TEXT NOT NULL,
@@ -712,7 +713,7 @@ CREATE INDEX IF NOT EXISTS idx_spine_events_run
   ON spine_events(run_id, occurred_at, recorded_at);
 
 -- Lexical retrieval extension — SQLite FTS5 backing for GET /v1/search.
--- One row per (connector_id, stream, record_key, field) where \`field\` is
+-- One row per (connector_instance_id, stream, record_key, field) where \`field\` is
 -- declared in the stream's manifest under query.search.lexical_fields.
 -- Maintenance is JS-side at the record write/update/delete call sites
 -- (see search.js); the manifest decides what's indexable, which triggers
@@ -766,6 +767,7 @@ CREATE TABLE IF NOT EXISTS lexical_search_meta (
 -- restores coverage.
 -- Spec: openspec/changes/add-semantic-retrieval-experimental-extension/specs/semantic-retrieval/spec.md
 CREATE TABLE IF NOT EXISTS semantic_search_meta (
+  connector_instance_id TEXT NOT NULL,
   connector_id        TEXT NOT NULL,
   stream              TEXT NOT NULL,
   fields_fingerprint  TEXT NOT NULL,
@@ -773,13 +775,14 @@ CREATE TABLE IF NOT EXISTS semantic_search_meta (
   dimensions          INTEGER NOT NULL,
   distance_metric     TEXT NOT NULL,
   updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
-  PRIMARY KEY(connector_id, stream)
+  PRIMARY KEY(connector_instance_id, stream)
 );
 
 -- Persistent in-progress semantic backfill identity. This lets an
 -- interrupted rebuild resume already-written record-field vectors when the
 -- active field fingerprint and backend storage identity still match.
 CREATE TABLE IF NOT EXISTS semantic_search_backfill_progress (
+  connector_instance_id TEXT NOT NULL,
   connector_id        TEXT NOT NULL,
   stream              TEXT NOT NULL,
   fields_fingerprint  TEXT NOT NULL,
@@ -787,21 +790,22 @@ CREATE TABLE IF NOT EXISTS semantic_search_backfill_progress (
   dimensions          INTEGER NOT NULL,
   distance_metric     TEXT NOT NULL,
   updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
-  PRIMARY KEY(connector_id, stream)
+  PRIMARY KEY(connector_instance_id, stream)
 );
 
--- Maps logical semantic-index identity (connector_id, scope_key, record_key)
+-- Maps logical semantic-index identity (connector_instance_id, scope_key, record_key)
 -- to the vec0 rowid (sqlite-vec path only). vec0 requires an integer rowid
 -- and does not support composite text PKs; this sidecar lets us upsert by
 -- logical identity. Unused on the BLOB-flat fallback.
 -- scope_key encodes (stream, field) as JSON.stringify([stream, field]);
 -- see search-semantic.js for the helper.
 CREATE TABLE IF NOT EXISTS semantic_search_rowid (
+  connector_instance_id TEXT NOT NULL,
   connector_id  TEXT NOT NULL,
   scope_key     TEXT NOT NULL,
   record_key    TEXT NOT NULL,
   rowid         INTEGER NOT NULL,
-  PRIMARY KEY(connector_id, scope_key, record_key)
+  PRIMARY KEY(connector_instance_id, scope_key, record_key)
 );
 
 -- BLOB-flat fallback table (used only when sqlite-vec cannot be loaded).
@@ -811,11 +815,12 @@ CREATE TABLE IF NOT EXISTS semantic_search_rowid (
 -- no unauthorized row is ever read, because the caller constructs the
 -- WHERE clause from a grant-gated plan.
 CREATE TABLE IF NOT EXISTS semantic_search_blob (
+  connector_instance_id TEXT NOT NULL,
   connector_id  TEXT NOT NULL,
   scope_key     TEXT NOT NULL,
   record_key    TEXT NOT NULL,
   embedding     BLOB NOT NULL,
-  PRIMARY KEY(connector_id, scope_key, record_key)
+  PRIMARY KEY(connector_instance_id, scope_key, record_key)
 );
 CREATE INDEX IF NOT EXISTS idx_semantic_search_blob_plan
   ON semantic_search_blob(connector_id, scope_key);
@@ -1353,6 +1358,35 @@ function migrateLexicalSearchInstanceColumns(raw, opts = {}) {
   return result;
 }
 
+function migrateConnectorDetailGapInstanceColumns(raw, opts = {}) {
+  const hasInstance = hasTableColumn(raw, 'connector_detail_gaps', 'connector_instance_id');
+  if (!hasInstance) {
+    addColumnIfMissing(raw, 'connector_detail_gaps', 'connector_instance_id', 'TEXT');
+    const rows = raw.prepare('SELECT gap_id, connector_id FROM connector_detail_gaps ORDER BY gap_id').all();
+    const instanceIds = new Map();
+    const resolveInstanceId = (connectorId) => {
+      if (!instanceIds.has(connectorId)) instanceIds.set(connectorId, legacySyncStateConnectorInstanceId(raw, connectorId));
+      return instanceIds.get(connectorId);
+    };
+    const update = raw.prepare('UPDATE connector_detail_gaps SET connector_instance_id = ? WHERE gap_id = ?');
+    for (const row of rows) {
+      update.run(resolveInstanceId(row.connector_id), row.gap_id);
+    }
+    if (typeof opts.onSchemaMigration === 'function') {
+      opts.onSchemaMigration({ name: 'connector_detail_gap_instance_columns', rebuilt: false, backfilledRows: rows.length });
+    }
+  }
+
+  raw.exec(`
+DROP INDEX IF EXISTS uniq_connector_detail_gaps_identity;
+DROP INDEX IF EXISTS idx_connector_detail_gaps_pending;
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_connector_detail_gaps_identity
+  ON connector_detail_gaps(connector_instance_id, ifnull(grant_id, ''), stream, ifnull(parent_stream, ''), ifnull(record_key, ''), ifnull(detail_locator_json, ''));
+CREATE INDEX IF NOT EXISTS idx_connector_detail_gaps_pending
+  ON connector_detail_gaps(connector_instance_id, grant_id, status, stream, next_attempt_after);
+`);
+}
+
 function migrateSchedulerInstanceColumns(raw) {
   const schedulesHaveInstance = hasTableColumn(raw, 'connector_schedules', 'connector_instance_id');
   const activeRunsHaveInstance = hasTableColumn(raw, 'controller_active_runs', 'connector_instance_id');
@@ -1653,6 +1687,125 @@ function migrateBlobBindingsJsonPath(raw, opts = {}) {
   return result;
 }
 
+function migrateSemanticSearchInstanceColumns(raw, opts = {}) {
+  const rowidHasInstance = hasTableColumn(raw, 'semantic_search_rowid', 'connector_instance_id');
+  const blobHasInstance = hasTableColumn(raw, 'semantic_search_blob', 'connector_instance_id');
+  const metaHasInstance = hasTableColumn(raw, 'semantic_search_meta', 'connector_instance_id');
+  const progressHasInstance = hasTableColumn(raw, 'semantic_search_backfill_progress', 'connector_instance_id');
+  if (rowidHasInstance && blobHasInstance && metaHasInstance && progressHasInstance) {
+    return { rebuilt: false, backfilledRows: 0 };
+  }
+
+  const migration = raw.transaction(() => {
+    const rowids = raw.prepare(
+      `SELECT ${rowidHasInstance ? 'connector_instance_id,' : ''} connector_id, scope_key, record_key, rowid
+        FROM semantic_search_rowid`
+    ).all();
+    const blobs = raw.prepare(
+      `SELECT ${blobHasInstance ? 'connector_instance_id,' : ''} connector_id, scope_key, record_key, embedding
+        FROM semantic_search_blob`
+    ).all();
+    const metas = raw.prepare(
+      `SELECT ${metaHasInstance ? 'connector_instance_id,' : ''} connector_id, stream, fields_fingerprint, model_id, dimensions, distance_metric, updated_at
+        FROM semantic_search_meta`
+    ).all();
+    const progressRows = raw.prepare(
+      `SELECT ${progressHasInstance ? 'connector_instance_id,' : ''} connector_id, stream, fields_fingerprint, model_id, dimensions, distance_metric, updated_at
+        FROM semantic_search_backfill_progress`
+    ).all();
+
+    const instanceIds = new Map();
+    const resolveInstanceId = (row) => {
+      if (typeof row.connector_instance_id === 'string' && row.connector_instance_id.trim()) return row.connector_instance_id.trim();
+      if (!instanceIds.has(row.connector_id)) instanceIds.set(row.connector_id, legacySyncStateConnectorInstanceId(raw, row.connector_id));
+      return instanceIds.get(row.connector_id);
+    };
+
+    raw.exec(`
+      DROP TABLE IF EXISTS semantic_search_rowid;
+      DROP TABLE IF EXISTS semantic_search_blob;
+      DROP TABLE IF EXISTS semantic_search_meta;
+      DROP TABLE IF EXISTS semantic_search_backfill_progress;
+
+      CREATE TABLE semantic_search_meta (
+        connector_instance_id TEXT NOT NULL,
+        connector_id        TEXT NOT NULL,
+        stream              TEXT NOT NULL,
+        fields_fingerprint  TEXT NOT NULL,
+        model_id            TEXT NOT NULL,
+        dimensions          INTEGER NOT NULL,
+        distance_metric     TEXT NOT NULL,
+        updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY(connector_instance_id, stream)
+      );
+
+      CREATE TABLE semantic_search_backfill_progress (
+        connector_instance_id TEXT NOT NULL,
+        connector_id        TEXT NOT NULL,
+        stream              TEXT NOT NULL,
+        fields_fingerprint  TEXT NOT NULL,
+        model_id            TEXT NOT NULL,
+        dimensions          INTEGER NOT NULL,
+        distance_metric     TEXT NOT NULL,
+        updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY(connector_instance_id, stream)
+      );
+
+      CREATE TABLE semantic_search_rowid (
+        connector_instance_id TEXT NOT NULL,
+        connector_id  TEXT NOT NULL,
+        scope_key     TEXT NOT NULL,
+        record_key    TEXT NOT NULL,
+        rowid         INTEGER NOT NULL,
+        PRIMARY KEY(connector_instance_id, scope_key, record_key)
+      );
+
+      CREATE TABLE semantic_search_blob (
+        connector_instance_id TEXT NOT NULL,
+        connector_id  TEXT NOT NULL,
+        scope_key     TEXT NOT NULL,
+        record_key    TEXT NOT NULL,
+        embedding     BLOB NOT NULL,
+        PRIMARY KEY(connector_instance_id, scope_key, record_key)
+      );
+      CREATE INDEX IF NOT EXISTS idx_semantic_search_blob_plan
+        ON semantic_search_blob(connector_id, scope_key);
+    `);
+
+    const insertRowid = raw.prepare(
+      `INSERT INTO semantic_search_rowid(connector_instance_id, connector_id, scope_key, record_key, rowid)
+        VALUES(?, ?, ?, ?, ?)`
+    );
+    for (const row of rowids) insertRowid.run(resolveInstanceId(row), row.connector_id, row.scope_key, row.record_key, row.rowid);
+
+    const insertBlob = raw.prepare(
+      `INSERT INTO semantic_search_blob(connector_instance_id, connector_id, scope_key, record_key, embedding)
+        VALUES(?, ?, ?, ?, ?)`
+    );
+    for (const row of blobs) insertBlob.run(resolveInstanceId(row), row.connector_id, row.scope_key, row.record_key, row.embedding);
+
+    const insertMeta = raw.prepare(
+      `INSERT INTO semantic_search_meta(connector_instance_id, connector_id, stream, fields_fingerprint, model_id, dimensions, distance_metric, updated_at)
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    for (const row of metas) insertMeta.run(resolveInstanceId(row), row.connector_id, row.stream, row.fields_fingerprint, row.model_id, row.dimensions, row.distance_metric, row.updated_at);
+
+    const insertProgress = raw.prepare(
+      `INSERT INTO semantic_search_backfill_progress(connector_instance_id, connector_id, stream, fields_fingerprint, model_id, dimensions, distance_metric, updated_at)
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    for (const row of progressRows) insertProgress.run(resolveInstanceId(row), row.connector_id, row.stream, row.fields_fingerprint, row.model_id, row.dimensions, row.distance_metric, row.updated_at);
+
+    return { rebuilt: true, backfilledRows: rowids.length + blobs.length + metas.length + progressRows.length };
+  });
+
+  const result = migration();
+  if (typeof opts.onSchemaMigration === 'function') {
+    opts.onSchemaMigration({ name: 'semantic_search_instance_columns', ...result });
+  }
+  return result;
+}
+
 function loadVectorExtension(raw) {
   try {
     sqliteVec.load(raw);
@@ -1739,7 +1892,9 @@ export function initDb(path = ':memory:', opts = {}) {
   // backfill with '@record' (their existing record-level semantics).
   runWithSqliteBusyRetrySync(() => migrateBlobBindingsJsonPath(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateConnectorSyncStateInstanceColumns(raw, opts));
+  runWithSqliteBusyRetrySync(() => migrateConnectorDetailGapInstanceColumns(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateRecordStorageInstanceColumns(raw, opts));
+  runWithSqliteBusyRetrySync(() => migrateSemanticSearchInstanceColumns(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateLexicalSearchInstanceColumns(raw, opts));
   raw.exec(`
 DROP INDEX IF EXISTS idx_records_lookup;
