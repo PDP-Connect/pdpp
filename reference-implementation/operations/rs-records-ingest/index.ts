@@ -31,6 +31,8 @@
 export interface RecordsIngestInput {
   /** Connector id parsed from the query string. May be null/empty. */
   readonly connectorId: string | null;
+  /** Connector instance id parsed from the query string. Optional for legacy connector-only compatibility. */
+  readonly connectorInstanceId?: string | null;
   /** Stream name from the request path. */
   readonly streamName: string;
   /** Raw NDJSON body as received by the host. */
@@ -40,13 +42,14 @@ export interface RecordsIngestInput {
 export interface RecordsIngestDependencies {
   hasManifestStream(connectorId: string, streamName: string): boolean | Promise<boolean>;
   /**
-   * Ingest a single parsed record under the connector + stream. Hosts wire
-   * the existing `ingestRecord(connectorId, { ...record, stream })` capability,
-   * which owns durable write ordering for that record. Throws on failure;
+   * Ingest a single parsed record under the connector instance + stream.
+   * Hosts wire the existing durable ingest capability after resolving
+   * connector-only compatibility to a connector instance. Throws on failure;
    * the operation increments `records_rejected` and collects the message.
    */
   ingestRecord(
     connectorId: string,
+    connectorInstanceId: string | null,
     record: Record<string, unknown>,
   ): unknown | Promise<unknown>;
 }
@@ -141,7 +144,7 @@ export async function executeRecordsIngest(
   for (const line of lines) {
     try {
       const parsed = JSON.parse(line) as Record<string, unknown>;
-      await dependencies.ingestRecord(connectorId, {
+      await dependencies.ingestRecord(connectorId, input.connectorInstanceId ?? null, {
         ...parsed,
         stream: input.streamName,
       });

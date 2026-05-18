@@ -1250,7 +1250,7 @@ test('semantic upsert with an empty field deletes only that record, not the whol
   });
 });
 
-test('semantic index metadata isolates records with same connector stream and key across instances', async () => {
+test('semantic index metadata isolates instances and connector-only client search rejects ambiguity', async () => {
   await withHarness({}, async ({ asUrl, rsUrl }) => {
     const ownerToken = await issueOwnerToken(asUrl);
 
@@ -1313,14 +1313,8 @@ test('semantic index metadata isolates records with same connector stream and ke
       `${rsUrl}/v1/search/semantic?q=${encodeURIComponent(baseRecord.title)}&streams[]=posts`,
       { headers: { Authorization: `Bearer ${approved.token}` } },
     );
-    assert.equal(status, 200);
-    const hits = body.data.filter((row) =>
-      row.connector_id === MANIFEST_A.connector_id
-      && row.stream === 'posts'
-      && row.record_key === 'shared-record-key'
-    );
-    assert.equal(hits.length, 2, 'same connector-local record key from two instances yields two semantic hits');
-    assert.equal(hits[0].connector_instance_id, undefined, 'public search_result shape remains unchanged');
+    assert.equal(status, 400);
+    assert.equal(body.error.code, 'ambiguous_connector_instance');
   });
 });
 

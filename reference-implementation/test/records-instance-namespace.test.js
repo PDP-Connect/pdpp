@@ -2,9 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { closeDb, getDb, initDb } from '../server/db.js';
-import { getRecord, ingestRecord, queryRecords } from '../server/records.js';
+import { deleteAllRecordsForConnector, getRecord, ingestRecord, queryRecords } from '../server/records.js';
 import { registerConnector } from '../server/auth.js';
 import { lexicalIndexBackfillForManifest } from '../server/search.js';
+import { buildSemanticSearchPlanForGrant } from '../server/search-semantic.js';
 
 const CONNECTOR_ID = 'https://test.pdpp.org/connectors/instance-records';
 const WORK_INSTANCE_ID = 'cin_test_records_work';
@@ -33,7 +34,7 @@ const manifest = {
           subject: { type: 'string' },
         },
       },
-      query: { search: { lexical_fields: ['subject'] } },
+      query: { search: { lexical_fields: ['subject'], semantic_fields: ['subject'] } },
     },
   ],
 };
@@ -165,6 +166,82 @@ test('records with the same connector type, stream, and key are isolated by conn
         [PERSONAL_INSTANCE_ID, '["subject"]'],
         [WORK_INSTANCE_ID, '["subject"]'],
       ],
+    );
+  } finally {
+    teardown();
+  }
+});
+
+test('semantic candidate planning scans connector instance namespace, not connector type namespace', async () => {
+  setup();
+  try {
+    await registerConnector(manifest);
+    const work = target(WORK_INSTANCE_ID);
+    const personal = target(PERSONAL_INSTANCE_ID);
+
+    await ingestRecord(work, upsert('work account'));
+    await ingestRecord(personal, upsert('personal account'));
+
+    const plan = buildSemanticSearchPlanForGrant({
+      manifest,
+      grant: {
+        streams: [{
+          name: STREAM,
+          fields: ['id', 'subject'],
+          resources: ['same-key'],
+          time_range: {
+            since: '2026-05-18T00:00:00.000Z',
+            until: '2026-05-19T00:00:00.000Z',
+          },
+        }],
+      },
+      streamsFilter: null,
+      connectorId: CONNECTOR_ID,
+      connectorInstanceId: WORK_INSTANCE_ID,
+    });
+
+    assert.deepEqual(plan.map((entry) => entry.connectorInstanceId), [WORK_INSTANCE_ID]);
+    assert.deepEqual(plan.map((entry) => entry.candidateRecordKeys), [['same-key']]);
+  } finally {
+    teardown();
+  }
+});
+
+test('manifest reset cleanup leaves rows outside discovered record instance namespaces intact', async () => {
+  setup();
+  try {
+    await registerConnector(manifest);
+    await ingestRecord(target(WORK_INSTANCE_ID), upsert('work account'));
+
+    const db = getDb();
+    db.prepare(
+      `INSERT INTO record_changes(connector_id, connector_instance_id, stream, record_key, version, record_json, emitted_at, deleted)
+       VALUES(?, ?, ?, ?, ?, ?, ?, 0)`
+    ).run(CONNECTOR_ID, PERSONAL_INSTANCE_ID, STREAM, 'orphan-change', 1, JSON.stringify({ id: 'orphan-change' }), '2026-05-18T12:00:00.000Z');
+    db.prepare(
+      `INSERT INTO blobs(blob_id, connector_id, connector_instance_id, stream, record_key, mime_type, size_bytes, sha256, data)
+       VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run('blob_sha256_' + 'a'.repeat(64), CONNECTOR_ID, PERSONAL_INSTANCE_ID, STREAM, 'orphan-change', 'text/plain', 1, 'a'.repeat(64), Buffer.from('x'));
+    db.prepare(
+      `INSERT INTO blob_bindings(blob_id, connector_id, connector_instance_id, stream, record_key, json_path)
+       VALUES(?, ?, ?, ?, ?, ?)`
+    ).run('blob_sha256_' + 'a'.repeat(64), CONNECTOR_ID, PERSONAL_INSTANCE_ID, STREAM, 'orphan-change', '@record');
+
+    const result = await deleteAllRecordsForConnector(CONNECTOR_ID);
+
+    assert.equal(result.deletedCount, 1);
+    assert.deepEqual(result.streams, [STREAM]);
+    assert.equal(
+      db.prepare('SELECT COUNT(*) AS n FROM records WHERE connector_instance_id = ?').get(WORK_INSTANCE_ID).n,
+      0,
+    );
+    assert.equal(
+      db.prepare('SELECT COUNT(*) AS n FROM record_changes WHERE connector_instance_id = ?').get(PERSONAL_INSTANCE_ID).n,
+      1,
+    );
+    assert.equal(
+      db.prepare('SELECT COUNT(*) AS n FROM blob_bindings WHERE connector_instance_id = ?').get(PERSONAL_INSTANCE_ID).n,
+      1,
     );
   } finally {
     teardown();

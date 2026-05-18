@@ -485,13 +485,20 @@ function makeBlobFlatIndex({ dimensions, distanceMetric }) {
         [connectorId, `${streamPrefix}%`],
       );
     },
-    async deleteByConnectorScope({ connectorId, scopeKey }) {
+    async deleteByConnectorScope({ connectorId, connectorInstanceId = null, scopeKey }) {
+      if (connectorInstanceId) {
+        execDynamicSqlAcknowledged(
+          'DELETE FROM semantic_search_blob WHERE connector_instance_id = ? AND connector_id = ? AND scope_key = ?',
+          [connectorInstanceId, connectorId, scopeKey],
+        );
+        return;
+      }
       exec(referenceQueries.searchSemanticBlobDeleteByScope, [connectorId, scopeKey]);
     },
     async deleteByConnector({ connectorId }) {
       exec(referenceQueries.searchSemanticBlobDeleteByConnector, [connectorId]);
     },
-    async queryPerConnector({ connectorId, scopeKeys, queryVector, limit, recordKeys = null }) {
+    async queryPerConnector({ connectorId, connectorInstanceId = null, scopeKeys, queryVector, limit, recordKeys = null }) {
       if (!Array.isArray(scopeKeys) || scopeKeys.length === 0) return [];
       if (Array.isArray(recordKeys) && recordKeys.length === 0) return [];
       const placeholders = scopeKeys.map(() => '?').join(',');
@@ -502,17 +509,19 @@ function makeBlobFlatIndex({ dimensions, distanceMetric }) {
       // cardinality from the grant-narrowed plan; SQL composed at call time;
       // overall row count is bounded by the plan's authorized scope+record
       // tuples and we slice to `limit` after distance scoring.
+      const instanceClause = connectorInstanceId ? 'AND connector_instance_id = ?' : '';
       const sql = `
         SELECT connector_instance_id, scope_key, record_key, embedding
         FROM semantic_search_blob
         WHERE connector_id = ?
+          ${instanceClause}
           AND scope_key IN (${placeholders})
           ${recordKeyClause}
       `;
       const scored = [];
       for (const row of iterateDynamicSqlAcknowledged(
         sql,
-        [connectorId, ...scopeKeys, ...(recordKeys || [])],
+        [connectorId, ...(connectorInstanceId ? [connectorInstanceId] : []), ...scopeKeys, ...(recordKeys || [])],
       )) {
         if (!row.embedding || row.embedding.length !== byteLen) continue;
         const buf = Buffer.isBuffer(row.embedding)
@@ -546,22 +555,34 @@ function makeBlobFlatIndex({ dimensions, distanceMetric }) {
       const row = getOne(referenceQueries.searchSemanticBlobCountByScope, [connectorId, scopeKey]);
       return Number(row?.n || 0);
     },
-    async listExistingKeys({ connectorId, stream }) {
+    async listExistingKeys({ connectorId, connectorInstanceId = null, stream }) {
       const streamPrefix = scopeKeyPrefixForStream(stream);
       const PAGE = 1000;
       const result = new Set();
       let cursorRowid = 0;
       for (;;) {
-        const page = getMany(
-          referenceQueries.searchSemanticBlobListExistingKeysByStreamPrefix,
-          [connectorId, `${streamPrefix}%`, cursorRowid],
-          { limit: PAGE },
-        );
-        for (const row of page.rows) {
+        const rows = connectorInstanceId
+          ? Array.from(iterateDynamicSqlAcknowledged(
+            `SELECT rowid, connector_instance_id, scope_key, record_key
+             FROM semantic_search_blob
+             WHERE connector_instance_id = ?
+               AND connector_id = ?
+               AND scope_key LIKE ?
+               AND rowid > ?
+             ORDER BY rowid ASC
+             LIMIT ?`,
+            [connectorInstanceId, connectorId, `${streamPrefix}%`, cursorRowid, PAGE],
+          ))
+          : getMany(
+            referenceQueries.searchSemanticBlobListExistingKeysByStreamPrefix,
+            [connectorId, `${streamPrefix}%`, cursorRowid],
+            { limit: PAGE },
+          ).rows;
+        for (const row of rows) {
           result.add(encodeVectorPairKey(row.scope_key, `${row.connector_instance_id}\u0000${row.record_key}`));
           cursorRowid = Number(row.rowid);
         }
-        if (!page.truncated) break;
+        if (rows.length < PAGE) break;
       }
       return result;
     },
@@ -766,18 +787,19 @@ function makeSqliteVecIndex({ dimensions, distanceMetric }) {
       }
       exec(referenceQueries.searchSemanticRowidDeleteByConnector, [connectorId]);
     },
-    async queryPerConnector({ connectorId, scopeKeys, queryVector, limit, recordKeys = null }) {
+    async queryPerConnector({ connectorId, connectorInstanceId = null, scopeKeys, queryVector, limit, recordKeys = null }) {
       if (!Array.isArray(scopeKeys) || scopeKeys.length === 0) return [];
       if (Array.isArray(recordKeys) && recordKeys.length === 0) return [];
       const placeholders = scopeKeys.map(() => '?').join(',');
-      const instanceRows = Array.from(iterateDynamicSqlAcknowledged(
-        `SELECT DISTINCT connector_instance_id
-         FROM semantic_search_rowid
-         WHERE connector_id = ?
-           AND scope_key IN (${placeholders})`,
-        [connectorId, ...scopeKeys],
-      ));
-      const connectorInstanceIds = instanceRows.map((row) => row.connector_instance_id).filter(Boolean);
+      const connectorInstanceIds = connectorInstanceId
+        ? [connectorInstanceId]
+        : Array.from(iterateDynamicSqlAcknowledged(
+          `SELECT DISTINCT connector_instance_id
+           FROM semantic_search_rowid
+           WHERE connector_id = ?
+             AND scope_key IN (${placeholders})`,
+          [connectorId, ...scopeKeys],
+        )).map((row) => row.connector_instance_id).filter(Boolean);
       if (connectorInstanceIds.length === 0) return [];
       const recordKeyClause = Array.isArray(recordKeys)
         ? `AND rowid IN (
@@ -844,22 +866,34 @@ function makeSqliteVecIndex({ dimensions, distanceMetric }) {
       const row = getOne(referenceQueries.searchSemanticRowidCountByScope, [connectorId, scopeKey]);
       return Number(row?.n || 0);
     },
-    async listExistingKeys({ connectorId, stream }) {
+    async listExistingKeys({ connectorId, connectorInstanceId = null, stream }) {
       const streamPrefix = scopeKeyPrefixForStream(stream);
       const PAGE = 1000;
       const result = new Set();
       let cursorRowid = 0;
       for (;;) {
-        const page = getMany(
-          referenceQueries.searchSemanticRowidListExistingKeysByStreamPrefix,
-          [connectorId, `${streamPrefix}%`, cursorRowid],
-          { limit: PAGE },
-        );
-        for (const row of page.rows) {
+        const rows = connectorInstanceId
+          ? Array.from(iterateDynamicSqlAcknowledged(
+            `SELECT rowid, connector_instance_id, scope_key, record_key
+             FROM semantic_search_rowid
+             WHERE connector_instance_id = ?
+               AND connector_id = ?
+               AND scope_key LIKE ?
+               AND rowid > ?
+             ORDER BY rowid ASC
+             LIMIT ?`,
+            [connectorInstanceId, connectorId, `${streamPrefix}%`, cursorRowid, PAGE],
+          ))
+          : getMany(
+            referenceQueries.searchSemanticRowidListExistingKeysByStreamPrefix,
+            [connectorId, `${streamPrefix}%`, cursorRowid],
+            { limit: PAGE },
+          ).rows;
+        for (const row of rows) {
           result.add(encodeVectorPairKey(row.scope_key, `${row.connector_instance_id}\u0000${row.record_key}`));
           cursorRowid = Number(row.rowid);
         }
-        if (!page.truncated) break;
+        if (rows.length < PAGE) break;
       }
       return result;
     },
@@ -1233,17 +1267,18 @@ export async function semanticIndexBackfillForManifest({ manifest, log = () => {
     const isParticipating = Array.isArray(declaredFields) && declaredFields.length > 0;
 
     if (!isParticipating) {
-      const metaExists = getOne(referenceQueries.searchSemanticMetaExistsByStream, [connectorId, stream]);
-      const progressExists = Array.from(iterateDynamicSqlAcknowledged(
-        'SELECT stream FROM semantic_search_backfill_progress WHERE connector_id = ? AND stream = ? LIMIT 1',
-        [connectorId, stream],
-      ))[0];
-      if (metaExists || progressExists) {
+      const connectorInstanceIds = listSemanticConnectorInstanceIds({ connectorId, stream });
+      if (connectorInstanceIds.length > 0) {
         log(`[PDPP] Semantic index: stream='${stream}' connector='${connectorId}' ` +
             `no longer declares semantic_fields — dropping stale index + meta/progress`);
-        await index.deleteByConnectorStream({ connectorId, stream });
-        exec(referenceQueries.searchSemanticMetaDeleteByStream, [connectorId, stream]);
-        deleteBackfillProgress({ connectorId, stream });
+        for (const connectorInstanceId of connectorInstanceIds) {
+          await index.deleteByConnectorStream({ connectorId, connectorInstanceId, stream });
+          execDynamicSqlAcknowledged(
+            'DELETE FROM semantic_search_meta WHERE connector_instance_id = ? AND stream = ?',
+            [connectorInstanceId, stream],
+          );
+          deleteBackfillProgress({ connectorId, connectorInstanceId, stream });
+        }
       }
       continue;
     }
@@ -1324,7 +1359,7 @@ export async function semanticIndexBackfillForManifest({ manifest, log = () => {
     upsertBackfillProgress({ connectorId, connectorInstanceId, stream, ...currentIdentity });
     let existingKeys = null;
     if (canResume && typeof index.listExistingKeys === 'function') {
-      existingKeys = await index.listExistingKeys({ connectorId, stream });
+      existingKeys = await index.listExistingKeys({ connectorId, connectorInstanceId, stream });
     } else {
       await index.deleteByConnectorStream({ connectorId, connectorInstanceId, stream });
     }
@@ -1393,9 +1428,15 @@ export async function semanticIndexBackfillForManifest({ manifest, log = () => {
     if (visitedStreams.has(orphanStream)) continue;
     log(`[PDPP] Semantic index: stream='${orphanStream}' connector='${connectorId}' ` +
         `no longer in manifest — dropping stale index + meta/progress`);
-    await index.deleteByConnectorStream({ connectorId, stream: orphanStream });
-    exec(referenceQueries.searchSemanticMetaDeleteByStream, [connectorId, orphanStream]);
-    deleteBackfillProgress({ connectorId, stream: orphanStream });
+    const connectorInstanceIds = listSemanticConnectorInstanceIds({ connectorId, stream: orphanStream });
+    for (const connectorInstanceId of connectorInstanceIds) {
+      await index.deleteByConnectorStream({ connectorId, connectorInstanceId, stream: orphanStream });
+      execDynamicSqlAcknowledged(
+        'DELETE FROM semantic_search_meta WHERE connector_instance_id = ? AND stream = ?',
+        [connectorInstanceId, orphanStream],
+      );
+      deleteBackfillProgress({ connectorId, connectorInstanceId, stream: orphanStream });
+    }
   }
   } finally {
     activeBackfillCount = Math.max(0, activeBackfillCount - 1);
@@ -1498,12 +1539,14 @@ function hasGrantRecordConstraints(streamGrant) {
   );
 }
 
-function buildCandidateRecordKeys({ connectorId, streamName, streamGrant, manifestStream, compiledFilters }) {
+function buildCandidateRecordKeys({ connectorId, connectorInstanceId, streamName, streamGrant, manifestStream, compiledFilters }) {
   const needsRecordScan = compiledFilters?.length || hasGrantRecordConstraints(streamGrant);
   if (!needsRecordScan) return null;
 
-  const where = ['connector_id = ?', 'stream = ?', 'deleted = 0'];
-  const binds = [connectorId, streamName];
+  const where = connectorInstanceId
+    ? ['connector_instance_id = ?', 'stream = ?', 'deleted = 0']
+    : ['connector_id = ?', 'stream = ?', 'deleted = 0'];
+  const binds = [connectorInstanceId || connectorId, streamName];
   if (Array.isArray(streamGrant?.resources) && streamGrant.resources.length > 0) {
     where.push(`record_key IN (${streamGrant.resources.map(() => '?').join(', ')})`);
     binds.push(...streamGrant.resources);
@@ -1533,7 +1576,7 @@ function buildCandidateRecordKeys({ connectorId, streamName, streamGrant, manife
   return allowed;
 }
 
-export function buildSemanticSearchPlanForGrant({ manifest, grant, streamsFilter, compiledFilter = null, connectorId = null }) {
+export function buildSemanticSearchPlanForGrant({ manifest, grant, streamsFilter, compiledFilter = null, connectorId = null, connectorInstanceId = null }) {
   if (!manifest?.streams || !grant?.streams) return [];
   const plan = [];
   for (const mStream of manifest.streams) {
@@ -1555,6 +1598,7 @@ export function buildSemanticSearchPlanForGrant({ manifest, grant, streamsFilter
     const candidateRecordKeys = connectorId
       ? buildCandidateRecordKeys({
         connectorId,
+        connectorInstanceId,
         streamName: mStream.name,
         streamGrant,
         manifestStream: mStream,
@@ -1566,6 +1610,7 @@ export function buildSemanticSearchPlanForGrant({ manifest, grant, streamsFilter
       streamName: mStream.name,
       searchableFields: searchable,
       scopeKeys: searchable.map((f) => encodeScopeKey(mStream.name, f)),
+      ...(connectorInstanceId ? { connectorInstanceId } : {}),
       ...(candidateRecordKeys ? { candidateRecordKeys } : {}),
     });
   }
@@ -1690,6 +1735,8 @@ export async function runSemanticSearch({
       filteredStream,
       connectorId,
     }) => {
+      const connectorInstanceId =
+        manifest?.storage_binding?.connector_instance_id || manifest?.connector_instance_id || null;
       const compiledFilter = compileSingleStreamSearchFilter({
         manifest,
         grant,
@@ -1702,6 +1749,7 @@ export async function runSemanticSearch({
         streamsFilter,
         compiledFilter,
         connectorId,
+        connectorInstanceId,
       });
     },
     buildSnapshot: (args) => buildSemanticSnapshot(args),
@@ -1782,6 +1830,7 @@ async function buildSemanticSnapshot({ q, perConnectorPlans, isOwner }) {
         if (isPostgresStorageBackend()) {
           entryHits.push(...await postgresSemanticSearch({
             connectorId,
+            connectorInstanceId: entry.connectorInstanceId,
             scopeKeys: entry.scopeKeys,
             queryVector,
             limit: PER_CONNECTOR_LIMIT,
@@ -1790,6 +1839,7 @@ async function buildSemanticSnapshot({ q, perConnectorPlans, isOwner }) {
         } else {
           entryHits.push(...await index.queryPerConnector({
             connectorId,
+            connectorInstanceId: entry.connectorInstanceId,
             scopeKeys: entry.scopeKeys,
             queryVector,
             limit: PER_CONNECTOR_LIMIT,

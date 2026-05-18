@@ -30,6 +30,7 @@ import { isPostgresStorageBackend } from '../postgres-storage.js';
  * @typedef {{
  *   blob_id: string,
  *   connector_id: string,
+ *   connector_instance_id: string,
  *   stream: string,
  *   record_key: string,
  *   mime_type: string,

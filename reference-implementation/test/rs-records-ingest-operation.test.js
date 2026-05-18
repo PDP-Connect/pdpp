@@ -91,7 +91,7 @@ test('rs.records.ingest invokes ingestRecord sequentially in line order', async 
   await executeRecordsIngest(
     defaultInput({ body: '{"id":"r1"}\n{"id":"r2"}\n{"id":"r3"}' }),
     defaultDeps({
-      ingestRecord: async (cid, record) => {
+      ingestRecord: async (cid, _cin, record) => {
         seen.push(record.id);
       },
     }),
@@ -102,14 +102,15 @@ test('rs.records.ingest invokes ingestRecord sequentially in line order', async 
 test('rs.records.ingest forwards { ...record, stream } to the dependency', async () => {
   let captured;
   await executeRecordsIngest(
-    defaultInput({ body: '{"id":"r1","x":1}' }),
+    defaultInput({ connectorInstanceId: 'cin_gmail_work', body: '{"id":"r1","x":1}' }),
     defaultDeps({
-      ingestRecord: (cid, record) => {
-        captured = { cid, record };
+      ingestRecord: (cid, cin, record) => {
+        captured = { cid, cin, record };
       },
     }),
   );
   assert.equal(captured.cid, 'gmail');
+  assert.equal(captured.cin, 'cin_gmail_work');
   assert.deepEqual(captured.record, { id: 'r1', x: 1, stream: 'messages' });
 });
 
@@ -117,7 +118,7 @@ test('rs.records.ingest counts accepted vs rejected and collects error messages'
   const out = await executeRecordsIngest(
     defaultInput({ body: '{"id":"r1"}\nNOT_JSON\n{"id":"r3"}' }),
     defaultDeps({
-      ingestRecord: async (cid, record) => {
+      ingestRecord: async (cid, _cin, record) => {
         if (record.id === 'r3') throw new Error('store down');
       },
     }),
@@ -149,7 +150,7 @@ test('rs.records.ingest does not halt on a failing line; subsequent lines still 
   const out = await executeRecordsIngest(
     defaultInput({ body: '{"id":"r1"}\n{"id":"r2"}' }),
     defaultDeps({
-      ingestRecord: async (cid, record) => {
+      ingestRecord: async (cid, _cin, record) => {
         if (record.id === 'r1') throw new Error('first failed');
         lateCalled = true;
       },

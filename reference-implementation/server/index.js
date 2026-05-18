@@ -505,7 +505,6 @@ const codeToStatus = {
   connector_instance_connector_mismatch: 400,
   connector_instance_inactive: 400,
   connector_instance_selector_required: 400,
-  connector_instance_storage_not_migrated: 400,
   connector_instance_store_required: 500,
   owner_subject_required: 400,
   unknown_field: 400,
@@ -1074,14 +1073,6 @@ async function resolveOwnerConnectorNamespace(req, connectorId, options = {}) {
   const explicitConnectorInstanceId =
     resolveSingleConnectorIdQueryValue(options.connectorInstanceId) ||
     resolveSingleConnectorIdQueryValue(req.query?.connector_instance_id);
-  if (explicitConnectorInstanceId && options.allowExplicitConnectorInstanceId === false) {
-    const err = new Error(
-      'connector_instance_id is not accepted on this path until storage is migrated to connector_instance_id',
-    );
-    err.code = 'connector_instance_storage_not_migrated';
-    err.param = 'connector_instance_id';
-    throw err;
-  }
   const ownerSubjectId = options.ownerSubjectId || getOwnerTokenSubjectId(req);
   return resolveOwnerConnectorInstanceNamespace({
     ownerSubjectId,
@@ -1418,7 +1409,18 @@ async function resolveOwnerManifest(req, opts = {}) {
 }
 
 async function resolveGrantManifest(tokenInfo, opts = {}) {
-  const storageBinding = resolveGrantStorageBinding(tokenInfo);
+  let storageBinding = resolveGrantStorageBinding(tokenInfo);
+  if (storageBinding?.connector_id) {
+    const namespace = await resolveOwnerConnectorInstanceNamespace({
+      ownerSubjectId: tokenInfo?.grant?.subject?.id || tokenInfo?.subject_id || OWNER_AUTH_DEFAULT_SUBJECT_ID,
+      connectorId: storageBinding.connector_id,
+      connectorInstanceId: storageBinding.connector_instance_id,
+      connectorInstanceStore: createRequestConnectorInstanceStore(),
+      allowLegacyDefault: true,
+      displayName: storageBinding.connector_id,
+    });
+    storageBinding = storageTargetForConnectorNamespace(namespace);
+  }
   const source = buildClientSourceDescriptor(tokenInfo);
   const manifest = await getManifestForStorageBinding(storageBinding, opts);
   if (!manifest) {
@@ -1862,7 +1864,7 @@ function decorateRecordBlobRefs(record) {
 
 function persistContentAddressedBlob({ connectorId, connectorInstanceId, stream, recordKey, mimeType, data }) {
   if (isPostgresStorageBackend()) {
-    return postgresPersistContentAddressedBlob({ connectorId, stream, recordKey, mimeType, data });
+    return postgresPersistContentAddressedBlob({ connectorId, connectorInstanceId, stream, recordKey, mimeType, data });
   }
 
   const sha256 = createHash('sha256').update(data).digest('hex');
@@ -1870,7 +1872,7 @@ function persistContentAddressedBlob({ connectorId, connectorInstanceId, stream,
   const sizeBytes = data.byteLength;
   const stored = transaction(() => {
     exec(referenceQueries.blobsInsertBlob, [
-      blobId, connectorId, stream, recordKey, mimeType, sizeBytes, sha256, data,
+      blobId, connectorId, connectorInstanceId, stream, recordKey, mimeType, sizeBytes, sha256, data,
     ]);
 
     const row = getOne(referenceQueries.blobsGetStoredById, [blobId]);
@@ -1989,14 +1991,12 @@ function buildAsApp(opts = {}) {
   async function resolveRefConnectorNamespace(req, connectorId) {
     return resolveOwnerConnectorNamespace(req, connectorId, {
       ownerSubjectId: getOwnerSubjectId(req),
-      allowExplicitConnectorInstanceId: true,
     });
   }
 
   async function resolveRefConnectionNamespace(req, connectorInstanceId) {
     return resolveOwnerConnectorNamespace(req, null, {
       ownerSubjectId: getOwnerSubjectId(req),
-      allowExplicitConnectorInstanceId: true,
       allowLegacyDefault: false,
       connectorInstanceId,
     });
@@ -2088,6 +2088,7 @@ function buildAsApp(opts = {}) {
     const outcomeStats = new Map();
     const devicesById = new Map(devices.map((device) => [device.deviceId, device]));
     const connectorInstances = await createRequestConnectorInstanceStore().listByOwner(ownerSubjectId);
+    const connectorInstancesById = new Map(connectorInstances.map((instance) => [instance.connectorInstanceId, instance]));
     const connectorInstancesByBinding = new Map(connectorInstances.map((instance) => [
       `${instance.connectorId}\n${instance.sourceKind}\n${instance.sourceBindingKey}`,
       instance,
@@ -2119,9 +2120,11 @@ function buildAsApp(opts = {}) {
       };
       const device = devicesById.get(source.deviceId);
       const sourceBinding = deviceExporterSourceBinding(source.deviceId, source);
-      const connectorInstance = device
-        ? connectorInstancesByBinding.get(`${source.connectorId}\nlocal_device\n${makeConnectorInstanceSourceBindingKey(sourceBinding)}`)
-        : null;
+      const connectorInstance = source.connectorInstanceId
+        ? connectorInstancesById.get(source.connectorInstanceId)
+        : device
+          ? connectorInstancesByBinding.get(`${source.connectorId}\nlocal_device\n${makeConnectorInstanceSourceBindingKey(sourceBinding)}`)
+          : null;
       const projected = {
         object: 'device_source_instance',
         source_instance_id: source.sourceInstanceId,
@@ -2191,6 +2194,18 @@ function buildAsApp(opts = {}) {
 
   async function resolveActiveDeviceConnectorInstance(deviceId, ownerSubjectId, sourceInstance) {
     const store = createRequestConnectorInstanceStore();
+    if (sourceInstance.connectorInstanceId) {
+      const instance = await store.get(sourceInstance.connectorInstanceId);
+      if (
+        instance
+        && instance.status === 'active'
+        && instance.ownerSubjectId === ownerSubjectId
+        && instance.connectorId === sourceInstance.connectorId
+      ) {
+        return instance;
+      }
+      return null;
+    }
     const sourceBinding = deviceExporterSourceBinding(deviceId, sourceInstance);
     const instance = await store.getByBinding({
       ownerSubjectId,
@@ -3712,15 +3727,6 @@ function buildAsApp(opts = {}) {
         tokenHash: hashDeviceSecret(deviceToken),
         createdAt: now.toISOString(),
       });
-      await deviceExporterStore.upsertSourceInstance({
-        sourceInstanceId,
-        deviceId,
-        connectorId: enrollment.connectorId,
-        localBindingId: enrollment.localBindingId,
-        displayName: enrollment.displayName,
-        createdAt: now.toISOString(),
-        updatedAt: now.toISOString(),
-      });
       await ensureReferenceConnectorCatalogEntry(enrollment.connectorId, enrollment.displayName || displayName);
       const connectorInstance = await createRequestConnectorInstanceStore().upsert({
         ownerSubjectId: enrollment.ownerSubjectId,
@@ -3734,6 +3740,16 @@ function buildAsApp(opts = {}) {
           local_binding_name: enrollment.localBindingId,
           source_instance_id: sourceInstanceId,
         },
+        createdAt: now.toISOString(),
+        updatedAt: now.toISOString(),
+      });
+      await deviceExporterStore.upsertSourceInstance({
+        sourceInstanceId,
+        deviceId,
+        connectorId: enrollment.connectorId,
+        connectorInstanceId: connectorInstance.connectorInstanceId,
+        localBindingId: enrollment.localBindingId,
+        displayName: enrollment.displayName,
         createdAt: now.toISOString(),
         updatedAt: now.toISOString(),
       });
@@ -6141,7 +6157,7 @@ function buildRsApp(opts = {}) {
                     const manifest = await resolveRegisteredConnectorManifest(cid);
                     return Boolean((manifest.streams || []).find((stream) => stream.name === name));
                   },
-                  ingestRecord: (cid, record) => ingestRecord(cid, record),
+                  ingestRecord: (cid, _connectorInstanceId, record) => ingestRecord(cid, record),
                 },
               );
               return output.envelope;
@@ -6188,9 +6204,11 @@ function buildRsApp(opts = {}) {
     // durable atomicity remains in the underlying `ingestRecord` capability.
     app.post('/v1/ingest/:stream', requireToken, requireOwner, async (req, res) => {
       const connectorId = resolveSingleConnectorIdQueryValue(req.query.connector_id);
+      const connectorInstanceId = resolveSingleConnectorIdQueryValue(req.query.connector_instance_id);
       const lines = parseIngestLines(typeof req.body === 'string' ? req.body : '');
       const mutationContext = buildMutationContext(req, res, {
         connectorId,
+        connectorInstanceId,
         operation: 'ingest_records',
         streamId: req.params.stream,
         submittedRecordCount: lines.length,
@@ -6204,12 +6222,14 @@ function buildRsApp(opts = {}) {
               (manifest.streams || []).find((stream) => stream.name === streamName),
             );
             if (visible) {
-              storageNamespace = await resolveOwnerConnectorNamespace(req, cid);
+              storageNamespace = await resolveOwnerConnectorNamespace(req, cid, { connectorInstanceId });
             }
             return visible;
           },
-          ingestRecord: async (cid, record) => {
-            const namespace = storageNamespace ?? await resolveOwnerConnectorNamespace(req, cid);
+          ingestRecord: async (cid, cin, record) => {
+            const namespace = storageNamespace ?? await resolveOwnerConnectorNamespace(req, cid, {
+              connectorInstanceId: cin,
+            });
             return ingestRecord(storageTargetForConnectorNamespace(namespace), record);
           },
         };
@@ -6225,6 +6245,7 @@ function buildRsApp(opts = {}) {
           output = await executeRecordsIngest(
             {
               connectorId,
+              connectorInstanceId,
               streamName: req.params.stream,
               body: typeof req.body === 'string' ? req.body : '',
             },

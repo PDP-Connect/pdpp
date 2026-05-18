@@ -131,6 +131,17 @@ test('legacy connector-keyed stores migrate to one deterministic instance per ow
         PRIMARY KEY(connector_id, stream)
       );
       DROP TABLE blob_bindings;
+      DROP TABLE blobs;
+      CREATE TABLE blobs (
+        blob_id TEXT PRIMARY KEY,
+        connector_id TEXT NOT NULL,
+        stream TEXT NOT NULL,
+        record_key TEXT NOT NULL,
+        mime_type TEXT NOT NULL,
+        size_bytes INTEGER NOT NULL,
+        sha256 TEXT NOT NULL,
+        data BLOB
+      );
       CREATE TABLE blob_bindings (
         blob_id TEXT NOT NULL,
         connector_id TEXT NOT NULL,

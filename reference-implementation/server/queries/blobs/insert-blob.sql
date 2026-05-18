@@ -4,5 +4,5 @@
 -- exact bytes already exist; the caller verifies the existing row and
 -- proceeds. Called inside persistContentAddressedBlob's transaction.
 INSERT OR IGNORE INTO blobs(
-  blob_id, connector_id, stream, record_key, mime_type, size_bytes, sha256, data
-) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+  blob_id, connector_id, connector_instance_id, stream, record_key, mime_type, size_bytes, sha256, data
+) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)

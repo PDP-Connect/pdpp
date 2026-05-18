@@ -848,7 +848,7 @@ test('stream aggregate computes count, sum, min/max, grouped counts, and declare
 
 test('stream aggregate enforces grants and declared aggregate fields', async () => {
   await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
-    const ownerToken = await issueOwnerToken(asUrl);
+    const ownerToken = await issueOwnerToken(asUrl, 'aggregation_grant_owner');
     const connectorId = spotifyManifest.connector_id;
     await seedSpotifyTopArtists(rsUrl, ownerToken, connectorId, [
       { id: 'grant_a', name: 'Alpha', popularity: 10, followers: 100, source_updated_at: '2026-01-01T00:00:00Z' },
@@ -882,7 +882,7 @@ test('stream aggregate enforces grants and declared aggregate fields', async () 
 
 test('stream aggregate honors grant resources, time ranges, and request filters together', async () => {
   await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
-    const ownerToken = await issueOwnerToken(asUrl);
+    const ownerToken = await issueOwnerToken(asUrl, 'aggregation_scope_owner');
     const connectorId = spotifyManifest.connector_id;
     await seedSpotifyTopArtists(rsUrl, ownerToken, connectorId, [
       { id: 'scoped_old', name: 'Alpha', popularity: 10, followers: 100, source_updated_at: '2026-01-01T00:00:00Z' },
@@ -2211,11 +2211,14 @@ test('blob fetch injects fetch_url and requires blob_ref visibility under the gr
       },
     ]);
     getDb().prepare(`
-      INSERT INTO blobs(blob_id, connector_id, stream, record_key, mime_type, size_bytes, sha256, data)
-      VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO blobs(blob_id, connector_id, connector_instance_id, stream, record_key, mime_type, size_bytes, sha256, data)
+      VALUES(?, ?, (SELECT connector_instance_id FROM records WHERE connector_id = ? AND stream = ? AND record_key = ?), ?, ?, ?, ?, ?, ?)
     `).run(
       'blob_track_art',
       connectorId,
+      connectorId,
+      'saved_tracks',
+      'track_blob',
       'saved_tracks',
       'track_blob',
       'text/plain',

@@ -547,9 +547,9 @@ test('_ref dataset summary', async (t) => {
 
       // Seed a blob directly so blob_bytes is exercised.
       getDb().prepare(`
-        INSERT INTO blobs(blob_id, connector_id, stream, record_key, mime_type, size_bytes, sha256, data)
-        VALUES ('blob_test_1', ?, 'covers', 'cover_1', 'image/png', 2048, 'deadbeef', NULL)
-      `).run(spotifyId);
+        INSERT INTO blobs(blob_id, connector_id, connector_instance_id, stream, record_key, mime_type, size_bytes, sha256, data)
+        VALUES ('blob_test_1', ?, (SELECT connector_instance_id FROM records WHERE connector_id = ? LIMIT 1), 'covers', 'cover_1', 'image/png', 2048, 'deadbeef', NULL)
+      `).run(spotifyId, spotifyId);
 
       const resp = await fetch(`${asUrl}/_ref/dataset/summary`);
       const body = await resp.json();

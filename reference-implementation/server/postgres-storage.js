@@ -359,6 +359,7 @@ export async function bootstrapPostgresSchema() {
         source_instance_id TEXT PRIMARY KEY,
         device_id TEXT NOT NULL REFERENCES device_exporters(device_id) ON DELETE CASCADE,
         connector_id TEXT NOT NULL,
+        connector_instance_id TEXT,
         local_binding_id TEXT NOT NULL,
         display_name TEXT,
         status TEXT NOT NULL DEFAULT 'active',
@@ -1386,6 +1387,7 @@ async function migratePostgresDeviceExporterColumns(client) {
   `);
   await client.query(`
     ALTER TABLE device_source_instances
+      ADD COLUMN IF NOT EXISTS connector_instance_id TEXT,
       ADD COLUMN IF NOT EXISTS last_error_json JSONB
   `);
 }

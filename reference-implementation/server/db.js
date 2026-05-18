@@ -338,6 +338,7 @@ CREATE TABLE IF NOT EXISTS device_source_instances (
   source_instance_id  TEXT PRIMARY KEY,
   device_id           TEXT NOT NULL,
   connector_id        TEXT NOT NULL,
+  connector_instance_id TEXT,
   local_binding_id    TEXT NOT NULL,
   display_name        TEXT,
   status              TEXT NOT NULL DEFAULT 'active',
@@ -570,6 +571,7 @@ CREATE INDEX IF NOT EXISTS idx_record_changes_record
 CREATE TABLE IF NOT EXISTS blobs (
   blob_id       TEXT PRIMARY KEY,
   connector_id  TEXT NOT NULL,
+  connector_instance_id TEXT NOT NULL,
   stream        TEXT NOT NULL,
   record_key    TEXT NOT NULL,
   mime_type     TEXT NOT NULL,
@@ -1277,6 +1279,57 @@ function migrateRecordStorageInstanceColumns(raw, opts = {}) {
   return result;
 }
 
+function migrateBlobOriginInstanceColumn(raw, opts = {}) {
+  addColumnIfMissing(raw, 'blobs', 'connector_instance_id', 'TEXT');
+  const rows = raw.prepare(
+    `SELECT blob_id, connector_id, connector_instance_id
+       FROM blobs
+      WHERE connector_instance_id IS NULL OR trim(connector_instance_id) = ''
+      ORDER BY connector_id, blob_id`
+  ).all();
+  if (rows.length === 0) {
+    return { rebuilt: false, backfilledRows: 0 };
+  }
+
+  const bindingInstance = raw.prepare(
+    `SELECT connector_instance_id
+       FROM blob_bindings
+      WHERE blob_id = ? AND connector_id = ?
+        AND connector_instance_id IS NOT NULL
+        AND trim(connector_instance_id) <> ''
+      ORDER BY connector_instance_id
+      LIMIT 1`
+  );
+  const update = raw.prepare(
+    `UPDATE blobs SET connector_instance_id = ? WHERE blob_id = ?`
+  );
+  const legacyInstanceIds = new Map();
+  const migration = raw.transaction(() => {
+    let backfilledRows = 0;
+    for (const row of rows) {
+      const binding = bindingInstance.get(row.blob_id, row.connector_id);
+      let connectorInstanceId = typeof binding?.connector_instance_id === 'string'
+        ? binding.connector_instance_id.trim()
+        : '';
+      if (!connectorInstanceId) {
+        if (!legacyInstanceIds.has(row.connector_id)) {
+          legacyInstanceIds.set(row.connector_id, legacySyncStateConnectorInstanceId(raw, row.connector_id));
+        }
+        connectorInstanceId = legacyInstanceIds.get(row.connector_id);
+      }
+      update.run(connectorInstanceId, row.blob_id);
+      backfilledRows += 1;
+    }
+    return { rebuilt: false, backfilledRows };
+  });
+
+  const result = migration();
+  if (typeof opts.onSchemaMigration === 'function') {
+    opts.onSchemaMigration({ name: 'blob_origin_instance_column', ...result });
+  }
+  return result;
+}
+
 function migrateLexicalSearchInstanceColumns(raw, opts = {}) {
   const indexHasInstance = hasTableColumn(raw, 'lexical_search_index', 'connector_instance_id');
   const metaHasInstance = hasTableColumn(raw, 'lexical_search_meta', 'connector_instance_id');
@@ -1860,6 +1913,7 @@ export function initDb(path = ':memory:', opts = {}) {
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'device_enrollment_codes', 'connector_id', "TEXT NOT NULL DEFAULT 'unknown'"));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'device_enrollment_codes', 'local_binding_id', "TEXT NOT NULL DEFAULT 'default'"));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'device_enrollment_codes', 'display_name', 'TEXT'));
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'device_source_instances', 'connector_instance_id', 'TEXT'));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'device_source_instances', 'last_error_json', 'TEXT'));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'browser_surfaces', 'surface_mode', 'TEXT'));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'browser_surfaces', 'surface_subject_id', 'TEXT'));
@@ -1894,6 +1948,7 @@ export function initDb(path = ':memory:', opts = {}) {
   runWithSqliteBusyRetrySync(() => migrateConnectorSyncStateInstanceColumns(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateConnectorDetailGapInstanceColumns(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateRecordStorageInstanceColumns(raw, opts));
+  runWithSqliteBusyRetrySync(() => migrateBlobOriginInstanceColumn(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateSemanticSearchInstanceColumns(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateLexicalSearchInstanceColumns(raw, opts));
   raw.exec(`

@@ -18,7 +18,7 @@ SELECT 0 AS id, connector_id, connector_instance_id, stream, record_key
 FROM blob_bindings
 WHERE blob_id = ?
 UNION
-SELECT 0 AS id, connector_id, NULL AS connector_instance_id, stream, record_key
+SELECT 0 AS id, connector_id, connector_instance_id, stream, record_key
 FROM blobs
 WHERE blob_id = ?
 ORDER BY connector_id, connector_instance_id, stream, record_key

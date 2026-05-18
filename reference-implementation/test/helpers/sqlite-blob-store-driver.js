@@ -86,6 +86,7 @@ export function createSqliteBlobStoreDriver() {
         exec(referenceQueries.blobsInsertBlob, [
           blobId,
           connectorId,
+          makeLegacyConnectorInstanceId('owner_local', connectorId),
           stream,
           recordKey,
           mimeType,

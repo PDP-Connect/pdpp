@@ -64,12 +64,14 @@ async function runConformance(makeStore) {
     sourceInstanceId: 'src_1',
     deviceId: 'dev_1',
     connectorId: 'local.files',
+    connectorInstanceId: 'cin_local_files_dev_1',
     localBindingId: 'photos',
     displayName: 'Photos Folder',
     createdAt: NOW,
     updatedAt: NOW,
   });
   assert.equal((await driver.call('getSourceInstance', 'dev_1', 'src_1')).connectorId, 'local.files');
+  assert.equal((await driver.call('getSourceInstance', 'dev_1', 'src_1')).connectorInstanceId, 'cin_local_files_dev_1');
   assert.equal(
     (await driver.call('getSourceInstanceByBinding', 'dev_1', 'local.files', 'photos')).sourceInstanceId,
     'src_1',

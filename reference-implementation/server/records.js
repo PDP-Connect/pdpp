@@ -2076,7 +2076,7 @@ export async function deleteAllRecords(storageTarget, stream) {
     const connectorId = resolveStorageConnectorId(storageTarget);
     const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
     await lexicalIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
-    await semanticIndexDeleteByConnectorStream({ connectorId, stream });
+    await semanticIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
     return deletedRecordCount;
   }
 
@@ -2091,7 +2091,7 @@ export async function deleteAllRecords(storageTarget, stream) {
   exec(referenceQueries.recordsDeleteDeleteRecordChangesByStream, [connectorInstanceId, stream]);
   exec(referenceQueries.recordsDeleteDeleteVersionCounterByStream, [connectorInstanceId, stream]);
   await lexicalIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
-  await semanticIndexDeleteByConnectorStream({ connectorId, stream });
+  await semanticIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
   return deletedRecordCount;
 }
 
@@ -2112,28 +2112,30 @@ export async function deleteAllRecordsForConnector(connectorId) {
   if (typeof connectorId !== 'string' || !connectorId) {
     return { deletedCount: 0, streams: [] };
   }
-  // REVIEWED-BOUNDED: rows are one per distinct stream a connector has ever
-  // produced; manifests declare at most a few dozen streams, well under
-  // the registry's @max_rows=256 cap.
-  const streamRows = allowUnboundedReadAcknowledged(
-    referenceQueries.recordsDeleteListDistinctStreamsByConnector,
+  // REVIEWED-BOUNDED: rows are one per distinct (connector instance, stream)
+  // pair a connector type has produced. Manifest stream counts are bounded by
+  // the registry cap; instance cardinality is the connector-instance registry's
+  // configured connection set, not record-table cardinality.
+  const namespaceRows = allowUnboundedReadAcknowledged(
+    referenceQueries.recordsDeleteListInstanceStreamsByConnector,
     [connectorId],
   );
-  const streams = streamRows.map((row) => row.stream);
   const countRow = getOne(
     referenceQueries.recordsDeleteCountRecordsByConnector,
     [connectorId],
   );
   const deletedCount = countRow?.count || 0;
+  const streams = Array.from(new Set(namespaceRows.map((row) => row.stream)));
 
-  exec(referenceQueries.recordsDeleteDeleteRecordsByConnector, [connectorId]);
-  exec(referenceQueries.recordsDeleteDeleteRecordChangesByConnector, [connectorId]);
-  exec(referenceQueries.recordsDeleteDeleteVersionCounterByConnector, [connectorId]);
-  exec(referenceQueries.recordsDeleteDeleteBlobBindingsByConnector, [connectorId]);
-
-  for (const stream of streams) {
-    await lexicalIndexDeleteByConnectorStream({ connectorId, stream });
-    await semanticIndexDeleteByConnectorStream({ connectorId, stream });
+  for (const row of namespaceRows) {
+    const connectorInstanceId = row.connector_instance_id;
+    const stream = row.stream;
+    exec(referenceQueries.recordsDeleteDeleteRecordsByStream, [connectorInstanceId, stream]);
+    exec(referenceQueries.recordsDeleteDeleteRecordChangesByStream, [connectorInstanceId, stream]);
+    exec(referenceQueries.recordsDeleteDeleteVersionCounterByStream, [connectorInstanceId, stream]);
+    exec(referenceQueries.recordsDeleteDeleteBlobBindingsByStream, [connectorInstanceId, stream]);
+    await lexicalIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
+    await semanticIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
   }
 
   return { deletedCount, streams };

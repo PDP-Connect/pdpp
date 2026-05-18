@@ -86,6 +86,7 @@ function mapSourceInstance(row) {
     sourceInstanceId: row.source_instance_id,
     deviceId: row.device_id,
     connectorId: row.connector_id,
+    connectorInstanceId: row.connector_instance_id ?? null,
     localBindingId: row.local_binding_id,
     displayName: row.display_name,
     status: row.status,
@@ -218,6 +219,7 @@ export function createSqliteDeviceExporterStore() {
         record.sourceInstanceId,
         record.deviceId,
         record.connectorId,
+        record.connectorInstanceId ?? null,
         record.localBindingId,
         record.displayName ?? null,
         record.status ?? 'active',
@@ -426,10 +428,11 @@ export function createPostgresDeviceExporterStore() {
 
     async upsertSourceInstance(record) {
       await postgresQuery(
-        `INSERT INTO device_source_instances(source_instance_id, device_id, connector_id, local_binding_id, display_name, status, last_error_json, created_at, updated_at, revoked_at)
-         VALUES($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10)
+        `INSERT INTO device_source_instances(source_instance_id, device_id, connector_id, connector_instance_id, local_binding_id, display_name, status, last_error_json, created_at, updated_at, revoked_at)
+         VALUES($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11)
          ON CONFLICT(device_id, connector_id, local_binding_id) DO UPDATE SET
            source_instance_id = excluded.source_instance_id,
+           connector_instance_id = excluded.connector_instance_id,
            display_name = excluded.display_name,
            status = excluded.status,
            last_error_json = excluded.last_error_json,
@@ -439,6 +442,7 @@ export function createPostgresDeviceExporterStore() {
           record.sourceInstanceId,
           record.deviceId,
           record.connectorId,
+          record.connectorInstanceId ?? null,
           record.localBindingId,
           record.displayName ?? null,
           record.status ?? 'active',
@@ -452,7 +456,7 @@ export function createPostgresDeviceExporterStore() {
 
     async getSourceInstance(deviceId, sourceInstanceId) {
       const result = await postgresQuery(
-        `SELECT source_instance_id, device_id, connector_id, local_binding_id, display_name, status, last_error_json, created_at, updated_at, revoked_at
+        `SELECT source_instance_id, device_id, connector_id, connector_instance_id, local_binding_id, display_name, status, last_error_json, created_at, updated_at, revoked_at
          FROM device_source_instances WHERE device_id = $1 AND source_instance_id = $2`,
         [deviceId, sourceInstanceId],
       );
@@ -461,7 +465,7 @@ export function createPostgresDeviceExporterStore() {
 
     async listSourceInstances({ deviceId = null } = {}) {
       const result = await postgresQuery(
-        `SELECT source_instance_id, device_id, connector_id, local_binding_id, display_name, status, last_error_json, created_at, updated_at, revoked_at
+        `SELECT source_instance_id, device_id, connector_id, connector_instance_id, local_binding_id, display_name, status, last_error_json, created_at, updated_at, revoked_at
          FROM device_source_instances
          WHERE ($1::text IS NULL OR device_id = $1)
          ORDER BY device_id ASC, created_at DESC, source_instance_id ASC`,
@@ -472,7 +476,7 @@ export function createPostgresDeviceExporterStore() {
 
     async getSourceInstanceByBinding(deviceId, connectorId, localBindingId) {
       const result = await postgresQuery(
-        `SELECT source_instance_id, device_id, connector_id, local_binding_id, display_name, status, last_error_json, created_at, updated_at, revoked_at
+        `SELECT source_instance_id, device_id, connector_id, connector_instance_id, local_binding_id, display_name, status, last_error_json, created_at, updated_at, revoked_at
          FROM device_source_instances WHERE device_id = $1 AND connector_id = $2 AND local_binding_id = $3`,
         [deviceId, connectorId, localBindingId],
       );

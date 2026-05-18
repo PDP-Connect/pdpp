@@ -15,7 +15,7 @@
 
 ## 2. Store Migration Tranche
 
-- [ ] Migrate existing connector-keyed records, record changes, stream version counters, blob bindings, connector state, schedules, active-run rows, run history, last-run gates, detail gaps, diagnostics, search indexes, and freshness into single-instance namespaces per owner/connector.
+- [x] Migrate existing connector-keyed records, record changes, stream version counters, blob bindings, connector state, schedules, active-run rows, run history, last-run gates, detail gaps, diagnostics, search indexes, and freshness into single-instance namespaces per owner/connector.
 - [x] Update owner-auth ingest and blob upload/read paths to accept connector instance identity, with connector-only compatibility only when exactly one active instance exists.
 - [x] Migrate connector state storage and owner-auth `/v1/state` reads/writes to connector-instance namespaces without exposing instance metadata on the public state response.
 - [x] Update runtime checkpoint reads/writes so connector execution supplies connector instance identity rather than legacy connector-only fallback.
@@ -26,8 +26,8 @@
 
 ## 3. Records, Search, And Collector Tranche
 
-- [ ] Update record ingest, idempotency, and indexing to distinguish records with the same connector type, stream, and connector-local key from different instances.
-- [ ] Update local collector/device ingest so every batch, heartbeat, run event, and diagnostic is authorized for a connector instance.
+- [x] Update record ingest, idempotency, and indexing to distinguish records with the same connector type, stream, and connector-local key from different instances.
+- [x] Update local collector/device ingest so every batch, heartbeat, run event, and diagnostic is authorized for a connector instance.
 - [x] Replace or subordinate `source_instance_id` in CLI/device-exporter UX with connection / connector-instance terminology while preserving compatibility for existing local device bindings.
 - [x] Scope local collector default queue durability by source binding or add locking/diagnostics proving concurrent local connections cannot corrupt the shared queue.
 - [x] Add multi-account tests proving two Gmail instances do not share state, records, schedules, leases, or diagnostics.
@@ -46,4 +46,4 @@
 - [x] `openspec validate define-connector-instances --strict`
 - [x] `openspec validate --all --strict`
 - [x] Relevant runtime tests pass once implementation tasks are started.
-- [ ] Grep confirms no remaining connector state, schedule, active-run lease, or owner mutation path uses `connector_id` alone as a durable instance key.
+- [x] Grep confirms no remaining connector state, schedule, active-run lease, or owner mutation path uses `connector_id` alone as a durable instance key.
