@@ -182,6 +182,90 @@ test('legacy connector-keyed stores migrate to one deterministic instance per ow
         last_run_time_ms INTEGER NOT NULL,
         updated_at TEXT NOT NULL
       );
+      DROP TABLE connector_detail_gaps;
+      CREATE TABLE connector_detail_gaps (
+        gap_id TEXT PRIMARY KEY,
+        connector_id TEXT NOT NULL,
+        grant_id TEXT,
+        source_json TEXT NOT NULL,
+        stream TEXT NOT NULL,
+        parent_stream TEXT,
+        record_key TEXT,
+        detail_locator_json TEXT,
+        list_cursor_json TEXT,
+        scope_json TEXT,
+        reason TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        last_attempt_at TEXT,
+        next_attempt_after TEXT,
+        last_error_json TEXT,
+        discovered_run_id TEXT,
+        last_run_id TEXT,
+        recovered_run_id TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        CHECK (status IN ('pending', 'in_progress', 'recovered', 'terminal'))
+      );
+      CREATE UNIQUE INDEX uniq_connector_detail_gaps_identity
+        ON connector_detail_gaps(connector_id, ifnull(grant_id, ''), stream, ifnull(parent_stream, ''), ifnull(record_key, ''), ifnull(detail_locator_json, ''));
+      CREATE INDEX idx_connector_detail_gaps_pending
+        ON connector_detail_gaps(connector_id, grant_id, status, stream, next_attempt_after);
+      DROP TABLE lexical_search_index;
+      CREATE VIRTUAL TABLE lexical_search_index USING fts5(
+        connector_id UNINDEXED,
+        stream UNINDEXED,
+        record_key UNINDEXED,
+        field UNINDEXED,
+        text,
+        tokenize = 'unicode61'
+      );
+      DROP TABLE lexical_search_meta;
+      CREATE TABLE lexical_search_meta (
+        connector_id TEXT NOT NULL,
+        stream TEXT NOT NULL,
+        fields_fingerprint TEXT NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY(connector_id, stream)
+      );
+      DROP TABLE semantic_search_rowid;
+      CREATE TABLE semantic_search_rowid (
+        connector_id TEXT NOT NULL,
+        scope_key TEXT NOT NULL,
+        record_key TEXT NOT NULL,
+        rowid INTEGER NOT NULL,
+        PRIMARY KEY(connector_id, scope_key, record_key)
+      );
+      DROP TABLE semantic_search_blob;
+      CREATE TABLE semantic_search_blob (
+        connector_id TEXT NOT NULL,
+        scope_key TEXT NOT NULL,
+        record_key TEXT NOT NULL,
+        embedding BLOB NOT NULL,
+        PRIMARY KEY(connector_id, scope_key, record_key)
+      );
+      DROP TABLE semantic_search_meta;
+      CREATE TABLE semantic_search_meta (
+        connector_id TEXT NOT NULL,
+        stream TEXT NOT NULL,
+        fields_fingerprint TEXT NOT NULL,
+        model_id TEXT NOT NULL,
+        dimensions INTEGER NOT NULL,
+        distance_metric TEXT NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY(connector_id, stream)
+      );
+      DROP TABLE semantic_search_backfill_progress;
+      CREATE TABLE semantic_search_backfill_progress (
+        connector_id TEXT NOT NULL,
+        stream TEXT NOT NULL,
+        fields_fingerprint TEXT NOT NULL,
+        model_id TEXT NOT NULL,
+        dimensions INTEGER NOT NULL,
+        distance_metric TEXT NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY(connector_id, stream)
+      );
     `);
     db.prepare('INSERT INTO connector_state VALUES(?, ?, ?, ?)').run(GMAIL, 'messages', '{"cursor":"owner"}', NOW);
     db.prepare('INSERT INTO grant_connector_state VALUES(?, ?, ?, ?, ?)').run('grant_1', GMAIL, 'messages', '{"cursor":"grant"}', NOW);
@@ -194,6 +278,27 @@ test('legacy connector-keyed stores migrate to one deterministic instance per ow
     db.prepare('INSERT INTO controller_active_runs VALUES(?, ?, ?, ?, ?)').run(GMAIL, 'run_legacy', 'trc_legacy', 'scn_legacy', NOW);
     db.prepare('INSERT INTO scheduler_run_history(connector_id, source_json, status, records_emitted, known_gaps_json, run_id, trace_id, started_at, completed_at, attempt) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(GMAIL, '{}', 'succeeded', 1, '[]', 'run_history', 'trc_history', NOW, NOW, 1);
     db.prepare('INSERT INTO scheduler_last_run_times VALUES(?, ?, ?)').run(GMAIL, 1_779_120_000_000, NOW);
+    db.prepare('INSERT INTO connector_detail_gaps(gap_id, connector_id, grant_id, source_json, stream, record_key, detail_locator_json, reason, status, attempt_count, discovered_run_id, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+      'gap_legacy',
+      GMAIL,
+      'grant_1',
+      '{"connector_id":"https://test.pdpp.org/connectors/gmail-acceptance"}',
+      'messages',
+      'msg_1',
+      '{"path":"/thread"}',
+      'detail unavailable',
+      'pending',
+      2,
+      'run_legacy',
+      NOW,
+      NOW,
+    );
+    db.prepare('INSERT INTO lexical_search_index(connector_id, stream, record_key, field, text) VALUES(?, ?, ?, ?, ?)').run(GMAIL, 'messages', 'msg_1', 'subject', 'legacy lexical subject');
+    db.prepare('INSERT INTO lexical_search_meta(connector_id, stream, fields_fingerprint, updated_at) VALUES(?, ?, ?, ?)').run(GMAIL, 'messages', 'lexical-fingerprint', NOW);
+    db.prepare('INSERT INTO semantic_search_rowid(connector_id, scope_key, record_key, rowid) VALUES(?, ?, ?, ?)').run(GMAIL, '["messages","subject"]', 'msg_1', 42);
+    db.prepare('INSERT INTO semantic_search_blob(connector_id, scope_key, record_key, embedding) VALUES(?, ?, ?, ?)').run(GMAIL, '["messages","subject"]', 'msg_1', Buffer.from(new Float32Array([0.1, 0.2]).buffer));
+    db.prepare('INSERT INTO semantic_search_meta(connector_id, stream, fields_fingerprint, model_id, dimensions, distance_metric, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?)').run(GMAIL, 'messages', 'semantic-fingerprint', 'test-embedding', 2, 'cosine', NOW);
+    db.prepare('INSERT INTO semantic_search_backfill_progress(connector_id, stream, fields_fingerprint, model_id, dimensions, distance_metric, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?)').run(GMAIL, 'messages', 'semantic-progress', 'test-embedding', 2, 'cosine', NOW);
     closeDb();
 
     initDb(dbPath);
@@ -219,17 +324,20 @@ test('legacy connector-keyed stores migrate to one deterministic instance per ow
     assert.equal(scheduler.listActiveRuns()[0].connector_instance_id, legacyInstanceId);
     assert.equal(scheduler.listRunHistory(10)[0].connectorInstanceId, legacyInstanceId);
     assert.equal(scheduler.listLastRunTimes()[0].connector_instance_id, legacyInstanceId);
+    assert.equal(getDb().prepare('SELECT connector_instance_id FROM connector_detail_gaps WHERE gap_id = ?').get('gap_legacy').connector_instance_id, legacyInstanceId);
+    assert.deepEqual(
+      getDb().prepare('SELECT connector_instance_id, stream, record_key, field, text FROM lexical_search_index WHERE connector_id = ?').all(GMAIL),
+      [{ connector_instance_id: legacyInstanceId, stream: 'messages', record_key: 'msg_1', field: 'subject', text: 'legacy lexical subject' }],
+    );
+    assert.equal(getDb().prepare('SELECT connector_instance_id FROM lexical_search_meta WHERE connector_id = ? AND stream = ?').get(GMAIL, 'messages').connector_instance_id, legacyInstanceId);
+    assert.equal(getDb().prepare('SELECT connector_instance_id FROM semantic_search_rowid WHERE connector_id = ?').get(GMAIL).connector_instance_id, legacyInstanceId);
+    assert.equal(getDb().prepare('SELECT connector_instance_id FROM semantic_search_blob WHERE connector_id = ?').get(GMAIL).connector_instance_id, legacyInstanceId);
+    assert.equal(getDb().prepare('SELECT connector_instance_id FROM semantic_search_meta WHERE connector_id = ? AND stream = ?').get(GMAIL, 'messages').connector_instance_id, legacyInstanceId);
+    assert.equal(getDb().prepare('SELECT connector_instance_id FROM semantic_search_backfill_progress WHERE connector_id = ? AND stream = ?').get(GMAIL, 'messages').connector_instance_id, legacyInstanceId);
   } finally {
     closeDb();
     await rm(dir, { recursive: true, force: true });
   }
-});
-
-test('lexical and semantic search index legacy migration is blocked until indexes carry connector_instance_id', { skip: true }, () => {
-  // Current production schema still keys lexical_search_index, lexical_search_meta,
-  // semantic_search_blob, semantic_search_meta, and semantic_search_backfill_progress
-  // by connector_id alone. There is no safe test-only way to prove per-instance
-  // migration without the production schema/migration tranche landing first.
 });
 
 test('two Gmail account instances isolate state, records, schedules, leases, and diagnostics', async () => {

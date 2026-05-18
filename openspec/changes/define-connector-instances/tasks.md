@@ -21,7 +21,7 @@
 - [x] Update runtime checkpoint reads/writes so connector execution supplies connector instance identity rather than legacy connector-only fallback.
 - [x] Update schedules, scheduler backoff, last-run gates, human-attention gates, and active-run leases so pause/resume/refresh/conflict checks operate per connector instance.
 - [x] Update browser-surface leases and default profile keys so browser-backed connections isolate profiles and queued leases by connector instance rather than connector type.
-- [ ] Add migration tests proving existing single-connector deployments become one instance per owner/connector without data loss.
+- [x] Add migration tests proving existing single-connector deployments become one instance per owner/connector without data loss.
 - [x] Add ambiguity tests proving connector-only refresh/pause/read operations fail when more than one instance exists.
 
 ## 3. Records, Search, And Collector Tranche
