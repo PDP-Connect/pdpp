@@ -155,14 +155,15 @@ export async function ingestRecord(storageTarget, record) {
     const outcome = await postgresIngestRecord(storageTarget, record);
     if (outcome.changed) {
       const connectorId = resolveStorageConnectorId(storageTarget);
+      const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
       const { stream, key, data, op = 'upsert' } = record;
       const recordKey = encodeKey(key);
       if (op === 'delete') {
-        await lexicalIndexDelete({ connectorId, stream, recordKey });
-        await semanticIndexDelete({ connectorId, stream, recordKey });
+        await lexicalIndexDelete({ connectorId, connectorInstanceId, stream, recordKey });
+        await semanticIndexDelete({ connectorId, connectorInstanceId, stream, recordKey });
       } else {
-        await lexicalIndexUpsert({ connectorId, stream, recordKey, data });
-        await semanticIndexUpsert({ connectorId, stream, recordKey, data });
+        await lexicalIndexUpsert({ connectorId, connectorInstanceId, stream, recordKey, data });
+        await semanticIndexUpsert({ connectorId, connectorInstanceId, stream, recordKey, data });
       }
     }
     return outcome;
@@ -1979,8 +1980,9 @@ export async function deleteRecord(storageTarget, stream, recordId) {
     const outcome = await postgresDeleteRecord(storageTarget, stream, recordId);
     if (outcome.changed) {
       const connectorId = resolveStorageConnectorId(storageTarget);
-      await lexicalIndexDelete({ connectorId, stream, recordKey: recordId });
-      await semanticIndexDelete({ connectorId, stream, recordKey: recordId });
+      const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
+      await lexicalIndexDelete({ connectorId, connectorInstanceId, stream, recordKey: recordId });
+      await semanticIndexDelete({ connectorId, connectorInstanceId, stream, recordKey: recordId });
     }
     return outcome;
   }

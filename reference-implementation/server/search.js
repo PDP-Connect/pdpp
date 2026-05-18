@@ -126,7 +126,7 @@ async function getStreamLexicalFields(connectorId, stream) {
  * `data` is the parsed record payload object (i.e. JSON.parse(record_json)),
  * not the JSON string.
  */
-export async function lexicalIndexUpsert({ connectorId, stream, recordKey, data }) {
+export async function lexicalIndexUpsert({ connectorId, connectorInstanceId, stream, recordKey, data }) {
   const declared = await getStreamLexicalFields(connectorId, stream);
   if (!declared) return;
 
@@ -136,7 +136,7 @@ export async function lexicalIndexUpsert({ connectorId, stream, recordKey, data 
         .map((field) => [field, data?.[field]])
         .filter(([, value]) => typeof value === 'string' && value.length > 0),
     );
-    await postgresLexicalIndexUpsert({ connectorId, stream, recordKey, fields });
+    await postgresLexicalIndexUpsert({ connectorId, connectorInstanceId, stream, recordKey, fields });
     return;
   }
 
@@ -152,9 +152,9 @@ export async function lexicalIndexUpsert({ connectorId, stream, recordKey, data 
 /**
  * Delete all FTS rows for a single record. Called on hard or soft delete.
  */
-export async function lexicalIndexDelete({ connectorId, stream, recordKey }) {
+export async function lexicalIndexDelete({ connectorId, connectorInstanceId, stream, recordKey }) {
   if (isPostgresStorageBackend()) {
-    await postgresLexicalIndexDelete({ connectorId, stream, recordKey });
+    await postgresLexicalIndexDelete({ connectorId, connectorInstanceId, stream, recordKey });
     return;
   }
   exec(referenceQueries.searchIndexDeleteByRecordKey, [connectorId, stream, recordKey]);
@@ -164,9 +164,9 @@ export async function lexicalIndexDelete({ connectorId, stream, recordKey }) {
  * Delete all FTS rows for an entire (connector_id, stream). Called on
  * deleteAllRecords (the owner-authenticated reset path).
  */
-export async function lexicalIndexDeleteByConnectorStream({ connectorId, stream }) {
+export async function lexicalIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream }) {
   if (isPostgresStorageBackend()) {
-    await postgresLexicalIndexDeleteByConnectorStream({ connectorId, stream });
+    await postgresLexicalIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
     return;
   }
   exec(referenceQueries.searchIndexDeleteByStream, [connectorId, stream]);

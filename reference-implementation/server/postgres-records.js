@@ -11,6 +11,8 @@
 import { createHash } from 'node:crypto';
 
 import { postgresQuery, withPostgresTransaction } from './postgres-storage.js';
+import { makeLegacyConnectorInstanceId } from './stores/connector-instance-store.js';
+import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from './owner-auth.ts';
 
 const DEFAULT_LIMIT = 25;
 const MAX_LIMIT = 100;
@@ -38,6 +40,12 @@ function resolveStorageConnectorId(storageTarget) {
   if (storageTarget?.connector_id) return storageTarget.connector_id;
   if (storageTarget?.connectorId) return storageTarget.connectorId;
   throw new Error('storage target must include connector_id');
+}
+
+function resolveStorageConnectorInstanceId(storageTarget, connectorId) {
+  if (storageTarget?.connector_instance_id) return storageTarget.connector_instance_id;
+  if (storageTarget?.connectorInstanceId) return storageTarget.connectorInstanceId;
+  return makeLegacyConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId);
 }
 
 function getChangeHistoryLimit() {
@@ -203,20 +211,21 @@ function recordOrderExpressions(manifestStream) {
   };
 }
 
-async function allocateNextVersion(client, connectorId, stream) {
+async function allocateNextVersion(client, connectorId, connectorInstanceId, stream) {
   const result = await client.query(
-    `INSERT INTO version_counter (connector_id, stream, max_version)
-     VALUES ($1, $2, 1)
-     ON CONFLICT (connector_id, stream) DO UPDATE
+    `INSERT INTO version_counter (connector_id, connector_instance_id, stream, max_version)
+     VALUES ($1, $2, $3, 1)
+     ON CONFLICT (connector_instance_id, stream) DO UPDATE
        SET max_version = version_counter.max_version + 1
      RETURNING max_version`,
-    [connectorId, stream],
+    [connectorId, connectorInstanceId, stream],
   );
   return Number(result.rows[0].max_version);
 }
 
 export async function postgresIngestRecord(storageTarget, record) {
   const connectorId = resolveStorageConnectorId(storageTarget);
+  const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
   const { stream, key, data, emitted_at: emittedAt, op = 'upsert' } = record;
   const recordKey = encodeKey(key);
   const recordJson = data ? JSON.stringify(data) : null;
@@ -239,9 +248,9 @@ export async function postgresIngestRecord(storageTarget, record) {
     const currentResult = await client.query(
       `SELECT record_json, deleted
        FROM records
-       WHERE connector_id = $1 AND stream = $2 AND record_key = $3
+       WHERE connector_instance_id = $1 AND stream = $2 AND record_key = $3
        FOR UPDATE`,
-      [connectorId, stream, recordKey],
+      [connectorInstanceId, stream, recordKey],
     );
     const current = currentResult.rows[0] || null;
 
@@ -252,27 +261,27 @@ export async function postgresIngestRecord(storageTarget, record) {
       return { kind: 'noop' };
     }
 
-    const nextVersion = await allocateNextVersion(client, connectorId, stream);
+    const nextVersion = await allocateNextVersion(client, connectorId, connectorInstanceId, stream);
 
     if (op === 'delete') {
       await client.query(
         `UPDATE records
          SET deleted = TRUE, deleted_at = $4, emitted_at = $4, version = $5
-         WHERE connector_id = $1 AND stream = $2 AND record_key = $3`,
-        [connectorId, stream, recordKey, effectiveEmittedAt, nextVersion],
+         WHERE connector_instance_id = $1 AND stream = $2 AND record_key = $3`,
+        [connectorInstanceId, stream, recordKey, effectiveEmittedAt, nextVersion],
       );
       await client.query(
         `INSERT INTO record_changes
-           (connector_id, stream, record_key, version, record_json, emitted_at, deleted, deleted_at)
-         VALUES ($1, $2, $3, $4, $5::jsonb, $6, TRUE, $6)`,
-        [connectorId, stream, recordKey, nextVersion, JSON.stringify(current.record_json), effectiveEmittedAt],
+           (connector_id, connector_instance_id, stream, record_key, version, record_json, emitted_at, deleted, deleted_at)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, TRUE, $7)`,
+        [connectorId, connectorInstanceId, stream, recordKey, nextVersion, JSON.stringify(current.record_json), effectiveEmittedAt],
       );
     } else {
       await client.query(
         `INSERT INTO records
-           (connector_id, stream, record_key, record_json, emitted_at, version, deleted, deleted_at, cursor_value, primary_key_text)
-         VALUES ($1, $2, $3, $4::jsonb, $5, $6, FALSE, NULL, $7, $8)
-         ON CONFLICT (connector_id, stream, record_key) DO UPDATE
+           (connector_id, connector_instance_id, stream, record_key, record_json, emitted_at, version, deleted, deleted_at, cursor_value, primary_key_text)
+         VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, FALSE, NULL, $8, $9)
+         ON CONFLICT (connector_instance_id, stream, record_key) DO UPDATE
            SET record_json = EXCLUDED.record_json,
                emitted_at = EXCLUDED.emitted_at,
                version = EXCLUDED.version,
@@ -280,21 +289,21 @@ export async function postgresIngestRecord(storageTarget, record) {
                deleted_at = NULL,
                cursor_value = EXCLUDED.cursor_value,
                primary_key_text = EXCLUDED.primary_key_text`,
-        [connectorId, stream, recordKey, recordJson, effectiveEmittedAt, nextVersion, null, recordKey],
+        [connectorId, connectorInstanceId, stream, recordKey, recordJson, effectiveEmittedAt, nextVersion, null, recordKey],
       );
       await client.query(
         `INSERT INTO record_changes
-           (connector_id, stream, record_key, version, record_json, emitted_at, deleted, deleted_at)
-         VALUES ($1, $2, $3, $4, $5::jsonb, $6, FALSE, NULL)`,
-        [connectorId, stream, recordKey, nextVersion, recordJson, effectiveEmittedAt],
+           (connector_id, connector_instance_id, stream, record_key, version, record_json, emitted_at, deleted, deleted_at)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, FALSE, NULL)`,
+        [connectorId, connectorInstanceId, stream, recordKey, nextVersion, recordJson, effectiveEmittedAt],
       );
     }
 
     if (changeHistoryLimit > 0) {
       await client.query(
         `DELETE FROM record_changes
-         WHERE connector_id = $1 AND stream = $2 AND version <= $3`,
-        [connectorId, stream, nextVersion - changeHistoryLimit],
+         WHERE connector_instance_id = $1 AND stream = $2 AND version <= $3`,
+        [connectorInstanceId, stream, nextVersion - changeHistoryLimit],
       );
     }
 
@@ -317,6 +326,7 @@ export async function postgresDeleteRecord(storageTarget, stream, recordId) {
 
 export async function postgresQueryRecords(storageTarget, stream, grant, requestParams = {}, manifest = null) {
   const connectorId = resolveStorageConnectorId(storageTarget);
+  const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
   const streamGrant = getStreamGrant(grant, stream);
   const manifestStream = getManifestStream(manifest, stream);
   const fields = fieldsFor(streamGrant, requestParams.fields, requiredFieldsFor(manifestStream));
@@ -334,18 +344,18 @@ export async function postgresQueryRecords(storageTarget, stream, grant, request
       throw err;
     }
     const maxResult = await postgresQuery(
-      `SELECT max_version FROM version_counter WHERE connector_id = $1 AND stream = $2`,
-      [connectorId, stream],
+      `SELECT max_version FROM version_counter WHERE connector_instance_id = $1 AND stream = $2`,
+      [connectorInstanceId, stream],
     );
     const sessionMax = maxResult.rows[0] ? Number(maxResult.rows[0].max_version) : 0;
     const rows = await postgresQuery(
       `SELECT DISTINCT ON (record_key)
               record_key, record_json, deleted, deleted_at, emitted_at, version
        FROM record_changes
-       WHERE connector_id = $1 AND stream = $2
+       WHERE connector_instance_id = $1 AND stream = $2
          AND version > $3 AND version <= $4
        ORDER BY record_key, version DESC`,
-      [connectorId, stream, decoded.v, sessionMax],
+      [connectorInstanceId, stream, decoded.v, sessionMax],
     );
     const sorted = [...rows.rows].sort((a, b) => Number(a.version) - Number(b.version));
     return {
@@ -368,8 +378,8 @@ export async function postgresQueryRecords(storageTarget, stream, grant, request
     }
   }
 
-  const params = [connectorId, stream];
-  let where = 'WHERE connector_id = $1 AND stream = $2 AND deleted = FALSE';
+  const params = [connectorInstanceId, stream];
+  let where = 'WHERE connector_instance_id = $1 AND stream = $2 AND deleted = FALSE';
   where += buildFilterClause(requestParams.filter, params);
 
   if (cursorPosition) {
@@ -423,14 +433,15 @@ export async function postgresQueryRecords(storageTarget, stream, grant, request
 
 export async function postgresGetRecord(storageTarget, stream, recordId, grant, manifest = null) {
   const connectorId = resolveStorageConnectorId(storageTarget);
+  const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
   const streamGrant = getStreamGrant(grant, stream);
   const manifestStream = getManifestStream(manifest, stream);
   const fields = fieldsFor(streamGrant, null, requiredFieldsFor(manifestStream));
   const result = await postgresQuery(
     `SELECT record_key, record_json, emitted_at
      FROM records
-     WHERE connector_id = $1 AND stream = $2 AND record_key = $3 AND deleted = FALSE`,
-    [connectorId, stream, recordId],
+     WHERE connector_instance_id = $1 AND stream = $2 AND record_key = $3 AND deleted = FALSE`,
+    [connectorInstanceId, stream, recordId],
   );
   const row = result.rows[0];
   if (!row) {
@@ -443,20 +454,20 @@ export async function postgresGetRecord(storageTarget, stream, recordId, grant, 
 
 export async function postgresListAllStreams(storageTarget) {
   const connectorId = resolveStorageConnectorId(storageTarget);
+  const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
   const result = await postgresQuery(
     `SELECT stream AS name, COUNT(*)::int AS record_count, MAX(emitted_at) AS last_updated
      FROM records
-     WHERE connector_id = $1 AND deleted = FALSE
+     WHERE connector_instance_id = $1 AND deleted = FALSE
      GROUP BY stream
      ORDER BY stream`,
-    [connectorId],
+    [connectorInstanceId],
   );
   return result.rows;
 }
 
 export async function postgresListStreams(storageTarget, grant, manifest = null) {
-  const connectorId = resolveStorageConnectorId(storageTarget);
-  const rows = await postgresListAllStreams(connectorId);
+  const rows = await postgresListAllStreams(storageTarget);
   const byName = new Map(rows.map((row) => [row.name, row]));
   return (grant?.streams || []).map((streamGrant) => {
     const manifestStream = getManifestStream(manifest, streamGrant.name);
@@ -472,28 +483,30 @@ export async function postgresListStreams(storageTarget, grant, manifest = null)
 
 export async function postgresDeleteAllRecords(storageTarget, stream) {
   const connectorId = resolveStorageConnectorId(storageTarget);
+  const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
   const semanticScopePrefix = `[${JSON.stringify(stream)},`;
   const countResult = await postgresQuery(
     `SELECT COUNT(*)::int AS count FROM records
-     WHERE connector_id = $1 AND stream = $2 AND deleted = FALSE`,
-    [connectorId, stream],
+     WHERE connector_instance_id = $1 AND stream = $2 AND deleted = FALSE`,
+    [connectorInstanceId, stream],
   );
   const deletedRecordCount = Number(countResult.rows[0]?.count || 0);
   await postgresQuery(
-    `DELETE FROM record_changes WHERE connector_id = $1 AND stream = $2;
-     DELETE FROM records WHERE connector_id = $1 AND stream = $2;
-     DELETE FROM version_counter WHERE connector_id = $1 AND stream = $2;
-     DELETE FROM lexical_search_index WHERE connector_id = $1 AND stream = $2;
-     DELETE FROM lexical_search_meta WHERE connector_id = $1 AND stream = $2;
-     DELETE FROM semantic_search_blob WHERE connector_id = $1 AND scope_key LIKE $2;
-     DELETE FROM semantic_search_meta WHERE connector_id = $1 AND stream = $2;
-     DELETE FROM semantic_search_backfill_progress WHERE connector_id = $1 AND stream = $2;`,
-    [connectorId, stream, `${semanticScopePrefix}%`],
+    `DELETE FROM record_changes WHERE connector_instance_id = $1 AND stream = $2;
+     DELETE FROM records WHERE connector_instance_id = $1 AND stream = $2;
+     DELETE FROM version_counter WHERE connector_instance_id = $1 AND stream = $2;
+     DELETE FROM lexical_search_index WHERE connector_instance_id = $1 AND stream = $2;
+     DELETE FROM lexical_search_meta WHERE connector_instance_id = $1 AND stream = $2;
+     DELETE FROM semantic_search_blob WHERE connector_instance_id = $1 AND scope_key LIKE $3;
+     DELETE FROM semantic_search_meta WHERE connector_instance_id = $1 AND stream = $2;
+     DELETE FROM semantic_search_backfill_progress WHERE connector_instance_id = $1 AND stream = $2;`,
+    [connectorInstanceId, stream, `${semanticScopePrefix}%`],
   );
   return deletedRecordCount;
 }
 
-export async function postgresPersistContentAddressedBlob({ connectorId, stream, recordKey, mimeType, data }) {
+export async function postgresPersistContentAddressedBlob({ connectorId, connectorInstanceId, stream, recordKey, mimeType, data }) {
+  const effectiveConnectorInstanceId = connectorInstanceId || resolveStorageConnectorInstanceId(null, connectorId);
   const bytes = Buffer.isBuffer(data) ? data : Buffer.from(data);
   const sha256 = createHash('sha256').update(bytes).digest('hex');
   const blobId = `blob_sha256_${sha256}`;
@@ -502,10 +515,10 @@ export async function postgresPersistContentAddressedBlob({ connectorId, stream,
   const row = await withPostgresTransaction(async (client) => {
     await client.query(
       `INSERT INTO blobs
-         (blob_id, connector_id, stream, record_key, mime_type, size_bytes, sha256, data)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         (blob_id, connector_id, connector_instance_id, stream, record_key, mime_type, size_bytes, sha256, data)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        ON CONFLICT (blob_id) DO NOTHING`,
-      [blobId, connectorId, stream, recordKey, mimeType, sizeBytes, sha256, bytes],
+      [blobId, connectorId, effectiveConnectorInstanceId, stream, recordKey, mimeType, sizeBytes, sha256, bytes],
     );
     const stored = await client.query(
       `SELECT blob_id, mime_type, size_bytes, sha256 FROM blobs WHERE blob_id = $1`,
@@ -522,10 +535,10 @@ export async function postgresPersistContentAddressedBlob({ connectorId, stream,
     // migrate-storage tool uses RFC 6901 JSON Pointers for field-level
     // extractions. See docs/binary-content-invariant-design-brief.md §4.6.
     await client.query(
-      `INSERT INTO blob_bindings (blob_id, connector_id, stream, record_key, json_path)
-       VALUES ($1, $2, $3, $4, '@record')
+      `INSERT INTO blob_bindings (blob_id, connector_id, connector_instance_id, stream, record_key, json_path)
+       VALUES ($1, $2, $3, $4, $5, '@record')
        ON CONFLICT DO NOTHING`,
-      [blobId, connectorId, stream, recordKey],
+      [blobId, connectorId, effectiveConnectorInstanceId, stream, recordKey],
     );
     return storedRow;
   });
@@ -540,7 +553,7 @@ export async function postgresPersistContentAddressedBlob({ connectorId, stream,
 
 export async function postgresLoadContentAddressedBlob(blobId) {
   const result = await postgresQuery(
-    `SELECT blob_id, connector_id, stream, record_key, mime_type, size_bytes, sha256, data
+    `SELECT blob_id, connector_id, connector_instance_id, stream, record_key, mime_type, size_bytes, sha256, data
      FROM blobs
      WHERE blob_id = $1`,
     [blobId],
@@ -550,13 +563,13 @@ export async function postgresLoadContentAddressedBlob(blobId) {
 
 export async function postgresListBlobBindings(blobId, { limit = 1024 } = {}) {
   const result = await postgresQuery(
-    `SELECT connector_id, stream, record_key
+    `SELECT connector_id, connector_instance_id, stream, record_key
      FROM (
-       SELECT connector_id, stream, record_key FROM blobs WHERE blob_id = $1
+       SELECT connector_id, connector_instance_id, stream, record_key FROM blobs WHERE blob_id = $1
        UNION
-       SELECT connector_id, stream, record_key FROM blob_bindings WHERE blob_id = $1
+       SELECT connector_id, connector_instance_id, stream, record_key FROM blob_bindings WHERE blob_id = $1
      ) bindings
-     ORDER BY connector_id, stream, record_key
+     ORDER BY connector_id, connector_instance_id, stream, record_key
      LIMIT $2`,
     [blobId, limit],
   );

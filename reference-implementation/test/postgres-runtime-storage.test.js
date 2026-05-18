@@ -243,6 +243,51 @@ if (!POSTGRES_URL) {
         },
       });
 
+      const accountA = {
+        connector_id: connectorId,
+        connector_instance_id: `cin_${suffix}_account_a`,
+      };
+      const accountB = {
+        connector_id: connectorId,
+        connector_instance_id: `cin_${suffix}_account_b`,
+      };
+      await ingestRecord(accountA, {
+        stream,
+        key: 'shared',
+        data: {
+          id: 'shared',
+          title: 'Account A only',
+          body: 'postgres instance namespace account a',
+          created_at: '2026-04-03T00:00:00.000Z',
+        },
+      });
+      await ingestRecord(accountB, {
+        stream,
+        key: 'shared',
+        data: {
+          id: 'shared',
+          title: 'Account B only',
+          body: 'postgres instance namespace account b',
+          created_at: '2026-04-04T00:00:00.000Z',
+        },
+      });
+      assert.equal((await getRecord(accountA, stream, 'shared', grant, manifest)).data.title, 'Account A only');
+      assert.equal((await getRecord(accountB, stream, 'shared', grant, manifest)).data.title, 'Account B only');
+      const instanceRows = await postgresQuery(
+        `SELECT connector_instance_id, record_json->>'title' AS title
+           FROM records
+          WHERE connector_id = $1 AND stream = $2 AND record_key = 'shared'
+          ORDER BY connector_instance_id`,
+        [connectorId, stream],
+      );
+      assert.deepEqual(
+        instanceRows.rows.map((row) => [row.connector_instance_id, row.title]),
+        [
+          [accountA.connector_instance_id, 'Account A only'],
+          [accountB.connector_instance_id, 'Account B only'],
+        ],
+      );
+
       const page = await queryRecords(connectorId, stream, grant, { limit: 1, order: 'asc' }, manifest);
       assert.deepEqual(page.data.map((row) => row.id), ['a']);
       assert.equal(page.has_more, true);
@@ -270,6 +315,23 @@ if (!POSTGRES_URL) {
       assert.equal(blobRow.sha256, blob.sha256);
       const bindings = await blobStore.listBlobBindings(blob.blob_id);
       assert.ok(bindings.some((binding) => binding.connector_id === connectorId && binding.record_key === 'a'));
+      const accountBlob = await postgresPersistContentAddressedBlob({
+        connectorId,
+        connectorInstanceId: accountA.connector_instance_id,
+        stream,
+        recordKey: 'shared',
+        mimeType: 'text/plain',
+        data: Buffer.from('postgres account a blob bytes'),
+      });
+      const accountBindings = await blobStore.listBlobBindings(accountBlob.blob_id);
+      assert.ok(
+        accountBindings.some(
+          (binding) =>
+            binding.connector_id === connectorId &&
+            binding.connector_instance_id === accountA.connector_instance_id &&
+            binding.record_key === 'shared',
+        ),
+      );
 
       const datasetAggregate = await getDatasetRecordsAggregate();
       assert.ok(datasetAggregate.record_count >= 2);
@@ -280,7 +342,7 @@ if (!POSTGRES_URL) {
       assert.ok((await getDatasetBlobBytes()) >= Buffer.byteLength('postgres blob bytes'));
       assert.deepEqual(await getDatasetRecordTimeBounds(), {
         earliest: '2026-04-01T00:00:00.000Z',
-        latest: '2026-04-02T00:00:00.000Z',
+        latest: '2026-04-04T00:00:00.000Z',
       });
       const topConnectorCandidates = await listDatasetTopConnectorCandidates();
       assert.ok(
@@ -434,6 +496,20 @@ if (!POSTGRES_URL) {
         recordKey: 'b',
         fields: { title: 'Beta proof', body: 'postgres runtime storage covers beta' },
       });
+      await postgresLexicalIndexUpsert({
+        connectorId,
+        connectorInstanceId: accountA.connector_instance_id,
+        stream,
+        recordKey: 'shared',
+        fields: { title: 'Account A only', body: 'postgres instance namespace account a' },
+      });
+      await postgresLexicalIndexUpsert({
+        connectorId,
+        connectorInstanceId: accountB.connector_instance_id,
+        stream,
+        recordKey: 'shared',
+        fields: { title: 'Account B only', body: 'postgres instance namespace account b' },
+      });
       const lexicalHits = await postgresLexicalSearch({
         connectorId,
         stream,
@@ -441,6 +517,14 @@ if (!POSTGRES_URL) {
         q: 'alpha',
       });
       assert.equal(lexicalHits[0].record_key, 'a');
+      const accountALexicalHits = await postgresLexicalSearch({
+        connectorId,
+        connectorInstanceId: accountA.connector_instance_id,
+        stream,
+        searchableFields: ['title', 'body'],
+        q: 'account',
+      });
+      assert.deepEqual([...new Set(accountALexicalHits.map((row) => row.record_key))], ['shared']);
 
       const searchDeps = {
         resolveOwnerVisibleConnectorIds: () => [connectorId],
@@ -486,6 +570,21 @@ if (!POSTGRES_URL) {
           },
         ],
       });
+      await postgresSemanticIndexUpsertMany({
+        connectorId,
+        connectorInstanceId: accountA.connector_instance_id,
+        stream,
+        recordKey: 'shared',
+        entries: [
+          {
+            connectorId,
+            connectorInstanceId: accountA.connector_instance_id,
+            scopeKey: JSON.stringify([stream, 'body']),
+            recordKey: 'shared',
+            vector: [0, 1, 0],
+          },
+        ],
+      });
       const semanticHits = await postgresSemanticSearch({
         connectorId,
         scopeKeys: [JSON.stringify([stream, 'body'])],
@@ -493,6 +592,14 @@ if (!POSTGRES_URL) {
         limit: 10,
       });
       assert.equal(semanticHits[0].recordKey, 'a');
+      const accountASemanticHits = await postgresSemanticSearch({
+        connectorId,
+        connectorInstanceId: accountA.connector_instance_id,
+        scopeKeys: [JSON.stringify([stream, 'body'])],
+        queryVector: [0, 1, 0],
+        limit: 10,
+      });
+      assert.deepEqual(accountASemanticHits.map((row) => row.recordKey), ['shared']);
 
       await semanticIndexUpsert({
         connectorId,

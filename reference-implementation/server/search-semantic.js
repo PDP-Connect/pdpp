@@ -838,7 +838,7 @@ export function resetVectorIndexForTests() {
 
 // ─── Index maintenance (called from records.js) ────────────────────────────
 
-export async function semanticIndexUpsert({ connectorId, stream, recordKey, data }) {
+export async function semanticIndexUpsert({ connectorId, connectorInstanceId, stream, recordKey, data }) {
   if (!backend) return;
   const declared = await getStreamSemanticFields(connectorId, stream);
   if (!declared) return;
@@ -849,13 +849,14 @@ export async function semanticIndexUpsert({ connectorId, stream, recordKey, data
     const vector = await backend.embedDocument(text);
     entries.push({
       connectorId,
+      connectorInstanceId,
       scopeKey: encodeScopeKey(stream, field),
       recordKey,
       vector,
     });
   }
   if (isPostgresStorageBackend()) {
-    await postgresSemanticIndexUpsertMany({ connectorId, stream, recordKey, entries });
+    await postgresSemanticIndexUpsertMany({ connectorId, connectorInstanceId, stream, recordKey, entries });
     return;
   }
   const index = ensureVectorIndex();
@@ -872,10 +873,10 @@ export async function semanticIndexUpsert({ connectorId, stream, recordKey, data
   }
 }
 
-export async function semanticIndexDelete({ connectorId, stream, recordKey }) {
+export async function semanticIndexDelete({ connectorId, connectorInstanceId, stream, recordKey }) {
   if (!backend) return;
   if (isPostgresStorageBackend()) {
-    await postgresSemanticIndexDelete({ connectorId, stream, recordKey });
+    await postgresSemanticIndexDelete({ connectorId, connectorInstanceId, stream, recordKey });
     return;
   }
   const index = ensureVectorIndex();
@@ -883,10 +884,10 @@ export async function semanticIndexDelete({ connectorId, stream, recordKey }) {
   await index.deleteRecord({ connectorId, stream, recordKey });
 }
 
-export async function semanticIndexDeleteByConnectorStream({ connectorId, stream }) {
+export async function semanticIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream }) {
   if (!backend) return;
   if (isPostgresStorageBackend()) {
-    await postgresSemanticIndexDeleteByConnectorStream({ connectorId, stream });
+    await postgresSemanticIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
     return;
   }
   const index = ensureVectorIndex();
