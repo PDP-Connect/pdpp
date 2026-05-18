@@ -4,7 +4,7 @@
 -- on top before responding.
 SELECT record_key, record_json, emitted_at
 FROM records
-WHERE connector_id = ?
+WHERE connector_instance_id = ?
   AND stream = ?
   AND record_key = ?
   AND deleted = 0

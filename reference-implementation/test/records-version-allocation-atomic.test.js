@@ -44,8 +44,11 @@ import assert from 'node:assert/strict';
 import { closeDb, getDb, initDb } from '../server/db.js';
 import { execReturningOne, referenceQueries } from '../lib/db.ts';
 import { deleteRecord, ingestRecord } from '../server/records.js';
+import { makeLegacyConnectorInstanceId } from '../server/stores/connector-instance-store.js';
 
 const CONNECTOR_ID = 'https://test.pdpp.org/connectors/version-allocation';
+const CONNECTOR_INSTANCE_ID = 'cin_test_version_allocation';
+const LEGACY_CONNECTOR_INSTANCE_ID = makeLegacyConnectorInstanceId('owner_local', CONNECTOR_ID);
 const STREAM = 'items';
 
 function setup() {
@@ -56,13 +59,13 @@ function teardown() {
   closeDb();
 }
 
-function readVersionCounter() {
+function readVersionCounter(connectorInstanceId = LEGACY_CONNECTOR_INSTANCE_ID) {
   const row = getDb()
     .prepare(
       `SELECT max_version FROM version_counter
-       WHERE connector_id = ? AND stream = ?`,
+       WHERE connector_id = ? AND connector_instance_id = ? AND stream = ?`,
     )
-    .get(CONNECTOR_ID, STREAM);
+    .get(CONNECTOR_ID, connectorInstanceId, STREAM);
   return row ? row.max_version : null;
 }
 
@@ -91,32 +94,32 @@ test('atomic allocator returns 1 on first call and bumps counter in one statemen
   setup();
   try {
     // Counter is absent before any allocation.
-    assert.equal(readVersionCounter(), null);
+    assert.equal(readVersionCounter(CONNECTOR_INSTANCE_ID), null);
 
     const first = execReturningOne(
       referenceQueries.recordsIngestAllocateNextVersion,
-      [CONNECTOR_ID, STREAM],
+      [CONNECTOR_ID, CONNECTOR_INSTANCE_ID, STREAM],
     );
     assert.equal(first.max_version, 1, 'first allocation returns 1');
     assert.equal(
-      readVersionCounter(),
+      readVersionCounter(CONNECTOR_INSTANCE_ID),
       1,
       'allocator must persist the new max_version in the same statement',
     );
 
     const second = execReturningOne(
       referenceQueries.recordsIngestAllocateNextVersion,
-      [CONNECTOR_ID, STREAM],
+      [CONNECTOR_ID, CONNECTOR_INSTANCE_ID, STREAM],
     );
     assert.equal(second.max_version, 2, 'second allocation returns counter + 1');
-    assert.equal(readVersionCounter(), 2);
+    assert.equal(readVersionCounter(CONNECTOR_INSTANCE_ID), 2);
 
     const third = execReturningOne(
       referenceQueries.recordsIngestAllocateNextVersion,
-      [CONNECTOR_ID, STREAM],
+      [CONNECTOR_ID, CONNECTOR_INSTANCE_ID, STREAM],
     );
     assert.equal(third.max_version, 3);
-    assert.equal(readVersionCounter(), 3);
+    assert.equal(readVersionCounter(CONNECTOR_INSTANCE_ID), 3);
   } finally {
     teardown();
   }

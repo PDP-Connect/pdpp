@@ -3,7 +3,7 @@
 -- @table: records
 -- @max_rows: 256
 -- Per-stream record-count + last-emitted aggregate for a single
--- connector, used to project freshness for `/_ref/connectors[/:id]`.
+-- connector instance, used to project freshness for `/_ref/connectors[/:id]`.
 -- The result is bounded by the count of streams declared by a single
 -- connector's manifest (dozens at most), even though the underlying
 -- table can be large; GROUP BY collapses the scan to one row per
@@ -14,7 +14,7 @@ SELECT
   COUNT(*) AS record_count,
   MAX(emitted_at) AS last_updated
 FROM records
-WHERE connector_id = ?
+WHERE connector_instance_id = ?
   AND deleted = 0
 GROUP BY stream
 ORDER BY stream ASC

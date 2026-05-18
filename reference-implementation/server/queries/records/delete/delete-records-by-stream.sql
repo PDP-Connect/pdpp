@@ -1,2 +1,2 @@
 -- @terminator: exec
-DELETE FROM records WHERE connector_id = ? AND stream = ?
+DELETE FROM records WHERE connector_instance_id = ? AND stream = ?

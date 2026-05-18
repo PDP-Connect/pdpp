@@ -534,6 +534,7 @@ CREATE INDEX IF NOT EXISTS idx_oauth_clients_registration_mode
 CREATE TABLE IF NOT EXISTS records (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   connector_id  TEXT NOT NULL,
+  connector_instance_id TEXT NOT NULL,
   stream        TEXT NOT NULL,
   record_key    TEXT NOT NULL,
   record_json   TEXT NOT NULL,
@@ -541,17 +542,18 @@ CREATE TABLE IF NOT EXISTS records (
   version       INTEGER NOT NULL DEFAULT 1,
   deleted       INTEGER NOT NULL DEFAULT 0,
   deleted_at    TEXT,
-  UNIQUE(connector_id, stream, record_key)
+  UNIQUE(connector_instance_id, stream, record_key)
 );
 
 CREATE INDEX IF NOT EXISTS idx_records_lookup
-  ON records(connector_id, stream, record_key);
+  ON records(connector_instance_id, stream, record_key);
 
 CREATE INDEX IF NOT EXISTS idx_records_version
-  ON records(connector_id, stream, version);
+  ON records(connector_instance_id, stream, version);
 
 CREATE TABLE IF NOT EXISTS record_changes (
   connector_id  TEXT NOT NULL,
+  connector_instance_id TEXT NOT NULL,
   stream        TEXT NOT NULL,
   record_key    TEXT NOT NULL,
   version       INTEGER NOT NULL,
@@ -559,11 +561,11 @@ CREATE TABLE IF NOT EXISTS record_changes (
   emitted_at    TEXT NOT NULL,
   deleted       INTEGER NOT NULL DEFAULT 0,
   deleted_at    TEXT,
-  PRIMARY KEY(connector_id, stream, version)
+  PRIMARY KEY(connector_instance_id, stream, version)
 );
 
 CREATE INDEX IF NOT EXISTS idx_record_changes_record
-  ON record_changes(connector_id, stream, record_key, version);
+  ON record_changes(connector_instance_id, stream, record_key, version);
 
 CREATE TABLE IF NOT EXISTS blobs (
   blob_id       TEXT PRIMARY KEY,
@@ -586,16 +588,17 @@ CREATE TABLE IF NOT EXISTS blobs (
 CREATE TABLE IF NOT EXISTS blob_bindings (
   blob_id       TEXT NOT NULL,
   connector_id  TEXT NOT NULL,
+  connector_instance_id TEXT NOT NULL,
   stream        TEXT NOT NULL,
   record_key    TEXT NOT NULL,
   json_path     TEXT NOT NULL DEFAULT '@record',
-  PRIMARY KEY(blob_id, connector_id, stream, record_key, json_path),
+  PRIMARY KEY(blob_id, connector_instance_id, stream, record_key, json_path),
   FOREIGN KEY(blob_id) REFERENCES blobs(blob_id),
   CHECK (json_path = '@record' OR substr(json_path, 1, 1) = '/')
 );
 
 CREATE INDEX IF NOT EXISTS idx_blob_bindings_record
-  ON blob_bindings(connector_id, stream, record_key);
+  ON blob_bindings(connector_instance_id, stream, record_key);
 
 -- sha256 uniqueness is *implied* by the blob_id = 'blob_sha256_<hex>'
 -- naming convention plus the PRIMARY KEY on blob_id. Making the
@@ -656,9 +659,10 @@ CREATE INDEX IF NOT EXISTS idx_connector_detail_gaps_pending
 
 CREATE TABLE IF NOT EXISTS version_counter (
   connector_id  TEXT NOT NULL,
+  connector_instance_id TEXT NOT NULL,
   stream        TEXT NOT NULL,
   max_version   INTEGER NOT NULL DEFAULT 0,
-  PRIMARY KEY(connector_id, stream)
+  PRIMARY KEY(connector_instance_id, stream)
 );
 
 -- spine_events.event_seq: stable monotonic logical sequence assigned at
@@ -1120,6 +1124,152 @@ function migrateConnectorSyncStateInstanceColumns(raw, opts = {}) {
   return result;
 }
 
+function migrateRecordStorageInstanceColumns(raw, opts = {}) {
+  const recordsHaveInstance = hasTableColumn(raw, 'records', 'connector_instance_id');
+  const changesHaveInstance = hasTableColumn(raw, 'record_changes', 'connector_instance_id');
+  const countersHaveInstance = hasTableColumn(raw, 'version_counter', 'connector_instance_id');
+  const bindingsHaveInstance = hasTableColumn(raw, 'blob_bindings', 'connector_instance_id');
+  if (recordsHaveInstance && changesHaveInstance && countersHaveInstance && bindingsHaveInstance) {
+    return { rebuilt: false, backfilledRows: 0 };
+  }
+
+  const migration = raw.transaction(() => {
+    const records = raw.prepare(
+      `SELECT id, connector_id, ${recordsHaveInstance ? 'connector_instance_id,' : ''} stream, record_key, record_json, emitted_at, version, deleted, deleted_at
+         FROM records
+        ORDER BY id`
+    ).all();
+    const changes = raw.prepare(
+      `SELECT connector_id, ${changesHaveInstance ? 'connector_instance_id,' : ''} stream, record_key, version, record_json, emitted_at, deleted, deleted_at
+         FROM record_changes
+        ORDER BY connector_id, stream, version`
+    ).all();
+    const counters = raw.prepare(
+      `SELECT connector_id, ${countersHaveInstance ? 'connector_instance_id,' : ''} stream, max_version
+         FROM version_counter
+        ORDER BY connector_id, stream`
+    ).all();
+    const bindings = raw.prepare(
+      `SELECT blob_id, connector_id, ${bindingsHaveInstance ? 'connector_instance_id,' : ''} stream, record_key, json_path
+         FROM blob_bindings
+        ORDER BY blob_id, connector_id, stream, record_key, json_path`
+    ).all();
+    const instanceIds = new Map();
+    const resolveInstanceId = (row) => {
+      if (typeof row.connector_instance_id === 'string' && row.connector_instance_id.trim()) return row.connector_instance_id.trim();
+      if (!instanceIds.has(row.connector_id)) instanceIds.set(row.connector_id, legacySyncStateConnectorInstanceId(raw, row.connector_id));
+      return instanceIds.get(row.connector_id);
+    };
+
+    raw.exec(`
+      DROP TABLE records;
+      CREATE TABLE records (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        connector_id  TEXT NOT NULL,
+        connector_instance_id TEXT NOT NULL,
+        stream        TEXT NOT NULL,
+        record_key    TEXT NOT NULL,
+        record_json   TEXT NOT NULL,
+        emitted_at    TEXT NOT NULL,
+        version       INTEGER NOT NULL DEFAULT 1,
+        deleted       INTEGER NOT NULL DEFAULT 0,
+        deleted_at    TEXT,
+        UNIQUE(connector_instance_id, stream, record_key)
+      );
+
+      DROP TABLE record_changes;
+      CREATE TABLE record_changes (
+        connector_id  TEXT NOT NULL,
+        connector_instance_id TEXT NOT NULL,
+        stream        TEXT NOT NULL,
+        record_key    TEXT NOT NULL,
+        version       INTEGER NOT NULL,
+        record_json   TEXT,
+        emitted_at    TEXT NOT NULL,
+        deleted       INTEGER NOT NULL DEFAULT 0,
+        deleted_at    TEXT,
+        PRIMARY KEY(connector_instance_id, stream, version)
+      );
+
+      DROP TABLE version_counter;
+      CREATE TABLE version_counter (
+        connector_id  TEXT NOT NULL,
+        connector_instance_id TEXT NOT NULL,
+        stream        TEXT NOT NULL,
+        max_version   INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY(connector_instance_id, stream)
+      );
+
+      DROP TABLE blob_bindings;
+      CREATE TABLE blob_bindings (
+        blob_id       TEXT NOT NULL,
+        connector_id  TEXT NOT NULL,
+        connector_instance_id TEXT NOT NULL,
+        stream        TEXT NOT NULL,
+        record_key    TEXT NOT NULL,
+        json_path     TEXT NOT NULL DEFAULT '@record',
+        PRIMARY KEY(blob_id, connector_instance_id, stream, record_key, json_path),
+        FOREIGN KEY(blob_id) REFERENCES blobs(blob_id),
+        CHECK (json_path = '@record' OR substr(json_path, 1, 1) = '/')
+      );
+    `);
+
+    const insertRecord = raw.prepare(
+      `INSERT INTO records(id, connector_id, connector_instance_id, stream, record_key, record_json, emitted_at, version, deleted, deleted_at)
+       VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    for (const row of records) {
+      insertRecord.run(row.id, row.connector_id, resolveInstanceId(row), row.stream, row.record_key, row.record_json, row.emitted_at, row.version, row.deleted, row.deleted_at);
+    }
+
+    const insertChange = raw.prepare(
+      `INSERT INTO record_changes(connector_id, connector_instance_id, stream, record_key, version, record_json, emitted_at, deleted, deleted_at)
+       VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    for (const row of changes) {
+      insertChange.run(row.connector_id, resolveInstanceId(row), row.stream, row.record_key, row.version, row.record_json, row.emitted_at, row.deleted, row.deleted_at);
+    }
+
+    const insertCounter = raw.prepare(
+      `INSERT INTO version_counter(connector_id, connector_instance_id, stream, max_version)
+       VALUES(?, ?, ?, ?)`
+    );
+    for (const row of counters) {
+      insertCounter.run(row.connector_id, resolveInstanceId(row), row.stream, row.max_version);
+    }
+
+    const insertBinding = raw.prepare(
+      `INSERT INTO blob_bindings(blob_id, connector_id, connector_instance_id, stream, record_key, json_path)
+       VALUES(?, ?, ?, ?, ?, ?)`
+    );
+    for (const row of bindings) {
+      insertBinding.run(row.blob_id, row.connector_id, resolveInstanceId(row), row.stream, row.record_key, row.json_path);
+    }
+
+    raw.exec(`
+      CREATE INDEX IF NOT EXISTS idx_records_lookup ON records(connector_instance_id, stream, record_key);
+      CREATE INDEX IF NOT EXISTS idx_records_version ON records(connector_instance_id, stream, version);
+      CREATE INDEX IF NOT EXISTS idx_record_changes_record ON record_changes(connector_instance_id, stream, record_key, version);
+      CREATE INDEX IF NOT EXISTS idx_blob_bindings_record ON blob_bindings(connector_instance_id, stream, record_key);
+    `);
+
+    return {
+      rebuilt: true,
+      backfilledRows:
+        (recordsHaveInstance ? 0 : records.length)
+        + (changesHaveInstance ? 0 : changes.length)
+        + (countersHaveInstance ? 0 : counters.length)
+        + (bindingsHaveInstance ? 0 : bindings.length),
+    };
+  });
+
+  const result = migration();
+  if (typeof opts.onSchemaMigration === 'function') {
+    opts.onSchemaMigration({ name: 'record_storage_instance_columns', ...result });
+  }
+  return result;
+}
+
 function migrateSchedulerInstanceColumns(raw) {
   const schedulesHaveInstance = hasTableColumn(raw, 'connector_schedules', 'connector_instance_id');
   const activeRunsHaveInstance = hasTableColumn(raw, 'controller_active_runs', 'connector_instance_id');
@@ -1506,6 +1656,7 @@ export function initDb(path = ':memory:', opts = {}) {
   // backfill with '@record' (their existing record-level semantics).
   runWithSqliteBusyRetrySync(() => migrateBlobBindingsJsonPath(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateConnectorSyncStateInstanceColumns(raw, opts));
+  runWithSqliteBusyRetrySync(() => migrateRecordStorageInstanceColumns(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateSchedulerInstanceColumns(raw));
   raw.exec(
     `CREATE INDEX IF NOT EXISTS idx_spine_events_run_terminal

@@ -5,7 +5,7 @@
 -- controls those predicates per stream.
 SELECT record_key, record_json, emitted_at
 FROM records
-WHERE connector_id = ?
+WHERE connector_instance_id = ?
   AND stream = ?
   AND deleted = 0
 ORDER BY record_key ASC

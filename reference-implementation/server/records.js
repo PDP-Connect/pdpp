@@ -169,6 +169,7 @@ export async function ingestRecord(storageTarget, record) {
   }
 
   const connectorId = resolveStorageConnectorId(storageTarget);
+  const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
   const { stream, key, data, emitted_at, op = 'upsert' } = record;
   const recordKey = encodeKey(key);
   const recordJson = data ? JSON.stringify(data) : null;
@@ -194,7 +195,7 @@ export async function ingestRecord(storageTarget, record) {
   const outcome = writeTransaction(() => {
     const current = getOne(
       referenceQueries.recordsIngestGetCurrentRecordState,
-      [connectorId, stream, recordKey],
+      [connectorInstanceId, stream, recordKey],
     );
 
     if (op === 'delete' && (!current || current.deleted)) {
@@ -207,40 +208,40 @@ export async function ingestRecord(storageTarget, record) {
 
     const allocated = execReturningOne(
       referenceQueries.recordsIngestAllocateNextVersion,
-      [connectorId, stream],
+      [connectorId, connectorInstanceId, stream],
     );
     const nextVersion = allocated.max_version;
 
-    maybeFault('after-version-allocation', { connectorId, stream, recordKey, nextVersion });
+    maybeFault('after-version-allocation', { connectorId, connectorInstanceId, stream, recordKey, nextVersion });
 
     if (op === 'delete') {
       exec(
         referenceQueries.recordsIngestMarkRecordDeleted,
-        [effectiveEmittedAt, nextVersion, connectorId, stream, recordKey],
+        [effectiveEmittedAt, nextVersion, connectorInstanceId, stream, recordKey],
       );
-      maybeFault('after-records-mutation', { connectorId, stream, recordKey, nextVersion, op });
+      maybeFault('after-records-mutation', { connectorId, connectorInstanceId, stream, recordKey, nextVersion, op });
       exec(
         referenceQueries.recordsIngestInsertRecordChangeDeleted,
-        [connectorId, stream, recordKey, nextVersion, current.record_json, effectiveEmittedAt, effectiveEmittedAt],
+        [connectorId, connectorInstanceId, stream, recordKey, nextVersion, current.record_json, effectiveEmittedAt, effectiveEmittedAt],
       );
     } else {
       exec(
         referenceQueries.recordsIngestUpsertRecord,
-        [connectorId, stream, recordKey, recordJson, effectiveEmittedAt, nextVersion],
+        [connectorId, connectorInstanceId, stream, recordKey, recordJson, effectiveEmittedAt, nextVersion],
       );
-      maybeFault('after-records-mutation', { connectorId, stream, recordKey, nextVersion, op });
+      maybeFault('after-records-mutation', { connectorId, connectorInstanceId, stream, recordKey, nextVersion, op });
       exec(
         referenceQueries.recordsIngestInsertRecordChangeUpsert,
-        [connectorId, stream, recordKey, nextVersion, recordJson, effectiveEmittedAt],
+        [connectorId, connectorInstanceId, stream, recordKey, nextVersion, recordJson, effectiveEmittedAt],
       );
     }
 
-    maybeFault('after-record-changes-append', { connectorId, stream, recordKey, nextVersion, op });
+    maybeFault('after-record-changes-append', { connectorId, connectorInstanceId, stream, recordKey, nextVersion, op });
 
     if (changeHistoryLimit > 0) {
       exec(
         referenceQueries.recordsIngestPruneRecordChanges,
-        [connectorId, stream, nextVersion - changeHistoryLimit],
+        [connectorInstanceId, stream, nextVersion - changeHistoryLimit],
       );
     }
 
@@ -926,6 +927,7 @@ function buildCursorSeekClause(manifestStream, cursorPosition, order) {
 function fetchVisibleRecordRowsInMemory({
   db,
   connectorId,
+  connectorInstanceId,
   stream,
   effective,
   manifestStream,
@@ -938,8 +940,8 @@ function fetchVisibleRecordRowsInMemory({
 
   // Access-control pushdown: keep the same WHERE shape the SQL path uses, just
   // without ORDER BY / LIMIT / cursor-seek.
-  const whereParts = ['connector_id = ?', 'stream = ?', 'deleted = 0'];
-  const whereBinds = [connectorId, stream];
+  const whereParts = ['connector_instance_id = ?', 'stream = ?', 'deleted = 0'];
+  const whereBinds = [connectorInstanceId, stream];
   if (effective.timeRange && consentTimeField) {
     assertSafeJsonField(consentTimeField, 'consent_time_field');
     const ctExpr = jsonExtractExpr(consentTimeField);
@@ -999,6 +1001,7 @@ function fetchVisibleRecordRowsInMemory({
 function fetchVisibleRecordRowsPaginated({
   db,
   connectorId,
+  connectorInstanceId,
   stream,
   effective,
   manifestStream,
@@ -1018,6 +1021,7 @@ function fetchVisibleRecordRowsPaginated({
     return fetchVisibleRecordRowsInMemory({
       db,
       connectorId,
+      connectorInstanceId,
       stream,
       effective,
       manifestStream,
@@ -1047,8 +1051,8 @@ function fetchVisibleRecordRowsPaginated({
   }
 
   // --- WHERE clause ---
-  const whereParts = ['connector_id = ?', 'stream = ?', 'deleted = 0'];
-  const whereBinds = [connectorId, stream];
+  const whereParts = ['connector_instance_id = ?', 'stream = ?', 'deleted = 0'];
+  const whereBinds = [connectorInstanceId, stream];
 
   // time_range pushdown — only when the grant narrows AND the manifest
   // declares a consent_time_field.
@@ -1162,6 +1166,7 @@ function buildResponseRecord(stream, row, effective) {
 
 async function hydrateExpandedRelations({
   connectorId,
+  connectorInstanceId,
   db,
   effectiveParentRows,
   expansions,
@@ -1178,6 +1183,7 @@ async function hydrateExpandedRelations({
     const groupedChildren = fetchExpansionChildrenGroupedByForeignKey({
       db,
       connectorId,
+      connectorInstanceId,
       childStream: expansion.relationship.stream,
       childManifestStream,
       childEffective,
@@ -1237,6 +1243,7 @@ async function hydrateExpandedRelations({
 function fetchExpansionChildrenGroupedByForeignKeyInMemory({
   db,
   connectorId,
+  connectorInstanceId,
   childStream,
   childManifestStream,
   childEffective,
@@ -1254,8 +1261,8 @@ function fetchExpansionChildrenGroupedByForeignKeyInMemory({
     throw new Error('[records] child stream manifest primary_key is required for expansion');
   }
 
-  const whereParts = ['connector_id = ?', 'stream = ?', 'deleted = 0'];
-  const whereBinds = [connectorId, childStream];
+  const whereParts = ['connector_instance_id = ?', 'stream = ?', 'deleted = 0'];
+  const whereBinds = [connectorInstanceId, childStream];
   if (childEffective.timeRange && consentTimeField) {
     assertSafeJsonField(consentTimeField, 'consent_time_field');
     const ctExpr = jsonExtractExpr(consentTimeField);
@@ -1316,6 +1323,7 @@ function fetchExpansionChildrenGroupedByForeignKeyInMemory({
 function fetchExpansionChildrenGroupedByForeignKey({
   db,
   connectorId,
+  connectorInstanceId,
   childStream,
   childManifestStream,
   childEffective,
@@ -1338,6 +1346,7 @@ function fetchExpansionChildrenGroupedByForeignKey({
     return fetchExpansionChildrenGroupedByForeignKeyInMemory({
       db,
       connectorId,
+      connectorInstanceId,
       childStream,
       childManifestStream,
       childEffective,
@@ -1373,8 +1382,8 @@ function fetchExpansionChildrenGroupedByForeignKey({
   orderByParts.push(`${pkExpr} ASC`);
   const orderBySql = orderByParts.join(', ');
 
-  const whereParts = ['connector_id = ?', 'stream = ?', 'deleted = 0'];
-  const whereBinds = [connectorId, childStream];
+  const whereParts = ['connector_instance_id = ?', 'stream = ?', 'deleted = 0'];
+  const whereBinds = [connectorInstanceId, childStream];
 
   // time_range pushdown — same shape as fetchVisibleRecordRowsPaginated.
   if (childEffective.timeRange && consentTimeField) {
@@ -1504,11 +1513,11 @@ function encodeChangesSinceCursor(version) {
   return encodeCursor({ kind: 'changes_since', version });
 }
 
-async function getSnapshotAtVersion(connectorId, stream, recordKey, version) {
+async function getSnapshotAtVersion(connectorInstanceId, stream, recordKey, version) {
   if (!Number.isInteger(version) || version < 0) return null;
   const row = getOne(
     referenceQueries.recordsSnapshotsGetSnapshotAtVersion,
-    [connectorId, stream, recordKey, version],
+    [connectorInstanceId, stream, recordKey, version],
   );
 
   if (!row) return null;
@@ -1532,6 +1541,7 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
   }
 
   const connectorId = resolveStorageConnectorId(storageTarget);
+  const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
   const db = getDb();
 
   // Find stream grant
@@ -1600,14 +1610,14 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
 
     const vcRow = getOne(
       referenceQueries.recordsIngestGetVersionCounter,
-      [connectorId, stream],
+      [connectorInstanceId, stream],
     );
     const currentMaxVersion = vcRow ? vcRow.max_version : 0;
     const effectiveSessionMaxVersion = changesSince ? currentMaxVersion : sessionMaxVersion;
 
     const minChangeRow = getOne(
       referenceQueries.recordsSnapshotsGetMinRecordChangeVersion,
-      [connectorId, stream],
+      [connectorInstanceId, stream],
     );
     const minVersion = minChangeRow?.min_version ?? null;
     if (minVersion !== null && sinceVersion < (minVersion - 1)) {
@@ -1628,7 +1638,7 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
       const changeGroups = [];
       for (const row of iterate(
         referenceQueries.recordsSnapshotsListChangeGroups,
-        [connectorId, stream, pageAfterVersion, effectiveSessionMaxVersion],
+        [connectorInstanceId, stream, pageAfterVersion, effectiveSessionMaxVersion],
       )) {
         changeGroups.push(row);
         if (changeGroups.length >= batchSize) break;
@@ -1637,8 +1647,8 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
       if (!changeGroups.length) break;
 
       for (const group of changeGroups) {
-        const previous = await getSnapshotAtVersion(connectorId, stream, group.record_key, sinceVersion);
-        const current = await getSnapshotAtVersion(connectorId, stream, group.record_key, group.latest_version);
+        const previous = await getSnapshotAtVersion(connectorInstanceId, stream, group.record_key, sinceVersion);
+        const current = await getSnapshotAtVersion(connectorInstanceId, stream, group.record_key, group.latest_version);
 
         const previousVisible = isVisibleSnapshot(previous, effective, consentTimeField);
         const currentVisible = isVisibleSnapshot(current, effective, consentTimeField);
@@ -1718,6 +1728,7 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
   const { rows: pagedRows, hasMore } = fetchVisibleRecordRowsPaginated({
     db,
     connectorId,
+    connectorInstanceId,
     stream,
     effective,
     manifestStream: mStream,
@@ -1733,6 +1744,7 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
 
   await hydrateExpandedRelations({
     connectorId,
+    connectorInstanceId,
     db,
     effectiveParentRows: effectivePageRows,
     expansions,
@@ -1761,6 +1773,7 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
  */
 export async function aggregateRecords(storageTarget, stream, grant, requestParams = {}, manifest = null) {
   const connectorId = resolveStorageConnectorId(storageTarget);
+  const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
 
   const streamGrant = grant.streams.find((entry) => entry.name === stream);
   if (!streamGrant) {
@@ -1783,7 +1796,7 @@ export async function aggregateRecords(storageTarget, stream, grant, requestPara
 
   const rows = iterate(
     referenceQueries.recordsAggregateIterateStreamRecordsForAggregation,
-    [connectorId, stream],
+    [connectorInstanceId, stream],
   );
 
   let visibleCount = 0;
@@ -1870,6 +1883,7 @@ export async function getRecord(storageTarget, stream, recordId, grant, manifest
   }
 
   const connectorId = resolveStorageConnectorId(storageTarget);
+  const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
   const db = getDb();
 
   const streamGrant = grant.streams.find(s => s.name === stream);
@@ -1881,7 +1895,7 @@ export async function getRecord(storageTarget, stream, recordId, grant, manifest
 
   const row = getOne(
     referenceQueries.recordsGetLiveRecordByKey,
-    [connectorId, stream, recordId],
+    [connectorInstanceId, stream, recordId],
   );
 
   if (!row) {
@@ -1928,6 +1942,7 @@ export async function getRecord(storageTarget, stream, recordId, grant, manifest
 
   await hydrateExpandedRelations({
     connectorId,
+    connectorInstanceId,
     db,
     effectiveParentRows: [responseRow],
     expansions,
@@ -1971,13 +1986,14 @@ export async function deleteRecord(storageTarget, stream, recordId) {
   }
 
   const connectorId = resolveStorageConnectorId(storageTarget);
+  const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
   const now = nowIso();
   const changeHistoryLimit = getChangeHistoryLimit();
 
   const outcome = writeTransaction(() => {
     const current = getOne(
       referenceQueries.recordsIngestGetCurrentRecordState,
-      [connectorId, stream, recordId],
+      [connectorInstanceId, stream, recordId],
     );
     if (!current || current.deleted) {
       return { kind: 'noop' };
@@ -1985,30 +2001,30 @@ export async function deleteRecord(storageTarget, stream, recordId) {
 
     const allocated = execReturningOne(
       referenceQueries.recordsIngestAllocateNextVersion,
-      [connectorId, stream],
+      [connectorId, connectorInstanceId, stream],
     );
     const nextVersion = allocated.max_version;
 
-    maybeDeleteFault('after-version-allocation', { connectorId, stream, recordId, nextVersion });
+    maybeDeleteFault('after-version-allocation', { connectorId, connectorInstanceId, stream, recordId, nextVersion });
 
     exec(
       referenceQueries.recordsIngestMarkRecordDeleted,
-      [now, nextVersion, connectorId, stream, recordId],
+      [now, nextVersion, connectorInstanceId, stream, recordId],
     );
 
-    maybeDeleteFault('after-records-mutation', { connectorId, stream, recordId, nextVersion });
+    maybeDeleteFault('after-records-mutation', { connectorId, connectorInstanceId, stream, recordId, nextVersion });
 
     exec(
       referenceQueries.recordsIngestInsertRecordChangeDeleted,
-      [connectorId, stream, recordId, nextVersion, current.record_json, now, now],
+      [connectorId, connectorInstanceId, stream, recordId, nextVersion, current.record_json, now, now],
     );
 
-    maybeDeleteFault('after-record-changes-append', { connectorId, stream, recordId, nextVersion });
+    maybeDeleteFault('after-record-changes-append', { connectorId, connectorInstanceId, stream, recordId, nextVersion });
 
     if (changeHistoryLimit > 0) {
       exec(
         referenceQueries.recordsIngestPruneRecordChanges,
-        [connectorId, stream, nextVersion - changeHistoryLimit],
+        [connectorInstanceId, stream, nextVersion - changeHistoryLimit],
       );
     }
 
@@ -2032,12 +2048,13 @@ export async function listAllStreams(storageTarget) {
   }
 
   const connectorId = resolveStorageConnectorId(storageTarget);
+  const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
   // REVIEWED-BOUNDED: rows are one per (connector, stream) pair; a single
   // connector's manifest declares at most a few dozen streams, well under
   // the registry's @max_rows=256 cap on the records table read.
   const rows = allowUnboundedReadAcknowledged(
     referenceQueries.recordsAggregateStreamsByConnector,
-    [connectorId],
+    [connectorInstanceId],
   );
 
   return rows.map((row) => ({
@@ -2061,14 +2078,15 @@ export async function deleteAllRecords(storageTarget, stream) {
   }
 
   const connectorId = resolveStorageConnectorId(storageTarget);
+  const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
   const countRow = getOne(
     referenceQueries.recordsDeleteCountRecordsByStream,
-    [connectorId, stream],
+    [connectorInstanceId, stream],
   );
   const deletedRecordCount = countRow?.count || 0;
-  exec(referenceQueries.recordsDeleteDeleteRecordsByStream, [connectorId, stream]);
-  exec(referenceQueries.recordsDeleteDeleteRecordChangesByStream, [connectorId, stream]);
-  exec(referenceQueries.recordsDeleteDeleteVersionCounterByStream, [connectorId, stream]);
+  exec(referenceQueries.recordsDeleteDeleteRecordsByStream, [connectorInstanceId, stream]);
+  exec(referenceQueries.recordsDeleteDeleteRecordChangesByStream, [connectorInstanceId, stream]);
+  exec(referenceQueries.recordsDeleteDeleteVersionCounterByStream, [connectorInstanceId, stream]);
   await lexicalIndexDeleteByConnectorStream({ connectorId, stream });
   await semanticIndexDeleteByConnectorStream({ connectorId, stream });
   return deletedRecordCount;
@@ -2127,10 +2145,11 @@ export async function listStreams(storageTarget, grant, manifest = null) {
   }
 
   const connectorId = resolveStorageConnectorId(storageTarget);
+  const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
   const result = [];
 
   for (const sg of grant.streams) {
-    const rows = iterate(referenceQueries.recordsListStreamVisibleCandidates, [connectorId, sg.name]);
+    const rows = iterate(referenceQueries.recordsListStreamVisibleCandidates, [connectorInstanceId, sg.name]);
     const effective = buildEffectiveFilter(sg, {});
     const manifestStream = manifest?.streams?.find((stream) => stream.name === sg.name);
     const consentTimeField = manifestStream?.consent_time_field || null;
