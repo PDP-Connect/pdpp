@@ -1,0 +1,2 @@
+export { type NekoControlPos, type NekoPointerControl, type NekoPointerControllerDeps, type NekoPointerLogger, NekoPointerController, } from "./neko-pointer-controller.ts";
+//# sourceMappingURL=index.d.ts.map
