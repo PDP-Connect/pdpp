@@ -320,6 +320,10 @@ test('reference run and schedule actions reject ambiguous connector-only admissi
     const connectorId = manifest.connector_id;
     await seedTwoSpotifyInstances(connectorId);
 
+    const scheduleReadResp = await fetchJson(`${asUrl}/_ref/connectors/${encodeURIComponent(connectorId)}/schedule`);
+    assert.equal(scheduleReadResp.status, 400);
+    assert.equal(scheduleReadResp.body.error.code, 'ambiguous_connector_instance');
+
     const runResp = await fetchJson(`${asUrl}/_ref/connectors/${encodeURIComponent(connectorId)}/run`, {
       method: 'POST',
     });
@@ -333,6 +337,24 @@ test('reference run and schedule actions reject ambiguous connector-only admissi
     });
     assert.equal(scheduleResp.status, 400);
     assert.equal(scheduleResp.body.error.code, 'ambiguous_connector_instance');
+
+    const pauseResp = await fetchJson(`${asUrl}/_ref/connectors/${encodeURIComponent(connectorId)}/schedule/pause`, {
+      method: 'POST',
+    });
+    assert.equal(pauseResp.status, 400);
+    assert.equal(pauseResp.body.error.code, 'ambiguous_connector_instance');
+
+    const resumeResp = await fetchJson(`${asUrl}/_ref/connectors/${encodeURIComponent(connectorId)}/schedule/resume`, {
+      method: 'POST',
+    });
+    assert.equal(resumeResp.status, 400);
+    assert.equal(resumeResp.body.error.code, 'ambiguous_connector_instance');
+
+    const deleteResp = await fetchJson(`${asUrl}/_ref/connectors/${encodeURIComponent(connectorId)}/schedule`, {
+      method: 'DELETE',
+    });
+    assert.equal(deleteResp.status, 400);
+    assert.equal(deleteResp.body.error.code, 'ambiguous_connector_instance');
   } finally {
     await closeServer(server);
   }

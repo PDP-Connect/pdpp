@@ -22,7 +22,7 @@
 - [x] Update schedules, scheduler backoff, last-run gates, human-attention gates, and active-run leases so pause/resume/refresh/conflict checks operate per connector instance.
 - [x] Update browser-surface leases and default profile keys so browser-backed connections isolate profiles and queued leases by connector instance rather than connector type.
 - [ ] Add migration tests proving existing single-connector deployments become one instance per owner/connector without data loss.
-- [ ] Add ambiguity tests proving connector-only refresh/pause/read operations fail when more than one instance exists.
+- [x] Add ambiguity tests proving connector-only refresh/pause/read operations fail when more than one instance exists.
 
 ## 3. Records, Search, And Collector Tranche
 
@@ -30,8 +30,8 @@
 - [ ] Update local collector/device ingest so every batch, heartbeat, run event, and diagnostic is authorized for a connector instance.
 - [x] Replace or subordinate `source_instance_id` in CLI/device-exporter UX with connection / connector-instance terminology while preserving compatibility for existing local device bindings.
 - [x] Scope local collector default queue durability by source binding or add locking/diagnostics proving concurrent local connections cannot corrupt the shared queue.
-- [ ] Add multi-account tests proving two Gmail instances do not share state, records, schedules, leases, or diagnostics.
-- [ ] Add multi-device tests proving Claude/Codex collectors on two devices do not overwrite each other's checkpoints or records.
+- [x] Add multi-account tests proving two Gmail instances do not share state, records, schedules, leases, or diagnostics.
+- [x] Add multi-device tests proving Claude/Codex collectors on two devices do not overwrite each other's checkpoints or records.
 
 ## 4. Owner UX/API Tranche
 
