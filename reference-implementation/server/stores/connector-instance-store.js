@@ -32,6 +32,10 @@ function hashKey(value) {
   return createHash('sha256').update(value).digest('hex');
 }
 
+export function makeConnectorInstanceSourceBindingKey(sourceBinding) {
+  return hashKey(stableJson(sourceBinding ?? {}));
+}
+
 export function makeLegacyConnectorInstanceId(ownerSubjectId, connectorId) {
   return `cin_legacy_${hashKey(`${ownerSubjectId}\n${connectorId}`).slice(0, 24)}`;
 }
@@ -48,7 +52,7 @@ function normalizeRecord(record) {
     throw new Error(`Invalid connector instance status '${status}'.`);
   }
   const sourceBindingJson = stableJson(record.sourceBinding ?? {});
-  const sourceBindingKey = record.sourceBindingKey ?? hashKey(sourceBindingJson);
+  const sourceBindingKey = record.sourceBindingKey ?? makeConnectorInstanceSourceBindingKey(record.sourceBinding ?? {});
   return {
     connectorInstanceId: record.connectorInstanceId ?? `cin_${hashKey(`${record.ownerSubjectId}\n${record.connectorId}\n${sourceKind}\n${sourceBindingKey}`).slice(0, 24)}`,
     ownerSubjectId: record.ownerSubjectId,

@@ -12,6 +12,7 @@ import {
   closePostgresStorage,
   initPostgresStorage,
   isPostgresStorageBackend,
+  postgresQuery,
   resolveStorageBackend,
 } from './postgres-storage.js';
 import {
@@ -43,6 +44,7 @@ import { createBlobStore } from './stores/blob-store.js';
 import {
   createPostgresConnectorInstanceStore,
   createSqliteConnectorInstanceStore,
+  makeConnectorInstanceSourceBindingKey,
   resolveOwnerConnectorInstanceNamespace,
 } from './stores/connector-instance-store.js';
 import { postgresPersistContentAddressedBlob } from './postgres-records.js';
@@ -448,8 +450,29 @@ function requireNonEmptyString(value, param) {
   return value.trim();
 }
 
-function referenceLocalDeviceStorageConnectorId(connectorId, sourceInstanceId) {
-  return `local-device:${encodeURIComponent(connectorId)}:${encodeURIComponent(sourceInstanceId)}`;
+function referenceLocalDeviceStorageTarget(connectorId, connectorInstanceId) {
+  return {
+    connector_id: `local-device:${encodeURIComponent(connectorId)}`,
+    connector_instance_id: connectorInstanceId,
+  };
+}
+
+async function ensureReferenceConnectorCatalogEntry(connectorId, displayName) {
+  const manifest = {
+    connector_id: connectorId,
+    display_name: displayName || connectorId,
+    streams: [],
+  };
+  if (isPostgresStorageBackend()) {
+    await postgresQuery(
+      `INSERT INTO connectors(connector_id, manifest)
+       VALUES($1, $2::jsonb)
+       ON CONFLICT(connector_id) DO NOTHING`,
+      [connectorId, JSON.stringify(manifest)],
+    );
+    return;
+  }
+  exec(referenceQueries.authConnectorsUpsert, [connectorId, JSON.stringify(manifest)]);
 }
 
 function typeFor(status) {
@@ -2047,6 +2070,12 @@ function buildAsApp(opts = {}) {
     const now = Date.now();
     const sourcesByDevice = new Map();
     const outcomeStats = new Map();
+    const devicesById = new Map(devices.map((device) => [device.deviceId, device]));
+    const connectorInstances = await createRequestConnectorInstanceStore().listByOwner(ownerSubjectId);
+    const connectorInstancesByBinding = new Map(connectorInstances.map((instance) => [
+      `${instance.connectorId}\n${instance.sourceKind}\n${instance.sourceBindingKey}`,
+      instance,
+    ]));
 
     for (const outcome of outcomes) {
       const key = outcome.sourceInstanceId;
@@ -2072,9 +2101,15 @@ function buildAsApp(opts = {}) {
         rejected: 0,
         lastIngestAt: null,
       };
+      const device = devicesById.get(source.deviceId);
+      const sourceBinding = deviceExporterSourceBinding(source.deviceId, source);
+      const connectorInstance = device
+        ? connectorInstancesByBinding.get(`${source.connectorId}\nlocal_device\n${makeConnectorInstanceSourceBindingKey(sourceBinding)}`)
+        : null;
       const projected = {
         object: 'device_source_instance',
         source_instance_id: source.sourceInstanceId,
+        connector_instance_id: connectorInstance?.connectorInstanceId ?? null,
         device_id: source.deviceId,
         connector_id: source.connectorId,
         local_binding_name: source.localBindingId,
@@ -2127,6 +2162,44 @@ function buildAsApp(opts = {}) {
       return [{ source_instance_id: body.source_instance_id, last_error: body.last_error ?? null }];
     }
     return [];
+  }
+
+  function deviceExporterSourceBinding(deviceId, sourceInstance) {
+    return {
+      kind: 'local_device',
+      device_id: deviceId,
+      local_binding_name: sourceInstance.localBindingId,
+      source_instance_id: sourceInstance.sourceInstanceId,
+    };
+  }
+
+  async function resolveActiveDeviceConnectorInstance(deviceId, ownerSubjectId, sourceInstance) {
+    const store = createRequestConnectorInstanceStore();
+    const sourceBinding = deviceExporterSourceBinding(deviceId, sourceInstance);
+    const instance = await store.getByBinding({
+      ownerSubjectId,
+      connectorId: sourceInstance.connectorId,
+      sourceKind: 'local_device',
+      sourceBindingKey: makeConnectorInstanceSourceBindingKey(sourceBinding),
+    });
+    if (!instance || instance.status !== 'active') {
+      return null;
+    }
+    return instance;
+  }
+
+  async function resolveAuthorizedDeviceSource(req, res, deviceId, sourceInstanceId, { notFoundStatus = 400 } = {}) {
+    const sourceInstance = await deviceExporterStore.getSourceInstance(deviceId, sourceInstanceId);
+    if (!sourceInstance || sourceInstance.status !== 'active') {
+      pdppError(res, notFoundStatus, notFoundStatus === 404 ? 'not_found' : 'invalid_request', `Unknown source_instance_id '${sourceInstanceId}'`, 'source_instance_id');
+      return null;
+    }
+    const connectorInstance = await resolveActiveDeviceConnectorInstance(deviceId, req.deviceExporter.ownerSubjectId, sourceInstance);
+    if (!connectorInstance || connectorInstance.ownerSubjectId !== req.deviceExporter.ownerSubjectId) {
+      pdppError(res, 403, 'permission_error', 'source_instance_id is not authorized for an active connector instance', 'source_instance_id');
+      return null;
+    }
+    return { sourceInstance, connectorInstance };
   }
 
   function normalizeDeviceIngestRecords(body) {
@@ -3632,15 +3705,40 @@ function buildAsApp(opts = {}) {
         createdAt: now.toISOString(),
         updatedAt: now.toISOString(),
       });
+      await ensureReferenceConnectorCatalogEntry(enrollment.connectorId, enrollment.displayName || displayName);
+      const connectorInstance = await createRequestConnectorInstanceStore().upsert({
+        ownerSubjectId: enrollment.ownerSubjectId,
+        connectorId: enrollment.connectorId,
+        displayName,
+        status: 'active',
+        sourceKind: 'local_device',
+        sourceBinding: {
+          kind: 'local_device',
+          device_id: deviceId,
+          local_binding_name: enrollment.localBindingId,
+          source_instance_id: sourceInstanceId,
+        },
+        createdAt: now.toISOString(),
+        updatedAt: now.toISOString(),
+      });
       const consumed = await deviceExporterStore.consumeEnrollmentCode(enrollment.enrollmentCodeId, deviceId, now.toISOString());
       if (!consumed) {
         await deviceExporterStore.revokeDevice(deviceId, now.toISOString());
+        await createRequestConnectorInstanceStore().updateStatus(connectorInstance.connectorInstanceId, {
+          status: 'revoked',
+          updatedAt: now.toISOString(),
+          revokedAt: now.toISOString(),
+        });
         return pdppError(res, 409, 'invalid_request', 'Enrollment code was consumed by another device', 'enrollment_code');
       }
 
       res.status(201).json({
         object: 'device_exporter_enrollment',
         device_id: deviceId,
+        connector_instance_id: connectorInstance.connectorInstanceId,
+        // Compatibility: collectors still persist source_instance_id as their
+        // device-binding selector. Server-side trust is now the active
+        // connector_instance_id resolved from that binding.
         source_instance_id: sourceInstanceId,
         device_token: deviceToken,
         connector_id: enrollment.connectorId,
@@ -3712,10 +3810,8 @@ function buildAsApp(opts = {}) {
       });
       for (const source of normalizeHeartbeatSourceInstances(body)) {
         const sourceInstanceId = requireNonEmptyString(source.source_instance_id, 'source_instance_id');
-        const existing = await deviceExporterStore.getSourceInstance(deviceId, sourceInstanceId);
-        if (!existing) {
-          return pdppError(res, 400, 'invalid_request', `Unknown source_instance_id '${sourceInstanceId}'`, 'source_instance_id');
-        }
+        const authorized = await resolveAuthorizedDeviceSource(req, res, deviceId, sourceInstanceId);
+        if (!authorized) return;
         await deviceExporterStore.markSourceInstanceHeartbeat(deviceId, sourceInstanceId, {
           receivedAt,
           lastError: source.last_error ?? null,
@@ -3750,10 +3846,9 @@ function buildAsApp(opts = {}) {
       if (!Number.isInteger(body.batch_seq) || body.batch_seq < 0) {
         return pdppError(res, 400, 'invalid_request', 'batch_seq must be a non-negative integer', 'batch_seq');
       }
-      const sourceInstance = await deviceExporterStore.getSourceInstance(deviceId, sourceInstanceId);
-      if (!sourceInstance || sourceInstance.status !== 'active') {
-        return pdppError(res, 400, 'invalid_request', `Unknown source_instance_id '${sourceInstanceId}'`, 'source_instance_id');
-      }
+      const authorized = await resolveAuthorizedDeviceSource(req, res, deviceId, sourceInstanceId);
+      if (!authorized) return;
+      const { sourceInstance, connectorInstance } = authorized;
       if (sourceInstance.connectorId !== connectorId) {
         return pdppError(res, 400, 'invalid_request', 'connector_id does not match source_instance_id', 'connector_id');
       }
@@ -3767,6 +3862,7 @@ function buildAsApp(opts = {}) {
         return res.status(200).json({
           object: 'device_ingest_batch_result',
           device_id: deviceId,
+          connector_instance_id: connectorInstance.connectorInstanceId,
           source_instance_id: sourceInstanceId,
           batch_id: batchId,
           body_hash: bodyHash,
@@ -3776,13 +3872,14 @@ function buildAsApp(opts = {}) {
         });
       }
 
-      const storageConnectorId = referenceLocalDeviceStorageConnectorId(connectorId, sourceInstanceId);
+      const storageTarget = referenceLocalDeviceStorageTarget(connectorId, connectorInstance.connectorInstanceId);
       for (const record of records) {
-        await ingestRecord(storageConnectorId, record);
+        await ingestRecord(storageTarget, record);
       }
       const response = {
         object: 'device_ingest_batch_result',
         device_id: deviceId,
+        connector_instance_id: connectorInstance.connectorInstanceId,
         source_instance_id: sourceInstanceId,
         batch_id: batchId,
         body_hash: bodyHash,
@@ -3812,9 +3909,11 @@ function buildAsApp(opts = {}) {
   // GET /_ref/device-exporters/:deviceId/source-instances/:sourceInstanceId/state
   // Device-scoped local collector state read. Reference-only; not part of the
   // public PDPP contract. State is stored under the same internal storage
-  // connector id used by device ingest (`referenceLocalDeviceStorageConnectorId`)
-  // so device state rows never collide with owner-auth /v1/state rows for the
-  // public connector id. See OpenSpec `design-local-collector-state-sync`.
+  // storage target used by device ingest (`referenceLocalDeviceStorageTarget`)
+  // so device state rows are scoped by the authorized connector instance and
+  // never collide with owner-auth /v1/state rows for the public connector id.
+  // `source_instance_id` remains in the route as the legacy device-binding
+  // selector. See OpenSpec `design-local-collector-state-sync`.
   app.get(
     '/_ref/device-exporters/:deviceId/source-instances/:sourceInstanceId/state',
     { contract: 'refGetDeviceExporterSourceInstanceState' },
@@ -3826,24 +3925,18 @@ function buildAsApp(opts = {}) {
           return pdppError(res, 403, 'permission_error', 'Device credential is not valid for this device');
         }
         const sourceInstanceId = decodeURIComponent(req.params.sourceInstanceId);
-        const sourceInstance = await deviceExporterStore.getSourceInstance(deviceId, sourceInstanceId);
-        if (!sourceInstance || sourceInstance.status !== 'active') {
-          return pdppError(
-            res,
-            404,
-            'not_found',
-            `Unknown source_instance_id '${sourceInstanceId}'`,
-            'source_instance_id',
-          );
-        }
-        const storageConnectorId = referenceLocalDeviceStorageConnectorId(
+        const authorized = await resolveAuthorizedDeviceSource(req, res, deviceId, sourceInstanceId, { notFoundStatus: 404 });
+        if (!authorized) return;
+        const { sourceInstance, connectorInstance } = authorized;
+        const storageTarget = referenceLocalDeviceStorageTarget(
           sourceInstance.connectorId,
-          sourceInstanceId,
+          connectorInstance.connectorInstanceId,
         );
-        const projection = await getSyncState(storageConnectorId, { grantId: null });
+        const projection = await getSyncState(storageTarget, { grantId: null });
         res.json({
           object: 'device_source_instance_state',
           device_id: deviceId,
+          connector_instance_id: connectorInstance.connectorInstanceId,
           source_instance_id: sourceInstanceId,
           state: projection.state ?? {},
           updated_at: projection.updated_at ?? null,
@@ -3869,28 +3962,22 @@ function buildAsApp(opts = {}) {
           return pdppError(res, 403, 'permission_error', 'Device credential is not valid for this device');
         }
         const sourceInstanceId = decodeURIComponent(req.params.sourceInstanceId);
-        const sourceInstance = await deviceExporterStore.getSourceInstance(deviceId, sourceInstanceId);
-        if (!sourceInstance || sourceInstance.status !== 'active') {
-          return pdppError(
-            res,
-            404,
-            'not_found',
-            `Unknown source_instance_id '${sourceInstanceId}'`,
-            'source_instance_id',
-          );
-        }
+        const authorized = await resolveAuthorizedDeviceSource(req, res, deviceId, sourceInstanceId, { notFoundStatus: 404 });
+        if (!authorized) return;
+        const { sourceInstance, connectorInstance } = authorized;
         const stateMap = optionalObject(req.body?.state);
         if (!stateMap) {
           return pdppError(res, 400, 'invalid_request', 'state body must be an object map of streams to cursors', 'state');
         }
-        const storageConnectorId = referenceLocalDeviceStorageConnectorId(
+        const storageTarget = referenceLocalDeviceStorageTarget(
           sourceInstance.connectorId,
-          sourceInstanceId,
+          connectorInstance.connectorInstanceId,
         );
-        const projection = await putSyncState(storageConnectorId, stateMap, { grantId: null });
+        const projection = await putSyncState(storageTarget, stateMap, { grantId: null });
         res.json({
           object: 'device_source_instance_state',
           device_id: deviceId,
+          connector_instance_id: connectorInstance.connectorInstanceId,
           source_instance_id: sourceInstanceId,
           state: projection.state ?? {},
           updated_at: projection.updated_at ?? null,

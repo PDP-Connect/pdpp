@@ -56,6 +56,7 @@ async function enrollDevice(asUrl, localBindingName) {
   });
   assert.equal(enrollResp.status, 201);
   assert.equal(enrollResp.body.object, 'device_exporter_enrollment');
+  assert.match(enrollResp.body.connector_instance_id, /^cin_/);
   return enrollResp.body;
 }
 
@@ -82,8 +83,8 @@ function makeBatch(device, batchId, value) {
   };
 }
 
-function internalStorageConnectorId(connectorId, sourceInstanceId) {
-  return `local-device:${encodeURIComponent(connectorId)}:${encodeURIComponent(sourceInstanceId)}`;
+function internalStorageConnectorId(connectorId) {
+  return `local-device:${encodeURIComponent(connectorId)}`;
 }
 
 test('device exporter routes enroll, heartbeat, ingest idempotently, isolate source instances, and revoke', async () => {
@@ -128,6 +129,7 @@ test('device exporter routes enroll, heartbeat, ingest idempotently, isolate sou
       authHeaders(first.device_token),
     );
     assert.equal(ingest.status, 201);
+    assert.equal(ingest.body.connector_instance_id, first.connector_instance_id);
     assert.equal(ingest.body.accepted_record_count, 1);
 
     const replay = await postJson(
@@ -153,20 +155,23 @@ test('device exporter routes enroll, heartbeat, ingest idempotently, isolate sou
       authHeaders(second.device_token),
     );
     assert.equal(secondIngest.status, 201);
+    assert.equal(secondIngest.body.connector_instance_id, second.connector_instance_id);
 
     const db = getDb();
-    const firstRow = db.prepare('SELECT record_json FROM records WHERE connector_id = ? AND stream = ? AND record_key = ?').get(
-      internalStorageConnectorId('codex', first.source_instance_id),
-      'messages',
-      'same-key',
+    const instanceRows = db.prepare(
+      `SELECT connector_instance_id, record_json
+         FROM records
+        WHERE connector_id = ? AND stream = ? AND record_key = ?
+        ORDER BY connector_instance_id`,
+    ).all(internalStorageConnectorId('codex'), 'messages', 'same-key');
+    assert.equal(instanceRows.length, 2);
+    assert.deepEqual(
+      new Map(instanceRows.map((row) => [row.connector_instance_id, JSON.parse(row.record_json).value])),
+      new Map([
+        [first.connector_instance_id, 'first'],
+        [second.connector_instance_id, 'second'],
+      ]),
     );
-    const secondRow = db.prepare('SELECT record_json FROM records WHERE connector_id = ? AND stream = ? AND record_key = ?').get(
-      internalStorageConnectorId('codex', second.source_instance_id),
-      'messages',
-      'same-key',
-    );
-    assert.equal(JSON.parse(firstRow.record_json).value, 'first');
-    assert.equal(JSON.parse(secondRow.record_json).value, 'second');
 
     const diagnosticsResp = await fetch(`${asUrl}/_ref/device-exporters/diagnostics`, {
       headers: { Accept: 'application/json' },
@@ -176,6 +181,7 @@ test('device exporter routes enroll, heartbeat, ingest idempotently, isolate sou
     assert.equal(diagnostics.data.length, 2);
     const firstDiagnostics = diagnostics.data.find((device) => device.device_id === first.device_id);
     assert.ok(Number.isFinite(Date.parse(firstDiagnostics.last_heartbeat_at)));
+    assert.equal(firstDiagnostics.source_instances[0].connector_instance_id, first.connector_instance_id);
     assert.equal(firstDiagnostics.source_instances[0].accepted_record_count, 1);
 
     const revokeResp = await postJson(`${asUrl}/_ref/device-exporters/${encodeURIComponent(first.device_id)}/revoke`, {});

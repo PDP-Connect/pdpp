@@ -6,8 +6,8 @@
 //
 // These routes are reference-only and authenticated by the existing
 // `requireDeviceExporterCredential` middleware. They store state under the
-// derived internal connector id `local-device:<encoded>:<encoded>` so they
-// cannot collide with owner-auth `/v1/state/:connectorId` rows.
+// local-device connector namespace plus the authorized connector instance id
+// so they cannot collide with owner-auth `/v1/state/:connectorId` rows.
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -87,6 +87,7 @@ async function enrollDevice(asUrl, localBindingName) {
     enrollment_code: codeResp.body.enrollment_code,
   });
   assert.equal(enrollResp.status, 201, JSON.stringify(enrollResp.body));
+  assert.match(enrollResp.body.connector_instance_id, /^cin_/);
   return enrollResp.body;
 }
 
@@ -198,6 +199,7 @@ test('PUT then GET round-trips per-stream cursors with last-write-wins merge sem
     assert.equal(initial.status, 200);
     assert.equal(initial.body.object, 'device_source_instance_state');
     assert.equal(initial.body.device_id, device.device_id);
+    assert.equal(initial.body.connector_instance_id, device.connector_instance_id);
     assert.equal(initial.body.source_instance_id, device.source_instance_id);
     assert.deepEqual(initial.body.state, {});
     assert.equal(initial.body.updated_at, null);
@@ -277,14 +279,13 @@ test('Two-device isolation: same connector id, different source instances, separ
     ).get('codex');
     assert.equal(ownerRows.n, 0);
 
-    const firstStorageId = `local-device:${encodeURIComponent('codex')}:${encodeURIComponent(first.source_instance_id)}`;
-    const secondStorageId = `local-device:${encodeURIComponent('codex')}:${encodeURIComponent(second.source_instance_id)}`;
+    const storageConnectorId = `local-device:${encodeURIComponent('codex')}`;
     const firstRow = db.prepare(
-      `SELECT state_json FROM connector_state WHERE connector_id = ? AND stream = ?`,
-    ).get(firstStorageId, 'messages');
+      `SELECT state_json FROM connector_state WHERE connector_id = ? AND connector_instance_id = ? AND stream = ?`,
+    ).get(storageConnectorId, first.connector_instance_id, 'messages');
     const secondRow = db.prepare(
-      `SELECT state_json FROM connector_state WHERE connector_id = ? AND stream = ?`,
-    ).get(secondStorageId, 'messages');
+      `SELECT state_json FROM connector_state WHERE connector_id = ? AND connector_instance_id = ? AND stream = ?`,
+    ).get(storageConnectorId, second.connector_instance_id, 'messages');
     assert.equal(JSON.parse(firstRow.state_json).cursor, 'first-cursor');
     assert.equal(JSON.parse(secondRow.state_json).cursor, 'second-cursor');
   });
