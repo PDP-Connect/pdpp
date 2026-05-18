@@ -27,6 +27,34 @@ const deniedPackageFilePatterns = [
   /(^|\/)\.tsbuildinfo$/,
 ];
 
+const hostNeutralScanPatterns = [
+  { name: "_ref", pattern: /_ref/g },
+  { name: "run_id", pattern: /run_id/g },
+  { name: "interaction_id", pattern: /interaction_id/g },
+  { name: "workspace:", pattern: /workspace:/g },
+];
+
+const hostNeutralAllowedFiles = new Set([
+  "README.md",
+  "dist/leases/browser-surface-leases.d.ts",
+  "dist/leases/browser-surface-leases.js",
+  "dist/leases/browser-surface-leases.js.map",
+  "dist/protocol/index.d.ts",
+  "dist/protocol/index.js",
+  "dist/protocol/index.js.map",
+  "dist/protocol/stream-viewer.d.ts",
+  "dist/protocol/stream-viewer.js",
+  "dist/protocol/stream-viewer.js.map",
+  "dist/server/streaming-session-store.d.ts",
+  "dist/server/streaming-session-store.js",
+  "dist/server/streaming-session-store.js.map",
+  "dist/testing/reference-wire-fixtures.d.ts",
+  "dist/testing/reference-wire-fixtures.js",
+  "dist/testing/reference-wire-fixtures.js.map",
+]);
+
+const publicPackageNamePattern = /@pdpp\/(?!remote-surface\b)[a-z0-9._-]+/g;
+
 const exportTargets = collectExportTargets(packageJson.exports);
 const typeTargets = collectTypeTargets(packageJson.exports);
 if (typeof packageJson.main === "string") {
@@ -89,6 +117,7 @@ try {
     assert.equal(packedFiles.includes(packedPath), true, `type target missing from tarball: ${target}`);
   }
 
+  await validatePublicArtifactBoundaries(packedFiles);
   await validateCleanConsumer(tarballPath);
 } finally {
   await rm(tarballPath, { force: true });
@@ -116,6 +145,49 @@ function collectTypeTargets(exportsField) {
     }
   }
   return targets;
+}
+
+async function validatePublicArtifactBoundaries(packedFiles) {
+  const unexpectedHostCoupling = [];
+  const privatePackageLeaks = [];
+
+  for (const file of packedFiles) {
+    if (!(file === "README.md" || file.startsWith("dist/"))) {
+      continue;
+    }
+
+    const text = await readFile(path.join(packageRoot, file), "utf8");
+    for (const { name, pattern } of hostNeutralScanPatterns) {
+      pattern.lastIndex = 0;
+      if (!pattern.test(text)) {
+        continue;
+      }
+      if (!hostNeutralAllowedFiles.has(file)) {
+        unexpectedHostCoupling.push(`${file} contains ${name}`);
+      }
+    }
+
+    publicPackageNamePattern.lastIndex = 0;
+    const privateMatches = [...text.matchAll(publicPackageNamePattern)].map((match) => match[0]);
+    for (const privatePackageName of new Set(privateMatches)) {
+      privatePackageLeaks.push(`${file} references ${privatePackageName}`);
+    }
+  }
+
+  assert.deepEqual(
+    unexpectedHostCoupling,
+    [],
+    [
+      "unexpected host-coupled public artifact leakage",
+      "Known compatibility debt is allowlisted in validate-package.mjs; new _ref/run_id/interaction_id/workspace: matches need a host-neutral API or an explicit allowlist decision.",
+      ...unexpectedHostCoupling,
+    ].join("\n"),
+  );
+  assert.deepEqual(
+    privatePackageLeaks,
+    [],
+    ["unexpected private @pdpp package reference in public artifacts", ...privatePackageLeaks].join("\n"),
+  );
 }
 
 async function validateCleanConsumer(tarballPath) {
