@@ -164,6 +164,61 @@ test("compatible idle surface is leased and projected", () => {
   assert.equal(leases.planCapacityPressureReclaim(result.lease.lease_id), undefined);
 });
 
+test("different surface subjects do not dedupe pending leases or share default profiles", () => {
+  const { leases } = manager({ config: { surfaceCap: 1 } });
+
+  const first = leases.acquire({ connectorId: "chatgpt", runId: "run_1", surfaceSubjectId: "owner_a" });
+  const second = leases.acquire({ connectorId: "chatgpt", runId: "run_2", surfaceSubjectId: "owner_b" });
+  const duplicate = leases.acquire({ connectorId: "chatgpt", runId: "run_3", surfaceSubjectId: "owner_b" });
+
+  assert.equal(first.lease.status, "starting_surface");
+  assert.equal(first.lease.profile_key, "chatgpt:owner_a");
+  assert.equal(first.lease.surface_subject_id, "owner_a");
+  assert.equal(first.surface?.surface_subject_id, "owner_a");
+  assert.equal(second.lease.status, "waiting_for_browser_surface");
+  assert.equal(second.lease.profile_key, "chatgpt:owner_b");
+  assert.equal(second.lease.surface_subject_id, "owner_b");
+  assert.equal(duplicate.lease.lease_id, second.lease.lease_id);
+  assert.equal(duplicate.duplicateOf?.lease_id, second.lease.lease_id);
+});
+
+test("same explicit profile only reuses idle surfaces for the same subject", () => {
+  const { leases } = manager({
+    initialSurfaces: [
+      {
+        surface_id: "surface_owner_a",
+        backend: "neko",
+        profile_key: "shared_profile",
+        connector_id: "chatgpt",
+        cdp_url: "http://neko:9222",
+        stream_base_url: "http://neko:8080",
+        health: "ready",
+        created_at: "2026-05-12T11:00:00.000Z",
+        last_used_at: "2026-05-12T11:00:00.000Z",
+        surface_subject_id: "owner_a",
+      },
+    ],
+  });
+
+  const ownerB = leases.acquire({
+    connectorId: "chatgpt",
+    runId: "run_owner_b",
+    profileKey: "shared_profile",
+    surfaceSubjectId: "owner_b",
+  });
+  const ownerA = leases.acquire({
+    connectorId: "chatgpt",
+    runId: "run_owner_a",
+    profileKey: "shared_profile",
+    surfaceSubjectId: "owner_a",
+  });
+
+  assert.equal(ownerB.lease.status, "waiting_for_browser_surface");
+  assert.equal(ownerB.lease.wait_reason, "capacity_full");
+  assert.equal(ownerA.lease.status, "leased");
+  assert.equal(ownerA.lease.surface_id, "surface_owner_a");
+});
+
 test("host-neutral lease API acquires, projects, cancels, and reconciles by session id", () => {
   const { leases } = manager({
     initialSurfaces: [

@@ -108,13 +108,13 @@ export class BrowserSurfaceLeaseManager {
         return this.#config.managedConnectors.has(connectorId);
     }
     acquire(request) {
-        const duplicate = this.#findNonTerminalRunLease(request.runId) ?? this.#findPendingDuplicate(request);
+        const duplicate = this.#findNonTerminalRunLease(request.runId, request.surfaceSubjectId, true) ?? this.#findPendingDuplicate(request);
         if (duplicate) {
             const surface = this.#surfaceForLease(duplicate);
             return { lease: duplicate, duplicateOf: duplicate, ...(surface ? { surface } : {}) };
         }
         const now = this.#isoNow();
-        const profileKey = request.profileKey ?? request.connectorId;
+        const profileKey = this.#profileKeyForRequest(request);
         const baseLease = {
             lease_id: this.#makeLeaseId(),
             connector_id: request.connectorId,
@@ -126,6 +126,7 @@ export class BrowserSurfaceLeaseManager {
             expires_at: new Date(Date.parse(now) + this.#config.leaseWaitTimeoutMs).toISOString(),
             fencing_token: this.#nextFencingToken(),
             ...(request.accountKey ? { account_key: request.accountKey } : {}),
+            ...(request.surfaceSubjectId ? { surface_subject_id: request.surfaceSubjectId } : {}),
         };
         const lease = this.#resolveNewLease(baseLease, now);
         this.#leases.set(lease.lease_id, lease);
@@ -138,6 +139,7 @@ export class BrowserSurfaceLeaseManager {
             runId: request.sessionId,
             ...(request.profileKey ? { profileKey: request.profileKey } : {}),
             ...(request.accountKey ? { accountKey: request.accountKey } : {}),
+            ...(request.sessionSubjectId ? { surfaceSubjectId: request.sessionSubjectId } : {}),
             ...(request.priorityClass ? { priorityClass: request.priorityClass } : {}),
         });
     }
@@ -217,6 +219,7 @@ export class BrowserSurfaceLeaseManager {
                 connectorId: lease.connector_id,
                 profileKey: lease.profile_key,
                 ...(lease.account_key ? { accountKey: lease.account_key } : {}),
+                ...(lease.surface_subject_id ? { surfaceSubjectId: lease.surface_subject_id } : {}),
             });
             const status = await request.allocator.getSurfaceStatus(surface.surface_id);
             if (!status) {
@@ -377,6 +380,7 @@ export class BrowserSurfaceLeaseManager {
                 health: "stopping",
                 last_used_at: stopping.last_used_at,
                 ...(surface.account_key ? { account_key: surface.account_key } : {}),
+                ...(surface.surface_subject_id ? { surface_subject_id: surface.surface_subject_id } : {}),
             });
         }
         return { stopped, promoted: this.pumpQueuedLeases() };
@@ -387,7 +391,7 @@ export class BrowserSurfaceLeaseManager {
             !lease ||
             lease.status !== "waiting_for_browser_surface" ||
             lease.wait_reason !== "capacity_full" ||
-            this.#findReadyIdleSurface(lease.profile_key) ||
+            this.#findReadyIdleSurface(lease.profile_key, lease.surface_subject_id) ||
             this.#activeSurfaceCount() < this.#config.surfaceCap) {
             return undefined;
         }
@@ -395,7 +399,7 @@ export class BrowserSurfaceLeaseManager {
             .filter((surface) => surface.backend === "neko" &&
             surface.health === "ready" &&
             !surface.active_lease_id &&
-            surface.profile_key !== lease.profile_key)
+            !this.#isSurfaceCompatibleWithLease(surface, lease))
             .sort((a, b) => Date.parse(a.last_used_at) - Date.parse(b.last_used_at))[0];
     }
     completeCapacityPressureReclaim(surfaceId) {
@@ -412,7 +416,7 @@ export class BrowserSurfaceLeaseManager {
         if (this.#config.surfaceMode === "static" && this.#config.staticProfileKey && lease.profile_key !== this.#config.staticProfileKey) {
             return { ...lease, status: "deferred", wait_reason: "incompatible_static_profile" };
         }
-        const idle = this.#findReadyIdleSurface(lease.profile_key);
+        const idle = this.#findReadyIdleSurface(lease.profile_key, lease.surface_subject_id);
         if (idle) {
             return this.#leaseSurface(lease, idle, now);
         }
@@ -451,8 +455,10 @@ export class BrowserSurfaceLeaseManager {
             .filter((lease) => lease.status === "waiting_for_browser_surface")
             .sort((a, b) => this.#comparePriorityFifo(a, b));
         for (const lease of waiting) {
-            const surface = preferredSurfaceId ? this.#surfaces.get(preferredSurfaceId) : this.#findReadyIdleSurface(lease.profile_key);
-            const compatibleSurface = surface?.health === "ready" && !surface.active_lease_id && surface.profile_key === lease.profile_key ? surface : this.#findReadyIdleSurface(lease.profile_key);
+            const surface = preferredSurfaceId ? this.#surfaces.get(preferredSurfaceId) : this.#findReadyIdleSurface(lease.profile_key, lease.surface_subject_id);
+            const compatibleSurface = surface?.health === "ready" && !surface.active_lease_id && this.#isSurfaceCompatibleWithLease(surface, lease)
+                ? surface
+                : this.#findReadyIdleSurface(lease.profile_key, lease.surface_subject_id);
             const promoted = compatibleSurface ? this.#leaseSurface(lease, compatibleSurface, this.#isoNow()) : this.#promoteWaitingLeaseToStarting(lease);
             if (!promoted) {
                 continue;
@@ -509,6 +515,7 @@ export class BrowserSurfaceLeaseManager {
             created_at: now,
             last_used_at: now,
             ...(lease.account_key ? { account_key: lease.account_key } : {}),
+            ...(lease.surface_subject_id ? { surface_subject_id: lease.surface_subject_id } : {}),
         };
     }
     #mergeAllocatorSurface(current, allocated) {
@@ -520,6 +527,7 @@ export class BrowserSurfaceLeaseManager {
             profile_key: current.profile_key,
             connector_id: current.connector_id,
             ...(current.account_key ? { account_key: current.account_key } : {}),
+            ...(current.surface_subject_id ? { surface_subject_id: current.surface_subject_id } : {}),
             ...(current.active_lease_id ? { active_lease_id: current.active_lease_id } : {}),
         };
     }
@@ -542,8 +550,15 @@ export class BrowserSurfaceLeaseManager {
         this.#surfaces.set(surfaceId, next);
         return next;
     }
-    #findReadyIdleSurface(profileKey) {
-        return [...this.#surfaces.values()].find((surface) => surface.backend === "neko" && surface.health === "ready" && !surface.active_lease_id && surface.profile_key === profileKey);
+    #findReadyIdleSurface(profileKey, surfaceSubjectId) {
+        return [...this.#surfaces.values()].find((surface) => surface.backend === "neko" &&
+            surface.health === "ready" &&
+            !surface.active_lease_id &&
+            surface.profile_key === profileKey &&
+            surface.surface_subject_id === surfaceSubjectId);
+    }
+    #isSurfaceCompatibleWithLease(surface, lease) {
+        return surface.profile_key === lease.profile_key && surface.surface_subject_id === lease.surface_subject_id;
     }
     #isCompatibleInitialSurface(surface) {
         if (surface.backend !== "neko") {
@@ -557,16 +572,22 @@ export class BrowserSurfaceLeaseManager {
     #activeSurfaceCount() {
         return [...this.#surfaces.values()].filter((surface) => surface.backend === "neko" && surface.health !== "stopping").length;
     }
-    #findNonTerminalRunLease(runId) {
-        return [...this.#leases.values()].find((lease) => lease.run_id === runId && !isTerminalBrowserSurfaceLeaseStatus(lease.status));
+    #findNonTerminalRunLease(runId, surfaceSubjectId, requireSubjectMatch = false) {
+        return [...this.#leases.values()].find((lease) => lease.run_id === runId &&
+            (!requireSubjectMatch || lease.surface_subject_id === surfaceSubjectId) &&
+            !isTerminalBrowserSurfaceLeaseStatus(lease.status));
     }
     #findPendingDuplicate(request) {
-        const profileKey = request.profileKey ?? request.connectorId;
+        const profileKey = this.#profileKeyForRequest(request);
         return [...this.#leases.values()].find((lease) => !isTerminalBrowserSurfaceLeaseStatus(lease.status) &&
             lease.status !== "leased" &&
             lease.connector_id === request.connectorId &&
             lease.profile_key === profileKey &&
-            lease.account_key === request.accountKey);
+            lease.account_key === request.accountKey &&
+            lease.surface_subject_id === request.surfaceSubjectId);
+    }
+    #profileKeyForRequest(request) {
+        return request.profileKey ?? (request.surfaceSubjectId ? `${request.connectorId}:${request.surfaceSubjectId}` : request.connectorId);
     }
     #surfaceForLease(lease) {
         return lease.surface_id ? this.#surfaces.get(lease.surface_id) : undefined;

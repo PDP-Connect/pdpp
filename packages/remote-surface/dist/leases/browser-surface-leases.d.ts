@@ -24,6 +24,7 @@ export interface BrowserSurface {
     readonly created_at: string;
     readonly last_used_at: string;
     readonly account_key?: string;
+    readonly surface_subject_id?: string;
     readonly active_lease_id?: string;
     readonly container_id?: string;
     readonly allocator_metadata?: Readonly<Record<string, string>>;
@@ -39,6 +40,7 @@ export interface BrowserSurfaceLease {
     readonly expires_at: string;
     readonly fencing_token: number;
     readonly account_key?: string;
+    readonly surface_subject_id?: string;
     readonly leased_at?: string;
     readonly released_at?: string;
     readonly surface_id?: string;
@@ -78,6 +80,7 @@ export interface AcquireBrowserSurfaceLeaseRequest {
     readonly runId: string;
     readonly profileKey?: string;
     readonly accountKey?: string;
+    readonly surfaceSubjectId?: string;
     readonly priorityClass?: BrowserSurfacePriorityClass;
 }
 export interface AcquireSurfaceLeaseRequest {
@@ -85,6 +88,7 @@ export interface AcquireSurfaceLeaseRequest {
     readonly sessionId: string;
     readonly profileKey?: string;
     readonly accountKey?: string;
+    readonly sessionSubjectId?: string;
     readonly priorityClass?: BrowserSurfacePriorityClass;
 }
 export interface BrowserSurfaceLeaseResult {
@@ -139,6 +143,7 @@ export interface EnsureBrowserSurfaceRequest {
     readonly connectorId: string;
     readonly profileKey: string;
     readonly accountKey?: string;
+    readonly surfaceSubjectId?: string;
 }
 export interface StopBrowserSurfaceRequest {
     readonly surfaceId: string;
