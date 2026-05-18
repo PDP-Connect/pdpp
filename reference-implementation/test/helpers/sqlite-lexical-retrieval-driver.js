@@ -25,8 +25,6 @@ import {
   referenceQueries,
 } from '../../lib/db.ts';
 import { closeDb, initDb } from '../../server/db.js';
-import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from '../../server/owner-auth.ts';
-import { makeLegacyConnectorInstanceId } from '../../server/stores/connector-instance-store.js';
 
 function buildFtsUserTextQuery(q) {
   const terms = String(q || '')
@@ -66,9 +64,8 @@ export function createSqliteLexicalRetrievalDriver() {
     },
 
     async upsert({ connectorId, stream, recordKey, fields }) {
-      const connectorInstanceId = makeLegacyConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId);
       exec(referenceQueries.searchIndexDeleteByRecordKey, [
-        connectorInstanceId,
+        connectorId,
         stream,
         recordKey,
       ]);
@@ -76,7 +73,6 @@ export function createSqliteLexicalRetrievalDriver() {
         if (typeof value !== 'string' || value.length === 0) continue;
         exec(referenceQueries.searchIndexInsertRow, [
           connectorId,
-          connectorInstanceId,
           stream,
           recordKey,
           field,
@@ -86,21 +82,18 @@ export function createSqliteLexicalRetrievalDriver() {
     },
 
     async deleteRecord({ connectorId, stream, recordKey }) {
-      const connectorInstanceId = makeLegacyConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId);
       exec(referenceQueries.searchIndexDeleteByRecordKey, [
-        connectorInstanceId,
+        connectorId,
         stream,
         recordKey,
       ]);
     },
 
     async deleteStream({ connectorId, stream }) {
-      const connectorInstanceId = makeLegacyConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId);
-      exec(referenceQueries.searchIndexDeleteByStream, [connectorInstanceId, stream]);
+      exec(referenceQueries.searchIndexDeleteByStream, [connectorId, stream]);
     },
 
     async search({ connectorId, stream, searchableFields, q }) {
-      const connectorInstanceId = makeLegacyConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId);
       const ftsQuery = buildFtsUserTextQuery(q);
       // Per-(stream, field) match against the FTS5 table. Same shape as
       // production `runFtsQueryForConnector` minus the records join — the
@@ -113,10 +106,10 @@ export function createSqliteLexicalRetrievalDriver() {
         const sql = `
           SELECT
             record_key                        AS record_key,
-            snippet(lexical_search_index, 5, '', '', '…', 16) AS snippet_text,
+            snippet(lexical_search_index, 4, '', '', '…', 16) AS snippet_text,
             bm25(lexical_search_index)        AS score
           FROM lexical_search_index
-          WHERE connector_instance_id = ?
+          WHERE connector_id = ?
             AND stream       = ?
             AND field        = ?
             AND text MATCH   ?
@@ -125,7 +118,7 @@ export function createSqliteLexicalRetrievalDriver() {
         `;
         const rows = [];
         for (const row of iterateDynamicSqlAcknowledged(sql, [
-          connectorInstanceId,
+          connectorId,
           stream,
           field,
           ftsQuery,

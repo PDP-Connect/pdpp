@@ -4,4 +4,4 @@
 -- @max_rows: 1024
 SELECT stream
 FROM lexical_search_meta
-WHERE connector_instance_id = ?
+WHERE connector_id = ?

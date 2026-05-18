@@ -34,13 +34,11 @@ import {
   SearchLexicalRequestError,
 } from '../operations/rs-search-lexical/index.ts';
 import { getConnectorManifest } from './auth.js';
-import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from './owner-auth.ts';
 import {
   compileRequestFilters,
   passesGrantRecordConstraints,
   passesRequestFilters,
 } from './record-filters.js';
-import { makeLegacyConnectorInstanceId } from './stores/connector-instance-store.js';
 import {
   postgresLexicalIndexDelete,
   postgresLexicalIndexDeleteByConnectorStream,
@@ -99,13 +97,6 @@ export function getLexicalIndexBackfillProgress() {
   return job ? publicLexicalBackfillJob(job) : null;
 }
 
-function resolveLexicalConnectorInstanceId(connectorId, connectorInstanceId = null) {
-  if (typeof connectorInstanceId === 'string' && connectorInstanceId.trim()) {
-    return connectorInstanceId.trim();
-  }
-  return makeLegacyConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId);
-}
-
 // ─── Stream-level declaration lookup ───────────────────────────────────────
 
 /**
@@ -138,7 +129,6 @@ async function getStreamLexicalFields(connectorId, stream) {
 export async function lexicalIndexUpsert({ connectorId, connectorInstanceId, stream, recordKey, data }) {
   const declared = await getStreamLexicalFields(connectorId, stream);
   if (!declared) return;
-  const resolvedConnectorInstanceId = resolveLexicalConnectorInstanceId(connectorId, connectorInstanceId);
 
   if (isPostgresStorageBackend()) {
     const fields = Object.fromEntries(
@@ -146,16 +136,16 @@ export async function lexicalIndexUpsert({ connectorId, connectorInstanceId, str
         .map((field) => [field, data?.[field]])
         .filter(([, value]) => typeof value === 'string' && value.length > 0),
     );
-    await postgresLexicalIndexUpsert({ connectorId, connectorInstanceId: resolvedConnectorInstanceId, stream, recordKey, fields });
+    await postgresLexicalIndexUpsert({ connectorId, connectorInstanceId, stream, recordKey, fields });
     return;
   }
 
-  exec(referenceQueries.searchIndexDeleteByRecordKey, [resolvedConnectorInstanceId, stream, recordKey]);
+  exec(referenceQueries.searchIndexDeleteByRecordKey, [connectorId, stream, recordKey]);
 
   for (const field of declared) {
     const value = data?.[field];
     if (typeof value !== 'string' || value.length === 0) continue;
-    exec(referenceQueries.searchIndexInsertRow, [connectorId, resolvedConnectorInstanceId, stream, recordKey, field, value]);
+    exec(referenceQueries.searchIndexInsertRow, [connectorId, stream, recordKey, field, value]);
   }
 }
 
@@ -163,12 +153,11 @@ export async function lexicalIndexUpsert({ connectorId, connectorInstanceId, str
  * Delete all FTS rows for a single record. Called on hard or soft delete.
  */
 export async function lexicalIndexDelete({ connectorId, connectorInstanceId, stream, recordKey }) {
-  const resolvedConnectorInstanceId = resolveLexicalConnectorInstanceId(connectorId, connectorInstanceId);
   if (isPostgresStorageBackend()) {
-    await postgresLexicalIndexDelete({ connectorId, connectorInstanceId: resolvedConnectorInstanceId, stream, recordKey });
+    await postgresLexicalIndexDelete({ connectorId, connectorInstanceId, stream, recordKey });
     return;
   }
-  exec(referenceQueries.searchIndexDeleteByRecordKey, [resolvedConnectorInstanceId, stream, recordKey]);
+  exec(referenceQueries.searchIndexDeleteByRecordKey, [connectorId, stream, recordKey]);
 }
 
 /**
@@ -176,12 +165,11 @@ export async function lexicalIndexDelete({ connectorId, connectorInstanceId, str
  * deleteAllRecords (the owner-authenticated reset path).
  */
 export async function lexicalIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream }) {
-  const resolvedConnectorInstanceId = resolveLexicalConnectorInstanceId(connectorId, connectorInstanceId);
   if (isPostgresStorageBackend()) {
-    await postgresLexicalIndexDeleteByConnectorStream({ connectorId, connectorInstanceId: resolvedConnectorInstanceId, stream });
+    await postgresLexicalIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
     return;
   }
-  exec(referenceQueries.searchIndexDeleteByStream, [resolvedConnectorInstanceId, stream]);
+  exec(referenceQueries.searchIndexDeleteByStream, [connectorId, stream]);
 }
 
 // ─── Drift-detect + backfill ───────────────────────────────────────────────
@@ -194,9 +182,8 @@ export async function lexicalIndexDeleteByConnectorStream({ connectorId, connect
  * which handles the per-stream loop, the manifest lookup of declared fields,
  * and the drift check that decides whether a rebuild is needed at all.
  */
-async function rebuildLexicalIndexForStream({ connectorId, connectorInstanceId, stream, declaredFields, recordsToScan = null, progressJob = null, signal = null }) {
-  const resolvedConnectorInstanceId = resolveLexicalConnectorInstanceId(connectorId, connectorInstanceId);
-  exec(referenceQueries.searchIndexDeleteByStream, [resolvedConnectorInstanceId, stream]);
+async function rebuildLexicalIndexForStream({ connectorId, stream, declaredFields, recordsToScan = null, progressJob = null, signal = null }) {
+  exec(referenceQueries.searchIndexDeleteByStream, [connectorId, stream]);
 
   // Stream the records page-by-page so we don't pull the whole table into
   // memory on big stores.
@@ -216,7 +203,7 @@ async function rebuildLexicalIndexForStream({ connectorId, connectorInstanceId, 
     }
     const page = getMany(
       referenceQueries.searchRecordsPageNonDeleted,
-      [resolvedConnectorInstanceId, stream, lastId],
+      [connectorId, stream, lastId],
       { limit: PAGE },
     );
     const rows = page.rows;
@@ -242,7 +229,7 @@ async function rebuildLexicalIndexForStream({ connectorId, connectorInstanceId, 
     if (entries.length > 0) {
       transaction(() => {
         for (const entry of entries) {
-          exec(referenceQueries.searchIndexInsertRow, [connectorId, resolvedConnectorInstanceId, stream, entry.recordKey, entry.field, entry.text]);
+          exec(referenceQueries.searchIndexInsertRow, [connectorId, stream, entry.recordKey, entry.field, entry.text]);
         }
       });
       indexed += entries.length;
@@ -281,11 +268,11 @@ function jsonPathForTopLevelField(field) {
   return `$."${String(field).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 }
 
-function countIndexableTextValues({ connectorInstanceId, stream, declaredFields }) {
+function countIndexableTextValues({ connectorId, stream, declaredFields }) {
   let total = 0;
   for (const field of declaredFields) {
     const path = jsonPathForTopLevelField(field);
-    const row = getOne(referenceQueries.searchRecordsCountIndexableTextValues, [connectorInstanceId, stream, path, path]);
+    const row = getOne(referenceQueries.searchRecordsCountIndexableTextValues, [connectorId, stream, path, path]);
     total += Number(row?.n || 0);
   }
   return total;
@@ -352,10 +339,6 @@ export async function lexicalIndexBackfillForManifest({ manifest, log = () => {}
   lexicalBackfillJobs.set(progressJob.id, progressJob);
   try {
   const connectorId = manifest.connector_id;
-  const connectorInstanceId = resolveLexicalConnectorInstanceId(
-    connectorId,
-    manifest.storage_binding?.connector_instance_id || manifest.connector_instance_id,
-  );
 
   // Track which streams we visited so we can detect "previously
   // participated, no longer participates" — those need their stale index
@@ -378,12 +361,12 @@ export async function lexicalIndexBackfillForManifest({ manifest, log = () => {}
       // version declared lexical_fields for it, drop the stale index +
       // meta so historical data doesn't keep matching against a field set
       // that's no longer declared.
-      const metaExists = getOne(referenceQueries.searchMetaExistsByStream, [connectorInstanceId, stream]);
+      const metaExists = getOne(referenceQueries.searchMetaExistsByStream, [connectorId, stream]);
       if (metaExists) {
         log(`[PDPP] Lexical index: stream='${stream}' connector='${connectorId}' ` +
             `no longer declares lexical_fields — dropping stale index + meta`);
-        exec(referenceQueries.searchIndexDeleteByStream, [connectorInstanceId, stream]);
-        exec(referenceQueries.searchMetaDeleteByStream, [connectorInstanceId, stream]);
+        exec(referenceQueries.searchIndexDeleteByStream, [connectorId, stream]);
+        exec(referenceQueries.searchMetaDeleteByStream, [connectorId, stream]);
       }
       continue;
     }
@@ -398,7 +381,7 @@ export async function lexicalIndexBackfillForManifest({ manifest, log = () => {}
 
     const newFingerprint = fingerprintLexicalFields(declaredFields);
 
-    const fingerprintRow = getOne(referenceQueries.searchMetaGetFingerprintByStream, [connectorInstanceId, stream]);
+    const fingerprintRow = getOne(referenceQueries.searchMetaGetFingerprintByStream, [connectorId, stream]);
     const persistedFingerprint = fingerprintRow?.fields_fingerprint ?? null;
     const fingerprintChanged = persistedFingerprint !== newFingerprint;
 
@@ -408,7 +391,7 @@ export async function lexicalIndexBackfillForManifest({ manifest, log = () => {}
     let expectedIndexRows = 0;
 
     const countRecords = () => {
-      const row = getOne(referenceQueries.searchRecordsCountNonDeleted, [connectorInstanceId, stream]);
+      const row = getOne(referenceQueries.searchRecordsCountNonDeleted, [connectorId, stream]);
       return Number(row?.n || 0);
     };
 
@@ -418,12 +401,12 @@ export async function lexicalIndexBackfillForManifest({ manifest, log = () => {}
       // streams have records but no lexical text for the declared fields.
       recordCount = countRecords();
 
-      const indexCountRow = getOne(referenceQueries.searchIndexCountByStream, [connectorInstanceId, stream]);
+      const indexCountRow = getOne(referenceQueries.searchIndexCountByStream, [connectorId, stream]);
       indexCount = Number(indexCountRow?.n || 0);
 
       const maxIndexRows = recordCount * declaredFields.length;
       expectedIndexRows = indexCount === 0 || indexCount > maxIndexRows
-        ? countIndexableTextValues({ connectorInstanceId, stream, declaredFields })
+        ? countIndexableTextValues({ connectorId, stream, declaredFields })
         : null;
       const inSync = indexCount > 0
         ? indexCount <= maxIndexRows
@@ -453,7 +436,6 @@ export async function lexicalIndexBackfillForManifest({ manifest, log = () => {}
 
     const indexedRows = await rebuildLexicalIndexForStream({
       connectorId,
-      connectorInstanceId,
       stream,
       declaredFields,
       recordsToScan: recordCount,
@@ -464,7 +446,7 @@ export async function lexicalIndexBackfillForManifest({ manifest, log = () => {}
         `(records=${recordCount}, indexed_rows=${indexedRows})`);
 
     // Persist the new fingerprint so subsequent backfill calls can skip.
-    exec(referenceQueries.searchMetaUpsertFingerprint, [connectorId, connectorInstanceId, stream, newFingerprint, new Date().toISOString()]);
+    exec(referenceQueries.searchMetaUpsertFingerprint, [connectorId, stream, newFingerprint, new Date().toISOString()]);
   }
   progressJob = updateLexicalBackfillJob(progressJob, {
     stream: null,
@@ -477,19 +459,19 @@ export async function lexicalIndexBackfillForManifest({ manifest, log = () => {}
   // Streams that previously had a meta row but are no longer in the
   // manifest at all (entire stream removed). Same cleanup as the
   // "no-longer-participating" case above.
-  // REVIEWED-BOUNDED: lexical_search_meta is keyed by (connector_instance_id, stream)
+  // REVIEWED-BOUNDED: lexical_search_meta is keyed by (connector_id, stream)
   // and the stream count per connector is a small enumeration bounded by the
   // manifest, well below the @max_rows=1024 declared in the artifact.
   const orphanRows = allowUnboundedReadAcknowledged(
     referenceQueries.searchMetaListStreamsForConnector,
-    [connectorInstanceId],
+    [connectorId],
   );
   for (const row of orphanRows) {
     if (visitedStreams.has(row.stream)) continue;
     log(`[PDPP] Lexical index: stream='${row.stream}' connector='${connectorId}' ` +
         `no longer in manifest — dropping stale index + meta`);
-    exec(referenceQueries.searchIndexDeleteByStream, [connectorInstanceId, row.stream]);
-    exec(referenceQueries.searchMetaDeleteByStream, [connectorInstanceId, row.stream]);
+    exec(referenceQueries.searchIndexDeleteByStream, [connectorId, row.stream]);
+    exec(referenceQueries.searchMetaDeleteByStream, [connectorId, row.stream]);
   }
   } finally {
     activeLexicalBackfillCount = Math.max(0, activeLexicalBackfillCount - 1);
@@ -553,17 +535,7 @@ export async function runLexicalSearch({
       try {
         const ownerScope = resolveOwnerScopeForConnector(connectorId);
         const resolved = await resolveOwnerManifestFromScope(ownerScope);
-        const manifest = resolved.manifest ?? null;
-        if (manifest && resolved.storageBinding?.connector_instance_id) {
-          return {
-            ...manifest,
-            storage_binding: {
-              ...(manifest.storage_binding || {}),
-              connector_instance_id: resolved.storageBinding.connector_instance_id,
-            },
-          };
-        }
-        return manifest;
+        return resolved.manifest ?? null;
       } catch {
         // Skip connectors whose manifest cannot be resolved. The owner can
         // still read the others; one broken connector should not break the
@@ -575,15 +547,6 @@ export async function runLexicalSearch({
       buildOwnerReadGrantForManifest(manifest),
     resolveClientManifest: async () => {
       const grantResolved = await resolveGrantManifest(tokenInfo);
-      if (grantResolved.storageBinding?.connector_instance_id) {
-        return {
-          ...grantResolved.manifest,
-          storage_binding: {
-            ...(grantResolved.manifest.storage_binding || {}),
-            connector_instance_id: grantResolved.storageBinding.connector_instance_id,
-          },
-        };
-      }
       return grantResolved.manifest;
     },
     buildSearchPlanForGrant: ({
@@ -594,11 +557,6 @@ export async function runLexicalSearch({
       filteredStream,
       connectorId,
     }) => {
-      const effectiveConnectorId = connectorId || manifest?.connector_id;
-      const connectorInstanceId = effectiveConnectorId ? resolveLexicalConnectorInstanceId(
-        effectiveConnectorId,
-        manifest?.storage_binding?.connector_instance_id || manifest?.connector_instance_id,
-      ) : null;
       const compiledFilter = compileSingleStreamSearchFilter({
         manifest,
         grant,
@@ -610,8 +568,7 @@ export async function runLexicalSearch({
         grant,
         streamsFilter,
         compiledFilter,
-        connectorId: effectiveConnectorId,
-        connectorInstanceId,
+        connectorId,
       });
     },
     buildSnapshot: (args) => buildSnapshot(args),
@@ -716,12 +673,12 @@ function hasGrantRecordConstraints(streamGrant) {
   );
 }
 
-function buildCandidateRecordKeys({ connectorInstanceId, streamName, streamGrant, manifestStream, compiledFilters }) {
+function buildCandidateRecordKeys({ connectorId, streamName, streamGrant, manifestStream, compiledFilters }) {
   const needsRecordScan = compiledFilters?.length || hasGrantRecordConstraints(streamGrant);
   if (!needsRecordScan) return null;
 
-  const where = ['connector_instance_id = ?', 'stream = ?', 'deleted = 0'];
-  const binds = [connectorInstanceId, streamName];
+  const where = ['connector_id = ?', 'stream = ?', 'deleted = 0'];
+  const binds = [connectorId, streamName];
   if (Array.isArray(streamGrant?.resources) && streamGrant.resources.length > 0) {
     where.push(`record_key IN (${streamGrant.resources.map(() => '?').join(', ')})`);
     binds.push(...streamGrant.resources);
@@ -751,11 +708,8 @@ function buildCandidateRecordKeys({ connectorInstanceId, streamName, streamGrant
   return allowed;
 }
 
-export function buildSearchPlanForGrant({ manifest, grant, streamsFilter, compiledFilter = null, connectorId = null, connectorInstanceId = null }) {
+export function buildSearchPlanForGrant({ manifest, grant, streamsFilter, compiledFilter = null, connectorId = null }) {
   if (!manifest?.streams || !grant?.streams) return [];
-  const resolvedConnectorInstanceId = connectorId
-    ? resolveLexicalConnectorInstanceId(connectorId, connectorInstanceId || manifest?.storage_binding?.connector_instance_id || manifest?.connector_instance_id)
-    : null;
   const plan = [];
   for (const mStream of manifest.streams) {
     const declared = mStream?.query?.search?.lexical_fields;
@@ -774,9 +728,9 @@ export function buildSearchPlanForGrant({ manifest, grant, streamsFilter, compil
     if (searchable.length === 0) continue;
 
     const filters = compiledFilter?.streamName === mStream.name ? compiledFilter.filters : [];
-    const candidateRecordKeys = resolvedConnectorInstanceId
+    const candidateRecordKeys = connectorId
       ? buildCandidateRecordKeys({
-        connectorInstanceId: resolvedConnectorInstanceId,
+        connectorId,
         streamName: mStream.name,
         streamGrant,
         manifestStream: mStream,
@@ -786,7 +740,6 @@ export function buildSearchPlanForGrant({ manifest, grant, streamsFilter, compil
 
     plan.push({
       streamName: mStream.name,
-      ...(resolvedConnectorInstanceId ? { connectorInstanceId: resolvedConnectorInstanceId } : {}),
       searchableFields: searchable,
       ...(candidateRecordKeys ? { candidateRecordKeys } : {}),
     });
@@ -829,14 +782,8 @@ function resolveLexicalRetrievalAdvertisement(opts) {
 async function buildSnapshot({ q, perConnectorPlans, isOwner }) {
   const allowsSnippets = true; // reference always supports snippets in v1
   const perConnectorHits = await Promise.all(
-    perConnectorPlans.map(async ({ connectorId, planEntries, manifest }) =>
-      runFtsQueryForConnector({
-        connectorId: connectorId || manifest?.connector_id,
-        connectorInstanceId: planEntries[0]?.connectorInstanceId || manifest?.storage_binding?.connector_instance_id || manifest?.connector_instance_id,
-        planEntries,
-        q,
-        allowsSnippets,
-      })
+    perConnectorPlans.map(async ({ connectorId, planEntries }) =>
+      runFtsQueryForConnector({ connectorId, planEntries, q, allowsSnippets })
     ),
   );
 
@@ -860,15 +807,13 @@ async function buildSnapshot({ q, perConnectorPlans, isOwner }) {
  * with a combined matched_fields list and one snippet from the
  * highest-ranked field match.
  */
-async function runFtsQueryForConnector({ connectorId, connectorInstanceId, planEntries, q, allowsSnippets }) {
-  const resolvedConnectorInstanceId = resolveLexicalConnectorInstanceId(connectorId, connectorInstanceId);
+async function runFtsQueryForConnector({ connectorId, planEntries, q, allowsSnippets }) {
   if (isPostgresStorageBackend()) {
     const collapsed = new Map();
     for (const entry of planEntries) {
       if (Array.isArray(entry.candidateRecordKeys) && entry.candidateRecordKeys.length === 0) continue;
       const rows = await postgresLexicalSearch({
         connectorId,
-        connectorInstanceId: resolvedConnectorInstanceId,
         stream: entry.streamName,
         searchableFields: entry.searchableFields,
         q,
@@ -931,7 +876,7 @@ async function runFtsQueryForConnector({ connectorId, connectorInstanceId, planE
       // (negative-leaning). The public score exposes that implementation-
       // relative ordering honestly rather than normalizing it.
       const snippetExpr = allowsSnippets
-        ? `snippet(lexical_search_index, 5, '', '', '…', 16)`
+        ? `snippet(lexical_search_index, 4, '', '', '…', 16)`
         : `NULL`;
       const recordKeyConstraint = Array.isArray(entry.candidateRecordKeys)
         ? `AND r.record_key IN (${entry.candidateRecordKeys.map(() => '?').join(',')})`
@@ -947,10 +892,10 @@ async function runFtsQueryForConnector({ connectorId, connectorInstanceId, planE
           r.deleted                               AS deleted
         FROM lexical_search_index lsi
         JOIN records r
-          ON r.connector_instance_id = lsi.connector_instance_id
+          ON r.connector_id = lsi.connector_id
          AND r.stream       = lsi.stream
          AND r.record_key   = lsi.record_key
-        WHERE lsi.connector_instance_id = ?
+        WHERE lsi.connector_id = ?
           AND lsi.stream       = ?
           AND lsi.field        = ?
           AND lsi.text MATCH   ?
@@ -962,7 +907,7 @@ async function runFtsQueryForConnector({ connectorId, connectorInstanceId, planE
       const rows = [];
       for (const row of iterateDynamicSqlAcknowledged(
         sql,
-        [resolvedConnectorInstanceId, entry.streamName, field, ftsQuery, ...(entry.candidateRecordKeys || [])],
+        [connectorId, entry.streamName, field, ftsQuery, ...(entry.candidateRecordKeys || [])],
       )) {
         rows.push(row);
       }
@@ -1043,7 +988,7 @@ function hashPlan({ perConnectorPlans, isOwner }) {
   // Cheap stable hash; only used to sanity-check snapshot reuse.
   const summary = perConnectorPlans.map((p) => ({
     c: p.connectorId,
-    e: p.planEntries.map((pe) => ({ i: pe.connectorInstanceId, s: pe.streamName, f: pe.searchableFields.slice().sort() })),
+    e: p.planEntries.map((pe) => ({ s: pe.streamName, f: pe.searchableFields.slice().sort() })),
   }));
   return JSON.stringify({ isOwner, summary });
 }
