@@ -331,6 +331,7 @@ test("Postgres store maps dynamic surface metadata with the same persistence sha
     "chatgpt",
     "chatgpt",
     null,
+    null,
     "dynamic",
     "allocator",
     "http://neko:9222",

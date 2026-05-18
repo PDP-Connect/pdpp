@@ -405,6 +405,7 @@ CREATE TABLE IF NOT EXISTS browser_surfaces (
   backend          TEXT NOT NULL,
   profile_key      TEXT NOT NULL,
   connector_id     TEXT NOT NULL,
+  surface_subject_id TEXT,
   account_key      TEXT,
   surface_mode     TEXT,
   surface_source   TEXT,
@@ -436,6 +437,7 @@ CREATE TABLE IF NOT EXISTS browser_surface_leases (
   surface_id      TEXT,
   connector_id    TEXT NOT NULL,
   profile_key     TEXT NOT NULL,
+  surface_subject_id TEXT,
   account_key     TEXT,
   run_id          TEXT NOT NULL,
   status          TEXT NOT NULL,
@@ -881,6 +883,8 @@ function addColumnIfMissing(raw, table, column, type) {
 
 function ensureBrowserSurfaceLeaseIndexes(raw) {
   raw.exec(`
+DROP INDEX IF EXISTS idx_browser_surface_leases_one_pending_connector_profile;
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_browser_surface_leases_one_non_terminal_run
   ON browser_surface_leases(run_id)
   WHERE status NOT IN ('released', 'expired', 'deferred', 'cancelled', 'surface_failed');
@@ -907,6 +911,8 @@ function migrateBrowserSurfaceLeaseEnumChecks(raw) {
     return;
   }
 
+  addColumnIfMissing(raw, 'browser_surface_leases', 'surface_subject_id', 'TEXT');
+
   raw.exec(`
 DROP TABLE IF EXISTS browser_surface_leases_new;
 
@@ -915,6 +921,7 @@ CREATE TABLE browser_surface_leases_new (
   surface_id      TEXT,
   connector_id    TEXT NOT NULL,
   profile_key     TEXT NOT NULL,
+  surface_subject_id TEXT,
   account_key     TEXT,
   run_id          TEXT NOT NULL,
   status          TEXT NOT NULL,
@@ -954,6 +961,7 @@ INSERT INTO browser_surface_leases_new(
   surface_id,
   connector_id,
   profile_key,
+  surface_subject_id,
   account_key,
   run_id,
   status,
@@ -970,6 +978,7 @@ SELECT
   surface_id,
   connector_id,
   profile_key,
+  NULL AS surface_subject_id,
   account_key,
   run_id,
   status,
@@ -1467,12 +1476,15 @@ export function initDb(path = ':memory:', opts = {}) {
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'device_enrollment_codes', 'display_name', 'TEXT'));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'device_source_instances', 'last_error_json', 'TEXT'));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'browser_surfaces', 'surface_mode', 'TEXT'));
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'browser_surfaces', 'surface_subject_id', 'TEXT'));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'browser_surfaces', 'surface_source', 'TEXT'));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'browser_surfaces', 'stream_origin', 'TEXT'));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'browser_surfaces', 'container_name', 'TEXT'));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'browser_surfaces', 'profile_dir', 'TEXT'));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'browser_surfaces', 'profile_volume', 'TEXT'));
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'browser_surface_leases', 'surface_subject_id', 'TEXT'));
   runWithSqliteBusyRetrySync(() => migrateBrowserSurfaceLeaseEnumChecks(raw));
+  runWithSqliteBusyRetrySync(() => ensureBrowserSurfaceLeaseIndexes(raw));
   // Disclosure-spine `event_seq` migration. Pre-existing reference DBs were
   // created before `event_seq` existed; add the column non-destructively and
   // seed it for any rows that lack a value. The seed orders by `rowid` —

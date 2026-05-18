@@ -142,6 +142,7 @@ export interface ScheduleApi {
   readonly browser_surface_status?: BrowserSurfaceProjection["browser_surface_status"];
   readonly browser_surface_wait_reason?: BrowserSurfaceProjection["browser_surface_wait_reason"];
   readonly connector_id: string;
+  readonly connector_instance_id: string;
   readonly created_at: string;
   readonly effective_mode: "automatic" | "manual" | "paused";
   readonly enabled: boolean;
@@ -175,12 +176,14 @@ export interface ScheduleApi {
 
 export interface ActiveRun {
   readonly connector_id: string;
+  readonly connector_instance_id: string;
   readonly run_id: string;
   readonly started_at: string;
   readonly trace_id: string;
 }
 
 export interface RunNowOptions {
+  connectorInstanceId?: string;
   manifest?: ConnectorManifest;
   ownerToken?: string;
   priorityClass?: "owner_interactive" | "scheduled_refresh";
@@ -189,6 +192,10 @@ export interface RunNowOptions {
   scenarioId?: string;
   traceContext?: SpineTraceContext;
   triggerKind?: Extract<RunTriggerKind, "manual" | "webhook">;
+}
+
+export interface ConnectorInstanceOptions {
+  connectorInstanceId?: string;
 }
 
 export interface RunNowResult {
@@ -317,8 +324,8 @@ export interface ControllerOptions {
 
 export interface Controller {
   cancelBrowserSurfaceRun(runId: string): Promise<BrowserSurfaceProjection | null>;
-  clearNeedsHuman(connectorId: string): void;
-  deleteSchedule(connectorId: string): Promise<boolean>;
+  clearNeedsHuman(connectorId: string, options?: ConnectorInstanceOptions): void;
+  deleteSchedule(connectorId: string, options?: ConnectorInstanceOptions): Promise<boolean>;
   /**
    * Graceful-shutdown drain: await all in-flight `runConnector` promises,
    * bounded by `timeoutMs`. Returns a summary of which runs finished
@@ -337,20 +344,20 @@ export interface Controller {
   drainActiveRuns(timeoutMs: number): Promise<DrainSummary>;
   cleanupIdleBrowserSurfaces(): Promise<BrowserSurfaceProjection[]>;
   expireBrowserSurfaceWaits(): Promise<BrowserSurfaceProjection[]>;
-  getActiveRun(connectorId: string): ActiveRun | null;
+  getActiveRun(connectorId: string, options?: ConnectorInstanceOptions): ActiveRun | null;
   getPendingInteraction(runId: string): PendingInteractionProjection | null;
-  getSchedule(connectorId: string): Promise<ScheduleApi | null>;
-  isNeedsHuman(connectorId: string): boolean;
+  getSchedule(connectorId: string, options?: ConnectorInstanceOptions): Promise<ScheduleApi | null>;
+  isNeedsHuman(connectorId: string, options?: ConnectorInstanceOptions): boolean;
   issueRuntimeOwnerToken(): Promise<string>;
   listSchedules(): Promise<ScheduleApi[]>;
-  markNeedsHuman(connectorId: string): void;
+  markNeedsHuman(connectorId: string, options?: ConnectorInstanceOptions): void;
   promoteBrowserSurfaceLeasesAfterBoot(): Promise<void>;
   reconcileBrowserSurfaceLeasesAfterBoot(): Promise<void>;
   respondToInteraction(runId: string, input?: RunInteractionResponseInput): RunInteractionAck;
   listBrowserSurfaceRunProjections(): BrowserSurfaceRunProjection[];
   runNow(connectorId: string, options?: RunNowOptions): Promise<RunNowResult>;
-  setScheduleEnabled(connectorId: string, enabled: boolean): Promise<ScheduleApi | null>;
-  upsertSchedule(connectorId: string, input: ConnectorSchedulePatch): Promise<ScheduleUpsertResult>;
+  setScheduleEnabled(connectorId: string, enabled: boolean, options?: ConnectorInstanceOptions): Promise<ScheduleApi | null>;
+  upsertSchedule(connectorId: string, input: ConnectorSchedulePatch, options?: ConnectorInstanceOptions): Promise<ScheduleUpsertResult>;
 }
 
 export interface DrainSummary {
@@ -441,6 +448,10 @@ const ABANDONED_CONTROLLER_RUN_REASON = "controller_restarted";
 
 function buildRunSource(connectorId: string): { kind: "connector"; id: string } {
   return { kind: "connector", id: connectorId };
+}
+
+function runtimeKey(connectorId: string, connectorInstanceId?: string | null): string {
+  return connectorInstanceId || connectorId;
 }
 
 /**
@@ -557,6 +568,7 @@ function readManifestRefreshPolicy(manifest: ConnectorManifest | null | undefine
 
 function readBrowserSurfaceProfileKey(
   connectorId: string,
+  connectorInstanceId: string,
   manifest: ConnectorManifest | null | undefined,
 ): string {
   const caps = manifest && typeof manifest === "object" ? (manifest as { capabilities?: unknown }).capabilities : null;
@@ -566,7 +578,8 @@ function readBrowserSurfaceProfileKey(
     browserSurface && typeof browserSurface === "object"
       ? (browserSurface as { profile_key?: unknown }).profile_key
       : null;
-  return typeof profileKey === "string" && profileKey.trim() ? profileKey.trim() : connectorId;
+  const baseProfileKey = typeof profileKey === "string" && profileKey.trim() ? profileKey.trim() : connectorId;
+  return connectorInstanceId === connectorId ? baseProfileKey : `${baseProfileKey}:${connectorInstanceId}`;
 }
 
 function loadReferenceFixtureFingerprints(): Map<string, ManifestFingerprint> {
@@ -743,21 +756,25 @@ const EMPTY_SCHEDULE_HISTORY_FACTS: ScheduleHistoryFacts = {
 
 function getRuntimeProjection(
   connectorId: string,
+  connectorInstanceId: string,
   browserSurfaceLeaseManager?: BrowserSurfaceLeaseManager,
   historyIndex?: ScheduleHistoryIndex,
 ): RuntimeProjection {
-  const active = activeRuns.get(connectorId) || null;
+  const key = runtimeKey(connectorId, connectorInstanceId);
+  const active = activeRuns.get(key) || null;
   const pendingBrowserSurfaceLease = browserSurfaceLeaseManager
     ?.listLeases()
     .find(
       (lease) =>
         lease.connector_id === connectorId &&
+        (lease.surface_subject_id === connectorInstanceId ||
+          (!lease.surface_subject_id && connectorInstanceId === connectorId)) &&
         (lease.status === "waiting_for_browser_surface" || lease.status === "deferred")
     );
   const browserSurfaceProjection = pendingBrowserSurfaceLease
     ? projectBrowserSurfaceLease(pendingBrowserSurfaceLease)
     : null;
-  const historyFacts = historyIndex?.get(connectorId) ?? EMPTY_SCHEDULE_HISTORY_FACTS;
+  const historyFacts = historyIndex?.get(key) ?? EMPTY_SCHEDULE_HISTORY_FACTS;
   if (!active) {
     return {
       active_run_id: null,
@@ -770,7 +787,7 @@ function getRuntimeProjection(
       last_finished_at: historyFacts.latestFinishedAt,
       last_error_code: historyFacts.latestErrorCode,
       last_successful_at: historyFacts.latestSuccessfulAt,
-      human_attention_needed: needsHumanAttention.has(connectorId),
+      human_attention_needed: needsHumanAttention.has(key),
     };
   }
   return {
@@ -784,7 +801,7 @@ function getRuntimeProjection(
     last_finished_at: historyFacts.latestFinishedAt,
     last_error_code: historyFacts.latestErrorCode,
     last_successful_at: historyFacts.latestSuccessfulAt,
-    human_attention_needed: needsHumanAttention.has(connectorId),
+    human_attention_needed: needsHumanAttention.has(key),
   };
 }
 
@@ -969,8 +986,8 @@ export function __resetControllerInteractionStateForTests(): void {
   needsHumanAttention.clear();
 }
 
-export function isNeedsHumanAttention(connectorId: string): boolean {
-  return needsHumanAttention.has(connectorId);
+export function isNeedsHumanAttention(connectorId: string, options: ConnectorInstanceOptions = {}): boolean {
+  return needsHumanAttention.has(runtimeKey(connectorId, options.connectorInstanceId));
 }
 
 function validateScheduleInput(input: ConnectorSchedulePatch | null | undefined): ValidatedSchedulePatch {
@@ -1108,6 +1125,7 @@ function scheduleToApi(
   return {
     object: "schedule",
     connector_id: schedule.connector_id,
+    connector_instance_id: schedule.connector_instance_id,
     automation_mode: automationPolicy.automation_mode,
     automation_summary: automationModeCopy(automationPolicy.automation_mode),
     interval_seconds: schedule.interval_seconds,
@@ -1181,8 +1199,8 @@ export function createController(opts: ControllerOptions = {}): Controller {
     await schedulerStore.upsertActiveRun(record);
   }
 
-  async function clearPersistedActiveRun(connectorId: string, runId: string): Promise<void> {
-    await schedulerStore.deleteActiveRun(connectorId, runId);
+  async function clearPersistedActiveRun(connectorInstanceId: string, runId: string): Promise<void> {
+    await schedulerStore.deleteActiveRun(connectorInstanceId, runId);
   }
 
   async function runAlreadyTerminal(runId: string): Promise<boolean> {
@@ -1235,7 +1253,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
           log.warn?.(`[controller] failed to emit restart reconciliation event for ${row.run_id}: ${message}`);
         }
       }
-      await clearPersistedActiveRun(row.connector_id, row.run_id);
+      await clearPersistedActiveRun(row.connector_instance_id ?? row.connector_id, row.run_id);
     }
 
     for (const row of rows) {
@@ -1778,7 +1796,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     // rows below will overwrite with a more precise per-status anchor
     // when they exist.
     for (const row of lastRunTimes) {
-      const entry = ensure(row.connector_id);
+      const entry = ensure(row.connector_instance_id || row.connector_id);
       if (!entry.latestFinishedAt && Number.isFinite(row.last_run_time_ms)) {
         entry.latestFinishedAt = new Date(row.last_run_time_ms).toISOString();
       }
@@ -1793,7 +1811,8 @@ export function createController(opts: ControllerOptions = {}): Controller {
       if (!row || typeof row.connectorId !== "string") {
         continue;
       }
-      const entry = ensure(row.connectorId);
+      const rowKey = row.connectorInstanceId || row.connectorId;
+      const entry = ensure(rowKey);
       if (entry.latestStatus === null) {
         entry.latestStatus = row.status;
         if (row.status === "failed" || row.status === "skipped") {
@@ -1836,6 +1855,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
         const policy = await getConnectorRefreshPolicy(schedule.connector_id);
         const runtimeProjection = getRuntimeProjection(
           schedule.connector_id,
+          schedule.connector_instance_id,
           browserSurfaceLeaseManager,
           historyIndex
         );
@@ -1845,8 +1865,17 @@ export function createController(opts: ControllerOptions = {}): Controller {
     return apis.flatMap((api) => (api ? [api] : []));
   }
 
-  async function getSchedule(connectorId: string): Promise<ScheduleApi | null> {
-    const schedule = await getScheduleRecord(connectorId);
+  async function getSchedule(connectorId: string, options: ConnectorInstanceOptions = {}): Promise<ScheduleApi | null> {
+    const connectorInstanceId = options.connectorInstanceId || connectorId;
+    const directSchedule = await getScheduleRecord(connectorInstanceId);
+    let schedule = directSchedule;
+    if (!schedule && !options.connectorInstanceId) {
+      const matches = (await schedulerStore.listSchedules()).filter((candidate) => candidate.connector_id === connectorId);
+      if (matches.length > 1) {
+        throw new ControllerError(`Connector '${connectorId}' has multiple schedules; provide connector_instance_id.`, "ambiguous_connector_instance");
+      }
+      schedule = matches[0] ?? null;
+    }
     if (!schedule) {
       return null;
     }
@@ -1854,13 +1883,19 @@ export function createController(opts: ControllerOptions = {}): Controller {
     const historyIndex = await loadScheduleHistoryIndex();
     const runtimeProjection = getRuntimeProjection(
       connectorId,
+      schedule.connector_instance_id,
       browserSurfaceLeaseManager,
       historyIndex
     );
     return scheduleToApi(schedule, runtimeProjection, policy);
   }
 
-  async function upsertSchedule(connectorId: string, input: ConnectorSchedulePatch): Promise<ScheduleUpsertResult> {
+  async function upsertSchedule(
+    connectorId: string,
+    input: ConnectorSchedulePatch,
+    options: ConnectorInstanceOptions = {}
+  ): Promise<ScheduleUpsertResult> {
+    const connectorInstanceId = options.connectorInstanceId || connectorId;
     const now = nowIso();
     const validated = validateScheduleInput(input);
     const policy = await getConnectorRefreshPolicy(connectorId);
@@ -1868,9 +1903,9 @@ export function createController(opts: ControllerOptions = {}): Controller {
     if (ineligibilityReason) {
       throw new ControllerError(ineligibilityReason, "invalid_request");
     }
-    const existing = await getScheduleRecord(connectorId);
+    const existing = await getScheduleRecord(connectorInstanceId);
     if (existing) {
-      await schedulerStore.updateSchedule(connectorId, {
+      await schedulerStore.updateSchedule(connectorInstanceId, {
         interval_seconds: validated.interval_seconds,
         jitter_seconds: validated.jitter_seconds,
         enabled: validated.enabled,
@@ -1878,6 +1913,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
       });
     } else {
       await schedulerStore.createSchedule({
+        connector_instance_id: connectorInstanceId,
         connector_id: connectorId,
         interval_seconds: validated.interval_seconds,
         jitter_seconds: validated.jitter_seconds,
@@ -1888,8 +1924,8 @@ export function createController(opts: ControllerOptions = {}): Controller {
     }
     const historyIndex = await loadScheduleHistoryIndex();
     const schedule = scheduleToApi(
-      await getScheduleRecord(connectorId),
-      getRuntimeProjection(connectorId, browserSurfaceLeaseManager, historyIndex),
+      await getScheduleRecord(connectorInstanceId),
+      getRuntimeProjection(connectorId, connectorInstanceId, browserSurfaceLeaseManager, historyIndex),
       policy
     );
     if (!schedule) {
@@ -1899,8 +1935,13 @@ export function createController(opts: ControllerOptions = {}): Controller {
     return { schedule, policy_warning };
   }
 
-  async function setScheduleEnabled(connectorId: string, enabled: boolean): Promise<ScheduleApi | null> {
-    const existing = await getScheduleRecord(connectorId);
+  async function setScheduleEnabled(
+    connectorId: string,
+    enabled: boolean,
+    options: ConnectorInstanceOptions = {}
+  ): Promise<ScheduleApi | null> {
+    const connectorInstanceId = options.connectorInstanceId || connectorId;
+    const existing = await getScheduleRecord(connectorInstanceId);
     if (!existing) {
       throw new ControllerError(`Schedule not found for connector: ${connectorId}`, "not_found");
     }
@@ -1909,38 +1950,41 @@ export function createController(opts: ControllerOptions = {}): Controller {
     if (ineligibilityReason) {
       throw new ControllerError(ineligibilityReason, "invalid_request");
     }
-    await schedulerStore.setScheduleEnabled(connectorId, enabled, nowIso());
+    await schedulerStore.setScheduleEnabled(connectorInstanceId, enabled, nowIso());
     const historyIndex = await loadScheduleHistoryIndex();
     return scheduleToApi(
-      await getScheduleRecord(connectorId),
-      getRuntimeProjection(connectorId, browserSurfaceLeaseManager, historyIndex),
+      await getScheduleRecord(connectorInstanceId),
+      getRuntimeProjection(connectorId, existing.connector_instance_id, browserSurfaceLeaseManager, historyIndex),
       policy
     );
   }
 
-  function markNeedsHuman(connectorId: string): void {
-    needsHumanAttention.add(connectorId);
+  function markNeedsHuman(connectorId: string, options: ConnectorInstanceOptions = {}): void {
+    needsHumanAttention.add(runtimeKey(connectorId, options.connectorInstanceId));
   }
 
-  function clearNeedsHuman(connectorId: string): void {
-    needsHumanAttention.delete(connectorId);
+  function clearNeedsHuman(connectorId: string, options: ConnectorInstanceOptions = {}): void {
+    needsHumanAttention.delete(runtimeKey(connectorId, options.connectorInstanceId));
   }
 
-  async function deleteSchedule(connectorId: string): Promise<boolean> {
-    const existing = await getScheduleRecord(connectorId);
+  async function deleteSchedule(connectorId: string, options: ConnectorInstanceOptions = {}): Promise<boolean> {
+    const connectorInstanceId = options.connectorInstanceId || connectorId;
+    const existing = await getScheduleRecord(connectorInstanceId);
     if (!existing) {
       return false;
     }
-    await schedulerStore.deleteSchedule(connectorId);
+    await schedulerStore.deleteSchedule(connectorInstanceId);
     return true;
   }
 
-  function getActiveRun(connectorId: string): ActiveRun | null {
-    return activeRuns.get(connectorId) || null;
+  function getActiveRun(connectorId: string, options: ConnectorInstanceOptions = {}): ActiveRun | null {
+    return activeRuns.get(runtimeKey(connectorId, options.connectorInstanceId)) || null;
   }
 
   async function runNow(connectorId: string, options: RunNowOptions = {}): Promise<RunNowResult> {
-    const existing = activeRuns.get(connectorId);
+    const connectorInstanceId = options.connectorInstanceId || connectorId;
+    const key = runtimeKey(connectorId, connectorInstanceId);
+    const existing = activeRuns.get(key);
 
     const manifest: ConnectorManifest | null | undefined =
       options.manifest ?? (await getConnectorManifest(connectorId));
@@ -1970,12 +2014,14 @@ export function createController(opts: ControllerOptions = {}): Controller {
     let browserSurfaceEnv: Record<string, string> | null = null;
 
     if (managedBrowserSurfaceRun && browserSurfaceLeaseManager) {
-      const profileKey = readBrowserSurfaceProfileKey(connectorId, manifest);
+      const profileKey = readBrowserSurfaceProfileKey(connectorId, connectorInstanceId, manifest);
+      const surfaceSubjectId = connectorInstanceId === connectorId ? undefined : connectorInstanceId;
       const priorityClass = options.priorityClass ?? "owner_interactive";
       const leaseResult = browserSurfaceLeaseManager.acquire({
         connectorId,
         runId,
         profileKey,
+        ...(surfaceSubjectId ? { surfaceSubjectId } : {}),
         priorityClass,
       });
       browserSurfaceLease = leaseResult.lease;
@@ -2037,6 +2083,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
 
       if (browserSurfaceLease?.status === "waiting_for_browser_surface") {
         pendingBrowserSurfaceLaunches.set(runId, {
+          connectorInstanceId,
           manifest,
           priorityClass,
           runId,
@@ -2178,7 +2225,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
       }
     }
 
-    const syncState = (await getSyncState(connectorId)) as { state?: unknown } | null;
+    const syncState = (await getSyncState(connectorId, { connectorInstanceId })) as { state?: unknown } | null;
     const rawState = syncState?.state;
     const state: Record<string, unknown> | null =
       rawState && typeof rawState === "object" && !Array.isArray(rawState) && Object.keys(rawState).length
@@ -2191,20 +2238,22 @@ export function createController(opts: ControllerOptions = {}): Controller {
     // scheduler can resume after the owner resolves the issue. Webhook
     // triggers are external automation and must not silently clear this gate.
     if (triggerKind === "manual") {
-      needsHumanAttention.delete(connectorId);
+      needsHumanAttention.delete(key);
     }
 
     let streamingNonce: string | null = null;
     try {
       await persistActiveRun({
+        connector_instance_id: connectorInstanceId,
         connector_id: connectorId,
         run_id: runId,
         trace_id: traceContext.trace_id,
         scenario_id: traceContext.scenario_id,
         started_at: startedAt,
       });
-      activeRuns.set(connectorId, {
+      activeRuns.set(key, {
         connector_id: connectorId,
+        connector_instance_id: connectorInstanceId,
         run_id: runId,
         trace_id: traceContext.trace_id,
         started_at: startedAt,
@@ -2265,6 +2314,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
         runConnectorImpl({
           connectorPath,
           connectorId,
+          connectorInstanceId,
           ownerToken,
           manifest,
           state,
@@ -2273,7 +2323,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
           runId,
           traceContext,
           triggerKind,
-          automationMode: automationMetadata.automation_mode,
+          automationMode: automationMetadata.automation_mode ?? null,
           onInteraction: interactionHandler,
           onProgress: (msg: unknown) => {
             // Progress is persisted via the event spine, not this callback.
@@ -2304,10 +2354,10 @@ export function createController(opts: ControllerOptions = {}): Controller {
         log.error?.(`[controller] manual run failed for ${connectorId}: ${message}`);
       })
       .finally(async () => {
-        activeRuns.delete(connectorId);
+        activeRuns.delete(key);
         activeRunPromises.delete(runId);
         activeRunTraceContexts.delete(runId);
-        clearPersistedActiveRun(connectorId, runId).catch((err) => {
+        clearPersistedActiveRun(connectorInstanceId, runId).catch((err) => {
           const message = err instanceof Error ? err.message : String(err);
           log.warn?.(`[controller] failed to clear active run ${runId} for ${connectorId}: ${message}`);
         });
@@ -2438,7 +2488,8 @@ export function createController(opts: ControllerOptions = {}): Controller {
     promoteBrowserSurfaceLeasesAfterBoot,
     reconcileBrowserSurfaceLeasesAfterBoot,
     getPendingInteraction,
-    isNeedsHuman: (connectorId: string) => needsHumanAttention.has(connectorId),
+    isNeedsHuman: (connectorId: string, options: ConnectorInstanceOptions = {}) =>
+      needsHumanAttention.has(runtimeKey(connectorId, options.connectorInstanceId)),
     issueRuntimeOwnerToken,
     respondToInteraction,
     runNow,

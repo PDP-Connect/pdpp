@@ -115,6 +115,7 @@ interface ResourceNames {
 
 interface SurfaceRequest extends EnsureBrowserSurfaceRequest {
   readonly accountKey?: string;
+  readonly surfaceSubjectId?: string;
 }
 
 export class DockerEngineHttpClient implements DockerEngineTransport {
@@ -371,6 +372,8 @@ export class NekoSurfaceAllocatorService {
     const readiness = options.readiness ?? (await this.#readiness({ inspect, cdpUrl, streamBaseUrl }));
     const now = this.#options.now().toISOString();
     const accountKey = options.request?.accountKey ?? labels[`${this.#options.labelNamespace}.account_key`];
+    const surfaceSubjectId =
+      options.request?.surfaceSubjectId ?? labels[`${this.#options.labelNamespace}.surface_subject_id`];
     const surface: BrowserSurface = {
       surface_id: surfaceId,
       backend: BROWSER_SURFACE_BACKEND_NEKO,
@@ -393,6 +396,9 @@ export class NekoSurfaceAllocatorService {
         resource_owner: "pdpp-reference",
       },
     };
+    if (surfaceSubjectId !== undefined) {
+      return { ...surface, ...(accountKey !== undefined ? { account_key: accountKey } : {}), surface_subject_id: surfaceSubjectId };
+    }
     if (accountKey !== undefined) {
       return { ...surface, account_key: accountKey };
     }
@@ -549,6 +555,9 @@ export class NekoSurfaceAllocatorService {
       [`${this.#options.labelNamespace}.webrtc_host_port`]: String(webrtcHostPort),
       [`${this.#options.labelNamespace}.created_at`]: this.#options.now().toISOString(),
     };
+    if (request.surfaceSubjectId !== undefined) {
+      labels[`${this.#options.labelNamespace}.surface_subject_id`] = request.surfaceSubjectId;
+    }
     if (request.accountKey !== undefined) {
       labels[`${this.#options.labelNamespace}.account_key`] = request.accountKey;
     }
@@ -756,7 +765,12 @@ function parseEnsureBody(value: unknown): SurfaceRequest {
     profileKey: requiredBodyString(value, "profile_key"),
   };
   const accountKey = optionalBodyString(value, "account_key");
-  return accountKey === undefined ? request : { ...request, accountKey };
+  const surfaceSubjectId = optionalBodyString(value, "surface_subject_id");
+  return {
+    ...request,
+    ...(accountKey === undefined ? {} : { accountKey }),
+    ...(surfaceSubjectId === undefined ? {} : { surfaceSubjectId }),
+  };
 }
 
 function parseStopReason(value: unknown): StopBrowserSurfaceRequest["reason"] {

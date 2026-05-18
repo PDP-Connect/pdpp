@@ -469,6 +469,7 @@ export async function bootstrapPostgresSchema() {
         backend TEXT NOT NULL CHECK (backend IN ('neko')),
         profile_key TEXT NOT NULL,
         connector_id TEXT NOT NULL,
+        surface_subject_id TEXT,
         account_key TEXT,
         surface_mode TEXT CHECK (surface_mode IS NULL OR surface_mode IN ('static', 'dynamic')),
         surface_source TEXT,
@@ -497,6 +498,7 @@ export async function bootstrapPostgresSchema() {
         surface_id TEXT REFERENCES browser_surfaces(surface_id),
         connector_id TEXT NOT NULL,
         profile_key TEXT NOT NULL,
+        surface_subject_id TEXT,
         account_key TEXT,
         run_id TEXT NOT NULL,
         status TEXT NOT NULL CHECK (status IN (
@@ -535,14 +537,20 @@ export async function bootstrapPostgresSchema() {
         ON browser_surface_leases(surface_id)
         WHERE surface_id IS NOT NULL AND status = 'leased';
 
+      ALTER TABLE browser_surface_leases
+        ADD COLUMN IF NOT EXISTS surface_subject_id TEXT;
+
+      DROP INDEX IF EXISTS idx_pg_browser_surface_leases_one_pending_connector_profile;
+
       CREATE UNIQUE INDEX IF NOT EXISTS idx_pg_browser_surface_leases_one_pending_connector_profile
-        ON browser_surface_leases(connector_id, profile_key, COALESCE(account_key, ''))
+        ON browser_surface_leases(connector_id, profile_key, COALESCE(surface_subject_id, ''), COALESCE(account_key, ''))
         WHERE status IN ('waiting_for_browser_surface', 'starting_surface');
 
       CREATE INDEX IF NOT EXISTS idx_pg_browser_surface_leases_non_terminal
         ON browser_surface_leases(status, priority_class, requested_at);
 
       ALTER TABLE browser_surfaces
+        ADD COLUMN IF NOT EXISTS surface_subject_id TEXT,
         ADD COLUMN IF NOT EXISTS surface_mode TEXT CHECK (surface_mode IS NULL OR surface_mode IN ('static', 'dynamic')),
         ADD COLUMN IF NOT EXISTS surface_source TEXT,
         ADD COLUMN IF NOT EXISTS stream_origin TEXT,

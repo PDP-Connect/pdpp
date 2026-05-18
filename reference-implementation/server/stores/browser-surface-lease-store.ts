@@ -21,6 +21,7 @@ interface BrowserSurfaceRow {
   backend: BrowserSurface["backend"];
   profile_key: string;
   connector_id: string;
+  surface_subject_id: string | null;
   account_key: string | null;
   surface_mode: BrowserSurfacePersistenceMetadata["surface_mode"] | null;
   surface_source: string | null;
@@ -42,6 +43,7 @@ interface BrowserSurfaceLeaseRow {
   surface_id: string | null;
   connector_id: string;
   profile_key: string;
+  surface_subject_id: string | null;
   account_key: string | null;
   run_id: string;
   status: BrowserSurfaceLease["status"];
@@ -104,6 +106,7 @@ function mapSurface(row: BrowserSurfaceRow | null | undefined): BrowserSurfaceWi
     created_at: row.created_at,
     last_used_at: row.last_used_at,
     ...(row.account_key ? { account_key: row.account_key } : {}),
+    ...(row.surface_subject_id ? { surface_subject_id: row.surface_subject_id } : {}),
     ...(row.active_lease_id ? { active_lease_id: row.active_lease_id } : {}),
     ...(row.container_id ? { container_id: row.container_id } : {}),
     ...(row.surface_mode ? { surface_mode: row.surface_mode } : {}),
@@ -128,6 +131,7 @@ function mapLease(row: BrowserSurfaceLeaseRow | null | undefined): BrowserSurfac
     expires_at: row.expires_at,
     fencing_token: Number(row.fencing_token),
     ...(row.account_key ? { account_key: row.account_key } : {}),
+    ...(row.surface_subject_id ? { surface_subject_id: row.surface_subject_id } : {}),
     ...(row.leased_at ? { leased_at: row.leased_at } : {}),
     ...(row.released_at ? { released_at: row.released_at } : {}),
     ...(row.surface_id ? { surface_id: row.surface_id } : {}),
@@ -142,6 +146,7 @@ function sqliteSurfaceParams(surface: BrowserSurfaceWithPersistenceMetadata): Bi
     surface.backend,
     surface.profile_key,
     surface.connector_id,
+    surface.surface_subject_id ?? null,
     surface.account_key ?? null,
     metadata.surface_mode ?? null,
     optionalString(metadata.surface_source) ?? null,
@@ -165,6 +170,7 @@ function sqliteLeaseParams(lease: BrowserSurfaceLease): BindValue[] {
     lease.surface_id ?? null,
     lease.connector_id,
     lease.profile_key,
+    lease.surface_subject_id ?? null,
     lease.account_key ?? null,
     lease.run_id,
     lease.status,
@@ -194,15 +200,16 @@ class SqliteBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
     // REVIEWED-DYNAMIC: browser surface persistence is a compact new store seam; the SQL is static here and not caller-built.
     execDynamicSqlAcknowledged(
       `INSERT INTO browser_surfaces(
-        surface_id, backend, profile_key, connector_id, account_key, surface_mode, surface_source,
+        surface_id, backend, profile_key, connector_id, surface_subject_id, account_key, surface_mode, surface_source,
         cdp_url, stream_base_url, stream_origin, health, container_id, container_name,
         profile_dir, profile_volume, active_lease_id, created_at, last_used_at
       )
-      VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(surface_id) DO UPDATE SET
         backend = excluded.backend,
         profile_key = excluded.profile_key,
         connector_id = excluded.connector_id,
+        surface_subject_id = excluded.surface_subject_id,
         account_key = excluded.account_key,
         surface_mode = excluded.surface_mode,
         surface_source = excluded.surface_source,
@@ -226,14 +233,15 @@ class SqliteBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
     // REVIEWED-DYNAMIC: browser lease persistence is a compact new store seam; the SQL is static here and not caller-built.
     execDynamicSqlAcknowledged(
       `INSERT INTO browser_surface_leases(
-        lease_id, surface_id, connector_id, profile_key, account_key, run_id, status,
+        lease_id, surface_id, connector_id, profile_key, surface_subject_id, account_key, run_id, status,
         priority_class, requested_at, leased_at, released_at, expires_at, fencing_token, wait_reason
       )
-      VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(lease_id) DO UPDATE SET
         surface_id = excluded.surface_id,
         connector_id = excluded.connector_id,
         profile_key = excluded.profile_key,
+        surface_subject_id = excluded.surface_subject_id,
         account_key = excluded.account_key,
         run_id = excluded.run_id,
         status = excluded.status,
@@ -336,15 +344,16 @@ class PostgresBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
   async upsertSurface(surface: BrowserSurfaceWithPersistenceMetadata): Promise<BrowserSurfaceWithPersistenceMetadata> {
     await this.#query(
       `INSERT INTO browser_surfaces(
-        surface_id, backend, profile_key, connector_id, account_key, surface_mode, surface_source,
+        surface_id, backend, profile_key, connector_id, surface_subject_id, account_key, surface_mode, surface_source,
         cdp_url, stream_base_url, stream_origin, health, container_id, container_name,
         profile_dir, profile_volume, active_lease_id, created_at, last_used_at
       )
-      VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+      VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
       ON CONFLICT(surface_id) DO UPDATE SET
         backend = EXCLUDED.backend,
         profile_key = EXCLUDED.profile_key,
         connector_id = EXCLUDED.connector_id,
+        surface_subject_id = EXCLUDED.surface_subject_id,
         account_key = EXCLUDED.account_key,
         surface_mode = EXCLUDED.surface_mode,
         surface_source = EXCLUDED.surface_source,
@@ -367,14 +376,15 @@ class PostgresBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
   async upsertLease(lease: BrowserSurfaceLease): Promise<BrowserSurfaceLease> {
     await this.#query(
       `INSERT INTO browser_surface_leases(
-        lease_id, surface_id, connector_id, profile_key, account_key, run_id, status,
+        lease_id, surface_id, connector_id, profile_key, surface_subject_id, account_key, run_id, status,
         priority_class, requested_at, leased_at, released_at, expires_at, fencing_token, wait_reason
       )
-      VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+      VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
       ON CONFLICT(lease_id) DO UPDATE SET
         surface_id = EXCLUDED.surface_id,
         connector_id = EXCLUDED.connector_id,
         profile_key = EXCLUDED.profile_key,
+        surface_subject_id = EXCLUDED.surface_subject_id,
         account_key = EXCLUDED.account_key,
         run_id = EXCLUDED.run_id,
         status = EXCLUDED.status,

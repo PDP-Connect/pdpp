@@ -115,6 +115,7 @@ export type SchedulerManifest = Record<string, unknown>;
 
 export interface ConnectorSchedule {
   readonly connectorId: string;
+  readonly connectorInstanceId?: string;
   readonly connectorPath: string;
   readonly grantAccessMode?: GrantAccessMode;
   readonly intervalMs: number;
@@ -138,6 +139,7 @@ export interface RunRecord {
   readonly completedAt: string;
   readonly connectorError?: ConnectorError | null;
   readonly connectorId: string;
+  readonly connectorInstanceId?: string | null;
   readonly error?: string;
   readonly failureReason?: string | null;
   readonly knownGaps: readonly Record<string, unknown>[];
@@ -163,10 +165,10 @@ export interface SchedulerStats {
 
 export type InteractionHandler = (...args: unknown[]) => unknown;
 export type RunCompleteHandler = (record: RunRecord) => void;
-export type GetStateHandler = (connectorId: string) => Promise<unknown>;
-export type SetStateHandler = (connectorId: string, state: unknown) => Promise<void>;
-export type NeedsHumanHandler = (connectorId: string) => void;
-export type IsNeedsHumanHandler = (connectorId: string) => boolean;
+export type GetStateHandler = (connectorId: string, connectorInstanceId?: string) => Promise<unknown>;
+export type SetStateHandler = (connectorId: string, state: unknown, connectorInstanceId?: string) => Promise<void>;
+export type NeedsHumanHandler = (connectorId: string, connectorInstanceId?: string) => void;
+export type IsNeedsHumanHandler = (connectorId: string, connectorInstanceId?: string) => boolean;
 
 export interface SchedulerOptions {
   connectors: readonly ConnectorSchedule[];
@@ -259,6 +261,10 @@ function isTerminalGrantFailure(reason: string | null | undefined): reason is Te
 
 function buildScheduledRunSource(connectorId: string): RunSource {
   return { kind: "connector", id: connectorId };
+}
+
+function runtimeKey(schedule: Pick<ConnectorSchedule, "connectorId" | "connectorInstanceId">): string {
+  return schedule.connectorInstanceId || schedule.connectorId;
 }
 
 function getManifestRefreshPolicy(manifest: SchedulerManifest | null | undefined): AutomationRefreshPolicy | null {
@@ -395,6 +401,7 @@ function buildRuntime(): SchedulerRuntime {
 function toStoredRunRecord(record: RunRecord): SchedulerRunHistoryRecord {
   const stored: SchedulerRunHistoryRecord = {
     connectorId: record.connectorId,
+    connectorInstanceId: record.connectorInstanceId ?? null,
     source: { ...record.source },
     status: record.status,
     recordsEmitted: record.recordsEmitted,
@@ -423,6 +430,7 @@ function fromStoredRunRecord(record: SchedulerRunHistoryRecord): RunRecord {
   }
   const restored: RunRecord = {
     connectorId: record.connectorId,
+    connectorInstanceId: record.connectorInstanceId ?? null,
     source: {
       kind: "connector",
       id: sourceId,
@@ -449,9 +457,10 @@ function fromStoredRunRecord(record: SchedulerRunHistoryRecord): RunRecord {
 
 // ─── Skip-record builders ───────────────────────────────────────────────────
 
-function buildSingleUseExhaustedSkip(connectorId: string): RunRecord {
+function buildSingleUseExhaustedSkip(connectorId: string, connectorInstanceId?: string): RunRecord {
   return {
     connectorId,
+    connectorInstanceId: connectorInstanceId ?? null,
     source: buildScheduledRunSource(connectorId),
     status: "skipped",
     recordsEmitted: 0,
@@ -464,9 +473,14 @@ function buildSingleUseExhaustedSkip(connectorId: string): RunRecord {
   };
 }
 
-function buildDisabledGrantSkip(connectorId: string, terminalReason: TerminalGrantFailureReason): RunRecord {
+function buildDisabledGrantSkip(
+  connectorId: string,
+  terminalReason: TerminalGrantFailureReason,
+  connectorInstanceId?: string
+): RunRecord {
   return {
     connectorId,
+    connectorInstanceId: connectorInstanceId ?? null,
     source: buildScheduledRunSource(connectorId),
     status: "skipped",
     recordsEmitted: 0,
@@ -480,9 +494,10 @@ function buildDisabledGrantSkip(connectorId: string, terminalReason: TerminalGra
   };
 }
 
-function buildNeedsHumanSkip(connectorId: string): RunRecord {
+function buildNeedsHumanSkip(connectorId: string, connectorInstanceId?: string): RunRecord {
   return {
     connectorId,
+    connectorInstanceId: connectorInstanceId ?? null,
     source: buildScheduledRunSource(connectorId),
     status: "skipped",
     recordsEmitted: 0,
@@ -495,9 +510,10 @@ function buildNeedsHumanSkip(connectorId: string): RunRecord {
   };
 }
 
-function buildNotReadySkip(connectorId: string, reason: string): RunRecord {
+function buildNotReadySkip(connectorId: string, reason: string, connectorInstanceId?: string): RunRecord {
   return {
     connectorId,
+    connectorInstanceId: connectorInstanceId ?? null,
     source: buildScheduledRunSource(connectorId),
     status: "skipped",
     recordsEmitted: 0,
@@ -510,9 +526,10 @@ function buildNotReadySkip(connectorId: string, reason: string): RunRecord {
   };
 }
 
-function buildAutomationPolicySkip(connectorId: string, reason: string | null): RunRecord {
+function buildAutomationPolicySkip(connectorId: string, reason: string | null, connectorInstanceId?: string): RunRecord {
   return {
     connectorId,
+    connectorInstanceId: connectorInstanceId ?? null,
     source: buildScheduledRunSource(connectorId),
     status: "skipped",
     recordsEmitted: 0,
@@ -546,7 +563,7 @@ function formatNextAttempt(decision: BackoffDecision): string {
   return decision.nextRunAt;
 }
 
-function buildBackoffSkip(connectorId: string, decision: BackoffDecision): RunRecord {
+function buildBackoffSkip(connectorId: string, decision: BackoffDecision, connectorInstanceId?: string): RunRecord {
   // One-shot skip emitted when back-off first engages for the current
   // failure streak. The error string carries enough context for the
   // dashboard to render `scheduler_backoff_applied; next attempt at HH:MM`
@@ -558,6 +575,7 @@ function buildBackoffSkip(connectorId: string, decision: BackoffDecision): RunRe
   const next = formatNextAttempt(decision);
   return {
     connectorId,
+    connectorInstanceId: connectorInstanceId ?? null,
     source: buildScheduledRunSource(connectorId),
     status: "skipped",
     recordsEmitted: 0,
@@ -587,7 +605,7 @@ function buildBackoffSkip(connectorId: string, decision: BackoffDecision): RunRe
 const BACKOFF_STARTED_PREFIX = "schedule.back_off.started:";
 const GAVE_UP_PREFIX = "schedule.gave_up:";
 
-function buildBackoffStartedEvent(connectorId: string, decision: BackoffDecision): RunRecord {
+function buildBackoffStartedEvent(connectorId: string, decision: BackoffDecision, connectorInstanceId?: string): RunRecord {
   const payload = JSON.stringify({
     reason_class: decision.reasonClass,
     consecutive_failures: decision.consecutiveFailures,
@@ -595,6 +613,7 @@ function buildBackoffStartedEvent(connectorId: string, decision: BackoffDecision
   });
   return {
     connectorId,
+    connectorInstanceId: connectorInstanceId ?? null,
     source: buildScheduledRunSource(connectorId),
     status: "skipped",
     recordsEmitted: 0,
@@ -607,10 +626,11 @@ function buildBackoffStartedEvent(connectorId: string, decision: BackoffDecision
   };
 }
 
-function buildBackoffClearedEvent(connectorId: string, resumedAt: string): RunRecord {
+function buildBackoffClearedEvent(connectorId: string, resumedAt: string, connectorInstanceId?: string): RunRecord {
   const payload = JSON.stringify({ resumed_at: resumedAt });
   return {
     connectorId,
+    connectorInstanceId: connectorInstanceId ?? null,
     source: buildScheduledRunSource(connectorId),
     status: "skipped",
     recordsEmitted: 0,
@@ -623,7 +643,12 @@ function buildBackoffClearedEvent(connectorId: string, resumedAt: string): RunRe
   };
 }
 
-function buildGaveUpEvent(connectorId: string, decision: BackoffDecision, lastSuccessAt: string | null): RunRecord {
+function buildGaveUpEvent(
+  connectorId: string,
+  decision: BackoffDecision,
+  lastSuccessAt: string | null,
+  connectorInstanceId?: string
+): RunRecord {
   const payload = JSON.stringify({
     reason_class: decision.reasonClass,
     final_consecutive_failures: decision.consecutiveFailures,
@@ -631,6 +656,7 @@ function buildGaveUpEvent(connectorId: string, decision: BackoffDecision, lastSu
   });
   return {
     connectorId,
+    connectorInstanceId: connectorInstanceId ?? null,
     source: buildScheduledRunSource(connectorId),
     status: "skipped",
     recordsEmitted: 0,
@@ -643,10 +669,10 @@ function buildGaveUpEvent(connectorId: string, decision: BackoffDecision, lastSu
   };
 }
 
-function findLastSuccessAt(history: readonly RunRecord[], connectorId: string): string | null {
+function findLastSuccessAt(history: readonly RunRecord[], connectorKey: string): string | null {
   for (let i = history.length - 1; i >= 0; i--) {
     const record = history[i];
-    if (record && record.connectorId === connectorId && record.status === "succeeded") {
+    if (record && (record.connectorInstanceId || record.connectorId) === connectorKey && record.status === "succeeded") {
       return record.completedAt;
     }
   }
@@ -833,17 +859,20 @@ async function defaultReadinessChecker(schedule: ConnectorSchedule): Promise<Sch
 
 function buildSuccessOrFailureRecord({
   connectorId,
+  connectorInstanceId,
   result,
   startedAt,
   attempt,
 }: {
   attempt: number;
   connectorId: string;
+  connectorInstanceId?: string;
   result: RunConnectorResult;
   startedAt: string;
 }): RunRecord {
   return {
     connectorId,
+    connectorInstanceId: connectorInstanceId ?? null,
     source: buildScheduledRunSource(connectorId),
     status: result.status === "succeeded" ? "succeeded" : "failed",
     recordsEmitted: result.records_emitted || 0,
@@ -863,15 +892,18 @@ function buildSuccessOrFailureRecord({
 
 function buildExhaustedFailureRecord({
   connectorId,
+  connectorInstanceId,
   lastError,
   attempt,
 }: {
   attempt: number;
   connectorId: string;
+  connectorInstanceId?: string;
   lastError: RunConnectorError | null;
 }): RunRecord {
   return {
     connectorId,
+    connectorInstanceId: connectorInstanceId ?? null,
     source: buildScheduledRunSource(connectorId),
     status: "failed",
     recordsEmitted: lastError?.records_emitted ?? 0,
@@ -895,6 +927,7 @@ function buildExhaustedFailureRecord({
 interface RunConnectorCall {
   collectionMode: "full_refresh" | "incremental";
   connectorId: string;
+  connectorInstanceId?: string;
   connectorPath: string;
   manifest: SchedulerManifest;
   onInteraction: InteractionHandler;
@@ -938,8 +971,9 @@ function withSchedulerInteractionContext(
   {
     connectorDisplayName,
     connectorId,
+    connectorInstanceId,
     runId,
-  }: { connectorDisplayName: string; connectorId: string; runId: string | null }
+  }: { connectorDisplayName: string; connectorId: string; connectorInstanceId?: string; runId: string | null }
 ): unknown {
   if (!interaction || typeof interaction !== "object" || Array.isArray(interaction)) {
     return interaction;
@@ -947,6 +981,7 @@ function withSchedulerInteractionContext(
   return {
     ...interaction,
     connector_id: connectorId,
+    ...(connectorInstanceId ? { connector_instance_id: connectorInstanceId } : {}),
     connector_display_name: connectorDisplayName,
     run_id: runId,
   };
@@ -1006,42 +1041,47 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
       runtime.history.push(...history.map(fromStoredRunRecord));
     }
     for (const row of lastRunTimes) {
-      runtime.lastRunTime.set(row.connector_id, row.last_run_time_ms);
+      runtime.lastRunTime.set(row.connector_instance_id || row.connector_id, row.last_run_time_ms);
     }
   }
 
-  function persistLastRunTime(connectorId: string, lastRunTimeMs: number): void {
-    runtime.lastRunTime.set(connectorId, lastRunTimeMs);
+  function persistLastRunTime(connectorId: string, connectorInstanceId: string, lastRunTimeMs: number): void {
+    runtime.lastRunTime.set(connectorInstanceId, lastRunTimeMs);
     if (!schedulerStore) {
       return;
     }
-    Promise.resolve(schedulerStore.upsertLastRunTime(connectorId, lastRunTimeMs, nowIso())).catch((err: unknown) => {
+    Promise.resolve(schedulerStore.upsertLastRunTime(connectorInstanceId, lastRunTimeMs, nowIso(), connectorId)).catch((err: unknown) => {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`[scheduler] failed to persist last_run_time for ${connectorId}: ${message}`);
     });
   }
 
-  function handleGrantFailureDisable(reason: string | null | undefined, connectorId: string): void {
+  function handleGrantFailureDisable(reason: string | null | undefined, connectorInstanceId: string): void {
     if (!isTerminalGrantFailure(reason)) {
       return;
     }
-    runtime.disabledGrantFailures.set(connectorId, reason);
-    runtime.notifiedDisabledGrantFailures.delete(connectorId);
+    runtime.disabledGrantFailures.set(connectorInstanceId, reason);
+    runtime.notifiedDisabledGrantFailures.delete(connectorInstanceId);
   }
 
-  function maybeSkipSingleUseExhausted(connectorId: string, grantAccessMode: GrantAccessMode): RunRecord | null {
-    if (grantAccessMode !== "single_use" || !runtime.exhaustedGrants.has(connectorId)) {
+  function maybeSkipSingleUseExhausted(
+    connectorId: string,
+    connectorInstanceId: string,
+    grantAccessMode: GrantAccessMode
+  ): RunRecord | null {
+    if (grantAccessMode !== "single_use" || !runtime.exhaustedGrants.has(connectorInstanceId)) {
       return null;
     }
-    return recordAndNotify(buildSingleUseExhaustedSkip(connectorId));
+    return recordAndNotify(buildSingleUseExhaustedSkip(connectorId, connectorInstanceId));
   }
 
   type NotReadyDecision = "proceed" | "silent-skip" | RunRecord;
 
   async function decideNotReady(schedule: ConnectorSchedule): Promise<NotReadyDecision> {
     const readiness = await readinessChecker(schedule);
+    const key = runtimeKey(schedule);
     if (!readiness || readiness.ready) {
-      runtime.notifiedNotReadySkips.delete(schedule.connectorId);
+      runtime.notifiedNotReadySkips.delete(key);
       return "proceed";
     }
     const projection = projectRunAutomationPolicy({
@@ -1053,11 +1093,11 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
       },
     });
     const reason = projection.reason || "scheduled connector runtime prerequisites are not currently satisfied";
-    if (runtime.notifiedNotReadySkips.get(schedule.connectorId) === reason) {
+    if (runtime.notifiedNotReadySkips.get(key) === reason) {
       return "silent-skip";
     }
-    runtime.notifiedNotReadySkips.set(schedule.connectorId, reason);
-    return recordAndNotify(buildNotReadySkip(schedule.connectorId, reason));
+    runtime.notifiedNotReadySkips.set(key, reason);
+    return recordAndNotify(buildNotReadySkip(schedule.connectorId, reason, schedule.connectorInstanceId));
   }
 
   // Returns a sentinel that tells executeRun what to do next:
@@ -1067,19 +1107,19 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
   //   - a skip RunRecord: first terminal failure notification; return it
   type DisabledGrantDecision = "proceed" | "silent-skip" | RunRecord;
 
-  function decideDisabledGrant(connectorId: string): DisabledGrantDecision {
-    if (!runtime.disabledGrantFailures.has(connectorId)) {
+  function decideDisabledGrant(connectorId: string, connectorInstanceId: string): DisabledGrantDecision {
+    if (!runtime.disabledGrantFailures.has(connectorInstanceId)) {
       return "proceed";
     }
-    if (runtime.notifiedDisabledGrantFailures.has(connectorId)) {
+    if (runtime.notifiedDisabledGrantFailures.has(connectorInstanceId)) {
       return "silent-skip";
     }
-    const terminalReason = runtime.disabledGrantFailures.get(connectorId);
+    const terminalReason = runtime.disabledGrantFailures.get(connectorInstanceId);
     if (!terminalReason) {
       return "proceed";
     }
-    runtime.notifiedDisabledGrantFailures.add(connectorId);
-    return recordAndNotify(buildDisabledGrantSkip(connectorId, terminalReason));
+    runtime.notifiedDisabledGrantFailures.add(connectorInstanceId);
+    return recordAndNotify(buildDisabledGrantSkip(connectorId, terminalReason, connectorInstanceId));
   }
 
   async function finalizeSuccessOrFailure(
@@ -1089,9 +1129,10 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     startedAt: string,
     attempt: number
   ): Promise<RunRecord> {
-    const { connectorId, grantAccessMode = "continuous" } = schedule;
+    const { connectorId, connectorInstanceId = connectorId, grantAccessMode = "continuous" } = schedule;
     const record = buildSuccessOrFailureRecord({
       connectorId,
+      connectorInstanceId,
       result,
       startedAt,
       attempt,
@@ -1102,8 +1143,8 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     // ended an announced back-off (or blocked) streak. The marker is
     // emitted AFTER the success record itself so the chronological
     // order on the timeline is: success → cleared.
-    const wasAnnouncedBackoff = runtime.announcedBackoffClass.has(connectorId);
-    const wasAnnouncedBlocked = runtime.announcedBlockedClass.has(connectorId);
+    const wasAnnouncedBackoff = runtime.announcedBackoffClass.has(connectorInstanceId);
+    const wasAnnouncedBlocked = runtime.announcedBlockedClass.has(connectorInstanceId);
 
     runtime.history.push(record);
     if (schedulerStore) {
@@ -1112,17 +1153,17 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
         console.error(`[scheduler] failed to persist run history for ${connectorId}: ${message}`);
       });
     }
-    persistLastRunTime(connectorId, Date.now());
+    persistLastRunTime(connectorId, connectorInstanceId, Date.now());
 
     if (result.status === "succeeded" && grantAccessMode === "single_use") {
-      runtime.exhaustedGrants.add(connectorId);
+      runtime.exhaustedGrants.add(connectorInstanceId);
     }
     if (result.status !== "succeeded") {
-      handleGrantFailureDisable(record.terminalReason, connectorId);
+      handleGrantFailureDisable(record.terminalReason, connectorInstanceId);
     }
 
     if (result.status === "succeeded" && call.persistState && result.state !== undefined) {
-      await setState(connectorId, result.state);
+      await setState(connectorId, result.state, connectorInstanceId);
     }
 
     onRunComplete(record);
@@ -1134,9 +1175,9 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     // keeps the timeline event ordering tight (success → cleared in
     // the same tick).
     if (result.status === "succeeded" && (wasAnnouncedBackoff || wasAnnouncedBlocked)) {
-      runtime.announcedBackoffClass.delete(connectorId);
-      runtime.announcedBlockedClass.delete(connectorId);
-      recordAndNotify(buildBackoffClearedEvent(connectorId, record.completedAt));
+      runtime.announcedBackoffClass.delete(connectorInstanceId);
+      runtime.announcedBlockedClass.delete(connectorInstanceId);
+      recordAndNotify(buildBackoffClearedEvent(connectorId, record.completedAt, connectorInstanceId));
     }
 
     return record;
@@ -1183,7 +1224,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
   }
 
   async function runWithRetries(schedule: ConnectorSchedule, call: RunConnectorCall): Promise<RunRecord> {
-    const { connectorId, maxRetries = 2 } = schedule;
+    const { connectorId, connectorInstanceId = connectorId, maxRetries = 2 } = schedule;
     let attempt = 0;
     let lastError: RunConnectorError | null = null;
 
@@ -1221,6 +1262,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
 
     const failRecord = buildExhaustedFailureRecord({
       connectorId,
+      connectorInstanceId,
       lastError,
       attempt,
     });
@@ -1231,14 +1273,15 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
         console.error(`[scheduler] failed to persist run history for ${connectorId}: ${message}`);
       });
     }
-    persistLastRunTime(connectorId, Date.now());
-    handleGrantFailureDisable(failRecord.terminalReason ?? failRecord.failureReason, connectorId);
+    persistLastRunTime(connectorId, connectorInstanceId, Date.now());
+    handleGrantFailureDisable(failRecord.terminalReason ?? failRecord.failureReason, connectorInstanceId);
     onRunComplete(failRecord);
     return failRecord;
   }
 
   async function executeRun(schedule: ConnectorSchedule, isManual = false): Promise<RunRecord | null> {
-    const { connectorId, connectorPath, manifest, ownerToken, grantAccessMode = "continuous" } = schedule;
+    const { connectorId, connectorInstanceId = connectorId, connectorPath, manifest, ownerToken, grantAccessMode = "continuous" } = schedule;
+    const key = connectorInstanceId;
     const triggerKind: RunTriggerKind = isManual ? "manual" : "scheduled";
     const refreshPolicy = getManifestRefreshPolicy(manifest);
     const automationPolicy = projectRunAutomationPolicy({
@@ -1246,10 +1289,10 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
       refreshPolicy,
     });
 
-    if (runtime.activeRuns.has(connectorId)) {
+    if (runtime.activeRuns.has(key)) {
       return null;
     }
-    runtime.activeRuns.add(connectorId);
+    runtime.activeRuns.add(key);
 
     try {
       // Automatic runs skip connectors that previously surfaced a human-attention
@@ -1259,11 +1302,11 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
         if (!automationPolicy.allowed_to_start) {
           const reason = automationPolicy.reason || "automatic run is not allowed by connector policy";
           const dedupeReason = `automation_policy_blocked:${reason}`;
-          if (runtime.notifiedNotReadySkips.get(connectorId) === dedupeReason) {
+          if (runtime.notifiedNotReadySkips.get(key) === dedupeReason) {
             return null;
           }
-          runtime.notifiedNotReadySkips.set(connectorId, dedupeReason);
-          return recordAndNotify(buildAutomationPolicySkip(connectorId, reason));
+          runtime.notifiedNotReadySkips.set(key, dedupeReason);
+          return recordAndNotify(buildAutomationPolicySkip(connectorId, reason, connectorInstanceId));
         }
         const notReadyDecision = await decideNotReady(schedule);
         if (notReadyDecision === "silent-skip") {
@@ -1272,26 +1315,26 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
         if (notReadyDecision !== "proceed") {
           return notReadyDecision;
         }
-        if (isNeedsHuman(connectorId)) {
+        if (isNeedsHuman(connectorId, connectorInstanceId)) {
           // Emit one inspectable skip record, then suppress further skips on
           // subsequent ticks (mirrors the terminal-grant disabled pattern).
-          if (runtime.notifiedNeedsHumanSkips.has(connectorId)) {
+          if (runtime.notifiedNeedsHumanSkips.has(key)) {
             return null;
           }
-          runtime.notifiedNeedsHumanSkips.add(connectorId);
-          return recordAndNotify(buildNeedsHumanSkip(connectorId));
+          runtime.notifiedNeedsHumanSkips.add(key);
+          return recordAndNotify(buildNeedsHumanSkip(connectorId, connectorInstanceId));
         }
         // Flag was cleared (owner ran manually or called clearNeedsHuman).
         // Reset suppression so the next time the flag is set we emit a fresh skip.
-        runtime.notifiedNeedsHumanSkips.delete(connectorId);
+        runtime.notifiedNeedsHumanSkips.delete(key);
       }
 
-      const singleUseSkip = maybeSkipSingleUseExhausted(connectorId, grantAccessMode);
+      const singleUseSkip = maybeSkipSingleUseExhausted(connectorId, connectorInstanceId, grantAccessMode);
       if (singleUseSkip) {
         return singleUseSkip;
       }
 
-      const disabledDecision = decideDisabledGrant(connectorId);
+      const disabledDecision = decideDisabledGrant(connectorId, connectorInstanceId);
       if (disabledDecision === "silent-skip") {
         return null;
       }
@@ -1300,7 +1343,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
       }
 
       const persistState = grantAccessMode !== "single_use";
-      const state = narrowState(await getState(connectorId));
+      const state = narrowState(await getState(connectorId, connectorInstanceId));
       const collectionMode: "full_refresh" | "incremental" = state ? "incremental" : "full_refresh";
       let currentRunId: string | null = null;
       const connectorDisplayName = displayNameForScheduledConnector(manifest, connectorId);
@@ -1311,16 +1354,17 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
       // prompting for OTP or manual browser action.
       const wrappedInteraction: InteractionHandler = (interaction) => {
         if (!isManual) {
-          markNeedsHuman(connectorId);
+          markNeedsHuman(connectorId, connectorInstanceId);
         }
         return onInteraction(
-          withSchedulerInteractionContext(interaction, { connectorDisplayName, connectorId, runId: currentRunId })
+          withSchedulerInteractionContext(interaction, { connectorDisplayName, connectorId, connectorInstanceId, runId: currentRunId })
         );
       };
 
       return await runWithRetries(schedule, {
         connectorPath,
         connectorId,
+        connectorInstanceId,
         ownerToken,
         manifest,
         state,
@@ -1339,7 +1383,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
         },
       });
     } finally {
-      runtime.activeRuns.delete(connectorId);
+      runtime.activeRuns.delete(key);
     }
   }
 
@@ -1392,7 +1436,8 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     skipToEmit: RunRecord | null;
   } {
     const connectorId = schedule.connectorId;
-    const history = runtime.history.filter((r) => r.connectorId === connectorId);
+    const key = runtimeKey(schedule);
+    const history = runtime.history.filter((r) => (r.connectorInstanceId || r.connectorId) === key);
     // `scheduler_last_run_times` and `scheduler_run_history` are persisted
     // through separate writes. If a process is killed between them — or if
     // an older runtime never wrote `last_run_time` at all — we hydrate
@@ -1400,7 +1445,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     // `nextRunAt = 0 + effectiveIntervalMs` then surfaces a 1970 date in
     // the audit log. Fall back to the newest history record's
     // `completedAt` so the next-attempt math has a real anchor.
-    const lastRun = resolveLastRunEpochMs(runtime.lastRunTime.get(connectorId), history);
+    const lastRun = resolveLastRunEpochMs(runtime.lastRunTime.get(key), history);
     const scheduleIntervalMs = normalizeScheduleIntervalMs(schedule.intervalMs);
     const decision = computeNextRunWithBackoff(history, scheduleIntervalMs, lastRun);
 
@@ -1411,22 +1456,22 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     const eventsToEmit: RunRecord[] = [];
 
     if (decision.backoffApplied && decision.reasonClass) {
-      const announced = runtime.announcedBackoffClass.get(connectorId);
+      const announced = runtime.announcedBackoffClass.get(key);
       const persistedBackoffStarted = currentStreakHasSchedulerEvent(
         history,
         BACKOFF_STARTED_PREFIX,
         decision.reasonClass
       );
       if (announced === decision.reasonClass || persistedBackoffStarted) {
-        runtime.announcedBackoffClass.set(connectorId, decision.reasonClass);
+        runtime.announcedBackoffClass.set(key, decision.reasonClass);
       } else {
-        runtime.announcedBackoffClass.set(connectorId, decision.reasonClass);
+        runtime.announcedBackoffClass.set(key, decision.reasonClass);
         // The existing back-off skip record (audit log) plus the new
         // one-shot `schedule.back_off.started` transition marker. Both
         // are tied to the *first* skip of the streak; subsequent ticks
         // are suppressed by the `announcedBackoffClass` gate above.
-        skipToEmit = buildBackoffSkip(connectorId, decision);
-        eventsToEmit.push(buildBackoffStartedEvent(connectorId, decision));
+        skipToEmit = buildBackoffSkip(connectorId, decision, schedule.connectorInstanceId);
+        eventsToEmit.push(buildBackoffStartedEvent(connectorId, decision, schedule.connectorInstanceId));
       }
 
       if (decision.recommendedHealthState === "blocked") {
@@ -1434,13 +1479,13 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
         // streak. Cleared by a successful run (see
         // `finalizeSuccessOrFailure`) so a future degradation can
         // re-promote and re-announce.
-        const blockedAnnounced = runtime.announcedBlockedClass.get(connectorId);
+        const blockedAnnounced = runtime.announcedBlockedClass.get(key);
         const persistedGaveUp = currentStreakHasSchedulerEvent(history, GAVE_UP_PREFIX, decision.reasonClass);
         if (blockedAnnounced === decision.reasonClass || persistedGaveUp) {
-          runtime.announcedBlockedClass.set(connectorId, decision.reasonClass);
+          runtime.announcedBlockedClass.set(key, decision.reasonClass);
         } else {
-          runtime.announcedBlockedClass.set(connectorId, decision.reasonClass);
-          eventsToEmit.push(buildGaveUpEvent(connectorId, decision, findLastSuccessAt(history, connectorId)));
+          runtime.announcedBlockedClass.set(key, decision.reasonClass);
+          eventsToEmit.push(buildGaveUpEvent(connectorId, decision, findLastSuccessAt(history, key), schedule.connectorInstanceId));
         }
         // Auto-dispatch is suppressed for blocked connectors. Manual
         // `runNow` still works (it bypasses this evaluator entirely via
@@ -1450,7 +1495,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     } else if (!decision.backoffApplied) {
       // Streak broken (success or different class): clear the announcement
       // so the next time back-off engages we emit a fresh skip record.
-      runtime.announcedBackoffClass.delete(connectorId);
+      runtime.announcedBackoffClass.delete(key);
     }
 
     return { decision, eligible, skipToEmit, eventsToEmit };
@@ -1534,8 +1579,9 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
   function getStats(): SchedulerStats {
     const stats: Record<string, SchedulerStats[string]> = {};
     for (const schedule of connectors) {
-      const runs = runtime.history.filter((r) => r.connectorId === schedule.connectorId);
-      stats[schedule.connectorId] = {
+      const key = runtimeKey(schedule);
+      const runs = runtime.history.filter((r) => (r.connectorInstanceId || r.connectorId) === key);
+      stats[key] = {
         totalRuns: runs.length,
         succeeded: runs.filter((r) => r.status === "succeeded").length,
         failed: runs.filter((r) => r.status === "failed").length,

@@ -1948,7 +1948,7 @@ function buildAsApp(opts = {}) {
   async function resolveRefConnectorNamespace(req, connectorId) {
     return resolveOwnerConnectorNamespace(req, connectorId, {
       ownerSubjectId: getOwnerSubjectId(req),
-      allowExplicitConnectorInstanceId: false,
+      allowExplicitConnectorInstanceId: true,
     });
   }
 
@@ -3378,11 +3378,16 @@ function buildAsApp(opts = {}) {
   app.get('/_ref/connectors/:connectorId/schedule', ownerAuth.requireOwnerSession, async (req, res) => {
     const connectorId = decodeURIComponent(req.params.connectorId);
     try {
-      await resolveRefConnectorNamespace(req, connectorId);
+      const namespace = await resolveRefConnectorNamespace(req, connectorId);
       const schedule = await executeRefConnectorScheduleGet(
-        { connectorId },
+        { connectorId: namespace.connectorInstanceId },
         {
-          getConnectorSchedule: async (id) => (controller ? await controller.getSchedule(id) : null),
+          getConnectorSchedule: async () =>
+            controller
+              ? await controller.getSchedule(namespace.connectorId, {
+                  connectorInstanceId: namespace.connectorInstanceId,
+                })
+              : null,
         },
       );
       res.json(schedule);
@@ -3840,8 +3845,10 @@ function buildAsApp(opts = {}) {
     async (req, res) => {
       try {
         const connectorId = decodeURIComponent(req.params.connectorId);
-        await resolveRefConnectorNamespace(req, connectorId);
-        const started = await controller.runNow(connectorId);
+        const namespace = await resolveRefConnectorNamespace(req, connectorId);
+        const started = await controller.runNow(namespace.connectorId, {
+          connectorInstanceId: namespace.connectorInstanceId,
+        });
         res.status(202).json(started);
       } catch (err) {
         handleError(res, err);
@@ -3857,8 +3864,10 @@ function buildAsApp(opts = {}) {
       try {
         const connectorId = decodeURIComponent(req.params.connectorId);
         await resolveRegisteredConnectorManifest(connectorId);
-        await resolveRefConnectorNamespace(req, connectorId);
-        const result = await controller.upsertSchedule(connectorId, req.body || {});
+        const namespace = await resolveRefConnectorNamespace(req, connectorId);
+        const result = await controller.upsertSchedule(namespace.connectorId, req.body || {}, {
+          connectorInstanceId: namespace.connectorInstanceId,
+        });
         await opts.onScheduleMutation?.();
         // Include policy_warning in the response so dashboard can surface it
         // without a second round-trip.
@@ -3879,8 +3888,10 @@ function buildAsApp(opts = {}) {
     async (req, res) => {
       try {
         const connectorId = decodeURIComponent(req.params.connectorId);
-        await resolveRefConnectorNamespace(req, connectorId);
-        const schedule = await controller.setScheduleEnabled(connectorId, false);
+        const namespace = await resolveRefConnectorNamespace(req, connectorId);
+        const schedule = await controller.setScheduleEnabled(namespace.connectorId, false, {
+          connectorInstanceId: namespace.connectorInstanceId,
+        });
         await opts.onScheduleMutation?.();
         res.json(schedule);
       } catch (err) {
@@ -3896,8 +3907,10 @@ function buildAsApp(opts = {}) {
     async (req, res) => {
       try {
         const connectorId = decodeURIComponent(req.params.connectorId);
-        await resolveRefConnectorNamespace(req, connectorId);
-        const schedule = await controller.setScheduleEnabled(connectorId, true);
+        const namespace = await resolveRefConnectorNamespace(req, connectorId);
+        const schedule = await controller.setScheduleEnabled(namespace.connectorId, true, {
+          connectorInstanceId: namespace.connectorInstanceId,
+        });
         await opts.onScheduleMutation?.();
         res.json(schedule);
       } catch (err) {
@@ -3913,8 +3926,10 @@ function buildAsApp(opts = {}) {
     async (req, res) => {
       try {
         const connectorId = decodeURIComponent(req.params.connectorId);
-        await resolveRefConnectorNamespace(req, connectorId);
-        const deleted = await controller.deleteSchedule(connectorId);
+        const namespace = await resolveRefConnectorNamespace(req, connectorId);
+        const deleted = await controller.deleteSchedule(namespace.connectorId, {
+          connectorInstanceId: namespace.connectorInstanceId,
+        });
         if (!deleted) {
           return pdppError(res, 404, 'not_found', `Schedule not found for connector: ${connectorId}`);
         }
@@ -6580,6 +6595,7 @@ function createReferenceSchedulerManager({
         }
         connectors.push({
           connectorId: schedule.connector_id,
+          connectorInstanceId: schedule.connector_instance_id,
           connectorPath,
           manifest,
           intervalMs: Math.max(1, schedule.interval_seconds) * 1000,
@@ -6610,16 +6626,19 @@ function createReferenceSchedulerManager({
       rsUrl: runtimeContext.rsUrl,
       referenceBaseUrl: runtimeContext.referenceBaseUrl,
       schedulerStore,
-      getState: async (connectorId) => {
-        const stored = await getSyncState(connectorId);
+      getState: async (connectorId, connectorInstanceId) => {
+        const stored = await getSyncState(connectorId, { connectorInstanceId });
         return stored?.state || null;
       },
-      setState: async (connectorId, state) => {
-        await putSyncState(connectorId, state && typeof state === 'object' && !Array.isArray(state) ? state : {});
+      setState: async (connectorId, state, connectorInstanceId) => {
+        await putSyncState(connectorId, state && typeof state === 'object' && !Array.isArray(state) ? state : {}, {
+          connectorInstanceId,
+        });
       },
-      markNeedsHuman: (connectorId) => controller.markNeedsHuman(connectorId),
-      isNeedsHuman: (connectorId) =>
-        controller.isNeedsHuman(connectorId) || Boolean(controller.getActiveRun(connectorId)),
+      markNeedsHuman: (connectorId, connectorInstanceId) => controller.markNeedsHuman(connectorId, { connectorInstanceId }),
+      isNeedsHuman: (connectorId, connectorInstanceId) =>
+        controller.isNeedsHuman(connectorId, { connectorInstanceId }) ||
+        Boolean(controller.getActiveRun(connectorId, { connectorInstanceId })),
       onInteraction: async (interaction) => {
         const connectorDisplayName =
           typeof interaction?.connector_display_name === 'string' && interaction.connector_display_name.trim()
@@ -6659,6 +6678,7 @@ function createReferenceSchedulerManager({
         logger?.info?.(
           {
             connector_id: record.connectorId,
+            connector_instance_id: record.connectorInstanceId || record.connectorId,
             status: record.status,
             run_id: record.runId || null,
             trace_id: record.traceId || null,

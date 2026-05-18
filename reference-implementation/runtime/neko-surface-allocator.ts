@@ -59,6 +59,9 @@ export class NekoSurfaceAllocatorClient implements BrowserSurfaceAllocator {
       connector_id: request.connectorId,
       profile_key: request.profileKey,
     };
+    if (request.surfaceSubjectId !== undefined) {
+      body.surface_subject_id = request.surfaceSubjectId;
+    }
     if (request.accountKey !== undefined) {
       body.account_key = request.accountKey;
     }
@@ -184,6 +187,10 @@ function parseBrowserSurface(value: unknown, label: string): BrowserSurface {
   const accountKey = optionalString(value.account_key, "account_key", label);
   if (accountKey !== undefined) {
     surface.account_key = accountKey;
+  }
+  const surfaceSubjectId = optionalString(value.surface_subject_id, "surface_subject_id", label);
+  if (surfaceSubjectId !== undefined) {
+    surface.surface_subject_id = surfaceSubjectId;
   }
   const activeLeaseId = optionalString(value.active_lease_id, "active_lease_id", label);
   if (activeLeaseId !== undefined) {

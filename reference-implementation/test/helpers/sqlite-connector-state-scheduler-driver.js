@@ -88,6 +88,7 @@ function scopeKey(scope) {
 function activeRunRowToSummary(row) {
   if (!row) return null;
   return {
+    connector_instance_id: row.connector_instance_id ?? row.connector_id,
     connector_id: row.connector_id,
     run_id: row.run_id,
     trace_id: row.trace_id,
@@ -134,6 +135,7 @@ export function createSqliteConnectorStateSchedulerDriver() {
       const result = await controller.upsertSchedule(connectorId, patch);
       const api = result.schedule;
       return {
+        connector_instance_id: api.connector_instance_id,
         connector_id: api.connector_id,
         interval_seconds: api.interval_seconds,
         jitter_seconds: api.jitter_seconds,
@@ -147,6 +149,7 @@ export function createSqliteConnectorStateSchedulerDriver() {
       const api = await controller.getSchedule(connectorId);
       if (!api) return null;
       return {
+        connector_instance_id: api.connector_instance_id,
         connector_id: api.connector_id,
         interval_seconds: api.interval_seconds,
         jitter_seconds: api.jitter_seconds,
@@ -159,6 +162,7 @@ export function createSqliteConnectorStateSchedulerDriver() {
     async listSchedules() {
       const apis = await controller.listSchedules();
       return apis.map((api) => ({
+        connector_instance_id: api.connector_instance_id,
         connector_id: api.connector_id,
         interval_seconds: api.interval_seconds,
         jitter_seconds: api.jitter_seconds,
@@ -171,6 +175,7 @@ export function createSqliteConnectorStateSchedulerDriver() {
     async setScheduleEnabled(connectorId, enabled) {
       const api = await controller.setScheduleEnabled(connectorId, enabled);
       return {
+        connector_instance_id: api.connector_instance_id,
         connector_id: api.connector_id,
         interval_seconds: api.interval_seconds,
         jitter_seconds: api.jitter_seconds,
@@ -191,6 +196,7 @@ export function createSqliteConnectorStateSchedulerDriver() {
       // invariant regardless of whether collision throws or upserts.
       exec(referenceQueries.controllerUpsertActiveRun, [
         connectorId,
+        connectorId,
         run.runId,
         run.traceId,
         run.scenarioId,
@@ -205,7 +211,7 @@ export function createSqliteConnectorStateSchedulerDriver() {
       // harness we filter the bounded list, which still exercises
       // the persistence read path.
       const rows = allowUnboundedReadAcknowledged(referenceQueries.controllerListActiveRuns);
-      const found = rows.find((row) => row.connector_id === connectorId);
+      const found = rows.find((row) => (row.connector_instance_id ?? row.connector_id) === connectorId);
       return found ? activeRunRowToSummary(found) : null;
     },
 
@@ -215,7 +221,7 @@ export function createSqliteConnectorStateSchedulerDriver() {
     },
 
     async deleteActiveRun(connectorId, runId) {
-      exec(referenceQueries.controllerDeleteActiveRun, [connectorId, runId]);
+      exec(referenceQueries.controllerDeleteActiveRun, [runId, connectorId, connectorId]);
     },
 
     async simulateRestart() {

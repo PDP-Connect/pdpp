@@ -53,6 +53,7 @@ export interface RuntimeRunConnectorOptions {
   browserSurfaceEnv?: RuntimeBrowserSurfaceEnv | null;
   collectionMode?: RuntimeCollectionMode;
   connectorId: string;
+  connectorInstanceId?: string | null;
   connectorPath: string;
   automationMode?: RuntimeRunAutomationMode | null;
   grantId?: string | null;

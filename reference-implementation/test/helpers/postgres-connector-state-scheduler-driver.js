@@ -117,10 +117,13 @@ export function createPostgresConnectorStateSchedulerDriver({ connectionString }
           WHERE grant_id IS NOT NULL
       `);
 
-      // Schedule registry: one row per connector.
+      // Schedule registry: one row per connector instance. The conformance
+      // harness still addresses the compatibility single-instance path with
+      // connectorId, so connector_instance_id is the same value here.
       await exec(`
         CREATE TABLE connector_schedules (
-          connector_id TEXT PRIMARY KEY,
+          connector_instance_id TEXT PRIMARY KEY,
+          connector_id TEXT NOT NULL,
           interval_seconds INTEGER NOT NULL,
           jitter_seconds INTEGER NOT NULL DEFAULT 0,
           enabled BOOLEAN NOT NULL DEFAULT TRUE,
@@ -129,11 +132,13 @@ export function createPostgresConnectorStateSchedulerDriver({ connectionString }
         )
       `);
 
-      // Active-run registry: per-connector exclusivity (PK on
-      // connector_id) and global run_id uniqueness (UNIQUE).
+      // Active-run registry: per-instance exclusivity and global run_id
+      // uniqueness. The harness exercises the legacy single-instance mapping
+      // where connector_instance_id == connector_id.
       await exec(`
         CREATE TABLE controller_active_runs (
-          connector_id TEXT PRIMARY KEY,
+          connector_instance_id TEXT PRIMARY KEY,
+          connector_id TEXT NOT NULL,
           run_id TEXT NOT NULL UNIQUE,
           trace_id TEXT NOT NULL,
           scenario_id TEXT NOT NULL,
@@ -249,14 +254,14 @@ export function createPostgresConnectorStateSchedulerDriver({ connectionString }
       const res = await exec(
         `
         INSERT INTO connector_schedules
-          (connector_id, interval_seconds, jitter_seconds, enabled, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, $5, $5)
-        ON CONFLICT (connector_id) DO UPDATE
+          (connector_instance_id, connector_id, interval_seconds, jitter_seconds, enabled, created_at, updated_at)
+        VALUES ($1, $1, $2, $3, $4, $5, $5)
+        ON CONFLICT (connector_instance_id) DO UPDATE
           SET interval_seconds = EXCLUDED.interval_seconds,
               jitter_seconds = EXCLUDED.jitter_seconds,
               enabled = EXCLUDED.enabled,
               updated_at = EXCLUDED.updated_at
-        RETURNING connector_id, interval_seconds, jitter_seconds, enabled,
+        RETURNING connector_instance_id, connector_id, interval_seconds, jitter_seconds, enabled,
                   created_at, updated_at
         `,
         [connectorId, interval, jitter, enabled, now],
@@ -266,9 +271,9 @@ export function createPostgresConnectorStateSchedulerDriver({ connectionString }
 
     async getSchedule(connectorId) {
       const res = await exec(
-        `SELECT connector_id, interval_seconds, jitter_seconds, enabled,
+        `SELECT connector_instance_id, connector_id, interval_seconds, jitter_seconds, enabled,
                 created_at, updated_at
-         FROM connector_schedules WHERE connector_id = $1`,
+         FROM connector_schedules WHERE connector_instance_id = $1`,
         [connectorId],
       );
       return res.rows[0] ? rowToSchedule(res.rows[0]) : null;
@@ -276,7 +281,7 @@ export function createPostgresConnectorStateSchedulerDriver({ connectionString }
 
     async listSchedules() {
       const res = await exec(
-        `SELECT connector_id, interval_seconds, jitter_seconds, enabled,
+        `SELECT connector_instance_id, connector_id, interval_seconds, jitter_seconds, enabled,
                 created_at, updated_at
          FROM connector_schedules`,
       );
@@ -288,8 +293,8 @@ export function createPostgresConnectorStateSchedulerDriver({ connectionString }
       const res = await exec(
         `UPDATE connector_schedules
          SET enabled = $2, updated_at = $3
-         WHERE connector_id = $1
-         RETURNING connector_id, interval_seconds, jitter_seconds, enabled,
+         WHERE connector_instance_id = $1
+         RETURNING connector_instance_id, connector_id, interval_seconds, jitter_seconds, enabled,
                    created_at, updated_at`,
         [connectorId, enabled, now],
       );
@@ -301,7 +306,7 @@ export function createPostgresConnectorStateSchedulerDriver({ connectionString }
 
     async deleteSchedule(connectorId) {
       const res = await exec(
-        `DELETE FROM connector_schedules WHERE connector_id = $1`,
+        `DELETE FROM connector_schedules WHERE connector_instance_id = $1`,
         [connectorId],
       );
       return res.rowCount > 0;
@@ -317,10 +322,11 @@ export function createPostgresConnectorStateSchedulerDriver({ connectionString }
       // duplicate, so we let the error surface unchanged.
       await exec(
         `INSERT INTO controller_active_runs
-           (connector_id, run_id, trace_id, scenario_id, started_at)
-         VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT (connector_id) DO UPDATE
+           (connector_instance_id, connector_id, run_id, trace_id, scenario_id, started_at)
+         VALUES ($1, $1, $2, $3, $4, $5)
+         ON CONFLICT (connector_instance_id) DO UPDATE
            SET run_id = EXCLUDED.run_id,
+               connector_id = EXCLUDED.connector_id,
                trace_id = EXCLUDED.trace_id,
                scenario_id = EXCLUDED.scenario_id,
                started_at = EXCLUDED.started_at`,
@@ -330,8 +336,8 @@ export function createPostgresConnectorStateSchedulerDriver({ connectionString }
 
     async getActiveRun(connectorId) {
       const res = await exec(
-        `SELECT connector_id, run_id, trace_id, scenario_id, started_at
-         FROM controller_active_runs WHERE connector_id = $1`,
+        `SELECT connector_instance_id, connector_id, run_id, trace_id, scenario_id, started_at
+         FROM controller_active_runs WHERE connector_instance_id = $1`,
         [connectorId],
       );
       return res.rows[0] ? rowToActiveRun(res.rows[0]) : null;
@@ -339,18 +345,18 @@ export function createPostgresConnectorStateSchedulerDriver({ connectionString }
 
     async listActiveRuns() {
       const res = await exec(
-        `SELECT connector_id, run_id, trace_id, scenario_id, started_at
+        `SELECT connector_instance_id, connector_id, run_id, trace_id, scenario_id, started_at
          FROM controller_active_runs`,
       );
       return res.rows.map(rowToActiveRun);
     },
 
     async deleteActiveRun(connectorId, runId) {
-      // Guarded delete: row only goes away if both connector and run id
+      // Guarded delete: row only goes away if both instance and run id
       // match, so a stale delete with the wrong run id is a no-op.
       await exec(
         `DELETE FROM controller_active_runs
-         WHERE connector_id = $1 AND run_id = $2`,
+         WHERE connector_instance_id = $1 AND run_id = $2`,
         [connectorId, runId],
       );
     },
@@ -395,6 +401,7 @@ export function createPostgresConnectorStateSchedulerDriver({ connectionString }
 
 function rowToSchedule(row) {
   return {
+    connector_instance_id: row.connector_instance_id,
     connector_id: row.connector_id,
     interval_seconds: Number(row.interval_seconds),
     jitter_seconds: Number(row.jitter_seconds),
@@ -406,6 +413,7 @@ function rowToSchedule(row) {
 
 function rowToActiveRun(row) {
   return {
+    connector_instance_id: row.connector_instance_id,
     connector_id: row.connector_id,
     run_id: row.run_id,
     trace_id: row.trace_id,

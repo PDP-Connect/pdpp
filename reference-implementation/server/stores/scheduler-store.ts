@@ -322,7 +322,7 @@ export function createSqliteSchedulerStore(): SchedulerStore {
     },
 
     deleteActiveRun(connectorInstanceId, runId) {
-      exec(referenceQueries.controllerDeleteActiveRun, [connectorInstanceId, runId]);
+      exec(referenceQueries.controllerDeleteActiveRun, [runId, connectorInstanceId, connectorInstanceId]);
     },
   };
 }
@@ -522,10 +522,15 @@ export function createPostgresSchedulerStore(): SchedulerStore {
     },
 
     async deleteActiveRun(connectorInstanceId, runId) {
-      await postgresQuery("DELETE FROM controller_active_runs WHERE connector_instance_id = $1 AND run_id = $2", [
-        connectorInstanceId,
-        runId,
-      ]);
+      await postgresQuery(
+        `DELETE FROM controller_active_runs
+         WHERE run_id = $1
+           AND (
+             connector_instance_id = $2
+             OR (connector_instance_id IS NULL AND connector_id = $2)
+           )`,
+        [runId, connectorInstanceId]
+      );
     },
   };
 }
