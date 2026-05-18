@@ -14,6 +14,7 @@ import type {
 
 export {
   __test__,
+  createSurfaceSessionStore,
   createStreamingSessionStore,
   DEFAULT_MINT_IDEMPOTENCY_TTL_MS,
   DEFAULT_STREAMING_SESSION_TTL_MS,
@@ -23,11 +24,19 @@ export {
 } from "./streaming-session-store.ts";
 export type {
   AttachStreamingSessionRequest,
+  AttachSurfaceSessionRequest,
   AuthorizeStreamingSessionRequest,
+  AuthorizeSurfaceSessionRequest,
+  GetSurfaceSessionSummaryRequest,
   GetStreamingSessionSummaryRequest,
   InvalidateStreamingSessionRequest,
+  InvalidateSurfaceSessionRequest,
+  MintSurfaceSessionRequest,
+  MintSurfaceSessionResult,
   MintStreamingSessionRequest,
   MintStreamingSessionResult,
+  SurfaceSessionRecord,
+  SurfaceSessionStore,
   StreamingSessionRecord,
   StreamingSessionStore,
   StreamingSessionStoreOptions,

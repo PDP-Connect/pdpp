@@ -157,6 +157,7 @@ async function validateCleanConsumer(tarballPath) {
     await writeFile(
       path.join(fixtureDir, "consumer.ts"),
       [
+        'import { createSurfaceSessionStore } from "@pdpp/remote-surface/server";',
         'import "@pdpp/remote-surface";',
         'import "@pdpp/remote-surface/adapters";',
         'import "@pdpp/remote-surface/backends/cdp";',
@@ -170,6 +171,9 @@ async function validateCleanConsumer(tarballPath) {
         'import "@pdpp/remote-surface/protocol";',
         'import "@pdpp/remote-surface/server";',
         'import "@pdpp/remote-surface/testing";',
+        'const store = createSurfaceSessionStore();',
+        'const issued = store.mint({ surfaceSessionId: "surface", actionId: "action", browserSessionId: "browser" });',
+        'store.attach({ token: issued.token, surfaceSessionId: "surface", actionId: "action" });',
         "",
       ].join("\n"),
     );

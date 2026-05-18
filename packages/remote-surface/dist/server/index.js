@@ -1,2 +1,2 @@
-export { __test__, createStreamingSessionStore, DEFAULT_MINT_IDEMPOTENCY_TTL_MS, DEFAULT_STREAMING_SESSION_TTL_MS, hashStreamingSessionToken, MAX_IDEMPOTENCY_KEY_LEN, StreamingSessionStoreError, } from "./streaming-session-store.js";
+export { __test__, createSurfaceSessionStore, createStreamingSessionStore, DEFAULT_MINT_IDEMPOTENCY_TTL_MS, DEFAULT_STREAMING_SESSION_TTL_MS, hashStreamingSessionToken, MAX_IDEMPOTENCY_KEY_LEN, StreamingSessionStoreError, } from "./streaming-session-store.js";
 //# sourceMappingURL=index.js.map

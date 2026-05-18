@@ -3,7 +3,7 @@
   "version": "0.0.1",
   "private": true,
   "type": "module",
-  "description": "RemoteSurface abstraction layer for PDPP manual-action interactions over n.eko (preferred) and CDP (fallback).",
+  "description": "Host-neutral RemoteSurface abstraction layer for browser interactions over n.eko and CDP backends.",
   "license": "ISC",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

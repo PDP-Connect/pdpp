@@ -1,9 +1,10 @@
 # @pdpp/remote-surface
 
-Internal PDPP package for the generic remote-surface substrate used by manual
-browser interactions. It owns host-neutral protocol shapes, viewer/controller
-interfaces, backend adapter contracts, diagnostics helpers, and browser-surface
-lease primitives.
+Generic remote-surface substrate for browser interactions. It owns host-neutral
+protocol shapes, viewer/controller interfaces, backend adapter contracts,
+diagnostics helpers, browser-surface lease primitives, and an additive
+`SurfaceSessionStore` wrapper for hosts that want session/action terminology
+instead of reference-runtime field names.
 
 This is the architectural shape recommended in:
 
@@ -40,7 +41,8 @@ This package must not import `reference-implementation`, `apps/web`,
   descriptor shapes plus descriptor safety helpers.
 - `@pdpp/remote-surface/server` — `RemoteSurfaceSessionBroker` and
   host-adapter interfaces for create/register/attach/authorize/revoke,
-  channels, and diagnostics.
+  channels, diagnostics, and `createSurfaceSessionStore` for host-neutral
+  session/action persistence.
 - `@pdpp/remote-surface/client` — viewer lifecycle, input dispatch,
   clipboard policy, viewport reporting, telemetry, and lifecycle interfaces.
 - `@pdpp/remote-surface/backends/neko` — n.eko backend contracts and safe

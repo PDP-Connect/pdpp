@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   __test__,
+  createSurfaceSessionStore,
   createStreamingSessionStore,
   DEFAULT_MINT_IDEMPOTENCY_TTL_MS,
   DEFAULT_STREAMING_SESSION_TTL_MS,
@@ -49,6 +50,48 @@ test("mint binds the token to a single (run, interaction, browser session)", () 
   assert.equal(session.browser_session_id, "bs_1");
   assert.equal(session.attached_at, null);
   assert.equal(session.invalidated, false);
+});
+
+test("surface session store exposes host-neutral session/action names", () => {
+  const clock = freshClock();
+  const store = createSurfaceSessionStore({ now: clock.now, ttlMs: 60_000 });
+
+  const minted = store.mint({
+    surfaceSessionId: "session_a",
+    actionId: "action_a",
+    browserSessionId: "browser_a",
+    idempotencyKey: "same-request",
+  });
+
+  assert.equal(minted.session.surfaceSessionId, "session_a");
+  assert.equal(minted.session.actionId, "action_a");
+  assert.equal(minted.session.browserSessionId, "browser_a");
+  assert.equal(minted.idempotencyReplayed, false);
+
+  const replayed = store.mint({
+    surfaceSessionId: "session_a",
+    actionId: "action_a",
+    browserSessionId: "browser_a",
+    idempotencyKey: "same-request",
+  });
+  assert.equal(replayed.token, minted.token);
+  assert.equal(replayed.idempotencyReplayed, true);
+
+  const attached = store.attach({
+    token: minted.token,
+    surfaceSessionId: "session_a",
+    actionId: "action_a",
+  });
+  assert.equal(attached.attachedAt, clock.now());
+
+  clock.advance(1);
+  assert.equal(store.authorize({ token: minted.token }).surfaceSessionId, "session_a");
+  assert.equal(store.getSummary({ surfaceSessionId: "session_a", actionId: "action_a" })?.actionId, "action_a");
+  assert.equal(
+    store.invalidate({ surfaceSessionId: "session_a", actionId: "action_a", reason: "resolved" })?.invalidatedReason,
+    "resolved",
+  );
+  assert.equal(store.getSummary({ surfaceSessionId: "session_a", actionId: "action_a" }), null);
 });
 
 test("default session TTL is five minutes", () => {
