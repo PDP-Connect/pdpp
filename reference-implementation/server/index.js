@@ -40,6 +40,11 @@ import {
   buildPendingConsentRequestUri,
 } from './auth.js';
 import { createBlobStore } from './stores/blob-store.js';
+import {
+  createPostgresConnectorInstanceStore,
+  createSqliteConnectorInstanceStore,
+  resolveOwnerConnectorInstanceNamespace,
+} from './stores/connector-instance-store.js';
 import { postgresPersistContentAddressedBlob } from './postgres-records.js';
 import { createConsentStore } from './stores/consent-store.js';
 import { createOwnerDeviceAuthStore } from './stores/owner-device-auth-store.js';
@@ -473,10 +478,19 @@ const codeToStatus = {
   invalid_record: 400,
   invalid_record_identity: 400,
   invalid_expand: 400,
+  ambiguous_connector_instance: 400,
+  connector_instance_connector_mismatch: 400,
+  connector_instance_inactive: 400,
+  connector_instance_selector_required: 400,
+  connector_instance_storage_not_migrated: 400,
+  connector_instance_store_required: 500,
+  owner_subject_required: 400,
   unknown_field: 400,
   unsupported_version: 400,
   authentication_error: 401,
+  connector_instance_owner_mismatch: 403,
   blob_not_found: 404,
+  connector_instance_not_found: 404,
   not_found: 404,
   run_already_active: 409,
   no_pending_interaction: 409,
@@ -1021,6 +1035,45 @@ function resolveSingleConnectorIdQueryValue(rawConnectorId) {
   if (typeof rawConnectorId !== 'string') return null;
   const trimmed = rawConnectorId.trim();
   return trimmed || null;
+}
+
+function getOwnerTokenSubjectId(req) {
+  return req.tokenInfo?.subject_id || OWNER_AUTH_DEFAULT_SUBJECT_ID;
+}
+
+function createRequestConnectorInstanceStore() {
+  return isPostgresStorageBackend()
+    ? createPostgresConnectorInstanceStore()
+    : createSqliteConnectorInstanceStore();
+}
+
+async function resolveOwnerConnectorNamespace(req, connectorId, options = {}) {
+  const explicitConnectorInstanceId = resolveSingleConnectorIdQueryValue(req.query?.connector_instance_id);
+  if (explicitConnectorInstanceId && options.allowExplicitConnectorInstanceId === false) {
+    const err = new Error(
+      'connector_instance_id is not accepted on this path until storage is migrated to connector_instance_id',
+    );
+    err.code = 'connector_instance_storage_not_migrated';
+    err.param = 'connector_instance_id';
+    throw err;
+  }
+  const ownerSubjectId = options.ownerSubjectId || getOwnerTokenSubjectId(req);
+  return resolveOwnerConnectorInstanceNamespace({
+    ownerSubjectId,
+    connectorId,
+    connectorInstanceId: explicitConnectorInstanceId,
+    connectorInstanceStore: createRequestConnectorInstanceStore(),
+    allowLegacyDefault: options.allowLegacyDefault ?? true,
+    displayName: options.displayName ?? connectorId,
+    now: options.now,
+  });
+}
+
+function storageTargetForConnectorNamespace(namespace) {
+  return {
+    connector_id: namespace.connectorId,
+    connector_instance_id: namespace.connectorInstanceId,
+  };
 }
 
 function parseSourceWebhookSecrets(raw = process.env.PDPP_SOURCE_WEBHOOK_SECRETS || '') {
@@ -5489,21 +5542,32 @@ function buildRsApp(opts = {}) {
   app.post('/v1/blobs', { contract: 'uploadBlob' }, requireToken, requireOwner, async (req, res) => {
     try {
       let manifestCache = null;
+      let storageNamespace = null;
       const dependencies = {
         hasManifestStream: async (connectorId, streamName) => {
           manifestCache = await resolveRegisteredConnectorManifest(connectorId);
-          return Boolean(
+          const visible = Boolean(
             (manifestCache.streams || []).find((candidate) => candidate.name === streamName),
           );
+          if (visible) {
+            storageNamespace = await resolveOwnerConnectorNamespace(req, connectorId, {
+              allowExplicitConnectorInstanceId: false,
+            });
+          }
+          return visible;
         },
-        persistBlob: ({ connectorId, stream, recordKey, mimeType, data }) =>
-          persistContentAddressedBlob({
-            connectorId,
+        persistBlob: async ({ connectorId, stream, recordKey, mimeType, data }) => {
+          const namespace = storageNamespace ?? await resolveOwnerConnectorNamespace(req, connectorId, {
+            allowExplicitConnectorInstanceId: false,
+          });
+          return persistContentAddressedBlob({
+            connectorId: namespace.connectorId,
             stream,
             recordKey,
             mimeType,
             data: Buffer.isBuffer(data) ? data : Buffer.from(data),
-          }),
+          });
+        },
       };
       const operationInput = {
         requestParams: {
@@ -5806,14 +5870,26 @@ function buildRsApp(opts = {}) {
         submittedRecordCount: lines.length,
       });
       try {
+        let storageNamespace = null;
         const dependencies = {
           hasManifestStream: async (cid, streamName) => {
             const manifest = await resolveRegisteredConnectorManifest(cid);
-            return Boolean(
+            const visible = Boolean(
               (manifest.streams || []).find((stream) => stream.name === streamName),
             );
+            if (visible) {
+              storageNamespace = await resolveOwnerConnectorNamespace(req, cid, {
+                allowExplicitConnectorInstanceId: false,
+              });
+            }
+            return visible;
           },
-          ingestRecord: (cid, record) => ingestRecord(cid, record),
+          ingestRecord: async (cid, record) => {
+            const namespace = storageNamespace ?? await resolveOwnerConnectorNamespace(req, cid, {
+              allowExplicitConnectorInstanceId: false,
+            });
+            return ingestRecord(storageTargetForConnectorNamespace(namespace), record);
+          },
         };
         let output;
         try {
@@ -5870,11 +5946,17 @@ function buildRsApp(opts = {}) {
         operation: 'read',
       });
       try {
+        let storageNamespace = null;
         const { state } = await executeRsConnectorStateGet(
           { connectorId, grantId },
           {
-            resolveRegisteredConnectorManifest: (id) =>
-              resolveRegisteredConnectorManifest(id),
+            resolveRegisteredConnectorManifest: async (id) => {
+              const manifest = await resolveRegisteredConnectorManifest(id);
+              storageNamespace = await resolveOwnerConnectorNamespace(req, id, {
+                allowExplicitConnectorInstanceId: false,
+              });
+              return manifest;
+            },
             resolveGrantScope: (id, gid) => resolveGrantScopedStateGrant(id, gid),
             onGrantResolved: async (grantScope) => {
               if (grantScope?.traceId) {
@@ -5884,7 +5966,12 @@ function buildRsApp(opts = {}) {
               setReferenceTraceId(res, stateContext.traceId);
               await emitStateRequested(req, stateContext);
             },
-            getSyncState: (id, args) => getSyncState(id, args),
+            getSyncState: async (id, args) => {
+              const namespace = storageNamespace ?? await resolveOwnerConnectorNamespace(req, id, {
+                allowExplicitConnectorInstanceId: false,
+              });
+              return getSyncState(storageTargetForConnectorNamespace(namespace), args);
+            },
           },
         );
         await emitStateEvent(req, stateContext, 'state.served', 'succeeded', {
@@ -5919,11 +6006,17 @@ function buildRsApp(opts = {}) {
         requestedStreams,
       });
       try {
+        let storageNamespace = null;
         const { state } = await executeRsConnectorStatePut(
           { connectorId, grantId, stateMap },
           {
-            resolveRegisteredConnectorManifest: (id) =>
-              resolveRegisteredConnectorManifest(id),
+            resolveRegisteredConnectorManifest: async (id) => {
+              const manifest = await resolveRegisteredConnectorManifest(id);
+              storageNamespace = await resolveOwnerConnectorNamespace(req, id, {
+                allowExplicitConnectorInstanceId: false,
+              });
+              return manifest;
+            },
             resolveGrantScope: (id, gid) => resolveGrantScopedStateGrant(id, gid),
             onGrantResolved: async (grantScope) => {
               if (grantScope?.traceId) {
@@ -5933,7 +6026,12 @@ function buildRsApp(opts = {}) {
               setReferenceTraceId(res, stateContext.traceId);
               await emitStateRequested(req, stateContext);
             },
-            putSyncState: (id, map, args) => putSyncState(id, map, args),
+            putSyncState: async (id, map, args) => {
+              const namespace = storageNamespace ?? await resolveOwnerConnectorNamespace(req, id, {
+                allowExplicitConnectorInstanceId: false,
+              });
+              return putSyncState(storageTargetForConnectorNamespace(namespace), map, args);
+            },
           },
         );
         await emitStateEvent(req, stateContext, 'state.updated', 'succeeded', {
