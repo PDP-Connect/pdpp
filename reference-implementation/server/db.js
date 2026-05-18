@@ -546,10 +546,10 @@ CREATE TABLE IF NOT EXISTS records (
 );
 
 CREATE INDEX IF NOT EXISTS idx_records_lookup
-  ON records(connector_instance_id, stream, record_key);
+  ON records(connector_id, stream, record_key);
 
 CREATE INDEX IF NOT EXISTS idx_records_version
-  ON records(connector_instance_id, stream, version);
+  ON records(connector_id, stream, version);
 
 CREATE TABLE IF NOT EXISTS record_changes (
   connector_id  TEXT NOT NULL,
@@ -565,7 +565,7 @@ CREATE TABLE IF NOT EXISTS record_changes (
 );
 
 CREATE INDEX IF NOT EXISTS idx_record_changes_record
-  ON record_changes(connector_instance_id, stream, record_key, version);
+  ON record_changes(connector_id, stream, record_key, version);
 
 CREATE TABLE IF NOT EXISTS blobs (
   blob_id       TEXT PRIMARY KEY,
@@ -598,7 +598,7 @@ CREATE TABLE IF NOT EXISTS blob_bindings (
 );
 
 CREATE INDEX IF NOT EXISTS idx_blob_bindings_record
-  ON blob_bindings(connector_instance_id, stream, record_key);
+  ON blob_bindings(connector_id, stream, record_key);
 
 -- sha256 uniqueness is *implied* by the blob_id = 'blob_sha256_<hex>'
 -- naming convention plus the PRIMARY KEY on blob_id. Making the
@@ -1657,6 +1657,16 @@ export function initDb(path = ':memory:', opts = {}) {
   runWithSqliteBusyRetrySync(() => migrateBlobBindingsJsonPath(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateConnectorSyncStateInstanceColumns(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateRecordStorageInstanceColumns(raw, opts));
+  raw.exec(`
+DROP INDEX IF EXISTS idx_records_lookup;
+DROP INDEX IF EXISTS idx_records_version;
+DROP INDEX IF EXISTS idx_record_changes_record;
+DROP INDEX IF EXISTS idx_blob_bindings_record;
+CREATE INDEX IF NOT EXISTS idx_records_lookup ON records(connector_instance_id, stream, record_key);
+CREATE INDEX IF NOT EXISTS idx_records_version ON records(connector_instance_id, stream, version);
+CREATE INDEX IF NOT EXISTS idx_record_changes_record ON record_changes(connector_instance_id, stream, record_key, version);
+CREATE INDEX IF NOT EXISTS idx_blob_bindings_record ON blob_bindings(connector_instance_id, stream, record_key);
+`);
   runWithSqliteBusyRetrySync(() => migrateSchedulerInstanceColumns(raw));
   raw.exec(
     `CREATE INDEX IF NOT EXISTS idx_spine_events_run_terminal

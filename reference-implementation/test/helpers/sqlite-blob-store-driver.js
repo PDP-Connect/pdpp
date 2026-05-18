@@ -24,6 +24,7 @@ import {
   transaction,
 } from '../../lib/db.ts';
 import { closeDb, initDb } from '../../server/db.js';
+import { makeLegacyConnectorInstanceId } from '../../server/stores/connector-instance-store.js';
 
 function getOneRow(sql, params) {
   for (const row of iterateDynamicSqlAcknowledged(sql, params)) {
@@ -138,6 +139,7 @@ export function createSqliteBlobStoreDriver() {
       exec(referenceQueries.blobsInsertBinding, [
         blobId,
         connectorId,
+        makeLegacyConnectorInstanceId('owner_local', connectorId),
         stream,
         recordKey,
       ]);
@@ -145,14 +147,14 @@ export function createSqliteBlobStoreDriver() {
 
     async listBindingsForRecord({ connectorId, stream, recordKey }) {
       // REVIEWED-DYNAMIC: harness read scoped by composite key + index
-      // `idx_blob_bindings_record(connector_id, stream, record_key)`. Bound
+      // `idx_blob_bindings_record(connector_instance_id, stream, record_key)`. Bound
       // by fanout per record in the test workload (typically <=3).
       const rows = listRows(
         `SELECT blob_id, connector_id, stream, record_key
          FROM blob_bindings
-         WHERE connector_id = ? AND stream = ? AND record_key = ?
+         WHERE connector_instance_id = ? AND stream = ? AND record_key = ?
          LIMIT 1000`,
-        [connectorId, stream, recordKey],
+        [makeLegacyConnectorInstanceId('owner_local', connectorId), stream, recordKey],
       );
       return rows.map((row) => ({
         blobId: row.blob_id,

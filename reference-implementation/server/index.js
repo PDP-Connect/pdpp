@@ -1821,7 +1821,7 @@ function decorateRecordBlobRefs(record) {
   return next;
 }
 
-function persistContentAddressedBlob({ connectorId, stream, recordKey, mimeType, data }) {
+function persistContentAddressedBlob({ connectorId, connectorInstanceId, stream, recordKey, mimeType, data }) {
   if (isPostgresStorageBackend()) {
     return postgresPersistContentAddressedBlob({ connectorId, stream, recordKey, mimeType, data });
   }
@@ -1841,7 +1841,7 @@ function persistContentAddressedBlob({ connectorId, stream, recordKey, mimeType,
       throw err;
     }
 
-    exec(referenceQueries.blobsInsertBinding, [blobId, connectorId, stream, recordKey]);
+    exec(referenceQueries.blobsInsertBinding, [blobId, connectorId, connectorInstanceId, stream, recordKey]);
 
     return row;
   });
@@ -5772,6 +5772,7 @@ function buildRsApp(opts = {}) {
           });
           return persistContentAddressedBlob({
             connectorId: namespace.connectorId,
+            connectorInstanceId: namespace.connectorInstanceId,
             stream,
             recordKey,
             mimeType,

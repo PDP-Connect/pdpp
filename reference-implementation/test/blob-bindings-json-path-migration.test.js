@@ -22,6 +22,11 @@ import os from 'node:os';
 import Database from 'better-sqlite3';
 
 import { initDb, closeDb } from '../server/db.js';
+import { makeLegacyConnectorInstanceId } from '../server/stores/connector-instance-store.js';
+
+function legacyInstanceId(connectorId) {
+  return makeLegacyConnectorInstanceId('owner_local', connectorId);
+}
 
 function tempDbPath() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pdpp-blobbindings-'));
@@ -49,23 +54,23 @@ test('fresh DB has json_path in blob_bindings PK + CHECK constraint', () => {
       VALUES ('blob_sha256_aa', 'c1', 's1', 'r1', 'application/octet-stream', 1, 'aa', x'aa');
     `);
     raw.prepare(
-      'INSERT INTO blob_bindings (blob_id, connector_id, stream, record_key) VALUES (?,?,?,?)'
-    ).run('blob_sha256_aa', 'c1', 's1', 'r1');
+      'INSERT INTO blob_bindings (blob_id, connector_id, connector_instance_id, stream, record_key) VALUES (?,?,?,?,?)'
+    ).run('blob_sha256_aa', 'c1', legacyInstanceId('c1'), 's1', 'r1');
     const row = raw.prepare('SELECT json_path FROM blob_bindings').get();
     assert.equal(row.json_path, '@record');
 
     // CHECK constraint rejects shapes that are neither '@record' nor /-prefixed.
     assert.throws(
       () => raw.prepare(
-        'INSERT INTO blob_bindings (blob_id, connector_id, stream, record_key, json_path) VALUES (?,?,?,?,?)'
-      ).run('blob_sha256_aa', 'c1', 's1', 'r1', 'output_preview'),
+        'INSERT INTO blob_bindings (blob_id, connector_id, connector_instance_id, stream, record_key, json_path) VALUES (?,?,?,?,?,?)'
+      ).run('blob_sha256_aa', 'c1', legacyInstanceId('c1'), 's1', 'r1', 'output_preview'),
       /CHECK constraint failed/,
     );
 
     // JSON Pointer values pass.
     raw.prepare(
-      'INSERT INTO blob_bindings (blob_id, connector_id, stream, record_key, json_path) VALUES (?,?,?,?,?)'
-    ).run('blob_sha256_aa', 'c1', 's1', 'r1', '/output_preview');
+      'INSERT INTO blob_bindings (blob_id, connector_id, connector_instance_id, stream, record_key, json_path) VALUES (?,?,?,?,?,?)'
+    ).run('blob_sha256_aa', 'c1', legacyInstanceId('c1'), 's1', 'r1', '/output_preview');
     const all = raw.prepare(
       "SELECT json_path FROM blob_bindings ORDER BY json_path"
     ).all().map((r) => r.json_path);
@@ -222,14 +227,14 @@ test('PK includes json_path: same blob can bind to same record at multiple json_
       'INSERT INTO blobs (blob_id, connector_id, stream, record_key, mime_type, size_bytes, sha256, data) VALUES (?,?,?,?,?,?,?,?)'
     ).run('blob_sha256_x', 'c1', 's1', 'r1', 'application/octet-stream', 1, 'x', Buffer.from([0xaa]));
     raw.prepare(
-      'INSERT INTO blob_bindings (blob_id, connector_id, stream, record_key, json_path) VALUES (?,?,?,?,?)'
-    ).run('blob_sha256_x', 'c1', 's1', 'r1', '/output_preview');
+      'INSERT INTO blob_bindings (blob_id, connector_id, connector_instance_id, stream, record_key, json_path) VALUES (?,?,?,?,?,?)'
+    ).run('blob_sha256_x', 'c1', legacyInstanceId('c1'), 's1', 'r1', '/output_preview');
     raw.prepare(
-      'INSERT INTO blob_bindings (blob_id, connector_id, stream, record_key, json_path) VALUES (?,?,?,?,?)'
-    ).run('blob_sha256_x', 'c1', 's1', 'r1', '/arguments');
+      'INSERT INTO blob_bindings (blob_id, connector_id, connector_instance_id, stream, record_key, json_path) VALUES (?,?,?,?,?,?)'
+    ).run('blob_sha256_x', 'c1', legacyInstanceId('c1'), 's1', 'r1', '/arguments');
     raw.prepare(
-      'INSERT INTO blob_bindings (blob_id, connector_id, stream, record_key, json_path) VALUES (?,?,?,?,?)'
-    ).run('blob_sha256_x', 'c1', 's1', 'r1', '@record');
+      'INSERT INTO blob_bindings (blob_id, connector_id, connector_instance_id, stream, record_key, json_path) VALUES (?,?,?,?,?,?)'
+    ).run('blob_sha256_x', 'c1', legacyInstanceId('c1'), 's1', 'r1', '@record');
     const rows = raw.prepare(
       'SELECT json_path FROM blob_bindings ORDER BY json_path'
     ).all().map((r) => r.json_path);
@@ -238,8 +243,8 @@ test('PK includes json_path: same blob can bind to same record at multiple json_
     // But same json_path is rejected (PK uniqueness).
     assert.throws(
       () => raw.prepare(
-        'INSERT INTO blob_bindings (blob_id, connector_id, stream, record_key, json_path) VALUES (?,?,?,?,?)'
-      ).run('blob_sha256_x', 'c1', 's1', 'r1', '/output_preview'),
+        'INSERT INTO blob_bindings (blob_id, connector_id, connector_instance_id, stream, record_key, json_path) VALUES (?,?,?,?,?,?)'
+      ).run('blob_sha256_x', 'c1', legacyInstanceId('c1'), 's1', 'r1', '/output_preview'),
       /UNIQUE constraint failed/,
     );
   } finally {
