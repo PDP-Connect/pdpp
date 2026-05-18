@@ -23,7 +23,7 @@ Usage (run from inside a monorepo checkout, e.g. via "pnpm exec pdpp"):
                           [--device-label <label>]
   ${PDPP_CLI_BIN_NAME} collector run     --base-url <url> --connector <id>
                           --device-id <id> --device-token <token>
-                          --source-instance-id <id>
+                          --connection-id <id>
                           [--streams a,b,c]
                           [--backfill-streams attachments]
                           [--run-id <id>]
@@ -39,12 +39,13 @@ Suggested operator flow:
      then on the host with Claude/Codex data run:
        ${PDPP_CLI_BIN_NAME} collector enroll --base-url <url> --code <code>
      The JSON response returns device_id, device_token, and
-     source_instance_id — persist all three to a secrets store. You
-     will pass them back as flags/env vars in step 4.
+     source_instance_id (the connection id for this local binding) —
+     persist all three to a secrets store. You will pass them back as
+     flags/env vars in step 4.
   4. Run a connector with:
        PDPP_LOCAL_DEVICE_ID=<device_id> \\
        PDPP_LOCAL_DEVICE_TOKEN=<device_token> \\
-       PDPP_SOURCE_INSTANCE_ID=<source_instance_id> \\
+       PDPP_CONNECTION_ID=<connection_id> \\
          ${PDPP_CLI_BIN_NAME} collector run --base-url <url> \\
            --connector claude_code
      Connectors that need bindings the collector does not advertise fail
@@ -55,8 +56,8 @@ Notes:
   approve grants, or mint owner tokens. See
   openspec/changes/introduce-local-collector-runner/design.md.
   Required flags can also be supplied via PDPP_REFERENCE_BASE_URL,
-  PDPP_LOCAL_DEVICE_ID, PDPP_LOCAL_DEVICE_TOKEN, PDPP_SOURCE_INSTANCE_ID,
-  PDPP_RUN_ID.
+  PDPP_LOCAL_DEVICE_ID, PDPP_LOCAL_DEVICE_TOKEN, PDPP_CONNECTION_ID,
+  PDPP_RUN_ID. PDPP_SOURCE_INSTANCE_ID remains a compatibility alias.
 `;
 
 const SUBCOMMANDS = new Set(['advertise', 'enroll', 'run']);

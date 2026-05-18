@@ -22,7 +22,7 @@ This is the single-page operator runbook for running Claude Code and Codex local
 
 The reference deployment issues a short-lived enrollment code from `/dashboard/device-exporters`. The host that owns the Claude Code / Codex data exchanges that code for a device-scoped credential, then runs the collector. The credential cannot read records, mint owner tokens, or mutate unrelated devices &mdash; it can only ingest into its own scoped lane. See `openspec/changes/introduce-local-collector-runner`.
 
-State is authoritative on the server. Before each connector pass the runner fetches prior state via `GET /_ref/device-exporters/:deviceId/source-instances/:sourceInstanceId/state` and populates `START.state`. After records are durably accepted it flushes the per-stream `STATE` map back via `PUT`. Process crashes between record ingest and state flush replay safely &mdash; `(device_id, batch_id, body_hash)` ingest is idempotent and connectors are idempotent at the record key. See `openspec/changes/design-local-collector-state-sync`.
+State is authoritative on the server. Before each connector pass the runner fetches prior state for the local connection via `GET /_ref/device-exporters/:deviceId/source-instances/:sourceInstanceId/state` and populates `START.state`. After records are durably accepted it flushes the per-stream `STATE` map back via `PUT`. Process crashes between record ingest and state flush replay safely &mdash; `(device_id, batch_id, body_hash)` ingest is idempotent and connectors are idempotent at the record key. See `openspec/changes/design-local-collector-state-sync`.
 
 ## Prerequisites
 
@@ -57,14 +57,14 @@ In a browser, open `/dashboard/device-exporters` on the reference deployment, si
 Use the "Create enrollment code" form:
 
 - Connector id: `claude_code` (or `codex`).
-- Local binding: a stable name like `personal-laptop` or `ci-runner-eu-1`. Used by the server to namespace the source-instance id.
+- Local binding: a stable name like `personal-laptop` or `ci-runner-eu-1`. Used by the server to namespace the connection id. Existing server responses still expose this compatibility field as `source_instance_id`.
 - Display name: optional, propagates as the device label.
 
 After "Create code" the dashboard renders:
 
 1. The raw enrollment code (copy button).
 2. A pre-filled `pdpp collector enroll` command targeting the deployment's public origin.
-3. Pre-filled `pdpp collector run --connector claude_code|codex` commands with `PDPP_LOCAL_DEVICE_ID`, `PDPP_LOCAL_DEVICE_TOKEN`, `PDPP_SOURCE_INSTANCE_ID` placeholders.
+3. Pre-filled `pdpp collector run --connector claude_code|codex` commands with `PDPP_LOCAL_DEVICE_ID`, `PDPP_LOCAL_DEVICE_TOKEN`, `PDPP_CONNECTION_ID` placeholders.
 
 You do not need to memorize the route or the env var names; the dashboard advertises the exact command.
 
@@ -99,7 +99,7 @@ Paste the `pdpp collector run` command from the dashboard, filling the three env
 ```bash
 PDPP_LOCAL_DEVICE_ID=dev_... \
 PDPP_LOCAL_DEVICE_TOKEN=dvtk_... \
-PDPP_SOURCE_INSTANCE_ID=si_... \
+PDPP_CONNECTION_ID=si_... \
   pnpm exec pdpp collector run \
     --base-url https://peregrine-dev.vivid.fish \
     --connector claude_code
@@ -123,14 +123,14 @@ Open `/dashboard/device-exporters`. The device row updates with:
 
 - `fresh` heartbeat (or `stale` if the runner has not heartbeated within the threshold).
 - Accepted / rejected ingest counts.
-- Per-source-instance breakdown of last ingest time and last error.
+- Per-connection breakdown of last ingest time and last error.
 
 `/dashboard/runs` and `/dashboard/grants` show the underlying record/run flow for the connector. For low-level diagnostics, use the `pdpp ref ...` commands &mdash; see `apps/web/content/docs/reference-implementation.md`.
 
 ## Recovery and re-runs
 
 - **Re-running the same command**: safe. STATE replays so the connector starts where it left off; ingest is idempotent at `(device_id, batch_id, body_hash)`.
-- **Lost the device token**: revoke the device from `/dashboard/device-exporters` and re-enroll a new device. Source-instance ids are stable per `(connector_id, local_binding_name)` so accepted records are not lost.
+- **Lost the device token**: revoke the device from `/dashboard/device-exporters` and re-enroll a new device. Connection ids are stable per `(connector_id, local_binding_name)` so accepted records are not lost; older routes and JSON still call this `source_instance_id`.
 - **`status: blocked` with `state_get_failed`**: the runner refuses to advance without prior state to avoid over-collecting. Inspect the dashboard for the underlying error (typically a transient AS reach issue or a removed source instance) before retrying.
 - **`status: retrying` with `state_put_failed`**: benign; the next pass re-reads state and re-emits records the connector child considered consumed. Server-side idempotency absorbs the duplicates.
 

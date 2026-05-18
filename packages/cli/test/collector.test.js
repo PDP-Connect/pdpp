@@ -53,15 +53,17 @@ test('collector help states the monorepo requirement and Distribution follow-up'
   assert.match(io.stdout, /openspec\/changes\/introduce-local-collector-runner\/design\.md/);
 });
 
-test('collector help names device_id, device_token, and source_instance_id from enroll', async () => {
+test('collector help names device_id, device_token, and connection id from enroll', async () => {
   const io = makeIo();
   const code = await runCollector([], io.io);
   assert.equal(code, 0);
-  // Enrollment returns three values; help must surface all three so
-  // operators don't hit "<source_instance_id>" later with no provenance.
+  // Enrollment still returns source_instance_id, but operator-facing run
+  // commands should name it as the local connection id.
   assert.match(io.stdout, /device_id/);
   assert.match(io.stdout, /device_token/);
   assert.match(io.stdout, /source_instance_id/);
+  assert.match(io.stdout, /PDPP_CONNECTION_ID/);
+  assert.match(io.stdout, /--connection-id/);
 });
 
 test('top-level help advertises the collector namespace', async () => {
@@ -114,11 +116,12 @@ test('spawnCollectorRunner throws actionable error when runner is missing', asyn
       assert.match(err.message, /pdpp collector advertise/);
       assert.match(err.message, /pdpp collector enroll/);
       assert.match(err.message, /pdpp collector run --connector claude_code/);
-      // Enrollment returns three values, not two — name all of them so
-      // the later <source_instance_id> placeholder has provenance.
+      // Enrollment returns three values, not two, but the run command should
+      // use connection terminology for the binding id.
       assert.match(err.message, /device_id/);
       assert.match(err.message, /device_token/);
       assert.match(err.message, /source_instance_id/);
+      assert.match(err.message, /PDPP_CONNECTION_ID/);
       return true;
     },
   );

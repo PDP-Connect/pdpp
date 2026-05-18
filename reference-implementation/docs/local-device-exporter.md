@@ -18,12 +18,12 @@ pnpm exec pdpp collector enroll \
   --code <enrollment-code>
 ```
 
-4. Use the returned `device_id`, `device_token`, and `source_instance_id` to run a connector pass:
+4. Use the returned `device_id`, `device_token`, and `source_instance_id` (the local connection id) to run a connector pass:
 
 ```bash
 PDPP_LOCAL_DEVICE_ID=<device_id> \
 PDPP_LOCAL_DEVICE_TOKEN=<device_token> \
-PDPP_SOURCE_INSTANCE_ID=<source_instance_id> \
+PDPP_CONNECTION_ID=<connection_id> \
   pnpm exec pdpp collector run --base-url http://127.0.0.1:7662 --connector claude_code
 ```
 
@@ -41,7 +41,7 @@ pnpm --dir packages/polyfill-connectors exec tsx bin/local-device-exporter.ts ru
   --base-url http://127.0.0.1:7662 \
   --device-id <device-id> \
   --device-token <device-token> \
-  --source-instance-id <source-instance-id>
+  --connection-id <connection-id>
 ```
 
 Environment equivalents:
@@ -49,15 +49,16 @@ Environment equivalents:
 - `PDPP_REFERENCE_BASE_URL`: reference AS base URL.
 - `PDPP_LOCAL_DEVICE_ID`: enrolled device id.
 - `PDPP_LOCAL_DEVICE_TOKEN`: device-scoped ingest token.
-- `PDPP_SOURCE_INSTANCE_ID`: source instance id returned by enrollment.
+- `PDPP_CONNECTION_ID`: connection id returned by enrollment as `source_instance_id`.
+- `PDPP_SOURCE_INSTANCE_ID`: compatibility alias for existing local device bindings.
 - `PDPP_RUN_ID`: optional stable run id for streaming-companion target registration.
-- `PDPP_COLLECTOR_QUEUE`: durable queue path for `pdpp collector`. Defaults to `packages/polyfill-connectors/.pdpp-data/collector-runner-queue.json`.
-- `PDPP_LOCAL_DEVICE_QUEUE`: durable queue path for the legacy lane. Defaults to `packages/polyfill-connectors/.pdpp-data/local-device-exporter-queue.json`.
+- `PDPP_COLLECTOR_QUEUE`: durable queue path for `pdpp collector`. Defaults to a connection-scoped file under `packages/polyfill-connectors/.pdpp-data/`.
+- `PDPP_LOCAL_DEVICE_QUEUE`: durable queue path for the legacy lane. Defaults to a connection-scoped file under `packages/polyfill-connectors/.pdpp-data/`.
 
 ## Boundaries
 
 - Device credentials are not owner or client grant tokens.
 - Owner-token and client-token routes do not accept device credentials.
-- Device ingest uses a reference-internal storage connector id derived from connector id plus source instance id to avoid overwriting same stream/key records from different devices.
+- Device ingest uses a reference-internal storage connector id derived from connector id plus connection id to avoid overwriting same stream/key records from different devices. Existing server routes and JSON still call this `source_instance_id`.
 - Device-scoped local collector STATE read/write is available through the same device-exporter authority at `GET|PUT /_ref/device-exporters/:deviceId/source-instances/:sourceInstanceId/state`. The route uses the existing device bearer credential, stores state under the same internal storage connector id used by device ingest, and never collides with the owner-auth `/v1/state/:connectorId` route (which remains keyed by public connector id plus grant). See OpenSpec `design-local-collector-state-sync` for the load/replay/persist contract.
 - The public/source-instance vocabulary remains an open protocol question owned outside the RI. See `design-notes/source-authority-vs-schema-identity-2026-04-30.md`.

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { buildCollectorStartMessage } from "../src/collector-runner.ts";
-import { buildConnectorSpec, parseArgs } from "./collector-runner.ts";
+import { buildConnectorSpec, parseArgs, scopedDefaultQueuePath } from "./collector-runner.ts";
 
 // These tests pin the START wire for stream backfill:
 // CLI argv → parseArgs → buildConnectorSpec → buildCollectorStartMessage.
@@ -109,4 +109,33 @@ test("CLI run without --connector defaults still rejects unknown connectors that
     "src",
   ]);
   assert.throws(() => buildConnectorSpec(options), /requires --streams/);
+});
+
+test("CLI prefers connection id alias while preserving source-instance compatibility", () => {
+  const options = parseArgs([
+    "run",
+    "--base-url",
+    "http://127.0.0.1:7662",
+    "--connector",
+    "codex",
+    "--device-id",
+    "dev",
+    "--device-token",
+    "tok",
+    "--connection-id",
+    "conn-1",
+  ]);
+
+  assert.equal(options.sourceInstanceId, "conn-1");
+});
+
+test("default collector queue path is scoped by connection id", () => {
+  assert.equal(
+    scopedDefaultQueuePath("/tmp/collector-runner-queue.json", "/tmp/collector-runner-queue.json", "conn/a b"),
+    "/tmp/collector-runner-queue.conn_2Fa_20b.json"
+  );
+  assert.equal(
+    scopedDefaultQueuePath("/tmp/custom.json", "/tmp/collector-runner-queue.json", "conn/a b"),
+    "/tmp/custom.json"
+  );
 });

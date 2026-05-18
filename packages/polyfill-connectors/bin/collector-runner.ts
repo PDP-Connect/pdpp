@@ -15,7 +15,7 @@
  *
  *   run     --base-url <url> --connector <id>
  *           --device-id <id> --device-token <token>
- *           --source-instance-id <id> [--streams a,b,c]
+ *           --connection-id <id> [--streams a,b,c]
  *           [--backfill-streams attachments]
  *           [--command <cmd>] [--args <argv...>] [--run-id <id>]
  *     Run the connector under the collector runtime. Gates the
@@ -43,6 +43,9 @@
  *     STATE handling: this CLI now persists and replays connector STATE
  *     through the device-scoped state route under
  *     `/_ref/device-exporters/:deviceId/source-instances/:sourceInstanceId/state`.
+ *     The CLI prefers connection terminology; `--source-instance-id` and
+ *     `PDPP_SOURCE_INSTANCE_ID` remain compatibility aliases for existing
+ *     local device bindings until the server route is renamed.
  *     `runCollectorConnector` fetches prior state before spawning the
  *     connector child, populates `START.state`, buffers emitted STATE
  *     messages per stream (last-wins, in-scope only), and flushes the
@@ -58,7 +61,7 @@
  *     can satisfy before pairing.
  */
 
-import { dirname, join } from "node:path";
+import { basename, dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type CollectorConnectorSpec, enrollCollector, runCollectorConnector } from "../src/collector-runner.ts";
 import { COLLECTOR_RUNTIME_CAPABILITIES } from "../src/runtime-capabilities.ts";
@@ -147,7 +150,7 @@ async function main(): Promise<void> {
   }
 
   if (!(options.deviceId && options.deviceToken && options.sourceInstanceId)) {
-    throw new Error("run requires --device-id <id>, --device-token <token>, and --source-instance-id <id>");
+    throw new Error("run requires --device-id <id>, --device-token <token>, and --connection-id <id>");
   }
   if (!options.connector) {
     throw new Error("run requires --connector <connector-id>");
@@ -159,7 +162,7 @@ async function main(): Promise<void> {
     connector: spec,
     deviceId: options.deviceId,
     deviceToken: options.deviceToken,
-    queuePath: options.queuePath,
+    queuePath: scopedDefaultQueuePath(options.queuePath, DEFAULT_QUEUE_PATH, options.sourceInstanceId),
     ...(options.runId ? { runId: options.runId } : {}),
     sourceInstanceId: options.sourceInstanceId,
   });
@@ -205,6 +208,9 @@ export function parseArgs(args: string[]): CliOptions {
   }
   if (process.env.PDPP_SOURCE_INSTANCE_ID) {
     options.sourceInstanceId = process.env.PDPP_SOURCE_INSTANCE_ID;
+  }
+  if (process.env.PDPP_CONNECTION_ID) {
+    options.sourceInstanceId = process.env.PDPP_CONNECTION_ID;
   }
   if (process.env.PDPP_RUN_ID) {
     options.runId = process.env.PDPP_RUN_ID;
@@ -255,6 +261,9 @@ function applyOption(options: CliOptions, arg: string, value: string | undefined
     "--run-id": (next) => {
       options.runId = next;
     },
+    "--connection-id": (next) => {
+      options.sourceInstanceId = next;
+    },
     "--source-instance-id": (next) => {
       options.sourceInstanceId = next;
     },
@@ -280,6 +289,19 @@ function parseCsv(value: string): string[] {
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
+}
+
+export function scopedDefaultQueuePath(queuePath: string, defaultQueuePath: string, connectionId: string): string {
+  if (queuePath !== defaultQueuePath) {
+    return queuePath;
+  }
+  const extension = extname(defaultQueuePath);
+  const stem = basename(defaultQueuePath, extension);
+  return join(dirname(defaultQueuePath), `${stem}.${safeQueuePathSegment(connectionId)}${extension}`);
+}
+
+function safeQueuePathSegment(value: string): string {
+  return encodeURIComponent(value).replaceAll("%", "_");
 }
 
 // Run the CLI only when invoked directly (`tsx bin/collector-runner.ts`),

@@ -76,11 +76,11 @@ const RUNNER_MISSING_MESSAGE =
   '       --base-url https://<your-reference-deployment> \\\n' +
   '       --code <one-time-code-from-dashboard>\n' +
   '       # The JSON response returns device_id, device_token, and\n' +
-  '       # source_instance_id — capture all three.\n' +
+  '       # source_instance_id is the connection id for this local binding; capture all three.\n' +
   '  5. PDPP_REFERENCE_BASE_URL=https://<your-reference-deployment> \\\n' +
   '     PDPP_LOCAL_DEVICE_ID=<device_id> \\\n' +
   '     PDPP_LOCAL_DEVICE_TOKEN=<device_token> \\\n' +
-  '     PDPP_SOURCE_INSTANCE_ID=<source_instance_id> \\\n' +
+  '     PDPP_CONNECTION_ID=<connection_id> \\\n' +
   '     pnpm exec pdpp collector run --connector claude_code\n' +
   '       # repeat with --connector codex for Codex data\n' +
   '\n' +
