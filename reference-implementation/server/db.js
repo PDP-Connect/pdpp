@@ -721,6 +721,7 @@ CREATE INDEX IF NOT EXISTS idx_spine_events_run
 -- Spec: openspec/changes/add-lexical-retrieval-extension/specs/lexical-retrieval/spec.md
 CREATE VIRTUAL TABLE IF NOT EXISTS lexical_search_index USING fts5(
   connector_id UNINDEXED,
+  connector_instance_id UNINDEXED,
   stream       UNINDEXED,
   record_key   UNINDEXED,
   field        UNINDEXED,
@@ -740,7 +741,7 @@ CREATE TABLE IF NOT EXISTS lexical_search_snapshots (
   created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
--- Per-(connector, stream) fingerprint of the last-rebuilt declared
+-- Per-(connector instance, stream) fingerprint of the last-rebuilt declared
 -- lexical_fields set. Used by the backfill drift detector in search.js
 -- to force a rebuild when the manifest changes the field set, even when
 -- the field count stays the same (e.g. ['title'] -> ['selftext']). The
@@ -748,14 +749,15 @@ CREATE TABLE IF NOT EXISTS lexical_search_snapshots (
 -- satisfy the count band.
 CREATE TABLE IF NOT EXISTS lexical_search_meta (
   connector_id        TEXT NOT NULL,
+  connector_instance_id TEXT NOT NULL,
   stream              TEXT NOT NULL,
   fields_fingerprint  TEXT NOT NULL,
   updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
-  PRIMARY KEY(connector_id, stream)
+  PRIMARY KEY(connector_instance_id, stream)
 );
 
 -- Semantic retrieval experimental extension — drift tracking.
--- Per-(connector, stream) fingerprint of the last-rebuilt declared
+-- Per-(connector instance, stream) fingerprint of the last-rebuilt declared
 -- semantic_fields set AND the backend identity (model_id + dimensions +
 -- distance_metric) at index time. The backfill drift detector in
 -- search-semantic.js compares these against the live backend on startup and
@@ -1270,6 +1272,87 @@ function migrateRecordStorageInstanceColumns(raw, opts = {}) {
   return result;
 }
 
+function migrateLexicalSearchInstanceColumns(raw, opts = {}) {
+  const indexHasInstance = hasTableColumn(raw, 'lexical_search_index', 'connector_instance_id');
+  const metaHasInstance = hasTableColumn(raw, 'lexical_search_meta', 'connector_instance_id');
+  if (indexHasInstance && metaHasInstance) {
+    return { rebuilt: false, backfilledRows: 0 };
+  }
+
+  const migration = raw.transaction(() => {
+    const indexRows = raw.prepare(
+      `SELECT connector_id, ${indexHasInstance ? 'connector_instance_id,' : ''} stream, record_key, field, text
+         FROM lexical_search_index
+        ORDER BY connector_id, stream, record_key, field`
+    ).all();
+    const metaRows = raw.prepare(
+      `SELECT connector_id, ${metaHasInstance ? 'connector_instance_id,' : ''} stream, fields_fingerprint, updated_at
+         FROM lexical_search_meta
+        ORDER BY connector_id, stream`
+    ).all();
+    const instanceIds = new Map();
+    const resolveInstanceId = (row) => {
+      if (typeof row.connector_instance_id === 'string' && row.connector_instance_id.trim()) return row.connector_instance_id.trim();
+      if (!instanceIds.has(row.connector_id)) instanceIds.set(row.connector_id, legacySyncStateConnectorInstanceId(raw, row.connector_id));
+      return instanceIds.get(row.connector_id);
+    };
+
+    raw.exec(`
+      DROP TABLE lexical_search_index;
+      CREATE VIRTUAL TABLE lexical_search_index USING fts5(
+        connector_id UNINDEXED,
+        connector_instance_id UNINDEXED,
+        stream       UNINDEXED,
+        record_key   UNINDEXED,
+        field        UNINDEXED,
+        text,
+        tokenize = 'unicode61'
+      );
+
+      DROP TABLE lexical_search_meta;
+      CREATE TABLE lexical_search_meta (
+        connector_id        TEXT NOT NULL,
+        connector_instance_id TEXT NOT NULL,
+        stream              TEXT NOT NULL,
+        fields_fingerprint  TEXT NOT NULL,
+        updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY(connector_instance_id, stream)
+      );
+    `);
+
+    const insertIndex = raw.prepare(
+      `INSERT INTO lexical_search_index(connector_id, connector_instance_id, stream, record_key, field, text)
+       VALUES(?, ?, ?, ?, ?, ?)`
+    );
+    for (const row of indexRows) {
+      insertIndex.run(row.connector_id, resolveInstanceId(row), row.stream, row.record_key, row.field, row.text);
+    }
+
+    const insertMeta = raw.prepare(
+      `INSERT INTO lexical_search_meta(connector_id, connector_instance_id, stream, fields_fingerprint, updated_at)
+       VALUES(?, ?, ?, ?, ?)
+       ON CONFLICT(connector_instance_id, stream) DO UPDATE SET
+         connector_id = excluded.connector_id,
+         fields_fingerprint = excluded.fields_fingerprint,
+         updated_at = excluded.updated_at`
+    );
+    for (const row of metaRows) {
+      insertMeta.run(row.connector_id, resolveInstanceId(row), row.stream, row.fields_fingerprint, row.updated_at);
+    }
+
+    return {
+      rebuilt: true,
+      backfilledRows: (indexHasInstance ? 0 : indexRows.length) + (metaHasInstance ? 0 : metaRows.length),
+    };
+  });
+
+  const result = migration();
+  if (typeof opts.onSchemaMigration === 'function') {
+    opts.onSchemaMigration({ name: 'lexical_search_instance_columns', ...result });
+  }
+  return result;
+}
+
 function migrateSchedulerInstanceColumns(raw) {
   const schedulesHaveInstance = hasTableColumn(raw, 'connector_schedules', 'connector_instance_id');
   const activeRunsHaveInstance = hasTableColumn(raw, 'controller_active_runs', 'connector_instance_id');
@@ -1657,6 +1740,7 @@ export function initDb(path = ':memory:', opts = {}) {
   runWithSqliteBusyRetrySync(() => migrateBlobBindingsJsonPath(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateConnectorSyncStateInstanceColumns(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateRecordStorageInstanceColumns(raw, opts));
+  runWithSqliteBusyRetrySync(() => migrateLexicalSearchInstanceColumns(raw, opts));
   raw.exec(`
 DROP INDEX IF EXISTS idx_records_lookup;
 DROP INDEX IF EXISTS idx_records_version;

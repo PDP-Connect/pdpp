@@ -2074,7 +2074,8 @@ export async function deleteAllRecords(storageTarget, stream) {
   if (isPostgresStorageBackend()) {
     const deletedRecordCount = await postgresDeleteAllRecords(storageTarget, stream);
     const connectorId = resolveStorageConnectorId(storageTarget);
-    await lexicalIndexDeleteByConnectorStream({ connectorId, stream });
+    const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
+    await lexicalIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
     await semanticIndexDeleteByConnectorStream({ connectorId, stream });
     return deletedRecordCount;
   }
@@ -2089,7 +2090,7 @@ export async function deleteAllRecords(storageTarget, stream) {
   exec(referenceQueries.recordsDeleteDeleteRecordsByStream, [connectorInstanceId, stream]);
   exec(referenceQueries.recordsDeleteDeleteRecordChangesByStream, [connectorInstanceId, stream]);
   exec(referenceQueries.recordsDeleteDeleteVersionCounterByStream, [connectorInstanceId, stream]);
-  await lexicalIndexDeleteByConnectorStream({ connectorId, stream });
+  await lexicalIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
   await semanticIndexDeleteByConnectorStream({ connectorId, stream });
   return deletedRecordCount;
 }

@@ -2,7 +2,7 @@
 -- @cursor_field: id
 SELECT id, record_key, record_json
 FROM records
-WHERE connector_id = ?
+WHERE connector_instance_id = ?
   AND stream = ?
   AND deleted = 0
   AND id > ?
