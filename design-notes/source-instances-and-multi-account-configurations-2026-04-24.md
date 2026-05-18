@@ -1,10 +1,10 @@
 # Source Instances And Multi-Account Configurations
 
-Status: captured
+Status: superseded
 Owner: project owner
 Created: 2026-04-24
-Updated: 2026-04-24
-Related: `openspec/changes/add-polyfill-connector-system/design-notes/connector-configuration-open-question.md`
+Updated: 2026-05-18
+Related: `openspec/changes/add-polyfill-connector-system/design-notes/connector-configuration-open-question.md`, `design-notes/connection-first-collection-identity-2026-05-18.md`
 
 ## Question
 
@@ -51,7 +51,11 @@ A weak model will make multi-account support look like it works until data from 
 
 ## Current Leaning
 
-Model configured accounts as first-class source instances. The exact wire/storage shape is undecided, but the reference should not treat bare `connector_id` as enough once connector configuration exists.
+This note is superseded by `design-notes/connection-first-collection-identity-2026-05-18.md`.
+
+The core problem remains valid: the reference should not treat bare `connector_id` as enough once connector configuration exists. The newer leaning changes the solution: use a first-class owner-facing `connection` / internal `connector_instance` as the durable configured-source unit, and keep source/account/profile/device details as structured binding metadata unless they prove they need independent lifecycle, authority, schedules, health, grants, or storage namespaces.
+
+The older plausible direction below is retained as historical context, not current guidance.
 
 A plausible direction:
 
@@ -76,3 +80,4 @@ Promote this into an OpenSpec change before implementing any of:
 ## Decision Log
 
 - 2026-04-24: Captured after asking whether PDPP, the Collection Profile, and the reference support multiple accounts or multiple configurations per account. Answer: conceptually yes, but the current reference is not fully productized for it because most first-party polyfill connectors are still modeled as one connector per platform.
+- 2026-05-18: Superseded by `connection-first-collection-identity-2026-05-18.md`. The collision problem remains accepted, but the preferred solution is first-class `connection` / internal `connector_instance` with structured bindings, not first-class top-level `source_instance` by default.

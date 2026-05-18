@@ -3,8 +3,8 @@
 Status: decided-promote
 Owner: Lane C
 Created: 2026-05-15
-Updated: 2026-05-15
-Related: packages/polyfill-connectors/connectors/gmail, packages/polyfill-connectors/manifests/gmail.json, reference-implementation/runtime/index.js
+Updated: 2026-05-18
+Related: packages/polyfill-connectors/connectors/gmail, packages/polyfill-connectors/manifests/gmail.json, reference-implementation/runtime/index.js, `design-notes/connection-first-collection-identity-2026-05-18.md`
 
 ## Question
 
@@ -16,7 +16,7 @@ The Gmail manifest exposes `messages`, `threads`, `labels`, `message_bodies`, an
 
 This is not an all-history blob guarantee. Incremental fetch range is keyed by the message cursor (`priorUidnext:*` after first sync), so attachments are hydrated for messages seen in the current message pass: full resync messages or new UIDs. If `attachments` is enabled after `messages` already advanced state, historical attachment records are not backfilled unless an operator forces a full resync or a future backfill mode is added.
 
-The standard reference runtime stores and ingests by `connector_id`: record upserts, blob bindings, stream state, and schedules all use the manifest connector id as the storage namespace. Two Gmail accounts using `https://registry.pdpp.org/connectors/gmail` would collide on record keys, state, schedules, and dashboard display. The local collector CLI has `source-instance-id`, but the standard ingest/state paths reviewed here do not carry it as the durable record/state/blob namespace.
+The standard reference runtime stores and ingests by `connector_id`: record upserts, blob bindings, stream state, and schedules all use the manifest connector id as the storage namespace. Two Gmail accounts using `https://registry.pdpp.org/connectors/gmail` would collide on record keys, state, schedules, and dashboard display. The local collector CLI has `source-instance-id`, but the standard ingest/state paths reviewed here do not carry a connection / connector-instance identity as the durable record/state/blob namespace.
 
 ## Stakes
 
@@ -24,7 +24,7 @@ Gmail attachment content is high-sensitivity binary data. A partial implementati
 
 ## Current Leaning
 
-Promote this to an OpenSpec change before enabling multi-account Gmail or promising all-mail attachment blobs. The change should define a first-class connector instance identity that is distinct from connector capability identity. That identity should flow through runs, ingest, blob bindings, state, schedules, grants, search, dashboard labels, and collector enrollment.
+Promote this to an OpenSpec change before enabling multi-account Gmail or promising all-mail attachment blobs. The change should define a first-class connection / connector-instance identity that is distinct from connector capability identity. That identity should flow through runs, ingest, blob bindings, state, schedules, grants, search, dashboard labels, and collector enrollment.
 
 For attachments, add an explicit backfill plan instead of overloading normal incremental sync. A plausible shape is an attachment-specific cursor such as `attachments.backfilled_through_uid` plus a bounded backfill run mode that can scan historical `BODYSTRUCTURE` rows and hydrate missing or failed attachments without resetting message state.
 
@@ -34,7 +34,7 @@ Promote before any of these are implemented:
 
 - Running two Gmail accounts under the same PDPP owner.
 - Displaying multiple Gmail instances in the dashboard.
-- Treating `source_instance_id` as the durable storage namespace.
+- Treating connection / `connector_instance_id` identity as the durable storage namespace, including replacing or subordinating any `source_instance_id` placeholders.
 - Claiming Gmail attachment blobs are complete for previously indexed mail.
 - Adding scheduler semantics for per-instance connector runs.
 
@@ -42,3 +42,4 @@ Promote before any of these are implemented:
 
 - 2026-05-15: Captured current state. Attachment hydration exists for requested current-pass messages, but historical backfill and multi-instance storage identity need OpenSpec before implementation.
 - 2026-05-15: Added a bounded connector warning when attachment blob upload cannot run because `PDPP_RS_URL`/`RS_URL` or `PDPP_OWNER_TOKEN` is missing.
+- 2026-05-18: Aligned the multi-instance identity language with `connection-first-collection-identity-2026-05-18.md`: use first-class connection / connector-instance identity as the durable namespace; keep `source_instance_id` as a placeholder or binding detail unless promoted by evidence.
