@@ -16,7 +16,7 @@
 ## 2. Store Migration Tranche
 
 - [ ] Migrate existing connector-keyed records, record changes, stream version counters, blob bindings, connector state, schedules, active-run rows, run history, last-run gates, detail gaps, diagnostics, search indexes, and freshness into single-instance namespaces per owner/connector.
-- [ ] Update owner-auth ingest and blob upload/read paths to accept connector instance identity, with connector-only compatibility only when exactly one active instance exists.
+- [x] Update owner-auth ingest and blob upload/read paths to accept connector instance identity, with connector-only compatibility only when exactly one active instance exists.
 - [x] Migrate connector state storage and owner-auth `/v1/state` reads/writes to connector-instance namespaces without exposing instance metadata on the public state response.
 - [x] Update runtime checkpoint reads/writes so connector execution supplies connector instance identity rather than legacy connector-only fallback.
 - [x] Update schedules, scheduler backoff, last-run gates, human-attention gates, and active-run leases so pause/resume/refresh/conflict checks operate per connector instance.

@@ -257,11 +257,11 @@ export async function ingestRecord(storageTarget, record) {
   // are not allowed to retroactively roll back the durable record mutation;
   // recovery is the search-index drift detector's job.
   if (outcome.op === 'delete') {
-    await lexicalIndexDelete({ connectorId, stream, recordKey });
-    await semanticIndexDelete({ connectorId, stream, recordKey });
+    await lexicalIndexDelete({ connectorId, connectorInstanceId, stream, recordKey });
+    await semanticIndexDelete({ connectorId, connectorInstanceId, stream, recordKey });
   } else {
-    await lexicalIndexUpsert({ connectorId, stream, recordKey, data });
-    await semanticIndexUpsert({ connectorId, stream, recordKey, data });
+    await lexicalIndexUpsert({ connectorId, connectorInstanceId, stream, recordKey, data });
+    await semanticIndexUpsert({ connectorId, connectorInstanceId, stream, recordKey, data });
   }
 
   return { accepted: true, changed: true };
@@ -2038,8 +2038,8 @@ export async function deleteRecord(storageTarget, stream, recordId) {
   // Derived index maintenance runs after the durable commit. Failures here
   // are not allowed to retroactively roll back the durable record mutation;
   // recovery is the search-index drift detector's job.
-  await lexicalIndexDelete({ connectorId, stream, recordKey: recordId });
-  await semanticIndexDelete({ connectorId, stream, recordKey: recordId });
+  await lexicalIndexDelete({ connectorId, connectorInstanceId, stream, recordKey: recordId });
+  await semanticIndexDelete({ connectorId, connectorInstanceId, stream, recordKey: recordId });
 
   return 1;
 }

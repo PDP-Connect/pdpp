@@ -172,6 +172,146 @@ test('owner-auth state route uses explicit connector_instance_id for migrated sy
   }
 });
 
+test('owner-auth ingest route stores same record key under explicit connector instances', async () => {
+  const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+  try {
+    const asUrl = `http://localhost:${server.asPort}`;
+    const rsUrl = `http://localhost:${server.rsPort}`;
+    const manifest = await registerSpotify(asUrl);
+    const connectorId = manifest.connector_id;
+    await seedTwoSpotifyInstances(connectorId);
+    const ownerToken = await issueOwnerToken(asUrl);
+
+    const ambiguousIngest = await fetchJson(
+      `${rsUrl}/v1/ingest/top_artists?connector_id=${encodeURIComponent(connectorId)}`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${ownerToken}`,
+          'Content-Type': 'application/x-ndjson',
+        },
+        body: `${JSON.stringify({ key: 'artist_1', data: { id: 'artist_1', name: 'ambiguous' } })}\n`,
+      },
+    );
+    assert.equal(ambiguousIngest.status, 400);
+    assert.equal(ambiguousIngest.body.error.code, 'ambiguous_connector_instance');
+
+    for (const [connectorInstanceId, name] of [
+      ['cin_spotify_personal', 'personal artist'],
+      ['cin_spotify_work', 'work artist'],
+    ]) {
+      const ingestResp = await fetchJson(
+        `${rsUrl}/v1/ingest/top_artists?connector_id=${encodeURIComponent(connectorId)}&connector_instance_id=${connectorInstanceId}`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${ownerToken}`,
+            'Content-Type': 'application/x-ndjson',
+          },
+          body: `${JSON.stringify({ key: 'artist_1', data: { id: 'artist_1', name } })}\n`,
+        },
+      );
+      assert.equal(ingestResp.status, 200);
+      assert.equal(ingestResp.body.records_accepted, 1);
+      assert.equal(ingestResp.body.connector_instance_id, undefined);
+    }
+
+    const personalRecord = await fetchJson(
+      `${rsUrl}/v1/streams/top_artists/records/artist_1?connector_id=${encodeURIComponent(connectorId)}&connector_instance_id=cin_spotify_personal`,
+      { headers: { Authorization: `Bearer ${ownerToken}` } },
+    );
+    assert.equal(personalRecord.status, 200);
+    assert.equal(personalRecord.body.connector_instance_id, undefined);
+    assert.equal(personalRecord.body.data.name, 'personal artist');
+
+    const workRecord = await fetchJson(
+      `${rsUrl}/v1/streams/top_artists/records/artist_1?connector_id=${encodeURIComponent(connectorId)}&connector_instance_id=cin_spotify_work`,
+      { headers: { Authorization: `Bearer ${ownerToken}` } },
+    );
+    assert.equal(workRecord.status, 200);
+    assert.equal(workRecord.body.connector_instance_id, undefined);
+    assert.equal(workRecord.body.data.name, 'work artist');
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('owner-auth blob upload and read route through explicit connector instance bindings', async () => {
+  const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+  try {
+    const asUrl = `http://localhost:${server.asPort}`;
+    const rsUrl = `http://localhost:${server.rsPort}`;
+    const manifest = await registerSpotify(asUrl);
+    const connectorId = manifest.connector_id;
+    await seedTwoSpotifyInstances(connectorId);
+    const ownerToken = await issueOwnerToken(asUrl);
+
+    const ambiguousUpload = await fetchJson(
+      `${rsUrl}/v1/blobs?connector_id=${encodeURIComponent(connectorId)}&stream=top_artists&record_key=artist_blob`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${ownerToken}`,
+          'Content-Type': 'text/plain',
+        },
+        body: 'ambiguous blob',
+      },
+    );
+    assert.equal(ambiguousUpload.status, 400);
+    assert.equal(ambiguousUpload.body.error.code, 'ambiguous_connector_instance');
+
+    const uploadResp = await fetchJson(
+      `${rsUrl}/v1/blobs?connector_id=${encodeURIComponent(connectorId)}&connector_instance_id=cin_spotify_work&stream=top_artists&record_key=artist_blob`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${ownerToken}`,
+          'Content-Type': 'text/plain',
+        },
+        body: 'work blob',
+      },
+    );
+    assert.equal(uploadResp.status, 200);
+    assert.equal(uploadResp.body.object, 'blob');
+
+    const ingestResp = await fetchJson(
+      `${rsUrl}/v1/ingest/top_artists?connector_id=${encodeURIComponent(connectorId)}&connector_instance_id=cin_spotify_work`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${ownerToken}`,
+          'Content-Type': 'application/x-ndjson',
+        },
+        body: `${JSON.stringify({
+          key: 'artist_blob',
+          data: {
+            id: 'artist_blob',
+            name: 'work blob artist',
+            blob_ref: { blob_id: uploadResp.body.blob_id },
+          },
+        })}\n`,
+      },
+    );
+    assert.equal(ingestResp.status, 200);
+
+    const workRead = await fetch(
+      `${rsUrl}/v1/blobs/${encodeURIComponent(uploadResp.body.blob_id)}?connector_id=${encodeURIComponent(connectorId)}&connector_instance_id=cin_spotify_work`,
+      { headers: { Authorization: `Bearer ${ownerToken}` } },
+    );
+    assert.equal(workRead.status, 200);
+    assert.equal(await workRead.text(), 'work blob');
+
+    const personalRead = await fetchJson(
+      `${rsUrl}/v1/blobs/${encodeURIComponent(uploadResp.body.blob_id)}?connector_id=${encodeURIComponent(connectorId)}&connector_instance_id=cin_spotify_personal`,
+      { headers: { Authorization: `Bearer ${ownerToken}` } },
+    );
+    assert.equal(personalRead.status, 404);
+    assert.equal(personalRead.body.error.code, 'blob_not_found');
+  } finally {
+    await closeServer(server);
+  }
+});
+
 test('reference run and schedule actions reject ambiguous connector-only admission', async () => {
   const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
   try {

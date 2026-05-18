@@ -1136,6 +1136,7 @@ function resolveOwnerReadScope(req, opts = {}) {
   if (nativeManifest && nativeStorageBinding) {
     return {
       public_scope: 'native',
+      owner_subject_id: getOwnerTokenSubjectId(req),
       source: { kind: 'provider_native', id: nativeManifest.provider_id },
       storage_binding: nativeStorageBinding,
     };
@@ -1150,8 +1151,12 @@ function resolveOwnerReadScope(req, opts = {}) {
 
   return {
     public_scope: 'polyfill',
+    owner_subject_id: getOwnerTokenSubjectId(req),
     source: { kind: 'connector', id: connectorId },
-    storage_binding: { connector_id: connectorId },
+    storage_binding: {
+      connector_id: connectorId,
+      connector_instance_id: resolveSingleConnectorIdQueryValue(req.query.connector_instance_id),
+    },
   };
 }
 
@@ -1382,7 +1387,18 @@ function buildOwnerReadGrant(streamName) {
 }
 
 async function resolveOwnerManifestFromScope(ownerScope, opts = {}) {
-  const storageBinding = ownerScope.storage_binding || null;
+  let storageBinding = ownerScope.storage_binding || null;
+  if (ownerScope.public_scope === 'polyfill' && storageBinding?.connector_id) {
+    const namespace = await resolveOwnerConnectorInstanceNamespace({
+      ownerSubjectId: ownerScope.owner_subject_id || OWNER_AUTH_DEFAULT_SUBJECT_ID,
+      connectorId: storageBinding.connector_id,
+      connectorInstanceId: storageBinding.connector_instance_id,
+      connectorInstanceStore: createRequestConnectorInstanceStore(),
+      allowLegacyDefault: true,
+      displayName: storageBinding.connector_id,
+    });
+    storageBinding = storageTargetForConnectorNamespace(namespace);
+  }
   const manifest = await getManifestForStorageBinding(storageBinding, opts);
   if (!manifest) {
     const err = new Error(
@@ -5605,6 +5621,7 @@ function buildRsApp(opts = {}) {
         },
         resolveOwnerScopeForConnector: (connectorId) => ({
           public_scope: 'polyfill',
+          owner_subject_id: getOwnerTokenSubjectId(req),
           source: { kind: 'connector', id: connectorId },
           storage_binding: { connector_id: connectorId },
         }),
@@ -5698,6 +5715,7 @@ function buildRsApp(opts = {}) {
           },
           resolveOwnerScopeForConnector: (connectorId) => ({
             public_scope: 'polyfill',
+            owner_subject_id: getOwnerTokenSubjectId(req),
             source: { kind: 'connector', id: connectorId },
             storage_binding: { connector_id: connectorId },
           }),
@@ -5789,6 +5807,7 @@ function buildRsApp(opts = {}) {
           },
           resolveOwnerScopeForConnector: (connectorId) => ({
             public_scope: 'polyfill',
+            owner_subject_id: getOwnerTokenSubjectId(req),
             source: { kind: 'connector', id: connectorId },
             storage_binding: { connector_id: connectorId },
           }),
@@ -5847,16 +5866,12 @@ function buildRsApp(opts = {}) {
             (manifestCache.streams || []).find((candidate) => candidate.name === streamName),
           );
           if (visible) {
-            storageNamespace = await resolveOwnerConnectorNamespace(req, connectorId, {
-              allowExplicitConnectorInstanceId: false,
-            });
+            storageNamespace = await resolveOwnerConnectorNamespace(req, connectorId);
           }
           return visible;
         },
         persistBlob: async ({ connectorId, stream, recordKey, mimeType, data }) => {
-          const namespace = storageNamespace ?? await resolveOwnerConnectorNamespace(req, connectorId, {
-            allowExplicitConnectorInstanceId: false,
-          });
+          const namespace = storageNamespace ?? await resolveOwnerConnectorNamespace(req, connectorId);
           return persistContentAddressedBlob({
             connectorId: namespace.connectorId,
             connectorInstanceId: namespace.connectorInstanceId,
@@ -5929,10 +5944,23 @@ function buildRsApp(opts = {}) {
         loadBindings: (id) => blobStore.listBlobBindings(id),
         getActorConnectorId: () => storageBinding?.connector_id ?? null,
         getVisibleRecord: async (binding) => {
+          if (
+            storageBinding?.connector_instance_id
+            && binding.connector_instance_id
+            && binding.connector_instance_id !== storageBinding.connector_instance_id
+          ) {
+            return null;
+          }
           const grant = tokenInfo.pdpp_token_kind === 'owner'
             ? buildOwnerReadGrant(binding.stream)
             : tokenInfo.grant;
-          return await getRecord(storageBinding, binding.stream, binding.record_key, grant, manifest);
+          const bindingStorageTarget = binding.connector_instance_id
+            ? {
+                connector_id: binding.connector_id,
+                connector_instance_id: binding.connector_instance_id,
+              }
+            : storageBinding;
+          return await getRecord(bindingStorageTarget, binding.stream, binding.record_key, grant, manifest);
         },
       };
 
@@ -6176,16 +6204,12 @@ function buildRsApp(opts = {}) {
               (manifest.streams || []).find((stream) => stream.name === streamName),
             );
             if (visible) {
-              storageNamespace = await resolveOwnerConnectorNamespace(req, cid, {
-                allowExplicitConnectorInstanceId: false,
-              });
+              storageNamespace = await resolveOwnerConnectorNamespace(req, cid);
             }
             return visible;
           },
           ingestRecord: async (cid, record) => {
-            const namespace = storageNamespace ?? await resolveOwnerConnectorNamespace(req, cid, {
-              allowExplicitConnectorInstanceId: false,
-            });
+            const namespace = storageNamespace ?? await resolveOwnerConnectorNamespace(req, cid);
             return ingestRecord(storageTargetForConnectorNamespace(namespace), record);
           },
         };

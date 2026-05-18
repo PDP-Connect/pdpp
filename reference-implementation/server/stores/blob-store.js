@@ -7,7 +7,8 @@
  * SQLite rows or registry queries themselves. The interface speaks blob
  * lookup: `loadContentAddressedBlob` returns the row by id (or null);
  * `listBlobBindings` returns the union of `blob_bindings` rows and the
- * originating `blobs` row reduced to `(connector_id, stream, record_key)`
+ * originating `blobs` row reduced to
+ * `(connector_id, connector_instance_id, stream, record_key)`
  * tuples.
  *
  * Spec: openspec/changes/complete-reference-operation-refactor/specs/
@@ -41,7 +42,7 @@ import { isPostgresStorageBackend } from '../postgres-storage.js';
 /**
  * Binding tuple returned by `listBlobBindings`.
  *
- * @typedef {{ connector_id: string, stream: string, record_key: string }} BlobBinding
+ * @typedef {{ connector_id: string, connector_instance_id?: string | null, stream: string, record_key: string }} BlobBinding
  */
 
 /**
