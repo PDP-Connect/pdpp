@@ -85,12 +85,13 @@ The JSON response shape:
 {
   "device_id": "dev_...",
   "device_token": "dvtk_...",
+  "connector_instance_id": "cin_...",
   "source_instance_id": "si_...",
   "...": "..."
 }
 ```
 
-Persist all three. The device token is sensitive (device-scoped ingest only, but still write-capable on this lane). Treat it like an API key &mdash; never commit it.
+Persist the device id, device token, and `source_instance_id`. `connector_instance_id` is the server-side connection id for owner-facing diagnostics; the collector command still passes the device-binding selector as `PDPP_CONNECTION_ID`. The device token is sensitive (device-scoped ingest only, but still write-capable on this lane). Treat it like an API key &mdash; never commit it.
 
 ## Step 4 &mdash; Run a connector pass
 

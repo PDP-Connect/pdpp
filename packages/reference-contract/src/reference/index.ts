@@ -89,6 +89,63 @@ const RunStartResponseSchema = {
   required: ["run_id"],
 };
 
+const ConnectorInstanceIdParamSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: { connectorInstanceId: { type: "string", minLength: 1 } },
+  required: ["connectorInstanceId"],
+};
+
+const ConnectionQuerySchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    connector_id: { type: "string" },
+    status: { type: "string", enum: ["active", "paused", "revoked"] },
+  },
+};
+
+const RefConnectionSchema = {
+  type: "object",
+  additionalProperties: true,
+  properties: {
+    object: { const: "ref_connection" },
+    connector_instance_id: { type: "string" },
+    connector_id: { type: "string" },
+    display_name: { type: ["string", "null"] },
+    status: { type: "string" },
+    source_kind: { type: ["string", "null"] },
+    source_binding: { type: ["object", "null"], additionalProperties: true },
+    created_at: { type: "string" },
+    updated_at: { type: "string" },
+    revoked_at: { type: ["string", "null"] },
+    schedule: { type: ["object", "null"], additionalProperties: true },
+  },
+  required: [
+    "object",
+    "connector_instance_id",
+    "connector_id",
+    "display_name",
+    "status",
+    "source_kind",
+    "source_binding",
+    "created_at",
+    "updated_at",
+    "revoked_at",
+    "schedule",
+  ],
+};
+
+const ConnectionListResponseSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    object: { const: "list" },
+    data: { type: "array", items: RefConnectionSchema },
+  },
+  required: ["object", "data"],
+};
+
 const ApprovalItemSchema = {
   type: "object",
   additionalProperties: true,
@@ -231,6 +288,7 @@ const DeviceSourceInstanceSchema = {
   properties: {
     object: { const: "device_source_instance" },
     source_instance_id: { type: "string" },
+    connector_instance_id: { type: ["string", "null"] },
     device_id: { type: "string" },
     connector_id: { type: "string" },
     local_binding_name: { type: "string" },
@@ -305,12 +363,21 @@ const DeviceEnrollmentExchangeResponseSchema = {
   properties: {
     object: { const: "device_exporter_enrollment" },
     device_id: { type: "string" },
+    connector_instance_id: { type: "string" },
     source_instance_id: { type: "string" },
     device_token: { type: "string" },
     connector_id: { type: "string" },
     local_binding_name: { type: "string" },
   },
-  required: ["object", "device_id", "source_instance_id", "device_token", "connector_id", "local_binding_name"],
+  required: [
+    "object",
+    "device_id",
+    "connector_instance_id",
+    "source_instance_id",
+    "device_token",
+    "connector_id",
+    "local_binding_name",
+  ],
 };
 
 const DeviceHeartbeatBodySchema = {
@@ -384,6 +451,7 @@ const DeviceIngestBatchResponseSchema = {
   properties: {
     object: { const: "device_ingest_batch_result" },
     device_id: { type: "string" },
+    connector_instance_id: { type: "string" },
     source_instance_id: { type: "string" },
     batch_id: { type: "string" },
     body_hash: { type: "string" },
@@ -394,6 +462,7 @@ const DeviceIngestBatchResponseSchema = {
   required: [
     "object",
     "device_id",
+    "connector_instance_id",
     "source_instance_id",
     "batch_id",
     "body_hash",
@@ -428,11 +497,12 @@ const DeviceSourceInstanceStateResponseSchema = {
   properties: {
     object: { const: "device_source_instance_state" },
     device_id: { type: "string" },
+    connector_instance_id: { type: "string" },
     source_instance_id: { type: "string" },
     state: { type: "object", additionalProperties: true },
     updated_at: { type: ["string", "null"] },
   },
-  required: ["object", "device_id", "source_instance_id", "state", "updated_at"],
+  required: ["object", "device_id", "connector_instance_id", "source_instance_id", "state", "updated_at"],
 };
 
 export const referenceManifests = [
@@ -496,6 +566,46 @@ export const referenceManifests = [
     summary: "Get a single connector with manifest excerpt, schedule, recent runs, and stream summaries.",
     request: { params: ConnectorIdParamSchema },
     responses: { 200: { schema: ConnectorSummarySchema }, ...CommonErrors },
+  },
+  {
+    id: "refListConnections",
+    method: "GET",
+    path: "/_ref/connections",
+    surface: "reference",
+    tags: ["reference", "connections"],
+    summary: "List owner-facing configured connector connections with labels, lifecycle status, binding metadata, and schedules.",
+    request: { query: ConnectionQuerySchema },
+    responses: { 200: { schema: ConnectionListResponseSchema }, ...CommonErrors },
+  },
+  {
+    id: "refListConnectorInstances",
+    method: "GET",
+    path: "/_ref/connector-instances",
+    surface: "reference",
+    tags: ["reference", "connections"],
+    summary: "Compatibility alias for listing configured connector instances behind owner-facing connections.",
+    request: { query: ConnectionQuerySchema },
+    responses: { 200: { schema: ConnectionListResponseSchema }, ...CommonErrors },
+  },
+  {
+    id: "refGetConnection",
+    method: "GET",
+    path: "/_ref/connections/{connectorInstanceId}",
+    surface: "reference",
+    tags: ["reference", "connections"],
+    summary: "Get one owner-facing configured connector connection by connector instance id.",
+    request: { params: ConnectorInstanceIdParamSchema },
+    responses: { 200: { schema: RefConnectionSchema }, ...CommonErrors },
+  },
+  {
+    id: "refGetConnectorInstance",
+    method: "GET",
+    path: "/_ref/connector-instances/{connectorInstanceId}",
+    surface: "reference",
+    tags: ["reference", "connections"],
+    summary: "Compatibility alias for reading one configured connector instance behind an owner-facing connection.",
+    request: { params: ConnectorInstanceIdParamSchema },
+    responses: { 200: { schema: RefConnectionSchema }, ...CommonErrors },
   },
   {
     id: "refListApprovals",
@@ -718,6 +828,19 @@ export const referenceManifests = [
     },
   },
   {
+    id: "refRunConnection",
+    method: "POST",
+    path: "/_ref/connections/{connectorInstanceId}/run",
+    surface: "reference",
+    tags: ["reference", "runs", "connections"],
+    summary: "Start a connector run for one configured connection. Returns 202 with run_id + trace_id, or 409 run_already_active.",
+    request: { params: ConnectorInstanceIdParamSchema },
+    responses: {
+      202: { schema: RunStartResponseSchema, description: "Accepted" },
+      ...CommonErrors,
+    },
+  },
+  {
     id: "refPutConnectorSchedule",
     method: "PUT",
     path: "/_ref/connectors/{connectorId}/schedule",
@@ -726,6 +849,19 @@ export const referenceManifests = [
     summary: "Create or replace the single schedule for a connector.",
     request: {
       params: ConnectorIdParamSchema,
+      body: { contentType: "application/json", schema: ScheduleUpsertBodySchema },
+    },
+    responses: { 200: { description: "Schedule upserted" }, ...CommonErrors },
+  },
+  {
+    id: "refPutConnectionSchedule",
+    method: "PUT",
+    path: "/_ref/connections/{connectorInstanceId}/schedule",
+    surface: "reference",
+    tags: ["reference", "runs", "connections"],
+    summary: "Create or replace the schedule for one configured connection.",
+    request: {
+      params: ConnectorInstanceIdParamSchema,
       body: { contentType: "application/json", schema: ScheduleUpsertBodySchema },
     },
     responses: { 200: { description: "Schedule upserted" }, ...CommonErrors },
@@ -741,6 +877,16 @@ export const referenceManifests = [
     responses: { 200: { description: "Paused" }, ...CommonErrors },
   },
   {
+    id: "refPauseConnectionSchedule",
+    method: "POST",
+    path: "/_ref/connections/{connectorInstanceId}/schedule/pause",
+    surface: "reference",
+    tags: ["reference", "runs", "connections"],
+    summary: "Pause one configured connection schedule without deleting its config.",
+    request: { params: ConnectorInstanceIdParamSchema },
+    responses: { 200: { description: "Paused" }, ...CommonErrors },
+  },
+  {
     id: "refResumeConnectorSchedule",
     method: "POST",
     path: "/_ref/connectors/{connectorId}/schedule/resume",
@@ -751,6 +897,16 @@ export const referenceManifests = [
     responses: { 200: { description: "Resumed" }, ...CommonErrors },
   },
   {
+    id: "refResumeConnectionSchedule",
+    method: "POST",
+    path: "/_ref/connections/{connectorInstanceId}/schedule/resume",
+    surface: "reference",
+    tags: ["reference", "runs", "connections"],
+    summary: "Resume one paused configured connection schedule.",
+    request: { params: ConnectorInstanceIdParamSchema },
+    responses: { 200: { description: "Resumed" }, ...CommonErrors },
+  },
+  {
     id: "refDeleteConnectorSchedule",
     method: "DELETE",
     path: "/_ref/connectors/{connectorId}/schedule",
@@ -758,6 +914,16 @@ export const referenceManifests = [
     tags: ["reference", "runs"],
     summary: "Delete the connector schedule config.",
     request: { params: ConnectorIdParamSchema },
+    responses: { 204: { description: "Deleted" }, ...CommonErrors },
+  },
+  {
+    id: "refDeleteConnectionSchedule",
+    method: "DELETE",
+    path: "/_ref/connections/{connectorInstanceId}/schedule",
+    surface: "reference",
+    tags: ["reference", "runs", "connections"],
+    summary: "Delete the schedule config for one configured connection.",
+    request: { params: ConnectorInstanceIdParamSchema },
     responses: { 204: { description: "Deleted" }, ...CommonErrors },
   },
   {

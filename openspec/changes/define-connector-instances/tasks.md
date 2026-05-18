@@ -38,7 +38,7 @@
 - [x] Update owner-facing dashboard and reference-only operations to list, filter, and mutate connector instances rather than connector types alone.
 - [x] Add `_ref` connection / connector-instance routes or projections for list/detail/run/schedule actions; keep connector-id routes as compatibility shims that reject ambiguity.
 - [x] Update dashboard Records and Schedules copy/actions to use "connections" for actionable rows while retaining connector-type grouping.
-- [ ] Regenerate reference route docs and operator runbooks after instance-aware routes land.
+- [x] Regenerate reference route docs and operator runbooks after instance-aware routes land.
 - [x] Add owner UX/API tests proving instance labels and lifecycle actions target one instance.
 
 ## Acceptance Checks

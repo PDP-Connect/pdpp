@@ -18,7 +18,7 @@ pnpm exec pdpp collector enroll \
   --code <enrollment-code>
 ```
 
-4. Use the returned `device_id`, `device_token`, and `source_instance_id` (the local connection id) to run a connector pass:
+4. Use the returned `device_id`, `device_token`, and `source_instance_id` (the legacy device-binding selector used as `PDPP_CONNECTION_ID`) to run a connector pass. Responses may also include `connector_instance_id`, which is the server-side owner-facing connection id for diagnostics and instance-scoped storage:
 
 ```bash
 PDPP_LOCAL_DEVICE_ID=<device_id> \
@@ -49,7 +49,7 @@ Environment equivalents:
 - `PDPP_REFERENCE_BASE_URL`: reference AS base URL.
 - `PDPP_LOCAL_DEVICE_ID`: enrolled device id.
 - `PDPP_LOCAL_DEVICE_TOKEN`: device-scoped ingest token.
-- `PDPP_CONNECTION_ID`: connection id returned by enrollment as `source_instance_id`.
+- `PDPP_CONNECTION_ID`: device-binding selector returned by enrollment as `source_instance_id`.
 - `PDPP_SOURCE_INSTANCE_ID`: compatibility alias for existing local device bindings.
 - `PDPP_RUN_ID`: optional stable run id for streaming-companion target registration.
 - `PDPP_COLLECTOR_QUEUE`: durable queue path for `pdpp collector`. Defaults to a connection-scoped file under `packages/polyfill-connectors/.pdpp-data/`.
@@ -59,6 +59,6 @@ Environment equivalents:
 
 - Device credentials are not owner or client grant tokens.
 - Owner-token and client-token routes do not accept device credentials.
-- Device ingest uses a reference-internal storage connector id derived from connector id plus connection id to avoid overwriting same stream/key records from different devices. Existing server routes and JSON still call this `source_instance_id`.
+- Device ingest resolves the device-binding selector to an authorized `connector_instance_id` before writing records or state, so same stream/key records from different devices do not overwrite each other. Existing device routes and JSON still call the device-binding selector `source_instance_id`.
 - Device-scoped local collector STATE read/write is available through the same device-exporter authority at `GET|PUT /_ref/device-exporters/:deviceId/source-instances/:sourceInstanceId/state`. The route uses the existing device bearer credential, stores state under the same internal storage connector id used by device ingest, and never collides with the owner-auth `/v1/state/:connectorId` route (which remains keyed by public connector id plus grant). See OpenSpec `design-local-collector-state-sync` for the load/replay/persist contract.
 - The public/source-instance vocabulary remains an open protocol question owned outside the RI. See `design-notes/source-authority-vs-schema-identity-2026-04-30.md`.

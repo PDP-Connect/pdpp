@@ -3436,7 +3436,7 @@ function buildAsApp(opts = {}) {
     }
   });
 
-  app.get('/_ref/connections', ownerAuth.requireOwnerSession, async (req, res) => {
+  app.get('/_ref/connections', { contract: 'refListConnections' }, ownerAuth.requireOwnerSession, async (req, res) => {
     try {
       const ownerSubjectId = getOwnerSubjectId(req);
       const connectorId = resolveSingleConnectorIdQueryValue(req.query.connector_id);
@@ -3459,7 +3459,7 @@ function buildAsApp(opts = {}) {
     }
   });
 
-  app.get('/_ref/connector-instances', ownerAuth.requireOwnerSession, async (req, res) => {
+  app.get('/_ref/connector-instances', { contract: 'refListConnectorInstances' }, ownerAuth.requireOwnerSession, async (req, res) => {
     try {
       const ownerSubjectId = getOwnerSubjectId(req);
       const connectorId = resolveSingleConnectorIdQueryValue(req.query.connector_id);
@@ -3476,7 +3476,7 @@ function buildAsApp(opts = {}) {
     }
   });
 
-  app.get('/_ref/connections/:connectorInstanceId', ownerAuth.requireOwnerSession, async (req, res) => {
+  app.get('/_ref/connections/:connectorInstanceId', { contract: 'refGetConnection' }, ownerAuth.requireOwnerSession, async (req, res) => {
     try {
       const connectorInstanceId = decodeURIComponent(req.params.connectorInstanceId);
       await sendRefConnectionDetail(req, res, connectorInstanceId);
@@ -3485,7 +3485,7 @@ function buildAsApp(opts = {}) {
     }
   });
 
-  app.get('/_ref/connector-instances/:connectorInstanceId', ownerAuth.requireOwnerSession, async (req, res) => {
+  app.get('/_ref/connector-instances/:connectorInstanceId', { contract: 'refGetConnectorInstance' }, ownerAuth.requireOwnerSession, async (req, res) => {
     try {
       const connectorInstanceId = decodeURIComponent(req.params.connectorInstanceId);
       await sendRefConnectionDetail(req, res, connectorInstanceId);
@@ -3951,7 +3951,7 @@ function buildAsApp(opts = {}) {
     }
   );
 
-  app.post('/_ref/connections/:connectorInstanceId/run', ownerAuth.requireOwnerSession, async (req, res) => {
+  app.post('/_ref/connections/:connectorInstanceId/run', { contract: 'refRunConnection' }, ownerAuth.requireOwnerSession, async (req, res) => {
     try {
       const connectorInstanceId = decodeURIComponent(req.params.connectorInstanceId);
       const namespace = await resolveRefConnectionNamespace(req, connectorInstanceId);
@@ -3989,7 +3989,7 @@ function buildAsApp(opts = {}) {
     }
   );
 
-  app.put('/_ref/connections/:connectorInstanceId/schedule', ownerAuth.requireOwnerSession, async (req, res) => {
+  app.put('/_ref/connections/:connectorInstanceId/schedule', { contract: 'refPutConnectionSchedule' }, ownerAuth.requireOwnerSession, async (req, res) => {
     try {
       const connectorInstanceId = decodeURIComponent(req.params.connectorInstanceId);
       const namespace = await resolveRefConnectionNamespace(req, connectorInstanceId);
@@ -4026,7 +4026,7 @@ function buildAsApp(opts = {}) {
     }
   );
 
-  app.post('/_ref/connections/:connectorInstanceId/schedule/pause', ownerAuth.requireOwnerSession, async (req, res) => {
+  app.post('/_ref/connections/:connectorInstanceId/schedule/pause', { contract: 'refPauseConnectionSchedule' }, ownerAuth.requireOwnerSession, async (req, res) => {
     try {
       const connectorInstanceId = decodeURIComponent(req.params.connectorInstanceId);
       const namespace = await resolveRefConnectionNamespace(req, connectorInstanceId);
@@ -4059,7 +4059,7 @@ function buildAsApp(opts = {}) {
     }
   );
 
-  app.post('/_ref/connections/:connectorInstanceId/schedule/resume', ownerAuth.requireOwnerSession, async (req, res) => {
+  app.post('/_ref/connections/:connectorInstanceId/schedule/resume', { contract: 'refResumeConnectionSchedule' }, ownerAuth.requireOwnerSession, async (req, res) => {
     try {
       const connectorInstanceId = decodeURIComponent(req.params.connectorInstanceId);
       const namespace = await resolveRefConnectionNamespace(req, connectorInstanceId);
@@ -4095,7 +4095,7 @@ function buildAsApp(opts = {}) {
     }
   );
 
-  app.delete('/_ref/connections/:connectorInstanceId/schedule', ownerAuth.requireOwnerSession, async (req, res) => {
+  app.delete('/_ref/connections/:connectorInstanceId/schedule', { contract: 'refDeleteConnectionSchedule' }, ownerAuth.requireOwnerSession, async (req, res) => {
     try {
       const connectorInstanceId = decodeURIComponent(req.params.connectorInstanceId);
       const namespace = await resolveRefConnectionNamespace(req, connectorInstanceId);

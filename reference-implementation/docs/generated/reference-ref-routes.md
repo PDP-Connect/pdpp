@@ -7,6 +7,10 @@ Generated from `packages/reference-contract/src/reference/`. Reference-designate
 | **GET** | `/_ref/search` | `refSearch` | Search exact trace/grant/run ids and record content across retained records. |
 | **GET** | `/_ref/connectors` | `refListConnectors` | List registered connectors with manifest summary, latest run summary, schedule summary, and freshness. |
 | **GET** | `/_ref/connectors/{connectorId}` | `refGetConnector` | Get a single connector with manifest excerpt, schedule, recent runs, and stream summaries. |
+| **GET** | `/_ref/connections` | `refListConnections` | List owner-facing configured connector connections with labels, lifecycle status, binding metadata, and schedules. |
+| **GET** | `/_ref/connector-instances` | `refListConnectorInstances` | Compatibility alias for listing configured connector instances behind owner-facing connections. |
+| **GET** | `/_ref/connections/{connectorInstanceId}` | `refGetConnection` | Get one owner-facing configured connector connection by connector instance id. |
+| **GET** | `/_ref/connector-instances/{connectorInstanceId}` | `refGetConnectorInstance` | Compatibility alias for reading one configured connector instance behind an owner-facing connection. |
 | **GET** | `/_ref/approvals` | `refListApprovals` | List pending approvals across provider-connect consents and owner-device flows. |
 | **POST** | `/_ref/device-exporters/enrollment-codes` | `refCreateDeviceExporterEnrollmentCode` | Create a short-lived local device exporter enrollment code for an owner-approved connector binding. |
 | **POST** | `/_ref/device-exporters/enroll` | `refExchangeDeviceExporterEnrollmentCode` | Exchange a one-time enrollment code for a device-scoped local exporter credential. |
@@ -20,10 +24,15 @@ Generated from `packages/reference-contract/src/reference/`. Reference-designate
 | **PUT** | `/_ref/device-exporters/{deviceId}/source-instances/{sourceInstanceId}/state` | `refPutDeviceExporterSourceInstanceState` | Persist device-scoped local collector state for a source instance. State is a stream-keyed map; existing streams are merged with last-write-wins semantics. |
 | **GET** | `/_ref/schedules` | `refListSchedules` | List all configured schedules with runtime status. |
 | **POST** | `/_ref/connectors/{connectorId}/run` | `refRunConnector` | Start a connector run asynchronously. Returns 202 with run_id + trace_id, or 409 run_already_active. |
+| **POST** | `/_ref/connections/{connectorInstanceId}/run` | `refRunConnection` | Start a connector run for one configured connection. Returns 202 with run_id + trace_id, or 409 run_already_active. |
 | **PUT** | `/_ref/connectors/{connectorId}/schedule` | `refPutConnectorSchedule` | Create or replace the single schedule for a connector. |
+| **PUT** | `/_ref/connections/{connectorInstanceId}/schedule` | `refPutConnectionSchedule` | Create or replace the schedule for one configured connection. |
 | **POST** | `/_ref/connectors/{connectorId}/schedule/pause` | `refPauseConnectorSchedule` | Pause the connector schedule without deleting its config. |
+| **POST** | `/_ref/connections/{connectorInstanceId}/schedule/pause` | `refPauseConnectionSchedule` | Pause one configured connection schedule without deleting its config. |
 | **POST** | `/_ref/connectors/{connectorId}/schedule/resume` | `refResumeConnectorSchedule` | Resume a paused connector schedule. |
+| **POST** | `/_ref/connections/{connectorInstanceId}/schedule/resume` | `refResumeConnectionSchedule` | Resume one paused configured connection schedule. |
 | **DELETE** | `/_ref/connectors/{connectorId}/schedule` | `refDeleteConnectorSchedule` | Delete the connector schedule config. |
+| **DELETE** | `/_ref/connections/{connectorInstanceId}/schedule` | `refDeleteConnectionSchedule` | Delete the schedule config for one configured connection. |
 | **POST** | `/_ref/runs/{runId}/interaction` | `refRunInteraction` | Owner-only control surface: answer the current pending interaction for an active controller-managed run. Reference-only; not part of the public PDPP API. |
 | **GET** | `/_ref/records/timeline` | `refRecordsTimeline` | Server-backed cross-connector recent-record feed for the Records > Timeline UI. |
 | **GET** | `/_ref/dataset/summary` | `refDatasetSummary` | Aggregate dataset summary: live record counts, retained-history bytes, timespan bounds, and top connectors. |
@@ -73,6 +82,76 @@ Get a single connector with manifest excerpt, schedule, recent runs, and stream 
 ### Path parameters
 
 - `connectorId` — string
+
+### Responses
+
+- `200` — JSON body
+- `400` — Invalid request
+- `404` — Not found
+- `409` — Conflict (e.g. run_already_active)
+
+## refListConnections
+
+`GET /_ref/connections`
+
+List owner-facing configured connector connections with labels, lifecycle status, binding metadata, and schedules.
+
+### Query parameters
+
+- `connector_id` — string
+- `status` — enum `active | paused | revoked`
+
+### Responses
+
+- `200` — JSON body
+- `400` — Invalid request
+- `404` — Not found
+- `409` — Conflict (e.g. run_already_active)
+
+## refListConnectorInstances
+
+`GET /_ref/connector-instances`
+
+Compatibility alias for listing configured connector instances behind owner-facing connections.
+
+### Query parameters
+
+- `connector_id` — string
+- `status` — enum `active | paused | revoked`
+
+### Responses
+
+- `200` — JSON body
+- `400` — Invalid request
+- `404` — Not found
+- `409` — Conflict (e.g. run_already_active)
+
+## refGetConnection
+
+`GET /_ref/connections/{connectorInstanceId}`
+
+Get one owner-facing configured connector connection by connector instance id.
+
+### Path parameters
+
+- `connectorInstanceId` — string
+
+### Responses
+
+- `200` — JSON body
+- `400` — Invalid request
+- `404` — Not found
+- `409` — Conflict (e.g. run_already_active)
+
+## refGetConnectorInstance
+
+`GET /_ref/connector-instances/{connectorInstanceId}`
+
+Compatibility alias for reading one configured connector instance behind an owner-facing connection.
+
+### Path parameters
+
+- `connectorInstanceId` — string
 
 ### Responses
 
@@ -342,6 +421,23 @@ Start a connector run asynchronously. Returns 202 with run_id + trace_id, or 409
 - `404` — Not found
 - `409` — Conflict (e.g. run_already_active)
 
+## refRunConnection
+
+`POST /_ref/connections/{connectorInstanceId}/run`
+
+Start a connector run for one configured connection. Returns 202 with run_id + trace_id, or 409 run_already_active.
+
+### Path parameters
+
+- `connectorInstanceId` — string
+
+### Responses
+
+- `202` — Accepted
+- `400` — Invalid request
+- `404` — Not found
+- `409` — Conflict (e.g. run_already_active)
+
 ## refPutConnectorSchedule
 
 `PUT /_ref/connectors/{connectorId}/schedule`
@@ -351,6 +447,30 @@ Create or replace the single schedule for a connector.
 ### Path parameters
 
 - `connectorId` — string
+
+### Request body
+
+`application/json`
+- `interval_seconds` (required) — integer · min: 1
+- `jitter_seconds` — integer · min: 0
+- `enabled` — boolean
+
+### Responses
+
+- `200` — Schedule upserted
+- `400` — Invalid request
+- `404` — Not found
+- `409` — Conflict (e.g. run_already_active)
+
+## refPutConnectionSchedule
+
+`PUT /_ref/connections/{connectorInstanceId}/schedule`
+
+Create or replace the schedule for one configured connection.
+
+### Path parameters
+
+- `connectorInstanceId` — string
 
 ### Request body
 
@@ -383,6 +503,23 @@ Pause the connector schedule without deleting its config.
 - `404` — Not found
 - `409` — Conflict (e.g. run_already_active)
 
+## refPauseConnectionSchedule
+
+`POST /_ref/connections/{connectorInstanceId}/schedule/pause`
+
+Pause one configured connection schedule without deleting its config.
+
+### Path parameters
+
+- `connectorInstanceId` — string
+
+### Responses
+
+- `200` — Paused
+- `400` — Invalid request
+- `404` — Not found
+- `409` — Conflict (e.g. run_already_active)
+
 ## refResumeConnectorSchedule
 
 `POST /_ref/connectors/{connectorId}/schedule/resume`
@@ -400,6 +537,23 @@ Resume a paused connector schedule.
 - `404` — Not found
 - `409` — Conflict (e.g. run_already_active)
 
+## refResumeConnectionSchedule
+
+`POST /_ref/connections/{connectorInstanceId}/schedule/resume`
+
+Resume one paused configured connection schedule.
+
+### Path parameters
+
+- `connectorInstanceId` — string
+
+### Responses
+
+- `200` — Resumed
+- `400` — Invalid request
+- `404` — Not found
+- `409` — Conflict (e.g. run_already_active)
+
 ## refDeleteConnectorSchedule
 
 `DELETE /_ref/connectors/{connectorId}/schedule`
@@ -409,6 +563,23 @@ Delete the connector schedule config.
 ### Path parameters
 
 - `connectorId` — string
+
+### Responses
+
+- `204` — Deleted
+- `400` — Invalid request
+- `404` — Not found
+- `409` — Conflict (e.g. run_already_active)
+
+## refDeleteConnectionSchedule
+
+`DELETE /_ref/connections/{connectorInstanceId}/schedule`
+
+Delete the schedule config for one configured connection.
+
+### Path parameters
+
+- `connectorInstanceId` — string
 
 ### Responses
 
