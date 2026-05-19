@@ -4,7 +4,7 @@ Status: captured
 Owner: reference implementation owner
 Created: 2026-05-19
 Updated: 2026-05-19
-Related: spec-core.md, spec-collection-profile.md, spec-architecture.md, spec-dti-alignment.md, docs/personas/pdpp-reviewer-onboarding.md, openspec/changes/define-connector-instances, openspec/changes/design-local-device-exporter-collection, openspec/changes/publish-pdpp-local-collector, openspec/changes/complete-local-agent-collectors
+Related: spec-core.md, spec-collection-profile.md, spec-architecture.md, spec-dti-alignment.md, docs/personas/pdpp-reviewer-onboarding.md, openspec/changes/define-connector-instances, openspec/changes/design-local-device-exporter-collection, openspec/changes/publish-pdpp-local-collector, openspec/changes/complete-local-agent-collectors, design-notes/local-collector-durable-work-substrate-2026-05-19.md
 
 ## Question
 
@@ -111,6 +111,21 @@ In practice:
 - Keep protocol facts, manifest-authored descriptions, structured policy declarations, and client-authored claims visually and semantically distinct.
 - Do not conflate revocation, deletion, retention, access validity, data freshness, and collection state.
 
+## Standing Principle: Good Construction Before Feature Lists
+
+When a problem appears to require a long list of features, first ask what small set of durable primitives would make those features correct by construction. The reference implementation should avoid accreting one-off fixes for each source, device, connector, or UX symptom when the same pressure points reveal a missing construction boundary.
+
+The standard test is:
+
+```text
+If a novel or exotic use case appeared later, would this design still look like
+the right foundation, or would it expose that we only patched today's case?
+```
+
+Prefer designs that identify the essential nouns, invariants, and ownership boundaries, then implement the minimum behavior needed to prove them. For collection work, this often means reasoning in terms of connection, runtime, bounded work, progress, backlog, and policy rather than enumerating source-specific setup features. For UI work, this means separating the durable state model from its current presentation. For protocol work, this means keeping reference-only operational mechanisms from leaking into Core unless they have earned standardization.
+
+This is not a license to over-generalize. The bar is construction quality, not abstraction volume. A new primitive is justified only when it reduces incidental complexity across multiple concrete cases, makes correctness easier to verify, or prevents a class of false-success/failure modes. Otherwise, keep the solution local and honest.
+
 ## History To Preserve
 
 The core design already converged on a few non-negotiables:
@@ -129,6 +144,7 @@ Recent reference implementation history also matters:
 - The remote-surface substrate has been extracted toward an internal package boundary so it can later be published or reused without PDPP-specific leakage.
 - Connector reliability work exposed the need for fixture-first debugging, honest gaps, connector health state, and fewer user-driven test runs.
 - Local Claude/Codex collectors exposed the need for a first-class connection model that supports multiple accounts, multiple devices, multiple schedules, and source-specific coverage.
+- Local collector prior-art research is now captured in `design-notes/local-collector-durable-work-substrate-2026-05-19.md`. The key conclusion is that the next tranche should promote a durable outbox/checkpoint/backlog substrate into OpenSpec before implementation, rather than adding more setup or queue patches.
 
 ## Current Risk
 
@@ -155,3 +171,4 @@ Promote this note into OpenSpec before implementing any tranche that changes:
 ## Decision Log
 
 - 2026-05-19: Captured full-context refresh after re-reading the PDPP Core spec, Collection Profile, architecture notes, DTI alignment, reviewer onboarding, and recent RI owner handoffs. Current conclusion: the project has enough component designs, but needs a synthesis artifact before major implementation that maps connection/device/run/schedule/coverage to Core vs Collection Profile vs reference-only semantics.
+- 2026-05-19: Linked the local collector durable work substrate research note. Current conclusion: large local backfills and stuck queues should be addressed through a promoted OpenSpec change for durable outbox, checkpoint, backlog, service lifecycle, and dashboard health semantics.
