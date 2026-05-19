@@ -38,7 +38,7 @@
 - [x] 6.1 Add tarball hygiene validation that compares packed files against an allowlist or explicit denylist.
 - [x] 6.2 Add declaration validation for every exported entrypoint.
 - [x] 6.3 Add clean-consumer install/import/typecheck validation from the packed artifact.
-- [ ] 6.4 Add CI gating for package tests, lint/typecheck, dependency leakage, host-neutral artifact scans, clean-consumer validation, and publication dry run.
+- [x] 6.4 Add CI gating for package tests, lint/typecheck, dependency leakage, host-neutral artifact scans, clean-consumer validation, and publication dry run.
 - [x] 6.5 Define the release-prep command path and document how maintainers run a dry run before publishing without requiring the publish command to run in this change.
 - [x] 6.6 Add an explicit release-prep follow-up for flipping `private: false`, final registry metadata, polished docs/examples, and actual publication.
 

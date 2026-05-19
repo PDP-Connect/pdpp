@@ -1,0 +1,51 @@
+name: remote-surface
+
+# Path-scoped CI for the OSS-spinnable remote-surface package. The package
+# remains private until release prep, but this gate proves the near-publishable
+# artifact shape on every package change.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packages/remote-surface/**"
+      - ".github/workflows/remote-surface.yml"
+      - "pnpm-lock.yaml"
+  pull_request:
+    paths:
+      - "packages/remote-surface/**"
+      - ".github/workflows/remote-surface.yml"
+      - "pnpm-lock.yaml"
+  workflow_dispatch: {}
+
+concurrency:
+  group: remote-surface-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: verify package boundary
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        env:
+          PATCHRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify remote-surface package
+        run: pnpm --filter @pdpp/remote-surface run verify
