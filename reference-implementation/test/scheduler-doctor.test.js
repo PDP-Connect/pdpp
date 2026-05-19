@@ -884,3 +884,83 @@ test('controller.listSchedules projects last failure code from history when no a
     closeDb();
   }
 });
+
+test('controller.listSchedules does not expose raw scheduler error messages as error codes', async () => {
+  const { startServer } = await import('../server/index.js');
+  const { getDefaultSchedulerStore } = await import('../server/stores/scheduler-store.ts');
+  const { closeDb } = await import('../server/db.js');
+  const { readFileSync } = await import('node:fs');
+  const REFERENCE_IMPL_DIR = join(__dirname, '..');
+  const spotifyManifest = JSON.parse(
+    readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'),
+  );
+  const ownerPassword = 'scheduler-doctor-redaction-pw';
+  const secret = 'secret-token-should-not-leak';
+
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+    ownerAuthPassword: ownerPassword,
+  });
+
+  try {
+    const asUrl = `http://localhost:${server.asPort}`;
+    const registerResp = await fetch(`${asUrl}/connectors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(spotifyManifest),
+    });
+    assert.equal(registerResp.status, 201);
+    await server.controller.upsertSchedule(spotifyManifest.connector_id, {
+      interval_seconds: 3600,
+      jitter_seconds: 0,
+      enabled: true,
+    });
+
+    const completedAt = new Date(Date.now() - 60_000).toISOString();
+    await Promise.resolve(
+      getDefaultSchedulerStore().appendRunHistory({
+        connectorId: spotifyManifest.connector_id,
+        source: { kind: 'connector', id: spotifyManifest.connector_id },
+        status: 'failed',
+        recordsEmitted: 0,
+        reportedRecordsEmitted: 0,
+        checkpointSummary: null,
+        knownGaps: [],
+        connectorError: null,
+        runId: 'run_test_history_raw_error',
+        traceId: 'trace_test_history_raw_error',
+        failureReason: null,
+        terminalReason: null,
+        error: `network failed with ${secret}`,
+        startedAt: new Date(Date.now() - 120_000).toISOString(),
+        completedAt,
+        attempt: 1,
+      }),
+    );
+    await Promise.resolve(
+      getDefaultSchedulerStore().upsertLastRunTime(
+        spotifyManifest.connector_id,
+        Date.parse(completedAt),
+        new Date().toISOString(),
+      ),
+    );
+
+    const schedules = await server.controller.listSchedules();
+    assert.equal(schedules[0].last_error_code, 'scheduler_error');
+    assert.doesNotMatch(JSON.stringify(schedules), new RegExp(secret));
+
+    const { code, stdout, stderr } = await runProbe(asUrl, { PDPP_OWNER_PASSWORD: ownerPassword });
+    assert.equal(code, 0, `probe failed; stderr: ${stderr}`);
+    assert.doesNotMatch(stdout, new RegExp(secret));
+  } finally {
+    server.schedulerManager?.stop?.();
+    server.asServer.closeAllConnections();
+    server.rsServer.closeAllConnections();
+    await new Promise((resolve) => server.asServer.close(resolve));
+    await new Promise((resolve) => server.rsServer.close(resolve));
+    closeDb();
+  }
+});

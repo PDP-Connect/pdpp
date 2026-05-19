@@ -11,7 +11,7 @@
 - [x] 2.1 Inventory current durable evidence sources for runs, schedules, active runs, detail gaps, local collector outbox, device exporters, remote-surface leases, projection freshness, and connector coverage.
 - [x] 2.2 Identify missing durable evidence required by the connection health projection.
 - [x] 2.3 Add or normalize reference-only evidence shapes needed for connection-scoped health without changing PDPP Core surfaces.
-- [ ] 2.4 Add secret-redaction checks for any evidence exposed through dashboard, CLI/status, timelines, or notifications.
+- [x] 2.4 Add secret-redaction checks for any evidence exposed through dashboard, CLI/status, timelines, or notifications.
 
 ## 3. Connection Health Projection
 

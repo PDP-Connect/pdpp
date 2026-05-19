@@ -60,15 +60,16 @@ must not be hidden behind a green dashboard state.
   uses a coarse last-run coverage rollup.
 - Projection reliability: `unreliableSources` is still not populated from
   failed/stale read models.
-- Secret redaction: `_ref` and dashboard read paths need explicit checks for
-  any future sensitive evidence sources.
+- Secret redaction: scheduler raw-error fallback is now code-sanitized before
+  `_ref` / scheduler-doctor exposure. Future sensitive evidence sources still
+  need checks before they are added to operator projections.
 
 ## Next Tranches
 
 1. Integrate scheduler backoff from durable history into schedule summaries and
    `connection_health`.
-2. Add secret-redaction checks before adding any sensitive attention or state
-   evidence to `_ref` surfaces.
+2. Add per-source secret-redaction checks before adding any sensitive attention
+   or state evidence to `_ref` surfaces.
 3. Roll durable detail gaps into connection/stream coverage.
 4. Add durable attention storage and feed open attention into connection health.
 5. Ingest local outbox/backlog summaries for local collector/device exporter

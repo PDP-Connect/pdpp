@@ -782,6 +782,32 @@ const EMPTY_SCHEDULE_HISTORY_FACTS: ScheduleHistoryFacts = {
   recentRuns: [],
 };
 
+const SAFE_SCHEDULER_ERROR_PREFIXES = new Set([
+  "automation_policy_blocked",
+  "not_ready",
+  "schedule.back_off.cleared",
+  "schedule.back_off.started",
+  "schedule.gave_up",
+  "scheduler_backoff_applied",
+]);
+
+function schedulerErrorCodeFromRecord(row: SchedulerRunHistoryRecord): string | null {
+  if (row.terminalReason) {
+    return row.terminalReason;
+  }
+  if (row.failureReason) {
+    return row.failureReason;
+  }
+  if (!row.error) {
+    return null;
+  }
+  const prefix = row.error.includes(":") ? row.error.slice(0, row.error.indexOf(":")) : row.error;
+  if (SAFE_SCHEDULER_ERROR_PREFIXES.has(prefix)) {
+    return prefix;
+  }
+  return "scheduler_error";
+}
+
 function getRuntimeProjection(
   connectorId: string,
   connectorInstanceId: string,
@@ -1909,7 +1935,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
       if (entry.latestStatus === null) {
         entry.latestStatus = row.status;
         if (row.status === "failed" || row.status === "skipped") {
-          entry.latestErrorCode = row.terminalReason ?? row.failureReason ?? row.error ?? null;
+          entry.latestErrorCode = schedulerErrorCodeFromRecord(row);
         }
       }
       if (!entry.latestFinishedAt || row.completedAt > entry.latestFinishedAt) {
