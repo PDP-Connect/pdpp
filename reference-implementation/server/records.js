@@ -46,6 +46,10 @@ import { isPostgresStorageBackend } from './postgres-storage.js';
 import { getDefaultConnectorStateStore } from './stores/connector-state-store.ts';
 import { makeLegacyConnectorInstanceId } from './stores/connector-instance-store.js';
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from './owner-auth.ts';
+import {
+  applyDatasetSummaryRecordDelta,
+  markDatasetSummaryProjectionStale,
+} from './dataset-summary-read-model.js';
 
 function nowIso() {
   return new Date().toISOString();
@@ -80,6 +84,23 @@ function resolveStorageConnectorInstanceId(storageTarget, connectorId) {
 
 function getChangeHistoryLimit() {
   return Math.max(parseInt(process.env.PDPP_CHANGE_HISTORY_LIMIT || '0', 10) || 0, 0);
+}
+
+function byteLength(value) {
+  return value == null ? 0 : Buffer.byteLength(String(value));
+}
+
+function getPrunedRecordChangeJsonBytes(connectorInstanceId, stream, versionBefore) {
+  const row = getDb()
+    .prepare(
+      `SELECT COALESCE(SUM(LENGTH(CAST(record_json AS BLOB))), 0) AS bytes
+         FROM record_changes
+        WHERE connector_instance_id = ?
+          AND stream = ?
+          AND version <= ?`,
+    )
+    .get(connectorInstanceId, stream, versionBefore);
+  return Number(row?.bytes || 0);
 }
 
 /**
@@ -240,10 +261,34 @@ export async function ingestRecord(storageTarget, record) {
     maybeFault('after-record-changes-append', { connectorId, connectorInstanceId, stream, recordKey, nextVersion, op });
 
     if (changeHistoryLimit > 0) {
+      const prunedBytes = getPrunedRecordChangeJsonBytes(connectorInstanceId, stream, nextVersion - changeHistoryLimit);
       exec(
         referenceQueries.recordsIngestPruneRecordChanges,
         [connectorInstanceId, stream, nextVersion - changeHistoryLimit],
       );
+      applyDatasetSummaryRecordDelta({
+        connectorId,
+        stream,
+        emittedAt: effectiveEmittedAt,
+        recordCountDelta: op === 'delete' ? -1 : current?.deleted ? 1 : current ? 0 : 1,
+        recordJsonBytesDelta: op === 'delete'
+          ? -byteLength(current.record_json)
+          : byteLength(recordJson) - (current && !current.deleted ? byteLength(current.record_json) : 0),
+        recordChangesJsonBytesDelta: byteLength(op === 'delete' ? current.record_json : recordJson) - prunedBytes,
+        dirtyRecordTimeBounds: true,
+      });
+    } else {
+      applyDatasetSummaryRecordDelta({
+        connectorId,
+        stream,
+        emittedAt: effectiveEmittedAt,
+        recordCountDelta: op === 'delete' ? -1 : current?.deleted ? 1 : current ? 0 : 1,
+        recordJsonBytesDelta: op === 'delete'
+          ? -byteLength(current.record_json)
+          : byteLength(recordJson) - (current && !current.deleted ? byteLength(current.record_json) : 0),
+        recordChangesJsonBytesDelta: byteLength(op === 'delete' ? current.record_json : recordJson),
+        dirtyRecordTimeBounds: true,
+      });
     }
 
     return { kind: 'changed', op };
@@ -2024,10 +2069,30 @@ export async function deleteRecord(storageTarget, stream, recordId) {
     maybeDeleteFault('after-record-changes-append', { connectorId, connectorInstanceId, stream, recordId, nextVersion });
 
     if (changeHistoryLimit > 0) {
+      const prunedBytes = getPrunedRecordChangeJsonBytes(connectorInstanceId, stream, nextVersion - changeHistoryLimit);
       exec(
         referenceQueries.recordsIngestPruneRecordChanges,
         [connectorInstanceId, stream, nextVersion - changeHistoryLimit],
       );
+      applyDatasetSummaryRecordDelta({
+        connectorId,
+        stream,
+        emittedAt: now,
+        recordCountDelta: -1,
+        recordJsonBytesDelta: -byteLength(current.record_json),
+        recordChangesJsonBytesDelta: byteLength(current.record_json) - prunedBytes,
+        dirtyRecordTimeBounds: true,
+      });
+    } else {
+      applyDatasetSummaryRecordDelta({
+        connectorId,
+        stream,
+        emittedAt: now,
+        recordCountDelta: -1,
+        recordJsonBytesDelta: -byteLength(current.record_json),
+        recordChangesJsonBytesDelta: byteLength(current.record_json),
+        dirtyRecordTimeBounds: true,
+      });
     }
 
     return { kind: 'changed' };
@@ -2090,6 +2155,9 @@ export async function deleteAllRecords(storageTarget, stream) {
   exec(referenceQueries.recordsDeleteDeleteRecordsByStream, [connectorInstanceId, stream]);
   exec(referenceQueries.recordsDeleteDeleteRecordChangesByStream, [connectorInstanceId, stream]);
   exec(referenceQueries.recordsDeleteDeleteVersionCounterByStream, [connectorInstanceId, stream]);
+  if (deletedRecordCount > 0) {
+    markDatasetSummaryProjectionStale('bulk stream record delete bypassed exact dataset summary projection deltas');
+  }
   await lexicalIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
   await semanticIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
   return deletedRecordCount;
@@ -2136,6 +2204,9 @@ export async function deleteAllRecordsForConnector(connectorId) {
     exec(referenceQueries.recordsDeleteDeleteBlobBindingsByStream, [connectorInstanceId, stream]);
     await lexicalIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
     await semanticIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
+  }
+  if (deletedCount > 0) {
+    markDatasetSummaryProjectionStale('bulk connector record delete bypassed exact dataset summary projection deltas');
   }
 
   return { deletedCount, streams };
@@ -2329,6 +2400,36 @@ export function listDatasetTopConnectorCandidates() {
     });
   }
   return candidates;
+}
+
+export function listDatasetSummaryStreamProjectionSeeds() {
+  if (isPostgresStorageBackend()) {
+    return [];
+  }
+
+  return getDb()
+    .prepare(
+      `SELECT connector_id,
+              stream,
+              COUNT(*) AS record_count,
+              COALESCE(SUM(LENGTH(CAST(record_json AS BLOB))), 0) AS record_json_bytes,
+              MIN(emitted_at) AS earliest_ingested_at,
+              MAX(emitted_at) AS latest_ingested_at,
+              0 AS dirty_record_time_bounds
+         FROM records
+        WHERE deleted = 0
+        GROUP BY connector_id, stream`,
+    )
+    .all()
+    .map((row) => ({
+      connector_id: row.connector_id,
+      stream: row.stream,
+      record_count: Number(row.record_count || 0),
+      record_json_bytes: Number(row.record_json_bytes || 0),
+      earliest_ingested_at: row.earliest_ingested_at || null,
+      latest_ingested_at: row.latest_ingested_at || null,
+      dirty_record_time_bounds: 0,
+    }));
 }
 
 /**

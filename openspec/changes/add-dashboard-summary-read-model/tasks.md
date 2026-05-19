@@ -7,13 +7,13 @@
 
 ## 2. Projection Maintenance
 
-- [ ] 2.1 Add transactional or idempotent update hooks for record upsert/delete changes that affect record counts, record JSON bytes, change-history bytes, ingest bounds, top connectors, and stream summaries.
-- [ ] 2.2 Add update hooks for blob byte totals at blob insert/delete call sites.
-- [ ] 2.3 Mark stream/global record-time bounds dirty when an overwrite or delete may have removed the current extremum.
-- [ ] 2.4 Mark or report the summary as stale when a write cannot be projected safely.
-- [ ] 2.5 Add targeted tests for duplicate/no-op record handling, upsert deltas, delete deltas, blob deltas, dirty extrema, and failed projection handling.
+- [x] 2.1 Add transactional or idempotent update hooks for record upsert/delete changes that affect record counts, record JSON bytes, change-history bytes, ingest bounds, top connectors, and stream summaries.
+- [ ] 2.2 Add update hooks for blob byte totals at blob insert/delete call sites. Blob insert is implemented; no blob delete call site exists in the current server path.
+- [x] 2.3 Mark stream/global record-time bounds dirty when an overwrite or delete may have removed the current extremum.
+- [x] 2.4 Mark or report the summary as stale when a write cannot be projected safely.
+- [x] 2.5 Add targeted tests for duplicate/no-op record handling, upsert deltas, delete deltas, blob deltas, dirty extrema, and failed projection handling.
 
-First backend tranche note: write-hook maintenance is intentionally not implemented yet. The hot path now reads the bounded global projection row, missing rows report `rebuilding`, and rebuild failure preserves last-known rows with sanitized failure metadata.
+Maintenance note: record deltas, blob insert deltas, unsafe-write staleness, failed projection metadata, and non-empty rebuild stream seeds are implemented. Blob delete remains open because the server currently has no blob delete call site.
 
 ## 3. Reconciliation And Rebuild
 
@@ -22,7 +22,7 @@ First backend tranche note: write-hook maintenance is intentionally not implemen
 - [x] 3.3 Surface rebuild in-progress and failed states through summary metadata.
 - [ ] 3.4 Add tests for rebuilding from empty/missing projection rows, older databases, dirty extrema, and rebuild failure.
 
-First backend tranche note: tests cover missing projection rows, successful full rebuild, rebuild failure, last-known preservation, and sanitized errors. Dirty-extrema and older-database reconciliation remain open with write-hook maintenance.
+Rebuild note: tests cover missing projection rows, successful full rebuild, non-empty stream seed rebuild, rebuild failure, last-known preservation, and sanitized errors. Dirty-extrema reconciliation and older-database reconciliation remain open.
 
 ## 4. Dashboard UX
 

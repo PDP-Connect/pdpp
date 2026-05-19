@@ -5,10 +5,24 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import {
+  __setDatasetSummaryProjectionFaultHookForTest,
+  applyDatasetSummaryBlobDelta,
   getDatasetSummaryProjection,
   rebuildDatasetSummaryProjection,
 } from '../server/dataset-summary-read-model.js';
-import { closeDb, initDb } from '../server/db.js';
+import { closeDb, getDb, initDb } from '../server/db.js';
+import {
+  deleteAllRecords,
+  deleteAllRecordsForConnector,
+  deleteRecord,
+  getDatasetBlobBytes,
+  getDatasetRecordChangesBytes,
+  getDatasetRecordsAggregate,
+  getDatasetRecordTimeBounds,
+  ingestRecord,
+  listDatasetSummaryStreamProjectionSeeds,
+  listDatasetTopConnectorCandidates,
+} from '../server/records.js';
 
 async function withTempDb(fn) {
   const dir = mkdtempSync(join(tmpdir(), 'pdpp-summary-projection-'));
@@ -107,3 +121,321 @@ test('dataset summary projection rebuild keeps last-known rows and marks failure
       false,
     );
   }));
+
+test('record no-op ingest does not change dataset summary projection', async () =>
+  withTempDb(async () => {
+    await rebuildEmptyProjection();
+    await ingestRecord('gmail', {
+      stream: 'messages',
+      key: 'm1',
+      emitted_at: '2026-01-01T00:00:00.000Z',
+      data: { id: 'm1', subject: 'hello' },
+    });
+    const afterFirst = getDatasetSummaryProjection();
+
+    await ingestRecord('gmail', {
+      stream: 'messages',
+      key: 'm1',
+      emitted_at: '2026-01-02T00:00:00.000Z',
+      data: { id: 'm1', subject: 'hello' },
+    });
+
+    assert.deepEqual(getDatasetSummaryProjection(), afterFirst);
+  }));
+
+test('record upsert deltas update counts bytes ingest bounds and top connectors', async () =>
+  withTempDb(async () => {
+    await rebuildEmptyProjection();
+    await ingestRecord('gmail', {
+      stream: 'messages',
+      key: 'm1',
+      emitted_at: '2026-01-02T00:00:00.000Z',
+      data: { id: 'm1', subject: 'hello' },
+    });
+    await ingestRecord('calendar', {
+      stream: 'events',
+      key: 'e1',
+      emitted_at: '2026-01-01T00:00:00.000Z',
+      data: { id: 'e1', title: 'standup' },
+    });
+    await ingestRecord('gmail', {
+      stream: 'messages',
+      key: 'm1',
+      emitted_at: '2026-01-03T00:00:00.000Z',
+      data: { id: 'm1', subject: 'hello world' },
+    });
+
+    const projection = getDatasetSummaryProjection();
+    assert.deepEqual(projection.counts, {
+      connector_count: 2,
+      stream_count: 2,
+      record_count: 2,
+    });
+    assert.equal(projection.ingested_time_bounds.earliest, '2026-01-01T00:00:00.000Z');
+    assert.equal(projection.ingested_time_bounds.latest, '2026-01-03T00:00:00.000Z');
+    assert.deepEqual(projection.top_connector_candidates, [
+      { connector_id: 'calendar', record_count: 1 },
+      { connector_id: 'gmail', record_count: 1 },
+    ]);
+    assert.equal(projection.retained_bytes.record_json_bytes, liveRecordJsonBytes());
+    assert.equal(projection.retained_bytes.record_changes_json_bytes, recordChangeJsonBytes());
+    assert.equal(projection.metadata.state, 'stale');
+  }));
+
+test('record-change pruning subtracts the inclusive retention boundary', async () =>
+  withTempDb(async () => {
+    const previousLimit = process.env.PDPP_CHANGE_HISTORY_LIMIT;
+    process.env.PDPP_CHANGE_HISTORY_LIMIT = '1';
+    try {
+      await rebuildEmptyProjection();
+      await ingestRecord('gmail', {
+        stream: 'messages',
+        key: 'm1',
+        emitted_at: '2026-01-01T00:00:00.000Z',
+        data: { id: 'm1', subject: 'v1' },
+      });
+      await ingestRecord('gmail', {
+        stream: 'messages',
+        key: 'm1',
+        emitted_at: '2026-01-02T00:00:00.000Z',
+        data: { id: 'm1', subject: 'v2' },
+      });
+
+      const projection = getDatasetSummaryProjection();
+      assert.equal(projection.retained_bytes.record_changes_json_bytes, recordChangeJsonBytes());
+      assert.equal(getDb().prepare('SELECT COUNT(*) AS n FROM record_changes').get().n, 1);
+    } finally {
+      if (previousLimit === undefined) {
+        delete process.env.PDPP_CHANGE_HISTORY_LIMIT;
+      } else {
+        process.env.PDPP_CHANGE_HISTORY_LIMIT = previousLimit;
+      }
+    }
+  }));
+
+test('record delete deltas decrement live counts and mark extrema dirty', async () =>
+  withTempDb(async () => {
+    await rebuildEmptyProjection();
+    await ingestRecord('gmail', {
+      stream: 'messages',
+      key: 'm1',
+      emitted_at: '2026-01-01T00:00:00.000Z',
+      data: { id: 'm1', subject: 'hello' },
+    });
+    await ingestRecord('gmail', {
+      stream: 'messages',
+      key: 'm2',
+      emitted_at: '2026-01-02T00:00:00.000Z',
+      data: { id: 'm2', subject: 'later' },
+    });
+
+    assert.equal(await deleteRecord('gmail', 'messages', 'm1'), 1);
+    const projection = getDatasetSummaryProjection();
+
+    assert.equal(projection.counts.record_count, 1);
+    assert.equal(projection.counts.connector_count, 1);
+    assert.equal(projection.counts.stream_count, 1);
+    assert.equal(projection.retained_bytes.record_json_bytes, liveRecordJsonBytes());
+    assert.equal(projection.retained_bytes.record_changes_json_bytes, recordChangeJsonBytes());
+    assert.equal(projection.metadata.state, 'stale');
+    assert.match(projection.metadata.stale_since, /^\d{4}-\d{2}-\d{2}T/);
+  }));
+
+test('blob insert delta updates retained blob bytes and duplicate content is a no-op', async () =>
+  withTempDb(async () => {
+    await rebuildEmptyProjection();
+
+    applyDatasetSummaryBlobDelta({ blobBytesDelta: Buffer.byteLength('hello blob') });
+    applyDatasetSummaryBlobDelta({ blobBytesDelta: 0 });
+
+    const projection = getDatasetSummaryProjection();
+    assert.equal(projection.retained_bytes.blob_bytes, Buffer.byteLength('hello blob'));
+  }));
+
+test('blob and non-repair deltas preserve existing stale metadata', async () =>
+  withTempDb(async () => {
+    await rebuildEmptyProjection();
+    await ingestRecord('gmail', {
+      stream: 'messages',
+      key: 'm1',
+      emitted_at: '2026-01-01T00:00:00.000Z',
+      data: { id: 'm1', subject: 'hello' },
+    });
+    const staleProjection = getDatasetSummaryProjection();
+    assert.equal(staleProjection.metadata.state, 'stale');
+
+    applyDatasetSummaryBlobDelta({ blobBytesDelta: 10 });
+    const afterBlob = getDatasetSummaryProjection();
+    assert.equal(afterBlob.metadata.state, 'stale');
+    assert.equal(afterBlob.metadata.stale_since, staleProjection.metadata.stale_since);
+
+    await ingestRecord('gmail', {
+      stream: 'messages',
+      key: 'm2',
+      emitted_at: '2026-01-02T00:00:00.000Z',
+      data: { id: 'm2', subject: 'later' },
+    });
+    const afterRecord = getDatasetSummaryProjection();
+    assert.equal(afterRecord.metadata.state, 'stale');
+    assert.equal(afterRecord.metadata.stale_since, staleProjection.metadata.stale_since);
+  }));
+
+test('projection hook failure marks sanitized stale failure metadata without blocking canonical write', async () =>
+  withTempDb(async () => {
+    await rebuildEmptyProjection();
+    __setDatasetSummaryProjectionFaultHookForTest(() => {
+      throw new Error('projection-token-abcdefghijklmnopqrstuvwxyz123456 failed');
+    });
+    try {
+      const outcome = await ingestRecord('gmail', {
+        stream: 'messages',
+        key: 'm1',
+        emitted_at: '2026-01-01T00:00:00.000Z',
+        data: { id: 'm1', subject: 'hello' },
+      });
+      assert.equal(outcome.changed, true);
+    } finally {
+      __setDatasetSummaryProjectionFaultHookForTest(null);
+    }
+
+    assert.equal(getDb().prepare('SELECT COUNT(*) AS n FROM records').get().n, 1);
+    const projection = getDatasetSummaryProjection();
+    assert.equal(projection.metadata.state, 'failed');
+    assert.equal(projection.metadata.rebuild_status, 'failed');
+    assert.equal(
+      projection.metadata.last_error.includes('abcdefghijklmnopqrstuvwxyz123456'),
+      false,
+    );
+
+    applyDatasetSummaryBlobDelta({ blobBytesDelta: 5 });
+    const afterBlob = getDatasetSummaryProjection();
+    assert.equal(afterBlob.metadata.state, 'failed');
+    assert.equal(afterBlob.metadata.last_error, projection.metadata.last_error);
+  }));
+
+test('bulk stream delete marks projection stale instead of applying unsafe exact deltas', async () =>
+  withTempDb(async () => {
+    await rebuildEmptyProjection();
+    await ingestRecord('gmail', {
+      stream: 'messages',
+      key: 'm1',
+      emitted_at: '2026-01-01T00:00:00.000Z',
+      data: { id: 'm1', subject: 'hello' },
+    });
+    await rebuildFromCurrentDb();
+
+    assert.equal(await deleteAllRecords('gmail', 'messages'), 1);
+    const projection = getDatasetSummaryProjection();
+    assert.equal(projection.metadata.state, 'stale');
+    assert.match(projection.metadata.last_error, /bulk stream record delete/);
+  }));
+
+test('bulk connector delete marks projection stale instead of applying unsafe exact deltas', async () =>
+  withTempDb(async () => {
+    await rebuildEmptyProjection();
+    await ingestRecord('gmail', {
+      stream: 'messages',
+      key: 'm1',
+      emitted_at: '2026-01-01T00:00:00.000Z',
+      data: { id: 'm1', subject: 'hello' },
+    });
+    await rebuildFromCurrentDb();
+
+    const result = await deleteAllRecordsForConnector('gmail');
+    assert.equal(result.deletedCount, 1);
+    const projection = getDatasetSummaryProjection();
+    assert.equal(projection.metadata.state, 'stale');
+    assert.match(projection.metadata.last_error, /bulk connector record delete/);
+  }));
+
+test('non-empty rebuild seeds stream projections so later deltas do not fail', async () =>
+  withTempDb(async () => {
+    await rebuildEmptyProjection();
+    await ingestRecord('gmail', {
+      stream: 'messages',
+      key: 'm1',
+      emitted_at: '2026-01-01T00:00:00.000Z',
+      data: { id: 'm1', subject: 'hello' },
+    });
+    await rebuildFromCurrentDb();
+    assert.equal(getDatasetSummaryProjection().metadata.state, 'fresh');
+
+    await ingestRecord('gmail', {
+      stream: 'messages',
+      key: 'm2',
+      emitted_at: '2026-01-02T00:00:00.000Z',
+      data: { id: 'm2', subject: 'later' },
+    });
+    const projection = getDatasetSummaryProjection();
+    assert.equal(projection.counts.record_count, 2);
+    assert.equal(projection.metadata.state, 'stale');
+    assert.notEqual(projection.metadata.state, 'failed');
+  }));
+
+async function rebuildEmptyProjection() {
+  await rebuildDatasetSummaryProjection({
+    getCounts: () => ({ connector_count: 0, stream_count: 0, record_count: 0 }),
+    getRetainedBytes: () => ({
+      record_json_bytes: 0,
+      record_changes_json_bytes: 0,
+      blob_bytes: 0,
+    }),
+    getRecordTimeBounds: () => ({ earliest: null, latest: null }),
+    getIngestedTimeBounds: () => ({ earliest: null, latest: null }),
+    listTopConnectorCandidates: () => [],
+  });
+}
+
+async function rebuildFromCurrentDb() {
+  await rebuildDatasetSummaryProjection({
+    getCounts: async () => {
+      const agg = getDatasetRecordsAggregate();
+      return {
+        connector_count: agg.connector_count,
+        stream_count: agg.stream_count,
+        record_count: agg.record_count,
+      };
+    },
+    getRetainedBytes: async () => {
+      const agg = getDatasetRecordsAggregate();
+      return {
+        record_json_bytes: agg.record_json_bytes,
+        record_changes_json_bytes: getDatasetRecordChangesBytes(),
+        blob_bytes: getDatasetBlobBytes(),
+      };
+    },
+    getRecordTimeBounds: () => getDatasetRecordTimeBounds(),
+    getIngestedTimeBounds: async () => {
+      const agg = getDatasetRecordsAggregate();
+      return {
+        earliest: agg.earliest_ingested_at,
+        latest: agg.latest_ingested_at,
+      };
+    },
+    listTopConnectorCandidates: () => listDatasetTopConnectorCandidates(),
+    listStreamProjectionSeeds: () => listDatasetSummaryStreamProjectionSeeds(),
+  });
+}
+
+function liveRecordJsonBytes() {
+  return Number(
+    getDb()
+      .prepare(
+        `SELECT COALESCE(SUM(LENGTH(CAST(record_json AS BLOB))), 0) AS bytes
+           FROM records
+          WHERE deleted = 0`,
+      )
+      .get().bytes || 0,
+  );
+}
+
+function recordChangeJsonBytes() {
+  return Number(
+    getDb()
+      .prepare(
+        `SELECT COALESCE(SUM(LENGTH(CAST(record_json AS BLOB))), 0) AS bytes
+           FROM record_changes`,
+      )
+      .get().bytes || 0,
+  );
+}

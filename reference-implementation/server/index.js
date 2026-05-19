@@ -63,8 +63,10 @@ import {
   listStreams, listAllStreams, getSyncState, putSyncState,
   getDatasetRecordsAggregate, getDatasetRecordChangesBytes, getDatasetBlobBytes,
   getDatasetRecordTimeBounds, listDatasetTopConnectorCandidates,
+  listDatasetSummaryStreamProjectionSeeds,
 } from './records.js';
 import {
+  applyDatasetSummaryBlobDelta,
   getDatasetSummaryProjection,
   rebuildDatasetSummaryProjection,
 } from './dataset-summary-read-model.js';
@@ -1882,7 +1884,7 @@ function persistContentAddressedBlob({ connectorId, connectorInstanceId, stream,
   const blobId = `blob_sha256_${sha256}`;
   const sizeBytes = data.byteLength;
   const stored = transaction(() => {
-    exec(referenceQueries.blobsInsertBlob, [
+    const insertResult = exec(referenceQueries.blobsInsertBlob, [
       blobId, connectorId, connectorInstanceId, stream, recordKey, mimeType, sizeBytes, sha256, data,
     ]);
 
@@ -1894,6 +1896,9 @@ function persistContentAddressedBlob({ connectorId, connectorInstanceId, stream,
     }
 
     exec(referenceQueries.blobsInsertBinding, [blobId, connectorId, connectorInstanceId, stream, recordKey]);
+    if (insertResult.changes > 0) {
+      applyDatasetSummaryBlobDelta({ blobBytesDelta: sizeBytes });
+    }
 
     return row;
   });
@@ -3479,6 +3484,7 @@ function buildAsApp(opts = {}) {
           };
         },
         listTopConnectorCandidates: () => listDatasetTopConnectorCandidates(),
+        listStreamProjectionSeeds: () => listDatasetSummaryStreamProjectionSeeds(),
       });
       const summary = await executeRefDatasetSummary({
         getProjection: () => projection,
