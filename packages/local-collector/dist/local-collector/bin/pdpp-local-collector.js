@@ -1,13 +1,22 @@
 #!/usr/bin/env node
+import { existsSync } from "node:fs";
 import { basename, dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ALLOW_CUSTOM_COMMAND_ENV, CollectorCustomCommandRefusedError, CollectorUsageError, } from "../src/errors.js";
-import { BUNDLED_CONNECTOR_IDS, COLLECTOR_PROTOCOL_VERSION, COLLECTOR_RUNTIME_CAPABILITIES, enrollCollector, getBundledConnector, isMainModule, runCollectorConnector, } from "../src/runner.js";
+import { BUNDLED_CONNECTOR_IDS, COLLECTOR_PROTOCOL_VERSION, COLLECTOR_RUNTIME_CAPABILITIES, LocalDeviceOutbox, enrollCollector, getBundledConnector, isMainModule, runCollectorConnector, } from "../src/runner.js";
 const DEFAULT_QUEUE_PATH = join(dirname(fileURLToPath(import.meta.url)), "..", ".pdpp-data", "collector-runner-queue.json");
+const LOCAL_COLLECTOR_PACKAGE_NAME = "@pdpp/local-collector";
+const LOCAL_COLLECTOR_PACKAGE_VERSION = "0.0.0";
 const HELP_TEXT = `pdpp-local-collector — PDPP local collector runner.
 
 Subcommands:
   advertise                       Print runtime capabilities and protocol version.
+  status                          Print local durable outbox health as JSON.
+          [--queue <path>]
+          [--connection-id <id>]
+  doctor                          Print local durable outbox operator diagnostics as JSON.
+          [--queue <path>]
+          [--connection-id <id>]
   enroll  --base-url <url>        Exchange a one-time enrollment code for a
           --code <code>             device id + device token.
           [--device-label <label>]
@@ -35,6 +44,11 @@ async function main() {
             collector_protocol_version: COLLECTOR_PROTOCOL_VERSION,
             bundled_connectors: BUNDLED_CONNECTOR_IDS,
         }, null, 2)}\n`);
+        return;
+    }
+    if (options.command === "status" || options.command === "doctor") {
+        const status = inspectLocalOutboxStatus(options);
+        process.stdout.write(`${JSON.stringify(options.command === "doctor" ? buildLocalOutboxDoctor(status) : status, null, 2)}\n`);
         return;
     }
     if (options.command === "enroll") {
@@ -66,6 +80,58 @@ async function main() {
         sourceInstanceId: options.sourceInstanceId,
     });
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+}
+export function inspectLocalOutboxStatus(options) {
+    const dbPath = resolveOutboxPath(options);
+    const exists = existsSync(dbPath);
+    const summary = exists ? readOutboxSummary(dbPath, options.sourceInstanceId) : emptyOutboxSummary();
+    return {
+        collector_protocol_version: COLLECTOR_PROTOCOL_VERSION,
+        configured_device: {
+            device_id_configured: Boolean(options.deviceId),
+            device_token_configured: Boolean(options.deviceToken),
+        },
+        db: {
+            configured: Boolean(options.queuePath),
+            exists,
+            path: dbPath,
+        },
+        outbox: {
+            counts: {
+                dead_letter: summary.deadLetter,
+                leased: summary.leased,
+                pending: summary.ready,
+                retrying: summary.retrying,
+                sent: summary.succeeded,
+                total: summary.total,
+            },
+            expired_leases: summary.staleLeases,
+            oldest_pending_at: summary.oldestReadyAt,
+        },
+        package: {
+            name: LOCAL_COLLECTOR_PACKAGE_NAME,
+            version: LOCAL_COLLECTOR_PACKAGE_VERSION,
+        },
+        source: {
+            source_instance_id: options.sourceInstanceId ?? null,
+        },
+    };
+}
+export function buildLocalOutboxDoctor(status) {
+    const checks = {
+        expired_leases: status.outbox.expired_leases > 0 ? "warn" : "ok",
+        outbox_db: status.db.exists ? "ok" : "missing",
+        outbox_failures: status.outbox.counts.dead_letter > 0 ? "fail" : "ok",
+    };
+    return {
+        ...status,
+        checks,
+        status: checks.outbox_failures === "fail"
+            ? "critical"
+            : checks.expired_leases === "warn" || checks.outbox_db === "missing"
+                ? "warning"
+                : "ok",
+    };
 }
 export function buildConnectorSpec(options) {
     if (!options.connector) {
@@ -102,8 +168,8 @@ export function parseArgs(args) {
         process.stdout.write(HELP_TEXT);
         process.exit(0);
     }
-    if (command !== "enroll" && command !== "run" && command !== "advertise") {
-        throw new CollectorUsageError(`usage: pdpp-local-collector <enroll|run|advertise> --base-url <url> [options]`);
+    if (command !== "enroll" && command !== "run" && command !== "advertise" && command !== "status" && command !== "doctor") {
+        throw new CollectorUsageError(`usage: pdpp-local-collector <enroll|run|advertise|status|doctor> --base-url <url> [options]`);
     }
     const options = {
         baseUrl: process.env.PDPP_REFERENCE_BASE_URL ?? "http://127.0.0.1:7662",
@@ -203,6 +269,32 @@ export function scopedDefaultQueuePath(queuePath, defaultQueuePath, connectionId
     const extension = extname(defaultQueuePath);
     const stem = basename(defaultQueuePath, extension);
     return join(dirname(defaultQueuePath), `${stem}.${safeQueuePathSegment(connectionId)}${extension}`);
+}
+function resolveOutboxPath(options) {
+    return options.sourceInstanceId
+        ? scopedDefaultQueuePath(options.queuePath, DEFAULT_QUEUE_PATH, options.sourceInstanceId)
+        : options.queuePath;
+}
+function readOutboxSummary(path, sourceInstanceId) {
+    const outbox = new LocalDeviceOutbox({ path });
+    try {
+        return outbox.summary(sourceInstanceId ? { sourceInstanceId } : {});
+    }
+    finally {
+        outbox.close();
+    }
+}
+function emptyOutboxSummary() {
+    return {
+        deadLetter: 0,
+        leased: 0,
+        oldestReadyAt: null,
+        ready: 0,
+        retrying: 0,
+        staleLeases: 0,
+        succeeded: 0,
+        total: 0,
+    };
 }
 function safeQueuePathSegment(value) {
     return encodeURIComponent(value).replaceAll("%", "_");

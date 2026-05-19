@@ -31,6 +31,7 @@ export interface LocalDeviceOutboxSummary {
   leased: number;
   oldestReadyAt: string | null;
   ready: number;
+  retrying: number;
   staleLeases: number;
   succeeded: number;
   total: number;
@@ -354,6 +355,7 @@ export class LocalDeviceOutbox {
       leased: 0,
       oldestReadyAt: null,
       ready: 0,
+      retrying: 0,
       staleLeases: 0,
       succeeded: 0,
       total: items.length,
@@ -361,6 +363,9 @@ export class LocalDeviceOutbox {
     for (const item of items) {
       if (item.status === "ready") {
         summary.ready++;
+        if (item.next_attempt_at > now) {
+          summary.retrying++;
+        }
         if (summary.oldestReadyAt === null || item.created_at < summary.oldestReadyAt) {
           summary.oldestReadyAt = item.created_at;
         }

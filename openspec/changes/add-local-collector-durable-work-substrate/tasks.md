@@ -24,7 +24,7 @@
 
 ## 4. Operator And Service UX
 
-- [ ] 4.1 Add local `doctor` and `status` output for durable outbox health, stale leases, oldest pending work, package/protocol version, configured device, and source-home identity.
+- [x] 4.1 Add local `doctor` and `status` output for durable outbox health, stale leases, oldest pending work, package/protocol version, configured device, and source-home identity.
 - [ ] 4.2 Add service-run guidance that preserves host-native systemd/launchd scheduling rather than adding a custom scheduler daemon.
 - [ ] 4.3 Update dashboard/device-exporter health surfaces to distinguish pending, retrying, stale, dead-letter, backlog, and fully-drained local collector states.
 - [ ] 4.4 Ensure remote diagnostics avoid raw secrets, auth files, browser cookies, and unredacted absolute local paths.
@@ -43,6 +43,6 @@
 - [ ] 6.3 Add backlog/gap tests proving partial progress is reported honestly and retryable work remains targetable.
 - [x] 6.4 Add migration/quarantine tests for existing JSON queue files.
 - [ ] 6.8 Add a closeout check proving no long-term JSON queue migration path remains after the one-time migration is complete.
-- [ ] 6.5 Add CLI/status tests for local outbox health output.
+- [x] 6.5 Add CLI/status tests for local outbox health output.
 - [ ] 6.6 Run relevant local collector, polyfill connector, reference server, and dashboard tests.
 - [ ] 6.7 Run `openspec validate add-local-collector-durable-work-substrate --strict`.

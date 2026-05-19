@@ -22,6 +22,7 @@ export interface LocalDeviceOutboxSummary {
     leased: number;
     oldestReadyAt: string | null;
     ready: number;
+    retrying: number;
     staleLeases: number;
     succeeded: number;
     total: number;
