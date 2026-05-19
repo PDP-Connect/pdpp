@@ -198,6 +198,12 @@ export interface CollectorRunResult {
   skippedScanForBacklog: boolean;
   /** True when the runner failed to persist accumulated STATE after a successful drain. */
   statePutFailed: boolean;
+  /**
+   * Highest number of unflushed RECORDs the streaming buffer held at once.
+   * Bounded by `batchSize`; exposed so memory-bounding behavior can be
+   * asserted in tests without inspecting heap usage directly.
+   */
+  streamingBufferHighWaterMark: number;
 }
 
 export class CollectorStateReadError extends Error {
@@ -274,19 +280,19 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
       status: "starting",
     });
 
-    const messages = await collectMessagesForRun(config, priorState);
-    const records = messages.filter((msg): msg is Extract<EmittedMessage, { type: "RECORD" }> => msg.type === "RECORD");
-    const done =
-      messages.findLast((msg): msg is Extract<EmittedMessage, { type: "DONE" }> => msg.type === "DONE") ?? null;
-
-    const inScopeStreams = new Set(config.connector.streams);
-    const bufferedState = projectEmittedState(messages, inScopeStreams, config.connector.connector_id);
-    const enqueueResult = enqueueRecordBatches({
+    const streamResult = await streamConnectorIntoOutbox({
+      ...(config.abortSignal ? { abortSignal: config.abortSignal } : {}),
       batchSize: config.batchSize ?? 100,
       config,
       outbox,
-      records,
+      priorState,
     });
+    const done = streamResult.done;
+    const bufferedState = streamResult.bufferedState;
+    const enqueueResult = {
+      enqueuedBatches: streamResult.enqueuedBatches,
+      recordsQueued: streamResult.recordsQueued,
+    };
 
     const recordDrain = await drainCollectorOutbox({
       ...(config.abortSignal ? { abortSignal: config.abortSignal } : {}),
@@ -333,6 +339,7 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
       sentBatches: (preScanDrain.sentByKind.record_batch ?? 0) + (recordDrain.sentByKind.record_batch ?? 0),
       skippedScanForBacklog: false,
       statePutFailed: checkpointResult.statePutFailed,
+      streamingBufferHighWaterMark: streamResult.bufferHighWaterMark,
     };
   } finally {
     outbox.close();
@@ -371,6 +378,7 @@ async function maybeSkipScanForBacklog(input: MaybeSkipScanInput): Promise<Colle
     sentBatches: input.preScanDrain.sentByKind.record_batch ?? 0,
     skippedScanForBacklog: true,
     statePutFailed: false,
+    streamingBufferHighWaterMark: 0,
   };
 }
 
@@ -399,33 +407,72 @@ async function readPriorStateOrBlock(input: {
   }
 }
 
-async function collectMessagesForRun(
-  config: CollectorRunConfig,
-  priorState: Readonly<Record<string, unknown>>
-): Promise<EmittedMessage[]> {
-  throwIfAborted(config.abortSignal);
-  return await collectConnectorMessages(
-    config.connector,
-    {
-      baseUrl: config.baseUrl,
-      deviceToken: config.deviceToken,
-      ...(config.runId ? { runId: config.runId } : {}),
-    },
-    priorState,
-    config.abortSignal
-  );
-}
-
-function enqueueRecordBatches(input: {
+interface StreamConnectorIntoOutboxInput {
+  abortSignal?: AbortSignal;
   batchSize: number;
   config: CollectorRunConfig;
   outbox: LocalDeviceOutbox;
-  records: readonly Extract<EmittedMessage, { type: "RECORD" }>[];
-}): { enqueuedBatches: number; recordsQueued: number } {
+  priorState: Readonly<Record<string, unknown>>;
+}
+
+interface StreamConnectorIntoOutboxResult {
+  bufferedState: Readonly<Record<string, unknown>>;
+  bufferHighWaterMark: number;
+  done: Extract<EmittedMessage, { type: "DONE" }> | null;
+  enqueuedBatches: number;
+  recordsQueued: number;
+}
+
+/**
+ * Drive the connector child process and translate its protocol output
+ * into durable outbox rows incrementally.
+ *
+ * Memory bounds:
+ *
+ * - At most `batchSize` RECORD messages are held in the streaming buffer
+ *   at any time; the buffer flushes to a durable record_batch outbox row
+ *   as soon as it fills.
+ * - STATE messages are projected per-stream (last-wins) into a small
+ *   in-memory map keyed by stream name. The map size is bounded by the
+ *   connector's declared in-scope streams; out-of-scope STATE is dropped
+ *   with the same stderr warning the buffered implementation used.
+ * - DONE retains only the final `DONE` message (one reference).
+ *
+ * Failure semantics:
+ *
+ * - If the child exits non-zero (or stdout streaming fails), the function
+ *   throws. Any already-enqueued record_batch rows stay durable and will
+ *   be drained on the next runner invocation. STATE is intentionally NOT
+ *   turned into a checkpoint outbox row here — the caller only enqueues
+ *   a checkpoint after the record drain succeeds, so a mid-stream crash
+ *   cannot advance the destination checkpoint past acknowledged work.
+ */
+async function streamConnectorIntoOutbox(
+  input: StreamConnectorIntoOutboxInput
+): Promise<StreamConnectorIntoOutboxResult> {
+  throwIfAborted(input.abortSignal);
+
+  const child = spawnConnector(input.config.connector, {
+    baseUrl: input.config.baseUrl,
+    deviceToken: input.config.deviceToken,
+    ...(input.config.runId ? { runId: input.config.runId } : {}),
+  });
+  const stderr = new BoundedStderrBuffer(COLLECTOR_STDERR_MAX_BYTES);
+  const inScopeStreams = new Set(input.config.connector.streams);
+  const bufferedState: Record<string, unknown> = {};
+  let batchSeq = nextOutboxBatchSeq(input.outbox, input.config.sourceInstanceId);
+  let pendingRecords: Extract<EmittedMessage, { type: "RECORD" }>[] = [];
+  let bufferHighWaterMark = 0;
   let recordsQueued = 0;
   let enqueuedBatches = 0;
-  let batchSeq = nextOutboxBatchSeq(input.outbox, input.config.sourceInstanceId);
-  for (const chunk of chunkRecords(input.records, input.batchSize)) {
+  let done: Extract<EmittedMessage, { type: "DONE" }> | null = null;
+
+  const flushPendingBatch = (): void => {
+    if (pendingRecords.length === 0) {
+      return;
+    }
+    const chunk = pendingRecords;
+    pendingRecords = [];
     const batchId = buildOutboxBatchId({
       batchSeq,
       connectorId: input.config.connector.connector_id,
@@ -462,8 +509,119 @@ function enqueueRecordBatches(input: {
     recordsQueued += envelopes.length;
     enqueuedBatches++;
     batchSeq++;
+  };
+
+  const handleMessage = (message: EmittedMessage): void => {
+    if (message.type === "RECORD") {
+      pendingRecords.push(message);
+      if (pendingRecords.length > bufferHighWaterMark) {
+        bufferHighWaterMark = pendingRecords.length;
+      }
+      if (pendingRecords.length >= input.batchSize) {
+        flushPendingBatch();
+      }
+      return;
+    }
+    if (message.type === "STATE") {
+      if (!inScopeStreams.has(message.stream)) {
+        process.stderr.write(
+          `${input.config.connector.connector_id} dropped out-of-scope STATE for stream '${message.stream}'\n`
+        );
+        return;
+      }
+      bufferedState[message.stream] = message.cursor;
+      return;
+    }
+    if (message.type === "DONE") {
+      done = message;
+    }
+  };
+
+  const abortListener = input.abortSignal
+    ? () => {
+        try {
+          child.kill("SIGTERM");
+        } catch {
+          // ignore — child already exited
+        }
+        setTimeout(() => {
+          try {
+            if (!child.killed) {
+              child.kill("SIGKILL");
+            }
+          } catch {
+            // ignore
+          }
+        }, 1000).unref?.();
+      }
+    : null;
+  if (input.abortSignal && abortListener) {
+    input.abortSignal.addEventListener("abort", abortListener, { once: true });
   }
-  return { enqueuedBatches, recordsQueued };
+
+  const exitPromise = new Promise<number | null>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", resolve);
+  });
+  const outputPromise = (async () => {
+    const lines = createInterface({ input: child.stdout, terminal: false });
+    for await (const line of lines) {
+      if (!line.trim()) {
+        continue;
+      }
+      handleMessage(JSON.parse(line) as EmittedMessage);
+    }
+  })();
+  child.stdin.on("error", () => {
+    // Missing commands or early child exits can close stdin before the
+    // START line is accepted. The child error/exit path below is the
+    // actionable diagnostic; do not mask it with EPIPE.
+  });
+  child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+  child.stdin.end(
+    `${JSON.stringify(
+      buildCollectorStartMessage(
+        input.config.connector.streams,
+        input.config.connector.streamsToBackfill,
+        input.priorState
+      )
+    )}\n`
+  );
+
+  let exitCode: number | null;
+  try {
+    [exitCode] = await Promise.all([exitPromise, outputPromise]);
+  } catch (error) {
+    if (input.abortSignal && abortListener) {
+      input.abortSignal.removeEventListener("abort", abortListener);
+    }
+    throw new Error(
+      `${input.config.connector.connector_id} connector failed to start or stream output: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+  }
+  if (input.abortSignal && abortListener) {
+    input.abortSignal.removeEventListener("abort", abortListener);
+  }
+  if (input.abortSignal?.aborted) {
+    throw input.abortSignal.reason instanceof Error
+      ? input.abortSignal.reason
+      : new DOMException("Aborted", "AbortError");
+  }
+  if (exitCode !== 0) {
+    throw new Error(`${input.config.connector.connector_id} connector exited ${exitCode}: ${stderr.toString().trim()}`);
+  }
+
+  flushPendingBatch();
+
+  return {
+    bufferedState: Object.freeze({ ...bufferedState }),
+    bufferHighWaterMark,
+    done,
+    enqueuedBatches,
+    recordsQueued,
+  };
 }
 
 async function maybeCommitCheckpoint(input: {
@@ -519,33 +677,6 @@ async function maybeCommitCheckpoint(input: {
     `${input.config.connector.connector_id} checkpoint not yet committed (drained ${checkpointDrain.sent} this pass; ${checkpointAfter?.last_error ?? "no error"})\n`
   );
   return { flushedState: null, statePutFailed: true };
-}
-
-/**
- * Project emitted STATE messages into a stream-keyed map.
- *
- * - Per-stream last-wins ordering (matches `connector-state-store` semantics).
- * - Drops STATE for streams that were not in `START.scope.streams` and emits a
- *   stderr warning identifying the offending stream. Mirrors the in-process
- *   runtime's strictness on stream membership.
- */
-function projectEmittedState(
-  messages: readonly EmittedMessage[],
-  inScopeStreams: Set<string>,
-  connectorId: string
-): Record<string, unknown> {
-  const projected: Record<string, unknown> = {};
-  for (const message of messages) {
-    if (message.type !== "STATE") {
-      continue;
-    }
-    if (!inScopeStreams.has(message.stream)) {
-      process.stderr.write(`${connectorId} dropped out-of-scope STATE for stream '${message.stream}'\n`);
-      continue;
-    }
-    projected[message.stream] = message.cursor;
-  }
-  return projected;
 }
 
 async function safeHeartbeat(
@@ -983,90 +1114,6 @@ function buildCollectorChildEnv(context: CollectorChildContext): Record<string, 
   return env;
 }
 
-async function collectConnectorMessages(
-  connector: CollectorConnectorSpec,
-  childContext: CollectorChildContext,
-  priorState?: Readonly<Record<string, unknown>>,
-  abortSignal?: AbortSignal
-): Promise<EmittedMessage[]> {
-  const child = spawnConnector(connector, childContext);
-  const messages: EmittedMessage[] = [];
-  const stderr = new BoundedStderrBuffer(COLLECTOR_STDERR_MAX_BYTES);
-
-  const abortListener = abortSignal
-    ? () => {
-        // Best-effort: SIGTERM, then escalate to SIGKILL if the child
-        // is still alive shortly after. The child's exit code will
-        // surface as a non-zero exit and the abort error will be
-        // re-thrown to the caller below.
-        try {
-          child.kill("SIGTERM");
-        } catch {
-          // ignore — child already exited
-        }
-        setTimeout(() => {
-          try {
-            if (!child.killed) {
-              child.kill("SIGKILL");
-            }
-          } catch {
-            // ignore
-          }
-        }, 1000).unref?.();
-      }
-    : null;
-  if (abortSignal && abortListener) {
-    abortSignal.addEventListener("abort", abortListener, { once: true });
-  }
-
-  const exitPromise = new Promise<number | null>((resolve, reject) => {
-    child.once("error", reject);
-    child.once("close", resolve);
-  });
-  const outputPromise = (async () => {
-    const lines = createInterface({ input: child.stdout, terminal: false });
-    for await (const line of lines) {
-      if (!line.trim()) {
-        continue;
-      }
-      messages.push(JSON.parse(line) as EmittedMessage);
-    }
-  })();
-  child.stdin.on("error", () => {
-    // Missing commands or early child exits can close stdin before the
-    // START line is accepted. The child error/exit path below is the
-    // actionable diagnostic; do not mask it with EPIPE.
-  });
-  child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
-  child.stdin.end(
-    `${JSON.stringify(buildCollectorStartMessage(connector.streams, connector.streamsToBackfill, priorState))}\n`
-  );
-
-  let exitCode: number | null;
-  try {
-    [exitCode] = await Promise.all([exitPromise, outputPromise]);
-  } catch (error) {
-    if (abortSignal && abortListener) {
-      abortSignal.removeEventListener("abort", abortListener);
-    }
-    throw new Error(
-      `${connector.connector_id} connector failed to start or stream output: ${
-        error instanceof Error ? error.message : String(error)
-      }`
-    );
-  }
-  if (abortSignal && abortListener) {
-    abortSignal.removeEventListener("abort", abortListener);
-  }
-  if (abortSignal?.aborted) {
-    throw abortSignal.reason instanceof Error ? abortSignal.reason : new DOMException("Aborted", "AbortError");
-  }
-  if (exitCode !== 0) {
-    throw new Error(`${connector.connector_id} connector exited ${exitCode}: ${stderr.toString().trim()}`);
-  }
-  return messages;
-}
-
 /**
  * Fixed-capacity stderr ring. Connectors emitting verbose progress logs
  * can otherwise pin proportional heap during long backfills. We retain
@@ -1130,12 +1177,4 @@ function buildCollectorChildPath(pathValue: string | undefined): string {
   return [join(PACKAGE_ROOT, "node_modules", ".bin"), join(REPO_ROOT, "node_modules", ".bin"), pathValue]
     .filter((part): part is string => Boolean(part))
     .join(delimiter);
-}
-
-function chunkRecords<T>(records: readonly T[], size: number): T[][] {
-  const chunks: T[][] = [];
-  for (let index = 0; index < records.length; index += size) {
-    chunks.push(records.slice(index, index + size));
-  }
-  return chunks;
 }

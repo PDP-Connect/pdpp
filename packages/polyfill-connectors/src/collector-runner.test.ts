@@ -1035,6 +1035,228 @@ test("recoverAndSummarizeOutbox recovers expired leases and returns a fast summa
   }
 });
 
+test("runCollectorConnector streams RECORDs into bounded durable batches without retaining the whole child output", async () => {
+  // Emit 250 records with a streaming batchSize of 50. The runner must
+  // produce 5 durable record_batch rows AND prove the in-memory buffer
+  // never held more than `batchSize` records at once.
+  const recordCount = 250;
+  const batchSize = 50;
+  const harness = await startCollectorHarness({ priorState: {} });
+  try {
+    const queuePath = await tempQueuePath();
+    const fixture = await writeFixtureConnector({
+      script: `
+        let buf = "";
+        await new Promise((r) => process.stdin.on("data", (c) => {
+          buf += c;
+          if (buf.includes("\\n")) r();
+        }));
+        for (let i = 0; i < ${recordCount}; i++) {
+          process.stdout.write(JSON.stringify({
+            type: "RECORD",
+            stream: "messages",
+            key: "m-" + i,
+            data: { id: "m-" + i },
+            emitted_at: new Date().toISOString(),
+          }) + "\\n");
+        }
+        process.stdout.write(JSON.stringify({
+          type: "STATE",
+          stream: "messages",
+          cursor: "m-final",
+        }) + "\\n");
+        process.stdout.write(JSON.stringify({
+          type: "DONE",
+          status: "succeeded",
+          records_emitted: ${recordCount},
+        }) + "\\n");
+      `,
+    });
+
+    const result = await runCollectorConnector({
+      baseUrl: harness.url,
+      batchSize,
+      connector: {
+        args: [fixture],
+        command: "node",
+        connector_id: "fixture-streaming-bounded",
+        runtime_requirements: { bindings: {} },
+        streams: ["messages"],
+      },
+      deviceId: "device-1",
+      deviceToken: "device-token",
+      queuePath,
+      sourceInstanceId: "src-1",
+    });
+
+    assert.equal(result.recordsQueued, recordCount);
+    assert.equal(result.enqueuedBatches, recordCount / batchSize);
+    // The streaming buffer must never have held more than one batch's
+    // worth of records at any moment — that is the memory bound.
+    assert.ok(
+      result.streamingBufferHighWaterMark <= batchSize,
+      `streaming buffer leaked: high-water ${result.streamingBufferHighWaterMark} > batchSize ${batchSize}`
+    );
+    assert.equal(result.sentBatches, recordCount / batchSize);
+    // Server received every record split into individual ingest calls.
+    const totalIngested = harness.ingestedBatches.reduce((sum, batch) => sum + (batch.records?.length ?? 0), 0);
+    assert.equal(totalIngested, recordCount);
+    assert.deepEqual(result.flushedState, { messages: "m-final" });
+  } finally {
+    await harness.close();
+  }
+});
+
+test("runCollectorConnector defers checkpoint until every streamed record batch is acknowledged", async () => {
+  // Emit 60 records (3 batches of 20) and STATE. Ingest fails for every
+  // batch this pass, so even though some batches stream successfully to
+  // the outbox before the child exits, the checkpoint must NOT advance.
+  const harness = await startCollectorHarness({
+    ingestFailureMode: "always-503",
+    priorState: {},
+  });
+  try {
+    const queuePath = await tempQueuePath();
+    const fixture = await writeFixtureConnector({
+      script: `
+        let buf = "";
+        await new Promise((r) => process.stdin.on("data", (c) => {
+          buf += c;
+          if (buf.includes("\\n")) r();
+        }));
+        for (let i = 0; i < 60; i++) {
+          process.stdout.write(JSON.stringify({
+            type: "RECORD",
+            stream: "messages",
+            key: "m-" + i,
+            data: { id: "m-" + i },
+            emitted_at: new Date().toISOString(),
+          }) + "\\n");
+        }
+        process.stdout.write(JSON.stringify({
+          type: "STATE",
+          stream: "messages",
+          cursor: "m-60",
+        }) + "\\n");
+        process.stdout.write(JSON.stringify({
+          type: "DONE",
+          status: "succeeded",
+          records_emitted: 60,
+        }) + "\\n");
+      `,
+    });
+
+    const result = await runCollectorConnector({
+      baseUrl: harness.url,
+      batchSize: 20,
+      connector: {
+        args: [fixture],
+        command: "node",
+        connector_id: "fixture-streaming-defer-checkpoint",
+        runtime_requirements: { bindings: {} },
+        streams: ["messages"],
+      },
+      deviceId: "device-1",
+      deviceToken: "device-token",
+      outboxPolicy: { retryBackoffMs: 60_000 },
+      queuePath,
+      sourceInstanceId: "src-1",
+    });
+
+    assert.equal(result.enqueuedBatches, 3);
+    assert.equal(result.sentBatches, 0);
+    assert.equal(result.flushedState, null);
+    assert.equal(result.statePutFailed, false);
+    // Three durable record_batch rows must remain in the outbox; with the
+    // backoff override every row is in ready+retrying after the failed
+    // drain (ready counts all unleased rows; retrying counts the subset
+    // with a future next_attempt_at).
+    assert.equal(result.outboxSummary.ready, 3);
+    assert.equal(result.outboxSummary.retrying, 3);
+    assert.equal(result.outboxSummary.deadLetter, 0);
+    // Server saw no checkpoint PUT — the checkpoint outbox row must not
+    // have been enqueued (let alone drained) while record work is pending.
+    assert.equal(harness.stateOps.filter((op) => op.method === "PUT").length, 0);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("runCollectorConnector leaves streamed batches durable when the child fails mid-stream and does not advance the checkpoint", async () => {
+  // Emit two full batches' worth of records, then exit non-zero before
+  // emitting STATE or DONE. The runner must throw, but the already-
+  // streamed batches must remain in the outbox as retryable work, and
+  // no checkpoint may have been enqueued.
+  const harness = await startCollectorHarness({ priorState: {} });
+  try {
+    const queuePath = await tempQueuePath();
+    const fixture = await writeFixtureConnector({
+      script: `
+        let buf = "";
+        await new Promise((r) => process.stdin.on("data", (c) => {
+          buf += c;
+          if (buf.includes("\\n")) r();
+        }));
+        for (let i = 0; i < 40; i++) {
+          process.stdout.write(JSON.stringify({
+            type: "RECORD",
+            stream: "messages",
+            key: "m-" + i,
+            data: { id: "m-" + i },
+            emitted_at: new Date().toISOString(),
+          }) + "\\n");
+        }
+        // Flush stdout so the runner observes the batches before we exit.
+        await new Promise((r) => process.stdout.write("", () => r(undefined)));
+        process.stderr.write("synthetic mid-stream failure\\n");
+        process.exit(9);
+      `,
+    });
+
+    await assert.rejects(
+      () =>
+        runCollectorConnector({
+          baseUrl: harness.url,
+          batchSize: 20,
+          connector: {
+            args: [fixture],
+            command: "node",
+            connector_id: "fixture-streaming-mid-failure",
+            runtime_requirements: { bindings: {} },
+            streams: ["messages"],
+          },
+          deviceId: "device-1",
+          deviceToken: "device-token",
+          outboxPolicy: { retryBackoffMs: 60_000 },
+          queuePath,
+          sourceInstanceId: "src-1",
+        }),
+      /fixture-streaming-mid-failure connector exited 9/
+    );
+
+    // Reopen the outbox after the runner closed it — the two streamed
+    // batches must still be there, available for the next runner pass.
+    const outbox = new LocalDeviceOutbox({ path: queuePath });
+    try {
+      const summary = outbox.summary({ sourceInstanceId: "src-1" });
+      assert.equal(summary.ready, 2, `expected 2 retryable record batches, got ${JSON.stringify(summary)}`);
+      const items = outbox.list({ sourceInstanceId: "src-1" });
+      // No checkpoint row was enqueued because STATE never reached the runner.
+      assert.equal(
+        items.filter((item) => item.kind === "checkpoint").length,
+        0,
+        "checkpoint must not be enqueued when child fails mid-stream"
+      );
+      assert.equal(items.filter((item) => item.kind === "record_batch").length, 2);
+    } finally {
+      outbox.close();
+    }
+    assert.equal(harness.stateOps.filter((op) => op.method === "PUT").length, 0);
+  } finally {
+    await harness.close();
+  }
+});
+
 async function writeFixtureConnector(input: { script: string }): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "pdpp-fixture-connector-"));
   const path = join(dir, "fixture.mjs");
