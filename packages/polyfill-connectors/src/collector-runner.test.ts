@@ -7,12 +7,15 @@ import { test } from "node:test";
 
 import {
   buildCollectorStartMessage,
+  COLLECTOR_STDERR_MAX_BYTES,
   CollectorStateReadError,
   drainCollectorQueue,
+  recoverAndSummarizeOutbox,
   runCollectorConnector,
   transformRecordsToCollectorEnvelopes,
 } from "./collector-runner.ts";
 import type { IngestBatchRequest } from "./local-device-client.ts";
+import { LocalDeviceOutbox } from "./local-device-outbox.ts";
 import { LocalDeviceQueue } from "./local-device-queue.ts";
 import { RuntimeCapabilityMismatchError } from "./runtime-capabilities.ts";
 
@@ -690,6 +693,132 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { "content-type": "application/json" });
   res.end(JSON.stringify(body));
 }
+
+test("runCollectorConnector bounds child stderr buffering so verbose connectors cannot pin memory", async () => {
+  const harness = await startCollectorHarness({ priorState: {} });
+  try {
+    const queuePath = await tempQueuePath();
+    // Emit ~2 MiB of stderr — well past COLLECTOR_STDERR_MAX_BYTES — then
+    // exit non-zero so the runner surfaces the bounded tail.
+    const fixture = await writeFixtureConnector({
+      script: `
+        let buf = "";
+        await new Promise((r) => process.stdin.on("data", (c) => {
+          buf += c;
+          if (buf.includes("\\n")) r();
+        }));
+        const chunk = "x".repeat(64 * 1024);
+        for (let i = 0; i < 32; i++) {
+          process.stderr.write(chunk);
+        }
+        // Flush before exit so the marker is observable even when
+        // stderr is a pipe that defers writes.
+        await new Promise((r) => process.stderr.write("\\nFINAL_ERROR_MARKER\\n", () => r(undefined)));
+        process.exit(7);
+      `,
+    });
+
+    await assert.rejects(
+      () =>
+        runCollectorConnector({
+          baseUrl: harness.url,
+          connector: {
+            args: [fixture],
+            command: "node",
+            connector_id: "fixture-noisy-stderr",
+            runtime_requirements: { bindings: {} },
+            streams: ["messages"],
+          },
+          deviceId: "device-1",
+          deviceToken: "device-token",
+          queuePath,
+          sourceInstanceId: "src-1",
+        }),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        const message = err instanceof Error ? err.message : String(err);
+        // Tail of stderr (the final error marker) MUST survive truncation.
+        assert.ok(/FINAL_ERROR_MARKER/.test(message), `missing final marker: ${message}`);
+        // The runner must report truncation so operators can tell that
+        // earlier stderr was dropped.
+        assert.ok(/truncated \d+ stderr bytes/.test(message), `missing truncation note: ${message}`);
+        // The retained slice plus the truncation note must stay near
+        // the configured cap — never near the 2 MiB the child emitted.
+        assert.ok(
+          message.length < COLLECTOR_STDERR_MAX_BYTES + 1024,
+          `bounded stderr leaked: ${message.length} bytes (cap ${COLLECTOR_STDERR_MAX_BYTES})`
+        );
+        return true;
+      }
+    );
+  } finally {
+    await harness.close();
+  }
+});
+
+test("runCollectorConnector honors AbortSignal at the pre-spawn gate", async () => {
+  const harness = await startCollectorHarness({ priorState: {} });
+  try {
+    const queuePath = await tempQueuePath();
+    const controller = new AbortController();
+    controller.abort(new Error("operator cancelled run"));
+
+    await assert.rejects(
+      () =>
+        runCollectorConnector({
+          abortSignal: controller.signal,
+          baseUrl: harness.url,
+          connector: {
+            args: ["unused.ts"],
+            command: "node",
+            connector_id: "fixture-aborted",
+            runtime_requirements: { bindings: {} },
+            streams: ["messages"],
+          },
+          deviceId: "device-1",
+          deviceToken: "device-token",
+          queuePath,
+          sourceInstanceId: "src-1",
+        }),
+      /operator cancelled run/
+    );
+    // No spawn happened, so no ingest occurred either.
+    assert.equal(harness.ingestedBatches.length, 0);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("recoverAndSummarizeOutbox recovers expired leases and returns a fast summary", async () => {
+  let now = new Date("2026-05-19T12:00:00.000Z");
+  const dir = await mkdtemp(join(tmpdir(), "pdpp-recover-summary-"));
+  const outbox = new LocalDeviceOutbox({ clock: () => now, path: join(dir, "outbox.sqlite") });
+  try {
+    outbox.enqueue({
+      id: "src-1:record_batch:1",
+      kind: "record_batch",
+      payload: { x: 1 },
+      sourceInstanceId: "src-1",
+    });
+    outbox.enqueue({
+      id: "src-1:record_batch:2",
+      kind: "record_batch",
+      payload: { x: 2 },
+      sourceInstanceId: "src-1",
+    });
+    // Lease both briefly so they expire when the clock advances.
+    outbox.claimReady({ holder: "worker-old", leaseMs: 1000, limit: 2, sourceInstanceId: "src-1" });
+    now = new Date("2026-05-19T12:00:05.000Z");
+
+    const { recovered, summary } = recoverAndSummarizeOutbox(outbox, { sourceInstanceId: "src-1" });
+    assert.equal(recovered, 2);
+    assert.equal(summary.ready, 2);
+    assert.equal(summary.leased, 0);
+    assert.equal(summary.staleLeases, 0);
+  } finally {
+    outbox.close();
+  }
+});
 
 async function writeFixtureConnector(input: { script: string }): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "pdpp-fixture-connector-"));

@@ -302,6 +302,99 @@ test("LocalDeviceOutbox can recover expired leases by source instance", async ()
   }
 });
 
+test("LocalDeviceOutbox.summary aggregates large queues with one SQL pass", async () => {
+  let now = new Date("2026-05-19T12:00:00.000Z");
+  const outbox = new LocalDeviceOutbox({ clock: () => now, path: await tempOutboxPath() });
+  try {
+    const sourceInstanceId = "src-bulk";
+    const futureBackoff = new Date("2026-05-19T13:00:00.000Z");
+    for (let index = 0; index < 250; index++) {
+      outbox.enqueue({
+        id: `${sourceInstanceId}:record_batch:${index}`,
+        kind: "record_batch",
+        payload: { records: [{ key: `m-${index}` }] },
+        sourceInstanceId,
+      });
+    }
+    // 50 of them get pushed into "retrying" (status=ready, next_attempt_at in the future)
+    for (let index = 0; index < 50; index++) {
+      const [claim] = outbox.claimReady({ holder: "worker-bulk", leaseMs: 60_000, sourceInstanceId });
+      assert.ok(claim);
+      outbox.failRetryable({
+        error: "503",
+        holder: "worker-bulk",
+        id: claim.id,
+        leaseEpoch: claim.lease_epoch,
+        retryBackoffMs: futureBackoff.getTime() - now.getTime(),
+      });
+    }
+    // 20 succeed.
+    for (let index = 0; index < 20; index++) {
+      const [claim] = outbox.claimReady({ holder: "worker-bulk", leaseMs: 60_000, sourceInstanceId });
+      assert.ok(claim);
+      outbox.acknowledge({ holder: "worker-bulk", id: claim.id, leaseEpoch: claim.lease_epoch });
+    }
+    // 5 currently leased; advance clock so 3 of them become stale.
+    const longLease: { id: string; epoch: number }[] = [];
+    for (let index = 0; index < 5; index++) {
+      const [claim] = outbox.claimReady({
+        holder: "worker-bulk",
+        leaseMs: index < 3 ? 1000 : 60_000,
+        sourceInstanceId,
+      });
+      assert.ok(claim);
+      longLease.push({ epoch: claim.lease_epoch, id: claim.id });
+    }
+    now = new Date("2026-05-19T12:00:02.000Z");
+
+    const summary = outbox.summary({ sourceInstanceId });
+    // 250 enqueued total
+    assert.equal(summary.total, 250);
+    // 20 succeeded
+    assert.equal(summary.succeeded, 20);
+    // 5 still leased
+    assert.equal(summary.leased, 5);
+    // 3 of the leases have expired
+    assert.equal(summary.staleLeases, 3);
+    // 50 retrying (their next_attempt_at is in the future)
+    assert.equal(summary.retrying, 50);
+    // ready = total - succeeded - leased - deadLetter = 250 - 20 - 5 = 225
+    assert.equal(summary.ready, 225);
+    assert.equal(summary.deadLetter, 0);
+    assert.ok(summary.oldestReadyAt);
+    // The aggregate summary must agree with the slow per-row computation:
+    const items = outbox.list({ sourceInstanceId });
+    const slow = {
+      deadLetter: items.filter((i) => i.status === "dead_letter").length,
+      leased: items.filter((i) => i.status === "leased").length,
+      ready: items.filter((i) => i.status === "ready").length,
+      succeeded: items.filter((i) => i.status === "succeeded").length,
+    };
+    assert.equal(summary.ready, slow.ready);
+    assert.equal(summary.leased, slow.leased);
+    assert.equal(summary.succeeded, slow.succeeded);
+    assert.equal(summary.deadLetter, slow.deadLetter);
+    // Avoid unused-var warning
+    assert.equal(longLease.length, 5);
+  } finally {
+    outbox.close();
+  }
+});
+
+test("LocalDeviceOutbox.summary scopes by source instance without scanning others", async () => {
+  const outbox = new LocalDeviceOutbox({ path: await tempOutboxPath() });
+  try {
+    outbox.enqueue({ id: "src-a:r:1", kind: "record_batch", payload: { x: 1 }, sourceInstanceId: "src-a" });
+    outbox.enqueue({ id: "src-a:r:2", kind: "record_batch", payload: { x: 2 }, sourceInstanceId: "src-a" });
+    outbox.enqueue({ id: "src-b:r:1", kind: "record_batch", payload: { x: 3 }, sourceInstanceId: "src-b" });
+    assert.equal(outbox.summary({ sourceInstanceId: "src-a" }).total, 2);
+    assert.equal(outbox.summary({ sourceInstanceId: "src-b" }).total, 1);
+    assert.equal(outbox.summary().total, 3);
+  } finally {
+    outbox.close();
+  }
+});
+
 async function tempOutboxPath(): Promise<string> {
   return join(await mkdtemp(join(tmpdir(), "pdpp-local-outbox-")), "outbox.sqlite");
 }

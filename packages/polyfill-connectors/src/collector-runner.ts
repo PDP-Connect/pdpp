@@ -33,6 +33,7 @@ import {
   hashCanonicalJson,
   type LocalDeviceRecordEnvelope,
 } from "./local-device-envelope.ts";
+import type { LocalDeviceOutbox } from "./local-device-outbox.ts";
 import { LocalDeviceQueue, type LocalDeviceQueueItem } from "./local-device-queue.ts";
 import {
   assertPlacementOrThrow,
@@ -40,6 +41,15 @@ import {
   type ConnectorPlacementInput,
   type RuntimeBindingName,
 } from "./runtime-capabilities.ts";
+
+/**
+ * Maximum stderr bytes retained from a connector child before the runner
+ * truncates and notes the drop. Connector failures should surface in the
+ * exit-code error message; large local backfills can otherwise emit
+ * progress logs that would balloon the runner's heap before the child
+ * exits. 256 KiB keeps a meaningful tail without becoming a memory risk.
+ */
+export const COLLECTOR_STDERR_MAX_BYTES = 256 * 1024;
 
 const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const REPO_ROOT = join(PACKAGE_ROOT, "..", "..");
@@ -73,6 +83,14 @@ export interface CollectorConnectorSpec extends ConnectorPlacementInput {
 }
 
 export interface CollectorRunConfig {
+  /**
+   * Optional cooperative cancellation signal. When aborted, the runner
+   * tears down the connector child process, stops draining the queue at
+   * the next safe boundary, and surfaces an AbortError. Honored at the
+   * pre-spawn capability gate, the prior-state read, child stdout
+   * consumption, and between queue drain iterations.
+   */
+  abortSignal?: AbortSignal;
   baseUrl: string;
   batchSize?: number;
   connector: CollectorConnectorSpec;
@@ -136,6 +154,7 @@ export class CollectorStateReadError extends Error {
  * heartbeats start/healthy.
  */
 export async function runCollectorConnector(config: CollectorRunConfig): Promise<CollectorRunResult> {
+  throwIfAborted(config.abortSignal);
   const satisfiedBindings = assertPlacementOrThrow(config.connector, COLLECTOR_RUNTIME_CAPABILITIES);
 
   const batchSize = config.batchSize ?? 100;
@@ -148,6 +167,7 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
 
   let priorState: Readonly<Record<string, unknown>> = Object.freeze({});
   try {
+    throwIfAborted(config.abortSignal);
     const projection = await client.getSourceInstanceState({ sourceInstanceId: config.sourceInstanceId });
     if (projection.state && typeof projection.state === "object") {
       priorState = Object.freeze({ ...projection.state });
@@ -175,6 +195,7 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
     status: "starting",
   });
 
+  throwIfAborted(config.abortSignal);
   const messages = await collectConnectorMessages(
     config.connector,
     {
@@ -182,7 +203,8 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
       deviceToken: config.deviceToken,
       ...(config.runId ? { runId: config.runId } : {}),
     },
-    priorState
+    priorState,
+    config.abortSignal
   );
   const records = messages.filter((msg): msg is Extract<EmittedMessage, { type: "RECORD" }> => msg.type === "RECORD");
   const done =
@@ -212,7 +234,11 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
     batchSeq++;
   }
 
-  const sentBatches = await drainCollectorQueue({ client, queue });
+  const sentBatches = await drainCollectorQueue({
+    client,
+    queue,
+    ...(config.abortSignal ? { abortSignal: config.abortSignal } : {}),
+  });
   const pendingAfterDrain = (await queue.list()).filter((item) => item.status !== "sent").length;
 
   let flushedState: Readonly<Record<string, unknown>> | null = null;
@@ -341,11 +367,13 @@ export function transformRecordsToCollectorEnvelopes(input: {
 }
 
 export async function drainCollectorQueue(input: {
+  abortSignal?: AbortSignal;
   client: Pick<LocalDeviceClient, "ingestBatch">;
   queue: LocalDeviceQueue;
 }): Promise<number> {
   let sent = 0;
   for (;;) {
+    throwIfAborted(input.abortSignal);
     const item = await input.queue.dequeueReady();
     if (!item) {
       return sent;
@@ -358,6 +386,34 @@ export async function drainCollectorQueue(input: {
       await input.queue.markRetry(item.batch_id, error instanceof Error ? error.message : String(error));
       return sent;
     }
+  }
+}
+
+/**
+ * Drain-before-scan helper for the durable outbox path.
+ *
+ * Recovers expired leases first so any work abandoned by a previous
+ * runner becomes claimable, then exposes a summary the caller can use
+ * to decide whether to scan a source for new work or finish out the
+ * existing backlog. Matches the design-note ordering: recover, drain
+ * acknowledged-safe pending work, only then scan more source data.
+ */
+export function recoverAndSummarizeOutbox(
+  outbox: Pick<LocalDeviceOutbox, "recoverExpiredLeases" | "summary">,
+  input: { sourceInstanceId?: string } = {}
+): { recovered: number; summary: ReturnType<LocalDeviceOutbox["summary"]> } {
+  const recovered = input.sourceInstanceId
+    ? outbox.recoverExpiredLeases({ sourceInstanceId: input.sourceInstanceId })
+    : outbox.recoverExpiredLeases();
+  const summary = input.sourceInstanceId
+    ? outbox.summary({ sourceInstanceId: input.sourceInstanceId })
+    : outbox.summary();
+  return { recovered, summary };
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) {
+    throw signal.reason instanceof Error ? signal.reason : new DOMException("Aborted", "AbortError");
   }
 }
 
@@ -414,11 +470,39 @@ function buildCollectorChildEnv(context: CollectorChildContext): Record<string, 
 async function collectConnectorMessages(
   connector: CollectorConnectorSpec,
   childContext: CollectorChildContext,
-  priorState?: Readonly<Record<string, unknown>>
+  priorState?: Readonly<Record<string, unknown>>,
+  abortSignal?: AbortSignal
 ): Promise<EmittedMessage[]> {
   const child = spawnConnector(connector, childContext);
   const messages: EmittedMessage[] = [];
-  const stderr: Buffer[] = [];
+  const stderr = new BoundedStderrBuffer(COLLECTOR_STDERR_MAX_BYTES);
+
+  const abortListener = abortSignal
+    ? () => {
+        // Best-effort: SIGTERM, then escalate to SIGKILL if the child
+        // is still alive shortly after. The child's exit code will
+        // surface as a non-zero exit and the abort error will be
+        // re-thrown to the caller below.
+        try {
+          child.kill("SIGTERM");
+        } catch {
+          // ignore — child already exited
+        }
+        setTimeout(() => {
+          try {
+            if (!child.killed) {
+              child.kill("SIGKILL");
+            }
+          } catch {
+            // ignore
+          }
+        }, 1000).unref?.();
+      }
+    : null;
+  if (abortSignal && abortListener) {
+    abortSignal.addEventListener("abort", abortListener, { once: true });
+  }
+
   const exitPromise = new Promise<number | null>((resolve, reject) => {
     child.once("error", reject);
     child.once("close", resolve);
@@ -446,18 +530,72 @@ async function collectConnectorMessages(
   try {
     [exitCode] = await Promise.all([exitPromise, outputPromise]);
   } catch (error) {
+    if (abortSignal && abortListener) {
+      abortSignal.removeEventListener("abort", abortListener);
+    }
     throw new Error(
       `${connector.connector_id} connector failed to start or stream output: ${
         error instanceof Error ? error.message : String(error)
       }`
     );
   }
+  if (abortSignal && abortListener) {
+    abortSignal.removeEventListener("abort", abortListener);
+  }
+  if (abortSignal?.aborted) {
+    throw abortSignal.reason instanceof Error ? abortSignal.reason : new DOMException("Aborted", "AbortError");
+  }
   if (exitCode !== 0) {
-    throw new Error(
-      `${connector.connector_id} connector exited ${exitCode}: ${Buffer.concat(stderr).toString("utf8").trim()}`
-    );
+    throw new Error(`${connector.connector_id} connector exited ${exitCode}: ${stderr.toString().trim()}`);
   }
   return messages;
+}
+
+/**
+ * Fixed-capacity stderr ring. Connectors emitting verbose progress logs
+ * can otherwise pin proportional heap during long backfills. We retain
+ * the tail (which carries the actionable failure message) and prepend a
+ * truncation marker when bytes were dropped.
+ */
+class BoundedStderrBuffer {
+  readonly #limit: number;
+  readonly #chunks: Buffer[] = [];
+  #size = 0;
+  #dropped = 0;
+
+  constructor(limit: number) {
+    this.#limit = Math.max(1024, limit);
+  }
+
+  push(chunk: Buffer): void {
+    this.#chunks.push(chunk);
+    this.#size += chunk.length;
+    while (this.#size > this.#limit && this.#chunks.length > 0) {
+      const head = this.#chunks[0];
+      if (!head) {
+        break;
+      }
+      const overflow = this.#size - this.#limit;
+      if (head.length <= overflow) {
+        this.#chunks.shift();
+        this.#size -= head.length;
+        this.#dropped += head.length;
+        continue;
+      }
+      this.#chunks[0] = head.subarray(overflow);
+      this.#size -= overflow;
+      this.#dropped += overflow;
+      break;
+    }
+  }
+
+  toString(): string {
+    const body = Buffer.concat(this.#chunks).toString("utf8");
+    if (this.#dropped === 0) {
+      return body;
+    }
+    return `[truncated ${this.#dropped} stderr bytes]\n${body}`;
+  }
 }
 
 function spawnConnector(
