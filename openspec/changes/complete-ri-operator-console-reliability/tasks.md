@@ -25,7 +25,7 @@
 
 ## 4. Executor Bounds And Durability
 
-- [ ] 4.1 Finish local collector runner integration with the durable outbox: recover expired leases, drain ready work before scanning, and use destination-confirmed checkpoints.
+- [x] 4.1 Finish local collector runner integration with the durable outbox: recover expired leases, drain ready work before scanning, and use destination-confirmed checkpoints.
 - [ ] 4.2 Replace local collector full-output buffering with streaming or bounded batch ingestion for Claude/Codex-scale first backfills.
 - [ ] 4.3 Add local collector resource/backlog policy for duration, batch size, queue depth, retry, and dead-letter behavior.
 - [ ] 4.4 Add restart/crash tests for local collector enqueue-before-ack, upload-before-local-ack, state-staged-before-commit, and stale lease recovery.

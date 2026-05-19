@@ -9,9 +9,9 @@
 
 ## 2. Runner Integration
 
-- [ ] 2.1 Change the local collector runner to recover expired leases and drain ready durable work before scanning a source for new work.
-- [ ] 2.2 Map connector child output into bounded work units and durable outbox rows without changing the Collection Profile envelope seen by the child.
-- [ ] 2.3 Stage connector-emitted `STATE` as attempted progress and commit checkpoints only after server acknowledgement for the related records and gap metadata.
+- [x] 2.1 Change the local collector runner to recover expired leases and drain ready durable work before scanning a source for new work.
+- [x] 2.2 Map connector child output into bounded work units and durable outbox rows without changing the Collection Profile envelope seen by the child.
+- [x] 2.3 Stage connector-emitted `STATE` as attempted progress and commit checkpoints only after server acknowledgement for the related records and gap metadata.
 - [ ] 2.4 Persist known incomplete work as backlog/gap units with stream/boundary identity, reason, retryability, first-seen run, last-attempt run, and next-attempt policy.
 - [ ] 2.5 Enforce policy limits for first backfill and steady-state drains without losing queued work.
 
