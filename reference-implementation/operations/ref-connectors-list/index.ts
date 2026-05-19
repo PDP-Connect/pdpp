@@ -38,6 +38,8 @@ export interface RefConnectorsListRunSummary {
 }
 
 export interface RefConnectorsListItem {
+  readonly connection_id: string;
+  readonly connection_health: unknown;
   readonly connector_id: string;
   readonly display_name: string;
   readonly manifest_version: string | null;

@@ -12,6 +12,7 @@
  */
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
+import type { RefConnectionHealthSnapshot } from "./ref-client.ts";
 import { getOwnerToken, getRsInternalUrl, ReferenceServerUnreachableError } from "./owner-token.ts";
 import { verifyDashboardSession } from "./verify-session.ts";
 
@@ -360,6 +361,7 @@ export async function listConnectorManifests(): Promise<ConnectorManifest[]> {
 }
 
 export interface ConnectorOverview {
+  connectionHealth?: RefConnectionHealthSnapshot;
   connector: ConnectorManifest;
   error?: string;
   /** Shortcut: true iff lastRun.status ∈ {started, in_progress}. */

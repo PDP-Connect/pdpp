@@ -183,12 +183,29 @@ function buildRefConnectorSummary(connectorId: string): RefConnectorSummary {
   const runIds = connectorRecentRunIds(connectorId);
   const lastRunId = runIds[0];
   const lastSuccessId = getDemoRuns().find((r) => r.connector_id === connectorId && r.status === "succeeded")?.run_id;
+  const lastRun = refConnectorRunSummary(lastRunId);
+  const lastSuccessfulRun = refConnectorRunSummary(lastSuccessId);
   return {
+    connection_id: connectorId,
+    connection_health: {
+      axes: {
+        attention: "none",
+        coverage: lastRun ? "complete" : "unknown",
+        freshness: lastSuccessfulRun ? "fresh" : "unknown",
+        outbox: "idle",
+      },
+      badges: { stale: false, syncing: false },
+      last_success_at: lastSuccessfulRun?.last_at ?? null,
+      next_attempt_at: null,
+      reason_code: null,
+      state: lastSuccessfulRun ? "healthy" : "idle",
+      unknown_reasons: [],
+    },
     connector_id: connectorId,
     display_name: connector?.display_name ?? connectorId,
     freshness: {},
-    last_run: refConnectorRunSummary(lastRunId),
-    last_successful_run: refConnectorRunSummary(lastSuccessId),
+    last_run: lastRun,
+    last_successful_run: lastSuccessfulRun,
     manifest_version: "1.0.0-demo",
     schedule: connector?.schedule ? buildDemoSchedule(connectorId, connector.schedule) : null,
     streams: streams.map((s) => s.key),

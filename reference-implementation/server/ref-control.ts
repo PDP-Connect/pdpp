@@ -11,6 +11,12 @@
 
 import { allowUnboundedReadAcknowledged, getOne, iterateDynamicSqlAcknowledged, referenceQueries } from "../lib/db.ts";
 import { listSpineCorrelations, type SpineSummary } from "../lib/spine.ts";
+import {
+  computeConnectionHealth,
+  type ConnectionHealthSnapshot,
+  type CoverageAxis,
+  type FreshnessAxis,
+} from "../runtime/connection-health.ts";
 import { getConnectorManifest } from "./auth.js";
 import { deriveReferenceFreshness, type ReferenceFreshness } from "./freshness.ts";
 import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.js";
@@ -115,6 +121,8 @@ interface ControllerLike {
 }
 
 export interface ConnectorSummary {
+  readonly connection_health: ConnectionHealthSnapshot;
+  readonly connection_id: string;
   readonly connector_id: string;
   readonly display_name: string;
   readonly freshness: Freshness;
@@ -128,6 +136,8 @@ export interface ConnectorSummary {
 }
 
 export interface ConnectorDetail {
+  readonly connection_health: ConnectionHealthSnapshot;
+  readonly connection_id: string;
   readonly connector_id: string;
   readonly display_name: string;
   readonly freshness: Freshness;
@@ -476,6 +486,131 @@ function getMaximumStalenessSeconds(refreshPolicy: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
 }
 
+function mapFreshnessAxis(freshness: Freshness): FreshnessAxis {
+  if (freshness.status === "current") {
+    return "fresh";
+  }
+  if (freshness.status === "stale") {
+    return "stale";
+  }
+  return "unknown";
+}
+
+function hasDegradingKnownGap(run: ConnectorRunSummary | null): boolean {
+  if (!run) {
+    return false;
+  }
+  return run.known_gaps.some((gap) => {
+    if (!gap || typeof gap !== "object" || Array.isArray(gap)) {
+      return true;
+    }
+    const severity = (gap as { severity?: unknown }).severity;
+    return severity !== "informational" && severity !== "recoverable";
+  });
+}
+
+function firstDegradingKnownGapReason(run: ConnectorRunSummary | null): string | null {
+  if (!run) {
+    return null;
+  }
+  for (const gap of run.known_gaps) {
+    if (!gap || typeof gap !== "object" || Array.isArray(gap)) {
+      return null;
+    }
+    const severity = (gap as { severity?: unknown }).severity;
+    if (severity === "informational" || severity === "recoverable") {
+      continue;
+    }
+    const reason = (gap as { reason?: unknown }).reason;
+    if (typeof reason === "string" && reason.length > 0) {
+      return reason;
+    }
+  }
+  return null;
+}
+
+function mapCoverageAxis(lastRun: ConnectorRunSummary | null): CoverageAxis {
+  if (!lastRun) {
+    return "unknown";
+  }
+  if (hasDegradingKnownGap(lastRun)) {
+    return "gaps";
+  }
+  if (lastRun.status === "succeeded" || lastRun.status === "success") {
+    return "complete";
+  }
+  if (lastRun.status === "failed" || lastRun.status === "cancelled" || lastRun.status === "abandoned") {
+    return "partial";
+  }
+  return "unknown";
+}
+
+function mapRunStatus(status: string | null | undefined): "failed" | "succeeded" | null {
+  if (!status) {
+    return null;
+  }
+  if (status === "succeeded" || status === "success") {
+    return "succeeded";
+  }
+  if (status === "failed" || status === "cancelled" || status === "abandoned") {
+    return "failed";
+  }
+  return null;
+}
+
+function asScheduleRecord(schedule: unknown): Record<string, unknown> | null {
+  if (!schedule || typeof schedule !== "object" || Array.isArray(schedule)) {
+    return null;
+  }
+  return schedule as Record<string, unknown>;
+}
+
+export function projectConnectorSummaryConnectionHealth(input: {
+  readonly freshness: Freshness;
+  readonly lastRun: ConnectorRunSummary | null;
+  readonly lastSuccessfulRun: ConnectorRunSummary | null;
+  readonly schedule: unknown;
+}): ConnectionHealthSnapshot {
+  const schedule = asScheduleRecord(input.schedule);
+  const humanAttentionNeeded = schedule?.human_attention_needed === true;
+  const activeRunId = typeof schedule?.active_run_id === "string" && schedule.active_run_id ? schedule.active_run_id : null;
+  const nextDueAt = typeof schedule?.next_due_at === "string" ? schedule.next_due_at : null;
+  const lastErrorCode = typeof schedule?.last_error_code === "string" ? schedule.last_error_code : null;
+  return computeConnectionHealth({
+    activity: { active: activeRunId !== null },
+    attention: humanAttentionNeeded
+      ? {
+          actionTarget: null,
+          expiresAt: null,
+          lifecycle: "open",
+          reasonCode: lastErrorCode ?? "needs_human_attention",
+        }
+      : null,
+    // Scheduler backoff details are not yet fully normalized into the
+    // connector summary. Preserve next-attempt evidence when present; the
+    // full cooling-off/blocked integration remains tracked in OpenSpec 3.4.
+    backoff: nextDueAt
+      ? {
+          backoffApplied: false,
+          consecutiveFailures: 0,
+          nextRunAt: nextDueAt,
+          reasonClass: lastErrorCode,
+        }
+      : null,
+    coverage: { axis: mapCoverageAxis(input.lastRun) },
+    freshness: { axis: mapFreshnessAxis(input.freshness) },
+    outbox: { axis: "unknown" },
+    projection: { unreliableSources: [] },
+    run: {
+      hasDegradingGaps: hasDegradingKnownGap(input.lastRun),
+      lastSuccessAt: input.lastSuccessfulRun?.last_at ?? null,
+      latestStatus: mapRunStatus(input.lastRun?.status),
+      reasonCode: input.lastRun?.failure_reason ?? firstDegradingKnownGapReason(input.lastRun) ?? lastErrorCode,
+    },
+    schedule: schedule ? { enabled: schedule.enabled !== false } : null,
+  });
+}
+
 function buildConnectorFreshness({
   lastRun,
   lastSuccessfulRun,
@@ -517,7 +652,15 @@ export function listConnectorSummaries(controller?: ControllerLike | null): Prom
           live,
           refreshPolicy,
         });
+        const connectionHealth = projectConnectorSummaryConnectionHealth({
+          freshness,
+          lastRun,
+          lastSuccessfulRun,
+          schedule,
+        });
         return {
+          connection_id: row.connector_id,
+          connection_health: connectionHealth,
           connector_id: row.connector_id,
           display_name: manifest.display_name || row.connector_id,
           manifest_version: manifest.version || null,
@@ -555,8 +698,16 @@ export async function getConnectorDetail(
     live,
     refreshPolicy,
   });
+  const connectionHealth = projectConnectorSummaryConnectionHealth({
+    freshness,
+    lastRun,
+    lastSuccessfulRun,
+    schedule,
+  });
   return {
     object: "ref_connector_detail",
+    connection_id: connectorId,
+    connection_health: connectionHealth,
     connector_id: connectorId,
     display_name: manifest.display_name || connectorId,
     manifest_version: manifest.version || null,

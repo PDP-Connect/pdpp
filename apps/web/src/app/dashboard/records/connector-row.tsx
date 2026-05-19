@@ -22,7 +22,7 @@ interface RowProps {
 type ToastState = { kind: "none" } | { kind: "already_running" } | { kind: "error"; message: string };
 
 export function ConnectorRow({ overview, runsHref }: RowProps) {
-  const { connector, totalRecords, streams, lastRun, lastSuccessfulRun, isRunning } = overview;
+  const { connectionHealth, connector, totalRecords, streams, lastRun, lastSuccessfulRun, isRunning } = overview;
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   // Optimistic: if the user just clicked, treat as running until the next
@@ -139,6 +139,7 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
         {/* Status + action */}
         <div className="flex shrink-0 items-center gap-2">
           <RunStatus
+            connectionHealth={connectionHealth}
             hasRecords={totalRecords > 0}
             lastRun={lastRun}
             running={running}
@@ -175,18 +176,32 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
 }
 
 function RunStatus({
+  connectionHealth,
   hasRecords,
   running,
   runStart,
   lastRun,
   runsHref,
 }: {
+  connectionHealth?: ConnectorOverview["connectionHealth"];
   hasRecords: boolean;
   running: boolean;
   runStart: string | undefined;
   lastRun: ConnectorRunRef | null;
   runsHref: string;
 }) {
+  if (connectionHealth) {
+    return (
+      <ConnectionHealthStatus
+        health={connectionHealth}
+        lastRun={lastRun}
+        running={running}
+        runStart={runStart}
+        runsHref={runsHref}
+      />
+    );
+  }
+
   const lastRunKnownGaps = normalizeKnownGaps(lastRun?.known_gaps);
   const hasPartialCoverageHint = connectorHasPartialCoverageHint({
     lastRunKnownGaps,
@@ -294,6 +309,102 @@ function RunStatus({
       {lastRun.status.replace(/_/g, " ")}
     </span>
   );
+}
+
+function ConnectionHealthStatus({
+  health,
+  lastRun,
+  running,
+  runStart,
+  runsHref,
+}: {
+  health: NonNullable<ConnectorOverview["connectionHealth"]>;
+  lastRun: ConnectorRunRef | null;
+  running: boolean;
+  runStart: string | undefined;
+  runsHref: string;
+}) {
+  const { label, shape, tone, title } = connectionHealthDisplay(health, Boolean(lastRun));
+  const content = (
+    <span className={`pdpp-caption inline-flex items-center gap-1 ${connectionHealthTextClass(tone)}`} title={title}>
+      <StatusDot shape={shape} tone={tone} />
+      {label}
+    </span>
+  );
+  const healthPill = lastRun ? (
+    <Link
+      className="underline-offset-2 hover:text-foreground/80 hover:underline"
+      href={`${runsHref}/${encodeURIComponent(lastRun.run_id)}`}
+    >
+      {content}
+    </Link>
+  ) : (
+    content
+  );
+
+  if (running || health.badges.syncing) {
+    return (
+      <span className="inline-flex items-center gap-2">
+        {healthPill}
+        <RunningBadge
+          href={lastRun ? `${runsHref}/${encodeURIComponent(lastRun.run_id)}` : undefined}
+          startedAt={runStart}
+        />
+      </span>
+    );
+  }
+
+  return healthPill;
+}
+
+function connectionHealthDisplay(
+  health: NonNullable<ConnectorOverview["connectionHealth"]>,
+  hasLastRun: boolean
+): {
+  label: string;
+  shape?: "circle" | "diamond" | "triangle";
+  title: string;
+  tone: "success" | "danger" | "neutral" | "warning";
+} {
+  const reason = health.reason_code ? ` · ${health.reason_code}` : "";
+  switch (health.state) {
+    case "healthy":
+      return { label: "Healthy", title: "Required coverage is current and complete", tone: "success" };
+    case "needs_attention":
+      return { label: "Needs attention", shape: "diamond", title: `Owner action required${reason}`, tone: "warning" };
+    case "cooling_off":
+      return { label: "Cooling off", shape: "diamond", title: `Waiting before retry${reason}`, tone: "warning" };
+    case "blocked":
+      return { label: "Blocked", shape: "triangle", title: `Cannot make progress${reason}`, tone: "danger" };
+    case "degraded":
+      return {
+        label: health.axes.coverage === "gaps" || health.axes.coverage === "partial" ? "Partial" : "Degraded",
+        shape: "diamond",
+        title: `Useful data may exist, but coverage or freshness is incomplete${reason}`,
+        tone: "warning",
+      };
+    case "idle":
+      return { label: hasLastRun ? "Idle" : "Never run", title: hasLastRun ? "No active work" : "Never run", tone: "neutral" };
+    case "unknown":
+      return {
+        label: "Unknown",
+        title:
+          health.unknown_reasons.length > 0
+            ? `Projection evidence missing: ${health.unknown_reasons.join(", ")}`
+            : "Projection evidence is incomplete",
+        tone: "neutral",
+      };
+  }
+}
+
+function connectionHealthTextClass(tone: "success" | "danger" | "neutral" | "warning"): string {
+  if (tone === "danger") {
+    return "text-destructive";
+  }
+  if (tone === "warning") {
+    return "text-[color:var(--warning)]";
+  }
+  return "text-muted-foreground";
 }
 
 function ConnectorFreshnessLine({

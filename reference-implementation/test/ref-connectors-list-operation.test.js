@@ -13,10 +13,20 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { executeRefConnectorsList } from '../operations/ref-connectors-list/index.ts';
-import { isPublicReferenceConnector } from '../server/ref-control.ts';
+import { isPublicReferenceConnector, projectConnectorSummaryConnectionHealth } from '../server/ref-control.ts';
 
 function makeItem(connectorId, overrides = {}) {
   return {
+    connection_id: connectorId,
+    connection_health: {
+      state: 'idle',
+      axes: { attention: 'none', coverage: 'unknown', freshness: 'unknown', outbox: 'unknown' },
+      badges: { stale: false, syncing: false },
+      last_success_at: null,
+      next_attempt_at: null,
+      reason_code: null,
+      unknown_reasons: [],
+    },
     connector_id: connectorId,
     display_name: connectorId,
     manifest_version: '1.0.0',
@@ -172,4 +182,60 @@ test('reference connector catalog hides stub and stream-test connector registrat
       `${connectorId} must not appear in the user-facing reference connector catalog`,
     );
   }
+});
+
+test('connector summary connection health projects never-run as idle with unknown axes', () => {
+  const snapshot = projectConnectorSummaryConnectionHealth({
+    freshness: { status: 'unknown' },
+    lastRun: null,
+    lastSuccessfulRun: null,
+    schedule: null,
+  });
+  assert.equal(snapshot.state, 'idle');
+  assert.equal(snapshot.axes.coverage, 'unknown');
+  assert.equal(snapshot.axes.freshness, 'unknown');
+});
+
+test('connector summary connection health degrades succeeded runs with coverage gaps', () => {
+  const run = {
+    event_count: 3,
+    failure_reason: null,
+    finished_at: '2026-05-19T12:00:00.000Z',
+    first_at: '2026-05-19T11:59:00.000Z',
+    known_gaps: [{ reason: 'http_429', stream: 'messages' }],
+    last_at: '2026-05-19T12:00:00.000Z',
+    run_id: 'run_gap',
+    started_at: '2026-05-19T11:59:00.000Z',
+    status: 'succeeded',
+  };
+  const snapshot = projectConnectorSummaryConnectionHealth({
+    freshness: { status: 'current', captured_at: '2026-05-19T12:00:00.000Z' },
+    lastRun: run,
+    lastSuccessfulRun: run,
+    schedule: null,
+  });
+  assert.equal(snapshot.state, 'degraded');
+  assert.equal(snapshot.axes.coverage, 'gaps');
+  assert.equal(snapshot.reason_code, 'http_429');
+});
+
+test('connector summary connection health refuses healthy when freshness is unknown', () => {
+  const run = {
+    event_count: 3,
+    failure_reason: null,
+    finished_at: '2026-05-19T12:00:00.000Z',
+    first_at: '2026-05-19T11:59:00.000Z',
+    known_gaps: [],
+    last_at: '2026-05-19T12:00:00.000Z',
+    run_id: 'run_success',
+    started_at: '2026-05-19T11:59:00.000Z',
+    status: 'succeeded',
+  };
+  const snapshot = projectConnectorSummaryConnectionHealth({
+    freshness: { status: 'unknown', captured_at: '2026-05-19T12:00:00.000Z' },
+    lastRun: run,
+    lastSuccessfulRun: run,
+    schedule: null,
+  });
+  assert.equal(snapshot.state, 'unknown');
 });

@@ -224,6 +224,8 @@ export interface RefSchedule {
 }
 
 export interface RefConnectorSummary {
+  connection_health: RefConnectionHealthSnapshot;
+  connection_id: string;
   connector_id: string;
   display_name: string;
   freshness: Record<string, unknown>;
@@ -234,6 +236,24 @@ export interface RefConnectorSummary {
   schedule: RefSchedule | null;
   streams: string[];
   total_records: number;
+}
+
+export interface RefConnectionHealthSnapshot {
+  axes: {
+    attention: "acknowledged" | "in_progress" | "none" | "open";
+    coverage: "complete" | "gaps" | "partial" | "unknown";
+    freshness: "fresh" | "stale" | "unknown";
+    outbox: "active" | "idle" | "stalled" | "unknown";
+  };
+  badges: {
+    stale: boolean;
+    syncing: boolean;
+  };
+  last_success_at: string | null;
+  next_attempt_at: string | null;
+  reason_code: string | null;
+  state: "blocked" | "cooling_off" | "degraded" | "healthy" | "idle" | "needs_attention" | "unknown";
+  unknown_reasons: readonly string[];
 }
 
 export interface WebPushConfig {
