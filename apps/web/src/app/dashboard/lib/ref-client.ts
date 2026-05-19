@@ -219,6 +219,13 @@ export interface RefSchedule {
   object: "schedule";
   policy_warning?: string | null;
   recommended_policy: RefreshPolicy | null;
+  scheduler_backoff: {
+    backoff_applied: boolean;
+    consecutive_failures: number;
+    next_run_at: string | null;
+    reason_class: string | null;
+    recommended_health_state: "blocked" | "cooling_off" | null;
+  } | null;
   trigger_kind: "scheduled";
   updated_at: string;
 }

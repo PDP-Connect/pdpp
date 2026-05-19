@@ -32,6 +32,7 @@ import {
   type ActiveRunRecord,
   getDefaultSchedulerStore,
   type ScheduleRecord,
+  type SchedulerRunHistoryRecord,
   type SchedulerStore,
 } from "../server/stores/scheduler-store.ts";
 import {
@@ -49,6 +50,7 @@ import {
 } from "./browser-surface-readiness.ts";
 import { type BrowserSurfaceLeaseStore } from "../server/stores/browser-surface-lease-store.ts";
 import { runConnector } from "./index.js";
+import type { RunRecord } from "./scheduler.ts";
 import {
   automaticIneligibilityReason,
   automationModeCopy,
@@ -56,6 +58,7 @@ import {
   type RunTriggerKind,
   projectRunAutomationPolicy,
 } from "./run-automation-policy.ts";
+import { computeNextRunWithBackoff, type BackoffDecision } from "./scheduler-backoff.ts";
 
 // ─── Path constants ─────────────────────────────────────────────────────────
 
@@ -115,6 +118,14 @@ export interface RuntimeProjection {
   readonly last_successful_at: string | null;
 }
 
+export interface SchedulerBackoffApi {
+  readonly backoff_applied: boolean;
+  readonly consecutive_failures: number;
+  readonly next_run_at: string | null;
+  readonly reason_class: string | null;
+  readonly recommended_health_state: "blocked" | "cooling_off" | null;
+}
+
 export interface RefreshPolicy {
   readonly background_safe?: boolean;
   readonly bot_detection_sensitivity?: "high" | "low" | "medium";
@@ -170,6 +181,7 @@ export interface ScheduleApi {
   readonly next_due_at: string | null;
   readonly object: "schedule";
   readonly recommended_policy: RefreshPolicy | null;
+  readonly scheduler_backoff: SchedulerBackoffApi | null;
   readonly trigger_kind: "scheduled";
   readonly updated_at: string;
 }
@@ -742,9 +754,23 @@ interface ScheduleHistoryFacts {
   readonly latestSuccessfulAt: string | null;
   /** Error/skip code for the most recent terminal row, when that row was not successful. */
   readonly latestErrorCode: string | null;
+  /** Latest durable last-run timestamp, from history or `scheduler_last_run_times`. */
+  readonly lastRunTimeMs: number | null;
+  /** Recent durable scheduler history for this connector instance, oldest to newest. */
+  readonly recentRuns: readonly SchedulerRunHistoryRecord[];
 }
 
 type ScheduleHistoryIndex = ReadonlyMap<string, ScheduleHistoryFacts>;
+
+interface MutableScheduleHistoryFacts {
+  latestStartedAt: string | null;
+  latestFinishedAt: string | null;
+  latestStatus: "failed" | "skipped" | "succeeded" | null;
+  latestSuccessfulAt: string | null;
+  latestErrorCode: string | null;
+  lastRunTimeMs: number | null;
+  recentRuns: SchedulerRunHistoryRecord[];
+}
 
 const EMPTY_SCHEDULE_HISTORY_FACTS: ScheduleHistoryFacts = {
   latestStartedAt: null,
@@ -752,6 +778,8 @@ const EMPTY_SCHEDULE_HISTORY_FACTS: ScheduleHistoryFacts = {
   latestStatus: null,
   latestSuccessfulAt: null,
   latestErrorCode: null,
+  lastRunTimeMs: null,
+  recentRuns: [],
 };
 
 function getRuntimeProjection(
@@ -1069,10 +1097,66 @@ function computeNextDueAt(
   return new Date(lastMs + intervalMs).toISOString();
 }
 
+function toBackoffRunRecord(record: SchedulerRunHistoryRecord): RunRecord {
+  const runRecord = {
+    attempt: record.attempt,
+    checkpointSummary: record.checkpointSummary,
+    completedAt: record.completedAt,
+    connectorError: record.connectorError ?? null,
+    connectorId: record.connectorId,
+    connectorInstanceId: record.connectorInstanceId ?? null,
+    failureReason: record.failureReason ?? null,
+    knownGaps: record.knownGaps,
+    recordsEmitted: record.recordsEmitted,
+    reportedRecordsEmitted: record.reportedRecordsEmitted ?? null,
+    runId: record.runId ?? null,
+    source: {
+      id: typeof record.source.id === "string" ? record.source.id : record.connectorId,
+      kind: "connector" as const,
+    },
+    startedAt: record.startedAt,
+    status: record.status,
+    terminalReason: (record.terminalReason ?? null) as Exclude<RunRecord["terminalReason"], undefined>,
+    traceId: record.traceId ?? null,
+  };
+  return record.error === undefined ? runRecord : { ...runRecord, error: record.error };
+}
+
+function buildSchedulerBackoffApi(
+  schedule: Schedule,
+  facts: ScheduleHistoryFacts,
+  ineligibilityReason: string | null
+): SchedulerBackoffApi | null {
+  if (!schedule.enabled || ineligibilityReason) {
+    return null;
+  }
+  const lastRunTimeMs =
+    facts.lastRunTimeMs ??
+    (facts.latestFinishedAt && Number.isFinite(Date.parse(facts.latestFinishedAt))
+      ? Date.parse(facts.latestFinishedAt)
+      : null);
+  if (lastRunTimeMs === null) {
+    return null;
+  }
+  const decision: BackoffDecision = computeNextRunWithBackoff(
+    facts.recentRuns.map(toBackoffRunRecord),
+    Math.max(1, schedule.interval_seconds) * 1000,
+    lastRunTimeMs
+  );
+  return {
+    backoff_applied: decision.backoffApplied,
+    consecutive_failures: decision.consecutiveFailures,
+    next_run_at: decision.nextRunAt,
+    reason_class: decision.reasonClass,
+    recommended_health_state: decision.recommendedHealthState,
+  };
+}
+
 function scheduleToApi(
   schedule: Schedule | null,
   runtimeProjection: RuntimeProjection | null = null,
-  policy: RefreshPolicy | null = null
+  policy: RefreshPolicy | null = null,
+  historyFacts: ScheduleHistoryFacts = EMPTY_SCHEDULE_HISTORY_FACTS
 ): ScheduleApi | null {
   if (!schedule) {
     return null;
@@ -1110,6 +1194,7 @@ function scheduleToApi(
   const lastFinishedAt = runtimeProjection?.last_finished_at || null;
   const nextDueAt =
     schedule.enabled && !ineligibilityReason ? computeNextDueAt(schedule, lastFinishedAt) : null;
+  const schedulerBackoff = buildSchedulerBackoffApi(schedule, historyFacts, ineligibilityReason);
   // Historical run timestamps (`last_started_at`, `last_finished_at`,
   // `last_successful_at`) remain truthful audit anchors and stay surfaced
   // even for a gated row -- they describe what already happened, not
@@ -1155,6 +1240,7 @@ function scheduleToApi(
     human_attention_needed: humanAttentionNeeded,
     ineligibility_reason: ineligibilityReason,
     recommended_policy: policy,
+    scheduler_backoff: schedulerBackoff,
     minimum_interval_warning: minimumIntervalWarning,
     trigger_kind: "scheduled",
   };
@@ -1769,14 +1855,8 @@ export function createController(opts: ControllerOptions = {}): Controller {
       Promise.resolve(schedulerStore.listRunHistory(SCHEDULE_HISTORY_PROJECTION_LIMIT)),
       Promise.resolve(schedulerStore.listLastRunTimes()),
     ]);
-    const facts = new Map<string, {
-      latestStartedAt: string | null;
-      latestFinishedAt: string | null;
-      latestStatus: "failed" | "skipped" | "succeeded" | null;
-      latestSuccessfulAt: string | null;
-      latestErrorCode: string | null;
-    }>();
-    function ensure(connectorId: string) {
+    const facts = new Map<string, MutableScheduleHistoryFacts>();
+    function ensure(connectorId: string): MutableScheduleHistoryFacts {
       let entry = facts.get(connectorId);
       if (!entry) {
         entry = {
@@ -1785,6 +1865,8 @@ export function createController(opts: ControllerOptions = {}): Controller {
           latestStatus: null,
           latestSuccessfulAt: null,
           latestErrorCode: null,
+          lastRunTimeMs: null,
+          recentRuns: [],
         };
         facts.set(connectorId, entry);
       }
@@ -1800,6 +1882,17 @@ export function createController(opts: ControllerOptions = {}): Controller {
       if (!entry.latestFinishedAt && Number.isFinite(row.last_run_time_ms)) {
         entry.latestFinishedAt = new Date(row.last_run_time_ms).toISOString();
       }
+      if (Number.isFinite(row.last_run_time_ms)) {
+        entry.lastRunTimeMs =
+          entry.lastRunTimeMs === null ? row.last_run_time_ms : Math.max(entry.lastRunTimeMs, row.last_run_time_ms);
+      }
+    }
+    for (const row of history) {
+      if (!row || typeof row.connectorId !== "string") {
+        continue;
+      }
+      const rowKey = row.connectorInstanceId || row.connectorId;
+      ensure(rowKey).recentRuns.push(row);
     }
     // Walk newest to oldest. The store's chronological order means the
     // last array element is the newest record overall; iterating in
@@ -1859,7 +1952,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
           browserSurfaceLeaseManager,
           historyIndex
         );
-        return scheduleToApi(schedule, runtimeProjection, policy);
+        return scheduleToApi(schedule, runtimeProjection, policy, historyIndex.get(schedule.connector_instance_id));
       })
     );
     return apis.flatMap((api) => (api ? [api] : []));
@@ -1887,7 +1980,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
       browserSurfaceLeaseManager,
       historyIndex
     );
-    return scheduleToApi(schedule, runtimeProjection, policy);
+    return scheduleToApi(schedule, runtimeProjection, policy, historyIndex.get(schedule.connector_instance_id));
   }
 
   async function upsertSchedule(
@@ -1926,7 +2019,8 @@ export function createController(opts: ControllerOptions = {}): Controller {
     const schedule = scheduleToApi(
       await getScheduleRecord(connectorInstanceId),
       getRuntimeProjection(connectorId, connectorInstanceId, browserSurfaceLeaseManager, historyIndex),
-      policy
+      policy,
+      historyIndex.get(connectorInstanceId)
     );
     if (!schedule) {
       throw new ControllerError(`Schedule not found after upsert for connector: ${connectorId}`, "internal_error");

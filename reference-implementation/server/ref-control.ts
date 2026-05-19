@@ -565,6 +565,18 @@ function asScheduleRecord(schedule: unknown): Record<string, unknown> | null {
   return schedule as Record<string, unknown>;
 }
 
+function asBackoffRecord(schedule: Record<string, unknown> | null): Record<string, unknown> | null {
+  const backoff = schedule?.scheduler_backoff;
+  if (!backoff || typeof backoff !== "object" || Array.isArray(backoff)) {
+    return null;
+  }
+  return backoff as Record<string, unknown>;
+}
+
+function readNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
 export function projectConnectorSummaryConnectionHealth(input: {
   readonly freshness: Freshness;
   readonly lastRun: ConnectorRunSummary | null;
@@ -572,10 +584,19 @@ export function projectConnectorSummaryConnectionHealth(input: {
   readonly schedule: unknown;
 }): ConnectionHealthSnapshot {
   const schedule = asScheduleRecord(input.schedule);
+  const schedulerBackoff = asBackoffRecord(schedule);
   const humanAttentionNeeded = schedule?.human_attention_needed === true;
   const activeRunId = typeof schedule?.active_run_id === "string" && schedule.active_run_id ? schedule.active_run_id : null;
   const nextDueAt = typeof schedule?.next_due_at === "string" ? schedule.next_due_at : null;
   const lastErrorCode = typeof schedule?.last_error_code === "string" ? schedule.last_error_code : null;
+  const scheduleLastSuccessfulAt =
+    typeof schedule?.last_successful_at === "string" ? schedule.last_successful_at : null;
+  const backoffConsecutiveFailures = readNumber(schedulerBackoff?.consecutive_failures) ?? 0;
+  const backoffNextRunAt = typeof schedulerBackoff?.next_run_at === "string" ? schedulerBackoff.next_run_at : nextDueAt;
+  const backoffReasonClass =
+    typeof schedulerBackoff?.reason_class === "string" ? schedulerBackoff.reason_class : lastErrorCode;
+  const schedulerFailureStatus =
+    schedulerBackoff && (schedulerBackoff.backoff_applied === true || backoffConsecutiveFailures > 0) ? "failed" : null;
   return computeConnectionHealth({
     activity: { active: activeRunId !== null },
     attention: humanAttentionNeeded
@@ -586,15 +607,12 @@ export function projectConnectorSummaryConnectionHealth(input: {
           reasonCode: lastErrorCode ?? "needs_human_attention",
         }
       : null,
-    // Scheduler backoff details are not yet fully normalized into the
-    // connector summary. Preserve next-attempt evidence when present; the
-    // full cooling-off/blocked integration remains tracked in OpenSpec 3.4.
-    backoff: nextDueAt
+    backoff: schedulerBackoff || nextDueAt
       ? {
-          backoffApplied: false,
-          consecutiveFailures: 0,
-          nextRunAt: nextDueAt,
-          reasonClass: lastErrorCode,
+          backoffApplied: schedulerBackoff?.backoff_applied === true,
+          consecutiveFailures: backoffConsecutiveFailures,
+          nextRunAt: backoffNextRunAt,
+          reasonClass: backoffReasonClass,
         }
       : null,
     coverage: { axis: mapCoverageAxis(input.lastRun) },
@@ -603,8 +621,8 @@ export function projectConnectorSummaryConnectionHealth(input: {
     projection: { unreliableSources: [] },
     run: {
       hasDegradingGaps: hasDegradingKnownGap(input.lastRun),
-      lastSuccessAt: input.lastSuccessfulRun?.last_at ?? null,
-      latestStatus: mapRunStatus(input.lastRun?.status),
+      lastSuccessAt: input.lastSuccessfulRun?.last_at ?? scheduleLastSuccessfulAt,
+      latestStatus: mapRunStatus(input.lastRun?.status) ?? schedulerFailureStatus,
       reasonCode: input.lastRun?.failure_reason ?? firstDegradingKnownGapReason(input.lastRun) ?? lastErrorCode,
     },
     schedule: schedule ? { enabled: schedule.enabled !== false } : null,

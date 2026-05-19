@@ -239,3 +239,86 @@ test('connector summary connection health refuses healthy when freshness is unkn
   });
   assert.equal(snapshot.state, 'unknown');
 });
+
+test('connector summary connection health projects durable scheduler backoff as cooling off', () => {
+  const run = {
+    event_count: 1,
+    failure_reason: 'rate_limited',
+    finished_at: '2026-05-19T12:00:00.000Z',
+    first_at: '2026-05-19T11:59:00.000Z',
+    known_gaps: [],
+    last_at: '2026-05-19T12:00:00.000Z',
+    run_id: 'run_backoff',
+    started_at: '2026-05-19T11:59:00.000Z',
+    status: 'failed',
+  };
+  const snapshot = projectConnectorSummaryConnectionHealth({
+    freshness: { status: 'stale', captured_at: '2026-05-19T12:00:00.000Z' },
+    lastRun: run,
+    lastSuccessfulRun: null,
+    schedule: {
+      enabled: true,
+      scheduler_backoff: {
+        backoff_applied: true,
+        consecutive_failures: 4,
+        next_run_at: '2026-05-19T13:00:00.000Z',
+        reason_class: 'failure:rate_limited',
+        recommended_health_state: 'cooling_off',
+      },
+    },
+  });
+  assert.equal(snapshot.state, 'cooling_off');
+  assert.equal(snapshot.next_attempt_at, '2026-05-19T13:00:00.000Z');
+  assert.equal(snapshot.reason_code, 'rate_limited');
+});
+
+test('connector summary connection health uses scheduler backoff even when run spine summary is absent', () => {
+  const snapshot = projectConnectorSummaryConnectionHealth({
+    freshness: { status: 'unknown', captured_at: '2026-05-19T12:00:00.000Z' },
+    lastRun: null,
+    lastSuccessfulRun: null,
+    schedule: {
+      enabled: true,
+      last_error_code: 'rate_limited',
+      scheduler_backoff: {
+        backoff_applied: true,
+        consecutive_failures: 3,
+        next_run_at: '2026-05-19T13:00:00.000Z',
+        reason_class: 'failure:rate_limited',
+        recommended_health_state: 'cooling_off',
+      },
+    },
+  });
+  assert.equal(snapshot.state, 'cooling_off');
+  assert.equal(snapshot.next_attempt_at, '2026-05-19T13:00:00.000Z');
+});
+
+test('connector summary connection health promotes durable scheduler backoff streak to blocked', () => {
+  const snapshot = projectConnectorSummaryConnectionHealth({
+    freshness: { status: 'stale', captured_at: '2026-05-19T12:00:00.000Z' },
+    lastRun: {
+      event_count: 1,
+      failure_reason: 'browser_runtime_not_configured',
+      finished_at: '2026-05-19T12:00:00.000Z',
+      first_at: '2026-05-19T11:59:00.000Z',
+      known_gaps: [],
+      last_at: '2026-05-19T12:00:00.000Z',
+      run_id: 'run_blocked',
+      started_at: '2026-05-19T11:59:00.000Z',
+      status: 'failed',
+    },
+    lastSuccessfulRun: null,
+    schedule: {
+      enabled: true,
+      scheduler_backoff: {
+        backoff_applied: true,
+        consecutive_failures: 7,
+        next_run_at: '2026-05-20T12:00:00.000Z',
+        reason_class: 'failure:browser_runtime_not_configured',
+        recommended_health_state: 'blocked',
+      },
+    },
+  });
+  assert.equal(snapshot.state, 'blocked');
+  assert.equal(snapshot.reason_code, 'browser_runtime_not_configured');
+});

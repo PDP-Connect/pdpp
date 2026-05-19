@@ -8,8 +8,8 @@
 
 ## 2. Evidence Inventory
 
-- [ ] 2.1 Inventory current durable evidence sources for runs, schedules, active runs, detail gaps, local collector outbox, device exporters, remote-surface leases, projection freshness, and connector coverage.
-- [ ] 2.2 Identify missing durable evidence required by the connection health projection.
+- [x] 2.1 Inventory current durable evidence sources for runs, schedules, active runs, detail gaps, local collector outbox, device exporters, remote-surface leases, projection freshness, and connector coverage.
+- [x] 2.2 Identify missing durable evidence required by the connection health projection.
 - [x] 2.3 Add or normalize reference-only evidence shapes needed for connection-scoped health without changing PDPP Core surfaces.
 - [ ] 2.4 Add secret-redaction checks for any evidence exposed through dashboard, CLI/status, timelines, or notifications.
 
@@ -18,7 +18,7 @@
 - [x] 3.1 Implement a connection health projection module with deterministic precedence for healthy, degraded, needs-attention, cooling-off, blocked, idle, and unknown.
 - [x] 3.2 Project orthogonal connection axes for freshness, coverage, attention, and outbox/work health; render syncing/activity as a badge rather than a health state.
 - [ ] 3.3 Project coverage by connection and stream/scope boundary, including complete, partial, deferred, unsupported, unavailable, retryable gap, terminal gap, inventory-only, and unknown.
-- [ ] 3.4 Integrate scheduler/backoff evidence so cooling-off and next-attempt semantics survive restart.
+- [x] 3.4 Integrate scheduler/backoff evidence so cooling-off and next-attempt semantics survive restart.
 - [ ] 3.5 Integrate detail-gap/backlog evidence so success-with-gaps never projects as healthy.
 - [x] 3.6 Add projection-unreliable handling so failed/missing/stale required evidence projects to unknown.
 - [x] 3.7 Add tests for every canonical health state, every axis, and state precedence conflict.

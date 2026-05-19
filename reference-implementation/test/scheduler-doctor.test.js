@@ -806,6 +806,29 @@ test('controller.listSchedules projects last failure code from history when no a
     const store = getDefaultSchedulerStore();
     const startedAt = new Date(Date.now() - 120_000).toISOString();
     const completedAt = new Date(Date.now() - 60_000).toISOString();
+    for (let i = 0; i < 2; i++) {
+      const olderStartedAt = new Date(Date.now() - (420_000 - i * 120_000)).toISOString();
+      const olderCompletedAt = new Date(Date.now() - (360_000 - i * 120_000)).toISOString();
+      await Promise.resolve(
+        store.appendRunHistory({
+          connectorId: spotifyManifest.connector_id,
+          source: { kind: 'connector', id: spotifyManifest.connector_id },
+          status: 'failed',
+          recordsEmitted: 0,
+          reportedRecordsEmitted: 0,
+          checkpointSummary: null,
+          knownGaps: [],
+          connectorError: { code: 'spotify_oauth_expired', message: 'access token expired' },
+          runId: `run_test_history_failed_${i}`,
+          traceId: `trace_test_history_failed_${i}`,
+          failureReason: 'auth_failed',
+          terminalReason: 'auth_failed_terminal',
+          startedAt: olderStartedAt,
+          completedAt: olderCompletedAt,
+          attempt: i + 1,
+        }),
+      );
+    }
     await Promise.resolve(
       store.appendRunHistory({
         connectorId: spotifyManifest.connector_id,
@@ -842,6 +865,15 @@ test('controller.listSchedules projects last failure code from history when no a
       spotify.last_error_code,
       'auth_failed_terminal',
       'terminal_reason takes precedence over failure_reason',
+    );
+    assert.ok(spotify.scheduler_backoff, 'scheduler backoff projection is present after durable failures');
+    assert.equal(spotify.scheduler_backoff.backoff_applied, true);
+    assert.equal(spotify.scheduler_backoff.consecutive_failures, 3);
+    assert.equal(spotify.scheduler_backoff.reason_class, 'terminal:auth_failed_terminal');
+    assert.equal(spotify.scheduler_backoff.recommended_health_state, 'cooling_off');
+    assert.equal(
+      spotify.scheduler_backoff.next_run_at,
+      new Date(Date.parse(completedAt) + 3600_000).toISOString(),
     );
   } finally {
     server.schedulerManager?.stop?.();

@@ -172,6 +172,7 @@ function buildDemoSchedule(connectorId: string, kind: string): RefSchedule {
     ineligibility_reason: null,
     notification_posture: "none",
     recommended_policy: null,
+    scheduler_backoff: null,
     minimum_interval_warning: null,
     trigger_kind: "scheduled",
   };
