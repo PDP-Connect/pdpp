@@ -50,6 +50,10 @@ const SSR_SAFE_NAVIGATOR_HELPER_GUARD_PATTERN = /typeof navigator !== "undefined
 const SSR_SAFE_DIAGNOSTIC_PUSHMANAGER_PATTERN = /hasWindowFeature\("PushManager"\)/;
 const SSR_SAFE_DIAGNOSTIC_NOTIFICATION_PATTERN = /hasWindowFeature\("Notification"\)/;
 const SSR_SAFE_DIAGNOSTIC_SERVICE_WORKER_PATTERN = /hasNavigatorFeature\("serviceWorker"\)/;
+const SVG_CSS_COLOR_FUNCTION_PATTERN = /oklch\(|lab\(|lch\(|color\(/i;
+const SVG_BACKGROUND_PATTERN = /<rect[^>]+width="32"[^>]+height="32"[^>]+fill="#f8f6f0"/;
+const SVG_BRAND_COPPER_PATTERN = /fill="#a05533"/;
+const SVG_BRAND_BLUE_PATTERN = /fill="#2c73d9"/;
 
 test("WebPushSettings renders unsupported, denied-permission, insecure-context, VAPID, and iOS/PWA caveat states", async () => {
   const src = await readFile(join(HERE, "web-push-settings.tsx"), "utf8");
@@ -94,6 +98,14 @@ test("dashboard exposes installable PWA manifest for mobile Web Push setup", asy
   assert.match(src, MANIFEST_MASKABLE_PATTERN);
   assert.match(src, MANIFEST_ICON_PATTERN);
   assert.match(src, MANIFEST_ANY_SIZE_PATTERN);
+});
+
+test("dashboard launcher SVG icon uses Android-safe paint values", async () => {
+  const src = await readFile(join(APP_ROOT, "src", "app", "icon.svg"), "utf8");
+  assert.doesNotMatch(src, SVG_CSS_COLOR_FUNCTION_PATTERN);
+  assert.match(src, SVG_BACKGROUND_PATTERN);
+  assert.match(src, SVG_BRAND_COPPER_PATTERN);
+  assert.match(src, SVG_BRAND_BLUE_PATTERN);
 });
 
 test("dashboard PWA install metadata uses one App Router manifest source", async () => {
