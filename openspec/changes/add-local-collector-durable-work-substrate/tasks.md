@@ -1,0 +1,46 @@
+## 1. Outbox Substrate
+
+- [ ] 1.1 Add a package-local durable outbox module for local collectors with SQLite/WAL initialization, schema migrations, and a small typed adapter boundary.
+- [ ] 1.2 Model outbox rows for record batches, checkpoint/state commits, gap/backlog reports, and artifact/blob uploads.
+- [ ] 1.3 Implement enqueue, claim, acknowledge, fail/retry, dead-letter, lease-renew, expired-lease recovery, and status-summary operations.
+- [ ] 1.4 Add deterministic work ids and lease fencing so stale holders cannot acknowledge work after a newer claim.
+- [ ] 1.5 Add an old JSON queue inspection/import/quarantine path so existing pending local work is not silently discarded.
+
+## 2. Runner Integration
+
+- [ ] 2.1 Change the local collector runner to recover expired leases and drain ready durable work before scanning a source for new work.
+- [ ] 2.2 Map connector child output into bounded work units and durable outbox rows without changing the Collection Profile envelope seen by the child.
+- [ ] 2.3 Stage connector-emitted `STATE` as attempted progress and commit checkpoints only after server acknowledgement for the related records and gap metadata.
+- [ ] 2.4 Persist known incomplete work as backlog/gap units with stream/boundary identity, reason, retryability, first-seen run, last-attempt run, and next-attempt policy.
+- [ ] 2.5 Enforce policy limits for first backfill and steady-state drains without losing queued work.
+
+## 3. Server And Acknowledgement Semantics
+
+- [ ] 3.1 Define and implement the minimum server acknowledgement shape needed by local outbox items for records, gaps, state commits, and blobs.
+- [ ] 3.2 Ensure device-exporter ingest and state routes remain idempotent for at-least-once local delivery.
+- [ ] 3.3 Add or extend reference-only diagnostics for connection-scoped backlog, last acknowledgement, last committed checkpoint, and dead-letter work.
+- [ ] 3.4 Keep new server surfaces under reference-only/device-exporter authority and document that they are not PDPP Core APIs.
+
+## 4. Operator And Service UX
+
+- [ ] 4.1 Add local `doctor` and `status` output for durable outbox health, stale leases, oldest pending work, package/protocol version, configured device, and source-home identity.
+- [ ] 4.2 Add service-run guidance that preserves host-native systemd/launchd scheduling rather than adding a custom scheduler daemon.
+- [ ] 4.3 Update dashboard/device-exporter health surfaces to distinguish pending, retrying, stale, dead-letter, backlog, and fully-drained local collector states.
+- [ ] 4.4 Ensure remote diagnostics avoid raw secrets, auth files, browser cookies, and unredacted absolute local paths.
+
+## 5. Connector Adoption
+
+- [ ] 5.1 Enable the durable outbox path for one low-risk local connector mode behind a compatibility flag or migration guard.
+- [ ] 5.2 Enable the durable outbox path for Claude Code local collection after crash/restart tests pass.
+- [ ] 5.3 Enable the durable outbox path for Codex local collection after crash/restart tests pass.
+- [ ] 5.4 Preserve deterministic record ids and source-instance namespacing so multi-device local collection remains collision-safe.
+
+## 6. Validation
+
+- [ ] 6.1 Add crash/restart tests for crash after enqueue before upload acknowledgement, crash after upload before local acknowledgement, and crash after state staging before commit.
+- [ ] 6.2 Add stale-lease tests proving expired work recovers and stale holders cannot acknowledge newer claims.
+- [ ] 6.3 Add backlog/gap tests proving partial progress is reported honestly and retryable work remains targetable.
+- [ ] 6.4 Add migration/quarantine tests for existing JSON queue files.
+- [ ] 6.5 Add CLI/status tests for local outbox health output.
+- [ ] 6.6 Run relevant local collector, polyfill connector, reference server, and dashboard tests.
+- [ ] 6.7 Run `openspec validate add-local-collector-durable-work-substrate --strict`.
