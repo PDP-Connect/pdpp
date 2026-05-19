@@ -485,6 +485,14 @@ test('_ref listing helpers', async (t) => {
 });
 
 test('_ref dataset summary', async (t) => {
+  async function rebuildDatasetSummary(asUrl) {
+    const resp = await fetch(`${asUrl}/_ref/dataset/summary/rebuild`, {
+      method: 'POST',
+    });
+    assert.equal(resp.status, 200);
+    return resp.json();
+  }
+
   await t.test('empty instance returns zeros, null timestamps, and empty top_connectors', async () => {
     await withHarness(async ({ asUrl }) => {
       const resp = await fetch(`${asUrl}/_ref/dataset/summary`);
@@ -503,6 +511,7 @@ test('_ref dataset summary', async (t) => {
       assert.equal(body.earliest_ingested_at, null);
       assert.equal(body.latest_ingested_at, null);
       assert.deepEqual(body.top_connectors, []);
+      assert.equal(body.projection.state, 'rebuilding');
     });
   });
 
@@ -551,6 +560,7 @@ test('_ref dataset summary', async (t) => {
         VALUES ('blob_test_1', ?, (SELECT connector_instance_id FROM records WHERE connector_id = ? LIMIT 1), 'covers', 'cover_1', 'image/png', 2048, 'deadbeef', NULL)
       `).run(spotifyId, spotifyId);
 
+      await rebuildDatasetSummary(asUrl);
       const resp = await fetch(`${asUrl}/_ref/dataset/summary`);
       const body = await resp.json();
       assert.equal(resp.status, 200);
@@ -617,6 +627,7 @@ test('_ref dataset summary', async (t) => {
         emitted_at: '2026-04-20T00:00:00.000Z',
       });
 
+      await rebuildDatasetSummary(asUrl);
       const resp = await fetch(`${asUrl}/_ref/dataset/summary`);
       const body = await resp.json();
       assert.equal(body.record_count, 1, 'soft-deleted rows must not count');
@@ -642,6 +653,7 @@ test('_ref dataset summary', async (t) => {
         emitted_at: '2026-04-20T00:00:00.000Z',
       });
 
+      await rebuildDatasetSummary(asUrl);
       const resp = await fetch(`${asUrl}/_ref/dataset/summary`);
       const body = await resp.json();
       assert.equal(body.record_count, 1);
@@ -685,6 +697,7 @@ test('_ref dataset summary', async (t) => {
         emitted_at: '2024-01-03T00:00:00.000Z',
       });
 
+      await rebuildDatasetSummary(asUrl);
       const resp = await fetch(`${asUrl}/_ref/dataset/summary`);
       const body = await resp.json();
       assert.equal(body.record_count, 1, 'still one live record after three versions');

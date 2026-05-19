@@ -1,22 +1,44 @@
+import { Suspense } from "react";
+import { OverviewHero, OverviewHeroError, OverviewHeroPlaceholder } from "./components/overview-hero.tsx";
 import { PageHeader } from "./components/primitives.tsx";
-import { DashboardShell, ServerUnreachable } from "./components/shell.tsx";
-import { WebPushSettings } from "./components/web-push-settings.tsx";
-import { OverviewView, type OverviewViewData } from "./components/views/overview-view.tsx";
+import { DashboardShell } from "./components/shell.tsx";
+import {
+  AttentionOverview,
+  type AttentionOverviewData,
+  AttentionOverviewError,
+  AttentionOverviewPlaceholder,
+  RecentActivityError,
+  RecentActivityOverview,
+  type RecentActivityOverviewData,
+  RecentActivityPlaceholder,
+} from "./components/views/overview-view.tsx";
 import { dashboardRoutes } from "./components/views/routes.ts";
+import { WebPushSettings } from "./components/web-push-settings.tsx";
 import { liveDashboardDataSource } from "./lib/data-source.ts";
 import { getWebPushConfig, listWebPushSubscriptions } from "./lib/ref-client.ts";
-import { ReferenceServerUnreachableError } from "./lib/owner-token.ts";
 
 export const dynamic = "force-dynamic";
 
-async function loadOverview(): Promise<OverviewViewData> {
+function loadDashboardSummary() {
+  return liveDashboardDataSource.getDatasetSummary();
+}
+
+async function loadAttentionSummary(): Promise<AttentionOverviewData> {
   const ds = liveDashboardDataSource;
-  // Scale first. Then the things that need attention: failed traces/runs
-  // and recently-decided grants. Recent runs support "what's happening now".
-  const [summary, failedTraces, failedRuns, revokedGrants, deniedGrants, issuedGrants, recentRuns] = await Promise.all([
-    ds.getDatasetSummary(),
+  const [failedTraces, failedRuns] = await Promise.all([
     ds.listTraces({ status: "failed", limit: 5 }),
     ds.listRuns({ status: "failed", limit: 5 }),
+  ]);
+  return {
+    failedTraces: failedTraces.data,
+    failedRuns: failedRuns.data,
+    actionNeeded: failedTraces.data.length + failedRuns.data.length,
+  };
+}
+
+async function loadRecentActivity(): Promise<RecentActivityOverviewData> {
+  const ds = liveDashboardDataSource;
+  const [revokedGrants, deniedGrants, issuedGrants, recentRuns] = await Promise.all([
     ds.listGrants({ status: "revoked", limit: 5 }),
     ds.listGrants({ status: "denied", limit: 5 }),
     ds.listGrants({ status: "issued", limit: 5 }),
@@ -36,45 +58,66 @@ async function loadOverview(): Promise<OverviewViewData> {
     .slice(0, 6);
 
   return {
-    summary,
-    failedTraces: failedTraces.data,
-    failedRuns: failedRuns.data,
     recentDecisions,
     recentRuns: recentRuns.data,
-    actionNeeded: failedTraces.data.length + failedRuns.data.length,
   };
 }
 
-export default async function DashboardPage() {
-  let data: OverviewViewData;
-  let webPush;
-  let subscriptions;
+async function DatasetSummarySection() {
   try {
-    [data, webPush, subscriptions] = await Promise.all([
-      loadOverview(),
-      getWebPushConfig(),
-      listWebPushSubscriptions(),
-    ]);
+    const summary = await loadDashboardSummary();
+    return <OverviewHero recordsHref={dashboardRoutes.section.records} summary={summary} />;
   } catch (err) {
-    if (err instanceof ReferenceServerUnreachableError) {
-      return (
-        <DashboardShell active="overview">
-          <PageHeader title="Overview" />
-          <ServerUnreachable />
-        </DashboardShell>
-      );
-    }
-    throw err;
+    return <OverviewHeroError message={err instanceof Error ? err.message : undefined} />;
   }
+}
 
+async function AttentionSection() {
+  try {
+    const data = await loadAttentionSummary();
+    return <AttentionOverview data={data} routes={dashboardRoutes} />;
+  } catch {
+    return <AttentionOverviewError />;
+  }
+}
+
+async function RecentActivitySection() {
+  try {
+    const data = await loadRecentActivity();
+    return <RecentActivityOverview data={data} routes={dashboardRoutes} />;
+  } catch {
+    return <RecentActivityError />;
+  }
+}
+
+async function WebPushSettingsSection() {
+  try {
+    const [webPush, subscriptions] = await Promise.all([getWebPushConfig(), listWebPushSubscriptions()]);
+    return <WebPushSettings config={webPush} subscriptions={subscriptions.data} />;
+  } catch {
+    return null;
+  }
+}
+
+export default function DashboardPage() {
   return (
     <DashboardShell active="overview">
-      <OverviewView
-        data={data}
+      <PageHeader
         description="A local-first operator console for the PDPP reference stack. Inspect traces, grants, runs, and retained records."
-        routes={dashboardRoutes}
+        title="Overview"
       />
-      <WebPushSettings config={webPush} subscriptions={subscriptions.data} />
+      <Suspense fallback={<OverviewHeroPlaceholder />}>
+        <DatasetSummarySection />
+      </Suspense>
+      <Suspense fallback={<AttentionOverviewPlaceholder />}>
+        <AttentionSection />
+      </Suspense>
+      <Suspense fallback={<RecentActivityPlaceholder />}>
+        <RecentActivitySection />
+      </Suspense>
+      <Suspense fallback={null}>
+        <WebPushSettingsSection />
+      </Suspense>
     </DashboardShell>
   );
 }

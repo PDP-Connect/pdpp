@@ -23,6 +23,17 @@ export interface OverviewViewData {
   summary: DatasetSummary;
 }
 
+export interface AttentionOverviewData {
+  actionNeeded: number;
+  failedRuns: RunSummary[];
+  failedTraces: TraceSummary[];
+}
+
+export interface RecentActivityOverviewData {
+  recentDecisions: GrantSummary[];
+  recentRuns: RunSummary[];
+}
+
 export function OverviewView({
   data,
   routes,
@@ -32,94 +43,168 @@ export function OverviewView({
   routes: Routes;
   description: string;
 }) {
-  const hasFailures = data.actionNeeded > 0;
   return (
     <>
       <PageHeader description={description} title="Overview" />
       <OverviewHero recordsHref={routes.section.records} summary={data.summary} />
+      <AttentionOverview
+        data={{ actionNeeded: data.actionNeeded, failedRuns: data.failedRuns, failedTraces: data.failedTraces }}
+        routes={routes}
+      />
+      <RecentActivityOverview
+        data={{ recentDecisions: data.recentDecisions, recentRuns: data.recentRuns }}
+        routes={routes}
+      />
+    </>
+  );
+}
+
+export function AttentionOverview({ data, routes }: { data: AttentionOverviewData; routes: Routes }) {
+  const hasFailures = data.actionNeeded > 0;
+  return (
+    <>
       <StatusStrip actionNeeded={data.actionNeeded} hasFailures={hasFailures} routes={routes} />
+      <FailedOverviewLists failedRuns={data.failedRuns} failedTraces={data.failedTraces} routes={routes} />
+    </>
+  );
+}
+
+export function AttentionOverviewPlaceholder() {
+  return (
+    <>
+      <div className="pdpp-caption mb-8 flex items-center gap-2">
+        <span aria-hidden className="inline-block h-1.5 w-1.5 rounded-full bg-muted-foreground/40" />
+        <span className="font-medium text-foreground">Checking failures...</span>
+        <span className="text-muted-foreground">Failed traces and runs are loading independently.</span>
+      </div>
       <div className="grid gap-8 lg:grid-cols-2">
-        <Section
-          action={
-            <Link
-              className="text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-              href={`${routes.section.traces}?status=failed`}
-            >
-              view all →
-            </Link>
-          }
-          description="Recent protocol interactions that did not complete."
-          title="Failed traces"
-        >
-          {data.failedTraces.length === 0 ? (
-            <EmptyState hint="Nothing has failed in the recent window." title="No failed traces" />
-          ) : (
-            <DataList>
-              {data.failedTraces.map((t) => (
-                <li key={t.trace_id}>
-                  <Link
-                    className="block px-3 py-2.5 transition-colors hover:bg-muted/40"
-                    href={routes.peek(routes.section.traces, t.trace_id)}
-                  >
-                    <div className="flex flex-wrap items-baseline justify-between gap-2">
-                      <code className="pdpp-caption break-all font-medium font-mono text-foreground">{t.trace_id}</code>
-                      <span className="pdpp-caption text-muted-foreground">
-                        <Timestamp value={t.last_at} />
-                      </span>
-                    </div>
-                    <div className="pdpp-caption mt-1 flex flex-wrap items-center gap-2">
-                      <StatusBadge status={t.status} />
-                      <span className="text-muted-foreground">
-                        {t.failure?.reason ?? t.kinds.slice(0, 3).join(", ")}
-                      </span>
-                    </div>
-                  </Link>
-                </li>
-              ))}
-            </DataList>
-          )}
+        <Section description="Recent protocol interactions that did not complete." title="Failed traces">
+          <EmptyState hint="Checking the recent failure window." title="Loading failed traces" />
         </Section>
-        <Section
-          action={
-            <Link
-              className="text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-              href={`${routes.section.runs}?status=failed`}
-            >
-              view all →
-            </Link>
-          }
-          description="Connector runs that errored or were cancelled."
-        >
-          {data.failedRuns.length === 0 ? (
-            <EmptyState hint="Nothing has failed in the recent window." title="No failed runs" />
-          ) : (
-            <DataList>
-              {data.failedRuns.map((r) => (
-                <li key={r.run_id}>
-                  <Link
-                    className="block px-3 py-2.5 transition-colors hover:bg-muted/40"
-                    href={routes.peek(routes.section.runs, r.run_id)}
-                  >
-                    <div className="flex flex-wrap items-baseline justify-between gap-2">
-                      <code className="pdpp-caption break-all font-medium font-mono text-foreground">{r.run_id}</code>
-                      <span className="pdpp-caption text-muted-foreground">
-                        <Timestamp value={r.last_at} />
-                      </span>
-                    </div>
-                    <div className="pdpp-caption mt-1 flex flex-wrap items-center gap-2">
-                      <StatusBadge status={r.status} />
-                      <span className="text-muted-foreground">
-                        {r.failure_reason ?? (r.source ? `${r.source.kind}:${r.source.id}` : "—")}
-                      </span>
-                    </div>
-                  </Link>
-                </li>
-              ))}
-            </DataList>
-          )}
+        <Section description="Connector runs that errored or were cancelled." title="Failed runs">
+          <EmptyState hint="Checking the recent failure window." title="Loading failed runs" />
         </Section>
       </div>
+    </>
+  );
+}
 
+export function AttentionOverviewError() {
+  return (
+    <>
+      <div className="pdpp-caption mb-8 flex items-center gap-2">
+        <span aria-hidden className="inline-block h-1.5 w-1.5 rounded-full bg-muted-foreground/40" />
+        <span className="font-medium text-foreground">Could not check failures.</span>
+        <span className="text-muted-foreground">Refresh the dashboard to retry.</span>
+      </div>
+      <div className="grid gap-8 lg:grid-cols-2">
+        <Section description="Recent protocol interactions that did not complete." title="Failed traces">
+          <EmptyState hint="Refresh the dashboard to retry." title="Could not load failed traces" />
+        </Section>
+        <Section description="Connector runs that errored or were cancelled." title="Failed runs">
+          <EmptyState hint="Refresh the dashboard to retry." title="Could not load failed runs" />
+        </Section>
+      </div>
+    </>
+  );
+}
+
+function FailedOverviewLists({
+  failedRuns,
+  failedTraces,
+  routes,
+}: {
+  failedRuns: RunSummary[];
+  failedTraces: TraceSummary[];
+  routes: Routes;
+}) {
+  return (
+    <div className="grid gap-8 lg:grid-cols-2">
+      <Section
+        action={
+          <Link
+            className="text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+            href={`${routes.section.traces}?status=failed`}
+          >
+            view all →
+          </Link>
+        }
+        description="Recent protocol interactions that did not complete."
+        title="Failed traces"
+      >
+        {failedTraces.length === 0 ? (
+          <EmptyState hint="Nothing has failed in the recent window." title="No failed traces" />
+        ) : (
+          <DataList>
+            {failedTraces.map((t) => (
+              <li key={t.trace_id}>
+                <Link
+                  className="block px-3 py-2.5 transition-colors hover:bg-muted/40"
+                  href={routes.peek(routes.section.traces, t.trace_id)}
+                >
+                  <div className="flex flex-wrap items-baseline justify-between gap-2">
+                    <code className="pdpp-caption break-all font-medium font-mono text-foreground">{t.trace_id}</code>
+                    <span className="pdpp-caption text-muted-foreground">
+                      <Timestamp value={t.last_at} />
+                    </span>
+                  </div>
+                  <div className="pdpp-caption mt-1 flex flex-wrap items-center gap-2">
+                    <StatusBadge status={t.status} />
+                    <span className="text-muted-foreground">{t.failure?.reason ?? t.kinds.slice(0, 3).join(", ")}</span>
+                  </div>
+                </Link>
+              </li>
+            ))}
+          </DataList>
+        )}
+      </Section>
+      <Section
+        action={
+          <Link
+            className="text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+            href={`${routes.section.runs}?status=failed`}
+          >
+            view all →
+          </Link>
+        }
+        description="Connector runs that errored or were cancelled."
+        title="Failed runs"
+      >
+        {failedRuns.length === 0 ? (
+          <EmptyState hint="Nothing has failed in the recent window." title="No failed runs" />
+        ) : (
+          <DataList>
+            {failedRuns.map((r) => (
+              <li key={r.run_id}>
+                <Link
+                  className="block px-3 py-2.5 transition-colors hover:bg-muted/40"
+                  href={routes.peek(routes.section.runs, r.run_id)}
+                >
+                  <div className="flex flex-wrap items-baseline justify-between gap-2">
+                    <code className="pdpp-caption break-all font-medium font-mono text-foreground">{r.run_id}</code>
+                    <span className="pdpp-caption text-muted-foreground">
+                      <Timestamp value={r.last_at} />
+                    </span>
+                  </div>
+                  <div className="pdpp-caption mt-1 flex flex-wrap items-center gap-2">
+                    <StatusBadge status={r.status} />
+                    <span className="text-muted-foreground">
+                      {r.failure_reason ?? (r.source ? `${r.source.kind}:${r.source.id}` : "—")}
+                    </span>
+                  </div>
+                </Link>
+              </li>
+            ))}
+          </DataList>
+        )}
+      </Section>
+    </div>
+  );
+}
+
+export function RecentActivityOverview({ data, routes }: { data: RecentActivityOverviewData; routes: Routes }) {
+  return (
+    <>
       <Section
         action={
           <Link
@@ -199,6 +284,32 @@ export function OverviewView({
             ))}
           </DataList>
         )}
+      </Section>
+    </>
+  );
+}
+
+export function RecentActivityPlaceholder() {
+  return (
+    <>
+      <Section description="Issued, revoked, or denied in the last window." title="Recent grant decisions">
+        <EmptyState title="Loading recent grant decisions" />
+      </Section>
+      <Section title="Recent runs">
+        <EmptyState title="Loading recent runs" />
+      </Section>
+    </>
+  );
+}
+
+export function RecentActivityError() {
+  return (
+    <>
+      <Section description="Issued, revoked, or denied in the last window." title="Recent grant decisions">
+        <EmptyState hint="Refresh the dashboard to retry." title="Could not load recent grant decisions" />
+      </Section>
+      <Section title="Recent runs">
+        <EmptyState hint="Refresh the dashboard to retry." title="Could not load recent runs" />
       </Section>
     </>
   );

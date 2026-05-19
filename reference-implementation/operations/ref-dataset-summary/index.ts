@@ -91,6 +91,15 @@ export interface RefDatasetSummaryConnectorCandidate {
 
 export interface RefDatasetSummaryDependencies {
   /**
+   * Optional bounded read-model dependency. When present and it returns a
+   * projection, the operation MUST assemble the response from that projection
+   * and MUST NOT call the raw aggregate dependencies below.
+   */
+  getProjection?():
+    | Promise<RefDatasetSummaryProjection | null>
+    | RefDatasetSummaryProjection
+    | null;
+  /**
    * Aggregate counts (connectors, streams, records) over the live records
    * substrate. The operation calls this once per execution.
    */
@@ -150,6 +159,34 @@ export interface RefDatasetSummaryEnvelope {
   earliest_ingested_at: string | null;
   latest_ingested_at: string | null;
   top_connectors: RefDatasetSummaryConnectorEntry[];
+  projection: RefDatasetSummaryProjectionMetadata;
+}
+
+export type RefDatasetSummaryProjectionState =
+  | "fresh"
+  | "refreshing"
+  | "stale"
+  | "rebuilding"
+  | "failed";
+
+export type RefDatasetSummaryRebuildStatus = "idle" | "running" | "failed";
+
+export interface RefDatasetSummaryProjectionMetadata {
+  computed_at: string | null;
+  state: RefDatasetSummaryProjectionState;
+  stale_since: string | null;
+  rebuild_status: RefDatasetSummaryRebuildStatus;
+  last_error: string | null;
+  source_high_watermark?: string | null;
+}
+
+export interface RefDatasetSummaryProjection {
+  counts: RefDatasetSummaryCounts;
+  retained_bytes: RefDatasetSummaryRetainedBytes;
+  record_time_bounds: RefDatasetSummaryTimeBounds;
+  ingested_time_bounds: RefDatasetSummaryTimeBounds;
+  top_connector_candidates: RefDatasetSummaryConnectorCandidate[];
+  metadata: RefDatasetSummaryProjectionMetadata;
 }
 
 const TOP_CONNECTOR_LIMIT = 3;
@@ -181,6 +218,20 @@ function sortAndLimitTopConnectors(
 export async function executeRefDatasetSummary(
   dependencies: RefDatasetSummaryDependencies,
 ): Promise<RefDatasetSummaryEnvelope> {
+  const projection = dependencies.getProjection
+    ? await dependencies.getProjection()
+    : null;
+  if (projection) {
+    return envelopeFromParts({
+      counts: projection.counts,
+      bytes: projection.retained_bytes,
+      recordTimeBounds: projection.record_time_bounds,
+      ingestedTimeBounds: projection.ingested_time_bounds,
+      candidates: projection.top_connector_candidates,
+      metadata: projection.metadata,
+    });
+  }
+
   const counts = await dependencies.getCounts();
   const bytes = await dependencies.getRetainedBytes();
   const candidates = await dependencies.listTopConnectorCandidates();
@@ -195,6 +246,38 @@ export async function executeRefDatasetSummary(
       ? await dependencies.getIngestedTimeBounds()
       : { earliest: null, latest: null };
 
+  return envelopeFromParts({
+    counts,
+    bytes,
+    recordTimeBounds,
+    ingestedTimeBounds,
+    candidates,
+    metadata: {
+      computed_at: null,
+      state: "refreshing",
+      stale_since: null,
+      rebuild_status: "idle",
+      last_error: null,
+      source_high_watermark: null,
+    },
+  });
+}
+
+function envelopeFromParts({
+  counts,
+  bytes,
+  recordTimeBounds,
+  ingestedTimeBounds,
+  candidates,
+  metadata,
+}: {
+  counts: RefDatasetSummaryCounts;
+  bytes: RefDatasetSummaryRetainedBytes;
+  recordTimeBounds: RefDatasetSummaryTimeBounds;
+  ingestedTimeBounds: RefDatasetSummaryTimeBounds;
+  candidates: RefDatasetSummaryConnectorCandidate[];
+  metadata: RefDatasetSummaryProjectionMetadata;
+}): RefDatasetSummaryEnvelope {
   const totalRetainedBytes =
     bytes.record_json_bytes +
     bytes.record_changes_json_bytes +
@@ -204,7 +287,7 @@ export async function executeRefDatasetSummary(
     object: "dataset_summary",
     connector_count: counts.connector_count,
     stream_count: counts.stream_count,
-    record_count: recordCount,
+    record_count: counts.record_count,
     record_json_bytes: bytes.record_json_bytes,
     record_changes_json_bytes: bytes.record_changes_json_bytes,
     blob_bytes: bytes.blob_bytes,
@@ -214,5 +297,6 @@ export async function executeRefDatasetSummary(
     earliest_ingested_at: ingestedTimeBounds.earliest,
     latest_ingested_at: ingestedTimeBounds.latest,
     top_connectors: sortAndLimitTopConnectors(candidates),
+    projection: metadata,
   };
 }

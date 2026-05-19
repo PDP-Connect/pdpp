@@ -420,6 +420,8 @@ export interface DatasetConnectorSummary {
 
 export interface DatasetSummary {
   blob_bytes: number;
+  /** When the returned summary values were produced by the reference projection, when available. */
+  computed_at?: string | null;
   connector_count: number;
   /** Substrate ingestion bounds (when the runtime wrote the row). Not the real age of the data. */
   earliest_ingested_at: string | null;
@@ -429,12 +431,22 @@ export interface DatasetSummary {
   /** Real-world latest timestamp pulled the same way. */
   latest_record_time: string | null;
   object: "dataset_summary";
+  projection?: DatasetSummaryProjectionMetadata;
   record_changes_json_bytes: number;
   record_count: number;
   record_json_bytes: number;
   stream_count: number;
   top_connectors: DatasetConnectorSummary[];
   total_retained_bytes: number;
+}
+
+export interface DatasetSummaryProjectionMetadata {
+  computed_at?: string | null;
+  last_error?: string | null;
+  rebuild_status?: "idle" | "running" | "failed";
+  source_high_watermark?: string | null;
+  stale_since?: string | null;
+  state?: "fresh" | "refreshing" | "stale" | "rebuilding" | "failed";
 }
 
 export async function getDatasetSummary(): Promise<DatasetSummary> {

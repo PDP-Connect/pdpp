@@ -581,6 +581,28 @@ CREATE TABLE IF NOT EXISTS blobs (
   data          BLOB
 );
 
+CREATE TABLE IF NOT EXISTS dataset_summary_projection (
+  projection_key TEXT PRIMARY KEY,
+  summary_json   TEXT NOT NULL,
+  metadata_json  TEXT NOT NULL,
+  updated_at     TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS dataset_summary_stream_projection (
+  connector_id              TEXT NOT NULL,
+  stream                    TEXT NOT NULL,
+  record_count              INTEGER NOT NULL DEFAULT 0,
+  record_json_bytes         INTEGER NOT NULL DEFAULT 0,
+  earliest_ingested_at      TEXT,
+  latest_ingested_at        TEXT,
+  earliest_record_time      TEXT,
+  latest_record_time        TEXT,
+  consent_time_field        TEXT,
+  dirty_record_time_bounds  INTEGER NOT NULL DEFAULT 0,
+  computed_at               TEXT,
+  PRIMARY KEY(connector_id, stream)
+);
+
 -- blob_bindings.json_path: either an RFC 6901 JSON Pointer naming the
 -- record_json leaf the blob replaces (e.g. '/output_preview',
 -- '/messages/0/content') or the reserved pseudo-path '@record' for

@@ -1,9 +1,9 @@
 ## 1. Read-Model Contract
 
-- [ ] 1.1 Define global and per-stream dataset-summary read-model storage for counts, bytes, ingest bounds, record-time bounds, freshness, stale, rebuild, and sanitized error metadata.
-- [ ] 1.2 Extend the `GET /_ref/dataset/summary` response contract with projection metadata while preserving existing summary fields.
-- [ ] 1.3 Update `GET /_ref/dataset/summary` to read from bounded read-model rows rather than computing the dashboard overview by raw record/blob/change scans.
-- [ ] 1.4 Ensure the summary response preserves reference-only status and does not expose secrets, raw connector payloads, or raw local paths.
+- [x] 1.1 Define global and per-stream dataset-summary read-model storage for counts, bytes, ingest bounds, record-time bounds, freshness, stale, rebuild, and sanitized error metadata.
+- [x] 1.2 Extend the `GET /_ref/dataset/summary` response contract with projection metadata while preserving existing summary fields.
+- [x] 1.3 Update `GET /_ref/dataset/summary` to read from bounded read-model rows rather than computing the dashboard overview by raw record/blob/change scans.
+- [x] 1.4 Ensure the summary response preserves reference-only status and does not expose secrets, raw connector payloads, or raw local paths.
 
 ## 2. Projection Maintenance
 
@@ -13,24 +13,28 @@
 - [ ] 2.4 Mark or report the summary as stale when a write cannot be projected safely.
 - [ ] 2.5 Add targeted tests for duplicate/no-op record handling, upsert deltas, delete deltas, blob deltas, dirty extrema, and failed projection handling.
 
+First backend tranche note: write-hook maintenance is intentionally not implemented yet. The hot path now reads the bounded global projection row, missing rows report `rebuilding`, and rebuild failure preserves last-known rows with sanitized failure metadata.
+
 ## 3. Reconciliation And Rebuild
 
 - [ ] 3.1 Add stream-scoped reconciliation for dirty record-time bounds from durable records.
-- [ ] 3.2 Add a full rebuild path that regenerates the dashboard summary without connector reruns, credential reads, or destructive canonical-data changes.
-- [ ] 3.3 Surface rebuild in-progress and failed states through summary metadata.
+- [x] 3.2 Add a full rebuild path that regenerates the dashboard summary without connector reruns, credential reads, or destructive canonical-data changes.
+- [x] 3.3 Surface rebuild in-progress and failed states through summary metadata.
 - [ ] 3.4 Add tests for rebuilding from empty/missing projection rows, older databases, dirty extrema, and rebuild failure.
+
+First backend tranche note: tests cover missing projection rows, successful full rebuild, rebuild failure, last-known preservation, and sanitized errors. Dirty-extrema and older-database reconciliation remain open with write-hook maintenance.
 
 ## 4. Dashboard UX
 
-- [ ] 4.1 Split `/dashboard` so the shell/header and honest loading placeholders are not blocked by dataset-summary refresh.
-- [ ] 4.2 Render summary states as fresh, refreshing, stale, rebuilding, failed-with-cache, or failed-without-cache.
-- [ ] 4.3 Ensure the dashboard never renders `0 records` as a loading or error fallback; only a successful summary with `record_count === 0` may show an empty dataset state.
-- [ ] 4.4 Keep web-push settings and attention lists from blocking initial shell/header render.
+- [x] 4.1 Split `/dashboard` so the shell/header and honest loading placeholders are not blocked by dataset-summary refresh.
+- [x] 4.2 Render summary states as fresh, refreshing, stale, rebuilding, failed-with-cache, or failed-without-cache.
+- [x] 4.3 Ensure the dashboard never renders `0 records` as a loading or error fallback; only a successful summary with `record_count === 0` may show an empty dataset state.
+- [x] 4.4 Keep web-push settings and attention lists from blocking initial shell/header render.
 
 ## 5. Checks
 
-- [ ] 5.1 Run targeted tests for the dashboard summary read path.
-- [ ] 5.2 Run relevant reference implementation tests.
-- [ ] 5.3 Run dashboard rendering/loading-state tests.
+- [x] 5.1 Run targeted tests for the dashboard summary read path.
+- [x] 5.2 Run relevant reference implementation tests.
+- [x] 5.3 Run dashboard rendering/loading-state tests.
 - [ ] 5.4 Measure `/dashboard` and `/_ref/dataset/summary` before/after on the Docker deployment with active ingest or injected delay.
-- [ ] 5.5 Run `openspec validate add-dashboard-summary-read-model --strict`.
+- [x] 5.5 Run `openspec validate add-dashboard-summary-read-model --strict`.

@@ -18,8 +18,16 @@ import type { DatasetSummary } from "../lib/ref-client.ts";
  * substrate holds no records yet.
  */
 export function OverviewHero({ summary, recordsHref }: { summary: DatasetSummary; recordsHref: string }) {
+  const projection = getProjectionMetadata(summary);
+  const status = getProjectionStatus(projection);
+  if (summary.record_count === 0 && projection && !projection.computed_at && status !== "fresh") {
+    if (status === "failed") {
+      return <OverviewHeroError message={projection.last_error ?? undefined} />;
+    }
+    return <OverviewHeroPlaceholder />;
+  }
   if (summary.record_count === 0) {
-    return <EmptyHero />;
+    return <EmptyHero projection={projection} status={status} />;
   }
 
   return (
@@ -46,6 +54,7 @@ export function OverviewHero({ summary, recordsHref }: { summary: DatasetSummary
         recordsHref={recordsHref}
         totalConnectors={summary.connector_count}
       />
+      {status ? <ProjectionStatusLine projection={projection} status={status} /> : null}
 
       <p className="pdpp-body mt-3 text-muted-foreground">
         Each approved grant issues runs that write records into streams —{" "}
@@ -61,19 +70,134 @@ export function OverviewHero({ summary, recordsHref }: { summary: DatasetSummary
   );
 }
 
-function EmptyHero() {
+export function OverviewHeroPlaceholder() {
+  return (
+    <section aria-label="Dataset overview" className="mb-8">
+      <p className="pdpp-heading font-semibold text-foreground">
+        <span>Summarizing retained records...</span>
+      </p>
+      <p className="pdpp-body mt-2 flex flex-wrap items-baseline gap-x-4 gap-y-1 text-muted-foreground">
+        <span>records pending</span>
+        <span>bytes pending</span>
+        <span>connectors pending</span>
+      </p>
+      <p className="pdpp-body mt-3 text-muted-foreground">
+        The dashboard shell is ready while the retained-record summary loads.
+      </p>
+    </section>
+  );
+}
+
+export function OverviewHeroError({ message }: { message?: string }) {
+  return (
+    <section aria-label="Dataset overview" className="mb-8">
+      <p className="pdpp-heading font-semibold text-foreground">
+        <span>Could not load retained-record summary</span>
+      </p>
+      <p className="pdpp-body mt-3 text-muted-foreground">
+        {message ?? "The dashboard can still show other operator sections while summary facts are unavailable."}
+      </p>
+    </section>
+  );
+}
+
+function EmptyHero({
+  projection,
+  status,
+}: {
+  projection: DatasetSummary["projection"];
+  status: ProjectionStatus | null;
+}) {
   return (
     <section aria-label="Dataset overview" className="mb-8">
       <p className="pdpp-heading font-semibold text-foreground">
         <span>No records yet</span>
         <span className="font-normal text-muted-foreground"> · 0 connectors connected</span>
       </p>
+      {status ? <ProjectionStatusLine projection={projection} status={status} /> : null}
       <p className="pdpp-body mt-3 text-muted-foreground">
         Start a grant to begin ingesting. Every record lands inspectable through{" "}
         <code className="pdpp-caption font-mono">/v1/streams</code>.
       </p>
     </section>
   );
+}
+
+type ProjectionStatus = "fresh" | "refreshing" | "stale" | "rebuilding" | "failed";
+
+function getProjectionMetadata(summary: DatasetSummary): DatasetSummary["projection"] {
+  return (
+    summary.projection ?? {
+      computed_at: summary.computed_at,
+    }
+  );
+}
+
+function getProjectionStatus(projection: DatasetSummary["projection"]): ProjectionStatus | null {
+  const state = projection?.state;
+  if (
+    state === "fresh" ||
+    state === "refreshing" ||
+    state === "stale" ||
+    state === "rebuilding" ||
+    state === "failed"
+  ) {
+    return state;
+  }
+  if (projection?.rebuild_status === "running") {
+    return "rebuilding";
+  }
+  if (projection?.rebuild_status === "failed" || projection?.last_error) {
+    return "failed";
+  }
+  return projection?.computed_at ? "fresh" : null;
+}
+
+function ProjectionStatusLine({
+  projection,
+  status,
+}: {
+  projection: DatasetSummary["projection"];
+  status: ProjectionStatus;
+}) {
+  const computedAt = projection?.computed_at;
+  const staleSince = projection?.stale_since;
+  const error = projection?.last_error;
+  const label = projectionStatusLabel(status);
+  return (
+    <p className="pdpp-caption mt-2 text-muted-foreground">
+      <span className="font-medium text-foreground">{label}</span>
+      {computedAt ? (
+        <>
+          <span> · last computed </span>
+          <Timestamp value={computedAt} />
+        </>
+      ) : null}
+      {staleSince ? (
+        <>
+          <span> · stale since </span>
+          <Timestamp value={staleSince} />
+        </>
+      ) : null}
+      {error ? <span> · {error}</span> : null}
+    </p>
+  );
+}
+
+function projectionStatusLabel(status: ProjectionStatus): string {
+  if (status === "refreshing") {
+    return "Refreshing summary";
+  }
+  if (status === "stale") {
+    return "Stale summary";
+  }
+  if (status === "rebuilding") {
+    return "Rebuilding summary";
+  }
+  if (status === "failed") {
+    return "Could not refresh summary";
+  }
+  return "Summary updated";
 }
 
 function BreadthRow({

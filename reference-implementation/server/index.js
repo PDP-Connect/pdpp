@@ -64,6 +64,10 @@ import {
   getDatasetRecordsAggregate, getDatasetRecordChangesBytes, getDatasetBlobBytes,
   getDatasetRecordTimeBounds, listDatasetTopConnectorCandidates,
 } from './records.js';
+import {
+  getDatasetSummaryProjection,
+  rebuildDatasetSummaryProjection,
+} from './dataset-summary-read-model.js';
 import { getLexicalIndexBackfillProgress, lexicalIndexBackfillForManifest, runLexicalSearch } from './search.js';
 import { runHybridSearch } from './search-hybrid.js';
 import { reconcilePolyfillManifests } from './polyfill-manifest-reconcile.ts';
@@ -3399,6 +3403,7 @@ function buildAsApp(opts = {}) {
       };
 
       const summary = await executeRefDatasetSummary({
+        getProjection: () => getDatasetSummaryProjection(),
         getCounts: async () => {
           const agg = await aggregate();
           return {
@@ -3428,6 +3433,70 @@ function buildAsApp(opts = {}) {
           };
         },
         listTopConnectorCandidates: () => listDatasetTopConnectorCandidates(),
+      });
+      res.json(summary);
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
+  app.post('/_ref/dataset/summary/rebuild', ownerAuth.requireOwnerSession, async (req, res) => {
+    try {
+      let cachedAggregate = null;
+      const aggregate = async () => {
+        if (cachedAggregate === null) {
+          cachedAggregate = await getDatasetRecordsAggregate();
+        }
+        return cachedAggregate;
+      };
+      const projection = await rebuildDatasetSummaryProjection({
+        getCounts: async () => {
+          const agg = await aggregate();
+          return {
+            connector_count: agg.connector_count,
+            stream_count: agg.stream_count,
+            record_count: agg.record_count,
+          };
+        },
+        getRetainedBytes: async () => {
+          const [agg, recordChangesJsonBytes, blobBytes] = await Promise.all([
+            aggregate(),
+            getDatasetRecordChangesBytes(),
+            getDatasetBlobBytes(),
+          ]);
+          return {
+            record_json_bytes: agg.record_json_bytes,
+            record_changes_json_bytes: recordChangesJsonBytes,
+            blob_bytes: blobBytes,
+          };
+        },
+        getRecordTimeBounds: () => getDatasetRecordTimeBounds(),
+        getIngestedTimeBounds: async () => {
+          const agg = await aggregate();
+          return {
+            earliest: agg.earliest_ingested_at,
+            latest: agg.latest_ingested_at,
+          };
+        },
+        listTopConnectorCandidates: () => listDatasetTopConnectorCandidates(),
+      });
+      const summary = await executeRefDatasetSummary({
+        getProjection: () => projection,
+        getCounts: () => {
+          throw new Error('dataset summary rebuild response must use projection');
+        },
+        getRetainedBytes: () => {
+          throw new Error('dataset summary rebuild response must use projection');
+        },
+        getRecordTimeBounds: () => {
+          throw new Error('dataset summary rebuild response must use projection');
+        },
+        getIngestedTimeBounds: () => {
+          throw new Error('dataset summary rebuild response must use projection');
+        },
+        listTopConnectorCandidates: () => {
+          throw new Error('dataset summary rebuild response must use projection');
+        },
       });
       res.json(summary);
     } catch (err) {

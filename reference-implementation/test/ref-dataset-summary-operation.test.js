@@ -66,6 +66,114 @@ test('ref.dataset.summary returns the full dataset_summary envelope', async () =
     { object: 'dataset_connector_summary', connector_id: 'a', record_count: 3 },
     { object: 'dataset_connector_summary', connector_id: 'b', record_count: 2 },
   ]);
+  assert.deepEqual(summary.projection, {
+    computed_at: null,
+    state: 'refreshing',
+    stale_since: null,
+    rebuild_status: 'idle',
+    last_error: null,
+    source_high_watermark: null,
+  });
+});
+
+test('ref.dataset.summary uses projection hot path without raw aggregate dependencies', async () => {
+  const forbidden = () => {
+    throw new Error('raw aggregate dependency must not be called');
+  };
+
+  const summary = await executeRefDatasetSummary({
+    getProjection: () => ({
+      counts: { connector_count: 3, stream_count: 5, record_count: 11 },
+      retained_bytes: {
+        record_json_bytes: 200,
+        record_changes_json_bytes: 30,
+        blob_bytes: 40,
+      },
+      record_time_bounds: {
+        earliest: '2026-01-01T00:00:00Z',
+        latest: '2026-05-01T00:00:00Z',
+      },
+      ingested_time_bounds: {
+        earliest: '2026-01-02T00:00:00Z',
+        latest: '2026-05-02T00:00:00Z',
+      },
+      top_connector_candidates: [
+        { connector_id: 'b', record_count: 4 },
+        { connector_id: 'a', record_count: 7 },
+      ],
+      metadata: {
+        computed_at: '2026-05-19T12:00:00.000Z',
+        state: 'fresh',
+        stale_since: null,
+        rebuild_status: 'idle',
+        last_error: null,
+        source_high_watermark: 'records:42',
+      },
+    }),
+    getCounts: forbidden,
+    getRetainedBytes: forbidden,
+    getRecordTimeBounds: forbidden,
+    getIngestedTimeBounds: forbidden,
+    listTopConnectorCandidates: forbidden,
+  });
+
+  assert.equal(summary.record_count, 11);
+  assert.equal(summary.total_retained_bytes, 270);
+  assert.deepEqual(
+    summary.top_connectors.map((entry) => entry.connector_id),
+    ['a', 'b'],
+  );
+  assert.deepEqual(summary.projection, {
+    computed_at: '2026-05-19T12:00:00.000Z',
+    state: 'fresh',
+    stale_since: null,
+    rebuild_status: 'idle',
+    last_error: null,
+    source_high_watermark: 'records:42',
+  });
+});
+
+test('ref.dataset.summary exposes rebuilding metadata for missing projection rows', async () => {
+  const summary = await executeRefDatasetSummary({
+    getProjection: () => ({
+      counts: { connector_count: 0, stream_count: 0, record_count: 0 },
+      retained_bytes: {
+        record_json_bytes: 0,
+        record_changes_json_bytes: 0,
+        blob_bytes: 0,
+      },
+      record_time_bounds: { earliest: null, latest: null },
+      ingested_time_bounds: { earliest: null, latest: null },
+      top_connector_candidates: [],
+      metadata: {
+        computed_at: null,
+        state: 'rebuilding',
+        stale_since: '2026-05-19T12:05:00.000Z',
+        rebuild_status: 'running',
+        last_error: null,
+      },
+    }),
+    getCounts: () => {
+      throw new Error('raw fallback must not run when rebuilding projection is returned');
+    },
+    getRetainedBytes: () => {
+      throw new Error('raw fallback must not run when rebuilding projection is returned');
+    },
+    getRecordTimeBounds: () => {
+      throw new Error('raw fallback must not run when rebuilding projection is returned');
+    },
+    getIngestedTimeBounds: () => {
+      throw new Error('raw fallback must not run when rebuilding projection is returned');
+    },
+    listTopConnectorCandidates: () => {
+      throw new Error('raw fallback must not run when rebuilding projection is returned');
+    },
+  });
+
+  assert.equal(summary.record_count, 0);
+  assert.equal(summary.projection.state, 'rebuilding');
+  assert.equal(summary.projection.rebuild_status, 'running');
+  assert.equal(summary.projection.computed_at, null);
 });
 
 test('ref.dataset.summary derives total_retained_bytes from the three byte fields', async () => {

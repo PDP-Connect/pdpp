@@ -1075,6 +1075,27 @@ export const referenceManifests = [
                 required: ["object", "connector_id", "record_count"],
               },
             },
+            projection: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                computed_at: { type: ["string", "null"] },
+                state: {
+                  enum: ["fresh", "refreshing", "stale", "rebuilding", "failed"],
+                },
+                stale_since: { type: ["string", "null"] },
+                rebuild_status: { enum: ["idle", "running", "failed"] },
+                last_error: { type: ["string", "null"] },
+                source_high_watermark: { type: ["string", "null"] },
+              },
+              required: [
+                "computed_at",
+                "state",
+                "stale_since",
+                "rebuild_status",
+                "last_error",
+              ],
+            },
           },
           required: [
             "object",
@@ -1090,6 +1111,7 @@ export const referenceManifests = [
             "earliest_ingested_at",
             "latest_ingested_at",
             "top_connectors",
+            "projection",
           ],
         },
       },
