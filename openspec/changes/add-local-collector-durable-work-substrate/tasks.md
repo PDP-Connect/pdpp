@@ -4,7 +4,8 @@
 - [x] 1.2 Model outbox rows for record batches, checkpoint/state commits, gap/backlog reports, and artifact/blob uploads.
 - [x] 1.3 Implement enqueue, claim, acknowledge, fail/retry, dead-letter, lease-renew, expired-lease recovery, and status-summary operations.
 - [x] 1.4 Add deterministic work ids and lease fencing so stale holders cannot acknowledge work after a newer claim.
-- [x] 1.5 Add an old JSON queue inspection/import/quarantine path so existing pending local work is not silently discarded.
+- [x] 1.5 Add a temporary old JSON queue inspection/import/quarantine path so the owner's current pending local development work is not silently discarded.
+- [ ] 1.6 Remove the temporary old JSON queue inspection/import/quarantine path after the owner's current local queues have been imported or intentionally discarded.
 
 ## 2. Runner Integration
 
@@ -41,6 +42,7 @@
 - [ ] 6.2 Add stale-lease tests proving expired work recovers and stale holders cannot acknowledge newer claims.
 - [ ] 6.3 Add backlog/gap tests proving partial progress is reported honestly and retryable work remains targetable.
 - [x] 6.4 Add migration/quarantine tests for existing JSON queue files.
+- [ ] 6.8 Add a closeout check proving no long-term JSON queue migration path remains after the one-time migration is complete.
 - [ ] 6.5 Add CLI/status tests for local outbox health output.
 - [ ] 6.6 Run relevant local collector, polyfill connector, reference server, and dashboard tests.
 - [ ] 6.7 Run `openspec validate add-local-collector-durable-work-substrate --strict`.

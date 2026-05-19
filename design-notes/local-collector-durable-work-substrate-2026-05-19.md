@@ -171,6 +171,7 @@ The first implementation should be deliberately small:
 - Do not silently auto-update local agents.
 - Do not attempt cross-device deduplication or conflict resolution beyond deterministic record IDs and server-side idempotency.
 - Do not use the durable outbox as a reason to make connector-specific hacks look successful.
+- Do not keep a long-term JSON queue compatibility layer. A JSON queue importer is acceptable only as a temporary one-time development safety valve for the owner's current local queues and should be removed after those queues are imported or intentionally discarded.
 
 ## Promotion Trigger
 
@@ -179,6 +180,7 @@ Before implementing durable queue, backlog, service lifecycle, or checkpoint beh
 ## Decision Log
 
 - 2026-05-19: Captured delegated prior-art research. Current decision: this is significant enough to promote before implementation because it changes local storage semantics, setup UX, run progress semantics, and dashboard health semantics.
+- 2026-05-19: Clarified that legacy JSON queue migration is temporary. The durable design should converge on SQLite outbox only; the importer exists only to avoid silently discarding the owner's current development queues while the system is being rebuilt.
 
 ## Sources
 

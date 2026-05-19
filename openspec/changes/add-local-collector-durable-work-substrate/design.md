@@ -142,7 +142,7 @@ This composes with the connection namespace work: multiple Gmail accounts, multi
   **Mitigation:** Require deterministic batch/work ids and server idempotency. At-least-once local delivery is acceptable only when destination effects are idempotent.
 
 - **Risk:** Migration from JSON queues can lose pending local work.  
-  **Mitigation:** Add an importer or quarantine path that preserves old JSON queue contents before enabling the SQLite path by default.
+  **Mitigation:** Add a temporary importer or quarantine path that preserves the owner's current development queue contents before enabling the SQLite path by default. This is not a long-term compatibility layer and must be removed after the one-time migration is complete and verified.
 
 - **Risk:** The design may accidentally leak reference-only concepts into PDPP Core.  
   **Mitigation:** Keep spec wording scoped to reference implementation behavior and add an architecture requirement classifying durable local work as runtime/orchestrator behavior.
@@ -150,12 +150,13 @@ This composes with the connection namespace work: multiple Gmail accounts, multi
 ## Migration Plan
 
 1. Add the local durable outbox schema and adapter behind a package-local interface.
-2. Add read-only `doctor/status` inspection for both old JSON queues and the new outbox where possible.
-3. Add migration or quarantine handling for existing JSON queues.
+2. Add read-only temporary inspection for old JSON queues and durable inspection for the new outbox where possible.
+3. Add one-time migration or quarantine handling for existing JSON queues.
 4. Switch local collector enqueue/drain to the durable outbox for one low-risk connector path.
 5. Add crash/restart tests around enqueue, lease, upload acknowledgement, state commit, backlog creation, and stale lease recovery.
 6. Enable the durable outbox for Claude Code and Codex local collectors.
 7. Update dashboard/operator diagnostics to display connection-scoped outbox/backlog health.
+8. Remove the temporary JSON queue import/quarantine code after the owner's current local queues have either been imported or intentionally discarded.
 
 Rollback should disable the new outbox path for new runs while preserving the SQLite file for inspection. If migration has already imported JSON queue rows, rollback must not delete either queue representation automatically.
 
