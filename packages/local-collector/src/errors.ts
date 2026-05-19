@@ -12,7 +12,7 @@ export {
   CollectorStateReadError,
   RUNTIME_CAPABILITY_MISMATCH_CODE,
   RuntimeCapabilityMismatchError,
-} from "@pdpp/polyfill-connectors/runner";
+} from "../../polyfill-connectors/src/runner/index.ts";
 
 /**
  * The published `pdpp-local-collector` bin rejects `--command <bin>` unless

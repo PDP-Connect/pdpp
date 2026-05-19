@@ -18,12 +18,19 @@
  * Spec: openspec/changes/publish-pdpp-local-collector/design.md §1–§3.
  */
 
+import { existsSync } from "node:fs";
+import { extname } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import {
+  COLLECTOR_PROTOCOL_VERSION as PROTOCOL_VERSION,
+  COLLECTOR_RUNTIME_CAPABILITIES as POLYFILL_COLLECTOR_RUNTIME_CAPABILITIES,
+  type RuntimeCapabilityProfile,
+} from "../../polyfill-connectors/src/runner/index.ts";
 
 export {
   buildCollectorStartMessage,
   COLLECTOR_PROTOCOL_VERSION,
-  COLLECTOR_RUNTIME_CAPABILITIES,
   CollectorStateReadError,
   drainCollectorQueue,
   emitToStdout,
@@ -61,9 +68,20 @@ export {
   type RuntimeCapabilityProfile,
   type StartMessage,
   type StreamScope,
-} from "@pdpp/polyfill-connectors/runner";
+} from "../../polyfill-connectors/src/runner/index.ts";
 
-import { COLLECTOR_PROTOCOL_VERSION as PROTOCOL_VERSION } from "@pdpp/polyfill-connectors/runner";
+/**
+ * Public package capability profile.
+ *
+ * The monorepo collector runtime may satisfy browser-bound development
+ * connectors, but this published package intentionally bundles only
+ * filesystem-class Claude Code and Codex entrypoints. Advertising `browser`
+ * here would overstate the package contract and weaken runtime placement.
+ */
+export const COLLECTOR_RUNTIME_CAPABILITIES: RuntimeCapabilityProfile = {
+  id: POLYFILL_COLLECTOR_RUNTIME_CAPABILITIES.id,
+  bindings: new Set(["network", "filesystem", "local_device"]),
+};
 
 /**
  * Default arguments for each bundled filesystem-class connector.
@@ -88,13 +106,20 @@ export interface BundledConnectorEntry {
   readonly streams: readonly string[];
 }
 
-const POLYFILL_CLAUDE_CODE_ENTRY = fileURLToPath(
-  new URL("../../polyfill-connectors/connectors/claude_code/index.ts", import.meta.url)
-);
+function bundledEntry(connectorPath: string): string {
+  const built = fileURLToPath(new URL(`../../polyfill-connectors/connectors/${connectorPath}/index.js`, import.meta.url));
+  if (existsSync(built)) {
+    return built;
+  }
+  return fileURLToPath(new URL(`../../polyfill-connectors/connectors/${connectorPath}/index.ts`, import.meta.url));
+}
 
-const POLYFILL_CODEX_ENTRY = fileURLToPath(
-  new URL("../../polyfill-connectors/connectors/codex/index.ts", import.meta.url)
-);
+function commandForEntry(entry: string): "node" | "tsx" {
+  return extname(entry) === ".ts" ? "tsx" : "node";
+}
+
+const POLYFILL_CLAUDE_CODE_ENTRY = bundledEntry("claude_code");
+const POLYFILL_CODEX_ENTRY = bundledEntry("codex");
 
 /**
  * Registry of filesystem-class connectors bundled with `@pdpp/local-collector`.
@@ -106,7 +131,7 @@ const POLYFILL_CODEX_ENTRY = fileURLToPath(
 export const BUNDLED_CONNECTORS: Readonly<Record<string, BundledConnectorEntry>> = Object.freeze({
   claude_code: Object.freeze({
     connector_id: "claude_code",
-    command: "tsx",
+    command: commandForEntry(POLYFILL_CLAUDE_CODE_ENTRY),
     args: Object.freeze([POLYFILL_CLAUDE_CODE_ENTRY]) as readonly string[],
     bindings: Object.freeze({ filesystem: Object.freeze({ required: true }) }),
     streams: Object.freeze([
@@ -120,7 +145,7 @@ export const BUNDLED_CONNECTORS: Readonly<Record<string, BundledConnectorEntry>>
   }),
   codex: Object.freeze({
     connector_id: "codex",
-    command: "tsx",
+    command: commandForEntry(POLYFILL_CODEX_ENTRY),
     args: Object.freeze([POLYFILL_CODEX_ENTRY]) as readonly string[],
     bindings: Object.freeze({ filesystem: Object.freeze({ required: true }) }),
     streams: Object.freeze([
