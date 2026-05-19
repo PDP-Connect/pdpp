@@ -1,0 +1,330 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+
+import { computeConnectionHealth } from '../runtime/connection-health.ts';
+import { BLOCKED_PROMOTION_THRESHOLD } from '../runtime/connector-health.ts';
+
+// ─── Test helpers ──────────────────────────────────────────────────────────
+
+/** Default input: never-run, enabled schedule, no policy violations. */
+function input(overrides = {}) {
+  return {
+    schedule: { enabled: true },
+    run: null,
+    backoff: null,
+    attention: null,
+    coverage: null,
+    freshness: null,
+    outbox: null,
+    projection: null,
+    activity: null,
+    ...overrides,
+  };
+}
+
+function run(overrides = {}) {
+  return {
+    latestStatus: 'succeeded',
+    hasDegradingGaps: false,
+    lastSuccessAt: '2026-05-19T00:00:00.000Z',
+    reasonCode: null,
+    ...overrides,
+  };
+}
+
+function backoff(overrides = {}) {
+  return {
+    backoffApplied: true,
+    consecutiveFailures: 3,
+    reasonClass: 'connector:reddit_login_unexpected_ui',
+    nextRunAt: '2026-05-19T01:00:00.000Z',
+    ...overrides,
+  };
+}
+
+// ─── 1. Projection unreliable → unknown ───────────────────────────────────
+
+test('unknown: any unreliable required projection forces unknown and names the source', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'fresh' },
+      projection: { unreliableSources: ['dashboard_summary'] },
+    })
+  );
+  assert.equal(snap.state, 'unknown');
+  assert.deepEqual([...snap.unknown_reasons], ['dashboard_summary']);
+});
+
+test('unknown: takes precedence even over open attention', () => {
+  // Spec scenario: projection unreliable beats every other ordered rule.
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      attention: { lifecycle: 'open', reasonCode: 'otp_required', actionTarget: 'dashboard', expiresAt: null },
+      projection: { unreliableSources: ['coverage_read_model'] },
+    })
+  );
+  assert.equal(snap.state, 'unknown');
+});
+
+// ─── 2. Idle (paused & never-run) ─────────────────────────────────────────
+
+test('idle: owner-paused schedule wins over later evidence', () => {
+  const snap = computeConnectionHealth(
+    input({
+      schedule: { enabled: false },
+      run: run({ latestStatus: 'failed', lastSuccessAt: '2026-05-01T00:00:00.000Z' }),
+      backoff: backoff(),
+    })
+  );
+  assert.equal(snap.state, 'idle');
+  assert.equal(snap.next_attempt_at, null); // paused: no next attempt
+});
+
+test('idle: never-run connection with enabled schedule', () => {
+  const snap = computeConnectionHealth(input());
+  assert.equal(snap.state, 'idle');
+  assert.equal(snap.last_success_at, null);
+});
+
+// ─── 3. Needs attention ───────────────────────────────────────────────────
+
+test('needs_attention: open required attention beats backoff', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run({ latestStatus: 'failed', lastSuccessAt: null }),
+      attention: { lifecycle: 'open', reasonCode: 'otp_required', actionTarget: 'dashboard', expiresAt: null },
+      backoff: backoff({ consecutiveFailures: 2 }),
+    })
+  );
+  assert.equal(snap.state, 'needs_attention');
+  assert.equal(snap.reason_code, 'otp_required');
+  assert.equal(snap.axes.attention, 'open');
+  assert.equal(snap.next_attempt_at, '2026-05-19T01:00:00.000Z');
+});
+
+test('needs_attention: attention does NOT override projection-unreliable', () => {
+  // Already covered above; documents the precedence boundary explicitly.
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      attention: { lifecycle: 'in_progress', reasonCode: null, actionTarget: null, expiresAt: null },
+      projection: { unreliableSources: ['runs'] },
+    })
+  );
+  assert.equal(snap.state, 'unknown');
+});
+
+// ─── 4. Blocked (give-up streak) ─────────────────────────────────────────
+
+test('blocked: consecutiveFailures at threshold promotes cooling_off to blocked', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run({ latestStatus: 'failed', lastSuccessAt: '2026-04-01T00:00:00.000Z' }),
+      backoff: backoff({
+        backoffApplied: true,
+        consecutiveFailures: BLOCKED_PROMOTION_THRESHOLD,
+        reasonClass: 'connector:auth_expired',
+      }),
+    })
+  );
+  assert.equal(snap.state, 'blocked');
+  assert.equal(snap.reason_code, 'auth_expired'); // class prefix stripped
+});
+
+// ─── 5. Cooling off ───────────────────────────────────────────────────────
+
+test('cooling_off: backoffApplied with sub-threshold streak', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run({ latestStatus: 'failed', lastSuccessAt: '2026-05-10T00:00:00.000Z' }),
+      backoff: backoff({ consecutiveFailures: 3, reasonClass: 'failure:network_timeout' }),
+    })
+  );
+  assert.equal(snap.state, 'cooling_off');
+  assert.equal(snap.reason_code, 'network_timeout');
+  assert.equal(snap.next_attempt_at, '2026-05-19T01:00:00.000Z');
+});
+
+// ─── 6. Degraded ──────────────────────────────────────────────────────────
+
+test('degraded: outbox stalled forces degraded even when run succeeded', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run(), // succeeded, no gaps
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'fresh' },
+      outbox: { axis: 'stalled' },
+    })
+  );
+  assert.equal(snap.state, 'degraded');
+  assert.equal(snap.axes.outbox, 'stalled');
+});
+
+test('degraded: succeeded-with-gaps does not project as healthy', () => {
+  // Spec scenario: "Last run succeeded with required gaps".
+  const snap = computeConnectionHealth(
+    input({
+      run: run({ hasDegradingGaps: true, reasonCode: 'reddit_login_unexpected_ui' }),
+      coverage: { axis: 'gaps' },
+      freshness: { axis: 'fresh' },
+    })
+  );
+  assert.equal(snap.state, 'degraded');
+  assert.equal(snap.reason_code, 'reddit_login_unexpected_ui');
+});
+
+test('degraded: failed last run with no backoff applied yet', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run({ latestStatus: 'failed', reasonCode: 'transient_400' }),
+      coverage: { axis: 'partial' },
+    })
+  );
+  assert.equal(snap.state, 'degraded');
+  assert.equal(snap.reason_code, 'transient_400');
+});
+
+test('degraded: coverage gaps without a failed run still degrade', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'gaps' },
+      freshness: { axis: 'fresh' },
+    })
+  );
+  assert.equal(snap.state, 'degraded');
+});
+
+// ─── 7. Healthy ───────────────────────────────────────────────────────────
+
+test('healthy: success + complete coverage + fresh + no attention/backoff', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'fresh' },
+      outbox: { axis: 'idle' },
+    })
+  );
+  assert.equal(snap.state, 'healthy');
+  assert.equal(snap.reason_code, null);
+  assert.equal(snap.badges.stale, false);
+  assert.equal(snap.badges.syncing, false);
+});
+
+test('healthy: coverage `unknown` is allowed when no other evidence degrades', () => {
+  // No coverage source configured at all; the projection must not invent
+  // gaps. (The opposite case — `unknown` coverage + succeeded run with
+  // gaps — is degraded via run evidence.)
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'fresh' },
+    })
+  );
+  assert.equal(snap.state, 'healthy');
+});
+
+// ─── Stale axis (never a headline state) ──────────────────────────────────
+
+test('stale: freshness stale alone surfaces as axis+badge, not a stale headline state', () => {
+  // Spec scenario: "Freshness policy is violated" — stale is an axis.
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'stale' },
+    })
+  );
+  // Headline must not be "stale". Stale-but-otherwise-clean degrades to
+  // unknown via the fallback (last rule) because evidence is incomplete:
+  // we know the data is past policy but no other red flags. The badge
+  // and axis carry the freshness signal.
+  assert.notEqual(snap.state, 'healthy');
+  assert.equal(snap.axes.freshness, 'stale');
+  assert.equal(snap.badges.stale, true);
+});
+
+// ─── Syncing badge (never a headline state) ───────────────────────────────
+
+test('activity: active work surfaces as syncing badge without replacing health pill', () => {
+  // Spec scenario: "Active work is running" — syncing is a badge.
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'fresh' },
+      activity: { active: true },
+    })
+  );
+  assert.equal(snap.state, 'healthy'); // unchanged pill
+  assert.equal(snap.badges.syncing, true);
+});
+
+test('activity: syncing badge sits orthogonal to degraded headline', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run({ hasDegradingGaps: true }),
+      coverage: { axis: 'gaps' },
+      freshness: { axis: 'fresh' },
+      activity: { active: true },
+    })
+  );
+  assert.equal(snap.state, 'degraded');
+  assert.equal(snap.badges.syncing, true);
+});
+
+// ─── Mixed / fallback ────────────────────────────────────────────────────
+
+test('mixed: succeeded run with unknown coverage and unknown freshness falls back to unknown', () => {
+  // Coverage axis is unknown, freshness axis is unknown — we cannot
+  // confidently claim healthy. With no degrading evidence either, the
+  // fallback (`unknown`) protects against silent false-green.
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+    })
+  );
+  assert.equal(snap.state, 'unknown');
+  assert.deepEqual([...snap.unknown_reasons], ['unclassified']);
+});
+
+test('mixed: stale projection evidence reported as unknown when projection source flagged', () => {
+  // Spec scenario: when read-model rebuild fails or is stale beyond
+  // policy, the projection evidence is unreliable.
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'fresh' },
+      projection: { unreliableSources: ['dashboard_summary', 'coverage_read_model'] },
+    })
+  );
+  assert.equal(snap.state, 'unknown');
+  assert.deepEqual([...snap.unknown_reasons], ['dashboard_summary', 'coverage_read_model']);
+});
+
+// ─── Axes always populated regardless of headline ────────────────────────
+
+test('axes: rolled up consistently across all headline states', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run({ latestStatus: 'failed' }),
+      coverage: { axis: 'partial' },
+      freshness: { axis: 'stale' },
+      outbox: { axis: 'active' },
+      attention: { lifecycle: 'acknowledged', reasonCode: 'manual_verification', actionTarget: null, expiresAt: null },
+    })
+  );
+  // Attention is open → needs_attention pill; axes still report partial/stale/active.
+  assert.equal(snap.state, 'needs_attention');
+  assert.equal(snap.axes.attention, 'acknowledged');
+  assert.equal(snap.axes.coverage, 'partial');
+  assert.equal(snap.axes.freshness, 'stale');
+  assert.equal(snap.axes.outbox, 'active');
+  assert.equal(snap.badges.stale, true);
+});
