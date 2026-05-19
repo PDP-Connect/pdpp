@@ -15,7 +15,7 @@ import {
   transformRecordsToCollectorEnvelopes,
 } from "./collector-runner.ts";
 import type { IngestBatchRequest } from "./local-device-client.ts";
-import { LocalDeviceOutbox } from "./local-device-outbox.ts";
+import { buildLocalDeviceOutboxId, LocalDeviceOutbox } from "./local-device-outbox.ts";
 import { LocalDeviceQueue } from "./local-device-queue.ts";
 import { RuntimeCapabilityMismatchError } from "./runtime-capabilities.ts";
 
@@ -403,6 +403,65 @@ test("runCollectorConnector skips state PUT when the queue still has retrying it
   }
 });
 
+test("runCollectorConnector does not checkpoint when record work dead-letters", async () => {
+  const harness = await startCollectorHarness({
+    priorState: {},
+    ingestFailureMode: "always-503",
+  });
+  try {
+    const queuePath = await tempQueuePath();
+    const fixture = await writeFixtureConnector({
+      script: `
+        let buf = "";
+        await new Promise((r) => process.stdin.on("data", (c) => {
+          buf += c;
+          if (buf.includes("\\n")) r();
+        }));
+        process.stdout.write(JSON.stringify({
+          type: "RECORD",
+          stream: "messages",
+          key: "m-dead",
+          data: { id: "m-dead" },
+          emitted_at: new Date().toISOString(),
+        }) + "\\n");
+        process.stdout.write(JSON.stringify({
+          type: "STATE",
+          stream: "messages",
+          cursor: "m-dead-cursor",
+        }) + "\\n");
+        process.stdout.write(JSON.stringify({
+          type: "DONE",
+          status: "succeeded",
+          records_emitted: 1,
+        }) + "\\n");
+      `,
+    });
+
+    const result = await runCollectorConnector({
+      baseUrl: harness.url,
+      connector: {
+        args: [fixture],
+        command: "node",
+        connector_id: "fixture-dead-letter-no-checkpoint",
+        runtime_requirements: { bindings: {} },
+        streams: ["messages"],
+      },
+      deviceId: "device-1",
+      deviceToken: "device-token",
+      outboxPolicy: { maxAttempts: 1 },
+      queuePath,
+      sourceInstanceId: "src-1",
+    });
+
+    assert.equal(result.flushedState, null);
+    assert.equal(result.outboxSummary.deadLetter, 1);
+    assert.equal(harness.stateOps.filter((op) => op.method === "PUT").length, 0);
+    assert.equal(harness.heartbeats.at(-1)?.status, "blocked");
+  } finally {
+    await harness.close();
+  }
+});
+
 test("runCollectorConnector drops out-of-scope STATE messages with a warning and does not persist them", async () => {
   const harness = await startCollectorHarness({ priorState: {} });
   try {
@@ -522,6 +581,162 @@ test("two-pass replay regression: a second runCollectorConnector call receives t
     assert.deepEqual(pass2.priorState, { attachments: "uid:1" });
     assert.deepEqual(pass2.flushedState, { attachments: "uid:2" });
     assert.equal(harness.ingestedBatches[1]?.records?.[0]?.data?.observed_prior, "uid:1");
+  } finally {
+    await harness.close();
+  }
+});
+
+test("runCollectorConnector drains durable checkpoint work before reading prior state", async () => {
+  const harness = await startCollectorHarness({
+    priorState: { messages: { cursor: "m-prior" } },
+  });
+  try {
+    const queuePath = await tempQueuePath();
+    const outbox = new LocalDeviceOutbox({ path: queuePath });
+    try {
+      outbox.enqueue({
+        id: buildLocalDeviceOutboxId({
+          kind: "checkpoint",
+          parts: ["fixture-checkpoint-before-state", { messages: { cursor: "m-checkpoint" } }],
+          sourceInstanceId: "src-1",
+        }),
+        kind: "checkpoint",
+        payload: {
+          connectorId: "fixture-checkpoint-before-state",
+          sourceInstanceId: "src-1",
+          state: { messages: { cursor: "m-checkpoint" } },
+        },
+        sourceInstanceId: "src-1",
+      });
+    } finally {
+      outbox.close();
+    }
+
+    const fixture = await writeFixtureConnector({
+      script: `
+        let buf = "";
+        await new Promise((r) => process.stdin.on("data", (c) => {
+          buf += c;
+          if (buf.includes("\\n")) r();
+        }));
+        const start = JSON.parse(buf.split("\\n")[0]);
+        process.stdout.write(JSON.stringify({
+          type: "RECORD",
+          stream: "messages",
+          key: "m-after-checkpoint",
+          data: { prior_cursor: start.state?.messages?.cursor ?? null },
+          emitted_at: new Date().toISOString(),
+        }) + "\\n");
+        process.stdout.write(JSON.stringify({
+          type: "DONE",
+          status: "succeeded",
+          records_emitted: 1,
+        }) + "\\n");
+      `,
+    });
+
+    const result = await runCollectorConnector({
+      baseUrl: harness.url,
+      connector: {
+        args: [fixture],
+        command: "node",
+        connector_id: "fixture-checkpoint-before-state",
+        runtime_requirements: { bindings: {} },
+        streams: ["messages"],
+      },
+      deviceId: "device-1",
+      deviceToken: "device-token",
+      queuePath,
+      sourceInstanceId: "src-1",
+    });
+
+    assert.equal(result.sentBatches, 1);
+    assert.equal(result.outboxSummary.ready, 0);
+    assert.equal(result.outboxSummary.leased, 0);
+    assert.equal(harness.stateOps[0]?.method, "PUT");
+    assert.equal(harness.stateOps[1]?.method, "GET");
+    assert.equal(harness.ingestedBatches[0]?.records?.[0]?.data?.prior_cursor, "m-checkpoint");
+  } finally {
+    await harness.close();
+  }
+});
+
+test("runCollectorConnector skips source scan when pre-existing durable work cannot drain", async () => {
+  const harness = await startCollectorHarness({
+    ingestFailureMode: "always-503",
+    priorState: {},
+  });
+  try {
+    const queuePath = await tempQueuePath();
+    const outbox = new LocalDeviceOutbox({ path: queuePath });
+    try {
+      const records = transformRecordsToCollectorEnvelopes({
+        batchId: "existing-batch",
+        batchSeq: 1,
+        connectorId: "fixture-backlog-skip",
+        deviceId: "device-1",
+        messages: [
+          {
+            data: { id: "m-existing" },
+            emitted_at: "2026-05-19T12:00:00.000Z",
+            key: "m-existing",
+            stream: "messages",
+            type: "RECORD",
+          },
+        ],
+        sourceInstanceId: "src-1",
+      });
+      outbox.enqueue({
+        id: buildLocalDeviceOutboxId({
+          kind: "record_batch",
+          parts: ["existing-batch"],
+          sourceInstanceId: "src-1",
+        }),
+        kind: "record_batch",
+        payload: {
+          batchId: "existing-batch",
+          batchSeq: 1,
+          connectorId: "fixture-backlog-skip",
+          deviceId: "device-1",
+          records,
+          sourceInstanceId: "src-1",
+        },
+        sourceInstanceId: "src-1",
+      });
+    } finally {
+      outbox.close();
+    }
+
+    const fixture = await writeFixtureConnector({
+      script: `
+        process.stderr.write("fixture should not spawn while backlog is pending\\n");
+        process.exit(13);
+      `,
+    });
+
+    const result = await runCollectorConnector({
+      baseUrl: harness.url,
+      connector: {
+        args: [fixture],
+        command: "node",
+        connector_id: "fixture-backlog-skip",
+        runtime_requirements: { bindings: {} },
+        streams: ["messages"],
+      },
+      deviceId: "device-1",
+      deviceToken: "device-token",
+      outboxPolicy: { retryBackoffMs: 60_000 },
+      queuePath,
+      sourceInstanceId: "src-1",
+    });
+
+    assert.equal(result.skippedScanForBacklog, true);
+    assert.equal(result.recordsQueued, 0);
+    assert.equal(result.sentBatches, 0);
+    assert.equal(result.outboxSummary.ready, 1);
+    assert.equal(result.outboxSummary.retrying, 1);
+    assert.equal(harness.stateOps.length, 0);
+    assert.equal(harness.heartbeats.at(-1)?.status, "retrying");
   } finally {
     await harness.close();
   }

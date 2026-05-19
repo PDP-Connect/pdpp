@@ -33,8 +33,13 @@ import {
   hashCanonicalJson,
   type LocalDeviceRecordEnvelope,
 } from "./local-device-envelope.ts";
-import type { LocalDeviceOutbox } from "./local-device-outbox.ts";
-import { LocalDeviceQueue, type LocalDeviceQueueItem } from "./local-device-queue.ts";
+import {
+  buildLocalDeviceOutboxId,
+  LocalDeviceOutbox,
+  type LocalDeviceOutboxItem,
+  type LocalDeviceOutboxSummary,
+} from "./local-device-outbox.ts";
+import type { LocalDeviceQueue, LocalDeviceQueueItem } from "./local-device-queue.ts";
 import {
   assertPlacementOrThrow,
   COLLECTOR_RUNTIME_CAPABILITIES,
@@ -50,6 +55,36 @@ import {
  * exits. 256 KiB keeps a meaningful tail without becoming a memory risk.
  */
 export const COLLECTOR_STDERR_MAX_BYTES = 256 * 1024;
+
+/**
+ * Default policy bounds for durable outbox drains. These are intentionally
+ * conservative; callers may override via `CollectorRunConfig.outboxPolicy`.
+ *
+ * - `leaseMs`: how long a claimed row stays leased before
+ *   `recoverExpiredLeases` reclaims it. Must exceed worst-case ingest RTT.
+ * - `drainBatchSize`: rows claimed per drain iteration.
+ * - `maxDrainIterations`: hard ceiling so a single runner invocation can
+ *   never spin forever on a poisoned outbox; remaining work surfaces via
+ *   heartbeat and the next invocation continues.
+ * - `retryBackoffMs`: bounded backoff base; per-attempt grows linearly.
+ * - `maxAttempts`: after this many failed attempts, the row dead-letters
+ *   so it stops occupying drain bandwidth.
+ */
+export interface CollectorOutboxPolicy {
+  drainBatchSize: number;
+  leaseMs: number;
+  maxAttempts: number;
+  maxDrainIterations: number;
+  retryBackoffMs: number;
+}
+
+export const DEFAULT_COLLECTOR_OUTBOX_POLICY: Readonly<CollectorOutboxPolicy> = Object.freeze({
+  drainBatchSize: 4,
+  leaseMs: 60_000,
+  maxAttempts: 5,
+  maxDrainIterations: 256,
+  retryBackoffMs: 30_000,
+});
 
 const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const REPO_ROOT = join(PACKAGE_ROOT, "..", "..");
@@ -93,9 +128,26 @@ export interface CollectorRunConfig {
   abortSignal?: AbortSignal;
   baseUrl: string;
   batchSize?: number;
+  /**
+   * Stable identifier for the runner instance holding outbox leases. When
+   * omitted, a fresh UUID is generated per invocation. Tests and host
+   * supervisors that need predictable lease holders (e.g. for assertions
+   * about which holder must acknowledge) can pin this.
+   */
+  collectorHolderId?: string;
   connector: CollectorConnectorSpec;
   deviceId: string;
   deviceToken: string;
+  /**
+   * Path to the durable SQLite outbox. The legacy `queuePath` field is
+   * accepted as a fallback when this is omitted so existing call sites
+   * (CLI, tests) keep working as the implementation cuts over.
+   */
+  outboxPath?: string;
+  /**
+   * Override drain/retry bounds. Defaults to {@link DEFAULT_COLLECTOR_OUTBOX_POLICY}.
+   */
+  outboxPolicy?: Partial<CollectorOutboxPolicy>;
   queuePath: string;
   /**
    * Optional stable id for THIS run. When provided alongside `baseUrl`
@@ -118,15 +170,32 @@ export interface CollectorRunResult {
   enqueuedBatches: number;
   /**
    * Map of stream → cursor for STATE messages flushed to the server this pass.
-   * Null when STATE was buffered but the flush was skipped because the queue
-   * still held unsent items, or when no in-scope STATE was emitted.
+   * Null when STATE was buffered but the flush was skipped because the
+   * outbox still held undrained record work, or when no in-scope STATE
+   * was emitted.
    */
   flushedState: Readonly<Record<string, unknown>> | null;
+  /**
+   * Outbox summary after this invocation's drain. Operators use it to
+   * decide between rescheduling (pending/retrying > 0) and idle.
+   */
+  outboxSummary: LocalDeviceOutboxSummary;
   /** Prior state replayed into the START message (empty when first run). */
   priorState: Readonly<Record<string, unknown>>;
   recordsQueued: number;
+  /**
+   * Number of leases recovered before scan/spawn. Non-zero means the
+   * previous runner instance crashed mid-drain and left work claimed.
+   */
+  recoveredLeases: number;
   satisfiedBindings: readonly RuntimeBindingName[];
   sentBatches: number;
+  /**
+   * True when the runner skipped scanning a source for new work because
+   * durable work was already pending/retrying/leased/dead-letter for the
+   * source instance. The connector child does not spawn in this case.
+   */
+  skippedScanForBacklog: boolean;
   /** True when the runner failed to persist accumulated STATE after a successful drain. */
   statePutFailed: boolean;
 }
@@ -149,54 +218,193 @@ export class CollectorStateReadError extends Error {
  * Spawn: runs the connector entrypoint as a child process, feeding
  * START on stdin and parsing emitted protocol messages off stdout.
  *
- * Post-spawn: builds device-scoped envelopes, enqueues them for ingest,
- * drains the queue against the device-exporter ingest endpoint, and
- * heartbeats start/healthy.
+ * Post-spawn: builds device-scoped envelopes, enqueues them in the
+ * durable outbox, drains acknowledged work against the device-exporter
+ * ingest endpoint, and heartbeats start/healthy.
  */
 export async function runCollectorConnector(config: CollectorRunConfig): Promise<CollectorRunResult> {
   throwIfAborted(config.abortSignal);
   const satisfiedBindings = assertPlacementOrThrow(config.connector, COLLECTOR_RUNTIME_CAPABILITIES);
 
-  const batchSize = config.batchSize ?? 100;
-  const queue = new LocalDeviceQueue({ path: config.queuePath });
+  const policy: CollectorOutboxPolicy = { ...DEFAULT_COLLECTOR_OUTBOX_POLICY, ...(config.outboxPolicy ?? {}) };
+  const holderId = config.collectorHolderId ?? randomUUID();
+  const outboxPath = config.outboxPath ?? config.queuePath;
+  const outbox = new LocalDeviceOutbox({ path: outboxPath });
   const client = new LocalDeviceClient({
     baseUrl: config.baseUrl,
     deviceId: config.deviceId,
     deviceToken: config.deviceToken,
   });
 
-  let priorState: Readonly<Record<string, unknown>> = Object.freeze({});
   try {
-    throwIfAborted(config.abortSignal);
-    const projection = await client.getSourceInstanceState({ sourceInstanceId: config.sourceInstanceId });
-    if (projection.state && typeof projection.state === "object") {
-      priorState = Object.freeze({ ...projection.state });
+    const recoveredLeases = outbox.recoverExpiredLeases({ sourceInstanceId: config.sourceInstanceId });
+    const preScanDrain = await drainCollectorOutbox({
+      ...(config.abortSignal ? { abortSignal: config.abortSignal } : {}),
+      client,
+      connectorId: config.connector.connector_id,
+      holderId,
+      outbox,
+      policy,
+      sourceInstanceId: config.sourceInstanceId,
+    });
+
+    const postDrainSummary = outbox.summary({ sourceInstanceId: config.sourceInstanceId });
+    const skipResult = await maybeSkipScanForBacklog({
+      client,
+      config,
+      postDrainSummary,
+      preScanDrain,
+      recoveredLeases,
+      satisfiedBindings,
+    });
+    if (skipResult) {
+      return skipResult;
     }
-  } catch (error) {
-    // Honest-crash: we cannot safely advance without knowing prior state.
-    // Surface the failure via heartbeat and bail before spawning the child,
-    // so the operator can see the blocker on the dashboard.
-    await safeHeartbeat(client, {
+
+    const priorState = await readPriorStateOrBlock({
+      client,
+      config,
+      recordsPending: pendingOutboxWorkCount(postDrainSummary),
+    });
+
+    await client.heartbeat({
       connector_id: config.connector.connector_id,
-      records_pending: (await queue.list()).filter((item) => item.status !== "sent").length,
+      records_pending: pendingOutboxWorkCount(postDrainSummary),
       source_instance_id: config.sourceInstanceId,
+      status: "starting",
+    });
+
+    const messages = await collectMessagesForRun(config, priorState);
+    const records = messages.filter((msg): msg is Extract<EmittedMessage, { type: "RECORD" }> => msg.type === "RECORD");
+    const done =
+      messages.findLast((msg): msg is Extract<EmittedMessage, { type: "DONE" }> => msg.type === "DONE") ?? null;
+
+    const inScopeStreams = new Set(config.connector.streams);
+    const bufferedState = projectEmittedState(messages, inScopeStreams, config.connector.connector_id);
+    const enqueueResult = enqueueRecordBatches({
+      batchSize: config.batchSize ?? 100,
+      config,
+      outbox,
+      records,
+    });
+
+    const recordDrain = await drainCollectorOutbox({
+      ...(config.abortSignal ? { abortSignal: config.abortSignal } : {}),
+      client,
+      connectorId: config.connector.connector_id,
+      holderId,
+      outbox,
+      policy,
+      sourceInstanceId: config.sourceInstanceId,
+    });
+
+    const afterRecordsSummary = outbox.summary({ sourceInstanceId: config.sourceInstanceId });
+    const checkpointResult = await maybeCommitCheckpoint({
+      afterRecordsSummary,
+      bufferedState,
+      client,
+      config,
+      holderId,
+      outbox,
+      policy,
+    });
+
+    const finalSummary = outbox.summary({ sourceInstanceId: config.sourceInstanceId });
+    const recordsPending = pendingOutboxWorkCount(finalSummary);
+
+    if (!checkpointResult.statePutFailed) {
+      await client.heartbeat({
+        connector_id: config.connector.connector_id,
+        records_pending: recordsPending,
+        source_instance_id: config.sourceInstanceId,
+        status: heartbeatStatusForSummary(finalSummary),
+      });
+    }
+
+    return {
+      done,
+      enqueuedBatches: enqueueResult.enqueuedBatches,
+      flushedState: checkpointResult.flushedState,
+      outboxSummary: finalSummary,
+      priorState,
+      recordsQueued: enqueueResult.recordsQueued,
+      recoveredLeases,
+      satisfiedBindings,
+      sentBatches: (preScanDrain.sentByKind.record_batch ?? 0) + (recordDrain.sentByKind.record_batch ?? 0),
+      skippedScanForBacklog: false,
+      statePutFailed: checkpointResult.statePutFailed,
+    };
+  } finally {
+    outbox.close();
+  }
+}
+
+interface MaybeSkipScanInput {
+  client: Pick<LocalDeviceClient, "heartbeat">;
+  config: CollectorRunConfig;
+  postDrainSummary: LocalDeviceOutboxSummary;
+  preScanDrain: DrainCollectorOutboxResult;
+  recoveredLeases: number;
+  satisfiedBindings: readonly RuntimeBindingName[];
+}
+
+async function maybeSkipScanForBacklog(input: MaybeSkipScanInput): Promise<CollectorRunResult | null> {
+  if (!hasBlockingOutboxWork(input.postDrainSummary)) {
+    return null;
+  }
+  const recordsPending = pendingOutboxWorkCount(input.postDrainSummary);
+  await safeHeartbeat(input.client, {
+    connector_id: input.config.connector.connector_id,
+    records_pending: recordsPending,
+    source_instance_id: input.config.sourceInstanceId,
+    status: heartbeatStatusForSummary(input.postDrainSummary),
+  });
+  return {
+    done: null,
+    enqueuedBatches: 0,
+    flushedState: null,
+    outboxSummary: input.postDrainSummary,
+    priorState: Object.freeze({}),
+    recordsQueued: 0,
+    recoveredLeases: input.recoveredLeases,
+    satisfiedBindings: input.satisfiedBindings,
+    sentBatches: input.preScanDrain.sentByKind.record_batch ?? 0,
+    skippedScanForBacklog: true,
+    statePutFailed: false,
+  };
+}
+
+async function readPriorStateOrBlock(input: {
+  client: Pick<LocalDeviceClient, "getSourceInstanceState" | "heartbeat">;
+  config: CollectorRunConfig;
+  recordsPending: number;
+}): Promise<Readonly<Record<string, unknown>>> {
+  try {
+    throwIfAborted(input.config.abortSignal);
+    const projection = await input.client.getSourceInstanceState({ sourceInstanceId: input.config.sourceInstanceId });
+    return projection.state && typeof projection.state === "object"
+      ? Object.freeze({ ...projection.state })
+      : Object.freeze({});
+  } catch (error) {
+    await safeHeartbeat(input.client, {
+      connector_id: input.config.connector.connector_id,
+      records_pending: input.recordsPending,
+      source_instance_id: input.config.sourceInstanceId,
       status: "blocked",
     });
     throw new CollectorStateReadError(
-      `failed to read prior state for ${config.sourceInstanceId}: ${error instanceof Error ? error.message : String(error)}`,
+      `failed to read prior state for ${input.config.sourceInstanceId}: ${error instanceof Error ? error.message : String(error)}`,
       error
     );
   }
+}
 
-  await client.heartbeat({
-    connector_id: config.connector.connector_id,
-    records_pending: (await queue.list()).filter((item) => item.status !== "sent").length,
-    source_instance_id: config.sourceInstanceId,
-    status: "starting",
-  });
-
+async function collectMessagesForRun(
+  config: CollectorRunConfig,
+  priorState: Readonly<Record<string, unknown>>
+): Promise<EmittedMessage[]> {
   throwIfAborted(config.abortSignal);
-  const messages = await collectConnectorMessages(
+  return await collectConnectorMessages(
     config.connector,
     {
       baseUrl: config.baseUrl,
@@ -206,85 +414,111 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
     priorState,
     config.abortSignal
   );
-  const records = messages.filter((msg): msg is Extract<EmittedMessage, { type: "RECORD" }> => msg.type === "RECORD");
-  const done =
-    messages.findLast((msg): msg is Extract<EmittedMessage, { type: "DONE" }> => msg.type === "DONE") ?? null;
+}
 
-  const inScopeStreams = new Set(config.connector.streams);
-  const bufferedState = projectEmittedState(messages, inScopeStreams, config.connector.connector_id);
-
+function enqueueRecordBatches(input: {
+  batchSize: number;
+  config: CollectorRunConfig;
+  outbox: LocalDeviceOutbox;
+  records: readonly Extract<EmittedMessage, { type: "RECORD" }>[];
+}): { enqueuedBatches: number; recordsQueued: number } {
   let recordsQueued = 0;
   let enqueuedBatches = 0;
-  let batchSeq = nextBatchSeq(await queue.list(), config.sourceInstanceId);
-  for (const chunk of chunkRecords(records, batchSize)) {
-    const batchId = `${config.sourceInstanceId}-${batchSeq}-${randomUUID()}`;
+  let batchSeq = nextOutboxBatchSeq(input.outbox, input.config.sourceInstanceId);
+  for (const chunk of chunkRecords(input.records, input.batchSize)) {
+    const batchId = buildOutboxBatchId({
+      batchSeq,
+      connectorId: input.config.connector.connector_id,
+      records: chunk,
+      sourceInstanceId: input.config.sourceInstanceId,
+    });
     const envelopes = chunk.map((record) =>
       buildLocalDeviceRecordEnvelope({
         batchId,
         batchSeq,
-        connectorId: config.connector.connector_id,
-        deviceId: config.deviceId,
+        connectorId: input.config.connector.connector_id,
+        deviceId: input.config.deviceId,
         record,
-        sourceInstanceId: config.sourceInstanceId,
+        sourceInstanceId: input.config.sourceInstanceId,
       })
     );
-    await queue.enqueue({ batchId, batchSeq, records: envelopes, sourceInstanceId: config.sourceInstanceId });
+    input.outbox.enqueue({
+      id: buildLocalDeviceOutboxId({
+        kind: "record_batch",
+        parts: [input.config.connector.connector_id, batchSeq, batchId],
+        sourceInstanceId: input.config.sourceInstanceId,
+      }),
+      kind: "record_batch",
+      payload: {
+        batchId,
+        batchSeq,
+        connectorId: input.config.connector.connector_id,
+        deviceId: input.config.deviceId,
+        records: envelopes,
+        sourceInstanceId: input.config.sourceInstanceId,
+      } satisfies RecordBatchPayload,
+      sourceInstanceId: input.config.sourceInstanceId,
+    });
     recordsQueued += envelopes.length;
     enqueuedBatches++;
     batchSeq++;
   }
+  return { enqueuedBatches, recordsQueued };
+}
 
-  const sentBatches = await drainCollectorQueue({
-    client,
-    queue,
-    ...(config.abortSignal ? { abortSignal: config.abortSignal } : {}),
+async function maybeCommitCheckpoint(input: {
+  afterRecordsSummary: LocalDeviceOutboxSummary;
+  bufferedState: Readonly<Record<string, unknown>>;
+  client: Pick<LocalDeviceClient, "heartbeat" | "ingestBatch" | "putSourceInstanceState">;
+  config: CollectorRunConfig;
+  holderId: string;
+  outbox: LocalDeviceOutbox;
+  policy: CollectorOutboxPolicy;
+}): Promise<{ flushedState: Readonly<Record<string, unknown>> | null; statePutFailed: boolean }> {
+  if (hasBlockingOutboxWork(input.afterRecordsSummary) || Object.keys(input.bufferedState).length === 0) {
+    return { flushedState: null, statePutFailed: false };
+  }
+
+  const checkpointId = buildLocalDeviceOutboxId({
+    kind: "checkpoint",
+    parts: [input.config.connector.connector_id, input.bufferedState],
+    sourceInstanceId: input.config.sourceInstanceId,
   });
-  const pendingAfterDrain = (await queue.list()).filter((item) => item.status !== "sent").length;
+  input.outbox.enqueue({
+    id: checkpointId,
+    kind: "checkpoint",
+    payload: {
+      connectorId: input.config.connector.connector_id,
+      sourceInstanceId: input.config.sourceInstanceId,
+      state: input.bufferedState,
+    } satisfies CheckpointPayload,
+    sourceInstanceId: input.config.sourceInstanceId,
+  });
 
-  let flushedState: Readonly<Record<string, unknown>> | null = null;
-  let statePutFailed = false;
-  if (pendingAfterDrain === 0 && Object.keys(bufferedState).length > 0) {
-    try {
-      await client.putSourceInstanceState({
-        sourceInstanceId: config.sourceInstanceId,
-        state: bufferedState,
-      });
-      flushedState = Object.freeze({ ...bufferedState });
-    } catch (error) {
-      statePutFailed = true;
-      // Surface via heartbeat. Next pass re-reads state from the server and
-      // re-emits records; device-ingest idempotency absorbs duplicates.
-      await safeHeartbeat(client, {
-        connector_id: config.connector.connector_id,
-        records_pending: pendingAfterDrain,
-        source_instance_id: config.sourceInstanceId,
-        status: "retrying",
-      });
-      process.stderr.write(
-        `${config.connector.connector_id} state PUT failed: ${error instanceof Error ? error.message : String(error)}\n`
-      );
-    }
+  const checkpointDrain = await drainCollectorOutbox({
+    ...(input.config.abortSignal ? { abortSignal: input.config.abortSignal } : {}),
+    client: input.client,
+    connectorId: input.config.connector.connector_id,
+    holderId: input.holderId,
+    outbox: input.outbox,
+    policy: input.policy,
+    sourceInstanceId: input.config.sourceInstanceId,
+  });
+  const checkpointAfter = input.outbox.get(checkpointId);
+  if (checkpointAfter?.status === "succeeded") {
+    return { flushedState: Object.freeze({ ...input.bufferedState }), statePutFailed: false };
   }
 
-  if (!statePutFailed) {
-    await client.heartbeat({
-      connector_id: config.connector.connector_id,
-      records_pending: pendingAfterDrain,
-      source_instance_id: config.sourceInstanceId,
-      status: pendingAfterDrain > 0 ? "retrying" : "healthy",
-    });
-  }
-
-  return {
-    done,
-    enqueuedBatches,
-    flushedState,
-    priorState,
-    recordsQueued,
-    satisfiedBindings,
-    sentBatches,
-    statePutFailed,
-  };
+  await safeHeartbeat(input.client, {
+    connector_id: input.config.connector.connector_id,
+    records_pending: pendingOutboxWorkCount(input.afterRecordsSummary),
+    source_instance_id: input.config.sourceInstanceId,
+    status: "retrying",
+  });
+  process.stderr.write(
+    `${input.config.connector.connector_id} checkpoint not yet committed (drained ${checkpointDrain.sent} this pass; ${checkpointAfter?.last_error ?? "no error"})\n`
+  );
+  return { flushedState: null, statePutFailed: true };
 }
 
 /**
@@ -364,6 +598,288 @@ export function transformRecordsToCollectorEnvelopes(input: {
         sourceInstanceId: input.sourceInstanceId,
       })
     );
+}
+
+/**
+ * `record_batch` outbox payload shape. Validated narrowly before sending
+ * so malformed rows dead-letter instead of poisoning the drain loop.
+ */
+export interface RecordBatchPayload {
+  batchId: string;
+  batchSeq: number;
+  connectorId: string;
+  deviceId: string;
+  records: LocalDeviceRecordEnvelope[];
+  sourceInstanceId: string;
+}
+
+/**
+ * `checkpoint` outbox payload shape. Validated narrowly before sending.
+ */
+export interface CheckpointPayload {
+  connectorId: string;
+  sourceInstanceId: string;
+  state: Record<string, unknown>;
+}
+
+export interface DrainCollectorOutboxInput {
+  abortSignal?: AbortSignal;
+  client: Pick<LocalDeviceClient, "ingestBatch" | "putSourceInstanceState">;
+  connectorId: string;
+  holderId: string;
+  outbox: LocalDeviceOutbox;
+  policy: CollectorOutboxPolicy;
+  sourceInstanceId?: string;
+}
+
+export interface DrainCollectorOutboxResult {
+  deadLettered: number;
+  failed: number;
+  iterations: number;
+  sent: number;
+  /** Acknowledged-this-pass counts broken down by outbox row kind. */
+  sentByKind: Readonly<Partial<Record<LocalDeviceOutboxItem["kind"], number>>>;
+}
+
+/**
+ * Drain ready durable outbox rows for a source instance.
+ *
+ * Acknowledges only after a successful destination call. Retries with
+ * bounded backoff up to `policy.maxAttempts`, then dead-letters the row
+ * so it stops occupying drain bandwidth.
+ *
+ * Iterates at most `policy.maxDrainIterations` times so a single
+ * invocation cannot spin. Remaining ready rows surface via the next
+ * runner pass.
+ */
+export async function drainCollectorOutbox(input: DrainCollectorOutboxInput): Promise<DrainCollectorOutboxResult> {
+  const sentByKind: Partial<Record<LocalDeviceOutboxItem["kind"], number>> = {};
+  const result: DrainCollectorOutboxResult = { deadLettered: 0, failed: 0, iterations: 0, sent: 0, sentByKind };
+  for (let i = 0; i < input.policy.maxDrainIterations; i++) {
+    throwIfAborted(input.abortSignal);
+    const claimed = claimReadyOutboxItems(input);
+    if (claimed.length === 0) {
+      return result;
+    }
+    result.iterations++;
+    for (const item of claimed) {
+      await drainClaimedOutboxItem(input, item, result, sentByKind);
+    }
+  }
+  return result;
+}
+
+function claimReadyOutboxItems(input: DrainCollectorOutboxInput): LocalDeviceOutboxItem[] {
+  const claimInput: Parameters<LocalDeviceOutbox["claimReady"]>[0] = {
+    holder: input.holderId,
+    leaseMs: input.policy.leaseMs,
+    limit: input.policy.drainBatchSize,
+  };
+  if (input.sourceInstanceId) {
+    claimInput.sourceInstanceId = input.sourceInstanceId;
+  }
+  return input.outbox.claimReady(claimInput);
+}
+
+async function drainClaimedOutboxItem(
+  input: DrainCollectorOutboxInput,
+  item: LocalDeviceOutboxItem,
+  result: DrainCollectorOutboxResult,
+  sentByKind: Partial<Record<LocalDeviceOutboxItem["kind"], number>>
+): Promise<void> {
+  throwIfAborted(input.abortSignal);
+  try {
+    await sendOutboxItem(input.client, item);
+    input.outbox.acknowledge({ holder: input.holderId, id: item.id, leaseEpoch: item.lease_epoch });
+    result.sent++;
+    sentByKind[item.kind] = (sentByKind[item.kind] ?? 0) + 1;
+  } catch (error) {
+    failOutboxItem(input, item, error, result);
+  }
+}
+
+function failOutboxItem(
+  input: DrainCollectorOutboxInput,
+  item: LocalDeviceOutboxItem,
+  error: unknown,
+  result: DrainCollectorOutboxResult
+): void {
+  const message = error instanceof Error ? error.message : String(error);
+  if (error instanceof OutboxPayloadShapeError || item.attempt_count + 1 >= input.policy.maxAttempts) {
+    input.outbox.deadLetter({
+      error: message,
+      holder: input.holderId,
+      id: item.id,
+      leaseEpoch: item.lease_epoch,
+    });
+    result.deadLettered++;
+    return;
+  }
+  input.outbox.failRetryable({
+    error: message,
+    holder: input.holderId,
+    id: item.id,
+    leaseEpoch: item.lease_epoch,
+    retryBackoffMs: input.policy.retryBackoffMs * (item.attempt_count + 1),
+  });
+  result.failed++;
+}
+
+class OutboxPayloadShapeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "OutboxPayloadShapeError";
+  }
+}
+
+async function sendOutboxItem(
+  client: Pick<LocalDeviceClient, "ingestBatch" | "putSourceInstanceState">,
+  item: LocalDeviceOutboxItem
+): Promise<void> {
+  if (item.kind === "record_batch") {
+    const payload = assertRecordBatchPayload(item.payload, item.id);
+    if (payload.records.length === 0) {
+      throw new OutboxPayloadShapeError(`record_batch payload has no records: ${item.id}`);
+    }
+    await client.ingestBatch({
+      batch_id: payload.batchId,
+      batch_seq: payload.batchSeq,
+      body_hash: hashCanonicalJson(payload.records),
+      connector_id: payload.connectorId,
+      device_id: payload.deviceId,
+      records: payload.records.map((record) => ({
+        data: record.data,
+        emitted_at: record.emitted_at,
+        record_key: record.record_key,
+        stream: record.stream,
+      })),
+      source_instance_id: payload.sourceInstanceId,
+    });
+    return;
+  }
+  if (item.kind === "checkpoint") {
+    const payload = assertCheckpointPayload(item.payload, item.id);
+    await client.putSourceInstanceState({
+      sourceInstanceId: payload.sourceInstanceId,
+      state: payload.state,
+    });
+    return;
+  }
+  throw new OutboxPayloadShapeError(`unsupported outbox kind ${item.kind} for id ${item.id}`);
+}
+
+function assertRecordBatchPayload(payload: unknown, id: string): RecordBatchPayload {
+  if (!isRecord(payload)) {
+    throw new OutboxPayloadShapeError(`record_batch payload is not an object: ${id}`);
+  }
+  if (
+    typeof payload.batchId !== "string" ||
+    typeof payload.batchSeq !== "number" ||
+    typeof payload.connectorId !== "string" ||
+    typeof payload.deviceId !== "string" ||
+    typeof payload.sourceInstanceId !== "string" ||
+    !Array.isArray(payload.records) ||
+    !payload.records.every(isLocalDeviceRecordEnvelope)
+  ) {
+    throw new OutboxPayloadShapeError(`record_batch payload missing required fields: ${id}`);
+  }
+  return {
+    batchId: payload.batchId,
+    batchSeq: payload.batchSeq,
+    connectorId: payload.connectorId,
+    deviceId: payload.deviceId,
+    records: payload.records,
+    sourceInstanceId: payload.sourceInstanceId,
+  };
+}
+
+function assertCheckpointPayload(payload: unknown, id: string): CheckpointPayload {
+  if (!isRecord(payload)) {
+    throw new OutboxPayloadShapeError(`checkpoint payload is not an object: ${id}`);
+  }
+  if (
+    typeof payload.connectorId !== "string" ||
+    typeof payload.sourceInstanceId !== "string" ||
+    !isRecord(payload.state)
+  ) {
+    throw new OutboxPayloadShapeError(`checkpoint payload missing required fields: ${id}`);
+  }
+  return {
+    connectorId: payload.connectorId,
+    sourceInstanceId: payload.sourceInstanceId,
+    state: payload.state,
+  };
+}
+
+function isLocalDeviceRecordEnvelope(value: unknown): value is LocalDeviceRecordEnvelope {
+  return (
+    isRecord(value) &&
+    typeof value.batch_id === "string" &&
+    typeof value.batch_seq === "number" &&
+    typeof value.body_hash === "string" &&
+    typeof value.connector_id === "string" &&
+    isRecord(value.data) &&
+    typeof value.device_id === "string" &&
+    typeof value.emitted_at === "string" &&
+    typeof value.record_key === "string" &&
+    typeof value.source_instance_id === "string" &&
+    typeof value.stream === "string"
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function buildOutboxBatchId(input: {
+  batchSeq: number;
+  connectorId: string;
+  records: readonly Extract<EmittedMessage, { type: "RECORD" }>[];
+  sourceInstanceId: string;
+}): string {
+  return `local-batch:${hashCanonicalJson({
+    batch_seq: input.batchSeq,
+    connector_id: input.connectorId,
+    records: input.records.map((record) => ({
+      data: record.data,
+      key: String(record.key),
+      stream: record.stream,
+    })),
+    source_instance_id: input.sourceInstanceId,
+  })}`;
+}
+
+function pendingOutboxWorkCount(summary: LocalDeviceOutboxSummary): number {
+  return summary.ready + summary.leased;
+}
+
+function hasBlockingOutboxWork(summary: LocalDeviceOutboxSummary): boolean {
+  return pendingOutboxWorkCount(summary) > 0 || summary.deadLetter > 0;
+}
+
+function heartbeatStatusForSummary(summary: LocalDeviceOutboxSummary): "blocked" | "healthy" | "retrying" {
+  if (summary.deadLetter > 0) {
+    return "blocked";
+  }
+  if (pendingOutboxWorkCount(summary) > 0) {
+    return "retrying";
+  }
+  return "healthy";
+}
+
+function nextOutboxBatchSeq(outbox: LocalDeviceOutbox, sourceInstanceId: string): number {
+  const items = outbox.list({ sourceInstanceId });
+  let max = 0;
+  for (const item of items) {
+    if (item.kind !== "record_batch") {
+      continue;
+    }
+    const payload = item.payload as { batchSeq?: unknown };
+    if (typeof payload?.batchSeq === "number" && payload.batchSeq > max) {
+      max = payload.batchSeq;
+    }
+  }
+  return max + 1;
 }
 
 export async function drainCollectorQueue(input: {
@@ -622,11 +1138,4 @@ function chunkRecords<T>(records: readonly T[], size: number): T[][] {
     chunks.push(records.slice(index, index + size));
   }
   return chunks;
-}
-
-function nextBatchSeq(items: readonly LocalDeviceQueueItem[], sourceInstanceId: string): number {
-  return (
-    Math.max(0, ...items.filter((item) => item.source_instance_id === sourceInstanceId).map((item) => item.batch_seq)) +
-    1
-  );
 }
