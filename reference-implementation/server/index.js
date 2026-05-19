@@ -63,11 +63,12 @@ import {
   listStreams, listAllStreams, getSyncState, putSyncState,
   getDatasetRecordsAggregate, getDatasetRecordChangesBytes, getDatasetBlobBytes,
   getDatasetRecordTimeBounds, listDatasetTopConnectorCandidates,
-  listDatasetSummaryStreamProjectionSeeds,
+  listDatasetSummaryStreamProjectionSeeds, getDatasetSummaryStreamRecordTimeBounds,
 } from './records.js';
 import {
   applyDatasetSummaryBlobDelta,
   getDatasetSummaryProjection,
+  reconcileDirtyDatasetSummaryRecordTimeBounds,
   rebuildDatasetSummaryProjection,
 } from './dataset-summary-read-model.js';
 import { getLexicalIndexBackfillProgress, lexicalIndexBackfillForManifest, runLexicalSearch } from './search.js';
@@ -3505,6 +3506,41 @@ function buildAsApp(opts = {}) {
         },
       });
       res.json(summary);
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
+  app.post('/_ref/dataset/summary/reconcile', { contract: 'refDatasetSummaryReconcile' }, ownerAuth.requireOwnerSession, async (req, res) => {
+    try {
+      const result = await reconcileDirtyDatasetSummaryRecordTimeBounds({
+        getStreamRecordTimeBounds: (connectorId, stream, consentTimeField) =>
+          getDatasetSummaryStreamRecordTimeBounds(connectorId, stream, consentTimeField),
+      });
+      const summary = await executeRefDatasetSummary({
+        getProjection: () => getDatasetSummaryProjection(),
+        getCounts: () => {
+          throw new Error('dataset summary reconcile response must use projection');
+        },
+        getRetainedBytes: () => {
+          throw new Error('dataset summary reconcile response must use projection');
+        },
+        getRecordTimeBounds: () => {
+          throw new Error('dataset summary reconcile response must use projection');
+        },
+        getIngestedTimeBounds: () => {
+          throw new Error('dataset summary reconcile response must use projection');
+        },
+        listTopConnectorCandidates: () => {
+          throw new Error('dataset summary reconcile response must use projection');
+        },
+      });
+      res.json({
+        object: 'dataset_summary_reconcile',
+        reconciled: result.reconciled,
+        deferred: result.deferred,
+        summary,
+      });
     } catch (err) {
       handleError(res, err);
     }

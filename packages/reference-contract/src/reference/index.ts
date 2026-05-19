@@ -1136,4 +1136,30 @@ export const referenceManifests = [
       ...CommonErrors,
     },
   },
+  {
+    id: "refDatasetSummaryReconcile",
+    method: "POST",
+    path: "/_ref/dataset/summary/reconcile",
+    surface: "reference",
+    tags: ["reference", "dataset"],
+    summary:
+      "Owner-triggered reconciliation of dirty dataset-summary record-time bounds from durable reference state.",
+    request: {},
+    responses: {
+      200: {
+        schema: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            object: { const: "dataset_summary_reconcile" },
+            reconciled: { type: "integer", minimum: 0 },
+            deferred: { type: "integer", minimum: 0 },
+            summary: DatasetSummaryResponseSchema,
+          },
+          required: ["object", "reconciled", "deferred", "summary"],
+        },
+      },
+      ...CommonErrors,
+    },
+  },
 ];
