@@ -152,7 +152,6 @@ export const SCHEMAS: Record<string, z.ZodTypeAny> = {
   memory_notes: memoryNotesSchema,
   slash_commands: slashCommandsSchema,
   file_history: inventorySchema,
-  context_mode: inventorySchema,
   debug_artifacts: inventorySchema,
   downloads: inventorySchema,
   cache_inventory: inventorySchema,

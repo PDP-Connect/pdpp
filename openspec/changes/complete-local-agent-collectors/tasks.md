@@ -22,9 +22,9 @@
 ## 4. Stream Implementation
 
 - [ ] 4.1 Add Claude `file_history` collection with bounded scanning, stable ids, checkpointing, and fixture tests.
-- [ ] 4.2 Add Claude `context_mode` collection or mark it inventory-only with a documented deferral if file shapes are unstable.
+- [ ] 4.2 Remove or hide Claude `context_mode` from the general connector surface; if discovered locally, account for it only through safe diagnostics or a future explicit opt-in source.
 - [ ] 4.3 Add Claude debug, downloads, cache, backup, and config inventory streams according to the privacy classification.
-- [ ] 4.4 Add Codex `history`, `session_index`, `shell_snapshots`, `memories`, and `context_mode` streams with fixture tests.
+- [ ] 4.4 Add Codex `history`, `session_index`, and reviewed `shell_snapshots` handling with fixture tests; keep Codex `memories` and `context_mode` out of the general connector surface unless a later review approves them.
 - [ ] 4.5 Add Codex `logs`, config, and cache inventory/redacted streams according to the privacy classification.
 
 ## 5. Diagnostics And Validation

@@ -14,7 +14,7 @@ The reference implementation SHALL define complete local Claude Code and Codex c
 - **AND** it SHALL NOT emit that store's payload as records or blobs
 
 ### Requirement: Claude Code local stores have durable stream contracts
-The Claude Code connector SHALL define durable contracts for approved local stores beyond transcript-derived sessions, messages, attachments, skills, memory notes, and slash commands. Approved stream names SHALL include `file_history`, `context_mode`, `debug_artifacts`, `downloads`, `cache_inventory`, `backup_inventory`, and `config_inventory`, with risky payload classes defaulting to inventory-only, redacted, excluded, or deferred until reviewed.
+The Claude Code connector SHALL define durable contracts for approved local stores beyond transcript-derived sessions, messages, attachments, skills, memory notes, and slash commands. Approved stream names SHALL include `file_history`, `debug_artifacts`, `downloads`, `cache_inventory`, `backup_inventory`, and `config_inventory`, with risky payload classes defaulting to inventory-only, redacted, excluded, or deferred until reviewed. User-specific local tool state, including `context-mode`, SHALL NOT be part of the general Claude Code connector surface unless a later explicit opt-in source contract approves it.
 
 #### Scenario: Standalone file history exists
 - **WHEN** the configured Claude Code source home contains `file-history/**`
@@ -27,16 +27,17 @@ The Claude Code connector SHALL define durable contracts for approved local stor
 - **AND** auth-adjacent files SHALL default to exclusion unless a later explicit security review approves a narrower contract
 
 ### Requirement: Codex local stores have durable stream contracts
-The Codex connector SHALL define durable contracts for approved local stores beyond sessions, messages, function calls, rules, prompts, and skills. Approved stream names SHALL include `history`, `session_index`, `logs`, `shell_snapshots`, `memories`, `context_mode`, `config_inventory`, and `cache_inventory`, with risky payload classes defaulting to inventory-only, redacted, excluded, or deferred until reviewed.
+The Codex connector SHALL define durable contracts for approved local stores beyond sessions, messages, function calls, rules, prompts, and skills. Approved stream names SHALL include `history`, `session_index`, `logs`, `shell_snapshots`, `config_inventory`, and `cache_inventory`, with risky payload classes defaulting to inventory-only, redacted, excluded, or deferred until reviewed. User-specific local tool state, including `context-mode`, and unproven memory directories SHALL NOT be part of the general Codex connector surface unless a later explicit opt-in source contract approves them.
 
 #### Scenario: Codex history files exist
 - **WHEN** the configured Codex source home contains `history.jsonl` or `session_index.jsonl`
 - **THEN** the connector SHALL either emit `history` and `session_index` records or report those stores as deferred, excluded, missing, unsupported, or inventory-only with a reason
 
-#### Scenario: Codex shell, log, memory, context, config, or cache stores exist
-- **WHEN** Codex shell snapshots, logs SQLite, memories, context-mode state, configuration, auth-adjacent files, or cache directories are discovered
+#### Scenario: Codex shell, log, private memory, context, config, or cache stores exist
+- **WHEN** Codex shell snapshots, logs SQLite, private memory directories, context-mode state, configuration, auth-adjacent files, or cache directories are discovered
 - **THEN** the connector SHALL apply the approved privacy classification before emitting payload content
 - **AND** auth-adjacent files SHALL default to exclusion unless a later explicit security review approves a narrower contract
+- **AND** private memory directories and context-mode state SHALL be accounted for through safe diagnostics, not default general connector streams
 
 ### Requirement: Local collector coverage diagnostics are safe and explicit
 The reference implementation SHALL emit safe coverage diagnostics for full local Claude Code and Codex runs. Diagnostics SHALL distinguish collected, collected-redacted, inventory-only, excluded, deferred, missing, unsupported, and unaccounted stores without exposing secrets or raw auth material.

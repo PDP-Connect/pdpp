@@ -2,7 +2,7 @@
 
 The 2026-05-15 completeness audit found that Docker scheduled success only covers declared streams. Claude Code currently declares sessions, messages, attachments, skills, memory notes, and slash commands. Codex currently declares sessions, messages, function calls, rules, prompts, and skills.
 
-Local owner homes include more state than those manifests declare. Observed gaps include Claude `file-history`, `context-mode`, debug, downloads, cache, and backups, plus Codex `history.jsonl`, `session_index.jsonl`, logs SQLite, shell snapshots, memories, context-mode, config, cache, and auth-adjacent files. Some of these are clearly valuable user/work history; others may contain credentials, secrets, machine identifiers, raw tool output, or volatile implementation cache.
+Local owner homes include more state than those manifests declare. Observed gaps include Claude `file-history`, debug, downloads, cache, and backups, plus Codex `history.jsonl`, `session_index.jsonl`, logs SQLite, shell snapshots, config, cache, and auth-adjacent files. Some installations also contain user-specific tool state such as `context-mode` or local memory directories. Stable Claude/Codex connector streams must not absorb those personal/tool-specific stores by default; they are accounted for through coverage diagnostics or explicit future opt-in source contracts.
 
 This change is a design and spec lane only. Implementation must happen later against the tasks and requirements here.
 
@@ -11,11 +11,11 @@ This change is a design and spec lane only. Implementation must happen later aga
 **Goals:**
 
 - Define a source inventory for 100% complete local Claude Code and Codex collection.
-- Define durable stream names for collectible local stores.
+- Define durable stream names for stable, collectible local stores.
 - Define privacy/security exclusions before collecting auth-adjacent or high-risk files.
 - Define source-home and multi-device assumptions.
 - Tie local source homes to connector instances so records, checkpoints, schedules, diagnostics, and artifacts do not collide.
-- Require coverage diagnostics for mounted but uncollected local stores.
+- Require coverage diagnostics for mounted but uncollected local stores, including local/private stores that are intentionally outside the general Claude/Codex connector contract.
 
 **Non-Goals:**
 
@@ -24,6 +24,7 @@ This change is a design and spec lane only. Implementation must happen later aga
 - Do not claim these local completeness contracts are PDPP Core semantics.
 - Do not solve cross-instance deduplication across devices.
 - Do not force every cache/debug/log file into a first-class stream before privacy review.
+- Do not make user-specific tools or private local conventions, such as `context-mode`, part of the general Claude/Codex connector surface.
 
 ## Decisions
 
@@ -38,7 +39,6 @@ Alternative considered: keep scheduled success as the completeness signal. Rejec
 Claude Code stream names:
 
 - `file_history`: standalone `file-history/**` snapshots and metadata.
-- `context_mode`: context-mode state that is not already represented in transcripts or memory notes.
 - `debug_artifacts`: redacted debug artifacts approved for collection.
 - `downloads`: owner-visible downloaded artifacts approved for collection.
 - `cache_inventory`: cache file inventory and safe metadata, not raw cache payloads by default.
@@ -51,12 +51,17 @@ Codex stream names:
 - `session_index`: `session_index.jsonl` session index entries.
 - `logs`: redacted logs SQLite records approved for collection.
 - `shell_snapshots`: shell snapshot files and metadata.
-- `memories`: durable Codex memory files.
-- `context_mode`: context-mode state.
 - `config_inventory`: non-secret configuration inventory and safe metadata only.
 - `cache_inventory`: cache file inventory and safe metadata, not raw cache payloads by default.
 
 Alternative considered: use one generic `local_files` stream. Rejected because stream-level contracts, grants, privacy review, and tests need stable semantics by store type.
+
+Explicitly excluded from the general stream-name list:
+
+- `context_mode`: a user-specific local tool convention, not a general Claude Code or Codex product surface.
+- Codex `memories`: deferred until there is evidence of a stable general Codex memory surface and a reviewed privacy contract.
+
+These stores may be reported by safe coverage diagnostics as `deferred`, `excluded`, or `unsupported`, but they should not be requested by default profiles or treated as complete general connector streams.
 
 ### Privacy And Security Classification
 
@@ -96,7 +101,7 @@ Alternative considered: rely on tests to catch missing stores. Rejected because 
 
 ## Migration Plan
 
-Implementation should land in slices. First add source inventory and diagnostics without collecting new payload content. Then add low-risk payload streams such as Codex `history`, `session_index`, `memories`, and Claude `file_history` after fixture and privacy tests. Finally evaluate redacted log/debug/download streams and inventory-only config/cache/backups.
+Implementation should land in slices. First add source inventory and diagnostics without collecting new payload content. Then add low-risk payload streams such as Codex `history`, `session_index`, and Claude `file_history` after fixture and privacy tests. Finally evaluate redacted log/debug/download streams and inventory-only config/cache/backups. User-specific stores such as `context-mode` and unproven Codex memory directories remain outside the general connector contract unless a later source-specific opt-in design approves them.
 
 Existing single-device deployments should migrate to one connector instance per owner, connector type, and source home. Compatibility reads or operator actions may accept connector-only identifiers only when exactly one local instance exists for that owner and connector type.
 
@@ -104,7 +109,7 @@ Rollback should disable newly declared streams while preserving coverage diagnos
 
 ## Open Questions
 
-- Which exact Claude `context-mode` and Codex `context-mode` file shapes are stable enough for content streams versus inventory-only records?
+- Should user-specific local tools such as `context-mode` be represented later as separate custom local sources rather than Claude/Codex connector streams?
 - Which fields in Codex `logs_2.sqlite` can be redacted deterministically without losing useful run diagnostics?
 - Should Claude `downloads` and `backups` expose payload blobs, inventories, or both after owner review?
 - Should local absolute paths ever appear in owner-only diagnostics, or should diagnostics always use source-home-relative paths and hashes?

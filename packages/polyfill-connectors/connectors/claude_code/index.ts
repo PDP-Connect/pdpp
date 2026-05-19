@@ -92,9 +92,9 @@ export const CLAUDE_CODE_KNOWN_LOCAL_STORES: KnownLocalStore[] = [
   {
     store: "context_mode",
     relativePath: "context-mode",
-    stream: "context_mode",
+    stream: null,
     classification: "inventory_only",
-    reason: "file shapes are not stable enough for content collection",
+    reason: "user-specific local convention; diagnostics only, not a general Claude Code stream",
   },
   {
     store: "cache",

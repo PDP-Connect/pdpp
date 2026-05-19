@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -66,6 +66,57 @@ test("codex inventory streams emit safe metadata and exclude auth payloads", asy
         record.stream === "coverage_diagnostics" && record.data.store === "auth" && record.data.status === "excluded"
     )
   );
+});
+
+test("codex memories and context_mode are diagnostics-only, not requestable streams", async () => {
+  const codexHome = await mkdtemp(join(tmpdir(), "pdpp-codex-private-"));
+  await mkdir(join(codexHome, "memories"), { recursive: true });
+  await mkdir(join(codexHome, "context-mode"), { recursive: true });
+  await writeFile(join(codexHome, "memories", "local.md"), "private memory");
+  await writeFile(join(codexHome, "context-mode", "local.json"), '{"private":"secret-context-payload"}');
+
+  const result = await runConnectorProcess({
+    env: { CODEX_HOME: codexHome },
+    start: {
+      scope: { streams: [{ name: "memories" }, { name: "context_mode" }, { name: "coverage_diagnostics" }] },
+      type: "START",
+    },
+  });
+
+  assert.equal(result.exitCode, 0);
+  const records = result.messages.filter(
+    (msg): msg is Extract<EmittedMessage, { type: "RECORD" }> => msg.type === "RECORD"
+  );
+  assert(!records.some((record) => record.stream === "memories" || record.stream === "context_mode"));
+  assert(!records.some((record) => JSON.stringify(record).includes("private memory")));
+  assert(!records.some((record) => JSON.stringify(record).includes("secret-context-payload")));
+  for (const store of ["memories", "context_mode"]) {
+    assert(
+      records.some(
+        (record) =>
+          record.stream === "coverage_diagnostics" &&
+          record.data.store === store &&
+          record.data.stream === null &&
+          record.data.status === "inventory_only"
+      )
+    );
+  }
+  assert(
+    !result.messages.some(
+      (msg) =>
+        msg.type === "STATE" &&
+        ["memories", "context_mode"].includes((msg as Extract<EmittedMessage, { type: "STATE" }>).stream)
+    )
+  );
+});
+
+test("codex manifest does not expose memories or context_mode as consentable streams", async () => {
+  const manifestPath = join(import.meta.dirname, "../../manifests/codex.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as { streams: Array<{ name: string }> };
+  const streamNames = new Set(manifest.streams.map((stream) => stream.name));
+
+  assert(!streamNames.has("memories"));
+  assert(!streamNames.has("context_mode"));
 });
 
 async function runConnectorProcess(input: {

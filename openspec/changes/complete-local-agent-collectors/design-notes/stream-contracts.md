@@ -47,13 +47,13 @@ Source: `connectors/claude_code/index.ts::CLAUDE_CODE_KNOWN_LOCAL_STORES`.
 | `slash_commands`        | `commands/`            | collect            | commands path                                                          | per-run cursor (no incremental)                           | n/a                        |
 | `memory_notes`          | `projects/**/memory/`  | collect            | project-dir + relative note path                                       | per-run cursor                                            | n/a                        |
 | `file_history`          | `file-history/`        | inventory_only     | `file_history:<sha256(claude_code:relpath)>`                           | inventory rebuilt every run                               | none                       |
-| `context_mode`          | `context-mode`         | inventory_only     | `context_mode:<sha256(...)>`                                           | inventory rebuilt every run                               | none                       |
 | `cache_inventory`       | `cache/`               | inventory_only     | `cache:<sha256(...)>`                                                  | inventory rebuilt every run                               | none                       |
 | `backup_inventory`      | `backups/`             | inventory_only     | `backups:<sha256(...)>`                                                | inventory rebuilt every run                               | none                       |
 | `config_inventory`      | `settings.json`        | inventory_only     | `config:<sha256(...)>`                                                 | inventory rebuilt every run                               | none                       |
 | `debug_artifacts`       | `debug/`               | defer              | n/a (no records until redaction is approved)                           | n/a                                                       | none                       |
 | `downloads`             | `downloads/`           | defer              | n/a                                                                    | n/a                                                       | none                       |
 | (no stream — excluded)  | `auth.json`            | exclude            | n/a                                                                    | n/a                                                       | none                       |
+| (no stream — private)   | `context-mode`         | defer/exclude      | n/a                                                                    | n/a                                                       | none                       |
 | `coverage_diagnostics`  | n/a (synthetic)        | collect            | `coverage:<store>`                                                     | per-run                                                   | none                       |
 
 ### Redaction rules
@@ -99,12 +99,12 @@ Source: `connectors/codex/index.ts::CODEX_KNOWN_LOCAL_STORES`.
 | `history`               | `history.jsonl`      | inventory_only     | `history:<sha256(codex:history.jsonl)>`                    | inventory rebuilt every run                             | none          |
 | `session_index`         | `session_index.jsonl` | inventory_only    | `session_index:<sha256(...)>`                              | inventory rebuilt every run                             | none          |
 | `shell_snapshots`       | `shell-snapshots/`   | inventory_only     | `shell_snapshots:<sha256(...)>`                            | inventory rebuilt every run                             | none          |
-| `memories`              | `memories/`          | inventory_only     | `memories:<sha256(...)>`                                   | inventory rebuilt every run                             | none          |
-| `context_mode`          | `context-mode`       | inventory_only     | `context_mode:<sha256(...)>`                               | inventory rebuilt every run                             | none          |
 | `config_inventory`      | `config.toml`        | inventory_only     | `config:<sha256(...)>`                                     | inventory rebuilt every run                             | none          |
 | `cache_inventory`       | `cache/`             | inventory_only     | `cache:<sha256(...)>`                                      | inventory rebuilt every run                             | none          |
 | `logs`                  | `logs/`              | defer              | n/a (no records until redaction is approved)               | n/a                                                     | none          |
 | (no stream — excluded)  | `auth.json`          | exclude            | n/a                                                        | n/a                                                     | none          |
+| (no stream — private)   | `memories/`          | defer/exclude      | n/a                                                        | n/a                                                     | none          |
+| (no stream — private)   | `context-mode`       | defer/exclude      | n/a                                                        | n/a                                                     | none          |
 | `coverage_diagnostics`  | n/a (synthetic)      | collect            | `coverage:<store>`                                         | per-run                                                 | none          |
 
 ### Redaction rules

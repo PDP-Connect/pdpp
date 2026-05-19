@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -62,6 +62,48 @@ test("claude_code inventory streams emit safe metadata and exclude auth payloads
         record.stream === "coverage_diagnostics" && record.data.store === "auth" && record.data.status === "excluded"
     )
   );
+});
+
+test("claude_code context_mode is diagnostics-only, not a requestable stream", async () => {
+  const claudeHome = await mkdtemp(join(tmpdir(), "pdpp-claude-private-"));
+  await mkdir(join(claudeHome, "context-mode"), { recursive: true });
+  await writeFile(join(claudeHome, "context-mode", "local.json"), '{"private":"do-not-emit"}');
+
+  const result = await runConnectorProcess({
+    env: { CLAUDE_CODE_HOME: claudeHome },
+    start: {
+      scope: { streams: [{ name: "context_mode" }, { name: "coverage_diagnostics" }] },
+      type: "START",
+    },
+  });
+
+  assert.equal(result.exitCode, 0);
+  const records = result.messages.filter(
+    (msg): msg is Extract<EmittedMessage, { type: "RECORD" }> => msg.type === "RECORD"
+  );
+  assert(!records.some((record) => record.stream === "context_mode"));
+  assert(!records.some((record) => JSON.stringify(record).includes("do-not-emit")));
+  assert(
+    records.some(
+      (record) =>
+        record.stream === "coverage_diagnostics" &&
+        record.data.store === "context_mode" &&
+        record.data.stream === null &&
+        record.data.status === "inventory_only"
+    )
+  );
+  assert(
+    !result.messages.some(
+      (msg) => msg.type === "STATE" && (msg as Extract<EmittedMessage, { type: "STATE" }>).stream === "context_mode"
+    )
+  );
+});
+
+test("claude_code manifest does not expose context_mode as a consentable stream", async () => {
+  const manifestPath = join(import.meta.dirname, "../../manifests/claude_code.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as { streams: Array<{ name: string }> };
+
+  assert(!manifest.streams.some((stream) => stream.name === "context_mode"));
 });
 
 async function runConnectorProcess(input: {

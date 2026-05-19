@@ -151,16 +151,16 @@ export const CODEX_KNOWN_LOCAL_STORES: KnownLocalStore[] = [
   {
     store: "memories",
     relativePath: "memories",
-    stream: "memories",
+    stream: null,
     classification: "inventory_only",
-    reason: "metadata-only until memory file shapes are approved",
+    reason: "deferred private local store; diagnostics only until a general Codex memory surface is approved",
   },
   {
     store: "context_mode",
     relativePath: "context-mode",
-    stream: "context_mode",
+    stream: null,
     classification: "inventory_only",
-    reason: "file shapes are not stable enough for content collection",
+    reason: "user-specific local convention; diagnostics only, not a general Codex stream",
   },
   {
     store: "logs",
@@ -979,8 +979,6 @@ function emitStateCursors({ requested, newMtimes, nowIso }: EmitStateCursorsArgs
     "session_index",
     "logs",
     "shell_snapshots",
-    "memories",
-    "context_mode",
     "config_inventory",
     "cache_inventory",
     "coverage_diagnostics",
@@ -1011,12 +1009,6 @@ async function emitLocalInventoryStreams(input: {
       store: "shell_snapshots",
       stream: "shell_snapshots",
       reason: "shell content requires redaction review before payload collection",
-    },
-    {
-      relativeRoot: "memories",
-      store: "memories",
-      stream: "memories",
-      reason: "metadata-only until memory file shapes are approved",
     },
   ]) {
     if (!input.requested.has(directoryStream.stream)) {

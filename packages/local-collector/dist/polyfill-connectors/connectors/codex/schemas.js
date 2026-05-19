@@ -111,8 +111,6 @@ export const SCHEMAS = {
     session_index: inventorySchema,
     logs: inventorySchema,
     shell_snapshots: inventorySchema,
-    memories: inventorySchema,
-    context_mode: inventorySchema,
     config_inventory: inventorySchema,
     cache_inventory: inventorySchema,
     coverage_diagnostics: coverageDiagnosticsSchema,
