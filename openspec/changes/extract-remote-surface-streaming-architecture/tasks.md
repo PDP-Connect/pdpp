@@ -57,7 +57,7 @@
 
 ## 7. Verification And Smoke
 
-- [ ] 7.1 Run `pnpm --filter @pdpp/remote-surface typecheck`, package tests, and package lint/check commands available in the workspace.
+- [x] 7.1 Run `pnpm --filter @pdpp/remote-surface typecheck`, package tests, and package lint/check commands available in the workspace.
 - [x] 7.2 Run reference streaming route, session, run-target registry, n.eko adapter, CDP allowlist, and browser-surface lease tests.
 - [x] 7.3 Run dashboard stream viewer tests for protocol, keyboard, clipboard, viewport, visual quality, media settle, and n.eko client behavior.
 - [x] 7.4 Run import-boundary sweeps proving `packages/remote-surface` has no imports from reference, dashboard, connectors, Docker, or server modules.
