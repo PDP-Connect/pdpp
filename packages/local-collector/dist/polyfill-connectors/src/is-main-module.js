@@ -1,8 +1,17 @@
-import { pathToFileURL } from "node:url";
+import { realpathSync } from "node:fs";
+import { fileURLToPath, pathToFileURL } from "node:url";
 export function isMainModule(importMetaUrl) {
     const entry = process.argv[1];
     if (!entry) {
         return false;
     }
-    return importMetaUrl === pathToFileURL(entry).href;
+    if (importMetaUrl === pathToFileURL(entry).href) {
+        return true;
+    }
+    try {
+        return realpathSync(fileURLToPath(importMetaUrl)) === realpathSync(entry);
+    }
+    catch {
+        return false;
+    }
 }

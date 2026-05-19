@@ -407,6 +407,8 @@ function buildSandboxDeploymentDiagnostics(): DeploymentDiagnostics {
     database: { path: "(sandbox: in-memory deterministic dataset)" },
     runtime_capabilities: {
       bindings: { browser: false, filesystem: false, local_device: false, network: true },
+      accepted_collector_protocol_versions: ["1"],
+      collector_pairing: null,
       collector_paired: false,
       in_container: false,
     },

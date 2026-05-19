@@ -23,12 +23,24 @@
  * Connectors control their own bootstrap.
  */
 
-import { pathToFileURL } from "node:url";
+import { realpathSync } from "node:fs";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 export function isMainModule(importMetaUrl: string): boolean {
   const entry = process.argv[1];
   if (!entry) {
     return false;
   }
-  return importMetaUrl === pathToFileURL(entry).href;
+  if (importMetaUrl === pathToFileURL(entry).href) {
+    return true;
+  }
+
+  // npm exposes package bins as symlinks. Compare real paths too so
+  // installed CLI entrypoints still bootstrap while import-time tests stay
+  // safe.
+  try {
+    return realpathSync(fileURLToPath(importMetaUrl)) === realpathSync(entry);
+  } catch {
+    return false;
+  }
 }

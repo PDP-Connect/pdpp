@@ -633,13 +633,6 @@ export async function bootstrapPostgresSchema() {
         primary_key_text TEXT NOT NULL,
         UNIQUE(connector_instance_id, stream, record_key)
       );
-      CREATE INDEX IF NOT EXISTS idx_pg_records_lookup
-        ON records(connector_instance_id, stream, record_key);
-      CREATE INDEX IF NOT EXISTS idx_pg_records_stream_version
-        ON records(connector_instance_id, stream, version);
-      CREATE INDEX IF NOT EXISTS idx_pg_records_stream_cursor
-        ON records(connector_instance_id, stream, deleted, cursor_value, primary_key_text);
-
       CREATE TABLE IF NOT EXISTS record_changes (
         connector_id TEXT NOT NULL,
         connector_instance_id TEXT NOT NULL,
@@ -652,9 +645,6 @@ export async function bootstrapPostgresSchema() {
         deleted_at TEXT,
         PRIMARY KEY(connector_instance_id, stream, version)
       );
-      CREATE INDEX IF NOT EXISTS idx_pg_record_changes_record
-        ON record_changes(connector_instance_id, stream, record_key, version);
-
       CREATE TABLE IF NOT EXISTS version_counter (
         connector_id TEXT NOT NULL,
         connector_instance_id TEXT NOT NULL,
@@ -692,9 +682,6 @@ export async function bootstrapPostgresSchema() {
         CONSTRAINT blob_bindings_json_path_shape
           CHECK (json_path = '@record' OR json_path LIKE '/%')
       );
-      CREATE INDEX IF NOT EXISTS idx_pg_blob_bindings_record
-        ON blob_bindings(connector_instance_id, stream, record_key);
-
       -- sha256 uniqueness is implied by the blob_id = 'blob_sha256_<hex>'
       -- naming + PRIMARY KEY on blob_id. Making it explicit at the
       -- schema layer protects against future drift.
@@ -785,9 +772,6 @@ export async function bootstrapPostgresSchema() {
         embedding JSONB NOT NULL,
         PRIMARY KEY(connector_instance_id, scope_key, record_key)
       );
-      CREATE INDEX IF NOT EXISTS idx_pg_semantic_search_scope
-        ON semantic_search_blob(connector_instance_id, scope_key);
-
       CREATE TABLE IF NOT EXISTS semantic_search_snapshots (
         snapshot_id TEXT PRIMARY KEY,
         query TEXT NOT NULL,
@@ -1052,19 +1036,23 @@ async function migratePostgresSchedulerInstanceColumns(client) {
 }
 
 async function migratePostgresRecordsBlobSearchInstanceColumns(client) {
-  const checks = await Promise.all([
-    hasPostgresColumn(client, 'records', 'connector_instance_id'),
-    hasPostgresColumn(client, 'record_changes', 'connector_instance_id'),
-    hasPostgresColumn(client, 'version_counter', 'connector_instance_id'),
-    hasPostgresColumn(client, 'blobs', 'connector_instance_id'),
-    hasPostgresColumn(client, 'blob_bindings', 'connector_instance_id'),
-    hasPostgresColumn(client, 'lexical_search_index', 'connector_instance_id'),
-    hasPostgresColumn(client, 'lexical_search_meta', 'connector_instance_id'),
-    hasPostgresColumn(client, 'semantic_search_blob', 'connector_instance_id'),
-    hasPostgresColumn(client, 'semantic_search_meta', 'connector_instance_id'),
-    hasPostgresColumn(client, 'semantic_search_backfill_progress', 'connector_instance_id'),
-  ]);
+  const checks = [];
+  for (const table of [
+    'records',
+    'record_changes',
+    'version_counter',
+    'blobs',
+    'blob_bindings',
+    'lexical_search_index',
+    'lexical_search_meta',
+    'semantic_search_blob',
+    'semantic_search_meta',
+    'semantic_search_backfill_progress',
+  ]) {
+    checks.push(await hasPostgresColumn(client, table, 'connector_instance_id'));
+  }
   if (checks.every(Boolean)) {
+    await ensurePostgresRecordsBlobSearchInstanceIndexes(client);
     return;
   }
 
@@ -1078,12 +1066,12 @@ async function migratePostgresRecordsBlobSearchInstanceColumns(client) {
       return instanceIds.get(connectorId);
     };
 
-    const backfillRows = async (table, selector, connectorColumn = 'connector_id') => {
-      const rows = await client.query(`SELECT ${selector}, ${connectorColumn} AS connector_id FROM ${table} ORDER BY ${selector}`);
+    const backfillTableByConnector = async (table, connectorColumn = 'connector_id') => {
+      const rows = await client.query(`SELECT DISTINCT ${connectorColumn} AS connector_id FROM ${table} WHERE connector_instance_id IS NULL ORDER BY ${connectorColumn}`);
       for (const row of rows.rows) {
         await client.query(
-          `UPDATE ${table} SET connector_instance_id = $1 WHERE ${selector} = $2`,
-          [await resolveInstanceId(row.connector_id), row[selector]],
+          `UPDATE ${table} SET connector_instance_id = $1 WHERE ${connectorColumn} = $2 AND connector_instance_id IS NULL`,
+          [await resolveInstanceId(row.connector_id), row.connector_id],
         );
       }
     };
@@ -1091,7 +1079,7 @@ async function migratePostgresRecordsBlobSearchInstanceColumns(client) {
     if (!checks[0]) {
       await client.query('ALTER TABLE records DROP CONSTRAINT IF EXISTS records_connector_id_stream_record_key_key');
       await client.query('ALTER TABLE records ADD COLUMN connector_instance_id TEXT');
-      await backfillRows('records', 'id');
+      await backfillTableByConnector('records');
       await client.query('ALTER TABLE records ALTER COLUMN connector_instance_id SET NOT NULL');
       await client.query('ALTER TABLE records ADD CONSTRAINT records_connector_instance_stream_key UNIQUE(connector_instance_id, stream, record_key)');
     }
@@ -1099,13 +1087,7 @@ async function migratePostgresRecordsBlobSearchInstanceColumns(client) {
     if (!checks[1]) {
       await client.query('ALTER TABLE record_changes DROP CONSTRAINT IF EXISTS record_changes_pkey');
       await client.query('ALTER TABLE record_changes ADD COLUMN connector_instance_id TEXT');
-      const rows = await client.query('SELECT connector_id, stream, version FROM record_changes ORDER BY connector_id, stream, version');
-      for (const row of rows.rows) {
-        await client.query(
-          'UPDATE record_changes SET connector_instance_id = $1 WHERE connector_id = $2 AND stream = $3 AND version = $4',
-          [await resolveInstanceId(row.connector_id), row.connector_id, row.stream, row.version],
-        );
-      }
+      await backfillTableByConnector('record_changes');
       await client.query('ALTER TABLE record_changes ALTER COLUMN connector_instance_id SET NOT NULL');
       await client.query('ALTER TABLE record_changes ADD CONSTRAINT record_changes_pkey PRIMARY KEY(connector_instance_id, stream, version)');
     }
@@ -1113,33 +1095,21 @@ async function migratePostgresRecordsBlobSearchInstanceColumns(client) {
     if (!checks[2]) {
       await client.query('ALTER TABLE version_counter DROP CONSTRAINT IF EXISTS version_counter_pkey');
       await client.query('ALTER TABLE version_counter ADD COLUMN connector_instance_id TEXT');
-      const rows = await client.query('SELECT connector_id, stream FROM version_counter ORDER BY connector_id, stream');
-      for (const row of rows.rows) {
-        await client.query(
-          'UPDATE version_counter SET connector_instance_id = $1 WHERE connector_id = $2 AND stream = $3',
-          [await resolveInstanceId(row.connector_id), row.connector_id, row.stream],
-        );
-      }
+      await backfillTableByConnector('version_counter');
       await client.query('ALTER TABLE version_counter ALTER COLUMN connector_instance_id SET NOT NULL');
       await client.query('ALTER TABLE version_counter ADD CONSTRAINT version_counter_pkey PRIMARY KEY(connector_instance_id, stream)');
     }
 
     if (!checks[3]) {
       await client.query('ALTER TABLE blobs ADD COLUMN connector_instance_id TEXT');
-      await backfillRows('blobs', 'blob_id');
+      await backfillTableByConnector('blobs');
       await client.query('ALTER TABLE blobs ALTER COLUMN connector_instance_id SET NOT NULL');
     }
 
     if (!checks[4]) {
       await client.query('ALTER TABLE blob_bindings DROP CONSTRAINT IF EXISTS blob_bindings_pkey');
       await client.query('ALTER TABLE blob_bindings ADD COLUMN connector_instance_id TEXT');
-      const rows = await client.query('SELECT blob_id, connector_id, stream, record_key, json_path FROM blob_bindings ORDER BY blob_id, connector_id, stream, record_key, json_path');
-      for (const row of rows.rows) {
-        await client.query(
-          'UPDATE blob_bindings SET connector_instance_id = $1 WHERE blob_id = $2 AND connector_id = $3 AND stream = $4 AND record_key = $5 AND json_path = $6',
-          [await resolveInstanceId(row.connector_id), row.blob_id, row.connector_id, row.stream, row.record_key, row.json_path],
-        );
-      }
+      await backfillTableByConnector('blob_bindings');
       await client.query('ALTER TABLE blob_bindings ALTER COLUMN connector_instance_id SET NOT NULL');
       await client.query('ALTER TABLE blob_bindings ADD CONSTRAINT blob_bindings_pkey PRIMARY KEY(blob_id, connector_instance_id, stream, record_key, json_path)');
     }
@@ -1147,13 +1117,7 @@ async function migratePostgresRecordsBlobSearchInstanceColumns(client) {
     if (!checks[5]) {
       await client.query('ALTER TABLE lexical_search_index DROP CONSTRAINT IF EXISTS lexical_search_index_pkey');
       await client.query('ALTER TABLE lexical_search_index ADD COLUMN connector_instance_id TEXT');
-      const rows = await client.query('SELECT connector_id, stream, record_key, field FROM lexical_search_index ORDER BY connector_id, stream, record_key, field');
-      for (const row of rows.rows) {
-        await client.query(
-          'UPDATE lexical_search_index SET connector_instance_id = $1 WHERE connector_id = $2 AND stream = $3 AND record_key = $4 AND field = $5',
-          [await resolveInstanceId(row.connector_id), row.connector_id, row.stream, row.record_key, row.field],
-        );
-      }
+      await backfillTableByConnector('lexical_search_index');
       await client.query('ALTER TABLE lexical_search_index ALTER COLUMN connector_instance_id SET NOT NULL');
       await client.query('ALTER TABLE lexical_search_index ADD CONSTRAINT lexical_search_index_pkey PRIMARY KEY(connector_instance_id, stream, record_key, field)');
     }
@@ -1161,13 +1125,7 @@ async function migratePostgresRecordsBlobSearchInstanceColumns(client) {
     if (!checks[6]) {
       await client.query('ALTER TABLE lexical_search_meta DROP CONSTRAINT IF EXISTS lexical_search_meta_pkey');
       await client.query('ALTER TABLE lexical_search_meta ADD COLUMN connector_instance_id TEXT');
-      const rows = await client.query('SELECT connector_id, stream FROM lexical_search_meta ORDER BY connector_id, stream');
-      for (const row of rows.rows) {
-        await client.query(
-          'UPDATE lexical_search_meta SET connector_instance_id = $1 WHERE connector_id = $2 AND stream = $3',
-          [await resolveInstanceId(row.connector_id), row.connector_id, row.stream],
-        );
-      }
+      await backfillTableByConnector('lexical_search_meta');
       await client.query('ALTER TABLE lexical_search_meta ALTER COLUMN connector_instance_id SET NOT NULL');
       await client.query('ALTER TABLE lexical_search_meta ADD CONSTRAINT lexical_search_meta_pkey PRIMARY KEY(connector_instance_id, stream)');
     }
@@ -1175,13 +1133,7 @@ async function migratePostgresRecordsBlobSearchInstanceColumns(client) {
     if (!checks[7]) {
       await client.query('ALTER TABLE semantic_search_blob DROP CONSTRAINT IF EXISTS semantic_search_blob_pkey');
       await client.query('ALTER TABLE semantic_search_blob ADD COLUMN connector_instance_id TEXT');
-      const rows = await client.query('SELECT connector_id, scope_key, record_key FROM semantic_search_blob ORDER BY connector_id, scope_key, record_key');
-      for (const row of rows.rows) {
-        await client.query(
-          'UPDATE semantic_search_blob SET connector_instance_id = $1 WHERE connector_id = $2 AND scope_key = $3 AND record_key = $4',
-          [await resolveInstanceId(row.connector_id), row.connector_id, row.scope_key, row.record_key],
-        );
-      }
+      await backfillTableByConnector('semantic_search_blob');
       await client.query('ALTER TABLE semantic_search_blob ALTER COLUMN connector_instance_id SET NOT NULL');
       await client.query('ALTER TABLE semantic_search_blob ADD CONSTRAINT semantic_search_blob_pkey PRIMARY KEY(connector_instance_id, scope_key, record_key)');
     }
@@ -1189,13 +1141,7 @@ async function migratePostgresRecordsBlobSearchInstanceColumns(client) {
     if (!checks[8]) {
       await client.query('ALTER TABLE semantic_search_meta DROP CONSTRAINT IF EXISTS semantic_search_meta_pkey');
       await client.query('ALTER TABLE semantic_search_meta ADD COLUMN connector_instance_id TEXT');
-      const rows = await client.query('SELECT connector_id, stream FROM semantic_search_meta ORDER BY connector_id, stream');
-      for (const row of rows.rows) {
-        await client.query(
-          'UPDATE semantic_search_meta SET connector_instance_id = $1 WHERE connector_id = $2 AND stream = $3',
-          [await resolveInstanceId(row.connector_id), row.connector_id, row.stream],
-        );
-      }
+      await backfillTableByConnector('semantic_search_meta');
       await client.query('ALTER TABLE semantic_search_meta ALTER COLUMN connector_instance_id SET NOT NULL');
       await client.query('ALTER TABLE semantic_search_meta ADD CONSTRAINT semantic_search_meta_pkey PRIMARY KEY(connector_instance_id, stream)');
     }
@@ -1203,29 +1149,12 @@ async function migratePostgresRecordsBlobSearchInstanceColumns(client) {
     if (!checks[9]) {
       await client.query('ALTER TABLE semantic_search_backfill_progress DROP CONSTRAINT IF EXISTS semantic_search_backfill_progress_pkey');
       await client.query('ALTER TABLE semantic_search_backfill_progress ADD COLUMN connector_instance_id TEXT');
-      const rows = await client.query('SELECT connector_id, stream FROM semantic_search_backfill_progress ORDER BY connector_id, stream');
-      for (const row of rows.rows) {
-        await client.query(
-          'UPDATE semantic_search_backfill_progress SET connector_instance_id = $1 WHERE connector_id = $2 AND stream = $3',
-          [await resolveInstanceId(row.connector_id), row.connector_id, row.stream],
-        );
-      }
+      await backfillTableByConnector('semantic_search_backfill_progress');
       await client.query('ALTER TABLE semantic_search_backfill_progress ALTER COLUMN connector_instance_id SET NOT NULL');
       await client.query('ALTER TABLE semantic_search_backfill_progress ADD CONSTRAINT semantic_search_backfill_progress_pkey PRIMARY KEY(connector_instance_id, stream)');
     }
 
-    await client.query('DROP INDEX IF EXISTS idx_pg_records_lookup');
-    await client.query('DROP INDEX IF EXISTS idx_pg_records_stream_version');
-    await client.query('DROP INDEX IF EXISTS idx_pg_records_stream_cursor');
-    await client.query('DROP INDEX IF EXISTS idx_pg_record_changes_record');
-    await client.query('DROP INDEX IF EXISTS idx_pg_blob_bindings_record');
-    await client.query('DROP INDEX IF EXISTS idx_pg_semantic_search_scope');
-    await client.query('CREATE INDEX IF NOT EXISTS idx_pg_records_lookup ON records(connector_instance_id, stream, record_key)');
-    await client.query('CREATE INDEX IF NOT EXISTS idx_pg_records_stream_version ON records(connector_instance_id, stream, version)');
-    await client.query('CREATE INDEX IF NOT EXISTS idx_pg_records_stream_cursor ON records(connector_instance_id, stream, deleted, cursor_value, primary_key_text)');
-    await client.query('CREATE INDEX IF NOT EXISTS idx_pg_record_changes_record ON record_changes(connector_instance_id, stream, record_key, version)');
-    await client.query('CREATE INDEX IF NOT EXISTS idx_pg_blob_bindings_record ON blob_bindings(connector_instance_id, stream, record_key)');
-    await client.query('CREATE INDEX IF NOT EXISTS idx_pg_semantic_search_scope ON semantic_search_blob(connector_instance_id, scope_key)');
+    await ensurePostgresRecordsBlobSearchInstanceIndexes(client);
     await client.query('COMMIT');
   } catch (err) {
     try {
@@ -1233,6 +1162,21 @@ async function migratePostgresRecordsBlobSearchInstanceColumns(client) {
     } catch {}
     throw err;
   }
+}
+
+async function ensurePostgresRecordsBlobSearchInstanceIndexes(client) {
+  await client.query('DROP INDEX IF EXISTS idx_pg_records_lookup');
+  await client.query('DROP INDEX IF EXISTS idx_pg_records_stream_version');
+  await client.query('DROP INDEX IF EXISTS idx_pg_records_stream_cursor');
+  await client.query('DROP INDEX IF EXISTS idx_pg_record_changes_record');
+  await client.query('DROP INDEX IF EXISTS idx_pg_blob_bindings_record');
+  await client.query('DROP INDEX IF EXISTS idx_pg_semantic_search_scope');
+  await client.query('CREATE INDEX IF NOT EXISTS idx_pg_records_lookup ON records(connector_instance_id, stream, record_key)');
+  await client.query('CREATE INDEX IF NOT EXISTS idx_pg_records_stream_version ON records(connector_instance_id, stream, version)');
+  await client.query('CREATE INDEX IF NOT EXISTS idx_pg_records_stream_cursor ON records(connector_instance_id, stream, deleted, cursor_value, primary_key_text)');
+  await client.query('CREATE INDEX IF NOT EXISTS idx_pg_record_changes_record ON record_changes(connector_instance_id, stream, record_key, version)');
+  await client.query('CREATE INDEX IF NOT EXISTS idx_pg_blob_bindings_record ON blob_bindings(connector_instance_id, stream, record_key)');
+  await client.query('CREATE INDEX IF NOT EXISTS idx_pg_semantic_search_scope ON semantic_search_blob(connector_instance_id, scope_key)');
 }
 
 async function migratePostgresSpineSourceColumns(client) {
