@@ -16,6 +16,7 @@ const declarationKeep = new Set(
     "polyfill-connectors/src/local-device-client.d.ts",
     "polyfill-connectors/src/local-device-envelope.d.ts",
     "polyfill-connectors/src/local-device-outbox.d.ts",
+    "polyfill-connectors/src/local-device-queue-migration.d.ts",
     "polyfill-connectors/src/local-device-queue.d.ts",
     "polyfill-connectors/src/runner/index.d.ts",
     "polyfill-connectors/src/runtime-capabilities.d.ts",

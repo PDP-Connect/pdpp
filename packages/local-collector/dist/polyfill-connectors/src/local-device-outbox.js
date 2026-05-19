@@ -353,8 +353,7 @@ function asOutboxRow(row) {
     }
     const kind = row.kind;
     const status = row.status;
-    if (typeof row.acknowledged_at !== "string" &&
-        row.acknowledged_at !== null) {
+    if (typeof row.acknowledged_at !== "string" && row.acknowledged_at !== null) {
         throw new Error("local outbox row has invalid acknowledged_at");
     }
     if (typeof row.attempt_count !== "number" ||
