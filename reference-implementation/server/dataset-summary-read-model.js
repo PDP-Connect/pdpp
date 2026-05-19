@@ -93,7 +93,11 @@ export function applyDatasetSummaryRecordDelta(delta) {
     const nextRecordJsonBytes = Math.max(0, previousRecordJsonBytes + delta.recordJsonBytesDelta);
     const earliestIngestedAt = minIso(existingStream?.earliest_ingested_at || null, delta.emittedAt);
     const latestIngestedAt = maxIso(existingStream?.latest_ingested_at || null, delta.emittedAt);
-    const dirtyRecordTimeBounds = Number(existingStream?.dirty_record_time_bounds || 0) || delta.dirtyRecordTimeBounds ? 1 : 0;
+    const consentTimeField = existingStream?.consent_time_field || delta.consentTimeField || null;
+    const dirtyRecordTimeBounds =
+      Number(existingStream?.dirty_record_time_bounds || 0) || (consentTimeField && delta.dirtyRecordTimeBounds)
+        ? 1
+        : 0;
     const computedAt = nowIso();
 
     db.prepare(
@@ -104,15 +108,17 @@ export function applyDatasetSummaryRecordDelta(delta) {
          record_json_bytes,
          earliest_ingested_at,
          latest_ingested_at,
+         consent_time_field,
          dirty_record_time_bounds,
          computed_at
        )
-       VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(connector_id, stream) DO UPDATE SET
          record_count = excluded.record_count,
          record_json_bytes = excluded.record_json_bytes,
          earliest_ingested_at = excluded.earliest_ingested_at,
          latest_ingested_at = excluded.latest_ingested_at,
+         consent_time_field = excluded.consent_time_field,
          dirty_record_time_bounds = excluded.dirty_record_time_bounds,
          computed_at = excluded.computed_at`,
     ).run(
@@ -122,6 +128,7 @@ export function applyDatasetSummaryRecordDelta(delta) {
       nextRecordJsonBytes,
       earliestIngestedAt,
       latestIngestedAt,
+      consentTimeField,
       dirtyRecordTimeBounds,
       computedAt,
     );
@@ -257,6 +264,104 @@ export async function rebuildDatasetSummaryProjection(dependencies) {
   }
 }
 
+export async function reconcileDirtyDatasetSummaryRecordTimeBounds(dependencies) {
+  const dirtyRows = getDb()
+    .prepare(
+      `SELECT connector_id,
+              stream,
+              consent_time_field
+         FROM dataset_summary_stream_projection
+        WHERE dirty_record_time_bounds <> 0
+        ORDER BY connector_id ASC, stream ASC`,
+    )
+    .all();
+  if (dirtyRows.length === 0) {
+    return { reconciled: 0, deferred: 0 };
+  }
+
+  const computedAt = nowIso();
+  let reconciled = 0;
+  let deferred = 0;
+  const repairedRows = [];
+
+  for (const row of dirtyRows) {
+    if (!isSafeConsentTimeField(row.consent_time_field)) {
+      deferred += 1;
+      continue;
+    }
+
+    let bounds;
+    try {
+      bounds = await dependencies.getStreamRecordTimeBounds(
+        row.connector_id,
+        row.stream,
+        row.consent_time_field,
+      );
+    } catch (err) {
+      markDatasetSummaryProjectionFailed(err);
+      throw err;
+    }
+    repairedRows.push({
+      connector_id: row.connector_id,
+      stream: row.stream,
+      earliest_record_time: bounds?.earliest || null,
+      latest_record_time: bounds?.latest || null,
+    });
+    reconciled += 1;
+  }
+
+  getDb().transaction(() => {
+    const updateStream = getDb().prepare(
+      `UPDATE dataset_summary_stream_projection
+          SET earliest_record_time = ?,
+              latest_record_time = ?,
+              dirty_record_time_bounds = 0,
+              computed_at = ?
+        WHERE connector_id = ? AND stream = ?`,
+    );
+    for (const row of repairedRows) {
+      updateStream.run(
+        row.earliest_record_time,
+        row.latest_record_time,
+        computedAt,
+        row.connector_id,
+        row.stream,
+      );
+    }
+
+    const current = getDatasetSummaryProjection();
+    const recordTimeBounds = getGlobalRecordTimeBoundsFromStreams();
+    const stillDirty = hasDirtyRecordTimeBounds();
+    const summary = {
+      counts: current.counts,
+      retained_bytes: current.retained_bytes,
+      record_time_bounds: stillDirty ? current.record_time_bounds : recordTimeBounds,
+      ingested_time_bounds: current.ingested_time_bounds,
+      top_connector_candidates: current.top_connector_candidates,
+    };
+    const metadata = stillDirty
+      ? {
+          computed_at: computedAt,
+          state: 'stale',
+          stale_since: current.metadata.stale_since || computedAt,
+          rebuild_status: current.metadata.rebuild_status === 'running' ? 'running' : 'idle',
+          last_error: current.metadata.last_error || 'dirty record-time bounds could not be safely reconciled',
+          source_high_watermark: `reconcile:${computedAt}`,
+        }
+      : {
+          computed_at: computedAt,
+          state: current.metadata.state === 'failed' ? 'failed' : 'fresh',
+          stale_since: current.metadata.state === 'failed' ? current.metadata.stale_since : null,
+          rebuild_status: current.metadata.state === 'failed' ? current.metadata.rebuild_status : 'idle',
+          last_error: current.metadata.state === 'failed' ? current.metadata.last_error : null,
+          source_high_watermark: `reconcile:${computedAt}`,
+        };
+    writeDatasetSummaryProjection(summary, metadata, computedAt);
+  })();
+
+  return { reconciled, deferred };
+}
+
 function maybeProjectionFault(point, ctx) {
   if (projectionFaultHook) projectionFaultHook(point, ctx);
 }
@@ -268,6 +373,7 @@ function getStreamProjection(connectorId, stream) {
               record_json_bytes,
               earliest_ingested_at,
               latest_ingested_at,
+              consent_time_field,
               dirty_record_time_bounds
          FROM dataset_summary_stream_projection
         WHERE connector_id = ? AND stream = ?`,
@@ -378,10 +484,13 @@ function replaceStreamProjections(rows, computedAt, db = getDb()) {
        record_json_bytes,
        earliest_ingested_at,
        latest_ingested_at,
+       earliest_record_time,
+       latest_record_time,
+       consent_time_field,
        dirty_record_time_bounds,
        computed_at
      )
-     VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   for (const row of rows || []) {
     insert.run(
@@ -391,6 +500,9 @@ function replaceStreamProjections(rows, computedAt, db = getDb()) {
       Number(row.record_json_bytes || 0),
       row.earliest_ingested_at || null,
       row.latest_ingested_at || null,
+      row.earliest_record_time || null,
+      row.latest_record_time || null,
+      row.consent_time_field || null,
       Number(row.dirty_record_time_bounds || 0),
       computedAt,
     );
@@ -446,6 +558,38 @@ function minIsoFromRows(rows, field) {
 
 function maxIsoFromRows(rows, field) {
   return rows.reduce((max, row) => maxIso(max, row[field] || null), null);
+}
+
+function getGlobalRecordTimeBoundsFromStreams() {
+  const row = getDb()
+    .prepare(
+      `SELECT MIN(CASE WHEN record_count > 0 THEN earliest_record_time END) AS earliest,
+              MAX(CASE WHEN record_count > 0 THEN latest_record_time END) AS latest
+         FROM dataset_summary_stream_projection
+        WHERE record_count > 0
+          AND consent_time_field IS NOT NULL
+          AND dirty_record_time_bounds = 0`,
+    )
+    .get();
+  return {
+    earliest: typeof row?.earliest === 'string' ? row.earliest : null,
+    latest: typeof row?.latest === 'string' ? row.latest : null,
+  };
+}
+
+function hasDirtyRecordTimeBounds() {
+  const row = getDb()
+    .prepare(
+      `SELECT COUNT(*) AS count
+         FROM dataset_summary_stream_projection
+        WHERE dirty_record_time_bounds <> 0`,
+    )
+    .get();
+  return Number(row?.count || 0) > 0;
+}
+
+function isSafeConsentTimeField(field) {
+  return typeof field === 'string' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(field);
 }
 
 function markDatasetSummaryProjectionRebuilding(at) {

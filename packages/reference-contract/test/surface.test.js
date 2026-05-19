@@ -88,12 +88,18 @@ test('OpenAPI and docs generation include the auth/control routes alongside reco
 
   assert.ok(fullDocument.paths['/_ref/connectors']);
   assert.ok(fullDocument.paths['/_ref/search']);
+  assert.equal(publicDocument.paths['/_ref/dataset/summary/rebuild'], undefined);
+  assert.equal(
+    fullDocument.paths['/_ref/dataset/summary/rebuild'].post.operationId,
+    'refDatasetSummaryRebuild',
+  );
 
   assert.match(docs.routes, /\/oauth\/par/);
   assert.match(docs.routes, /\/oauth\/token/);
   assert.match(docs.routes, /\/grants\/\{grantId\}\/revoke/);
   assert.match(docs.routes, /\/v1\/streams\/\{stream\}\/records/);
   assert.match(docs.referenceRoutes, /\/_ref\/search/);
+  assert.match(docs.referenceRoutes, /\/_ref\/dataset\/summary\/rebuild/);
   assert.match(docs.cookbook, /consent\/approve.*\{ grant_id, token, grant \}/);
   assert.ok(!publicDocument.paths['/v1/blobs/{blob_id}'].get.responses['302']);
   assert.deepEqual(

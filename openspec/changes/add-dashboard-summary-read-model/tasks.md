@@ -17,12 +17,12 @@ Maintenance note: record deltas, blob insert deltas, unsafe-write staleness, fai
 
 ## 3. Reconciliation And Rebuild
 
-- [ ] 3.1 Add stream-scoped reconciliation for dirty record-time bounds from durable records.
+- [x] 3.1 Add stream-scoped reconciliation for dirty record-time bounds from durable records.
 - [x] 3.2 Add a full rebuild path that regenerates the dashboard summary without connector reruns, credential reads, or destructive canonical-data changes.
 - [x] 3.3 Surface rebuild in-progress and failed states through summary metadata.
-- [ ] 3.4 Add tests for rebuilding from empty/missing projection rows, older databases, dirty extrema, and rebuild failure.
+- [x] 3.4 Add tests for rebuilding from empty/missing projection rows, older databases, dirty extrema, and rebuild failure.
 
-Rebuild note: tests cover missing projection rows, successful full rebuild, non-empty stream seed rebuild, rebuild failure, last-known preservation, and sanitized errors. Dirty-extrema reconciliation and older-database reconciliation remain open.
+Rebuild note: tests cover missing projection rows, successful full rebuild, non-empty stream seed rebuild, dirty record-time reconciliation, rebuild failure, last-known preservation, and sanitized errors. Older-database coverage is represented by missing/empty projection state rebuilt from durable record tables.
 
 ## 4. Dashboard UX
 

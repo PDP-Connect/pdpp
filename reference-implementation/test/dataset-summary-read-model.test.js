@@ -8,6 +8,8 @@ import {
   __setDatasetSummaryProjectionFaultHookForTest,
   applyDatasetSummaryBlobDelta,
   getDatasetSummaryProjection,
+  markDatasetSummaryProjectionStale,
+  reconcileDirtyDatasetSummaryRecordTimeBounds,
   rebuildDatasetSummaryProjection,
 } from '../server/dataset-summary-read-model.js';
 import { closeDb, getDb, initDb } from '../server/db.js';
@@ -18,6 +20,7 @@ import {
   getDatasetBlobBytes,
   getDatasetRecordChangesBytes,
   getDatasetRecordsAggregate,
+  getDatasetSummaryStreamRecordTimeBounds,
   getDatasetRecordTimeBounds,
   ingestRecord,
   listDatasetSummaryStreamProjectionSeeds,
@@ -179,7 +182,7 @@ test('record upsert deltas update counts bytes ingest bounds and top connectors'
     ]);
     assert.equal(projection.retained_bytes.record_json_bytes, liveRecordJsonBytes());
     assert.equal(projection.retained_bytes.record_changes_json_bytes, recordChangeJsonBytes());
-    assert.equal(projection.metadata.state, 'stale');
+    assert.equal(projection.metadata.state, 'fresh');
   }));
 
 test('record-change pruning subtracts the inclusive retention boundary', async () =>
@@ -213,7 +216,7 @@ test('record-change pruning subtracts the inclusive retention boundary', async (
     }
   }));
 
-test('record delete deltas decrement live counts and mark extrema dirty', async () =>
+test('record delete deltas decrement live counts without staling non-time streams', async () =>
   withTempDb(async () => {
     await rebuildEmptyProjection();
     await ingestRecord('gmail', {
@@ -237,8 +240,8 @@ test('record delete deltas decrement live counts and mark extrema dirty', async 
     assert.equal(projection.counts.stream_count, 1);
     assert.equal(projection.retained_bytes.record_json_bytes, liveRecordJsonBytes());
     assert.equal(projection.retained_bytes.record_changes_json_bytes, recordChangeJsonBytes());
-    assert.equal(projection.metadata.state, 'stale');
-    assert.match(projection.metadata.stale_since, /^\d{4}-\d{2}-\d{2}T/);
+    assert.equal(projection.metadata.state, 'fresh');
+    assert.equal(projection.metadata.stale_since, null);
   }));
 
 test('blob insert delta updates retained blob bytes and duplicate content is a no-op', async () =>
@@ -261,6 +264,7 @@ test('blob and non-repair deltas preserve existing stale metadata', async () =>
       emitted_at: '2026-01-01T00:00:00.000Z',
       data: { id: 'm1', subject: 'hello' },
     });
+    markDatasetSummaryProjectionStale('test stale metadata');
     const staleProjection = getDatasetSummaryProjection();
     assert.equal(staleProjection.metadata.state, 'stale');
 
@@ -368,8 +372,74 @@ test('non-empty rebuild seeds stream projections so later deltas do not fail', a
     });
     const projection = getDatasetSummaryProjection();
     assert.equal(projection.counts.record_count, 2);
-    assert.equal(projection.metadata.state, 'stale');
+    assert.equal(projection.metadata.state, 'fresh');
     assert.notEqual(projection.metadata.state, 'failed');
+  }));
+
+test('dirty record-time bounds reconcile from durable records for one stream', async () =>
+  withTempDb(async () => {
+    await rebuildEmptyProjection();
+    await ingestRecord('gmail', {
+      stream: 'messages',
+      key: 'm1',
+      emitted_at: '2026-01-01T00:00:00.000Z',
+      data: { id: 'm1', created_at: '2025-01-01T00:00:00.000Z', subject: 'old' },
+    });
+    await ingestRecord('gmail', {
+      stream: 'messages',
+      key: 'm2',
+      emitted_at: '2026-01-02T00:00:00.000Z',
+      data: { id: 'm2', created_at: '2025-02-01T00:00:00.000Z', subject: 'new' },
+    });
+    registerConnectorManifest('gmail', {
+      connector_id: 'gmail',
+      streams: [{ name: 'messages', consent_time_field: 'created_at' }],
+    });
+    await rebuildFromCurrentDb();
+
+    assert.equal(await deleteRecord('gmail', 'messages', 'm1'), 1);
+    assert.equal(getDatasetSummaryProjection().metadata.state, 'stale');
+
+    const result = await reconcileDirtyDatasetSummaryRecordTimeBounds({
+      getStreamRecordTimeBounds: getDatasetSummaryStreamRecordTimeBounds,
+    });
+    const projection = getDatasetSummaryProjection();
+
+    assert.deepEqual(result, { reconciled: 1, deferred: 0 });
+    assert.equal(projection.metadata.state, 'fresh');
+    assert.equal(projection.record_time_bounds.earliest, '2025-02-01T00:00:00.000Z');
+    assert.equal(projection.record_time_bounds.latest, '2025-02-01T00:00:00.000Z');
+    assert.equal(getStreamDirtyFlag('gmail', 'messages'), 0);
+  }));
+
+test('dirty record-time reconciliation defers unsafe rows instead of clearing stale state', async () =>
+  withTempDb(async () => {
+    await rebuildEmptyProjection();
+    getDb()
+      .prepare(
+        `INSERT INTO dataset_summary_stream_projection(
+           connector_id,
+           stream,
+           record_count,
+           record_json_bytes,
+           dirty_record_time_bounds,
+           computed_at
+         )
+         VALUES('gmail', 'messages', 1, 1, 1, '2026-01-01T00:00:00.000Z')`,
+      )
+      .run();
+
+    const result = await reconcileDirtyDatasetSummaryRecordTimeBounds({
+      getStreamRecordTimeBounds: () => {
+        throw new Error('should not scan without a safe consent_time_field');
+      },
+    });
+    const projection = getDatasetSummaryProjection();
+
+    assert.deepEqual(result, { reconciled: 0, deferred: 1 });
+    assert.equal(projection.metadata.state, 'stale');
+    assert.match(projection.metadata.last_error, /could not be safely reconciled/);
+    assert.equal(getStreamDirtyFlag('gmail', 'messages'), 1);
   }));
 
 async function rebuildEmptyProjection() {
@@ -415,6 +485,29 @@ async function rebuildFromCurrentDb() {
     listTopConnectorCandidates: () => listDatasetTopConnectorCandidates(),
     listStreamProjectionSeeds: () => listDatasetSummaryStreamProjectionSeeds(),
   });
+}
+
+function registerConnectorManifest(connectorId, manifest) {
+  getDb()
+    .prepare(
+      `INSERT INTO connectors(connector_id, manifest, created_at)
+       VALUES(?, ?, ?)
+       ON CONFLICT(connector_id) DO UPDATE SET
+         manifest = excluded.manifest`,
+    )
+    .run(connectorId, JSON.stringify(manifest), '2026-01-01T00:00:00.000Z');
+}
+
+function getStreamDirtyFlag(connectorId, stream) {
+  return Number(
+    getDb()
+      .prepare(
+        `SELECT dirty_record_time_bounds
+           FROM dataset_summary_stream_projection
+          WHERE connector_id = ? AND stream = ?`,
+      )
+      .get(connectorId, stream).dirty_record_time_bounds,
+  );
 }
 
 function liveRecordJsonBytes() {

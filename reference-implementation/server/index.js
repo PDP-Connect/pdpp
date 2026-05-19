@@ -3445,7 +3445,7 @@ function buildAsApp(opts = {}) {
     }
   });
 
-  app.post('/_ref/dataset/summary/rebuild', ownerAuth.requireOwnerSession, async (req, res) => {
+  app.post('/_ref/dataset/summary/rebuild', { contract: 'refDatasetSummaryRebuild' }, ownerAuth.requireOwnerSession, async (req, res) => {
     try {
       let cachedAggregate = null;
       const aggregate = async () => {

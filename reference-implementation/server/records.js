@@ -270,6 +270,7 @@ export async function ingestRecord(storageTarget, record) {
         connectorId,
         stream,
         emittedAt: effectiveEmittedAt,
+        consentTimeField: getManifestConsentTimeField(connectorId, stream),
         recordCountDelta: op === 'delete' ? -1 : current?.deleted ? 1 : current ? 0 : 1,
         recordJsonBytesDelta: op === 'delete'
           ? -byteLength(current.record_json)
@@ -282,6 +283,7 @@ export async function ingestRecord(storageTarget, record) {
         connectorId,
         stream,
         emittedAt: effectiveEmittedAt,
+        consentTimeField: getManifestConsentTimeField(connectorId, stream),
         recordCountDelta: op === 'delete' ? -1 : current?.deleted ? 1 : current ? 0 : 1,
         recordJsonBytesDelta: op === 'delete'
           ? -byteLength(current.record_json)
@@ -2078,6 +2080,7 @@ export async function deleteRecord(storageTarget, stream, recordId) {
         connectorId,
         stream,
         emittedAt: now,
+        consentTimeField: getManifestConsentTimeField(connectorId, stream),
         recordCountDelta: -1,
         recordJsonBytesDelta: -byteLength(current.record_json),
         recordChangesJsonBytesDelta: byteLength(current.record_json) - prunedBytes,
@@ -2088,6 +2091,7 @@ export async function deleteRecord(storageTarget, stream, recordId) {
         connectorId,
         stream,
         emittedAt: now,
+        consentTimeField: getManifestConsentTimeField(connectorId, stream),
         recordCountDelta: -1,
         recordJsonBytesDelta: -byteLength(current.record_json),
         recordChangesJsonBytesDelta: byteLength(current.record_json),
@@ -2407,7 +2411,7 @@ export function listDatasetSummaryStreamProjectionSeeds() {
     return [];
   }
 
-  return getDb()
+  const streamRows = getDb()
     .prepare(
       `SELECT connector_id,
               stream,
@@ -2421,15 +2425,27 @@ export function listDatasetSummaryStreamProjectionSeeds() {
         GROUP BY connector_id, stream`,
     )
     .all()
-    .map((row) => ({
-      connector_id: row.connector_id,
-      stream: row.stream,
-      record_count: Number(row.record_count || 0),
-      record_json_bytes: Number(row.record_json_bytes || 0),
-      earliest_ingested_at: row.earliest_ingested_at || null,
-      latest_ingested_at: row.latest_ingested_at || null,
-      dirty_record_time_bounds: 0,
-    }));
+    .map((row) => seedDatasetSummaryStreamProjection(row));
+  return streamRows;
+}
+
+export function getDatasetSummaryStreamRecordTimeBounds(connectorId, stream, consentTimeField) {
+  if (isPostgresStorageBackend()) {
+    return { earliest: null, latest: null };
+  }
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(consentTimeField || '')) {
+    throw new Error('unsafe consent_time_field for dataset summary stream reconciliation');
+  }
+
+  const jsonPath = `$.${consentTimeField}`;
+  const result = getOne(
+    referenceQueries.recordsDatasetGetStreamTimeBounds,
+    [jsonPath, jsonPath, connectorId, stream],
+  );
+  return {
+    earliest: typeof result?.min_time === 'string' ? result.min_time : null,
+    latest: typeof result?.max_time === 'string' ? result.max_time : null,
+  };
 }
 
 /**
@@ -2490,6 +2506,43 @@ async function getRealWorldTimeBounds() {
   }
 
   return { earliest, latest };
+}
+
+function seedDatasetSummaryStreamProjection(row) {
+  const consentTimeField = getManifestConsentTimeField(row.connector_id, row.stream);
+  const recordTimeBounds = consentTimeField
+    ? getDatasetSummaryStreamRecordTimeBounds(row.connector_id, row.stream, consentTimeField)
+    : { earliest: null, latest: null };
+  return {
+    connector_id: row.connector_id,
+    stream: row.stream,
+    record_count: Number(row.record_count || 0),
+    record_json_bytes: Number(row.record_json_bytes || 0),
+    earliest_ingested_at: row.earliest_ingested_at || null,
+    latest_ingested_at: row.latest_ingested_at || null,
+    earliest_record_time: recordTimeBounds.earliest,
+    latest_record_time: recordTimeBounds.latest,
+    consent_time_field: consentTimeField,
+    dirty_record_time_bounds: 0,
+  };
+}
+
+function getManifestConsentTimeField(connectorId, streamName) {
+  const row = getOne(referenceQueries.authConnectorsGetManifestById, [connectorId]);
+  if (!row?.manifest) return null;
+
+  let manifest;
+  try {
+    manifest = JSON.parse(row.manifest);
+  } catch {
+    return null;
+  }
+  const stream = Array.isArray(manifest?.streams)
+    ? manifest.streams.find((candidate) => candidate?.name === streamName)
+    : null;
+  const field = stream?.consent_time_field;
+  if (typeof field !== 'string' || !field) return null;
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(field) ? field : null;
 }
 
 // --- Cursor encoding ---

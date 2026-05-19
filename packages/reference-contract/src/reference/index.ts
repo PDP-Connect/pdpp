@@ -221,6 +221,75 @@ const RecordPageSchema = {
   ],
 };
 
+const DatasetSummaryResponseSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    object: { const: "dataset_summary" },
+    connector_count: { type: "integer", minimum: 0 },
+    stream_count: { type: "integer", minimum: 0 },
+    record_count: { type: "integer", minimum: 0 },
+    record_json_bytes: { type: "integer", minimum: 0 },
+    record_changes_json_bytes: { type: "integer", minimum: 0 },
+    blob_bytes: { type: "integer", minimum: 0 },
+    total_retained_bytes: { type: "integer", minimum: 0 },
+    earliest_record_time: { type: ["string", "null"] },
+    latest_record_time: { type: ["string", "null"] },
+    earliest_ingested_at: { type: ["string", "null"] },
+    latest_ingested_at: { type: ["string", "null"] },
+    top_connectors: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          object: { const: "dataset_connector_summary" },
+          connector_id: { type: "string" },
+          record_count: { type: "integer", minimum: 0 },
+        },
+        required: ["object", "connector_id", "record_count"],
+      },
+    },
+    projection: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        computed_at: { type: ["string", "null"] },
+        state: {
+          enum: ["fresh", "refreshing", "stale", "rebuilding", "failed"],
+        },
+        stale_since: { type: ["string", "null"] },
+        rebuild_status: { enum: ["idle", "running", "failed"] },
+        last_error: { type: ["string", "null"] },
+        source_high_watermark: { type: ["string", "null"] },
+      },
+      required: [
+        "computed_at",
+        "state",
+        "stale_since",
+        "rebuild_status",
+        "last_error",
+      ],
+    },
+  },
+  required: [
+    "object",
+    "connector_count",
+    "stream_count",
+    "record_count",
+    "record_json_bytes",
+    "record_changes_json_bytes",
+    "blob_bytes",
+    "total_retained_bytes",
+    "earliest_record_time",
+    "latest_record_time",
+    "earliest_ingested_at",
+    "latest_ingested_at",
+    "top_connectors",
+    "projection",
+  ],
+};
+
 const TimelineEntrySchema = {
   type: "object",
   additionalProperties: true,
@@ -1042,78 +1111,27 @@ export const referenceManifests = [
     surface: "reference",
     tags: ["reference", "dataset"],
     summary:
-      "Aggregate dataset summary: live record counts, retained-history bytes, timespan bounds, and top connectors.",
+      "Projection-backed dataset summary: record counts, retained-history bytes, timespan bounds, top connectors, and freshness metadata.",
     request: {},
     responses: {
       200: {
-        schema: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            object: { const: "dataset_summary" },
-            connector_count: { type: "integer", minimum: 0 },
-            stream_count: { type: "integer", minimum: 0 },
-            record_count: { type: "integer", minimum: 0 },
-            record_json_bytes: { type: "integer", minimum: 0 },
-            record_changes_json_bytes: { type: "integer", minimum: 0 },
-            blob_bytes: { type: "integer", minimum: 0 },
-            total_retained_bytes: { type: "integer", minimum: 0 },
-            earliest_record_time: { type: ["string", "null"] },
-            latest_record_time: { type: ["string", "null"] },
-            earliest_ingested_at: { type: ["string", "null"] },
-            latest_ingested_at: { type: ["string", "null"] },
-            top_connectors: {
-              type: "array",
-              items: {
-                type: "object",
-                additionalProperties: false,
-                properties: {
-                  object: { const: "dataset_connector_summary" },
-                  connector_id: { type: "string" },
-                  record_count: { type: "integer", minimum: 0 },
-                },
-                required: ["object", "connector_id", "record_count"],
-              },
-            },
-            projection: {
-              type: "object",
-              additionalProperties: false,
-              properties: {
-                computed_at: { type: ["string", "null"] },
-                state: {
-                  enum: ["fresh", "refreshing", "stale", "rebuilding", "failed"],
-                },
-                stale_since: { type: ["string", "null"] },
-                rebuild_status: { enum: ["idle", "running", "failed"] },
-                last_error: { type: ["string", "null"] },
-                source_high_watermark: { type: ["string", "null"] },
-              },
-              required: [
-                "computed_at",
-                "state",
-                "stale_since",
-                "rebuild_status",
-                "last_error",
-              ],
-            },
-          },
-          required: [
-            "object",
-            "connector_count",
-            "stream_count",
-            "record_count",
-            "record_json_bytes",
-            "record_changes_json_bytes",
-            "blob_bytes",
-            "total_retained_bytes",
-            "earliest_record_time",
-            "latest_record_time",
-            "earliest_ingested_at",
-            "latest_ingested_at",
-            "top_connectors",
-            "projection",
-          ],
-        },
+        schema: DatasetSummaryResponseSchema,
+      },
+      ...CommonErrors,
+    },
+  },
+  {
+    id: "refDatasetSummaryRebuild",
+    method: "POST",
+    path: "/_ref/dataset/summary/rebuild",
+    surface: "reference",
+    tags: ["reference", "dataset"],
+    summary:
+      "Owner-triggered rebuild of the projection-backed dataset summary from durable reference state.",
+    request: {},
+    responses: {
+      200: {
+        schema: DatasetSummaryResponseSchema,
       },
       ...CommonErrors,
     },
