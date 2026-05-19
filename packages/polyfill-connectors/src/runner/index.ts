@@ -88,6 +88,22 @@ export {
   type LocalDeviceRecordEnvelope,
 } from "../local-device-envelope.ts";
 export {
+  type BuildLocalDeviceOutboxIdInput,
+  buildLocalDeviceOutboxId,
+  LocalDeviceOutbox,
+  type LocalDeviceOutboxClaimInput,
+  type LocalDeviceOutboxDeadLetterInput,
+  type LocalDeviceOutboxEnqueueInput,
+  type LocalDeviceOutboxFailInput,
+  type LocalDeviceOutboxItem,
+  type LocalDeviceOutboxKind,
+  type LocalDeviceOutboxLeaseInput,
+  type LocalDeviceOutboxOptions,
+  type LocalDeviceOutboxRenewInput,
+  type LocalDeviceOutboxStatus,
+  type LocalDeviceOutboxSummary,
+} from "../local-device-outbox.ts";
+export {
   LocalDeviceQueue,
   type LocalDeviceQueueItem,
   type LocalDeviceQueueOptions,

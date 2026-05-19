@@ -1,9 +1,9 @@
 ## 1. Outbox Substrate
 
-- [ ] 1.1 Add a package-local durable outbox module for local collectors with SQLite/WAL initialization, schema migrations, and a small typed adapter boundary.
-- [ ] 1.2 Model outbox rows for record batches, checkpoint/state commits, gap/backlog reports, and artifact/blob uploads.
-- [ ] 1.3 Implement enqueue, claim, acknowledge, fail/retry, dead-letter, lease-renew, expired-lease recovery, and status-summary operations.
-- [ ] 1.4 Add deterministic work ids and lease fencing so stale holders cannot acknowledge work after a newer claim.
+- [x] 1.1 Add a package-local durable outbox module for local collectors with SQLite/WAL initialization, schema migrations, and a small typed adapter boundary.
+- [x] 1.2 Model outbox rows for record batches, checkpoint/state commits, gap/backlog reports, and artifact/blob uploads.
+- [x] 1.3 Implement enqueue, claim, acknowledge, fail/retry, dead-letter, lease-renew, expired-lease recovery, and status-summary operations.
+- [x] 1.4 Add deterministic work ids and lease fencing so stale holders cannot acknowledge work after a newer claim.
 - [ ] 1.5 Add an old JSON queue inspection/import/quarantine path so existing pending local work is not silently discarded.
 
 ## 2. Runner Integration

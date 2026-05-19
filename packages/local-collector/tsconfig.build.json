@@ -28,6 +28,7 @@
     "../polyfill-connectors/src/is-main-module.ts",
     "../polyfill-connectors/src/local-device-client.ts",
     "../polyfill-connectors/src/local-device-envelope.ts",
+    "../polyfill-connectors/src/local-device-outbox.ts",
     "../polyfill-connectors/src/local-device-queue.ts",
     "../polyfill-connectors/src/local-source-inventory.ts",
     "../polyfill-connectors/src/pdpp-safe-text.ts",

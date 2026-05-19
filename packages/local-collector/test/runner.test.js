@@ -11,6 +11,7 @@ import {
   BUNDLED_CONNECTORS,
   COLLECTOR_PROTOCOL_VERSION,
   COLLECTOR_RUNTIME_CAPABILITIES,
+  LocalDeviceOutbox,
   getBundledConnector,
 } from '../src/runner.ts';
 import {
@@ -50,6 +51,10 @@ test('bundled connector versions map covers every bundled id', () => {
   for (const id of BUNDLED_CONNECTOR_IDS) {
     assert.equal(typeof BUNDLED_CONNECTOR_VERSIONS[id], 'string');
   }
+});
+
+test('runner exports the durable local outbox substrate without private package imports', () => {
+  assert.equal(typeof LocalDeviceOutbox, 'function');
 });
 
 test('getBundledConnector returns null for non-bundled ids', () => {

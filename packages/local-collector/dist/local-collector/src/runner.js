@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { extname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { COLLECTOR_PROTOCOL_VERSION as PROTOCOL_VERSION, COLLECTOR_RUNTIME_CAPABILITIES as POLYFILL_COLLECTOR_RUNTIME_CAPABILITIES, } from "../../polyfill-connectors/src/runner/index.js";
-export { buildCollectorStartMessage, COLLECTOR_PROTOCOL_VERSION, CollectorStateReadError, drainCollectorQueue, emitToStdout, enrollCollector, evaluatePlacement, isMainModule, LocalDeviceClient, LocalDeviceHttpError, LocalDeviceQueue, PROVIDER_RUNTIME_CAPABILITIES, RUNTIME_CAPABILITY_MISMATCH_CODE, RuntimeCapabilityMismatchError, assertPlacementOrThrow, buildLocalDeviceRecordEnvelope, canonicalJson, diffRequiredBindings, hashCanonicalJson, parseJsonlLine, resourceSet, runCollectorConnector, stringifyForJsonl, transformRecordsToCollectorEnvelopes, } from "../../polyfill-connectors/src/runner/index.js";
+export { buildCollectorStartMessage, COLLECTOR_PROTOCOL_VERSION, CollectorStateReadError, drainCollectorQueue, emitToStdout, enrollCollector, evaluatePlacement, isMainModule, LocalDeviceClient, LocalDeviceHttpError, LocalDeviceOutbox, LocalDeviceQueue, PROVIDER_RUNTIME_CAPABILITIES, RUNTIME_CAPABILITY_MISMATCH_CODE, RuntimeCapabilityMismatchError, assertPlacementOrThrow, buildLocalDeviceRecordEnvelope, buildLocalDeviceOutboxId, canonicalJson, diffRequiredBindings, hashCanonicalJson, parseJsonlLine, resourceSet, runCollectorConnector, stringifyForJsonl, transformRecordsToCollectorEnvelopes, } from "../../polyfill-connectors/src/runner/index.js";
 export const COLLECTOR_RUNTIME_CAPABILITIES = {
     id: POLYFILL_COLLECTOR_RUNTIME_CAPABILITIES.id,
     bindings: new Set(["network", "filesystem", "local_device"]),
