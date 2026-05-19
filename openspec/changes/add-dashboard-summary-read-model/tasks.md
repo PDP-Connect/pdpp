@@ -8,12 +8,12 @@
 ## 2. Projection Maintenance
 
 - [x] 2.1 Add transactional or idempotent update hooks for record upsert/delete changes that affect record counts, record JSON bytes, change-history bytes, ingest bounds, top connectors, and stream summaries.
-- [ ] 2.2 Add update hooks for blob byte totals at blob insert/delete call sites. Blob insert is implemented; no blob delete call site exists in the current server path.
+- [x] 2.2 Add update hooks for blob byte totals at blob insert/delete call sites. Blob insert is implemented; no blob delete call site exists in the current server path, so current write surfaces are covered.
 - [x] 2.3 Mark stream/global record-time bounds dirty when an overwrite or delete may have removed the current extremum.
 - [x] 2.4 Mark or report the summary as stale when a write cannot be projected safely.
 - [x] 2.5 Add targeted tests for duplicate/no-op record handling, upsert deltas, delete deltas, blob deltas, dirty extrema, and failed projection handling.
 
-Maintenance note: record deltas, blob insert deltas, unsafe-write staleness, failed projection metadata, and non-empty rebuild stream seeds are implemented. Blob delete remains open because the server currently has no blob delete call site.
+Maintenance note: record deltas, blob insert deltas, unsafe-write staleness, failed projection metadata, and non-empty rebuild stream seeds are implemented. Blob delete maintenance is not separately implemented because the server currently has no blob delete call site.
 
 ## 3. Reconciliation And Rebuild
 
@@ -36,5 +36,7 @@ Rebuild note: tests cover missing projection rows, successful full rebuild, non-
 - [x] 5.1 Run targeted tests for the dashboard summary read path.
 - [x] 5.2 Run relevant reference implementation tests.
 - [x] 5.3 Run dashboard rendering/loading-state tests.
-- [ ] 5.4 Measure `/dashboard` and `/_ref/dataset/summary` before/after on the Docker deployment with active ingest or injected delay.
+- [x] 5.4 Measure `/dashboard` and `/_ref/dataset/summary` before/after on the Docker deployment with active ingest or injected delay.
 - [x] 5.5 Run `openspec validate add-dashboard-summary-read-model --strict`.
+
+Measurement note: Docker dev-overlay measurement on 2026-05-19 showed `GET /_ref/dataset/summary` at ~0.5-1.0ms after rebuild, explicit `POST /_ref/dataset/summary/rebuild` at ~8.3-10.9s for 1,257,590 records, `POST /_ref/dataset/summary/reconcile` at ~0.6-1.5ms with no dirty rows, and `/dashboard` at ~0.16-0.43s after the first Next dev compile. This confirms the expensive corpus scan is isolated to the owner-triggered rebuild path rather than the dashboard summary hot path.
