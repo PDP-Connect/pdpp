@@ -1,0 +1,53 @@
+{
+  "name": "@pdpp/local-collector",
+  "version": "0.0.0",
+  "description": "Publishable local collector runtime for PDPP: filesystem-class connectors (Claude Code, Codex) plus the device-exporter ingest client.",
+  "type": "module",
+  "private": false,
+  "bin": {
+    "pdpp-local-collector": "./bin/pdpp-local-collector.ts"
+  },
+  "exports": {
+    "./runner": "./src/runner.ts",
+    "./errors": "./src/errors.ts",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "README.md"
+  ],
+  "scripts": {
+    "verify": "node --test --import tsx 'test/*.test.js'",
+    "test": "node --test --import tsx 'test/*.test.js'"
+  },
+  "dependencies": {
+    "@pdpp/polyfill-connectors": "workspace:*",
+    "zod": "^4.3.6"
+  },
+  "keywords": [
+    "pdpp",
+    "personal-data",
+    "collector",
+    "data-portability"
+  ],
+  "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vana-com/pdpp.git",
+    "directory": "packages/local-collector"
+  },
+  "bugs": {
+    "url": "https://github.com/vana-com/pdpp/issues"
+  },
+  "homepage": "https://github.com/vana-com/pdpp#readme",
+  "engines": {
+    "node": ">=22.14.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": false,
+    "registry": "https://registry.npmjs.org/",
+    "tag": "beta"
+  }
+}

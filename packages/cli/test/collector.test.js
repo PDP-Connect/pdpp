@@ -9,7 +9,12 @@ import { fileURLToPath } from 'node:url';
 
 import { COLLECTOR_HELP, runCollector } from '../src/collector/commands.js';
 import { CollectorUsageError } from '../src/collector/errors.js';
-import { resolveCollectorRunnerScript, resolveTsxBinary, spawnCollectorRunner } from '../src/collector/runner.js';
+import {
+  resolveCollectorRunnerScript,
+  resolveLocalCollectorPackage,
+  resolveTsxBinary,
+  spawnCollectorRunner,
+} from '../src/collector/runner.js';
 
 const binPath = fileURLToPath(new URL('../bin/pdpp.js', import.meta.url));
 
@@ -41,16 +46,15 @@ test('collector help lists the three subcommands and operator flow', async () =>
   assert.match(io.stdout, /device-scoped/);
 });
 
-test('collector help states the monorepo requirement and Distribution follow-up', async () => {
+test('collector help advertises the published @pdpp/local-collector path', async () => {
   const io = makeIo();
   const code = await runCollector([], io.io);
   assert.equal(code, 0);
-  // Operators must know the runner is not in the @pdpp/cli tarball.
-  assert.match(io.stdout, /Distribution requirement/);
-  assert.match(io.stdout, /requires a PDPP monorepo checkout/);
-  assert.match(io.stdout, /not in the @pdpp\/cli npm/);
-  assert.match(io.stdout, /Distribution follow-up/);
-  assert.match(io.stdout, /openspec\/changes\/introduce-local-collector-runner\/design\.md/);
+  // The supported public path is the npm-installable runner, not a monorepo clone.
+  assert.match(io.stdout, /@pdpp\/local-collector/);
+  assert.match(io.stdout, /npm i -g @pdpp\/local-collector|npx -y @pdpp\/local-collector/);
+  assert.doesNotMatch(io.stdout, /monorepo only/i);
+  assert.doesNotMatch(io.stdout, /git clone/);
 });
 
 test('collector help names device_id, device_token, and connection id from enroll', async () => {
@@ -95,11 +99,25 @@ test('runner resolver returns null outside any workspace', async () => {
   assert.equal(script, null);
 });
 
-test('spawnCollectorRunner throws actionable error when runner is missing', async () => {
+test('@pdpp/local-collector resolver resolves the workspace package', () => {
+  const cliSrcDir = fileURLToPath(new URL('../src/collector/', import.meta.url));
+  const resolved = resolveLocalCollectorPackage(cliSrcDir);
+  assert.ok(resolved, 'expected to resolve @pdpp/local-collector via workspace deps');
+  // Either Node-resolved (@pdpp/local-collector under node_modules) or the
+  // monorepo workspace fallback (packages/local-collector) is acceptable.
+  assert.match(
+    resolved.manifestPath,
+    /(?:@pdpp[\\/]+local-collector|packages[\\/]+local-collector)[\\/]+package\.json$/,
+  );
+  assert.ok(resolved.packageDir.endsWith('local-collector'));
+});
+
+test('spawnCollectorRunner throws actionable install hint when nothing resolves', async () => {
   await assert.rejects(
     () =>
       spawnCollectorRunner('advertise', [], {
         runnerScript: null,
+        localCollector: null,
         tsxBinary: '/fake/tsx',
         spawnFn: () => {
           throw new Error('should not spawn');
@@ -107,21 +125,8 @@ test('spawnCollectorRunner throws actionable error when runner is missing', asyn
       }),
     (err) => {
       assert.ok(err instanceof CollectorUsageError);
-      // Names the distribution-contract follow-up so operators know it's intentional.
-      assert.match(err.message, /Distribution follow-up/);
-      assert.match(err.message, /introduce-local-collector-runner/);
-      // Walks the operator through the remote-deployment monorepo flow.
-      assert.match(err.message, /git clone https:\/\/github.com\/vana-com\/pdpp\.git/);
-      assert.match(err.message, /pnpm install/);
-      assert.match(err.message, /pdpp collector advertise/);
-      assert.match(err.message, /pdpp collector enroll/);
-      assert.match(err.message, /pdpp collector run --connector claude_code/);
-      // Enrollment returns three values, not two, but the run command should
-      // use connection terminology for the binding id.
-      assert.match(err.message, /device_id/);
-      assert.match(err.message, /device_token/);
-      assert.match(err.message, /source_instance_id/);
-      assert.match(err.message, /PDPP_CONNECTION_ID/);
+      assert.match(err.message, /@pdpp\/local-collector/);
+      assert.match(err.message, /npm i -g @pdpp\/local-collector|npx -y @pdpp\/local-collector/);
       return true;
     },
   );
@@ -132,12 +137,13 @@ test('spawnCollectorRunner throws actionable error when tsx is missing', async (
     () =>
       spawnCollectorRunner('advertise', [], {
         runnerScript: '/some/runner.ts',
+        localCollector: null,
         tsxBinary: null,
         spawnFn: () => {
           throw new Error('should not spawn');
         },
       }),
-    /Could not locate tsx alongside the collector runner/,
+    /Could not locate tsx/,
   );
 });
 
@@ -155,6 +161,7 @@ test('spawnCollectorRunner forwards subcommand, args, env, and exit code', async
     ['--base-url', 'http://x', '--connector', 'codex'],
     {
       runnerScript: '/runner.ts',
+      localCollector: null,
       tsxBinary: '/tsx',
       spawnFn: fakeSpawn,
       env: { PDPP_LOCAL_DEVICE_TOKEN: 'tok' },
@@ -170,6 +177,54 @@ test('spawnCollectorRunner forwards subcommand, args, env, and exit code', async
   assert.equal(spawned[0].options.stdio, 'pipe');
 });
 
+test('spawnCollectorRunner prefers monorepo runner over @pdpp/local-collector', async () => {
+  const spawned = [];
+  const fakeSpawn = (binary, args, options) => {
+    spawned.push({ binary, args, options });
+    const child = new EventEmitter();
+    setImmediate(() => child.emit('exit', 0, null));
+    return child;
+  };
+
+  await spawnCollectorRunner('advertise', [], {
+    runnerScript: '/monorepo/runner.ts',
+    localCollector: { manifestPath: '/lc/package.json', packageDir: '/lc' },
+    tsxBinary: '/tsx',
+    spawnFn: fakeSpawn,
+    stdio: 'pipe',
+  });
+
+  assert.equal(spawned.length, 1);
+  assert.equal(spawned[0].args[0], '/monorepo/runner.ts');
+});
+
+test('spawnCollectorRunner falls back to @pdpp/local-collector when monorepo runner is absent', async () => {
+  // Create a fake local-collector package on disk so existsSync in the
+  // resolver finds its bin file.
+  const dir = await mkdtemp(join(tmpdir(), 'pdpp-fake-local-collector-'));
+  await mkdir(join(dir, 'bin'), { recursive: true });
+  await writeFile(join(dir, 'bin', 'pdpp-local-collector.ts'), '');
+
+  const spawned = [];
+  const fakeSpawn = (binary, args, options) => {
+    spawned.push({ binary, args, options });
+    const child = new EventEmitter();
+    setImmediate(() => child.emit('exit', 0, null));
+    return child;
+  };
+
+  await spawnCollectorRunner('advertise', [], {
+    runnerScript: null,
+    localCollector: { manifestPath: join(dir, 'package.json'), packageDir: dir },
+    tsxBinary: '/tsx',
+    spawnFn: fakeSpawn,
+    stdio: 'pipe',
+  });
+
+  assert.equal(spawned.length, 1);
+  assert.equal(spawned[0].args[0], join(dir, 'bin', 'pdpp-local-collector.ts'));
+});
+
 test('spawnCollectorRunner rejects when child terminates by signal', async () => {
   const fakeSpawn = () => {
     const child = new EventEmitter();
@@ -181,6 +236,7 @@ test('spawnCollectorRunner rejects when child terminates by signal', async () =>
     () =>
       spawnCollectorRunner('advertise', [], {
         runnerScript: '/runner.ts',
+        localCollector: null,
         tsxBinary: '/tsx',
         spawnFn: fakeSpawn,
       }),
@@ -189,41 +245,15 @@ test('spawnCollectorRunner rejects when child terminates by signal', async () =>
 });
 
 test('runCli dispatches `collector` to the runner', async () => {
-  const calls = [];
-  const fakeSpawn = (binary, args) => {
-    calls.push({ binary, args });
-    const child = new EventEmitter();
-    setImmediate(() => child.emit('exit', 0, null));
-    return child;
-  };
-
-  // Hijack the resolver via env: we know they exist in the workspace.
   const runnerScript = resolveCollectorRunnerScript();
   const tsxBinary = resolveTsxBinary();
   assert.ok(runnerScript, 'expected workspace collector-runner script to exist');
   assert.ok(tsxBinary, 'expected workspace tsx to exist');
 
-  // Drive via runCollector directly to inject spawnFn.
   const io = makeIo();
-  const code = await runCollector(['advertise'], io.io).catch((err) => {
-    throw err;
-  });
-  // The default flow really spawns tsx + the runner; we only assert exit code
-  // and that the help string was not mistakenly emitted.
+  const code = await runCollector(['advertise'], io.io);
   assert.equal(code, 0);
   assert.equal(io.stdout, '');
-
-  // Sanity-check the spawn-injection contract through the lower-level entry.
-  const injectedCode = await spawnCollectorRunner('advertise', [], {
-    runnerScript,
-    tsxBinary,
-    spawnFn: fakeSpawn,
-    stdio: 'pipe',
-  });
-  assert.equal(injectedCode, 0);
-  assert.equal(calls[0].binary, tsxBinary);
-  assert.equal(calls[0].args[0], runnerScript);
-  assert.equal(calls[0].args[1], 'advertise');
 });
 
 test('pdpp collector advertise (real subprocess) emits the capability profile', () => {
@@ -250,7 +280,7 @@ test('pdpp collector enroll missing --code surfaces collector-runner usage error
 });
 
 test('COLLECTOR_HELP names the openspec design doc as source of truth', () => {
-  assert.match(COLLECTOR_HELP, /openspec\/changes\/introduce-local-collector-runner/);
+  assert.match(COLLECTOR_HELP, /openspec\/changes\/publish-pdpp-local-collector/);
 });
 
 test('runner resolver prefers the nearest workspace, not a stray ancestor', async () => {
@@ -268,4 +298,22 @@ test('runner resolver prefers the nearest workspace, not a stray ancestor', asyn
   await mkdir(startDir, { recursive: true });
   const resolved = resolveCollectorRunnerScript(startDir);
   assert.equal(resolved, join(inner, 'collector-runner.ts'));
+});
+
+test('@pdpp/cli does not declare a runtime dependency on @pdpp/local-collector', async () => {
+  // The shim resolves the runner lazily; declaring it as a runtime dependency
+  // would re-couple slim @pdpp/cli to the runner's release cadence.
+  const manifest = JSON.parse(
+    await (await import('node:fs/promises')).readFile(
+      fileURLToPath(new URL('../package.json', import.meta.url)),
+      'utf8',
+    ),
+  );
+  for (const field of ['dependencies', 'peerDependencies', 'optionalDependencies']) {
+    if (manifest[field] && '@pdpp/local-collector' in manifest[field]) {
+      assert.fail(
+        `@pdpp/cli must not declare @pdpp/local-collector in ${field}; the shim resolves it lazily.`,
+      );
+    }
+  }
 });

@@ -16,7 +16,7 @@
  * { access_token, refresh_token, expires_at, ... }.
  */
 
-import type { InteractionRequest, InteractionResponse } from "./connector-runtime.ts";
+import type { InteractionRequest, InteractionResponse } from "./connector-runtime-protocol.ts";
 
 // ─── Public types ───────────────────────────────────────────────────────
 

@@ -153,6 +153,15 @@ importers:
 
   packages/cli: {}
 
+  packages/local-collector:
+    dependencies:
+      '@pdpp/polyfill-connectors':
+        specifier: workspace:*
+        version: link:../polyfill-connectors
+      zod:
+        specifier: ^4.3.6
+        version: 4.3.6
+
   packages/pdpp-brand:
     dependencies:
       '@fontsource-variable/geist':

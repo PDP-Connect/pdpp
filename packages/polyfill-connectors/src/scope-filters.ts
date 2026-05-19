@@ -8,7 +8,7 @@
  */
 
 import type { AuthStrategyContext, Credentials } from "./auth.ts";
-import type { EmittedMessage, InteractionRequest, InteractionResponse } from "./connector-runtime.ts";
+import type { EmittedMessage, InteractionRequest, InteractionResponse } from "./connector-runtime-protocol.ts";
 
 export interface TimeRange {
   since?: string;

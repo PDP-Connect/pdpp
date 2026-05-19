@@ -1,3 +1,4 @@
+import { COLLECTOR_PROTOCOL_HEADER, COLLECTOR_PROTOCOL_VERSION } from "./collector-protocol.ts";
 import type { LocalDeviceRecordEnvelope } from "./local-device-envelope.ts";
 
 export const LOCAL_DEVICE_ENDPOINTS = {
@@ -138,6 +139,7 @@ export class LocalDeviceClient {
   ): Promise<TResponse> {
     const headers: Record<string, string> = {
       accept: "application/json",
+      [COLLECTOR_PROTOCOL_HEADER]: COLLECTOR_PROTOCOL_VERSION,
     };
     if (options.body !== undefined) {
       headers["content-type"] = "application/json";

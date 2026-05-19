@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { EmittedMessage, RecordData } from "./connector-runtime.ts";
+import type { EmittedMessage, RecordData } from "./connector-runtime-protocol.ts";
 
 export interface LocalDeviceRecordEnvelope {
   batch_id: string;

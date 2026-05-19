@@ -41,7 +41,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface as createFileReader, createInterface } from "node:readline";
 import { DatabaseSync } from "node:sqlite";
-import type { EmittedMessage, RecordData, StreamScope } from "../../src/connector-runtime.ts";
+import type { EmittedMessage, RecordData, StreamScope } from "../../src/connector-runtime-protocol.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
 import {
   buildLocalSourceInventory,

@@ -17,6 +17,11 @@
   "bin": {
     "pdpp-local-device-exporter": "./bin/local-device-exporter.ts"
   },
+  "exports": {
+    "./runner": "./src/runner/index.ts",
+    "./connectors/claude_code": "./connectors/claude_code/index.ts",
+    "./connectors/codex": "./connectors/codex/index.ts"
+  },
   "scripts": {
     "postinstall": "patchright install chromium",
     "check": "ultracite check",

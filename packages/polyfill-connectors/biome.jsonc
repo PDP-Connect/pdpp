@@ -53,6 +53,22 @@
       }
     },
     {
+      // Runner-slice barrel. `src/runner/index.ts` is the load-bearing entry
+      // for the publishable `@pdpp/local-collector` package — it exists
+      // specifically to give that package a single import path. The
+      // noBarrelFile perf concern (large module graphs of unused modules)
+      // does not apply: every module re-exported here is used by the
+      // collector loop, and the file is intentionally narrow.
+      "includes": ["src/runner/index.ts"],
+      "linter": {
+        "rules": {
+          "performance": {
+            "noBarrelFile": "off"
+          }
+        }
+      }
+    },
+    {
       // Test-file override. Tests are held to the same typecheck + style
       // bar as production code, with two exceptions that are test-idiomatic:
       // (a) useTopLevelRegex — test bodies routinely use inline

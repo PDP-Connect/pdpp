@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { test } from "node:test";
+import { COLLECTOR_PROTOCOL_VERSION } from "./collector-protocol.ts";
 import { LOCAL_DEVICE_ENDPOINTS, LocalDeviceClient, LocalDeviceHttpError } from "./local-device-client.ts";
 
 test("LocalDeviceClient sends enrollment exchange without bearer token", async () => {
@@ -16,6 +17,7 @@ test("LocalDeviceClient sends enrollment exchange without bearer token", async (
     assert.equal(response.device_id, "device-1");
     assert.equal(seen[0]?.path, LOCAL_DEVICE_ENDPOINTS.exchangeEnrollment);
     assert.equal(seen[0]?.authorization, undefined);
+    assert.equal(seen[0]?.collectorProtocol, COLLECTOR_PROTOCOL_VERSION);
     assert.deepEqual(seen[0]?.body, {
       device_label: "Laptop",
       enrollment_code: "enroll-123",
@@ -48,6 +50,7 @@ test("LocalDeviceClient sends bearer-authenticated heartbeat and ingest batch sh
 
     assert.equal(seen[0]?.path, LOCAL_DEVICE_ENDPOINTS.heartbeat("device-1"));
     assert.equal(seen[0]?.authorization, "Bearer device-token");
+    assert.equal(seen[0]?.collectorProtocol, COLLECTOR_PROTOCOL_VERSION);
     assert.deepEqual(seen[0]?.body, {
       connector_id: "codex",
       records_pending: 3,
@@ -56,6 +59,7 @@ test("LocalDeviceClient sends bearer-authenticated heartbeat and ingest batch sh
     });
     assert.equal(seen[1]?.path, LOCAL_DEVICE_ENDPOINTS.ingestBatch("device-1"));
     assert.equal(seen[1]?.authorization, "Bearer device-token");
+    assert.equal(seen[1]?.collectorProtocol, COLLECTOR_PROTOCOL_VERSION);
     assert.deepEqual(seen[1]?.body, {
       batch_id: "batch-1",
       batch_seq: 1,
@@ -83,6 +87,7 @@ test("LocalDeviceClient GET source-instance state hits the device-scoped state r
     assert.equal(seen[0]?.method, "GET");
     assert.equal(seen[0]?.path, LOCAL_DEVICE_ENDPOINTS.sourceInstanceState("device-1", "source-1"));
     assert.equal(seen[0]?.authorization, "Bearer device-token");
+    assert.equal(seen[0]?.collectorProtocol, COLLECTOR_PROTOCOL_VERSION);
     // No body on GET.
     assert.equal(seen[0]?.body, null);
   } finally {
@@ -102,6 +107,7 @@ test("LocalDeviceClient PUT source-instance state sends bearer + JSON body", asy
     assert.equal(seen[0]?.method, "PUT");
     assert.equal(seen[0]?.path, LOCAL_DEVICE_ENDPOINTS.sourceInstanceState("device-1", "source-1"));
     assert.equal(seen[0]?.authorization, "Bearer device-token");
+    assert.equal(seen[0]?.collectorProtocol, COLLECTOR_PROTOCOL_VERSION);
     assert.deepEqual(seen[0]?.body, { state: { messages: { cursor: "next" } } });
   } finally {
     await server.close();
@@ -150,6 +156,7 @@ test("LocalDeviceClient state methods surface 404 unknown source instance", asyn
 interface SeenRequest {
   authorization: string | undefined;
   body: unknown;
+  collectorProtocol: string | undefined;
   method: string;
   path: string;
 }
@@ -161,6 +168,7 @@ async function startJsonServer(seen: SeenRequest[]): Promise<{ close: () => Prom
     seen.push({
       authorization: req.headers.authorization,
       body: body ? JSON.parse(body) : null,
+      collectorProtocol: req.headers["x-pdpp-collector-protocol"] as string | undefined,
       method: req.method ?? "",
       path,
     });

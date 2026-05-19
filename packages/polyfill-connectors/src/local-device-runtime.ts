@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { delimiter, join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
-import type { EmittedMessage, StartMessage, StreamScope } from "./connector-runtime.ts";
+import type { EmittedMessage, StartMessage, StreamScope } from "./connector-runtime-protocol.ts";
 import { type EnrollmentExchangeResponse, LocalDeviceClient } from "./local-device-client.ts";
 import {
   buildLocalDeviceRecordEnvelope,

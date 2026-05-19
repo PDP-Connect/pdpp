@@ -6,18 +6,18 @@ const COLLECTOR_HELP = `Local collector runner (reference operator surface).
 
 Pair a host you control with a PDPP reference deployment, then run
 browser-backed or local-device connectors that the provider container
-cannot run on its own.
+cannot run on its own. Runner-owned flags are documented by
+"pdpp-local-collector --help" (see "Distribution" below).
 
-Distribution requirement:
-  The collector runner currently requires a PDPP monorepo checkout —
-  it ships in @pdpp/polyfill-connectors, not in the @pdpp/cli npm
-  tarball. Distributing the runner from npm is an intentional follow-up;
-  see openspec/changes/introduce-local-collector-runner/design.md
-  § "Distribution follow-up". The monorepo flow below is the supported
-  path today. From an npm-only install of @pdpp/cli, this command
-  fails fast with the same monorepo instructions.
+Distribution:
+  The collector runtime ships in @pdpp/local-collector, a separate npm
+  package owned by the PDPP monorepo. @pdpp/cli stays slim and resolves
+  the runner lazily:
+    npm i -g @pdpp/local-collector
+    npx -y @pdpp/local-collector advertise
+  See openspec/changes/publish-pdpp-local-collector/design.md.
 
-Usage (run from inside a monorepo checkout, e.g. via "pnpm exec pdpp"):
+Usage:
   ${PDPP_CLI_BIN_NAME} collector advertise
   ${PDPP_CLI_BIN_NAME} collector enroll  --base-url <url> --code <one-time-code>
                           [--device-label <label>]
@@ -27,14 +27,14 @@ Usage (run from inside a monorepo checkout, e.g. via "pnpm exec pdpp"):
                           [--streams a,b,c]
                           [--backfill-streams attachments]
                           [--run-id <id>]
-                          [--command <cmd>] [--args "<argv...>"]
 
 Suggested operator flow:
   1. Start the reference deployment somewhere reachable (e.g. Docker on a
      server) so it has a base URL such as http://server.local:7662.
   2. Confirm runtime capabilities with:
        ${PDPP_CLI_BIN_NAME} collector advertise
-     The collector advertises network, browser, filesystem, local_device.
+     The collector advertises network, browser, filesystem, local_device
+     and reports collector_protocol_version.
   3. Mint an enrollment code from the dashboard or "pdpp ref" tooling,
      then on the host with Claude/Codex data run:
        ${PDPP_CLI_BIN_NAME} collector enroll --base-url <url> --code <code>
@@ -54,7 +54,7 @@ Suggested operator flow:
 Notes:
   Collector credentials are device-scoped; they cannot read records,
   approve grants, or mint owner tokens. See
-  openspec/changes/introduce-local-collector-runner/design.md.
+  openspec/changes/publish-pdpp-local-collector/design.md.
   Required flags can also be supplied via PDPP_REFERENCE_BASE_URL,
   PDPP_LOCAL_DEVICE_ID, PDPP_LOCAL_DEVICE_TOKEN, PDPP_CONNECTION_ID,
   PDPP_RUN_ID. PDPP_SOURCE_INSTANCE_ID remains a compatibility alias.
