@@ -10,10 +10,14 @@
 // so they cannot collide with owner-auth `/v1/state/:connectorId` rows.
 
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 
 import { COLLECTOR_PROTOCOL_VERSION } from '../server/collector-protocol.ts';
-import { getDb } from '../server/db.js';
+import { closeDb, getDb, initDb } from '../server/db.js';
 import { startServer } from '../server/index.js';
 
 const PROTOCOL_HEADERS = { 'X-PDPP-Collector-Protocol': COLLECTOR_PROTOCOL_VERSION };
@@ -100,6 +104,37 @@ function stateUrl(asUrl, deviceId, sourceInstanceId) {
   return `${asUrl}/_ref/device-exporters/${encodeURIComponent(deviceId)}/source-instances/${encodeURIComponent(sourceInstanceId)}/state`;
 }
 
+function localDeviceConnectorId(connectorId) {
+  return `local-device:${encodeURIComponent(connectorId)}`;
+}
+
+function legacyLocalDeviceConnectorId(connectorId, sourceInstanceId) {
+  return `${localDeviceConnectorId(connectorId)}:${encodeURIComponent(sourceInstanceId)}`;
+}
+
+function hashDeviceSecret(value) {
+  return `sha256:${createHash('sha256').update(value, 'utf8').digest('hex')}`;
+}
+
+function makeBatch(device, batchId, value) {
+  return {
+    batch_id: batchId,
+    batch_seq: 1,
+    body_hash: `hash-${batchId}-${value}`,
+    connector_id: device.connector_id,
+    device_id: device.device_id,
+    records: [
+      {
+        data: { id: 'after-migration', value },
+        emitted_at: '2026-04-30T12:00:00.000Z',
+        record_key: 'after-migration',
+        stream: 'messages',
+      },
+    ],
+    source_instance_id: device.source_instance_id,
+  };
+}
+
 test('GET device state requires a valid device credential', async () => {
   await withServer(async ({ asUrl }) => {
     const device = await enrollDevice(asUrl, 'laptop-a');
@@ -126,6 +161,164 @@ test('GET device state requires a valid device credential', async () => {
     );
     assert.equal(invalid.status, 401);
   });
+});
+
+test('startup migrates legacy local-device source namespaces to connector-instance scope', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'pdpp-local-device-migration-'));
+  const dbPath = join(dir, 'pdpp.sqlite');
+  const device = {
+    connector_id: 'claude_code',
+    connector_instance_id: 'cin_preserved_legacy_local_device',
+    device_id: 'dev_legacy_local_device',
+    device_token: 'devtok_legacy_local_device',
+    local_binding_name: 'laptop-a',
+    source_instance_id: 'src_legacy_local_device',
+  };
+  const oldConnectorId = legacyLocalDeviceConnectorId(device.connector_id, device.source_instance_id);
+  const newConnectorId = localDeviceConnectorId(device.connector_id);
+  try {
+    initDb(dbPath, { quiet: true });
+    const db = getDb();
+    const now = '2026-05-01T00:00:00.000Z';
+    db.prepare(
+      `INSERT INTO device_exporters(device_id, owner_subject_id, display_name, status, created_at, updated_at)
+       VALUES(?, ?, ?, 'active', ?, ?)`,
+    ).run(device.device_id, 'owner_ref', 'Legacy Laptop', now, now);
+    db.prepare(
+      `INSERT INTO device_ingest_credentials(credential_id, device_id, token_hash, status, created_at)
+       VALUES(?, ?, ?, 'active', ?)`,
+    ).run('cred_legacy_local_device', device.device_id, hashDeviceSecret(device.device_token), now);
+    db.prepare(
+      `INSERT INTO device_source_instances(source_instance_id, device_id, connector_id, connector_instance_id, local_binding_id, display_name, status, created_at, updated_at)
+       VALUES(?, ?, ?, NULL, ?, ?, 'active', ?, ?)`,
+    ).run(
+      device.source_instance_id,
+      device.device_id,
+      device.connector_id,
+      device.local_binding_name,
+      'Legacy Claude Code',
+      now,
+      now,
+    );
+    db.prepare(
+      `INSERT INTO connector_state(connector_id, connector_instance_id, stream, state_json, updated_at)
+       VALUES(?, ?, 'messages', ?, ?)`,
+    ).run(oldConnectorId, device.connector_instance_id, JSON.stringify({ cursor: 'legacy-cursor' }), now);
+    db.prepare(
+      `INSERT INTO records(connector_id, connector_instance_id, stream, record_key, record_json, emitted_at, version)
+       VALUES(?, ?, 'messages', 'legacy-record', ?, ?, 1)`,
+    ).run(oldConnectorId, device.connector_instance_id, JSON.stringify({ id: 'legacy-record', value: 'before' }), now);
+    db.prepare(
+      `INSERT INTO record_changes(connector_id, connector_instance_id, stream, record_key, version, record_json, emitted_at)
+       VALUES(?, ?, 'messages', 'legacy-record', 1, ?, ?)`,
+    ).run(oldConnectorId, device.connector_instance_id, JSON.stringify({ id: 'legacy-record', value: 'before' }), now);
+    db.prepare(
+      `INSERT INTO version_counter(connector_id, connector_instance_id, stream, max_version)
+       VALUES(?, ?, 'messages', 1)`,
+    ).run(oldConnectorId, device.connector_instance_id);
+    const migrations = [];
+    closeDb();
+    initDb(dbPath, {
+      onSchemaMigration: (event) => migrations.push(event),
+    });
+    closeDb();
+
+    const server = await startServer({
+      quiet: true,
+      asPort: 0,
+      rsPort: 0,
+      dbPath,
+    });
+    const asUrl = `http://localhost:${server.asPort}`;
+    try {
+      assert.ok(migrations.some((event) => event.name === 'local_device_connector_instances'));
+
+      const migratedDb = getDb();
+      const sourceRow = migratedDb.prepare(
+        `SELECT connector_instance_id FROM device_source_instances WHERE device_id = ? AND source_instance_id = ?`,
+      ).get(device.device_id, device.source_instance_id);
+      assert.equal(sourceRow.connector_instance_id, device.connector_instance_id);
+
+      const instanceRow = migratedDb.prepare(
+        `SELECT connector_id, owner_subject_id, source_kind, source_binding_json
+           FROM connector_instances
+          WHERE connector_instance_id = ?`,
+      ).get(device.connector_instance_id);
+      assert.equal(instanceRow.connector_id, device.connector_id);
+      assert.equal(instanceRow.owner_subject_id, 'owner_ref');
+      assert.equal(instanceRow.source_kind, 'local_device');
+      assert.deepEqual(JSON.parse(instanceRow.source_binding_json), {
+        kind: 'local_device',
+        device_id: device.device_id,
+        local_binding_name: device.local_binding_name,
+        source_instance_id: device.source_instance_id,
+      });
+
+      const stateRead = await getJson(
+        stateUrl(asUrl, device.device_id, device.source_instance_id),
+        authHeaders(device.device_token),
+      );
+      assert.equal(stateRead.status, 200, JSON.stringify(stateRead.body));
+      assert.equal(stateRead.body.connector_instance_id, device.connector_instance_id);
+      assert.deepEqual(stateRead.body.state, { messages: { cursor: 'legacy-cursor' } });
+
+      const statePut = await putJson(
+        stateUrl(asUrl, device.device_id, device.source_instance_id),
+        { state: { messages: { cursor: 'post-migration' } } },
+        authHeaders(device.device_token),
+      );
+      assert.equal(statePut.status, 200, JSON.stringify(statePut.body));
+
+      const ingest = await postJson(
+        `${asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/ingest-batches`,
+        makeBatch(device, 'batch-after-migration', 'after'),
+        authHeaders(device.device_token),
+      );
+      assert.equal(ingest.status, 201, JSON.stringify(ingest.body));
+      assert.equal(ingest.body.connector_instance_id, device.connector_instance_id);
+
+      const oldRows = migratedDb.prepare(
+        `SELECT COUNT(*) AS n
+           FROM (
+             SELECT connector_id FROM connector_state WHERE connector_id = ?
+             UNION ALL
+             SELECT connector_id FROM records WHERE connector_id = ?
+             UNION ALL
+             SELECT connector_id FROM record_changes WHERE connector_id = ?
+             UNION ALL
+             SELECT connector_id FROM version_counter WHERE connector_id = ?
+           )`,
+      ).get(oldConnectorId, oldConnectorId, oldConnectorId, oldConnectorId);
+      assert.equal(oldRows.n, 0);
+
+      const migratedState = migratedDb.prepare(
+        `SELECT connector_id, state_json
+           FROM connector_state
+          WHERE connector_instance_id = ? AND stream = 'messages'`,
+      ).get(device.connector_instance_id);
+      assert.equal(migratedState.connector_id, newConnectorId);
+      assert.equal(JSON.parse(migratedState.state_json).cursor, 'post-migration');
+
+      const migratedRecords = migratedDb.prepare(
+        `SELECT record_key, connector_id
+           FROM records
+          WHERE connector_instance_id = ?
+          ORDER BY record_key`,
+      ).all(device.connector_instance_id);
+      assert.deepEqual(
+        migratedRecords.map((row) => [row.record_key, row.connector_id]),
+        [
+          ['after-migration', newConnectorId],
+          ['legacy-record', newConnectorId],
+        ],
+      );
+    } finally {
+      await closeServer(server);
+    }
+  } finally {
+    closeDb();
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test('Owner-token bearer is rejected by the device state routes', async () => {

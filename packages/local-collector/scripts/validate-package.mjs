@@ -54,12 +54,12 @@ try {
   }
 
   const forbidden = [
-    /from\s+["']playwright["']/,
-    /from\s+["']patchright["']/,
-    /from\s+["']imapflow["']/,
-    /from\s+["']pdf-parse["']/,
-    /from\s+["']better-sqlite3["']/,
-    /from\s+["']linkedom["']/,
+    /(?:from\s+|import\s*\(|require\s*\()\s*["']playwright["']/,
+    /(?:from\s+|import\s*\(|require\s*\()\s*["']patchright["']/,
+    /(?:from\s+|import\s*\(|require\s*\()\s*["']imapflow["']/,
+    /(?:from\s+|import\s*\(|require\s*\()\s*["']pdf-parse["']/,
+    /(?:from\s+|import\s*\(|require\s*\()\s*["']better-sqlite3["']/,
+    /(?:from\s+|import\s*\(|require\s*\()\s*["']linkedom["']/,
     /workspace:/,
   ];
   for (const file of packedFiles) {

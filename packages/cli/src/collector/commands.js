@@ -5,7 +5,7 @@ import { spawnCollectorRunner } from './runner.js';
 const COLLECTOR_HELP = `Local collector runner (reference operator surface).
 
 Pair a host you control with a PDPP reference deployment, then run
-browser-backed or local-device connectors that the provider container
+filesystem-class or local-device connectors that the provider container
 cannot run on its own. Runner-owned flags are documented by
 "pdpp-local-collector --help" (see "Distribution" below).
 
@@ -13,7 +13,9 @@ Distribution:
   The collector runtime ships in @pdpp/local-collector, a separate npm
   package owned by the PDPP monorepo. @pdpp/cli stays slim and resolves
   the runner lazily:
+    # @pdpp/local-collector package, installs pdpp-local-collector
     npm i -g @pdpp/local-collector
+    # @pdpp/local-collector package, npx-launched pdpp-local-collector
     npx -y @pdpp/local-collector advertise
   See openspec/changes/publish-pdpp-local-collector/design.md.
 
@@ -33,11 +35,13 @@ Suggested operator flow:
      server) so it has a base URL such as http://server.local:7662.
   2. Confirm runtime capabilities with:
        ${PDPP_CLI_BIN_NAME} collector advertise
-     The collector advertises network, browser, filesystem, local_device
+     (@pdpp/cli pdpp shim, resolving @pdpp/local-collector)
+     The collector advertises network, filesystem, local_device
      and reports collector_protocol_version.
   3. Mint an enrollment code from the dashboard or "pdpp ref" tooling,
      then on the host with Claude/Codex data run:
        ${PDPP_CLI_BIN_NAME} collector enroll --base-url <url> --code <code>
+     (@pdpp/cli pdpp shim, resolving @pdpp/local-collector)
      The JSON response returns device_id, device_token, and
      source_instance_id (the connection id for this local binding) —
      persist all three to a secrets store. You will pass them back as
@@ -48,12 +52,13 @@ Suggested operator flow:
        PDPP_CONNECTION_ID=<connection_id> \\
          ${PDPP_CLI_BIN_NAME} collector run --base-url <url> \\
            --connector claude_code
+     (@pdpp/cli pdpp shim, resolving @pdpp/local-collector)
      Connectors that need bindings the collector does not advertise fail
      before spawn with "runtime_capability_mismatch".
 
 Notes:
   Collector credentials are device-scoped; they cannot read records,
-  approve grants, or mint owner tokens. See
+  approve grants, or mint owner tokens. Do not log device tokens. See
   openspec/changes/publish-pdpp-local-collector/design.md.
   Required flags can also be supplied via PDPP_REFERENCE_BASE_URL,
   PDPP_LOCAL_DEVICE_ID, PDPP_LOCAL_DEVICE_TOKEN, PDPP_CONNECTION_ID,

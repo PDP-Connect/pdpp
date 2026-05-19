@@ -28,6 +28,7 @@
     "build": "rm -rf dist && tsc -p tsconfig.build.json && node scripts/postbuild.mjs",
     "prepack": "pnpm build",
     "test": "node --test --import tsx 'test/*.test.js'",
+    "pack-install-run": "node scripts/pack-install-run.mjs",
     "validate:package": "pnpm build && node scripts/validate-package.mjs",
     "verify": "pnpm test && pnpm validate:package"
   },

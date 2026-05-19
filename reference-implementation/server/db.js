@@ -1019,6 +1019,37 @@ function hasTableColumn(raw, table, column) {
   return tableColumns(raw, table).includes(column);
 }
 
+function stableJson(value) {
+  if (value == null) return '{}';
+  if (Array.isArray(value)) {
+    return `[${value.map(stableJson).join(',')}]`;
+  }
+  if (typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function hashKey(value) {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+function sourceBindingKey(sourceBinding) {
+  return hashKey(stableJson(sourceBinding ?? {}));
+}
+
+function connectorInstanceId(ownerSubjectId, connectorId, sourceKind, bindingKey) {
+  return `cin_${hashKey(`${ownerSubjectId}\n${connectorId}\n${sourceKind}\n${bindingKey}`).slice(0, 24)}`;
+}
+
+function localDeviceConnectorId(connectorId) {
+  return `local-device:${encodeURIComponent(connectorId)}`;
+}
+
+function legacyLocalDeviceConnectorId(connectorId, sourceInstanceId) {
+  return `${localDeviceConnectorId(connectorId)}:${encodeURIComponent(sourceInstanceId)}`;
+}
+
 function makeLegacyConnectorInstanceId(ownerSubjectId, connectorId) {
   const hash = createHash('sha256').update(`${ownerSubjectId}\n${connectorId}`).digest('hex');
   return `cin_legacy_${hash.slice(0, 24)}`;
@@ -1130,6 +1161,240 @@ function migrateConnectorSyncStateInstanceColumns(raw, opts = {}) {
   const result = migration();
   if (typeof opts.onSchemaMigration === 'function') {
     opts.onSchemaMigration({ name: 'connector_sync_state_instance_columns', ...result });
+  }
+  return result;
+}
+
+function updateConnectorIdForInstance(raw, table, oldConnectorId, newConnectorId, connectorInstanceId) {
+  if (!hasTableColumn(raw, table, 'connector_id') || !hasTableColumn(raw, table, 'connector_instance_id')) {
+    return 0;
+  }
+  return raw.prepare(
+    `UPDATE ${table}
+        SET connector_id = ?
+      WHERE connector_id = ?
+        AND connector_instance_id = ?`
+  ).run(newConnectorId, oldConnectorId, connectorInstanceId).changes;
+}
+
+function migrateLocalDeviceConnectorInstances(raw, opts = {}) {
+  if (
+    !hasTableColumn(raw, 'device_source_instances', 'connector_instance_id')
+    || !hasTableColumn(raw, 'connector_instances', 'source_binding_key')
+    || !hasTableColumn(raw, 'connector_instances', 'source_binding_json')
+  ) {
+    return { rebuilt: false, backfilledRows: 0 };
+  }
+
+  const rows = raw.prepare(
+    `SELECT dsi.source_instance_id,
+            dsi.device_id,
+            dsi.connector_id,
+            dsi.connector_instance_id,
+            dsi.local_binding_id,
+            dsi.display_name,
+            dsi.status,
+            dsi.created_at,
+            dsi.updated_at,
+            dsi.revoked_at,
+            de.owner_subject_id
+       FROM device_source_instances dsi
+       JOIN device_exporters de ON de.device_id = dsi.device_id
+      WHERE dsi.connector_id IS NOT NULL
+        AND trim(dsi.connector_id) <> ''
+        AND dsi.source_instance_id IS NOT NULL
+        AND trim(dsi.source_instance_id) <> ''
+      ORDER BY dsi.device_id, dsi.source_instance_id`
+  ).all();
+  if (rows.length === 0) {
+    return { rebuilt: false, backfilledRows: 0 };
+  }
+
+  const tables = [
+    'connector_state',
+    'grant_connector_state',
+    'records',
+    'record_changes',
+    'version_counter',
+    'blobs',
+    'blob_bindings',
+    'lexical_search_index',
+    'lexical_search_meta',
+    'semantic_search_rowid',
+    'semantic_search_blob',
+    'semantic_search_meta',
+    'semantic_search_backfill_progress',
+    'connector_detail_gaps',
+    'connector_schedules',
+    'controller_active_runs',
+    'scheduler_run_history',
+    'scheduler_last_run_times',
+  ];
+
+  const migration = raw.transaction(() => {
+    const legacyInstanceRows = raw.prepare(
+      `SELECT connector_instance_id
+         FROM (
+           SELECT connector_instance_id FROM connector_state WHERE connector_id = ?
+           UNION
+           SELECT connector_instance_id FROM grant_connector_state WHERE connector_id = ?
+           UNION
+           SELECT connector_instance_id FROM records WHERE connector_id = ?
+           UNION
+           SELECT connector_instance_id FROM record_changes WHERE connector_id = ?
+           UNION
+           SELECT connector_instance_id FROM version_counter WHERE connector_id = ?
+           UNION
+           SELECT connector_instance_id FROM blobs WHERE connector_id = ?
+           UNION
+           SELECT connector_instance_id FROM blob_bindings WHERE connector_id = ?
+           UNION
+           SELECT connector_instance_id FROM lexical_search_index WHERE connector_id = ?
+           UNION
+           SELECT connector_instance_id FROM lexical_search_meta WHERE connector_id = ?
+           UNION
+           SELECT connector_instance_id FROM semantic_search_rowid WHERE connector_id = ?
+           UNION
+           SELECT connector_instance_id FROM semantic_search_blob WHERE connector_id = ?
+           UNION
+           SELECT connector_instance_id FROM semantic_search_meta WHERE connector_id = ?
+           UNION
+           SELECT connector_instance_id FROM semantic_search_backfill_progress WHERE connector_id = ?
+         )
+        WHERE connector_instance_id IS NOT NULL
+          AND trim(connector_instance_id) <> ''
+        ORDER BY connector_instance_id`
+    );
+    const upsertConnector = raw.prepare(
+      `INSERT INTO connectors(connector_id, manifest, created_at)
+       VALUES(?, ?, ?)
+       ON CONFLICT(connector_id) DO NOTHING`
+    );
+    const getExistingInstanceByBinding = raw.prepare(
+      `SELECT connector_instance_id
+         FROM connector_instances
+        WHERE owner_subject_id = ?
+          AND connector_id = ?
+          AND source_kind = 'local_device'
+          AND source_binding_key = ?
+        LIMIT 1`
+    );
+    const upsertInstance = raw.prepare(
+      `INSERT INTO connector_instances(
+         connector_instance_id, owner_subject_id, connector_id, display_name, status,
+         source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
+       )
+       VALUES(?, ?, ?, ?, ?, 'local_device', ?, ?, ?, ?, ?)
+       ON CONFLICT(connector_instance_id) DO UPDATE SET
+         owner_subject_id = excluded.owner_subject_id,
+         connector_id = excluded.connector_id,
+         display_name = excluded.display_name,
+         status = excluded.status,
+         source_kind = excluded.source_kind,
+         source_binding_key = excluded.source_binding_key,
+         source_binding_json = excluded.source_binding_json,
+         updated_at = excluded.updated_at,
+         revoked_at = excluded.revoked_at`
+    );
+    const updateSourceInstance = raw.prepare(
+      `UPDATE device_source_instances
+          SET connector_instance_id = ?,
+              updated_at = ?
+        WHERE device_id = ?
+          AND source_instance_id = ?`
+    );
+
+    let backfilledRows = 0;
+    const now = new Date().toISOString();
+    for (const row of rows) {
+      const sourceBinding = {
+        kind: 'local_device',
+        device_id: row.device_id,
+        local_binding_name: row.local_binding_id,
+        source_instance_id: row.source_instance_id,
+      };
+      const bindingKey = sourceBindingKey(sourceBinding);
+      const newConnectorId = localDeviceConnectorId(row.connector_id);
+      const oldConnectorId = legacyLocalDeviceConnectorId(row.connector_id, row.source_instance_id);
+      const legacyRows = legacyInstanceRows.all(
+        oldConnectorId,
+        oldConnectorId,
+        oldConnectorId,
+        oldConnectorId,
+        oldConnectorId,
+        oldConnectorId,
+        oldConnectorId,
+        oldConnectorId,
+        oldConnectorId,
+        oldConnectorId,
+        oldConnectorId,
+        oldConnectorId,
+        oldConnectorId,
+      );
+      const legacyInstanceIds = [...new Set(legacyRows.map((r) => r.connector_instance_id.trim()).filter(Boolean))];
+      if (!row.connector_instance_id && legacyInstanceIds.length > 1) {
+        throw new Error(
+          `Cannot migrate local-device source_instance_id '${row.source_instance_id}': legacy rows under '${oldConnectorId}' have multiple connector_instance_ids (${legacyInstanceIds.join(', ')}) and device_source_instances.connector_instance_id is empty.`
+        );
+      }
+      const currentInstanceId = typeof row.connector_instance_id === 'string' && row.connector_instance_id.trim()
+        ? row.connector_instance_id.trim()
+        : null;
+      const legacyInstanceId = legacyInstanceIds[0] || null;
+      const existingBinding = getExistingInstanceByBinding.get(row.owner_subject_id, row.connector_id, bindingKey);
+      const existingBindingInstanceId = existingBinding?.connector_instance_id || null;
+      if (currentInstanceId && existingBindingInstanceId && existingBindingInstanceId !== currentInstanceId) {
+        throw new Error(
+          `Cannot migrate local-device source_instance_id '${row.source_instance_id}': existing binding uses connector_instance_id '${existingBindingInstanceId}' but source row uses '${currentInstanceId}'.`
+        );
+      }
+      if (legacyInstanceId && existingBindingInstanceId && existingBindingInstanceId !== legacyInstanceId) {
+        throw new Error(
+          `Cannot migrate local-device source_instance_id '${row.source_instance_id}': existing binding uses connector_instance_id '${existingBindingInstanceId}' but legacy rows use '${legacyInstanceId}'.`
+        );
+      }
+      const resolvedInstanceId = currentInstanceId
+        || existingBindingInstanceId
+        || legacyInstanceId
+        || connectorInstanceId(row.owner_subject_id, row.connector_id, 'local_device', bindingKey);
+      const createdAt = row.created_at || now;
+      const updatedAt = row.updated_at || now;
+      const displayName = row.display_name || row.local_binding_id || row.connector_id;
+      const status = row.status === 'revoked' ? 'revoked' : 'active';
+      const manifest = stableJson({
+        connector_id: row.connector_id,
+        display_name: displayName,
+        streams: [],
+      });
+
+      upsertConnector.run(row.connector_id, manifest, createdAt);
+      upsertInstance.run(
+        resolvedInstanceId,
+        row.owner_subject_id,
+        row.connector_id,
+        displayName,
+        status,
+        bindingKey,
+        stableJson(sourceBinding),
+        createdAt,
+        updatedAt,
+        status === 'revoked' ? (row.revoked_at ?? updatedAt) : null,
+      );
+      if (currentInstanceId !== resolvedInstanceId) {
+        updateSourceInstance.run(resolvedInstanceId, updatedAt, row.device_id, row.source_instance_id);
+        backfilledRows += 1;
+      }
+
+      for (const table of tables) {
+        backfilledRows += updateConnectorIdForInstance(raw, table, oldConnectorId, newConnectorId, resolvedInstanceId);
+      }
+    }
+    return { rebuilt: false, backfilledRows };
+  });
+
+  const result = migration();
+  if (result.backfilledRows > 0 && typeof opts.onSchemaMigration === 'function') {
+    opts.onSchemaMigration({ name: 'local_device_connector_instances', ...result });
   }
   return result;
 }
@@ -1953,6 +2218,7 @@ export function initDb(path = ':memory:', opts = {}) {
   runWithSqliteBusyRetrySync(() => migrateBlobOriginInstanceColumn(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateSemanticSearchInstanceColumns(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateLexicalSearchInstanceColumns(raw, opts));
+  runWithSqliteBusyRetrySync(() => migrateLocalDeviceConnectorInstances(raw, opts));
   raw.exec(`
 DROP INDEX IF EXISTS idx_records_lookup;
 DROP INDEX IF EXISTS idx_records_version;

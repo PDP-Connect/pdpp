@@ -15,15 +15,14 @@ supports three command namespaces:
 
 - **`pdpp collector <advertise|enroll|run>`** — operator surface for the
   local collector runner. Pairs a host the operator controls (Claude Code or
-  Codex CLI data, a visible-browser desktop) with a remote PDPP reference
-  deployment via device-scoped enrollment, then runs connectors that the
-  provider/control-plane container cannot run on its own. The runner itself
-  ships with `@pdpp/polyfill-connectors` in the monorepo today — this command
-  is a thin wrapper that locates and spawns it, and fails fast with the
-  monorepo-flow instructions when invoked outside a checkout. Distributing
-  the runner from npm is an explicit follow-up; see
-  `openspec/changes/introduce-local-collector-runner/design.md`
-  § "Distribution follow-up".
+  Codex CLI data) with a remote PDPP reference deployment via device-scoped
+  enrollment, then runs connectors that the provider/control-plane container
+  cannot run on its own. The runner ships separately as
+  `@pdpp/local-collector` and owns the `pdpp-local-collector` binary; `pdpp
+  collector ...` is a slim `@pdpp/cli` shim that resolves that package lazily.
+  Public onboarding should use `npx -y @pdpp/local-collector ...` or
+  `npm i -g @pdpp/local-collector` unless the operator intentionally wants the
+  `@pdpp/cli` shim.
 
 - **`pdpp ref ...`** — reference operator diagnostics over `_ref` routes on a
   running reference deployment. Current subcommands: `pdpp ref run timeline
@@ -34,6 +33,7 @@ supports three command namespaces:
 ## Install
 
 ```bash
+# @pdpp/cli package, npx-launched pdpp binary
 npx -y @pdpp/cli@beta --help
 ```
 
@@ -44,11 +44,23 @@ When working from this monorepo without installing or linking the binary, use
 the workspace executable:
 
 ```bash
+# @pdpp/cli package, workspace-launched pdpp binary
 pnpm exec pdpp ref run timeline <run-id>
 ```
 
 The public command surface is still the `pdpp` binary; `pnpm exec` is only the
 local workspace launcher.
+
+The local collector runtime is a separate public package:
+
+```bash
+# @pdpp/local-collector package, npx-launched pdpp-local-collector binary
+npx -y @pdpp/local-collector advertise
+
+# @pdpp/local-collector package, installs the pdpp-local-collector binary
+npm i -g @pdpp/local-collector
+pdpp-local-collector advertise
+```
 
 ## Ownership And Publishing
 
@@ -63,6 +75,7 @@ After the package exists on npm, configure the trusted publisher with npm CLI
 11.5.1+:
 
 ```bash
+# npm trust command for the @pdpp/cli package publisher config
 npm trust github @pdpp/cli --repo vana-com/pdpp --file semantic-release.yml
 npm trust list @pdpp/cli
 ```

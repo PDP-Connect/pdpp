@@ -266,9 +266,9 @@ export async function postgresIngestRecord(storageTarget, record) {
     if (op === 'delete') {
       await client.query(
         `UPDATE records
-         SET deleted = TRUE, deleted_at = $4, emitted_at = $4, version = $5
+         SET connector_id = $6, deleted = TRUE, deleted_at = $4, emitted_at = $4, version = $5
          WHERE connector_instance_id = $1 AND stream = $2 AND record_key = $3`,
-        [connectorInstanceId, stream, recordKey, effectiveEmittedAt, nextVersion],
+        [connectorInstanceId, stream, recordKey, effectiveEmittedAt, nextVersion, connectorId],
       );
       await client.query(
         `INSERT INTO record_changes
@@ -282,7 +282,8 @@ export async function postgresIngestRecord(storageTarget, record) {
            (connector_id, connector_instance_id, stream, record_key, record_json, emitted_at, version, deleted, deleted_at, cursor_value, primary_key_text)
          VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, FALSE, NULL, $8, $9)
          ON CONFLICT (connector_instance_id, stream, record_key) DO UPDATE
-           SET record_json = EXCLUDED.record_json,
+           SET connector_id = EXCLUDED.connector_id,
+               record_json = EXCLUDED.record_json,
                emitted_at = EXCLUDED.emitted_at,
                version = EXCLUDED.version,
                deleted = FALSE,

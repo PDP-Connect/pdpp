@@ -26,6 +26,29 @@ function isSourceKind(value) {
   return value === 'connector' || value === 'provider_native';
 }
 
+function stableJson(value) {
+  if (value == null) return '{}';
+  if (Array.isArray(value)) {
+    return `[${value.map(stableJson).join(',')}]`;
+  }
+  if (typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function hashKey(value) {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+function makeConnectorInstanceSourceBindingKey(sourceBinding) {
+  return hashKey(stableJson(sourceBinding ?? {}));
+}
+
+function makeConnectorInstanceId(ownerSubjectId, connectorId, sourceKind, sourceBindingKey) {
+  return `cin_${hashKey(`${ownerSubjectId}\n${connectorId}\n${sourceKind}\n${sourceBindingKey}`).slice(0, 24)}`;
+}
+
 function parseSpineSourceShape(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return null;
@@ -811,6 +834,7 @@ export async function bootstrapPostgresSchema() {
     await migratePostgresConnectorDetailGapInstanceColumns(client);
     await migratePostgresSchedulerInstanceColumns(client);
     await migratePostgresRecordsBlobSearchInstanceColumns(client);
+    await migratePostgresLocalDeviceConnectorInstances(client);
   } finally {
     client.release();
   }
@@ -830,7 +854,7 @@ async function hasPostgresColumn(client, table, column) {
 }
 
 function makeLegacyConnectorInstanceId(ownerSubjectId, connectorId) {
-  const hash = createHash('sha256').update(`${ownerSubjectId}\n${connectorId}`).digest('hex');
+  const hash = hashKey(`${ownerSubjectId}\n${connectorId}`);
   return `cin_legacy_${hash.slice(0, 24)}`;
 }
 
@@ -1177,6 +1201,185 @@ async function ensurePostgresRecordsBlobSearchInstanceIndexes(client) {
   await client.query('CREATE INDEX IF NOT EXISTS idx_pg_record_changes_record ON record_changes(connector_instance_id, stream, record_key, version)');
   await client.query('CREATE INDEX IF NOT EXISTS idx_pg_blob_bindings_record ON blob_bindings(connector_instance_id, stream, record_key)');
   await client.query('CREATE INDEX IF NOT EXISTS idx_pg_semantic_search_scope ON semantic_search_blob(connector_instance_id, scope_key)');
+}
+
+function localDeviceConnectorId(connectorId) {
+  return `local-device:${encodeURIComponent(connectorId)}`;
+}
+
+function legacyLocalDeviceConnectorId(connectorId, sourceInstanceId) {
+  return `${localDeviceConnectorId(connectorId)}:${encodeURIComponent(sourceInstanceId)}`;
+}
+
+async function migratePostgresLocalDeviceConnectorInstances(client) {
+  const rows = await client.query(`
+    SELECT
+      dsi.source_instance_id,
+      dsi.device_id,
+      dsi.connector_id,
+      dsi.connector_instance_id,
+      dsi.local_binding_id,
+      COALESCE(dsi.display_name, de.display_name, dsi.local_binding_id) AS display_name,
+      dsi.status,
+      dsi.created_at,
+      dsi.updated_at,
+      dsi.revoked_at,
+      de.owner_subject_id
+    FROM device_source_instances dsi
+    JOIN device_exporters de ON de.device_id = dsi.device_id
+    ORDER BY dsi.created_at, dsi.source_instance_id
+  `);
+
+  if (rows.rows.length === 0) {
+    return;
+  }
+
+  await client.query('BEGIN');
+  try {
+    for (const row of rows.rows) {
+      const sourceBinding = {
+        kind: 'local_device',
+        device_id: row.device_id,
+        local_binding_name: row.local_binding_id,
+        source_instance_id: row.source_instance_id,
+      };
+      const sourceBindingKey = makeConnectorInstanceSourceBindingKey(sourceBinding);
+      const newConnectorId = localDeviceConnectorId(row.connector_id);
+      const oldConnectorId = legacyLocalDeviceConnectorId(row.connector_id, row.source_instance_id);
+
+      const legacyIds = await client.query(
+        `SELECT DISTINCT connector_instance_id
+           FROM (
+             SELECT connector_instance_id FROM records WHERE connector_id = $1
+             UNION
+             SELECT connector_instance_id FROM connector_state WHERE connector_id = $1
+             UNION
+             SELECT connector_instance_id FROM connector_schedules WHERE connector_id = $1
+             UNION
+             SELECT connector_instance_id FROM controller_active_runs WHERE connector_id = $1
+             UNION
+             SELECT connector_instance_id FROM scheduler_run_history WHERE connector_id = $1
+             UNION
+             SELECT connector_instance_id FROM scheduler_last_run_times WHERE connector_id = $1
+           ) legacy_ids
+          WHERE connector_instance_id IS NOT NULL
+          ORDER BY connector_instance_id
+          LIMIT 2`,
+        [oldConnectorId],
+      );
+      if (legacyIds.rows.length > 1 && !row.connector_instance_id) {
+        throw new Error(`Ambiguous local-device connector instance migration for ${oldConnectorId}`);
+      }
+
+      const existingBinding = await client.query(
+        `SELECT connector_instance_id
+           FROM connector_instances
+          WHERE owner_subject_id = $1
+            AND connector_id = $2
+            AND source_kind = 'local_device'
+            AND source_binding_key = $3
+          LIMIT 1`,
+        [row.owner_subject_id, row.connector_id, sourceBindingKey],
+      );
+      const existingBindingInstanceId = existingBinding.rows[0]?.connector_instance_id || null;
+      const legacyInstanceId = legacyIds.rows[0]?.connector_instance_id || null;
+      if (row.connector_instance_id && existingBindingInstanceId && existingBindingInstanceId !== row.connector_instance_id) {
+        throw new Error(`Conflicting local-device connector instance migration for ${oldConnectorId}`);
+      }
+      if (legacyInstanceId && existingBindingInstanceId && existingBindingInstanceId !== legacyInstanceId) {
+        throw new Error(`Conflicting legacy local-device rows for ${oldConnectorId}`);
+      }
+
+      const connectorInstanceId = row.connector_instance_id
+        || existingBindingInstanceId
+        || legacyInstanceId
+        || makeConnectorInstanceId(row.owner_subject_id, row.connector_id, 'local_device', sourceBindingKey);
+      const now = new Date().toISOString();
+      const manifest = {
+        connector_id: row.connector_id,
+        display_name: row.display_name || row.connector_id,
+        streams: [],
+      };
+
+      await client.query(
+        `INSERT INTO connectors(connector_id, manifest, created_at)
+         VALUES($1, $2::jsonb, $3)
+         ON CONFLICT(connector_id) DO NOTHING`,
+        [row.connector_id, JSON.stringify(manifest), row.created_at || now],
+      );
+
+      await client.query(
+        `INSERT INTO connector_instances(
+           connector_instance_id, owner_subject_id, connector_id, display_name, status,
+           source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
+         )
+         VALUES($1, $2, $3, $4, $5, 'local_device', $6, $7::jsonb, $8, $9, $10)
+         ON CONFLICT (connector_instance_id) DO UPDATE
+           SET owner_subject_id = EXCLUDED.owner_subject_id,
+               connector_id = EXCLUDED.connector_id,
+               display_name = EXCLUDED.display_name,
+               status = EXCLUDED.status,
+               source_kind = EXCLUDED.source_kind,
+               source_binding_key = EXCLUDED.source_binding_key,
+               source_binding_json = EXCLUDED.source_binding_json,
+               updated_at = EXCLUDED.updated_at,
+               revoked_at = EXCLUDED.revoked_at`,
+        [
+          connectorInstanceId,
+          row.owner_subject_id,
+          row.connector_id,
+          row.display_name,
+          row.status === 'revoked' ? 'revoked' : 'active',
+          sourceBindingKey,
+          JSON.stringify(sourceBinding),
+          row.created_at,
+          row.updated_at || now,
+          row.status === 'revoked' ? (row.revoked_at || row.updated_at || now) : null,
+        ],
+      );
+
+      await client.query(
+        `UPDATE device_source_instances
+            SET connector_instance_id = $1,
+                updated_at = CASE WHEN updated_at > $2 THEN updated_at ELSE $2 END
+          WHERE device_id = $3 AND source_instance_id = $4`,
+        [connectorInstanceId, now, row.device_id, row.source_instance_id],
+      );
+
+      for (const table of [
+        'connector_state',
+        'grant_connector_state',
+        'connector_detail_gaps',
+        'records',
+        'record_changes',
+        'version_counter',
+        'blobs',
+        'blob_bindings',
+        'lexical_search_index',
+        'lexical_search_meta',
+        'semantic_search_blob',
+        'semantic_search_meta',
+        'semantic_search_backfill_progress',
+        'connector_schedules',
+        'controller_active_runs',
+        'scheduler_run_history',
+        'scheduler_last_run_times',
+      ]) {
+        await client.query(
+          `UPDATE ${table}
+              SET connector_id = $1
+            WHERE connector_id = $2 AND connector_instance_id = $3`,
+          [newConnectorId, oldConnectorId, connectorInstanceId],
+        );
+      }
+    }
+    await client.query('COMMIT');
+  } catch (err) {
+    try {
+      await client.query('ROLLBACK');
+    } catch {}
+    throw err;
+  }
 }
 
 async function migratePostgresSpineSourceColumns(client) {

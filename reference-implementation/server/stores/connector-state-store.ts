@@ -213,7 +213,8 @@ export function createPostgresConnectorStateStore(): ConnectorStateStore {
             `INSERT INTO grant_connector_state(grant_id, connector_id, connector_instance_id, stream, state_json, updated_at)
              VALUES($1, $2, $3, $4, $5::jsonb, $6)
              ON CONFLICT (grant_id, connector_instance_id, stream) DO UPDATE
-               SET state_json = EXCLUDED.state_json,
+               SET connector_id = EXCLUDED.connector_id,
+                   state_json = EXCLUDED.state_json,
                    updated_at = EXCLUDED.updated_at`,
             [grantId, connectorId, connectorInstanceId, stream, JSON.stringify(cursor), now]
           );
@@ -223,7 +224,8 @@ export function createPostgresConnectorStateStore(): ConnectorStateStore {
           `INSERT INTO connector_state(connector_id, connector_instance_id, stream, state_json, updated_at)
            VALUES($1, $2, $3, $4::jsonb, $5)
            ON CONFLICT (connector_instance_id, stream) DO UPDATE
-             SET state_json = EXCLUDED.state_json,
+             SET connector_id = EXCLUDED.connector_id,
+                 state_json = EXCLUDED.state_json,
                  updated_at = EXCLUDED.updated_at`,
           [connectorId, connectorInstanceId, stream, JSON.stringify(cursor), now]
         );

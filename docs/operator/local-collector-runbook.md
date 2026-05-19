@@ -11,10 +11,10 @@ This is the single-page operator runbook for running Claude Code and Codex local
   |   Host with the data        |         |   PDPP reference deployment    |
   |   (Claude Code / Codex)     |         |   (Docker on a reachable host)  |
   |                             |         |                                 |
-  |   pdpp collector enroll  ---|-------->|   POST /_ref/device-exporters/  |
+  |   pdpp-local-collector   ---|-------->|   POST /_ref/device-exporters/  |
   |                             |  one-   |        enrollment-exchange      |
   |                             |  time   |                                 |
-  |   pdpp collector run     ---|-------->|   POST .../ingest               |
+  |   pdpp-local-collector   ---|-------->|   POST .../ingest               |
   |       --connector            ingest   |   GET|PUT .../state             |
   |       claude_code|codex     |         |                                 |
   +-----------------------------+         +---------------------------------+
@@ -28,15 +28,17 @@ State is authoritative on the server. Before each connector pass the runner fetc
 
 - A PDPP reference deployment reachable at a stable URL (e.g. `http://server.local:7662` or `https://peregrine-dev.vivid.fish`). See `reference-implementation/docs/migrate-storage.md` and the Docker compose under `reference-implementation/docker/` for the deployment side.
 - Owner session for that deployment so you can mint enrollment codes from `/dashboard/device-exporters`.
-- A PDPP monorepo checkout on the host that owns the data. The collector runner ships with `@pdpp/polyfill-connectors`, not the npm `@pdpp/cli` tarball &mdash; see "Open packaging follow-up" at the end of this runbook.
-- `pnpm install` at the repo root on that host.
+- Node.js 22.14+ and npm on the host that owns the data.
+- `@pdpp/local-collector` installed globally, or `npx -y @pdpp/local-collector`
+  available for one-shot execution. A PDPP monorepo checkout is only needed for
+  development or unpublished connector work.
 
 ## Step 1 &mdash; Confirm collector runtime capabilities
 
-On the host with Claude/Codex data, inside the monorepo checkout:
+On the host with Claude/Codex data:
 
 ```bash
-pnpm exec pdpp collector advertise
+npx -y @pdpp/local-collector advertise
 ```
 
 Expected output (capabilities may grow):
@@ -63,8 +65,8 @@ Use the "Create enrollment code" form:
 After "Create code" the dashboard renders:
 
 1. The raw enrollment code (copy button).
-2. A pre-filled `pdpp collector enroll` command targeting the deployment's public origin.
-3. Pre-filled `pdpp collector run --connector claude_code|codex` commands with `PDPP_LOCAL_DEVICE_ID`, `PDPP_LOCAL_DEVICE_TOKEN`, `PDPP_CONNECTION_ID` placeholders.
+2. A pre-filled `npx -y @pdpp/local-collector enroll` command targeting the deployment's public origin.
+3. Pre-filled `npx -y @pdpp/local-collector run --connector claude_code|codex` commands with `PDPP_LOCAL_DEVICE_ID`, `PDPP_LOCAL_DEVICE_TOKEN`, `PDPP_CONNECTION_ID` placeholders.
 
 You do not need to memorize the route or the env var names; the dashboard advertises the exact command.
 
@@ -73,7 +75,7 @@ You do not need to memorize the route or the env var names; the dashboard advert
 On the host with the data, paste the command the dashboard rendered. Example:
 
 ```bash
-pnpm exec pdpp collector enroll \
+npx -y @pdpp/local-collector enroll \
   --base-url https://peregrine-dev.vivid.fish \
   --code <one-time-code> \
   --device-label "the owner's laptop"
@@ -101,7 +103,7 @@ Paste the `pdpp collector run` command from the dashboard, filling the three env
 PDPP_LOCAL_DEVICE_ID=dev_... \
 PDPP_LOCAL_DEVICE_TOKEN=dvtk_... \
 PDPP_CONNECTION_ID=si_... \
-  pnpm exec pdpp collector run \
+  npx -y @pdpp/local-collector run \
     --base-url https://peregrine-dev.vivid.fish \
     --connector claude_code
 ```
@@ -175,8 +177,13 @@ include `coverage_diagnostics` to see the per-store status. See
 invocation, which is unscoped and therefore exercises everything declared in
 the manifest.
 
-## Open packaging follow-up
+## Docker moves and URL changes
 
-The collector runner is not yet distributed via the `@pdpp/cli` npm tarball, because shipping Playwright/Patchright/Chromium and the full connector source tree would bloat a public CLI install. From an npm-only install of `@pdpp/cli`, `pdpp collector` exits non-zero with the same monorepo-flow instructions used in step 3 here.
+When the Docker reference deployment moves, update `PDPP_REFERENCE_BASE_URL` in
+each collector env file. If the database moves with the deployment, keep the
+existing `PDPP_LOCAL_DEVICE_ID`, `PDPP_LOCAL_DEVICE_TOKEN`, and
+`PDPP_CONNECTION_ID` values. If the new deployment starts from a fresh database,
+re-enroll each host from `/dashboard/device-exporters`; old device credentials
+are scoped to the old database.
 
-Until the runner is split off into a publishable package, the supported operator path is a monorepo checkout on the host with the data. See "Distribution follow-up" in `openspec/changes/introduce-local-collector-runner/design.md` for the design constraint and follow-up scope. This runbook will be updated when that ships.
+For the consolidated public docs, see `docs/local-collector.md`.

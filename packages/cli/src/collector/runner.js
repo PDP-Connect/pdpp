@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -146,20 +146,36 @@ export async function spawnCollectorRunner(
   }
 
   if (localCollector) {
-    const binPath = join(localCollector.packageDir, 'bin', 'pdpp-local-collector.ts');
+    const binPath = resolveLocalCollectorBin(localCollector.packageDir);
     if (!existsSync(binPath)) {
       throw new CollectorUsageError(
         `@pdpp/local-collector is installed at ${localCollector.packageDir} but is missing its bin entrypoint. ` +
           'Reinstall the package or report this on https://github.com/vana-com/pdpp/issues.',
       );
     }
-    if (!tsxBinary) {
-      throw new CollectorUsageError(TSX_MISSING_MESSAGE);
+    if (binPath.endsWith('.ts')) {
+      if (!tsxBinary) {
+        throw new CollectorUsageError(TSX_MISSING_MESSAGE);
+      }
+      return await runSubprocess(spawnFn, tsxBinary, [binPath, subcommand, ...argv], { env, stdio });
     }
-    return await runSubprocess(spawnFn, tsxBinary, [binPath, subcommand, ...argv], { env, stdio });
+    return await runSubprocess(spawnFn, process.execPath, [binPath, subcommand, ...argv], { env, stdio });
   }
 
   throw new CollectorUsageError(RUNNER_MISSING_MESSAGE);
+}
+
+function resolveLocalCollectorBin(packageDir) {
+  try {
+    const manifest = JSON.parse(readFileSync(join(packageDir, 'package.json'), 'utf8'));
+    const bin = manifest?.bin?.['pdpp-local-collector'];
+    if (typeof bin === 'string' && bin.trim()) {
+      return join(packageDir, bin);
+    }
+  } catch {}
+  const publishedBin = join(packageDir, 'dist', 'local-collector', 'bin', 'pdpp-local-collector.js');
+  if (existsSync(publishedBin)) return publishedBin;
+  return join(packageDir, 'bin', 'pdpp-local-collector.ts');
 }
 
 function runSubprocess(spawnFn, binary, args, { env, stdio }) {

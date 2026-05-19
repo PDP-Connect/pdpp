@@ -11,6 +11,8 @@ plugins:
     - preset: conventionalcommits
   - - "@semantic-release/npm"
     - pkgRoot: "packages/cli"
+  - - "@semantic-release/npm"
+    - pkgRoot: "packages/local-collector"
   - - "@semantic-release/github"
     - successComment: false
       failComment: false

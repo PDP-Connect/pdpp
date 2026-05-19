@@ -22,8 +22,7 @@ Usage:
 Agent access:
   ${createPdppCliCommand()}
 
-Local collector (run browser/local-device connectors on a host you control;
-  currently requires a PDPP monorepo checkout — see "pdpp collector --help"):
+Local collector (pair a host you control with a reference deployment):
   ${PDPP_CLI_BIN_NAME} collector advertise
   ${PDPP_CLI_BIN_NAME} collector enroll --base-url <url> --code <code>
   ${PDPP_CLI_BIN_NAME} collector run    --base-url <url> --connector <id> ...
@@ -36,8 +35,9 @@ Reference diagnostics (reference server only):
 
 Notes:
   Do not ask users for owner bearer tokens for routine delegated access.
-  "pdpp collector" pairs a local host with a remote reference deployment so it
-  can run connectors the provider/control-plane container cannot run itself.
+  "pdpp collector" is a thin @pdpp/cli shim. Install @pdpp/local-collector
+  once, or use "npx -y @pdpp/local-collector ..." directly, for filesystem
+  collectors like Claude Code and Codex.
   "pdpp ref" commands require a running PDPP reference server and an owner session.
   "pdpp ref login" caches an owner session in project-local .pdpp/ with mode 0600;
   later "pdpp ref" commands use the cache when --owner-session and

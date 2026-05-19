@@ -1,6 +1,6 @@
 /**
  * Asserts that the device-exporters enrollment form surfaces the canonical
- * `pdpp collector enroll` / `pdpp collector run` invocations via the shared
+ * `@pdpp/local-collector` enroll / run invocations via the shared
  * helpers in apps/web/src/lib/pdpp-cli-command.ts, and exposes stable test
  * hooks for the rendered commands. The operator-readiness runbook in
  * docs/operator/local-collector-runbook.md depends on this surface; if it
@@ -22,18 +22,18 @@ function read(relPath: string): Promise<string> {
 
 const FORM_PATH = "apps/web/src/app/dashboard/device-exporters/enrollment-form.tsx";
 
-const COLLECTOR_ENROLL_HELPER = /pdppCliCollectorEnrollCommand/;
-const COLLECTOR_RUN_HELPER = /pdppCliCollectorRunCommand/;
-const MONOREPO_HELPER = /pdppCliMonorepoCommand/;
+const COLLECTOR_ENROLL_HELPER = /pdppLocalCollectorEnrollCommand/;
+const COLLECTOR_RUN_HELPER = /pdppLocalCollectorRunCommand/;
+const LOCAL_COLLECTOR_PACKAGE = /@pdpp\/local-collector/;
 const ENROLL_TESTID = /data-testid="collector-enroll-command"/;
 const RUN_TESTID_CLAUDE = /data-testid={`collector-run-command-/;
 const SUPPORTED_CONNECTORS = /COLLECTOR_RUN_CONNECTORS\s*=\s*\["claude_code",\s*"codex"\]/;
 
-test("enrollment form derives the canonical pdpp collector commands via shared helpers", async () => {
+test("enrollment form derives the canonical local collector commands via shared helpers", async () => {
   const src = await read(FORM_PATH);
-  assert.match(src, COLLECTOR_ENROLL_HELPER, "form must call pdppCliCollectorEnrollCommand");
-  assert.match(src, COLLECTOR_RUN_HELPER, "form must call pdppCliCollectorRunCommand");
-  assert.match(src, MONOREPO_HELPER, "form must surface the monorepo (pnpm exec) wrapping");
+  assert.match(src, COLLECTOR_ENROLL_HELPER, "form must call pdppLocalCollectorEnrollCommand");
+  assert.match(src, COLLECTOR_RUN_HELPER, "form must call pdppLocalCollectorRunCommand");
+  assert.match(src, LOCAL_COLLECTOR_PACKAGE, "form must surface the public @pdpp/local-collector path");
 });
 
 test("enrollment form exposes stable test hooks for the rendered commands", async () => {

@@ -202,8 +202,12 @@ test('spawnCollectorRunner falls back to @pdpp/local-collector when monorepo run
   // Create a fake local-collector package on disk so existsSync in the
   // resolver finds its bin file.
   const dir = await mkdtemp(join(tmpdir(), 'pdpp-fake-local-collector-'));
-  await mkdir(join(dir, 'bin'), { recursive: true });
-  await writeFile(join(dir, 'bin', 'pdpp-local-collector.ts'), '');
+  await mkdir(join(dir, 'dist', 'local-collector', 'bin'), { recursive: true });
+  await writeFile(
+    join(dir, 'package.json'),
+    JSON.stringify({ bin: { 'pdpp-local-collector': './dist/local-collector/bin/pdpp-local-collector.js' } }),
+  );
+  await writeFile(join(dir, 'dist', 'local-collector', 'bin', 'pdpp-local-collector.js'), '');
 
   const spawned = [];
   const fakeSpawn = (binary, args, options) => {
@@ -222,7 +226,8 @@ test('spawnCollectorRunner falls back to @pdpp/local-collector when monorepo run
   });
 
   assert.equal(spawned.length, 1);
-  assert.equal(spawned[0].args[0], join(dir, 'bin', 'pdpp-local-collector.ts'));
+  assert.equal(spawned[0].binary, process.execPath);
+  assert.equal(spawned[0].args[0], join(dir, 'dist', 'local-collector', 'bin', 'pdpp-local-collector.js'));
 });
 
 test('spawnCollectorRunner rejects when child terminates by signal', async () => {
