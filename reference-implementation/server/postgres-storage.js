@@ -317,6 +317,7 @@ export async function bootstrapPostgresSchema() {
         display_name TEXT NOT NULL,
         status TEXT NOT NULL DEFAULT 'active',
         agent_version TEXT,
+        collector_protocol_version TEXT,
         last_heartbeat_at TEXT,
         last_error_json JSONB,
         created_at TEXT NOT NULL,
@@ -1376,6 +1377,7 @@ async function migratePostgresDeviceExporterColumns(client) {
   await client.query(`
     ALTER TABLE device_exporters
       ADD COLUMN IF NOT EXISTS agent_version TEXT,
+      ADD COLUMN IF NOT EXISTS collector_protocol_version TEXT,
       ADD COLUMN IF NOT EXISTS last_heartbeat_at TEXT,
       ADD COLUMN IF NOT EXISTS last_error_json JSONB
   `);

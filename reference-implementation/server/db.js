@@ -286,16 +286,17 @@ CREATE INDEX IF NOT EXISTS idx_web_push_subscriptions_owner_active
   ON web_push_subscriptions(owner_subject_id, revoked_at, updated_at);
 
 CREATE TABLE IF NOT EXISTS device_exporters (
-  device_id         TEXT PRIMARY KEY,
-  owner_subject_id  TEXT NOT NULL,
-  display_name      TEXT NOT NULL,
-  status            TEXT NOT NULL DEFAULT 'active',
-  agent_version     TEXT,
-  last_heartbeat_at TEXT,
-  last_error_json   TEXT,
-  created_at        TEXT NOT NULL,
-  updated_at        TEXT NOT NULL,
-  revoked_at        TEXT
+  device_id                  TEXT PRIMARY KEY,
+  owner_subject_id           TEXT NOT NULL,
+  display_name               TEXT NOT NULL,
+  status                     TEXT NOT NULL DEFAULT 'active',
+  agent_version              TEXT,
+  collector_protocol_version TEXT,
+  last_heartbeat_at          TEXT,
+  last_error_json            TEXT,
+  created_at                 TEXT NOT NULL,
+  updated_at                 TEXT NOT NULL,
+  revoked_at                 TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_device_exporters_owner_status
@@ -1908,6 +1909,7 @@ export function initDb(path = ':memory:', opts = {}) {
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'pending_consents', 'approval_id', 'TEXT'));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'owner_device_auth', 'approval_id', 'TEXT'));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'device_exporters', 'agent_version', 'TEXT'));
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'device_exporters', 'collector_protocol_version', 'TEXT'));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'device_exporters', 'last_heartbeat_at', 'TEXT'));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'device_exporters', 'last_error_json', 'TEXT'));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'device_enrollment_codes', 'connector_id', "TEXT NOT NULL DEFAULT 'unknown'"));

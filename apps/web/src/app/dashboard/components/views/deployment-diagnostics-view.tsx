@@ -56,6 +56,7 @@ const WARNING_TITLES: Record<DeploymentDiagnostics["warnings"][number]["code"], 
   download_disabled: "Model download disabled",
   vector_index_fallback: "Using blob-flat vector fallback",
   browser_connectors_need_collector: "Browser-backed connectors need a local collector",
+  collector_protocol_outdated: "Local collector protocol is outdated",
 };
 
 function WarningsSection({ warnings }: { warnings: DeploymentDiagnostics["warnings"] }) {
@@ -83,6 +84,17 @@ function WarningsSection({ warnings }: { warnings: DeploymentDiagnostics["warnin
 }
 
 function RuntimeCapabilitiesSection({ capabilities }: { capabilities: DeploymentDiagnostics["runtime_capabilities"] }) {
+  const pairing = capabilities.collector_pairing;
+  const acceptedLabel =
+    capabilities.accepted_collector_protocol_versions.length > 0
+      ? capabilities.accepted_collector_protocol_versions.join(", ")
+      : "—";
+  const observedProtocolLabel = (() => {
+    if (!pairing) return "—";
+    if (pairing.protocol_version === "legacy_unknown") return "legacy (pre-header)";
+    return pairing.protocol_version ?? "—";
+  })();
+  const connectorVersions = pairing ? Object.entries(pairing.connector_versions) : [];
   return (
     <Section
       description="Bindings the provider/control-plane runtime advertises. Connectors requiring a binding the runtime does not advertise must run in a paired local collector runtime."
@@ -95,6 +107,15 @@ function RuntimeCapabilitiesSection({ capabilities }: { capabilities: Deployment
         <Field label="Filesystem binding" value={yesNo(capabilities.bindings.filesystem)} />
         <Field label="Browser binding" value={yesNo(capabilities.bindings.browser)} />
         <Field label="Local-device binding" value={yesNo(capabilities.bindings.local_device)} />
+        <Field label="Accepted collector protocol versions" value={acceptedLabel} />
+        <Field label="Paired collector protocol version" value={observedProtocolLabel} />
+        <Field label="Paired runner version" value={pairing?.runner_version ?? "—"} />
+        <Field
+          label="Bundled connector versions"
+          value={connectorVersions.length === 0
+            ? "—"
+            : connectorVersions.map(([id, v]) => `${id}@${v}`).join(", ")}
+        />
       </dl>
     </Section>
   );

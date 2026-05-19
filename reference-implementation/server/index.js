@@ -79,6 +79,13 @@ import {
   semanticIndexBackfillForManifest,
 } from './search-semantic.js';
 import { collectDeploymentDiagnostics } from './deployment-diagnostics.ts';
+import {
+  COLLECTOR_PROTOCOL_VERSION,
+  SUPPORTED_COLLECTOR_PROTOCOL_VERSIONS,
+  buildCollectorProtocolMismatchBody,
+  isAcceptedCollectorProtocolVersion,
+  readCollectorProtocolHeader,
+} from './collector-protocol.ts';
 import { createOwnerAuthPlaceholder, OWNER_AUTH_DEFAULT_SUBJECT_ID } from './owner-auth.ts';
 import { registerInboxRoutes } from './inbox.js';
 import { createStreamingSessionStore } from './streaming/sessions.js';
@@ -2028,8 +2035,43 @@ function buildAsApp(opts = {}) {
     res.json(projectRefConnection(instance || namespace, new Map(schedule ? [[namespace.connectorInstanceId, schedule]] : [])));
   }
 
+  // Reject any device-exporter ingest/heartbeat/state request whose
+  // X-PDPP-Collector-Protocol header is not in the server's accepted set.
+  // Returns true when a 409 was written. Callers must short-circuit. Runs
+  // BEFORE record/state persistence and BEFORE heartbeat row updates, so a
+  // rejected mismatch never widens any device-scoped capability. Spec:
+  // openspec/changes/publish-pdpp-local-collector/specs/
+  // reference-implementation-architecture/spec.md
+  function enforceCollectorProtocolVersion(req, res) {
+    const received = readCollectorProtocolHeader(req.headers);
+    if (!isAcceptedCollectorProtocolVersion(received)) {
+      const body = {
+        error: {
+          type: typeFor(409),
+          code: 'collector_protocol_mismatch',
+          message: received
+            ? `Collector protocol version '${received}' is not accepted by this reference server.`
+            : 'Collector protocol version header X-PDPP-Collector-Protocol is required.',
+          ...buildCollectorProtocolMismatchBody(received),
+        },
+      };
+      body.error.request_id = ensureRequestId(res);
+      res.status(409).json(body);
+      return true;
+    }
+    return false;
+  }
+
   async function requireDeviceExporterCredential(req, res, next) {
     try {
+      // Reject incompatible collector protocol versions before any device
+      // capability is established. The check sits ahead of credential
+      // introspection so an outdated runner can't even prove its token to
+      // mint a record on this server. Spec: openspec/changes/
+      // publish-pdpp-local-collector.
+      if (enforceCollectorProtocolVersion(req, res)) {
+        return;
+      }
       const auth = req.headers.authorization;
       if (!auth || !auth.startsWith('Bearer ')) {
         return pdppError(res, 401, 'authentication_error', 'Missing device exporter bearer token');
@@ -3627,13 +3669,50 @@ function buildAsApp(opts = {}) {
               const inContainer =
                 process.env.PDPP_FORCE_CONTAINER === '1' || existsSync('/.dockerenv');
               let collectorPaired = false;
+              let pairing = null;
               try {
                 const subjectId = getOwnerSubjectId(req);
                 const devices = await deviceExporterStore.listDevices(subjectId);
-                collectorPaired = Array.isArray(devices) && devices.length > 0;
+                const activeDevices = Array.isArray(devices)
+                  ? devices.filter((d) => d.status === 'active')
+                  : [];
+                collectorPaired = activeDevices.length > 0;
+                if (collectorPaired) {
+                  // Pick the most-recently-updated active device as the
+                  // representative pairing for the warning surface. Multiple
+                  // collectors with different protocol versions still drive
+                  // a single dashboard warning, but we report the worst case
+                  // (outdated > current) so the operator notices drift.
+                  const sorted = [...activeDevices].sort((a, b) => {
+                    const aT = Date.parse(a.lastHeartbeatAt || a.updatedAt || a.createdAt || '') || 0;
+                    const bT = Date.parse(b.lastHeartbeatAt || b.updatedAt || b.createdAt || '') || 0;
+                    return bT - aT;
+                  });
+                  const outdated = activeDevices.some(
+                    (d) => !SUPPORTED_COLLECTOR_PROTOCOL_VERSIONS.includes(d.collectorProtocolVersion || ''),
+                  );
+                  const outdatedDevice = outdated
+                    ? activeDevices.find(
+                        (d) => !SUPPORTED_COLLECTOR_PROTOCOL_VERSIONS.includes(d.collectorProtocolVersion || ''),
+                      )
+                    : null;
+                  const representative = outdatedDevice || sorted[0];
+                  const observedVersion = representative?.collectorProtocolVersion ?? null;
+                  pairing = {
+                    protocol_version: observedVersion ?? (representative ? 'legacy_unknown' : null),
+                    protocol_outdated: outdated,
+                    runner_version: representative?.agentVersion ?? null,
+                    // Per-connector bundle versions aren't advertised by
+                    // today's runner. The shape is reserved so a future
+                    // heartbeat extension can fill it without a contract
+                    // change.
+                    connector_versions: {},
+                  };
+                }
               } catch {
                 // Diagnostics must survive a transient store failure.
                 collectorPaired = false;
+                pairing = null;
               }
               return {
                 bindings: {
@@ -3643,6 +3722,8 @@ function buildAsApp(opts = {}) {
                   network: true,
                 },
                 collector_paired: collectorPaired,
+                accepted_collector_protocol_versions: [...SUPPORTED_COLLECTOR_PROTOCOL_VERSIONS],
+                collector_pairing: pairing,
                 in_container: inContainer,
               };
             },
@@ -3694,6 +3775,13 @@ function buildAsApp(opts = {}) {
 
   app.post('/_ref/device-exporters/enroll', { contract: 'refExchangeDeviceExporterEnrollmentCode' }, async (req, res) => {
     try {
+      // Refuse to mint a device-scoped credential for a collector whose
+      // protocol version this server cannot accept. The 409 must precede any
+      // store write (no device row, no credential, no source instance) so a
+      // rejected enroll cannot leak partial state.
+      if (enforceCollectorProtocolVersion(req, res)) {
+        return;
+      }
       const body = req.body || {};
       const enrollmentCode = requireNonEmptyString(body.enrollment_code, 'enrollment_code');
       const enrollment = await deviceExporterStore.findEnrollmentByCodeHash(hashDeviceSecret(enrollmentCode));
@@ -3705,6 +3793,8 @@ function buildAsApp(opts = {}) {
         await deviceExporterStore.revokeEnrollmentCode(enrollment.enrollmentCodeId, now.toISOString());
         return pdppError(res, 410, 'invalid_request', 'Enrollment code has expired', 'enrollment_code');
       }
+
+      const collectorProtocolVersion = readCollectorProtocolHeader(req.headers);
 
       const deviceId = generateSpineId('dexp');
       const credentialId = generateSpineId('dcred');
@@ -3718,6 +3808,7 @@ function buildAsApp(opts = {}) {
         deviceId,
         ownerSubjectId: enrollment.ownerSubjectId,
         displayName,
+        collectorProtocolVersion,
         createdAt: now.toISOString(),
         updatedAt: now.toISOString(),
       });

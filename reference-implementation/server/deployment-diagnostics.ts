@@ -117,6 +117,26 @@ export interface DeploymentDiagnosticsInput {
 // or provider+collector.
 //
 // Spec: openspec/changes/introduce-local-collector-runner/design.md
+// Updated: openspec/changes/publish-pdpp-local-collector — collector
+// protocol-version surface for `@pdpp/local-collector` compatibility.
+export interface CollectorPairing {
+  // null when no collector has enrolled. "legacy_unknown" when a paired
+  // device has no stored protocol version (predates the header). Otherwise
+  // the most-recent paired device's protocol version.
+  readonly protocol_version: string | "legacy_unknown" | null;
+  // True when ANY paired device's protocol version is not in the server's
+  // accepted set. Drives the `collector_protocol_outdated` dashboard
+  // warning. False when no collector is paired.
+  readonly protocol_outdated: boolean;
+  // The agent/runner version advertised by paired collectors at heartbeat
+  // time. Surfaced for visible drift; not enforced by the server.
+  readonly runner_version: string | null;
+  // Bundled connector entrypoint versions advertised by the runner. Today
+  // the runner does not yet advertise these per-connector, so this is
+  // typically empty. Keyed by connector_id.
+  readonly connector_versions: Readonly<Record<string, string>>;
+}
+
 export interface RuntimeCapabilityPosture {
   readonly bindings: {
     readonly browser: boolean;
@@ -128,6 +148,11 @@ export interface RuntimeCapabilityPosture {
   // runtime adapter resolves this from the device-exporter store; the
   // pure builder treats it as a single boolean.
   readonly collector_paired: boolean;
+  // The server's accepted set of collector protocol versions. Dashboard
+  // compares paired-device versions against this list.
+  readonly accepted_collector_protocol_versions: readonly string[];
+  // Per-pairing detail. Null when collector_paired is false.
+  readonly collector_pairing: CollectorPairing | null;
   // True iff the provider/control-plane runtime is running inside a
   // container (`/.dockerenv` present or PDPP_FORCE_CONTAINER=1).
   readonly in_container: boolean;
@@ -156,7 +181,8 @@ export type DiagnosticsWarningCode =
   | "missing_model_cache"
   | "download_disabled"
   | "vector_index_fallback"
-  | "browser_connectors_need_collector";
+  | "browser_connectors_need_collector"
+  | "collector_protocol_outdated";
 
 export interface DiagnosticsWarning {
   readonly code: DiagnosticsWarningCode;
@@ -197,6 +223,8 @@ export interface DeploymentDiagnosticsReport {
       readonly network: boolean;
     };
     readonly collector_paired: boolean;
+    readonly accepted_collector_protocol_versions: readonly string[];
+    readonly collector_pairing: CollectorPairing | null;
     readonly in_container: boolean;
   };
   readonly semantic: {
@@ -461,6 +489,26 @@ function buildRuntimeCapabilityWarnings(posture: RuntimeCapabilityPosture | null
         "See `bin/collector-runner.ts` and `openspec/changes/introduce-local-collector-runner`.",
     });
   }
+  // A paired collector whose protocol version is outside the server's
+  // accepted set will be 409'd at ingest time. This is distinct from the
+  // browser_connectors_need_collector warning above: the collector exists
+  // but the *protocol* between runner and server is incompatible, not the
+  // source data. Phrased to avoid implying captured records are invalid.
+  if (posture.collector_pairing?.protocol_outdated) {
+    const observed = posture.collector_pairing.protocol_version;
+    const observedLabel =
+      observed === "legacy_unknown"
+        ? "an older version that pre-dates the compatibility header"
+        : `version ${observed}`;
+    out.push({
+      code: "collector_protocol_outdated",
+      message:
+        `A paired local collector reports ${observedLabel}. ` +
+        `This reference server accepts collector protocol version(s) ${posture.accepted_collector_protocol_versions.join(", ") || "(none)"}. ` +
+        "Ingest from that collector will be rejected with 409 collector_protocol_mismatch until the collector is upgraded. " +
+        "Previously-captured records are unaffected.",
+    });
+  }
   return out;
 }
 
@@ -471,12 +519,23 @@ function buildRuntimeCapabilityReport(
     return {
       bindings: { browser: false, filesystem: false, local_device: false, network: true },
       collector_paired: false,
+      accepted_collector_protocol_versions: [],
+      collector_pairing: null,
       in_container: false,
     };
   }
+  const accepted = posture.accepted_collector_protocol_versions;
+  const pairing = posture.collector_pairing ?? null;
   return {
     bindings: { ...posture.bindings },
     collector_paired: posture.collector_paired,
+    accepted_collector_protocol_versions: Array.isArray(accepted) ? [...accepted] : [],
+    collector_pairing: pairing
+      ? {
+          ...pairing,
+          connector_versions: { ...(pairing.connector_versions ?? {}) },
+        }
+      : null,
     in_container: posture.in_container,
   };
 }

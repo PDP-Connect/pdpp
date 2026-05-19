@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { COLLECTOR_PROTOCOL_VERSION } from '../server/collector-protocol.ts';
 import { getDb } from '../server/db.js';
 import { startServer } from '../server/index.js';
+
+const PROTOCOL_HEADERS = { 'X-PDPP-Collector-Protocol': COLLECTOR_PROTOCOL_VERSION };
 
 async function closeServer(server) {
   server.asServer.closeAllConnections();
@@ -51,9 +54,11 @@ async function enrollDevice(asUrl, localBindingName) {
   assert.equal(codeResp.status, 201);
   assert.equal(codeResp.body.object, 'device_exporter_enrollment_code');
 
-  const enrollResp = await postJson(`${asUrl}/_ref/device-exporters/enroll`, {
-    enrollment_code: codeResp.body.enrollment_code,
-  });
+  const enrollResp = await postJson(
+    `${asUrl}/_ref/device-exporters/enroll`,
+    { enrollment_code: codeResp.body.enrollment_code },
+    PROTOCOL_HEADERS,
+  );
   assert.equal(enrollResp.status, 201);
   assert.equal(enrollResp.body.object, 'device_exporter_enrollment');
   assert.match(enrollResp.body.connector_instance_id, /^cin_/);
@@ -61,7 +66,7 @@ async function enrollDevice(asUrl, localBindingName) {
 }
 
 function authHeaders(deviceToken) {
-  return { Authorization: `Bearer ${deviceToken}` };
+  return { Authorization: `Bearer ${deviceToken}`, ...PROTOCOL_HEADERS };
 }
 
 function makeBatch(device, batchId, value) {
@@ -89,7 +94,11 @@ function internalStorageConnectorId(connectorId) {
 
 test('device exporter routes enroll, heartbeat, ingest idempotently, isolate source instances, and revoke', async () => {
   await withServer(async ({ asUrl }) => {
-    const missingAuth = await postJson(`${asUrl}/_ref/device-exporters/dev_missing/heartbeat`, {});
+    const missingAuth = await postJson(
+      `${asUrl}/_ref/device-exporters/dev_missing/heartbeat`,
+      {},
+      PROTOCOL_HEADERS,
+    );
     assert.equal(missingAuth.status, 401);
     assert.equal(missingAuth.body.error.code, 'authentication_error');
 
@@ -193,5 +202,89 @@ test('device exporter routes enroll, heartbeat, ingest idempotently, isolate sou
       authHeaders(first.device_token),
     );
     assert.equal(revokedHeartbeat.status, 401);
+  });
+});
+
+test('enroll rejects missing collector protocol header with 409 collector_protocol_mismatch and persists nothing', async () => {
+  await withServer(async ({ asUrl }) => {
+    const codeResp = await postJson(`${asUrl}/_ref/device-exporters/enrollment-codes`, {
+      connector_id: 'codex',
+      local_binding_name: 'laptop-c',
+    });
+    assert.equal(codeResp.status, 201);
+
+    // No X-PDPP-Collector-Protocol header — must fail before any device row
+    // is created.
+    const enrollResp = await postJson(`${asUrl}/_ref/device-exporters/enroll`, {
+      enrollment_code: codeResp.body.enrollment_code,
+    });
+    assert.equal(enrollResp.status, 409);
+    assert.equal(enrollResp.body.error.code, 'collector_protocol_mismatch');
+    assert.ok(Array.isArray(enrollResp.body.error.accepted_versions));
+    assert.ok(enrollResp.body.error.accepted_versions.length > 0);
+    assert.equal(enrollResp.body.error.received_version, null);
+
+    // The enrollment code should still be pending — the rejected enroll
+    // must not have consumed it.
+    const retry = await postJson(
+      `${asUrl}/_ref/device-exporters/enroll`,
+      { enrollment_code: codeResp.body.enrollment_code },
+      PROTOCOL_HEADERS,
+    );
+    assert.equal(retry.status, 201);
+
+    // And no devices should exist beyond the one we just enrolled — the
+    // earlier mismatch must not have leaked a device row.
+    const rows = getDb()
+      .prepare('SELECT COUNT(*) as n FROM device_exporters')
+      .get();
+    assert.equal(rows.n, 1);
+  });
+});
+
+test('enroll persists collector_protocol_version on the device row', async () => {
+  await withServer(async ({ asUrl }) => {
+    const codeResp = await postJson(`${asUrl}/_ref/device-exporters/enrollment-codes`, {
+      connector_id: 'codex',
+      local_binding_name: 'laptop-d',
+    });
+    assert.equal(codeResp.status, 201);
+    const enrollResp = await postJson(
+      `${asUrl}/_ref/device-exporters/enroll`,
+      { enrollment_code: codeResp.body.enrollment_code },
+      PROTOCOL_HEADERS,
+    );
+    assert.equal(enrollResp.status, 201);
+
+    const row = getDb()
+      .prepare('SELECT collector_protocol_version FROM device_exporters WHERE device_id = ?')
+      .get(enrollResp.body.device_id);
+    assert.equal(row.collector_protocol_version, COLLECTOR_PROTOCOL_VERSION);
+  });
+});
+
+test('ingest rejects unaccepted collector protocol version with 409 before any record persists', async () => {
+  await withServer(async ({ asUrl }) => {
+    const device = await enrollDevice(asUrl, 'laptop-e');
+    const batch = makeBatch(device, 'batch-mismatch', 'will-not-persist');
+    const reject = await postJson(
+      `${asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/ingest-batches`,
+      batch,
+      { Authorization: `Bearer ${device.device_token}`, 'X-PDPP-Collector-Protocol': '999' },
+    );
+    assert.equal(reject.status, 409);
+    assert.equal(reject.body.error.code, 'collector_protocol_mismatch');
+    assert.equal(reject.body.error.received_version, '999');
+
+    const outcomes = getDb()
+      .prepare('SELECT COUNT(*) as n FROM device_ingest_batch_outcomes WHERE device_id = ?')
+      .get(device.device_id);
+    assert.equal(outcomes.n, 0);
+    const recordRows = getDb()
+      .prepare(
+        `SELECT COUNT(*) as n FROM records WHERE connector_id = ?`,
+      )
+      .get(internalStorageConnectorId('codex'));
+    assert.equal(recordRows.n, 0);
   });
 });

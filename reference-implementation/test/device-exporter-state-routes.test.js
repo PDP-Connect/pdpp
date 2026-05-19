@@ -12,8 +12,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { COLLECTOR_PROTOCOL_VERSION } from '../server/collector-protocol.ts';
 import { getDb } from '../server/db.js';
 import { startServer } from '../server/index.js';
+
+const PROTOCOL_HEADERS = { 'X-PDPP-Collector-Protocol': COLLECTOR_PROTOCOL_VERSION };
 
 async function closeServer(server) {
   server.asServer.closeAllConnections();
@@ -74,7 +77,7 @@ async function putJson(url, body, headers = {}) {
 }
 
 function authHeaders(deviceToken) {
-  return { Authorization: `Bearer ${deviceToken}` };
+  return { Authorization: `Bearer ${deviceToken}`, ...PROTOCOL_HEADERS };
 }
 
 async function enrollDevice(asUrl, localBindingName) {
@@ -83,9 +86,11 @@ async function enrollDevice(asUrl, localBindingName) {
     local_binding_name: localBindingName,
   });
   assert.equal(codeResp.status, 201, JSON.stringify(codeResp.body));
-  const enrollResp = await postJson(`${asUrl}/_ref/device-exporters/enroll`, {
-    enrollment_code: codeResp.body.enrollment_code,
-  });
+  const enrollResp = await postJson(
+    `${asUrl}/_ref/device-exporters/enroll`,
+    { enrollment_code: codeResp.body.enrollment_code },
+    PROTOCOL_HEADERS,
+  );
   assert.equal(enrollResp.status, 201, JSON.stringify(enrollResp.body));
   assert.match(enrollResp.body.connector_instance_id, /^cin_/);
   return enrollResp.body;
@@ -100,14 +105,17 @@ test('GET device state requires a valid device credential', async () => {
     const device = await enrollDevice(asUrl, 'laptop-a');
 
     // Missing auth.
-    const missing = await getJson(stateUrl(asUrl, device.device_id, device.source_instance_id));
+    const missing = await getJson(
+      stateUrl(asUrl, device.device_id, device.source_instance_id),
+      PROTOCOL_HEADERS,
+    );
     assert.equal(missing.status, 401);
     assert.equal(missing.body.error.code, 'authentication_error');
 
     // Wrong auth shape.
     const wrong = await getJson(
       stateUrl(asUrl, device.device_id, device.source_instance_id),
-      { Authorization: 'NotBearer foo' },
+      { Authorization: 'NotBearer foo', ...PROTOCOL_HEADERS },
     );
     assert.equal(wrong.status, 401);
 

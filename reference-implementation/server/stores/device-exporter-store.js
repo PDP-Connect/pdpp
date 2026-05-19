@@ -41,6 +41,10 @@ function mapDevice(row) {
     displayName: row.display_name,
     status: row.status,
     agentVersion: row.agent_version,
+    // null when this device enrolled before the X-PDPP-Collector-Protocol
+    // header was required; consumers must report that as legacy_unknown
+    // rather than assume current compatibility.
+    collectorProtocolVersion: row.collector_protocol_version ?? null,
     lastHeartbeatAt: row.last_heartbeat_at,
     lastError: parseJson(row.last_error_json, null),
     createdAt: row.created_at,
@@ -132,6 +136,7 @@ export function createSqliteDeviceExporterStore() {
         record.displayName,
         record.status ?? 'active',
         record.agentVersion ?? null,
+        record.collectorProtocolVersion ?? null,
         record.lastHeartbeatAt ?? null,
         record.lastError === undefined ? null : JSON.stringify(record.lastError),
         record.createdAt,
@@ -299,14 +304,15 @@ export function createPostgresDeviceExporterStore() {
   return {
     async createDevice(record) {
       await postgresQuery(
-        `INSERT INTO device_exporters(device_id, owner_subject_id, display_name, status, agent_version, last_heartbeat_at, last_error_json, created_at, updated_at, revoked_at)
-         VALUES($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10)`,
+        `INSERT INTO device_exporters(device_id, owner_subject_id, display_name, status, agent_version, collector_protocol_version, last_heartbeat_at, last_error_json, created_at, updated_at, revoked_at)
+         VALUES($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11)`,
         [
           record.deviceId,
           record.ownerSubjectId,
           record.displayName,
           record.status ?? 'active',
           record.agentVersion ?? null,
+          record.collectorProtocolVersion ?? null,
           record.lastHeartbeatAt ?? null,
           record.lastError === undefined ? null : JSON.stringify(record.lastError),
           record.createdAt,
@@ -318,7 +324,7 @@ export function createPostgresDeviceExporterStore() {
 
     async getDevice(deviceId) {
       const result = await postgresQuery(
-        `SELECT device_id, owner_subject_id, display_name, status, agent_version, last_heartbeat_at, last_error_json, created_at, updated_at, revoked_at
+        `SELECT device_id, owner_subject_id, display_name, status, agent_version, collector_protocol_version, last_heartbeat_at, last_error_json, created_at, updated_at, revoked_at
          FROM device_exporters WHERE device_id = $1`,
         [deviceId],
       );
@@ -327,7 +333,7 @@ export function createPostgresDeviceExporterStore() {
 
     async listDevices(ownerSubjectId) {
       const result = await postgresQuery(
-        `SELECT device_id, owner_subject_id, display_name, status, agent_version, last_heartbeat_at, last_error_json, created_at, updated_at, revoked_at
+        `SELECT device_id, owner_subject_id, display_name, status, agent_version, collector_protocol_version, last_heartbeat_at, last_error_json, created_at, updated_at, revoked_at
          FROM device_exporters
          WHERE owner_subject_id = $1
          ORDER BY created_at DESC, device_id ASC`,

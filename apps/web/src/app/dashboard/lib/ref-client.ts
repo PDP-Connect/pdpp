@@ -486,6 +486,19 @@ export interface DeploymentDiagnostics {
       network: boolean;
     };
     collector_paired: boolean;
+    // Versions the reference server is willing to accept on ingest. Empty
+    // when the diagnostics adapter could not introspect.
+    accepted_collector_protocol_versions: ReadonlyArray<string>;
+    // Per-pairing detail. Null when no collector is enrolled.
+    collector_pairing: {
+      // null when this device pre-dates the X-PDPP-Collector-Protocol
+      // header. "legacy_unknown" carries the same idea in a typed form
+      // when the device row exists but the column is empty.
+      protocol_version: string | "legacy_unknown" | null;
+      protocol_outdated: boolean;
+      runner_version: string | null;
+      connector_versions: Readonly<Record<string, string>>;
+    } | null;
     in_container: boolean;
   };
   semantic: {
@@ -542,7 +555,8 @@ export interface DeploymentDiagnostics {
       | "missing_model_cache"
       | "download_disabled"
       | "vector_index_fallback"
-      | "browser_connectors_need_collector";
+      | "browser_connectors_need_collector"
+      | "collector_protocol_outdated";
     message: string;
   }>;
 }
