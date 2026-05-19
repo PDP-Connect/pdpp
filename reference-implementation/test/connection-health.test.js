@@ -215,10 +215,7 @@ test('healthy: success + complete coverage + fresh + no attention/backoff', () =
   assert.equal(snap.badges.syncing, false);
 });
 
-test('healthy: coverage `unknown` is allowed when no other evidence degrades', () => {
-  // No coverage source configured at all; the projection must not invent
-  // gaps. (The opposite case — `unknown` coverage + succeeded run with
-  // gaps — is degraded via run evidence.)
+test('healthy: complete coverage and fresh evidence can project healthy without outbox evidence', () => {
   const snap = computeConnectionHealth(
     input({
       run: run(),
@@ -240,11 +237,9 @@ test('stale: freshness stale alone surfaces as axis+badge, not a stale headline 
       freshness: { axis: 'stale' },
     })
   );
-  // Headline must not be "stale". Stale-but-otherwise-clean degrades to
-  // unknown via the fallback (last rule) because evidence is incomplete:
-  // we know the data is past policy but no other red flags. The badge
-  // and axis carry the freshness signal.
-  assert.notEqual(snap.state, 'healthy');
+  // Headline must not be "stale". Stale-but-otherwise-clean degrades
+  // while the badge and axis carry the precise freshness signal.
+  assert.equal(snap.state, 'degraded');
   assert.equal(snap.axes.freshness, 'stale');
   assert.equal(snap.badges.stale, true);
 });
@@ -287,6 +282,17 @@ test('mixed: succeeded run with unknown coverage and unknown freshness falls bac
   const snap = computeConnectionHealth(
     input({
       run: run(),
+    })
+  );
+  assert.equal(snap.state, 'unknown');
+  assert.deepEqual([...snap.unknown_reasons], ['unclassified']);
+});
+
+test('mixed: succeeded run with complete coverage but unknown freshness is not healthy', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'complete' },
     })
   );
   assert.equal(snap.state, 'unknown');

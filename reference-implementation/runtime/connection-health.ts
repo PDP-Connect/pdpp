@@ -352,6 +352,9 @@ function isDegradedShape(input: ComputeConnectionHealthInput, axes: ConnectionAx
   if (axes.coverage === "gaps" || axes.coverage === "partial") {
     return true;
   }
+  if (axes.freshness === "stale") {
+    return true;
+  }
   if (input.run?.latestStatus === "failed") {
     return true;
   }
@@ -371,12 +374,12 @@ function isHealthyShape(input: ComputeConnectionHealthInput, axes: ConnectionAxe
   if (axes.coverage !== "complete") {
     return false;
   }
-  if (axes.freshness === "stale") {
+  if (axes.freshness !== "fresh") {
     return false;
   }
-  // Coverage must be `complete` (above), and freshness must not be
-  // explicitly stale. `fresh` is the only confident healthy freshness;
-  // `unknown` here means no policy is configured and is acceptable.
+  // Coverage and freshness must both be affirmative. If a connection
+  // truly has no freshness policy, the caller should pass `fresh`;
+  // `unknown` is reserved for missing or unreliable evidence.
   return true;
 }
 

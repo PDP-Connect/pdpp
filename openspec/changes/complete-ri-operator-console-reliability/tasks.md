@@ -15,13 +15,13 @@
 
 ## 3. Connection Health Projection
 
-- [ ] 3.1 Implement a connection health projection module with deterministic precedence for healthy, degraded, needs-attention, cooling-off, blocked, idle, and unknown.
-- [ ] 3.2 Project orthogonal connection axes for freshness, coverage, attention, and outbox/work health; render syncing/activity as a badge rather than a health state.
+- [x] 3.1 Implement a connection health projection module with deterministic precedence for healthy, degraded, needs-attention, cooling-off, blocked, idle, and unknown.
+- [x] 3.2 Project orthogonal connection axes for freshness, coverage, attention, and outbox/work health; render syncing/activity as a badge rather than a health state.
 - [ ] 3.3 Project coverage by connection and stream/scope boundary, including complete, partial, deferred, unsupported, unavailable, retryable gap, terminal gap, inventory-only, and unknown.
 - [ ] 3.4 Integrate scheduler/backoff evidence so cooling-off and next-attempt semantics survive restart.
 - [ ] 3.5 Integrate detail-gap/backlog evidence so success-with-gaps never projects as healthy.
-- [ ] 3.6 Add projection-unreliable handling so failed/missing/stale required evidence projects to unknown.
-- [ ] 3.7 Add tests for every canonical health state, every axis, and state precedence conflict.
+- [x] 3.6 Add projection-unreliable handling so failed/missing/stale required evidence projects to unknown.
+- [x] 3.7 Add tests for every canonical health state, every axis, and state precedence conflict.
 
 ## 4. Executor Bounds And Durability
 
@@ -34,11 +34,11 @@
 
 ## 5. Structured Attention And Notifications
 
-- [ ] 5.1 Normalize run and connection attention evidence with attention id, dedupe key, reason, action target, expiry, auto-detection, lifecycle state, privacy classification, and recovery semantics.
-- [ ] 5.2 Add lifecycle support for open, acknowledged, in-progress, resolved, expired, cancelled, and superseded attention.
+- [x] 5.1 Normalize run and connection attention evidence with attention id, dedupe key, reason, action target, expiry, auto-detection, lifecycle state, privacy classification, and recovery semantics.
+- [x] 5.2 Add lifecycle support for open, acknowledged, in-progress, resolved, expired, cancelled, and superseded attention.
 - [ ] 5.3 Integrate attention evidence into connection health projection and dashboard CTAs.
 - [ ] 5.4 Update PWA/Web Push policy so it delivers actionable attention and important health transitions without owning state.
-- [ ] 5.5 Add dedupe/cooldown behavior for repeated prompts and repeated non-actionable failures.
+- [x] 5.5 Add dedupe/cooldown behavior for repeated prompts and repeated non-actionable failures.
 - [ ] 5.6 Add tests for OTP/push approval, re-consent/manual browser verification, missing local device, timeout, cancellation, supersession, and auto-detected completion.
 
 ## 6. Dashboard And CLI Operator Surfaces
