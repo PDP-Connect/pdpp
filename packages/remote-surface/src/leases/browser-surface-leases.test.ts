@@ -10,6 +10,7 @@ import {
   type EnsureBrowserSurfaceRequest,
   type StopBrowserSurfaceRequest,
   DEFAULT_NEKO_PRIORITY_RANKS,
+  createSurfaceLeaseManager,
   projectBrowserSurfaceLease,
   projectSurfaceLease,
 } from "./browser-surface-leases.ts";
@@ -237,7 +238,7 @@ test("host-neutral lease API acquires, projects, cancels, and reconciles by sess
   });
 
   const result = leases.acquireSurfaceLease({
-    connectorId: "chatgpt",
+    surfaceKind: "chatgpt",
     sessionId: "session_1",
     profileKey: "chatgpt",
   });
@@ -259,6 +260,99 @@ test("host-neutral lease API acquires, projects, cancels, and reconciles by sess
   const cancelled = leases.cancelSurfaceSessionAndPump("session_1");
   assert.equal(cancelled.stale, false);
   assert.equal(cancelled.lease?.status, "cancelled");
+});
+
+test("legacy browser surface session API still accepts connectorId", () => {
+  const { leases } = manager({
+    initialSurfaces: [
+      {
+        surface_id: "surface_idle",
+        backend: "neko",
+        profile_key: "chatgpt",
+        connector_id: "chatgpt",
+        cdp_url: "http://neko:9222",
+        stream_base_url: "http://neko:8080",
+        health: "ready",
+        created_at: "2026-05-12T11:00:00.000Z",
+        last_used_at: "2026-05-12T11:00:00.000Z",
+      },
+    ],
+  });
+
+  const result = leases.acquireSurfaceLease({
+    connectorId: "chatgpt",
+    sessionId: "session_legacy",
+    profileKey: "chatgpt",
+  });
+
+  assert.equal(result.lease.connector_id, "chatgpt");
+  assert.equal(result.lease.run_id, "session_legacy");
+
+  const renewed = leases.renew({
+    leaseId: result.lease.lease_id,
+    fencingToken: result.lease.fencing_token,
+    ttlMs: 120_000,
+  });
+  assert.equal(renewed.renewed, true);
+  assert.equal(renewed.lease?.expires_at, "2026-05-12T12:02:00.000Z");
+});
+
+test("non-PDPP host fixture uses neutral surface lease manager terms", () => {
+  const surfaceLeases = createSurfaceLeaseManager({
+    config: {
+      managedSurfaceKinds: new Set(["browser"]),
+      surfaceCap: 1,
+      staticCdpHttpUrl: "http://surface-control.local",
+      staticStreamBaseUrl: "http://surface-stream.local",
+      leaseWaitTimeoutMs: 60_000,
+      idleTtlMs: 300_000,
+      defaultPriorityClass: "scheduled_refresh",
+      priorityRanks: DEFAULT_NEKO_PRIORITY_RANKS,
+      surfaceMode: "dynamic",
+    },
+    now: () => new Date("2026-05-12T12:00:00.000Z"),
+    makeLeaseId: () => "lease_host_1",
+    makeSurfaceId: () => "surface_host_1",
+    nextFencingToken: (() => {
+      let token = 0;
+      return () => ++token;
+    })(),
+  });
+
+  assert.equal(surfaceLeases.isManagedSurfaceKind("browser"), true);
+
+  const acquired = surfaceLeases.acquire({
+    surfaceKind: "browser",
+    sessionId: "session_host_1",
+    profileKey: "checkout-profile",
+    sessionSubjectId: "account_123",
+  });
+
+  assert.equal(acquired.lease.leaseId, "lease_host_1");
+  assert.equal(acquired.lease.surfaceKind, "browser");
+  assert.equal(acquired.lease.sessionId, "session_host_1");
+  assert.equal(acquired.lease.sessionSubjectId, "account_123");
+  assert.equal(acquired.lease.status, "starting_surface");
+  assert.equal(surfaceLeases.getLease("lease_host_1")?.sessionId, "session_host_1");
+
+  const renewed = surfaceLeases.renewLease({
+    leaseId: "lease_host_1",
+    fencingToken: acquired.lease.fencingToken,
+    ttlMs: 120_000,
+  });
+  assert.equal(renewed.renewed, true);
+  assert.equal(renewed.lease?.expiresAt, "2026-05-12T12:02:00.000Z");
+
+  const reconciled = surfaceLeases.reconcileAfterRestart({
+    activeSessionIds: new Set(["session_host_1"]),
+    promoteQueued: false,
+  });
+  assert.deepEqual(reconciled.queued.map((lease) => lease.leaseId), ["lease_host_1"]);
+
+  const cancelled = surfaceLeases.cancelSessionAndPump("session_host_1");
+  assert.equal(cancelled.stale, false);
+  assert.equal(cancelled.lease?.status, "cancelled");
+  assert.equal(cancelled.lease?.sessionId, "session_host_1");
 });
 
 test("capacity-pressure planner preserves compatible idle reuse", () => {

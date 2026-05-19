@@ -126,12 +126,110 @@ export interface AcquireBrowserSurfaceLeaseRequest {
 }
 
 export interface AcquireSurfaceLeaseRequest {
-  readonly connectorId: string;
   readonly sessionId: string;
+  readonly surfaceKind: string;
   readonly profileKey?: string;
   readonly accountKey?: string;
   readonly sessionSubjectId?: string;
   readonly priorityClass?: BrowserSurfacePriorityClass;
+}
+
+export interface AcquireBrowserSurfaceSessionLeaseRequest extends Omit<AcquireSurfaceLeaseRequest, "surfaceKind"> {
+  readonly surfaceKind?: string;
+  /** @deprecated Use surfaceKind for host-neutral integrations. */
+  readonly connectorId?: string;
+}
+
+export interface SurfaceLeaseManagerConfig {
+  readonly managedSurfaceKinds: ReadonlySet<string>;
+  readonly surfaceCap: number;
+  readonly staticProfileKey?: string;
+  readonly staticCdpHttpUrl?: string;
+  readonly staticStreamBaseUrl?: string;
+  readonly leaseWaitTimeoutMs: number;
+  readonly idleTtlMs: number;
+  readonly defaultPriorityClass: BrowserSurfacePriorityClass;
+  readonly priorityRanks: Readonly<Record<BrowserSurfacePriorityClass, number>>;
+  readonly surfaceMode: BrowserSurfaceMode;
+}
+
+export interface SurfaceLeaseManagerOptions {
+  readonly config: SurfaceLeaseManagerConfig;
+  readonly now?: () => Date;
+  readonly makeLeaseId?: () => string;
+  readonly makeSurfaceId?: () => string;
+  readonly nextFencingToken?: () => number;
+  readonly initialSurfaces?: readonly BrowserSurface[];
+  readonly initialLeases?: readonly BrowserSurfaceLease[];
+  readonly releasePromotesNext?: boolean;
+}
+
+export interface SurfaceLease {
+  readonly leaseId: string;
+  readonly surfaceKind: string;
+  readonly profileKey: string;
+  readonly sessionId: string;
+  readonly status: BrowserSurfaceLeaseStatus;
+  readonly priorityClass: BrowserSurfacePriorityClass;
+  readonly requestedAt: string;
+  readonly expiresAt: string;
+  readonly fencingToken: number;
+  readonly accountKey?: string;
+  readonly sessionSubjectId?: string;
+  readonly leasedAt?: string;
+  readonly releasedAt?: string;
+  readonly surfaceId?: string;
+  readonly waitReason?: BrowserSurfaceWaitReason;
+}
+
+export interface SurfaceLeaseResult {
+  readonly lease: SurfaceLease;
+  readonly surface?: BrowserSurface;
+  readonly duplicateOf?: SurfaceLease;
+}
+
+export interface ReleaseSurfaceLeaseRequest {
+  readonly leaseId: string;
+  readonly fencingToken: number;
+}
+
+export interface ReleaseSurfaceLeaseResult {
+  readonly released: boolean;
+  readonly stale: boolean;
+  readonly lease?: SurfaceLease;
+  readonly promoted?: SurfaceLease;
+  readonly surface?: BrowserSurface;
+}
+
+export interface RenewBrowserSurfaceLeaseRequest {
+  readonly leaseId: string;
+  readonly fencingToken?: number;
+  readonly ttlMs?: number;
+}
+
+export interface RenewBrowserSurfaceLeaseResult {
+  readonly renewed: boolean;
+  readonly stale: boolean;
+  readonly lease?: BrowserSurfaceLease;
+}
+
+export interface RenewSurfaceLeaseRequest {
+  readonly leaseId: string;
+  readonly fencingToken?: number;
+  readonly ttlMs?: number;
+}
+
+export interface RenewSurfaceLeaseResult {
+  readonly renewed: boolean;
+  readonly stale: boolean;
+  readonly lease?: SurfaceLease;
+}
+
+export interface TerminalSurfaceLeaseResult {
+  readonly stale: boolean;
+  readonly lease?: SurfaceLease;
+  readonly promoted?: SurfaceLease;
+  readonly surface?: BrowserSurface;
 }
 
 export interface BrowserSurfaceLeaseResult {
@@ -178,6 +276,16 @@ export interface ReconcileBrowserSurfaceLeasesAfterRestartResult {
   readonly queued: BrowserSurfaceLease[];
   readonly activeLeased: BrowserSurfaceLease[];
   readonly promoted: BrowserSurfaceLease[];
+}
+
+export interface ReconcileSurfaceLeasesAfterRestartResult {
+  readonly released: SurfaceLease[];
+  readonly expired: SurfaceLease[];
+  readonly deferred: SurfaceLease[];
+  readonly surfaceFailed: SurfaceLease[];
+  readonly queued: SurfaceLease[];
+  readonly activeLeased: SurfaceLease[];
+  readonly promoted: SurfaceLease[];
 }
 
 export interface CleanupIdleBrowserSurfacesResult {
@@ -246,6 +354,169 @@ export function projectSurfaceLease(lease: BrowserSurfaceLease): SurfaceLeasePro
     surface_profile_key: lease.profile_key,
     ...(lease.wait_reason ? { surface_wait_reason: lease.wait_reason } : {}),
   };
+}
+
+export function toSurfaceLease(lease: BrowserSurfaceLease): SurfaceLease {
+  return {
+    leaseId: lease.lease_id,
+    surfaceKind: lease.connector_id,
+    profileKey: lease.profile_key,
+    sessionId: lease.run_id,
+    status: lease.status,
+    priorityClass: lease.priority_class,
+    requestedAt: lease.requested_at,
+    expiresAt: lease.expires_at,
+    fencingToken: lease.fencing_token,
+    ...(lease.account_key ? { accountKey: lease.account_key } : {}),
+    ...(lease.surface_subject_id ? { sessionSubjectId: lease.surface_subject_id } : {}),
+    ...(lease.leased_at ? { leasedAt: lease.leased_at } : {}),
+    ...(lease.released_at ? { releasedAt: lease.released_at } : {}),
+    ...(lease.surface_id ? { surfaceId: lease.surface_id } : {}),
+    ...(lease.wait_reason ? { waitReason: lease.wait_reason } : {}),
+  };
+}
+
+function toSurfaceLeaseResult(result: BrowserSurfaceLeaseResult): SurfaceLeaseResult {
+  return {
+    lease: toSurfaceLease(result.lease),
+    ...(result.surface ? { surface: result.surface } : {}),
+    ...(result.duplicateOf ? { duplicateOf: toSurfaceLease(result.duplicateOf) } : {}),
+  };
+}
+
+function toReleaseSurfaceLeaseResult(result: ReleaseBrowserSurfaceLeaseResult): ReleaseSurfaceLeaseResult {
+  return {
+    released: result.released,
+    stale: result.stale,
+    ...(result.lease ? { lease: toSurfaceLease(result.lease) } : {}),
+    ...(result.promoted ? { promoted: toSurfaceLease(result.promoted) } : {}),
+    ...(result.surface ? { surface: result.surface } : {}),
+  };
+}
+
+function toRenewSurfaceLeaseResult(result: RenewBrowserSurfaceLeaseResult): RenewSurfaceLeaseResult {
+  return {
+    renewed: result.renewed,
+    stale: result.stale,
+    ...(result.lease ? { lease: toSurfaceLease(result.lease) } : {}),
+  };
+}
+
+function toTerminalSurfaceLeaseResult(result: TerminalBrowserSurfaceLeaseResult): TerminalSurfaceLeaseResult {
+  return {
+    stale: result.stale,
+    ...(result.lease ? { lease: toSurfaceLease(result.lease) } : {}),
+    ...(result.promoted ? { promoted: toSurfaceLease(result.promoted) } : {}),
+    ...(result.surface ? { surface: result.surface } : {}),
+  };
+}
+
+function toReconcileSurfaceLeasesAfterRestartResult(
+  result: ReconcileBrowserSurfaceLeasesAfterRestartResult,
+): ReconcileSurfaceLeasesAfterRestartResult {
+  return {
+    released: result.released.map(toSurfaceLease),
+    expired: result.expired.map(toSurfaceLease),
+    deferred: result.deferred.map(toSurfaceLease),
+    surfaceFailed: result.surfaceFailed.map(toSurfaceLease),
+    queued: result.queued.map(toSurfaceLease),
+    activeLeased: result.activeLeased.map(toSurfaceLease),
+    promoted: result.promoted.map(toSurfaceLease),
+  };
+}
+
+function toBrowserSurfaceLeaseConfig(config: SurfaceLeaseManagerConfig): BrowserSurfaceLeaseConfig {
+  return {
+    managedConnectors: config.managedSurfaceKinds,
+    surfaceCap: config.surfaceCap,
+    ...(config.staticProfileKey ? { staticProfileKey: config.staticProfileKey } : {}),
+    ...(config.staticCdpHttpUrl ? { staticCdpHttpUrl: config.staticCdpHttpUrl } : {}),
+    ...(config.staticStreamBaseUrl ? { staticStreamBaseUrl: config.staticStreamBaseUrl } : {}),
+    leaseWaitTimeoutMs: config.leaseWaitTimeoutMs,
+    idleTtlMs: config.idleTtlMs,
+    defaultPriorityClass: config.defaultPriorityClass,
+    priorityRanks: config.priorityRanks,
+    surfaceMode: config.surfaceMode,
+  };
+}
+
+export class SurfaceLeaseManager {
+  readonly #manager: BrowserSurfaceLeaseManager;
+
+  constructor(options: SurfaceLeaseManagerOptions) {
+    this.#manager = new BrowserSurfaceLeaseManager({
+      config: toBrowserSurfaceLeaseConfig(options.config),
+      ...(options.now ? { now: options.now } : {}),
+      ...(options.makeLeaseId ? { makeLeaseId: options.makeLeaseId } : {}),
+      ...(options.makeSurfaceId ? { makeSurfaceId: options.makeSurfaceId } : {}),
+      ...(options.nextFencingToken ? { nextFencingToken: options.nextFencingToken } : {}),
+      ...(options.initialSurfaces ? { initialSurfaces: options.initialSurfaces } : {}),
+      ...(options.initialLeases ? { initialLeases: options.initialLeases } : {}),
+      ...(typeof options.releasePromotesNext === "boolean" ? { releasePromotesNext: options.releasePromotesNext } : {}),
+    });
+  }
+
+  listLeases(): SurfaceLease[] {
+    return this.#manager.listLeases().map(toSurfaceLease);
+  }
+
+  listSurfaces(): BrowserSurface[] {
+    return this.#manager.listSurfaces();
+  }
+
+  getLease(leaseId: string): SurfaceLease | undefined {
+    const lease = this.#manager.getLease(leaseId);
+    return lease ? toSurfaceLease(lease) : undefined;
+  }
+
+  getSurface(surfaceId: string): BrowserSurface | undefined {
+    return this.#manager.getSurface(surfaceId);
+  }
+
+  isManagedSurfaceKind(surfaceKind: string): boolean {
+    return this.#manager.isManagedConnector(surfaceKind);
+  }
+
+  acquire(request: AcquireSurfaceLeaseRequest): SurfaceLeaseResult {
+    if (!request.surfaceKind) {
+      throw new Error("SurfaceLeaseManager.acquire requires surfaceKind");
+    }
+    return toSurfaceLeaseResult(
+      this.#manager.acquire({
+        connectorId: request.surfaceKind,
+        runId: request.sessionId,
+        ...(request.profileKey ? { profileKey: request.profileKey } : {}),
+        ...(request.accountKey ? { accountKey: request.accountKey } : {}),
+        ...(request.sessionSubjectId ? { surfaceSubjectId: request.sessionSubjectId } : {}),
+        ...(request.priorityClass ? { priorityClass: request.priorityClass } : {}),
+      }),
+    );
+  }
+
+  release(request: ReleaseSurfaceLeaseRequest): ReleaseSurfaceLeaseResult {
+    return toReleaseSurfaceLeaseResult(this.#manager.release(request));
+  }
+
+  renewLease(request: RenewSurfaceLeaseRequest): RenewSurfaceLeaseResult {
+    return toRenewSurfaceLeaseResult(this.#manager.renew(request));
+  }
+
+  cancelSession(sessionId: string): SurfaceLease | undefined {
+    const lease = this.#manager.cancelSurfaceSession(sessionId);
+    return lease ? toSurfaceLease(lease) : undefined;
+  }
+
+  cancelSessionAndPump(sessionId: string): TerminalSurfaceLeaseResult {
+    return toTerminalSurfaceLeaseResult(this.#manager.cancelSurfaceSessionAndPump(sessionId));
+  }
+
+  reconcileAfterRestart(request: ReconcileSurfaceLeasesAfterRestartRequest = {}): ReconcileSurfaceLeasesAfterRestartResult {
+    return toReconcileSurfaceLeasesAfterRestartResult(this.#manager.reconcileSurfaceSessionsAfterRestart(request));
+  }
+}
+
+export function createSurfaceLeaseManager(options: SurfaceLeaseManagerOptions): SurfaceLeaseManager {
+  return new SurfaceLeaseManager(options);
 }
 
 export class BrowserSurfaceLeaseManager {
@@ -336,9 +607,13 @@ export class BrowserSurfaceLeaseManager {
     return { lease, ...(surface ? { surface } : {}) };
   }
 
-  acquireSurfaceLease(request: AcquireSurfaceLeaseRequest): BrowserSurfaceLeaseResult {
+  acquireSurfaceLease(request: AcquireBrowserSurfaceSessionLeaseRequest): BrowserSurfaceLeaseResult {
+    const connectorId = request.surfaceKind ?? request.connectorId;
+    if (!connectorId) {
+      throw new Error("acquireSurfaceLease requires surfaceKind or connectorId");
+    }
     return this.acquire({
-      connectorId: request.connectorId,
+      connectorId,
       runId: request.sessionId,
       ...(request.profileKey ? { profileKey: request.profileKey } : {}),
       ...(request.accountKey ? { accountKey: request.accountKey } : {}),
@@ -399,6 +674,25 @@ export class BrowserSurfaceLeaseManager {
     const surface = this.#clearSurfaceLease(lease.surface_id, lease.lease_id);
     const promoted = this.#releasePromotesNext ? this.#pumpQueue(surface?.surface_id) : undefined;
     return { released: true, stale: false, lease: released, ...(surface ? { surface } : {}), ...(promoted ? { promoted } : {}) };
+  }
+
+  renew(request: RenewBrowserSurfaceLeaseRequest): RenewBrowserSurfaceLeaseResult {
+    const lease = this.#leases.get(request.leaseId);
+    if (
+      !lease ||
+      isTerminalBrowserSurfaceLeaseStatus(lease.status) ||
+      (typeof request.fencingToken === "number" && lease.fencing_token !== request.fencingToken)
+    ) {
+      return { renewed: false, stale: true, ...(lease ? { lease } : {}) };
+    }
+
+    const ttl = Number.isFinite(request.ttlMs) && Number(request.ttlMs) > 0 ? Number(request.ttlMs) : this.#config.leaseWaitTimeoutMs;
+    const renewed = {
+      ...lease,
+      expires_at: new Date(this.#now().getTime() + ttl).toISOString(),
+    };
+    this.#leases.set(renewed.lease_id, renewed);
+    return { renewed: true, stale: false, lease: renewed };
   }
 
   async ensureStartingSurfaceReady(request: EnsureStartingBrowserSurfaceRequest): Promise<BrowserSurfaceLeaseResult> {

@@ -121,6 +121,79 @@ const descriptor = buildNekoSafeClientDescriptor({
 The package intentionally does not create these HTTP routes. Your host maps the
 token/session/action to its own authorization model and backend process.
 
+Acquire browser-surface capacity through the host-neutral lease facade:
+
+```ts
+import { DEFAULT_NEKO_PRIORITY_RANKS, createSurfaceLeaseManager } from "@pdpp/remote-surface/leases";
+
+const leases = createSurfaceLeaseManager({
+  config: {
+    managedSurfaceKinds: new Set(["browser"]),
+    surfaceCap: 2,
+    leaseWaitTimeoutMs: 60_000,
+    idleTtlMs: 300_000,
+    defaultPriorityClass: "scheduled_refresh",
+    priorityRanks: DEFAULT_NEKO_PRIORITY_RANKS,
+    surfaceMode: "dynamic",
+  },
+});
+
+const lease = leases.acquire({
+  surfaceKind: "browser",
+  sessionId: "surface-session-123",
+  profileKey: "checkout-profile",
+});
+
+leases.renewLease({
+  leaseId: lease.lease.leaseId,
+  fencingToken: lease.lease.fencingToken,
+});
+```
+
+Mount a client adapter by supplying the host-owned browser client bridge:
+
+```ts
+import { NekoSurfaceAdapter } from "@pdpp/remote-surface/adapters";
+
+const adapter = new NekoSurfaceAdapter({
+  config: {
+    kind: "neko",
+    sessionId: "surface-session-123",
+    target: { id: "target-1", label: "Browser", kind: "browser" },
+  },
+  client: {
+    start: async (container, config) => {
+      // Host code starts its n.eko/WebRTC client here.
+    },
+    sendText: async (text) => true,
+  },
+});
+
+const root = document.querySelector<HTMLElement>("#remote-surface");
+if (!root) {
+  throw new Error("remote surface mount target missing");
+}
+await adapter.mount(root);
+```
+
+The package lifecycle is intentionally small: host code creates a session,
+leases or starts backend capacity, exposes host-owned HTTP/SSE/WebRTC routes,
+mounts a client adapter with token-scoped descriptors, reports viewport/input/
+clipboard events through the package protocol helpers, renews leases while
+long-running actions remain active, then releases or invalidates the session and
+lease when the action completes. The package assumes modern ESM runtimes,
+browser DOM APIs for client adapters, and host-provided routing, authorization,
+persistence, process supervision, and backend network access.
+
+### Reference Compatibility
+
+The legacy `StreamingSessionStore` and `BrowserSurfaceLeaseManager` exports
+remain available for the PDPP reference adapter and existing internal callers.
+New host integrations should prefer `SurfaceSessionStore` and
+`SurfaceLeaseManager`, which map reference-oriented fields to host-neutral
+session/action/surface terminology without requiring hosts to implement PDPP
+routes or timeline storage.
+
 ## Package validation
 
 The package remains `private: true` until release preparation. Maintainers can

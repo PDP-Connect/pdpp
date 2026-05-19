@@ -56,6 +56,144 @@ export function projectSurfaceLease(lease) {
         ...(lease.wait_reason ? { surface_wait_reason: lease.wait_reason } : {}),
     };
 }
+export function toSurfaceLease(lease) {
+    return {
+        leaseId: lease.lease_id,
+        surfaceKind: lease.connector_id,
+        profileKey: lease.profile_key,
+        sessionId: lease.run_id,
+        status: lease.status,
+        priorityClass: lease.priority_class,
+        requestedAt: lease.requested_at,
+        expiresAt: lease.expires_at,
+        fencingToken: lease.fencing_token,
+        ...(lease.account_key ? { accountKey: lease.account_key } : {}),
+        ...(lease.surface_subject_id ? { sessionSubjectId: lease.surface_subject_id } : {}),
+        ...(lease.leased_at ? { leasedAt: lease.leased_at } : {}),
+        ...(lease.released_at ? { releasedAt: lease.released_at } : {}),
+        ...(lease.surface_id ? { surfaceId: lease.surface_id } : {}),
+        ...(lease.wait_reason ? { waitReason: lease.wait_reason } : {}),
+    };
+}
+function toSurfaceLeaseResult(result) {
+    return {
+        lease: toSurfaceLease(result.lease),
+        ...(result.surface ? { surface: result.surface } : {}),
+        ...(result.duplicateOf ? { duplicateOf: toSurfaceLease(result.duplicateOf) } : {}),
+    };
+}
+function toReleaseSurfaceLeaseResult(result) {
+    return {
+        released: result.released,
+        stale: result.stale,
+        ...(result.lease ? { lease: toSurfaceLease(result.lease) } : {}),
+        ...(result.promoted ? { promoted: toSurfaceLease(result.promoted) } : {}),
+        ...(result.surface ? { surface: result.surface } : {}),
+    };
+}
+function toRenewSurfaceLeaseResult(result) {
+    return {
+        renewed: result.renewed,
+        stale: result.stale,
+        ...(result.lease ? { lease: toSurfaceLease(result.lease) } : {}),
+    };
+}
+function toTerminalSurfaceLeaseResult(result) {
+    return {
+        stale: result.stale,
+        ...(result.lease ? { lease: toSurfaceLease(result.lease) } : {}),
+        ...(result.promoted ? { promoted: toSurfaceLease(result.promoted) } : {}),
+        ...(result.surface ? { surface: result.surface } : {}),
+    };
+}
+function toReconcileSurfaceLeasesAfterRestartResult(result) {
+    return {
+        released: result.released.map(toSurfaceLease),
+        expired: result.expired.map(toSurfaceLease),
+        deferred: result.deferred.map(toSurfaceLease),
+        surfaceFailed: result.surfaceFailed.map(toSurfaceLease),
+        queued: result.queued.map(toSurfaceLease),
+        activeLeased: result.activeLeased.map(toSurfaceLease),
+        promoted: result.promoted.map(toSurfaceLease),
+    };
+}
+function toBrowserSurfaceLeaseConfig(config) {
+    return {
+        managedConnectors: config.managedSurfaceKinds,
+        surfaceCap: config.surfaceCap,
+        ...(config.staticProfileKey ? { staticProfileKey: config.staticProfileKey } : {}),
+        ...(config.staticCdpHttpUrl ? { staticCdpHttpUrl: config.staticCdpHttpUrl } : {}),
+        ...(config.staticStreamBaseUrl ? { staticStreamBaseUrl: config.staticStreamBaseUrl } : {}),
+        leaseWaitTimeoutMs: config.leaseWaitTimeoutMs,
+        idleTtlMs: config.idleTtlMs,
+        defaultPriorityClass: config.defaultPriorityClass,
+        priorityRanks: config.priorityRanks,
+        surfaceMode: config.surfaceMode,
+    };
+}
+export class SurfaceLeaseManager {
+    #manager;
+    constructor(options) {
+        this.#manager = new BrowserSurfaceLeaseManager({
+            config: toBrowserSurfaceLeaseConfig(options.config),
+            ...(options.now ? { now: options.now } : {}),
+            ...(options.makeLeaseId ? { makeLeaseId: options.makeLeaseId } : {}),
+            ...(options.makeSurfaceId ? { makeSurfaceId: options.makeSurfaceId } : {}),
+            ...(options.nextFencingToken ? { nextFencingToken: options.nextFencingToken } : {}),
+            ...(options.initialSurfaces ? { initialSurfaces: options.initialSurfaces } : {}),
+            ...(options.initialLeases ? { initialLeases: options.initialLeases } : {}),
+            ...(typeof options.releasePromotesNext === "boolean" ? { releasePromotesNext: options.releasePromotesNext } : {}),
+        });
+    }
+    listLeases() {
+        return this.#manager.listLeases().map(toSurfaceLease);
+    }
+    listSurfaces() {
+        return this.#manager.listSurfaces();
+    }
+    getLease(leaseId) {
+        const lease = this.#manager.getLease(leaseId);
+        return lease ? toSurfaceLease(lease) : undefined;
+    }
+    getSurface(surfaceId) {
+        return this.#manager.getSurface(surfaceId);
+    }
+    isManagedSurfaceKind(surfaceKind) {
+        return this.#manager.isManagedConnector(surfaceKind);
+    }
+    acquire(request) {
+        if (!request.surfaceKind) {
+            throw new Error("SurfaceLeaseManager.acquire requires surfaceKind");
+        }
+        return toSurfaceLeaseResult(this.#manager.acquire({
+            connectorId: request.surfaceKind,
+            runId: request.sessionId,
+            ...(request.profileKey ? { profileKey: request.profileKey } : {}),
+            ...(request.accountKey ? { accountKey: request.accountKey } : {}),
+            ...(request.sessionSubjectId ? { surfaceSubjectId: request.sessionSubjectId } : {}),
+            ...(request.priorityClass ? { priorityClass: request.priorityClass } : {}),
+        }));
+    }
+    release(request) {
+        return toReleaseSurfaceLeaseResult(this.#manager.release(request));
+    }
+    renewLease(request) {
+        return toRenewSurfaceLeaseResult(this.#manager.renew(request));
+    }
+    cancelSession(sessionId) {
+        const lease = this.#manager.cancelSurfaceSession(sessionId);
+        return lease ? toSurfaceLease(lease) : undefined;
+    }
+    cancelSessionAndPump(sessionId) {
+        return toTerminalSurfaceLeaseResult(this.#manager.cancelSurfaceSessionAndPump(sessionId));
+    }
+    reconcileAfterRestart(request = {}) {
+        return toReconcileSurfaceLeasesAfterRestartResult(this.#manager.reconcileSurfaceSessionsAfterRestart(request));
+    }
+}
+export function createSurfaceLeaseManager(options) {
+    return new SurfaceLeaseManager(options);
+}
 export class BrowserSurfaceLeaseManager {
     #config;
     #now;
@@ -134,8 +272,12 @@ export class BrowserSurfaceLeaseManager {
         return { lease, ...(surface ? { surface } : {}) };
     }
     acquireSurfaceLease(request) {
+        const connectorId = request.surfaceKind ?? request.connectorId;
+        if (!connectorId) {
+            throw new Error("acquireSurfaceLease requires surfaceKind or connectorId");
+        }
         return this.acquire({
-            connectorId: request.connectorId,
+            connectorId,
             runId: request.sessionId,
             ...(request.profileKey ? { profileKey: request.profileKey } : {}),
             ...(request.accountKey ? { accountKey: request.accountKey } : {}),
@@ -189,6 +331,21 @@ export class BrowserSurfaceLeaseManager {
         const surface = this.#clearSurfaceLease(lease.surface_id, lease.lease_id);
         const promoted = this.#releasePromotesNext ? this.#pumpQueue(surface?.surface_id) : undefined;
         return { released: true, stale: false, lease: released, ...(surface ? { surface } : {}), ...(promoted ? { promoted } : {}) };
+    }
+    renew(request) {
+        const lease = this.#leases.get(request.leaseId);
+        if (!lease ||
+            isTerminalBrowserSurfaceLeaseStatus(lease.status) ||
+            (typeof request.fencingToken === "number" && lease.fencing_token !== request.fencingToken)) {
+            return { renewed: false, stale: true, ...(lease ? { lease } : {}) };
+        }
+        const ttl = Number.isFinite(request.ttlMs) && Number(request.ttlMs) > 0 ? Number(request.ttlMs) : this.#config.leaseWaitTimeoutMs;
+        const renewed = {
+            ...lease,
+            expires_at: new Date(this.#now().getTime() + ttl).toISOString(),
+        };
+        this.#leases.set(renewed.lease_id, renewed);
+        return { renewed: true, stale: false, lease: renewed };
     }
     async ensureStartingSurfaceReady(request) {
         const lease = this.#leases.get(request.leaseId);

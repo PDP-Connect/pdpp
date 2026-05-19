@@ -15,21 +15,21 @@
 ## 3. Host-Neutral API
 
 - [x] 3.1 Audit exported names, types, README examples, and packed declarations for PDPP-specific `_ref`, `run_id`, and `interaction_id` leakage.
-- [ ] 3.2 Rename or wrap public API concepts so external consumers see host-neutral surface/session/prompt/action terminology.
-- [ ] 3.3 Keep any PDPP reference adapter explicitly labeled as reference-only and outside the default external consumer path.
-- [ ] 3.4 Add compatibility or migration notes where existing internal users need mapping from PDPP reference terms to host-neutral terms.
+- [x] 3.2 Rename or wrap public API concepts so external consumers see host-neutral surface/session/prompt/action terminology.
+- [x] 3.3 Keep any PDPP reference adapter explicitly labeled as reference-only and outside the default external consumer path.
+- [x] 3.4 Add compatibility or migration notes where existing internal users need mapping from PDPP reference terms to host-neutral terms.
 
 ## 4. Server Store and Lease Neutralization
 
-- [ ] 4.1 Redesign server store interfaces around host-owned persistence and lifecycle concepts rather than PDPP runtime rows or `_ref` endpoints.
-- [ ] 4.2 Redesign lease APIs around generic surface/session acquisition, renewal, release, cancellation, and expiry semantics.
-- [ ] 4.3 Ensure hosts can provide authorization, routing, persistence, and process lifecycle without importing PDPP reference runtime code.
-- [ ] 4.4 Add package-local tests that exercise the store and lease contracts through a non-PDPP host fixture.
+- [x] 4.1 Redesign server store interfaces around host-owned persistence and lifecycle concepts rather than PDPP runtime rows or `_ref` endpoints.
+- [x] 4.2 Redesign lease APIs around generic surface/session acquisition, renewal, release, cancellation, and expiry semantics.
+- [x] 4.3 Ensure hosts can provide authorization, routing, persistence, and process lifecycle without importing PDPP reference runtime code.
+- [x] 4.4 Add package-local tests that exercise the store and lease contracts through a non-PDPP host fixture.
 
 ## 5. README and External Consumer Story
 
 - [x] 5.1 Update the README enough for an external consumer to understand the intended npm package boundary, public entrypoints, host responsibilities, and current pre-release status.
-- [ ] 5.2 Document minimal installation shape, minimal client usage, minimal server host integration, lifecycle, store/lease adapter contracts, and supported runtime assumptions without requiring polished launch prose.
+- [x] 5.2 Document minimal installation shape, minimal client usage, minimal server host integration, lifecycle, store/lease adapter contracts, and supported runtime assumptions without requiring polished launch prose.
 - [x] 5.3 Mark PDPP reference integration as an adapter/example rather than the default public contract.
 - [x] 5.4 Defer fully polished docs, cookbook examples, and exhaustive executable documentation validation to release prep unless a minimal example is needed to prove the package contract.
 
