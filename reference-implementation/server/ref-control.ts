@@ -21,6 +21,7 @@ import { getConnectorManifest } from "./auth.js";
 import { deriveReferenceFreshness, type ReferenceFreshness } from "./freshness.ts";
 import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.js";
 import { listAllStreams } from "./records.js";
+import { getDefaultConnectorDetailGapStore } from "./stores/connector-detail-gap-store.js";
 import {
   chooseDisplayTimestamp,
   compareTimestampValues,
@@ -110,6 +111,26 @@ interface ConnectorRunSummary {
   readonly run_id: string | undefined;
   readonly started_at: string;
   readonly status: string;
+}
+
+interface PendingDetailGapSummary {
+  readonly next_attempt_after?: unknown;
+  readonly reason?: unknown;
+  readonly status?: unknown;
+  readonly stream?: unknown;
+}
+
+interface DetailGapProjection {
+  readonly gaps: readonly PendingDetailGapSummary[];
+  readonly unreliable: boolean;
+}
+
+interface ConnectorDetailGapStoreLike {
+  listPendingGaps(input: {
+    connectorId: string;
+    connectorInstanceId?: string;
+    limit?: number;
+  }): Promise<readonly PendingDetailGapSummary[]> | readonly PendingDetailGapSummary[];
 }
 
 interface ScheduleLike {
@@ -395,6 +416,18 @@ async function getConnectorRecordProjection(connectorId: string): Promise<Record
   };
 }
 
+async function getConnectorDetailGapProjection(connectorId: string): Promise<DetailGapProjection> {
+  try {
+    const store = getDefaultConnectorDetailGapStore() as ConnectorDetailGapStoreLike;
+    return {
+      gaps: await Promise.resolve(store.listPendingGaps({ connectorId, limit: 100 })),
+      unreliable: false,
+    };
+  } catch {
+    return { gaps: [], unreliable: true };
+  }
+}
+
 function buildManifestExcerpt(manifest: ConnectorManifest): ManifestExcerpt {
   return {
     connector_id: manifest.connector_id,
@@ -496,6 +529,10 @@ function mapFreshnessAxis(freshness: Freshness): FreshnessAxis {
   return "unknown";
 }
 
+function hasPendingDetailGap(gaps: readonly PendingDetailGapSummary[] = []): boolean {
+  return gaps.length > 0;
+}
+
 function hasDegradingKnownGap(run: ConnectorRunSummary | null): boolean {
   if (!run) {
     return false;
@@ -507,6 +544,21 @@ function hasDegradingKnownGap(run: ConnectorRunSummary | null): boolean {
     const severity = (gap as { severity?: unknown }).severity;
     return severity !== "informational" && severity !== "recoverable";
   });
+}
+
+function firstPendingDetailGapReason(gaps: readonly PendingDetailGapSummary[] = []): string | null {
+  for (const gap of gaps) {
+    if (!gap || typeof gap !== "object" || Array.isArray(gap)) {
+      continue;
+    }
+    if (typeof gap.reason === "string" && gap.reason.length > 0) {
+      return gap.reason;
+    }
+    if (typeof gap.stream === "string" && gap.stream.length > 0) {
+      return `detail_gap:${gap.stream}`;
+    }
+  }
+  return gaps.length > 0 ? "detail_gap_pending" : null;
 }
 
 function firstDegradingKnownGapReason(run: ConnectorRunSummary | null): string | null {
@@ -529,11 +581,14 @@ function firstDegradingKnownGapReason(run: ConnectorRunSummary | null): string |
   return null;
 }
 
-function mapCoverageAxis(lastRun: ConnectorRunSummary | null): CoverageAxis {
+function mapCoverageAxis(
+  lastRun: ConnectorRunSummary | null,
+  pendingDetailGaps: readonly PendingDetailGapSummary[] = []
+): CoverageAxis {
   if (!lastRun) {
-    return "unknown";
+    return hasPendingDetailGap(pendingDetailGaps) ? "gaps" : "unknown";
   }
-  if (hasDegradingKnownGap(lastRun)) {
+  if (hasPendingDetailGap(pendingDetailGaps) || hasDegradingKnownGap(lastRun)) {
     return "gaps";
   }
   if (lastRun.status === "succeeded" || lastRun.status === "success") {
@@ -581,10 +636,13 @@ export function projectConnectorSummaryConnectionHealth(input: {
   readonly freshness: Freshness;
   readonly lastRun: ConnectorRunSummary | null;
   readonly lastSuccessfulRun: ConnectorRunSummary | null;
+  readonly pendingDetailGaps?: readonly PendingDetailGapSummary[];
+  readonly unreliableSources?: readonly string[];
   readonly schedule: unknown;
 }): ConnectionHealthSnapshot {
   const schedule = asScheduleRecord(input.schedule);
   const schedulerBackoff = asBackoffRecord(schedule);
+  const pendingDetailGaps = input.pendingDetailGaps ?? [];
   const humanAttentionNeeded = schedule?.human_attention_needed === true;
   const activeRunId = typeof schedule?.active_run_id === "string" && schedule.active_run_id ? schedule.active_run_id : null;
   const nextDueAt = typeof schedule?.next_due_at === "string" ? schedule.next_due_at : null;
@@ -615,15 +673,19 @@ export function projectConnectorSummaryConnectionHealth(input: {
           reasonClass: backoffReasonClass,
         }
       : null,
-    coverage: { axis: mapCoverageAxis(input.lastRun) },
+    coverage: { axis: mapCoverageAxis(input.lastRun, pendingDetailGaps) },
     freshness: { axis: mapFreshnessAxis(input.freshness) },
     outbox: { axis: "unknown" },
-    projection: { unreliableSources: [] },
+    projection: { unreliableSources: input.unreliableSources ?? [] },
     run: {
-      hasDegradingGaps: hasDegradingKnownGap(input.lastRun),
+      hasDegradingGaps: hasPendingDetailGap(pendingDetailGaps) || hasDegradingKnownGap(input.lastRun),
       lastSuccessAt: input.lastSuccessfulRun?.last_at ?? scheduleLastSuccessfulAt,
       latestStatus: mapRunStatus(input.lastRun?.status) ?? schedulerFailureStatus,
-      reasonCode: input.lastRun?.failure_reason ?? firstDegradingKnownGapReason(input.lastRun) ?? lastErrorCode,
+      reasonCode:
+        input.lastRun?.failure_reason ??
+        firstDegradingKnownGapReason(input.lastRun) ??
+        firstPendingDetailGapReason(pendingDetailGaps) ??
+        lastErrorCode,
     },
     schedule: schedule ? { enabled: schedule.enabled !== false } : null,
   });
@@ -658,10 +720,11 @@ export function listConnectorSummaries(controller?: ControllerLike | null): Prom
           return null;
         }
         const live = await getConnectorRecordProjection(row.connector_id);
-        const [schedule, lastRun, lastSuccessfulRun] = await Promise.all([
+        const [schedule, lastRun, lastSuccessfulRun, detailGaps] = await Promise.all([
           getScheduleFrom(controller, row.connector_id),
           getLatestRunSummary(row.connector_id),
           getLatestRunSummary(row.connector_id, "succeeded"),
+          getConnectorDetailGapProjection(row.connector_id),
         ]);
         const refreshPolicy = extractRefreshPolicy(manifest);
         const freshness = buildConnectorFreshness({
@@ -674,6 +737,8 @@ export function listConnectorSummaries(controller?: ControllerLike | null): Prom
           freshness,
           lastRun,
           lastSuccessfulRun,
+          pendingDetailGaps: detailGaps.gaps,
+          unreliableSources: detailGaps.unreliable ? ["detail_gaps"] : [],
           schedule,
         });
         return {
@@ -704,10 +769,11 @@ export async function getConnectorDetail(
     throw new RefControlError(`Unknown connector: ${connectorId}`, "not_found");
   }
   const live = await getConnectorRecordProjection(connectorId);
-  const [schedule, lastRun, lastSuccessfulRun] = await Promise.all([
+  const [schedule, lastRun, lastSuccessfulRun, detailGaps] = await Promise.all([
     getScheduleFrom(controller, connectorId),
     getLatestRunSummary(connectorId),
     getLatestRunSummary(connectorId, "succeeded"),
+    getConnectorDetailGapProjection(connectorId),
   ]);
   const refreshPolicy = extractRefreshPolicy(manifest);
   const freshness = buildConnectorFreshness({
@@ -720,6 +786,8 @@ export async function getConnectorDetail(
     freshness,
     lastRun,
     lastSuccessfulRun,
+    pendingDetailGaps: detailGaps.gaps,
+    unreliableSources: detailGaps.unreliable ? ["detail_gaps"] : [],
     schedule,
   });
   return {

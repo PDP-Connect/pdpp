@@ -32,7 +32,7 @@ must not be hidden behind a green dashboard state.
 | Scheduler config | `connector_schedules` via `SchedulerStore` | Wired into idle/paused and schedule metadata |
 | Scheduler history/backoff | `scheduler_run_history` and `scheduler_last_run_times` via `SchedulerStore` | Now wired into `scheduler_backoff` and connection `cooling_off` / `blocked` |
 | Active runs | `scheduler_active_runs` via `SchedulerStore` plus in-memory controller state | Wired into syncing/activity badge |
-| Connector detail gaps | `connector_detail_gaps` in SQLite/Postgres and `connector-detail-gap-store.js` | Durable, but not yet rolled up into connection/stream coverage |
+| Connector detail gaps | `connector_detail_gaps` in SQLite/Postgres and `connector-detail-gap-store.js` | Pending gaps now degrade connection health; stream/scope coverage detail remains pending |
 | Local collector outbox | `packages/polyfill-connectors/src/local-device-outbox.ts` | Durable locally, but not yet ingested into reference dashboard health |
 | Browser-surface leases | `browser-surface-lease-store.ts` and remote-surface lease helpers | Durable/status-bearing, not yet health-wired |
 | Attention lifecycle | Pure `runtime/attention.ts` helpers | Not durable yet; current schedule boolean loses lifecycle/action target |
@@ -56,8 +56,9 @@ must not be hidden behind a green dashboard state.
   lifecycle, action target, expiry, sensitivity, and auto-detection.
 - Outbox/backlog integration: local outbox summary is not yet surfaced to the
   reference server connection health projection.
-- Stream/scope coverage: durable detail gaps exist, but the dashboard still
-  uses a coarse last-run coverage rollup.
+- Stream/scope coverage: pending durable detail gaps now prevent false green,
+  but the dashboard still uses a coarse last-run coverage rollup and does not
+  expose per-stream/scope coverage detail.
 - Projection reliability: `unreliableSources` is still not populated from
   failed/stale read models.
 - Secret redaction: scheduler raw-error fallback is now code-sanitized before

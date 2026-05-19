@@ -219,6 +219,53 @@ test('connector summary connection health degrades succeeded runs with coverage 
   assert.equal(snapshot.reason_code, 'http_429');
 });
 
+test('connector summary connection health degrades successful runs with pending durable detail gaps', () => {
+  const run = {
+    event_count: 3,
+    failure_reason: null,
+    finished_at: '2026-05-19T12:00:00.000Z',
+    first_at: '2026-05-19T11:59:00.000Z',
+    known_gaps: [],
+    last_at: '2026-05-19T12:00:00.000Z',
+    run_id: 'run_success_with_detail_gap',
+    started_at: '2026-05-19T11:59:00.000Z',
+    status: 'succeeded',
+  };
+  const snapshot = projectConnectorSummaryConnectionHealth({
+    freshness: { status: 'current', captured_at: '2026-05-19T12:00:00.000Z' },
+    lastRun: run,
+    lastSuccessfulRun: run,
+    pendingDetailGaps: [{ reason: 'rate_limited', status: 'pending', stream: 'messages' }],
+    schedule: null,
+  });
+  assert.equal(snapshot.state, 'degraded');
+  assert.equal(snapshot.axes.coverage, 'gaps');
+  assert.equal(snapshot.reason_code, 'rate_limited');
+});
+
+test('connector summary connection health becomes unknown when durable detail-gap evidence cannot be read', () => {
+  const run = {
+    event_count: 3,
+    failure_reason: null,
+    finished_at: '2026-05-19T12:00:00.000Z',
+    first_at: '2026-05-19T11:59:00.000Z',
+    known_gaps: [],
+    last_at: '2026-05-19T12:00:00.000Z',
+    run_id: 'run_success_projection_unreliable',
+    started_at: '2026-05-19T11:59:00.000Z',
+    status: 'succeeded',
+  };
+  const snapshot = projectConnectorSummaryConnectionHealth({
+    freshness: { status: 'current', captured_at: '2026-05-19T12:00:00.000Z' },
+    lastRun: run,
+    lastSuccessfulRun: run,
+    schedule: null,
+    unreliableSources: ['detail_gaps'],
+  });
+  assert.equal(snapshot.state, 'unknown');
+  assert.deepEqual(snapshot.unknown_reasons, ['detail_gaps']);
+});
+
 test('connector summary connection health refuses healthy when freshness is unknown', () => {
   const run = {
     event_count: 3,
