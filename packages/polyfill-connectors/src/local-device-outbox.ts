@@ -263,6 +263,36 @@ export class LocalDeviceOutbox {
     assertOneChange(Number(result.changes), `local outbox lease not current for retry: ${input.id}`);
   }
 
+  /**
+   * Release a lease back to `ready` without consuming attempt budget.
+   *
+   * Used when the failure is structural (e.g. destination route is not
+   * yet implemented) rather than a per-attempt error. The row stays
+   * retryable indefinitely; operator UIs still see the latest error
+   * and next-attempt timestamp.
+   */
+  deferRetryable(input: LocalDeviceOutboxFailInput): void {
+    const now = this.#now();
+    const nextAttemptAt = new Date(this.#clock().getTime() + input.retryBackoffMs).toISOString();
+    const result = this.#db
+      .prepare(
+        `UPDATE local_device_outbox
+           SET status = 'ready',
+               next_attempt_at = ?,
+               lease_holder = NULL,
+               lease_until = NULL,
+               last_error = ?,
+               updated_at = ?
+         WHERE id = ?
+           AND status = 'leased'
+           AND lease_holder = ?
+           AND lease_epoch = ?
+           AND lease_until > ?`
+      )
+      .run(nextAttemptAt, input.error, now, input.id, input.holder, input.leaseEpoch, now);
+    assertOneChange(Number(result.changes), `local outbox lease not current for defer: ${input.id}`);
+  }
+
   deadLetter(input: LocalDeviceOutboxDeadLetterInput): void {
     const now = this.#now();
     const result = this.#db

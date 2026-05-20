@@ -1239,8 +1239,6 @@ test("runCollectorConnector leaves streamed batches durable when the child fails
     // batches must still be there, available for the next runner pass.
     const outbox = new LocalDeviceOutbox({ path: queuePath });
     try {
-      const summary = outbox.summary({ sourceInstanceId: "src-1" });
-      assert.equal(summary.ready, 2, `expected 2 retryable record batches, got ${JSON.stringify(summary)}`);
       const items = outbox.list({ sourceInstanceId: "src-1" });
       // No checkpoint row was enqueued because STATE never reached the runner.
       assert.equal(
@@ -1249,6 +1247,12 @@ test("runCollectorConnector leaves streamed batches durable when the child fails
         "checkpoint must not be enqueued when child fails mid-stream"
       );
       assert.equal(items.filter((item) => item.kind === "record_batch").length, 2);
+      // A gap row is durably persisted alongside the streamed batches so
+      // partial coverage stays first-class. Both record_batch rows and the
+      // gap row are pending — the next runner pass sees them all.
+      assert.equal(items.filter((item) => item.kind === "gap").length, 1);
+      const summary = outbox.summary({ sourceInstanceId: "src-1" });
+      assert.equal(summary.ready, 3, `expected 2 record batches + 1 gap row, got ${JSON.stringify(summary)}`);
     } finally {
       outbox.close();
     }
@@ -1678,7 +1682,9 @@ test("runCollectorConnector skips spawn and reports blocked when queue depth cro
     });
 
     assert.equal(result.skippedScanForBacklog, true);
-    assert.equal(result.outboxSummary.total, seedCount);
+    // seedCount record_batch rows plus the policy_budget gap row the
+    // runner enqueued to make the depth-blocked deferment first-class.
+    assert.equal(result.outboxSummary.total, seedCount + 1);
     assert.ok(
       result.outboxSummary.ready + result.outboxSummary.leased >= maxQueueDepth,
       "queue depth must remain over the configured ceiling"
@@ -1867,3 +1873,288 @@ async function writeFixtureConnector(input: { script: string }): Promise<string>
   );
   return path;
 }
+
+test("runCollectorConnector enqueues a policy-budget gap row when queue depth blocks the scan", async () => {
+  // Seed the outbox above the configured ceiling so the runner takes the
+  // queue-depth skip-scan branch. The runner must persist a durable
+  // gap row describing the deferred scan, in addition to skipping the
+  // connector spawn. The gap row must remain retryable across drain
+  // attempts (destination route not implemented yet) so partial
+  // progress stays honest and targetable.
+  const harness = await startCollectorHarness({
+    ingestFailureMode: "always-503",
+    priorState: {},
+  });
+  try {
+    const queuePath = await tempQueuePath();
+    const maxQueueDepth = 2;
+    const seedCount = maxQueueDepth + 1;
+    const seedOutbox = new LocalDeviceOutbox({ path: queuePath });
+    try {
+      for (let i = 0; i < seedCount; i++) {
+        const records = transformRecordsToCollectorEnvelopes({
+          batchId: `seed-batch-${i}`,
+          batchSeq: i + 1,
+          connectorId: "fixture-gap-policy-budget",
+          deviceId: "device-1",
+          messages: [
+            {
+              data: { id: `seed-${i}` },
+              emitted_at: "2026-05-19T12:00:00.000Z",
+              key: `seed-${i}`,
+              stream: "messages",
+              type: "RECORD",
+            },
+          ],
+          sourceInstanceId: "src-gap-policy",
+        });
+        seedOutbox.enqueue({
+          id: buildLocalDeviceOutboxId({
+            kind: "record_batch",
+            parts: [`seed-batch-${i}`],
+            sourceInstanceId: "src-gap-policy",
+          }),
+          kind: "record_batch",
+          payload: {
+            batchId: `seed-batch-${i}`,
+            batchSeq: i + 1,
+            connectorId: "fixture-gap-policy-budget",
+            deviceId: "device-1",
+            records,
+            sourceInstanceId: "src-gap-policy",
+          },
+          sourceInstanceId: "src-gap-policy",
+        });
+      }
+    } finally {
+      seedOutbox.close();
+    }
+
+    const fixture = await writeFixtureConnector({
+      script: `
+        process.stderr.write("fixture must not spawn while queue depth blocks the scan\\n");
+        process.exit(19);
+      `,
+    });
+
+    const result = await runCollectorConnector({
+      baseUrl: harness.url,
+      connector: {
+        args: [fixture],
+        command: "node",
+        connector_id: "fixture-gap-policy-budget",
+        runtime_requirements: { bindings: {} },
+        streams: ["messages"],
+      },
+      deviceId: "device-1",
+      deviceToken: "device-token",
+      outboxPolicy: { maxQueueDepth, retryBackoffMs: 60_000 },
+      queuePath,
+      runId: "run-policy-1",
+      sourceInstanceId: "src-gap-policy",
+    });
+
+    assert.equal(result.skippedScanForBacklog, true);
+
+    // Inspect durable state directly: the gap row must be visible and
+    // carry the expected reason/retryability/first-seen metadata.
+    const verify = new LocalDeviceOutbox({ path: queuePath });
+    try {
+      const items = verify.list({ sourceInstanceId: "src-gap-policy" });
+      const gaps = items.filter((i) => i.kind === "gap");
+      assert.equal(gaps.length, 1, `expected exactly one gap row, got ${gaps.length}`);
+      const firstGap = gaps[0];
+      assert.ok(firstGap, "expected gap row");
+      const payload = firstGap.payload as Record<string, unknown>;
+      assert.equal(payload.reason, "policy_budget");
+      assert.equal(payload.retryable, true);
+      assert.equal(payload.connectorId, "fixture-gap-policy-budget");
+      assert.equal(payload.sourceInstanceId, "src-gap-policy");
+      assert.equal(payload.firstSeenRunId, "run-policy-1");
+      assert.ok(typeof payload.firstSeenAt === "string");
+      assert.ok(typeof payload.nextAttemptBackoffMs === "number");
+      // The gap row must surface in pending work for honest reporting.
+      assert.ok(result.outboxSummary.ready >= 1);
+    } finally {
+      verify.close();
+    }
+
+    // A second invocation with the same conditions must NOT add a new
+    // gap row — the deterministic id makes re-observation idempotent.
+    const repeat = await runCollectorConnector({
+      baseUrl: harness.url,
+      connector: {
+        args: [fixture],
+        command: "node",
+        connector_id: "fixture-gap-policy-budget",
+        runtime_requirements: { bindings: {} },
+        streams: ["messages"],
+      },
+      deviceId: "device-1",
+      deviceToken: "device-token",
+      outboxPolicy: { maxQueueDepth, retryBackoffMs: 60_000 },
+      queuePath,
+      runId: "run-policy-2",
+      sourceInstanceId: "src-gap-policy",
+    });
+    assert.equal(repeat.skippedScanForBacklog, true);
+    const verify2 = new LocalDeviceOutbox({ path: queuePath });
+    try {
+      const gaps = verify2.list({ sourceInstanceId: "src-gap-policy" }).filter((i) => i.kind === "gap");
+      assert.equal(gaps.length, 1, "re-observation must be idempotent");
+    } finally {
+      verify2.close();
+    }
+  } finally {
+    await harness.close();
+  }
+});
+
+test("runCollectorConnector records a connector_child_failure gap when the child exits non-zero after partial flush", async () => {
+  // Emit a couple of records, then exit with a non-zero status. The
+  // runner must flush the partial batch AND persist a durable gap row
+  // describing the partial-coverage child failure. State must remain
+  // un-checkpointed because there is unacknowledged record + gap work.
+  const harness = await startCollectorHarness({ priorState: {} });
+  try {
+    const queuePath = await tempQueuePath();
+    const fixture = await writeFixtureConnector({
+      script: `
+        let buf = "";
+        await new Promise((r) => process.stdin.on("data", (c) => {
+          buf += c;
+          if (buf.includes("\\n")) r();
+        }));
+        for (let i = 0; i < 2; i++) {
+          process.stdout.write(JSON.stringify({
+            type: "RECORD",
+            stream: "messages",
+            key: "partial-" + i,
+            data: { id: "partial-" + i },
+            emitted_at: new Date().toISOString(),
+          }) + "\\n");
+        }
+        process.stdout.write(JSON.stringify({
+          type: "STATE",
+          stream: "messages",
+          cursor: "partial-cursor",
+        }) + "\\n");
+        process.stderr.write("synthetic child crash after partial flush\\n");
+        process.exit(31);
+      `,
+    });
+
+    await assert.rejects(
+      () =>
+        runCollectorConnector({
+          baseUrl: harness.url,
+          connector: {
+            args: [fixture],
+            command: "node",
+            connector_id: "fixture-gap-child-failure",
+            runtime_requirements: { bindings: {} },
+            streams: ["messages"],
+          },
+          batchSize: 1, // force the partial batch to flush before exit
+          deviceId: "device-1",
+          deviceToken: "device-token",
+          queuePath,
+          runId: "run-child-fail-1",
+          sourceInstanceId: "src-child-fail",
+        }),
+      /connector exited 31/
+    );
+
+    const verify = new LocalDeviceOutbox({ path: queuePath });
+    try {
+      const items = verify.list({ sourceInstanceId: "src-child-fail" });
+      const gaps = items.filter((i) => i.kind === "gap");
+      const batches = items.filter((i) => i.kind === "record_batch");
+      assert.ok(batches.length >= 1, "partial record batches must reach the outbox");
+      assert.equal(gaps.length, 1, `expected exactly one gap row, got ${gaps.length}`);
+      const firstGap = gaps[0];
+      assert.ok(firstGap, "expected gap row");
+      const payload = firstGap.payload as Record<string, unknown>;
+      assert.equal(payload.reason, "connector_child_failure");
+      assert.equal(payload.retryable, true);
+      assert.equal(payload.firstSeenRunId, "run-child-fail-1");
+
+      // Checkpoint must NOT have been committed past the unacknowledged
+      // records + gap row.
+      const putOps = harness.stateOps.filter((op) => op.method === "PUT");
+      assert.equal(putOps.length, 0);
+    } finally {
+      verify.close();
+    }
+  } finally {
+    await harness.close();
+  }
+});
+
+test("drainCollectorOutbox keeps gap rows retryable without consuming attempt budget", async () => {
+  // A gap row's destination acknowledgement route is not implemented
+  // yet. The drain must report the row as `failed` (retryable) on each
+  // pass without incrementing attempt_count past maxAttempts — otherwise
+  // gap rows would silently dead-letter and the "completion with gaps"
+  // signal would be lost.
+  const outbox = new LocalDeviceOutbox({ path: await tempQueuePath() });
+  try {
+    outbox.enqueue({
+      id: "src-drain-gap:policy",
+      kind: "gap",
+      payload: {
+        connectorId: "fixture-drain",
+        firstSeenAt: "2026-05-19T12:00:00.000Z",
+        nextAttemptBackoffMs: 60_000,
+        reason: "policy_budget",
+        retryable: true,
+        sourceInstanceId: "src-drain-gap",
+      },
+      sourceInstanceId: "src-drain-gap",
+    });
+
+    const client: Pick<LocalDeviceClient, "ingestBatch" | "putSourceInstanceState"> = {
+      ingestBatch() {
+        return Promise.reject(new Error("gap drain test must not ingest"));
+      },
+      putSourceInstanceState() {
+        return Promise.reject(new Error("gap drain test must not write state"));
+      },
+    };
+
+    // Run the drain past the normal maxAttempts threshold. The row must
+    // never dead-letter and attempt_count must stay at 0 (the
+    // destination-not-ready path does not bump it).
+    for (let i = 0; i < 7; i++) {
+      const result = await drainCollectorOutbox({
+        client,
+        connectorId: "fixture-drain",
+        holderId: `holder-${i}`,
+        outbox,
+        policy: {
+          drainBatchSize: 1,
+          leaseMs: 60_000,
+          maxAttempts: 3,
+          maxDrainDurationMs: 60_000,
+          maxDrainIterations: 16,
+          maxQueueDepth: 10_000,
+          retryBackoffMs: 1, // tiny so the gap is immediately re-claimable
+        },
+        sourceInstanceId: "src-drain-gap",
+      });
+      assert.equal(result.deadLettered, 0, `iteration ${i}: gap must not dead-letter`);
+      assert.equal(result.sent, 0, `iteration ${i}: gap must not acknowledge`);
+      // Wait long enough that the next pass can re-claim the row.
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+
+    const finalSummary = outbox.summary({ sourceInstanceId: "src-drain-gap" });
+    assert.equal(finalSummary.deadLetter, 0);
+    assert.ok(finalSummary.ready + finalSummary.leased >= 1);
+    const item = outbox.get("src-drain-gap:policy");
+    assert.equal(item?.attempt_count, 0, "gap retries must not consume attempt budget");
+    assert.match(item?.last_error ?? "", /destination not ready|gap acknowledgement route/);
+  } finally {
+    outbox.close();
+  }
+});

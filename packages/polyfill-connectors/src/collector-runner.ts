@@ -272,6 +272,7 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
     const skipResult = await maybeSkipScanForBacklog({
       client,
       config,
+      outbox,
       policy,
       postDrainSummary,
       preScanDrain,
@@ -364,6 +365,7 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
 interface MaybeSkipScanInput {
   client: Pick<LocalDeviceClient, "heartbeat">;
   config: CollectorRunConfig;
+  outbox: LocalDeviceOutbox;
   policy: CollectorOutboxPolicy;
   postDrainSummary: LocalDeviceOutboxSummary;
   preScanDrain: DrainCollectorOutboxResult;
@@ -376,17 +378,36 @@ async function maybeSkipScanForBacklog(input: MaybeSkipScanInput): Promise<Colle
     return null;
   }
   const recordsPending = pendingOutboxWorkCount(input.postDrainSummary);
+  // When the skip is triggered by the configured queue-depth ceiling we
+  // record a durable gap row so the deferred scan is visible as
+  // first-class diagnostic evidence (not just an in-flight heartbeat).
+  // Skips caused by pre-existing pending work that is still well under
+  // the ceiling do not get a gap row: that pending work is already
+  // represented by its own outbox rows.
+  if (recordsPending >= input.policy.maxQueueDepth) {
+    ensureCollectorGapRow({
+      clock: () => new Date(),
+      connectorId: input.config.connector.connector_id,
+      details: `pending ${recordsPending} >= maxQueueDepth ${input.policy.maxQueueDepth}`,
+      outbox: input.outbox,
+      reason: "policy_budget",
+      retryable: true,
+      ...(input.config.runId ? { runId: input.config.runId } : {}),
+      sourceInstanceId: input.config.sourceInstanceId,
+    });
+  }
+  const summaryAfterGap = input.outbox.summary({ sourceInstanceId: input.config.sourceInstanceId });
   await safeHeartbeat(input.client, {
     connector_id: input.config.connector.connector_id,
     records_pending: recordsPending,
     source_instance_id: input.config.sourceInstanceId,
-    status: heartbeatStatusForSummary(input.postDrainSummary, input.policy),
+    status: heartbeatStatusForSummary(summaryAfterGap, input.policy),
   });
   return {
     done: null,
     enqueuedBatches: 0,
     flushedState: null,
-    outboxSummary: input.postDrainSummary,
+    outboxSummary: summaryAfterGap,
     priorState: Object.freeze({}),
     recordsQueued: 0,
     recoveredLeases: input.recoveredLeases,
@@ -617,6 +638,11 @@ async function streamConnectorIntoOutbox(
     // durable outbox; the next runner pass will drain them. State stays
     // buffered-only so the checkpoint cannot advance past acknowledged work.
     flushPendingBatch();
+    recordConnectorChildFailureGap({
+      details: error instanceof Error ? error.message : String(error),
+      enqueuedBatches,
+      input,
+    });
     throw new Error(
       `${input.config.connector.connector_id} connector failed to start or stream output: ${
         error instanceof Error ? error.message : String(error)
@@ -634,6 +660,11 @@ async function streamConnectorIntoOutbox(
   }
   if (exitCode !== 0) {
     flushPendingBatch();
+    recordConnectorChildFailureGap({
+      details: `exit ${exitCode}: ${stderr.toString().trim().slice(0, 256)}`,
+      enqueuedBatches,
+      input,
+    });
     throw new Error(`${input.config.connector.connector_id} connector exited ${exitCode}: ${stderr.toString().trim()}`);
   }
 
@@ -646,6 +677,34 @@ async function streamConnectorIntoOutbox(
     enqueuedBatches,
     recordsQueued,
   };
+}
+
+/**
+ * Persist a `connector_child_failure` gap row when the connector child
+ * crashes after the runner already flushed at least one durable record
+ * batch for this source instance. Skipping the gap when no records
+ * were flushed avoids inventing a known-incomplete-unit when there is
+ * no partial progress to attribute — the throw and surrounding
+ * heartbeat are already the honest signal.
+ */
+function recordConnectorChildFailureGap(input: {
+  details: string;
+  enqueuedBatches: number;
+  input: StreamConnectorIntoOutboxInput;
+}): void {
+  if (input.enqueuedBatches === 0) {
+    return;
+  }
+  ensureCollectorGapRow({
+    clock: () => new Date(),
+    connectorId: input.input.config.connector.connector_id,
+    details: input.details,
+    outbox: input.input.outbox,
+    reason: "connector_child_failure",
+    retryable: true,
+    ...(input.input.config.runId ? { runId: input.input.config.runId } : {}),
+    sourceInstanceId: input.input.config.sourceInstanceId,
+  });
 }
 
 async function maybeCommitCheckpoint(input: {
@@ -777,6 +836,141 @@ export interface CheckpointPayload {
   state: Record<string, unknown>;
 }
 
+/**
+ * Machine-readable reason taxonomy for `gap` outbox rows. Kept narrow to
+ * runner-knowable conditions so connector-specific failure modes do not
+ * leak into a shared schema. Connectors that need richer reasons can
+ * carry them as opaque `details` in {@link GapPayload}.
+ *
+ * - `policy_budget`: the runner deferred work because a configured bound
+ *   (queue depth, duration, etc.) would otherwise grow the backlog past
+ *   the policy ceiling. Retryable: a future invocation can drain and try
+ *   again.
+ * - `connector_child_failure`: the connector child process exited
+ *   abnormally (non-zero exit, stream parse error, or stdin close)
+ *   after the runner already flushed at least one durable record batch
+ *   for this source instance. The boundary that was partially covered
+ *   is preserved so the next invocation can target it.
+ */
+export type GapReason = "policy_budget" | "connector_child_failure";
+
+/**
+ * `gap` outbox payload shape. Records known incomplete or deferred work
+ * the runner can describe generically. Stream/boundary identity is
+ * optional because the runner cannot always know which stream a child
+ * failed on; when absent the gap is scoped to the source instance.
+ *
+ * Payload fields are stable across re-observations so re-enqueue with a
+ * deterministic id is idempotent. Per-attempt metadata (last-attempt
+ * timestamp, attempt count, next attempt time) lives on the outbox row
+ * itself (`updated_at`, `attempt_count`, `next_attempt_at`,
+ * `last_error`) — not in the payload — so an operator surface can
+ * project both first-seen (payload) and last-attempt (row) without
+ * mutating the body hash.
+ *
+ * Validated narrowly before sending so malformed rows dead-letter
+ * instead of poisoning the drain loop.
+ */
+export interface GapPayload {
+  connectorId: string;
+  /** Opaque diagnostic detail (already-redacted free-form text). */
+  details?: string;
+  /** ISO timestamp of the first run that observed this gap. */
+  firstSeenAt: string;
+  /** Run id of the first run that observed this gap, when known. */
+  firstSeenRunId?: string;
+  /**
+   * Next-attempt policy hint, expressed as a bounded backoff in
+   * milliseconds. The drain loop owns actual scheduling; this field
+   * advertises the intended cadence so operator surfaces can show
+   * "retries every N minutes" without inspecting drain code.
+   */
+  nextAttemptBackoffMs: number;
+  reason: GapReason;
+  /**
+   * When true, the gap describes work that can still be retried (e.g.
+   * policy budget). When false, the gap is terminal until external
+   * action resolves it. Gap rows track retryability semantically; the
+   * outbox row status still moves only via leases.
+   */
+  retryable: boolean;
+  sourceInstanceId: string;
+  /** Optional stream name when the runner can attribute the gap. */
+  stream?: string;
+  /**
+   * Optional opaque boundary identity (e.g. a partition key, file path,
+   * date window). Free-form; the runner does not interpret it.
+   */
+  streamBoundary?: string;
+}
+
+interface EnsureGapInput {
+  clock: () => Date;
+  connectorId: string;
+  details?: string;
+  outbox: LocalDeviceOutbox;
+  reason: GapReason;
+  retryable: boolean;
+  runId?: string;
+  sourceInstanceId: string;
+  stream?: string;
+  streamBoundary?: string;
+}
+
+/**
+ * Persist a gap row durably for the given source instance. Idempotent
+ * over the (connectorId, sourceInstanceId, reason, stream, streamBoundary)
+ * tuple so re-observing the same condition on a later run does not
+ * accumulate new rows — last-attempt metadata is observable from the
+ * existing outbox row's `updated_at`/`next_attempt_at`/`attempt_count`
+ * after the drain leases it again.
+ */
+function ensureCollectorGapRow(input: EnsureGapInput): LocalDeviceOutboxItem {
+  const firstSeenAt = input.clock().toISOString();
+  const idParts: unknown[] = [
+    input.connectorId,
+    input.sourceInstanceId,
+    input.reason,
+    input.stream ?? null,
+    input.streamBoundary ?? null,
+  ];
+  const id = buildLocalDeviceOutboxId({
+    kind: "gap",
+    parts: idParts,
+    sourceInstanceId: input.sourceInstanceId,
+  });
+  const existing = input.outbox.get(id);
+  if (existing) {
+    return existing;
+  }
+  const payload: GapPayload = {
+    connectorId: input.connectorId,
+    firstSeenAt,
+    nextAttemptBackoffMs: GAP_DESTINATION_NOT_READY_BACKOFF_MS,
+    reason: input.reason,
+    retryable: input.retryable,
+    sourceInstanceId: input.sourceInstanceId,
+  };
+  if (input.stream) {
+    payload.stream = input.stream;
+  }
+  if (input.streamBoundary) {
+    payload.streamBoundary = input.streamBoundary;
+  }
+  if (input.runId) {
+    payload.firstSeenRunId = input.runId;
+  }
+  if (input.details) {
+    payload.details = input.details;
+  }
+  return input.outbox.enqueue({
+    id,
+    kind: "gap",
+    payload,
+    sourceInstanceId: input.sourceInstanceId,
+  });
+}
+
 export interface DrainCollectorOutboxInput {
   abortSignal?: AbortSignal;
   client: Pick<LocalDeviceClient, "ingestBatch" | "putSourceInstanceState">;
@@ -874,6 +1068,22 @@ function failOutboxItem(
   result: DrainCollectorOutboxResult
 ): void {
   const message = error instanceof Error ? error.message : String(error);
+  // Destination-not-ready is not a per-attempt failure: it signals that
+  // the reference acknowledgement route for this outbox kind does not
+  // exist yet. The row stays retryable on a long backoff WITHOUT
+  // consuming attempt budget so it never silently dead-letters into
+  // "terminal failure" when the real condition is "feature pending".
+  if (error instanceof OutboxDestinationNotReadyError) {
+    input.outbox.deferRetryable({
+      error: message,
+      holder: input.holderId,
+      id: item.id,
+      leaseEpoch: item.lease_epoch,
+      retryBackoffMs: Math.max(input.policy.retryBackoffMs, error.retryBackoffMs),
+    });
+    result.failed++;
+    return;
+  }
   if (error instanceof OutboxPayloadShapeError || item.attempt_count + 1 >= input.policy.maxAttempts) {
     input.outbox.deadLetter({
       error: message,
@@ -900,6 +1110,31 @@ class OutboxPayloadShapeError extends Error {
     this.name = "OutboxPayloadShapeError";
   }
 }
+
+/**
+ * Signals that the destination for an outbox row kind is not yet
+ * implemented in the reference server (e.g. `gap` row acknowledgement).
+ * The drain treats this as retryable-without-attempt-budget so the row
+ * remains durable and visible until the route lands. See
+ * `openspec/changes/add-local-collector-durable-work-substrate` task 3.1.
+ */
+class OutboxDestinationNotReadyError extends Error {
+  readonly retryBackoffMs: number;
+
+  constructor(message: string, retryBackoffMs: number) {
+    super(message);
+    this.name = "OutboxDestinationNotReadyError";
+    this.retryBackoffMs = retryBackoffMs;
+  }
+}
+
+/**
+ * How long a `gap` row defers between drain attempts while the
+ * reference acknowledgement route is still pending. Long enough that
+ * the drain loop does not hot-spin; short enough that operators see
+ * the gap surface as `retrying` rather than appearing stalled.
+ */
+const GAP_DESTINATION_NOT_READY_BACKOFF_MS = 15 * 60_000;
 
 async function sendOutboxItem(
   client: Pick<LocalDeviceClient, "ingestBatch" | "putSourceInstanceState">,
@@ -934,6 +1169,15 @@ async function sendOutboxItem(
     });
     return;
   }
+  if (item.kind === "gap") {
+    // Validate first so a malformed gap dead-letters via OutboxPayloadShapeError
+    // rather than being deferred indefinitely.
+    assertGapPayload(item.payload, item.id);
+    throw new OutboxDestinationNotReadyError(
+      `gap acknowledgement route is not implemented yet (row ${item.id}); remains retryable`,
+      GAP_DESTINATION_NOT_READY_BACKOFF_MS
+    );
+  }
   throw new OutboxPayloadShapeError(`unsupported outbox kind ${item.kind} for id ${item.id}`);
 }
 
@@ -960,6 +1204,47 @@ function assertRecordBatchPayload(payload: unknown, id: string): RecordBatchPayl
     records: payload.records,
     sourceInstanceId: payload.sourceInstanceId,
   };
+}
+
+function assertGapPayload(payload: unknown, id: string): GapPayload {
+  if (!isRecord(payload)) {
+    throw new OutboxPayloadShapeError(`gap payload is not an object: ${id}`);
+  }
+  if (
+    typeof payload.connectorId !== "string" ||
+    typeof payload.sourceInstanceId !== "string" ||
+    typeof payload.firstSeenAt !== "string" ||
+    typeof payload.nextAttemptBackoffMs !== "number" ||
+    typeof payload.retryable !== "boolean" ||
+    (payload.reason !== "policy_budget" && payload.reason !== "connector_child_failure") ||
+    (payload.stream !== undefined && typeof payload.stream !== "string") ||
+    (payload.streamBoundary !== undefined && typeof payload.streamBoundary !== "string") ||
+    (payload.firstSeenRunId !== undefined && typeof payload.firstSeenRunId !== "string") ||
+    (payload.details !== undefined && typeof payload.details !== "string")
+  ) {
+    throw new OutboxPayloadShapeError(`gap payload missing or invalid fields: ${id}`);
+  }
+  const gap: GapPayload = {
+    connectorId: payload.connectorId,
+    firstSeenAt: payload.firstSeenAt,
+    nextAttemptBackoffMs: payload.nextAttemptBackoffMs,
+    reason: payload.reason,
+    retryable: payload.retryable,
+    sourceInstanceId: payload.sourceInstanceId,
+  };
+  if (typeof payload.stream === "string") {
+    gap.stream = payload.stream;
+  }
+  if (typeof payload.streamBoundary === "string") {
+    gap.streamBoundary = payload.streamBoundary;
+  }
+  if (typeof payload.firstSeenRunId === "string") {
+    gap.firstSeenRunId = payload.firstSeenRunId;
+  }
+  if (typeof payload.details === "string") {
+    gap.details = payload.details;
+  }
+  return gap;
 }
 
 function assertCheckpointPayload(payload: unknown, id: string): CheckpointPayload {

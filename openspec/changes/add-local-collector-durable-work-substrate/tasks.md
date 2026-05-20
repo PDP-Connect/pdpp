@@ -12,7 +12,7 @@
 - [x] 2.1 Change the local collector runner to recover expired leases and drain ready durable work before scanning a source for new work.
 - [x] 2.2 Map connector child output into bounded work units and durable outbox rows without changing the Collection Profile envelope seen by the child.
 - [x] 2.3 Stage connector-emitted `STATE` as attempted progress and commit checkpoints only after server acknowledgement for the related records and gap metadata.
-- [ ] 2.4 Persist known incomplete work as backlog/gap units with stream/boundary identity, reason, retryability, first-seen run, last-attempt run, and next-attempt policy.
+- [x] 2.4 Persist known incomplete work as backlog/gap units with stream/boundary identity, reason, retryability, first-seen run, last-attempt run, and next-attempt policy.
 - [ ] 2.5 Enforce policy limits for first backfill and steady-state drains without losing queued work.
 
 ## 3. Server And Acknowledgement Semantics
@@ -40,7 +40,7 @@
 
 - [x] 6.1 Add crash/restart tests for crash after enqueue before upload acknowledgement, crash after upload before local acknowledgement, and crash after state staging before commit.
 - [x] 6.2 Add stale-lease tests proving expired work recovers and stale holders cannot acknowledge newer claims.
-- [ ] 6.3 Add backlog/gap tests proving partial progress is reported honestly and retryable work remains targetable.
+- [x] 6.3 Add backlog/gap tests proving partial progress is reported honestly and retryable work remains targetable.
 - [x] 6.4 Add migration/quarantine tests for existing JSON queue files.
 - [ ] 6.8 Add a closeout check proving no long-term JSON queue migration path remains after the one-time migration is complete.
 - [x] 6.5 Add CLI/status tests for local outbox health output.

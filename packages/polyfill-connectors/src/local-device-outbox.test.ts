@@ -395,6 +395,99 @@ test("LocalDeviceOutbox.summary scopes by source instance without scanning other
   }
 });
 
+test("LocalDeviceOutbox preserves gap rows durably with source-instance scoping and lifecycle transitions", async () => {
+  let now = new Date("2026-05-19T12:00:00.000Z");
+  const path = await tempOutboxPath();
+  const outbox = new LocalDeviceOutbox({ clock: () => now, path });
+  try {
+    outbox.enqueue({
+      id: "src-1:gap:policy-budget",
+      kind: "gap",
+      payload: {
+        connectorId: "fixture",
+        firstSeenAt: now.toISOString(),
+        nextAttemptBackoffMs: 60_000,
+        reason: "policy_budget",
+        retryable: true,
+        sourceInstanceId: "src-1",
+      },
+      sourceInstanceId: "src-1",
+    });
+    outbox.enqueue({
+      id: "src-2:gap:other",
+      kind: "gap",
+      payload: {
+        connectorId: "fixture",
+        firstSeenAt: now.toISOString(),
+        nextAttemptBackoffMs: 60_000,
+        reason: "connector_child_failure",
+        retryable: true,
+        sourceInstanceId: "src-2",
+      },
+      sourceInstanceId: "src-2",
+    });
+
+    // Source-instance scoping: claims only see the right instance's gap row.
+    const claimedOther = outbox.claimReady({
+      holder: "worker-a",
+      leaseMs: 30_000,
+      sourceInstanceId: "src-1",
+    });
+    assert.equal(claimedOther.length, 1);
+    assert.equal(claimedOther[0]?.kind, "gap");
+    assert.equal(claimedOther[0]?.id, "src-1:gap:policy-budget");
+
+    // Retryable transition: a gap row can be failed retryable like any other kind.
+    const firstClaim = claimedOther[0];
+    assert.ok(firstClaim, "expected claimed gap row");
+    outbox.failRetryable({
+      error: "destination not ready",
+      holder: "worker-a",
+      id: firstClaim.id,
+      leaseEpoch: firstClaim.lease_epoch,
+      retryBackoffMs: 60_000,
+    });
+    const afterFail = outbox.get("src-1:gap:policy-budget");
+    assert.equal(afterFail?.status, "ready");
+    assert.equal(afterFail?.attempt_count, 1);
+    assert.equal(afterFail?.next_attempt_at, "2026-05-19T12:01:00.000Z");
+
+    // Dead-letter transition is reachable when terminal (e.g. malformed gap).
+    now = new Date("2026-05-19T12:01:01.000Z");
+    const reclaimed = outbox.claimReady({ holder: "worker-a", leaseMs: 30_000, sourceInstanceId: "src-1" });
+    const reclaim = reclaimed[0];
+    assert.ok(reclaim, "expected reclaim of the gap row");
+    assert.equal(reclaim.kind, "gap");
+    outbox.deadLetter({
+      error: "terminal",
+      holder: "worker-a",
+      id: reclaim.id,
+      leaseEpoch: reclaim.lease_epoch,
+    });
+    const afterDead = outbox.get("src-1:gap:policy-budget");
+    assert.equal(afterDead?.status, "dead_letter");
+    assert.equal(outbox.summary({ sourceInstanceId: "src-1" }).deadLetter, 1);
+    assert.equal(outbox.summary({ sourceInstanceId: "src-2" }).ready, 1);
+
+    outbox.close();
+    // Durable: a fresh process must observe both gap rows.
+    const reopened = new LocalDeviceOutbox({ clock: () => now, path });
+    try {
+      const items = reopened.list();
+      assert.equal(items.length, 2);
+      const kinds = items.map((i) => i.kind).sort();
+      assert.deepEqual(kinds, ["gap", "gap"]);
+      const payload = items.find((i) => i.id === "src-2:gap:other")?.payload as { reason: string };
+      assert.equal(payload.reason, "connector_child_failure");
+    } finally {
+      reopened.close();
+    }
+  } catch (err) {
+    outbox.close();
+    throw err;
+  }
+});
+
 async function tempOutboxPath(): Promise<string> {
   return join(await mkdtemp(join(tmpdir(), "pdpp-local-outbox-")), "outbox.sqlite");
 }
