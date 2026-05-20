@@ -131,6 +131,14 @@ the runtime package explicit.
 
 ## Durable Services And Timers
 
+The collector is intentionally not a custom scheduler daemon. Each invocation
+drains durable local outbox work, records honest backlog/health, then exits.
+Use the host supervisor for periodic execution, boot/login behavior, jitter,
+resource limits, and logs. That keeps the package small and lets each operating
+system own the lifecycle primitives it already provides.
+
+### systemd
+
 For a durable Linux host, store non-secret settings in an env file and secrets
 in a root-readable file or secret manager:
 
@@ -183,6 +191,62 @@ Commands for the installed service:
 systemctl enable --now pdpp-local-collector@claude_code.timer
 systemctl status pdpp-local-collector@claude_code.service
 ```
+
+### launchd
+
+For a durable macOS host, use the same environment split and let `launchd`
+trigger a one-shot collector run. Keep the token in a user-readable-only env
+file or a Keychain-backed wrapper script; do not inline secrets in the plist if
+the file will be synced or shared.
+
+Example wrapper:
+
+```bash
+#!/bin/zsh
+set -eu
+source "$HOME/.config/pdpp/local-collector.env"
+source "$HOME/.config/pdpp/local-collector.secret"
+exec /opt/homebrew/bin/pdpp-local-collector run --connector "$1"
+```
+
+Example LaunchAgent:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>fish.vivid.pdpp.local-collector.claude-code</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/<you>/.local/bin/pdpp-local-collector-run</string>
+    <string>claude_code</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartInterval</key>
+  <integer>900</integer>
+  <key>StandardOutPath</key>
+  <string>/Users/<you>/Library/Logs/pdpp-local-collector-claude-code.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/<you>/Library/Logs/pdpp-local-collector-claude-code.err.log</string>
+</dict>
+</plist>
+```
+
+Install and inspect:
+
+```bash
+launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/fish.vivid.pdpp.local-collector.claude-code.plist"
+launchctl kickstart -k "gui/$(id -u)/fish.vivid.pdpp.local-collector.claude-code"
+launchctl print "gui/$(id -u)/fish.vivid.pdpp.local-collector.claude-code"
+```
+
+Use one service/timer per connection when a host exports multiple sources. The
+shared reference server distinguishes them by `PDPP_CONNECTION_ID`, not by the
+connector type alone.
 
 ## Docker Moves And Reference URL Changes
 
