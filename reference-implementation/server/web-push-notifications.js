@@ -404,6 +404,42 @@ export function buildTestPushPayload({ now = nowIso() } = {}) {
   };
 }
 
+// Lock-screen safety classifier. The runtime treats interaction *kinds* as the
+// authority on what may appear in a push body — the connector-supplied
+// `message`/`schema`/`data` fields are never trusted on a lock screen.
+//
+//   - `secret`: the owner is about to type or paste a sensitive value
+//     (OTP, credentials). The push body must stay maximally generic.
+//   - `external`: the owner has to act somewhere else (manual browser
+//     verification, approve a provider prompt). The body says so without
+//     echoing connector copy.
+//   - `informational`: a benign owner-action prompt (e.g. confirm a step
+//     in the dashboard). Still no connector copy.
+//
+// Anything unknown is treated as `secret` — the safe default.
+const INTERACTION_KIND_SENSITIVITY = Object.freeze({
+  otp: 'secret',
+  credentials: 'secret',
+  manual_action: 'external',
+});
+
+export function classifyInteractionSensitivity(kind) {
+  if (typeof kind !== 'string' || kind.length === 0) return 'secret';
+  return INTERACTION_KIND_SENSITIVITY[kind] || 'secret';
+}
+
+function interactionPushBody(sensitivity) {
+  switch (sensitivity) {
+    case 'external':
+      return 'A connector needs you to take an action.';
+    case 'informational':
+      return 'A connector run is waiting for owner action.';
+    case 'secret':
+    default:
+      return 'A connector needs owner input.';
+  }
+}
+
 export function buildPendingInteractionPushPayload({ interaction, connectorDisplayName, routeTo = 'interaction', runId }) {
   const kind = typeof interaction?.kind === 'string' ? interaction.kind : 'interaction';
   const interactionId = typeof interaction?.request_id === 'string' ? interaction.request_id : '';
@@ -413,17 +449,22 @@ export function buildPendingInteractionPushPayload({ interaction, connectorDispl
     routeTo === 'interaction' && kind === 'manual_action'
       ? `/dashboard/runs/${encodedRunId}/stream?interaction_id=${encodedInteractionId}`
       : `/dashboard/runs/${encodedRunId}`;
-  return {
+  const sensitivity = classifyInteractionSensitivity(kind);
+  // Freeze the payload shape so a future contributor cannot accidentally
+  // attach connector-supplied free text (`interaction.message`, `.schema`,
+  // `.data`) by spreading the interaction object in.
+  return Object.freeze({
     type: 'pdpp.pending_interaction',
     title: `PDPP ${connectorDisplayName}: action needed`,
-    body: kind === 'credentials' || kind === 'otp' ? 'A connector needs owner input.' : 'A connector run is waiting for owner action.',
+    body: interactionPushBody(sensitivity),
     connector_display_name: connectorDisplayName,
     run_id: runId,
     interaction_id: interactionId,
     interaction_kind: kind,
+    interaction_sensitivity: sensitivity,
     timestamp: nowIso(),
     url,
-  };
+  });
 }
 
 // Predicate: should this connector progress message trigger a nonblocking
@@ -444,7 +485,9 @@ export function buildAssistancePushPayload({ assistance, connectorDisplayName, r
   // owner to the durable run page rather than a transient interaction stream.
   // Body copy is intentionally generic — assistance.message can carry
   // connector-supplied free text that we MUST NOT echo on a lock screen.
-  return {
+  // The payload is frozen so a future contributor cannot accidentally spread
+  // the assistance object in and pipe `.message`/`.data` through.
+  return Object.freeze({
     type: 'pdpp.assistance_requested',
     title: `PDPP ${connectorDisplayName}: action needed`,
     body: 'A connector needs you to act in another app.',
@@ -456,7 +499,7 @@ export function buildAssistancePushPayload({ assistance, connectorDisplayName, r
     response_contract: 'none',
     timestamp: nowIso(),
     url: `/dashboard/runs/${encodeURIComponent(runId)}`,
-  };
+  });
 }
 
 function shouldRevokeForWebPushError(err) {

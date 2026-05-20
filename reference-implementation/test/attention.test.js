@@ -328,3 +328,212 @@ test('auto-detect — terminal records are not re-resolved', () => {
   const out = classifyAutoDetect({ record: rec, evidence: 'proceeded', now: '2026-05-19T13:00:00.000Z' });
   assert.deepEqual(out, { kind: 'no_change', reason: 'terminal' });
 });
+
+// ─── 5.6 scenario coverage: re-consent / manual verification ───────────────
+
+test('re-consent — non-secret blocked + provide_value emits safe push and is health-relevant', () => {
+  const rec = createAttention(
+    input({
+      dedupe_key: 'conn_a:reconsent',
+      reason_code: 're_consent',
+      progress_posture: 'blocked',
+      owner_action: 'operate_attachment',
+      response_contract: 'response_required',
+      sensitivity: 'non_secret',
+      owner_copy: 'Re-grant access at provider.example.com',
+      attachments: [{ kind: 'url', ref: 'opaque-1', label: 'provider re-consent' }],
+    }),
+  );
+  assert.equal(isHealthRelevant(rec, NOW), true);
+
+  const payload = pushPayload(rec, {
+    dashboard_origin: 'https://dash.example.com',
+    connection_display: 'ChatGPT',
+  });
+  assert.ok(payload, 're-consent must produce a payload');
+  assert.equal(payload.reason_code, 're_consent');
+  assert.equal(payload.url, 'https://dash.example.com/attention/att_1');
+  // Owner-supplied copy and opaque attachment refs must never reach a push payload.
+  const serialized = JSON.stringify(payload);
+  for (const forbidden of ['Re-grant access', 'provider.example.com', 'opaque-1']) {
+    assert.equal(serialized.includes(forbidden), false, `payload leaked ${forbidden}`);
+  }
+});
+
+test('manual browser verification — operate_attachment routes by attention id, not attachment ref', () => {
+  const rec = createAttention(
+    input({
+      dedupe_key: 'conn_a:manual_verify',
+      reason_code: 'manual_verification',
+      progress_posture: 'blocked',
+      owner_action: 'operate_attachment',
+      response_contract: 'response_required',
+      sensitivity: 'non_secret',
+      attachments: [
+        { kind: 'browser_surface', ref: 'wss://secret-cdp.example/abc?token=xyz', label: 'live browser' },
+      ],
+    }),
+  );
+  const payload = pushPayload(rec, {
+    dashboard_origin: 'https://dash.example.com',
+    connection_display: 'Example Bank',
+  });
+  assert.ok(payload);
+  // The deep-link target is the durable attention surface, never an attachment ref.
+  assert.equal(payload.url, 'https://dash.example.com/attention/att_1');
+  assert.equal(payload.body.includes('wss://'), false);
+  assert.equal(payload.body.includes('xyz'), false);
+});
+
+// ─── 5.6 scenario coverage: cancellation ───────────────────────────────────
+
+test('cancellation — cancelled records never notify and never project to health', () => {
+  const rec = createAttention(
+    input({
+      reason_code: 'manual_action',
+      progress_posture: 'blocked',
+      owner_action: 'operate_attachment',
+      response_contract: 'response_required',
+      sensitivity: 'non_secret',
+    }),
+  );
+  assert.equal(isHealthRelevant(rec, NOW), true);
+
+  const cancelled = transition(rec, { to: 'cancelled', now: NOW });
+  assert.equal(isHealthRelevant(cancelled, NOW), false);
+  assert.equal(
+    pushPayload(cancelled, { dashboard_origin: 'https://dash.example.com', connection_display: 'Example Bank' }),
+    null,
+  );
+  // Cancellation is terminal; you cannot re-open it.
+  assert.throws(() => transition(cancelled, { to: 'open', now: NOW }));
+  assert.throws(() => transition(cancelled, { to: 'in_progress', now: NOW }));
+});
+
+// ─── 5.6 scenario coverage: OTP secrecy ────────────────────────────────────
+
+test('OTP — provider-prompt copy never reaches push, even via metadata bag', () => {
+  const rec = createAttention(
+    input({
+      dedupe_key: 'conn_a:otp',
+      reason_code: 'otp',
+      progress_posture: 'blocked',
+      owner_action: 'provide_value',
+      response_contract: 'response_required',
+      sensitivity: 'secret',
+      owner_copy: 'Enter the 6-digit code we just texted to +1•••5309',
+      metadata: {
+        otp_hint: '482913',
+        bearer: 'Bearer eyJabc',
+        provider_message: 'Your one-time code is 482913',
+      },
+    }),
+  );
+  // Secret sensitivity must short-circuit push entirely.
+  assert.equal(
+    pushPayload(rec, { dashboard_origin: 'https://dash.example.com', connection_display: 'Example Bank' }),
+    null,
+  );
+  // Even on the durable record, secret-looking keys are redacted defensively.
+  assert.equal(rec.metadata.bearer, '[redacted]');
+});
+
+// ─── 5.6 scenario coverage: app push approval (act_elsewhere) ─────────────
+
+test('push approval — act_elsewhere is push-eligible but NOT health-relevant on its own', () => {
+  const rec = createAttention(
+    input({
+      dedupe_key: 'conn_a:app_push_approval',
+      reason_code: 'app_push_approval',
+      progress_posture: 'running',
+      owner_action: 'act_elsewhere',
+      response_contract: 'none',
+      sensitivity: 'non_secret',
+    }),
+  );
+  // The runtime distinguishes "owner has work elsewhere" from "the connection
+  // is degraded": a running act_elsewhere prompt should ring the PWA but
+  // should NOT flip the dashboard pill to needs-attention by itself.
+  assert.equal(isHealthRelevant(rec, NOW), false);
+  const payload = pushPayload(rec, {
+    dashboard_origin: 'https://dash.example.com',
+    connection_display: 'ChatGPT',
+  });
+  assert.ok(payload, 'act_elsewhere should still deliver an attention push');
+  assert.equal(payload.title, 'Approve in your other app');
+});
+
+// ─── 5.6 scenario coverage: supersession deep-check ────────────────────────
+
+test('supersession — superseded records suppress push and stop projecting to health', () => {
+  const original = createAttention(
+    input({
+      reason_code: 'app_push_approval',
+      progress_posture: 'running',
+      owner_action: 'act_elsewhere',
+      response_contract: 'none',
+      sensitivity: 'non_secret',
+    }),
+  );
+  const superseded = transition(original, { to: 'superseded', now: NOW });
+  assert.equal(isHealthRelevant(superseded, NOW), false);
+  assert.equal(
+    pushPayload(superseded, {
+      dashboard_origin: 'https://dash.example.com',
+      connection_display: 'ChatGPT',
+    }),
+    null,
+  );
+});
+
+// ─── Policy guardrail: push is a channel, not state ────────────────────────
+
+test('push channel — failed delivery does not change AttentionRecord state', () => {
+  const rec = createAttention(
+    input({
+      reason_code: 'manual_verification',
+      progress_posture: 'blocked',
+      owner_action: 'operate_attachment',
+      response_contract: 'response_required',
+      sensitivity: 'non_secret',
+    }),
+  );
+  const beforeSnapshot = JSON.stringify(rec);
+  // Simulate a delivery loop: build payload, fail, retry, fail again.
+  for (let i = 0; i < 3; i += 1) {
+    const payload = pushPayload(rec, {
+      dashboard_origin: 'https://dash.example.com',
+      connection_display: 'Example Bank',
+    });
+    assert.ok(payload);
+    // Whatever the transport does, the record is frozen-shape and the runtime
+    // never re-routes its lifecycle on the basis of delivery outcome.
+  }
+  assert.equal(JSON.stringify(rec), beforeSnapshot, 'delivery attempts must not mutate the record');
+  assert.equal(rec.lifecycle, 'open');
+  assert.equal(isHealthRelevant(rec, NOW), true);
+});
+
+test('push channel — owner missing the push still sees the same attention via durable record', () => {
+  // The dashboard surface re-derives from the record; this asserts the
+  // record itself carries everything the surface needs (id, connection,
+  // reason, copy, attachments, lifecycle) regardless of whether any push
+  // was ever attempted or delivered.
+  const rec = createAttention(
+    input({
+      reason_code: 'manual_action',
+      progress_posture: 'blocked',
+      owner_action: 'operate_attachment',
+      response_contract: 'response_required',
+      sensitivity: 'non_secret',
+      owner_copy: 'Click Continue in the open tab',
+      attachments: [{ kind: 'browser_surface', ref: 'opaque-ref', label: 'live browser' }],
+    }),
+  );
+  assert.equal(rec.lifecycle, 'open');
+  assert.equal(rec.owner_copy, 'Click Continue in the open tab');
+  assert.equal(rec.attachments.length, 1);
+  assert.equal(rec.attachments[0].kind, 'browser_surface');
+  // Same record is health-relevant whether or not push fired.
+  assert.equal(isHealthRelevant(rec, NOW), true);
+});

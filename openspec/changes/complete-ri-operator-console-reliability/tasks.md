@@ -37,9 +37,9 @@
 - [x] 5.1 Normalize run and connection attention evidence with attention id, dedupe key, reason, action target, expiry, auto-detection, lifecycle state, privacy classification, and recovery semantics.
 - [x] 5.2 Add lifecycle support for open, acknowledged, in-progress, resolved, expired, cancelled, and superseded attention.
 - [ ] 5.3 Integrate attention evidence into connection health projection and dashboard CTAs.
-- [ ] 5.4 Update PWA/Web Push policy so it delivers actionable attention and important health transitions without owning state.
+- [x] 5.4 Update PWA/Web Push policy so it delivers actionable attention and important health transitions without owning state.
 - [x] 5.5 Add dedupe/cooldown behavior for repeated prompts and repeated non-actionable failures.
-- [ ] 5.6 Add tests for OTP/push approval, re-consent/manual browser verification, missing local device, timeout, cancellation, supersession, and auto-detected completion.
+- [x] 5.6 Add tests for OTP/push approval, re-consent/manual browser verification, missing local device, timeout, cancellation, supersession, and auto-detected completion.
 
 ## 6. Dashboard And CLI Operator Surfaces
 

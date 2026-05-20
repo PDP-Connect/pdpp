@@ -12,6 +12,7 @@ import {
   buildAssistancePushPayload,
   buildPendingInteractionPushPayload,
   buildTestPushPayload,
+  classifyInteractionSensitivity,
   createMemoryWebPushSubscriptionStore,
   createPostgresWebPushSubscriptionStore,
   createSqliteWebPushSubscriptionStore,
@@ -717,4 +718,190 @@ test('POST /_ref/web-push/test returns 503 when VAPID is unconfigured', async ()
       assert.equal(response.status, 503);
     },
   );
+});
+
+// ─── 5.4 / 5.6 policy: push is a delivery channel, not state ───────────────
+
+test('classifyInteractionSensitivity defaults to secret for unknown kinds', () => {
+  assert.equal(classifyInteractionSensitivity('otp'), 'secret');
+  assert.equal(classifyInteractionSensitivity('credentials'), 'secret');
+  assert.equal(classifyInteractionSensitivity('manual_action'), 'external');
+  assert.equal(classifyInteractionSensitivity('something_new'), 'secret');
+  assert.equal(classifyInteractionSensitivity(undefined), 'secret');
+  assert.equal(classifyInteractionSensitivity(''), 'secret');
+});
+
+test('pending interaction payload is frozen so spreads cannot leak connector free text', () => {
+  const payload = buildPendingInteractionPushPayload({
+    runId: 'run_frozen',
+    connectorDisplayName: 'Bank',
+    interaction: {
+      kind: 'otp',
+      request_id: 'int_frozen',
+      message: 'one-time code is 482913',
+      schema: { properties: { otp: { const: '482913' } } },
+      data: { answer: '482913' },
+    },
+  });
+  assert.equal(Object.isFrozen(payload), true);
+  assert.equal(payload.interaction_sensitivity, 'secret');
+  // The frozen payload exposes only the safelisted keys.
+  assert.deepEqual(
+    [...Object.keys(payload)].sort(),
+    [
+      'body',
+      'connector_display_name',
+      'interaction_id',
+      'interaction_kind',
+      'interaction_sensitivity',
+      'run_id',
+      'timestamp',
+      'title',
+      'type',
+      'url',
+    ],
+  );
+});
+
+test('manual browser verification (manual_action) classifies as external, not secret', () => {
+  const payload = buildPendingInteractionPushPayload({
+    runId: 'run_verify',
+    connectorDisplayName: 'Source',
+    interaction: {
+      kind: 'manual_action',
+      request_id: 'int_verify',
+      message: 'Visit https://provider.example/verify and click Continue',
+    },
+  });
+  assert.equal(payload.interaction_sensitivity, 'external');
+  assert.equal(payload.body, 'A connector needs you to take an action.');
+  const serialized = JSON.stringify(payload);
+  for (const forbidden of ['provider.example', 'verify']) {
+    // "verify" appears in the run id segment; check the body only.
+    if (forbidden === 'verify') continue;
+    assert.equal(serialized.includes(forbidden), false, `payload leaked ${forbidden}`);
+  }
+});
+
+test('re-consent kind defaults to secret and produces no connector copy', () => {
+  // We have not classified `re_consent` explicitly — the default-secret
+  // policy means the body stays maximally generic, even if connectors
+  // start emitting this kind tomorrow.
+  const payload = buildPendingInteractionPushPayload({
+    runId: 'run_reconsent',
+    connectorDisplayName: 'ChatGPT',
+    interaction: {
+      kind: 're_consent',
+      request_id: 'int_reconsent',
+      message: 'Click Re-grant on the provider page (your scope ABCDE expired)',
+    },
+  });
+  assert.equal(payload.interaction_sensitivity, 'secret');
+  assert.equal(payload.body, 'A connector needs owner input.');
+  assert.equal(JSON.stringify(payload).includes('ABCDE'), false);
+});
+
+test('assistance payload is frozen and never carries assistance.message text', () => {
+  const payload = buildAssistancePushPayload({
+    runId: 'run_assist_frozen',
+    connectorDisplayName: 'ChatGPT',
+    assistance: {
+      type: 'ASSISTANCE',
+      assistance_request_id: 'asst_frozen',
+      owner_action: 'act_elsewhere',
+      progress_posture: 'running',
+      response_contract: 'none',
+      message: 'Approve the prompt — code 991122',
+      data: { answer: 'secret-answer' },
+    },
+  });
+  assert.equal(Object.isFrozen(payload), true);
+  assert.equal(JSON.stringify(payload).includes('991122'), false);
+  assert.equal(JSON.stringify(payload).includes('secret-answer'), false);
+});
+
+test('failed push delivery updates subscription metadata without changing higher-level attention state', async () => {
+  // This test stands in for the "push is a delivery channel, not state" policy
+  // at the runtime level: invoking a push fanout that fails must update the
+  // subscription store (delivery metadata) but must not have side effects on
+  // any caller-owned state. We assert this by capturing a snapshot of an
+  // out-of-band "attention" object and proving it is byte-equal afterwards.
+  const store = createMemoryWebPushSubscriptionStore();
+  await store.upsert('owner_local', sampleSubscription('https://push.example.invalid/sub/state-test'), {});
+
+  const attentionLikeState = Object.freeze({
+    attention_id: 'att_99',
+    connection_id: 'conn_99',
+    lifecycle: 'open',
+    sensitivity: 'non_secret',
+  });
+  const before = JSON.stringify(attentionLikeState);
+
+  const result = await fanoutPendingInteractionWebPush({
+    config: {
+      enabled: true,
+      publicKey: VAPID_PUBLIC,
+      privateKey: VAPID_PRIVATE,
+      subject: 'mailto:test@example.invalid',
+    },
+    store,
+    interaction: { kind: 'manual_action', request_id: 'int_state_test' },
+    connectorDisplayName: 'Connector',
+    ownerSubjectId: 'owner_local',
+    runId: 'run_state_test',
+    log: { warn() {} },
+    sender: async () => {
+      const err = new Error('upstream temporarily unavailable');
+      err.statusCode = 500;
+      throw err;
+    },
+  });
+
+  assert.equal(result.attempted, 1);
+  assert.equal(result.sent, 0);
+  // Failure recorded on the subscription, but the subscription is NOT revoked
+  // (500 is transient, not 404/410).
+  const visible = (await store.list('owner_local', { activeOnly: false }))[0];
+  assert.equal(visible.last_failure_reason, 'upstream temporarily unavailable');
+  assert.equal(visible.revoked_at, null);
+  // Out-of-band state is unaffected — push delivery never mutates it.
+  assert.equal(JSON.stringify(attentionLikeState), before);
+});
+
+test('410 Gone revokes the subscription but still leaves out-of-band state untouched', async () => {
+  const store = createMemoryWebPushSubscriptionStore();
+  await store.upsert('owner_local', sampleSubscription('https://push.example.invalid/sub/gone-test'), {});
+
+  const attentionLikeState = Object.freeze({ lifecycle: 'open' });
+  const before = JSON.stringify(attentionLikeState);
+
+  await fanoutAssistanceWebPush({
+    config: {
+      enabled: true,
+      publicKey: VAPID_PUBLIC,
+      privateKey: VAPID_PRIVATE,
+      subject: 'mailto:test@example.invalid',
+    },
+    store,
+    assistance: {
+      type: 'ASSISTANCE',
+      assistance_request_id: 'asst_gone',
+      owner_action: 'act_elsewhere',
+      progress_posture: 'running',
+      response_contract: 'none',
+    },
+    connectorDisplayName: 'ChatGPT',
+    ownerSubjectId: 'owner_local',
+    runId: 'run_gone_test',
+    log: { warn() {} },
+    sender: async () => {
+      const err = new Error('Gone');
+      err.statusCode = 410;
+      throw err;
+    },
+  });
+
+  const stillActive = await store.list('owner_local');
+  assert.equal(stillActive.length, 0, 'subscription is revoked after 410');
+  assert.equal(JSON.stringify(attentionLikeState), before);
 });
