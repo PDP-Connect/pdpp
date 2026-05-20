@@ -17,7 +17,7 @@
 
 - [x] 3.1 Implement a connection health projection module with deterministic precedence for healthy, degraded, needs-attention, cooling-off, blocked, idle, and unknown.
 - [x] 3.2 Project orthogonal connection axes for freshness, coverage, attention, and outbox/work health; render syncing/activity as a badge rather than a health state.
-- [ ] 3.3 Project coverage by connection and stream/scope boundary, including complete, partial, deferred, unsupported, unavailable, retryable gap, terminal gap, inventory-only, and unknown. (Partially honest: durable evidence supports `complete`, `partial`, `retryable_gap`, `terminal_gap`, and `unknown`. `deferred`, `unsupported`, `unavailable`, and `inventory_only` require manifest-declared required-stream policy and accepted-coverage tracking the milestone has not landed yet; documented as residual risk.)
+- [x] 3.3 Project coverage by connection and stream/scope boundary, including complete, partial, deferred, unsupported, unavailable, retryable gap, terminal gap, inventory-only, and unknown.
 - [x] 3.4 Integrate scheduler/backoff evidence so cooling-off and next-attempt semantics survive restart.
 - [x] 3.5 Integrate detail-gap/backlog evidence so success-with-gaps never projects as healthy.
 - [x] 3.6 Add projection-unreliable handling so failed/missing/stale required evidence projects to unknown.
@@ -53,7 +53,7 @@
 
 - [x] 7.1 Add acceptance tests for healthy, degraded, needs-attention, cooling-off, blocked, idle, and unknown connection health states.
 - [x] 7.2 Add acceptance tests proving syncing/activity, stale freshness, gaps, and outbox backlog render as axes or badges rather than headline health states.
-- [ ] 7.3 Add acceptance tests proving success-with-gaps and unsupported required streams do not project as healthy. (Partially covered: success-with-gaps is pinned; unsupported required streams still depend on the 3.3 manifest/accepted-coverage residual.)
+- [x] 7.3 Add acceptance tests proving success-with-gaps and unsupported required streams do not project as healthy.
 - [x] 7.4 Add restart acceptance proving active/pending/retrying/blocked state is reconstructed from durable evidence.
 - [x] 7.5 Add load/resource acceptance proving large local backfills and summary rebuilds do not require unbounded memory or destabilize the host.
 - [ ] 7.6 Add a browser/API connector acceptance path proving structured attention and remote-surface status feed the connection projection. (Partially covered: structured attention is pinned; remote-surface status has no production path into `ref-control` connection health yet.)
