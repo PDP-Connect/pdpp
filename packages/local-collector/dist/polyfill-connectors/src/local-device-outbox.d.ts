@@ -6,6 +6,7 @@ export interface LocalDeviceOutboxItem {
     body_hash: string;
     created_at: string;
     id: string;
+    insert_order: number;
     kind: LocalDeviceOutboxKind;
     last_error: string | null;
     lease_epoch: number;
@@ -70,6 +71,9 @@ export declare class LocalDeviceOutbox {
     close(): void;
     enqueue(input: LocalDeviceOutboxEnqueueInput): LocalDeviceOutboxItem;
     claimReady(input: LocalDeviceOutboxClaimInput): LocalDeviceOutboxItem[];
+    peekReady(input?: {
+        sourceInstanceId?: string;
+    }): LocalDeviceOutboxItem | null;
     acknowledge(input: LocalDeviceOutboxLeaseInput): void;
     failRetryable(input: LocalDeviceOutboxFailInput): void;
     deadLetter(input: LocalDeviceOutboxDeadLetterInput): void;

@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { delimiter, join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
-import { LocalDeviceClient } from "./local-device-client.js";
+import { LocalDeviceClient, } from "./local-device-client.js";
 import { buildLocalDeviceRecordEnvelope, hashCanonicalJson, } from "./local-device-envelope.js";
 import { buildLocalDeviceOutboxId, LocalDeviceOutbox, } from "./local-device-outbox.js";
 import { assertPlacementOrThrow, COLLECTOR_RUNTIME_CAPABILITIES, } from "./runtime-capabilities.js";
@@ -12,12 +12,14 @@ const COLLECTOR_GAP_DETAILS_MAX_CHARS = 300;
 const KEYED_SECRET_RE = /\b(authorization|bearer|token|password|passwd|cookie|secret|otp|api[_-]?key)\b\s*[:=]\s*["']?[^"',\s}]+/gi;
 const OTP_RE = /\b\d{6}\b/g;
 const LONG_OPAQUE_RE = /\b[A-Za-z0-9_-]{24,}\b/g;
+const SCAN_BATCH_LIMIT_DETAIL_RE = /enqueued\s+\d+\s+batches\s+>=\s+(?:run batch limit|(?:maxEnqueuedBatchesPerRun|\[REDACTED\]))\s+(\d+)/;
 export const DEFAULT_COLLECTOR_OUTBOX_POLICY = Object.freeze({
     drainBatchSize: 4,
     leaseMs: 60_000,
     maxAttempts: 5,
     maxDrainDurationMs: 120_000,
     maxDrainIterations: 256,
+    maxEnqueuedBatchesPerRun: 10_000,
     maxQueueDepth: 10_000,
     retryBackoffMs: 30_000,
 });
@@ -80,6 +82,9 @@ export async function runCollectorConnector(config) {
         });
         await client.heartbeat({
             connector_id: config.connector.connector_id,
+            outbox: buildHeartbeatOutboxDiagnostics(postDrainSummary, {
+                backlogOpen: countOpenBacklogGaps(outbox, config.sourceInstanceId),
+            }),
             records_pending: pendingOutboxWorkCount(postDrainSummary),
             source_instance_id: config.sourceInstanceId,
             status: "starting",
@@ -89,6 +94,7 @@ export async function runCollectorConnector(config) {
             batchSize: config.batchSize ?? 100,
             config,
             outbox,
+            policy,
             priorState,
         });
         const done = streamResult.done;
@@ -119,6 +125,7 @@ export async function runCollectorConnector(config) {
         await recoverResolvedLocalCollectorGaps({
             client,
             config,
+            deferRecoveredGapCleanup: streamResult.scanBudgetExceeded,
             outbox,
         });
         const finalSummary = outbox.summary({ sourceInstanceId: config.sourceInstanceId });
@@ -126,9 +133,12 @@ export async function runCollectorConnector(config) {
         if (!checkpointResult.statePutFailed) {
             await client.heartbeat({
                 connector_id: config.connector.connector_id,
+                outbox: buildHeartbeatOutboxDiagnostics(finalSummary, {
+                    backlogOpen: countOpenBacklogGaps(outbox, config.sourceInstanceId),
+                }),
                 records_pending: recordsPending,
                 source_instance_id: config.sourceInstanceId,
-                status: heartbeatStatusForSummary(finalSummary, policy),
+                status: streamResult.scanBudgetExceeded ? "retrying" : heartbeatStatusForSummary(finalSummary, policy),
             });
         }
         return {
@@ -142,6 +152,7 @@ export async function runCollectorConnector(config) {
             satisfiedBindings,
             sentBatches: (preScanDrain.sentByKind.record_batch ?? 0) + (recordDrain.sentByKind.record_batch ?? 0),
             skippedScanForBacklog: false,
+            scanBudgetExceeded: streamResult.scanBudgetExceeded,
             statePutFailed: checkpointResult.statePutFailed,
             streamingBufferHighWaterMark: streamResult.bufferHighWaterMark,
         };
@@ -151,7 +162,7 @@ export async function runCollectorConnector(config) {
     }
 }
 async function maybeSkipScanForBacklog(input) {
-    if (!hasScanBlockingOutboxWork(input.outbox, input.config.sourceInstanceId)) {
+    if (!hasScanBlockingOutboxWork(input.outbox, input.config.sourceInstanceId, input.policy)) {
         return null;
     }
     const recordsPending = pendingOutboxWorkCount(input.postDrainSummary);
@@ -168,9 +179,13 @@ async function maybeSkipScanForBacklog(input) {
         });
     }
     const summaryAfterGap = input.outbox.summary({ sourceInstanceId: input.config.sourceInstanceId });
+    const recordsPendingAfterGap = pendingOutboxWorkCount(summaryAfterGap);
     await safeHeartbeat(input.client, {
         connector_id: input.config.connector.connector_id,
-        records_pending: recordsPending,
+        outbox: buildHeartbeatOutboxDiagnostics(summaryAfterGap, {
+            backlogOpen: countOpenBacklogGaps(input.outbox, input.config.sourceInstanceId),
+        }),
+        records_pending: recordsPendingAfterGap,
         source_instance_id: input.config.sourceInstanceId,
         status: heartbeatStatusForSummary(summaryAfterGap, input.policy),
     });
@@ -185,6 +200,7 @@ async function maybeSkipScanForBacklog(input) {
         satisfiedBindings: input.satisfiedBindings,
         sentBatches: input.preScanDrain.sentByKind.record_batch ?? 0,
         skippedScanForBacklog: true,
+        scanBudgetExceeded: false,
         statePutFailed: false,
         streamingBufferHighWaterMark: 0,
     };
@@ -223,6 +239,7 @@ async function streamConnectorIntoOutbox(input) {
     let recordsQueued = 0;
     let enqueuedBatches = 0;
     let done = null;
+    let scanBudgetExceeded = false;
     const flushPendingBatch = () => {
         if (pendingRecords.length === 0) {
             return;
@@ -263,6 +280,11 @@ async function streamConnectorIntoOutbox(input) {
         recordsQueued += envelopes.length;
         enqueuedBatches++;
         batchSeq++;
+        scanBudgetExceeded = maybeRecordScanBudgetGap({
+            enqueuedBatches,
+            input,
+            scanBudgetExceeded,
+        });
     };
     const handleMessage = (message) => {
         if (message.type === "RECORD") {
@@ -319,6 +341,14 @@ async function streamConnectorIntoOutbox(input) {
                 continue;
             }
             handleMessage(JSON.parse(line));
+            if (scanBudgetExceeded) {
+                try {
+                    child.kill("SIGTERM");
+                }
+                catch {
+                }
+                break;
+            }
         }
     })();
     child.stdin.on("error", () => {
@@ -351,24 +381,55 @@ async function streamConnectorIntoOutbox(input) {
             ? input.abortSignal.reason
             : new DOMException("Aborted", "AbortError");
     }
-    if (exitCode !== 0) {
-        flushPendingBatch();
-        const details = sanitizeCollectorGapDetails(`exit ${exitCode}: ${stderr.toString().trim()}`);
-        recordConnectorChildFailureGap({
-            details,
-            enqueuedBatches,
-            input,
-        });
-        throw new Error(`${input.config.connector.connector_id} connector exited ${exitCode}: ${details || "unknown error"}`);
-    }
+    throwIfConnectorExitedUncleanly({
+        enqueuedBatches,
+        exitCode,
+        flushPendingBatch,
+        input,
+        scanBudgetExceeded,
+        stderr,
+    });
     flushPendingBatch();
     return {
-        bufferedState: Object.freeze({ ...bufferedState }),
+        bufferedState: Object.freeze(scanBudgetExceeded ? {} : { ...bufferedState }),
         bufferHighWaterMark,
-        done,
+        done: scanBudgetExceeded ? null : done,
         enqueuedBatches,
         recordsQueued,
+        scanBudgetExceeded,
     };
+}
+function throwIfConnectorExitedUncleanly(input) {
+    if (input.exitCode === 0 || input.scanBudgetExceeded) {
+        return;
+    }
+    input.flushPendingBatch();
+    const details = sanitizeCollectorGapDetails(`exit ${input.exitCode}: ${input.stderr.toString().trim()}`);
+    recordConnectorChildFailureGap({
+        details,
+        enqueuedBatches: input.enqueuedBatches,
+        input: input.input,
+    });
+    throw new Error(`${input.input.config.connector.connector_id} connector exited ${input.exitCode}: ${details || "unknown error"}`);
+}
+function maybeRecordScanBudgetGap(input) {
+    if (input.scanBudgetExceeded) {
+        return true;
+    }
+    if (input.enqueuedBatches < input.input.policy.maxEnqueuedBatchesPerRun) {
+        return false;
+    }
+    ensureCollectorGapRow({
+        clock: () => new Date(),
+        connectorId: input.input.config.connector.connector_id,
+        details: `enqueued ${input.enqueuedBatches} batches >= run batch limit ${input.input.policy.maxEnqueuedBatchesPerRun}`,
+        outbox: input.input.outbox,
+        reason: "policy_budget",
+        retryable: true,
+        ...(input.input.config.runId ? { runId: input.input.config.runId } : {}),
+        sourceInstanceId: input.input.config.sourceInstanceId,
+    });
+    return true;
 }
 function recordConnectorChildFailureGap(input) {
     if (input.enqueuedBatches === 0) {
@@ -386,8 +447,7 @@ function recordConnectorChildFailureGap(input) {
     });
 }
 async function maybeCommitCheckpoint(input) {
-    if (hasCheckpointBlockingOutboxWork(input.outbox, input.config.sourceInstanceId) ||
-        Object.keys(input.bufferedState).length === 0) {
+    if (Object.keys(input.bufferedState).length === 0) {
         return { flushedState: null, statePutFailed: false };
     }
     const checkpointId = buildLocalDeviceOutboxId({
@@ -418,8 +478,14 @@ async function maybeCommitCheckpoint(input) {
     if (checkpointAfter?.status === "succeeded") {
         return { flushedState: Object.freeze({ ...input.bufferedState }), statePutFailed: false };
     }
+    if (checkpointAfter && hasCheckpointPredecessorBlockingWork(input.outbox, checkpointAfter)) {
+        return { flushedState: null, statePutFailed: false };
+    }
     await safeHeartbeat(input.client, {
         connector_id: input.config.connector.connector_id,
+        outbox: buildHeartbeatOutboxDiagnostics(input.afterRecordsSummary, {
+            backlogOpen: countOpenBacklogGaps(input.outbox, input.config.sourceInstanceId),
+        }),
         records_pending: pendingOutboxWorkCount(input.afterRecordsSummary),
         source_instance_id: input.config.sourceInstanceId,
         status: "retrying",
@@ -428,6 +494,9 @@ async function maybeCommitCheckpoint(input) {
     return { flushedState: null, statePutFailed: true };
 }
 async function recoverResolvedLocalCollectorGaps(input) {
+    if (input.deferRecoveredGapCleanup) {
+        return;
+    }
     if (hasCheckpointBlockingOutboxWork(input.outbox, input.config.sourceInstanceId)) {
         return;
     }
@@ -578,15 +647,36 @@ export async function drainCollectorOutbox(input) {
     return result;
 }
 function claimReadyOutboxItems(input) {
+    const nextReady = nextReadyOutboxItem(input);
+    if (!nextReady) {
+        return [];
+    }
+    if (nextReady.kind === "checkpoint" && hasCheckpointPredecessorBlockingWork(input.outbox, nextReady)) {
+        return [];
+    }
     const claimInput = {
         holder: input.holderId,
         leaseMs: input.policy.leaseMs,
-        limit: input.policy.drainBatchSize,
+        limit: 1,
     };
     if (input.sourceInstanceId) {
         claimInput.sourceInstanceId = input.sourceInstanceId;
     }
     return input.outbox.claimReady(claimInput);
+}
+function nextReadyOutboxItem(input) {
+    return input.outbox.peekReady(input.sourceInstanceId ? { sourceInstanceId: input.sourceInstanceId } : {});
+}
+function hasCheckpointPredecessorBlockingWork(outbox, checkpoint) {
+    return outbox.list({ sourceInstanceId: checkpoint.source_instance_id }).some((item) => {
+        if (item.id === checkpoint.id) {
+            return false;
+        }
+        if (item.insert_order >= checkpoint.insert_order) {
+            return false;
+        }
+        return (item.kind === "record_batch" || item.kind === "gap") && item.status !== "succeeded";
+    });
 }
 async function drainClaimedOutboxItem(input, item, result, sentByKind) {
     throwIfAborted(input.abortSignal);
@@ -783,11 +873,36 @@ function buildOutboxBatchId(input) {
 function pendingOutboxWorkCount(summary) {
     return summary.ready + summary.leased;
 }
-function hasScanBlockingOutboxWork(outbox, sourceInstanceId) {
-    return outbox.list({ sourceInstanceId }).some((item) => item.kind !== "gap" && item.status !== "succeeded");
+function hasScanBlockingOutboxWork(outbox, sourceInstanceId, policy) {
+    return outbox.list({ sourceInstanceId }).some((item) => {
+        if (item.kind !== "gap") {
+            return item.status !== "succeeded";
+        }
+        return isUnresolvedScanBudgetGap(item, policy);
+    });
 }
 function hasCheckpointBlockingOutboxWork(outbox, sourceInstanceId) {
     return outbox.list({ sourceInstanceId }).some((item) => item.status !== "succeeded");
+}
+function isUnresolvedScanBudgetGap(item, policy) {
+    if (item.status === "dead_letter") {
+        return false;
+    }
+    let payload;
+    try {
+        payload = assertGapPayload(item.payload, item.id);
+    }
+    catch {
+        return item.status !== "succeeded";
+    }
+    if (payload.reason !== "policy_budget" || !payload.retryable || !payload.details) {
+        return false;
+    }
+    const match = payload.details.match(SCAN_BATCH_LIMIT_DETAIL_RE);
+    if (!match?.[1]) {
+        return false;
+    }
+    return policy.maxEnqueuedBatchesPerRun <= Number(match[1]);
 }
 function heartbeatStatusForSummary(summary, policy) {
     if (summary.deadLetter > 0) {
@@ -801,6 +916,24 @@ function heartbeatStatusForSummary(summary, policy) {
         return "retrying";
     }
     return "healthy";
+}
+export function buildHeartbeatOutboxDiagnostics(summary, options = {}) {
+    return {
+        backlog_open: Math.max(0, options.backlogOpen ?? 0),
+        dead_letter: summary.deadLetter,
+        leased: summary.leased,
+        oldest_pending_at: summary.oldestReadyAt,
+        pending: summary.ready,
+        retrying: summary.retrying,
+        stale_leases: summary.staleLeases,
+        succeeded: summary.succeeded,
+        total: summary.total,
+    };
+}
+function countOpenBacklogGaps(outbox, sourceInstanceId) {
+    return outbox
+        .list({ sourceInstanceId })
+        .filter((item) => item.kind === "gap" && (item.status === "ready" || item.status === "leased")).length;
 }
 function nextOutboxBatchSeq(outbox, sourceInstanceId) {
     const items = outbox.list({ sourceInstanceId });

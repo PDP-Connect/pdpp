@@ -14,6 +14,7 @@ export interface LocalDeviceOutboxItem {
   body_hash: string;
   created_at: string;
   id: string;
+  insert_order: number;
   kind: LocalDeviceOutboxKind;
   last_error: string | null;
   lease_epoch: number;
@@ -43,6 +44,7 @@ interface LocalDeviceOutboxRow {
   body_hash: string;
   created_at: string;
   id: string;
+  insert_order: number;
   kind: LocalDeviceOutboxKind;
   last_error: string | null;
   lease_epoch: number;
@@ -138,6 +140,7 @@ export class LocalDeviceOutbox {
       body_hash: bodyHash,
       created_at: now,
       id: input.id,
+      insert_order: 0,
       kind: input.kind,
       last_error: null,
       lease_epoch: 0,
@@ -186,7 +189,11 @@ export class LocalDeviceOutbox {
         row.created_at,
         row.updated_at
       );
-    return rowToItem(row);
+    const inserted = this.get(row.id);
+    if (!inserted) {
+      throw new Error(`local outbox insert disappeared before readback: ${row.id}`);
+    }
+    return inserted;
   }
 
   claimReady(input: LocalDeviceOutboxClaimInput): LocalDeviceOutboxItem[] {
@@ -218,6 +225,11 @@ export class LocalDeviceOutbox {
       }
     }
     return claimed;
+  }
+
+  peekReady(input: { sourceInstanceId?: string } = {}): LocalDeviceOutboxItem | null {
+    const [candidate] = this.#selectReady(input.sourceInstanceId, this.#now(), 1);
+    return candidate ? rowToItem(candidate) : null;
   }
 
   acknowledge(input: LocalDeviceOutboxLeaseInput): void {
@@ -325,7 +337,7 @@ export class LocalDeviceOutbox {
   }
 
   get(id: string): LocalDeviceOutboxItem | null {
-    const row = this.#db.prepare("SELECT * FROM local_device_outbox WHERE id = ?").get(id);
+    const row = this.#db.prepare("SELECT *, rowid AS insert_order FROM local_device_outbox WHERE id = ?").get(id);
     return row ? rowToItem(row) : null;
   }
 
@@ -338,15 +350,15 @@ export class LocalDeviceOutbox {
     const rows = input.sourceInstanceId
       ? this.#db
           .prepare(
-            `SELECT * FROM local_device_outbox
+            `SELECT *, rowid AS insert_order FROM local_device_outbox
               WHERE source_instance_id = ?
-              ORDER BY source_instance_id, created_at, id`
+              ORDER BY source_instance_id, insert_order`
           )
           .all(input.sourceInstanceId)
       : this.#db
           .prepare(
-            `SELECT * FROM local_device_outbox
-              ORDER BY source_instance_id, created_at, id`
+            `SELECT *, rowid AS insert_order FROM local_device_outbox
+              ORDER BY source_instance_id, insert_order`
           )
           .all();
     return rows.map((row) => rowToItem(row));
@@ -462,11 +474,11 @@ export class LocalDeviceOutbox {
     if (sourceInstanceId) {
       return this.#db
         .prepare(
-          `SELECT * FROM local_device_outbox
+          `SELECT *, rowid AS insert_order FROM local_device_outbox
             WHERE status = 'ready'
               AND source_instance_id = ?
               AND next_attempt_at <= ?
-            ORDER BY created_at, id
+            ORDER BY insert_order
             LIMIT ?`
         )
         .all(sourceInstanceId, now, limit)
@@ -474,10 +486,10 @@ export class LocalDeviceOutbox {
     }
     return this.#db
       .prepare(
-        `SELECT * FROM local_device_outbox
+        `SELECT *, rowid AS insert_order FROM local_device_outbox
           WHERE status = 'ready'
             AND next_attempt_at <= ?
-          ORDER BY source_instance_id, created_at, id
+          ORDER BY source_instance_id, insert_order
           LIMIT ?`
       )
       .all(now, limit)
@@ -514,6 +526,7 @@ function rowToItem(rowLike: unknown): LocalDeviceOutboxItem {
     body_hash: row.body_hash,
     created_at: row.created_at,
     id: row.id,
+    insert_order: row.insert_order,
     kind: row.kind,
     last_error: row.last_error,
     lease_epoch: row.lease_epoch,
@@ -547,6 +560,7 @@ function asOutboxRow(row: unknown): LocalDeviceOutboxRow {
     typeof row.body_hash !== "string" ||
     typeof row.created_at !== "string" ||
     typeof row.id !== "string" ||
+    (typeof row.insert_order !== "number" && typeof row.insert_order !== "bigint") ||
     !isOutboxKind(kind) ||
     typeof row.lease_epoch !== "number" ||
     (typeof row.lease_holder !== "string" && row.lease_holder !== null) ||
@@ -566,6 +580,7 @@ function asOutboxRow(row: unknown): LocalDeviceOutboxRow {
     body_hash: row.body_hash,
     created_at: row.created_at,
     id: row.id,
+    insert_order: numberFrom(row.insert_order),
     kind,
     last_error: row.last_error,
     lease_epoch: row.lease_epoch,

@@ -65,6 +65,8 @@ const KEYED_SECRET_RE =
   /\b(authorization|bearer|token|password|passwd|cookie|secret|otp|api[_-]?key)\b\s*[:=]\s*["']?[^"',\s}]+/gi;
 const OTP_RE = /\b\d{6}\b/g;
 const LONG_OPAQUE_RE = /\b[A-Za-z0-9_-]{24,}\b/g;
+const SCAN_BATCH_LIMIT_DETAIL_RE =
+  /enqueued\s+\d+\s+batches\s+>=\s+(?:run batch limit|(?:maxEnqueuedBatchesPerRun|\[REDACTED\]))\s+(\d+)/;
 
 /**
  * Default policy bounds for durable outbox drains. These are intentionally
@@ -112,7 +114,7 @@ export const DEFAULT_COLLECTOR_OUTBOX_POLICY: Readonly<CollectorOutboxPolicy> = 
   maxAttempts: 5,
   maxDrainDurationMs: 120_000,
   maxDrainIterations: 256,
-  maxEnqueuedBatchesPerRun: 2048,
+  maxEnqueuedBatchesPerRun: 10_000,
   maxQueueDepth: 10_000,
   retryBackoffMs: 30_000,
 });
@@ -411,7 +413,7 @@ interface MaybeSkipScanInput {
 }
 
 async function maybeSkipScanForBacklog(input: MaybeSkipScanInput): Promise<CollectorRunResult | null> {
-  if (!hasScanBlockingOutboxWork(input.outbox, input.config.sourceInstanceId)) {
+  if (!hasScanBlockingOutboxWork(input.outbox, input.config.sourceInstanceId, input.policy)) {
     return null;
   }
   const recordsPending = pendingOutboxWorkCount(input.postDrainSummary);
@@ -773,7 +775,7 @@ function maybeRecordScanBudgetGap(input: {
   ensureCollectorGapRow({
     clock: () => new Date(),
     connectorId: input.input.config.connector.connector_id,
-    details: `enqueued ${input.enqueuedBatches} batches >= maxEnqueuedBatchesPerRun ${input.input.policy.maxEnqueuedBatchesPerRun}`,
+    details: `enqueued ${input.enqueuedBatches} batches >= run batch limit ${input.input.policy.maxEnqueuedBatchesPerRun}`,
     outbox: input.input.outbox,
     reason: "policy_budget",
     retryable: true,
@@ -820,10 +822,7 @@ async function maybeCommitCheckpoint(input: {
   outbox: LocalDeviceOutbox;
   policy: CollectorOutboxPolicy;
 }): Promise<{ flushedState: Readonly<Record<string, unknown>> | null; statePutFailed: boolean }> {
-  if (
-    hasCheckpointBlockingOutboxWork(input.outbox, input.config.sourceInstanceId) ||
-    Object.keys(input.bufferedState).length === 0
-  ) {
+  if (Object.keys(input.bufferedState).length === 0) {
     return { flushedState: null, statePutFailed: false };
   }
 
@@ -855,6 +854,9 @@ async function maybeCommitCheckpoint(input: {
   const checkpointAfter = input.outbox.get(checkpointId);
   if (checkpointAfter?.status === "succeeded") {
     return { flushedState: Object.freeze({ ...input.bufferedState }), statePutFailed: false };
+  }
+  if (checkpointAfter && hasCheckpointPredecessorBlockingWork(input.outbox, checkpointAfter)) {
+    return { flushedState: null, statePutFailed: false };
   }
 
   await safeHeartbeat(input.client, {
@@ -1204,15 +1206,38 @@ export async function drainCollectorOutbox(input: DrainCollectorOutboxInput): Pr
 }
 
 function claimReadyOutboxItems(input: DrainCollectorOutboxInput): LocalDeviceOutboxItem[] {
+  const nextReady = nextReadyOutboxItem(input);
+  if (!nextReady) {
+    return [];
+  }
+  if (nextReady.kind === "checkpoint" && hasCheckpointPredecessorBlockingWork(input.outbox, nextReady)) {
+    return [];
+  }
   const claimInput: Parameters<LocalDeviceOutbox["claimReady"]>[0] = {
     holder: input.holderId,
     leaseMs: input.policy.leaseMs,
-    limit: input.policy.drainBatchSize,
+    limit: 1,
   };
   if (input.sourceInstanceId) {
     claimInput.sourceInstanceId = input.sourceInstanceId;
   }
   return input.outbox.claimReady(claimInput);
+}
+
+function nextReadyOutboxItem(input: DrainCollectorOutboxInput): LocalDeviceOutboxItem | null {
+  return input.outbox.peekReady(input.sourceInstanceId ? { sourceInstanceId: input.sourceInstanceId } : {});
+}
+
+function hasCheckpointPredecessorBlockingWork(outbox: LocalDeviceOutbox, checkpoint: LocalDeviceOutboxItem): boolean {
+  return outbox.list({ sourceInstanceId: checkpoint.source_instance_id }).some((item) => {
+    if (item.id === checkpoint.id) {
+      return false;
+    }
+    if (item.insert_order >= checkpoint.insert_order) {
+      return false;
+    }
+    return (item.kind === "record_batch" || item.kind === "gap") && item.status !== "succeeded";
+  });
 }
 
 async function drainClaimedOutboxItem(
@@ -1456,12 +1481,44 @@ function pendingOutboxWorkCount(summary: LocalDeviceOutboxSummary): number {
   return summary.ready + summary.leased;
 }
 
-function hasScanBlockingOutboxWork(outbox: LocalDeviceOutbox, sourceInstanceId: string): boolean {
-  return outbox.list({ sourceInstanceId }).some((item) => item.kind !== "gap" && item.status !== "succeeded");
+function hasScanBlockingOutboxWork(
+  outbox: LocalDeviceOutbox,
+  sourceInstanceId: string,
+  policy: Pick<CollectorOutboxPolicy, "maxEnqueuedBatchesPerRun">
+): boolean {
+  return outbox.list({ sourceInstanceId }).some((item) => {
+    if (item.kind !== "gap") {
+      return item.status !== "succeeded";
+    }
+    return isUnresolvedScanBudgetGap(item, policy);
+  });
 }
 
 function hasCheckpointBlockingOutboxWork(outbox: LocalDeviceOutbox, sourceInstanceId: string): boolean {
   return outbox.list({ sourceInstanceId }).some((item) => item.status !== "succeeded");
+}
+
+function isUnresolvedScanBudgetGap(
+  item: LocalDeviceOutboxItem,
+  policy: Pick<CollectorOutboxPolicy, "maxEnqueuedBatchesPerRun">
+): boolean {
+  if (item.status === "dead_letter") {
+    return false;
+  }
+  let payload: GapPayload;
+  try {
+    payload = assertGapPayload(item.payload, item.id);
+  } catch {
+    return item.status !== "succeeded";
+  }
+  if (payload.reason !== "policy_budget" || !payload.retryable || !payload.details) {
+    return false;
+  }
+  const match = payload.details.match(SCAN_BATCH_LIMIT_DETAIL_RE);
+  if (!match?.[1]) {
+    return false;
+  }
+  return policy.maxEnqueuedBatchesPerRun <= Number(match[1]);
 }
 
 function heartbeatStatusForSummary(

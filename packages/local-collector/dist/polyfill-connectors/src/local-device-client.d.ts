@@ -24,8 +24,20 @@ export interface EnrollmentExchangeResponse {
     local_binding_name: string;
     source_instance_id: string;
 }
+export interface HeartbeatOutboxDiagnostics {
+    backlog_open?: number;
+    dead_letter: number;
+    leased: number;
+    oldest_pending_at?: string | null;
+    pending: number;
+    retrying: number;
+    stale_leases: number;
+    succeeded: number;
+    total: number;
+}
 export interface HeartbeatRequest {
     connector_id: string;
+    outbox?: HeartbeatOutboxDiagnostics;
     records_pending?: number;
     source_instance_id: string;
     status: "starting" | "healthy" | "retrying" | "blocked" | "stopped";

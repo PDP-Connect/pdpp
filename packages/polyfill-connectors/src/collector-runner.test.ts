@@ -1239,9 +1239,55 @@ test("runCollectorConnector caps one first-backfill scan without losing queued w
       assert.equal(gaps.length, 1);
       assert.equal(gaps[0]?.status, "succeeded");
       assert.equal((gaps[0]?.payload as { reason?: unknown } | undefined)?.reason, "policy_budget");
+      assert.match(
+        String((gaps[0]?.payload as { details?: unknown } | undefined)?.details ?? ""),
+        /^enqueued 2 batches >= /
+      );
     } finally {
       verify.close();
     }
+
+    const skippedRetry = await runCollectorConnector({
+      baseUrl: harness.url,
+      batchSize,
+      connector: {
+        args: [fixture],
+        command: "node",
+        connector_id: "fixture-first-backfill-budget",
+        runtime_requirements: { bindings: {} },
+        streams: ["messages"],
+      },
+      deviceId: "device-1",
+      deviceToken: "device-token",
+      outboxPolicy: { maxEnqueuedBatchesPerRun },
+      queuePath,
+      runId: "run-first-backfill-budget-same-policy",
+      sourceInstanceId: "src-first-backfill-budget",
+    });
+    assert.equal(skippedRetry.skippedScanForBacklog, true, "same-policy scan-budget retries must not replay work");
+    assert.equal(skippedRetry.enqueuedBatches, 0);
+    assert.equal(harness.ingestedBatches.length, maxEnqueuedBatchesPerRun);
+
+    const largerBudgetRetry = await runCollectorConnector({
+      baseUrl: harness.url,
+      batchSize,
+      connector: {
+        args: [fixture],
+        command: "node",
+        connector_id: "fixture-first-backfill-budget",
+        runtime_requirements: { bindings: {} },
+        streams: ["messages"],
+      },
+      deviceId: "device-1",
+      deviceToken: "device-token",
+      outboxPolicy: { maxEnqueuedBatchesPerRun: 16 },
+      queuePath,
+      runId: "run-first-backfill-budget-larger-policy",
+      sourceInstanceId: "src-first-backfill-budget",
+    });
+    assert.equal(largerBudgetRetry.skippedScanForBacklog, false);
+    assert.equal(largerBudgetRetry.scanBudgetExceeded, false);
+    assert.deepEqual(largerBudgetRetry.flushedState, { messages: "must-not-commit" });
   } finally {
     await harness.close();
   }
@@ -1307,16 +1353,225 @@ test("runCollectorConnector defers checkpoint until every streamed record batch 
     assert.equal(result.sentBatches, 0);
     assert.equal(result.flushedState, null);
     assert.equal(result.statePutFailed, false);
-    // Three durable record_batch rows must remain in the outbox; with the
-    // backoff override every row is in ready+retrying after the failed
-    // drain (ready counts all unleased rows; retrying counts the subset
-    // with a future next_attempt_at).
-    assert.equal(result.outboxSummary.ready, 3);
+    // Three durable record_batch rows plus one deferred checkpoint must
+    // remain in the outbox. With the backoff override, only the record
+    // rows are in the retrying subset.
+    assert.equal(result.outboxSummary.ready, 4);
     assert.equal(result.outboxSummary.retrying, 3);
     assert.equal(result.outboxSummary.deadLetter, 0);
-    // Server saw no checkpoint PUT — the checkpoint outbox row must not
-    // have been enqueued (let alone drained) while record work is pending.
+    const verify = new LocalDeviceOutbox({ path: queuePath });
+    try {
+      const checkpointRows = verify.list({ sourceInstanceId: "src-1" }).filter((item) => item.kind === "checkpoint");
+      assert.equal(checkpointRows.length, 1, "completed scan checkpoint must be durable even while records retry");
+      assert.equal(checkpointRows[0]?.status, "ready");
+    } finally {
+      verify.close();
+    }
+    // Server saw no checkpoint PUT — the durable checkpoint must not be
+    // sent before the record batches it summarizes are acknowledged.
     assert.equal(harness.stateOps.filter((op) => op.method === "PUT").length, 0);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("drainCollectorOutbox blocks checkpoint behind retry-delayed predecessors by insert order", async () => {
+  const fixedClock = () => new Date("2026-05-20T12:00:00.000Z");
+  const outbox = new LocalDeviceOutbox({ clock: fixedClock, path: await tempQueuePath() });
+  try {
+    const record = outbox.enqueue({
+      id: "zzzz-record-predecessor",
+      kind: "record_batch",
+      payload: {
+        batchId: "batch-1",
+        batchSeq: 1,
+        connectorId: "fixture-checkpoint-order",
+        deviceId: "device-1",
+        records: [],
+        sourceInstanceId: "src-order",
+      },
+      sourceInstanceId: "src-order",
+    });
+    const [claim] = outbox.claimReady({ holder: "seed", leaseMs: 60_000, sourceInstanceId: "src-order" });
+    assert.equal(claim?.id, record.id);
+    outbox.failRetryable({
+      error: "temporary ingest failure",
+      holder: "seed",
+      id: record.id,
+      leaseEpoch: claim.lease_epoch,
+      retryBackoffMs: 60_000,
+    });
+
+    const checkpoint = outbox.enqueue({
+      id: "aaaa-checkpoint-successor",
+      kind: "checkpoint",
+      payload: {
+        connectorId: "fixture-checkpoint-order",
+        sourceInstanceId: "src-order",
+        state: { messages: "m-final" },
+      },
+      sourceInstanceId: "src-order",
+    });
+    assert.equal(record.created_at, checkpoint.created_at, "test must cover same-timestamp ordering");
+    assert.ok(record.id > checkpoint.id, "test must cover the lexicographic ordering hazard");
+    assert.ok(record.insert_order < checkpoint.insert_order, "outbox insert order must reflect semantic order");
+
+    const putCalls: unknown[] = [];
+    const client: Pick<LocalDeviceClient, "ackLocalCollectorGap" | "ingestBatch" | "putSourceInstanceState"> = {
+      ackLocalCollectorGap() {
+        return Promise.reject(new Error("must not ack gaps"));
+      },
+      ingestBatch() {
+        return Promise.reject(new Error("retry-delayed predecessor must not be ready"));
+      },
+      putSourceInstanceState(request) {
+        putCalls.push(request);
+        return Promise.resolve({
+          device_id: "device-1",
+          object: "device_source_instance_state",
+          source_instance_id: request.sourceInstanceId,
+          state: request.state,
+          updated_at: "2026-05-20T12:00:00.000Z",
+        });
+      },
+    };
+
+    const result = await drainCollectorOutbox({
+      client,
+      connectorId: "fixture-checkpoint-order",
+      holderId: "drain",
+      outbox,
+      policy: {
+        drainBatchSize: 1,
+        leaseMs: 60_000,
+        maxAttempts: 3,
+        maxDrainDurationMs: 60_000,
+        maxDrainIterations: 4,
+        maxEnqueuedBatchesPerRun: 10_000,
+        maxQueueDepth: 10_000,
+        retryBackoffMs: 1,
+      },
+      sourceInstanceId: "src-order",
+    });
+
+    assert.equal(result.sent, 0);
+    assert.equal(putCalls.length, 0, "checkpoint must not advance before retry-delayed predecessor succeeds");
+    assert.equal(outbox.get(checkpoint.id)?.status, "ready");
+  } finally {
+    outbox.close();
+  }
+});
+
+test("runCollectorConnector persists complete-scan checkpoint across undrained backlog before next scan", async () => {
+  let ingestShouldFail = true;
+  const harness = await startTogglableHarness({
+    ingestHandler: () => (ingestShouldFail ? "fail" : "ok"),
+    priorState: { messages: "m-old" },
+  });
+  try {
+    const queuePath = await tempQueuePath();
+    const pass1Fixture = await writeFixtureConnector({
+      script: `
+        let buf = "";
+        await new Promise((r) => process.stdin.on("data", (c) => {
+          buf += c;
+          if (buf.includes("\\n")) r();
+        }));
+        for (let i = 0; i < 30; i++) {
+          process.stdout.write(JSON.stringify({
+            type: "RECORD",
+            stream: "messages",
+            key: "m-" + i,
+            data: { id: "m-" + i, pass: 1 },
+            emitted_at: new Date().toISOString(),
+          }) + "\\n");
+        }
+        process.stdout.write(JSON.stringify({
+          type: "STATE",
+          stream: "messages",
+          cursor: "m-30",
+        }) + "\\n");
+        process.stdout.write(JSON.stringify({
+          type: "DONE",
+          status: "succeeded",
+          records_emitted: 30,
+        }) + "\\n");
+      `,
+    });
+    const baseConfig = {
+      baseUrl: harness.url,
+      batchSize: 10,
+      connector: {
+        args: [pass1Fixture],
+        command: "node",
+        connector_id: "fixture-durable-checkpoint-backlog",
+        runtime_requirements: { bindings: {} },
+        streams: ["messages"],
+      },
+      deviceId: "device-1",
+      deviceToken: "device-token",
+      outboxPolicy: { retryBackoffMs: 1 },
+      queuePath,
+      sourceInstanceId: "src-1",
+    } as const;
+
+    const pass1 = await runCollectorConnector(baseConfig);
+    assert.equal(pass1.scanBudgetExceeded, false);
+    assert.equal(pass1.enqueuedBatches, 3);
+    assert.equal(pass1.flushedState, null);
+    assert.equal(harness.stateOps.filter((op) => op.method === "PUT").length, 0);
+
+    const afterPass1 = new LocalDeviceOutbox({ path: queuePath });
+    try {
+      const items = afterPass1.list({ sourceInstanceId: "src-1" });
+      assert.equal(items.filter((item) => item.kind === "record_batch").length, 3);
+      const checkpoints = items.filter((item) => item.kind === "checkpoint");
+      assert.equal(checkpoints.length, 1);
+      assert.equal(checkpoints[0]?.status, "ready");
+      assert.deepEqual((checkpoints[0]?.payload as { state?: unknown } | undefined)?.state, { messages: "m-30" });
+    } finally {
+      afterPass1.close();
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    ingestShouldFail = false;
+    const eventsBeforePass2 = harness.events.length;
+    const pass2Fixture = await writeFixtureConnector({
+      script: `
+        let buf = "";
+        await new Promise((r) => process.stdin.on("data", (c) => {
+          buf += c;
+          if (buf.includes("\\n")) r();
+        }));
+        const start = JSON.parse(buf.split("\\n")[0]);
+        process.stdout.write(JSON.stringify({
+          type: "RECORD",
+          stream: "messages",
+          key: "pass-2-observed-prior",
+          data: { observed_prior: start.state?.messages ?? null },
+          emitted_at: new Date().toISOString(),
+        }) + "\\n");
+        process.stdout.write(JSON.stringify({
+          type: "DONE",
+          status: "succeeded",
+          records_emitted: 1,
+        }) + "\\n");
+      `,
+    });
+
+    const pass2 = await runCollectorConnector({
+      ...baseConfig,
+      connector: { ...baseConfig.connector, args: [pass2Fixture] },
+    });
+
+    assert.deepEqual(pass2.priorState, { messages: "m-30" });
+    assert.equal(harness.ingestedBatches.at(-1)?.records?.[0]?.data?.observed_prior, "m-30");
+    const pass2Events = harness.events.slice(eventsBeforePass2).map((event) => event.label);
+    assert.deepEqual(
+      pass2Events.slice(0, 5),
+      ["ingest:ok", "ingest:ok", "ingest:ok", "state:PUT", "state:GET"],
+      `expected pass 2 to drain records, then checkpoint, then read state; saw ${pass2Events.join(",")}`
+    );
   } finally {
     await harness.close();
   }
@@ -1725,16 +1980,13 @@ test("runCollectorConnector drains a prior pass's enqueued backlog before scanni
     // state GET of pass 2 must come after the backlog ingest calls.
     const pass2Events = harness.events.slice(eventsBeforePass2).map((event) => event.label);
     assert.deepEqual(
-      pass2Events.slice(0, 4),
-      ["ingest:ok", "ingest:ok", "ingest:ok", "state:GET"],
-      `expected pass 2 to drain backlog before state read; saw ${pass2Events.join(",")}`
+      pass2Events.slice(0, 5),
+      ["ingest:ok", "ingest:ok", "ingest:ok", "state:PUT", "state:GET"],
+      `expected pass 2 to drain backlog and checkpoint before state read; saw ${pass2Events.join(",")}`
     );
+    assert.deepEqual(pass2.priorState, { messages: "m-30" });
     // Pass-2 child emitted no STATE of its own, so no new checkpoint
-    // PUT happens this pass. The pass-1 STATE was buffered in pass-1
-    // process memory and lost when that process exited — this is the
-    // intended trade-off: only durable record_batch rows survive a
-    // crash, and the checkpoint can only re-advance once a future
-    // connector pass replays cursor state from the source.
+    // PUT happens after the pre-scan durable checkpoint is flushed.
     assert.equal(pass2.flushedState, null);
   } finally {
     await harness.close();

@@ -1,5 +1,5 @@
 import type { EmittedMessage, StartMessage } from "./connector-runtime-protocol.js";
-import { type EnrollmentExchangeResponse, LocalDeviceClient } from "./local-device-client.js";
+import { type EnrollmentExchangeResponse, type HeartbeatOutboxDiagnostics, LocalDeviceClient } from "./local-device-client.js";
 import { type LocalDeviceRecordEnvelope } from "./local-device-envelope.js";
 import { LocalDeviceOutbox, type LocalDeviceOutboxItem, type LocalDeviceOutboxSummary } from "./local-device-outbox.js";
 import type { LocalDeviceQueue } from "./local-device-queue.js";
@@ -11,6 +11,7 @@ export interface CollectorOutboxPolicy {
     maxAttempts: number;
     maxDrainDurationMs: number;
     maxDrainIterations: number;
+    maxEnqueuedBatchesPerRun: number;
     maxQueueDepth: number;
     retryBackoffMs: number;
 }
@@ -54,6 +55,7 @@ export interface CollectorRunResult {
     recordsQueued: number;
     recoveredLeases: number;
     satisfiedBindings: readonly RuntimeBindingName[];
+    scanBudgetExceeded: boolean;
     sentBatches: number;
     skippedScanForBacklog: boolean;
     statePutFailed: boolean;
@@ -116,6 +118,9 @@ export interface DrainCollectorOutboxResult {
     sentByKind: Readonly<Partial<Record<LocalDeviceOutboxItem["kind"], number>>>;
 }
 export declare function drainCollectorOutbox(input: DrainCollectorOutboxInput): Promise<DrainCollectorOutboxResult>;
+export declare function buildHeartbeatOutboxDiagnostics(summary: LocalDeviceOutboxSummary, options?: {
+    backlogOpen?: number;
+}): HeartbeatOutboxDiagnostics;
 export declare function drainCollectorQueue(input: {
     abortSignal?: AbortSignal;
     client: Pick<LocalDeviceClient, "ingestBatch">;
