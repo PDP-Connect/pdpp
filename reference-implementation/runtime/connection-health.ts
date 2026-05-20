@@ -56,12 +56,35 @@ export type FreshnessAxis = "fresh" | "stale" | "unknown";
 /**
  * Coverage axis: rolled up across all required streams/scopes.
  *
- *   - `complete`: every required stream has complete or accepted-unavailable evidence
- *   - `partial` : some required streams are still in progress / deferred
- *   - `gaps`    : at least one required stream has a retryable or terminal gap
- *   - `unknown` : coverage evidence is missing or unreliable
+ *   - `complete`      : every required stream has complete evidence
+ *   - `partial`       : the last run did not reach a successful terminal state,
+ *                       so some required streams' coverage is unproven
+ *   - `retryable_gap` : at least one stream has a pending detail gap with a
+ *                       retry path, or a known_gap whose runtime severity is
+ *                       `recoverable`/`transient`. The system intends to make
+ *                       progress on its own.
+ *   - `terminal_gap`  : at least one stream has a known_gap whose runtime
+ *                       severity is `actionable` (or an unclassified gap),
+ *                       i.e. progress requires owner action / repair.
+ *   - `gaps`          : legacy roll-up emitted when gap evidence exists but
+ *                       cannot be honestly classified retryable vs terminal.
+ *   - `unknown`       : coverage evidence is missing or unreliable.
+ *
+ * The spec design taxonomy also lists `deferred`, `unsupported`,
+ * `unavailable`, and `inventory_only`. Those distinctions require manifest-
+ * declared required-stream policy and accepted-coverage tracking that the
+ * current durable evidence does not yet support. They are intentionally
+ * NOT exposed by this axis so the projection never paints a precision it
+ * cannot honestly justify; see `complete-ri-operator-console-reliability`
+ * task 3.3 residual notes.
  */
-export type CoverageAxis = "complete" | "gaps" | "partial" | "unknown";
+export type CoverageAxis =
+  | "complete"
+  | "gaps"
+  | "partial"
+  | "retryable_gap"
+  | "terminal_gap"
+  | "unknown";
 
 /**
  * Attention axis: rolled up from the structured attention lifecycle.
@@ -349,7 +372,12 @@ function isDegradedShape(input: ComputeConnectionHealthInput, axes: ConnectionAx
   if (axes.outbox === "stalled") {
     return true;
   }
-  if (axes.coverage === "gaps" || axes.coverage === "partial") {
+  if (
+    axes.coverage === "gaps" ||
+    axes.coverage === "partial" ||
+    axes.coverage === "retryable_gap" ||
+    axes.coverage === "terminal_gap"
+  ) {
     return true;
   }
   if (axes.freshness === "stale") {

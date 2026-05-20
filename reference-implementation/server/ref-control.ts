@@ -540,12 +540,46 @@ function hasDegradingKnownGap(run: ConnectorRunSummary | null): boolean {
   if (!run) {
     return false;
   }
+  return run.known_gaps.some(isDegradingKnownGap);
+}
+
+function isDegradingKnownGap(gap: unknown): boolean {
+  if (!gap || typeof gap !== "object" || Array.isArray(gap)) {
+    return true;
+  }
+  const severity = (gap as { severity?: unknown }).severity;
+  return severity !== "informational" && severity !== "recoverable";
+}
+
+/**
+ * Decide whether `run.known_gaps` contains at least one *terminal* gap —
+ * one whose severity is `actionable` (owner-fixable, no automated retry)
+ * or unclassified. `transient` gaps are runtime-retried so they roll up
+ * under `retryable_gap` instead. `informational` and `recoverable`
+ * gaps don't degrade health per `connector-health.ts::isDegradingKnownGap`
+ * and are ignored here.
+ */
+function hasTerminalKnownGap(run: ConnectorRunSummary | null): boolean {
+  if (!run) {
+    return false;
+  }
   return run.known_gaps.some((gap) => {
     if (!gap || typeof gap !== "object" || Array.isArray(gap)) {
+      // Unclassified gap shape — be conservative and treat as terminal so
+      // we never silently paint over evidence we can't read.
       return true;
     }
     const severity = (gap as { severity?: unknown }).severity;
-    return severity !== "informational" && severity !== "recoverable";
+    if (severity === "actionable") {
+      return true;
+    }
+    // Any other unknown severity counts as terminal (conservative);
+    // recognized non-degrading and retryable severities are not terminal.
+    return (
+      severity !== "informational" &&
+      severity !== "recoverable" &&
+      severity !== "transient"
+    );
   });
 }
 
@@ -584,15 +618,40 @@ function firstDegradingKnownGapReason(run: ConnectorRunSummary | null): string |
   return null;
 }
 
+/**
+ * Roll per-stream evidence into the connection-scoped coverage axis.
+ *
+ * Stream/scope boundary: each `pendingDetailGap` and each `known_gap` is
+ * already scoped to a stream (and, for detail gaps, parent_stream and
+ * record_key as well). When *any* stream has pending durable retry
+ * intent, we surface `retryable_gap` so a list row can never paint an
+ * otherwise-clean run green over a pending backlog. When the only gap
+ * evidence is terminal (owner-action required, or unclassified shape),
+ * we surface `terminal_gap`. If both flavors exist, `terminal_gap`
+ * dominates because it is the more urgent claim.
+ *
+ * Pending detail gaps are themselves runtime-retryable: the store only
+ * surfaces rows with `status = 'pending'`, and the runtime has a retry
+ * loop keyed on `next_attempt_after`. They never roll up as terminal on
+ * their own — only the known_gap severity can promote to terminal.
+ */
 function mapCoverageAxis(
   lastRun: ConnectorRunSummary | null,
   pendingDetailGaps: readonly PendingDetailGapSummary[] = []
 ): CoverageAxis {
-  if (!lastRun) {
-    return hasPendingDetailGap(pendingDetailGaps) ? "gaps" : "unknown";
+  const hasDetailGap = hasPendingDetailGap(pendingDetailGaps);
+  const hasTerminal = hasTerminalKnownGap(lastRun);
+  const hasRetryable = lastRun
+    ? lastRun.known_gaps.some((gap) => isRetryableKnownGap(gap))
+    : false;
+  if (hasTerminal) {
+    return "terminal_gap";
   }
-  if (hasPendingDetailGap(pendingDetailGaps) || hasDegradingKnownGap(lastRun)) {
-    return "gaps";
+  if (hasDetailGap || hasRetryable) {
+    return "retryable_gap";
+  }
+  if (!lastRun) {
+    return "unknown";
   }
   if (lastRun.status === "succeeded" || lastRun.status === "success") {
     return "complete";
@@ -601,6 +660,22 @@ function mapCoverageAxis(
     return "partial";
   }
   return "unknown";
+}
+
+/**
+ * `transient` severity is the runtime's signal that the gap is
+ * actively being re-tried without owner intervention. Per
+ * `connector-health.ts::isDegradingKnownGap`, `recoverable` means the
+ * gap has already been recovered (non-degrading) and `informational`
+ * means the gap is out of scope by design (non-degrading); neither
+ * counts as a retryable gap for the coverage axis rollup.
+ */
+function isRetryableKnownGap(gap: unknown): boolean {
+  if (!gap || typeof gap !== "object" || Array.isArray(gap)) {
+    return false;
+  }
+  const severity = (gap as { severity?: unknown }).severity;
+  return severity === "transient";
 }
 
 function mapRunStatus(status: string | null | undefined): "failed" | "succeeded" | null {

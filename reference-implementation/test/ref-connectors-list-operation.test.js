@@ -223,6 +223,8 @@ test('connector summary connection health projects never-run as idle with unknow
 });
 
 test('connector summary connection health degrades succeeded runs with coverage gaps', () => {
+  // Unclassified known_gap (no severity) is treated as terminal because
+  // the runtime cannot prove a retry path exists. Conservative > false-green.
   const run = {
     event_count: 3,
     failure_reason: null,
@@ -241,8 +243,85 @@ test('connector summary connection health degrades succeeded runs with coverage 
     schedule: null,
   });
   assert.equal(snapshot.state, 'degraded');
-  assert.equal(snapshot.axes.coverage, 'gaps');
+  assert.equal(snapshot.axes.coverage, 'terminal_gap');
   assert.equal(snapshot.reason_code, 'http_429');
+});
+
+test('connector summary connection health surfaces retryable_gap for known transient gaps', () => {
+  // `transient` severity means the runtime intends to retry on its own,
+  // so the gap is retryable rather than terminal — still degrading, but
+  // distinguishable from owner-action territory.
+  const run = {
+    event_count: 3,
+    failure_reason: null,
+    finished_at: '2026-05-19T12:00:00.000Z',
+    first_at: '2026-05-19T11:59:00.000Z',
+    known_gaps: [{ reason: 'http_429', severity: 'transient', stream: 'messages' }],
+    last_at: '2026-05-19T12:00:00.000Z',
+    run_id: 'run_transient',
+    started_at: '2026-05-19T11:59:00.000Z',
+    status: 'succeeded',
+  };
+  const snapshot = projectConnectorSummaryConnectionHealth({
+    freshness: { status: 'current', captured_at: '2026-05-19T12:00:00.000Z' },
+    lastRun: run,
+    lastSuccessfulRun: run,
+    schedule: null,
+  });
+  assert.equal(snapshot.state, 'degraded');
+  assert.equal(snapshot.axes.coverage, 'retryable_gap');
+});
+
+test('connector summary connection health surfaces terminal_gap for actionable known gaps', () => {
+  // `actionable` severity means owner intervention is required; the
+  // coverage axis must surface this as terminal so the dashboard never
+  // tells the owner the system will fix itself.
+  const run = {
+    event_count: 3,
+    failure_reason: 'auth_expired',
+    finished_at: '2026-05-19T12:00:00.000Z',
+    first_at: '2026-05-19T11:59:00.000Z',
+    known_gaps: [{ reason: 'auth_expired', severity: 'actionable', stream: 'messages' }],
+    last_at: '2026-05-19T12:00:00.000Z',
+    run_id: 'run_actionable',
+    started_at: '2026-05-19T11:59:00.000Z',
+    status: 'succeeded',
+  };
+  const snapshot = projectConnectorSummaryConnectionHealth({
+    freshness: { status: 'current', captured_at: '2026-05-19T12:00:00.000Z' },
+    lastRun: run,
+    lastSuccessfulRun: run,
+    schedule: null,
+  });
+  assert.equal(snapshot.state, 'degraded');
+  assert.equal(snapshot.axes.coverage, 'terminal_gap');
+});
+
+test('connector summary connection health ignores informational and recoverable known gaps', () => {
+  // Informational/recoverable severities do not degrade health — the
+  // axis should still report `complete` and the headline stay healthy.
+  const run = {
+    event_count: 3,
+    failure_reason: null,
+    finished_at: '2026-05-19T12:00:00.000Z',
+    first_at: '2026-05-19T11:59:00.000Z',
+    known_gaps: [
+      { reason: 'out_of_scope', severity: 'informational', stream: 'archived' },
+      { reason: 'http_500', severity: 'recoverable', stream: 'inbox' },
+    ],
+    last_at: '2026-05-19T12:00:00.000Z',
+    run_id: 'run_clean',
+    started_at: '2026-05-19T11:59:00.000Z',
+    status: 'succeeded',
+  };
+  const snapshot = projectConnectorSummaryConnectionHealth({
+    freshness: { status: 'current', captured_at: '2026-05-19T12:00:00.000Z' },
+    lastRun: run,
+    lastSuccessfulRun: run,
+    schedule: null,
+  });
+  assert.equal(snapshot.state, 'healthy');
+  assert.equal(snapshot.axes.coverage, 'complete');
 });
 
 test('connector summary connection health degrades successful runs with pending durable detail gaps', () => {
@@ -264,9 +343,40 @@ test('connector summary connection health degrades successful runs with pending 
     pendingDetailGaps: [{ reason: 'rate_limited', status: 'pending', stream: 'messages' }],
     schedule: null,
   });
+  // Pending detail gaps are runtime-retryable: the store surfaces them
+  // with `status = 'pending'` and the runtime owns the retry. The axis
+  // must say `retryable_gap` so a list row never claims healthy over a
+  // pending backlog, but the dashboard can still tell the owner the
+  // system intends to recover on its own.
   assert.equal(snapshot.state, 'degraded');
-  assert.equal(snapshot.axes.coverage, 'gaps');
+  assert.equal(snapshot.axes.coverage, 'retryable_gap');
   assert.equal(snapshot.reason_code, 'rate_limited');
+});
+
+test('connector summary connection health: terminal known_gap dominates pending detail gap rollup', () => {
+  // When both a retryable pending detail gap AND a terminal known_gap
+  // exist, the more urgent claim wins so the owner sees the terminal
+  // axis rather than a misleading retry-only label.
+  const run = {
+    event_count: 3,
+    failure_reason: null,
+    finished_at: '2026-05-19T12:00:00.000Z',
+    first_at: '2026-05-19T11:59:00.000Z',
+    known_gaps: [{ reason: 'auth_expired', severity: 'actionable', stream: 'inbox' }],
+    last_at: '2026-05-19T12:00:00.000Z',
+    run_id: 'run_mixed',
+    started_at: '2026-05-19T11:59:00.000Z',
+    status: 'succeeded',
+  };
+  const snapshot = projectConnectorSummaryConnectionHealth({
+    freshness: { status: 'current', captured_at: '2026-05-19T12:00:00.000Z' },
+    lastRun: run,
+    lastSuccessfulRun: run,
+    pendingDetailGaps: [{ reason: 'rate_limited', status: 'pending', stream: 'messages' }],
+    schedule: null,
+  });
+  assert.equal(snapshot.state, 'degraded');
+  assert.equal(snapshot.axes.coverage, 'terminal_gap');
 });
 
 test('connector summary connection health becomes unknown when durable detail-gap evidence cannot be read', () => {

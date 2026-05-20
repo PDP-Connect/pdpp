@@ -213,6 +213,53 @@ test('degraded: coverage gaps without a failed run still degrade', () => {
   assert.equal(snap.state, 'degraded');
 });
 
+test('degraded: retryable_gap coverage axis degrades a succeeded run', () => {
+  // Stream/scope-boundary coverage: at least one stream has a pending
+  // retryable gap. The headline must degrade so a success-with-gaps run
+  // can never project healthy (spec task 3.5).
+  const snap = computeConnectionHealth(
+    input({
+      run: run({ hasDegradingGaps: true }),
+      coverage: { axis: 'retryable_gap' },
+      freshness: { axis: 'fresh' },
+    })
+  );
+  assert.equal(snap.state, 'degraded');
+  assert.equal(snap.axes.coverage, 'retryable_gap');
+});
+
+test('degraded: terminal_gap coverage axis degrades a succeeded run', () => {
+  // Stream/scope-boundary coverage: at least one stream has a terminal
+  // gap (owner-action required). Must degrade and preserve the axis so
+  // the dashboard can surface "owner action needed" precision.
+  const snap = computeConnectionHealth(
+    input({
+      run: run({ hasDegradingGaps: true, reasonCode: 'auth_expired' }),
+      coverage: { axis: 'terminal_gap' },
+      freshness: { axis: 'fresh' },
+    })
+  );
+  assert.equal(snap.state, 'degraded');
+  assert.equal(snap.axes.coverage, 'terminal_gap');
+  assert.equal(snap.reason_code, 'auth_expired');
+});
+
+test('healthy is impossible when coverage axis is retryable_gap or terminal_gap', () => {
+  // The healthy predicate only accepts `complete`. Any gap-flavored
+  // axis — retryable or terminal — must downgrade. This is the
+  // success-with-gaps protection at the axis level.
+  for (const axis of ['retryable_gap', 'terminal_gap']) {
+    const snap = computeConnectionHealth(
+      input({
+        run: run(),
+        coverage: { axis },
+        freshness: { axis: 'fresh' },
+      })
+    );
+    assert.notEqual(snap.state, 'healthy', `axis=${axis} must not project healthy`);
+  }
+});
+
 // ─── 7. Healthy ───────────────────────────────────────────────────────────
 
 test('healthy: success + complete coverage + fresh + no attention/backoff', () => {
