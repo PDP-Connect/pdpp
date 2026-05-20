@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { tmpdir } from 'node:os';
@@ -63,6 +63,20 @@ test('bundled connector versions map covers every bundled id', () => {
 
 test('runner exports the durable local outbox substrate without private package imports', () => {
   assert.equal(typeof LocalDeviceOutbox, 'function');
+});
+
+test('local collector package no longer ships the temporary legacy JSON queue migration bridge', async () => {
+  const files = [
+    '../tsconfig.build.json',
+    '../scripts/postbuild.mjs',
+    '../src/runner.ts',
+    '../../polyfill-connectors/src/runner/index.ts',
+  ];
+
+  for (const file of files) {
+    const text = await readFile(new URL(file, import.meta.url), 'utf8');
+    assert.doesNotMatch(text, /local-device-queue-migration|LegacyLocalDeviceQueue|importLegacyLocalDeviceQueue|inspectLegacyLocalDeviceQueue/);
+  }
 });
 
 test('getBundledConnector returns null for non-bundled ids', () => {
