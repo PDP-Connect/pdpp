@@ -344,6 +344,13 @@ CREATE TABLE IF NOT EXISTS device_source_instances (
   display_name        TEXT,
   status              TEXT NOT NULL DEFAULT 'active',
   last_error_json     TEXT,
+  -- Heartbeat evidence persisted from device collector reports. Used by
+  -- the connection-health outbox axis so the operator console can see
+  -- whether a source instance is idle, actively draining, or stalled
+  -- without reading device-local SQLite. Bounded values; no secrets.
+  last_heartbeat_at      TEXT,
+  last_heartbeat_status  TEXT,
+  records_pending        INTEGER,
   created_at          TEXT NOT NULL,
   updated_at          TEXT NOT NULL,
   revoked_at          TEXT,
@@ -2211,6 +2218,9 @@ export function initDb(path = ':memory:', opts = {}) {
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'device_enrollment_codes', 'display_name', 'TEXT'));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'device_source_instances', 'connector_instance_id', 'TEXT'));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'device_source_instances', 'last_error_json', 'TEXT'));
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'device_source_instances', 'last_heartbeat_at', 'TEXT'));
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'device_source_instances', 'last_heartbeat_status', 'TEXT'));
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'device_source_instances', 'records_pending', 'INTEGER'));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'browser_surfaces', 'surface_mode', 'TEXT'));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'browser_surfaces', 'surface_subject_id', 'TEXT'));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'browser_surfaces', 'surface_source', 'TEXT'));

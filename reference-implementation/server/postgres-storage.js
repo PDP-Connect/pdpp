@@ -388,6 +388,9 @@ export async function bootstrapPostgresSchema() {
         display_name TEXT,
         status TEXT NOT NULL DEFAULT 'active',
         last_error_json JSONB,
+        last_heartbeat_at TEXT,
+        last_heartbeat_status TEXT,
+        records_pending INTEGER,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         revoked_at TEXT,
@@ -1537,6 +1540,9 @@ async function migratePostgresDeviceExporterColumns(client) {
   await client.query(`
     ALTER TABLE device_source_instances
       ADD COLUMN IF NOT EXISTS connector_instance_id TEXT,
-      ADD COLUMN IF NOT EXISTS last_error_json JSONB
+      ADD COLUMN IF NOT EXISTS last_error_json JSONB,
+      ADD COLUMN IF NOT EXISTS last_heartbeat_at TEXT,
+      ADD COLUMN IF NOT EXISTS last_heartbeat_status TEXT,
+      ADD COLUMN IF NOT EXISTS records_pending INTEGER
   `);
 }

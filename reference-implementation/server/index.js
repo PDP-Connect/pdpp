@@ -2227,10 +2227,20 @@ function buildAsApp(opts = {}) {
 
   function normalizeHeartbeatSourceInstances(body) {
     if (Array.isArray(body.source_instances)) {
+      // The array form carries per-source state today; the top-level
+      // `status` / `records_pending` apply to a single-source heartbeat.
       return body.source_instances;
     }
     if (typeof body.source_instance_id === 'string') {
-      return [{ source_instance_id: body.source_instance_id, last_error: body.last_error ?? null }];
+      return [
+        {
+          source_instance_id: body.source_instance_id,
+          last_error: body.last_error ?? null,
+          status: typeof body.status === 'string' ? body.status : null,
+          records_pending:
+            typeof body.records_pending === 'number' ? body.records_pending : null,
+        },
+      ];
     }
     return [];
   }
@@ -4049,6 +4059,9 @@ function buildAsApp(opts = {}) {
         await deviceExporterStore.markSourceInstanceHeartbeat(deviceId, sourceInstanceId, {
           receivedAt,
           lastError: source.last_error ?? null,
+          status: typeof source.status === 'string' ? source.status : null,
+          recordsPending:
+            typeof source.records_pending === 'number' ? source.records_pending : null,
         });
       }
       res.json({

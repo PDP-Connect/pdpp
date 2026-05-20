@@ -117,6 +117,42 @@ async function runConformance(makeStore) {
     DeviceBatchConflictError,
   );
 
+  // Heartbeat evidence persistence: the operator console's outbox axis
+  // needs heartbeat status + records_pending on the source-instance row.
+  // The mark call must accept (and round-trip) these fields without
+  // leaking secrets or arbitrary payload.
+  assert.equal(
+    await driver.call('markSourceInstanceHeartbeat', 'dev_1', 'src_1', {
+      receivedAt: LATER,
+      lastError: null,
+      status: 'healthy',
+      recordsPending: 7,
+    }),
+    1,
+  );
+  const heartbeated = await driver.call('getSourceInstance', 'dev_1', 'src_1');
+  assert.equal(heartbeated.lastHeartbeatAt, LATER);
+  assert.equal(heartbeated.lastHeartbeatStatus, 'healthy');
+  assert.equal(heartbeated.recordsPending, 7);
+
+  // Unrecognized status values must NOT be persisted: only the enum we
+  // accept on the heartbeat contract is stored.
+  await driver.call('markSourceInstanceHeartbeat', 'dev_1', 'src_1', {
+    receivedAt: LATER,
+    lastError: null,
+    status: 'totally_made_up',
+    recordsPending: -3,
+  });
+  const sanitized = await driver.call('getSourceInstance', 'dev_1', 'src_1');
+  assert.equal(sanitized.lastHeartbeatStatus, null);
+  assert.equal(sanitized.recordsPending, null);
+
+  const byConnector = await driver.call('listSourceInstanceHeartbeatsByConnector', 'local.files');
+  assert.equal(byConnector.length, 1);
+  assert.equal(byConnector[0].sourceInstanceId, 'src_1');
+  assert.equal(byConnector[0].deviceStatus, 'active');
+  assert.equal(byConnector[0].sourceStatus, 'active');
+
   await driver.call('revokeDevice', 'dev_1', LATER);
   assert.equal((await driver.call('getDevice', 'dev_1')).status, 'revoked');
   assert.equal((await driver.call('findCredentialByTokenHash', 'sha256:device-token')).status, 'revoked');

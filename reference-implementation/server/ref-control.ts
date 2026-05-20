@@ -15,13 +15,16 @@ import {
   computeConnectionHealth,
   type ConnectionHealthSnapshot,
   type CoverageAxis,
+  deriveOutboxAxisFromHeartbeat,
   type FreshnessAxis,
+  type OutboxAxis,
 } from "../runtime/connection-health.ts";
 import { getConnectorManifest } from "./auth.js";
 import { deriveReferenceFreshness, type ReferenceFreshness } from "./freshness.ts";
 import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.js";
 import { listAllStreams } from "./records.js";
 import { getDefaultConnectorDetailGapStore } from "./stores/connector-detail-gap-store.js";
+import { getDefaultDeviceExporterStore } from "./stores/device-exporter-store.js";
 import {
   chooseDisplayTimestamp,
   compareTimestampValues,
@@ -632,10 +635,142 @@ function readNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+/**
+ * Stale-heartbeat threshold used by the outbox axis derivation. A
+ * heartbeat older than this window with pending work present is treated
+ * as stalled rather than active, so a collector that died mid-drain
+ * does not sit forever in `active`. Chosen as a conservative single
+ * constant for the milestone; future work may tune per-connector once
+ * connection-scoped policy lands.
+ */
+export const OUTBOX_STALE_HEARTBEAT_THRESHOLD_MS = 30 * 60 * 1000;
+
+interface HeartbeatRow {
+  readonly sourceInstanceId: string;
+  readonly deviceId: string;
+  readonly connectorId: string;
+  readonly sourceStatus: string;
+  readonly deviceStatus: string;
+  readonly deviceRevokedAt: string | null;
+  readonly lastHeartbeatAt: string | null;
+  readonly lastHeartbeatStatus: string | null;
+  readonly recordsPending: number | null;
+  readonly updatedAt: string | null;
+}
+
+/**
+ * Roll up per-source-instance heartbeat evidence into a single
+ * connection outbox axis.
+ *
+ * - If no source instances exist for the connector, return `unknown`
+ *   without marking the projection unreliable: the connector simply
+ *   has no enrolled device-side collector, so no honest outbox claim
+ *   can be made. The headline stays driven by the other axes.
+ * - If at least one trusted source heartbeat exists, project each one
+ *   and roll up: `stalled` dominates `active` dominates `idle`;
+ *   any `unreliable: true` adds `outbox` to `unreliableSources`.
+ */
+export function projectConnectorOutboxAxisFromHeartbeats(
+  heartbeats: readonly HeartbeatRow[],
+  options: { readonly nowIso: string },
+): { axis: OutboxAxis; unreliable: boolean; hasEvidence: boolean } {
+  if (heartbeats.length === 0) {
+    return { axis: "unknown", unreliable: false, hasEvidence: false };
+  }
+  let rolled: OutboxAxis = "idle";
+  let anyUnreliable = false;
+  let anyTrustedEvidence = false;
+  for (const row of heartbeats) {
+    const trusted =
+      row.deviceStatus === "active" && row.sourceStatus === "active" && row.deviceRevokedAt === null;
+    if (trusted) anyTrustedEvidence = true;
+    const result = deriveOutboxAxisFromHeartbeat(
+      {
+        evidenceTrusted: trusted,
+        lastHeartbeatAt: row.lastHeartbeatAt,
+        lastHeartbeatStatus: normalizeHeartbeatStatusForAxis(row.lastHeartbeatStatus),
+        recordsPending: row.recordsPending,
+      },
+      {
+        nowIso: options.nowIso,
+        staleHeartbeatThresholdMs: OUTBOX_STALE_HEARTBEAT_THRESHOLD_MS,
+      },
+    );
+    if (result.unreliable) anyUnreliable = true;
+    rolled = combineOutboxAxes(rolled, result.axis);
+  }
+  // If every row is untrusted (e.g. all sources/devices revoked), there
+  // is no honest evidence — keep `unknown` rather than implying idle.
+  if (!anyTrustedEvidence) {
+    return { axis: "unknown", unreliable: anyUnreliable, hasEvidence: false };
+  }
+  return { axis: rolled, unreliable: anyUnreliable, hasEvidence: true };
+}
+
+function normalizeHeartbeatStatusForAxis(
+  value: string | null,
+): "blocked" | "healthy" | "retrying" | "starting" | "stopped" | null {
+  switch (value) {
+    case "blocked":
+    case "healthy":
+    case "retrying":
+    case "starting":
+    case "stopped":
+      return value;
+    default:
+      return null;
+  }
+}
+
+/**
+ * Pull device-side source-instance heartbeat evidence for `connectorId`
+ * from the device-exporter store and project the rollup outbox axis.
+ *
+ * Returns `unknown` (with `unreliable: false`) when the connector has
+ * no enrolled device — that is honest absence of evidence, not a
+ * projection failure. Returns `unreliable: true` only when the store
+ * read itself fails or named evidence is untrustworthy.
+ */
+export async function getConnectorOutboxAxis(
+  connectorId: string,
+): Promise<{ axis: OutboxAxis; unreliable: boolean }> {
+  const store = getDefaultDeviceExporterStore();
+  if (typeof store.listSourceInstanceHeartbeatsByConnector !== "function") {
+    return { axis: "unknown", unreliable: false };
+  }
+  try {
+    const rows = (await store.listSourceInstanceHeartbeatsByConnector(connectorId)) as readonly HeartbeatRow[];
+    const result = projectConnectorOutboxAxisFromHeartbeats(rows, { nowIso: new Date().toISOString() });
+    return { axis: result.axis, unreliable: result.unreliable };
+  } catch {
+    return { axis: "unknown", unreliable: true };
+  }
+}
+
+function combineUnreliableSources(
+  detailGapsUnreliable: boolean,
+  outboxUnreliable: boolean,
+): readonly string[] {
+  const sources: string[] = [];
+  if (detailGapsUnreliable) sources.push("detail_gaps");
+  if (outboxUnreliable) sources.push("outbox");
+  return sources;
+}
+
+function combineOutboxAxes(a: OutboxAxis, b: OutboxAxis): OutboxAxis {
+  // stalled > active > idle > unknown when rolling up across source
+  // instances: any stalled instance degrades the whole connection;
+  // active beats idle so we don't claim idle while one instance is
+  // working; unknown only wins when nothing else has spoken.
+  const rank: Record<OutboxAxis, number> = { unknown: 0, idle: 1, active: 2, stalled: 3 };
+  return rank[b] > rank[a] ? b : a;
+}
+
 export function projectConnectorSummaryConnectionHealth(input: {
   readonly freshness: Freshness;
   readonly lastRun: ConnectorRunSummary | null;
   readonly lastSuccessfulRun: ConnectorRunSummary | null;
+  readonly outbox?: { axis: OutboxAxis };
   readonly pendingDetailGaps?: readonly PendingDetailGapSummary[];
   readonly unreliableSources?: readonly string[];
   readonly schedule: unknown;
@@ -675,7 +810,7 @@ export function projectConnectorSummaryConnectionHealth(input: {
       : null,
     coverage: { axis: mapCoverageAxis(input.lastRun, pendingDetailGaps) },
     freshness: { axis: mapFreshnessAxis(input.freshness) },
-    outbox: { axis: "unknown" },
+    outbox: input.outbox ?? { axis: "unknown" },
     projection: { unreliableSources: input.unreliableSources ?? [] },
     run: {
       hasDegradingGaps: hasPendingDetailGap(pendingDetailGaps) || hasDegradingKnownGap(input.lastRun),
@@ -720,11 +855,12 @@ export function listConnectorSummaries(controller?: ControllerLike | null): Prom
           return null;
         }
         const live = await getConnectorRecordProjection(row.connector_id);
-        const [schedule, lastRun, lastSuccessfulRun, detailGaps] = await Promise.all([
+        const [schedule, lastRun, lastSuccessfulRun, detailGaps, outbox] = await Promise.all([
           getScheduleFrom(controller, row.connector_id),
           getLatestRunSummary(row.connector_id),
           getLatestRunSummary(row.connector_id, "succeeded"),
           getConnectorDetailGapProjection(row.connector_id),
+          getConnectorOutboxAxis(row.connector_id),
         ]);
         const refreshPolicy = extractRefreshPolicy(manifest);
         const freshness = buildConnectorFreshness({
@@ -737,8 +873,9 @@ export function listConnectorSummaries(controller?: ControllerLike | null): Prom
           freshness,
           lastRun,
           lastSuccessfulRun,
+          outbox: { axis: outbox.axis },
           pendingDetailGaps: detailGaps.gaps,
-          unreliableSources: detailGaps.unreliable ? ["detail_gaps"] : [],
+          unreliableSources: combineUnreliableSources(detailGaps.unreliable, outbox.unreliable),
           schedule,
         });
         return {
@@ -769,11 +906,12 @@ export async function getConnectorDetail(
     throw new RefControlError(`Unknown connector: ${connectorId}`, "not_found");
   }
   const live = await getConnectorRecordProjection(connectorId);
-  const [schedule, lastRun, lastSuccessfulRun, detailGaps] = await Promise.all([
+  const [schedule, lastRun, lastSuccessfulRun, detailGaps, outbox] = await Promise.all([
     getScheduleFrom(controller, connectorId),
     getLatestRunSummary(connectorId),
     getLatestRunSummary(connectorId, "succeeded"),
     getConnectorDetailGapProjection(connectorId),
+    getConnectorOutboxAxis(connectorId),
   ]);
   const refreshPolicy = extractRefreshPolicy(manifest);
   const freshness = buildConnectorFreshness({
@@ -786,8 +924,9 @@ export async function getConnectorDetail(
     freshness,
     lastRun,
     lastSuccessfulRun,
+    outbox: { axis: outbox.axis },
     pendingDetailGaps: detailGaps.gaps,
-    unreliableSources: detailGaps.unreliable ? ["detail_gaps"] : [],
+    unreliableSources: combineUnreliableSources(detailGaps.unreliable, outbox.unreliable),
     schedule,
   });
   return {

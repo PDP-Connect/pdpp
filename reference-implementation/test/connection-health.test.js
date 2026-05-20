@@ -1,8 +1,23 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { computeConnectionHealth } from '../runtime/connection-health.ts';
+import { computeConnectionHealth, deriveOutboxAxisFromHeartbeat } from '../runtime/connection-health.ts';
 import { BLOCKED_PROMOTION_THRESHOLD } from '../runtime/connector-health.ts';
+
+const STALE_MS = 30 * 60 * 1000;
+const NOW = '2026-05-19T12:00:00.000Z';
+const FRESH = '2026-05-19T11:55:00.000Z'; // 5 min ago
+const OLD = '2026-05-19T11:00:00.000Z'; // 60 min ago — past 30-min stale threshold
+
+function heartbeat(overrides = {}) {
+  return {
+    evidenceTrusted: true,
+    lastHeartbeatAt: FRESH,
+    lastHeartbeatStatus: 'healthy',
+    recordsPending: 0,
+    ...overrides,
+  };
+}
 
 // ─── Test helpers ──────────────────────────────────────────────────────────
 
@@ -333,4 +348,78 @@ test('axes: rolled up consistently across all headline states', () => {
   assert.equal(snap.axes.freshness, 'stale');
   assert.equal(snap.axes.outbox, 'active');
   assert.equal(snap.badges.stale, true);
+});
+
+// ─── Outbox axis derivation from device heartbeat evidence ───────────────
+
+test('outbox axis: trusted healthy heartbeat with zero pending is idle', () => {
+  const r = deriveOutboxAxisFromHeartbeat(heartbeat(), {
+    nowIso: NOW,
+    staleHeartbeatThresholdMs: STALE_MS,
+  });
+  assert.deepEqual(r, { axis: 'idle', unreliable: false });
+});
+
+test('outbox axis: trusted healthy heartbeat with pending work is active', () => {
+  const r = deriveOutboxAxisFromHeartbeat(
+    heartbeat({ recordsPending: 5 }),
+    { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS },
+  );
+  assert.equal(r.axis, 'active');
+});
+
+test('outbox axis: starting/retrying heartbeats are active', () => {
+  const starting = deriveOutboxAxisFromHeartbeat(
+    heartbeat({ lastHeartbeatStatus: 'starting' }),
+    { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS },
+  );
+  assert.equal(starting.axis, 'active');
+  const retrying = deriveOutboxAxisFromHeartbeat(
+    heartbeat({ lastHeartbeatStatus: 'retrying' }),
+    { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS },
+  );
+  assert.equal(retrying.axis, 'active');
+});
+
+test('outbox axis: blocked status is stalled regardless of freshness', () => {
+  const r = deriveOutboxAxisFromHeartbeat(
+    heartbeat({ lastHeartbeatStatus: 'blocked' }),
+    { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS },
+  );
+  assert.equal(r.axis, 'stalled');
+});
+
+test('outbox axis: pending work + stale heartbeat degrades to stalled', () => {
+  const r = deriveOutboxAxisFromHeartbeat(
+    heartbeat({ lastHeartbeatStatus: 'healthy', lastHeartbeatAt: OLD, recordsPending: 3 }),
+    { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS },
+  );
+  assert.equal(r.axis, 'stalled');
+});
+
+test('outbox axis: idle heartbeat that is stale but has zero pending stays idle', () => {
+  // Stale heartbeat with no pending work is not stalled by itself.
+  // Freshness axis handles general freshness; the outbox axis only
+  // claims stalled when there is durable work that is not draining.
+  const r = deriveOutboxAxisFromHeartbeat(
+    heartbeat({ lastHeartbeatAt: OLD, recordsPending: 0 }),
+    { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS },
+  );
+  assert.equal(r.axis, 'idle');
+});
+
+test('outbox axis: missing heartbeat is unknown (not unreliable)', () => {
+  const r = deriveOutboxAxisFromHeartbeat(
+    heartbeat({ lastHeartbeatAt: null, lastHeartbeatStatus: null }),
+    { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS },
+  );
+  assert.deepEqual(r, { axis: 'unknown', unreliable: false });
+});
+
+test('outbox axis: untrusted evidence flags projection unreliable', () => {
+  const r = deriveOutboxAxisFromHeartbeat(
+    heartbeat({ evidenceTrusted: false }),
+    { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS },
+  );
+  assert.deepEqual(r, { axis: 'unknown', unreliable: true });
 });

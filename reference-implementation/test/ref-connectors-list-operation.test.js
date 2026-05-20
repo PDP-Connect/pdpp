@@ -13,7 +13,31 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { executeRefConnectorsList } from '../operations/ref-connectors-list/index.ts';
-import { isPublicReferenceConnector, projectConnectorSummaryConnectionHealth } from '../server/ref-control.ts';
+import {
+  isPublicReferenceConnector,
+  projectConnectorOutboxAxisFromHeartbeats,
+  projectConnectorSummaryConnectionHealth,
+} from '../server/ref-control.ts';
+
+const NOW = '2026-05-19T12:00:00.000Z';
+const FRESH = '2026-05-19T11:55:00.000Z';
+const OLD = '2026-05-19T11:00:00.000Z';
+
+function hbRow(overrides = {}) {
+  return {
+    sourceInstanceId: 'src_1',
+    deviceId: 'dev_1',
+    connectorId: 'codex',
+    sourceStatus: 'active',
+    deviceStatus: 'active',
+    deviceRevokedAt: null,
+    lastHeartbeatAt: FRESH,
+    lastHeartbeatStatus: 'healthy',
+    recordsPending: 0,
+    updatedAt: FRESH,
+    ...overrides,
+  };
+}
 
 function makeItem(connectorId, overrides = {}) {
   return {
@@ -368,4 +392,127 @@ test('connector summary connection health promotes durable scheduler backoff str
   });
   assert.equal(snapshot.state, 'blocked');
   assert.equal(snapshot.reason_code, 'browser_runtime_not_configured');
+});
+
+// ─── Connector outbox axis rollup from per-source heartbeats ──────────────
+
+test('connector outbox rollup: no heartbeats → unknown without unreliable', () => {
+  const r = projectConnectorOutboxAxisFromHeartbeats([], { nowIso: NOW });
+  assert.deepEqual(r, { axis: 'unknown', unreliable: false, hasEvidence: false });
+});
+
+test('connector outbox rollup: single trusted healthy idle heartbeat → idle', () => {
+  const r = projectConnectorOutboxAxisFromHeartbeats([hbRow()], { nowIso: NOW });
+  assert.equal(r.axis, 'idle');
+  assert.equal(r.unreliable, false);
+  assert.equal(r.hasEvidence, true);
+});
+
+test('connector outbox rollup: any stalled instance dominates rollup', () => {
+  const rows = [
+    hbRow({ sourceInstanceId: 'src_1', recordsPending: 0 }),
+    hbRow({ sourceInstanceId: 'src_2', deviceId: 'dev_2', lastHeartbeatStatus: 'blocked' }),
+  ];
+  const r = projectConnectorOutboxAxisFromHeartbeats(rows, { nowIso: NOW });
+  assert.equal(r.axis, 'stalled');
+});
+
+test('connector outbox rollup: active beats idle when one instance is draining', () => {
+  const rows = [
+    hbRow({ sourceInstanceId: 'src_1' }), // idle
+    hbRow({ sourceInstanceId: 'src_2', deviceId: 'dev_2', recordsPending: 4 }), // active
+  ];
+  const r = projectConnectorOutboxAxisFromHeartbeats(rows, { nowIso: NOW });
+  assert.equal(r.axis, 'active');
+});
+
+test('connector outbox rollup: revoked-only instances yield unknown, not idle', () => {
+  // A revoked source must not be read as evidence the connector is idle.
+  // The only enrolled device for this connector is revoked → no honest
+  // claim can be made.
+  const rows = [
+    hbRow({ deviceStatus: 'revoked', deviceRevokedAt: FRESH }),
+  ];
+  const r = projectConnectorOutboxAxisFromHeartbeats(rows, { nowIso: NOW });
+  assert.equal(r.axis, 'unknown');
+  assert.equal(r.unreliable, true);
+  assert.equal(r.hasEvidence, false);
+});
+
+test('connector outbox rollup: pending + stale heartbeat surfaces stalled', () => {
+  const rows = [
+    hbRow({ lastHeartbeatAt: OLD, recordsPending: 9, lastHeartbeatStatus: 'healthy' }),
+  ];
+  const r = projectConnectorOutboxAxisFromHeartbeats(rows, { nowIso: NOW });
+  assert.equal(r.axis, 'stalled');
+});
+
+// ─── projectConnectorSummaryConnectionHealth honors outbox input ──────────
+
+test('connector summary connection health: stalled outbox degrades an otherwise clean run', () => {
+  const run = {
+    event_count: 3,
+    failure_reason: null,
+    finished_at: '2026-05-19T12:00:00.000Z',
+    first_at: '2026-05-19T11:59:00.000Z',
+    known_gaps: [],
+    last_at: '2026-05-19T12:00:00.000Z',
+    run_id: 'run_ok',
+    started_at: '2026-05-19T11:59:00.000Z',
+    status: 'succeeded',
+  };
+  const snapshot = projectConnectorSummaryConnectionHealth({
+    freshness: { status: 'current', captured_at: '2026-05-19T12:00:00.000Z' },
+    lastRun: run,
+    lastSuccessfulRun: run,
+    outbox: { axis: 'stalled' },
+    schedule: null,
+  });
+  assert.equal(snapshot.state, 'degraded');
+  assert.equal(snapshot.axes.outbox, 'stalled');
+});
+
+test('connector summary connection health: idle outbox does not by itself degrade healthy', () => {
+  const run = {
+    event_count: 3,
+    failure_reason: null,
+    finished_at: '2026-05-19T12:00:00.000Z',
+    first_at: '2026-05-19T11:59:00.000Z',
+    known_gaps: [],
+    last_at: '2026-05-19T12:00:00.000Z',
+    run_id: 'run_ok',
+    started_at: '2026-05-19T11:59:00.000Z',
+    status: 'succeeded',
+  };
+  const snapshot = projectConnectorSummaryConnectionHealth({
+    freshness: { status: 'current', captured_at: '2026-05-19T12:00:00.000Z' },
+    lastRun: run,
+    lastSuccessfulRun: run,
+    outbox: { axis: 'idle' },
+    schedule: null,
+  });
+  assert.equal(snapshot.state, 'healthy');
+  assert.equal(snapshot.axes.outbox, 'idle');
+});
+
+test('connector summary connection health: missing outbox evidence stays unknown axis, not false green', () => {
+  // No outbox input — axis must remain `unknown` rather than implying idle.
+  const run = {
+    event_count: 3,
+    failure_reason: null,
+    finished_at: '2026-05-19T12:00:00.000Z',
+    first_at: '2026-05-19T11:59:00.000Z',
+    known_gaps: [],
+    last_at: '2026-05-19T12:00:00.000Z',
+    run_id: 'run_ok',
+    started_at: '2026-05-19T11:59:00.000Z',
+    status: 'succeeded',
+  };
+  const snapshot = projectConnectorSummaryConnectionHealth({
+    freshness: { status: 'current', captured_at: '2026-05-19T12:00:00.000Z' },
+    lastRun: run,
+    lastSuccessfulRun: run,
+    schedule: null,
+  });
+  assert.equal(snapshot.axes.outbox, 'unknown');
 });

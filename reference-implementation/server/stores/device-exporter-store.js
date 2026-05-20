@@ -95,10 +95,44 @@ function mapSourceInstance(row) {
     displayName: row.display_name,
     status: row.status,
     lastError: parseJson(row.last_error_json, null),
+    lastHeartbeatAt: row.last_heartbeat_at ?? null,
+    lastHeartbeatStatus: row.last_heartbeat_status ?? null,
+    recordsPending: row.records_pending == null ? null : Number(row.records_pending),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     revokedAt: row.revoked_at,
   };
+}
+
+function mapSourceInstanceHeartbeatRow(row) {
+  if (!row) return null;
+  return {
+    sourceInstanceId: row.source_instance_id,
+    deviceId: row.device_id,
+    connectorId: row.connector_id,
+    sourceStatus: row.source_status,
+    deviceStatus: row.device_status,
+    deviceRevokedAt: row.device_revoked_at ?? null,
+    lastHeartbeatAt: row.last_heartbeat_at ?? null,
+    lastHeartbeatStatus: row.last_heartbeat_status ?? null,
+    recordsPending: row.records_pending == null ? null : Number(row.records_pending),
+    updatedAt: row.updated_at ?? null,
+  };
+}
+
+const HEARTBEAT_STATUS_VALUES = new Set(['starting', 'healthy', 'retrying', 'blocked', 'stopped']);
+
+function normalizeHeartbeatStatus(value) {
+  if (typeof value !== 'string') return null;
+  return HEARTBEAT_STATUS_VALUES.has(value) ? value : null;
+}
+
+function normalizeRecordsPending(value) {
+  if (value == null) return null;
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  const integer = Math.trunc(value);
+  if (integer < 0) return null;
+  return integer;
 }
 
 function normalizeOutcome(record) {
@@ -245,6 +279,13 @@ export function createSqliteDeviceExporterStore() {
       );
     },
 
+    listSourceInstanceHeartbeatsByConnector(connectorId) {
+      return allowUnboundedReadAcknowledged(
+        referenceQueries.deviceExportersListSourceInstanceHeartbeatsByConnector,
+        [connectorId],
+      ).map(mapSourceInstanceHeartbeatRow);
+    },
+
     getSourceInstanceByBinding(deviceId, connectorId, localBindingId) {
       return mapSourceInstance(
         getOne(referenceQueries.deviceExportersGetSourceInstanceByBinding, [deviceId, connectorId, localBindingId]),
@@ -255,6 +296,9 @@ export function createSqliteDeviceExporterStore() {
       return exec(referenceQueries.deviceExportersUpdateSourceInstanceHeartbeat, [
         record.receivedAt,
         record.lastError === undefined ? null : JSON.stringify(record.lastError),
+        record.receivedAt,
+        normalizeHeartbeatStatus(record.status),
+        normalizeRecordsPending(record.recordsPending),
         deviceId,
         sourceInstanceId,
       ]).changes;
@@ -462,7 +506,7 @@ export function createPostgresDeviceExporterStore() {
 
     async getSourceInstance(deviceId, sourceInstanceId) {
       const result = await postgresQuery(
-        `SELECT source_instance_id, device_id, connector_id, connector_instance_id, local_binding_id, display_name, status, last_error_json, created_at, updated_at, revoked_at
+        `SELECT source_instance_id, device_id, connector_id, connector_instance_id, local_binding_id, display_name, status, last_error_json, last_heartbeat_at, last_heartbeat_status, records_pending, created_at, updated_at, revoked_at
          FROM device_source_instances WHERE device_id = $1 AND source_instance_id = $2`,
         [deviceId, sourceInstanceId],
       );
@@ -471,7 +515,7 @@ export function createPostgresDeviceExporterStore() {
 
     async listSourceInstances({ deviceId = null } = {}) {
       const result = await postgresQuery(
-        `SELECT source_instance_id, device_id, connector_id, connector_instance_id, local_binding_id, display_name, status, last_error_json, created_at, updated_at, revoked_at
+        `SELECT source_instance_id, device_id, connector_id, connector_instance_id, local_binding_id, display_name, status, last_error_json, last_heartbeat_at, last_heartbeat_status, records_pending, created_at, updated_at, revoked_at
          FROM device_source_instances
          WHERE ($1::text IS NULL OR device_id = $1)
          ORDER BY device_id ASC, created_at DESC, source_instance_id ASC`,
@@ -480,9 +524,30 @@ export function createPostgresDeviceExporterStore() {
       return result.rows.map(mapSourceInstance);
     },
 
+    async listSourceInstanceHeartbeatsByConnector(connectorId) {
+      const result = await postgresQuery(
+        `SELECT dsi.source_instance_id,
+                dsi.device_id,
+                dsi.connector_id,
+                dsi.status AS source_status,
+                dsi.last_heartbeat_at,
+                dsi.last_heartbeat_status,
+                dsi.records_pending,
+                dsi.updated_at,
+                de.status AS device_status,
+                de.revoked_at AS device_revoked_at
+           FROM device_source_instances dsi
+           JOIN device_exporters de ON de.device_id = dsi.device_id
+          WHERE dsi.connector_id = $1
+          ORDER BY (dsi.last_heartbeat_at IS NULL), dsi.last_heartbeat_at DESC NULLS LAST, dsi.device_id ASC, dsi.source_instance_id ASC`,
+        [connectorId],
+      );
+      return result.rows.map(mapSourceInstanceHeartbeatRow);
+    },
+
     async getSourceInstanceByBinding(deviceId, connectorId, localBindingId) {
       const result = await postgresQuery(
-        `SELECT source_instance_id, device_id, connector_id, connector_instance_id, local_binding_id, display_name, status, last_error_json, created_at, updated_at, revoked_at
+        `SELECT source_instance_id, device_id, connector_id, connector_instance_id, local_binding_id, display_name, status, last_error_json, last_heartbeat_at, last_heartbeat_status, records_pending, created_at, updated_at, revoked_at
          FROM device_source_instances WHERE device_id = $1 AND connector_id = $2 AND local_binding_id = $3`,
         [deviceId, connectorId, localBindingId],
       );
@@ -492,11 +557,18 @@ export function createPostgresDeviceExporterStore() {
     async markSourceInstanceHeartbeat(deviceId, sourceInstanceId, record) {
       const result = await postgresQuery(
         `UPDATE device_source_instances
-            SET updated_at = $1, last_error_json = $2::jsonb
-          WHERE device_id = $3 AND source_instance_id = $4 AND status = 'active'`,
+            SET updated_at = $1,
+                last_error_json = $2::jsonb,
+                last_heartbeat_at = $3,
+                last_heartbeat_status = $4,
+                records_pending = $5
+          WHERE device_id = $6 AND source_instance_id = $7 AND status = 'active'`,
         [
           record.receivedAt,
           record.lastError === undefined ? null : JSON.stringify(record.lastError),
+          record.receivedAt,
+          normalizeHeartbeatStatus(record.status),
+          normalizeRecordsPending(record.recordsPending),
           deviceId,
           sourceInstanceId,
         ],

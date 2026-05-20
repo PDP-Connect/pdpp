@@ -417,6 +417,94 @@ function snapshot(args: SnapshotArgs): ConnectionHealthSnapshot {
   };
 }
 
+// ─── Outbox axis derivation from device-side heartbeat evidence ───────────
+
+/**
+ * Heartbeat evidence the server has legitimately received from an enrolled
+ * device for one source instance. The server never reads the device's
+ * SQLite outbox directly — these fields are the only legitimate bridge.
+ */
+export interface HeartbeatOutboxEvidence {
+  /** ISO timestamp of the most recent accepted heartbeat, or null. */
+  readonly lastHeartbeatAt: string | null;
+  /** Last reported `status` from the heartbeat body. */
+  readonly lastHeartbeatStatus:
+    | "blocked"
+    | "healthy"
+    | "retrying"
+    | "starting"
+    | "stopped"
+    | null;
+  /** Pending durable work depth the device last reported. */
+  readonly recordsPending: number | null;
+  /**
+   * Whether the device + source-instance row constitutes trustworthy
+   * evidence (device active, source active, not revoked). The caller
+   * decides; the projection trusts the flag.
+   */
+  readonly evidenceTrusted: boolean;
+}
+
+/**
+ * Outbox axis derivation from server-visible heartbeat evidence.
+ *
+ * Maps the most recent heartbeat for a connection's source instance onto
+ * `idle | active | stalled | unknown`. The mapping is conservative: when
+ * evidence is missing or untrustworthy, the axis is `unknown` rather
+ * than a false-green `idle`.
+ *
+ * Stale-heartbeat detection: if pending work is reported and the
+ * heartbeat is older than `staleHeartbeatThresholdMs` (an explicit named
+ * policy constant passed by the caller), the axis degrades to
+ * `stalled`. This prevents a connection from sitting in `active`
+ * indefinitely after the collector dies mid-drain.
+ */
+export function deriveOutboxAxisFromHeartbeat(
+  evidence: HeartbeatOutboxEvidence,
+  options: {
+    readonly nowIso: string;
+    readonly staleHeartbeatThresholdMs: number;
+  }
+): { axis: OutboxAxis; unreliable: boolean } {
+  if (!evidence.evidenceTrusted) {
+    return { axis: "unknown", unreliable: true };
+  }
+  if (!evidence.lastHeartbeatAt) {
+    return { axis: "unknown", unreliable: false };
+  }
+  if (evidence.lastHeartbeatStatus === "blocked") {
+    return { axis: "stalled", unreliable: false };
+  }
+
+  const heartbeatAgeMs = ageMs(evidence.lastHeartbeatAt, options.nowIso);
+  const pending = evidence.recordsPending ?? 0;
+  const heartbeatStale =
+    heartbeatAgeMs !== null && heartbeatAgeMs > options.staleHeartbeatThresholdMs;
+
+  if (pending > 0 && heartbeatStale) {
+    return { axis: "stalled", unreliable: false };
+  }
+  if (evidence.lastHeartbeatStatus === "starting" || evidence.lastHeartbeatStatus === "retrying") {
+    return { axis: "active", unreliable: false };
+  }
+  if (pending > 0) {
+    return { axis: "active", unreliable: false };
+  }
+  if (evidence.lastHeartbeatStatus === "healthy" || evidence.lastHeartbeatStatus === "stopped") {
+    return { axis: "idle", unreliable: false };
+  }
+  return { axis: "unknown", unreliable: false };
+}
+
+function ageMs(iso: string, nowIso: string): number | null {
+  const observed = Date.parse(iso);
+  const now = Date.parse(nowIso);
+  if (!Number.isFinite(observed) || !Number.isFinite(now)) {
+    return null;
+  }
+  return now - observed;
+}
+
 // `scheduler-backoff.ts::reasonClassOf` prefixes the class with `terminal:`,
 // `failure:`, or `connector:`. Dashboard wants the raw reason code.
 function stripClassPrefix(reasonClass: string | null): string | null {
