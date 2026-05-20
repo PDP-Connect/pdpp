@@ -40,7 +40,7 @@ export function getDatasetSummaryProjection() {
   const db = getDb();
   const row = db
     .prepare(
-      `SELECT summary_json, metadata_json
+      `SELECT summary_json, metadata_json, generation
          FROM dataset_summary_projection
         WHERE projection_key = ?`,
     )
@@ -58,11 +58,13 @@ export function getDatasetSummaryProjection() {
         last_error: null,
         source_high_watermark: null,
       },
+      generation: 0,
     };
   }
 
   const summary = parseJson(row.summary_json, EMPTY_SUMMARY);
   const metadata = parseJson(row.metadata_json, null);
+  const generation = Number(row.generation || 0);
   if (!metadata) {
     return {
       ...summary,
@@ -74,10 +76,11 @@ export function getDatasetSummaryProjection() {
         last_error: 'dataset summary projection metadata is unreadable',
         source_high_watermark: null,
       },
+      generation,
     };
   }
 
-  return { ...summary, metadata };
+  return { ...summary, metadata, generation };
 }
 
 export function applyDatasetSummaryRecordDelta(delta) {
@@ -86,6 +89,19 @@ export function applyDatasetSummaryRecordDelta(delta) {
     const db = getDb();
     const current = getDatasetSummaryProjection();
     assertDeltaCanUseStreamProjection(current);
+
+    // Fence against an in-flight rebuild: the rebuild's seed query captures
+    // a snapshot of the per-stream projection at rebuild start. If we let
+    // this delta both mutate that snapshot's source rows AND overwrite the
+    // summary row, the rebuild's final write may silently clobber us. We
+    // instead leave the per-stream row alone and mark the projection stale,
+    // bumping the generation so the rebuild's guarded final write notices
+    // the conflict and refuses to claim freshness.
+    if (current.metadata.rebuild_status === 'running') {
+      markDatasetSummaryProjectionStale('record delta arrived during projection rebuild');
+      return;
+    }
+
     const existingStream = getStreamProjection(delta.connectorId, delta.stream);
     const previousRecordCount = existingStream?.record_count || 0;
     const nextRecordCount = Math.max(0, previousRecordCount + delta.recordCountDelta);
@@ -152,6 +168,10 @@ export function applyDatasetSummaryBlobDelta(delta) {
     if (!current.metadata.computed_at) {
       throw new Error('dataset summary projection has not been rebuilt');
     }
+    if (current.metadata.rebuild_status === 'running') {
+      markDatasetSummaryProjectionStale('blob delta arrived during projection rebuild');
+      return;
+    }
     const computedAt = nowIso();
     const summary = buildSummaryAfterDelta(current, {
       recordJsonBytesDelta: 0,
@@ -195,7 +215,10 @@ export function markDatasetSummaryProjectionStale(reason) {
 
 export async function rebuildDatasetSummaryProjection(dependencies) {
   const startedAt = nowIso();
-  markDatasetSummaryProjectionRebuilding(startedAt);
+  // Advance generation and stamp rebuild_status='running'. Capture the
+  // post-advance generation so the final commit can detect a concurrent
+  // delta or competing rebuild that bumped the counter further.
+  const rebuildGeneration = markDatasetSummaryProjectionRebuilding(startedAt);
 
   try {
     const [counts, bytes, candidates] = await Promise.all([
@@ -231,12 +254,45 @@ export async function rebuildDatasetSummaryProjection(dependencies) {
       last_error: null,
       source_high_watermark: `rebuilt:${computedAt}`,
     };
-    writeDatasetSummaryProjectionWithStreamSeeds(
+    const seeds = dependencies.listStreamProjectionSeeds
+      ? await dependencies.listStreamProjectionSeeds()
+      : [];
+    const committed = writeDatasetSummaryProjectionWithStreamSeedsGuarded(
       summary,
       metadata,
       computedAt,
-      dependencies.listStreamProjectionSeeds ? await dependencies.listStreamProjectionSeeds() : [],
+      seeds,
+      rebuildGeneration,
     );
+    if (!committed) {
+      // A concurrent delta or competing rebuild advanced the generation
+      // past rebuildGeneration. Honest behavior is to leave the projection
+      // explicitly stale, not to claim freshness from values that no
+      // longer match the live tables.
+      const conflictAt = nowIso();
+      const after = getDatasetSummaryProjection();
+      writeDatasetSummaryProjection(
+        {
+          counts: after.counts,
+          retained_bytes: after.retained_bytes,
+          record_time_bounds: after.record_time_bounds,
+          ingested_time_bounds: after.ingested_time_bounds,
+          top_connector_candidates: after.top_connector_candidates,
+        },
+        {
+          computed_at: after.metadata.computed_at,
+          state: after.metadata.state === 'failed' ? 'failed' : 'stale',
+          stale_since: after.metadata.stale_since || conflictAt,
+          rebuild_status: 'idle',
+          last_error:
+            after.metadata.last_error ||
+            'dataset summary projection rebuild superseded by concurrent delta',
+          source_high_watermark: after.metadata.source_high_watermark || null,
+        },
+        conflictAt,
+      );
+      return getDatasetSummaryProjection();
+    }
     return { ...summary, metadata };
   } catch (err) {
     const failedAt = nowIso();
@@ -265,11 +321,18 @@ export async function rebuildDatasetSummaryProjection(dependencies) {
 }
 
 export async function reconcileDirtyDatasetSummaryRecordTimeBounds(dependencies) {
+  // Capture each dirty row's current `computed_at` while reading the dirty
+  // set. The transactional update below only clears the dirty flag and
+  // writes new bounds for rows whose `computed_at` still matches — a
+  // concurrent delta that touched the same row will have advanced
+  // `computed_at` and re-set `dirty_record_time_bounds`; its work then
+  // survives this reconcile pass for the next sweep.
   const dirtyRows = getDb()
     .prepare(
       `SELECT connector_id,
               stream,
-              consent_time_field
+              consent_time_field,
+              computed_at
          FROM dataset_summary_stream_projection
         WHERE dirty_record_time_bounds <> 0
         ORDER BY connector_id ASC, stream ASC`,
@@ -280,7 +343,6 @@ export async function reconcileDirtyDatasetSummaryRecordTimeBounds(dependencies)
   }
 
   const computedAt = nowIso();
-  let reconciled = 0;
   let deferred = 0;
   const repairedRows = [];
 
@@ -304,12 +366,13 @@ export async function reconcileDirtyDatasetSummaryRecordTimeBounds(dependencies)
     repairedRows.push({
       connector_id: row.connector_id,
       stream: row.stream,
+      captured_computed_at: row.computed_at || null,
       earliest_record_time: bounds?.earliest || null,
       latest_record_time: bounds?.latest || null,
     });
-    reconciled += 1;
   }
 
+  let reconciled = 0;
   getDb().transaction(() => {
     const updateStream = getDb().prepare(
       `UPDATE dataset_summary_stream_projection
@@ -317,16 +380,33 @@ export async function reconcileDirtyDatasetSummaryRecordTimeBounds(dependencies)
               latest_record_time = ?,
               dirty_record_time_bounds = 0,
               computed_at = ?
-        WHERE connector_id = ? AND stream = ?`,
+        WHERE connector_id = ?
+          AND stream = ?
+          AND dirty_record_time_bounds <> 0
+          AND (
+            (? IS NULL AND computed_at IS NULL)
+            OR computed_at = ?
+          )`,
     );
     for (const row of repairedRows) {
-      updateStream.run(
+      const result = updateStream.run(
         row.earliest_record_time,
         row.latest_record_time,
         computedAt,
         row.connector_id,
         row.stream,
+        row.captured_computed_at,
+        row.captured_computed_at,
       );
+      if (Number(result.changes || 0) > 0) {
+        reconciled += 1;
+      } else {
+        // Row moved between the dirty scan and the transactional update —
+        // either a concurrent delta touched it, or another reconcile pass
+        // already cleared it. Either way, leaving the dirty bit alone is
+        // safe; the next reconcile pass will pick it up if still needed.
+        deferred += 1;
+      }
     }
 
     const current = getDatasetSummaryProjection();
@@ -509,11 +589,29 @@ function replaceStreamProjections(rows, computedAt, db = getDb()) {
   }
 }
 
-function writeDatasetSummaryProjectionWithStreamSeeds(summary, metadata, updatedAt, streamRows) {
+function writeDatasetSummaryProjectionWithStreamSeedsGuarded(
+  summary,
+  metadata,
+  updatedAt,
+  streamRows,
+  expectedGeneration,
+) {
+  let committed = false;
   getDb().transaction(() => {
+    const row = getDb()
+      .prepare(
+        `SELECT generation FROM dataset_summary_projection WHERE projection_key = ?`,
+      )
+      .get(GLOBAL_KEY);
+    const currentGeneration = Number(row?.generation || 0);
+    if (currentGeneration !== expectedGeneration) {
+      return;
+    }
     replaceStreamProjections(streamRows, updatedAt);
     writeDatasetSummaryProjection(summary, metadata, updatedAt);
+    committed = true;
   })();
+  return committed;
 }
 
 function markDatasetSummaryProjectionFailed(err) {
@@ -594,7 +692,7 @@ function isSafeConsentTimeField(field) {
 
 function markDatasetSummaryProjectionRebuilding(at) {
   const current = getDatasetSummaryProjection();
-  writeDatasetSummaryProjection(
+  return writeDatasetSummaryProjection(
     {
       counts: current.counts,
       retained_bytes: current.retained_bytes,
@@ -615,19 +713,31 @@ function markDatasetSummaryProjectionRebuilding(at) {
 }
 
 function writeDatasetSummaryProjection(summary, metadata, updatedAt) {
+  // Every projection write bumps the generation. Returns the post-write
+  // generation so callers (notably rebuild) can capture an "expected
+  // generation" they will later guard their final commit against.
+  const row = getDb()
+    .prepare(
+      `SELECT generation FROM dataset_summary_projection WHERE projection_key = ?`,
+    )
+    .get(GLOBAL_KEY);
+  const nextGeneration = Number(row?.generation || 0) + 1;
   getDb()
     .prepare(
       `INSERT INTO dataset_summary_projection(
          projection_key,
          summary_json,
          metadata_json,
-         updated_at
+         updated_at,
+         generation
        )
-       VALUES(?, ?, ?, ?)
+       VALUES(?, ?, ?, ?, ?)
        ON CONFLICT(projection_key) DO UPDATE SET
          summary_json = excluded.summary_json,
          metadata_json = excluded.metadata_json,
-         updated_at = excluded.updated_at`,
+         updated_at = excluded.updated_at,
+         generation = excluded.generation`,
     )
-    .run(GLOBAL_KEY, JSON.stringify(summary), JSON.stringify(metadata), updatedAt);
+    .run(GLOBAL_KEY, JSON.stringify(summary), JSON.stringify(metadata), updatedAt, nextGeneration);
+  return nextGeneration;
 }

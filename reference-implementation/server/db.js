@@ -585,7 +585,14 @@ CREATE TABLE IF NOT EXISTS dataset_summary_projection (
   projection_key TEXT PRIMARY KEY,
   summary_json   TEXT NOT NULL,
   metadata_json  TEXT NOT NULL,
-  updated_at     TEXT NOT NULL
+  updated_at     TEXT NOT NULL,
+  -- Monotonic generation counter used to fence concurrent rebuild/reconcile
+  -- writers against live record/blob delta writers. Every projection write
+  -- bumps the generation. A rebuild captures the post-rebuilding-mark
+  -- generation and only commits its final summary when the captured value
+  -- still matches; otherwise it leaves the projection stale rather than
+  -- silently overwriting a concurrent delta.
+  generation     INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS dataset_summary_stream_projection (
@@ -2212,6 +2219,13 @@ export function initDb(path = ':memory:', opts = {}) {
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'browser_surfaces', 'profile_dir', 'TEXT'));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'browser_surfaces', 'profile_volume', 'TEXT'));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'browser_surface_leases', 'surface_subject_id', 'TEXT'));
+  // Dataset summary projection fencing: a `generation` column lets rebuild
+  // and reconcile writers guard their final summary write against
+  // concurrent record/blob delta writers. Pre-existing rows seed with 0;
+  // any subsequent write bumps the counter so old captures cannot win.
+  runWithSqliteBusyRetrySync(() =>
+    addColumnIfMissing(raw, 'dataset_summary_projection', 'generation', 'INTEGER NOT NULL DEFAULT 0'),
+  );
   runWithSqliteBusyRetrySync(() => migrateBrowserSurfaceLeaseEnumChecks(raw));
   runWithSqliteBusyRetrySync(() => ensureBrowserSurfaceLeaseIndexes(raw));
   // Disclosure-spine `event_seq` migration. Pre-existing reference DBs were

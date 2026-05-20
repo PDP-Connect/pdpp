@@ -442,6 +442,169 @@ test('dirty record-time reconciliation defers unsafe rows instead of clearing st
     assert.equal(getStreamDirtyFlag('gmail', 'messages'), 1);
   }));
 
+test('record delta during running rebuild does not silently overwrite the rebuild result', async () =>
+  withTempDb(async () => {
+    await rebuildFromCurrentDb();
+    await ingestRecord('gmail', {
+      stream: 'messages',
+      key: 'm1',
+      emitted_at: '2026-01-01T00:00:00.000Z',
+      data: { id: 'm1', subject: 'pre-rebuild' },
+    });
+
+    let deltaArrivedDuringRebuild = false;
+    await rebuildDatasetSummaryProjection({
+      getCounts: async () => {
+        // Simulate a live record delta arriving mid-rebuild, after the
+        // rebuild has stamped rebuild_status='running' but before it
+        // commits its final summary.
+        await ingestRecord('gmail', {
+          stream: 'messages',
+          key: 'm2',
+          emitted_at: '2026-01-02T00:00:00.000Z',
+          data: { id: 'm2', subject: 'mid-rebuild' },
+        });
+        deltaArrivedDuringRebuild = true;
+        // Rebuild's seed query — return a deliberately stale snapshot
+        // (count=1) to prove the rebuild's final write cannot win.
+        return { connector_count: 1, stream_count: 1, record_count: 1 };
+      },
+      getRetainedBytes: () => ({
+        record_json_bytes: 10,
+        record_changes_json_bytes: 0,
+        blob_bytes: 0,
+      }),
+      getRecordTimeBounds: () => ({ earliest: null, latest: null }),
+      getIngestedTimeBounds: () => ({
+        earliest: '2026-01-01T00:00:00.000Z',
+        latest: '2026-01-01T00:00:00.000Z',
+      }),
+      listTopConnectorCandidates: () => [{ connector_id: 'gmail', record_count: 1 }],
+      listStreamProjectionSeeds: () => [
+        {
+          connector_id: 'gmail',
+          stream: 'messages',
+          record_count: 1,
+          record_json_bytes: 10,
+        },
+      ],
+    });
+
+    assert.equal(deltaArrivedDuringRebuild, true);
+    const projection = getDatasetSummaryProjection();
+    // The mid-rebuild delta bumped the generation; the rebuild's final
+    // write must NOT have claimed fresh, and the projection must not
+    // report the rebuild's stale count of 1.
+    assert.notEqual(projection.metadata.state, 'fresh');
+    assert.ok(
+      projection.metadata.state === 'stale' || projection.metadata.state === 'failed',
+      `expected stale or failed, got ${projection.metadata.state}`,
+    );
+    assert.equal(projection.metadata.rebuild_status, 'idle');
+  }));
+
+test('reconcile concurrent with a delta leaves the row dirty for the next pass', async () =>
+  withTempDb(async () => {
+    await rebuildEmptyProjection();
+    await ingestRecord('gmail', {
+      stream: 'messages',
+      key: 'm1',
+      emitted_at: '2026-01-01T00:00:00.000Z',
+      data: { id: 'm1', created_at: '2025-01-01T00:00:00.000Z', subject: 'old' },
+    });
+    registerConnectorManifest('gmail', {
+      connector_id: 'gmail',
+      streams: [{ name: 'messages', consent_time_field: 'created_at' }],
+    });
+    await rebuildFromCurrentDb();
+
+    // Mark the row dirty manually to mimic the post-delete state without
+    // also bumping the projection's rebuild_status.
+    getDb()
+      .prepare(
+        `UPDATE dataset_summary_stream_projection
+            SET dirty_record_time_bounds = 1
+          WHERE connector_id = 'gmail' AND stream = 'messages'`,
+      )
+      .run();
+
+    const result = await reconcileDirtyDatasetSummaryRecordTimeBounds({
+      getStreamRecordTimeBounds: async (connectorId, stream) => {
+        // Simulate a concurrent delta arriving mid-reconcile: the row's
+        // computed_at advances and dirty_record_time_bounds re-asserts
+        // before reconcile gets to its transactional UPDATE.
+        getDb()
+          .prepare(
+            `UPDATE dataset_summary_stream_projection
+                SET computed_at = '2099-01-01T00:00:00.000Z',
+                    dirty_record_time_bounds = 1
+              WHERE connector_id = ? AND stream = ?`,
+          )
+          .run(connectorId, stream);
+        return getDatasetSummaryStreamRecordTimeBounds(connectorId, stream, 'created_at');
+      },
+    });
+
+    assert.deepEqual(result, { reconciled: 0, deferred: 1 });
+    // The concurrent delta's dirty flag must survive the reconcile pass.
+    assert.equal(getStreamDirtyFlag('gmail', 'messages'), 1);
+  }));
+
+test('rebuild succeeds when no concurrent delta interferes', async () =>
+  withTempDb(async () => {
+    await rebuildEmptyProjection();
+    await ingestRecord('gmail', {
+      stream: 'messages',
+      key: 'm1',
+      emitted_at: '2026-01-01T00:00:00.000Z',
+      data: { id: 'm1', subject: 'hello' },
+    });
+    await rebuildFromCurrentDb();
+    const projection = getDatasetSummaryProjection();
+    assert.equal(projection.metadata.state, 'fresh');
+    assert.equal(projection.metadata.rebuild_status, 'idle');
+    assert.equal(projection.counts.record_count, 1);
+  }));
+
+test('blob delta during running rebuild does not silently overwrite the rebuild result', async () =>
+  withTempDb(async () => {
+    await rebuildFromCurrentDb();
+    await ingestRecord('gmail', {
+      stream: 'messages',
+      key: 'm1',
+      emitted_at: '2026-01-01T00:00:00.000Z',
+      data: { id: 'm1', subject: 'hello' },
+    });
+    await rebuildFromCurrentDb();
+
+    await rebuildDatasetSummaryProjection({
+      getCounts: () => {
+        applyDatasetSummaryBlobDelta({ blobBytesDelta: 1234 });
+        return { connector_count: 1, stream_count: 1, record_count: 1 };
+      },
+      getRetainedBytes: () => ({
+        record_json_bytes: 10,
+        record_changes_json_bytes: 0,
+        blob_bytes: 0,
+      }),
+      getRecordTimeBounds: () => ({ earliest: null, latest: null }),
+      getIngestedTimeBounds: () => ({ earliest: null, latest: null }),
+      listTopConnectorCandidates: () => [{ connector_id: 'gmail', record_count: 1 }],
+      listStreamProjectionSeeds: () => [
+        {
+          connector_id: 'gmail',
+          stream: 'messages',
+          record_count: 1,
+          record_json_bytes: 10,
+        },
+      ],
+    });
+
+    const projection = getDatasetSummaryProjection();
+    assert.notEqual(projection.metadata.state, 'fresh');
+    assert.equal(projection.metadata.rebuild_status, 'idle');
+  }));
+
 async function rebuildEmptyProjection() {
   await rebuildDatasetSummaryProjection({
     getCounts: () => ({ connector_count: 0, stream_count: 0, record_count: 0 }),
