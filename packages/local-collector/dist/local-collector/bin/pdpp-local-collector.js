@@ -182,6 +182,9 @@ export function parseArgs(args) {
     if (process.env.PDPP_LOCAL_DEVICE_TOKEN) {
         options.deviceToken = process.env.PDPP_LOCAL_DEVICE_TOKEN;
     }
+    if (process.env.PDPP_COLLECTOR_CONNECTOR) {
+        options.connector = process.env.PDPP_COLLECTOR_CONNECTOR;
+    }
     if (process.env.PDPP_SOURCE_INSTANCE_ID) {
         options.sourceInstanceId = process.env.PDPP_SOURCE_INSTANCE_ID;
     }

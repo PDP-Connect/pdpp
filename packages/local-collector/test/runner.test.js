@@ -241,6 +241,28 @@ test('pdpp-local-collector run --connector claude_code resolves to the bundled d
   assert.equal(spec.runtime_requirements.bindings.filesystem?.required, true);
 });
 
+test('pdpp-local-collector run reads connector id from PDPP_COLLECTOR_CONNECTOR', () => {
+  const previous = process.env.PDPP_COLLECTOR_CONNECTOR;
+  process.env.PDPP_COLLECTOR_CONNECTOR = 'claude_code';
+  try {
+    const options = parseArgs([
+      'run',
+      '--base-url', 'http://127.0.0.1:7662',
+      '--device-id', 'device-1',
+      '--device-token', 'token-1',
+      '--connection-id', 'src-claude',
+    ]);
+    const spec = buildConnectorSpec(options);
+    assert.equal(spec.connector_id, 'claude_code');
+  } finally {
+    if (previous === undefined) {
+      delete process.env.PDPP_COLLECTOR_CONNECTOR;
+    } else {
+      process.env.PDPP_COLLECTOR_CONNECTOR = previous;
+    }
+  }
+});
+
 test('pdpp-local-collector run --connector codex resolves to the bundled durable-outbox entrypoint', () => {
   const options = parseArgs([
     'run',
