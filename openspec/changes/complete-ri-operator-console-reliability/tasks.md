@@ -17,7 +17,7 @@
 
 - [x] 3.1 Implement a connection health projection module with deterministic precedence for healthy, degraded, needs-attention, cooling-off, blocked, idle, and unknown.
 - [x] 3.2 Project orthogonal connection axes for freshness, coverage, attention, and outbox/work health; render syncing/activity as a badge rather than a health state.
-- [~] 3.3 Project coverage by connection and stream/scope boundary, including complete, partial, deferred, unsupported, unavailable, retryable gap, terminal gap, inventory-only, and unknown. (Partially honest: durable evidence supports `complete`, `partial`, `retryable_gap`, `terminal_gap`, and `unknown`. `deferred`, `unsupported`, `unavailable`, and `inventory_only` require manifest-declared required-stream policy and accepted-coverage tracking the milestone has not landed yet; documented as residual risk.)
+- [ ] 3.3 Project coverage by connection and stream/scope boundary, including complete, partial, deferred, unsupported, unavailable, retryable gap, terminal gap, inventory-only, and unknown. (Partially honest: durable evidence supports `complete`, `partial`, `retryable_gap`, `terminal_gap`, and `unknown`. `deferred`, `unsupported`, `unavailable`, and `inventory_only` require manifest-declared required-stream policy and accepted-coverage tracking the milestone has not landed yet; documented as residual risk.)
 - [x] 3.4 Integrate scheduler/backoff evidence so cooling-off and next-attempt semantics survive restart.
 - [x] 3.5 Integrate detail-gap/backlog evidence so success-with-gaps never projects as healthy.
 - [x] 3.6 Add projection-unreliable handling so failed/missing/stale required evidence projects to unknown.
