@@ -231,6 +231,7 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly recordsAggregateIterateStreamRecordsForAggregation: IterateQuery;
   // Records — per-connector stream aggregate for `/_ref/connectors`.
   readonly recordsAggregateStreamsByConnector: SmallEnumerationQuery;
+  readonly recordsAggregateStreamsByConnectorInstance: SmallEnumerationQuery;
   readonly recordsDatasetGetBlobBytes: ReadOneQuery;
   readonly recordsDatasetGetRecordChangesBytes: ReadOneQuery;
   // Records — dataset summary for the operator console hero band.
@@ -250,6 +251,7 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly recordsDeleteListDistinctStreamsByConnector: SmallEnumerationQuery;
   // Records — point-read for /v1/records/{id}.
   readonly recordsGetLiveRecordByKey: ReadOneQuery;
+  readonly recordsGetRetainedByConnectorInstance: ReadOneQuery;
   // Records — ingest path: read/write of records, record_changes, version_counter.
   readonly recordsIngestAllocateNextVersion: MutationReturningOneQuery;
   readonly recordsIngestGetCurrentRecordState: ReadOneQuery;
@@ -639,6 +641,7 @@ export function loadReferenceQueries(queryDir = QUERIES_DIR): ReferenceQueryRegi
     "approvalsListPendingOwnerDevices",
     // Records — per-connector stream aggregate for `/_ref/connectors`.
     "recordsAggregateStreamsByConnector",
+    "recordsAggregateStreamsByConnectorInstance",
     // Records — ingest path.
     "recordsIngestGetCurrentRecordState",
     "recordsIngestGetVersionCounter",
@@ -676,6 +679,7 @@ export function loadReferenceQueries(queryDir = QUERIES_DIR): ReferenceQueryRegi
     "recordsDatasetGetBlobBytes",
     "recordsDatasetGetStreamTimeBounds",
     "recordsDatasetGetTopConnectorsByRecordCount",
+    "recordsGetRetainedByConnectorInstance",
     "recordsListStreamVisibleCandidates",
     // Records — streaming aggregate.
     "recordsAggregateIterateStreamRecordsForAggregation",

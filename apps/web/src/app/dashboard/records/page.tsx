@@ -30,18 +30,23 @@ function toConnectorOverview(summary: RefConnectorSummary): ConnectorOverview {
   const lastSuccessfulRun = toConnectorRunRef(summary.last_successful_run);
   return {
     connectionHealth: summary.connection_health,
+    connectionId: summary.connection_id,
     connector: {
       connector_id: summary.connector_id,
       display_name: summary.display_name,
-      name: summary.display_name,
+      name: summary.connector_display_name ?? summary.display_name,
       streams: summary.streams.map((name) => ({ name })),
     },
+    connectorDisplayName: summary.connector_display_name,
+    connectorInstanceId: summary.connector_instance_id ?? summary.connection_id,
     streams: summary.streams.map((name) => ({
       object: "stream",
       name,
       record_count: 0,
       last_updated: null,
     })),
+    streamCount: summary.stream_count,
+    totalRetainedBytes: summary.total_retained_bytes,
     totalRecords: summary.total_records,
     lastRun,
     lastSuccessfulRun,

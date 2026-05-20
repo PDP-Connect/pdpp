@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { notFound } from "next/navigation";
 import { Fragment } from "react";
 import { buttonVariants } from "@/components/ui/button.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
@@ -17,6 +18,7 @@ import {
   stringifyCell,
   truncate,
 } from "../../../lib/rs-client.ts";
+import { connectorInstanceIdForConnection, resolveConnectionForRecordsRoute } from "../../connection-route.ts";
 import { ColumnsMenu } from "./columns-menu.tsx";
 
 export const dynamic = "force-dynamic";
@@ -34,17 +36,27 @@ export default async function StreamPage({
 }) {
   const { connector, stream } = await params;
   const { cursors: cursorsParam, columns: columnsParam } = await searchParams;
-  const connectorId = decodeURIComponent(connector);
+  const routeId = decodeURIComponent(connector);
   const streamName = decodeURIComponent(stream);
 
   const trail = cursorsParam ? cursorsParam.split(",").filter(Boolean) : [];
-  const streamPath = `/dashboard/records/${encodeURIComponent(connectorId)}/${encodeURIComponent(streamName)}`;
+  let connectorId = routeId;
+  let connectionId = routeId;
+  let connectorInstanceId: string | null = null;
 
   let page: RecordsPage;
   let streamManifest: StreamManifest | null = null;
   try {
+    const connection = await resolveConnectionForRecordsRoute(routeId);
+    if (!connection) {
+      notFound();
+    }
+    connectorId = connection.connector_id;
+    connectionId = connection.connection_id;
+    connectorInstanceId = connectorInstanceIdForConnection(connection);
     const [pageResult, manifests] = await Promise.all([
       queryRecords(connectorId, streamName, {
+        connectorInstanceId,
         limit: PAGE_SIZE,
         cursor: trail.at(-1),
       }),
@@ -69,6 +81,7 @@ export default async function StreamPage({
   const allColumns = deriveAllColumns(page.data);
   const defaultColumns = computeDefaultColumns(page.data, streamManifest);
   const { columns, mode } = resolveSelectedColumns(columnsParam, allColumns, defaultColumns);
+  const streamPath = `/dashboard/records/${encodeURIComponent(connectionId)}/${encodeURIComponent(streamName)}`;
   const prevHref = trail.length ? hrefFor(streamPath, trail.slice(0, -1), columnsParam) : null;
   const nextHref = page.next_cursor ? hrefFor(streamPath, [...trail, page.next_cursor], columnsParam) : null;
   const recordHref = (id: string) => `${streamPath}/${encodeURIComponent(id)}`;
@@ -93,7 +106,7 @@ export default async function StreamPage({
         }
         breadcrumbs={[
           { label: "Records", href: "/dashboard/records" },
-          { label: connectorId, href: `/dashboard/records/${encodeURIComponent(connectorId)}` },
+          { label: connectionId, href: `/dashboard/records/${encodeURIComponent(connectionId)}` },
           { label: streamName },
         ]}
         count={`page ${trail.length + 1} · ${page.data.length} records`}

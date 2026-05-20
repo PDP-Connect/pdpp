@@ -49,7 +49,7 @@ export interface ConnectorManifest {
 const MANIFESTS_DIR = join(process.cwd(), "..", "..", "packages", "polyfill-connectors", "manifests");
 const FRACTIONAL_SECONDS_RE = /\.\d+Z$/;
 
-async function authedFetch(path: string, params?: Record<string, string | number | undefined>) {
+async function authedFetch(path: string, params?: Record<string, string | number | undefined | null>) {
   // DAL gate. Memoized via React.cache, so fanned-out sibling fetches verify
   // exactly once per render — see ./verify-session.ts.
   await verifyDashboardSession();
@@ -78,26 +78,39 @@ async function authedFetch(path: string, params?: Record<string, string | number
   return res.json();
 }
 
-export async function listStreams(connectorId: string): Promise<StreamSummary[]> {
-  const body = (await authedFetch("/v1/streams", { connector_id: connectorId })) as {
+interface ConnectionReadOptions {
+  connectorInstanceId?: string | null;
+}
+
+export async function listStreams(connectorId: string, opts: ConnectionReadOptions = {}): Promise<StreamSummary[]> {
+  const body = (await authedFetch("/v1/streams", {
+    connector_id: connectorId,
+    connector_instance_id: opts.connectorInstanceId,
+  })) as {
     data: StreamSummary[];
   };
   return body.data ?? [];
 }
 
-export async function getStreamMetadata(connectorId: string, stream: string): Promise<Record<string, unknown>> {
+export async function getStreamMetadata(
+  connectorId: string,
+  stream: string,
+  opts: ConnectionReadOptions = {}
+): Promise<Record<string, unknown>> {
   return (await authedFetch(`/v1/streams/${encodeURIComponent(stream)}`, {
     connector_id: connectorId,
+    connector_instance_id: opts.connectorInstanceId,
   })) as Record<string, unknown>;
 }
 
 export async function queryRecords(
   connectorId: string,
   stream: string,
-  opts: { limit?: number; cursor?: string; order?: "asc" | "desc" } = {}
+  opts: { connectorInstanceId?: string | null; limit?: number; cursor?: string; order?: "asc" | "desc" } = {}
 ): Promise<RecordsPage> {
   return (await authedFetch(`/v1/streams/${encodeURIComponent(stream)}/records`, {
     connector_id: connectorId,
+    connector_instance_id: opts.connectorInstanceId,
     limit: opts.limit ?? 50,
     cursor: opts.cursor,
     order: opts.order,
@@ -113,9 +126,15 @@ export async function queryRecords(
  * to *payload* fields, not the envelope id, so we use the path-parameter form
  * rather than trying to filter the list.
  */
-export async function getRecord(connectorId: string, stream: string, recordId: string): Promise<StreamRecord> {
+export async function getRecord(
+  connectorId: string,
+  stream: string,
+  recordId: string,
+  opts: ConnectionReadOptions = {}
+): Promise<StreamRecord> {
   return (await authedFetch(`/v1/streams/${encodeURIComponent(stream)}/records/${encodeURIComponent(recordId)}`, {
     connector_id: connectorId,
+    connector_instance_id: opts.connectorInstanceId,
   })) as StreamRecord;
 }
 
@@ -362,7 +381,10 @@ export async function listConnectorManifests(): Promise<ConnectorManifest[]> {
 
 export interface ConnectorOverview {
   connectionHealth?: RefConnectionHealthSnapshot;
+  connectionId?: string;
   connector: ConnectorManifest;
+  connectorDisplayName?: string;
+  connectorInstanceId?: string;
   error?: string;
   /** Shortcut: true iff lastRun.status ∈ {started, in_progress}. */
   isRunning: boolean;
@@ -370,7 +392,9 @@ export interface ConnectorOverview {
   lastRun: ConnectorRunRef | null;
   /** Most recent SUCCEEDED run. Drives the "last synced" timestamp + delta. */
   lastSuccessfulRun: ConnectorRunRef | null;
+  streamCount?: number;
   streams: StreamSummary[];
+  totalRetainedBytes?: number | null;
   totalRecords: number;
 }
 
@@ -682,9 +706,13 @@ async function resolveStreamDef(
   return { cursorField, declaredProps };
 }
 
-async function resolveTotalRecords(connectorId: string, streamName: string): Promise<number> {
+async function resolveTotalRecords(
+  connectorId: string,
+  streamName: string,
+  opts: ConnectionReadOptions = {}
+): Promise<number> {
   try {
-    const meta = (await getStreamMetadata(connectorId, streamName)) as { record_count?: number };
+    const meta = (await getStreamMetadata(connectorId, streamName, opts)) as { record_count?: number };
     return typeof meta.record_count === "number" ? meta.record_count : 0;
   } catch {
     // soft: health still works, just unknown total
@@ -696,13 +724,15 @@ async function paginateSampleRecords(
   connectorId: string,
   streamName: string,
   sampleLimit: number,
-  pageSize: number
+  pageSize: number,
+  opts: ConnectionReadOptions = {}
 ): Promise<StreamRecord[]> {
   const records: StreamRecord[] = [];
   let cursor: string | undefined;
   while (records.length < sampleLimit) {
     const remaining = sampleLimit - records.length;
     const page = await queryRecords(connectorId, streamName, {
+      connectorInstanceId: opts.connectorInstanceId,
       limit: Math.min(pageSize, remaining),
       cursor,
     });
@@ -864,15 +894,19 @@ function computeFieldSummary(fields: FieldHealth[]) {
 export async function streamHealth(
   connectorId: string,
   streamName: string,
-  opts: { sampleSize?: number; pageSize?: number } = {}
+  opts: { connectorInstanceId?: string | null; sampleSize?: number; pageSize?: number } = {}
 ): Promise<StreamHealth> {
   const sampleLimit = Math.max(1, Math.min(opts.sampleSize ?? 2000, 20_000));
   const pageSize = Math.max(1, Math.min(opts.pageSize ?? 500, 1000));
 
   const { cursorField, declaredProps } = await resolveStreamDef(connectorId, streamName);
-  const totalRecords = await resolveTotalRecords(connectorId, streamName);
+  const totalRecords = await resolveTotalRecords(connectorId, streamName, {
+    connectorInstanceId: opts.connectorInstanceId,
+  });
 
-  const records = await paginateSampleRecords(connectorId, streamName, sampleLimit, pageSize);
+  const records = await paginateSampleRecords(connectorId, streamName, sampleLimit, pageSize, {
+    connectorInstanceId: opts.connectorInstanceId,
+  });
   const fieldNames = collectFieldNames(declaredProps, records);
   const { agg, emittedRange, cursorRange } = scanRecords(records, fieldNames, cursorField);
 

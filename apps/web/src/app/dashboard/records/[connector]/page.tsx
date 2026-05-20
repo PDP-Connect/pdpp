@@ -8,21 +8,22 @@ import { ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
 import {
   type DeviceSourceInstance,
   getConnectorSchedule,
-  listConnectorSummaries,
   listDeviceExporterSourceInstances,
   listRuns,
   type RefConnectionHealthSnapshot,
+  type RefConnectorRunSummary,
+  type RefConnectorSummary,
   type RefSchedule,
   type RunSummary,
 } from "../../lib/ref-client.ts";
 import {
   type ConnectorManifest,
   type ConnectorOverview,
-  getConnectorOverview,
   listConnectorManifests,
   listStreams,
   type StreamSummary,
 } from "../../lib/rs-client.ts";
+import { connectorInstanceIdForConnection, resolveConnectionForRecordsRoute } from "../connection-route.ts";
 import { ConnectionDiagnostics } from "./connection-diagnostics.tsx";
 import { SyncNowButton } from "./sync-now-button.tsx";
 
@@ -30,11 +31,54 @@ export const dynamic = "force-dynamic";
 
 const RECENT_RUNS_LIMIT = 10;
 
+function toConnectorRunRef(summary: RefConnectorRunSummary | null) {
+  if (!summary) {
+    return null;
+  }
+  return {
+    run_id: summary.run_id,
+    first_at: summary.first_at,
+    last_at: summary.last_at,
+    event_count: summary.event_count,
+    status: summary.status,
+    failure_reason: summary.failure_reason,
+    known_gaps: summary.known_gaps ?? [],
+  };
+}
+
+function toConnectorOverview(summary: RefConnectorSummary, streams: StreamSummary[]): ConnectorOverview {
+  const lastRun = toConnectorRunRef(summary.last_run);
+  const lastSuccessfulRun = toConnectorRunRef(summary.last_successful_run);
+  return {
+    connectionHealth: summary.connection_health,
+    connectionId: summary.connection_id,
+    connector: {
+      connector_id: summary.connector_id,
+      display_name: summary.display_name,
+      name: summary.connector_display_name ?? summary.display_name,
+      streams: summary.streams.map((name) => ({ name })),
+    },
+    connectorDisplayName: summary.connector_display_name,
+    connectorInstanceId: summary.connector_instance_id ?? summary.connection_id,
+    streams,
+    streamCount: summary.stream_count,
+    totalRetainedBytes: summary.total_retained_bytes,
+    totalRecords: summary.total_records,
+    lastRun,
+    lastSuccessfulRun,
+    isRunning: lastRun != null && new Set(["started", "in_progress"]).has(lastRun.status),
+  };
+}
+
 export default async function ConnectorPage({ params }: { params: Promise<{ connector: string }> }) {
   const { connector } = await params;
-  const connectorId = decodeURIComponent(connector);
+  const routeId = decodeURIComponent(connector);
 
   let manifest: ConnectorManifest | undefined;
+  let summary: RefConnectorSummary | undefined;
+  let connectorId = routeId;
+  let connectionId = routeId;
+  let connectorInstanceId: string | null = null;
   let streams: StreamSummary[];
   let overview: ConnectorOverview | null = null;
   let recentRuns: RunSummary[] = [];
@@ -44,13 +88,27 @@ export default async function ConnectorPage({ params }: { params: Promise<{ conn
   let sourceInstances: DeviceSourceInstance[] = [];
   let sourceInstancesError: string | null = null;
   try {
-    const manifests = await listConnectorManifests();
-    manifest = manifests.find((m) => m.connector_id === connectorId);
-    if (!manifest) {
+    const [resolvedSummary, manifests] = await Promise.all([
+      resolveConnectionForRecordsRoute(routeId),
+      listConnectorManifests(),
+    ]);
+    summary = resolvedSummary ?? undefined;
+    if (!summary) {
       notFound();
     }
-    streams = await listStreams(connectorId);
-    overview = await getConnectorOverview(manifest);
+    connectorId = summary.connector_id;
+    connectionId = summary.connection_id;
+    connectorInstanceId = connectorInstanceIdForConnection(summary);
+    manifest =
+      manifests.find((m) => m.connector_id === connectorId) ??
+      ({
+        connector_id: connectorId,
+        display_name: summary.connector_display_name ?? summary.display_name,
+        name: summary.connector_display_name ?? summary.display_name,
+        streams: summary.streams.map((name) => ({ name })),
+      } satisfies ConnectorManifest);
+    streams = await listStreams(connectorId, { connectorInstanceId });
+    overview = toConnectorOverview(summary, streams);
     const runsResp = await listRuns({ connector_id: connectorId, limit: RECENT_RUNS_LIMIT });
     recentRuns = runsResp.data ?? [];
 
@@ -58,22 +116,22 @@ export default async function ConnectorPage({ params }: { params: Promise<{ conn
     // device-exporter outage cannot suppress schedule data, and vice
     // versa. Failures surface as honest "unavailable" tooltips rather
     // than silently zeroing the section.
-    const [summariesResult, scheduleResult, sourcesResult] = await Promise.allSettled([
-      listConnectorSummaries(),
+    const [scheduleResult, sourcesResult] = await Promise.allSettled([
       getConnectorSchedule(connectorId),
       listDeviceExporterSourceInstances(),
     ]);
-    if (summariesResult.status === "fulfilled") {
-      const summary = summariesResult.value.data.find((s) => s.connector_id === connectorId);
-      connectionHealth = summary?.connection_health ?? null;
-    }
+    connectionHealth = summary.connection_health ?? null;
     if (scheduleResult.status === "fulfilled") {
       schedule = scheduleResult.value;
     } else {
       scheduleError = errorMessage(scheduleResult.reason);
     }
     if (sourcesResult.status === "fulfilled") {
-      sourceInstances = sourcesResult.value.data.filter((s) => s.connector_id === connectorId);
+      sourceInstances = sourcesResult.value.data.filter(
+        (s) =>
+          s.connector_id === connectorId &&
+          (!connectorInstanceId || !s.connector_instance_id || s.connector_instance_id === connectorInstanceId)
+      );
     } else {
       sourceInstancesError = errorMessage(sourcesResult.reason);
     }
@@ -119,7 +177,13 @@ export default async function ConnectorPage({ params }: { params: Promise<{ conn
         count={`${totalRecords.toLocaleString()} records · ${streams.length} stream${streams.length === 1 ? "" : "s"}`}
         description={
           <>
-            <code className="font-mono text-xs">{connectorId}</code>
+            <code className="font-mono text-xs">{connectionId}</code>
+            {connectionId !== connectorId ? (
+              <>
+                {" · "}
+                <span>Type: {connectorId}</span>
+              </>
+            ) : null}
             {manifest.provider_id ? (
               <>
                 {" · "}
@@ -150,7 +214,7 @@ export default async function ConnectorPage({ params }: { params: Promise<{ conn
               <li key={s.name}>
                 <Link
                   className="flex flex-col gap-1 px-3 py-3 transition-colors hover:bg-muted/40 sm:flex-row sm:items-center sm:justify-between sm:gap-4"
-                  href={`/dashboard/records/${encodeURIComponent(connectorId)}/${encodeURIComponent(s.name)}`}
+                  href={`/dashboard/records/${encodeURIComponent(connectionId)}/${encodeURIComponent(s.name)}`}
                 >
                   <span className="pdpp-body break-all font-medium font-mono">{s.name}</span>
                   <span className="pdpp-caption inline-flex flex-wrap items-baseline gap-x-1 text-muted-foreground tabular-nums">

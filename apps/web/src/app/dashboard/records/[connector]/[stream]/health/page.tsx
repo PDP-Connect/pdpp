@@ -1,9 +1,11 @@
+import { notFound } from "next/navigation";
 import { Fragment } from "react";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
 import { PageHeader, Section } from "../../../../components/primitives.tsx";
 import { DashboardShell, ServerUnreachable } from "../../../../components/shell.tsx";
 import { ReferenceServerUnreachableError } from "../../../../lib/owner-token.ts";
 import { type FieldHealth, type StreamHealth, streamHealth } from "../../../../lib/rs-client.ts";
+import { connectorInstanceIdForConnection, resolveConnectionForRecordsRoute } from "../../../connection-route.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -22,7 +24,7 @@ export default async function StreamHealthPage({
 }) {
   const { connector, stream } = await params;
   const { sample } = await searchParams;
-  const connectorId = decodeURIComponent(connector);
+  const routeId = decodeURIComponent(connector);
   const streamName = decodeURIComponent(stream);
 
   const parsedSample = Number.parseInt(sample ?? "", 10);
@@ -30,8 +32,19 @@ export default async function StreamHealthPage({
     Number.isFinite(parsedSample) && parsedSample > 0 ? Math.min(parsedSample, MAX_SAMPLE) : DEFAULT_SAMPLE;
 
   let health: StreamHealth;
+  let connectorId = routeId;
+  let connectionId = routeId;
   try {
-    health = await streamHealth(connectorId, streamName, { sampleSize });
+    const connection = await resolveConnectionForRecordsRoute(routeId);
+    if (!connection) {
+      notFound();
+    }
+    connectorId = connection.connector_id;
+    connectionId = connection.connection_id;
+    health = await streamHealth(connectorId, streamName, {
+      connectorInstanceId: connectorInstanceIdForConnection(connection),
+      sampleSize,
+    });
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
@@ -45,14 +58,14 @@ export default async function StreamHealthPage({
   }
 
   const { fields, summary, emittedAt, cursorField, cursorRange } = health;
-  const streamPath = `/dashboard/records/${encodeURIComponent(connectorId)}/${encodeURIComponent(streamName)}`;
+  const streamPath = `/dashboard/records/${encodeURIComponent(connectionId)}/${encodeURIComponent(streamName)}`;
 
   return (
     <DashboardShell active="records">
       <PageHeader
         breadcrumbs={[
           { label: "Records", href: "/dashboard/records" },
-          { label: connectorId, href: `/dashboard/records/${encodeURIComponent(connectorId)}` },
+          { label: connectionId, href: `/dashboard/records/${encodeURIComponent(connectionId)}` },
           { label: streamName, href: streamPath },
           { label: "health" },
         ]}

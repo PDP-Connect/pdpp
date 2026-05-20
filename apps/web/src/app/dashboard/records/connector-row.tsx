@@ -31,7 +31,20 @@ interface RowProps {
 type ToastState = { kind: "none" } | { kind: "already_running" } | { kind: "error"; message: string };
 
 export function ConnectorRow({ overview, runsHref }: RowProps) {
-  const { connectionHealth, connector, totalRecords, streams, lastRun, lastSuccessfulRun, isRunning } = overview;
+  const {
+    connectionHealth,
+    connectionId,
+    connector,
+    connectorDisplayName,
+    connectorInstanceId,
+    isRunning,
+    lastRun,
+    lastSuccessfulRun,
+    streamCount,
+    streams,
+    totalRecords,
+    totalRetainedBytes,
+  } = overview;
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   // Optimistic: if the user just clicked, treat as running until the next
@@ -109,8 +122,11 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
     });
   }, [connector.connector_id, router]);
 
-  const detailHref = `/dashboard/records/${encodeURIComponent(connector.connector_id)}`;
+  const routeId = connectionId ?? connectorInstanceId ?? connector.connector_id;
+  const detailHref = `/dashboard/records/${encodeURIComponent(routeId)}`;
   const displayName = connector.display_name ?? connector.name ?? connector.connector_id;
+  const typeName = connectorDisplayName ?? connector.name ?? connector.connector_id;
+  const displayedStreamCount = streamCount ?? streams.length;
   const nextAction = formatNextAction(connectionHealth?.next_action ?? null);
   const recordCount = resolveRecordCountDisplay(overview);
   const axisChips = summarizeAxisChips(connectionHealth?.axes);
@@ -133,7 +149,15 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
             href={detailHref}
           >
             <span className="pdpp-body font-medium text-foreground group-hover:underline">{displayName}</span>
-            <span className="pdpp-caption truncate font-mono text-muted-foreground">{connector.connector_id}</span>
+            <span className="pdpp-caption truncate text-muted-foreground">
+              {typeName}
+              {connectorInstanceId ? (
+                <>
+                  {" "}
+                  · <code className="font-mono">{connectorInstanceId}</code>
+                </>
+              ) : null}
+            </span>
           </Link>
         </div>
 
@@ -147,9 +171,14 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
             ) : (
               <span title={recordCount.title}>{recordCount.label} records</span>
             )}{" "}
-            · {streams.length} stream
-            {streams.length === 1 ? "" : "s"}
+            · {displayedStreamCount} stream
+            {displayedStreamCount === 1 ? "" : "s"}
           </span>
+          {typeof totalRetainedBytes === "number" ? (
+            <span title={`${totalRetainedBytes.toLocaleString()} retained bytes`}>
+              {formatBytes(totalRetainedBytes)} retained
+            </span>
+          ) : null}
           <ConnectorFreshnessLine
             hasError={Boolean(overview.error)}
             lastRun={lastRun}
@@ -602,6 +631,26 @@ function formatElapsed(secs: number): string {
   const m = Math.floor(secs / 60);
   const s = secs % 60;
   return `${m}m ${s.toString().padStart(2, "0")}s`;
+}
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return "0 B";
+  }
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1000 && unitIndex < units.length - 1) {
+    value /= 1000;
+    unitIndex += 1;
+  }
+  let rounded = value.toFixed(2);
+  if (value >= 100) {
+    rounded = String(Math.round(value));
+  } else if (value >= 10) {
+    rounded = value.toFixed(1);
+  }
+  return `${rounded} ${units[unitIndex]}`;
 }
 
 function NextActionPill({

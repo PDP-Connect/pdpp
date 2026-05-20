@@ -9,6 +9,10 @@
 // reference implementation exposes for its own dashboard. Clients must
 // not depend on the response shape.
 
+import type {
+  BrowserSurface,
+  BrowserSurfaceLease,
+} from "@pdpp/remote-surface/leases";
 import { allowUnboundedReadAcknowledged, getOne, iterateDynamicSqlAcknowledged, referenceQueries } from "../lib/db.ts";
 import { listSpineCorrelations, type SpineSummary } from "../lib/spine.ts";
 import {
@@ -27,18 +31,10 @@ import {
   type NextAction,
   type OutboxAxis,
 } from "../runtime/connection-health.ts";
-import type {
-  BrowserSurface,
-  BrowserSurfaceLease,
-} from "@pdpp/remote-surface/leases";
 import { getConnectorManifest } from "./auth.js";
 import { deriveReferenceFreshness, type ReferenceFreshness } from "./freshness.ts";
 import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.js";
 import { listAllStreams } from "./records.js";
-import { getDefaultBrowserSurfaceLeaseStore } from "./stores/browser-surface-lease-store.ts";
-import { getDefaultConnectorAttentionStore } from "./stores/connector-attention-store.js";
-import { getDefaultConnectorDetailGapStore } from "./stores/connector-detail-gap-store.js";
-import { getDefaultDeviceExporterStore } from "./stores/device-exporter-store.js";
 import {
   chooseDisplayTimestamp,
   compareTimestampValues,
@@ -47,6 +43,14 @@ import {
   type SemanticTimestamp,
   timestampWithinWindow,
 } from "./ref-record-utils.ts";
+import { getDefaultBrowserSurfaceLeaseStore } from "./stores/browser-surface-lease-store.ts";
+import { getDefaultConnectorAttentionStore } from "./stores/connector-attention-store.js";
+import { getDefaultConnectorDetailGapStore } from "./stores/connector-detail-gap-store.js";
+import {
+  createPostgresConnectorInstanceStore,
+  createSqliteConnectorInstanceStore,
+} from "./stores/connector-instance-store.js";
+import { getDefaultDeviceExporterStore } from "./stores/device-exporter-store.js";
 
 // ─── Shared domain types ────────────────────────────────────────────────────
 
@@ -101,6 +105,7 @@ interface ConnectorRow {
 }
 
 const NON_PUBLIC_CONNECTOR_ID_PARTS = ["manual_action_stub", "manual-action-stub", "stream-test-stub"];
+const REFERENCE_OWNER_SUBJECT_ID = "owner_local";
 
 interface StreamAggregateRow {
   readonly last_updated: string | null;
@@ -113,6 +118,7 @@ type Freshness = ReferenceFreshness;
 interface RecordProjection {
   readonly byStream: Map<string, StreamProjection>;
   readonly freshness: Freshness;
+  readonly retainedBytes: number | null;
   readonly totalRecords: number;
 }
 
@@ -126,6 +132,21 @@ interface RecordProjectionRow {
   readonly last_updated: string | null;
   readonly record_count: number | string | null;
   readonly stream: string;
+}
+
+interface RetainedBytesRow {
+  readonly blob_bytes?: number | string | null;
+  readonly record_changes_json_bytes?: number | string | null;
+  readonly record_json_bytes?: number | string | null;
+}
+
+interface ConnectorInstanceRow {
+  readonly connectorId: string;
+  readonly connectorInstanceId: string;
+  readonly displayName: string;
+  readonly ownerSubjectId: string;
+  readonly revokedAt: string | null;
+  readonly status: string;
 }
 
 interface ManifestExcerpt {
@@ -194,7 +215,9 @@ interface ControllerLike {
 export interface ConnectorSummary {
   readonly connection_health: ConnectionHealthSnapshot;
   readonly connection_id: string;
+  readonly connector_display_name: string;
   readonly connector_id: string;
+  readonly connector_instance_id: string;
   readonly display_name: string;
   readonly freshness: Freshness;
   readonly last_run: ConnectorRunSummary | null;
@@ -209,8 +232,10 @@ export interface ConnectorSummary {
   readonly next_action: NextAction | null;
   readonly refresh_policy: unknown;
   readonly schedule: unknown;
+  readonly stream_count?: number;
   readonly streams: string[];
   readonly total_records: number;
+  readonly total_retained_bytes?: number | null;
 }
 
 export interface ConnectorDetail {
@@ -442,18 +467,84 @@ async function getLatestRunSummary(
   return toConnectorRunSummary(summaries[0] ?? null);
 }
 
-async function getConnectorRecordProjection(connectorId: string): Promise<RecordProjection> {
-  const rows: RecordProjectionRow[] = isPostgresStorageBackend()
-    ? (await listAllStreams(connectorId)).map(
-        (row: { name: string; record_count: number; last_updated: string | null }) => ({
-          stream: row.name,
-          record_count: row.record_count,
-          last_updated: row.last_updated,
-        })
-      )
-    : allowUnboundedReadAcknowledged<StreamAggregateRow>(referenceQueries.recordsAggregateStreamsByConnector, [
+async function getRetainedBytesForConnection(
+  connectorId: string,
+  connectorInstanceId: string,
+): Promise<number | null> {
+  const row = isPostgresStorageBackend()
+    ? (await postgresQuery(
+        `SELECT
+           (
+             SELECT COALESCE(SUM(octet_length(record_json::text)), 0)
+             FROM records
+             WHERE connector_id = $1 AND connector_instance_id = $2 AND deleted = false
+           ) AS record_json_bytes,
+           (
+             SELECT COALESCE(SUM(octet_length(record_json::text)), 0)
+             FROM record_changes
+             WHERE connector_id = $1 AND connector_instance_id = $2 AND record_json IS NOT NULL
+           ) AS record_changes_json_bytes,
+           (
+             SELECT COALESCE(SUM(size_bytes), 0)
+             FROM blobs
+             WHERE connector_id = $1 AND connector_instance_id = $2
+           ) AS blob_bytes`,
+        [connectorId, connectorInstanceId],
+      )).rows[0] as RetainedBytesRow | undefined
+    : getOne<RetainedBytesRow>(referenceQueries.recordsGetRetainedByConnectorInstance, [
         connectorId,
+        connectorInstanceId,
+        connectorId,
+        connectorInstanceId,
+        connectorId,
+        connectorInstanceId,
       ]);
+  if (!row) {
+    return null;
+  }
+  return (
+    Number(row.record_json_bytes || 0)
+    + Number(row.record_changes_json_bytes || 0)
+    + Number(row.blob_bytes || 0)
+  );
+}
+
+async function getConnectorRecordProjection(
+  connectorId: string,
+  connectorInstanceId?: string,
+): Promise<RecordProjection> {
+  let rows: RecordProjectionRow[];
+  if (connectorInstanceId) {
+    rows = isPostgresStorageBackend()
+      ? (await postgresQuery(
+          `SELECT stream,
+                  COUNT(*)::int AS record_count,
+                  MAX(emitted_at) AS last_updated
+           FROM records
+           WHERE connector_id = $1
+             AND connector_instance_id = $2
+             AND deleted = false
+           GROUP BY stream
+           ORDER BY stream ASC`,
+          [connectorId, connectorInstanceId],
+        )).rows as RecordProjectionRow[]
+      : [...allowUnboundedReadAcknowledged<StreamAggregateRow>(
+          referenceQueries.recordsAggregateStreamsByConnectorInstance,
+          [connectorId, connectorInstanceId],
+        )];
+  } else if (isPostgresStorageBackend()) {
+    rows = (await listAllStreams(connectorId)).map(
+      (row: { name: string; record_count: number; last_updated: string | null }) => ({
+        stream: row.name,
+        record_count: row.record_count,
+        last_updated: row.last_updated,
+      })
+    );
+  } else {
+    rows = [...allowUnboundedReadAcknowledged<StreamAggregateRow>(referenceQueries.recordsAggregateStreamsByConnector, [
+      connectorId,
+    ])];
+  }
   const byStream = new Map<string, StreamProjection>();
   let latest: string | null = null;
   for (const row of rows) {
@@ -471,6 +562,9 @@ async function getConnectorRecordProjection(connectorId: string): Promise<Record
   return {
     byStream,
     freshness: buildFreshness(latest),
+    retainedBytes: connectorInstanceId
+      ? await getRetainedBytesForConnection(connectorId, connectorInstanceId)
+      : null,
     totalRecords: rows.reduce((sum, row) => sum + Number(row.record_count || 0), 0),
   };
 }
@@ -518,7 +612,10 @@ export async function getConnectorAttentionProjection(
   }
 }
 
-async function getConnectorDetailGapProjection(connectorId: string): Promise<DetailGapProjection> {
+async function getConnectorDetailGapProjection(
+  connectorId: string,
+  connectorInstanceId?: string,
+): Promise<DetailGapProjection> {
   try {
     const store = getDefaultConnectorDetailGapStore() as ConnectorDetailGapStoreLike;
     // Operator-console projection must surface pending gaps from every
@@ -528,9 +625,14 @@ async function getConnectorDetailGapProjection(connectorId: string): Promise<Det
     // when none is given — which drops every real per-device gap from the
     // dashboard. Prefer the connector-wide listing when the store exposes
     // it.
-    const gaps = typeof store.listPendingGapsForConnector === "function"
-      ? await Promise.resolve(store.listPendingGapsForConnector(connectorId, { limit: 100 }))
-      : await Promise.resolve(store.listPendingGaps({ connectorId, limit: 100 }));
+    let gaps: readonly PendingDetailGapSummary[];
+    if (connectorInstanceId) {
+      gaps = await Promise.resolve(store.listPendingGaps({ connectorId, connectorInstanceId, limit: 100 }));
+    } else if (typeof store.listPendingGapsForConnector === "function") {
+      gaps = await Promise.resolve(store.listPendingGapsForConnector(connectorId, { limit: 100 }));
+    } else {
+      gaps = await Promise.resolve(store.listPendingGaps({ connectorId, limit: 100 }));
+    }
     return {
       gaps,
       unreliable: false,
@@ -576,6 +678,45 @@ async function listRegisteredConnectorRows(): Promise<readonly ConnectorRow[]> {
   }
   // REVIEWED-BOUNDED: connectors table is O(registered providers); whole-table scan is acceptable.
   return allowUnboundedReadAcknowledged<ConnectorRow>(referenceQueries.listRegisteredConnectors);
+}
+
+function getConnectorInstanceStore() {
+  return isPostgresStorageBackend()
+    ? createPostgresConnectorInstanceStore()
+    : createSqliteConnectorInstanceStore();
+}
+
+async function listConnectorInstanceRowsForDashboard(
+  registeredRows: readonly ConnectorRow[],
+): Promise<readonly ConnectorInstanceRow[]> {
+  const store = getConnectorInstanceStore();
+  const instances = await store.listByOwner(REFERENCE_OWNER_SUBJECT_ID);
+  const active = instances.filter(
+    (instance: ConnectorInstanceRow) => instance.status !== "revoked" && !instance.revokedAt,
+  );
+  if (active.length > 0) {
+    return active;
+  }
+
+  // Preserve the historical first-run catalog by materializing legacy
+  // connection rows, then projecting the dashboard exclusively from
+  // connector_instances.
+  const now = new Date().toISOString();
+  const ensured = await Promise.all(
+    registeredRows.map(async (row): Promise<ConnectorInstanceRow | null> => {
+      const manifest = parseManifest(row.manifest, row.connector_id);
+      return await store.ensureLegacyDefault({
+        ownerSubjectId: REFERENCE_OWNER_SUBJECT_ID,
+        connectorId: row.connector_id,
+        displayName: manifest.display_name || row.connector_id,
+        now,
+      });
+    }),
+  );
+  return ensured.filter(
+    (instance): instance is ConnectorInstanceRow =>
+      instance !== null && instance.status !== "revoked" && !instance.revokedAt,
+  );
 }
 
 export function isPublicReferenceConnector(row: ConnectorRow, manifest: ConnectorManifest): boolean {
@@ -1573,25 +1714,34 @@ export async function listConnectorSummaries(
   controller?: ControllerLike | null,
   options: ListConnectorSummariesOptions = {},
 ): Promise<ConnectorSummary[]> {
-  const rows = await listRegisteredConnectorRows();
+  const connectorRows = await listRegisteredConnectorRows();
+  const manifestsByConnectorId = new Map(
+    connectorRows.map((row) => [row.connector_id, parseManifest(row.manifest, row.connector_id)]),
+  );
+  const rows = await listConnectorInstanceRowsForDashboard(connectorRows);
   const summaries = await mapWithConcurrency(
     rows,
     options.concurrency ?? LIST_CONNECTOR_SUMMARIES_CONCURRENCY,
-    async (row): Promise<ConnectorSummary | null> => {
-      const manifest = parseManifest(row.manifest, row.connector_id);
-      if (!isPublicReferenceConnector(row, manifest)) {
+    async (instance): Promise<ConnectorSummary | null> => {
+      const connectorId = instance.connectorId;
+      const connectorInstanceId = instance.connectorInstanceId;
+      const manifest = manifestsByConnectorId.get(connectorId);
+      if (!manifest) {
         return null;
       }
-      const live = await getConnectorRecordProjection(row.connector_id);
+      if (!isPublicReferenceConnector({ connector_id: connectorId, manifest: JSON.stringify(manifest) }, manifest)) {
+        return null;
+      }
+      const live = await getConnectorRecordProjection(connectorId, connectorInstanceId);
       const [schedule, lastRun, lastSuccessfulRun, detailGaps, outbox, attention, remoteSurface] =
         await Promise.all([
-          getScheduleFrom(controller, row.connector_id),
-          getLatestRunSummary(row.connector_id),
-          getLatestRunSummary(row.connector_id, "succeeded"),
-          getConnectorDetailGapProjection(row.connector_id),
-          getConnectorOutboxAxis(row.connector_id),
-          getConnectorAttentionProjection(row.connector_id),
-          getConnectorBrowserSurfaceProjection(row.connector_id),
+          getScheduleFrom(controller, connectorId),
+          getLatestRunSummary(connectorId),
+          getLatestRunSummary(connectorId, "succeeded"),
+          getConnectorDetailGapProjection(connectorId, connectorInstanceId),
+          getConnectorOutboxAxis(connectorId),
+          getConnectorAttentionProjection(connectorId, { connectorInstanceId }),
+          getConnectorBrowserSurfaceProjection(connectorId),
         ]);
       const refreshPolicy = extractRefreshPolicy(manifest);
       const freshness = buildConnectorFreshness({
@@ -1617,15 +1767,20 @@ export async function listConnectorSummaries(
         ),
         schedule,
       });
+      const connectorDisplayName = manifest.display_name || connectorId;
       return {
-        connection_id: row.connector_id,
+        connection_id: connectorInstanceId,
         connection_health: connectionHealth,
-        connector_id: row.connector_id,
-        display_name: manifest.display_name || row.connector_id,
+        connector_display_name: connectorDisplayName,
+        connector_id: connectorId,
+        connector_instance_id: connectorInstanceId,
+        display_name: instance.displayName || connectorDisplayName,
         manifest_version: manifest.version || null,
         next_action: connectionHealth.next_action,
         streams: (manifest.streams || []).map((stream) => stream.name),
+        stream_count: live.byStream.size,
         total_records: live.totalRecords,
+        total_retained_bytes: live.retainedBytes,
         freshness,
         refresh_policy: refreshPolicy,
         schedule,

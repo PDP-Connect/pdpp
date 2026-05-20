@@ -25,17 +25,22 @@ const STALE_MS = 7 * 24 * 60 * 60 * 1000;
 const RECENT_MS = 24 * 60 * 60 * 1000;
 
 function connectorSortKey(o: ConnectorOverview): [number, number, string] {
+  const key = o.connectionId ?? o.connectorInstanceId ?? o.connector.connector_id;
   if (o.lastRun?.status === "failed") {
-    return [0, 0, o.connector.connector_id];
+    return [0, 0, key];
   }
   if (o.isRunning) {
-    return [1, 0, o.connector.connector_id];
+    return [1, 0, key];
   }
   const lastTs = o.lastSuccessfulRun ? Date.parse(o.lastSuccessfulRun.last_at) : 0;
   if (!lastTs) {
-    return [2, 0, o.connector.connector_id];
+    return [2, 0, key];
   }
-  return [3, lastTs, o.connector.connector_id];
+  return [3, lastTs, key];
+}
+
+function overviewRouteId(o: ConnectorOverview): string {
+  return o.connectionId ?? o.connectorInstanceId ?? o.connector.connector_id;
 }
 
 export function RecordsListView({
@@ -74,7 +79,7 @@ export function RecordsListView({
   });
 
   const totalRecords = withData.reduce((sum, o) => sum + o.totalRecords, 0);
-  const totalStreams = withData.reduce((sum, o) => sum + o.streams.length, 0);
+  const totalStreams = withData.reduce((sum, o) => sum + (o.streamCount ?? o.streams.length), 0);
 
   const now = nowOverride ?? Date.now();
   const runningCount = withData.filter((o) => o.isRunning).length;
@@ -140,9 +145,9 @@ export function RecordsListView({
           <DataList>
             {sorted.map((o) =>
               interactive ? (
-                <ConnectorRow key={o.connector.connector_id} overview={o} runsHref={routes.section.runs} />
+                <ConnectorRow key={overviewRouteId(o)} overview={o} runsHref={routes.section.runs} />
               ) : (
-                <ReadOnlyConnectorRow key={o.connector.connector_id} overview={o} routes={routes} />
+                <ReadOnlyConnectorRow key={overviewRouteId(o)} overview={o} routes={routes} />
               )
             )}
           </DataList>
@@ -161,9 +166,9 @@ export function RecordsListView({
           <DataList>
             {empty.map((o) =>
               interactive ? (
-                <ConnectorRow key={o.connector.connector_id} overview={o} runsHref={routes.section.runs} />
+                <ConnectorRow key={overviewRouteId(o)} overview={o} runsHref={routes.section.runs} />
               ) : (
-                <ReadOnlyConnectorRow key={o.connector.connector_id} overview={o} routes={routes} />
+                <ReadOnlyConnectorRow key={overviewRouteId(o)} overview={o} routes={routes} />
               )
             )}
           </DataList>
@@ -175,9 +180,10 @@ export function RecordsListView({
 
 /** Read-only sandbox row: no Sync now, no client mutation, just navigate. */
 function ReadOnlyConnectorRow({ overview, routes }: { overview: ConnectorOverview; routes: Routes }) {
-  const { connector, totalRecords, streams, lastRun, lastSuccessfulRun } = overview;
-  const detailHref = routes.connector(connector.connector_id);
+  const { connector, streamCount, totalRecords, streams, lastRun, lastSuccessfulRun } = overview;
+  const detailHref = routes.connector(overviewRouteId(overview));
   const displayName = connector.display_name ?? connector.name ?? connector.connector_id;
+  const displayedStreamCount = streamCount ?? streams.length;
   return (
     <li>
       <Link
@@ -189,8 +195,9 @@ function ReadOnlyConnectorRow({ overview, routes }: { overview: ConnectorOvervie
           <span className="pdpp-caption block truncate font-mono text-muted-foreground">{connector.connector_id}</span>
         </div>
         <div className="pdpp-caption flex shrink-0 flex-col gap-0.5 text-muted-foreground tabular-nums sm:items-end sm:text-right">
-          <span>
-            {totalRecords.toLocaleString()} records · {streams.length} stream{streams.length === 1 ? "" : "s"}
+            <span>
+            {totalRecords.toLocaleString()} records · {displayedStreamCount} stream
+            {displayedStreamCount === 1 ? "" : "s"}
           </span>
           <RowFreshness lastRun={lastRun} lastSuccessfulRun={lastSuccessfulRun} />
         </div>

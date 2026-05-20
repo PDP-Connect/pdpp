@@ -123,9 +123,9 @@ test('ref.connectors.list yields empty envelope when dependency returns empty', 
 test('reference connector catalog hides manifest opt-outs', () => {
   assert.equal(
     isPublicReferenceConnector(
-      { connector_id: 'https://registry.pdpp.org/connectors/spotify', manifest: '{}' },
+      { connector_id: 'https://registry.pdpp.dev/connectors/spotify', manifest: '{}' },
       {
-        connector_id: 'https://registry.pdpp.org/connectors/spotify',
+        connector_id: 'https://registry.pdpp.dev/connectors/spotify',
         capabilities: {
           public_listing: {
             listed: false,
@@ -141,9 +141,9 @@ test('reference connector catalog hides manifest opt-outs', () => {
 test('reference connector catalog hides unproven connectors by default', () => {
   assert.equal(
     isPublicReferenceConnector(
-      { connector_id: 'https://registry.pdpp.org/connectors/unproven-source', manifest: '{}' },
+      { connector_id: 'https://registry.pdpp.dev/connectors/unproven-source', manifest: '{}' },
       {
-        connector_id: 'https://registry.pdpp.org/connectors/unproven-source',
+        connector_id: 'https://registry.pdpp.dev/connectors/unproven-source',
         capabilities: {
           public_listing: {
             status: 'unproven',
@@ -157,7 +157,7 @@ test('reference connector catalog hides unproven connectors by default', () => {
 
 test('reference connector catalog hides local-device connectors unless explicitly listed', () => {
   const imessageManifest = {
-    connector_id: 'https://registry.pdpp.org/connectors/imessage',
+    connector_id: 'https://registry.pdpp.dev/connectors/imessage',
     runtime_requirements: {
       bindings: {
         filesystem: {
@@ -172,7 +172,7 @@ test('reference connector catalog hides local-device connectors unless explicitl
 
   assert.equal(
     isPublicReferenceConnector(
-      { connector_id: 'https://registry.pdpp.org/connectors/imessage', manifest: '{}' },
+      { connector_id: 'https://registry.pdpp.dev/connectors/imessage', manifest: '{}' },
       imessageManifest,
     ),
     false,
@@ -181,7 +181,7 @@ test('reference connector catalog hides local-device connectors unless explicitl
 
   assert.equal(
     isPublicReferenceConnector(
-      { connector_id: 'https://registry.pdpp.org/connectors/imessage', manifest: '{}' },
+      { connector_id: 'https://registry.pdpp.dev/connectors/imessage', manifest: '{}' },
       {
         ...imessageManifest,
         capabilities: {
@@ -200,8 +200,8 @@ test('reference connector catalog hides local-device connectors unless explicitl
 test('reference connector catalog hides stub and stream-test connector registrations', () => {
   for (const connectorId of [
     'manual_action_stub',
-    'https://registry.pdpp.org/connectors/manual-action-stub',
-    'https://registry.pdpp.org/connectors/stream-test-stub',
+    'https://registry.pdpp.dev/connectors/manual-action-stub',
+    'https://registry.pdpp.dev/connectors/stream-test-stub',
   ]) {
     assert.equal(
       isPublicReferenceConnector({ connector_id: connectorId, manifest: '{}' }, { connector_id: connectorId }),

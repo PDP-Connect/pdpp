@@ -4,6 +4,7 @@ import { PageHeader, Section } from "../../../../components/primitives.tsx";
 import { DashboardShell, ServerUnreachable } from "../../../../components/shell.tsx";
 import { ReferenceServerUnreachableError } from "../../../../lib/owner-token.ts";
 import { getRecord, type StreamRecord } from "../../../../lib/rs-client.ts";
+import { connectorInstanceIdForConnection, resolveConnectionForRecordsRoute } from "../../../connection-route.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -15,13 +16,21 @@ export default async function RecordDetailPage({
   params: Promise<{ connector: string; stream: string; recordKey: string }>;
 }) {
   const { connector, stream, recordKey } = await params;
-  const connectorId = decodeURIComponent(connector);
+  const routeId = decodeURIComponent(connector);
   const streamName = decodeURIComponent(stream);
   const recordId = decodeURIComponent(recordKey);
 
   let record: StreamRecord;
+  let connectionId = routeId;
   try {
-    record = await getRecord(connectorId, streamName, recordId);
+    const connection = await resolveConnectionForRecordsRoute(routeId);
+    if (!connection) {
+      notFound();
+    }
+    connectionId = connection.connection_id;
+    record = await getRecord(connection.connector_id, streamName, recordId, {
+      connectorInstanceId: connectorInstanceIdForConnection(connection),
+    });
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
@@ -46,7 +55,7 @@ export default async function RecordDetailPage({
   };
   const pretty = JSON.stringify(envelope, null, 2);
 
-  const connectorHref = `/dashboard/records/${encodeURIComponent(connectorId)}`;
+  const connectorHref = `/dashboard/records/${encodeURIComponent(connectionId)}`;
   const streamHref = `${connectorHref}/${encodeURIComponent(streamName)}`;
 
   return (
@@ -54,7 +63,7 @@ export default async function RecordDetailPage({
       <PageHeader
         breadcrumbs={[
           { label: "Records", href: "/dashboard/records" },
-          { label: connectorId, href: connectorHref },
+          { label: connectionId, href: connectorHref },
           { label: streamName, href: streamHref },
           { label: recordId },
         ]}

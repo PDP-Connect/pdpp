@@ -233,7 +233,9 @@ export interface RefSchedule {
 export interface RefConnectorSummary {
   connection_health: RefConnectionHealthSnapshot;
   connection_id: string;
+  connector_display_name?: string;
   connector_id: string;
+  connector_instance_id?: string;
   display_name: string;
   freshness: Record<string, unknown>;
   last_run: RefConnectorRunSummary | null;
@@ -244,7 +246,9 @@ export interface RefConnectorSummary {
   refresh_policy?: RefreshPolicy | null;
   schedule: RefSchedule | null;
   streams: string[];
+  stream_count?: number;
   total_records: number;
+  total_retained_bytes?: number | null;
 }
 
 /**

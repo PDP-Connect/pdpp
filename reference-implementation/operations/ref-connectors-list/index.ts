@@ -40,11 +40,15 @@ export interface RefConnectorsListRunSummary {
 export interface RefConnectorsListItem {
   readonly connection_id: string;
   readonly connection_health: unknown;
+  readonly connector_display_name?: string;
   readonly connector_id: string;
+  readonly connector_instance_id?: string;
   readonly display_name: string;
   readonly manifest_version: string | null;
   readonly streams: string[];
+  readonly stream_count?: number;
   readonly total_records: number;
+  readonly total_retained_bytes?: number | null;
   readonly freshness: RefConnectorsListFreshness;
   readonly refresh_policy: unknown;
   readonly schedule: unknown;
