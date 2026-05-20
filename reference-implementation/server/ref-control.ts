@@ -20,16 +20,22 @@ import {
   computeConnectionHealth,
   type ConnectionAttentionEvidence,
   type ConnectionHealthSnapshot,
+  type ConnectionRemoteSurfaceEvidence,
   type CoverageAxis,
   deriveOutboxAxisFromHeartbeat,
   type FreshnessAxis,
   type NextAction,
   type OutboxAxis,
 } from "../runtime/connection-health.ts";
+import type {
+  BrowserSurface,
+  BrowserSurfaceLease,
+} from "@pdpp/remote-surface/leases";
 import { getConnectorManifest } from "./auth.js";
 import { deriveReferenceFreshness, type ReferenceFreshness } from "./freshness.ts";
 import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.js";
 import { listAllStreams } from "./records.js";
+import { getDefaultBrowserSurfaceLeaseStore } from "./stores/browser-surface-lease-store.ts";
 import { getDefaultConnectorAttentionStore } from "./stores/connector-attention-store.js";
 import { getDefaultConnectorDetailGapStore } from "./stores/connector-detail-gap-store.js";
 import { getDefaultDeviceExporterStore } from "./stores/device-exporter-store.js";
@@ -1076,11 +1082,13 @@ function combineUnreliableSources(
   detailGapsUnreliable: boolean,
   outboxUnreliable: boolean,
   attentionUnreliable: boolean = false,
+  remoteSurfaceUnreliable: boolean = false,
 ): readonly string[] {
   const sources: string[] = [];
   if (detailGapsUnreliable) sources.push("detail_gaps");
   if (outboxUnreliable) sources.push("outbox");
   if (attentionUnreliable) sources.push("attention_store");
+  if (remoteSurfaceUnreliable) sources.push("remote_surface_store");
   return sources;
 }
 
@@ -1180,6 +1188,211 @@ function ownerActionForEvidence(
   return action;
 }
 
+/**
+ * Roll the browser-surface lease store's per-connector evidence into a
+ * single {@link ConnectionRemoteSurfaceEvidence} the connection-health
+ * projection consumes.
+ *
+ * Live evidence sources:
+ *
+ *   - `browser_surfaces` rows — durable surface instances and their
+ *     `health` (`ready | starting | stopping | unhealthy`). An
+ *     `unhealthy` surface is the canonical live failure signal: when
+ *     the allocator marks a surface unhealthy, the runtime turns any
+ *     in-flight lease terminal and stops dispatching new runs at it
+ *     until it heals or is replaced.
+ *   - `listNonTerminalLeases()` — leases currently queued, starting,
+ *     or held against a surface. Terminal failure rows
+ *     (`surface_failed`) are not returned here; their effect is
+ *     reflected in the surface row's `health` instead.
+ *
+ * Urgency rollup (one axis per connection, most-urgent first):
+ *
+ *   1. any unhealthy surface or any non-terminal lease whose backing
+ *      surface is unhealthy -> `failed` (design.md: capacity failure
+ *      degrades the connection);
+ *   2. an active `leased` lease against a ready surface -> `leased`;
+ *   3. a `waiting_for_browser_surface` / `starting_surface` lease ->
+ *      `waiting`;
+ *   4. a managed surface with no active lease -> `idle`;
+ *   5. no rows at all -> `none` (host browser / API connector).
+ *
+ * When the store throws, we return `{ axis: "unknown", unreliable: true }`
+ * so the projection can mark `remote_surface_store` as an unreliable
+ * source and route the headline to `unknown` rather than silently
+ * accepting a stale axis.
+ */
+export interface ConnectorBrowserSurfaceProjection {
+  readonly evidence: ConnectionRemoteSurfaceEvidence | null;
+  readonly unreliable: boolean;
+}
+
+interface BrowserSurfaceLeaseStoreReader {
+  listNonTerminalLeases(): Promise<readonly BrowserSurfaceLease[]>;
+  listSurfaces(): Promise<readonly BrowserSurface[]>;
+}
+
+const ACTIVE_WAITING_LEASE_STATUSES = new Set<BrowserSurfaceLease["status"]>([
+  "waiting_for_browser_surface",
+  "starting_surface",
+]);
+
+function rankRemoteSurfaceLease(status: BrowserSurfaceLease["status"]): number {
+  // Lower rank = more urgent. `leased` above `waiting` so an operator
+  // viewing a connection sees "running" before "queued" when both
+  // exist; the waiting variants share a rung.
+  if (status === "leased") return 0;
+  if (status === "starting_surface") return 1;
+  if (status === "waiting_for_browser_surface") return 2;
+  return 3;
+}
+
+function pickMostUrgentLease(
+  leases: readonly BrowserSurfaceLease[],
+): BrowserSurfaceLease | null {
+  if (leases.length === 0) return null;
+  return [...leases].sort((a, b) => {
+    const r = rankRemoteSurfaceLease(a.status) - rankRemoteSurfaceLease(b.status);
+    if (r !== 0) return r;
+    // Stable secondary: most-recent requested_at first.
+    const at = Date.parse(b.requested_at) - Date.parse(a.requested_at);
+    return Number.isFinite(at) ? at : 0;
+  })[0]!;
+}
+
+/**
+ * Project the most-urgent remote-surface evidence for a single connector
+ * id from the durable browser-surface lease store. Returns `null`
+ * evidence for connectors that have no managed remote surface at all
+ * (host browser / API connectors), so they cannot be silently degraded
+ * by the absence of a lease/surface row.
+ */
+export async function getConnectorBrowserSurfaceProjection(
+  connectorId: string,
+  options: { readonly store?: BrowserSurfaceLeaseStoreReader } = {},
+): Promise<ConnectorBrowserSurfaceProjection> {
+  const store =
+    options.store ??
+    (getDefaultBrowserSurfaceLeaseStore() as BrowserSurfaceLeaseStoreReader);
+  let leases: readonly BrowserSurfaceLease[];
+  let surfaces: readonly BrowserSurface[];
+  try {
+    [leases, surfaces] = await Promise.all([
+      store.listNonTerminalLeases(),
+      store.listSurfaces(),
+    ]);
+  } catch {
+    return {
+      evidence: {
+        axis: "unknown",
+        leaseId: null,
+        leaseStatus: null,
+        profileKey: null,
+        surfaceHealth: null,
+        surfaceId: null,
+        waitReason: null,
+      },
+      unreliable: true,
+    };
+  }
+
+  const connectorLeases = leases.filter((lease) => lease.connector_id === connectorId);
+  const connectorSurfaces = surfaces.filter((surface) => surface.connector_id === connectorId);
+
+  if (connectorLeases.length === 0 && connectorSurfaces.length === 0) {
+    // Host browser / API connector — no managed remote surface. Routine
+    // absence of evidence, not unreliable evidence.
+    return { evidence: null, unreliable: false };
+  }
+
+  const unhealthySurface = connectorSurfaces.find((surface) => surface.health === "unhealthy");
+  const picked = pickMostUrgentLease(connectorLeases);
+
+  // 1. Unhealthy surface = live capacity failure (design.md).
+  if (unhealthySurface) {
+    return {
+      evidence: {
+        axis: "failed",
+        leaseId: unhealthySurface.active_lease_id ?? null,
+        leaseStatus: null,
+        profileKey: unhealthySurface.profile_key,
+        surfaceHealth: unhealthySurface.health,
+        surfaceId: unhealthySurface.surface_id,
+        waitReason: "surface_unhealthy",
+      },
+      unreliable: false,
+    };
+  }
+
+  // 2-3. Active lease evidence.
+  if (picked) {
+    const surface = picked.surface_id
+      ? connectorSurfaces.find((s) => s.surface_id === picked.surface_id)
+      : undefined;
+    if (picked.status === "leased") {
+      return {
+        evidence: {
+          axis: "leased",
+          leaseId: picked.lease_id,
+          leaseStatus: picked.status,
+          profileKey: picked.profile_key,
+          surfaceHealth: surface?.health ?? null,
+          surfaceId: picked.surface_id ?? null,
+          waitReason: null,
+        },
+        unreliable: false,
+      };
+    }
+    if (ACTIVE_WAITING_LEASE_STATUSES.has(picked.status)) {
+      return {
+        evidence: {
+          axis: "waiting",
+          leaseId: picked.lease_id,
+          leaseStatus: picked.status,
+          profileKey: picked.profile_key,
+          surfaceHealth: surface?.health ?? null,
+          surfaceId: picked.surface_id ?? null,
+          waitReason: picked.wait_reason ?? null,
+        },
+        unreliable: false,
+      };
+    }
+  }
+
+  // 4. Managed surface present, no active lease.
+  if (connectorSurfaces.length > 0) {
+    const surface = connectorSurfaces[0]!;
+    return {
+      evidence: {
+        axis: "idle",
+        leaseId: null,
+        leaseStatus: null,
+        profileKey: surface.profile_key,
+        surfaceHealth: surface.health,
+        surfaceId: surface.surface_id,
+        waitReason: null,
+      },
+      unreliable: false,
+    };
+  }
+
+  // No surface row and no recognized lease status — conservative
+  // `unknown` so the dashboard surfaces the gap rather than painting
+  // false-green over evidence we cannot classify.
+  return {
+    evidence: {
+      axis: "unknown",
+      leaseId: null,
+      leaseStatus: null,
+      profileKey: null,
+      surfaceHealth: null,
+      surfaceId: null,
+      waitReason: null,
+    },
+    unreliable: false,
+  };
+}
+
 export function projectConnectorSummaryConnectionHealth(input: {
   /**
    * Durable structured attention records the caller has already filtered
@@ -1208,6 +1421,16 @@ export function projectConnectorSummaryConnectionHealth(input: {
   readonly nowIso?: string;
   readonly outbox?: { axis: OutboxAxis };
   readonly pendingDetailGaps?: readonly PendingDetailGapSummary[];
+  /**
+   * Pre-projected browser-surface evidence for the connection. The list
+   * and detail operations read it via
+   * {@link getConnectorBrowserSurfaceProjection}; tests pass synthetic
+   * evidence. `null` means "host browser / API connector, no managed
+   * remote surface" and never affects headline state. Omit the field
+   * entirely for callers that have not opted into the remote-surface
+   * axis.
+   */
+  readonly remoteSurface?: ConnectionRemoteSurfaceEvidence | null;
   readonly unreliableSources?: readonly string[];
   readonly schedule: unknown;
 }): ConnectionHealthSnapshot {
@@ -1248,6 +1471,7 @@ export function projectConnectorSummaryConnectionHealth(input: {
     freshness: { axis: mapFreshnessAxis(input.freshness) },
     outbox: input.outbox ?? { axis: "unknown" },
     projection: { unreliableSources: input.unreliableSources ?? [] },
+    remoteSurface: input.remoteSurface ?? null,
     run: {
       hasDegradingGaps: hasPendingDetailGap(pendingDetailGaps) || hasDegradingKnownGap(input.lastRun),
       lastSuccessAt: input.lastSuccessfulRun?.last_at ?? scheduleLastSuccessfulAt,
@@ -1359,14 +1583,16 @@ export async function listConnectorSummaries(
         return null;
       }
       const live = await getConnectorRecordProjection(row.connector_id);
-      const [schedule, lastRun, lastSuccessfulRun, detailGaps, outbox, attention] = await Promise.all([
-        getScheduleFrom(controller, row.connector_id),
-        getLatestRunSummary(row.connector_id),
-        getLatestRunSummary(row.connector_id, "succeeded"),
-        getConnectorDetailGapProjection(row.connector_id),
-        getConnectorOutboxAxis(row.connector_id),
-        getConnectorAttentionProjection(row.connector_id),
-      ]);
+      const [schedule, lastRun, lastSuccessfulRun, detailGaps, outbox, attention, remoteSurface] =
+        await Promise.all([
+          getScheduleFrom(controller, row.connector_id),
+          getLatestRunSummary(row.connector_id),
+          getLatestRunSummary(row.connector_id, "succeeded"),
+          getConnectorDetailGapProjection(row.connector_id),
+          getConnectorOutboxAxis(row.connector_id),
+          getConnectorAttentionProjection(row.connector_id),
+          getConnectorBrowserSurfaceProjection(row.connector_id),
+        ]);
       const refreshPolicy = extractRefreshPolicy(manifest);
       const freshness = buildConnectorFreshness({
         lastRun,
@@ -1382,7 +1608,13 @@ export async function listConnectorSummaries(
         manifestStreams: manifest.streams ?? [],
         outbox: { axis: outbox.axis },
         pendingDetailGaps: detailGaps.gaps,
-        unreliableSources: combineUnreliableSources(detailGaps.unreliable, outbox.unreliable, attention.unreliable),
+        remoteSurface: remoteSurface.evidence,
+        unreliableSources: combineUnreliableSources(
+          detailGaps.unreliable,
+          outbox.unreliable,
+          attention.unreliable,
+          remoteSurface.unreliable,
+        ),
         schedule,
       });
       return {
@@ -1415,14 +1647,16 @@ export async function getConnectorDetail(
     throw new RefControlError(`Unknown connector: ${connectorId}`, "not_found");
   }
   const live = await getConnectorRecordProjection(connectorId);
-  const [schedule, lastRun, lastSuccessfulRun, detailGaps, outbox, attention] = await Promise.all([
-    getScheduleFrom(controller, connectorId),
-    getLatestRunSummary(connectorId),
-    getLatestRunSummary(connectorId, "succeeded"),
-    getConnectorDetailGapProjection(connectorId),
-    getConnectorOutboxAxis(connectorId),
-    getConnectorAttentionProjection(connectorId),
-  ]);
+  const [schedule, lastRun, lastSuccessfulRun, detailGaps, outbox, attention, remoteSurface] =
+    await Promise.all([
+      getScheduleFrom(controller, connectorId),
+      getLatestRunSummary(connectorId),
+      getLatestRunSummary(connectorId, "succeeded"),
+      getConnectorDetailGapProjection(connectorId),
+      getConnectorOutboxAxis(connectorId),
+      getConnectorAttentionProjection(connectorId),
+      getConnectorBrowserSurfaceProjection(connectorId),
+    ]);
   const refreshPolicy = extractRefreshPolicy(manifest);
   const freshness = buildConnectorFreshness({
     lastRun,
@@ -1438,7 +1672,13 @@ export async function getConnectorDetail(
     manifestStreams: manifest.streams ?? [],
     outbox: { axis: outbox.axis },
     pendingDetailGaps: detailGaps.gaps,
-    unreliableSources: combineUnreliableSources(detailGaps.unreliable, outbox.unreliable, attention.unreliable),
+    remoteSurface: remoteSurface.evidence,
+    unreliableSources: combineUnreliableSources(
+      detailGaps.unreliable,
+      outbox.unreliable,
+      attention.unreliable,
+      remoteSurface.unreliable,
+    ),
     schedule,
   });
   return {

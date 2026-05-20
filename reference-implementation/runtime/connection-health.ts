@@ -121,12 +121,41 @@ export type AttentionAxis = "acknowledged" | "in_progress" | "none" | "open";
  */
 export type OutboxAxis = "active" | "idle" | "stalled" | "unknown";
 
+/**
+ * Remote-surface axis: rolls up the most-urgent browser-surface lease and
+ * surface health for a connection.
+ *
+ *   - `none`     : connector has no managed remote surface (host browser
+ *                  or API connector). Routine state; never affects headline.
+ *   - `idle`     : connector is managed but has no active lease right now.
+ *                  Surfaces may exist but no run is currently leasing one.
+ *   - `waiting`  : a lease is queued (e.g. waiting on capacity, surface
+ *                  starting). Routine state — does not degrade health.
+ *   - `leased`   : a lease is currently held against a ready surface.
+ *                  Mirrored on `badges.syncing` when a run is active.
+ *   - `failed`   : the most recent non-terminal evidence is a surface
+ *                  capacity / readiness / start failure (per design.md:
+ *                  "A remote browser surface capacity failure degrades
+ *                  the affected connection without changing source
+ *                  identity"). Degrades the headline through the
+ *                  `degraded` rung when no higher precedence applies.
+ *   - `unknown`  : evidence is missing or the store is unreliable.
+ */
+export type RemoteSurfaceAxis =
+  | "failed"
+  | "idle"
+  | "leased"
+  | "none"
+  | "unknown"
+  | "waiting";
+
 /** Connection axes; orthogonal to headline state. */
 export interface ConnectionAxes {
   readonly attention: AttentionAxis;
   readonly coverage: CoverageAxis;
   readonly freshness: FreshnessAxis;
   readonly outbox: OutboxAxis;
+  readonly remote_surface: RemoteSurfaceAxis;
 }
 
 /** Activity badges; never replace the headline pill. */
@@ -167,6 +196,24 @@ export interface NextAction {
   readonly source: "none" | "schedule_fallback" | "structured";
 }
 
+/**
+ * Diagnostic snapshot of the connection's most-urgent remote-surface
+ * lease/surface state. Mirrors the axis with optional detail so the
+ * dashboard can render a non-headline badge ("waiting for browser
+ * surface", "surface failed: capacity_full") without re-reading the
+ * lease store. `null` when the connector is not managed by the
+ * remote-surface allocator.
+ */
+export interface RemoteSurfaceDetail {
+  readonly axis: RemoteSurfaceAxis;
+  readonly lease_id: string | null;
+  readonly lease_status: string | null;
+  readonly profile_key: string | null;
+  readonly surface_health: "ready" | "starting" | "stopping" | "unhealthy" | null;
+  readonly surface_id: string | null;
+  readonly wait_reason: string | null;
+}
+
 export interface ConnectionHealthSnapshot {
   readonly axes: ConnectionAxes;
   readonly badges: ConnectionBadges;
@@ -175,6 +222,16 @@ export interface ConnectionHealthSnapshot {
   readonly next_action: NextAction | null;
   readonly next_attempt_at: string | null;
   readonly reason_code: string | null;
+  /**
+   * Non-headline diagnostic for remote-surface (n.eko) lease/surface
+   * state. Mirrors `axes.remote_surface` and is `null` when no evidence
+   * was supplied (e.g. host browser / API connectors). Per design.md, a
+   * remote-surface capacity failure degrades the connection but does not
+   * change source identity — the headline pill still reflects whether
+   * the connection itself is healthy, while the surface detail explains
+   * the executor-capacity story.
+   */
+  readonly remote_surface: RemoteSurfaceDetail | null;
   readonly state: ConnectionHealthState;
   /**
    * When `state === "unknown"`, names the evidence source that made the
@@ -283,6 +340,27 @@ export interface ConnectionScheduleEvidence {
   readonly enabled: boolean;
 }
 
+/**
+ * Remote-surface evidence rolled up across the connection's most-urgent
+ * lease/surface state. The caller (ref-control) reads the durable
+ * browser-surface lease store and decides which lease wins; the
+ * projection trusts that pick.
+ *
+ * Carrying details (`leaseId`, `surfaceId`, `waitReason`, `profileKey`)
+ * lets the dashboard render a non-headline diagnostic without re-reading
+ * the store. They are intentionally non-secret: lease ids and profile
+ * keys are opaque identifiers, not credentials.
+ */
+export interface ConnectionRemoteSurfaceEvidence {
+  readonly axis: RemoteSurfaceAxis;
+  readonly leaseId: string | null;
+  readonly leaseStatus: string | null;
+  readonly profileKey: string | null;
+  readonly surfaceHealth: "ready" | "starting" | "stopping" | "unhealthy" | null;
+  readonly surfaceId: string | null;
+  readonly waitReason: string | null;
+}
+
 /** Active-work signal for the syncing badge. */
 export interface ConnectionActivityEvidence {
   readonly active: boolean;
@@ -296,6 +374,7 @@ export interface ComputeConnectionHealthInput {
   readonly freshness: ConnectionFreshnessEvidence | null;
   readonly outbox: ConnectionOutboxEvidence | null;
   readonly projection: ConnectionProjectionEvidence | null;
+  readonly remoteSurface?: ConnectionRemoteSurfaceEvidence | null;
   readonly run: ConnectionRunEvidence | null;
   readonly schedule: ConnectionScheduleEvidence | null;
 }
@@ -305,6 +384,7 @@ export interface ComputeConnectionHealthInput {
 export function computeConnectionHealth(input: ComputeConnectionHealthInput): ConnectionHealthSnapshot {
   const axes = projectAxes(input);
   const badges = projectBadges(input, axes);
+  const remoteSurface = projectRemoteSurfaceDetail(input.remoteSurface ?? null);
   const lastSuccessAt = input.run?.lastSuccessAt ?? null;
   const nextAttemptAt = input.backoff?.nextRunAt ?? null;
 
@@ -319,6 +399,7 @@ export function computeConnectionHealth(input: ComputeConnectionHealthInput): Co
       nextAttemptAt,
       axes,
       badges,
+      remoteSurface,
       unknownReasons: unreliable,
     });
   }
@@ -333,6 +414,7 @@ export function computeConnectionHealth(input: ComputeConnectionHealthInput): Co
       nextAttemptAt: null,
       axes,
       badges,
+      remoteSurface,
     });
   }
 
@@ -345,6 +427,7 @@ export function computeConnectionHealth(input: ComputeConnectionHealthInput): Co
       nextAttemptAt,
       axes,
       badges,
+      remoteSurface,
     });
   }
 
@@ -358,6 +441,7 @@ export function computeConnectionHealth(input: ComputeConnectionHealthInput): Co
       nextAttemptAt,
       axes,
       badges,
+      remoteSurface,
       nextAction: projectNextAction(input.attention),
     });
   }
@@ -371,6 +455,7 @@ export function computeConnectionHealth(input: ComputeConnectionHealthInput): Co
       nextAttemptAt,
       axes,
       badges,
+      remoteSurface,
     });
   }
 
@@ -383,6 +468,7 @@ export function computeConnectionHealth(input: ComputeConnectionHealthInput): Co
       nextAttemptAt,
       axes,
       badges,
+      remoteSurface,
     });
   }
 
@@ -396,6 +482,7 @@ export function computeConnectionHealth(input: ComputeConnectionHealthInput): Co
       nextAttemptAt,
       axes,
       badges,
+      remoteSurface,
     });
   }
 
@@ -411,6 +498,7 @@ export function computeConnectionHealth(input: ComputeConnectionHealthInput): Co
       nextAttemptAt,
       axes,
       badges,
+      remoteSurface,
     });
   }
 
@@ -423,6 +511,7 @@ export function computeConnectionHealth(input: ComputeConnectionHealthInput): Co
     nextAttemptAt,
     axes,
     badges,
+    remoteSurface,
     unknownReasons: ["unclassified"],
   });
 }
@@ -435,6 +524,24 @@ function projectAxes(input: ComputeConnectionHealthInput): ConnectionAxes {
     coverage: input.coverage?.axis ?? "unknown",
     attention: input.attention ? input.attention.lifecycle : "none",
     outbox: input.outbox?.axis ?? "unknown",
+    remote_surface: input.remoteSurface?.axis ?? "none",
+  };
+}
+
+function projectRemoteSurfaceDetail(
+  evidence: ConnectionRemoteSurfaceEvidence | null,
+): RemoteSurfaceDetail | null {
+  if (!evidence) {
+    return null;
+  }
+  return {
+    axis: evidence.axis,
+    lease_id: evidence.leaseId,
+    lease_status: evidence.leaseStatus,
+    profile_key: evidence.profileKey,
+    surface_health: evidence.surfaceHealth,
+    surface_id: evidence.surfaceId,
+    wait_reason: evidence.waitReason,
   };
 }
 
@@ -449,6 +556,13 @@ function projectBadges(input: ComputeConnectionHealthInput, axes: ConnectionAxes
 
 function isDegradedShape(input: ComputeConnectionHealthInput, axes: ConnectionAxes): boolean {
   if (axes.outbox === "stalled") {
+    return true;
+  }
+  // Per design.md "A remote browser surface capacity failure degrades the
+  // affected connection without changing source identity": a managed
+  // remote-surface in `failed` state (surface_failed lease, or unhealthy
+  // surface) degrades the connection. Routine waiting/leased/idle do not.
+  if (axes.remote_surface === "failed") {
     return true;
   }
   if (
@@ -537,6 +651,16 @@ function degradedReasonCode(input: ComputeConnectionHealthInput): string | null 
   if (input.backoff?.reasonClass) {
     return stripClassPrefix(input.backoff.reasonClass);
   }
+  // No run/backoff reason but the remote surface failed — surface that
+  // reason so the dashboard can render "surface: surface_unhealthy"
+  // instead of an empty reason_code on a degraded pill.
+  if (input.remoteSurface?.axis === "failed") {
+    const reason = input.remoteSurface.waitReason ?? input.remoteSurface.leaseStatus;
+    if (reason) {
+      return `remote_surface:${reason}`;
+    }
+    return "remote_surface_failed";
+  }
   return null;
 }
 
@@ -549,6 +673,7 @@ interface SnapshotArgs {
   readonly nextAction?: NextAction | null;
   readonly nextAttemptAt: string | null;
   readonly reasonCode: string | null;
+  readonly remoteSurface?: RemoteSurfaceDetail | null;
   readonly state: ConnectionHealthState;
   readonly unknownReasons?: readonly string[];
 }
@@ -562,6 +687,7 @@ function snapshot(args: SnapshotArgs): ConnectionHealthSnapshot {
     next_attempt_at: args.nextAttemptAt,
     axes: args.axes,
     badges: args.badges,
+    remote_surface: args.remoteSurface ?? null,
     unknown_reasons: args.unknownReasons ?? [],
   };
 }

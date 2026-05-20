@@ -56,7 +56,7 @@
 - [x] 7.3 Add acceptance tests proving success-with-gaps and unsupported required streams do not project as healthy.
 - [x] 7.4 Add restart acceptance proving active/pending/retrying/blocked state is reconstructed from durable evidence.
 - [x] 7.5 Add load/resource acceptance proving large local backfills and summary rebuilds do not require unbounded memory or destabilize the host.
-- [ ] 7.6 Add a browser/API connector acceptance path proving structured attention and remote-surface status feed the connection projection. (Partially covered: structured attention is pinned; remote-surface status has no production path into `ref-control` connection health yet.)
+- [x] 7.6 Add a browser/API connector acceptance path proving structured attention and remote-surface status feed the connection projection.
 - [x] 7.7 Run relevant reference implementation, web, local collector, and polyfill connector checks.
 - [x] 7.8 Run `openspec validate complete-ri-operator-console-reliability --strict`.
 - [x] 7.9 Run `openspec validate --all --strict` or document unrelated pre-existing failures.

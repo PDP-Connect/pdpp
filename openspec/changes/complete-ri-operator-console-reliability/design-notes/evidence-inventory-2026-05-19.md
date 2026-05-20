@@ -20,9 +20,9 @@ must not be hidden behind a green dashboard state.
   `scheduler_last_run_times`.
 - Attention lifecycle still needs a durable store. The current pure
   `runtime/attention.ts` model is not restart-reconstructable by itself.
-- Local device outbox evidence exists in the local collector package, but
-  reference-server dashboard health does not yet ingest a durable
-  connection-scoped outbox/backlog summary.
+- Local device outbox evidence exists in the local collector package and is
+  now projected into reference-server connection health through
+  device-exporter heartbeat/outbox diagnostics.
 
 ## Evidence Sources
 
@@ -33,8 +33,8 @@ must not be hidden behind a green dashboard state.
 | Scheduler history/backoff | `scheduler_run_history` and `scheduler_last_run_times` via `SchedulerStore` | Now wired into `scheduler_backoff` and connection `cooling_off` / `blocked` |
 | Active runs | `scheduler_active_runs` via `SchedulerStore` plus in-memory controller state | Wired into syncing/activity badge |
 | Connector detail gaps | `connector_detail_gaps` in SQLite/Postgres and `connector-detail-gap-store.js` | Pending gaps now degrade connection health; stream/scope coverage detail remains pending |
-| Local collector outbox | `packages/polyfill-connectors/src/local-device-outbox.ts` | Durable locally, but not yet ingested into reference dashboard health |
-| Browser-surface leases | `browser-surface-lease-store.ts` and remote-surface lease helpers | Durable/status-bearing, not yet health-wired |
+| Local collector outbox | `packages/polyfill-connectors/src/local-device-outbox.ts` plus device-exporter diagnostics | Wired into the outbox axis; stale/expired work degrades or marks projection unreliable |
+| Browser-surface leases | `browser-surface-lease-store.ts` and remote-surface lease helpers | Wired into the remote-surface axis/detail; capacity/surface failures degrade, routine waiting/leased/idle remain non-headline diagnostics |
 | Attention lifecycle | Pure `runtime/attention.ts` helpers | Not durable yet; current schedule boolean loses lifecycle/action target |
 | Projection freshness | Derived by `server/freshness.ts` | Wired as freshness axis; projection reliability sources still need explicit failure/stale evidence |
 | Connector state | Connector state stores | Durable but potentially sensitive; must not be surfaced without redaction |
@@ -54,8 +54,9 @@ must not be hidden behind a green dashboard state.
 
 - Durable attention store: missing persistence for attention id, dedupe key,
   lifecycle, action target, expiry, sensitivity, and auto-detection.
-- Outbox/backlog integration: local outbox summary is not yet surfaced to the
-  reference server connection health projection.
+- Outbox/backlog integration is wired through device-exporter heartbeat and
+  source-instance diagnostics; deeper local outbox push telemetry remains a
+  separate local collector enhancement.
 - Stream/scope coverage: pending durable detail gaps now prevent false green,
   but the dashboard still uses a coarse last-run coverage rollup and does not
   expose per-stream/scope coverage detail.
@@ -73,5 +74,6 @@ must not be hidden behind a green dashboard state.
    or state evidence to `_ref` surfaces.
 3. Roll durable detail gaps into connection/stream coverage.
 4. Add durable attention storage and feed open attention into connection health.
-5. Ingest local outbox/backlog summaries for local collector/device exporter
-   connections.
+5. Continue local collector durability hardening: drain-before-scan ordering,
+   bounded child buffering, cancellation propagation, lease renewal, and
+   host-native unit templates.
