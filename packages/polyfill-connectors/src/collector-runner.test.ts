@@ -1542,8 +1542,8 @@ test("runCollectorConnector drains a prior pass's enqueued backlog before scanni
     // Brief wait so the retry backoff (1ms) elapses for every retried row.
     await new Promise((resolve) => setTimeout(resolve, 25));
     ingestShouldFail = false;
+    const eventsBeforePass2 = harness.events.length;
     const pass2Started = harness.ingestedBatches.length;
-    const stateOpsBeforePass2 = harness.stateOps.length;
 
     // The pass-2 child emits zero records — so any ingest call during
     // pass 2 must come from the pre-scan drain of pass-1 backlog.
@@ -1580,10 +1580,12 @@ test("runCollectorConnector drains a prior pass's enqueued backlog before scanni
     // Critical ordering: the pre-scan drain must call ingest before the
     // runner reads prior state for the new spawn. Equivalent: the first
     // state GET of pass 2 must come after the backlog ingest calls.
-    const firstStateGetIndex = harness.stateOps.findIndex(
-      (op, idx) => idx >= stateOpsBeforePass2 && op.method === "GET"
+    const pass2Events = harness.events.slice(eventsBeforePass2).map((event) => event.label);
+    assert.deepEqual(
+      pass2Events.slice(0, 4),
+      ["ingest:ok", "ingest:ok", "ingest:ok", "state:GET"],
+      `expected pass 2 to drain backlog before state read; saw ${pass2Events.join(",")}`
     );
-    assert.ok(firstStateGetIndex > stateOpsBeforePass2 - 1, "pass 2 must read prior state");
     // Pass-2 child emitted no STATE of its own, so no new checkpoint
     // PUT happens this pass. The pass-1 STATE was buffered in pass-1
     // process memory and lost when that process exited — this is the
@@ -1775,7 +1777,8 @@ async function startTogglableHarness(options: {
   ingestHandler: () => "fail" | "ok";
   onIngestSucceeded?: () => void;
   priorState?: Record<string, unknown> | null;
-}): Promise<CollectorHarness> {
+}): Promise<CollectorHarness & { events: Array<{ label: string }> }> {
+  const events: Array<{ label: string }> = [];
   const stateOps: CollectorHarness["stateOps"] = [];
   const heartbeats: CollectorHarness["heartbeats"] = [];
   const ingestedBatches: CollectorHarness["ingestedBatches"] = [];
@@ -1788,6 +1791,7 @@ async function startTogglableHarness(options: {
     const parsed = body ? safeJsonParse(body) : null;
 
     if (url.endsWith("/state") && (method === "GET" || method === "PUT")) {
+      events.push({ label: `state:${method}` });
       stateOps.push({ body: parsed, method });
       if (method === "GET") {
         sendJson(res, 200, {
@@ -1813,12 +1817,15 @@ async function startTogglableHarness(options: {
       return;
     }
     if (url.includes("/heartbeat")) {
+      events.push({ label: "heartbeat" });
       heartbeats.push(parsed as { status: string });
       sendJson(res, 200, { object: "device_exporter_heartbeat", status: "accepted" });
       return;
     }
     if (url.includes("/ingest-batches")) {
-      if (options.ingestHandler() === "fail") {
+      const ingestResult = options.ingestHandler();
+      events.push({ label: `ingest:${ingestResult}` });
+      if (ingestResult === "fail") {
         res.writeHead(503, { "content-type": "application/json" });
         res.end(JSON.stringify({ error: { code: "synthetic_unavailable" } }));
         return;
@@ -1843,6 +1850,7 @@ async function startTogglableHarness(options: {
   }
   return {
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    events,
     heartbeats,
     ingestedBatches,
     stateOps,
