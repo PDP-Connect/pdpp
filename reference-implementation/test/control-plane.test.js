@@ -721,4 +721,35 @@ test('_ref dataset summary', async (t) => {
       assert.ok(requestId, 'Request-Id header must be present on _ref responses');
     });
   });
+
+  await t.test('reconcile route exposes residual dirty work for follow-up passes', async () => {
+    await withHarness(async ({ asUrl }) => {
+      await rebuildDatasetSummary(asUrl);
+      const insert = getDb().prepare(
+        `INSERT INTO dataset_summary_stream_projection(
+           connector_id,
+           stream,
+           record_count,
+           record_json_bytes,
+           consent_time_field,
+           dirty_record_time_bounds,
+           computed_at
+         )
+         VALUES(?, ?, 1, 1, 'created_at', 1, '2026-01-01T00:00:00.000Z')`,
+      );
+      for (let i = 0; i < 260; i += 1) {
+        insert.run('gmail', `route-stream-${String(i).padStart(4, '0')}`);
+      }
+
+      const { status, body } = await fetchJson(`${asUrl}/_ref/dataset/summary/reconcile`, {
+        method: 'POST',
+      });
+
+      assert.equal(status, 200);
+      assert.equal(body.object, 'dataset_summary_reconcile');
+      assert.equal(body.reconciled, 256);
+      assert.equal(body.residual, 1);
+      assert.equal(body.summary.projection.state, 'stale');
+    });
+  });
 });

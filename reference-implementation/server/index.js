@@ -547,6 +547,32 @@ function handleError(res, err) {
   pdppError(res, status, code, err.message, err.param || null);
 }
 
+function createRequestAbortSignal(req, message) {
+  const controller = new AbortController();
+  const raw = req?.raw;
+  const abort = () => {
+    if (controller.signal.aborted) return;
+    const err = new Error(message);
+    err.name = 'AbortError';
+    err.code = 'ABORT_ERR';
+    controller.abort(err);
+  };
+  if (raw && typeof raw.on === 'function') {
+    raw.on('close', abort);
+  }
+  return {
+    signal: controller.signal,
+    cleanup() {
+      if (!raw) return;
+      if (typeof raw.off === 'function') {
+        raw.off('close', abort);
+      } else if (typeof raw.removeListener === 'function') {
+        raw.removeListener('close', abort);
+      }
+    },
+  };
+}
+
 function oauthError(res, status, code, description) {
   const requestId = ensureRequestId(res);
   res.status(status).json({
@@ -3457,6 +3483,7 @@ function buildAsApp(opts = {}) {
   });
 
   app.post('/_ref/dataset/summary/rebuild', { contract: 'refDatasetSummaryRebuild' }, ownerAuth.requireOwnerSession, async (req, res) => {
+    const requestAbort = createRequestAbortSignal(req, 'dataset summary rebuild request closed');
     try {
       let cachedAggregate = null;
       const aggregate = async () => {
@@ -3496,7 +3523,7 @@ function buildAsApp(opts = {}) {
         },
         listTopConnectorCandidates: () => listDatasetTopConnectorCandidates(),
         listStreamProjectionSeeds: () => listDatasetSummaryStreamProjectionSeeds(),
-      });
+      }, { signal: requestAbort.signal });
       const summary = await executeRefDatasetSummary({
         getProjection: () => projection,
         getCounts: () => {
@@ -3518,15 +3545,18 @@ function buildAsApp(opts = {}) {
       res.json(summary);
     } catch (err) {
       handleError(res, err);
+    } finally {
+      requestAbort.cleanup();
     }
   });
 
   app.post('/_ref/dataset/summary/reconcile', { contract: 'refDatasetSummaryReconcile' }, ownerAuth.requireOwnerSession, async (req, res) => {
+    const requestAbort = createRequestAbortSignal(req, 'dataset summary reconcile request closed');
     try {
       const result = await reconcileDirtyDatasetSummaryRecordTimeBounds({
         getStreamRecordTimeBounds: (connectorId, stream, consentTimeField) =>
           getDatasetSummaryStreamRecordTimeBounds(connectorId, stream, consentTimeField),
-      });
+      }, { signal: requestAbort.signal });
       const summary = await executeRefDatasetSummary({
         getProjection: () => getDatasetSummaryProjection(),
         getCounts: () => {
@@ -3549,10 +3579,13 @@ function buildAsApp(opts = {}) {
         object: 'dataset_summary_reconcile',
         reconciled: result.reconciled,
         deferred: result.deferred,
+        residual: result.residual,
         summary,
       });
     } catch (err) {
       handleError(res, err);
+    } finally {
+      requestAbort.cleanup();
     }
   });
 
