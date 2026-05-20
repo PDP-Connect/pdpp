@@ -79,7 +79,43 @@ async function main() {
         ...(options.runId ? { runId: options.runId } : {}),
         sourceInstanceId: options.sourceInstanceId,
     });
-    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    process.stdout.write(`${JSON.stringify(summarizeRunResultForCli(result), null, 2)}\n`);
+}
+export function summarizeRunResultForCli(result) {
+    return {
+        ...result,
+        flushedState: summarizeCollectorState(result.flushedState),
+        priorState: summarizeCollectorState(result.priorState),
+    };
+}
+function summarizeCollectorState(state) {
+    if (!state || Object.keys(state).length === 0) {
+        return null;
+    }
+    const streams = {};
+    for (const [stream, cursor] of Object.entries(state).sort(([a], [b]) => a.localeCompare(b))) {
+        streams[stream] = summarizeCursor(cursor);
+    }
+    return {
+        stream_count: Object.keys(streams).length,
+        streams,
+    };
+}
+function summarizeCursor(cursor) {
+    if (!cursor || typeof cursor !== "object" || Array.isArray(cursor)) {
+        return { keys: [] };
+    }
+    const record = cursor;
+    const summary = {
+        keys: Object.keys(record).sort(),
+    };
+    if (typeof record.fetched_at === "string") {
+        summary.fetched_at = record.fetched_at;
+    }
+    if (record.file_mtimes && typeof record.file_mtimes === "object" && !Array.isArray(record.file_mtimes)) {
+        summary.file_mtimes_count = Object.keys(record.file_mtimes).length;
+    }
+    return summary;
 }
 export function inspectLocalOutboxStatus(options) {
     const dbPath = resolveOutboxPath(options);

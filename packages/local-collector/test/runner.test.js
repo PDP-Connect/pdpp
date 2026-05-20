@@ -24,6 +24,7 @@ import {
   inspectLocalOutboxStatus,
   parseArgs,
   scopedDefaultQueuePath,
+  summarizeRunResultForCli,
 } from '../bin/pdpp-local-collector.ts';
 import {
   ALLOW_CUSTOM_COMMAND_ENV,
@@ -220,6 +221,56 @@ test('local collector doctor flags missing db, expired leases, and dead letters'
   } finally {
     outbox.close();
   }
+});
+
+test('local collector run output summarizes state cursors without dumping payload maps', () => {
+  const output = summarizeRunResultForCli({
+    done: { records_emitted: 1, status: 'succeeded', type: 'DONE' },
+    enqueuedBatches: 1,
+    flushedState: {
+      messages: {
+        fetched_at: '2026-05-20T00:00:00.000Z',
+        file_mtimes: {
+          '/private/path/a.jsonl': 1,
+          '/private/path/b.jsonl': 2,
+        },
+      },
+    },
+    outboxSummary: {
+      deadLetter: 0,
+      leased: 0,
+      oldestReadyAt: null,
+      ready: 0,
+      retrying: 0,
+      staleLeases: 0,
+      succeeded: 1,
+      total: 1,
+    },
+    priorState: {
+      messages: {
+        fetched_at: '2026-05-19T00:00:00.000Z',
+        file_mtimes: {
+          '/private/path/a.jsonl': 1,
+        },
+      },
+    },
+    recordsQueued: 1,
+    recoveredLeases: 0,
+    satisfiedBindings: ['filesystem'],
+    sentBatches: 1,
+    skippedScanForBacklog: false,
+    scanBudgetExceeded: false,
+    statePutFailed: false,
+    streamingBufferHighWaterMark: 1,
+  });
+
+  assert.equal(output.flushedState.streams.messages.file_mtimes_count, 2);
+  assert.deepEqual(output.flushedState.streams.messages.keys, ['fetched_at', 'file_mtimes']);
+  assert.equal(output.priorState.streams.messages.file_mtimes_count, 1);
+  const rendered = JSON.stringify(output);
+  assert.equal(rendered.includes('/private/path'), false);
+  assert.equal(rendered.includes('a.jsonl'), false);
+  assert.equal(rendered.includes('b.jsonl'), false);
 });
 
 // --- Connector adoption (tasks 5.1-5.4) ---

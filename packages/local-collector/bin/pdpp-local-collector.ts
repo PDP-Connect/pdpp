@@ -159,7 +159,64 @@ async function main(): Promise<void> {
     ...(options.runId ? { runId: options.runId } : {}),
     sourceInstanceId: options.sourceInstanceId,
   });
-  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  process.stdout.write(`${JSON.stringify(summarizeRunResultForCli(result), null, 2)}\n`);
+}
+
+type CollectorRunResult = Awaited<ReturnType<typeof runCollectorConnector>>;
+
+export interface LocalCollectorRunOutput extends Omit<CollectorRunResult, "flushedState" | "priorState"> {
+  flushedState: LocalCollectorStateSummary | null;
+  priorState: LocalCollectorStateSummary | null;
+}
+
+export interface LocalCollectorStateSummary {
+  stream_count: number;
+  streams: Record<string, LocalCollectorCursorSummary>;
+}
+
+export interface LocalCollectorCursorSummary {
+  fetched_at?: string;
+  file_mtimes_count?: number;
+  keys: string[];
+}
+
+export function summarizeRunResultForCli(result: CollectorRunResult): LocalCollectorRunOutput {
+  return {
+    ...result,
+    flushedState: summarizeCollectorState(result.flushedState),
+    priorState: summarizeCollectorState(result.priorState),
+  };
+}
+
+function summarizeCollectorState(state: Record<string, unknown> | null): LocalCollectorStateSummary | null {
+  if (!state || Object.keys(state).length === 0) {
+    return null;
+  }
+  const streams: Record<string, LocalCollectorCursorSummary> = {};
+  for (const [stream, cursor] of Object.entries(state).sort(([a], [b]) => a.localeCompare(b))) {
+    streams[stream] = summarizeCursor(cursor);
+  }
+  return {
+    stream_count: Object.keys(streams).length,
+    streams,
+  };
+}
+
+function summarizeCursor(cursor: unknown): LocalCollectorCursorSummary {
+  if (!cursor || typeof cursor !== "object" || Array.isArray(cursor)) {
+    return { keys: [] };
+  }
+  const record = cursor as Record<string, unknown>;
+  const summary: LocalCollectorCursorSummary = {
+    keys: Object.keys(record).sort(),
+  };
+  if (typeof record.fetched_at === "string") {
+    summary.fetched_at = record.fetched_at;
+  }
+  if (record.file_mtimes && typeof record.file_mtimes === "object" && !Array.isArray(record.file_mtimes)) {
+    summary.file_mtimes_count = Object.keys(record.file_mtimes).length;
+  }
+  return summary;
 }
 
 export interface LocalOutboxStatusOutput {
