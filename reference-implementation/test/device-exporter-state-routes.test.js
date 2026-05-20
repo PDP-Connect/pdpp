@@ -440,6 +440,35 @@ test('PUT then GET round-trips per-stream cursors with last-write-wins merge sem
   });
 });
 
+test('PUT device state is safe to replay for at-least-once local delivery', async () => {
+  await withServer(async ({ asUrl }) => {
+    const device = await enrollDevice(asUrl, 'laptop-state-replay');
+    const url = stateUrl(asUrl, device.device_id, device.source_instance_id);
+    const body = { state: { messages: { cursor: 'm-replay' } } };
+
+    const firstPut = await putJson(url, body, authHeaders(device.device_token));
+    assert.equal(firstPut.status, 200, JSON.stringify(firstPut.body));
+
+    const replayPut = await putJson(url, body, authHeaders(device.device_token));
+    assert.equal(replayPut.status, 200, JSON.stringify(replayPut.body));
+    assert.deepEqual(replayPut.body.state, firstPut.body.state);
+
+    const readBack = await getJson(url, authHeaders(device.device_token));
+    assert.equal(readBack.status, 200);
+    assert.deepEqual(readBack.body.state, body.state);
+
+    const storageConnectorId = localDeviceConnectorId(device.connector_id);
+    const rows = getDb().prepare(
+      `SELECT state_json FROM connector_state
+        WHERE connector_id = ?
+          AND connector_instance_id = ?
+          AND stream = ?`,
+    ).all(storageConnectorId, device.connector_instance_id, 'messages');
+    assert.equal(rows.length, 1);
+    assert.deepEqual(JSON.parse(rows[0].state_json), { cursor: 'm-replay' });
+  });
+});
+
 test('Two-device isolation: same connector id, different source instances, separate state rows', async () => {
   await withServer(async ({ asUrl }) => {
     const first = await enrollDevice(asUrl, 'laptop-a');

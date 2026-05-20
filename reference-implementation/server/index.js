@@ -473,6 +473,45 @@ function sanitizeLocalCollectorGapDetails(value) {
   return redacted.length <= 300 ? redacted : `${redacted.slice(0, 299)}…`;
 }
 
+const SENSITIVE_DIAGNOSTIC_KEY_RE = /\b(authorization|bearer|token|password|passwd|cookie|secret|otp|api[_-]?key)\b/i;
+
+function sanitizeDeviceExporterDiagnostic(value, depth = 0) {
+  if (value == null) return null;
+  if (typeof value === 'string') {
+    return sanitizeDeviceExporterDiagnosticText(value);
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    if (depth >= 4) return '[REDACTED_DEPTH]';
+    return value.slice(0, 20).map((item) => sanitizeDeviceExporterDiagnostic(item, depth + 1));
+  }
+  if (typeof value === 'object') {
+    if (depth >= 4) return '[REDACTED_DEPTH]';
+    const out = {};
+    for (const [key, child] of Object.entries(value)) {
+      if (SENSITIVE_DIAGNOSTIC_KEY_RE.test(key)) {
+        out[key] = '[REDACTED]';
+        continue;
+      }
+      out[key] = sanitizeDeviceExporterDiagnostic(child, depth + 1);
+    }
+    return out;
+  }
+  return null;
+}
+
+function sanitizeDeviceExporterDiagnosticText(value) {
+  let redacted = redactStderrTail(value).text;
+  redacted = redacted.replace(/(?:^|[\s"'=(:])(?:\/home|\/Users|\/root)\/[^\s"',)]+/g, (match) => {
+    const prefix = match.startsWith('/') ? '' : match[0];
+    return `${prefix}[REDACTED_PATH]`;
+  });
+  redacted = redacted.replace(/\b[A-Za-z]:\\Users\\[^\s"',)]+/g, '[REDACTED_PATH]');
+  return redacted.replace(/\s+/g, ' ').trim();
+}
+
 function referenceLocalDeviceStorageTarget(connectorId, connectorInstanceId) {
   return {
     connector_id: `local-device:${encodeURIComponent(connectorId)}`,
@@ -4154,7 +4193,7 @@ function buildAsApp(opts = {}) {
       await deviceExporterStore.markDeviceHeartbeat(deviceId, {
         receivedAt,
         agentVersion: typeof body.agent_version === 'string' ? body.agent_version : null,
-        lastError: body.last_error ?? null,
+        lastError: sanitizeDeviceExporterDiagnostic(body.last_error),
       });
       for (const source of normalizeHeartbeatSourceInstances(body)) {
         const sourceInstanceId = requireNonEmptyString(source.source_instance_id, 'source_instance_id');
@@ -4162,7 +4201,7 @@ function buildAsApp(opts = {}) {
         if (!authorized) return;
         await deviceExporterStore.markSourceInstanceHeartbeat(deviceId, sourceInstanceId, {
           receivedAt,
-          lastError: source.last_error ?? null,
+          lastError: sanitizeDeviceExporterDiagnostic(source.last_error),
           status: typeof source.status === 'string' ? source.status : null,
           recordsPending:
             typeof source.records_pending === 'number' ? source.records_pending : null,

@@ -453,7 +453,22 @@ test('device-exporter diagnostics scope heartbeat, ingest, and local-collector g
       `${asUrl}/_ref/device-exporters/${encodeURIComponent(first.device_id)}/heartbeat`,
       {
         connector_id: 'codex',
+        last_error: {
+          message: 'top-level token=top-secret-token otp=654321 path=/home/user owner/.codex/auth.json',
+          cookie: 'session-cookie',
+        },
         records_pending: 3,
+        source_instances: [
+          {
+            source_instance_id: first.source_instance_id,
+            last_error: {
+              message: 'source token=source-secret path=/Users/user owner/.claude.json opaque=abcdefghijklmnopqrstuvwxyz123456',
+              nested: { api_key: 'raw-api-key' },
+            },
+            records_pending: 3,
+            status: 'healthy',
+          },
+        ],
         source_instance_id: first.source_instance_id,
         status: 'healthy',
       },
@@ -525,6 +540,15 @@ test('device-exporter diagnostics scope heartbeat, ingest, and local-collector g
     assert.equal(firstSource.records_pending, 3);
     assert.equal(secondSource.last_heartbeat_status, 'blocked');
     assert.equal(secondSource.records_pending, 17);
+    const diagnosticsJson = JSON.stringify(diagnostics);
+    assert.equal(diagnosticsJson.includes('top-secret-token'), false);
+    assert.equal(diagnosticsJson.includes('source-secret'), false);
+    assert.equal(diagnosticsJson.includes('session-cookie'), false);
+    assert.equal(diagnosticsJson.includes('raw-api-key'), false);
+    assert.equal(diagnosticsJson.includes('654321'), false);
+    assert.equal(diagnosticsJson.includes('/home/user owner'), false);
+    assert.equal(diagnosticsJson.includes('/Users/user owner'), false);
+    assert.ok(diagnosticsJson.includes('[REDACTED'));
 
     // Ingest counts scoped per source instance.
     assert.equal(firstSource.accepted_record_count, 1);
