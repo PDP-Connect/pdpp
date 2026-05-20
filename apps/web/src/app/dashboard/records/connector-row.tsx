@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
 import { Button } from "@/components/ui/button.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
+import { formatNextAction } from "../lib/next-action.ts";
 import type { ConnectorOverview, ConnectorRunRef } from "../lib/rs-client.ts";
 import { connectorHasPartialCoverageHint, normalizeKnownGaps } from "../lib/run-gaps.ts";
 import { type RunNowResult, runConnectorNowAction } from "./actions.ts";
@@ -102,6 +103,7 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
 
   const detailHref = `/dashboard/records/${encodeURIComponent(connector.connector_id)}`;
   const displayName = connector.display_name ?? connector.name ?? connector.connector_id;
+  const nextAction = formatNextAction(connectionHealth?.next_action ?? null);
 
   return (
     <li>
@@ -156,6 +158,8 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
           </Button>
         </div>
       </div>
+
+      {nextAction ? <NextActionPill detailHref={detailHref} formatted={nextAction} /> : null}
 
       {/* Toasts rendered inline so they don't obscure other rows. */}
       {toast.kind === "none" ? null : (
@@ -498,6 +502,48 @@ function formatElapsed(secs: number): string {
   const m = Math.floor(secs / 60);
   const s = secs % 60;
   return `${m}m ${s.toString().padStart(2, "0")}s`;
+}
+
+function NextActionPill({
+  detailHref,
+  formatted,
+}: {
+  detailHref: string;
+  formatted: NonNullable<ReturnType<typeof formatNextAction>>;
+}) {
+  // We never link to the spine's `action_target` directly — it can carry
+  // values the user shouldn't see, and the response shape is not a URL.
+  // For SLVP, the always-safe target is the connector detail page, which
+  // is where the structured action surface lives. When the formatter
+  // tells us no actionable target was given (or this is a schedule
+  // fallback, which is by definition imprecise), render plain text.
+  const interactive = formatted.actionTarget !== null && formatted.variant === "structured";
+  const labelEl = (
+    <span className="pdpp-caption inline-flex items-center gap-1.5 text-foreground">
+      <span aria-hidden className="inline-block h-2 w-2 rotate-45 bg-[color:var(--warning)]" />
+      <span className="font-medium">{formatted.label}</span>
+    </span>
+  );
+  return (
+    <div
+      className="mx-3 mb-2 flex flex-wrap items-baseline gap-x-2 gap-y-1 border-l-2 border-l-[color:var(--warning)] bg-[color:var(--warning)]/5 px-3 py-2"
+      data-next-action-source={formatted.variant}
+      data-testid="next-action-pill"
+    >
+      {interactive ? (
+        <Link className="underline-offset-2 hover:underline" href={detailHref}>
+          {labelEl}
+        </Link>
+      ) : (
+        labelEl
+      )}
+      {formatted.caveat ? (
+        <span className="pdpp-caption text-muted-foreground" data-testid="next-action-caveat">
+          {formatted.caveat}
+        </span>
+      ) : null}
+    </div>
+  );
 }
 
 function StatusDot({

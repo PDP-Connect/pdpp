@@ -239,10 +239,35 @@ export interface RefConnectorSummary {
   last_run: RefConnectorRunSummary | null;
   last_successful_run: RefConnectorRunSummary | null;
   manifest_version: string | null;
+  /** Top-level mirror of `connection_health.next_action`. */
+  next_action: RefNextAction | null;
   refresh_policy?: RefreshPolicy | null;
   schedule: RefSchedule | null;
   streams: string[];
   total_records: number;
+}
+
+/**
+ * Owner-facing, non-secret call to action surfaced alongside the health
+ * snapshot. Mirrors the reference-implementation contract at
+ * reference-implementation/runtime/connection-health.ts. The dashboard
+ * renders this verbatim; it must not invent fields or infer secret
+ * `action_target` values.
+ *
+ * `source` carries provenance:
+ *   - `structured`: a durable structured-attention record drove the CTA.
+ *   - `schedule_fallback`: only the schedule's `human_attention_needed`
+ *     flag was available, so the CTA is coarse and the UI must say so.
+ *   - `none`: reserved for non-needs-attention states.
+ */
+export interface RefNextAction {
+  action_target: string | null;
+  attention_id: string | null;
+  expires_at: string | null;
+  owner_action: "act_elsewhere" | "operate_attachment" | "provide_value" | null;
+  reason_code: string | null;
+  response_contract: "response_required" | "none" | null;
+  source: "none" | "schedule_fallback" | "structured";
 }
 
 export interface RefConnectionHealthSnapshot {
@@ -257,6 +282,8 @@ export interface RefConnectionHealthSnapshot {
     syncing: boolean;
   };
   last_success_at: string | null;
+  /** Non-secret owner CTA, or null when no attention is required. */
+  next_action: RefNextAction | null;
   next_attempt_at: string | null;
   reason_code: string | null;
   state: "blocked" | "cooling_off" | "degraded" | "healthy" | "idle" | "needs_attention" | "unknown";
