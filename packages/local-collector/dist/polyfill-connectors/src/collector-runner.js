@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
@@ -13,6 +14,7 @@ const KEYED_SECRET_RE = /\b(authorization|bearer|token|password|passwd|cookie|se
 const OTP_RE = /\b\d{6}\b/g;
 const LONG_OPAQUE_RE = /\b[A-Za-z0-9_-]{24,}\b/g;
 const SCAN_BATCH_LIMIT_DETAIL_RE = /enqueued\s+\d+\s+batches\s+>=\s+(?:run batch limit|(?:maxEnqueuedBatchesPerRun|\[REDACTED\]))\s+(\d+)/;
+const CONNECTOR_PROTOCOL_DEBUG_DIR_ENV = "PDPP_DEBUG_CONNECTOR_PROTOCOL_DIR";
 export const DEFAULT_COLLECTOR_OUTBOX_POLICY = Object.freeze({
     drainBatchSize: 4,
     leaseMs: 60_000,
@@ -336,11 +338,13 @@ async function streamConnectorIntoOutbox(input) {
     });
     const outputPromise = (async () => {
         const lines = createInterface({ input: child.stdout, terminal: false });
+        let lineNumber = 0;
         for await (const line of lines) {
+            lineNumber++;
             if (!line.trim()) {
                 continue;
             }
-            handleMessage(JSON.parse(line));
+            handleMessage(parseConnectorProtocolLine(line, lineNumber, input.config.connector.connector_id));
             if (scanBudgetExceeded) {
                 try {
                     child.kill("SIGTERM");
@@ -398,6 +402,37 @@ async function streamConnectorIntoOutbox(input) {
         recordsQueued,
         scanBudgetExceeded,
     };
+}
+function parseConnectorProtocolLine(line, lineNumber, connectorId) {
+    try {
+        return JSON.parse(line);
+    }
+    catch (error) {
+        const debugPath = writeConnectorProtocolDebugLine({ connectorId, error, line, lineNumber });
+        const suffix = debugPath ? `; raw line saved to ${debugPath}` : "";
+        throw new Error(`${error instanceof Error ? error.message : String(error)} at connector protocol line ${lineNumber} (${line.length} chars)${suffix}`);
+    }
+}
+function writeConnectorProtocolDebugLine(input) {
+    const dir = process.env[CONNECTOR_PROTOCOL_DEBUG_DIR_ENV]?.trim();
+    if (!dir) {
+        return null;
+    }
+    try {
+        mkdirSync(dir, { mode: 0o700, recursive: true });
+        const path = join(dir, `${input.connectorId}-${Date.now()}-${randomUUID()}.json`);
+        writeFileSync(path, `${JSON.stringify({
+            connector_id: input.connectorId,
+            error: input.error instanceof Error ? input.error.message : String(input.error),
+            line: input.line,
+            line_length: input.line.length,
+            line_number: input.lineNumber,
+        }, null, 2)}\n`, { mode: 0o600 });
+        return path;
+    }
+    catch {
+        return null;
+    }
 }
 function throwIfConnectorExitedUncleanly(input) {
     if (input.exitCode === 0 || input.scanBudgetExceeded) {
@@ -500,9 +535,11 @@ async function recoverResolvedLocalCollectorGaps(input) {
     if (hasCheckpointBlockingOutboxWork(input.outbox, input.config.sourceInstanceId)) {
         return;
     }
-    const succeededGaps = input.outbox
-        .list({ sourceInstanceId: input.config.sourceInstanceId })
-        .filter((item) => item.kind === "gap" && item.status === "succeeded");
+    const succeededGaps = input.outbox.listByKind({
+        kind: "gap",
+        sourceInstanceId: input.config.sourceInstanceId,
+        statuses: ["succeeded"],
+    });
     for (const item of succeededGaps) {
         let payload;
         try {
@@ -669,14 +706,10 @@ function nextReadyOutboxItem(input) {
     return input.outbox.peekReady(input.sourceInstanceId ? { sourceInstanceId: input.sourceInstanceId } : {});
 }
 function hasCheckpointPredecessorBlockingWork(outbox, checkpoint) {
-    return outbox.list({ sourceInstanceId: checkpoint.source_instance_id }).some((item) => {
-        if (item.id === checkpoint.id) {
-            return false;
-        }
-        if (item.insert_order >= checkpoint.insert_order) {
-            return false;
-        }
-        return (item.kind === "record_batch" || item.kind === "gap") && item.status !== "succeeded";
+    return outbox.hasNonSucceededPredecessor({
+        beforeInsertOrder: checkpoint.insert_order,
+        kinds: ["record_batch", "gap"],
+        sourceInstanceId: checkpoint.source_instance_id,
     });
 }
 async function drainClaimedOutboxItem(input, item, result, sentByKind) {
@@ -875,15 +908,13 @@ function pendingOutboxWorkCount(summary) {
     return summary.ready + summary.leased;
 }
 function hasScanBlockingOutboxWork(outbox, sourceInstanceId, policy) {
-    return outbox.list({ sourceInstanceId }).some((item) => {
-        if (item.kind !== "gap") {
-            return item.status !== "succeeded";
-        }
-        return isUnresolvedScanBudgetGap(item, policy);
-    });
+    if (outbox.hasNonSucceededWork({ excludeKinds: ["gap"], sourceInstanceId })) {
+        return true;
+    }
+    return outbox.listByKind({ kind: "gap", sourceInstanceId }).some((item) => isUnresolvedScanBudgetGap(item, policy));
 }
 function hasCheckpointBlockingOutboxWork(outbox, sourceInstanceId) {
-    return outbox.list({ sourceInstanceId }).some((item) => item.status !== "succeeded");
+    return outbox.hasNonSucceededWork({ sourceInstanceId });
 }
 function isUnresolvedScanBudgetGap(item, policy) {
     if (item.status === "dead_letter") {
@@ -932,23 +963,10 @@ export function buildHeartbeatOutboxDiagnostics(summary, options = {}) {
     };
 }
 function countOpenBacklogGaps(outbox, sourceInstanceId) {
-    return outbox
-        .list({ sourceInstanceId })
-        .filter((item) => item.kind === "gap" && (item.status === "ready" || item.status === "leased")).length;
+    return outbox.countOpenGaps({ sourceInstanceId });
 }
 function nextOutboxBatchSeq(outbox, sourceInstanceId) {
-    const items = outbox.list({ sourceInstanceId });
-    let max = 0;
-    for (const item of items) {
-        if (item.kind !== "record_batch") {
-            continue;
-        }
-        const payload = item.payload;
-        if (typeof payload?.batchSeq === "number" && payload.batchSeq > max) {
-            max = payload.batchSeq;
-        }
-    }
-    return max + 1;
+    return outbox.maxRecordBatchSeq({ sourceInstanceId }) + 1;
 }
 export async function drainCollectorQueue(input) {
     let sent = 0;

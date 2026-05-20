@@ -72,7 +72,29 @@ import {
 import { validateRecord } from "./schemas.ts";
 import type { PendingCall, RolloutAggregate, RolloutObject, RolloutPayload, StartMessage, ThreadRow } from "./types.ts";
 
-const emit = (m: EmittedMessage): boolean => process.stdout.write(stringifyForJsonl(m));
+const DEFAULT_ACTIVE_ROLLOUT_QUIET_MS = 120_000;
+const ACTIVE_ROLLOUT_QUIET_MS_ENV = "PDPP_CODEX_ACTIVE_ROLLOUT_QUIET_MS";
+
+let stdoutDrainPromise: Promise<void> | null = null;
+
+const emit = (m: EmittedMessage): void => {
+  const ok = process.stdout.write(stringifyForJsonl(m));
+  if (!ok && stdoutDrainPromise === null) {
+    stdoutDrainPromise = new Promise<void>((resolve) => {
+      process.stdout.once("drain", () => {
+        stdoutDrainPromise = null;
+        resolve();
+      });
+    });
+  }
+};
+
+async function waitForEmitDrain(): Promise<void> {
+  if (stdoutDrainPromise !== null) {
+    await stdoutDrainPromise;
+  }
+}
+
 const flushAndExit = (code: number): void => {
   if (process.stdout.writableLength > 0) {
     process.stdout.once("drain", () => process.exit(code));
@@ -399,6 +421,7 @@ async function emitRulesStream(
         continue;
       }
       emitRecord("rules", buildRuleRecord({ ruleset, line, index: idx, path: p, mtime }));
+      await waitForEmitDrain();
       idx++;
     }
   }
@@ -423,6 +446,7 @@ async function emitPromptsStream(
     }
     const { meta, body } = parseFrontmatter(loaded.text);
     emitRecord("prompts", buildPromptRecord({ fileName: f, meta, body, path: p, mtimeMs: loaded.mtimeMs }));
+    await waitForEmitDrain();
   }
 }
 
@@ -469,6 +493,7 @@ async function emitSkillsStream(
       "skills",
       buildSkillRecord({ dirName: ent.name, meta, body, path: skillMdPath, mtimeMs: loaded.mtimeMs })
     );
+    await waitForEmitDrain();
   }
 }
 
@@ -635,6 +660,10 @@ export interface ProcessRolloutLineArgs {
 
 const PROGRESS_EVERY = 2000;
 
+export function shouldDeferActiveRolloutFile(input: { mtimeMs: number; nowMs: number; quietMs: number }): boolean {
+  return input.quietMs > 0 && input.mtimeMs > input.nowMs - input.quietMs;
+}
+
 /**
  * Dispatch one JSONL line:
  *   - session_meta → install session id + metadata on state.
@@ -750,8 +779,10 @@ async function parseRolloutFile(args: ParseRolloutFileArgs): Promise<void> {
   };
   for await (const obj of iterJsonlLines(args.path)) {
     processRolloutLine({ obj, state, deps, file: args.file });
+    await waitForEmitDrain();
   }
   flushPendingCalls(state, deps);
+  await waitForEmitDrain();
   if (state.sessionId) {
     args.rolloutAggregates.set(state.sessionId, {
       meta: state.sessionMeta || {},
@@ -765,34 +796,49 @@ async function parseRolloutFile(args: ParseRolloutFileArgs): Promise<void> {
 }
 
 interface ScanRolloutsArgs {
+  activeQuietMs: number;
   baseDir: string;
   emitRecord: (stream: string, data: RecordData) => void;
   fileMtimes: Record<string, number>;
   newMtimes: Record<string, number>;
   requested: Map<string, StreamScope>;
   rolloutAggregates: Map<string, RolloutAggregate>;
+  scanStartedAtMs: number;
+}
+
+interface ScanRolloutsResult {
+  parsedFiles: number;
 }
 
 async function processRolloutEntry(
   entry: { path: string; year: string; month: string; day: string; file: string },
   args: ScanRolloutsArgs
-): Promise<boolean> {
+): Promise<"missing" | "parsed" | "skipped"> {
   let st: Stats;
   try {
     st = statSync(entry.path);
   } catch {
-    return false;
+    return "missing";
   }
   const mtime = st.mtimeMs;
   if (args.fileMtimes[entry.path] === mtime) {
     args.newMtimes[entry.path] = mtime;
     // Skip unchanged files; the previously-emitted rollout record stays valid.
-    return true;
+    return "skipped";
+  }
+  if (shouldDeferActiveRolloutFile({ mtimeMs: mtime, nowMs: args.scanStartedAtMs, quietMs: args.activeQuietMs })) {
+    emit({
+      type: "PROGRESS",
+      message: `Deferring active rollout ${entry.year}/${entry.month}/${entry.day}/${entry.file}`,
+    });
+    await waitForEmitDrain();
+    return "skipped";
   }
   emit({
     type: "PROGRESS",
     message: `Parsing ${entry.year}/${entry.month}/${entry.day}/${entry.file} (${(st.size / 1024 / 1024).toFixed(1)}MB)`,
   });
+  await waitForEmitDrain();
   await parseRolloutFile({
     path: entry.path,
     file: entry.file,
@@ -801,27 +847,33 @@ async function processRolloutEntry(
     rolloutAggregates: args.rolloutAggregates,
   });
   args.newMtimes[entry.path] = mtime;
-  return true;
+  return "parsed";
 }
 
-async function scanRollouts(args: ScanRolloutsArgs): Promise<void> {
+async function scanRollouts(args: ScanRolloutsArgs): Promise<ScanRolloutsResult> {
   const baseExists = (await listIfExists(args.baseDir)) !== null;
   if (!baseExists) {
     emit({
       type: "PROGRESS",
       message: `${args.baseDir} not readable`,
     });
-    return;
+    await waitForEmitDrain();
+    return { parsedFiles: 0 };
   }
   let fileCount = 0;
+  let parsedFiles = 0;
   for await (const entry of walkRollouts(args.baseDir)) {
     fileCount++;
-    await processRolloutEntry(entry, args);
+    if ((await processRolloutEntry(entry, args)) === "parsed") {
+      parsedFiles++;
+    }
   }
   emit({
     type: "PROGRESS",
     message: `Scanned ${fileCount} rollout files`,
   });
+  await waitForEmitDrain();
+  return { parsedFiles };
 }
 
 // ─── Session emission ───────────────────────────────────────────────────
@@ -893,6 +945,15 @@ function readFileMtimes(startMsg: StartMessage): Record<string, number> {
   );
 }
 
+function resolveActiveRolloutQuietMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env[ACTIVE_ROLLOUT_QUIET_MS_ENV];
+  if (!raw) {
+    return DEFAULT_ACTIVE_ROLLOUT_QUIET_MS;
+  }
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_ACTIVE_ROLLOUT_QUIET_MS;
+}
+
 function buildRequestedMap(startMsg: StartMessage): Map<string, StreamScope> {
   return new Map<string, StreamScope>((startMsg.scope?.streams || []).map((s) => [s.name, s]));
 }
@@ -955,11 +1016,16 @@ interface EmitStateCursorsArgs {
   newMtimes: Record<string, number>;
   nowIso: () => string;
   requested: Map<string, StreamScope>;
+  sessionsSourceMtimeMs: number;
 }
 
-function emitStateCursors({ requested, newMtimes, nowIso }: EmitStateCursorsArgs): void {
+function emitStateCursors({ requested, newMtimes, nowIso, sessionsSourceMtimeMs }: EmitStateCursorsArgs): void {
   if (requested.has("sessions")) {
-    emit({ type: "STATE", stream: "sessions", cursor: { fetched_at: nowIso() } });
+    emit({
+      type: "STATE",
+      stream: "sessions",
+      cursor: { fetched_at: nowIso(), source_mtime_ms: sessionsSourceMtimeMs },
+    });
   }
   if (requested.has("messages") || requested.has("function_calls")) {
     const cursorStream = requested.has("messages") ? "messages" : "function_calls";
@@ -989,6 +1055,24 @@ function emitStateCursors({ requested, newMtimes, nowIso }: EmitStateCursorsArgs
   }
 }
 
+function readPriorSessionsSourceMtimeMs(startMsg: StartMessage): number | null {
+  const state = startMsg.state || {};
+  const sessions = state.sessions;
+  const value =
+    sessions && typeof sessions === "object" && !Array.isArray(sessions)
+      ? (sessions as Record<string, unknown>).source_mtime_ms
+      : null;
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function fileMtimeMs(path: string): number {
+  try {
+    return statSync(path).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
 async function emitLocalInventoryStreams(input: {
   codexHome: string;
   emitRecord: (stream: string, data: RecordData) => void;
@@ -1001,6 +1085,7 @@ async function emitLocalInventoryStreams(input: {
     }
     for (const record of records) {
       input.emitRecord(stream, record);
+      await waitForEmitDrain();
     }
   }
   for (const directoryStream of [
@@ -1021,11 +1106,13 @@ async function emitLocalInventoryStreams(input: {
     });
     for (const record of records) {
       input.emitRecord(directoryStream.stream, record);
+      await waitForEmitDrain();
     }
   }
   if (input.requested.has("coverage_diagnostics")) {
     for (const record of inventory.coverage) {
       input.emitRecord("coverage_diagnostics", record);
+      await waitForEmitDrain();
     }
   }
 }
@@ -1086,22 +1173,32 @@ async function main(): Promise<void> {
   // function_call_count even when state_5 provides the canonical metadata).
   const rolloutAggregates = new Map<string, RolloutAggregate>();
   const newMtimes: Record<string, number> = { ...fileMtimes };
+  const scanStartedAtMs = Date.now();
+  const sessionsSourceMtimeMs = fileMtimeMs(dirs.stateDbPath);
+  let parsedRolloutFiles = 0;
 
   await emitLocalInventoryStreams({ codexHome: dirs.codexHome, requested, emitRecord });
 
   if (needRollouts) {
-    await scanRollouts({
+    const rolloutScan = await scanRollouts({
+      activeQuietMs: resolveActiveRolloutQuietMs(),
       baseDir: dirs.baseDir,
       fileMtimes,
       newMtimes,
       requested,
       emitRecord,
       rolloutAggregates,
+      scanStartedAtMs,
     });
+    parsedRolloutFiles = rolloutScan.parsedFiles;
   }
 
-  if (requested.has("sessions")) {
+  if (
+    requested.has("sessions") &&
+    (parsedRolloutFiles > 0 || readPriorSessionsSourceMtimeMs(startMsg) !== sessionsSourceMtimeMs)
+  ) {
     emitSessions({ stateDbPath: dirs.stateDbPath, rolloutAggregates, emitRecord });
+    await waitForEmitDrain();
   }
 
   if (requested.has("rules")) {
@@ -1114,7 +1211,8 @@ async function main(): Promise<void> {
     await emitSkillsStream(dirs.skillsDir, emitRecord);
   }
 
-  emitStateCursors({ requested, newMtimes, nowIso });
+  emitStateCursors({ requested, newMtimes, nowIso, sessionsSourceMtimeMs });
+  await waitForEmitDrain();
 
   emit({ type: "DONE", status: "succeeded", records_emitted: total });
   flushAndExit(0);

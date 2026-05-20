@@ -40,6 +40,7 @@ import {
   type LineEmitDeps,
   makeRolloutParseState,
   processRolloutLine,
+  shouldDeferActiveRolloutFile,
 } from "./index.ts";
 import type { RolloutAggregate, RolloutObject, RolloutPayload, ThreadRow } from "./types.ts";
 
@@ -140,6 +141,25 @@ function drive(deps: LineEmitDeps, objs: readonly RolloutObject[], file = "rollo
   }
   flushPendingCalls(state, deps);
 }
+
+test("shouldDeferActiveRolloutFile defers only files inside the quiet window", () => {
+  const nowMs = Date.parse("2026-05-20T20:45:00.000Z");
+  assert.equal(
+    shouldDeferActiveRolloutFile({ mtimeMs: nowMs - 10_000, nowMs, quietMs: 120_000 }),
+    true,
+    "recently modified rollout should wait for a later collector pass"
+  );
+  assert.equal(
+    shouldDeferActiveRolloutFile({ mtimeMs: nowMs - 180_000, nowMs, quietMs: 120_000 }),
+    false,
+    "quiet rollout can be collected"
+  );
+  assert.equal(
+    shouldDeferActiveRolloutFile({ mtimeMs: nowMs - 10_000, nowMs, quietMs: 0 }),
+    false,
+    "operators can disable the quiet window explicitly"
+  );
+});
 
 // ─── Invariant 1: parent-before-child (session_meta gates response_items) ────
 

@@ -347,6 +347,93 @@ export class LocalDeviceOutbox {
     return Number(result.changes) === 1;
   }
 
+  hasNonSucceededWork(input: {
+    excludeKinds?: readonly LocalDeviceOutboxKind[];
+    kinds?: readonly LocalDeviceOutboxKind[];
+    sourceInstanceId: string;
+  }): boolean {
+    const clauses = ["source_instance_id = ?", "status != 'succeeded'"];
+    const params: string[] = [input.sourceInstanceId];
+    if (input.kinds && input.kinds.length > 0) {
+      clauses.push(`kind IN (${input.kinds.map(() => "?").join(", ")})`);
+      params.push(...input.kinds);
+    }
+    if (input.excludeKinds && input.excludeKinds.length > 0) {
+      clauses.push(`kind NOT IN (${input.excludeKinds.map(() => "?").join(", ")})`);
+      params.push(...input.excludeKinds);
+    }
+    const row = this.#db
+      .prepare(`SELECT 1 AS found FROM local_device_outbox WHERE ${clauses.join(" AND ")} LIMIT 1`)
+      .get(...params);
+    return Boolean(row);
+  }
+
+  hasNonSucceededPredecessor(input: {
+    beforeInsertOrder: number;
+    kinds: readonly LocalDeviceOutboxKind[];
+    sourceInstanceId: string;
+  }): boolean {
+    if (input.kinds.length === 0) {
+      return false;
+    }
+    const row = this.#db
+      .prepare(
+        `SELECT 1 AS found FROM local_device_outbox
+          WHERE source_instance_id = ?
+            AND rowid < ?
+            AND status != 'succeeded'
+            AND kind IN (${input.kinds.map(() => "?").join(", ")})
+          LIMIT 1`
+      )
+      .get(input.sourceInstanceId, input.beforeInsertOrder, ...input.kinds);
+    return Boolean(row);
+  }
+
+  countOpenGaps(input: { sourceInstanceId: string }): number {
+    const row = this.#db
+      .prepare(
+        `SELECT COUNT(*) AS total FROM local_device_outbox
+          WHERE source_instance_id = ?
+            AND kind = 'gap'
+            AND status IN ('ready', 'leased')`
+      )
+      .get(input.sourceInstanceId);
+    return isRecord(row) ? numberFrom(row.total) : 0;
+  }
+
+  listByKind(input: {
+    kind: LocalDeviceOutboxKind;
+    sourceInstanceId: string;
+    statuses?: readonly LocalDeviceOutboxStatus[];
+  }): LocalDeviceOutboxItem[] {
+    const clauses = ["source_instance_id = ?", "kind = ?"];
+    const params: string[] = [input.sourceInstanceId, input.kind];
+    if (input.statuses && input.statuses.length > 0) {
+      clauses.push(`status IN (${input.statuses.map(() => "?").join(", ")})`);
+      params.push(...input.statuses);
+    }
+    const rows = this.#db
+      .prepare(
+        `SELECT *, rowid AS insert_order FROM local_device_outbox
+          WHERE ${clauses.join(" AND ")}
+          ORDER BY insert_order`
+      )
+      .all(...params);
+    return rows.map((row) => rowToItem(row));
+  }
+
+  maxRecordBatchSeq(input: { sourceInstanceId: string }): number {
+    const row = this.#db
+      .prepare(
+        `SELECT COALESCE(MAX(CAST(json_extract(payload_json, '$.batchSeq') AS INTEGER)), 0) AS max_seq
+          FROM local_device_outbox
+          WHERE source_instance_id = ?
+            AND kind = 'record_batch'`
+      )
+      .get(input.sourceInstanceId);
+    return isRecord(row) ? numberFrom(row.max_seq) : 0;
+  }
+
   list(input: { sourceInstanceId?: string } = {}): LocalDeviceOutboxItem[] {
     const rows = input.sourceInstanceId
       ? this.#db

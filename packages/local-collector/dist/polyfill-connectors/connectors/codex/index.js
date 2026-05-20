@@ -11,7 +11,25 @@ import { stringifyForJsonl } from "../../src/safe-emit.js";
 import { resourceSet } from "../../src/scope-filters.js";
 import { buildPromptRecord, buildRolloutOnlySessionRecord, buildRuleRecord, buildSkillRecord, buildThreadSessionRecord, extendTimestampRange, extractMessageText, isRolloutFile, isSkippableRulesLine, parseFrontmatter, payloadOutputPreview, RULES_SUFFIX_RE, splitRulesLines, TWO_DIGIT_DIR_RE, textPreview, YEAR_DIR_RE, } from "./parsers.js";
 import { validateRecord } from "./schemas.js";
-const emit = (m) => process.stdout.write(stringifyForJsonl(m));
+const DEFAULT_ACTIVE_ROLLOUT_QUIET_MS = 120_000;
+const ACTIVE_ROLLOUT_QUIET_MS_ENV = "PDPP_CODEX_ACTIVE_ROLLOUT_QUIET_MS";
+let stdoutDrainPromise = null;
+const emit = (m) => {
+    const ok = process.stdout.write(stringifyForJsonl(m));
+    if (!ok && stdoutDrainPromise === null) {
+        stdoutDrainPromise = new Promise((resolve) => {
+            process.stdout.once("drain", () => {
+                stdoutDrainPromise = null;
+                resolve();
+            });
+        });
+    }
+};
+async function waitForEmitDrain() {
+    if (stdoutDrainPromise !== null) {
+        await stdoutDrainPromise;
+    }
+}
 const flushAndExit = (code) => {
     if (process.stdout.writableLength > 0) {
         process.stdout.once("drain", () => process.exit(code));
@@ -292,6 +310,7 @@ async function emitRulesStream(rulesDir, emitRecord) {
                 continue;
             }
             emitRecord("rules", buildRuleRecord({ ruleset, line, index: idx, path: p, mtime }));
+            await waitForEmitDrain();
             idx++;
         }
     }
@@ -312,6 +331,7 @@ async function emitPromptsStream(promptsDir, emitRecord) {
         }
         const { meta, body } = parseFrontmatter(loaded.text);
         emitRecord("prompts", buildPromptRecord({ fileName: f, meta, body, path: p, mtimeMs: loaded.mtimeMs }));
+        await waitForEmitDrain();
     }
 }
 function shouldSkipSkillEntry(ent) {
@@ -349,6 +369,7 @@ async function emitSkillsStream(skillsDir, emitRecord) {
         }
         const { meta, body } = parseFrontmatter(loaded.text);
         emitRecord("skills", buildSkillRecord({ dirName: ent.name, meta, body, path: skillMdPath, mtimeMs: loaded.mtimeMs }));
+        await waitForEmitDrain();
     }
 }
 export function makeRolloutParseState() {
@@ -440,6 +461,9 @@ export function processResponseItem({ deps, payload, state, ts }) {
     }
 }
 const PROGRESS_EVERY = 2000;
+export function shouldDeferActiveRolloutFile(input) {
+    return input.quietMs > 0 && input.mtimeMs > input.nowMs - input.quietMs;
+}
 export function processRolloutLine({ deps, file, obj, state }) {
     state.lineCount++;
     if (state.lineCount % PROGRESS_EVERY === 0) {
@@ -497,8 +521,10 @@ async function parseRolloutFile(args) {
     };
     for await (const obj of iterJsonlLines(args.path)) {
         processRolloutLine({ obj, state, deps, file: args.file });
+        await waitForEmitDrain();
     }
     flushPendingCalls(state, deps);
+    await waitForEmitDrain();
     if (state.sessionId) {
         args.rolloutAggregates.set(state.sessionId, {
             meta: state.sessionMeta || {},
@@ -516,17 +542,26 @@ async function processRolloutEntry(entry, args) {
         st = statSync(entry.path);
     }
     catch {
-        return false;
+        return "missing";
     }
     const mtime = st.mtimeMs;
     if (args.fileMtimes[entry.path] === mtime) {
         args.newMtimes[entry.path] = mtime;
-        return true;
+        return "skipped";
+    }
+    if (shouldDeferActiveRolloutFile({ mtimeMs: mtime, nowMs: args.scanStartedAtMs, quietMs: args.activeQuietMs })) {
+        emit({
+            type: "PROGRESS",
+            message: `Deferring active rollout ${entry.year}/${entry.month}/${entry.day}/${entry.file}`,
+        });
+        await waitForEmitDrain();
+        return "skipped";
     }
     emit({
         type: "PROGRESS",
         message: `Parsing ${entry.year}/${entry.month}/${entry.day}/${entry.file} (${(st.size / 1024 / 1024).toFixed(1)}MB)`,
     });
+    await waitForEmitDrain();
     await parseRolloutFile({
         path: entry.path,
         file: entry.file,
@@ -535,7 +570,7 @@ async function processRolloutEntry(entry, args) {
         rolloutAggregates: args.rolloutAggregates,
     });
     args.newMtimes[entry.path] = mtime;
-    return true;
+    return "parsed";
 }
 async function scanRollouts(args) {
     const baseExists = (await listIfExists(args.baseDir)) !== null;
@@ -544,17 +579,23 @@ async function scanRollouts(args) {
             type: "PROGRESS",
             message: `${args.baseDir} not readable`,
         });
-        return;
+        await waitForEmitDrain();
+        return { parsedFiles: 0 };
     }
     let fileCount = 0;
+    let parsedFiles = 0;
     for await (const entry of walkRollouts(args.baseDir)) {
         fileCount++;
-        await processRolloutEntry(entry, args);
+        if ((await processRolloutEntry(entry, args)) === "parsed") {
+            parsedFiles++;
+        }
     }
     emit({
         type: "PROGRESS",
         message: `Scanned ${fileCount} rollout files`,
     });
+    await waitForEmitDrain();
+    return { parsedFiles };
 }
 function emitSessions({ stateDbPath, rolloutAggregates, emitRecord }) {
     const { map: threadsById } = loadThreadsMap(stateDbPath);
@@ -589,6 +630,14 @@ function readFileMtimes(startMsg) {
         state.sessions?.file_mtimes ||
         state.file_mtimes ||
         {});
+}
+function resolveActiveRolloutQuietMs(env = process.env) {
+    const raw = env[ACTIVE_ROLLOUT_QUIET_MS_ENV];
+    if (!raw) {
+        return DEFAULT_ACTIVE_ROLLOUT_QUIET_MS;
+    }
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_ACTIVE_ROLLOUT_QUIET_MS;
 }
 function buildRequestedMap(startMsg) {
     return new Map((startMsg.scope?.streams || []).map((s) => [s.name, s]));
@@ -644,9 +693,13 @@ async function assertRequestedCodexSources(dirs, requested) {
         throw new Error(`requested Codex local source path(s) are missing or unreadable: ${missing.join(", ")}`);
     }
 }
-function emitStateCursors({ requested, newMtimes, nowIso }) {
+function emitStateCursors({ requested, newMtimes, nowIso, sessionsSourceMtimeMs }) {
     if (requested.has("sessions")) {
-        emit({ type: "STATE", stream: "sessions", cursor: { fetched_at: nowIso() } });
+        emit({
+            type: "STATE",
+            stream: "sessions",
+            cursor: { fetched_at: nowIso(), source_mtime_ms: sessionsSourceMtimeMs },
+        });
     }
     if (requested.has("messages") || requested.has("function_calls")) {
         const cursorStream = requested.has("messages") ? "messages" : "function_calls";
@@ -675,6 +728,22 @@ function emitStateCursors({ requested, newMtimes, nowIso }) {
         }
     }
 }
+function readPriorSessionsSourceMtimeMs(startMsg) {
+    const state = startMsg.state || {};
+    const sessions = state.sessions;
+    const value = sessions && typeof sessions === "object" && !Array.isArray(sessions)
+        ? sessions.source_mtime_ms
+        : null;
+    return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+function fileMtimeMs(path) {
+    try {
+        return statSync(path).mtimeMs;
+    }
+    catch {
+        return 0;
+    }
+}
 async function emitLocalInventoryStreams(input) {
     const inventory = await buildLocalSourceInventory("codex", input.codexHome, CODEX_KNOWN_LOCAL_STORES);
     for (const [stream, records] of inventory.recordsByStream) {
@@ -683,6 +752,7 @@ async function emitLocalInventoryStreams(input) {
         }
         for (const record of records) {
             input.emitRecord(stream, record);
+            await waitForEmitDrain();
         }
     }
     for (const directoryStream of [
@@ -703,11 +773,13 @@ async function emitLocalInventoryStreams(input) {
         });
         for (const record of records) {
             input.emitRecord(directoryStream.stream, record);
+            await waitForEmitDrain();
         }
     }
     if (input.requested.has("coverage_diagnostics")) {
         for (const record of inventory.coverage) {
             input.emitRecord("coverage_diagnostics", record);
+            await waitForEmitDrain();
         }
     }
 }
@@ -758,19 +830,27 @@ async function main() {
     const needRollouts = requested.has("sessions") || requested.has("messages") || requested.has("function_calls");
     const rolloutAggregates = new Map();
     const newMtimes = { ...fileMtimes };
+    const scanStartedAtMs = Date.now();
+    const sessionsSourceMtimeMs = fileMtimeMs(dirs.stateDbPath);
+    let parsedRolloutFiles = 0;
     await emitLocalInventoryStreams({ codexHome: dirs.codexHome, requested, emitRecord });
     if (needRollouts) {
-        await scanRollouts({
+        const rolloutScan = await scanRollouts({
+            activeQuietMs: resolveActiveRolloutQuietMs(),
             baseDir: dirs.baseDir,
             fileMtimes,
             newMtimes,
             requested,
             emitRecord,
             rolloutAggregates,
+            scanStartedAtMs,
         });
+        parsedRolloutFiles = rolloutScan.parsedFiles;
     }
-    if (requested.has("sessions")) {
+    if (requested.has("sessions") &&
+        (parsedRolloutFiles > 0 || readPriorSessionsSourceMtimeMs(startMsg) !== sessionsSourceMtimeMs)) {
         emitSessions({ stateDbPath: dirs.stateDbPath, rolloutAggregates, emitRecord });
+        await waitForEmitDrain();
     }
     if (requested.has("rules")) {
         await emitRulesStream(dirs.rulesDir, emitRecord);
@@ -781,7 +861,8 @@ async function main() {
     if (requested.has("skills")) {
         await emitSkillsStream(dirs.skillsDir, emitRecord);
     }
-    emitStateCursors({ requested, newMtimes, nowIso });
+    emitStateCursors({ requested, newMtimes, nowIso, sessionsSourceMtimeMs });
+    await waitForEmitDrain();
     emit({ type: "DONE", status: "succeeded", records_emitted: total });
     flushAndExit(0);
 }

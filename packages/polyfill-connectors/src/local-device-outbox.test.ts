@@ -467,6 +467,60 @@ test("LocalDeviceOutbox.summary scopes by source instance without scanning other
   }
 });
 
+test("LocalDeviceOutbox exposes payload-light production queries for large retained queues", async () => {
+  const outbox = new LocalDeviceOutbox({ path: await tempOutboxPath() });
+  try {
+    outbox.enqueue({
+      id: "src-a:batch:1",
+      kind: "record_batch",
+      payload: { batchSeq: 41, records: [{ key: "a", value: "x".repeat(10_000) }] },
+      sourceInstanceId: "src-a",
+    });
+    outbox.enqueue({
+      id: "src-a:batch:2",
+      kind: "record_batch",
+      payload: { batchSeq: 42, records: [{ key: "b", value: "y".repeat(10_000) }] },
+      sourceInstanceId: "src-a",
+    });
+    outbox.enqueue({
+      id: "src-a:gap:1",
+      kind: "gap",
+      payload: { reason: "policy_budget", retryable: true },
+      sourceInstanceId: "src-a",
+    });
+    outbox.enqueue({
+      id: "src-b:batch:1",
+      kind: "record_batch",
+      payload: { batchSeq: 99, records: [{ key: "other-source" }] },
+      sourceInstanceId: "src-b",
+    });
+
+    const [first] = outbox.claimReady({ holder: "worker-a", leaseMs: 60_000, sourceInstanceId: "src-a" });
+    assert.ok(first);
+    outbox.acknowledge({ holder: "worker-a", id: first.id, leaseEpoch: first.lease_epoch });
+
+    assert.equal(outbox.maxRecordBatchSeq({ sourceInstanceId: "src-a" }), 42);
+    assert.equal(outbox.countOpenGaps({ sourceInstanceId: "src-a" }), 1);
+    assert.equal(outbox.hasNonSucceededWork({ excludeKinds: ["gap"], sourceInstanceId: "src-a" }), true);
+    assert.equal(
+      outbox.hasNonSucceededPredecessor({
+        beforeInsertOrder: Number.MAX_SAFE_INTEGER,
+        kinds: ["record_batch", "gap"],
+        sourceInstanceId: "src-a",
+      }),
+      true
+    );
+    assert.deepEqual(
+      outbox
+        .listByKind({ kind: "gap", sourceInstanceId: "src-a", statuses: ["ready", "leased"] })
+        .map((item) => item.id),
+      ["src-a:gap:1"]
+    );
+  } finally {
+    outbox.close();
+  }
+});
+
 test("LocalDeviceOutbox preserves gap rows durably with source-instance scoping and lifecycle transitions", async () => {
   let now = new Date("2026-05-19T12:00:00.000Z");
   const path = await tempOutboxPath();
