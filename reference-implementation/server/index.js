@@ -2181,6 +2181,52 @@ function buildAsApp(opts = {}) {
       instance,
     ]));
 
+    // Aggregate pending local-collector gap rows by the source instance
+    // that produced them. Without this, every device sharing a connector
+    // type collapses into the same connector-level gap count and an
+    // operator cannot tell whether "Codex" is unhealthy on laptop A or
+    // laptop B. Each gap stores the producing source in `source_json`
+    // (kind=local_device, device_id, source_instance_id).
+    const connectorIds = new Set();
+    for (const source of sourceInstances) {
+      if (source.connectorId) connectorIds.add(source.connectorId);
+    }
+    const detailGapStore = getDefaultConnectorDetailGapStore();
+    const localCollectorGapStats = new Map();
+    const localCollectorGapUnreliableConnectorIds = new Set();
+    if (typeof detailGapStore.listPendingGapsForConnector === 'function') {
+      for (const connectorId of connectorIds) {
+        let gaps = [];
+        try {
+          gaps = await detailGapStore.listPendingGapsForConnector(connectorId, { limit: 500 });
+        } catch {
+          // Do not fail the whole device-exporter projection on a single
+          // detail-gap store read, but also do not render a false zero.
+          // Each source for this connector gets local_collector_gaps.unreliable=true.
+          localCollectorGapUnreliableConnectorIds.add(connectorId);
+          gaps = [];
+        }
+        for (const gap of gaps) {
+          if (!gap || gap.status !== 'pending') continue;
+          const source = gap.source && typeof gap.source === 'object' ? gap.source : null;
+          if (!source || source.kind !== 'local_device') continue;
+          const sourceInstanceId = typeof source.source_instance_id === 'string' ? source.source_instance_id : null;
+          if (!sourceInstanceId) continue;
+          const current = localCollectorGapStats.get(sourceInstanceId) || {
+            pending: 0,
+            lastUpdatedAt: null,
+            reasons: new Set(),
+          };
+          current.pending += 1;
+          if (!current.lastUpdatedAt || (gap.updated_at && gap.updated_at > current.lastUpdatedAt)) {
+            current.lastUpdatedAt = gap.updated_at ?? current.lastUpdatedAt;
+          }
+          if (typeof gap.reason === 'string' && gap.reason) current.reasons.add(gap.reason);
+          localCollectorGapStats.set(sourceInstanceId, current);
+        }
+      }
+    }
+
     for (const outcome of outcomes) {
       const key = outcome.sourceInstanceId;
       const current = outcomeStats.get(key) || {
@@ -2212,6 +2258,7 @@ function buildAsApp(opts = {}) {
         : device
           ? connectorInstancesByBinding.get(`${source.connectorId}\nlocal_device\n${makeConnectorInstanceSourceBindingKey(sourceBinding)}`)
           : null;
+      const gapStats = localCollectorGapStats.get(source.sourceInstanceId) || null;
       const projected = {
         object: 'device_source_instance',
         source_instance_id: source.sourceInstanceId,
@@ -2224,6 +2271,21 @@ function buildAsApp(opts = {}) {
         last_ingest_at: stats.lastIngestAt,
         accepted_record_count: stats.accepted,
         rejected_record_count: stats.rejected,
+        // Per-source heartbeat state — distinguishes a stalled collector
+        // on one device from a healthy collector on another device that
+        // shares the same connector type.
+        last_heartbeat_at: source.lastHeartbeatAt ?? null,
+        last_heartbeat_status: source.lastHeartbeatStatus ?? null,
+        records_pending: source.recordsPending ?? null,
+        // Pending local-collector gaps scoped to THIS source instance.
+        // Diagnostics consumers can render a per-source backlog without
+        // attributing one device's gap to another.
+        local_collector_gaps: {
+          pending_count: gapStats ? gapStats.pending : 0,
+          reasons: gapStats ? [...gapStats.reasons].sort() : [],
+          last_updated_at: gapStats ? gapStats.lastUpdatedAt : null,
+          unreliable: localCollectorGapUnreliableConnectorIds.has(source.connectorId),
+        },
         last_error: source.lastError,
       };
       const list = sourcesByDevice.get(source.deviceId) || [];

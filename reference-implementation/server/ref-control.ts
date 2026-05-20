@@ -125,8 +125,10 @@ interface ConnectorRunSummary {
 }
 
 interface PendingDetailGapSummary {
+  readonly connector_instance_id?: unknown;
   readonly next_attempt_after?: unknown;
   readonly reason?: unknown;
+  readonly source?: unknown;
   readonly status?: unknown;
   readonly stream?: unknown;
 }
@@ -142,6 +144,10 @@ interface ConnectorDetailGapStoreLike {
     connectorInstanceId?: string;
     limit?: number;
   }): Promise<readonly PendingDetailGapSummary[]> | readonly PendingDetailGapSummary[];
+  listPendingGapsForConnector?: (
+    connectorId: string,
+    options?: { limit?: number },
+  ) => Promise<readonly PendingDetailGapSummary[]> | readonly PendingDetailGapSummary[];
 }
 
 interface ScheduleLike {
@@ -482,8 +488,18 @@ export async function getConnectorAttentionProjection(
 async function getConnectorDetailGapProjection(connectorId: string): Promise<DetailGapProjection> {
   try {
     const store = getDefaultConnectorDetailGapStore() as ConnectorDetailGapStoreLike;
+    // Operator-console projection must surface pending gaps from every
+    // configured source instance (e.g. one device per local Codex/Claude
+    // install). `listPendingGaps` requires a single
+    // `connectorInstanceId` and silently falls back to the legacy default
+    // when none is given — which drops every real per-device gap from the
+    // dashboard. Prefer the connector-wide listing when the store exposes
+    // it.
+    const gaps = typeof store.listPendingGapsForConnector === "function"
+      ? await Promise.resolve(store.listPendingGapsForConnector(connectorId, { limit: 100 }))
+      : await Promise.resolve(store.listPendingGaps({ connectorId, limit: 100 }));
     return {
-      gaps: await Promise.resolve(store.listPendingGaps({ connectorId, limit: 100 })),
+      gaps,
       unreliable: false,
     };
   } catch {

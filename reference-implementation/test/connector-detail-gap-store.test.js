@@ -192,6 +192,46 @@ test('connector detail gaps are isolated by connector instance', withTempDb(asyn
   );
 }));
 
+test('listPendingGapsForConnector returns gaps across every connector instance for diagnostics', withTempDb(async () => {
+  const store = createSqliteConnectorDetailGapStore();
+  const work = await store.upsertPendingGap({
+    connectorId: 'codex',
+    connectorInstanceId: 'cin_codex_laptop_a',
+    grantId: 'grant_local',
+    stream: 'local-collector/policy_budget/messages',
+    recordKey: 'work-1',
+    source: { kind: 'local_device', device_id: 'dev_a', source_instance_id: 'src_a' },
+  });
+  const home = await store.upsertPendingGap({
+    connectorId: 'codex',
+    connectorInstanceId: 'cin_codex_laptop_b',
+    grantId: 'grant_local',
+    stream: 'local-collector/policy_budget/messages',
+    recordKey: 'home-1',
+    source: { kind: 'local_device', device_id: 'dev_b', source_instance_id: 'src_b' },
+  });
+
+  // Operator-console projection must see both per-device gaps even
+  // without naming a connector instance — the per-instance default
+  // fallback in `listPendingGaps` would silently drop these.
+  const projected = await store.listPendingGapsForConnector('codex', { limit: 100 });
+  assert.deepEqual(
+    projected.map((gap) => gap.gap_id).sort(),
+    [work.gap_id, home.gap_id].sort(),
+  );
+
+  // Each gap still carries the source identity that distinguishes the
+  // two devices.
+  const byDevice = new Map(projected.map((gap) => [gap.source.device_id, gap]));
+  assert.equal(byDevice.get('dev_a').source.source_instance_id, 'src_a');
+  assert.equal(byDevice.get('dev_b').source.source_instance_id, 'src_b');
+
+  // Marking one instance recovered must not affect the other.
+  await store.markGapStatus(work.gap_id, 'recovered', { runId: 'run_recovery' });
+  const afterRecovery = await store.listPendingGapsForConnector('codex', { limit: 100 });
+  assert.deepEqual(afterRecovery.map((gap) => gap.gap_id), [home.gap_id]);
+}));
+
 test('sanitizeDetailGapMetadata does not preserve full URLs or secret-bearing fields', () => {
   const sanitized = sanitizeDetailGapMetadata({
     href: 'https://example.test/path/to/private?id=123',

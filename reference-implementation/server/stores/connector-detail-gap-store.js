@@ -233,6 +233,22 @@ export function createSqliteConnectorDetailGapStore() {
       return rows.map(rowToGap).filter((gap) => !streamList || streamList.includes(gap.stream));
     },
 
+    // Diagnostic listing across all connector instances for a connector type.
+    // Used by the operator-console projection so per-source-instance gaps
+    // (e.g. one device per local Codex install) are not silently dropped
+    // when the projection has no single instance to filter by.
+    async listPendingGapsForConnector(connectorId, { limit = 100 } = {}) {
+      // REVIEWED-DYNAMIC: bounded diagnostics scan of pending gaps for one connector type.
+      const rows = [...iterateDynamicSqlAcknowledged(`
+        SELECT * FROM connector_detail_gaps
+        WHERE connector_id = ?
+          AND status = 'pending'
+        ORDER BY created_at
+        LIMIT ?
+      `, [connectorId, Math.max(1, Math.min(limit, 500))])];
+      return rows.map(rowToGap);
+    },
+
     async markGapStatus(gapId, status, options = {}) {
       if (!VALID_STATUSES.has(status)) throw new Error(`Unsupported connector detail gap status: ${status}`);
       const now = options.now || nowIso();
@@ -324,6 +340,17 @@ export function createPostgresConnectorDetailGapStore() {
         ORDER BY created_at
         LIMIT $5
       `, [connectorInstanceId, connectorId, grantId, Array.isArray(streams) && streams.length ? streams : null, Math.max(1, Math.min(limit, 500))]);
+      return result.rows.map(rowToGap);
+    },
+
+    async listPendingGapsForConnector(connectorId, { limit = 100 } = {}) {
+      const result = await postgresQuery(`
+        SELECT * FROM connector_detail_gaps
+        WHERE connector_id = $1
+          AND status = 'pending'
+        ORDER BY created_at
+        LIMIT $2
+      `, [connectorId, Math.max(1, Math.min(limit, 500))]);
       return result.rows.map(rowToGap);
     },
 

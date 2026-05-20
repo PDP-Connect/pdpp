@@ -440,6 +440,133 @@ test('local-collector-gaps route rejects unaccepted collector protocol version',
   });
 });
 
+test('device-exporter diagnostics scope heartbeat, ingest, and local-collector gaps to the source instance', async () => {
+  await withServer(async ({ asUrl }) => {
+    const first = await enrollDevice(asUrl, 'laptop-diag-1');
+    const second = await enrollDevice(asUrl, 'laptop-diag-2');
+
+    // First device reports a healthy heartbeat with a small backlog; the
+    // second device reports a blocked heartbeat. Per-source heartbeat
+    // state must not bleed across instances even though they share the
+    // `codex` connector type.
+    const firstHeartbeat = await postJson(
+      `${asUrl}/_ref/device-exporters/${encodeURIComponent(first.device_id)}/heartbeat`,
+      {
+        connector_id: 'codex',
+        records_pending: 3,
+        source_instance_id: first.source_instance_id,
+        status: 'healthy',
+      },
+      authHeaders(first.device_token),
+    );
+    assert.equal(firstHeartbeat.status, 200);
+
+    const secondHeartbeat = await postJson(
+      `${asUrl}/_ref/device-exporters/${encodeURIComponent(second.device_id)}/heartbeat`,
+      {
+        connector_id: 'codex',
+        records_pending: 17,
+        source_instance_id: second.source_instance_id,
+        status: 'blocked',
+      },
+      authHeaders(second.device_token),
+    );
+    assert.equal(secondHeartbeat.status, 200);
+
+    // Only the first device ingests a batch; the second has none. The
+    // diagnostics projection must show the ingest count under the right
+    // source instance, not against the connector type.
+    const ingestFirst = await postJson(
+      `${asUrl}/_ref/device-exporters/${encodeURIComponent(first.device_id)}/ingest-batches`,
+      makeBatch(first, 'diag-batch-1', 'first-only'),
+      authHeaders(first.device_token),
+    );
+    assert.equal(ingestFirst.status, 201);
+
+    // Only the second device reports a local-collector gap. The first
+    // device must show zero pending local-collector gaps even though
+    // both devices share the `codex` connector type.
+    const gapSecond = await postLocalCollectorGap(asUrl, second, localCollectorGapBody(second, {
+      stream: 'messages',
+    }));
+    assert.equal(gapSecond.status, 201, JSON.stringify(gapSecond.body));
+
+    const diagnosticsResp = await fetch(`${asUrl}/_ref/device-exporters/diagnostics`, {
+      headers: { Accept: 'application/json' },
+    });
+    assert.equal(diagnosticsResp.status, 200);
+    const diagnostics = await diagnosticsResp.json();
+
+    const firstDevice = diagnostics.data.find((device) => device.device_id === first.device_id);
+    const secondDevice = diagnostics.data.find((device) => device.device_id === second.device_id);
+    assert.ok(firstDevice && secondDevice);
+
+    const firstSource = firstDevice.source_instances.find(
+      (source) => source.source_instance_id === first.source_instance_id,
+    );
+    const secondSource = secondDevice.source_instances.find(
+      (source) => source.source_instance_id === second.source_instance_id,
+    );
+    assert.ok(firstSource && secondSource);
+
+    // Identity is preserved.
+    assert.equal(firstSource.connector_id, 'codex');
+    assert.equal(firstSource.connector_instance_id, first.connector_instance_id);
+    assert.equal(firstSource.device_id, first.device_id);
+    assert.equal(firstSource.local_binding_name, 'laptop-diag-1');
+    assert.equal(secondSource.connector_id, 'codex');
+    assert.equal(secondSource.connector_instance_id, second.connector_instance_id);
+    assert.equal(secondSource.device_id, second.device_id);
+    assert.equal(secondSource.local_binding_name, 'laptop-diag-2');
+    assert.notEqual(firstSource.connector_instance_id, secondSource.connector_instance_id);
+
+    // Heartbeat status / backlog scoped per source instance.
+    assert.equal(firstSource.last_heartbeat_status, 'healthy');
+    assert.equal(firstSource.records_pending, 3);
+    assert.equal(secondSource.last_heartbeat_status, 'blocked');
+    assert.equal(secondSource.records_pending, 17);
+
+    // Ingest counts scoped per source instance.
+    assert.equal(firstSource.accepted_record_count, 1);
+    assert.ok(firstSource.last_ingest_at);
+    assert.equal(secondSource.accepted_record_count, 0);
+    assert.equal(secondSource.last_ingest_at, null);
+
+    // Local-collector gap counts scoped per source instance.
+    assert.equal(firstSource.local_collector_gaps.pending_count, 0);
+    assert.deepEqual(firstSource.local_collector_gaps.reasons, []);
+    assert.equal(firstSource.local_collector_gaps.unreliable, false);
+    assert.equal(secondSource.local_collector_gaps.pending_count, 1);
+    assert.deepEqual(secondSource.local_collector_gaps.reasons, ['policy_budget']);
+    assert.equal(secondSource.local_collector_gaps.unreliable, false);
+    assert.ok(secondSource.local_collector_gaps.last_updated_at);
+
+    // Recovering the second device's gap clears its per-source backlog
+    // without disturbing the first device.
+    const recovered = await postLocalCollectorGapRecovered(asUrl, second, {
+      connector_id: 'codex',
+      source_instance_id: second.source_instance_id,
+      reason: 'policy_budget',
+      stream: 'messages',
+      recovered_run_id: 'run-diag-recovery',
+    });
+    assert.equal(recovered.status, 200, JSON.stringify(recovered.body));
+
+    const refreshed = await fetch(`${asUrl}/_ref/device-exporters/diagnostics`, {
+      headers: { Accept: 'application/json' },
+    });
+    const refreshedJson = await refreshed.json();
+    const refreshedFirst = refreshedJson.data
+      .find((device) => device.device_id === first.device_id)
+      .source_instances.find((source) => source.source_instance_id === first.source_instance_id);
+    const refreshedSecond = refreshedJson.data
+      .find((device) => device.device_id === second.device_id)
+      .source_instances.find((source) => source.source_instance_id === second.source_instance_id);
+    assert.equal(refreshedFirst.local_collector_gaps.pending_count, 0);
+    assert.equal(refreshedSecond.local_collector_gaps.pending_count, 0);
+  });
+});
+
 test('ingest rejects unaccepted collector protocol version with 409 before any record persists', async () => {
   await withServer(async ({ asUrl }) => {
     const device = await enrollDevice(asUrl, 'laptop-e');
