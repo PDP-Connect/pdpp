@@ -14,6 +14,8 @@ import { deriveTerminalReason } from './terminal-reason.js';
 import { createStderrTailBuffer } from './stderr-tail.js';
 import { redactStderrTail } from './stderr-redact.js';
 import { getDefaultConnectorDetailGapStore } from '../server/stores/connector-detail-gap-store.js';
+import { getDefaultConnectorAttentionStore } from '../server/stores/connector-attention-store.js';
+import { createAttentionWriter } from './attention-writer.js';
 
 function encodeScopeResourceKey(key) {
   return Array.isArray(key) ? JSON.stringify(key) : String(key);
@@ -1481,12 +1483,35 @@ export async function runConnector(opts) {
   const openStructuredAssistance = new Map();
   const nextAssistanceRequestId = () => `asst_${Date.now()}_${++assistanceCounter}`;
 
+  // Durable structured-attention writer. Closes the production-writer
+  // gap from openspec/changes/complete-ri-operator-console-reliability
+  // task 5.3 — every owner-action prompt now upserts a row in
+  // `connector_attention_records` so the connection-health projection
+  // sees `next_action.source === "structured"` instead of having to fall
+  // back to the schedule's coarse `human_attention_needed` flag. Store
+  // outage is non-fatal (the writer logs and continues), which preserves
+  // the design rule that the operator-console sidecar never blocks data
+  // collection.
+  const attentionStore = opts.connectorAttentionStore || getDefaultConnectorAttentionStore();
+  const attentionWriter = createAttentionWriter({
+    connectorId,
+    connectorInstanceId: normalizedConnectorInstanceId,
+    runId,
+    store: attentionStore,
+    log: console,
+  });
+
   async function closeStructuredAssistance(assistanceRequestId, status, extra = {}) {
     const activeAssistance = openStructuredAssistance.get(assistanceRequestId);
     if (!activeAssistance) {
       return false;
     }
     openStructuredAssistance.delete(assistanceRequestId);
+    // Mirror the in-memory close into the durable attention store so the
+    // dashboard projection stops driving `needs_attention` for this
+    // prompt. Failure is logged inside the writer; the run terminal path
+    // must keep moving even if the sidecar store is unhappy.
+    await attentionWriter.resolveByRequestId(assistanceRequestId, status);
     const eventType = assistanceResolutionEventType(status);
     if (!eventType) {
       throw new Error(`Invalid assistance terminal status: ${status}`);
@@ -1522,6 +1547,11 @@ export async function runConnector(opts) {
     for (const assistanceRequestId of [...openStructuredAssistance.keys()]) {
       await closeStructuredAssistance(assistanceRequestId, status, extra);
     }
+    // Drain any durable attention rows the writer still has tracked.
+    // `closeStructuredAssistance` above handles the structured-ASSISTANCE
+    // request_ids; this catches any interaction-side rows still open
+    // when the run unwinds (timeout, crash, force-cancel, stdin closed).
+    await attentionWriter.resolveAllOpen(status);
   }
 
   // Stamp `run.started` with the current process's boot epoch so the
@@ -2131,6 +2161,11 @@ export async function runConnector(opts) {
             data: buildAssistanceRequestedDataFromInteraction(msg, runSource),
           });
 
+          // Durable structured attention upsert. The interaction is now
+          // a real owner-action prompt; the dashboard projection should
+          // surface it via `next_action.source === "structured"`.
+          await attentionWriter.recordInteractionRequest(msg);
+
           let timeoutHandle = null;
           let response;
           try {
@@ -2184,6 +2219,15 @@ export async function runConnector(opts) {
               stream: msg.stream || null,
             },
           });
+
+          // Transition the durable attention row for this interaction
+          // to its terminal lifecycle before emitting the resolution
+          // spine event. The writer maps `success`/`cancelled`/`timeout`
+          // onto `resolved`/`cancelled`/`expired`; secret-sensitive rows
+          // are persisted with `sensitivity: "secret"` so the projection
+          // continues to suppress action_target on the row even after
+          // resolution.
+          await attentionWriter.resolveByRequestId(msg.request_id, responseStatus);
 
           const assistanceEventType = assistanceResolutionEventType(responseStatus);
           if (assistanceEventType) {
@@ -2261,6 +2305,9 @@ export async function runConnector(opts) {
             stream_id: assistanceMsg.stream || null,
             data: buildAssistanceRequestedDataFromMessage(assistanceMsg, runSource),
           });
+          // Durable structured attention upsert. Same secret-redaction
+          // and non-secret-action-target rules as the INTERACTION path.
+          await attentionWriter.recordAssistanceRequest(assistanceMsg);
           onProgress(assistanceMsg);
           break;
         }
