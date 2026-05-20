@@ -3,6 +3,7 @@ import { Timestamp } from "@/components/ui/timestamp.tsx";
 import { DataList, Section } from "../../components/primitives.tsx";
 import {
   formatProjectionFreshness,
+  formatSourceOutboxState,
   summarizeAxisChips,
   summarizeOutboxForRow,
   summarizeSchedule,
@@ -35,11 +36,6 @@ export function ConnectionDiagnostics({
   sourceInstances,
   sourceInstancesError,
 }: ConnectionDiagnosticsProps) {
-  const projection = formatProjectionFreshness(connectionHealth);
-  const axisChips = summarizeAxisChips(connectionHealth?.axes);
-  const outbox = summarizeOutboxForRow(connectionHealth);
-  const scheduleSummary = summarizeSchedule(schedule);
-
   return (
     <Section
       description="Evidence the dashboard derives from the reference's connection projection, scheduler, and device-exporter diagnostics. Unknown fields render explicitly, never as zeroes or green."
@@ -54,207 +50,257 @@ export function ConnectionDiagnostics({
 
         <div className="flex flex-col gap-5 px-3 py-4">
           <DiagnosticsBlock title="Projected state">
-            {connectionHealth ? (
-              <div className="flex flex-col gap-2">
-                <p className="pdpp-caption text-muted-foreground">
-                  Health: <span className="text-foreground">{connectionHealth.state.replace(/_/g, " ")}</span>
-                  {connectionHealth.reason_code ? (
-                    <>
-                      {" · "}
-                      <span className="text-muted-foreground">{connectionHealth.reason_code}</span>
-                    </>
-                  ) : null}
-                </p>
-                {axisChips.length > 0 ? (
-                  <ul className="flex flex-wrap items-center gap-1.5" data-testid="diagnostics-axes">
-                    {axisChips.map((c) => (
-                      <li
-                        className="pdpp-caption inline-flex items-center gap-1 border border-muted-foreground/30 bg-muted/30 px-2 py-0.5 text-muted-foreground"
-                        data-axis-tone={c.tone}
-                        key={c.label}
-                        title={c.title}
-                      >
-                        {c.label}
-                      </li>
-                    ))}
-                  </ul>
-                ) : null}
-                {projection.unreliable ? (
-                  <p
-                    className="pdpp-caption text-muted-foreground"
-                    data-testid="diagnostics-projection-unreliable"
-                    title={projection.detail}
-                  >
-                    Projection unreliable: {projection.reasons.join(", ")}.
-                  </p>
-                ) : null}
-                {outbox ? (
-                  <p className="pdpp-caption text-muted-foreground" data-testid="diagnostics-outbox">
-                    {outbox.label}
-                  </p>
-                ) : null}
-                {connectionHealth.last_success_at ? (
-                  <p className="pdpp-caption text-muted-foreground">
-                    Last success at <Timestamp value={connectionHealth.last_success_at} />.
-                  </p>
-                ) : (
-                  <p className="pdpp-caption text-muted-foreground" data-testid="diagnostics-no-last-success">
-                    No durable success recorded.
-                  </p>
-                )}
-              </div>
-            ) : (
-              <p
-                className="pdpp-caption text-muted-foreground"
-                data-testid="diagnostics-projection-missing"
-                title="The reference did not return a connection_health snapshot for this connector."
-              >
-                Projection evidence unavailable.
-              </p>
-            )}
+            <ProjectedStateDiagnostics connectionHealth={connectionHealth} />
           </DiagnosticsBlock>
 
           <DiagnosticsBlock title="Schedule & backoff">
-            {scheduleError ? (
-              <p
-                className="pdpp-caption text-muted-foreground"
-                data-testid="diagnostics-schedule-error"
-                title={scheduleError}
-              >
-                Schedule unavailable: {scheduleError}
-              </p>
-            ) : scheduleSummary ? (
-              <ul className="pdpp-caption flex flex-col gap-1 text-muted-foreground">
-                <li>
-                  Mode: <span className="text-foreground">{scheduleSummary.mode}</span>
-                  {scheduleSummary.enabled ? null : <span className="ml-1">(disabled)</span>}
-                </li>
-                {scheduleSummary.nextAttemptLabel ? <li>{scheduleSummary.nextAttemptLabel}</li> : null}
-                {scheduleSummary.backoffLabel ? (
-                  <li className="text-[color:var(--warning)]" data-testid="diagnostics-backoff">
-                    {scheduleSummary.backoffLabel}
-                  </li>
-                ) : null}
-                {scheduleSummary.ineligibilityReason ? (
-                  <li className="text-[color:var(--warning)]" data-testid="diagnostics-ineligibility">
-                    Ineligible: {scheduleSummary.ineligibilityReason.replace(/[_-]+/g, " ")}
-                  </li>
-                ) : null}
-              </ul>
-            ) : (
-              <p className="pdpp-caption text-muted-foreground">No schedule configured.</p>
-            )}
+            <ScheduleDiagnostics schedule={schedule} scheduleError={scheduleError} />
           </DiagnosticsBlock>
 
           <DiagnosticsBlock title="Source instances">
-            {sourceInstancesError ? (
-              <p
-                className="pdpp-caption text-muted-foreground"
-                data-testid="diagnostics-sources-error"
-                title={sourceInstancesError}
-              >
-                Device-exporter diagnostics unavailable: {sourceInstancesError}
-              </p>
-            ) : sourceInstances.length === 0 ? (
-              <p className="pdpp-caption text-muted-foreground">No source instances bound to this connector.</p>
-            ) : (
-              <DataList ariaLabel="Source instances">
-                {sourceInstances.map((s) => (
-                  <li className="px-3 py-2" key={`${s.device_id}:${s.source_instance_id}`}>
-                    <div className="flex flex-col gap-0.5">
-                      <span className="pdpp-caption font-mono text-foreground">
-                        {s.display_name ?? s.local_binding_name}
-                      </span>
-                      <span className="pdpp-caption text-muted-foreground tabular-nums">
-                        Source {s.source_instance_id}
-                        {s.connector_instance_id ? ` · connection ${s.connector_instance_id}` : ""}
-                      </span>
-                      <span className="pdpp-caption text-muted-foreground tabular-nums">
-                        {typeof s.accepted_record_count === "number"
-                          ? `${s.accepted_record_count.toLocaleString()} accepted`
-                          : "accepted count unknown"}
-                        {typeof s.rejected_record_count === "number" ? (
-                          <>
-                            {" · "}
-                            <span className={s.rejected_record_count > 0 ? "text-[color:var(--warning)]" : ""}>
-                              {s.rejected_record_count.toLocaleString()} rejected
-                            </span>
-                          </>
-                        ) : null}
-                        {s.last_ingest_at ? (
-                          <>
-                            {" · last ingest "}
-                            <Timestamp value={s.last_ingest_at} />
-                          </>
-                        ) : (
-                          <>
-                            {" · "}
-                            <span data-testid="diagnostics-source-no-ingest">never ingested</span>
-                          </>
-                        )}
-                      </span>
-                      <span className="pdpp-caption text-muted-foreground tabular-nums">
-                        Heartbeat: {s.last_heartbeat_status ?? "status unknown"}
-                        {s.last_heartbeat_at ? (
-                          <>
-                            {" · "}
-                            <Timestamp value={s.last_heartbeat_at} />
-                          </>
-                        ) : (
-                          " · never seen"
-                        )}
-                      </span>
-                      <span className="pdpp-caption text-muted-foreground tabular-nums">
-                        {typeof s.records_pending === "number"
-                          ? `${s.records_pending.toLocaleString()} pending on device`
-                          : "pending count unknown"}
-                      </span>
-                      {s.local_collector_gaps ? (
-                        <span
-                          className={[
-                            "pdpp-caption tabular-nums",
-                            s.local_collector_gaps.unreliable || s.local_collector_gaps.pending_count > 0
-                              ? "text-[color:var(--warning)]"
-                              : "text-muted-foreground",
-                          ].join(" ")}
-                          data-testid="diagnostics-local-gaps"
-                          title={
-                            s.local_collector_gaps.reasons.length > 0
-                              ? `Reasons: ${s.local_collector_gaps.reasons.join(", ")}`
-                              : undefined
-                          }
-                        >
-                          {formatLocalCollectorGaps(s.local_collector_gaps)}
-                        </span>
-                      ) : (
-                        <span className="pdpp-caption text-muted-foreground" data-testid="diagnostics-local-gaps-missing">
-                          Local gap diagnostics unavailable.
-                        </span>
-                      )}
-                      {s.last_error ? (
-                        <span
-                          className="pdpp-caption text-destructive"
-                          data-testid="diagnostics-source-error"
-                          title={JSON.stringify(s.last_error)}
-                        >
-                          Last error reported
-                        </span>
-                      ) : null}
-                      <Link
-                        className="pdpp-caption text-muted-foreground underline-offset-2 hover:underline"
-                        href={`/dashboard/device-exporters#${encodeURIComponent(s.device_id)}`}
-                      >
-                        {s.device_id}
-                      </Link>
-                    </div>
-                  </li>
-                ))}
-              </DataList>
-            )}
+            <SourceInstancesDiagnostics sourceInstances={sourceInstances} sourceInstancesError={sourceInstancesError} />
           </DiagnosticsBlock>
         </div>
       </details>
     </Section>
+  );
+}
+
+function ProjectedStateDiagnostics({ connectionHealth }: { connectionHealth: RefConnectionHealthSnapshot | null }) {
+  if (!connectionHealth) {
+    return (
+      <p
+        className="pdpp-caption text-muted-foreground"
+        data-testid="diagnostics-projection-missing"
+        title="The reference did not return a connection_health snapshot for this connector."
+      >
+        Projection evidence unavailable.
+      </p>
+    );
+  }
+
+  const projection = formatProjectionFreshness(connectionHealth);
+  const axisChips = summarizeAxisChips(connectionHealth.axes);
+  const outbox = summarizeOutboxForRow(connectionHealth);
+
+  return (
+    <div className="flex flex-col gap-2">
+      <p className="pdpp-caption text-muted-foreground">
+        Health: <span className="text-foreground">{connectionHealth.state.replace(/_/g, " ")}</span>
+        {connectionHealth.reason_code ? (
+          <>
+            {" · "}
+            <span className="text-muted-foreground">{connectionHealth.reason_code}</span>
+          </>
+        ) : null}
+      </p>
+      {axisChips.length > 0 ? (
+        <ul className="flex flex-wrap items-center gap-1.5" data-testid="diagnostics-axes">
+          {axisChips.map((c) => (
+            <li
+              className="pdpp-caption inline-flex items-center gap-1 border border-muted-foreground/30 bg-muted/30 px-2 py-0.5 text-muted-foreground"
+              data-axis-tone={c.tone}
+              key={c.label}
+              title={c.title}
+            >
+              {c.label}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {projection.unreliable ? (
+        <p
+          className="pdpp-caption text-muted-foreground"
+          data-testid="diagnostics-projection-unreliable"
+          title={projection.detail}
+        >
+          Projection unreliable: {projection.reasons.join(", ")}.
+        </p>
+      ) : null}
+      {outbox ? (
+        <p className="pdpp-caption text-muted-foreground" data-testid="diagnostics-outbox">
+          {outbox.label}
+        </p>
+      ) : null}
+      {connectionHealth.last_success_at ? (
+        <p className="pdpp-caption text-muted-foreground">
+          Last success at <Timestamp value={connectionHealth.last_success_at} />.
+        </p>
+      ) : (
+        <p className="pdpp-caption text-muted-foreground" data-testid="diagnostics-no-last-success">
+          No durable success recorded.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function ScheduleDiagnostics({
+  schedule,
+  scheduleError,
+}: Pick<ConnectionDiagnosticsProps, "schedule" | "scheduleError">) {
+  if (scheduleError) {
+    return (
+      <p className="pdpp-caption text-muted-foreground" data-testid="diagnostics-schedule-error" title={scheduleError}>
+        Schedule unavailable: {scheduleError}
+      </p>
+    );
+  }
+
+  const scheduleSummary = summarizeSchedule(schedule);
+  if (!scheduleSummary) {
+    return <p className="pdpp-caption text-muted-foreground">No schedule configured.</p>;
+  }
+
+  return (
+    <ul className="pdpp-caption flex flex-col gap-1 text-muted-foreground">
+      <li>
+        Mode: <span className="text-foreground">{scheduleSummary.mode}</span>
+        {scheduleSummary.enabled ? null : <span className="ml-1">(disabled)</span>}
+      </li>
+      {scheduleSummary.nextAttemptLabel ? <li>{scheduleSummary.nextAttemptLabel}</li> : null}
+      {scheduleSummary.backoffLabel ? (
+        <li className="text-[color:var(--warning)]" data-testid="diagnostics-backoff">
+          {scheduleSummary.backoffLabel}
+        </li>
+      ) : null}
+      {scheduleSummary.ineligibilityReason ? (
+        <li className="text-[color:var(--warning)]" data-testid="diagnostics-ineligibility">
+          Ineligible: {scheduleSummary.ineligibilityReason.replace(/[_-]+/g, " ")}
+        </li>
+      ) : null}
+    </ul>
+  );
+}
+
+function SourceInstancesDiagnostics({
+  sourceInstances,
+  sourceInstancesError,
+}: Pick<ConnectionDiagnosticsProps, "sourceInstances" | "sourceInstancesError">) {
+  if (sourceInstancesError) {
+    return (
+      <p
+        className="pdpp-caption text-muted-foreground"
+        data-testid="diagnostics-sources-error"
+        title={sourceInstancesError}
+      >
+        Device-exporter diagnostics unavailable: {sourceInstancesError}
+      </p>
+    );
+  }
+  if (sourceInstances.length === 0) {
+    return <p className="pdpp-caption text-muted-foreground">No source instances bound to this connector.</p>;
+  }
+  return (
+    <DataList ariaLabel="Source instances">
+      {sourceInstances.map((source) => (
+        <SourceInstanceDiagnostics key={`${source.device_id}:${source.source_instance_id}`} source={source} />
+      ))}
+    </DataList>
+  );
+}
+
+function SourceInstanceDiagnostics({ source }: { source: DeviceSourceInstance }) {
+  const accepted =
+    typeof source.accepted_record_count === "number"
+      ? `${source.accepted_record_count.toLocaleString()} accepted`
+      : "accepted count unknown";
+  const rejected =
+    typeof source.rejected_record_count === "number"
+      ? `${source.rejected_record_count.toLocaleString()} rejected`
+      : null;
+  const recordsPending =
+    typeof source.records_pending === "number"
+      ? `${source.records_pending.toLocaleString()} pending on device`
+      : "pending count unknown";
+
+  return (
+    <li className="px-3 py-2">
+      <div className="flex flex-col gap-0.5">
+        <span className="pdpp-caption font-mono text-foreground">
+          {source.display_name ?? source.local_binding_name}
+        </span>
+        <span className="pdpp-caption text-muted-foreground tabular-nums">
+          Source {source.source_instance_id}
+          {source.connector_instance_id ? ` · connection ${source.connector_instance_id}` : ""}
+        </span>
+        <span className="pdpp-caption text-muted-foreground tabular-nums">
+          {accepted}
+          {rejected ? (
+            <>
+              {" · "}
+              <span
+                className={
+                  source.rejected_record_count && source.rejected_record_count > 0 ? "text-[color:var(--warning)]" : ""
+                }
+              >
+                {rejected}
+              </span>
+            </>
+          ) : null}
+          {source.last_ingest_at ? (
+            <>
+              {" · last ingest "}
+              <Timestamp value={source.last_ingest_at} />
+            </>
+          ) : (
+            <>
+              {" · "}
+              <span data-testid="diagnostics-source-no-ingest">never ingested</span>
+            </>
+          )}
+        </span>
+        <span className="pdpp-caption text-muted-foreground tabular-nums">
+          Heartbeat: {source.last_heartbeat_status ?? "status unknown"}
+          {source.last_heartbeat_at ? (
+            <>
+              {" · "}
+              <Timestamp value={source.last_heartbeat_at} />
+            </>
+          ) : (
+            " · never seen"
+          )}
+        </span>
+        <span className="pdpp-caption text-muted-foreground tabular-nums">{recordsPending}</span>
+        <SourceOutboxState source={source} />
+        <LocalCollectorGapDiagnostics source={source} />
+        {source.last_error ? (
+          <span
+            className="pdpp-caption text-destructive"
+            data-testid="diagnostics-source-error"
+            title={JSON.stringify(source.last_error)}
+          >
+            Last error reported
+          </span>
+        ) : null}
+        <Link
+          className="pdpp-caption text-muted-foreground underline-offset-2 hover:underline"
+          href={`/dashboard/device-exporters#${encodeURIComponent(source.device_id)}`}
+        >
+          {source.device_id}
+        </Link>
+      </div>
+    </li>
+  );
+}
+
+function LocalCollectorGapDiagnostics({ source }: { source: DeviceSourceInstance }) {
+  const gaps = source.local_collector_gaps;
+  if (!gaps) {
+    return (
+      <span className="pdpp-caption text-muted-foreground" data-testid="diagnostics-local-gaps-missing">
+        Local gap diagnostics unavailable.
+      </span>
+    );
+  }
+  return (
+    <span
+      className={["pdpp-caption tabular-nums", localCollectorGapToneClass(gaps)].join(" ")}
+      data-testid="diagnostics-local-gaps"
+      title={gaps.reasons.length > 0 ? `Reasons: ${gaps.reasons.join(", ")}` : undefined}
+    >
+      {formatLocalCollectorGaps(gaps)}
+    </span>
   );
 }
 
@@ -269,6 +315,37 @@ function formatLocalCollectorGaps(gaps: NonNullable<DeviceSourceInstance["local_
     } pending${reason}.`;
   }
   return "No local collector gaps pending.";
+}
+
+function localCollectorGapToneClass(gaps: NonNullable<DeviceSourceInstance["local_collector_gaps"]>): string {
+  if (gaps.unreliable || gaps.pending_count > 0) {
+    return "text-[color:var(--warning)]";
+  }
+  return "text-muted-foreground";
+}
+
+function SourceOutboxState({ source }: { source: DeviceSourceInstance }) {
+  const outbox = formatSourceOutboxState(source);
+  return (
+    <span
+      className={["pdpp-caption tabular-nums", sourceOutboxToneClass(outbox.tone)].join(" ")}
+      data-testid="diagnostics-outbox-state"
+      title={outbox.title}
+    >
+      {outbox.label}
+    </span>
+  );
+}
+
+function sourceOutboxToneClass(tone: ReturnType<typeof formatSourceOutboxState>["tone"]): string {
+  switch (tone) {
+    case "danger":
+      return "text-destructive";
+    case "warning":
+      return "text-[color:var(--warning)]";
+    default:
+      return "text-muted-foreground";
+  }
 }
 
 function DiagnosticsBlock({ title, children }: { title: string; children: React.ReactNode }) {

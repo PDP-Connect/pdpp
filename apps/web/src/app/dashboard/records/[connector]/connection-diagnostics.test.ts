@@ -42,6 +42,8 @@ const INELIGIBILITY_TESTID = /data-testid="diagnostics-ineligibility"/;
 const SOURCE_NO_INGEST_TESTID = /data-testid="diagnostics-source-no-ingest"/;
 const SOURCE_HEARTBEAT_STATUS = /last_heartbeat_status/;
 const SOURCE_RECORDS_PENDING = /records_pending/;
+const SOURCE_OUTBOX_STATE_TESTID = /data-testid="diagnostics-outbox-state"/;
+const SOURCE_OUTBOX_STATE_HELPER = /formatSourceOutboxState/;
 const SOURCE_LOCAL_GAPS_TESTID = /data-testid="diagnostics-local-gaps"/;
 const SOURCE_LOCAL_GAPS_MISSING_TESTID = /data-testid="diagnostics-local-gaps-missing"/;
 const NEVER_INGESTED_COPY = /never ingested/;
@@ -91,6 +93,8 @@ test("connection-diagnostics renders per-source runtime and backlog evidence", a
   const src = await readFile(DIAG_FILE, "utf8");
   assert.match(src, SOURCE_HEARTBEAT_STATUS);
   assert.match(src, SOURCE_RECORDS_PENDING);
+  assert.match(src, SOURCE_OUTBOX_STATE_TESTID);
+  assert.match(src, SOURCE_OUTBOX_STATE_HELPER);
   assert.match(src, SOURCE_LOCAL_GAPS_TESTID);
   assert.match(src, SOURCE_LOCAL_GAPS_MISSING_TESTID);
 });

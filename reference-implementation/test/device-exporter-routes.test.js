@@ -465,6 +465,19 @@ test('device-exporter diagnostics scope heartbeat, ingest, and local-collector g
               message: 'source token=source-secret path=/Users/user owner/.claude.json opaque=abcdefghijklmnopqrstuvwxyz123456',
               nested: { api_key: 'raw-api-key' },
             },
+            outbox: {
+              backlog_open: 1,
+              dead_letter: 0,
+              leased: 0,
+              oldest_pending_at: '2026-05-19T12:00:00.000Z',
+              pending: 2,
+              retrying: 1,
+              secret_path: '/home/user owner/.codex/auth.json',
+              stale_leases: 0,
+              succeeded: 4,
+              token: 'raw-outbox-token',
+              total: 7,
+            },
             records_pending: 3,
             status: 'healthy',
           },
@@ -480,6 +493,15 @@ test('device-exporter diagnostics scope heartbeat, ingest, and local-collector g
       `${asUrl}/_ref/device-exporters/${encodeURIComponent(second.device_id)}/heartbeat`,
       {
         connector_id: 'codex',
+        outbox: {
+          cookie: 'raw-cookie',
+          dead_letter: 1,
+          oldest_pending_at: 'not-a-date',
+          pending: 9,
+          retrying: 2,
+          stale_leases: 3,
+          total: 15,
+        },
         records_pending: 17,
         source_instance_id: second.source_instance_id,
         status: 'blocked',
@@ -538,13 +560,30 @@ test('device-exporter diagnostics scope heartbeat, ingest, and local-collector g
     // Heartbeat status / backlog scoped per source instance.
     assert.equal(firstSource.last_heartbeat_status, 'healthy');
     assert.equal(firstSource.records_pending, 3);
+    assert.equal(firstSource.outbox_state, 'retrying');
+    assert.deepEqual(firstSource.outbox_diagnostics, {
+      backlog_open: 1,
+      dead_letter: 0,
+      leased: 0,
+      oldest_pending_at: '2026-05-19T12:00:00.000Z',
+      pending: 2,
+      retrying: 1,
+      stale_leases: 0,
+      succeeded: 4,
+      total: 7,
+    });
     assert.equal(secondSource.last_heartbeat_status, 'blocked');
     assert.equal(secondSource.records_pending, 17);
+    assert.equal(secondSource.outbox_state, 'dead_letter');
+    assert.equal(secondSource.outbox_diagnostics.dead_letter, 1);
+    assert.equal(secondSource.outbox_diagnostics.oldest_pending_at, undefined);
     const diagnosticsJson = JSON.stringify(diagnostics);
     assert.equal(diagnosticsJson.includes('top-secret-token'), false);
     assert.equal(diagnosticsJson.includes('source-secret'), false);
     assert.equal(diagnosticsJson.includes('session-cookie'), false);
     assert.equal(diagnosticsJson.includes('raw-api-key'), false);
+    assert.equal(diagnosticsJson.includes('raw-cookie'), false);
+    assert.equal(diagnosticsJson.includes('raw-outbox-token'), false);
     assert.equal(diagnosticsJson.includes('654321'), false);
     assert.equal(diagnosticsJson.includes('/home/user owner'), false);
     assert.equal(diagnosticsJson.includes('/Users/user owner'), false);

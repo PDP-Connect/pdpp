@@ -8,7 +8,7 @@ export interface Breadcrumb {
   label: string;
 }
 
-export type MetaPillTone = "neutral" | "protocol" | "human" | "success" | "danger";
+export type MetaPillTone = "neutral" | "protocol" | "human" | "success" | "warning" | "danger";
 
 // ─── Layout: page header ────────────────────────────────────────────────────
 // One header per page. Breadcrumbs above, title row, optional meta below.
@@ -214,6 +214,7 @@ const META_PILL_TONE_CLASSES: Record<MetaPillTone, string> = {
   protocol: "border-primary/25 bg-primary/5 text-foreground",
   human: "border-[color:var(--human)]/25 bg-[color:var(--human-wash)] text-foreground",
   success: "border-[color:var(--success)]/30 bg-[color:var(--success-wash)] text-foreground",
+  warning: "border-[color:var(--warning)]/25 bg-[color:var(--warning-wash)] text-foreground",
   danger: "border-destructive/25 bg-destructive/5 text-destructive",
   neutral: "border-border/80 bg-background",
 };

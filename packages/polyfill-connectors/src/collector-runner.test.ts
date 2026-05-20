@@ -738,6 +738,8 @@ test("runCollectorConnector skips source scan when pre-existing durable work can
     assert.equal(result.outboxSummary.retrying, 1);
     assert.equal(harness.stateOps.length, 0);
     assert.equal(harness.heartbeats.at(-1)?.status, "retrying");
+    assert.equal(harness.heartbeats.at(-1)?.records_pending, 1);
+    assert.equal((harness.heartbeats.at(-1)?.outbox as { retrying?: number } | undefined)?.retrying, 1);
   } finally {
     await harness.close();
   }
@@ -1828,6 +1830,7 @@ test("runCollectorConnector skips spawn and reports blocked when queue depth cro
     );
     // Heartbeat must be honest about the depth-blocked posture.
     assert.equal(harness.heartbeats.at(-1)?.status, "blocked");
+    assert.equal(harness.heartbeats.at(-1)?.records_pending, seedCount + 1);
     // No new state ops happened because the runner skipped the spawn.
     assert.equal(harness.stateOps.length, 0);
   } finally {

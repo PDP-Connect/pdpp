@@ -121,6 +121,42 @@ export type AttentionAxis = "acknowledged" | "in_progress" | "none" | "open";
  */
 export type OutboxAxis = "active" | "idle" | "stalled" | "unknown";
 
+export type OutboxState = "backlog" | "dead_letter" | "drained" | "pending" | "retrying" | "stale" | "unknown";
+
+export interface OutboxDiagnosticCounts {
+  readonly backlog_open?: number;
+  readonly dead_letter?: number;
+  readonly leased?: number;
+  readonly oldest_pending_at?: string | null;
+  readonly pending?: number;
+  readonly retrying?: number;
+  readonly stale_leases?: number;
+  readonly succeeded?: number;
+  readonly total?: number;
+}
+
+export function deriveOutboxStateFromDiagnostics(diagnostics: OutboxDiagnosticCounts | null | undefined): OutboxState {
+  if (!diagnostics) {
+    return "unknown";
+  }
+  if ((diagnostics.dead_letter ?? 0) > 0) {
+    return "dead_letter";
+  }
+  if ((diagnostics.stale_leases ?? 0) > 0) {
+    return "stale";
+  }
+  if ((diagnostics.retrying ?? 0) > 0) {
+    return "retrying";
+  }
+  if ((diagnostics.pending ?? 0) > 0) {
+    return "pending";
+  }
+  if ((diagnostics.backlog_open ?? 0) > 0) {
+    return "backlog";
+  }
+  return "drained";
+}
+
 /**
  * Remote-surface axis: rolls up the most-urgent browser-surface lease and
  * surface health for a connection.
@@ -141,13 +177,7 @@ export type OutboxAxis = "active" | "idle" | "stalled" | "unknown";
  *                  `degraded` rung when no higher precedence applies.
  *   - `unknown`  : evidence is missing or the store is unreliable.
  */
-export type RemoteSurfaceAxis =
-  | "failed"
-  | "idle"
-  | "leased"
-  | "none"
-  | "unknown"
-  | "waiting";
+export type RemoteSurfaceAxis = "failed" | "idle" | "leased" | "none" | "unknown" | "waiting";
 
 /** Connection axes; orthogonal to headline state. */
 export interface ConnectionAxes {
@@ -302,7 +332,7 @@ export interface ConnectionCoverageEvidence {
   /**
    * `true` when the rollup emitted an accepted-coverage axis
    * (`unsupported`/`unavailable`/`deferred`/`inventory_only`) because of a
-   * *required* stream — i.e. the manifest is contradictory (`required:
+   * required stream — i.e. the manifest is contradictory (`required:
    * true` + accepted-absent policy). The projection treats this as
    * degrading, because a load-bearing stream is unaccounted for even
    * though the axis surface names the accepted label.
@@ -460,7 +490,7 @@ export function computeConnectionHealth(input: ComputeConnectionHealthInput): Co
   }
 
   // 5. Backoff currently delaying retry -> cooling_off.
-  if (input.backoff && input.backoff.backoffApplied) {
+  if (input.backoff?.backoffApplied) {
     return snapshot({
       state: "cooling_off",
       reasonCode: stripClassPrefix(input.backoff.reasonClass),
@@ -528,9 +558,7 @@ function projectAxes(input: ComputeConnectionHealthInput): ConnectionAxes {
   };
 }
 
-function projectRemoteSurfaceDetail(
-  evidence: ConnectionRemoteSurfaceEvidence | null,
-): RemoteSurfaceDetail | null {
+function projectRemoteSurfaceDetail(evidence: ConnectionRemoteSurfaceEvidence | null): RemoteSurfaceDetail | null {
   if (!evidence) {
     return null;
   }
@@ -636,12 +664,7 @@ function isHealthyCoverage(axis: CoverageAxis): boolean {
 }
 
 function isAcceptedCoverage(axis: CoverageAxis): boolean {
-  return (
-    axis === "deferred" ||
-    axis === "inventory_only" ||
-    axis === "unavailable" ||
-    axis === "unsupported"
-  );
+  return axis === "deferred" || axis === "inventory_only" || axis === "unavailable" || axis === "unsupported";
 }
 
 function degradedReasonCode(input: ComputeConnectionHealthInput): string | null {
@@ -741,24 +764,18 @@ function projectNextAction(attention: ConnectionAttentionEvidence): NextAction {
  * SQLite outbox directly — these fields are the only legitimate bridge.
  */
 export interface HeartbeatOutboxEvidence {
-  /** ISO timestamp of the most recent accepted heartbeat, or null. */
-  readonly lastHeartbeatAt: string | null;
-  /** Last reported `status` from the heartbeat body. */
-  readonly lastHeartbeatStatus:
-    | "blocked"
-    | "healthy"
-    | "retrying"
-    | "starting"
-    | "stopped"
-    | null;
-  /** Pending durable work depth the device last reported. */
-  readonly recordsPending: number | null;
   /**
    * Whether the device + source-instance row constitutes trustworthy
    * evidence (device active, source active, not revoked). The caller
    * decides; the projection trusts the flag.
    */
   readonly evidenceTrusted: boolean;
+  /** ISO timestamp of the most recent accepted heartbeat, or null. */
+  readonly lastHeartbeatAt: string | null;
+  /** Last reported `status` from the heartbeat body. */
+  readonly lastHeartbeatStatus: "blocked" | "healthy" | "retrying" | "starting" | "stopped" | null;
+  /** Pending durable work depth the device last reported. */
+  readonly recordsPending: number | null;
 }
 
 /**
@@ -794,8 +811,7 @@ export function deriveOutboxAxisFromHeartbeat(
 
   const heartbeatAgeMs = ageMs(evidence.lastHeartbeatAt, options.nowIso);
   const pending = evidence.recordsPending ?? 0;
-  const heartbeatStale =
-    heartbeatAgeMs !== null && heartbeatAgeMs > options.staleHeartbeatThresholdMs;
+  const heartbeatStale = heartbeatAgeMs !== null && heartbeatAgeMs > options.staleHeartbeatThresholdMs;
 
   if (pending > 0 && heartbeatStale) {
     return { axis: "stalled", unreliable: false };
@@ -815,7 +831,7 @@ export function deriveOutboxAxisFromHeartbeat(
 function ageMs(iso: string, nowIso: string): number | null {
   const observed = Date.parse(iso);
   const now = Date.parse(nowIso);
-  if (!Number.isFinite(observed) || !Number.isFinite(now)) {
+  if (!(Number.isFinite(observed) && Number.isFinite(now))) {
     return null;
   }
   return now - observed;

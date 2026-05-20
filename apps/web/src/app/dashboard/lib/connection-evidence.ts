@@ -15,7 +15,7 @@
  * without a browser harness.
  */
 
-import type { RefConnectionHealthSnapshot, RefSchedule } from "./ref-client.ts";
+import type { DeviceSourceInstance, RefConnectionHealthSnapshot, RefSchedule } from "./ref-client.ts";
 import type { ConnectorOverview, ConnectorRunRef } from "./rs-client.ts";
 
 export type EvidenceTone = "neutral" | "success" | "warning" | "danger";
@@ -267,6 +267,43 @@ export function summarizeOutboxForRow(
       return { label: "Outbox unknown", tone: "neutral" };
     case "idle":
       return null;
+    default:
+      return null;
+  }
+}
+
+export function formatSourceOutboxState(
+  source: Pick<DeviceSourceInstance, "outbox_diagnostics" | "outbox_state">
+): AxisChip {
+  const state = source.outbox_state ?? "unknown";
+  const diagnostics = source.outbox_diagnostics ?? null;
+  const counts = diagnostics
+    ? [
+        `pending ${diagnostics.pending ?? 0}`,
+        `retrying ${diagnostics.retrying ?? 0}`,
+        `stale ${diagnostics.stale_leases ?? 0}`,
+        `dead-letter ${diagnostics.dead_letter ?? 0}`,
+        `backlog ${diagnostics.backlog_open ?? 0}`,
+      ].join(" · ")
+    : "no granular outbox diagnostics reported";
+
+  switch (state) {
+    case "dead_letter":
+      return { label: "Outbox · dead-letter", title: counts, tone: "danger" };
+    case "stale":
+      return { label: "Outbox · stale lease", title: counts, tone: "danger" };
+    case "retrying":
+      return { label: "Outbox · retrying", title: counts, tone: "warning" };
+    case "pending":
+      return { label: "Outbox · pending", title: counts, tone: "neutral" };
+    case "backlog":
+      return { label: "Outbox · backlog", title: counts, tone: "warning" };
+    case "drained":
+      return { label: "Outbox · drained", title: counts, tone: "success" };
+    case "unknown":
+      return { label: "Outbox · unknown", title: counts, tone: "neutral" };
+    default:
+      return { label: "Outbox · unknown", title: counts, tone: "neutral" };
   }
 }
 

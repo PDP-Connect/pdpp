@@ -351,6 +351,7 @@ CREATE TABLE IF NOT EXISTS device_source_instances (
   last_heartbeat_at      TEXT,
   last_heartbeat_status  TEXT,
   records_pending        INTEGER,
+  outbox_diagnostics_json TEXT,
   created_at          TEXT NOT NULL,
   updated_at          TEXT NOT NULL,
   revoked_at          TEXT,
@@ -2252,6 +2253,7 @@ export function initDb(path = ':memory:', opts = {}) {
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'device_source_instances', 'last_heartbeat_at', 'TEXT'));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'device_source_instances', 'last_heartbeat_status', 'TEXT'));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'device_source_instances', 'records_pending', 'INTEGER'));
+  runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'device_source_instances', 'outbox_diagnostics_json', 'TEXT'));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'browser_surfaces', 'surface_mode', 'TEXT'));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'browser_surfaces', 'surface_subject_id', 'TEXT'));
   runWithSqliteBusyRetrySync(() => addColumnIfMissing(raw, 'browser_surfaces', 'surface_source', 'TEXT'));

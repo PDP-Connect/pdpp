@@ -19,14 +19,14 @@
 
 - [x] 3.1 Define and implement the minimum server acknowledgement shape needed by local outbox items for records, gaps, state commits, and blobs. (Blobs remain partial: only record_batch, checkpoint/state, and gap have routes; blob upload acknowledgement is open until a local-blob path lands.)
 - [x] 3.2 Ensure device-exporter ingest and state routes remain idempotent for at-least-once local delivery.
-- [ ] 3.3 Add or extend reference-only diagnostics for connection-scoped backlog, last acknowledgement, last committed checkpoint, and dead-letter work.
+- [x] 3.3 Add or extend reference-only diagnostics for connection-scoped backlog, last acknowledgement, last committed checkpoint, and dead-letter work.
 - [x] 3.4 Keep new server surfaces under reference-only/device-exporter authority and document that they are not PDPP Core APIs.
 
 ## 4. Operator And Service UX
 
 - [x] 4.1 Add local `doctor` and `status` output for durable outbox health, stale leases, oldest pending work, package/protocol version, configured device, and source-home identity.
 - [x] 4.2 Add service-run guidance that preserves host-native systemd/launchd scheduling rather than adding a custom scheduler daemon.
-- [ ] 4.3 Update dashboard/device-exporter health surfaces to distinguish pending, retrying, stale, dead-letter, backlog, and fully-drained local collector states.
+- [x] 4.3 Update dashboard/device-exporter health surfaces to distinguish pending, retrying, stale, dead-letter, backlog, and fully-drained local collector states.
 - [x] 4.4 Ensure remote diagnostics avoid raw secrets, auth files, browser cookies, and unredacted absolute local paths.
 
 ## 5. Connector Adoption
@@ -44,5 +44,5 @@
 - [x] 6.4 Add migration/quarantine tests for existing JSON queue files.
 - [x] 6.8 Add a closeout check proving no long-term JSON queue migration path remains after the one-time migration is complete.
 - [x] 6.5 Add CLI/status tests for local outbox health output.
-- [ ] 6.6 Run relevant local collector, polyfill connector, reference server, and dashboard tests.
-- [ ] 6.7 Run `openspec validate add-local-collector-durable-work-substrate --strict`.
+- [x] 6.6 Run relevant local collector, polyfill connector, reference server, and dashboard tests.
+- [x] 6.7 Run `openspec validate add-local-collector-durable-work-substrate --strict`.

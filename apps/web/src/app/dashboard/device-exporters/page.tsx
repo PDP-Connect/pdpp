@@ -2,6 +2,7 @@ import { Button } from "@/components/ui/button.tsx";
 import { CopyButton } from "../components/copy-button.tsx";
 import { DataList, MetaPill, PageHeader, Section, StatusBadge } from "../components/primitives.tsx";
 import { DashboardShell, EmptyState, ServerUnreachable } from "../components/shell.tsx";
+import { formatSourceOutboxState } from "../lib/connection-evidence.ts";
 import { getReferencePublicOrigin, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import {
   type DeviceExporter,
@@ -150,6 +151,7 @@ function DeviceRow({ device }: { device: DeviceExporter }) {
 
 function SourceInstanceCard({ source }: { source: DeviceSourceInstance }) {
   const lastError = formatLastError(source.last_error);
+  const outbox = formatSourceOutboxState(source);
 
   return (
     <li className="rounded-md border border-border/70 bg-muted/20 p-3">
@@ -170,6 +172,7 @@ function SourceInstanceCard({ source }: { source: DeviceSourceInstance }) {
           value={source.rejected_record_count ?? 0}
         />
         <MetaPill label="last error" tone={lastError === "none" ? "neutral" : "danger"} value={lastError} />
+        <MetaPill label="outbox" tone={outbox.tone} value={outbox.label.replace("Outbox · ", "")} />
       </div>
     </li>
   );

@@ -27,7 +27,11 @@ import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
 import type { EmittedMessage, StartMessage, StreamScope } from "./connector-runtime-protocol.ts";
-import { type EnrollmentExchangeResponse, LocalDeviceClient } from "./local-device-client.ts";
+import {
+  type EnrollmentExchangeResponse,
+  type HeartbeatOutboxDiagnostics,
+  LocalDeviceClient,
+} from "./local-device-client.ts";
 import {
   buildLocalDeviceRecordEnvelope,
   hashCanonicalJson,
@@ -310,6 +314,9 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
 
     await client.heartbeat({
       connector_id: config.connector.connector_id,
+      outbox: buildHeartbeatOutboxDiagnostics(postDrainSummary, {
+        backlogOpen: countOpenBacklogGaps(outbox, config.sourceInstanceId),
+      }),
       records_pending: pendingOutboxWorkCount(postDrainSummary),
       source_instance_id: config.sourceInstanceId,
       status: "starting",
@@ -363,6 +370,9 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
     if (!checkpointResult.statePutFailed) {
       await client.heartbeat({
         connector_id: config.connector.connector_id,
+        outbox: buildHeartbeatOutboxDiagnostics(finalSummary, {
+          backlogOpen: countOpenBacklogGaps(outbox, config.sourceInstanceId),
+        }),
         records_pending: recordsPending,
         source_instance_id: config.sourceInstanceId,
         status: streamResult.scanBudgetExceeded ? "retrying" : heartbeatStatusForSummary(finalSummary, policy),
@@ -424,9 +434,13 @@ async function maybeSkipScanForBacklog(input: MaybeSkipScanInput): Promise<Colle
     });
   }
   const summaryAfterGap = input.outbox.summary({ sourceInstanceId: input.config.sourceInstanceId });
+  const recordsPendingAfterGap = pendingOutboxWorkCount(summaryAfterGap);
   await safeHeartbeat(input.client, {
     connector_id: input.config.connector.connector_id,
-    records_pending: recordsPending,
+    outbox: buildHeartbeatOutboxDiagnostics(summaryAfterGap, {
+      backlogOpen: countOpenBacklogGaps(input.outbox, input.config.sourceInstanceId),
+    }),
+    records_pending: recordsPendingAfterGap,
     source_instance_id: input.config.sourceInstanceId,
     status: heartbeatStatusForSummary(summaryAfterGap, input.policy),
   });
@@ -845,6 +859,9 @@ async function maybeCommitCheckpoint(input: {
 
   await safeHeartbeat(input.client, {
     connector_id: input.config.connector.connector_id,
+    outbox: buildHeartbeatOutboxDiagnostics(input.afterRecordsSummary, {
+      backlogOpen: countOpenBacklogGaps(input.outbox, input.config.sourceInstanceId),
+    }),
     records_pending: pendingOutboxWorkCount(input.afterRecordsSummary),
     source_instance_id: input.config.sourceInstanceId,
     status: "retrying",
@@ -1462,6 +1479,29 @@ function heartbeatStatusForSummary(
     return "retrying";
   }
   return "healthy";
+}
+
+export function buildHeartbeatOutboxDiagnostics(
+  summary: LocalDeviceOutboxSummary,
+  options: { backlogOpen?: number } = {}
+): HeartbeatOutboxDiagnostics {
+  return {
+    backlog_open: Math.max(0, options.backlogOpen ?? 0),
+    dead_letter: summary.deadLetter,
+    leased: summary.leased,
+    oldest_pending_at: summary.oldestReadyAt,
+    pending: summary.ready,
+    retrying: summary.retrying,
+    stale_leases: summary.staleLeases,
+    succeeded: summary.succeeded,
+    total: summary.total,
+  };
+}
+
+function countOpenBacklogGaps(outbox: LocalDeviceOutbox, sourceInstanceId: string): number {
+  return outbox
+    .list({ sourceInstanceId })
+    .filter((item) => item.kind === "gap" && (item.status === "ready" || item.status === "leased")).length;
 }
 
 function nextOutboxBatchSeq(outbox: LocalDeviceOutbox, sourceInstanceId: string): number {

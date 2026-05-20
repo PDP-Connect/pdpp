@@ -554,7 +554,7 @@ export interface DeploymentDiagnostics {
     collector_paired: boolean;
     // Versions the reference server is willing to accept on ingest. Empty
     // when the diagnostics adapter could not introspect.
-    accepted_collector_protocol_versions: ReadonlyArray<string>;
+    accepted_collector_protocol_versions: readonly string[];
     // Per-pairing detail. Null when no collector is enrolled.
     collector_pairing: {
       // null when this device pre-dates the X-PDPP-Collector-Protocol
@@ -631,6 +631,27 @@ export async function getDeploymentDiagnostics(): Promise<DeploymentDiagnostics>
   return (await refFetch("/_ref/deployment")) as DeploymentDiagnostics;
 }
 
+export interface DeviceSourceInstanceOutboxDiagnostics {
+  backlog_open?: number;
+  dead_letter?: number;
+  leased?: number;
+  oldest_pending_at?: string | null;
+  pending?: number;
+  retrying?: number;
+  stale_leases?: number;
+  succeeded?: number;
+  total?: number;
+}
+
+export type DeviceSourceInstanceOutboxState =
+  | "backlog"
+  | "dead_letter"
+  | "drained"
+  | "pending"
+  | "retrying"
+  | "stale"
+  | "unknown";
+
 export interface DeviceSourceInstance {
   accepted_record_count?: number;
   connector_id: string;
@@ -638,9 +659,9 @@ export interface DeviceSourceInstance {
   created_at: string;
   device_id: string;
   display_name?: string | null;
+  last_error?: Record<string, unknown> | null;
   last_heartbeat_at?: string | null;
   last_heartbeat_status?: string | null;
-  last_error?: Record<string, unknown> | null;
   last_ingest_at?: string | null;
   local_binding_name: string;
   local_collector_gaps?: {
@@ -650,6 +671,8 @@ export interface DeviceSourceInstance {
     unreliable?: boolean;
   };
   object: "device_source_instance";
+  outbox_diagnostics?: DeviceSourceInstanceOutboxDiagnostics | null;
+  outbox_state?: DeviceSourceInstanceOutboxState;
   records_pending?: number | null;
   rejected_record_count?: number;
   source_instance_id: string;

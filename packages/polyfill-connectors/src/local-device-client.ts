@@ -33,8 +33,26 @@ export interface EnrollmentExchangeResponse {
   source_instance_id: string;
 }
 
+/**
+ * Optional granular durable-outbox diagnostics carried alongside a
+ * heartbeat. Reference-only and additive: counts/timestamps only, no
+ * local paths, payloads, cookies, or auth material.
+ */
+export interface HeartbeatOutboxDiagnostics {
+  backlog_open?: number;
+  dead_letter: number;
+  leased: number;
+  oldest_pending_at?: string | null;
+  pending: number;
+  retrying: number;
+  stale_leases: number;
+  succeeded: number;
+  total: number;
+}
+
 export interface HeartbeatRequest {
   connector_id: string;
+  outbox?: HeartbeatOutboxDiagnostics;
   records_pending?: number;
   source_instance_id: string;
   status: "starting" | "healthy" | "retrying" | "blocked" | "stopped";

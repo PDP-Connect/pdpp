@@ -9,6 +9,7 @@ SELECT dsi.source_instance_id,
        dsi.last_heartbeat_at,
        dsi.last_heartbeat_status,
        dsi.records_pending,
+       dsi.outbox_diagnostics_json,
        dsi.updated_at,
        de.status AS device_status,
        de.revoked_at AS device_revoked_at

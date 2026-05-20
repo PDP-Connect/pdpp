@@ -14,6 +14,7 @@ import {
   formatLastDurableProgress,
   formatOutboxAxis,
   formatProjectionFreshness,
+  formatSourceOutboxState,
   resolveRecordCountDisplay,
   summarizeAxisChips,
   summarizeOutboxForRow,
@@ -50,7 +51,7 @@ function baseOverview(overrides: Partial<ConnectorOverview> = {}): ConnectorOver
 
 test("coverage axis never labels 'unknown' as 'complete'", () => {
   assert.equal(formatCoverageAxis("unknown").tone, "neutral");
-  assert.match(formatCoverageAxis("unknown").label, /unknown/i);
+  assert.equal(formatCoverageAxis("unknown").label.toLowerCase().includes("unknown"), true);
   assert.equal(formatCoverageAxis("complete").tone, "success");
   assert.equal(formatCoverageAxis("gaps").tone, "warning");
   assert.equal(formatCoverageAxis("partial").tone, "warning");
@@ -68,12 +69,40 @@ test("outbox stalled is danger, unknown is neutral, idle is success", () => {
   assert.equal(formatOutboxAxis("idle").tone, "success");
 });
 
+test("formatSourceOutboxState distinguishes granular local collector states", () => {
+  assert.equal(
+    formatSourceOutboxState({ outbox_state: "dead_letter", outbox_diagnostics: { dead_letter: 1 } }).tone,
+    "danger"
+  );
+  assert.equal(
+    formatSourceOutboxState({ outbox_state: "stale", outbox_diagnostics: { stale_leases: 1 } }).tone,
+    "danger"
+  );
+  assert.equal(
+    formatSourceOutboxState({ outbox_state: "retrying", outbox_diagnostics: { retrying: 1 } }).tone,
+    "warning"
+  );
+  assert.equal(
+    formatSourceOutboxState({ outbox_state: "pending", outbox_diagnostics: { pending: 1 } }).label,
+    "Outbox · pending"
+  );
+  assert.equal(
+    formatSourceOutboxState({ outbox_state: "backlog", outbox_diagnostics: { backlog_open: 1 } }).tone,
+    "warning"
+  );
+  assert.equal(
+    formatSourceOutboxState({ outbox_state: "drained", outbox_diagnostics: { total: 2, succeeded: 2 } }).tone,
+    "success"
+  );
+  assert.equal(formatSourceOutboxState({ outbox_state: undefined, outbox_diagnostics: null }).tone, "neutral");
+});
+
 test("summarizeAxisChips omits attention when none and always includes coverage/freshness/outbox", () => {
   const out = summarizeAxisChips(
     snapshot({ axes: { coverage: "complete", freshness: "fresh", attention: "none", outbox: "idle" } }).axes
   );
   assert.equal(
-    out.some((c) => /Attention/.test(c.label)),
+    out.some((c) => c.label.startsWith("Attention")),
     false
   );
   assert.equal(out.length, 3);
@@ -102,8 +131,8 @@ test("formatProjectionFreshness flags unreliable when unknown_reasons is non-emp
   );
   assert.equal(out.unreliable, true);
   assert.equal(out.reasons.length, 2);
-  assert.match(out.detail, /schedule unavailable/);
-  assert.match(out.detail, /freshness unknown/);
+  assert.equal(out.detail.includes("schedule unavailable"), true);
+  assert.equal(out.detail.includes("freshness unknown"), true);
 });
 
 test("formatProjectionFreshness returns reliable when no unknown_reasons", () => {
@@ -125,8 +154,8 @@ test("formatLastDurableProgress refuses to substitute 0 when evidence failed", (
     totalRecords: 0,
   });
   assert.equal(out.unavailable, true);
-  assert.match(out.label, /unavailable/i);
-  assert.equal(/^0/.test(out.label), false);
+  assert.equal(out.label.toLowerCase().includes("unavailable"), true);
+  assert.equal(out.label.startsWith("0"), false);
 });
 
 test("formatLastDurableProgress reports last successful event count when present", () => {
@@ -144,7 +173,7 @@ test("formatLastDurableProgress reports last successful event count when present
     totalRecords: 50,
   });
   assert.equal(out.unavailable, false);
-  assert.match(out.label, /42 events/);
+  assert.equal(out.label.includes("42 events"), true);
 });
 
 test("formatLastDurableProgress reports last attempt when no success and no error", () => {
@@ -162,8 +191,8 @@ test("formatLastDurableProgress reports last attempt when no success and no erro
     totalRecords: 0,
   });
   assert.equal(out.unavailable, false);
-  assert.match(out.label, /Last attempt/);
-  assert.match(out.label, /failed/);
+  assert.equal(out.label.includes("Last attempt"), true);
+  assert.equal(out.label.includes("failed"), true);
 });
 
 test("formatLastDurableProgress reports 'records present · no run history' when records exist without runs", () => {
@@ -173,7 +202,7 @@ test("formatLastDurableProgress reports 'records present · no run history' when
     lastSuccessfulRun: null,
     totalRecords: 7,
   });
-  assert.match(out.label, /Records present/);
+  assert.equal(out.label.includes("Records present"), true);
 });
 
 test("formatLastDurableProgress reports 'Never run' when there is no evidence at all", () => {
@@ -183,7 +212,7 @@ test("formatLastDurableProgress reports 'Never run' when there is no evidence at
     lastSuccessfulRun: null,
     totalRecords: 0,
   });
-  assert.match(out.label, /Never run/);
+  assert.equal(out.label.includes("Never run"), true);
   assert.equal(out.unavailable, false);
 });
 
@@ -249,9 +278,9 @@ test("summarizeSchedule surfaces backoff when applied", () => {
     })
   );
   assert.ok(out);
-  assert.match(out.backoffLabel ?? "", /Backoff applied/);
-  assert.match(out.backoffLabel ?? "", /rate limited/);
-  assert.match(out.backoffLabel ?? "", /3 consecutive failures/);
+  assert.equal(out.backoffLabel?.includes("Backoff applied"), true);
+  assert.equal(out.backoffLabel?.includes("rate limited"), true);
+  assert.equal(out.backoffLabel?.includes("3 consecutive failures"), true);
 });
 
 test("summarizeSchedule surfaces ineligibility reason without inventing automation", () => {
@@ -263,7 +292,7 @@ test("resolveRecordCountDisplay refuses to show 0 when overview has an error", (
   const out = resolveRecordCountDisplay(baseOverview({ error: "boom", totalRecords: 0 }));
   assert.equal(out.label, null);
   assert.equal(out.reliable, false);
-  assert.match(out.title, /unavailable/);
+  assert.equal(out.title.includes("unavailable"), true);
 });
 
 test("resolveRecordCountDisplay renders the count normally when reliable", () => {

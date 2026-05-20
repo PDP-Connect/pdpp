@@ -98,6 +98,7 @@ function mapSourceInstance(row) {
     lastHeartbeatAt: row.last_heartbeat_at ?? null,
     lastHeartbeatStatus: row.last_heartbeat_status ?? null,
     recordsPending: row.records_pending == null ? null : Number(row.records_pending),
+    outboxDiagnostics: parseJson(row.outbox_diagnostics_json, null),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     revokedAt: row.revoked_at,
@@ -116,6 +117,7 @@ function mapSourceInstanceHeartbeatRow(row) {
     lastHeartbeatAt: row.last_heartbeat_at ?? null,
     lastHeartbeatStatus: row.last_heartbeat_status ?? null,
     recordsPending: row.records_pending == null ? null : Number(row.records_pending),
+    outboxDiagnostics: parseJson(row.outbox_diagnostics_json, null),
     updatedAt: row.updated_at ?? null,
   };
 }
@@ -133,6 +135,47 @@ function normalizeRecordsPending(value) {
   const integer = Math.trunc(value);
   if (integer < 0) return null;
   return integer;
+}
+
+const OUTBOX_DIAGNOSTIC_COUNTS = Object.freeze([
+  'backlog_open',
+  'dead_letter',
+  'leased',
+  'pending',
+  'retrying',
+  'stale_leases',
+  'succeeded',
+  'total',
+]);
+
+function normalizeDiagnosticCount(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  const integer = Math.trunc(value);
+  if (integer < 0) return null;
+  return integer;
+}
+
+export function normalizeOutboxDiagnostics(value) {
+  if (value == null || typeof value !== 'object' || Array.isArray(value)) return null;
+  const normalized = {};
+  for (const field of OUTBOX_DIAGNOSTIC_COUNTS) {
+    const count = normalizeDiagnosticCount(value[field]);
+    if (count !== null) {
+      normalized[field] = count;
+    }
+  }
+  if (typeof value.oldest_pending_at === 'string' && value.oldest_pending_at.length > 0) {
+    const parsed = Date.parse(value.oldest_pending_at);
+    if (Number.isFinite(parsed)) {
+      normalized.oldest_pending_at = value.oldest_pending_at;
+    }
+  }
+  return Object.keys(normalized).length > 0 ? normalized : null;
+}
+
+function serializeOutboxDiagnostics(value) {
+  const normalized = normalizeOutboxDiagnostics(value);
+  return normalized === null ? null : JSON.stringify(normalized);
 }
 
 function normalizeOutcome(record) {
@@ -299,6 +342,7 @@ export function createSqliteDeviceExporterStore() {
         record.receivedAt,
         normalizeHeartbeatStatus(record.status),
         normalizeRecordsPending(record.recordsPending),
+        serializeOutboxDiagnostics(record.outboxDiagnostics),
         deviceId,
         sourceInstanceId,
       ]).changes;
@@ -506,7 +550,7 @@ export function createPostgresDeviceExporterStore() {
 
     async getSourceInstance(deviceId, sourceInstanceId) {
       const result = await postgresQuery(
-        `SELECT source_instance_id, device_id, connector_id, connector_instance_id, local_binding_id, display_name, status, last_error_json, last_heartbeat_at, last_heartbeat_status, records_pending, created_at, updated_at, revoked_at
+        `SELECT source_instance_id, device_id, connector_id, connector_instance_id, local_binding_id, display_name, status, last_error_json, last_heartbeat_at, last_heartbeat_status, records_pending, outbox_diagnostics_json, created_at, updated_at, revoked_at
          FROM device_source_instances WHERE device_id = $1 AND source_instance_id = $2`,
         [deviceId, sourceInstanceId],
       );
@@ -515,7 +559,7 @@ export function createPostgresDeviceExporterStore() {
 
     async listSourceInstances({ deviceId = null } = {}) {
       const result = await postgresQuery(
-        `SELECT source_instance_id, device_id, connector_id, connector_instance_id, local_binding_id, display_name, status, last_error_json, last_heartbeat_at, last_heartbeat_status, records_pending, created_at, updated_at, revoked_at
+        `SELECT source_instance_id, device_id, connector_id, connector_instance_id, local_binding_id, display_name, status, last_error_json, last_heartbeat_at, last_heartbeat_status, records_pending, outbox_diagnostics_json, created_at, updated_at, revoked_at
          FROM device_source_instances
          WHERE ($1::text IS NULL OR device_id = $1)
          ORDER BY device_id ASC, created_at DESC, source_instance_id ASC`,
@@ -533,6 +577,7 @@ export function createPostgresDeviceExporterStore() {
                 dsi.last_heartbeat_at,
                 dsi.last_heartbeat_status,
                 dsi.records_pending,
+                dsi.outbox_diagnostics_json,
                 dsi.updated_at,
                 de.status AS device_status,
                 de.revoked_at AS device_revoked_at
@@ -547,7 +592,7 @@ export function createPostgresDeviceExporterStore() {
 
     async getSourceInstanceByBinding(deviceId, connectorId, localBindingId) {
       const result = await postgresQuery(
-        `SELECT source_instance_id, device_id, connector_id, connector_instance_id, local_binding_id, display_name, status, last_error_json, last_heartbeat_at, last_heartbeat_status, records_pending, created_at, updated_at, revoked_at
+        `SELECT source_instance_id, device_id, connector_id, connector_instance_id, local_binding_id, display_name, status, last_error_json, last_heartbeat_at, last_heartbeat_status, records_pending, outbox_diagnostics_json, created_at, updated_at, revoked_at
          FROM device_source_instances WHERE device_id = $1 AND connector_id = $2 AND local_binding_id = $3`,
         [deviceId, connectorId, localBindingId],
       );
@@ -561,14 +606,16 @@ export function createPostgresDeviceExporterStore() {
                 last_error_json = $2::jsonb,
                 last_heartbeat_at = $3,
                 last_heartbeat_status = $4,
-                records_pending = $5
-          WHERE device_id = $6 AND source_instance_id = $7 AND status = 'active'`,
+                records_pending = $5,
+                outbox_diagnostics_json = $6::jsonb
+          WHERE device_id = $7 AND source_instance_id = $8 AND status = 'active'`,
         [
           record.receivedAt,
           record.lastError === undefined ? null : JSON.stringify(record.lastError),
           record.receivedAt,
           normalizeHeartbeatStatus(record.status),
           normalizeRecordsPending(record.recordsPending),
+          serializeOutboxDiagnostics(record.outboxDiagnostics),
           deviceId,
           sourceInstanceId,
         ],

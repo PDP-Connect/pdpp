@@ -2298,6 +2298,7 @@ function buildAsApp(opts = {}) {
           ? connectorInstancesByBinding.get(`${source.connectorId}\nlocal_device\n${makeConnectorInstanceSourceBindingKey(sourceBinding)}`)
           : null;
       const gapStats = localCollectorGapStats.get(source.sourceInstanceId) || null;
+      const outboxDiagnostics = source.outboxDiagnostics ?? null;
       const projected = {
         object: 'device_source_instance',
         source_instance_id: source.sourceInstanceId,
@@ -2316,6 +2317,8 @@ function buildAsApp(opts = {}) {
         last_heartbeat_at: source.lastHeartbeatAt ?? null,
         last_heartbeat_status: source.lastHeartbeatStatus ?? null,
         records_pending: source.recordsPending ?? null,
+        outbox_diagnostics: outboxDiagnostics,
+        outbox_state: deriveSourceInstanceOutboxState(outboxDiagnostics),
         // Pending local-collector gaps scoped to THIS source instance.
         // Diagnostics consumers can render a per-source backlog without
         // attributing one device's gap to another.
@@ -2361,6 +2364,16 @@ function buildAsApp(opts = {}) {
     });
   }
 
+  function deriveSourceInstanceOutboxState(diagnostics) {
+    if (!diagnostics || typeof diagnostics !== 'object') return 'unknown';
+    if ((diagnostics.dead_letter ?? 0) > 0) return 'dead_letter';
+    if ((diagnostics.stale_leases ?? 0) > 0) return 'stale';
+    if ((diagnostics.retrying ?? 0) > 0) return 'retrying';
+    if ((diagnostics.pending ?? 0) > 0) return 'pending';
+    if ((diagnostics.backlog_open ?? 0) > 0) return 'backlog';
+    return 'drained';
+  }
+
   function normalizeHeartbeatSourceInstances(body) {
     if (Array.isArray(body.source_instances)) {
       // The array form carries per-source state today; the top-level
@@ -2375,6 +2388,7 @@ function buildAsApp(opts = {}) {
           status: typeof body.status === 'string' ? body.status : null,
           records_pending:
             typeof body.records_pending === 'number' ? body.records_pending : null,
+          outbox: body.outbox ?? null,
         },
       ];
     }
@@ -4205,6 +4219,7 @@ function buildAsApp(opts = {}) {
           status: typeof source.status === 'string' ? source.status : null,
           recordsPending:
             typeof source.records_pending === 'number' ? source.records_pending : null,
+          outboxDiagnostics: source.outbox ?? null,
         });
       }
       res.json({

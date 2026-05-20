@@ -1,7 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { computeConnectionHealth, deriveOutboxAxisFromHeartbeat } from '../runtime/connection-health.ts';
+import {
+  computeConnectionHealth,
+  deriveOutboxAxisFromHeartbeat,
+  deriveOutboxStateFromDiagnostics,
+} from '../runtime/connection-health.ts';
 import { BLOCKED_PROMOTION_THRESHOLD } from '../runtime/connector-health.ts';
 
 const STALE_MS = 30 * 60 * 1000;
@@ -508,6 +512,17 @@ test('outbox axis: untrusted evidence flags projection unreliable', () => {
     { nowIso: NOW, staleHeartbeatThresholdMs: STALE_MS },
   );
   assert.deepEqual(r, { axis: 'unknown', unreliable: true });
+});
+
+test('outbox state: granular diagnostics use terminal-first precedence', () => {
+  assert.equal(deriveOutboxStateFromDiagnostics(null), 'unknown');
+  assert.equal(deriveOutboxStateFromDiagnostics({}), 'drained');
+  assert.equal(deriveOutboxStateFromDiagnostics({ total: 3, succeeded: 3 }), 'drained');
+  assert.equal(deriveOutboxStateFromDiagnostics({ backlog_open: 1 }), 'backlog');
+  assert.equal(deriveOutboxStateFromDiagnostics({ pending: 1, backlog_open: 1 }), 'pending');
+  assert.equal(deriveOutboxStateFromDiagnostics({ retrying: 1, pending: 1 }), 'retrying');
+  assert.equal(deriveOutboxStateFromDiagnostics({ stale_leases: 1, retrying: 1 }), 'stale');
+  assert.equal(deriveOutboxStateFromDiagnostics({ dead_letter: 1, stale_leases: 1 }), 'dead_letter');
 });
 
 // ─── next_action CTA derivation ──────────────────────────────────────────
