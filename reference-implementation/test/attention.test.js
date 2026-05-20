@@ -385,6 +385,45 @@ test('manual browser verification — operate_attachment routes by attention id,
   assert.equal(payload.body.includes('xyz'), false);
 });
 
+test('missing local device — blocked device attention is push-eligible, health-relevant, and auto-detectable', () => {
+  const rec = createAttention(
+    input({
+      dedupe_key: 'conn_a:missing_local_device',
+      reason_code: 'missing_local_device',
+      progress_posture: 'blocked',
+      owner_action: 'act_elsewhere',
+      response_contract: 'none',
+      sensitivity: 'non_secret',
+      auto_detect: true,
+      owner_copy: 'Start the Claude collector on Simon laptop',
+      action_target: 'local_device',
+      metadata: {
+        device_label: 'Simon laptop',
+        device_token: 'devtok_secret',
+      },
+    }),
+  );
+
+  assert.equal(rec.metadata.device_token, '[redacted]');
+  assert.equal(isHealthRelevant(rec, NOW), true);
+
+  const payload = pushPayload(rec, {
+    dashboard_origin: 'https://dash.example.com',
+    connection_display: 'Claude Code on Simon laptop',
+  });
+  assert.ok(payload, 'missing local device should produce a non-secret owner-action push');
+  assert.equal(payload.reason_code, 'missing_local_device');
+  assert.equal(payload.url, 'https://dash.example.com/attention/att_1');
+  const serialized = JSON.stringify(payload);
+  for (const forbidden of ['Start the Claude collector', 'devtok_secret']) {
+    assert.equal(serialized.includes(forbidden), false, `payload leaked ${forbidden}`);
+  }
+
+  const resolved = classifyAutoDetect({ record: rec, evidence: 'proceeded', now: '2026-05-19T12:10:00.000Z' });
+  assert.equal(resolved.kind, 'resolve');
+  assert.equal(resolved.record.lifecycle, 'resolved');
+});
+
 // ─── 5.6 scenario coverage: cancellation ───────────────────────────────────
 
 test('cancellation — cancelled records never notify and never project to health', () => {
