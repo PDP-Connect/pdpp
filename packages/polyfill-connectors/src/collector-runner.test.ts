@@ -9,12 +9,13 @@ import {
   buildCollectorStartMessage,
   COLLECTOR_STDERR_MAX_BYTES,
   CollectorStateReadError,
+  drainCollectorOutbox,
   drainCollectorQueue,
   recoverAndSummarizeOutbox,
   runCollectorConnector,
   transformRecordsToCollectorEnvelopes,
 } from "./collector-runner.ts";
-import type { IngestBatchRequest } from "./local-device-client.ts";
+import type { IngestBatchRequest, LocalDeviceClient } from "./local-device-client.ts";
 import { buildLocalDeviceOutboxId, LocalDeviceOutbox } from "./local-device-outbox.ts";
 import { LocalDeviceQueue } from "./local-device-queue.ts";
 import { RuntimeCapabilityMismatchError } from "./runtime-capabilities.ts";
@@ -1338,6 +1339,516 @@ test("runCollectorConnector flushes a partial trailing batch when the child fail
     await harness.close();
   }
 });
+
+test("runCollectorConnector recovers a stale-leased record batch and drains it without enqueuing a duplicate checkpoint", async () => {
+  // Simulates crash-after-upload-before-local-ack: a prior runner instance
+  // claimed a record batch, the lease expired before the row was
+  // acknowledged. The next runner invocation must recover the expired
+  // lease, drain the batch through ingest, and only then proceed. A
+  // checkpoint must NOT be advanced on top of the recovered batch
+  // because the prior STATE never reached this runner.
+  const harness = await startCollectorHarness({ priorState: {} });
+  try {
+    const queuePath = await tempQueuePath();
+    const records = transformRecordsToCollectorEnvelopes({
+      batchId: "stale-batch",
+      batchSeq: 1,
+      connectorId: "fixture-stale-lease-recovery",
+      deviceId: "device-1",
+      messages: [
+        {
+          data: { id: "m-stale" },
+          emitted_at: "2026-05-19T12:00:00.000Z",
+          key: "m-stale",
+          stream: "messages",
+          type: "RECORD",
+        },
+      ],
+      sourceInstanceId: "src-1",
+    });
+    const staleBatchId = buildLocalDeviceOutboxId({
+      kind: "record_batch",
+      parts: ["stale-batch"],
+      sourceInstanceId: "src-1",
+    });
+    // Seed the outbox using a frozen clock so we can lease the row at
+    // T+0 with a one-second lease, then leave it leased at T+10s — the
+    // runner's outbox (real clock, far in the future) will treat the
+    // lease as expired and recover it before doing anything else.
+    let setupClock = new Date("2026-05-19T12:00:00.000Z");
+    const setupOutbox = new LocalDeviceOutbox({ clock: () => setupClock, path: queuePath });
+    try {
+      setupOutbox.enqueue({
+        id: staleBatchId,
+        kind: "record_batch",
+        payload: {
+          batchId: "stale-batch",
+          batchSeq: 1,
+          connectorId: "fixture-stale-lease-recovery",
+          deviceId: "device-1",
+          records,
+          sourceInstanceId: "src-1",
+        },
+        sourceInstanceId: "src-1",
+      });
+      const [claim] = setupOutbox.claimReady({
+        holder: "prior-runner",
+        leaseMs: 1000,
+        sourceInstanceId: "src-1",
+      });
+      assert.ok(claim, "prior runner must have claimed the seeded batch");
+      setupClock = new Date("2026-05-19T12:00:10.000Z");
+    } finally {
+      setupOutbox.close();
+    }
+
+    // The new runner spawns a connector that emits zero records and no
+    // STATE — exiting cleanly. The expectation is that the recovered
+    // stale batch drains via ingest, and no checkpoint row is enqueued
+    // (the recovered batch's STATE never reached this runner).
+    const fixture = await writeFixtureConnector({
+      script: `
+        let buf = "";
+        await new Promise((r) => process.stdin.on("data", (c) => {
+          buf += c;
+          if (buf.includes("\\n")) r();
+        }));
+        process.stdout.write(JSON.stringify({
+          type: "DONE",
+          status: "succeeded",
+          records_emitted: 0,
+        }) + "\\n");
+      `,
+    });
+
+    const result = await runCollectorConnector({
+      baseUrl: harness.url,
+      connector: {
+        args: [fixture],
+        command: "node",
+        connector_id: "fixture-stale-lease-recovery",
+        runtime_requirements: { bindings: {} },
+        streams: ["messages"],
+      },
+      deviceId: "device-1",
+      deviceToken: "device-token",
+      queuePath,
+      sourceInstanceId: "src-1",
+    });
+
+    assert.equal(result.recoveredLeases, 1, "the expired prior lease must be recovered");
+    assert.equal(result.sentBatches, 1, "the recovered batch must drain through ingest");
+    assert.equal(result.outboxSummary.ready, 0);
+    assert.equal(result.outboxSummary.leased, 0);
+    assert.equal(result.outboxSummary.deadLetter, 0);
+    assert.equal(harness.ingestedBatches.length, 1);
+    assert.equal(harness.ingestedBatches[0]?.records?.[0]?.data?.id, "m-stale");
+    // No checkpoint may have been advanced on top of the recovered batch,
+    // because the STATE that produced it never reached this runner.
+    assert.equal(
+      harness.stateOps.filter((op) => op.method === "PUT").length,
+      0,
+      "stale-recovered records must not push a checkpoint PUT this pass"
+    );
+    // Reopen the outbox to confirm the recovered row is succeeded and
+    // no checkpoint row was enqueued at any point.
+    const after = new LocalDeviceOutbox({ path: queuePath });
+    try {
+      const items = after.list({ sourceInstanceId: "src-1" });
+      const recovered = items.find((item) => item.id === staleBatchId);
+      assert.equal(recovered?.status, "succeeded", "the recovered batch must be marked succeeded");
+      assert.equal(items.filter((item) => item.kind === "checkpoint").length, 0);
+    } finally {
+      after.close();
+    }
+  } finally {
+    await harness.close();
+  }
+});
+
+test("runCollectorConnector drains a prior pass's enqueued backlog before scanning again", async () => {
+  // Models crash-after-enqueue-before-upload-acknowledgement across two
+  // runner invocations using one harness whose ingest can be toggled.
+  // Pass 1: ingest always fails. Records stream into the outbox and
+  // remain retryable. Pass 2: ingest succeeds. The runner must drain
+  // the prior pass's backlog (the pre-scan drain) and only then spawn a
+  // connector child; the child here emits zero new records, so the
+  // server-side ingest count equals the pass-1 backlog size.
+  let ingestShouldFail = true;
+  let ingestSucceededCount = 0;
+  const harness = await startTogglableHarness({
+    ingestHandler: () => (ingestShouldFail ? "fail" : "ok"),
+    onIngestSucceeded: () => {
+      ingestSucceededCount++;
+    },
+    priorState: {},
+  });
+  try {
+    const queuePath = await tempQueuePath();
+    const pass1Fixture = await writeFixtureConnector({
+      script: `
+        let buf = "";
+        await new Promise((r) => process.stdin.on("data", (c) => {
+          buf += c;
+          if (buf.includes("\\n")) r();
+        }));
+        for (let i = 0; i < 30; i++) {
+          process.stdout.write(JSON.stringify({
+            type: "RECORD",
+            stream: "messages",
+            key: "m-" + i,
+            data: { id: "m-" + i, pass: 1 },
+            emitted_at: new Date().toISOString(),
+          }) + "\\n");
+        }
+        process.stdout.write(JSON.stringify({
+          type: "STATE",
+          stream: "messages",
+          cursor: "m-30",
+        }) + "\\n");
+        process.stdout.write(JSON.stringify({
+          type: "DONE",
+          status: "succeeded",
+          records_emitted: 30,
+        }) + "\\n");
+      `,
+    });
+
+    const baseConfig = {
+      baseUrl: harness.url,
+      batchSize: 10,
+      connector: {
+        args: [pass1Fixture],
+        command: "node",
+        connector_id: "fixture-2pass-enqueue-before-ack",
+        runtime_requirements: { bindings: {} },
+        streams: ["messages"],
+      },
+      deviceId: "device-1",
+      deviceToken: "device-token",
+      // Tiny retry backoff so pass 2 can claim the retryable batches
+      // without needing to advance a fake clock.
+      outboxPolicy: { retryBackoffMs: 1 },
+      queuePath,
+      sourceInstanceId: "src-1",
+    } as const;
+
+    const pass1 = await runCollectorConnector(baseConfig);
+    assert.equal(pass1.enqueuedBatches, 3, "pass 1 must enqueue three durable batches");
+    assert.equal(pass1.sentBatches, 0, "pass 1 must not acknowledge any batch (ingest fails)");
+    assert.equal(pass1.flushedState, null, "checkpoint must not advance while record work pending");
+    assert.equal(ingestSucceededCount, 0);
+
+    // Brief wait so the retry backoff (1ms) elapses for every retried row.
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    ingestShouldFail = false;
+    const pass2Started = harness.ingestedBatches.length;
+    const stateOpsBeforePass2 = harness.stateOps.length;
+
+    // The pass-2 child emits zero records — so any ingest call during
+    // pass 2 must come from the pre-scan drain of pass-1 backlog.
+    const pass2Fixture = await writeFixtureConnector({
+      script: `
+        let buf = "";
+        await new Promise((r) => process.stdin.on("data", (c) => {
+          buf += c;
+          if (buf.includes("\\n")) r();
+        }));
+        process.stdout.write(JSON.stringify({
+          type: "DONE",
+          status: "succeeded",
+          records_emitted: 0,
+        }) + "\\n");
+      `,
+    });
+
+    const pass2 = await runCollectorConnector({
+      ...baseConfig,
+      connector: { ...baseConfig.connector, args: [pass2Fixture] },
+    });
+
+    assert.equal(pass2.recordsQueued, 0, "pass 2 child must not produce new records");
+    assert.equal(pass2.sentBatches, 3, "pass 2 must drain the three pass-1 backlog batches");
+    assert.equal(pass2.outboxSummary.ready, 0);
+    assert.equal(pass2.outboxSummary.leased, 0);
+    assert.equal(pass2.outboxSummary.deadLetter, 0);
+    assert.equal(
+      harness.ingestedBatches.length - pass2Started,
+      3,
+      "pass 2 server must observe exactly the pass-1 backlog batches"
+    );
+    // Critical ordering: the pre-scan drain must call ingest before the
+    // runner reads prior state for the new spawn. Equivalent: the first
+    // state GET of pass 2 must come after the backlog ingest calls.
+    const firstStateGetIndex = harness.stateOps.findIndex(
+      (op, idx) => idx >= stateOpsBeforePass2 && op.method === "GET"
+    );
+    assert.ok(firstStateGetIndex > stateOpsBeforePass2 - 1, "pass 2 must read prior state");
+    // Pass-2 child emitted no STATE of its own, so no new checkpoint
+    // PUT happens this pass. The pass-1 STATE was buffered in pass-1
+    // process memory and lost when that process exited — this is the
+    // intended trade-off: only durable record_batch rows survive a
+    // crash, and the checkpoint can only re-advance once a future
+    // connector pass replays cursor state from the source.
+    assert.equal(pass2.flushedState, null);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("runCollectorConnector skips spawn and reports blocked when queue depth crosses the configured ceiling", async () => {
+  // Seeds the outbox with N+1 retryable batches that will not drain
+  // (ingest fails) and runs with maxQueueDepth: N. The runner must
+  // skip spawning a new child and emit an honest `blocked` heartbeat
+  // rather than continuing to grow the backlog.
+  const harness = await startCollectorHarness({
+    ingestFailureMode: "always-503",
+    priorState: {},
+  });
+  try {
+    const queuePath = await tempQueuePath();
+    const maxQueueDepth = 3;
+    const seedCount = maxQueueDepth + 1;
+    const seedOutbox = new LocalDeviceOutbox({ path: queuePath });
+    try {
+      for (let i = 0; i < seedCount; i++) {
+        const records = transformRecordsToCollectorEnvelopes({
+          batchId: `seed-batch-${i}`,
+          batchSeq: i + 1,
+          connectorId: "fixture-queue-depth-blocked",
+          deviceId: "device-1",
+          messages: [
+            {
+              data: { id: `seed-${i}` },
+              emitted_at: "2026-05-19T12:00:00.000Z",
+              key: `seed-${i}`,
+              stream: "messages",
+              type: "RECORD",
+            },
+          ],
+          sourceInstanceId: "src-1",
+        });
+        seedOutbox.enqueue({
+          id: buildLocalDeviceOutboxId({
+            kind: "record_batch",
+            parts: [`seed-batch-${i}`],
+            sourceInstanceId: "src-1",
+          }),
+          kind: "record_batch",
+          payload: {
+            batchId: `seed-batch-${i}`,
+            batchSeq: i + 1,
+            connectorId: "fixture-queue-depth-blocked",
+            deviceId: "device-1",
+            records,
+            sourceInstanceId: "src-1",
+          },
+          sourceInstanceId: "src-1",
+        });
+      }
+    } finally {
+      seedOutbox.close();
+    }
+
+    const fixture = await writeFixtureConnector({
+      script: `
+        process.stderr.write("fixture must not spawn while queue depth is over the ceiling\\n");
+        process.exit(17);
+      `,
+    });
+
+    const result = await runCollectorConnector({
+      baseUrl: harness.url,
+      connector: {
+        args: [fixture],
+        command: "node",
+        connector_id: "fixture-queue-depth-blocked",
+        runtime_requirements: { bindings: {} },
+        streams: ["messages"],
+      },
+      deviceId: "device-1",
+      deviceToken: "device-token",
+      // Long retry backoff so the seeded batches stay retrying rather
+      // than collapsing to ready during a possible second drain pass.
+      outboxPolicy: { maxQueueDepth, retryBackoffMs: 60_000 },
+      queuePath,
+      sourceInstanceId: "src-1",
+    });
+
+    assert.equal(result.skippedScanForBacklog, true);
+    assert.equal(result.outboxSummary.total, seedCount);
+    assert.ok(
+      result.outboxSummary.ready + result.outboxSummary.leased >= maxQueueDepth,
+      "queue depth must remain over the configured ceiling"
+    );
+    // Heartbeat must be honest about the depth-blocked posture.
+    assert.equal(harness.heartbeats.at(-1)?.status, "blocked");
+    // No new state ops happened because the runner skipped the spawn.
+    assert.equal(harness.stateOps.length, 0);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("drainCollectorOutbox stops between iterations when the duration budget is exceeded", async () => {
+  // Seed the outbox with several retryable batches and a slow client.
+  // With a tight maxDrainDurationMs the drain must stop cleanly
+  // between iterations and surface the remaining work in the next
+  // runner invocation.
+  const queuePath = await tempQueuePath();
+  const outbox = new LocalDeviceOutbox({ path: queuePath });
+  try {
+    for (let i = 0; i < 5; i++) {
+      const records = transformRecordsToCollectorEnvelopes({
+        batchId: `slow-batch-${i}`,
+        batchSeq: i + 1,
+        connectorId: "fixture-drain-duration",
+        deviceId: "device-1",
+        messages: [
+          {
+            data: { id: `slow-${i}` },
+            emitted_at: "2026-05-19T12:00:00.000Z",
+            key: `slow-${i}`,
+            stream: "messages",
+            type: "RECORD",
+          },
+        ],
+        sourceInstanceId: "src-1",
+      });
+      outbox.enqueue({
+        id: buildLocalDeviceOutboxId({
+          kind: "record_batch",
+          parts: [`slow-batch-${i}`],
+          sourceInstanceId: "src-1",
+        }),
+        kind: "record_batch",
+        payload: {
+          batchId: `slow-batch-${i}`,
+          batchSeq: i + 1,
+          connectorId: "fixture-drain-duration",
+          deviceId: "device-1",
+          records,
+          sourceInstanceId: "src-1",
+        },
+        sourceInstanceId: "src-1",
+      });
+    }
+
+    const slowClient: Pick<LocalDeviceClient, "ingestBatch" | "putSourceInstanceState"> = {
+      async ingestBatch() {
+        await new Promise((resolve) => setTimeout(resolve, 40));
+        return { ok: true };
+      },
+      putSourceInstanceState() {
+        return Promise.reject(new Error("duration drain test must not send checkpoints"));
+      },
+    };
+
+    const result = await drainCollectorOutbox({
+      client: slowClient,
+      connectorId: "fixture-drain-duration",
+      holderId: "holder-duration",
+      outbox,
+      policy: {
+        drainBatchSize: 1,
+        leaseMs: 60_000,
+        maxAttempts: 5,
+        maxDrainDurationMs: 25,
+        maxDrainIterations: 256,
+        maxQueueDepth: 10_000,
+        retryBackoffMs: 30_000,
+      },
+      sourceInstanceId: "src-1",
+    });
+
+    assert.equal(result.durationBudgetExceeded, true, "drain must mark the duration budget as exceeded");
+    assert.ok(result.sent < 5, `drain must stop before sending all 5 batches; sent ${result.sent}`);
+    const remaining = outbox.summary({ sourceInstanceId: "src-1" });
+    assert.ok(remaining.ready + remaining.leased > 0, "remaining work must surface for the next pass");
+    assert.equal(remaining.deadLetter, 0);
+  } finally {
+    outbox.close();
+  }
+});
+
+async function startTogglableHarness(options: {
+  ingestHandler: () => "fail" | "ok";
+  onIngestSucceeded?: () => void;
+  priorState?: Record<string, unknown> | null;
+}): Promise<CollectorHarness> {
+  const stateOps: CollectorHarness["stateOps"] = [];
+  const heartbeats: CollectorHarness["heartbeats"] = [];
+  const ingestedBatches: CollectorHarness["ingestedBatches"] = [];
+  let persistedState: Record<string, unknown> = options.priorState ? { ...options.priorState } : {};
+
+  const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
+    const url = req.url ?? "";
+    const method = req.method ?? "";
+    const body = await readBody(req);
+    const parsed = body ? safeJsonParse(body) : null;
+
+    if (url.endsWith("/state") && (method === "GET" || method === "PUT")) {
+      stateOps.push({ body: parsed, method });
+      if (method === "GET") {
+        sendJson(res, 200, {
+          object: "device_source_instance_state",
+          device_id: "device-1",
+          source_instance_id: "src-1",
+          state: persistedState,
+          updated_at: null,
+        });
+        return;
+      }
+      if (parsed && typeof parsed === "object" && "state" in parsed) {
+        const next = (parsed as { state: Record<string, unknown> }).state;
+        persistedState = { ...persistedState, ...next };
+      }
+      sendJson(res, 200, {
+        object: "device_source_instance_state",
+        device_id: "device-1",
+        source_instance_id: "src-1",
+        state: persistedState,
+        updated_at: new Date().toISOString(),
+      });
+      return;
+    }
+    if (url.includes("/heartbeat")) {
+      heartbeats.push(parsed as { status: string });
+      sendJson(res, 200, { object: "device_exporter_heartbeat", status: "accepted" });
+      return;
+    }
+    if (url.includes("/ingest-batches")) {
+      if (options.ingestHandler() === "fail") {
+        res.writeHead(503, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: { code: "synthetic_unavailable" } }));
+        return;
+      }
+      ingestedBatches.push(parsed as { records?: Array<{ data?: Record<string, unknown> }> });
+      options.onIngestSucceeded?.();
+      sendJson(res, 201, {
+        object: "device_ingest_batch_result",
+        status: "accepted",
+        accepted_record_count: (parsed as { records?: unknown[] }).records?.length ?? 0,
+        rejected_record_count: 0,
+      });
+      return;
+    }
+    sendJson(res, 404, { error: { code: "not_found", path: url } });
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (!address || typeof address !== "object") {
+    throw new Error("collector togglable harness failed to start");
+  }
+  return {
+    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    heartbeats,
+    ingestedBatches,
+    stateOps,
+    url: `http://127.0.0.1:${address.port}`,
+  };
+}
 
 async function writeFixtureConnector(input: { script: string }): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "pdpp-fixture-connector-"));

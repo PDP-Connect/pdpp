@@ -66,15 +66,27 @@ export const COLLECTOR_STDERR_MAX_BYTES = 256 * 1024;
  * - `maxDrainIterations`: hard ceiling so a single runner invocation can
  *   never spin forever on a poisoned outbox; remaining work surfaces via
  *   heartbeat and the next invocation continues.
+ * - `maxDrainDurationMs`: wall-clock budget for a single drain pass.
+ *   When exceeded, the drain stops cleanly between iterations and the
+ *   remaining ready rows surface via the next runner invocation. Combined
+ *   with `maxDrainIterations` this prevents a poisoned-but-fast outbox
+ *   from monopolizing a runner invocation.
  * - `retryBackoffMs`: bounded backoff base; per-attempt grows linearly.
  * - `maxAttempts`: after this many failed attempts, the row dead-letters
  *   so it stops occupying drain bandwidth.
+ * - `maxQueueDepth`: ceiling on pending-or-retrying outbox depth per
+ *   source instance. When pending work crosses this ceiling the runner
+ *   skips spawning a new connector child and surfaces an honest
+ *   `blocked` heartbeat instead of growing the backlog further. The
+ *   already-pending work continues to drain on subsequent invocations.
  */
 export interface CollectorOutboxPolicy {
   drainBatchSize: number;
   leaseMs: number;
   maxAttempts: number;
+  maxDrainDurationMs: number;
   maxDrainIterations: number;
+  maxQueueDepth: number;
   retryBackoffMs: number;
 }
 
@@ -82,7 +94,9 @@ export const DEFAULT_COLLECTOR_OUTBOX_POLICY: Readonly<CollectorOutboxPolicy> = 
   drainBatchSize: 4,
   leaseMs: 60_000,
   maxAttempts: 5,
+  maxDrainDurationMs: 120_000,
   maxDrainIterations: 256,
+  maxQueueDepth: 10_000,
   retryBackoffMs: 30_000,
 });
 
@@ -258,6 +272,7 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
     const skipResult = await maybeSkipScanForBacklog({
       client,
       config,
+      policy,
       postDrainSummary,
       preScanDrain,
       recoveredLeases,
@@ -323,7 +338,7 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
         connector_id: config.connector.connector_id,
         records_pending: recordsPending,
         source_instance_id: config.sourceInstanceId,
-        status: heartbeatStatusForSummary(finalSummary),
+        status: heartbeatStatusForSummary(finalSummary, policy),
       });
     }
 
@@ -349,6 +364,7 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
 interface MaybeSkipScanInput {
   client: Pick<LocalDeviceClient, "heartbeat">;
   config: CollectorRunConfig;
+  policy: CollectorOutboxPolicy;
   postDrainSummary: LocalDeviceOutboxSummary;
   preScanDrain: DrainCollectorOutboxResult;
   recoveredLeases: number;
@@ -364,7 +380,7 @@ async function maybeSkipScanForBacklog(input: MaybeSkipScanInput): Promise<Colle
     connector_id: input.config.connector.connector_id,
     records_pending: recordsPending,
     source_instance_id: input.config.sourceInstanceId,
-    status: heartbeatStatusForSummary(input.postDrainSummary),
+    status: heartbeatStatusForSummary(input.postDrainSummary, input.policy),
   });
   return {
     done: null,
@@ -773,6 +789,8 @@ export interface DrainCollectorOutboxInput {
 
 export interface DrainCollectorOutboxResult {
   deadLettered: number;
+  /** True when the drain stopped because the duration budget was exceeded. */
+  durationBudgetExceeded: boolean;
   failed: number;
   iterations: number;
   sent: number;
@@ -793,9 +811,21 @@ export interface DrainCollectorOutboxResult {
  */
 export async function drainCollectorOutbox(input: DrainCollectorOutboxInput): Promise<DrainCollectorOutboxResult> {
   const sentByKind: Partial<Record<LocalDeviceOutboxItem["kind"], number>> = {};
-  const result: DrainCollectorOutboxResult = { deadLettered: 0, failed: 0, iterations: 0, sent: 0, sentByKind };
+  const result: DrainCollectorOutboxResult = {
+    deadLettered: 0,
+    durationBudgetExceeded: false,
+    failed: 0,
+    iterations: 0,
+    sent: 0,
+    sentByKind,
+  };
+  const startedAt = Date.now();
   for (let i = 0; i < input.policy.maxDrainIterations; i++) {
     throwIfAborted(input.abortSignal);
+    if (Date.now() - startedAt >= input.policy.maxDrainDurationMs) {
+      result.durationBudgetExceeded = true;
+      return result;
+    }
     const claimed = claimReadyOutboxItems(input);
     if (claimed.length === 0) {
       return result;
@@ -996,11 +1026,18 @@ function hasBlockingOutboxWork(summary: LocalDeviceOutboxSummary): boolean {
   return pendingOutboxWorkCount(summary) > 0 || summary.deadLetter > 0;
 }
 
-function heartbeatStatusForSummary(summary: LocalDeviceOutboxSummary): "blocked" | "healthy" | "retrying" {
+function heartbeatStatusForSummary(
+  summary: LocalDeviceOutboxSummary,
+  policy?: Pick<CollectorOutboxPolicy, "maxQueueDepth">
+): "blocked" | "healthy" | "retrying" {
   if (summary.deadLetter > 0) {
     return "blocked";
   }
-  if (pendingOutboxWorkCount(summary) > 0) {
+  const pending = pendingOutboxWorkCount(summary);
+  if (policy && pending >= policy.maxQueueDepth) {
+    return "blocked";
+  }
+  if (pending > 0) {
     return "retrying";
   }
   return "healthy";
