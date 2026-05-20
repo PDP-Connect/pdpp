@@ -406,7 +406,7 @@ test('dirty record-time bounds reconcile from durable records for one stream', a
     });
     const projection = getDatasetSummaryProjection();
 
-    assert.deepEqual(result, { reconciled: 1, deferred: 0 });
+    assert.deepEqual(result, { reconciled: 1, deferred: 0, residual: 0 });
     assert.equal(projection.metadata.state, 'fresh');
     assert.equal(projection.record_time_bounds.earliest, '2025-02-01T00:00:00.000Z');
     assert.equal(projection.record_time_bounds.latest, '2025-02-01T00:00:00.000Z');
@@ -437,7 +437,7 @@ test('dirty record-time reconciliation defers unsafe rows instead of clearing st
     });
     const projection = getDatasetSummaryProjection();
 
-    assert.deepEqual(result, { reconciled: 0, deferred: 1 });
+    assert.deepEqual(result, { reconciled: 0, deferred: 1, residual: 0 });
     assert.equal(projection.metadata.state, 'stale');
     assert.match(projection.metadata.last_error, /could not be safely reconciled/);
     assert.equal(getStreamDirtyFlag('gmail', 'messages'), 1);
@@ -546,7 +546,7 @@ test('reconcile concurrent with a delta leaves the row dirty for the next pass',
       },
     });
 
-    assert.deepEqual(result, { reconciled: 0, deferred: 1 });
+    assert.deepEqual(result, { reconciled: 0, deferred: 1, residual: 0 });
     // The concurrent delta's dirty flag must survive the reconcile pass.
     assert.equal(getStreamDirtyFlag('gmail', 'messages'), 1);
   }));
@@ -699,6 +699,198 @@ test('blob delta during first-ever rebuild stays stale instead of failing on nul
     const projection = getDatasetSummaryProjection();
     assert.notEqual(projection.metadata.state, 'fresh');
     assert.equal(projection.metadata.rebuild_status, 'idle');
+  }));
+
+test('rebuild caps persisted top connector candidates without losing the true top entries', async () =>
+  withTempDb(async () => {
+    // Adapter returns 200 candidates in arbitrary order. The persisted
+    // projection must drop the tail but keep the highest-count entries
+    // — proving the cap is enforced and the sort is correct.
+    const adapterCandidates = [];
+    for (let i = 0; i < 200; i += 1) {
+      adapterCandidates.push({
+        connector_id: `c${String(i).padStart(3, '0')}`,
+        // Inverted so the lowest-numbered ids have the highest counts;
+        // confirms the cap does not silently slice by adapter order.
+        record_count: 1000 - i,
+      });
+    }
+    await rebuildDatasetSummaryProjection({
+      getCounts: () => ({ connector_count: 200, stream_count: 200, record_count: 100000 }),
+      getRetainedBytes: () => ({
+        record_json_bytes: 0,
+        record_changes_json_bytes: 0,
+        blob_bytes: 0,
+      }),
+      getRecordTimeBounds: () => ({ earliest: null, latest: null }),
+      getIngestedTimeBounds: () => ({ earliest: null, latest: null }),
+      listTopConnectorCandidates: () => adapterCandidates,
+    });
+
+    const projection = getDatasetSummaryProjection();
+    assert.ok(
+      projection.top_connector_candidates.length <= 32,
+      `expected top candidates to be capped, got ${projection.top_connector_candidates.length}`,
+    );
+    assert.equal(projection.top_connector_candidates[0].connector_id, 'c000');
+    assert.equal(projection.top_connector_candidates[0].record_count, 1000);
+    // The persisted JSON must not silently include the long tail.
+    const row = getDb()
+      .prepare(`SELECT summary_json FROM dataset_summary_projection WHERE projection_key = 'global'`)
+      .get();
+    const parsed = JSON.parse(row.summary_json);
+    assert.ok(parsed.top_connector_candidates.length <= 32);
+  }));
+
+test('rebuild cancellation leaves canonical records intact and projection stale', async () =>
+  withTempDb(async () => {
+    await rebuildEmptyProjection();
+    await ingestRecord('gmail', {
+      stream: 'messages',
+      key: 'm1',
+      emitted_at: '2026-01-01T00:00:00.000Z',
+      data: { id: 'm1', subject: 'hello' },
+    });
+    await rebuildFromCurrentDb();
+    const beforeFresh = getDatasetSummaryProjection();
+    assert.equal(beforeFresh.metadata.state, 'fresh');
+    const beforeRecordCount = getDb()
+      .prepare('SELECT COUNT(*) AS n FROM records')
+      .get().n;
+
+    const controller = new AbortController();
+    await assert.rejects(
+      () =>
+        rebuildDatasetSummaryProjection(
+          {
+            getCounts: async () => {
+              controller.abort();
+              return { connector_count: 1, stream_count: 1, record_count: 1 };
+            },
+            getRetainedBytes: () => ({
+              record_json_bytes: 0,
+              record_changes_json_bytes: 0,
+              blob_bytes: 0,
+            }),
+            getRecordTimeBounds: () => ({ earliest: null, latest: null }),
+            getIngestedTimeBounds: () => ({ earliest: null, latest: null }),
+            listTopConnectorCandidates: () => [],
+            listStreamProjectionSeeds: () => [],
+          },
+          { signal: controller.signal },
+        ),
+      (err) => err.name === 'AbortError',
+    );
+
+    // Canonical record table must be untouched by the cancelled rebuild.
+    assert.equal(
+      getDb().prepare('SELECT COUNT(*) AS n FROM records').get().n,
+      beforeRecordCount,
+    );
+
+    const projection = getDatasetSummaryProjection();
+    // Cancellation projects honestly as stale, not failed; the last-known
+    // counts survive so the operator surface does not flash to zero.
+    assert.notEqual(projection.metadata.state, 'fresh');
+    assert.notEqual(projection.metadata.state, 'failed');
+    assert.equal(projection.metadata.state, 'stale');
+    assert.equal(projection.metadata.rebuild_status, 'idle');
+    assert.equal(projection.counts.record_count, beforeFresh.counts.record_count);
+  }));
+
+test('reconcile bounds work per call and reports residual rows for the next pass', async () =>
+  withTempDb(async () => {
+    await rebuildEmptyProjection();
+
+    // Seed 260 dirty stream projection rows directly — exceeds the
+    // per-call cap of 256 so the call must leave at least four behind.
+    const insert = getDb().prepare(
+      `INSERT INTO dataset_summary_stream_projection(
+         connector_id,
+         stream,
+         record_count,
+         record_json_bytes,
+         consent_time_field,
+         dirty_record_time_bounds,
+         computed_at
+       )
+       VALUES(?, ?, 1, 1, 'created_at', 1, '2026-01-01T00:00:00.000Z')`,
+    );
+    for (let i = 0; i < 260; i += 1) {
+      insert.run('gmail', `stream-${String(i).padStart(4, '0')}`);
+    }
+
+    let scanned = 0;
+    const result = await reconcileDirtyDatasetSummaryRecordTimeBounds({
+      getStreamRecordTimeBounds: () => {
+        scanned += 1;
+        return { earliest: '2025-01-01T00:00:00.000Z', latest: '2025-01-02T00:00:00.000Z' };
+      },
+    });
+
+    assert.ok(
+      scanned <= 256,
+      `reconcile must not scan more than the per-call cap; scanned=${scanned}`,
+    );
+    assert.equal(result.residual, 1);
+    assert.equal(result.reconciled, 256);
+
+    // Residual rows must remain dirty so a follow-up call still has work.
+    const remainingDirty = getDb()
+      .prepare(
+        `SELECT COUNT(*) AS n
+           FROM dataset_summary_stream_projection
+          WHERE dirty_record_time_bounds <> 0`,
+      )
+      .get().n;
+    assert.equal(remainingDirty, 260 - 256);
+
+    // Projection metadata must honestly reflect that work is unfinished.
+    const projection = getDatasetSummaryProjection();
+    assert.equal(projection.metadata.state, 'stale');
+  }));
+
+test('reconcile cancellation leaves dirty rows untouched and marks projection stale', async () =>
+  withTempDb(async () => {
+    await rebuildEmptyProjection();
+    getDb()
+      .prepare(
+        `INSERT INTO dataset_summary_stream_projection(
+           connector_id,
+           stream,
+           record_count,
+           record_json_bytes,
+           consent_time_field,
+           dirty_record_time_bounds,
+           computed_at
+         )
+         VALUES('gmail', 'messages', 1, 1, 'created_at', 1, '2026-01-01T00:00:00.000Z')`,
+      )
+      .run();
+
+    const controller = new AbortController();
+    await assert.rejects(
+      () =>
+        reconcileDirtyDatasetSummaryRecordTimeBounds(
+          {
+            getStreamRecordTimeBounds: () => {
+              controller.abort();
+              const err = new Error('cancelled');
+              err.name = 'AbortError';
+              throw err;
+            },
+          },
+          { signal: controller.signal },
+        ),
+      (err) => err.name === 'AbortError',
+    );
+
+    // Cancelled reconcile must not have cleared the dirty bit.
+    assert.equal(getStreamDirtyFlag('gmail', 'messages'), 1);
+    const projection = getDatasetSummaryProjection();
+    assert.equal(projection.metadata.state, 'stale');
+    // Honest failure mode: cancellation is not a hard failure.
+    assert.notEqual(projection.metadata.rebuild_status, 'failed');
   }));
 
 async function rebuildEmptyProjection() {

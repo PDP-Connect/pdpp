@@ -1,6 +1,18 @@
 import { getDb } from './db.js';
 
 const GLOBAL_KEY = 'global';
+// Cap the candidate list the projection persists. The operation only
+// emits the top three; anything beyond a small multiple of that is just
+// noise that bloats the projection JSON, the wire response, and the
+// in-memory rebuild result. Keep enough headroom that future tweaks to
+// the operation's TOP_CONNECTOR_LIMIT do not regress accuracy.
+const MAX_PERSISTED_TOP_CONNECTOR_CANDIDATES = 32;
+// Per-call ceiling on reconcile work. Reconcile is a derived-state
+// maintenance pass; a single invocation must not block on tens of
+// thousands of dirty rows. Anything beyond the ceiling stays dirty for
+// the next pass and the projection metadata reports the deferral
+// honestly.
+const MAX_RECONCILE_BATCH = 256;
 const EMPTY_SUMMARY = Object.freeze({
   counts: { connector_count: 0, stream_count: 0, record_count: 0 },
   retained_bytes: {
@@ -15,6 +27,42 @@ const EMPTY_SUMMARY = Object.freeze({
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function throwIfAborted(signal) {
+  if (signal && signal.aborted) {
+    const reason = signal.reason instanceof Error
+      ? signal.reason
+      : new Error(
+          typeof signal.reason === 'string' && signal.reason
+            ? signal.reason
+            : 'dataset summary projection rebuild cancelled',
+        );
+    if (reason.name !== 'AbortError') reason.name = 'AbortError';
+    throw reason;
+  }
+}
+
+function isAbortError(err) {
+  return Boolean(err && (err.name === 'AbortError' || err.code === 'ABORT_ERR'));
+}
+
+function boundedTopConnectorCandidates(candidates) {
+  if (!Array.isArray(candidates)) return [];
+  if (candidates.length <= MAX_PERSISTED_TOP_CONNECTOR_CANDIDATES) {
+    return candidates;
+  }
+  // Defensive sort: the rebuild dependency already promises an order,
+  // but trimming without re-sorting would silently drop the true top-N
+  // if the adapter ever returns them in a different order.
+  return [...candidates]
+    .sort((a, b) => {
+      const aCount = Number(a?.record_count || 0);
+      const bCount = Number(b?.record_count || 0);
+      if (bCount !== aCount) return bCount - aCount;
+      return String(a?.connector_id || '').localeCompare(String(b?.connector_id || ''));
+    })
+    .slice(0, MAX_PERSISTED_TOP_CONNECTOR_CANDIDATES);
 }
 
 function sanitizeProjectionError(err) {
@@ -220,7 +268,7 @@ export function markDatasetSummaryProjectionStale(reason) {
   }
 }
 
-export async function rebuildDatasetSummaryProjection(dependencies) {
+export async function rebuildDatasetSummaryProjection(dependencies, { signal } = {}) {
   const startedAt = nowIso();
   // Advance generation and stamp rebuild_status='running'. Capture the
   // post-advance generation so the final commit can detect a concurrent
@@ -228,11 +276,13 @@ export async function rebuildDatasetSummaryProjection(dependencies) {
   const rebuildGeneration = markDatasetSummaryProjectionRebuilding(startedAt);
 
   try {
+    throwIfAborted(signal);
     const [counts, bytes, candidates] = await Promise.all([
       dependencies.getCounts(),
       dependencies.getRetainedBytes(),
       dependencies.listTopConnectorCandidates(),
     ]);
+    throwIfAborted(signal);
     const recordCount = Number(counts.record_count || 0);
     const [recordTimeBounds, ingestedTimeBounds] =
       recordCount > 0
@@ -244,6 +294,7 @@ export async function rebuildDatasetSummaryProjection(dependencies) {
             { earliest: null, latest: null },
             { earliest: null, latest: null },
           ];
+    throwIfAborted(signal);
 
     const computedAt = nowIso();
     const summary = {
@@ -251,7 +302,7 @@ export async function rebuildDatasetSummaryProjection(dependencies) {
       retained_bytes: bytes,
       record_time_bounds: recordTimeBounds,
       ingested_time_bounds: ingestedTimeBounds,
-      top_connector_candidates: candidates,
+      top_connector_candidates: boundedTopConnectorCandidates(candidates),
     };
     const metadata = {
       computed_at: computedAt,
@@ -264,6 +315,7 @@ export async function rebuildDatasetSummaryProjection(dependencies) {
     const seeds = dependencies.listStreamProjectionSeeds
       ? await dependencies.listStreamProjectionSeeds()
       : [];
+    throwIfAborted(signal);
     const committed = writeDatasetSummaryProjectionWithStreamSeedsGuarded(
       summary,
       metadata,
@@ -302,16 +354,32 @@ export async function rebuildDatasetSummaryProjection(dependencies) {
     }
     return { ...summary, metadata };
   } catch (err) {
-    const failedAt = nowIso();
+    const endedAt = nowIso();
     const current = getDatasetSummaryProjection();
-    const metadata = {
-      computed_at: current.metadata.computed_at,
-      state: 'failed',
-      stale_since: current.metadata.stale_since || startedAt,
-      rebuild_status: 'failed',
-      last_error: sanitizeProjectionError(err),
-      source_high_watermark: current.metadata.source_high_watermark || null,
-    };
+    // Cancellation is non-destructive: canonical evidence is untouched
+    // and the last-known projection rows survive. Mark the projection
+    // stale (not failed) so the operator surface still shows the prior
+    // freshness but reports honestly that the rebuild did not complete.
+    const aborted = isAbortError(err);
+    const metadata = aborted
+      ? {
+          computed_at: current.metadata.computed_at,
+          state: current.metadata.state === 'failed' ? 'failed' : 'stale',
+          stale_since: current.metadata.stale_since || startedAt,
+          rebuild_status: 'idle',
+          last_error:
+            current.metadata.last_error ||
+            sanitizeProjectionError(err.message || 'dataset summary projection rebuild cancelled'),
+          source_high_watermark: current.metadata.source_high_watermark || null,
+        }
+      : {
+          computed_at: current.metadata.computed_at,
+          state: 'failed',
+          stale_since: current.metadata.stale_since || startedAt,
+          rebuild_status: 'failed',
+          last_error: sanitizeProjectionError(err),
+          source_high_watermark: current.metadata.source_high_watermark || null,
+        };
     writeDatasetSummaryProjection(
       {
         counts: current.counts,
@@ -321,20 +389,27 @@ export async function rebuildDatasetSummaryProjection(dependencies) {
         top_connector_candidates: current.top_connector_candidates,
       },
       metadata,
-      failedAt,
+      endedAt,
     );
     throw err;
   }
 }
 
-export async function reconcileDirtyDatasetSummaryRecordTimeBounds(dependencies) {
+export async function reconcileDirtyDatasetSummaryRecordTimeBounds(dependencies, { signal } = {}) {
   // Capture each dirty row's current `computed_at` while reading the dirty
   // set. The transactional update below only clears the dirty flag and
   // writes new bounds for rows whose `computed_at` still matches — a
   // concurrent delta that touched the same row will have advanced
   // `computed_at` and re-set `dirty_record_time_bounds`; its work then
   // survives this reconcile pass for the next sweep.
-  const dirtyRows = getDb()
+  //
+  // The scan is bounded with `LIMIT MAX_RECONCILE_BATCH + 1` so a single
+  // pass cannot block on tens of thousands of dirty streams. If the dirty
+  // backlog exceeds the batch, the extra row is dropped from the work
+  // set, `residual` is reported, and the projection metadata stays stale
+  // until the next pass.
+  throwIfAborted(signal);
+  const scanned = getDb()
     .prepare(
       `SELECT connector_id,
               stream,
@@ -342,11 +417,14 @@ export async function reconcileDirtyDatasetSummaryRecordTimeBounds(dependencies)
               computed_at
          FROM dataset_summary_stream_projection
         WHERE dirty_record_time_bounds <> 0
-        ORDER BY connector_id ASC, stream ASC`,
+        ORDER BY connector_id ASC, stream ASC
+        LIMIT ?`,
     )
-    .all();
+    .all(MAX_RECONCILE_BATCH + 1);
+  const residual = scanned.length > MAX_RECONCILE_BATCH;
+  const dirtyRows = residual ? scanned.slice(0, MAX_RECONCILE_BATCH) : scanned;
   if (dirtyRows.length === 0) {
-    return { reconciled: 0, deferred: 0 };
+    return { reconciled: 0, deferred: 0, residual: 0 };
   }
 
   const computedAt = nowIso();
@@ -354,6 +432,7 @@ export async function reconcileDirtyDatasetSummaryRecordTimeBounds(dependencies)
   const repairedRows = [];
 
   for (const row of dirtyRows) {
+    throwIfAborted(signal);
     if (!isSafeConsentTimeField(row.consent_time_field)) {
       deferred += 1;
       continue;
@@ -365,8 +444,19 @@ export async function reconcileDirtyDatasetSummaryRecordTimeBounds(dependencies)
         row.connector_id,
         row.stream,
         row.consent_time_field,
+        { signal },
       );
     } catch (err) {
+      if (isAbortError(err)) {
+        // Cancellation must not destabilize either canonical evidence
+        // or the projection. Leave the dirty rows dirty for the next
+        // pass and mark the projection stale (not failed) so the
+        // operator surface keeps last-known values honestly.
+        markDatasetSummaryProjectionStale(
+          err.message || 'dataset summary projection reconcile cancelled',
+        );
+        throw err;
+      }
       markDatasetSummaryProjectionFailed(err);
       throw err;
     }
@@ -446,7 +536,11 @@ export async function reconcileDirtyDatasetSummaryRecordTimeBounds(dependencies)
     writeDatasetSummaryProjection(summary, metadata, computedAt);
   })();
 
-  return { reconciled, deferred };
+  // `residual` is the contract for callers to schedule another pass.
+  // When > 0 the projection's `stillDirty` branch above already keeps
+  // metadata stale, so the report is consistent with what
+  // `getDatasetSummaryProjection()` will say.
+  return { reconciled, deferred, residual: residual ? 1 : 0 };
 }
 
 function maybeProjectionFault(point, ctx) {
@@ -523,10 +617,12 @@ function buildSummaryAfterDelta(current, delta) {
       earliest: earliestIngestedAt,
       latest: latestIngestedAt,
     },
-    top_connector_candidates: streamRows.map((row) => ({
-      connector_id: row.connector_id,
-      record_count: Number(row.record_count || 0),
-    })),
+    top_connector_candidates: boundedTopConnectorCandidates(
+      streamRows.map((row) => ({
+        connector_id: row.connector_id,
+        record_count: Number(row.record_count || 0),
+      })),
+    ),
   };
 }
 

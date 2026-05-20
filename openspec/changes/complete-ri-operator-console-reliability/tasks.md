@@ -30,7 +30,7 @@
 - [x] 4.3 Add local collector resource/backlog policy for duration, batch size, queue depth, retry, and dead-letter behavior.
 - [x] 4.4 Add restart/crash tests for local collector enqueue-before-ack, upload-before-local-ack, state-staged-before-commit, and stale lease recovery.
 - [x] 4.5 Audit browser/API connector executor paths for unbounded memory/concurrency/backoff risks and fix any milestone-blocking path.
-- [ ] 4.6 Audit dashboard projection rebuild/reconcile paths for resource bounds, cancellation, stale/failure visibility, and non-destructive rollback.
+- [x] 4.6 Audit dashboard projection rebuild/reconcile paths for resource bounds, cancellation, stale/failure visibility, and non-destructive rollback.
 
 ## 5. Structured Attention And Notifications
 
