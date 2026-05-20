@@ -270,12 +270,33 @@ export interface RefNextAction {
   source: "none" | "schedule_fallback" | "structured";
 }
 
+export type RefAttentionAxis = "acknowledged" | "in_progress" | "none" | "open";
+
+export type RefCoverageAxis =
+  | "complete"
+  | "deferred"
+  | "gaps"
+  | "inventory_only"
+  | "partial"
+  | "retryable_gap"
+  | "terminal_gap"
+  | "unavailable"
+  | "unknown"
+  | "unsupported";
+
+export type RefFreshnessAxis = "fresh" | "stale" | "unknown";
+
+export type RefOutboxAxis = "active" | "idle" | "stalled" | "unknown";
+
+export type RefRemoteSurfaceAxis = "failed" | "idle" | "leased" | "none" | "unknown" | "waiting";
+
 export interface RefConnectionHealthSnapshot {
   axes: {
-    attention: "acknowledged" | "in_progress" | "none" | "open";
-    coverage: "complete" | "gaps" | "partial" | "unknown";
-    freshness: "fresh" | "stale" | "unknown";
-    outbox: "active" | "idle" | "stalled" | "unknown";
+    attention: RefAttentionAxis;
+    coverage: RefCoverageAxis;
+    freshness: RefFreshnessAxis;
+    outbox: RefOutboxAxis;
+    remote_surface?: RefRemoteSurfaceAxis;
   };
   badges: {
     stale: boolean;

@@ -34,6 +34,11 @@ const COVERAGE_LABELS: Record<RefConnectionHealthSnapshot["axes"]["coverage"], A
     title: "All required streams have durable evidence of complete coverage.",
     tone: "success",
   },
+  deferred: {
+    label: "Coverage · deferred",
+    title: "The manifest intentionally defers this coverage; no detail collection is owed yet.",
+    tone: "neutral",
+  },
   partial: {
     label: "Coverage · partial",
     title: "Some required streams collected only partial data.",
@@ -44,9 +49,34 @@ const COVERAGE_LABELS: Record<RefConnectionHealthSnapshot["axes"]["coverage"], A
     title: "Required coverage has known retryable or terminal gaps.",
     tone: "warning",
   },
+  inventory_only: {
+    label: "Coverage · inventory only",
+    title: "The manifest only requires discovery/inventory evidence for this source.",
+    tone: "neutral",
+  },
+  retryable_gap: {
+    label: "Coverage · retryable gap",
+    title: "Required detail has a pending gap that should be retried.",
+    tone: "warning",
+  },
+  terminal_gap: {
+    label: "Coverage · terminal gap",
+    title: "Required detail has a known terminal gap until connector or source support changes.",
+    tone: "danger",
+  },
+  unavailable: {
+    label: "Coverage · unavailable",
+    title: "The manifest accepts that this coverage is unavailable from the source.",
+    tone: "neutral",
+  },
   unknown: {
     label: "Coverage · unknown",
     title: "No durable coverage evidence is available yet.",
+    tone: "neutral",
+  },
+  unsupported: {
+    label: "Coverage · unsupported",
+    title: "The manifest accepts that this coverage is not supported by the source or connector.",
     tone: "neutral",
   },
 };
@@ -111,20 +141,57 @@ const ATTENTION_LABELS: Record<RefConnectionHealthSnapshot["axes"]["attention"],
   },
 };
 
-export function formatCoverageAxis(axis: RefConnectionHealthSnapshot["axes"]["coverage"]): AxisChip {
-  return COVERAGE_LABELS[axis];
+export function formatCoverageAxis(
+  axis: RefConnectionHealthSnapshot["axes"]["coverage"] | null | string | undefined
+): AxisChip {
+  return formatKnownAxis(COVERAGE_LABELS, axis, "unknown", "Coverage");
 }
 
-export function formatFreshnessAxis(axis: RefConnectionHealthSnapshot["axes"]["freshness"]): AxisChip {
-  return FRESHNESS_LABELS[axis];
+export function formatFreshnessAxis(
+  axis: RefConnectionHealthSnapshot["axes"]["freshness"] | null | string | undefined
+): AxisChip {
+  return formatKnownAxis(FRESHNESS_LABELS, axis, "unknown", "Freshness");
 }
 
-export function formatOutboxAxis(axis: RefConnectionHealthSnapshot["axes"]["outbox"]): AxisChip {
-  return OUTBOX_LABELS[axis];
+export function formatOutboxAxis(
+  axis: RefConnectionHealthSnapshot["axes"]["outbox"] | null | string | undefined
+): AxisChip {
+  return formatKnownAxis(OUTBOX_LABELS, axis, "unknown", "Outbox");
 }
 
-export function formatAttentionAxis(axis: RefConnectionHealthSnapshot["axes"]["attention"]): AxisChip | null {
-  return ATTENTION_LABELS[axis];
+export function formatAttentionAxis(
+  axis: RefConnectionHealthSnapshot["axes"]["attention"] | null | string | undefined
+): AxisChip | null {
+  if (axis == null) {
+    return null;
+  }
+  if (Object.hasOwn(ATTENTION_LABELS, axis)) {
+    return ATTENTION_LABELS[axis as RefConnectionHealthSnapshot["axes"]["attention"]];
+  }
+  return {
+    label: "Attention · unknown",
+    title: `Unknown attention axis "${axis}" from the reference server.`,
+    tone: "neutral",
+  };
+}
+
+function formatKnownAxis<T extends string>(
+  labels: Record<T, AxisChip>,
+  axis: T | null | string | undefined,
+  fallback: T,
+  labelPrefix: string
+): AxisChip {
+  if (axis != null && Object.hasOwn(labels, axis)) {
+    return labels[axis as T];
+  }
+  const fallbackChip = labels[fallback];
+  if (axis == null) {
+    return fallbackChip;
+  }
+  return {
+    ...fallbackChip,
+    title: `Unknown ${labelPrefix.toLowerCase()} axis "${axis}" from the reference server.`,
+  };
 }
 
 /**

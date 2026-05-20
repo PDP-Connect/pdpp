@@ -57,6 +57,31 @@ test("coverage axis never labels 'unknown' as 'complete'", () => {
   assert.equal(formatCoverageAxis("partial").tone, "warning");
 });
 
+test("coverage axis covers the full reference-server vocabulary", () => {
+  assert.equal(formatCoverageAxis("retryable_gap").tone, "warning");
+  assert.equal(formatCoverageAxis("terminal_gap").tone, "danger");
+  for (const axis of ["deferred", "inventory_only", "unavailable", "unsupported"] as const) {
+    const chip = formatCoverageAxis(axis);
+    assert.equal(chip.tone, "neutral");
+    assert.equal(chip.label.startsWith("Coverage"), true);
+  }
+});
+
+test("axis chips degrade safely when runtime axes are missing or novel", () => {
+  const out = summarizeAxisChips({
+    attention: "none",
+    coverage: "future_gap",
+    freshness: undefined,
+    outbox: "future_outbox",
+  } as unknown as RefConnectionHealthSnapshot["axes"]);
+  assert.equal(out.length, 3);
+  assert.deepEqual(
+    out.map((c) => c.label),
+    ["Coverage · unknown", "Freshness · unknown", "Outbox · unknown"]
+  );
+  assert.equal(out.every((c) => c.tone === "neutral"), true);
+});
+
 test("freshness axis maps known states honestly", () => {
   assert.equal(formatFreshnessAxis("fresh").tone, "success");
   assert.equal(formatFreshnessAxis("stale").tone, "warning");
