@@ -51,10 +51,10 @@
 
 ## 7. Milestone Acceptance
 
-- [ ] 7.1 Add acceptance tests for healthy, degraded, needs-attention, cooling-off, blocked, idle, and unknown connection health states.
-- [ ] 7.2 Add acceptance tests proving syncing/activity, stale freshness, gaps, and outbox backlog render as axes or badges rather than headline health states.
+- [x] 7.1 Add acceptance tests for healthy, degraded, needs-attention, cooling-off, blocked, idle, and unknown connection health states.
+- [x] 7.2 Add acceptance tests proving syncing/activity, stale freshness, gaps, and outbox backlog render as axes or badges rather than headline health states.
 - [ ] 7.3 Add acceptance tests proving success-with-gaps and unsupported required streams do not project as healthy.
-- [ ] 7.4 Add restart acceptance proving active/pending/retrying/blocked state is reconstructed from durable evidence.
+- [x] 7.4 Add restart acceptance proving active/pending/retrying/blocked state is reconstructed from durable evidence.
 - [ ] 7.5 Add load/resource acceptance proving large local backfills and summary rebuilds do not require unbounded memory or destabilize the host.
 - [ ] 7.6 Add a browser/API connector acceptance path proving structured attention and remote-surface status feed the connection projection.
 - [ ] 7.7 Run relevant reference implementation, web, local collector, and polyfill connector checks.
