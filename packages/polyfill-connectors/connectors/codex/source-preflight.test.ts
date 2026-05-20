@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { EmittedMessage } from "../../src/connector-runtime.ts";
+import { runConnectorProtocolSubprocess } from "../../src/test-harness.ts";
 
 test("codex connector fails instead of succeeding when requested local sources are missing", async () => {
   const codexHome = await mkdtemp(join(tmpdir(), "pdpp-codex-missing-"));
@@ -123,20 +123,18 @@ async function runConnectorProcess(input: {
   env: NodeJS.ProcessEnv;
   start: unknown;
 }): Promise<{ exitCode: number | null; messages: EmittedMessage[]; stderr: string }> {
-  const child = spawn("tsx", ["connectors/codex/index.ts"], {
+  const result = await runConnectorProtocolSubprocess({
+    allowFailedDone: true,
     cwd: join(import.meta.dirname, "../.."),
-    env: { ...process.env, ...input.env },
+    entrypoint: "connectors/codex/index.ts",
+    env: input.env,
+    start: input.start as {
+      scope: {
+        streams: Array<{ name: string; resources?: string[]; time_range?: { since?: string; until?: string } }>;
+      };
+      state?: Record<string, unknown>;
+      type: "START";
+    },
   });
-  const stdout: Buffer[] = [];
-  const stderr: Buffer[] = [];
-  child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
-  child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
-  child.stdin.end(`${JSON.stringify(input.start)}\n`);
-  const exitCode = await new Promise<number | null>((resolve) => child.once("close", resolve));
-  const messages = Buffer.concat(stdout)
-    .toString("utf8")
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => JSON.parse(line) as EmittedMessage);
-  return { exitCode, messages, stderr: Buffer.concat(stderr).toString("utf8") };
+  return { exitCode: result.code, messages: result.messages, stderr: result.stderr };
 }
