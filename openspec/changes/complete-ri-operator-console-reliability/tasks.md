@@ -63,7 +63,7 @@
 
 ## 8. Closeout Hygiene
 
-- [ ] 8.1 Remove temporary legacy local queue import/quarantine support after current local queues are imported or intentionally discarded.
+- [x] 8.1 Remove temporary legacy local queue import/quarantine support after current local queues are imported or intentionally discarded.
 - [ ] 8.2 Mark superseded design notes and partial changes that this milestone absorbs or depends on.
 - [x] 8.3 Commit and push verified tranches in small reviewable groups.
 - [ ] 8.4 Record final milestone evidence and remaining connector-specific follow-ups.

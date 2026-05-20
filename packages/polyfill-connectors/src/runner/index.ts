@@ -110,13 +110,6 @@ export {
   type LocalDeviceQueueStatus,
 } from "../local-device-queue.ts";
 export {
-  type ImportLegacyLocalDeviceQueueOptions,
-  importLegacyLocalDeviceQueue,
-  inspectLegacyLocalDeviceQueue,
-  type LegacyLocalDeviceQueueImportResult,
-  type LegacyLocalDeviceQueueInspection,
-} from "../local-device-queue-migration.ts";
-export {
   assertPlacementOrThrow,
   COLLECTOR_RUNTIME_CAPABILITIES,
   type ConnectorPlacementInput,

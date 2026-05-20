@@ -60,7 +60,7 @@ The universal executor contract should require durability, idempotent work ids, 
 
 Local collector-specific gaps found in the current repo:
 
-- The new SQLite outbox and legacy JSON queue still coexist.
+- The temporary legacy queue import/quarantine bridge has been removed after no local queue files were found to import.
 - The current collector runner still scans/spawns before durable drain.
 - Child connector output is still buffered in memory before upload.
 - Child stderr is unbounded in some runner paths.
