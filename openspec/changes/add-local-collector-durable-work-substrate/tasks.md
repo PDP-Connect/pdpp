@@ -31,10 +31,10 @@
 
 ## 5. Connector Adoption
 
-- [ ] 5.1 Enable the durable outbox path for one low-risk local connector mode behind a compatibility flag or migration guard.
-- [ ] 5.2 Enable the durable outbox path for Claude Code local collection after crash/restart tests pass.
-- [ ] 5.3 Enable the durable outbox path for Codex local collection after crash/restart tests pass.
-- [ ] 5.4 Preserve deterministic record ids and source-instance namespacing so multi-device local collection remains collision-safe.
+- [x] 5.1 Enable the durable outbox path for one low-risk local connector mode behind a compatibility flag or migration guard.
+- [x] 5.2 Enable the durable outbox path for Claude Code local collection after crash/restart tests pass.
+- [x] 5.3 Enable the durable outbox path for Codex local collection after crash/restart tests pass.
+- [x] 5.4 Preserve deterministic record ids and source-instance namespacing so multi-device local collection remains collision-safe.
 
 ## 6. Validation
 

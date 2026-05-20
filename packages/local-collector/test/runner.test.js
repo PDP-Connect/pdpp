@@ -15,12 +15,15 @@ import {
   COLLECTOR_PROTOCOL_VERSION,
   COLLECTOR_RUNTIME_CAPABILITIES,
   LocalDeviceOutbox,
+  buildLocalDeviceOutboxId,
   getBundledConnector,
 } from '../src/runner.ts';
 import {
+  buildConnectorSpec,
   buildLocalOutboxDoctor,
   inspectLocalOutboxStatus,
   parseArgs,
+  scopedDefaultQueuePath,
 } from '../bin/pdpp-local-collector.ts';
 import {
   ALLOW_CUSTOM_COMMAND_ENV,
@@ -217,6 +220,224 @@ test('local collector doctor flags missing db, expired leases, and dead letters'
   } finally {
     outbox.close();
   }
+});
+
+// --- Connector adoption (tasks 5.1-5.4) ---
+
+test('pdpp-local-collector run --connector claude_code resolves to the bundled durable-outbox entrypoint', () => {
+  const options = parseArgs([
+    'run',
+    '--base-url', 'http://127.0.0.1:7662',
+    '--connector', 'claude_code',
+    '--device-id', 'device-1',
+    '--device-token', 'token-1',
+    '--connection-id', 'src-claude',
+  ]);
+  const spec = buildConnectorSpec(options);
+  assert.equal(spec.connector_id, 'claude_code');
+  assert.equal(spec.command, BUNDLED_CONNECTORS.claude_code.command);
+  assert.deepEqual([...spec.args], [...BUNDLED_CONNECTORS.claude_code.args]);
+  assert.deepEqual([...spec.streams].sort(), [...BUNDLED_CONNECTORS.claude_code.streams].sort());
+  assert.equal(spec.runtime_requirements.bindings.filesystem?.required, true);
+});
+
+test('pdpp-local-collector run --connector codex resolves to the bundled durable-outbox entrypoint', () => {
+  const options = parseArgs([
+    'run',
+    '--base-url', 'http://127.0.0.1:7662',
+    '--connector', 'codex',
+    '--device-id', 'device-1',
+    '--device-token', 'token-1',
+    '--connection-id', 'src-codex',
+  ]);
+  const spec = buildConnectorSpec(options);
+  assert.equal(spec.connector_id, 'codex');
+  assert.equal(spec.command, BUNDLED_CONNECTORS.codex.command);
+  assert.deepEqual([...spec.args], [...BUNDLED_CONNECTORS.codex.args]);
+  assert.deepEqual([...spec.streams].sort(), [...BUNDLED_CONNECTORS.codex.streams].sort());
+  assert.equal(spec.runtime_requirements.bindings.filesystem?.required, true);
+});
+
+test('pdpp-local-collector run refuses unbundled connector ids without the dev opt-in env', () => {
+  // Tasks 5.1 / 5.2 / 5.3 are gated by the bundled connector registry. Any
+  // non-bundled --connector id must refuse before reaching the durable
+  // outbox path, so an arbitrary binary cannot be paired with a device
+  // token via the published CLI.
+  const previous = process.env[ALLOW_CUSTOM_COMMAND_ENV];
+  delete process.env[ALLOW_CUSTOM_COMMAND_ENV];
+  try {
+    const options = parseArgs([
+      'run',
+      '--base-url', 'http://127.0.0.1:7662',
+      '--connector', 'gmail',
+      '--device-id', 'device-1',
+      '--device-token', 'token-1',
+      '--connection-id', 'src-1',
+    ]);
+    assert.throws(() => buildConnectorSpec(options), CollectorUsageError);
+  } finally {
+    if (previous === undefined) {
+      delete process.env[ALLOW_CUSTOM_COMMAND_ENV];
+    } else {
+      process.env[ALLOW_CUSTOM_COMMAND_ENV] = previous;
+    }
+  }
+});
+
+test('pdpp-local-collector run refuses --command <bin> without the dev opt-in env', () => {
+  // Even for a bundled connector id, an arbitrary --command override must
+  // refuse so the device-token supply chain stays narrow. This is the
+  // compatibility flag guard tying 5.1 to the published surface.
+  const previous = process.env[ALLOW_CUSTOM_COMMAND_ENV];
+  delete process.env[ALLOW_CUSTOM_COMMAND_ENV];
+  try {
+    const options = parseArgs([
+      'run',
+      '--base-url', 'http://127.0.0.1:7662',
+      '--connector', 'claude_code',
+      '--device-id', 'device-1',
+      '--device-token', 'token-1',
+      '--connection-id', 'src-claude',
+      '--command', '/bin/cat',
+    ]);
+    assert.throws(() => buildConnectorSpec(options), CollectorCustomCommandRefusedError);
+  } finally {
+    if (previous === undefined) {
+      delete process.env[ALLOW_CUSTOM_COMMAND_ENV];
+    } else {
+      process.env[ALLOW_CUSTOM_COMMAND_ENV] = previous;
+    }
+  }
+});
+
+test('scopedDefaultQueuePath namespaces the default queue path by connection-id', () => {
+  // Task 5.4: two distinct connection-ids must resolve to two distinct
+  // default outbox paths so concurrent local collection across devices
+  // and sources can not collide via a shared SQLite file.
+  const defaultPath = '/var/pdpp/.pdpp-data/collector-runner-queue.json';
+  const a = scopedDefaultQueuePath(defaultPath, defaultPath, 'src-A');
+  const b = scopedDefaultQueuePath(defaultPath, defaultPath, 'src-B');
+  assert.notEqual(a, b, 'distinct connection-ids must produce distinct default queue paths');
+  assert.ok(a.includes('src-A'), `expected ${a} to encode connection-id`);
+  assert.ok(b.includes('src-B'), `expected ${b} to encode connection-id`);
+  assert.equal(a.endsWith('.json'), true);
+  assert.equal(b.endsWith('.json'), true);
+
+  // An operator-supplied --queue path is honored verbatim (single-tenant case).
+  const explicit = '/operator/explicit-queue.sqlite';
+  assert.equal(
+    scopedDefaultQueuePath(explicit, defaultPath, 'src-A'),
+    explicit,
+    'operator-supplied queue path must be used as-is'
+  );
+});
+
+test('scopedDefaultQueuePath encodes path-separator characters in connection-ids', () => {
+  // Real connection-ids include separators and unicode; the scoped queue
+  // segment must not let one connection-id escape into another's path.
+  const defaultPath = '/var/pdpp/.pdpp-data/collector-runner-queue.json';
+  const tricky = scopedDefaultQueuePath(defaultPath, defaultPath, '../escape/../etc/passwd');
+  assert.equal(tricky.startsWith('/var/pdpp/.pdpp-data/'), true);
+  assert.equal(tricky.includes('/../'), false, 'must not include path traversal segments');
+});
+
+test('buildLocalDeviceOutboxId namespaces ids by source instance so identical payload parts do not collide', () => {
+  // Task 5.4: when the same connector emits the same logical work on two
+  // devices / source instances, the durable outbox id must differ. This
+  // protects the unique-key constraint on the local outbox row and keeps
+  // multi-device local collection collision-safe.
+  const partsA = ['claude_code', 1, 'batch-shared-id'];
+  const partsB = ['claude_code', 1, 'batch-shared-id'];
+  const idA = buildLocalDeviceOutboxId({ kind: 'record_batch', parts: partsA, sourceInstanceId: 'src-A' });
+  const idB = buildLocalDeviceOutboxId({ kind: 'record_batch', parts: partsB, sourceInstanceId: 'src-B' });
+  assert.notEqual(idA, idB, 'same parts under different source instances must yield different ids');
+
+  // Determinism: same inputs yield byte-identical ids so re-observing the
+  // same work on a re-run is idempotent (no duplicate row creation).
+  const idAagain = buildLocalDeviceOutboxId({ kind: 'record_batch', parts: ['claude_code', 1, 'batch-shared-id'], sourceInstanceId: 'src-A' });
+  assert.equal(idA, idAagain);
+});
+
+test('LocalDeviceOutbox isolates rows across connection-scoped source instances', async () => {
+  // Tasks 5.2 / 5.3 / 5.4: two source instances pointed at the same outbox
+  // file must each see only their own work via the per-source filters
+  // even when row ids differ only by source_instance_id.
+  const path = await tempOutboxPath();
+  const outbox = new LocalDeviceOutbox({ path });
+  try {
+    outbox.enqueue({
+      id: buildLocalDeviceOutboxId({ kind: 'record_batch', parts: ['claude_code', 1, 'batch-A'], sourceInstanceId: 'src-A' }),
+      kind: 'record_batch',
+      payload: { ok: 'A' },
+      sourceInstanceId: 'src-A',
+    });
+    outbox.enqueue({
+      id: buildLocalDeviceOutboxId({ kind: 'record_batch', parts: ['claude_code', 1, 'batch-B'], sourceInstanceId: 'src-B' }),
+      kind: 'record_batch',
+      payload: { ok: 'B' },
+      sourceInstanceId: 'src-B',
+    });
+
+    const summaryA = outbox.summary({ sourceInstanceId: 'src-A' });
+    const summaryB = outbox.summary({ sourceInstanceId: 'src-B' });
+    assert.equal(summaryA.total, 1);
+    assert.equal(summaryB.total, 1);
+    assert.equal(summaryA.ready, 1);
+    assert.equal(summaryB.ready, 1);
+
+    const listA = outbox.list({ sourceInstanceId: 'src-A' });
+    const listB = outbox.list({ sourceInstanceId: 'src-B' });
+    assert.equal(listA.length, 1);
+    assert.equal(listB.length, 1);
+    assert.equal(listA[0].source_instance_id, 'src-A');
+    assert.equal(listB[0].source_instance_id, 'src-B');
+  } finally {
+    outbox.close();
+  }
+});
+
+test('inspectLocalOutboxStatus reads connection-scoped counts from the scoped default queue path', async () => {
+  // Operator-facing proof of 5.4 from the published CLI angle: the
+  // status surface, when given a connection-id, only reports work
+  // belonging to that connection-scoped source instance and reads from
+  // the connection-scoped default queue file.
+  const path = await tempOutboxPath();
+  const outbox = new LocalDeviceOutbox({ path });
+  try {
+    outbox.enqueue({
+      id: buildLocalDeviceOutboxId({ kind: 'record_batch', parts: ['claude_code', 1, 'batch-A'], sourceInstanceId: 'src-only-A' }),
+      kind: 'record_batch',
+      payload: {},
+      sourceInstanceId: 'src-only-A',
+    });
+    outbox.enqueue({
+      id: buildLocalDeviceOutboxId({ kind: 'record_batch', parts: ['codex', 1, 'batch-B'], sourceInstanceId: 'src-only-B' }),
+      kind: 'record_batch',
+      payload: {},
+      sourceInstanceId: 'src-only-B',
+    });
+  } finally {
+    outbox.close();
+  }
+
+  const aOnly = inspectLocalOutboxStatus({
+    baseUrl: 'http://127.0.0.1:7662',
+    command: 'status',
+    queuePath: path,
+    sourceInstanceId: 'src-only-A',
+  });
+  assert.equal(aOnly.outbox.counts.pending, 1);
+  assert.equal(aOnly.outbox.counts.total, 1);
+  assert.equal(aOnly.source.source_instance_id, 'src-only-A');
+
+  const bOnly = inspectLocalOutboxStatus({
+    baseUrl: 'http://127.0.0.1:7662',
+    command: 'status',
+    queuePath: path,
+    sourceInstanceId: 'src-only-B',
+  });
+  assert.equal(bOnly.outbox.counts.pending, 1);
+  assert.equal(bOnly.outbox.counts.total, 1);
 });
 
 async function tempOutboxPath() {
