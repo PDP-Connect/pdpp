@@ -56,6 +56,12 @@ import {
  */
 export const COLLECTOR_STDERR_MAX_BYTES = 256 * 1024;
 
+const COLLECTOR_GAP_DETAILS_MAX_CHARS = 300;
+const KEYED_SECRET_RE =
+  /\b(authorization|bearer|token|password|passwd|cookie|secret|otp|api[_-]?key)\b\s*[:=]\s*["']?[^"',\s}]+/gi;
+const OTP_RE = /\b\d{6}\b/g;
+const LONG_OPAQUE_RE = /\b[A-Za-z0-9_-]{24,}\b/g;
+
 /**
  * Default policy bounds for durable outbox drains. These are intentionally
  * conservative; callers may override via `CollectorRunConfig.outboxPolicy`.
@@ -331,6 +337,11 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
       policy,
     });
 
+    await recoverResolvedLocalCollectorGaps({
+      client,
+      config,
+      outbox,
+    });
     const finalSummary = outbox.summary({ sourceInstanceId: config.sourceInstanceId });
     const recordsPending = pendingOutboxWorkCount(finalSummary);
 
@@ -374,7 +385,7 @@ interface MaybeSkipScanInput {
 }
 
 async function maybeSkipScanForBacklog(input: MaybeSkipScanInput): Promise<CollectorRunResult | null> {
-  if (!hasBlockingOutboxWork(input.postDrainSummary)) {
+  if (!hasScanBlockingOutboxWork(input.outbox, input.config.sourceInstanceId)) {
     return null;
   }
   const recordsPending = pendingOutboxWorkCount(input.postDrainSummary);
@@ -638,15 +649,14 @@ async function streamConnectorIntoOutbox(
     // durable outbox; the next runner pass will drain them. State stays
     // buffered-only so the checkpoint cannot advance past acknowledged work.
     flushPendingBatch();
+    const details = sanitizeCollectorGapDetails(error instanceof Error ? error.message : String(error));
     recordConnectorChildFailureGap({
-      details: error instanceof Error ? error.message : String(error),
+      details,
       enqueuedBatches,
       input,
     });
     throw new Error(
-      `${input.config.connector.connector_id} connector failed to start or stream output: ${
-        error instanceof Error ? error.message : String(error)
-      }`
+      `${input.config.connector.connector_id} connector failed to start or stream output: ${details || "unknown error"}`
     );
   }
   if (input.abortSignal && abortListener) {
@@ -660,12 +670,15 @@ async function streamConnectorIntoOutbox(
   }
   if (exitCode !== 0) {
     flushPendingBatch();
+    const details = sanitizeCollectorGapDetails(`exit ${exitCode}: ${stderr.toString().trim()}`);
     recordConnectorChildFailureGap({
-      details: `exit ${exitCode}: ${stderr.toString().trim().slice(0, 256)}`,
+      details,
       enqueuedBatches,
       input,
     });
-    throw new Error(`${input.config.connector.connector_id} connector exited ${exitCode}: ${stderr.toString().trim()}`);
+    throw new Error(
+      `${input.config.connector.connector_id} connector exited ${exitCode}: ${details || "unknown error"}`
+    );
   }
 
   flushPendingBatch();
@@ -716,7 +729,10 @@ async function maybeCommitCheckpoint(input: {
   outbox: LocalDeviceOutbox;
   policy: CollectorOutboxPolicy;
 }): Promise<{ flushedState: Readonly<Record<string, unknown>> | null; statePutFailed: boolean }> {
-  if (hasBlockingOutboxWork(input.afterRecordsSummary) || Object.keys(input.bufferedState).length === 0) {
+  if (
+    hasCheckpointBlockingOutboxWork(input.outbox, input.config.sourceInstanceId) ||
+    Object.keys(input.bufferedState).length === 0
+  ) {
     return { flushedState: null, statePutFailed: false };
   }
 
@@ -760,6 +776,49 @@ async function maybeCommitCheckpoint(input: {
     `${input.config.connector.connector_id} checkpoint not yet committed (drained ${checkpointDrain.sent} this pass; ${checkpointAfter?.last_error ?? "no error"})\n`
   );
   return { flushedState: null, statePutFailed: true };
+}
+
+async function recoverResolvedLocalCollectorGaps(input: {
+  client: Pick<LocalDeviceClient, "recoverLocalCollectorGap">;
+  config: CollectorRunConfig;
+  outbox: LocalDeviceOutbox;
+}): Promise<void> {
+  if (hasCheckpointBlockingOutboxWork(input.outbox, input.config.sourceInstanceId)) {
+    return;
+  }
+  const succeededGaps = input.outbox
+    .list({ sourceInstanceId: input.config.sourceInstanceId })
+    .filter((item) => item.kind === "gap" && item.status === "succeeded");
+  for (const item of succeededGaps) {
+    let payload: GapPayload;
+    try {
+      payload = assertGapPayload(item.payload, item.id);
+    } catch (error) {
+      process.stderr.write(
+        `${input.config.connector.connector_id} skipped malformed succeeded gap recovery ${item.id}: ${
+          error instanceof Error ? error.message : String(error)
+        }\n`
+      );
+      continue;
+    }
+    try {
+      await input.client.recoverLocalCollectorGap({
+        connector_id: payload.connectorId,
+        reason: payload.reason,
+        source_instance_id: payload.sourceInstanceId,
+        ...(input.config.runId ? { recovered_run_id: input.config.runId } : {}),
+        ...(payload.stream ? { stream: payload.stream } : {}),
+        ...(payload.streamBoundary ? { stream_boundary: payload.streamBoundary } : {}),
+      });
+      input.outbox.deleteSucceeded(item.id);
+    } catch (error) {
+      process.stderr.write(
+        `${input.config.connector.connector_id} local gap recovery deferred for ${item.id}: ${
+          error instanceof Error ? error.message : String(error)
+        }\n`
+      );
+    }
+  }
 }
 
 async function safeHeartbeat(
@@ -960,8 +1019,9 @@ function ensureCollectorGapRow(input: EnsureGapInput): LocalDeviceOutboxItem {
   if (input.runId) {
     payload.firstSeenRunId = input.runId;
   }
-  if (input.details) {
-    payload.details = input.details;
+  const details = input.details ? sanitizeCollectorGapDetails(input.details) : null;
+  if (details) {
+    payload.details = details;
   }
   return input.outbox.enqueue({
     id,
@@ -969,6 +1029,19 @@ function ensureCollectorGapRow(input: EnsureGapInput): LocalDeviceOutboxItem {
     payload,
     sourceInstanceId: input.sourceInstanceId,
   });
+}
+
+function sanitizeCollectorGapDetails(value: string): string {
+  let next = String(value)
+    .replace(KEYED_SECRET_RE, (_match, marker: string) => `${marker}=[REDACTED]`)
+    .replace(OTP_RE, "[REDACTED_OTP]")
+    .replace(LONG_OPAQUE_RE, "[REDACTED]")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (next.length > COLLECTOR_GAP_DETAILS_MAX_CHARS) {
+    next = `${next.slice(0, COLLECTOR_GAP_DETAILS_MAX_CHARS - 1)}…`;
+  }
+  return next;
 }
 
 export interface DrainCollectorOutboxInput {
@@ -1285,8 +1358,12 @@ function pendingOutboxWorkCount(summary: LocalDeviceOutboxSummary): number {
   return summary.ready + summary.leased;
 }
 
-function hasBlockingOutboxWork(summary: LocalDeviceOutboxSummary): boolean {
-  return pendingOutboxWorkCount(summary) > 0 || summary.deadLetter > 0;
+function hasScanBlockingOutboxWork(outbox: LocalDeviceOutbox, sourceInstanceId: string): boolean {
+  return outbox.list({ sourceInstanceId }).some((item) => item.kind !== "gap" && item.status !== "succeeded");
+}
+
+function hasCheckpointBlockingOutboxWork(outbox: LocalDeviceOutbox, sourceInstanceId: string): boolean {
+  return outbox.list({ sourceInstanceId }).some((item) => item.status !== "succeeded");
 }
 
 function heartbeatStatusForSummary(

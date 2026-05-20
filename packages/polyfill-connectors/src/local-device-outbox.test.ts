@@ -186,6 +186,35 @@ test("LocalDeviceOutbox handles retry and dead-letter transitions", async () => 
   }
 });
 
+test("LocalDeviceOutbox deletes only succeeded rows by id", async () => {
+  const outbox = new LocalDeviceOutbox({ path: await tempOutboxPath() });
+  try {
+    outbox.enqueue({
+      id: "src-1:gap:succeeded",
+      kind: "gap",
+      payload: { reason: "policy_budget" },
+      sourceInstanceId: "src-1",
+    });
+    outbox.enqueue({
+      id: "src-1:gap:ready",
+      kind: "gap",
+      payload: { reason: "policy_budget" },
+      sourceInstanceId: "src-1",
+    });
+    const [claim] = outbox.claimReady({ holder: "worker-a", leaseMs: 60_000, limit: 1, sourceInstanceId: "src-1" });
+    assert.ok(claim);
+    outbox.acknowledge({ holder: "worker-a", id: claim.id, leaseEpoch: claim.lease_epoch });
+    const otherId = claim.id === "src-1:gap:succeeded" ? "src-1:gap:ready" : "src-1:gap:succeeded";
+
+    assert.equal(outbox.deleteSucceeded(claim.id), true);
+    assert.equal(outbox.get(claim.id), null);
+    assert.equal(outbox.deleteSucceeded(otherId), false);
+    assert.equal(outbox.get(otherId)?.status, "ready");
+  } finally {
+    outbox.close();
+  }
+});
+
 test("LocalDeviceOutbox rejects lease transitions after expiry even before recovery", async () => {
   let now = new Date("2026-05-19T12:00:00.000Z");
   const outbox = new LocalDeviceOutbox({ clock: () => now, path: await tempOutboxPath() });

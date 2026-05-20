@@ -329,6 +329,11 @@ export class LocalDeviceOutbox {
     return row ? rowToItem(row) : null;
   }
 
+  deleteSucceeded(id: string): boolean {
+    const result = this.#db.prepare("DELETE FROM local_device_outbox WHERE id = ? AND status = 'succeeded'").run(id);
+    return Number(result.changes) === 1;
+  }
+
   list(input: { sourceInstanceId?: string } = {}): LocalDeviceOutboxItem[] {
     const rows = input.sourceInstanceId
       ? this.#db

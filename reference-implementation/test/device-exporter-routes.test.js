@@ -271,6 +271,14 @@ async function postLocalCollectorGap(asUrl, device, body, tokenOverride) {
   );
 }
 
+async function postLocalCollectorGapRecovered(asUrl, device, body, tokenOverride) {
+  return postJson(
+    `${asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/source-instances/${encodeURIComponent(device.source_instance_id)}/local-collector-gaps/recovered`,
+    body,
+    authHeaders(tokenOverride ?? device.device_token),
+  );
+}
+
 function localCollectorGapBody(device, overrides = {}) {
   return {
     connector_id: device.connector_id,
@@ -316,7 +324,10 @@ test('local-collector-gaps route authorizes device, derives connector binding, a
     assert.equal(sourceMismatch.status, 400);
 
     // Happy path.
-    const ack = await postLocalCollectorGap(asUrl, first, localCollectorGapBody(first, { stream: 'messages' }));
+    const ack = await postLocalCollectorGap(asUrl, first, localCollectorGapBody(first, {
+      details: 'child failed token=super-secret-value otp=123456 opaque=abcdefghijklmnopqrstuvwxyz123456',
+      stream: 'messages',
+    }));
     assert.equal(ack.status, 201, JSON.stringify(ack.body));
     assert.equal(ack.body.object, 'device_local_collector_gap');
     assert.equal(ack.body.connector_id, first.connector_id);
@@ -335,7 +346,11 @@ test('local-collector-gaps route authorizes device, derives connector binding, a
     const ackReplay = await postLocalCollectorGap(
       asUrl,
       first,
-      localCollectorGapBody(first, { stream: 'messages', last_run_id: 'run-2' }),
+      localCollectorGapBody(first, {
+        details: 'child failed token=super-secret-value otp=123456 opaque=abcdefghijklmnopqrstuvwxyz123456',
+        stream: 'messages',
+        last_run_id: 'run-2',
+      }),
     );
     assert.equal(ackReplay.status, 201);
     assert.equal(ackReplay.body.gap_id, firstGapId);
@@ -345,7 +360,7 @@ test('local-collector-gaps route authorizes device, derives connector binding, a
     // the authorized connector instance.
     const dbRows = getDb()
       .prepare(
-        `SELECT gap_id, connector_id, connector_instance_id, stream, reason, source_json
+        `SELECT gap_id, connector_id, connector_instance_id, stream, reason, status, source_json, detail_locator_json, last_error_json
            FROM connector_detail_gaps
           WHERE gap_id = ?`,
       )
@@ -355,10 +370,40 @@ test('local-collector-gaps route authorizes device, derives connector binding, a
     assert.equal(dbRows[0].connector_instance_id, first.connector_instance_id);
     assert.equal(dbRows[0].reason, 'policy_budget');
     assert.equal(dbRows[0].stream, 'local-collector/policy_budget/messages');
+    assert.equal(dbRows[0].status, 'pending');
     const source = JSON.parse(dbRows[0].source_json);
     assert.equal(source.kind, 'local_device');
     assert.equal(source.device_id, first.device_id);
     assert.equal(source.source_instance_id, first.source_instance_id);
+    const persistedDiagnostics = JSON.stringify({
+      detail_locator: JSON.parse(dbRows[0].detail_locator_json),
+      last_error: JSON.parse(dbRows[0].last_error_json),
+    });
+    assert.equal(persistedDiagnostics.includes('super-secret-value'), false);
+    assert.equal(persistedDiagnostics.includes('123456'), false);
+    assert.equal(persistedDiagnostics.includes('abcdefghijklmnopqrstuvwxyz123456'), false);
+    assert.ok(persistedDiagnostics.includes('[REDACTED'));
+
+    const recovered = await postLocalCollectorGapRecovered(
+      asUrl,
+      first,
+      {
+        connector_id: first.connector_id,
+        source_instance_id: first.source_instance_id,
+        reason: 'policy_budget',
+        stream: 'messages',
+        recovered_run_id: 'run-3',
+      },
+    );
+    assert.equal(recovered.status, 200, JSON.stringify(recovered.body));
+    assert.equal(recovered.body.gap_id, firstGapId);
+    assert.equal(recovered.body.status, 'recovered');
+    assert.equal(recovered.body.last_run_id, 'run-3');
+    const recoveredRow = getDb()
+      .prepare('SELECT status, recovered_run_id FROM connector_detail_gaps WHERE gap_id = ?')
+      .get(firstGapId);
+    assert.equal(recoveredRow.status, 'recovered');
+    assert.equal(recoveredRow.recovered_run_id, 'run-3');
 
     // A second device cannot observe or upsert into the first device's gap.
     const crossDevice = await postLocalCollectorGap(

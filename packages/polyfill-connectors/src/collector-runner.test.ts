@@ -804,6 +804,7 @@ interface CollectorHarnessOptions {
 interface CollectorHarness {
   close: () => Promise<void>;
   gapAcks: Record<string, unknown>[];
+  gapRecoveries: Record<string, unknown>[];
   heartbeats: Array<{ status: string; [k: string]: unknown }>;
   ingestedBatches: Array<{ records?: Array<{ data?: Record<string, unknown> }>; [k: string]: unknown }>;
   stateOps: Array<{ body: unknown; method: string }>;
@@ -815,6 +816,7 @@ async function startCollectorHarness(options: CollectorHarnessOptions): Promise<
   const heartbeats: CollectorHarness["heartbeats"] = [];
   const ingestedBatches: CollectorHarness["ingestedBatches"] = [];
   const gapAcks: CollectorHarness["gapAcks"] = [];
+  const gapRecoveries: CollectorHarness["gapRecoveries"] = [];
   let persistedState: Record<string, unknown> = options.priorState ? { ...options.priorState } : {};
 
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
@@ -857,6 +859,30 @@ async function startCollectorHarness(options: CollectorHarnessOptions): Promise<
     if (url.includes("/heartbeat")) {
       heartbeats.push(parsed as { status: string });
       sendJson(res, 200, { object: "device_exporter_heartbeat", status: "accepted" });
+      return;
+    }
+    if (url.includes("/local-collector-gaps/recovered")) {
+      const recovery = (parsed && typeof parsed === "object" ? parsed : {}) as Record<string, unknown>;
+      gapRecoveries.push(recovery);
+      const reason = typeof recovery.reason === "string" ? recovery.reason : "policy_budget";
+      const stream = typeof recovery.stream === "string" ? recovery.stream : null;
+      sendJson(res, 200, {
+        object: "device_local_collector_gap",
+        device_id: "device-1",
+        connector_id: recovery.connector_id ?? "unknown",
+        connector_instance_id: "cin_fake",
+        source_instance_id: recovery.source_instance_id ?? "src-1",
+        gap_id: "gap_fake",
+        stream: stream ? `local-collector/${reason}/${stream}` : `local-collector/${reason}`,
+        reason,
+        retryable: false,
+        status: "recovered",
+        attempt_count: 0,
+        first_seen_at: null,
+        first_seen_run_id: null,
+        last_run_id: recovery.recovered_run_id ?? null,
+        updated_at: new Date().toISOString(),
+      });
       return;
     }
     if (url.includes("/local-collector-gaps")) {
@@ -909,6 +935,7 @@ async function startCollectorHarness(options: CollectorHarnessOptions): Promise<
   return {
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
     gapAcks,
+    gapRecoveries,
     heartbeats,
     ingestedBatches,
     stateOps,
@@ -1819,6 +1846,7 @@ async function startTogglableHarness(options: {
   const heartbeats: CollectorHarness["heartbeats"] = [];
   const ingestedBatches: CollectorHarness["ingestedBatches"] = [];
   const gapAcks: CollectorHarness["gapAcks"] = [];
+  const gapRecoveries: CollectorHarness["gapRecoveries"] = [];
   let persistedState: Record<string, unknown> = options.priorState ? { ...options.priorState } : {};
 
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
@@ -1857,6 +1885,30 @@ async function startTogglableHarness(options: {
       events.push({ label: "heartbeat" });
       heartbeats.push(parsed as { status: string });
       sendJson(res, 200, { object: "device_exporter_heartbeat", status: "accepted" });
+      return;
+    }
+    if (url.includes("/local-collector-gaps/recovered")) {
+      const recovery = (parsed && typeof parsed === "object" ? parsed : {}) as Record<string, unknown>;
+      events.push({ label: "gap-recovered" });
+      gapRecoveries.push(recovery);
+      const reason = typeof recovery.reason === "string" ? recovery.reason : "policy_budget";
+      sendJson(res, 200, {
+        object: "device_local_collector_gap",
+        device_id: "device-1",
+        connector_id: recovery.connector_id ?? "unknown",
+        connector_instance_id: "cin_fake",
+        source_instance_id: recovery.source_instance_id ?? "src-1",
+        gap_id: "gap_fake",
+        stream: `local-collector/${reason}`,
+        reason,
+        retryable: false,
+        status: "recovered",
+        attempt_count: 0,
+        first_seen_at: null,
+        first_seen_run_id: null,
+        last_run_id: recovery.recovered_run_id ?? null,
+        updated_at: new Date().toISOString(),
+      });
       return;
     }
     if (url.includes("/local-collector-gaps")) {
@@ -1913,6 +1965,7 @@ async function startTogglableHarness(options: {
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
     events,
     gapAcks,
+    gapRecoveries,
     heartbeats,
     ingestedBatches,
     stateOps,
@@ -2103,7 +2156,7 @@ test("runCollectorConnector records a connector_child_failure gap when the child
           stream: "messages",
           cursor: "partial-cursor",
         }) + "\\n");
-        process.stderr.write("synthetic child crash after partial flush\\n");
+        process.stderr.write("synthetic child crash token=super-secret-value otp=123456 opaque=abcdefghijklmnopqrstuvwxyz123456\\n");
         process.exit(31);
       `,
     });
@@ -2126,7 +2179,13 @@ test("runCollectorConnector records a connector_child_failure gap when the child
           runId: "run-child-fail-1",
           sourceInstanceId: "src-child-fail",
         }),
-      /connector exited 31/
+      (error: unknown) => {
+        assert.match(error instanceof Error ? error.message : String(error), /connector exited 31/);
+        assert.equal(JSON.stringify(error).includes("super-secret-value"), false);
+        assert.equal(JSON.stringify(error).includes("123456"), false);
+        assert.equal(JSON.stringify(error).includes("abcdefghijklmnopqrstuvwxyz123456"), false);
+        return true;
+      }
     );
 
     const verify = new LocalDeviceOutbox({ path: queuePath });
@@ -2142,6 +2201,10 @@ test("runCollectorConnector records a connector_child_failure gap when the child
       assert.equal(payload.reason, "connector_child_failure");
       assert.equal(payload.retryable, true);
       assert.equal(payload.firstSeenRunId, "run-child-fail-1");
+      assert.equal(JSON.stringify(payload).includes("super-secret-value"), false);
+      assert.equal(JSON.stringify(payload).includes("123456"), false);
+      assert.equal(JSON.stringify(payload).includes("abcdefghijklmnopqrstuvwxyz123456"), false);
+      assert.match(String(payload.details), /\[REDACTED]/);
 
       // Checkpoint must NOT have been committed past the unacknowledged
       // records + gap row.
@@ -2291,5 +2354,171 @@ test("drainCollectorOutbox dead-letters a malformed gap row instead of poisoning
     assert.equal(item?.status, "dead_letter");
   } finally {
     outbox.close();
+  }
+});
+
+test("runCollectorConnector does not let a dead-lettered gap row permanently skip scans", async () => {
+  // A failed diagnostic gap acknowledgement must keep checkpoints from
+  // advancing, but it should not forever prevent the collector from
+  // re-observing the source and making useful, idempotent progress.
+  const harness = await startCollectorHarness({ priorState: {} });
+  try {
+    const queuePath = await tempQueuePath();
+    const seedOutbox = new LocalDeviceOutbox({ path: queuePath });
+    try {
+      seedOutbox.enqueue({
+        id: "src-dead-gap:policy",
+        kind: "gap",
+        payload: {
+          connectorId: "fixture-dead-gap",
+          firstSeenAt: "2026-05-19T12:00:00.000Z",
+          firstSeenRunId: "run-dead-gap-1",
+          nextAttemptBackoffMs: 60_000,
+          reason: "policy_budget",
+          retryable: true,
+          sourceInstanceId: "src-dead-gap",
+        },
+        sourceInstanceId: "src-dead-gap",
+      });
+      const [claim] = seedOutbox.claimReady({ holder: "seed", leaseMs: 60_000, sourceInstanceId: "src-dead-gap" });
+      assert.ok(claim);
+      seedOutbox.deadLetter({
+        error: "synthetic gap ack failure",
+        holder: "seed",
+        id: claim.id,
+        leaseEpoch: claim.lease_epoch,
+      });
+    } finally {
+      seedOutbox.close();
+    }
+
+    const fixture = await writeFixtureConnector({
+      script: `
+        let buf = "";
+        await new Promise((r) => process.stdin.on("data", (c) => {
+          buf += c;
+          if (buf.includes("\\n")) r();
+        }));
+        process.stdout.write(JSON.stringify({
+          type: "STATE",
+          stream: "messages",
+          cursor: "cursor-after-dead-gap",
+        }) + "\\n");
+        process.stdout.write(JSON.stringify({
+          type: "DONE",
+          status: "succeeded",
+          records_emitted: 0,
+        }) + "\\n");
+      `,
+    });
+
+    const result = await runCollectorConnector({
+      baseUrl: harness.url,
+      connector: {
+        args: [fixture],
+        command: "node",
+        connector_id: "fixture-dead-gap",
+        runtime_requirements: { bindings: {} },
+        streams: ["messages"],
+      },
+      deviceId: "device-1",
+      deviceToken: "device-token",
+      queuePath,
+      runId: "run-dead-gap-2",
+      sourceInstanceId: "src-dead-gap",
+    });
+
+    assert.equal(result.skippedScanForBacklog, false);
+    assert.equal(result.done?.status, "succeeded");
+    assert.equal(result.outboxSummary.deadLetter, 1);
+    assert.equal(result.flushedState, null, "checkpoint must not advance past an unacknowledged gap");
+    const putOps = harness.stateOps.filter((op) => op.method === "PUT");
+    assert.equal(putOps.length, 0);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("runCollectorConnector marks acknowledged local gaps recovered after a clean run", async () => {
+  const harness = await startCollectorHarness({ priorState: {} });
+  try {
+    const queuePath = await tempQueuePath();
+    const seedOutbox = new LocalDeviceOutbox({ path: queuePath });
+    try {
+      seedOutbox.enqueue({
+        id: "src-recovered-gap:policy",
+        kind: "gap",
+        payload: {
+          connectorId: "fixture-recovered-gap",
+          firstSeenAt: "2026-05-19T12:00:00.000Z",
+          firstSeenRunId: "run-recovered-gap-1",
+          nextAttemptBackoffMs: 60_000,
+          reason: "policy_budget",
+          retryable: true,
+          sourceInstanceId: "src-recovered-gap",
+        },
+        sourceInstanceId: "src-recovered-gap",
+      });
+      const [claim] = seedOutbox.claimReady({ holder: "seed", leaseMs: 60_000, sourceInstanceId: "src-recovered-gap" });
+      assert.ok(claim);
+      seedOutbox.acknowledge({ holder: "seed", id: claim.id, leaseEpoch: claim.lease_epoch });
+    } finally {
+      seedOutbox.close();
+    }
+
+    const fixture = await writeFixtureConnector({
+      script: `
+        let buf = "";
+        await new Promise((r) => process.stdin.on("data", (c) => {
+          buf += c;
+          if (buf.includes("\\n")) r();
+        }));
+        process.stdout.write(JSON.stringify({
+          type: "STATE",
+          stream: "messages",
+          cursor: "cursor-after-recovery",
+        }) + "\\n");
+        process.stdout.write(JSON.stringify({
+          type: "DONE",
+          status: "succeeded",
+          records_emitted: 0,
+        }) + "\\n");
+      `,
+    });
+
+    const result = await runCollectorConnector({
+      baseUrl: harness.url,
+      connector: {
+        args: [fixture],
+        command: "node",
+        connector_id: "fixture-recovered-gap",
+        runtime_requirements: { bindings: {} },
+        streams: ["messages"],
+      },
+      deviceId: "device-1",
+      deviceToken: "device-token",
+      queuePath,
+      runId: "run-recovered-gap-2",
+      sourceInstanceId: "src-recovered-gap",
+    });
+
+    assert.equal(result.skippedScanForBacklog, false);
+    assert.deepEqual(result.flushedState, { messages: "cursor-after-recovery" });
+    assert.equal(harness.gapRecoveries.length, 1);
+    assert.equal(harness.gapRecoveries[0]?.reason, "policy_budget");
+    assert.equal(harness.gapRecoveries[0]?.recovered_run_id, "run-recovered-gap-2");
+    const verify = new LocalDeviceOutbox({ path: queuePath });
+    try {
+      const gaps = verify.list({ sourceInstanceId: "src-recovered-gap" }).filter((item) => item.kind === "gap");
+      assert.equal(
+        gaps.length,
+        0,
+        "recovered local gap rows should be pruned so future re-observation can report a fresh gap"
+      );
+    } finally {
+      verify.close();
+    }
+  } finally {
+    await harness.close();
   }
 });

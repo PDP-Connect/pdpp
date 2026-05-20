@@ -7,6 +7,8 @@ export const LOCAL_DEVICE_ENDPOINTS = {
   ingestBatch: (deviceId: string) => `/_ref/device-exporters/${encodeURIComponent(deviceId)}/ingest-batches`,
   localCollectorGap: (deviceId: string, sourceInstanceId: string) =>
     `/_ref/device-exporters/${encodeURIComponent(deviceId)}/source-instances/${encodeURIComponent(sourceInstanceId)}/local-collector-gaps`,
+  localCollectorGapRecovered: (deviceId: string, sourceInstanceId: string) =>
+    `/_ref/device-exporters/${encodeURIComponent(deviceId)}/source-instances/${encodeURIComponent(sourceInstanceId)}/local-collector-gaps/recovered`,
   sourceInstanceState: (deviceId: string, sourceInstanceId: string) =>
     `/_ref/device-exporters/${encodeURIComponent(deviceId)}/source-instances/${encodeURIComponent(sourceInstanceId)}/state`,
 } as const;
@@ -93,7 +95,7 @@ export interface AckLocalCollectorGapResponse {
   connector_id: string;
   connector_instance_id: string;
   device_id: string;
-  first_seen_at: string;
+  first_seen_at: string | null;
   first_seen_run_id: string | null;
   gap_id: string;
   last_run_id: string | null;
@@ -104,6 +106,15 @@ export interface AckLocalCollectorGapResponse {
   status: string;
   stream: string;
   updated_at: string | null;
+}
+
+export interface RecoverLocalCollectorGapRequest {
+  connector_id: string;
+  reason: "policy_budget" | "connector_child_failure";
+  recovered_run_id?: string;
+  source_instance_id: string;
+  stream?: string;
+  stream_boundary?: string;
 }
 
 export class LocalDeviceHttpError extends Error {
@@ -171,6 +182,15 @@ export class LocalDeviceClient {
 
   ackLocalCollectorGap(request: AckLocalCollectorGapRequest): Promise<AckLocalCollectorGapResponse> {
     const path = LOCAL_DEVICE_ENDPOINTS.localCollectorGap(this.#requireDeviceId(), request.source_instance_id);
+    return this.#request(path, {
+      authenticate: true,
+      body: request,
+      method: "POST",
+    });
+  }
+
+  recoverLocalCollectorGap(request: RecoverLocalCollectorGapRequest): Promise<AckLocalCollectorGapResponse> {
+    const path = LOCAL_DEVICE_ENDPOINTS.localCollectorGapRecovered(this.#requireDeviceId(), request.source_instance_id);
     return this.#request(path, {
       authenticate: true,
       body: request,

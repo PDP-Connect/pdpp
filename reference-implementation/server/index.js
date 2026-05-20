@@ -107,6 +107,7 @@ import {
   resolveDefaultConnectorPath,
 } from '../runtime/controller.ts';
 import { projectRunAutomationPolicy } from '../runtime/run-automation-policy.ts';
+import { redactStderrTail } from '../runtime/stderr-redact.js';
 import { createScheduler } from '../runtime/scheduler.ts';
 import { getDefaultSchedulerStore } from './stores/scheduler-store.ts';
 import {
@@ -463,6 +464,13 @@ function requireNonEmptyString(value, param) {
     throw err;
   }
   return value.trim();
+}
+
+function sanitizeLocalCollectorGapDetails(value) {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  const redacted = redactStderrTail(value).text.replace(/\s+/g, ' ').trim();
+  if (!redacted) return null;
+  return redacted.length <= 300 ? redacted : `${redacted.slice(0, 299)}…`;
 }
 
 function referenceLocalDeviceStorageTarget(connectorId, connectorInstanceId) {
@@ -4331,7 +4339,7 @@ function buildAsApp(opts = {}) {
         const lastRunId = typeof body.last_run_id === 'string' && body.last_run_id.trim()
           ? body.last_run_id.trim()
           : firstSeenRunId;
-        const details = typeof body.details === 'string' ? body.details : null;
+        const details = sanitizeLocalCollectorGapDetails(body.details);
 
         // Use a synthetic stream namespace so a local-collector gap can
         // never collide with real connector-data streams that share the
@@ -4344,11 +4352,8 @@ function buildAsApp(opts = {}) {
         const detailLocator = {
           kind: 'local_collector_gap',
           reason,
-          retryable: body.retryable,
-          next_attempt_backoff_ms: body.next_attempt_backoff_ms,
           ...(streamName ? { stream: streamName } : {}),
           ...(streamBoundary ? { stream_boundary: streamBoundary } : {}),
-          ...(details ? { details } : {}),
         };
         const source = {
           kind: 'local_device',
@@ -4390,6 +4395,107 @@ function buildAsApp(opts = {}) {
           first_seen_run_id: firstSeenRunId,
           last_run_id: gap.last_run_id ?? lastRunId,
           updated_at: gap.updated_at,
+        });
+      } catch (err) {
+        if (err && err.code === 'invalid_request') {
+          return pdppError(res, 400, 'invalid_request', err.message, err.param || null);
+        }
+        handleError(res, err);
+      }
+    },
+  );
+
+  // POST /_ref/device-exporters/:deviceId/source-instances/:sourceInstanceId/local-collector-gaps/recovered
+  // Marks a previously reported local-collector gap as recovered once a later
+  // clean local run has drained its blocking work and can safely stop
+  // degrading connection coverage. The device still cannot choose connector
+  // instance identity: the route derives it from the enrolled source binding.
+  app.post(
+    '/_ref/device-exporters/:deviceId/source-instances/:sourceInstanceId/local-collector-gaps/recovered',
+    requireDeviceExporterCredential,
+    async (req, res) => {
+      try {
+        const deviceId = decodeURIComponent(req.params.deviceId);
+        if (deviceId !== req.deviceExporter.deviceId) {
+          return pdppError(res, 403, 'permission_error', 'Device credential is not valid for this device');
+        }
+        const sourceInstanceId = decodeURIComponent(req.params.sourceInstanceId);
+        const authorized = await resolveAuthorizedDeviceSource(req, res, deviceId, sourceInstanceId, { notFoundStatus: 404 });
+        if (!authorized) return;
+        const { sourceInstance, connectorInstance } = authorized;
+
+        const body = req.body || {};
+        const bodySourceInstanceId = requireNonEmptyString(body.source_instance_id, 'source_instance_id');
+        if (bodySourceInstanceId !== sourceInstanceId) {
+          return pdppError(res, 400, 'invalid_request', 'body source_instance_id must match path sourceInstanceId', 'source_instance_id');
+        }
+        const connectorId = requireNonEmptyString(body.connector_id, 'connector_id');
+        if (connectorId !== sourceInstance.connectorId) {
+          return pdppError(res, 400, 'invalid_request', 'connector_id does not match source_instance_id', 'connector_id');
+        }
+        const reason = requireNonEmptyString(body.reason, 'reason');
+        if (reason !== 'policy_budget' && reason !== 'connector_child_failure') {
+          return pdppError(res, 400, 'invalid_request', 'reason must be one of: policy_budget, connector_child_failure', 'reason');
+        }
+
+        const streamName = typeof body.stream === 'string' && body.stream.trim()
+          ? body.stream.trim()
+          : null;
+        const streamBoundary = typeof body.stream_boundary === 'string' && body.stream_boundary.trim()
+          ? body.stream_boundary.trim()
+          : null;
+        const recoveredRunId = typeof body.recovered_run_id === 'string' && body.recovered_run_id.trim()
+          ? body.recovered_run_id.trim()
+          : null;
+        const syntheticStream = streamName
+          ? `local-collector/${reason}/${streamName}`
+          : `local-collector/${reason}`;
+        const detailLocator = {
+          kind: 'local_collector_gap',
+          reason,
+          ...(streamName ? { stream: streamName } : {}),
+          ...(streamBoundary ? { stream_boundary: streamBoundary } : {}),
+        };
+        const source = {
+          kind: 'local_device',
+          device_id: deviceId,
+          source_instance_id: sourceInstanceId,
+        };
+
+        const store = getDefaultConnectorDetailGapStore();
+        const gap = await store.upsertPendingGap({
+          connectorId,
+          connectorInstanceId: connectorInstance.connectorInstanceId,
+          stream: syntheticStream,
+          source,
+          detailLocator,
+          reason,
+          lastError: {
+            recovered_by: 'local_collector',
+            recovered_at: new Date().toISOString(),
+          },
+          ...(recoveredRunId ? { discoveredRunId: recoveredRunId, lastRunId: recoveredRunId } : {}),
+        });
+        const recovered = await store.markGapStatus(gap.gap_id, 'recovered', {
+          ...(recoveredRunId ? { runId: recoveredRunId } : {}),
+        });
+
+        res.status(200).json({
+          object: 'device_local_collector_gap',
+          device_id: deviceId,
+          connector_id: connectorId,
+          connector_instance_id: connectorInstance.connectorInstanceId,
+          source_instance_id: sourceInstanceId,
+          gap_id: recovered.gap_id,
+          stream: syntheticStream,
+          reason,
+          retryable: false,
+          status: recovered.status,
+          attempt_count: recovered.attempt_count,
+          first_seen_at: null,
+          first_seen_run_id: recovered.discovered_run_id ?? null,
+          last_run_id: recovered.last_run_id ?? recoveredRunId,
+          updated_at: recovered.updated_at,
         });
       } catch (err) {
         if (err && err.code === 'invalid_request') {

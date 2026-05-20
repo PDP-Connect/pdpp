@@ -114,6 +114,50 @@ test("LocalDeviceClient PUT source-instance state sends bearer + JSON body", asy
   }
 });
 
+test("LocalDeviceClient sends local collector gap ack and recovery through device-scoped routes", async () => {
+  const seen: SeenRequest[] = [];
+  const server = await startJsonServer(seen);
+  try {
+    const client = new LocalDeviceClient({ baseUrl: server.url, deviceId: "device-1", deviceToken: "device-token" });
+    await client.ackLocalCollectorGap({
+      connector_id: "codex",
+      first_seen_at: "2026-05-19T12:00:00.000Z",
+      next_attempt_backoff_ms: 60_000,
+      reason: "policy_budget",
+      retryable: true,
+      source_instance_id: "source-1",
+    });
+    await client.recoverLocalCollectorGap({
+      connector_id: "codex",
+      reason: "policy_budget",
+      recovered_run_id: "run-2",
+      source_instance_id: "source-1",
+    });
+
+    assert.equal(seen[0]?.method, "POST");
+    assert.equal(seen[0]?.path, LOCAL_DEVICE_ENDPOINTS.localCollectorGap("device-1", "source-1"));
+    assert.equal(seen[0]?.authorization, "Bearer device-token");
+    assert.deepEqual(seen[0]?.body, {
+      connector_id: "codex",
+      first_seen_at: "2026-05-19T12:00:00.000Z",
+      next_attempt_backoff_ms: 60_000,
+      reason: "policy_budget",
+      retryable: true,
+      source_instance_id: "source-1",
+    });
+    assert.equal(seen[1]?.method, "POST");
+    assert.equal(seen[1]?.path, LOCAL_DEVICE_ENDPOINTS.localCollectorGapRecovered("device-1", "source-1"));
+    assert.deepEqual(seen[1]?.body, {
+      connector_id: "codex",
+      reason: "policy_budget",
+      recovered_run_id: "run-2",
+      source_instance_id: "source-1",
+    });
+  } finally {
+    await server.close();
+  }
+});
+
 test("LocalDeviceClient state methods reject 401/403 with LocalDeviceHttpError", async () => {
   const server = await startStatusServer(401, "denied");
   try {
