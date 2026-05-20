@@ -7,6 +7,7 @@ import test from 'node:test';
 import {
   __setDatasetSummaryProjectionFaultHookForTest,
   applyDatasetSummaryBlobDelta,
+  applyDatasetSummaryRecordDelta,
   getDatasetSummaryProjection,
   markDatasetSummaryProjectionStale,
   reconcileDirtyDatasetSummaryRecordTimeBounds,
@@ -599,6 +600,101 @@ test('blob delta during running rebuild does not silently overwrite the rebuild 
         },
       ],
     });
+
+    const projection = getDatasetSummaryProjection();
+    assert.notEqual(projection.metadata.state, 'fresh');
+    assert.equal(projection.metadata.rebuild_status, 'idle');
+  }));
+
+test('record delta during first-ever rebuild stays stale instead of failing on null computed_at', () =>
+  withTempDb(async () => {
+    // No prior rebuild has run, so the projection's computed_at is null.
+    // The rebuild below stamps rebuild_status='running' while keeping
+    // computed_at=null (markDatasetSummaryProjectionRebuilding preserves
+    // the prior computed_at). A delta arriving inside this window must
+    // be treated as a fence-mark-stale, NOT as a hard "projection has
+    // not been rebuilt" failure.
+    let deltaArrived = false;
+    let metadataDuringRebuild = null;
+    await rebuildDatasetSummaryProjection({
+      getCounts: () => {
+        applyDatasetSummaryRecordDelta({
+          connectorId: 'gmail',
+          stream: 'messages',
+          recordCountDelta: 1,
+          recordJsonBytesDelta: 10,
+          recordChangesJsonBytesDelta: 0,
+          emittedAt: '2026-01-01T00:00:00.000Z',
+          consentTimeField: null,
+          dirtyRecordTimeBounds: false,
+        });
+        deltaArrived = true;
+        metadataDuringRebuild = getDatasetSummaryProjection().metadata;
+        return { connector_count: 0, stream_count: 0, record_count: 0 };
+      },
+      getRetainedBytes: () => ({
+        record_json_bytes: 0,
+        record_changes_json_bytes: 0,
+        blob_bytes: 0,
+      }),
+      getRecordTimeBounds: () => ({ earliest: null, latest: null }),
+      getIngestedTimeBounds: () => ({ earliest: null, latest: null }),
+      listTopConnectorCandidates: () => [],
+      listStreamProjectionSeeds: () => [],
+    });
+
+    assert.equal(deltaArrived, true);
+    // Mid-rebuild snapshot: the delta must NOT have marked the
+    // projection failed simply because computed_at was null.
+    assert.notEqual(metadataDuringRebuild.state, 'failed');
+    assert.notEqual(metadataDuringRebuild.rebuild_status, 'failed');
+    assert.equal(
+      (metadataDuringRebuild.last_error || '').includes(
+        'projection has not been rebuilt',
+      ),
+      false,
+      `expected no "not been rebuilt" error, got ${metadataDuringRebuild.last_error}`,
+    );
+
+    const projection = getDatasetSummaryProjection();
+    // After the rebuild's guarded commit detects the bumped generation,
+    // the projection must NOT report a false-fresh state.
+    assert.notEqual(projection.metadata.state, 'fresh');
+    assert.equal(projection.metadata.rebuild_status, 'idle');
+  }));
+
+test('blob delta during first-ever rebuild stays stale instead of failing on null computed_at', () =>
+  withTempDb(async () => {
+    let deltaArrived = false;
+    let metadataDuringRebuild = null;
+    await rebuildDatasetSummaryProjection({
+      getCounts: () => {
+        applyDatasetSummaryBlobDelta({ blobBytesDelta: 1234 });
+        deltaArrived = true;
+        metadataDuringRebuild = getDatasetSummaryProjection().metadata;
+        return { connector_count: 0, stream_count: 0, record_count: 0 };
+      },
+      getRetainedBytes: () => ({
+        record_json_bytes: 0,
+        record_changes_json_bytes: 0,
+        blob_bytes: 0,
+      }),
+      getRecordTimeBounds: () => ({ earliest: null, latest: null }),
+      getIngestedTimeBounds: () => ({ earliest: null, latest: null }),
+      listTopConnectorCandidates: () => [],
+      listStreamProjectionSeeds: () => [],
+    });
+
+    assert.equal(deltaArrived, true);
+    assert.notEqual(metadataDuringRebuild.state, 'failed');
+    assert.notEqual(metadataDuringRebuild.rebuild_status, 'failed');
+    assert.equal(
+      (metadataDuringRebuild.last_error || '').includes(
+        'projection has not been rebuilt',
+      ),
+      false,
+      `expected no "not been rebuilt" error, got ${metadataDuringRebuild.last_error}`,
+    );
 
     const projection = getDatasetSummaryProjection();
     assert.notEqual(projection.metadata.state, 'fresh');

@@ -88,19 +88,20 @@ export function applyDatasetSummaryRecordDelta(delta) {
     maybeProjectionFault('before-record-delta', delta);
     const db = getDb();
     const current = getDatasetSummaryProjection();
-    assertDeltaCanUseStreamProjection(current);
 
-    // Fence against an in-flight rebuild: the rebuild's seed query captures
-    // a snapshot of the per-stream projection at rebuild start. If we let
-    // this delta both mutate that snapshot's source rows AND overwrite the
-    // summary row, the rebuild's final write may silently clobber us. We
-    // instead leave the per-stream row alone and mark the projection stale,
-    // bumping the generation so the rebuild's guarded final write notices
-    // the conflict and refuses to claim freshness.
+    // Fence against an in-flight rebuild BEFORE the "has been rebuilt"
+    // guard. During a first-ever rebuild, computed_at is still null and
+    // rebuild_status is 'running'; the rebuild itself is what will
+    // populate the projection. Treating a concurrent delta as a hard
+    // "not rebuilt" failure in that window would mark the projection
+    // failed instead of stale/deferred, even though the right outcome
+    // is to leave the rebuild to win or detect the conflict via its
+    // generation guard.
     if (current.metadata.rebuild_status === 'running') {
       markDatasetSummaryProjectionStale('record delta arrived during projection rebuild');
       return;
     }
+    assertDeltaCanUseStreamProjection(current);
 
     const existingStream = getStreamProjection(delta.connectorId, delta.stream);
     const previousRecordCount = existingStream?.record_count || 0;
@@ -165,12 +166,18 @@ export function applyDatasetSummaryBlobDelta(delta) {
   try {
     maybeProjectionFault('before-blob-delta', delta);
     const current = getDatasetSummaryProjection();
-    if (!current.metadata.computed_at) {
-      throw new Error('dataset summary projection has not been rebuilt');
-    }
+    // Fence against an in-flight rebuild BEFORE the "has been rebuilt"
+    // guard. Same reasoning as applyDatasetSummaryRecordDelta: during a
+    // first-ever rebuild, computed_at is null and rebuild_status is
+    // 'running', so the rebuild itself populates the projection. The
+    // honest signal for a concurrent blob delta is stale/deferred, not
+    // failed.
     if (current.metadata.rebuild_status === 'running') {
       markDatasetSummaryProjectionStale('blob delta arrived during projection rebuild');
       return;
+    }
+    if (!current.metadata.computed_at) {
+      throw new Error('dataset summary projection has not been rebuilt');
     }
     const computedAt = nowIso();
     const summary = buildSummaryAfterDelta(current, {
