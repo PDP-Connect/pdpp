@@ -9,6 +9,7 @@ import { runRefRun } from './ref/commands/run.js';
 import { runRefGrant } from './ref/commands/grant.js';
 import { runRefTrace } from './ref/commands/trace.js';
 import { runRefLogin } from './ref/commands/login.js';
+import { runRefConnectors } from './ref/commands/connectors.js';
 import { PdppCliError, PdppUsageError } from './ref/errors.js';
 
 const HELP = `PDPP CLI
@@ -32,6 +33,8 @@ Reference diagnostics (reference server only):
   ${PDPP_CLI_BIN_NAME} ref run timeline <run-id> --as-url <url>
   ${PDPP_CLI_BIN_NAME} ref grant timeline <grant-id> --as-url <url>
   ${PDPP_CLI_BIN_NAME} ref trace show <trace-id> --as-url <url>
+  ${PDPP_CLI_BIN_NAME} ref connectors list --as-url <url>
+  ${PDPP_CLI_BIN_NAME} ref connectors show <connector-id> --as-url <url>
 
 Notes:
   Do not ask users for owner bearer tokens for routine delegated access.
@@ -112,6 +115,8 @@ export async function runCli(argv, io = { stdout: process.stdout, stderr: proces
       io.stdout.write(`  ${PDPP_CLI_BIN_NAME} ref run timeline <run-id> --as-url <url> [--owner-session <cookie>] [--format json|table]\n`);
       io.stdout.write(`  ${PDPP_CLI_BIN_NAME} ref grant timeline <grant-id> --as-url <url> [--owner-session <cookie>] [--format json|table]\n`);
       io.stdout.write(`  ${PDPP_CLI_BIN_NAME} ref trace show <trace-id> --as-url <url> [--owner-session <cookie>] [--format json|table]\n`);
+      io.stdout.write(`  ${PDPP_CLI_BIN_NAME} ref connectors list --as-url <url> [--owner-session <cookie>] [--format json|table] [--verbose]\n`);
+      io.stdout.write(`  ${PDPP_CLI_BIN_NAME} ref connectors show <connector-id> --as-url <url> [--owner-session <cookie>] [--format json|table] [--verbose]\n`);
       io.stdout.write(`\nNotes:\n`);
       io.stdout.write(`  "ref login" prompts the reference server's owner-login route and caches the\n`);
       io.stdout.write(`  resulting session in .pdpp/owner-sessions/ (mode 0600). The cookie value is\n`);
@@ -120,7 +125,13 @@ export async function runCli(argv, io = { stdout: process.stdout, stderr: proces
       return 0;
     }
 
-    const refDispatch = { login: runRefLogin, run: runRefRun, grant: runRefGrant, trace: runRefTrace };
+    const refDispatch = {
+      login: runRefLogin,
+      run: runRefRun,
+      grant: runRefGrant,
+      trace: runRefTrace,
+      connectors: runRefConnectors,
+    };
     const handler = refDispatch[refCommand];
     if (!handler) {
       io.stderr.write(`Unknown ref command: ${refCommand}\n`);

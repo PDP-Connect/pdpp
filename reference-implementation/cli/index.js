@@ -28,6 +28,8 @@ Public commands delegated to ${PDPP_CLI_PACKAGE_NAME}:
   ${PDPP_CLI_BIN_NAME} package-info [--provider-url <url>]
   ${PDPP_CLI_BIN_NAME} connect <provider-url>  (gated)
   ${PDPP_CLI_BIN_NAME} collector <advertise|enroll|run> ...  (run connectors from a host you control)
+  ${PDPP_CLI_BIN_NAME} ref connectors list --as-url <url> [--format json|table] [--verbose]
+  ${PDPP_CLI_BIN_NAME} ref connectors show <connector-id> --as-url <url> [--format json|table] [--verbose]
 
 Agent access (project-local grant management for coding agents):
   pdpp agent bootstrap [--rs-url <url>] [--as-url <url>] [--initial-access-token <tok>]  (reference-only)
