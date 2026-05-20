@@ -1519,6 +1519,7 @@ function buildOutboxBatchId(input: {
     connector_id: input.connectorId,
     records: input.records.map((record) => ({
       data: record.data,
+      emitted_at: record.emitted_at,
       key: String(record.key),
       stream: record.stream,
     })),

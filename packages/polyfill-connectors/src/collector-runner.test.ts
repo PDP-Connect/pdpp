@@ -80,6 +80,66 @@ test("transformRecordsToCollectorEnvelopes uses the given connector id", () => {
   assert.equal(envelopes[0]?.stream, "messages");
 });
 
+test("runCollectorConnector gives changed emitted_at records a distinct local batch identity", async () => {
+  const harness = await startCollectorHarness({ priorState: {} });
+  const runOnce = async (emittedAt: string): Promise<{ batchId: string; bodyHash: string }> => {
+    const batchOffset = harness.ingestedBatches.length;
+    const fixture = await writeFixtureConnector({
+      script: `
+        let buf = "";
+        await new Promise((r) => process.stdin.on("data", (c) => {
+          buf += c;
+          if (buf.includes("\\n")) r();
+        }));
+        process.stdout.write(JSON.stringify({
+          type: "RECORD",
+          stream: "messages",
+          key: "same-record",
+          data: { id: "same-record", value: 1 },
+          emitted_at: ${JSON.stringify(emittedAt)},
+        }) + "\\n");
+        process.stdout.write(JSON.stringify({
+          type: "DONE",
+          status: "succeeded",
+          records_emitted: 1,
+        }) + "\\n");
+      `,
+    });
+
+    await runCollectorConnector({
+      baseUrl: harness.url,
+      batchSize: 1,
+      connector: {
+        args: [fixture],
+        command: "node",
+        connector_id: "fixture-batch-identity",
+        runtime_requirements: { bindings: {} },
+        streams: ["messages"],
+      },
+      deviceId: "device-1",
+      deviceToken: "device-token",
+      queuePath: await tempQueuePath(),
+      sourceInstanceId: "src-batch-identity",
+    });
+
+    const batch = harness.ingestedBatches.at(batchOffset);
+    assert.ok(batch, "expected one ingested batch");
+    assert.equal(typeof batch.batch_id, "string");
+    assert.equal(typeof batch.body_hash, "string");
+    return { batchId: batch.batch_id as string, bodyHash: batch.body_hash as string };
+  };
+
+  try {
+    const first = await runOnce("2026-05-20T00:00:00.000Z");
+    const second = await runOnce("2026-05-20T00:00:01.000Z");
+
+    assert.notEqual(first.bodyHash, second.bodyHash, "server idempotency hash changes when emitted_at changes");
+    assert.notEqual(first.batchId, second.batchId, "batch id must change with the body hash to avoid false conflicts");
+  } finally {
+    await harness.close();
+  }
+});
+
 test("drainCollectorQueue marks sent and preserves retryable failures", async () => {
   const queue = new LocalDeviceQueue({
     path: await tempQueuePath(),
