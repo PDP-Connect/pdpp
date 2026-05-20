@@ -634,13 +634,23 @@ export async function getDeploymentDiagnostics(): Promise<DeploymentDiagnostics>
 export interface DeviceSourceInstance {
   accepted_record_count?: number;
   connector_id: string;
+  connector_instance_id?: string | null;
   created_at: string;
   device_id: string;
   display_name?: string | null;
+  last_heartbeat_at?: string | null;
+  last_heartbeat_status?: string | null;
   last_error?: Record<string, unknown> | null;
   last_ingest_at?: string | null;
   local_binding_name: string;
+  local_collector_gaps?: {
+    last_updated_at: string | null;
+    pending_count: number;
+    reasons: string[];
+    unreliable?: boolean;
+  };
   object: "device_source_instance";
+  records_pending?: number | null;
   rejected_record_count?: number;
   source_instance_id: string;
 }

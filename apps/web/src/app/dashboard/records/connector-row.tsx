@@ -5,6 +5,14 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
 import { Button } from "@/components/ui/button.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
+import {
+  type AxisChip,
+  type EvidenceTone,
+  formatLastDurableProgress,
+  formatProjectionFreshness,
+  resolveRecordCountDisplay,
+  summarizeAxisChips,
+} from "../lib/connection-evidence.ts";
 import { formatNextAction } from "../lib/next-action.ts";
 import type { ConnectorOverview, ConnectorRunRef } from "../lib/rs-client.ts";
 import { connectorHasPartialCoverageHint, normalizeKnownGaps } from "../lib/run-gaps.ts";
@@ -104,6 +112,15 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
   const detailHref = `/dashboard/records/${encodeURIComponent(connector.connector_id)}`;
   const displayName = connector.display_name ?? connector.name ?? connector.connector_id;
   const nextAction = formatNextAction(connectionHealth?.next_action ?? null);
+  const recordCount = resolveRecordCountDisplay(overview);
+  const axisChips = summarizeAxisChips(connectionHealth?.axes);
+  const projectionFreshness = formatProjectionFreshness(connectionHealth);
+  const durableProgress = formatLastDurableProgress({
+    hasError: Boolean(overview.error),
+    lastRun,
+    lastSuccessfulRun,
+    totalRecords,
+  });
 
   return (
     <li>
@@ -123,10 +140,22 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
         {/* Stats */}
         <div className="pdpp-caption flex shrink-0 flex-col gap-0.5 text-muted-foreground tabular-nums sm:items-end sm:text-right">
           <span>
-            {totalRecords.toLocaleString()} records · {streams.length} stream
+            {recordCount.label === null ? (
+              <span className="text-muted-foreground/70" data-testid="records-unavailable" title={recordCount.title}>
+                Records unavailable
+              </span>
+            ) : (
+              <span title={recordCount.title}>{recordCount.label} records</span>
+            )}{" "}
+            · {streams.length} stream
             {streams.length === 1 ? "" : "s"}
           </span>
-          <ConnectorFreshnessLine lastRun={lastRun} lastSuccessfulRun={lastSuccessfulRun} totalRecords={totalRecords} />
+          <ConnectorFreshnessLine
+            hasError={Boolean(overview.error)}
+            lastRun={lastRun}
+            lastSuccessfulRun={lastSuccessfulRun}
+            totalRecords={totalRecords}
+          />
           {hasPartialCoverageHint ? (
             <Link
               className="inline-flex items-center gap-1 text-[color:var(--warning)] underline-offset-2 hover:underline"
@@ -158,6 +187,33 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
           </Button>
         </div>
       </div>
+
+      {axisChips.length > 0 ? (
+        <div className="mx-3 mb-2 flex flex-wrap items-center gap-1.5" data-testid="axis-chip-strip">
+          {axisChips.map((chip) => (
+            <AxisChipBadge chip={chip} key={chip.label} />
+          ))}
+          {durableProgress.unavailable ? (
+            <span
+              className="pdpp-caption inline-flex items-center gap-1 border border-muted-foreground/40 border-dashed px-2 py-0.5 text-muted-foreground"
+              data-testid="durable-progress-unavailable"
+              title="Last durable progress could not be derived from current evidence."
+            >
+              {durableProgress.label}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+
+      {projectionFreshness.unreliable ? (
+        <div
+          className="pdpp-caption mx-3 mb-2 border-l-2 border-l-muted-foreground/40 bg-muted/40 px-3 py-2 text-muted-foreground"
+          data-testid="projection-unreliable"
+          title={projectionFreshness.detail}
+        >
+          <span className="font-medium">Projection unreliable.</span> {projectionFreshness.detail}
+        </div>
+      ) : null}
 
       {nextAction ? <NextActionPill detailHref={detailHref} formatted={nextAction} /> : null}
 
@@ -388,7 +444,11 @@ function connectionHealthDisplay(
         tone: "warning",
       };
     case "idle":
-      return { label: hasLastRun ? "Idle" : "Never run", title: hasLastRun ? "No active work" : "Never run", tone: "neutral" };
+      return {
+        label: hasLastRun ? "Idle" : "Never run",
+        title: hasLastRun ? "No active work" : "Never run",
+        tone: "neutral",
+      };
     case "unknown":
       return {
         label: "Unknown",
@@ -411,15 +471,55 @@ function connectionHealthTextClass(tone: "success" | "danger" | "neutral" | "war
   return "text-muted-foreground";
 }
 
+function AxisChipBadge({ chip }: { chip: AxisChip }) {
+  return (
+    <span
+      className={`pdpp-caption inline-flex items-center gap-1 px-2 py-0.5 ${axisChipClass(chip.tone)}`}
+      data-axis-tone={chip.tone}
+      title={chip.title}
+    >
+      {chip.label}
+    </span>
+  );
+}
+
+function axisChipClass(tone: EvidenceTone): string {
+  if (tone === "success") {
+    return "border border-emerald-500/30 bg-emerald-500/5 text-emerald-700 dark:text-emerald-300";
+  }
+  if (tone === "warning") {
+    return "border border-[color:var(--warning)]/40 bg-[color:var(--warning)]/5 text-[color:var(--warning)]";
+  }
+  if (tone === "danger") {
+    return "border border-destructive/40 bg-destructive/5 text-destructive";
+  }
+  return "border border-muted-foreground/30 bg-muted/40 text-muted-foreground";
+}
+
 function ConnectorFreshnessLine({
+  hasError,
   lastRun,
   lastSuccessfulRun,
   totalRecords,
 }: {
+  hasError: boolean;
   lastRun: ConnectorRunRef | null;
   lastSuccessfulRun: ConnectorRunRef | null;
   totalRecords: number;
 }) {
+  if (hasError) {
+    // Evidence collection failed. Refuse to render a false "0 events" /
+    // "never" / "records present" — they would all be unfounded.
+    return (
+      <span
+        className="text-muted-foreground/70"
+        data-testid="freshness-unavailable"
+        title="Run evidence could not be loaded."
+      >
+        last sync: unavailable
+      </span>
+    );
+  }
   if (lastSuccessfulRun) {
     return (
       <span className="inline-flex items-center gap-1">

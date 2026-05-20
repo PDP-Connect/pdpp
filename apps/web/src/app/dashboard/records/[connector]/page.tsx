@@ -5,7 +5,16 @@ import { Timestamp } from "@/components/ui/timestamp.tsx";
 import { DataList, PageHeader, Section, StatusBadge } from "../../components/primitives.tsx";
 import { DashboardShell, ServerUnreachable } from "../../components/shell.tsx";
 import { ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
-import { listRuns, type RunSummary } from "../../lib/ref-client.ts";
+import {
+  type DeviceSourceInstance,
+  getConnectorSchedule,
+  listConnectorSummaries,
+  listDeviceExporterSourceInstances,
+  listRuns,
+  type RefConnectionHealthSnapshot,
+  type RefSchedule,
+  type RunSummary,
+} from "../../lib/ref-client.ts";
 import {
   type ConnectorManifest,
   type ConnectorOverview,
@@ -14,6 +23,7 @@ import {
   listStreams,
   type StreamSummary,
 } from "../../lib/rs-client.ts";
+import { ConnectionDiagnostics } from "./connection-diagnostics.tsx";
 import { SyncNowButton } from "./sync-now-button.tsx";
 
 export const dynamic = "force-dynamic";
@@ -28,6 +38,11 @@ export default async function ConnectorPage({ params }: { params: Promise<{ conn
   let streams: StreamSummary[];
   let overview: ConnectorOverview | null = null;
   let recentRuns: RunSummary[] = [];
+  let connectionHealth: RefConnectionHealthSnapshot | null = null;
+  let schedule: RefSchedule | null = null;
+  let scheduleError: string | null = null;
+  let sourceInstances: DeviceSourceInstance[] = [];
+  let sourceInstancesError: string | null = null;
   try {
     const manifests = await listConnectorManifests();
     manifest = manifests.find((m) => m.connector_id === connectorId);
@@ -38,6 +53,30 @@ export default async function ConnectorPage({ params }: { params: Promise<{ conn
     overview = await getConnectorOverview(manifest);
     const runsResp = await listRuns({ connector_id: connectorId, limit: RECENT_RUNS_LIMIT });
     recentRuns = runsResp.data ?? [];
+
+    // Diagnostics evidence. Each branch is independently failable so a
+    // device-exporter outage cannot suppress schedule data, and vice
+    // versa. Failures surface as honest "unavailable" tooltips rather
+    // than silently zeroing the section.
+    const [summariesResult, scheduleResult, sourcesResult] = await Promise.allSettled([
+      listConnectorSummaries(),
+      getConnectorSchedule(connectorId),
+      listDeviceExporterSourceInstances(),
+    ]);
+    if (summariesResult.status === "fulfilled") {
+      const summary = summariesResult.value.data.find((s) => s.connector_id === connectorId);
+      connectionHealth = summary?.connection_health ?? null;
+    }
+    if (scheduleResult.status === "fulfilled") {
+      schedule = scheduleResult.value;
+    } else {
+      scheduleError = errorMessage(scheduleResult.reason);
+    }
+    if (sourcesResult.status === "fulfilled") {
+      sourceInstances = sourcesResult.value.data.filter((s) => s.connector_id === connectorId);
+    } else {
+      sourceInstancesError = errorMessage(sourcesResult.reason);
+    }
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
@@ -90,6 +129,14 @@ export default async function ConnectorPage({ params }: { params: Promise<{ conn
           </>
         }
         title={displayName}
+      />
+
+      <ConnectionDiagnostics
+        connectionHealth={connectionHealth}
+        schedule={schedule}
+        scheduleError={scheduleError}
+        sourceInstances={sourceInstances}
+        sourceInstancesError={sourceInstancesError}
       />
 
       <Section title={`Streams (${streams.length})`}>
@@ -163,6 +210,13 @@ export default async function ConnectorPage({ params }: { params: Promise<{ conn
       </Section>
     </DashboardShell>
   );
+}
+
+function errorMessage(reason: unknown): string {
+  if (reason instanceof Error) {
+    return reason.message;
+  }
+  return String(reason);
 }
 
 function durationLabel(firstAt: string, lastAt: string): string {

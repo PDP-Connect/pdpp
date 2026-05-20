@@ -126,3 +126,49 @@ test("null action_target on a structured next_action falls back to plain text", 
 test("null next_action surfaces no CTA at all", () => {
   assert.equal(formatNextAction(null), null);
 });
+
+// ─── 6.1 / 6.5 wiring assertions ───────────────────────────────────────
+//
+// The row must consume the pure helpers from `connection-evidence.ts`
+// rather than reinventing the rules in JSX. These structural assertions
+// make the wiring explicit so future edits cannot regress the
+// honest-by-default invariants without flipping a test.
+
+const IMPORTS_EVIDENCE_HELPERS =
+  /import \{[\s\S]*?formatLastDurableProgress[\s\S]*?formatProjectionFreshness[\s\S]*?resolveRecordCountDisplay[\s\S]*?summarizeAxisChips[\s\S]*?\} from "\.\.\/lib\/connection-evidence\.ts"/;
+const USES_RECORD_COUNT_DISPLAY = /resolveRecordCountDisplay\(overview\)/;
+const RECORDS_UNAVAILABLE_BRANCH = /recordCount\.label === null/;
+const AXIS_CHIPS_STRIP = /data-testid="axis-chip-strip"/;
+const PROJECTION_UNRELIABLE_BANNER = /data-testid="projection-unreliable"/;
+const FRESHNESS_RESPECTS_ERROR = /hasError=\{Boolean\(overview\.error\)\}/;
+const FRESHNESS_UNAVAILABLE_RENDER = /data-testid="freshness-unavailable"/;
+
+test("connector-row imports the connection-evidence helpers", async () => {
+  const src = await readFile(ROW_FILE, "utf8");
+  assert.match(src, IMPORTS_EVIDENCE_HELPERS);
+});
+
+test("connector-row uses resolveRecordCountDisplay rather than raw totalRecords for the count", async () => {
+  // The raw number must not be rendered without going through the
+  // honest-by-default helper, so an evidence error cannot produce a
+  // false "0 records" line.
+  const src = await readFile(ROW_FILE, "utf8");
+  assert.match(src, USES_RECORD_COUNT_DISPLAY);
+  assert.match(src, RECORDS_UNAVAILABLE_BRANCH);
+});
+
+test("connector-row renders an axis chip strip when health is present", async () => {
+  const src = await readFile(ROW_FILE, "utf8");
+  assert.match(src, AXIS_CHIPS_STRIP);
+});
+
+test("connector-row surfaces a projection-unreliable banner when unknown_reasons is non-empty", async () => {
+  const src = await readFile(ROW_FILE, "utf8");
+  assert.match(src, PROJECTION_UNRELIABLE_BANNER);
+});
+
+test("connector-row freshness line refuses to render content when evidence collection failed", async () => {
+  const src = await readFile(ROW_FILE, "utf8");
+  assert.match(src, FRESHNESS_RESPECTS_ERROR);
+  assert.match(src, FRESHNESS_UNAVAILABLE_RENDER);
+});
