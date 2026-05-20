@@ -3,6 +3,7 @@
 Status: decided-promoted
 Owner: reference implementation owner
 Created: 2026-05-19
+Updated: 2026-05-20
 Related: `openspec/changes/complete-ri-operator-console-reliability`, `design-notes/full-context-refresh.md`, `design-notes/local-collector-durable-work-substrate-2026-05-19.md`, `docs/connector-health-state-research-2026-05-15.md`
 
 ## Question
@@ -103,6 +104,25 @@ The milestone belongs to reference runtime/operator and dashboard projection lay
 Accepted milestone definition:
 
 The RI/operator-console reliability milestone makes the reference implementation's operator console the single trustworthy surface for real collection across every configured connection. Every long-running execution path must be durable, bounded, crash-recoverable, secret-safe, and owner-actionable. Connection health is a deterministic projection over durable run, coverage, work, attention, schedule, runtime, and read-model evidence, not over last-run exit codes. Closing the milestone means the console tells the truth under success, partial success, retry/backoff, crash/restart, local backlog, pending human action, stale projections, and host-load pressure without requiring every connector to be green.
+
+## Closeout Relationship Map
+
+Absorbed by `complete-ri-operator-console-reliability`:
+
+- Connection health taxonomy and precedence from this research note.
+- Durable scheduler/backoff, active-run, detail-gap, attention, local-outbox, projection-freshness, and resource-bound evidence integration tranches.
+- The temporary legacy local queue import/quarantine bridge was removed after no local queue files were found to import.
+
+Still independently active and not absorbed:
+
+- `add-local-collector-durable-work-substrate`: remaining durable executor details such as scan/drain ordering, bounded child buffering, cancellation propagation, lease renewal, and host-native unit templates.
+- `publish-pdpp-local-collector`: packaging/publish-readiness for the local collector package.
+- `complete-local-agent-collectors`: connector-specific local collector completeness.
+- Remote-surface OSS/package changes: package extraction and allocator boundaries are separate; this milestone only consumes status evidence for operator health when wired.
+
+Dependency only:
+
+- `define-connector-instances`, scheduler changes, connector detail-gap recovery, and source/device exporter work provide durable evidence this milestone projects, but their broader specs remain their own artifacts.
 
 Accepted invariants:
 
