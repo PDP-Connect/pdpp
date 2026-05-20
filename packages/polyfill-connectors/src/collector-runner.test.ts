@@ -1257,6 +1257,88 @@ test("runCollectorConnector leaves streamed batches durable when the child fails
   }
 });
 
+test("runCollectorConnector flushes a partial trailing batch when the child fails mid-stream and still does not advance the checkpoint", async () => {
+  // Emit one full batch plus a partial trailing batch (less than batchSize),
+  // then exit non-zero before emitting STATE or DONE. The runner must throw,
+  // but BOTH the full batch and the partial batch must be durably enqueued
+  // so the next pass can drain them. No checkpoint may be enqueued.
+  const harness = await startCollectorHarness({ priorState: {} });
+  try {
+    const queuePath = await tempQueuePath();
+    const fixture = await writeFixtureConnector({
+      script: `
+        let buf = "";
+        await new Promise((r) => process.stdin.on("data", (c) => {
+          buf += c;
+          if (buf.includes("\\n")) r();
+        }));
+        // 20 = one full batch (batchSize), then 7 more = a valid partial batch.
+        for (let i = 0; i < 27; i++) {
+          process.stdout.write(JSON.stringify({
+            type: "RECORD",
+            stream: "messages",
+            key: "m-" + i,
+            data: { id: "m-" + i },
+            emitted_at: new Date().toISOString(),
+          }) + "\\n");
+        }
+        await new Promise((r) => process.stdout.write("", () => r(undefined)));
+        process.stderr.write("synthetic mid-stream failure with partial trailing batch\\n");
+        process.exit(9);
+      `,
+    });
+
+    await assert.rejects(
+      () =>
+        runCollectorConnector({
+          baseUrl: harness.url,
+          batchSize: 20,
+          connector: {
+            args: [fixture],
+            command: "node",
+            connector_id: "fixture-streaming-partial-batch-failure",
+            runtime_requirements: { bindings: {} },
+            streams: ["messages"],
+          },
+          deviceId: "device-1",
+          deviceToken: "device-token",
+          outboxPolicy: { retryBackoffMs: 60_000 },
+          queuePath,
+          sourceInstanceId: "src-1",
+        }),
+      /fixture-streaming-partial-batch-failure connector exited 9/
+    );
+
+    const outbox = new LocalDeviceOutbox({ path: queuePath });
+    try {
+      const items = outbox.list({ sourceInstanceId: "src-1" });
+      const recordBatches = items.filter((item) => item.kind === "record_batch");
+      // Both the full (20) and partial (7) batches must be durable.
+      assert.equal(
+        recordBatches.length,
+        2,
+        `expected full + partial record batches durable, got ${recordBatches.length}`
+      );
+      const totalRecords = recordBatches.reduce((sum, item) => {
+        const payload = item.payload as { records: unknown[] };
+        return sum + payload.records.length;
+      }, 0);
+      assert.equal(totalRecords, 27, `expected all 27 parsed records durable, got ${totalRecords}`);
+      // No checkpoint row was enqueued because STATE never reached the runner.
+      assert.equal(
+        items.filter((item) => item.kind === "checkpoint").length,
+        0,
+        "checkpoint must not be enqueued when child fails mid-stream"
+      );
+    } finally {
+      outbox.close();
+    }
+    assert.equal(harness.stateOps.filter((op) => op.method === "PUT").length, 0);
+  } finally {
+    await harness.close();
+  }
+});
+
 async function writeFixtureConnector(input: { script: string }): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "pdpp-fixture-connector-"));
   const path = join(dir, "fixture.mjs");

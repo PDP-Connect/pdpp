@@ -441,11 +441,13 @@ interface StreamConnectorIntoOutboxResult {
  * Failure semantics:
  *
  * - If the child exits non-zero (or stdout streaming fails), the function
- *   throws. Any already-enqueued record_batch rows stay durable and will
- *   be drained on the next runner invocation. STATE is intentionally NOT
- *   turned into a checkpoint outbox row here — the caller only enqueues
- *   a checkpoint after the record drain succeeds, so a mid-stream crash
- *   cannot advance the destination checkpoint past acknowledged work.
+ *   throws. Before throwing, any RECORD messages already parsed and
+ *   accepted — including a partial trailing batch smaller than batchSize —
+ *   are flushed into a durable record_batch row so the next runner
+ *   invocation can drain them. STATE is intentionally NOT turned into a
+ *   checkpoint outbox row here — the caller only enqueues a checkpoint
+ *   after the record drain succeeds, so a mid-stream crash cannot
+ *   advance the destination checkpoint past acknowledged work.
  */
 async function streamConnectorIntoOutbox(
   input: StreamConnectorIntoOutboxInput
@@ -595,6 +597,10 @@ async function streamConnectorIntoOutbox(
     if (input.abortSignal && abortListener) {
       input.abortSignal.removeEventListener("abort", abortListener);
     }
+    // Records already parsed and accepted before the failure must reach the
+    // durable outbox; the next runner pass will drain them. State stays
+    // buffered-only so the checkpoint cannot advance past acknowledged work.
+    flushPendingBatch();
     throw new Error(
       `${input.config.connector.connector_id} connector failed to start or stream output: ${
         error instanceof Error ? error.message : String(error)
@@ -605,11 +611,13 @@ async function streamConnectorIntoOutbox(
     input.abortSignal.removeEventListener("abort", abortListener);
   }
   if (input.abortSignal?.aborted) {
+    flushPendingBatch();
     throw input.abortSignal.reason instanceof Error
       ? input.abortSignal.reason
       : new DOMException("Aborted", "AbortError");
   }
   if (exitCode !== 0) {
+    flushPendingBatch();
     throw new Error(`${input.config.connector.connector_id} connector exited ${exitCode}: ${stderr.toString().trim()}`);
   }
 
