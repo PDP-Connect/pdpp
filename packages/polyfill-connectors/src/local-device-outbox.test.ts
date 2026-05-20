@@ -107,6 +107,49 @@ test("LocalDeviceOutbox claims ready work with holder, epoch, and lease deadline
   }
 });
 
+test("LocalDeviceOutbox can exclude checkpoint rows while batch-claiming ready work", async () => {
+  const outbox = new LocalDeviceOutbox({
+    clock: () => new Date("2026-05-19T12:00:00.000Z"),
+    path: await tempOutboxPath(),
+  });
+  try {
+    outbox.enqueue({
+      id: "src-1:record_batch:1",
+      kind: "record_batch",
+      payload: { records: [1] },
+      sourceInstanceId: "src-1",
+    });
+    outbox.enqueue({
+      id: "src-1:checkpoint:1",
+      kind: "checkpoint",
+      payload: { state: { cursor: "c1" } },
+      sourceInstanceId: "src-1",
+    });
+    outbox.enqueue({
+      id: "src-1:record_batch:2",
+      kind: "record_batch",
+      payload: { records: [2] },
+      sourceInstanceId: "src-1",
+    });
+
+    const claimed = outbox.claimReady({
+      excludeKinds: ["checkpoint"],
+      holder: "worker-a",
+      leaseMs: 30_000,
+      limit: 4,
+      sourceInstanceId: "src-1",
+    });
+
+    assert.deepEqual(
+      claimed.map((item) => item.id),
+      ["src-1:record_batch:1", "src-1:record_batch:2"]
+    );
+    assert.equal(outbox.get("src-1:checkpoint:1")?.status, "ready");
+  } finally {
+    outbox.close();
+  }
+});
+
 test("LocalDeviceOutbox recovers expired leases and fences stale acknowledgements", async () => {
   let now = new Date("2026-05-19T12:00:00.000Z");
   const outbox = new LocalDeviceOutbox({ clock: () => now, path: await tempOutboxPath() });

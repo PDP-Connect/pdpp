@@ -77,6 +77,7 @@ export interface BuildLocalDeviceOutboxIdInput {
 }
 
 export interface LocalDeviceOutboxClaimInput {
+  excludeKinds?: readonly LocalDeviceOutboxKind[];
   holder: string;
   leaseMs: number;
   limit?: number;
@@ -200,7 +201,7 @@ export class LocalDeviceOutbox {
     const now = this.#now();
     const leaseUntil = new Date(this.#clock().getTime() + input.leaseMs).toISOString();
     const limit = Math.max(1, input.limit ?? 1);
-    const candidates = this.#selectReady(input.sourceInstanceId, now, limit);
+    const candidates = this.#selectReady(input.sourceInstanceId, now, limit, input.excludeKinds);
     const claimed: LocalDeviceOutboxItem[] = [];
     for (const candidate of candidates) {
       const nextEpoch = candidate.lease_epoch + 1;
@@ -470,7 +471,13 @@ export class LocalDeviceOutbox {
     `);
   }
 
-  #selectReady(sourceInstanceId: string | undefined, now: string, limit: number): LocalDeviceOutboxRow[] {
+  #selectReady(
+    sourceInstanceId: string | undefined,
+    now: string,
+    limit: number,
+    excludeKinds: readonly LocalDeviceOutboxKind[] = []
+  ): LocalDeviceOutboxRow[] {
+    const kindClause = excludeKinds.length > 0 ? `AND kind NOT IN (${excludeKinds.map(() => "?").join(", ")})` : "";
     if (sourceInstanceId) {
       return this.#db
         .prepare(
@@ -478,10 +485,11 @@ export class LocalDeviceOutbox {
             WHERE status = 'ready'
               AND source_instance_id = ?
               AND next_attempt_at <= ?
+              ${kindClause}
             ORDER BY insert_order
             LIMIT ?`
         )
-        .all(sourceInstanceId, now, limit)
+        .all(sourceInstanceId, now, ...excludeKinds, limit)
         .map(asOutboxRow);
     }
     return this.#db
@@ -489,10 +497,11 @@ export class LocalDeviceOutbox {
         `SELECT *, rowid AS insert_order FROM local_device_outbox
           WHERE status = 'ready'
             AND next_attempt_at <= ?
+            ${kindClause}
           ORDER BY source_instance_id, insert_order
           LIMIT ?`
       )
-      .all(now, limit)
+      .all(now, ...excludeKinds, limit)
       .map(asOutboxRow);
   }
 

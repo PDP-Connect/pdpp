@@ -1214,9 +1214,10 @@ function claimReadyOutboxItems(input: DrainCollectorOutboxInput): LocalDeviceOut
     return [];
   }
   const claimInput: Parameters<LocalDeviceOutbox["claimReady"]>[0] = {
+    excludeKinds: nextReady.kind === "checkpoint" ? [] : ["checkpoint"],
     holder: input.holderId,
     leaseMs: input.policy.leaseMs,
-    limit: 1,
+    limit: nextReady.kind === "checkpoint" ? 1 : input.policy.drainBatchSize,
   };
   if (input.sourceInstanceId) {
     claimInput.sourceInstanceId = input.sourceInstanceId;

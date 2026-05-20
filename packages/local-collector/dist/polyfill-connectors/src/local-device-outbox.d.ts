@@ -45,6 +45,7 @@ export interface BuildLocalDeviceOutboxIdInput {
     sourceInstanceId: string;
 }
 export interface LocalDeviceOutboxClaimInput {
+    excludeKinds?: readonly LocalDeviceOutboxKind[];
     holder: string;
     leaseMs: number;
     limit?: number;

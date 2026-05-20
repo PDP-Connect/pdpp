@@ -77,7 +77,7 @@ export class LocalDeviceOutbox {
         const now = this.#now();
         const leaseUntil = new Date(this.#clock().getTime() + input.leaseMs).toISOString();
         const limit = Math.max(1, input.limit ?? 1);
-        const candidates = this.#selectReady(input.sourceInstanceId, now, limit);
+        const candidates = this.#selectReady(input.sourceInstanceId, now, limit, input.excludeKinds);
         const claimed = [];
         for (const candidate of candidates) {
             const nextEpoch = candidate.lease_epoch + 1;
@@ -313,25 +313,28 @@ export class LocalDeviceOutbox {
         ON local_device_outbox (source_instance_id, status);
     `);
     }
-    #selectReady(sourceInstanceId, now, limit) {
+    #selectReady(sourceInstanceId, now, limit, excludeKinds = []) {
+        const kindClause = excludeKinds.length > 0 ? `AND kind NOT IN (${excludeKinds.map(() => "?").join(", ")})` : "";
         if (sourceInstanceId) {
             return this.#db
                 .prepare(`SELECT *, rowid AS insert_order FROM local_device_outbox
             WHERE status = 'ready'
               AND source_instance_id = ?
               AND next_attempt_at <= ?
+              ${kindClause}
             ORDER BY insert_order
             LIMIT ?`)
-                .all(sourceInstanceId, now, limit)
+                .all(sourceInstanceId, now, ...excludeKinds, limit)
                 .map(asOutboxRow);
         }
         return this.#db
             .prepare(`SELECT *, rowid AS insert_order FROM local_device_outbox
           WHERE status = 'ready'
             AND next_attempt_at <= ?
+            ${kindClause}
           ORDER BY source_instance_id, insert_order
           LIMIT ?`)
-            .all(now, limit)
+            .all(now, ...excludeKinds, limit)
             .map(asOutboxRow);
     }
     #now() {
