@@ -677,9 +677,16 @@ export function projectConnectorOutboxAxisFromHeartbeats(
   if (heartbeats.length === 0) {
     return { axis: "unknown", unreliable: false, hasEvidence: false };
   }
-  let rolled: OutboxAxis = "idle";
+  // Track each trusted row's contribution separately. We can only claim
+  // `idle` when every trusted row reports idle; a trusted row whose
+  // heartbeat we have never observed (axis = unknown) must not be
+  // silently treated as idle, or a dead collector with no record of life
+  // would paint the connection green.
   let anyUnreliable = false;
   let anyTrustedEvidence = false;
+  let sawTrustedIdle = false;
+  let sawTrustedUnknown = false;
+  let severity: "active" | "stalled" | null = null;
   for (const row of heartbeats) {
     const trusted =
       row.deviceStatus === "active" && row.sourceStatus === "active" && row.deviceRevokedAt === null;
@@ -697,14 +704,32 @@ export function projectConnectorOutboxAxisFromHeartbeats(
       },
     );
     if (result.unreliable) anyUnreliable = true;
-    rolled = combineOutboxAxes(rolled, result.axis);
+    if (!trusted) continue;
+    if (result.axis === "stalled") {
+      severity = "stalled";
+    } else if (result.axis === "active" && severity !== "stalled") {
+      severity = "active";
+    } else if (result.axis === "idle") {
+      sawTrustedIdle = true;
+    } else if (result.axis === "unknown") {
+      sawTrustedUnknown = true;
+    }
   }
   // If every row is untrusted (e.g. all sources/devices revoked), there
   // is no honest evidence — keep `unknown` rather than implying idle.
   if (!anyTrustedEvidence) {
     return { axis: "unknown", unreliable: anyUnreliable, hasEvidence: false };
   }
-  return { axis: rolled, unreliable: anyUnreliable, hasEvidence: true };
+  if (severity !== null) {
+    return { axis: severity, unreliable: anyUnreliable, hasEvidence: true };
+  }
+  // No trusted instance is actively working or stalled. We can only
+  // promise `idle` when every trusted instance reported idle — a missing
+  // heartbeat on any trusted instance keeps the axis `unknown`.
+  if (sawTrustedIdle && !sawTrustedUnknown) {
+    return { axis: "idle", unreliable: anyUnreliable, hasEvidence: true };
+  }
+  return { axis: "unknown", unreliable: anyUnreliable, hasEvidence: sawTrustedIdle };
 }
 
 function normalizeHeartbeatStatusForAxis(
@@ -755,15 +780,6 @@ function combineUnreliableSources(
   if (detailGapsUnreliable) sources.push("detail_gaps");
   if (outboxUnreliable) sources.push("outbox");
   return sources;
-}
-
-function combineOutboxAxes(a: OutboxAxis, b: OutboxAxis): OutboxAxis {
-  // stalled > active > idle > unknown when rolling up across source
-  // instances: any stalled instance degrades the whole connection;
-  // active beats idle so we don't claim idle while one instance is
-  // working; unknown only wins when nothing else has spoken.
-  const rank: Record<OutboxAxis, number> = { unknown: 0, idle: 1, active: 2, stalled: 3 };
-  return rank[b] > rank[a] ? b : a;
 }
 
 export function projectConnectorSummaryConnectionHealth(input: {
@@ -846,55 +862,124 @@ function buildConnectorFreshness({
   });
 }
 
-export function listConnectorSummaries(controller?: ControllerLike | null): Promise<ConnectorSummary[]> {
-  return listRegisteredConnectorRows().then((rows) =>
-    Promise.all(
-      rows.map(async (row) => {
-        const manifest = parseManifest(row.manifest, row.connector_id);
-        if (!isPublicReferenceConnector(row, manifest)) {
-          return null;
-        }
-        const live = await getConnectorRecordProjection(row.connector_id);
-        const [schedule, lastRun, lastSuccessfulRun, detailGaps, outbox] = await Promise.all([
-          getScheduleFrom(controller, row.connector_id),
-          getLatestRunSummary(row.connector_id),
-          getLatestRunSummary(row.connector_id, "succeeded"),
-          getConnectorDetailGapProjection(row.connector_id),
-          getConnectorOutboxAxis(row.connector_id),
-        ]);
-        const refreshPolicy = extractRefreshPolicy(manifest);
-        const freshness = buildConnectorFreshness({
-          lastRun,
-          lastSuccessfulRun,
-          live,
-          refreshPolicy,
-        });
-        const connectionHealth = projectConnectorSummaryConnectionHealth({
-          freshness,
-          lastRun,
-          lastSuccessfulRun,
-          outbox: { axis: outbox.axis },
-          pendingDetailGaps: detailGaps.gaps,
-          unreliableSources: combineUnreliableSources(detailGaps.unreliable, outbox.unreliable),
-          schedule,
-        });
-        return {
-          connection_id: row.connector_id,
-          connection_health: connectionHealth,
-          connector_id: row.connector_id,
-          display_name: manifest.display_name || row.connector_id,
-          manifest_version: manifest.version || null,
-          streams: (manifest.streams || []).map((stream) => stream.name),
-          total_records: live.totalRecords,
-          freshness,
-          refresh_policy: refreshPolicy,
-          schedule,
-          last_run: lastRun,
-          last_successful_run: lastSuccessfulRun,
-        };
-      })
-    ).then((summaries) => summaries.filter((summary): summary is ConnectorSummary => summary !== null))
+/**
+ * Per-connector projection work fanout. Each list row triggers schedule,
+ * run-spine, detail-gap, and heartbeat-rollup reads; without a bound the
+ * dashboard's list call hits the DB with O(connectors × per-connector
+ * queries) requests in flight at once. Eight is small enough to keep the
+ * SQLite/Postgres work pool from thrashing while still letting most
+ * deployments overlap most projections.
+ */
+export const LIST_CONNECTOR_SUMMARIES_CONCURRENCY = 8;
+
+/**
+ * Bounded parallel map. Preserves input order in the output, runs at
+ * most `limit` workers at a time, and exposes a `peakInFlight` counter
+ * via the optional `onProgress` hook so tests can prove the bound holds.
+ *
+ * Intentionally minimal: no dependency, no early-exit semantics, no
+ * AbortSignal. Failures reject the returned promise once any in-flight
+ * worker finishes; pending work is still drained to avoid hanging
+ * connections, matching the prior `Promise.all` behavior.
+ */
+export async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  worker: (item: T, index: number) => Promise<R>,
+  options: { readonly onInFlightChange?: (inFlight: number) => void } = {},
+): Promise<R[]> {
+  if (items.length === 0) {
+    return [];
+  }
+  const effectiveLimit = Math.max(1, Math.min(limit, items.length));
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  let inFlight = 0;
+  let firstError: unknown = null;
+  const onChange = options.onInFlightChange;
+  const runOne = async (): Promise<void> => {
+    while (nextIndex < items.length) {
+      const index = nextIndex++;
+      inFlight++;
+      onChange?.(inFlight);
+      try {
+        results[index] = await worker(items[index]!, index);
+      } catch (err) {
+        if (firstError === null) firstError = err;
+      } finally {
+        inFlight--;
+        onChange?.(inFlight);
+      }
+    }
+  };
+  const workers: Promise<void>[] = [];
+  for (let i = 0; i < effectiveLimit; i++) workers.push(runOne());
+  await Promise.all(workers);
+  if (firstError !== null) throw firstError;
+  return results;
+}
+
+export interface ListConnectorSummariesOptions {
+  readonly concurrency?: number;
+  /** Test hook: invoked whenever the in-flight worker count changes. */
+  readonly onInFlightChange?: (inFlight: number) => void;
+}
+
+export async function listConnectorSummaries(
+  controller?: ControllerLike | null,
+  options: ListConnectorSummariesOptions = {},
+): Promise<ConnectorSummary[]> {
+  const rows = await listRegisteredConnectorRows();
+  const summaries = await mapWithConcurrency(
+    rows,
+    options.concurrency ?? LIST_CONNECTOR_SUMMARIES_CONCURRENCY,
+    async (row): Promise<ConnectorSummary | null> => {
+      const manifest = parseManifest(row.manifest, row.connector_id);
+      if (!isPublicReferenceConnector(row, manifest)) {
+        return null;
+      }
+      const live = await getConnectorRecordProjection(row.connector_id);
+      const [schedule, lastRun, lastSuccessfulRun, detailGaps, outbox] = await Promise.all([
+        getScheduleFrom(controller, row.connector_id),
+        getLatestRunSummary(row.connector_id),
+        getLatestRunSummary(row.connector_id, "succeeded"),
+        getConnectorDetailGapProjection(row.connector_id),
+        getConnectorOutboxAxis(row.connector_id),
+      ]);
+      const refreshPolicy = extractRefreshPolicy(manifest);
+      const freshness = buildConnectorFreshness({
+        lastRun,
+        lastSuccessfulRun,
+        live,
+        refreshPolicy,
+      });
+      const connectionHealth = projectConnectorSummaryConnectionHealth({
+        freshness,
+        lastRun,
+        lastSuccessfulRun,
+        outbox: { axis: outbox.axis },
+        pendingDetailGaps: detailGaps.gaps,
+        unreliableSources: combineUnreliableSources(detailGaps.unreliable, outbox.unreliable),
+        schedule,
+      });
+      return {
+        connection_id: row.connector_id,
+        connection_health: connectionHealth,
+        connector_id: row.connector_id,
+        display_name: manifest.display_name || row.connector_id,
+        manifest_version: manifest.version || null,
+        streams: (manifest.streams || []).map((stream) => stream.name),
+        total_records: live.totalRecords,
+        freshness,
+        refresh_policy: refreshPolicy,
+        schedule,
+        last_run: lastRun,
+        last_successful_run: lastSuccessfulRun,
+      };
+    },
+    options.onInFlightChange ? { onInFlightChange: options.onInFlightChange } : {},
   );
+  return summaries.filter((summary): summary is ConnectorSummary => summary !== null);
 }
 
 export async function getConnectorDetail(

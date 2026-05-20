@@ -15,6 +15,8 @@ import test from 'node:test';
 import { executeRefConnectorsList } from '../operations/ref-connectors-list/index.ts';
 import {
   isPublicReferenceConnector,
+  LIST_CONNECTOR_SUMMARIES_CONCURRENCY,
+  mapWithConcurrency,
   projectConnectorOutboxAxisFromHeartbeats,
   projectConnectorSummaryConnectionHealth,
 } from '../server/ref-control.ts';
@@ -515,4 +517,110 @@ test('connector summary connection health: missing outbox evidence stays unknown
     schedule: null,
   });
   assert.equal(snapshot.axes.outbox, 'unknown');
+});
+
+// ─── Trusted-but-silent heartbeat rows must not roll up as idle ───────────
+
+test('connector outbox rollup: trusted row with null heartbeat → unknown, not idle', () => {
+  // An enrolled, active source instance that has never produced a
+  // heartbeat is honest absence of evidence — claiming `idle` would
+  // paint a dead collector green.
+  const rows = [hbRow({ lastHeartbeatAt: null, lastHeartbeatStatus: null })];
+  const r = projectConnectorOutboxAxisFromHeartbeats(rows, { nowIso: NOW });
+  assert.equal(r.axis, 'unknown');
+  assert.equal(r.unreliable, false);
+  assert.equal(r.hasEvidence, false);
+});
+
+test('connector outbox rollup: trusted idle + trusted silent → unknown, not idle', () => {
+  // One instance is genuinely idle, another has never spoken. The
+  // honest rollup is `unknown`: we have no evidence about the silent
+  // instance's outbox depth, so we cannot promise the connector is
+  // drained.
+  const rows = [
+    hbRow({ sourceInstanceId: 'src_1' }), // healthy idle
+    hbRow({ sourceInstanceId: 'src_2', deviceId: 'dev_2', lastHeartbeatAt: null, lastHeartbeatStatus: null }),
+  ];
+  const r = projectConnectorOutboxAxisFromHeartbeats(rows, { nowIso: NOW });
+  assert.equal(r.axis, 'unknown');
+  assert.equal(r.unreliable, false);
+});
+
+test('connector outbox rollup: trusted active + trusted silent still surfaces active', () => {
+  // An untrustworthy "silent" row never downgrades a positive active
+  // signal — the connector is demonstrably working on at least one
+  // source, which is the more important fact to surface.
+  const rows = [
+    hbRow({ sourceInstanceId: 'src_1', recordsPending: 7 }), // active
+    hbRow({ sourceInstanceId: 'src_2', deviceId: 'dev_2', lastHeartbeatAt: null, lastHeartbeatStatus: null }),
+  ];
+  const r = projectConnectorOutboxAxisFromHeartbeats(rows, { nowIso: NOW });
+  assert.equal(r.axis, 'active');
+});
+
+// ─── mapWithConcurrency: bound parallel projection work ──────────────────
+
+test('mapWithConcurrency: keeps in-flight workers within the configured limit', async () => {
+  const items = Array.from({ length: 24 }, (_, i) => i);
+  const observed = [];
+  let peak = 0;
+  let active = 0;
+  const results = await mapWithConcurrency(
+    items,
+    4,
+    async (n) => {
+      active++;
+      peak = Math.max(peak, active);
+      observed.push(active);
+      // Yield so the runtime interleaves workers and inflight has time to grow.
+      await new Promise((resolve) => setImmediate(resolve));
+      active--;
+      return n * 2;
+    },
+  );
+  assert.equal(peak <= 4, true, `peak in-flight ${peak} exceeded limit 4`);
+  assert.equal(observed.every((v) => v <= 4), true);
+  // Order is preserved regardless of completion order.
+  assert.deepEqual(results, items.map((n) => n * 2));
+});
+
+test('mapWithConcurrency: onInFlightChange never reports above the limit', async () => {
+  const items = Array.from({ length: 20 }, (_, i) => i);
+  let maxReported = 0;
+  await mapWithConcurrency(
+    items,
+    3,
+    async () => {
+      await new Promise((resolve) => setImmediate(resolve));
+    },
+    {
+      onInFlightChange: (count) => {
+        if (count > maxReported) maxReported = count;
+      },
+    },
+  );
+  assert.equal(maxReported <= 3, true, `reported peak ${maxReported} exceeded limit 3`);
+});
+
+test('mapWithConcurrency: empty input returns empty array without invoking worker', async () => {
+  let called = false;
+  const out = await mapWithConcurrency([], 5, async () => {
+    called = true;
+  });
+  assert.deepEqual(out, []);
+  assert.equal(called, false);
+});
+
+test('mapWithConcurrency: limit larger than input still preserves order', async () => {
+  const items = ['a', 'b', 'c'];
+  const out = await mapWithConcurrency(items, 50, async (s, i) => `${i}:${s}`);
+  assert.deepEqual(out, ['0:a', '1:b', '2:c']);
+});
+
+test('LIST_CONNECTOR_SUMMARIES_CONCURRENCY exports a sensible bound', () => {
+  assert.equal(typeof LIST_CONNECTOR_SUMMARIES_CONCURRENCY, 'number');
+  assert.equal(LIST_CONNECTOR_SUMMARIES_CONCURRENCY > 0, true);
+  // We never want the dashboard list to fan out unboundedly; pin the
+  // upper bound at a clearly conservative number.
+  assert.equal(LIST_CONNECTOR_SUMMARIES_CONCURRENCY <= 32, true);
 });
