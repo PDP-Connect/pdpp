@@ -122,10 +122,42 @@ export interface ConnectionBadges {
   readonly syncing: boolean;
 }
 
+/**
+ * Non-secret CTA the dashboard can render when the connection needs the
+ * owner to do something. Derived from structured attention evidence by
+ * the projection; never carries owner_copy, OTP values, secrets, raw
+ * interaction payloads, browser URLs, or attachment refs. The dashboard
+ * resolves the actual surface from `action_target` semantics (a stable,
+ * non-secret label like `dashboard` / `external_app` / `local_device`).
+ *
+ * `attention_id` is opaque and safe to expose — it identifies the
+ * structured attention record so the dashboard can deep-link to the
+ * attention detail view without re-deriving evidence.
+ */
+export interface NextAction {
+  readonly action_target: string | null;
+  readonly attention_id: string | null;
+  readonly expires_at: string | null;
+  readonly owner_action: "act_elsewhere" | "operate_attachment" | "provide_value" | null;
+  readonly reason_code: string | null;
+  readonly response_contract: "response_required" | "none" | null;
+  /**
+   * Where the CTA was derived from. `structured` means a durable
+   * structured-attention record drove the projection; `schedule_fallback`
+   * means only the schedule's `human_attention_needed` flag was
+   * available, so the CTA is necessarily coarse and the dashboard should
+   * surface a "details unavailable" caveat instead of fabricating
+   * precision. `none` is reserved for non-needs-attention states.
+   */
+  readonly source: "none" | "schedule_fallback" | "structured";
+}
+
 export interface ConnectionHealthSnapshot {
   readonly axes: ConnectionAxes;
   readonly badges: ConnectionBadges;
   readonly last_success_at: string | null;
+  /** Non-secret CTA. `null` when the connection does not need attention. */
+  readonly next_action: NextAction | null;
   readonly next_attempt_at: string | null;
   readonly reason_code: string | null;
   readonly state: ConnectionHealthState;
@@ -165,12 +197,30 @@ export interface ConnectionBackoffEvidence {
  *
  * Lifecycle states `resolved`, `expired`, `cancelled`, `superseded` are
  * NOT passed in — they are not "open" attention. The caller filters.
+ *
+ * `id`, `ownerAction`, `responseContract`, and `sensitivity` are the
+ * subset of `AttentionRecord` the projection needs to emit a non-secret
+ * `NextAction` CTA. Callers may pass `null` for fields that are not
+ * available (e.g. when synthesizing fallback evidence from a schedule's
+ * `human_attention_needed` flag rather than from durable attention
+ * records); the projection will downgrade the CTA accordingly.
  */
 export interface ConnectionAttentionEvidence {
   readonly actionTarget: string | null;
   readonly expiresAt: string | null;
+  readonly id: string | null;
   readonly lifecycle: "acknowledged" | "in_progress" | "open";
+  readonly ownerAction: "act_elsewhere" | "operate_attachment" | "provide_value" | null;
   readonly reasonCode: string | null;
+  /**
+   * Caller has already filtered with `attention.isHealthRelevant`. Marked
+   * here for documentation; the projection trusts the filter.
+   *
+   * `sensitivity` is read so the `next_action` CTA can be suppressed for
+   * `secret` records (owner copy / OTP value etc. must never appear in
+   * the operator payload).
+   */
+  readonly sensitivity?: "non_secret" | "none" | "secret";
 }
 
 /** Coverage rollup. Caller aggregates per-stream evidence into one axis. */
@@ -280,6 +330,7 @@ export function computeConnectionHealth(input: ComputeConnectionHealthInput): Co
       nextAttemptAt,
       axes,
       badges,
+      nextAction: projectNextAction(input.attention),
     });
   }
 
@@ -427,6 +478,7 @@ interface SnapshotArgs {
   readonly axes: ConnectionAxes;
   readonly badges: ConnectionBadges;
   readonly lastSuccessAt: string | null;
+  readonly nextAction?: NextAction | null;
   readonly nextAttemptAt: string | null;
   readonly reasonCode: string | null;
   readonly state: ConnectionHealthState;
@@ -438,10 +490,52 @@ function snapshot(args: SnapshotArgs): ConnectionHealthSnapshot {
     state: args.state,
     reason_code: args.reasonCode,
     last_success_at: args.lastSuccessAt,
+    next_action: args.nextAction ?? null,
     next_attempt_at: args.nextAttemptAt,
     axes: args.axes,
     badges: args.badges,
     unknown_reasons: args.unknownReasons ?? [],
+  };
+}
+
+/**
+ * Project a non-secret CTA from already-filtered structured attention
+ * evidence. Secret-sensitive records yield a CTA with `reason_code` only
+ * (and `source: "structured"`), never `owner_copy` or any field that
+ * could leak the secret payload — the dashboard renders a generic "Owner
+ * action needed" without details. Callers that want stronger suppression
+ * should filter the record out entirely before passing it in.
+ *
+ * When the caller could not supply a structured `id` / `ownerAction`
+ * (e.g. the evidence was synthesized from a schedule's
+ * `human_attention_needed` flag), the CTA's `source` degrades to
+ * `schedule_fallback` so the dashboard can present a caveated label.
+ */
+function projectNextAction(attention: ConnectionAttentionEvidence): NextAction {
+  const isStructured = attention.id !== null && attention.ownerAction !== null;
+  const source: NextAction["source"] = isStructured ? "structured" : "schedule_fallback";
+  if (attention.sensitivity === "secret") {
+    // Block every potentially-revealing field; keep the bare minimum so
+    // the dashboard can still render "owner action needed" with a
+    // reason code (which is a controlled enum, not free text).
+    return {
+      action_target: null,
+      attention_id: attention.id,
+      expires_at: attention.expiresAt,
+      owner_action: attention.ownerAction,
+      reason_code: attention.reasonCode,
+      response_contract: null,
+      source,
+    };
+  }
+  return {
+    action_target: attention.actionTarget,
+    attention_id: attention.id,
+    expires_at: attention.expiresAt,
+    owner_action: attention.ownerAction,
+    reason_code: attention.reasonCode,
+    response_contract: null,
+    source,
   };
 }
 

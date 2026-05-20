@@ -12,11 +12,18 @@
 import { allowUnboundedReadAcknowledged, getOne, iterateDynamicSqlAcknowledged, referenceQueries } from "../lib/db.ts";
 import { listSpineCorrelations, type SpineSummary } from "../lib/spine.ts";
 import {
+  type AttentionRecord,
+  isHealthRelevant,
+  type OwnerAction,
+} from "../runtime/attention.ts";
+import {
   computeConnectionHealth,
+  type ConnectionAttentionEvidence,
   type ConnectionHealthSnapshot,
   type CoverageAxis,
   deriveOutboxAxisFromHeartbeat,
   type FreshnessAxis,
+  type NextAction,
   type OutboxAxis,
 } from "../runtime/connection-health.ts";
 import { getConnectorManifest } from "./auth.js";
@@ -153,6 +160,13 @@ export interface ConnectorSummary {
   readonly last_run: ConnectorRunSummary | null;
   readonly last_successful_run: ConnectorRunSummary | null;
   readonly manifest_version: string | null;
+  /**
+   * Top-level mirror of `connection_health.next_action`. Mirrored at the
+   * row level so the dashboard list view does not have to peer inside
+   * the health snapshot to render a CTA chip. `null` when the
+   * connection does not need owner action.
+   */
+  readonly next_action: NextAction | null;
   readonly refresh_policy: unknown;
   readonly schedule: unknown;
   readonly streams: string[];
@@ -169,6 +183,8 @@ export interface ConnectorDetail {
   readonly last_successful_run: ConnectorRunSummary | null;
   readonly manifest_excerpt: ManifestExcerpt;
   readonly manifest_version: string | null;
+  /** See `ConnectorSummary.next_action`. */
+  readonly next_action: NextAction | null;
   readonly object: "ref_connector_detail";
   readonly recent_runs: ConnectorRunSummary[];
   readonly schedule: unknown;
@@ -857,10 +873,117 @@ function combineUnreliableSources(
   return sources;
 }
 
+/**
+ * Lifecycles the connection-health projection treats as "open" for a
+ * structured attention record. `attention.isHealthRelevant` enforces
+ * additional axes-based filtering on top of this.
+ */
+const OPEN_LIFECYCLES = new Set(["acknowledged", "in_progress", "open"]);
+
+/**
+ * Pick the single most-urgent health-relevant structured attention record
+ * for a connection, and project it onto the
+ * `ConnectionAttentionEvidence` shape the runtime expects. Falls back to
+ * the schedule's `human_attention_needed` flag when no structured record
+ * is present, so the projection stays compatible with controllers that
+ * have not yet adopted the durable attention store.
+ *
+ * The fallback emits a `ConnectionAttentionEvidence` with `id: null` and
+ * `ownerAction: null`, which causes
+ * `connection-health::projectNextAction` to mark the CTA's `source` as
+ * `schedule_fallback` — the dashboard renders a caveated "owner action
+ * needed" without inventing precision the evidence cannot support.
+ *
+ * Returns `null` when there is no open attention and no schedule flag,
+ * so the projection falls through to the next precedence rung.
+ */
+function selectAttentionEvidence(input: {
+  readonly attentionRecords: readonly AttentionRecord[];
+  readonly humanAttentionNeeded: boolean;
+  readonly lastErrorCode: string | null;
+  readonly nowIso: string;
+}): ConnectionAttentionEvidence | null {
+  const candidates = input.attentionRecords.filter(
+    (record) =>
+      OPEN_LIFECYCLES.has(record.lifecycle) && isHealthRelevant(record, input.nowIso),
+  );
+  if (candidates.length > 0) {
+    const picked = pickMostUrgentAttention(candidates);
+    return {
+      actionTarget: picked.action_target,
+      expiresAt: picked.expires_at,
+      id: picked.id,
+      lifecycle: picked.lifecycle as ConnectionAttentionEvidence["lifecycle"],
+      ownerAction: ownerActionForEvidence(picked.owner_action),
+      reasonCode: picked.reason_code,
+      sensitivity: picked.sensitivity,
+    };
+  }
+  if (input.humanAttentionNeeded) {
+    return {
+      actionTarget: null,
+      expiresAt: null,
+      id: null,
+      lifecycle: "open",
+      ownerAction: null,
+      reasonCode: input.lastErrorCode ?? "needs_human_attention",
+    };
+  }
+  return null;
+}
+
+/**
+ * Pick the most-urgent record from a non-empty list of health-relevant
+ * candidates. Urgency ordering:
+ *
+ *   1. `response_required` beats observability-only.
+ *   2. Blocked posture beats running.
+ *   3. Sooner expiry beats later/no expiry.
+ *   4. Earliest `created_at` as a stable tiebreak (don't flip CTAs on
+ *      every refresh when two records are equally urgent).
+ */
+function pickMostUrgentAttention(records: readonly AttentionRecord[]): AttentionRecord {
+  // The list is small (<= number of open attention records per
+  // connection — typically 0-2); a single linear scan with a max-by
+  // comparator is fine.
+  return [...records].sort((a, b) => {
+    const aResp = a.response_contract === "response_required" ? 1 : 0;
+    const bResp = b.response_contract === "response_required" ? 1 : 0;
+    if (aResp !== bResp) return bResp - aResp;
+    const aBlocked = a.progress_posture === "blocked" ? 1 : 0;
+    const bBlocked = b.progress_posture === "blocked" ? 1 : 0;
+    if (aBlocked !== bBlocked) return bBlocked - aBlocked;
+    const aExpiry = a.expires_at ? Date.parse(a.expires_at) : Number.POSITIVE_INFINITY;
+    const bExpiry = b.expires_at ? Date.parse(b.expires_at) : Number.POSITIVE_INFINITY;
+    if (aExpiry !== bExpiry) return aExpiry - bExpiry;
+    return Date.parse(a.created_at) - Date.parse(b.created_at);
+  })[0]!;
+}
+
+function ownerActionForEvidence(
+  action: OwnerAction,
+): ConnectionAttentionEvidence["ownerAction"] {
+  if (action === "none") return null;
+  return action;
+}
+
 export function projectConnectorSummaryConnectionHealth(input: {
+  /**
+   * Durable structured attention records the caller has already filtered
+   * to this connection. The projection picks the most urgent
+   * health-relevant record via `attention.isHealthRelevant`. When
+   * omitted, the schedule's `human_attention_needed` flag is the only
+   * (coarse) fallback.
+   */
+  readonly attentionRecords?: readonly AttentionRecord[];
   readonly freshness: Freshness;
   readonly lastRun: ConnectorRunSummary | null;
   readonly lastSuccessfulRun: ConnectorRunSummary | null;
+  /**
+   * Wall-clock anchor for attention expiry/health-relevance checks.
+   * Defaults to `new Date().toISOString()`; tests pass a fixed value.
+   */
+  readonly nowIso?: string;
   readonly outbox?: { axis: OutboxAxis };
   readonly pendingDetailGaps?: readonly PendingDetailGapSummary[];
   readonly unreliableSources?: readonly string[];
@@ -881,16 +1004,16 @@ export function projectConnectorSummaryConnectionHealth(input: {
     typeof schedulerBackoff?.reason_class === "string" ? schedulerBackoff.reason_class : lastErrorCode;
   const schedulerFailureStatus =
     schedulerBackoff && (schedulerBackoff.backoff_applied === true || backoffConsecutiveFailures > 0) ? "failed" : null;
+  const nowIso = input.nowIso ?? new Date().toISOString();
+  const attention = selectAttentionEvidence({
+    attentionRecords: input.attentionRecords ?? [],
+    humanAttentionNeeded,
+    lastErrorCode,
+    nowIso,
+  });
   return computeConnectionHealth({
     activity: { active: activeRunId !== null },
-    attention: humanAttentionNeeded
-      ? {
-          actionTarget: null,
-          expiresAt: null,
-          lifecycle: "open",
-          reasonCode: lastErrorCode ?? "needs_human_attention",
-        }
-      : null,
+    attention,
     backoff: schedulerBackoff || nextDueAt
       ? {
           backoffApplied: schedulerBackoff?.backoff_applied === true,
@@ -1043,6 +1166,7 @@ export async function listConnectorSummaries(
         connector_id: row.connector_id,
         display_name: manifest.display_name || row.connector_id,
         manifest_version: manifest.version || null,
+        next_action: connectionHealth.next_action,
         streams: (manifest.streams || []).map((stream) => stream.name),
         total_records: live.totalRecords,
         freshness,
@@ -1096,6 +1220,7 @@ export async function getConnectorDetail(
     connector_id: connectorId,
     display_name: manifest.display_name || connectorId,
     manifest_version: manifest.version || null,
+    next_action: connectionHealth.next_action,
     total_records: live.totalRecords,
     freshness,
     schedule,

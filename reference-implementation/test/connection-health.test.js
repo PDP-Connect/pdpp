@@ -470,3 +470,106 @@ test('outbox axis: untrusted evidence flags projection unreliable', () => {
   );
   assert.deepEqual(r, { axis: 'unknown', unreliable: true });
 });
+
+// ─── next_action CTA derivation ──────────────────────────────────────────
+
+test('next_action: structured attention projects a non-secret CTA with source=structured', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run({ latestStatus: 'failed', lastSuccessAt: null }),
+      attention: {
+        actionTarget: 'external_app',
+        expiresAt: '2026-05-19T13:00:00.000Z',
+        id: 'att_1',
+        lifecycle: 'open',
+        ownerAction: 'act_elsewhere',
+        reasonCode: 'push_approval',
+      },
+    })
+  );
+  assert.equal(snap.state, 'needs_attention');
+  assert.deepEqual(snap.next_action, {
+    action_target: 'external_app',
+    attention_id: 'att_1',
+    expires_at: '2026-05-19T13:00:00.000Z',
+    owner_action: 'act_elsewhere',
+    reason_code: 'push_approval',
+    response_contract: null,
+    source: 'structured',
+  });
+});
+
+test('next_action: secret-sensitive structured attention suppresses action_target', () => {
+  // The runtime owns secret values (OTP digits, raw verification text).
+  // The CTA may pin attention_id and a controlled reason code, but
+  // must never expose action_target text that could leak which surface
+  // holds the secret beyond what reason_code already implies.
+  const snap = computeConnectionHealth(
+    input({
+      run: run({ latestStatus: 'failed' }),
+      attention: {
+        actionTarget: 'dashboard:/secrets/x',
+        expiresAt: null,
+        id: 'att_secret',
+        lifecycle: 'in_progress',
+        ownerAction: 'provide_value',
+        reasonCode: 'otp_required',
+        sensitivity: 'secret',
+      },
+    })
+  );
+  assert.equal(snap.next_action?.action_target, null);
+  assert.equal(snap.next_action?.attention_id, 'att_secret');
+  assert.equal(snap.next_action?.reason_code, 'otp_required');
+  assert.equal(snap.next_action?.source, 'structured');
+});
+
+test('next_action: schedule-fallback evidence projects source=schedule_fallback', () => {
+  // When the caller could not supply a structured record (id/ownerAction
+  // null), the CTA is necessarily coarse — the dashboard should render
+  // a caveated label rather than invent precision.
+  const snap = computeConnectionHealth(
+    input({
+      run: run({ latestStatus: 'failed' }),
+      attention: {
+        actionTarget: null,
+        expiresAt: null,
+        id: null,
+        lifecycle: 'open',
+        ownerAction: null,
+        reasonCode: 'needs_human_attention',
+      },
+    })
+  );
+  assert.equal(snap.next_action?.source, 'schedule_fallback');
+  assert.equal(snap.next_action?.attention_id, null);
+  assert.equal(snap.next_action?.owner_action, null);
+  assert.equal(snap.next_action?.reason_code, 'needs_human_attention');
+});
+
+test('next_action: null when no attention is open', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'fresh' },
+    })
+  );
+  assert.equal(snap.state, 'healthy');
+  assert.equal(snap.next_action, null);
+});
+
+test('next_action: idle and degraded headlines do not synthesize a CTA', () => {
+  const idleSnap = computeConnectionHealth(input({ schedule: { enabled: false } }));
+  assert.equal(idleSnap.state, 'idle');
+  assert.equal(idleSnap.next_action, null);
+
+  const degradedSnap = computeConnectionHealth(
+    input({
+      run: run({ latestStatus: 'failed' }),
+      coverage: { axis: 'partial' },
+    })
+  );
+  assert.equal(degradedSnap.state, 'degraded');
+  assert.equal(degradedSnap.next_action, null);
+});

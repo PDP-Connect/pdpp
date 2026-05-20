@@ -13,6 +13,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { executeRefConnectorsList } from '../operations/ref-connectors-list/index.ts';
+import { createAttention } from '../runtime/attention.ts';
 import {
   isPublicReferenceConnector,
   LIST_CONNECTOR_SUMMARIES_CONCURRENCY,
@@ -725,6 +726,284 @@ test('mapWithConcurrency: limit larger than input still preserves order', async 
   const items = ['a', 'b', 'c'];
   const out = await mapWithConcurrency(items, 50, async (s, i) => `${i}:${s}`);
   assert.deepEqual(out, ['0:a', '1:b', '2:c']);
+});
+
+// ─── Structured attention integration ────────────────────────────────────
+
+function failedRun(overrides = {}) {
+  return {
+    event_count: 1,
+    failure_reason: 'auth_expired',
+    finished_at: '2026-05-19T12:00:00.000Z',
+    first_at: '2026-05-19T11:59:00.000Z',
+    known_gaps: [],
+    last_at: '2026-05-19T12:00:00.000Z',
+    run_id: 'run_failed',
+    started_at: '2026-05-19T11:59:00.000Z',
+    status: 'failed',
+    ...overrides,
+  };
+}
+
+function succeededRun(overrides = {}) {
+  return {
+    event_count: 3,
+    failure_reason: null,
+    finished_at: '2026-05-19T12:00:00.000Z',
+    first_at: '2026-05-19T11:59:00.000Z',
+    known_gaps: [],
+    last_at: '2026-05-19T12:00:00.000Z',
+    run_id: 'run_ok',
+    started_at: '2026-05-19T11:59:00.000Z',
+    status: 'succeeded',
+    ...overrides,
+  };
+}
+
+test('summary connection health: structured attention record drives needs_attention with structured CTA', () => {
+  // A health-relevant durable attention record beats the schedule's
+  // human_attention_needed flag and beats backoff: the projection must
+  // use the structured evidence so the dashboard renders a precise CTA.
+  const attention = createAttention({
+    id: 'att_otp',
+    dedupe_key: 'codex:otp',
+    connection_id: 'codex',
+    run_id: 'run_1',
+    reason_code: 'otp_required',
+    progress_posture: 'blocked',
+    owner_action: 'provide_value',
+    response_contract: 'response_required',
+    sensitivity: 'non_secret',
+    action_target: 'dashboard',
+    now: '2026-05-19T11:50:00.000Z',
+  });
+  const snapshot = projectConnectorSummaryConnectionHealth({
+    attentionRecords: [attention],
+    freshness: { status: 'current', captured_at: '2026-05-19T12:00:00.000Z' },
+    lastRun: failedRun(),
+    lastSuccessfulRun: null,
+    nowIso: '2026-05-19T12:00:00.000Z',
+    schedule: null,
+  });
+  assert.equal(snapshot.state, 'needs_attention');
+  assert.equal(snapshot.reason_code, 'otp_required');
+  assert.equal(snapshot.next_action?.source, 'structured');
+  assert.equal(snapshot.next_action?.attention_id, 'att_otp');
+  assert.equal(snapshot.next_action?.action_target, 'dashboard');
+  assert.equal(snapshot.next_action?.owner_action, 'provide_value');
+});
+
+test('summary connection health: structured attention beats schedule.human_attention_needed flag', () => {
+  // Both the structured record AND the schedule flag are set. The
+  // structured record wins, so the CTA is `structured`, not the coarse
+  // schedule_fallback shape.
+  const attention = createAttention({
+    id: 'att_struct',
+    dedupe_key: 'codex:manual_verify',
+    connection_id: 'codex',
+    run_id: 'run_1',
+    reason_code: 'manual_verification',
+    progress_posture: 'blocked',
+    owner_action: 'operate_attachment',
+    response_contract: 'response_required',
+    sensitivity: 'non_secret',
+    action_target: 'remote_surface',
+    now: '2026-05-19T11:50:00.000Z',
+  });
+  const snapshot = projectConnectorSummaryConnectionHealth({
+    attentionRecords: [attention],
+    freshness: { status: 'current', captured_at: '2026-05-19T12:00:00.000Z' },
+    lastRun: failedRun(),
+    lastSuccessfulRun: null,
+    nowIso: '2026-05-19T12:00:00.000Z',
+    schedule: {
+      enabled: true,
+      human_attention_needed: true,
+      last_error_code: 'browser_runtime_not_configured',
+    },
+  });
+  assert.equal(snapshot.state, 'needs_attention');
+  assert.equal(snapshot.next_action?.source, 'structured');
+  assert.equal(snapshot.reason_code, 'manual_verification');
+});
+
+test('summary connection health: nonblocking act_elsewhere attention is filtered by isHealthRelevant', () => {
+  // A nonblocking `act_elsewhere` running notice with no
+  // response_contract is informational — `isHealthRelevant` rejects it,
+  // so the projection must NOT flip the headline pill and must NOT
+  // synthesize a CTA. (Spec scenario: "A non-actionable retry occurs".)
+  const informational = createAttention({
+    id: 'att_info',
+    dedupe_key: 'codex:auto_in_progress',
+    connection_id: 'codex',
+    run_id: 'run_1',
+    reason_code: 'app_push_pending_auto',
+    progress_posture: 'running',
+    owner_action: 'act_elsewhere',
+    response_contract: 'none',
+    sensitivity: 'non_secret',
+    action_target: 'external_app',
+    now: '2026-05-19T11:50:00.000Z',
+  });
+  const succeededRun = {
+    event_count: 3,
+    failure_reason: null,
+    finished_at: '2026-05-19T12:00:00.000Z',
+    first_at: '2026-05-19T11:59:00.000Z',
+    known_gaps: [],
+    last_at: '2026-05-19T12:00:00.000Z',
+    run_id: 'run_ok',
+    started_at: '2026-05-19T11:59:00.000Z',
+    status: 'succeeded',
+  };
+  const snapshot = projectConnectorSummaryConnectionHealth({
+    attentionRecords: [informational],
+    freshness: { status: 'current', captured_at: '2026-05-19T12:00:00.000Z' },
+    lastRun: succeededRun,
+    lastSuccessfulRun: succeededRun,
+    nowIso: '2026-05-19T12:00:00.000Z',
+    schedule: null,
+  });
+  assert.equal(snapshot.state, 'healthy');
+  assert.equal(snapshot.next_action, null);
+});
+
+test('summary connection health: expired structured attention does not drive needs_attention', () => {
+  // Past-expiry records are not health-relevant; the projection must
+  // ignore them and fall through to the run shape.
+  const expired = createAttention({
+    id: 'att_expired',
+    dedupe_key: 'codex:otp',
+    connection_id: 'codex',
+    run_id: 'run_old',
+    reason_code: 'otp_required',
+    progress_posture: 'blocked',
+    owner_action: 'provide_value',
+    response_contract: 'response_required',
+    sensitivity: 'non_secret',
+    expires_at: '2026-05-19T11:00:00.000Z',
+    now: '2026-05-19T10:55:00.000Z',
+  });
+  const snapshot = projectConnectorSummaryConnectionHealth({
+    attentionRecords: [expired],
+    freshness: { status: 'current', captured_at: '2026-05-19T12:00:00.000Z' },
+    lastRun: {
+      event_count: 1,
+      failure_reason: null,
+      finished_at: '2026-05-19T12:00:00.000Z',
+      first_at: '2026-05-19T11:59:00.000Z',
+      known_gaps: [],
+      last_at: '2026-05-19T12:00:00.000Z',
+      run_id: 'run_ok',
+      started_at: '2026-05-19T11:59:00.000Z',
+      status: 'succeeded',
+    },
+    lastSuccessfulRun: {
+      event_count: 1,
+      failure_reason: null,
+      finished_at: '2026-05-19T12:00:00.000Z',
+      first_at: '2026-05-19T11:59:00.000Z',
+      known_gaps: [],
+      last_at: '2026-05-19T12:00:00.000Z',
+      run_id: 'run_ok',
+      started_at: '2026-05-19T11:59:00.000Z',
+      status: 'succeeded',
+    },
+    nowIso: '2026-05-19T12:00:00.000Z',
+    schedule: null,
+  });
+  assert.equal(snapshot.state, 'healthy');
+  assert.equal(snapshot.next_action, null);
+});
+
+test('summary connection health: secret-sensitive structured attention suppresses action_target in CTA', () => {
+  // OTP-bearing attention is `secret`. The CTA must surface the
+  // attention_id and reason_code so the dashboard can deep-link, but
+  // never the action_target (which might encode the surface holding
+  // the secret).
+  const secret = createAttention({
+    id: 'att_secret',
+    dedupe_key: 'codex:otp',
+    connection_id: 'codex',
+    run_id: 'run_1',
+    reason_code: 'otp_required',
+    progress_posture: 'blocked',
+    owner_action: 'provide_value',
+    response_contract: 'response_required',
+    sensitivity: 'secret',
+    action_target: 'dashboard:/secrets/codex',
+    now: '2026-05-19T11:55:00.000Z',
+  });
+  const snapshot = projectConnectorSummaryConnectionHealth({
+    attentionRecords: [secret],
+    freshness: { status: 'current', captured_at: '2026-05-19T12:00:00.000Z' },
+    lastRun: failedRun(),
+    lastSuccessfulRun: null,
+    nowIso: '2026-05-19T12:00:00.000Z',
+    schedule: null,
+  });
+  assert.equal(snapshot.next_action?.action_target, null);
+  assert.equal(snapshot.next_action?.attention_id, 'att_secret');
+  assert.equal(snapshot.next_action?.reason_code, 'otp_required');
+});
+
+test('summary connection health: schedule.human_attention_needed projects schedule_fallback CTA when no structured record exists', () => {
+  // Controllers that have not yet adopted the durable attention store
+  // still get a CTA, but the source is `schedule_fallback` so the
+  // dashboard renders a caveated label.
+  const snapshot = projectConnectorSummaryConnectionHealth({
+    freshness: { status: 'current', captured_at: '2026-05-19T12:00:00.000Z' },
+    lastRun: failedRun({ failure_reason: 'browser_runtime_not_configured' }),
+    lastSuccessfulRun: null,
+    schedule: {
+      enabled: true,
+      human_attention_needed: true,
+      last_error_code: 'browser_runtime_not_configured',
+    },
+  });
+  assert.equal(snapshot.state, 'needs_attention');
+  assert.equal(snapshot.next_action?.source, 'schedule_fallback');
+  assert.equal(snapshot.next_action?.attention_id, null);
+  assert.equal(snapshot.next_action?.owner_action, null);
+  assert.equal(snapshot.next_action?.reason_code, 'browser_runtime_not_configured');
+});
+
+test('summary connection health: most-urgent picker prefers response_required over informational', () => {
+  // Two open records, both health-relevant. The response_required one
+  // wins (it blocks progress until owner responds).
+  const blocking = createAttention({
+    id: 'att_block',
+    dedupe_key: 'codex:otp',
+    connection_id: 'codex',
+    run_id: 'run_1',
+    reason_code: 'otp_required',
+    progress_posture: 'blocked',
+    owner_action: 'provide_value',
+    response_contract: 'response_required',
+    sensitivity: 'non_secret',
+    now: '2026-05-19T11:50:00.000Z',
+  });
+  const operating = createAttention({
+    id: 'att_operate',
+    dedupe_key: 'codex:attachment',
+    connection_id: 'codex',
+    run_id: 'run_1',
+    reason_code: 'attachment_review',
+    progress_posture: 'blocked',
+    owner_action: 'operate_attachment',
+    response_contract: 'none',
+    sensitivity: 'non_secret',
+    now: '2026-05-19T11:45:00.000Z',
+  });
+  const snapshot = projectConnectorSummaryConnectionHealth({
+    attentionRecords: [operating, blocking],
+    freshness: { status: 'current', captured_at: '2026-05-19T12:00:00.000Z' },
+    lastRun: failedRun(),
+    lastSuccessfulRun: null,
+    nowIso: '2026-05-19T12:00:00.000Z',
+    schedule: null,
+  });
+  assert.equal(snapshot.next_action?.attention_id, 'att_block');
 });
 
 test('LIST_CONNECTOR_SUMMARIES_CONCURRENCY exports a sensible bound', () => {
