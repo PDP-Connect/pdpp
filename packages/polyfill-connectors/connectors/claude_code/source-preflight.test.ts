@@ -99,6 +99,49 @@ test("claude_code context_mode is diagnostics-only, not a requestable stream", a
   );
 });
 
+test("claude_code markdown-backed streams skip unchanged files from state", async () => {
+  const claudeHome = await mkdtemp(join(tmpdir(), "pdpp-claude-markdown-state-"));
+  const projectsDir = join(claudeHome, "projects");
+  await mkdir(join(claudeHome, "skills", "demo-skill"), { recursive: true });
+  await mkdir(join(claudeHome, "commands"), { recursive: true });
+  await mkdir(join(projectsDir, "-tmp-demo", "memory"), { recursive: true });
+  await writeFile(join(claudeHome, "skills", "demo-skill", "SKILL.md"), "---\nname: Demo Skill\n---\nbody");
+  await writeFile(join(claudeHome, "commands", "demo.md"), "---\nname: Demo Command\n---\nbody");
+  await writeFile(join(projectsDir, "-tmp-demo", "memory", "note.md"), "---\ntitle: Demo Note\n---\nbody");
+
+  const start = {
+    scope: { streams: [{ name: "skills" }, { name: "slash_commands" }, { name: "memory_notes" }] },
+    type: "START",
+  };
+  const env = { CLAUDE_CODE_HOME: claudeHome, CLAUDE_CODE_PROJECTS_DIR: projectsDir };
+  const first = await runConnectorProcess({ env, start });
+  assert.equal(first.exitCode, 0);
+  const firstRecords = first.messages.filter(
+    (msg): msg is Extract<EmittedMessage, { type: "RECORD" }> => msg.type === "RECORD"
+  );
+  assert.deepEqual(firstRecords.map((record) => record.stream).sort(), ["memory_notes", "skills", "slash_commands"]);
+
+  const state = Object.fromEntries(
+    first.messages
+      .filter((msg): msg is Extract<EmittedMessage, { type: "STATE" }> => msg.type === "STATE")
+      .map((msg) => [msg.stream, msg.cursor])
+  );
+  assert.equal(Object.keys((state.skills as { file_mtimes?: Record<string, number> }).file_mtimes ?? {}).length, 1);
+  assert.equal(
+    Object.keys((state.slash_commands as { file_mtimes?: Record<string, number> }).file_mtimes ?? {}).length,
+    1
+  );
+  assert.equal(
+    Object.keys((state.memory_notes as { file_mtimes?: Record<string, number> }).file_mtimes ?? {}).length,
+    1
+  );
+
+  const second = await runConnectorProcess({ env, start: { ...start, state } });
+  assert.equal(second.exitCode, 0);
+  const secondRecords = second.messages.filter((msg) => msg.type === "RECORD");
+  assert.equal(secondRecords.length, 0, "unchanged markdown-backed streams should not re-emit records");
+});
+
 test("claude_code manifest does not expose context_mode as a consentable stream", async () => {
   const manifestPath = join(import.meta.dirname, "../../manifests/claude_code.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as { streams: Array<{ name: string }> };

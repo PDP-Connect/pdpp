@@ -45,7 +45,10 @@ export interface SessionAccumulator {
 
 export interface ClaudeCodeState {
   file_mtimes?: Record<string, number>;
+  memory_notes?: { file_mtimes?: Record<string, number> };
   messages?: { file_mtimes?: Record<string, number> };
+  skills?: { file_mtimes?: Record<string, number> };
+  slash_commands?: { file_mtimes?: Record<string, number> };
 }
 
 export interface ParsedFrontmatter {

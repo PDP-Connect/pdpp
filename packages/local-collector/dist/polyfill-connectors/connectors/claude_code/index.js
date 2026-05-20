@@ -365,7 +365,11 @@ async function parseJsonlFile(args) {
     }
     return obs.sessionId;
 }
-async function emitSkills({ claudeHome, requested, emitRecord }) {
+function markFileMtimeAndShouldSkip(fileMtimes, newMtimes, path, mtime) {
+    newMtimes[path] = mtime;
+    return fileMtimes[path] === mtime;
+}
+async function emitSkills({ claudeHome, requested, emitRecord, fileMtimes, newMtimes }) {
     if (!requested.has("skills")) {
         return;
     }
@@ -393,6 +397,9 @@ async function emitSkills({ claudeHome, requested, emitRecord }) {
         catch {
             continue;
         }
+        if (markFileMtimeAndShouldSkip(fileMtimes, newMtimes, skillPath, st.mtimeMs)) {
+            continue;
+        }
         try {
             raw = await readFile(skillPath, "utf8");
         }
@@ -415,6 +422,9 @@ async function processSlashCommandFile(args) {
     catch {
         return;
     }
+    if (markFileMtimeAndShouldSkip(args.fileMtimes, args.newMtimes, args.full, st.mtimeMs)) {
+        return;
+    }
     try {
         raw = await readFile(args.full, "utf8");
     }
@@ -426,7 +436,7 @@ async function processSlashCommandFile(args) {
     const idPath = args.prefix ? `${args.prefix}/${base}` : base;
     await args.emitRecord("slash_commands", buildSlashCommandRecord({ idPath, base, frontmatter, body, path: args.full, mtimeMs: st.mtimeMs }));
 }
-async function emitSlashCommands({ claudeHome, requested, emitRecord }) {
+async function emitSlashCommands({ claudeHome, requested, emitRecord, fileMtimes, newMtimes, }) {
     if (!requested.has("slash_commands")) {
         return;
     }
@@ -451,12 +461,12 @@ async function emitSlashCommands({ claudeHome, requested, emitRecord }) {
             if (!(ent.isFile() || ent.isSymbolicLink())) {
                 continue;
             }
-            await processSlashCommandFile({ full, name: ent.name, prefix, emitRecord });
+            await processSlashCommandFile({ full, name: ent.name, prefix, emitRecord, fileMtimes, newMtimes });
         }
     };
     await walk(commandsDir, "");
 }
-async function emitProjectMemoryNotes({ emitRecord, projectDir, projectPath, requested, }) {
+async function emitProjectMemoryNotes({ emitRecord, fileMtimes, newMtimes, projectDir, projectPath, requested, }) {
     if (!requested.has("memory_notes")) {
         return;
     }
@@ -469,6 +479,9 @@ async function emitProjectMemoryNotes({ emitRecord, projectDir, projectPath, req
             st = statSync(fullPath);
         }
         catch {
+            continue;
+        }
+        if (markFileMtimeAndShouldSkip(fileMtimes, newMtimes, fullPath, st.mtimeMs)) {
             continue;
         }
         try {
@@ -561,7 +574,14 @@ async function scanProjectDir(projectDir, args) {
         return;
     }
     if (args.buildOnly) {
-        await emitProjectMemoryNotes({ projectDir, projectPath, requested: args.requested, emitRecord: args.emitRecord });
+        await emitProjectMemoryNotes({
+            projectDir,
+            projectPath,
+            requested: args.requested,
+            emitRecord: args.emitRecord,
+            fileMtimes: args.memoryNoteMtimes ?? {},
+            newMtimes: args.newMemoryNoteMtimes ?? {},
+        });
     }
     await processTopLevelJsonl(entries, projectPath, projectDir, args);
     const sessionDirs = entries.filter((e) => e.isDirectory() && SESSION_DIR_PREFIX_RE.test(e.name));
@@ -658,27 +678,50 @@ async function emitLocalInventoryStreams(input) {
         }
     }
 }
-async function runSkillsAndCommands(claudeHome, requested, emit, emitRecord) {
+async function runSkillsAndCommands(claudeHome, requested, emit, emitRecord, state) {
     try {
-        await emitSkills({ claudeHome, requested, emitRecord });
+        await emitSkills({
+            claudeHome,
+            requested,
+            emitRecord,
+            fileMtimes: state.skillsMtimes,
+            newMtimes: state.newSkillsMtimes,
+        });
     }
     catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         await emit({ type: "PROGRESS", message: `skills scan skipped: ${msg}` });
     }
     try {
-        await emitSlashCommands({ claudeHome, requested, emitRecord });
+        await emitSlashCommands({
+            claudeHome,
+            requested,
+            emitRecord,
+            fileMtimes: state.slashCommandMtimes,
+            newMtimes: state.newSlashCommandMtimes,
+        });
     }
     catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         await emit({ type: "PROGRESS", message: `slash_commands scan skipped: ${msg}` });
     }
     if (requested.has("skills")) {
-        await emit({ type: "STATE", stream: "skills", cursor: { fetched_at: nowIso() } });
+        await emit({
+            type: "STATE",
+            stream: "skills",
+            cursor: { file_mtimes: state.newSkillsMtimes, fetched_at: nowIso() },
+        });
     }
     if (requested.has("slash_commands")) {
-        await emit({ type: "STATE", stream: "slash_commands", cursor: { fetched_at: nowIso() } });
+        await emit({
+            type: "STATE",
+            stream: "slash_commands",
+            cursor: { file_mtimes: state.newSlashCommandMtimes, fetched_at: nowIso() },
+        });
     }
+}
+function streamFileMtimes(state, stream) {
+    return state[stream]?.file_mtimes;
 }
 if (isMainModule(import.meta.url)) {
     runConnector({
@@ -689,9 +732,20 @@ if (isMainModule(import.meta.url)) {
             const baseDir = process.env.CLAUDE_CODE_PROJECTS_DIR || join(claudeHome, "projects");
             await assertRequestedClaudeSources({ baseDir, claudeHome, requested });
             const typedState = state;
-            const fileMtimes = typedState.messages?.file_mtimes || typedState.file_mtimes || {};
+            const fileMtimes = streamFileMtimes(typedState, "messages") ?? typedState.file_mtimes ?? {};
+            const skillsMtimes = streamFileMtimes(typedState, "skills") ?? {};
+            const slashCommandMtimes = streamFileMtimes(typedState, "slash_commands") ?? {};
+            const memoryNoteMtimes = streamFileMtimes(typedState, "memory_notes") ?? {};
+            const newSkillsMtimes = { ...skillsMtimes };
+            const newSlashCommandMtimes = { ...slashCommandMtimes };
+            const newMemoryNoteMtimes = { ...memoryNoteMtimes };
             await emitLocalInventoryStreams({ claudeHome, requested, emitRecord });
-            await runSkillsAndCommands(claudeHome, requested, emit, emitRecord);
+            await runSkillsAndCommands(claudeHome, requested, emit, emitRecord, {
+                skillsMtimes,
+                newSkillsMtimes,
+                slashCommandMtimes,
+                newSlashCommandMtimes,
+            });
             const needsProjects = requested.has("sessions") ||
                 requested.has("messages") ||
                 requested.has("attachments") ||
@@ -708,6 +762,8 @@ if (isMainModule(import.meta.url)) {
                 emitRecord,
                 fileMtimes,
                 newMtimes,
+                memoryNoteMtimes,
+                newMemoryNoteMtimes,
                 requested,
                 sessionAccumulators,
             });
@@ -723,7 +779,7 @@ if (isMainModule(import.meta.url)) {
                 await emit({
                     type: "STATE",
                     stream: "memory_notes",
-                    cursor: { fetched_at: nowIso() },
+                    cursor: { file_mtimes: newMemoryNoteMtimes, fetched_at: nowIso() },
                 });
             }
             if (requested.has("messages") || requested.has("attachments")) {
