@@ -471,6 +471,26 @@ export async function bootstrapPostgresSchema() {
       CREATE INDEX IF NOT EXISTS idx_pg_connector_detail_gaps_pending
         ON connector_detail_gaps(connector_id, grant_id, status, stream, next_attempt_after);
 
+      CREATE TABLE IF NOT EXISTS connector_attention_records (
+        attention_id TEXT PRIMARY KEY,
+        dedupe_key TEXT NOT NULL,
+        connector_id TEXT NOT NULL,
+        connector_instance_id TEXT NOT NULL,
+        connection_id TEXT NOT NULL,
+        run_id TEXT,
+        reason_code TEXT NOT NULL,
+        lifecycle TEXT NOT NULL CHECK (lifecycle IN ('open', 'acknowledged', 'in_progress', 'resolved', 'expired', 'cancelled', 'superseded')),
+        sensitivity TEXT NOT NULL CHECK (sensitivity IN ('none', 'non_secret', 'secret')),
+        expires_at TEXT,
+        record_json JSONB NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_pg_connector_attention_open
+        ON connector_attention_records(connector_id, connector_instance_id, lifecycle, updated_at);
+      CREATE INDEX IF NOT EXISTS idx_pg_connector_attention_dedupe
+        ON connector_attention_records(connector_id, connector_instance_id, dedupe_key, lifecycle);
+
       CREATE TABLE IF NOT EXISTS connector_schedules (
         connector_instance_id TEXT PRIMARY KEY,
         connector_id TEXT NOT NULL,

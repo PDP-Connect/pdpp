@@ -705,6 +705,37 @@ CREATE TABLE IF NOT EXISTS version_counter (
   PRIMARY KEY(connector_instance_id, stream)
 );
 
+-- Durable structured attention records for the reference operator console.
+-- Scoped per (connector_id, connector_instance_id) so the connector summary
+-- and detail projections only see attention belonging to the connection
+-- they are rendering. record_json carries the full AttentionRecord shape
+-- as serialized by the runtime; the projection only needs a small subset
+-- (lifecycle, axes, reason_code, action_target, etc.) plus the secret-safe
+-- redaction the runtime applies at construction time.
+CREATE TABLE IF NOT EXISTS connector_attention_records (
+  attention_id          TEXT PRIMARY KEY,
+  dedupe_key            TEXT NOT NULL,
+  connector_id          TEXT NOT NULL,
+  connector_instance_id TEXT NOT NULL,
+  connection_id         TEXT NOT NULL,
+  run_id                TEXT,
+  reason_code           TEXT NOT NULL,
+  lifecycle             TEXT NOT NULL,
+  sensitivity           TEXT NOT NULL,
+  expires_at            TEXT,
+  record_json           TEXT NOT NULL,
+  created_at            TEXT NOT NULL,
+  updated_at            TEXT NOT NULL,
+  CHECK (lifecycle IN ('open', 'acknowledged', 'in_progress', 'resolved', 'expired', 'cancelled', 'superseded')),
+  CHECK (sensitivity IN ('none', 'non_secret', 'secret'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_connector_attention_open
+  ON connector_attention_records(connector_id, connector_instance_id, lifecycle, updated_at);
+
+CREATE INDEX IF NOT EXISTS idx_connector_attention_dedupe
+  ON connector_attention_records(connector_id, connector_instance_id, dedupe_key, lifecycle);
+
 -- spine_events.event_seq: stable monotonic logical sequence assigned at
 -- append time. Disclosure-spine timeline pagination orders by event_seq
 -- so the cursor contract no longer leaks SQLite rowid. The column is

@@ -30,6 +30,7 @@ import { getConnectorManifest } from "./auth.js";
 import { deriveReferenceFreshness, type ReferenceFreshness } from "./freshness.ts";
 import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.js";
 import { listAllStreams } from "./records.js";
+import { getDefaultConnectorAttentionStore } from "./stores/connector-attention-store.js";
 import { getDefaultConnectorDetailGapStore } from "./stores/connector-detail-gap-store.js";
 import { getDefaultDeviceExporterStore } from "./stores/device-exporter-store.js";
 import {
@@ -433,6 +434,49 @@ async function getConnectorRecordProjection(connectorId: string): Promise<Record
     freshness: buildFreshness(latest),
     totalRecords: rows.reduce((sum, row) => sum + Number(row.record_count || 0), 0),
   };
+}
+
+interface AttentionStoreProjection {
+  readonly records: readonly AttentionRecord[];
+  readonly unreliable: boolean;
+}
+
+interface ConnectorAttentionStoreLike {
+  listOpenAttentionForConnection(input: {
+    connectorId: string;
+    connectorInstanceId?: string;
+    limit?: number;
+  }): Promise<readonly AttentionRecord[]> | readonly AttentionRecord[];
+}
+
+/**
+ * Bounded read for the durable structured-attention store keyed by
+ * connector id (and, when available, connector_instance_id).
+ *
+ * Returns `{ records, unreliable: false }` when the read succeeded —
+ * including when the store has no open attention rows. Returns
+ * `{ records: [], unreliable: true }` when the underlying store throws,
+ * so callers must mark the projection as `unreliable` to avoid a false
+ * healthy when attention evidence cannot be read.
+ */
+export async function getConnectorAttentionProjection(
+  connectorId: string,
+  options: { readonly connectorInstanceId?: string } = {},
+): Promise<AttentionStoreProjection> {
+  try {
+    const store = getDefaultConnectorAttentionStore() as ConnectorAttentionStoreLike;
+    const request: { connectorId: string; connectorInstanceId?: string; limit?: number } = {
+      connectorId,
+      limit: 50,
+    };
+    if (options.connectorInstanceId !== undefined) {
+      request.connectorInstanceId = options.connectorInstanceId;
+    }
+    const records = await Promise.resolve(store.listOpenAttentionForConnection(request));
+    return { records, unreliable: false };
+  } catch {
+    return { records: [], unreliable: true };
+  }
 }
 
 async function getConnectorDetailGapProjection(connectorId: string): Promise<DetailGapProjection> {
@@ -866,10 +910,12 @@ export async function getConnectorOutboxAxis(
 function combineUnreliableSources(
   detailGapsUnreliable: boolean,
   outboxUnreliable: boolean,
+  attentionUnreliable: boolean = false,
 ): readonly string[] {
   const sources: string[] = [];
   if (detailGapsUnreliable) sources.push("detail_gaps");
   if (outboxUnreliable) sources.push("outbox");
+  if (attentionUnreliable) sources.push("attention_store");
   return sources;
 }
 
@@ -1139,12 +1185,13 @@ export async function listConnectorSummaries(
         return null;
       }
       const live = await getConnectorRecordProjection(row.connector_id);
-      const [schedule, lastRun, lastSuccessfulRun, detailGaps, outbox] = await Promise.all([
+      const [schedule, lastRun, lastSuccessfulRun, detailGaps, outbox, attention] = await Promise.all([
         getScheduleFrom(controller, row.connector_id),
         getLatestRunSummary(row.connector_id),
         getLatestRunSummary(row.connector_id, "succeeded"),
         getConnectorDetailGapProjection(row.connector_id),
         getConnectorOutboxAxis(row.connector_id),
+        getConnectorAttentionProjection(row.connector_id),
       ]);
       const refreshPolicy = extractRefreshPolicy(manifest);
       const freshness = buildConnectorFreshness({
@@ -1154,12 +1201,13 @@ export async function listConnectorSummaries(
         refreshPolicy,
       });
       const connectionHealth = projectConnectorSummaryConnectionHealth({
+        attentionRecords: attention.records,
         freshness,
         lastRun,
         lastSuccessfulRun,
         outbox: { axis: outbox.axis },
         pendingDetailGaps: detailGaps.gaps,
-        unreliableSources: combineUnreliableSources(detailGaps.unreliable, outbox.unreliable),
+        unreliableSources: combineUnreliableSources(detailGaps.unreliable, outbox.unreliable, attention.unreliable),
         schedule,
       });
       return {
@@ -1192,12 +1240,13 @@ export async function getConnectorDetail(
     throw new RefControlError(`Unknown connector: ${connectorId}`, "not_found");
   }
   const live = await getConnectorRecordProjection(connectorId);
-  const [schedule, lastRun, lastSuccessfulRun, detailGaps, outbox] = await Promise.all([
+  const [schedule, lastRun, lastSuccessfulRun, detailGaps, outbox, attention] = await Promise.all([
     getScheduleFrom(controller, connectorId),
     getLatestRunSummary(connectorId),
     getLatestRunSummary(connectorId, "succeeded"),
     getConnectorDetailGapProjection(connectorId),
     getConnectorOutboxAxis(connectorId),
+    getConnectorAttentionProjection(connectorId),
   ]);
   const refreshPolicy = extractRefreshPolicy(manifest);
   const freshness = buildConnectorFreshness({
@@ -1207,12 +1256,13 @@ export async function getConnectorDetail(
     refreshPolicy,
   });
   const connectionHealth = projectConnectorSummaryConnectionHealth({
+    attentionRecords: attention.records,
     freshness,
     lastRun,
     lastSuccessfulRun,
     outbox: { axis: outbox.axis },
     pendingDetailGaps: detailGaps.gaps,
-    unreliableSources: combineUnreliableSources(detailGaps.unreliable, outbox.unreliable),
+    unreliableSources: combineUnreliableSources(detailGaps.unreliable, outbox.unreliable, attention.unreliable),
     schedule,
   });
   return {
