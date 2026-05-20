@@ -85,6 +85,11 @@ const LONG_OPAQUE_RE = /\b[A-Za-z0-9_-]{24,}\b/g;
  *   skips spawning a new connector child and surfaces an honest
  *   `blocked` heartbeat instead of growing the backlog further. The
  *   already-pending work continues to drain on subsequent invocations.
+ * - `maxEnqueuedBatchesPerRun`: first-backfill/scan safety valve. When a
+ *   connector emits more durable record batches than this during one
+ *   invocation, the runner stops the child, records a retryable
+ *   policy-budget gap, drains already-queued work, and refuses to commit
+ *   checkpoint state for the interrupted scan.
  */
 export interface CollectorOutboxPolicy {
   drainBatchSize: number;
@@ -92,6 +97,7 @@ export interface CollectorOutboxPolicy {
   maxAttempts: number;
   maxDrainDurationMs: number;
   maxDrainIterations: number;
+  maxEnqueuedBatchesPerRun: number;
   maxQueueDepth: number;
   retryBackoffMs: number;
 }
@@ -102,6 +108,7 @@ export const DEFAULT_COLLECTOR_OUTBOX_POLICY: Readonly<CollectorOutboxPolicy> = 
   maxAttempts: 5,
   maxDrainDurationMs: 120_000,
   maxDrainIterations: 256,
+  maxEnqueuedBatchesPerRun: 2048,
   maxQueueDepth: 10_000,
   retryBackoffMs: 30_000,
 });
@@ -209,6 +216,12 @@ export interface CollectorRunResult {
    */
   recoveredLeases: number;
   satisfiedBindings: readonly RuntimeBindingName[];
+  /**
+   * True when a spawned connector was stopped by the per-run scan enqueue
+   * budget. Already-emitted records remain durable; checkpoint state is
+   * intentionally not committed because the scan boundary is incomplete.
+   */
+  scanBudgetExceeded: boolean;
   sentBatches: number;
   /**
    * True when the runner skipped scanning a source for new work because
@@ -307,6 +320,7 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
       batchSize: config.batchSize ?? 100,
       config,
       outbox,
+      policy,
       priorState,
     });
     const done = streamResult.done;
@@ -340,6 +354,7 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
     await recoverResolvedLocalCollectorGaps({
       client,
       config,
+      deferRecoveredGapCleanup: streamResult.scanBudgetExceeded,
       outbox,
     });
     const finalSummary = outbox.summary({ sourceInstanceId: config.sourceInstanceId });
@@ -350,7 +365,7 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
         connector_id: config.connector.connector_id,
         records_pending: recordsPending,
         source_instance_id: config.sourceInstanceId,
-        status: heartbeatStatusForSummary(finalSummary, policy),
+        status: streamResult.scanBudgetExceeded ? "retrying" : heartbeatStatusForSummary(finalSummary, policy),
       });
     }
 
@@ -365,6 +380,7 @@ export async function runCollectorConnector(config: CollectorRunConfig): Promise
       satisfiedBindings,
       sentBatches: (preScanDrain.sentByKind.record_batch ?? 0) + (recordDrain.sentByKind.record_batch ?? 0),
       skippedScanForBacklog: false,
+      scanBudgetExceeded: streamResult.scanBudgetExceeded,
       statePutFailed: checkpointResult.statePutFailed,
       streamingBufferHighWaterMark: streamResult.bufferHighWaterMark,
     };
@@ -425,6 +441,7 @@ async function maybeSkipScanForBacklog(input: MaybeSkipScanInput): Promise<Colle
     satisfiedBindings: input.satisfiedBindings,
     sentBatches: input.preScanDrain.sentByKind.record_batch ?? 0,
     skippedScanForBacklog: true,
+    scanBudgetExceeded: false,
     statePutFailed: false,
     streamingBufferHighWaterMark: 0,
   };
@@ -460,6 +477,7 @@ interface StreamConnectorIntoOutboxInput {
   batchSize: number;
   config: CollectorRunConfig;
   outbox: LocalDeviceOutbox;
+  policy: CollectorOutboxPolicy;
   priorState: Readonly<Record<string, unknown>>;
 }
 
@@ -469,6 +487,7 @@ interface StreamConnectorIntoOutboxResult {
   done: Extract<EmittedMessage, { type: "DONE" }> | null;
   enqueuedBatches: number;
   recordsQueued: number;
+  scanBudgetExceeded: boolean;
 }
 
 /**
@@ -516,6 +535,7 @@ async function streamConnectorIntoOutbox(
   let recordsQueued = 0;
   let enqueuedBatches = 0;
   let done: Extract<EmittedMessage, { type: "DONE" }> | null = null;
+  let scanBudgetExceeded = false;
 
   const flushPendingBatch = (): void => {
     if (pendingRecords.length === 0) {
@@ -559,6 +579,11 @@ async function streamConnectorIntoOutbox(
     recordsQueued += envelopes.length;
     enqueuedBatches++;
     batchSeq++;
+    scanBudgetExceeded = maybeRecordScanBudgetGap({
+      enqueuedBatches,
+      input,
+      scanBudgetExceeded,
+    });
   };
 
   const handleMessage = (message: EmittedMessage): void => {
@@ -620,6 +645,14 @@ async function streamConnectorIntoOutbox(
         continue;
       }
       handleMessage(JSON.parse(line) as EmittedMessage);
+      if (scanBudgetExceeded) {
+        try {
+          child.kill("SIGTERM");
+        } catch {
+          // ignore — child already exited
+        }
+        break;
+      }
     }
   })();
   child.stdin.on("error", () => {
@@ -668,28 +701,72 @@ async function streamConnectorIntoOutbox(
       ? input.abortSignal.reason
       : new DOMException("Aborted", "AbortError");
   }
-  if (exitCode !== 0) {
-    flushPendingBatch();
-    const details = sanitizeCollectorGapDetails(`exit ${exitCode}: ${stderr.toString().trim()}`);
-    recordConnectorChildFailureGap({
-      details,
-      enqueuedBatches,
-      input,
-    });
-    throw new Error(
-      `${input.config.connector.connector_id} connector exited ${exitCode}: ${details || "unknown error"}`
-    );
-  }
+  throwIfConnectorExitedUncleanly({
+    enqueuedBatches,
+    exitCode,
+    flushPendingBatch,
+    input,
+    scanBudgetExceeded,
+    stderr,
+  });
 
   flushPendingBatch();
 
   return {
-    bufferedState: Object.freeze({ ...bufferedState }),
+    bufferedState: Object.freeze(scanBudgetExceeded ? {} : { ...bufferedState }),
     bufferHighWaterMark,
-    done,
+    done: scanBudgetExceeded ? null : done,
     enqueuedBatches,
     recordsQueued,
+    scanBudgetExceeded,
   };
+}
+
+function throwIfConnectorExitedUncleanly(input: {
+  enqueuedBatches: number;
+  exitCode: number | null;
+  flushPendingBatch: () => void;
+  input: StreamConnectorIntoOutboxInput;
+  scanBudgetExceeded: boolean;
+  stderr: BoundedStderrBuffer;
+}): void {
+  if (input.exitCode === 0 || input.scanBudgetExceeded) {
+    return;
+  }
+  input.flushPendingBatch();
+  const details = sanitizeCollectorGapDetails(`exit ${input.exitCode}: ${input.stderr.toString().trim()}`);
+  recordConnectorChildFailureGap({
+    details,
+    enqueuedBatches: input.enqueuedBatches,
+    input: input.input,
+  });
+  throw new Error(
+    `${input.input.config.connector.connector_id} connector exited ${input.exitCode}: ${details || "unknown error"}`
+  );
+}
+
+function maybeRecordScanBudgetGap(input: {
+  enqueuedBatches: number;
+  input: StreamConnectorIntoOutboxInput;
+  scanBudgetExceeded: boolean;
+}): boolean {
+  if (input.scanBudgetExceeded) {
+    return true;
+  }
+  if (input.enqueuedBatches < input.input.policy.maxEnqueuedBatchesPerRun) {
+    return false;
+  }
+  ensureCollectorGapRow({
+    clock: () => new Date(),
+    connectorId: input.input.config.connector.connector_id,
+    details: `enqueued ${input.enqueuedBatches} batches >= maxEnqueuedBatchesPerRun ${input.input.policy.maxEnqueuedBatchesPerRun}`,
+    outbox: input.input.outbox,
+    reason: "policy_budget",
+    retryable: true,
+    ...(input.input.config.runId ? { runId: input.input.config.runId } : {}),
+    sourceInstanceId: input.input.config.sourceInstanceId,
+  });
+  return true;
 }
 
 /**
@@ -781,8 +858,12 @@ async function maybeCommitCheckpoint(input: {
 async function recoverResolvedLocalCollectorGaps(input: {
   client: Pick<LocalDeviceClient, "recoverLocalCollectorGap">;
   config: CollectorRunConfig;
+  deferRecoveredGapCleanup?: boolean;
   outbox: LocalDeviceOutbox;
 }): Promise<void> {
+  if (input.deferRecoveredGapCleanup) {
+    return;
+  }
   if (hasCheckpointBlockingOutboxWork(input.outbox, input.config.sourceInstanceId)) {
     return;
   }

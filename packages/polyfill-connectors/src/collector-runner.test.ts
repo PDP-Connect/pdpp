@@ -1162,6 +1162,89 @@ test("runCollectorConnector streams RECORDs into bounded durable batches without
   }
 });
 
+test("runCollectorConnector caps one first-backfill scan without losing queued work", async () => {
+  // The first-backfill safety valve is intentionally a runner-level backstop:
+  // once the child has filled the configured per-run batch budget, already
+  // emitted records stay durable, a retryable policy gap is reported, and
+  // checkpoint state is withheld so the source can be retried safely.
+  const recordCount = 10;
+  const batchSize = 2;
+  const maxEnqueuedBatchesPerRun = 2;
+  const harness = await startCollectorHarness({ priorState: {} });
+  try {
+    const queuePath = await tempQueuePath();
+    const fixture = await writeFixtureConnector({
+      script: `
+        let buf = "";
+        await new Promise((r) => process.stdin.on("data", (c) => {
+          buf += c;
+          if (buf.includes("\\n")) r();
+        }));
+        for (let i = 0; i < ${recordCount}; i++) {
+          process.stdout.write(JSON.stringify({
+            type: "RECORD",
+            stream: "messages",
+            key: "m-" + i,
+            data: { id: "m-" + i },
+            emitted_at: new Date().toISOString(),
+          }) + "\\n");
+        }
+        process.stdout.write(JSON.stringify({
+          type: "STATE",
+          stream: "messages",
+          cursor: "must-not-commit",
+        }) + "\\n");
+        process.stdout.write(JSON.stringify({
+          type: "DONE",
+          status: "succeeded",
+          records_emitted: ${recordCount},
+        }) + "\\n");
+      `,
+    });
+
+    const result = await runCollectorConnector({
+      baseUrl: harness.url,
+      batchSize,
+      connector: {
+        args: [fixture],
+        command: "node",
+        connector_id: "fixture-first-backfill-budget",
+        runtime_requirements: { bindings: {} },
+        streams: ["messages"],
+      },
+      deviceId: "device-1",
+      deviceToken: "device-token",
+      outboxPolicy: { maxEnqueuedBatchesPerRun },
+      queuePath,
+      runId: "run-first-backfill-budget",
+      sourceInstanceId: "src-first-backfill-budget",
+    });
+
+    assert.equal(result.scanBudgetExceeded, true);
+    assert.equal(result.done, null);
+    assert.equal(result.enqueuedBatches, maxEnqueuedBatchesPerRun);
+    assert.equal(result.recordsQueued, batchSize * maxEnqueuedBatchesPerRun);
+    assert.equal(result.flushedState, null);
+    assert.equal(harness.heartbeats.at(-1)?.status, "retrying");
+
+    const totalIngested = harness.ingestedBatches.reduce((sum, batch) => sum + (batch.records?.length ?? 0), 0);
+    assert.equal(totalIngested, batchSize * maxEnqueuedBatchesPerRun);
+    assert.equal(harness.gapAcks.filter((ack) => ack.reason === "policy_budget").length, 1);
+
+    const verify = new LocalDeviceOutbox({ path: queuePath });
+    try {
+      const gaps = verify.list({ sourceInstanceId: "src-first-backfill-budget" }).filter((item) => item.kind === "gap");
+      assert.equal(gaps.length, 1);
+      assert.equal(gaps[0]?.status, "succeeded");
+      assert.equal((gaps[0]?.payload as { reason?: unknown } | undefined)?.reason, "policy_budget");
+    } finally {
+      verify.close();
+    }
+  } finally {
+    await harness.close();
+  }
+});
+
 test("runCollectorConnector defers checkpoint until every streamed record batch is acknowledged", async () => {
   // Emit 60 records (3 batches of 20) and STATE. Ingest fails for every
   // batch this pass, so even though some batches stream successfully to
@@ -1820,6 +1903,7 @@ test("drainCollectorOutbox stops between iterations when the duration budget is 
         maxAttempts: 5,
         maxDrainDurationMs: 25,
         maxDrainIterations: 256,
+        maxEnqueuedBatchesPerRun: 2048,
         maxQueueDepth: 10_000,
         retryBackoffMs: 30_000,
       },
@@ -2280,6 +2364,7 @@ test("drainCollectorOutbox delivers gap rows via ackLocalCollectorGap and acknow
         maxAttempts: 3,
         maxDrainDurationMs: 60_000,
         maxDrainIterations: 16,
+        maxEnqueuedBatchesPerRun: 2048,
         maxQueueDepth: 10_000,
         retryBackoffMs: 1,
       },
@@ -2342,6 +2427,7 @@ test("drainCollectorOutbox dead-letters a malformed gap row instead of poisoning
         maxAttempts: 3,
         maxDrainDurationMs: 60_000,
         maxDrainIterations: 4,
+        maxEnqueuedBatchesPerRun: 2048,
         maxQueueDepth: 10_000,
         retryBackoffMs: 1,
       },
