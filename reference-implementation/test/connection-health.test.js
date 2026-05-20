@@ -484,6 +484,7 @@ test('next_action: structured attention projects a non-secret CTA with source=st
         lifecycle: 'open',
         ownerAction: 'act_elsewhere',
         reasonCode: 'push_approval',
+        responseContract: 'none',
       },
     })
   );
@@ -494,7 +495,7 @@ test('next_action: structured attention projects a non-secret CTA with source=st
     expires_at: '2026-05-19T13:00:00.000Z',
     owner_action: 'act_elsewhere',
     reason_code: 'push_approval',
-    response_contract: null,
+    response_contract: 'none',
     source: 'structured',
   });
 });
@@ -514,6 +515,7 @@ test('next_action: secret-sensitive structured attention suppresses action_targe
         lifecycle: 'in_progress',
         ownerAction: 'provide_value',
         reasonCode: 'otp_required',
+        responseContract: 'response_required',
         sensitivity: 'secret',
       },
     })
@@ -538,6 +540,7 @@ test('next_action: schedule-fallback evidence projects source=schedule_fallback'
         lifecycle: 'open',
         ownerAction: null,
         reasonCode: 'needs_human_attention',
+        responseContract: null,
       },
     })
   );

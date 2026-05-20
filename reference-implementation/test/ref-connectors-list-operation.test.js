@@ -791,6 +791,7 @@ test('summary connection health: structured attention record drives needs_attent
   assert.equal(snapshot.next_action?.attention_id, 'att_otp');
   assert.equal(snapshot.next_action?.action_target, 'dashboard');
   assert.equal(snapshot.next_action?.owner_action, 'provide_value');
+  assert.equal(snapshot.next_action?.response_contract, 'response_required');
 });
 
 test('summary connection health: structured attention beats schedule.human_attention_needed flag', () => {

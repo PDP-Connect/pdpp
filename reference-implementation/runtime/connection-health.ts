@@ -212,6 +212,7 @@ export interface ConnectionAttentionEvidence {
   readonly lifecycle: "acknowledged" | "in_progress" | "open";
   readonly ownerAction: "act_elsewhere" | "operate_attachment" | "provide_value" | null;
   readonly reasonCode: string | null;
+  readonly responseContract: "response_required" | "none" | null;
   /**
    * Caller has already filtered with `attention.isHealthRelevant`. Marked
    * here for documentation; the projection trusts the filter.
@@ -524,7 +525,7 @@ function projectNextAction(attention: ConnectionAttentionEvidence): NextAction {
       expires_at: attention.expiresAt,
       owner_action: attention.ownerAction,
       reason_code: attention.reasonCode,
-      response_contract: null,
+      response_contract: attention.responseContract,
       source,
     };
   }
@@ -534,7 +535,7 @@ function projectNextAction(attention: ConnectionAttentionEvidence): NextAction {
     expires_at: attention.expiresAt,
     owner_action: attention.ownerAction,
     reason_code: attention.reasonCode,
-    response_contract: null,
+    response_contract: attention.responseContract,
     source,
   };
 }

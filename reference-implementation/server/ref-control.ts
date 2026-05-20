@@ -916,6 +916,7 @@ function selectAttentionEvidence(input: {
       lifecycle: picked.lifecycle as ConnectionAttentionEvidence["lifecycle"],
       ownerAction: ownerActionForEvidence(picked.owner_action),
       reasonCode: picked.reason_code,
+      responseContract: picked.response_contract,
       sensitivity: picked.sensitivity,
     };
   }
@@ -927,6 +928,7 @@ function selectAttentionEvidence(input: {
       lifecycle: "open",
       ownerAction: null,
       reasonCode: input.lastErrorCode ?? "needs_human_attention",
+      responseContract: null,
     };
   }
   return null;
