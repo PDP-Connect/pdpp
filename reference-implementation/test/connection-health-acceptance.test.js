@@ -535,16 +535,139 @@ test('acceptance 7.3: succeeded run with both known and pending gaps surfaces th
   assert.equal(snap.axes.coverage, 'terminal_gap');
 });
 
-test('acceptance 7.3 residual: unsupported required streams are not yet evidence-backed', () => {
-  // The coverage axis taxonomy in the spec includes `unsupported`,
-  // `deferred`, `unavailable`, and `inventory_only`. None of those have
-  // durable manifest-declared required-stream policy + accepted-coverage
-  // tracking yet (see openspec change `complete-ri-operator-console-
-  // reliability` task 3.3 residual notes). This test pins the residual:
-  // the projection's CoverageAxis union exposed via a healthy clean
-  // succeeded run is `complete`, NOT `unsupported`. When the residual
-  // lands, this test should be updated to assert the unsupported pathway
-  // does not project healthy.
+// ─── 7.3 / 3.3: manifest-declared accepted-coverage and required-stream
+// policy must surface in the coverage axis without painting the connection
+// healthy when the manifest is contradictory (required + unsupported).
+
+test('acceptance 7.3: required stream marked unsupported in the manifest never projects healthy', () => {
+  // A `required: true` + `coverage_policy: "unsupported"` declaration is
+  // contradictory: the stream is both load-bearing AND accepted-absent.
+  // The projection must refuse healthy and surface the contradiction
+  // through the coverage axis so the dashboard can explain why.
+  const run = succeededRun();
+  const snap = projectConnectorSummaryConnectionHealth({
+    freshness: FRESH,
+    lastRun: run,
+    lastSuccessfulRun: run,
+    manifestStreams: [
+      { name: 'messages', required: true, coverage_policy: 'unsupported' },
+    ],
+    schedule: { enabled: true },
+  });
+  assert.notEqual(snap.state, 'healthy');
+  assertHeadline(snap, 'degraded');
+  assert.equal(snap.axes.coverage, 'unsupported');
+});
+
+test('acceptance 7.3: required stream marked unavailable in the manifest never projects healthy', () => {
+  const run = succeededRun();
+  const snap = projectConnectorSummaryConnectionHealth({
+    freshness: FRESH,
+    lastRun: run,
+    lastSuccessfulRun: run,
+    manifestStreams: [
+      { name: 'archive', required: true, coverage_policy: 'unavailable' },
+    ],
+    schedule: { enabled: true },
+  });
+  assert.notEqual(snap.state, 'healthy');
+  assertHeadline(snap, 'degraded');
+  assert.equal(snap.axes.coverage, 'unavailable');
+});
+
+test('acceptance 7.3: required stream marked deferred in the manifest never projects healthy', () => {
+  const run = succeededRun();
+  const snap = projectConnectorSummaryConnectionHealth({
+    freshness: FRESH,
+    lastRun: run,
+    lastSuccessfulRun: run,
+    manifestStreams: [
+      { name: 'attachments', required: true, coverage_policy: 'deferred' },
+    ],
+    schedule: { enabled: true },
+  });
+  assert.notEqual(snap.state, 'healthy');
+  assertHeadline(snap, 'degraded');
+  assert.equal(snap.axes.coverage, 'deferred');
+});
+
+test('acceptance 3.3: accepted unsupported coverage on a non-required stream still allows healthy', () => {
+  // Inverse of the above: when the manifest declares the absence as
+  // accepted AND the stream is NOT required, the connection can still
+  // be healthy; the axis just surfaces the most-precise accepted label
+  // so the dashboard can render "no `archive` stream by design".
+  const run = succeededRun();
+  const snap = projectConnectorSummaryConnectionHealth({
+    freshness: FRESH,
+    lastRun: run,
+    lastSuccessfulRun: run,
+    manifestStreams: [
+      { name: 'conversations', required: true },
+      { name: 'archive', required: false, coverage_policy: 'unsupported' },
+    ],
+    schedule: { enabled: true },
+  });
+  assertHeadline(snap, 'healthy');
+  assert.equal(snap.axes.coverage, 'unsupported');
+});
+
+test('acceptance 3.3: accepted-coverage precedence is unsupported > unavailable > deferred > inventory_only', () => {
+  const run = succeededRun();
+  const snap = projectConnectorSummaryConnectionHealth({
+    freshness: FRESH,
+    lastRun: run,
+    lastSuccessfulRun: run,
+    manifestStreams: [
+      { name: 'inv', required: false, coverage_policy: 'inventory_only' },
+      { name: 'def', required: false, coverage_policy: 'deferred' },
+      { name: 'avail', required: false, coverage_policy: 'unavailable' },
+      { name: 'sup', required: false, coverage_policy: 'unsupported' },
+      { name: 'core', required: true },
+    ],
+    schedule: { enabled: true },
+  });
+  assertHeadline(snap, 'healthy');
+  assert.equal(snap.axes.coverage, 'unsupported');
+});
+
+test('acceptance 3.3: inventory_only accepted-coverage labels the axis without degrading health', () => {
+  const run = succeededRun();
+  const snap = projectConnectorSummaryConnectionHealth({
+    freshness: FRESH,
+    lastRun: run,
+    lastSuccessfulRun: run,
+    manifestStreams: [
+      { name: 'inventory', required: false, coverage_policy: 'inventory_only' },
+    ],
+    schedule: { enabled: true },
+  });
+  assertHeadline(snap, 'healthy');
+  assert.equal(snap.axes.coverage, 'inventory_only');
+});
+
+test('acceptance 3.3: contradictory required+unsupported beats success path even with otherwise clean evidence', () => {
+  // Sanity: no detail gaps, no known_gaps, fresh, succeeded — the only
+  // thing keeping this from healthy is the contradictory manifest. The
+  // projection must still refuse green.
+  const run = succeededRun();
+  const snap = projectConnectorSummaryConnectionHealth({
+    freshness: FRESH,
+    lastRun: run,
+    lastSuccessfulRun: run,
+    manifestStreams: [
+      { name: 'messages', required: true, coverage_policy: 'unsupported' },
+      { name: 'optional_extras', required: false, coverage_policy: 'inventory_only' },
+    ],
+    schedule: { enabled: true },
+  });
+  assert.notEqual(snap.state, 'healthy');
+  assert.equal(snap.axes.coverage, 'unsupported');
+});
+
+test('acceptance 7.3: no manifest policy keeps the prior complete behaviour intact', () => {
+  // Regression guard: a clean succeeded run with no manifest hints still
+  // projects healthy with a `complete` axis. The new manifest-aware
+  // rollup must not change behavior for connectors that omit policy.
   const run = succeededRun();
   const snap = projectConnectorSummaryConnectionHealth({
     freshness: FRESH,
@@ -552,9 +675,6 @@ test('acceptance 7.3 residual: unsupported required streams are not yet evidence
     lastSuccessfulRun: run,
     schedule: { enabled: true },
   });
+  assertHeadline(snap, 'healthy');
   assert.equal(snap.axes.coverage, 'complete');
-  assert.notEqual(snap.axes.coverage, 'unsupported');
-  assert.notEqual(snap.axes.coverage, 'unavailable');
-  assert.notEqual(snap.axes.coverage, 'deferred');
-  assert.notEqual(snap.axes.coverage, 'inventory_only');
 });

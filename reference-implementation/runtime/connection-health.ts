@@ -56,35 +56,50 @@ export type FreshnessAxis = "fresh" | "stale" | "unknown";
 /**
  * Coverage axis: rolled up across all required streams/scopes.
  *
- *   - `complete`      : every required stream has complete evidence
- *   - `partial`       : the last run did not reach a successful terminal state,
- *                       so some required streams' coverage is unproven
- *   - `retryable_gap` : at least one stream has a pending detail gap with a
- *                       retry path, or a known_gap whose runtime severity is
- *                       `recoverable`/`transient`. The system intends to make
- *                       progress on its own.
- *   - `terminal_gap`  : at least one stream has a known_gap whose runtime
- *                       severity is `actionable` (or an unclassified gap),
- *                       i.e. progress requires owner action / repair.
- *   - `gaps`          : legacy roll-up emitted when gap evidence exists but
- *                       cannot be honestly classified retryable vs terminal.
- *   - `unknown`       : coverage evidence is missing or unreliable.
+ *   - `complete`        : every required stream has complete evidence
+ *   - `partial`         : the last run did not reach a successful terminal state,
+ *                         so some required streams' coverage is unproven
+ *   - `retryable_gap`   : at least one stream has a pending detail gap with a
+ *                         retry path, or a known_gap whose runtime severity is
+ *                         `recoverable`/`transient`. The system intends to make
+ *                         progress on its own.
+ *   - `terminal_gap`    : at least one stream has a known_gap whose runtime
+ *                         severity is `actionable` (or an unclassified gap),
+ *                         i.e. progress requires owner action / repair.
+ *   - `gaps`            : legacy roll-up emitted when gap evidence exists but
+ *                         cannot be honestly classified retryable vs terminal.
+ *   - `unsupported`     : a required-stream policy is declared `unsupported`
+ *                         (the connector implementation cannot collect this
+ *                         stream). Accepted-coverage when policy is
+ *                         non-required; degrades otherwise.
+ *   - `unavailable`     : the upstream source cannot expose the stream for
+ *                         this account/configuration. Accepted-coverage
+ *                         when policy is non-required.
+ *   - `deferred`        : stream collection is intentionally deferred per
+ *                         manifest policy.
+ *   - `inventory_only`  : only inventory/discovery evidence is collected by
+ *                         design; no per-record detail is owed.
+ *   - `unknown`         : coverage evidence is missing or unreliable.
  *
- * The spec design taxonomy also lists `deferred`, `unsupported`,
- * `unavailable`, and `inventory_only`. Those distinctions require manifest-
- * declared required-stream policy and accepted-coverage tracking that the
- * current durable evidence does not yet support. They are intentionally
- * NOT exposed by this axis so the projection never paints a precision it
- * cannot honestly justify; see `complete-ri-operator-console-reliability`
- * task 3.3 residual notes.
+ * The `unsupported` / `unavailable` / `deferred` / `inventory_only`
+ * values are *accepted-coverage* claims when the manifest declares the
+ * stream's `coverage_policy` matches. They are not synonyms for "healthy
+ * silently" — the projection only allows them to coexist with a healthy
+ * headline when the manifest explicitly accepts the absence. A required
+ * stream that is also declared `unsupported` (a contradictory manifest)
+ * degrades health rather than projecting green.
  */
 export type CoverageAxis =
   | "complete"
+  | "deferred"
   | "gaps"
+  | "inventory_only"
   | "partial"
   | "retryable_gap"
   | "terminal_gap"
-  | "unknown";
+  | "unavailable"
+  | "unknown"
+  | "unsupported";
 
 /**
  * Attention axis: rolled up from the structured attention lifecycle.
@@ -227,6 +242,18 @@ export interface ConnectionAttentionEvidence {
 /** Coverage rollup. Caller aggregates per-stream evidence into one axis. */
 export interface ConnectionCoverageEvidence {
   readonly axis: CoverageAxis;
+  /**
+   * `true` when the rollup emitted an accepted-coverage axis
+   * (`unsupported`/`unavailable`/`deferred`/`inventory_only`) because of a
+   * *required* stream — i.e. the manifest is contradictory (`required:
+   * true` + accepted-absent policy). The projection treats this as
+   * degrading, because a load-bearing stream is unaccounted for even
+   * though the axis surface names the accepted label.
+   *
+   * Optional; absent means "the accepted-coverage axis, if any, applies
+   * only to non-required streams and does not block healthy".
+   */
+  readonly requiredButAccepted?: boolean;
 }
 
 /** Outbox/work rollup from local collector or other durable executor. */
@@ -432,6 +459,13 @@ function isDegradedShape(input: ComputeConnectionHealthInput, axes: ConnectionAx
   ) {
     return true;
   }
+  // Required-but-accepted contradiction: the rollup named an accepted-
+  // coverage axis on behalf of a *required* stream, which means a
+  // load-bearing stream is unaccounted for. Treat as degraded so the
+  // contradictory manifest cannot paint the connection green.
+  if (input.coverage?.requiredButAccepted === true && isAcceptedCoverage(axes.coverage)) {
+    return true;
+  }
   if (axes.freshness === "stale") {
     return true;
   }
@@ -451,7 +485,12 @@ function isHealthyShape(input: ComputeConnectionHealthInput, axes: ConnectionAxe
   if (input.run.hasDegradingGaps) {
     return false;
   }
-  if (axes.coverage !== "complete") {
+  if (!isHealthyCoverage(axes.coverage)) {
+    return false;
+  }
+  // Required-but-accepted contradiction blocks healthy even when the
+  // axis itself is in the healthy-compatible set (e.g. `unsupported`).
+  if (input.coverage?.requiredButAccepted === true && isAcceptedCoverage(axes.coverage)) {
     return false;
   }
   if (axes.freshness !== "fresh") {
@@ -461,6 +500,34 @@ function isHealthyShape(input: ComputeConnectionHealthInput, axes: ConnectionAxe
   // truly has no freshness policy, the caller should pass `fresh`;
   // `unknown` is reserved for missing or unreliable evidence.
   return true;
+}
+
+/**
+ * Coverage axes that are healthy-compatible. `complete` is the obvious
+ * one; the accepted-coverage variants (`unsupported`, `unavailable`,
+ * `deferred`, `inventory_only`) are also healthy-compatible because the
+ * caller only emits them when the manifest declares the absence as
+ * accepted. Required-but-uncollected streams roll up as `terminal_gap`
+ * or `partial`, not as one of these axes — except when the manifest is
+ * contradictory (required + accepted-absent), in which case
+ * `requiredButAccepted` blocks healthy at a higher layer.
+ */
+function isHealthyCoverage(axis: CoverageAxis): boolean {
+  switch (axis) {
+    case "complete":
+      return true;
+    default:
+      return isAcceptedCoverage(axis);
+  }
+}
+
+function isAcceptedCoverage(axis: CoverageAxis): boolean {
+  return (
+    axis === "deferred" ||
+    axis === "inventory_only" ||
+    axis === "unavailable" ||
+    axis === "unsupported"
+  );
 }
 
 function degradedReasonCode(input: ComputeConnectionHealthInput): string | null {

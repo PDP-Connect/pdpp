@@ -260,6 +260,45 @@ test('healthy is impossible when coverage axis is retryable_gap or terminal_gap'
   }
 });
 
+// ─── Accepted-coverage axis taxonomy ──────────────────────────────────────
+
+test('accepted-coverage axes (unsupported/unavailable/deferred/inventory_only) can project healthy', () => {
+  // When the caller emits an accepted-coverage axis it has already
+  // determined the absence is acceptable (e.g. non-required stream with
+  // declared policy). The projection must accept those as healthy-
+  // compatible alongside `complete`.
+  for (const axis of ['unsupported', 'unavailable', 'deferred', 'inventory_only']) {
+    const snap = computeConnectionHealth(
+      input({
+        run: run(),
+        coverage: { axis },
+        freshness: { axis: 'fresh' },
+      })
+    );
+    assert.equal(snap.state, 'healthy', `axis=${axis} should project healthy as accepted-coverage`);
+    assert.equal(snap.axes.coverage, axis);
+  }
+});
+
+test('requiredButAccepted blocks healthy even when the axis is accepted-coverage', () => {
+  // Contradictory manifest signal: a required stream declares an
+  // accepted-coverage policy. The projection refuses healthy and
+  // surfaces degraded, preserving the axis label so the dashboard can
+  // explain *why* (the named accepted-coverage label).
+  for (const axis of ['unsupported', 'unavailable', 'deferred', 'inventory_only']) {
+    const snap = computeConnectionHealth(
+      input({
+        run: run(),
+        coverage: { axis, requiredButAccepted: true },
+        freshness: { axis: 'fresh' },
+      })
+    );
+    assert.notEqual(snap.state, 'healthy', `axis=${axis} + requiredButAccepted must not project healthy`);
+    assert.equal(snap.state, 'degraded');
+    assert.equal(snap.axes.coverage, axis);
+  }
+});
+
 // ─── 7. Healthy ───────────────────────────────────────────────────────────
 
 test('healthy: success + complete coverage + fresh + no attention/backoff', () => {

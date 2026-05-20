@@ -47,7 +47,34 @@ import {
 interface ManifestStream extends ManifestStreamLike {
   name: string;
   semantics?: string;
+  /**
+   * Required-stream policy. Defaults to `true` when absent so that streams
+   * declared in a manifest without explicit policy are treated as
+   * load-bearing for connection health. Manifest authors opt OUT of
+   * required-stream policy by setting `required: false` (i.e. the stream
+   * is documented but not load-bearing).
+   */
+  required?: boolean;
+  /**
+   * Accepted-coverage policy for the stream. Default (absent) means
+   * `collect`: the connector intends to collect this stream and any
+   * absence is a gap. Other values declare the absence as accepted:
+   *
+   *   - `unsupported`    : the connector implementation cannot collect
+   *                        this stream and that limit is known/accepted
+   *   - `unavailable`    : the upstream source cannot expose the stream
+   *                        for this account/configuration
+   *   - `deferred`       : collection is intentionally deferred per policy
+   *   - `inventory_only` : only inventory/discovery is owed; no detail
+   *
+   * Combining `required: true` with an accepted-coverage policy is
+   * contradictory (a stream cannot be both load-bearing and accepted-
+   * absent) and degrades health rather than projecting green.
+   */
+  coverage_policy?: "collect" | "deferred" | "inventory_only" | "unavailable" | "unsupported";
 }
+
+type AcceptedCoveragePolicy = "deferred" | "inventory_only" | "unavailable" | "unsupported";
 
 type ConnectorManifest = {
   connector_id?: string;
@@ -710,16 +737,41 @@ function firstDegradingKnownGapReason(run: ConnectorRunSummary | null): string |
  * surfaces rows with `status = 'pending'`, and the runtime has a retry
  * loop keyed on `next_attempt_after`. They never roll up as terminal on
  * their own — only the known_gap severity can promote to terminal.
+ *
+ * Manifest-declared accepted-coverage:
+ *
+ *   - A stream may declare `coverage_policy` of `unsupported`,
+ *     `unavailable`, `deferred`, or `inventory_only`. When the run has
+ *     no degrading gaps and at least one stream declares such a policy,
+ *     the rollup surfaces the most-precise accepted-coverage label
+ *     (precedence: `unsupported` > `unavailable` > `deferred` >
+ *     `inventory_only`). Headline state can still be healthy because
+ *     the manifest declared the absence as accepted.
+ *
+ *   - A stream that is declared BOTH `required: true` AND an accepted-
+ *     coverage policy is contradictory (load-bearing AND accepted-
+ *     absent). We surface the accepted-coverage label but record that
+ *     the rollup is contradictory by also degrading via the
+ *     `requiredButUnsupported` channel — see callers.
  */
 function mapCoverageAxis(
   lastRun: ConnectorRunSummary | null,
-  pendingDetailGaps: readonly PendingDetailGapSummary[] = []
+  pendingDetailGaps: readonly PendingDetailGapSummary[] = [],
+  manifestStreams: readonly ManifestStream[] = []
 ): CoverageAxis {
   const hasDetailGap = hasPendingDetailGap(pendingDetailGaps);
   const hasTerminal = hasTerminalKnownGap(lastRun);
   const hasRetryable = lastRun
     ? lastRun.known_gaps.some((gap) => isRetryableKnownGap(gap))
     : false;
+  // Contradictory manifest (required AND accepted-absent) takes precedence
+  // over the success path so a misconfigured manifest can never paint
+  // green. The label still names the declared accepted-coverage policy
+  // so the dashboard can show *why* the projection refused to go green.
+  const requiredAccepted = pickRequiredAcceptedCoverage(manifestStreams);
+  if (requiredAccepted !== null) {
+    return requiredAccepted;
+  }
   if (hasTerminal) {
     return "terminal_gap";
   }
@@ -730,12 +782,109 @@ function mapCoverageAxis(
     return "unknown";
   }
   if (lastRun.status === "succeeded" || lastRun.status === "success") {
-    return "complete";
+    // Promote an accepted-coverage label only when the success path is
+    // otherwise clean; this surfaces the most-precise honest claim
+    // ("we accept that `messages` is unsupported on this connector")
+    // without inventing precision the run did not justify.
+    const accepted = pickAcceptedCoverage(manifestStreams);
+    return accepted ?? "complete";
   }
   if (lastRun.status === "failed" || lastRun.status === "cancelled" || lastRun.status === "abandoned") {
     return "partial";
   }
   return "unknown";
+}
+
+/**
+ * Precedence: `unsupported` is the strongest accepted-coverage claim
+ * (connector cannot collect by design), then `unavailable` (source-side
+ * limit), then `deferred` (intentionally postponed), then
+ * `inventory_only` (least surprising — only inventory was ever owed).
+ */
+const ACCEPTED_COVERAGE_PRECEDENCE: readonly AcceptedCoveragePolicy[] = [
+  "unsupported",
+  "unavailable",
+  "deferred",
+  "inventory_only",
+];
+
+function pickAcceptedCoverage(
+  streams: readonly ManifestStream[]
+): AcceptedCoveragePolicy | null {
+  if (streams.length === 0) return null;
+  const seen = new Set<AcceptedCoveragePolicy>();
+  for (const stream of streams) {
+    const policy = readAcceptedCoveragePolicy(stream);
+    if (policy !== null) seen.add(policy);
+  }
+  for (const policy of ACCEPTED_COVERAGE_PRECEDENCE) {
+    if (seen.has(policy)) return policy;
+  }
+  return null;
+}
+
+/**
+ * Same precedence as `pickAcceptedCoverage`, but only considers streams
+ * that are *both* declared `required: true` AND have an accepted-
+ * coverage policy. This is the contradictory-manifest signal: the
+ * connector simultaneously claims the stream is load-bearing AND
+ * accepted-absent, so the projection refuses to project healthy.
+ */
+function pickRequiredAcceptedCoverage(
+  streams: readonly ManifestStream[]
+): AcceptedCoveragePolicy | null {
+  if (streams.length === 0) return null;
+  const seen = new Set<AcceptedCoveragePolicy>();
+  for (const stream of streams) {
+    if (!isRequiredStream(stream)) continue;
+    const policy = readAcceptedCoveragePolicy(stream);
+    if (policy !== null) seen.add(policy);
+  }
+  for (const policy of ACCEPTED_COVERAGE_PRECEDENCE) {
+    if (seen.has(policy)) return policy;
+  }
+  return null;
+}
+
+function readAcceptedCoveragePolicy(
+  stream: ManifestStream | undefined
+): AcceptedCoveragePolicy | null {
+  if (!stream || typeof stream !== "object") return null;
+  const value = stream.coverage_policy;
+  if (
+    value === "unsupported" ||
+    value === "unavailable" ||
+    value === "deferred" ||
+    value === "inventory_only"
+  ) {
+    return value;
+  }
+  return null;
+}
+
+function isRequiredStream(stream: ManifestStream | undefined): boolean {
+  if (!stream || typeof stream !== "object") return false;
+  // Default to required when absent so a manifest-declared stream is
+  // load-bearing unless explicitly opted out.
+  return stream.required !== false;
+}
+
+/**
+ * Build the projection's coverage evidence: the axis plus the
+ * `requiredButAccepted` contradiction signal. The signal is only set
+ * when at least one *required* stream declares an accepted-coverage
+ * policy; the connection-health projection then refuses to project
+ * healthy even though the axis name is `unsupported`/`unavailable`/
+ * `deferred`/`inventory_only`.
+ */
+function buildCoverageEvidence(
+  lastRun: ConnectorRunSummary | null,
+  pendingDetailGaps: readonly PendingDetailGapSummary[],
+  manifestStreams: readonly ManifestStream[]
+): { axis: CoverageAxis; requiredButAccepted: boolean } {
+  const axis = mapCoverageAxis(lastRun, pendingDetailGaps, manifestStreams);
+  const requiredButAccepted = pickRequiredAcceptedCoverage(manifestStreams) !== null;
+  return { axis, requiredButAccepted };
 }
 
 /**
@@ -1044,6 +1193,15 @@ export function projectConnectorSummaryConnectionHealth(input: {
   readonly lastRun: ConnectorRunSummary | null;
   readonly lastSuccessfulRun: ConnectorRunSummary | null;
   /**
+   * Manifest-declared streams. The projection reads each stream's
+   * `required` flag and `coverage_policy` to roll up accepted-coverage
+   * labels (`unsupported`, `unavailable`, `deferred`, `inventory_only`)
+   * and to detect contradictory `required: true` + accepted-absent
+   * declarations. Optional; omitting it preserves the prior behavior
+   * (coverage axis ignores manifest policy).
+   */
+  readonly manifestStreams?: readonly ManifestStream[];
+  /**
    * Wall-clock anchor for attention expiry/health-relevance checks.
    * Defaults to `new Date().toISOString()`; tests pass a fixed value.
    */
@@ -1086,7 +1244,7 @@ export function projectConnectorSummaryConnectionHealth(input: {
           reasonClass: backoffReasonClass,
         }
       : null,
-    coverage: { axis: mapCoverageAxis(input.lastRun, pendingDetailGaps) },
+    coverage: buildCoverageEvidence(input.lastRun, pendingDetailGaps, input.manifestStreams ?? []),
     freshness: { axis: mapFreshnessAxis(input.freshness) },
     outbox: input.outbox ?? { axis: "unknown" },
     projection: { unreliableSources: input.unreliableSources ?? [] },
@@ -1221,6 +1379,7 @@ export async function listConnectorSummaries(
         freshness,
         lastRun,
         lastSuccessfulRun,
+        manifestStreams: manifest.streams ?? [],
         outbox: { axis: outbox.axis },
         pendingDetailGaps: detailGaps.gaps,
         unreliableSources: combineUnreliableSources(detailGaps.unreliable, outbox.unreliable, attention.unreliable),
@@ -1276,6 +1435,7 @@ export async function getConnectorDetail(
     freshness,
     lastRun,
     lastSuccessfulRun,
+    manifestStreams: manifest.streams ?? [],
     outbox: { axis: outbox.axis },
     pendingDetailGaps: detailGaps.gaps,
     unreliableSources: combineUnreliableSources(detailGaps.unreliable, outbox.unreliable, attention.unreliable),
