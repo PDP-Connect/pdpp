@@ -52,6 +52,7 @@ import { createConsentStore } from './stores/consent-store.js';
 import { createOwnerDeviceAuthStore } from './stores/owner-device-auth-store.js';
 import { getDefaultSourceWebhookEventStore } from './stores/source-webhook-event-store.ts';
 import { DeviceBatchConflictError, createDeviceExporterStore } from './stores/device-exporter-store.js';
+import { getDefaultConnectorDetailGapStore } from './stores/connector-detail-gap-store.js';
 import {
   createWebPushSubscriptionStore,
   fanoutPendingInteractionWebPush,
@@ -4263,6 +4264,137 @@ function buildAsApp(opts = {}) {
           updated_at: projection.updated_at ?? null,
         });
       } catch (err) {
+        handleError(res, err);
+      }
+    },
+  );
+
+  // POST /_ref/device-exporters/:deviceId/source-instances/:sourceInstanceId/local-collector-gaps
+  // Device-scoped acknowledgement route for `gap` outbox rows produced by
+  // the local collector runner (queue-depth deferrals, connector child
+  // crashes, etc.). Reuses the existing `connector_detail_gaps` storage
+  // because that table already models retryable pending evidence keyed by
+  // (connector_id, connector_instance_id, stream, ...). The local
+  // collector does not always know a real connector stream, so the route
+  // namespaces gaps under a synthetic `local-collector/<reason>` stream
+  // while still binding the source to the enrolled device source
+  // instance. `connector_id` and `connector_instance_id` are derived
+  // server-side from the authorized source instance; the client's
+  // `connector_id` must match. Reference-only; not part of PDPP Core.
+  app.post(
+    '/_ref/device-exporters/:deviceId/source-instances/:sourceInstanceId/local-collector-gaps',
+    requireDeviceExporterCredential,
+    async (req, res) => {
+      try {
+        const deviceId = decodeURIComponent(req.params.deviceId);
+        if (deviceId !== req.deviceExporter.deviceId) {
+          return pdppError(res, 403, 'permission_error', 'Device credential is not valid for this device');
+        }
+        const sourceInstanceId = decodeURIComponent(req.params.sourceInstanceId);
+        const authorized = await resolveAuthorizedDeviceSource(req, res, deviceId, sourceInstanceId, { notFoundStatus: 404 });
+        if (!authorized) return;
+        const { sourceInstance, connectorInstance } = authorized;
+
+        const body = req.body || {};
+        const bodySourceInstanceId = requireNonEmptyString(body.source_instance_id, 'source_instance_id');
+        if (bodySourceInstanceId !== sourceInstanceId) {
+          return pdppError(res, 400, 'invalid_request', 'body source_instance_id must match path sourceInstanceId', 'source_instance_id');
+        }
+        const connectorId = requireNonEmptyString(body.connector_id, 'connector_id');
+        if (connectorId !== sourceInstance.connectorId) {
+          return pdppError(res, 400, 'invalid_request', 'connector_id does not match source_instance_id', 'connector_id');
+        }
+        const reason = requireNonEmptyString(body.reason, 'reason');
+        if (reason !== 'policy_budget' && reason !== 'connector_child_failure') {
+          return pdppError(res, 400, 'invalid_request', 'reason must be one of: policy_budget, connector_child_failure', 'reason');
+        }
+        const firstSeenAt = requireNonEmptyString(body.first_seen_at, 'first_seen_at');
+        if (Number.isNaN(Date.parse(firstSeenAt))) {
+          return pdppError(res, 400, 'invalid_request', 'first_seen_at must be an ISO timestamp', 'first_seen_at');
+        }
+        if (typeof body.retryable !== 'boolean') {
+          return pdppError(res, 400, 'invalid_request', 'retryable must be a boolean', 'retryable');
+        }
+        if (!Number.isFinite(body.next_attempt_backoff_ms) || body.next_attempt_backoff_ms < 0) {
+          return pdppError(res, 400, 'invalid_request', 'next_attempt_backoff_ms must be a non-negative number', 'next_attempt_backoff_ms');
+        }
+
+        const streamName = typeof body.stream === 'string' && body.stream.trim()
+          ? body.stream.trim()
+          : null;
+        const streamBoundary = typeof body.stream_boundary === 'string' && body.stream_boundary.trim()
+          ? body.stream_boundary.trim()
+          : null;
+        const firstSeenRunId = typeof body.first_seen_run_id === 'string' && body.first_seen_run_id.trim()
+          ? body.first_seen_run_id.trim()
+          : null;
+        const lastRunId = typeof body.last_run_id === 'string' && body.last_run_id.trim()
+          ? body.last_run_id.trim()
+          : firstSeenRunId;
+        const details = typeof body.details === 'string' ? body.details : null;
+
+        // Use a synthetic stream namespace so a local-collector gap can
+        // never collide with real connector-data streams that share the
+        // same connector_instance_id. The optional client-supplied stream
+        // is preserved inside `detail_locator_json` for diagnostics.
+        const syntheticStream = streamName
+          ? `local-collector/${reason}/${streamName}`
+          : `local-collector/${reason}`;
+
+        const detailLocator = {
+          kind: 'local_collector_gap',
+          reason,
+          retryable: body.retryable,
+          next_attempt_backoff_ms: body.next_attempt_backoff_ms,
+          ...(streamName ? { stream: streamName } : {}),
+          ...(streamBoundary ? { stream_boundary: streamBoundary } : {}),
+          ...(details ? { details } : {}),
+        };
+        const source = {
+          kind: 'local_device',
+          device_id: deviceId,
+          source_instance_id: sourceInstanceId,
+        };
+        const lastError = {
+          first_seen_at: firstSeenAt,
+          next_attempt_backoff_ms: body.next_attempt_backoff_ms,
+          ...(details ? { details } : {}),
+        };
+
+        const store = getDefaultConnectorDetailGapStore();
+        const gap = await store.upsertPendingGap({
+          connectorId,
+          connectorInstanceId: connectorInstance.connectorInstanceId,
+          stream: syntheticStream,
+          source,
+          detailLocator,
+          reason,
+          lastError,
+          ...(firstSeenRunId ? { discoveredRunId: firstSeenRunId } : {}),
+          ...(lastRunId ? { lastRunId } : {}),
+        });
+
+        res.status(201).json({
+          object: 'device_local_collector_gap',
+          device_id: deviceId,
+          connector_id: connectorId,
+          connector_instance_id: connectorInstance.connectorInstanceId,
+          source_instance_id: sourceInstanceId,
+          gap_id: gap.gap_id,
+          stream: syntheticStream,
+          reason,
+          retryable: body.retryable,
+          status: gap.status,
+          attempt_count: gap.attempt_count,
+          first_seen_at: firstSeenAt,
+          first_seen_run_id: firstSeenRunId,
+          last_run_id: gap.last_run_id ?? lastRunId,
+          updated_at: gap.updated_at,
+        });
+      } catch (err) {
+        if (err && err.code === 'invalid_request') {
+          return pdppError(res, 400, 'invalid_request', err.message, err.param || null);
+        }
         handleError(res, err);
       }
     },

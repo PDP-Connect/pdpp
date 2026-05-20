@@ -5,6 +5,8 @@ export const LOCAL_DEVICE_ENDPOINTS = {
   exchangeEnrollment: "/_ref/device-exporters/enroll",
   heartbeat: (deviceId: string) => `/_ref/device-exporters/${encodeURIComponent(deviceId)}/heartbeat`,
   ingestBatch: (deviceId: string) => `/_ref/device-exporters/${encodeURIComponent(deviceId)}/ingest-batches`,
+  localCollectorGap: (deviceId: string, sourceInstanceId: string) =>
+    `/_ref/device-exporters/${encodeURIComponent(deviceId)}/source-instances/${encodeURIComponent(sourceInstanceId)}/local-collector-gaps`,
   sourceInstanceState: (deviceId: string, sourceInstanceId: string) =>
     `/_ref/device-exporters/${encodeURIComponent(deviceId)}/source-instances/${encodeURIComponent(sourceInstanceId)}/state`,
 } as const;
@@ -60,6 +62,47 @@ export interface SourceInstanceStateResponse {
   object: "device_source_instance_state";
   source_instance_id: string;
   state: Record<string, unknown>;
+  updated_at: string | null;
+}
+
+/**
+ * Acknowledge a runner-knowable gap (queue-depth deferral, connector
+ * child crash, etc.) to the reference server. The route is keyed by the
+ * enrolled device's source instance; the server validates that
+ * `connector_id` matches the source-instance binding before recording
+ * the gap in `connector_detail_gaps`. Idempotent: the same
+ * (connector_id, source_instance_id, reason, stream, stream_boundary)
+ * upserts one row.
+ */
+export interface AckLocalCollectorGapRequest {
+  connector_id: string;
+  details?: string;
+  first_seen_at: string;
+  first_seen_run_id?: string;
+  last_run_id?: string;
+  next_attempt_backoff_ms: number;
+  reason: "policy_budget" | "connector_child_failure";
+  retryable: boolean;
+  source_instance_id: string;
+  stream?: string;
+  stream_boundary?: string;
+}
+
+export interface AckLocalCollectorGapResponse {
+  attempt_count: number;
+  connector_id: string;
+  connector_instance_id: string;
+  device_id: string;
+  first_seen_at: string;
+  first_seen_run_id: string | null;
+  gap_id: string;
+  last_run_id: string | null;
+  object: "device_local_collector_gap";
+  reason: "policy_budget" | "connector_child_failure";
+  retryable: boolean;
+  source_instance_id: string;
+  status: string;
+  stream: string;
   updated_at: string | null;
 }
 
@@ -123,6 +166,15 @@ export class LocalDeviceClient {
       authenticate: true,
       body: { state: request.state },
       method: "PUT",
+    });
+  }
+
+  ackLocalCollectorGap(request: AckLocalCollectorGapRequest): Promise<AckLocalCollectorGapResponse> {
+    const path = LOCAL_DEVICE_ENDPOINTS.localCollectorGap(this.#requireDeviceId(), request.source_instance_id);
+    return this.#request(path, {
+      authenticate: true,
+      body: request,
+      method: "POST",
     });
   }
 

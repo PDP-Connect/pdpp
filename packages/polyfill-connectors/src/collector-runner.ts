@@ -710,7 +710,7 @@ function recordConnectorChildFailureGap(input: {
 async function maybeCommitCheckpoint(input: {
   afterRecordsSummary: LocalDeviceOutboxSummary;
   bufferedState: Readonly<Record<string, unknown>>;
-  client: Pick<LocalDeviceClient, "heartbeat" | "ingestBatch" | "putSourceInstanceState">;
+  client: Pick<LocalDeviceClient, "ackLocalCollectorGap" | "heartbeat" | "ingestBatch" | "putSourceInstanceState">;
   config: CollectorRunConfig;
   holderId: string;
   outbox: LocalDeviceOutbox;
@@ -946,7 +946,7 @@ function ensureCollectorGapRow(input: EnsureGapInput): LocalDeviceOutboxItem {
   const payload: GapPayload = {
     connectorId: input.connectorId,
     firstSeenAt,
-    nextAttemptBackoffMs: GAP_DESTINATION_NOT_READY_BACKOFF_MS,
+    nextAttemptBackoffMs: DEFAULT_GAP_RETRY_BACKOFF_MS,
     reason: input.reason,
     retryable: input.retryable,
     sourceInstanceId: input.sourceInstanceId,
@@ -973,7 +973,7 @@ function ensureCollectorGapRow(input: EnsureGapInput): LocalDeviceOutboxItem {
 
 export interface DrainCollectorOutboxInput {
   abortSignal?: AbortSignal;
-  client: Pick<LocalDeviceClient, "ingestBatch" | "putSourceInstanceState">;
+  client: Pick<LocalDeviceClient, "ackLocalCollectorGap" | "ingestBatch" | "putSourceInstanceState">;
   connectorId: string;
   holderId: string;
   outbox: LocalDeviceOutbox;
@@ -1068,22 +1068,6 @@ function failOutboxItem(
   result: DrainCollectorOutboxResult
 ): void {
   const message = error instanceof Error ? error.message : String(error);
-  // Destination-not-ready is not a per-attempt failure: it signals that
-  // the reference acknowledgement route for this outbox kind does not
-  // exist yet. The row stays retryable on a long backoff WITHOUT
-  // consuming attempt budget so it never silently dead-letters into
-  // "terminal failure" when the real condition is "feature pending".
-  if (error instanceof OutboxDestinationNotReadyError) {
-    input.outbox.deferRetryable({
-      error: message,
-      holder: input.holderId,
-      id: item.id,
-      leaseEpoch: item.lease_epoch,
-      retryBackoffMs: Math.max(input.policy.retryBackoffMs, error.retryBackoffMs),
-    });
-    result.failed++;
-    return;
-  }
   if (error instanceof OutboxPayloadShapeError || item.attempt_count + 1 >= input.policy.maxAttempts) {
     input.outbox.deadLetter({
       error: message,
@@ -1112,32 +1096,16 @@ class OutboxPayloadShapeError extends Error {
 }
 
 /**
- * Signals that the destination for an outbox row kind is not yet
- * implemented in the reference server (e.g. `gap` row acknowledgement).
- * The drain treats this as retryable-without-attempt-budget so the row
- * remains durable and visible until the route lands. See
- * `openspec/changes/add-local-collector-durable-work-substrate` task 3.1.
+ * Default next-attempt backoff hint advertised in {@link GapPayload}. The
+ * payload value is a stable description of the cadence at which the
+ * runner would re-observe the same gap on a future invocation; the
+ * actual drain scheduling is owned by the outbox lease + retry policy,
+ * not by this field.
  */
-class OutboxDestinationNotReadyError extends Error {
-  readonly retryBackoffMs: number;
-
-  constructor(message: string, retryBackoffMs: number) {
-    super(message);
-    this.name = "OutboxDestinationNotReadyError";
-    this.retryBackoffMs = retryBackoffMs;
-  }
-}
-
-/**
- * How long a `gap` row defers between drain attempts while the
- * reference acknowledgement route is still pending. Long enough that
- * the drain loop does not hot-spin; short enough that operators see
- * the gap surface as `retrying` rather than appearing stalled.
- */
-const GAP_DESTINATION_NOT_READY_BACKOFF_MS = 15 * 60_000;
+const DEFAULT_GAP_RETRY_BACKOFF_MS = 15 * 60_000;
 
 async function sendOutboxItem(
-  client: Pick<LocalDeviceClient, "ingestBatch" | "putSourceInstanceState">,
+  client: Pick<LocalDeviceClient, "ackLocalCollectorGap" | "ingestBatch" | "putSourceInstanceState">,
   item: LocalDeviceOutboxItem
 ): Promise<void> {
   if (item.kind === "record_batch") {
@@ -1171,12 +1139,22 @@ async function sendOutboxItem(
   }
   if (item.kind === "gap") {
     // Validate first so a malformed gap dead-letters via OutboxPayloadShapeError
-    // rather than being deferred indefinitely.
-    assertGapPayload(item.payload, item.id);
-    throw new OutboxDestinationNotReadyError(
-      `gap acknowledgement route is not implemented yet (row ${item.id}); remains retryable`,
-      GAP_DESTINATION_NOT_READY_BACKOFF_MS
-    );
+    // before any HTTP call.
+    const payload = assertGapPayload(item.payload, item.id);
+    await client.ackLocalCollectorGap({
+      connector_id: payload.connectorId,
+      first_seen_at: payload.firstSeenAt,
+      next_attempt_backoff_ms: payload.nextAttemptBackoffMs,
+      reason: payload.reason,
+      retryable: payload.retryable,
+      source_instance_id: payload.sourceInstanceId,
+      ...(payload.stream ? { stream: payload.stream } : {}),
+      ...(payload.streamBoundary ? { stream_boundary: payload.streamBoundary } : {}),
+      ...(payload.firstSeenRunId ? { first_seen_run_id: payload.firstSeenRunId } : {}),
+      ...(payload.firstSeenRunId ? { last_run_id: payload.firstSeenRunId } : {}),
+      ...(payload.details ? { details: payload.details } : {}),
+    });
+    return;
   }
   throw new OutboxPayloadShapeError(`unsupported outbox kind ${item.kind} for id ${item.id}`);
 }

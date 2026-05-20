@@ -263,6 +263,138 @@ test('enroll persists collector_protocol_version on the device row', async () =>
   });
 });
 
+async function postLocalCollectorGap(asUrl, device, body, tokenOverride) {
+  return postJson(
+    `${asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/source-instances/${encodeURIComponent(device.source_instance_id)}/local-collector-gaps`,
+    body,
+    authHeaders(tokenOverride ?? device.device_token),
+  );
+}
+
+function localCollectorGapBody(device, overrides = {}) {
+  return {
+    connector_id: device.connector_id,
+    source_instance_id: device.source_instance_id,
+    reason: 'policy_budget',
+    retryable: true,
+    first_seen_at: '2026-05-19T12:00:00.000Z',
+    first_seen_run_id: 'run-1',
+    last_run_id: 'run-1',
+    next_attempt_backoff_ms: 900000,
+    ...overrides,
+  };
+}
+
+test('local-collector-gaps route authorizes device, derives connector binding, and idempotently upserts', async () => {
+  await withServer(async ({ asUrl }) => {
+    const first = await enrollDevice(asUrl, 'laptop-gap-1');
+    const second = await enrollDevice(asUrl, 'laptop-gap-2');
+
+    // Missing auth.
+    const missingAuth = await postJson(
+      `${asUrl}/_ref/device-exporters/${encodeURIComponent(first.device_id)}/source-instances/${encodeURIComponent(first.source_instance_id)}/local-collector-gaps`,
+      localCollectorGapBody(first),
+      PROTOCOL_HEADERS,
+    );
+    assert.equal(missingAuth.status, 401);
+
+    // Token belonging to a different device.
+    const wrongToken = await postLocalCollectorGap(asUrl, first, localCollectorGapBody(first), second.device_token);
+    assert.equal(wrongToken.status, 403);
+
+    // Connector id mismatch.
+    const mismatch = await postLocalCollectorGap(asUrl, first, localCollectorGapBody(first, { connector_id: 'not-codex' }));
+    assert.equal(mismatch.status, 400);
+    assert.equal(mismatch.body.error.code, 'invalid_request');
+
+    // Source instance mismatch between body and path.
+    const sourceMismatch = await postLocalCollectorGap(
+      asUrl,
+      first,
+      localCollectorGapBody(first, { source_instance_id: second.source_instance_id }),
+    );
+    assert.equal(sourceMismatch.status, 400);
+
+    // Happy path.
+    const ack = await postLocalCollectorGap(asUrl, first, localCollectorGapBody(first, { stream: 'messages' }));
+    assert.equal(ack.status, 201, JSON.stringify(ack.body));
+    assert.equal(ack.body.object, 'device_local_collector_gap');
+    assert.equal(ack.body.connector_id, first.connector_id);
+    assert.equal(ack.body.connector_instance_id, first.connector_instance_id);
+    assert.equal(ack.body.source_instance_id, first.source_instance_id);
+    assert.equal(ack.body.reason, 'policy_budget');
+    assert.equal(ack.body.retryable, true);
+    assert.equal(ack.body.stream, 'local-collector/policy_budget/messages');
+    assert.equal(ack.body.status, 'pending');
+    assert.equal(ack.body.first_seen_run_id, 'run-1');
+    assert.equal(ack.body.last_run_id, 'run-1');
+    const firstGapId = ack.body.gap_id;
+    assert.ok(firstGapId);
+
+    // Idempotent replay with current run.
+    const ackReplay = await postLocalCollectorGap(
+      asUrl,
+      first,
+      localCollectorGapBody(first, { stream: 'messages', last_run_id: 'run-2' }),
+    );
+    assert.equal(ackReplay.status, 201);
+    assert.equal(ackReplay.body.gap_id, firstGapId);
+    assert.equal(ackReplay.body.last_run_id, 'run-2');
+
+    // Verify storage has exactly one row (idempotent) and is scoped to
+    // the authorized connector instance.
+    const dbRows = getDb()
+      .prepare(
+        `SELECT gap_id, connector_id, connector_instance_id, stream, reason, source_json
+           FROM connector_detail_gaps
+          WHERE gap_id = ?`,
+      )
+      .all(firstGapId);
+    assert.equal(dbRows.length, 1);
+    assert.equal(dbRows[0].connector_id, first.connector_id);
+    assert.equal(dbRows[0].connector_instance_id, first.connector_instance_id);
+    assert.equal(dbRows[0].reason, 'policy_budget');
+    assert.equal(dbRows[0].stream, 'local-collector/policy_budget/messages');
+    const source = JSON.parse(dbRows[0].source_json);
+    assert.equal(source.kind, 'local_device');
+    assert.equal(source.device_id, first.device_id);
+    assert.equal(source.source_instance_id, first.source_instance_id);
+
+    // A second device cannot observe or upsert into the first device's gap.
+    const crossDevice = await postLocalCollectorGap(
+      asUrl,
+      second,
+      localCollectorGapBody(first, { stream: 'messages' }),
+    );
+    assert.equal(crossDevice.status, 400);
+    assert.equal(crossDevice.body.error.code, 'invalid_request');
+
+    // Invalid reason rejected with 400.
+    const badReason = await postLocalCollectorGap(asUrl, first, localCollectorGapBody(first, { reason: 'nope' }));
+    assert.equal(badReason.status, 400);
+
+    // Missing retryable rejected.
+    const missingRetryable = await postLocalCollectorGap(asUrl, first, {
+      ...localCollectorGapBody(first),
+      retryable: 'truthy',
+    });
+    assert.equal(missingRetryable.status, 400);
+  });
+});
+
+test('local-collector-gaps route rejects unaccepted collector protocol version', async () => {
+  await withServer(async ({ asUrl }) => {
+    const device = await enrollDevice(asUrl, 'laptop-gap-proto');
+    const reject = await postJson(
+      `${asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/source-instances/${encodeURIComponent(device.source_instance_id)}/local-collector-gaps`,
+      localCollectorGapBody(device),
+      { Authorization: `Bearer ${device.device_token}`, 'X-PDPP-Collector-Protocol': '999' },
+    );
+    assert.equal(reject.status, 409);
+    assert.equal(reject.body.error.code, 'collector_protocol_mismatch');
+  });
+});
+
 test('ingest rejects unaccepted collector protocol version with 409 before any record persists', async () => {
   await withServer(async ({ asUrl }) => {
     const device = await enrollDevice(asUrl, 'laptop-e');

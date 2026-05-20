@@ -803,6 +803,7 @@ interface CollectorHarnessOptions {
 
 interface CollectorHarness {
   close: () => Promise<void>;
+  gapAcks: Record<string, unknown>[];
   heartbeats: Array<{ status: string; [k: string]: unknown }>;
   ingestedBatches: Array<{ records?: Array<{ data?: Record<string, unknown> }>; [k: string]: unknown }>;
   stateOps: Array<{ body: unknown; method: string }>;
@@ -813,6 +814,7 @@ async function startCollectorHarness(options: CollectorHarnessOptions): Promise<
   const stateOps: CollectorHarness["stateOps"] = [];
   const heartbeats: CollectorHarness["heartbeats"] = [];
   const ingestedBatches: CollectorHarness["ingestedBatches"] = [];
+  const gapAcks: CollectorHarness["gapAcks"] = [];
   let persistedState: Record<string, unknown> = options.priorState ? { ...options.priorState } : {};
 
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
@@ -857,6 +859,30 @@ async function startCollectorHarness(options: CollectorHarnessOptions): Promise<
       sendJson(res, 200, { object: "device_exporter_heartbeat", status: "accepted" });
       return;
     }
+    if (url.includes("/local-collector-gaps")) {
+      const ack = (parsed && typeof parsed === "object" ? parsed : {}) as Record<string, unknown>;
+      gapAcks.push(ack);
+      const reason = typeof ack.reason === "string" ? ack.reason : "policy_budget";
+      const stream = typeof ack.stream === "string" ? ack.stream : null;
+      sendJson(res, 201, {
+        object: "device_local_collector_gap",
+        device_id: "device-1",
+        connector_id: ack.connector_id ?? "unknown",
+        connector_instance_id: "cin_fake",
+        source_instance_id: ack.source_instance_id ?? "src-1",
+        gap_id: "gap_fake",
+        stream: stream ? `local-collector/${reason}/${stream}` : `local-collector/${reason}`,
+        reason,
+        retryable: ack.retryable ?? true,
+        status: "pending",
+        attempt_count: 0,
+        first_seen_at: ack.first_seen_at ?? null,
+        first_seen_run_id: ack.first_seen_run_id ?? null,
+        last_run_id: ack.last_run_id ?? null,
+        updated_at: new Date().toISOString(),
+      });
+      return;
+    }
     if (url.includes("/ingest-batches")) {
       if (options.ingestFailureMode === "always-503") {
         res.writeHead(503, { "content-type": "application/json" });
@@ -882,6 +908,7 @@ async function startCollectorHarness(options: CollectorHarnessOptions): Promise<
   }
   return {
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    gapAcks,
     heartbeats,
     ingestedBatches,
     stateOps,
@@ -1742,7 +1769,10 @@ test("drainCollectorOutbox stops between iterations when the duration budget is 
       });
     }
 
-    const slowClient: Pick<LocalDeviceClient, "ingestBatch" | "putSourceInstanceState"> = {
+    const slowClient: Pick<LocalDeviceClient, "ackLocalCollectorGap" | "ingestBatch" | "putSourceInstanceState"> = {
+      ackLocalCollectorGap() {
+        return Promise.reject(new Error("duration drain test must not ack gaps"));
+      },
       async ingestBatch() {
         await new Promise((resolve) => setTimeout(resolve, 40));
         return { ok: true };
@@ -1788,6 +1818,7 @@ async function startTogglableHarness(options: {
   const stateOps: CollectorHarness["stateOps"] = [];
   const heartbeats: CollectorHarness["heartbeats"] = [];
   const ingestedBatches: CollectorHarness["ingestedBatches"] = [];
+  const gapAcks: CollectorHarness["gapAcks"] = [];
   let persistedState: Record<string, unknown> = options.priorState ? { ...options.priorState } : {};
 
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
@@ -1828,6 +1859,30 @@ async function startTogglableHarness(options: {
       sendJson(res, 200, { object: "device_exporter_heartbeat", status: "accepted" });
       return;
     }
+    if (url.includes("/local-collector-gaps")) {
+      const ack = (parsed && typeof parsed === "object" ? parsed : {}) as Record<string, unknown>;
+      events.push({ label: "gap-ack" });
+      gapAcks.push(ack);
+      const reason = typeof ack.reason === "string" ? ack.reason : "policy_budget";
+      sendJson(res, 201, {
+        object: "device_local_collector_gap",
+        device_id: "device-1",
+        connector_id: ack.connector_id ?? "unknown",
+        connector_instance_id: "cin_fake",
+        source_instance_id: ack.source_instance_id ?? "src-1",
+        gap_id: "gap_fake",
+        stream: `local-collector/${reason}`,
+        reason,
+        retryable: ack.retryable ?? true,
+        status: "pending",
+        attempt_count: 0,
+        first_seen_at: ack.first_seen_at ?? null,
+        first_seen_run_id: ack.first_seen_run_id ?? null,
+        last_run_id: ack.last_run_id ?? null,
+        updated_at: new Date().toISOString(),
+      });
+      return;
+    }
     if (url.includes("/ingest-batches")) {
       const ingestResult = options.ingestHandler();
       events.push({ label: `ingest:${ingestResult}` });
@@ -1857,6 +1912,7 @@ async function startTogglableHarness(options: {
   return {
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
     events,
+    gapAcks,
     heartbeats,
     ingestedBatches,
     stateOps,
@@ -2002,9 +2058,17 @@ test("runCollectorConnector enqueues a policy-budget gap row when queue depth bl
     try {
       const gaps = verify2.list({ sourceInstanceId: "src-gap-policy" }).filter((i) => i.kind === "gap");
       assert.equal(gaps.length, 1, "re-observation must be idempotent");
+      // The gap row must have been acked by the device-exporter gap
+      // route — otherwise the runner self-blocks on the gap row forever.
+      assert.equal(gaps[0]?.status, "succeeded", "gap row must drain to the server");
     } finally {
       verify2.close();
     }
+    // The drain must have hit the server's gap acknowledgement route.
+    const policyAcks = harness.gapAcks.filter((ack) => ack.reason === "policy_budget");
+    assert.ok(policyAcks.length >= 1, "expected at least one gap ack call");
+    assert.equal(policyAcks[0]?.connector_id, "fixture-gap-policy-budget");
+    assert.equal(policyAcks[0]?.source_instance_id, "src-gap-policy");
   } finally {
     await harness.close();
   }
@@ -2091,12 +2155,10 @@ test("runCollectorConnector records a connector_child_failure gap when the child
   }
 });
 
-test("drainCollectorOutbox keeps gap rows retryable without consuming attempt budget", async () => {
-  // A gap row's destination acknowledgement route is not implemented
-  // yet. The drain must report the row as `failed` (retryable) on each
-  // pass without incrementing attempt_count past maxAttempts — otherwise
-  // gap rows would silently dead-letter and the "completion with gaps"
-  // signal would be lost.
+test("drainCollectorOutbox delivers gap rows via ackLocalCollectorGap and acknowledges them", async () => {
+  // The drain must deliver gap rows to the device-exporter
+  // acknowledgement route, then mark the local row succeeded so the
+  // outbox does not self-block the runner from making future progress.
   const outbox = new LocalDeviceOutbox({ path: await tempQueuePath() });
   try {
     outbox.enqueue({
@@ -2105,6 +2167,7 @@ test("drainCollectorOutbox keeps gap rows retryable without consuming attempt bu
       payload: {
         connectorId: "fixture-drain",
         firstSeenAt: "2026-05-19T12:00:00.000Z",
+        firstSeenRunId: "run-1",
         nextAttemptBackoffMs: 60_000,
         reason: "policy_budget",
         retryable: true,
@@ -2113,7 +2176,28 @@ test("drainCollectorOutbox keeps gap rows retryable without consuming attempt bu
       sourceInstanceId: "src-drain-gap",
     });
 
-    const client: Pick<LocalDeviceClient, "ingestBatch" | "putSourceInstanceState"> = {
+    const ackCalls: unknown[] = [];
+    const client: Pick<LocalDeviceClient, "ackLocalCollectorGap" | "ingestBatch" | "putSourceInstanceState"> = {
+      ackLocalCollectorGap(request) {
+        ackCalls.push(request);
+        return Promise.resolve({
+          attempt_count: 0,
+          connector_id: request.connector_id,
+          connector_instance_id: "cin_fake",
+          device_id: "dev_fake",
+          first_seen_at: request.first_seen_at,
+          first_seen_run_id: request.first_seen_run_id ?? null,
+          gap_id: "gap_fake",
+          last_run_id: request.last_run_id ?? null,
+          object: "device_local_collector_gap",
+          reason: request.reason,
+          retryable: request.retryable,
+          source_instance_id: request.source_instance_id,
+          status: "pending",
+          stream: `local-collector/${request.reason}`,
+          updated_at: "2026-05-19T12:00:00.000Z",
+        });
+      },
       ingestBatch() {
         return Promise.reject(new Error("gap drain test must not ingest"));
       },
@@ -2122,38 +2206,89 @@ test("drainCollectorOutbox keeps gap rows retryable without consuming attempt bu
       },
     };
 
-    // Run the drain past the normal maxAttempts threshold. The row must
-    // never dead-letter and attempt_count must stay at 0 (the
-    // destination-not-ready path does not bump it).
-    for (let i = 0; i < 7; i++) {
-      const result = await drainCollectorOutbox({
-        client,
-        connectorId: "fixture-drain",
-        holderId: `holder-${i}`,
-        outbox,
-        policy: {
-          drainBatchSize: 1,
-          leaseMs: 60_000,
-          maxAttempts: 3,
-          maxDrainDurationMs: 60_000,
-          maxDrainIterations: 16,
-          maxQueueDepth: 10_000,
-          retryBackoffMs: 1, // tiny so the gap is immediately re-claimable
-        },
-        sourceInstanceId: "src-drain-gap",
-      });
-      assert.equal(result.deadLettered, 0, `iteration ${i}: gap must not dead-letter`);
-      assert.equal(result.sent, 0, `iteration ${i}: gap must not acknowledge`);
-      // Wait long enough that the next pass can re-claim the row.
-      await new Promise((resolve) => setTimeout(resolve, 5));
-    }
+    const result = await drainCollectorOutbox({
+      client,
+      connectorId: "fixture-drain",
+      holderId: "holder-1",
+      outbox,
+      policy: {
+        drainBatchSize: 1,
+        leaseMs: 60_000,
+        maxAttempts: 3,
+        maxDrainDurationMs: 60_000,
+        maxDrainIterations: 16,
+        maxQueueDepth: 10_000,
+        retryBackoffMs: 1,
+      },
+      sourceInstanceId: "src-drain-gap",
+    });
 
-    const finalSummary = outbox.summary({ sourceInstanceId: "src-drain-gap" });
-    assert.equal(finalSummary.deadLetter, 0);
-    assert.ok(finalSummary.ready + finalSummary.leased >= 1);
+    assert.equal(result.sent, 1);
+    assert.equal(result.sentByKind.gap, 1);
+    assert.equal(ackCalls.length, 1);
     const item = outbox.get("src-drain-gap:policy");
-    assert.equal(item?.attempt_count, 0, "gap retries must not consume attempt budget");
-    assert.match(item?.last_error ?? "", /destination not ready|gap acknowledgement route/);
+    assert.equal(item?.status, "succeeded");
+    const summary = outbox.summary({ sourceInstanceId: "src-drain-gap" });
+    assert.equal(summary.ready, 0);
+    assert.equal(summary.leased, 0);
+    assert.equal(summary.deadLetter, 0);
+    assert.equal(summary.succeeded, 1);
+  } finally {
+    outbox.close();
+  }
+});
+
+test("drainCollectorOutbox dead-letters a malformed gap row instead of poisoning the drain", async () => {
+  // A gap row whose payload is missing required fields must dead-letter
+  // before any HTTP call so the outbox cannot loop on a permanently
+  //-broken row.
+  const outbox = new LocalDeviceOutbox({ path: await tempQueuePath() });
+  try {
+    outbox.enqueue({
+      id: "src-bad-gap:broken",
+      kind: "gap",
+      // Missing required fields (firstSeenAt, nextAttemptBackoffMs, retryable).
+      payload: {
+        connectorId: "fixture-bad",
+        reason: "policy_budget",
+        sourceInstanceId: "src-bad-gap",
+      } as unknown,
+      sourceInstanceId: "src-bad-gap",
+    });
+
+    const client: Pick<LocalDeviceClient, "ackLocalCollectorGap" | "ingestBatch" | "putSourceInstanceState"> = {
+      ackLocalCollectorGap() {
+        return Promise.reject(new Error("malformed gap must dead-letter before ack"));
+      },
+      ingestBatch() {
+        return Promise.reject(new Error("must not ingest"));
+      },
+      putSourceInstanceState() {
+        return Promise.reject(new Error("must not write state"));
+      },
+    };
+
+    const result = await drainCollectorOutbox({
+      client,
+      connectorId: "fixture-bad",
+      holderId: "holder-bad",
+      outbox,
+      policy: {
+        drainBatchSize: 1,
+        leaseMs: 60_000,
+        maxAttempts: 3,
+        maxDrainDurationMs: 60_000,
+        maxDrainIterations: 4,
+        maxQueueDepth: 10_000,
+        retryBackoffMs: 1,
+      },
+      sourceInstanceId: "src-bad-gap",
+    });
+
+    assert.equal(result.sent, 0);
+    assert.equal(result.deadLettered, 1);
+    const item = outbox.get("src-bad-gap:broken");
+    assert.equal(item?.status, "dead_letter");
   } finally {
     outbox.close();
   }

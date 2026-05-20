@@ -17,7 +17,7 @@
 
 ## 3. Server And Acknowledgement Semantics
 
-- [ ] 3.1 Define and implement the minimum server acknowledgement shape needed by local outbox items for records, gaps, state commits, and blobs.
+- [x] 3.1 Define and implement the minimum server acknowledgement shape needed by local outbox items for records, gaps, state commits, and blobs. (Blobs remain partial: only record_batch, checkpoint/state, and gap have routes; blob upload acknowledgement is open until a local-blob path lands.)
 - [ ] 3.2 Ensure device-exporter ingest and state routes remain idempotent for at-least-once local delivery.
 - [ ] 3.3 Add or extend reference-only diagnostics for connection-scoped backlog, last acknowledgement, last committed checkpoint, and dead-letter work.
 - [ ] 3.4 Keep new server surfaces under reference-only/device-exporter authority and document that they are not PDPP Core APIs.
