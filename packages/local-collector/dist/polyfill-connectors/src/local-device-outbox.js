@@ -191,6 +191,10 @@ export class LocalDeviceOutbox {
         const row = this.#db.prepare("SELECT * FROM local_device_outbox WHERE id = ?").get(id);
         return row ? rowToItem(row) : null;
     }
+    deleteSucceeded(id) {
+        const result = this.#db.prepare("DELETE FROM local_device_outbox WHERE id = ? AND status = 'succeeded'").run(id);
+        return Number(result.changes) === 1;
+    }
     list(input = {}) {
         const rows = input.sourceInstanceId
             ? this.#db
@@ -205,7 +209,6 @@ export class LocalDeviceOutbox {
         return rows.map((row) => rowToItem(row));
     }
     summary(input = {}) {
-        const items = this.list(input);
         const now = this.#now();
         const summary = {
             deadLetter: 0,
@@ -215,29 +218,44 @@ export class LocalDeviceOutbox {
             retrying: 0,
             staleLeases: 0,
             succeeded: 0,
-            total: items.length,
+            total: 0,
         };
-        for (const item of items) {
-            if (item.status === "ready") {
-                summary.ready++;
-                if (item.next_attempt_at > now) {
-                    summary.retrying++;
-                }
-                if (summary.oldestReadyAt === null || item.created_at < summary.oldestReadyAt) {
-                    summary.oldestReadyAt = item.created_at;
+        const aggregateSql = `
+      SELECT
+        status,
+        COUNT(*) AS total,
+        SUM(CASE WHEN status = 'ready' AND next_attempt_at > ? THEN 1 ELSE 0 END) AS retrying,
+        SUM(CASE WHEN status = 'leased' AND lease_until IS NOT NULL AND lease_until <= ? THEN 1 ELSE 0 END) AS stale_leases,
+        MIN(CASE WHEN status = 'ready' THEN created_at ELSE NULL END) AS oldest_ready
+      FROM local_device_outbox
+      ${input.sourceInstanceId ? "WHERE source_instance_id = ?" : ""}
+      GROUP BY status`;
+        const statement = this.#db.prepare(aggregateSql);
+        const rows = input.sourceInstanceId ? statement.all(now, now, input.sourceInstanceId) : statement.all(now, now);
+        for (const rowLike of rows) {
+            if (!isRecord(rowLike)) {
+                continue;
+            }
+            const status = rowLike.status;
+            const total = numberFrom(rowLike.total);
+            summary.total += total;
+            if (status === "ready") {
+                summary.ready = total;
+                summary.retrying = numberFrom(rowLike.retrying);
+                const oldest = rowLike.oldest_ready;
+                if (typeof oldest === "string") {
+                    summary.oldestReadyAt = oldest;
                 }
             }
-            else if (item.status === "leased") {
-                summary.leased++;
-                if (item.lease_until && item.lease_until <= now) {
-                    summary.staleLeases++;
-                }
+            else if (status === "leased") {
+                summary.leased = total;
+                summary.staleLeases = numberFrom(rowLike.stale_leases);
             }
-            else if (item.status === "succeeded") {
-                summary.succeeded++;
+            else if (status === "succeeded") {
+                summary.succeeded = total;
             }
-            else if (item.status === "dead_letter") {
-                summary.deadLetter++;
+            else if (status === "dead_letter") {
+                summary.deadLetter = total;
             }
         }
         return summary;
@@ -396,6 +414,15 @@ function asOutboxRow(row) {
 }
 function isRecord(value) {
     return typeof value === "object" && value !== null;
+}
+function numberFrom(value) {
+    if (typeof value === "number") {
+        return value;
+    }
+    if (typeof value === "bigint") {
+        return Number(value);
+    }
+    return 0;
 }
 function isOutboxKind(value) {
     return value === "record_batch" || value === "checkpoint" || value === "gap" || value === "blob_upload";

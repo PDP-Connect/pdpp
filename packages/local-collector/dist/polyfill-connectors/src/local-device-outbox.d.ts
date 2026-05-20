@@ -78,6 +78,7 @@ export declare class LocalDeviceOutbox {
         sourceInstanceId?: string;
     }): number;
     get(id: string): LocalDeviceOutboxItem | null;
+    deleteSucceeded(id: string): boolean;
     list(input?: {
         sourceInstanceId?: string;
     }): LocalDeviceOutboxItem[];

@@ -3,6 +3,8 @@ export declare const LOCAL_DEVICE_ENDPOINTS: {
     readonly exchangeEnrollment: "/_ref/device-exporters/enroll";
     readonly heartbeat: (deviceId: string) => string;
     readonly ingestBatch: (deviceId: string) => string;
+    readonly localCollectorGap: (deviceId: string, sourceInstanceId: string) => string;
+    readonly localCollectorGapRecovered: (deviceId: string, sourceInstanceId: string) => string;
     readonly sourceInstanceState: (deviceId: string, sourceInstanceId: string) => string;
 };
 export interface LocalDeviceClientOptions {
@@ -51,6 +53,44 @@ export interface SourceInstanceStateResponse {
     state: Record<string, unknown>;
     updated_at: string | null;
 }
+export interface AckLocalCollectorGapRequest {
+    connector_id: string;
+    details?: string;
+    first_seen_at: string;
+    first_seen_run_id?: string;
+    last_run_id?: string;
+    next_attempt_backoff_ms: number;
+    reason: "policy_budget" | "connector_child_failure";
+    retryable: boolean;
+    source_instance_id: string;
+    stream?: string;
+    stream_boundary?: string;
+}
+export interface AckLocalCollectorGapResponse {
+    attempt_count: number;
+    connector_id: string;
+    connector_instance_id: string;
+    device_id: string;
+    first_seen_at: string | null;
+    first_seen_run_id: string | null;
+    gap_id: string;
+    last_run_id: string | null;
+    object: "device_local_collector_gap";
+    reason: "policy_budget" | "connector_child_failure";
+    retryable: boolean;
+    source_instance_id: string;
+    status: string;
+    stream: string;
+    updated_at: string | null;
+}
+export interface RecoverLocalCollectorGapRequest {
+    connector_id: string;
+    reason: "policy_budget" | "connector_child_failure";
+    recovered_run_id?: string;
+    source_instance_id: string;
+    stream?: string;
+    stream_boundary?: string;
+}
 export declare class LocalDeviceHttpError extends Error {
     readonly body: string;
     readonly status: number;
@@ -68,4 +108,6 @@ export declare class LocalDeviceClient {
     }>;
     getSourceInstanceState(request: GetSourceInstanceStateRequest): Promise<SourceInstanceStateResponse>;
     putSourceInstanceState(request: PutSourceInstanceStateRequest): Promise<SourceInstanceStateResponse>;
+    ackLocalCollectorGap(request: AckLocalCollectorGapRequest): Promise<AckLocalCollectorGapResponse>;
+    recoverLocalCollectorGap(request: RecoverLocalCollectorGapRequest): Promise<AckLocalCollectorGapResponse>;
 }

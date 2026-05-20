@@ -3,6 +3,8 @@ export const LOCAL_DEVICE_ENDPOINTS = {
     exchangeEnrollment: "/_ref/device-exporters/enroll",
     heartbeat: (deviceId) => `/_ref/device-exporters/${encodeURIComponent(deviceId)}/heartbeat`,
     ingestBatch: (deviceId) => `/_ref/device-exporters/${encodeURIComponent(deviceId)}/ingest-batches`,
+    localCollectorGap: (deviceId, sourceInstanceId) => `/_ref/device-exporters/${encodeURIComponent(deviceId)}/source-instances/${encodeURIComponent(sourceInstanceId)}/local-collector-gaps`,
+    localCollectorGapRecovered: (deviceId, sourceInstanceId) => `/_ref/device-exporters/${encodeURIComponent(deviceId)}/source-instances/${encodeURIComponent(sourceInstanceId)}/local-collector-gaps/recovered`,
     sourceInstanceState: (deviceId, sourceInstanceId) => `/_ref/device-exporters/${encodeURIComponent(deviceId)}/source-instances/${encodeURIComponent(sourceInstanceId)}/state`,
 };
 export class LocalDeviceHttpError extends Error {
@@ -57,6 +59,22 @@ export class LocalDeviceClient {
             authenticate: true,
             body: { state: request.state },
             method: "PUT",
+        });
+    }
+    ackLocalCollectorGap(request) {
+        const path = LOCAL_DEVICE_ENDPOINTS.localCollectorGap(this.#requireDeviceId(), request.source_instance_id);
+        return this.#request(path, {
+            authenticate: true,
+            body: request,
+            method: "POST",
+        });
+    }
+    recoverLocalCollectorGap(request) {
+        const path = LOCAL_DEVICE_ENDPOINTS.localCollectorGapRecovered(this.#requireDeviceId(), request.source_instance_id);
+        return this.#request(path, {
+            authenticate: true,
+            body: request,
+            method: "POST",
         });
     }
     #requireDeviceId() {

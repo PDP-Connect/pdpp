@@ -5,8 +5,22 @@ import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { LocalDeviceClient } from "./local-device-client.js";
 import { buildLocalDeviceRecordEnvelope, hashCanonicalJson, } from "./local-device-envelope.js";
-import { LocalDeviceQueue } from "./local-device-queue.js";
+import { buildLocalDeviceOutboxId, LocalDeviceOutbox, } from "./local-device-outbox.js";
 import { assertPlacementOrThrow, COLLECTOR_RUNTIME_CAPABILITIES, } from "./runtime-capabilities.js";
+export const COLLECTOR_STDERR_MAX_BYTES = 256 * 1024;
+const COLLECTOR_GAP_DETAILS_MAX_CHARS = 300;
+const KEYED_SECRET_RE = /\b(authorization|bearer|token|password|passwd|cookie|secret|otp|api[_-]?key)\b\s*[:=]\s*["']?[^"',\s}]+/gi;
+const OTP_RE = /\b\d{6}\b/g;
+const LONG_OPAQUE_RE = /\b[A-Za-z0-9_-]{24,}\b/g;
+export const DEFAULT_COLLECTOR_OUTBOX_POLICY = Object.freeze({
+    drainBatchSize: 4,
+    leaseMs: 60_000,
+    maxAttempts: 5,
+    maxDrainDurationMs: 120_000,
+    maxDrainIterations: 256,
+    maxQueueDepth: 10_000,
+    retryBackoffMs: 30_000,
+});
 const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const REPO_ROOT = join(PACKAGE_ROOT, "..", "..");
 export async function enrollCollector(config) {
@@ -23,118 +37,427 @@ export class CollectorStateReadError extends Error {
     }
 }
 export async function runCollectorConnector(config) {
+    throwIfAborted(config.abortSignal);
     const satisfiedBindings = assertPlacementOrThrow(config.connector, COLLECTOR_RUNTIME_CAPABILITIES);
-    const batchSize = config.batchSize ?? 100;
-    const queue = new LocalDeviceQueue({ path: config.queuePath });
+    const policy = { ...DEFAULT_COLLECTOR_OUTBOX_POLICY, ...(config.outboxPolicy ?? {}) };
+    const holderId = config.collectorHolderId ?? randomUUID();
+    const outboxPath = config.outboxPath ?? config.queuePath;
+    const outbox = new LocalDeviceOutbox({ path: outboxPath });
     const client = new LocalDeviceClient({
         baseUrl: config.baseUrl,
         deviceId: config.deviceId,
         deviceToken: config.deviceToken,
     });
-    let priorState = Object.freeze({});
     try {
-        const projection = await client.getSourceInstanceState({ sourceInstanceId: config.sourceInstanceId });
-        if (projection.state && typeof projection.state === "object") {
-            priorState = Object.freeze({ ...projection.state });
+        const recoveredLeases = outbox.recoverExpiredLeases({ sourceInstanceId: config.sourceInstanceId });
+        const preScanDrain = await drainCollectorOutbox({
+            ...(config.abortSignal ? { abortSignal: config.abortSignal } : {}),
+            client,
+            connectorId: config.connector.connector_id,
+            holderId,
+            outbox,
+            policy,
+            sourceInstanceId: config.sourceInstanceId,
+        });
+        const postDrainSummary = outbox.summary({ sourceInstanceId: config.sourceInstanceId });
+        const skipResult = await maybeSkipScanForBacklog({
+            client,
+            config,
+            outbox,
+            policy,
+            postDrainSummary,
+            preScanDrain,
+            recoveredLeases,
+            satisfiedBindings,
+        });
+        if (skipResult) {
+            return skipResult;
         }
+        const priorState = await readPriorStateOrBlock({
+            client,
+            config,
+            recordsPending: pendingOutboxWorkCount(postDrainSummary),
+        });
+        await client.heartbeat({
+            connector_id: config.connector.connector_id,
+            records_pending: pendingOutboxWorkCount(postDrainSummary),
+            source_instance_id: config.sourceInstanceId,
+            status: "starting",
+        });
+        const streamResult = await streamConnectorIntoOutbox({
+            ...(config.abortSignal ? { abortSignal: config.abortSignal } : {}),
+            batchSize: config.batchSize ?? 100,
+            config,
+            outbox,
+            priorState,
+        });
+        const done = streamResult.done;
+        const bufferedState = streamResult.bufferedState;
+        const enqueueResult = {
+            enqueuedBatches: streamResult.enqueuedBatches,
+            recordsQueued: streamResult.recordsQueued,
+        };
+        const recordDrain = await drainCollectorOutbox({
+            ...(config.abortSignal ? { abortSignal: config.abortSignal } : {}),
+            client,
+            connectorId: config.connector.connector_id,
+            holderId,
+            outbox,
+            policy,
+            sourceInstanceId: config.sourceInstanceId,
+        });
+        const afterRecordsSummary = outbox.summary({ sourceInstanceId: config.sourceInstanceId });
+        const checkpointResult = await maybeCommitCheckpoint({
+            afterRecordsSummary,
+            bufferedState,
+            client,
+            config,
+            holderId,
+            outbox,
+            policy,
+        });
+        await recoverResolvedLocalCollectorGaps({
+            client,
+            config,
+            outbox,
+        });
+        const finalSummary = outbox.summary({ sourceInstanceId: config.sourceInstanceId });
+        const recordsPending = pendingOutboxWorkCount(finalSummary);
+        if (!checkpointResult.statePutFailed) {
+            await client.heartbeat({
+                connector_id: config.connector.connector_id,
+                records_pending: recordsPending,
+                source_instance_id: config.sourceInstanceId,
+                status: heartbeatStatusForSummary(finalSummary, policy),
+            });
+        }
+        return {
+            done,
+            enqueuedBatches: enqueueResult.enqueuedBatches,
+            flushedState: checkpointResult.flushedState,
+            outboxSummary: finalSummary,
+            priorState,
+            recordsQueued: enqueueResult.recordsQueued,
+            recoveredLeases,
+            satisfiedBindings,
+            sentBatches: (preScanDrain.sentByKind.record_batch ?? 0) + (recordDrain.sentByKind.record_batch ?? 0),
+            skippedScanForBacklog: false,
+            statePutFailed: checkpointResult.statePutFailed,
+            streamingBufferHighWaterMark: streamResult.bufferHighWaterMark,
+        };
+    }
+    finally {
+        outbox.close();
+    }
+}
+async function maybeSkipScanForBacklog(input) {
+    if (!hasScanBlockingOutboxWork(input.outbox, input.config.sourceInstanceId)) {
+        return null;
+    }
+    const recordsPending = pendingOutboxWorkCount(input.postDrainSummary);
+    if (recordsPending >= input.policy.maxQueueDepth) {
+        ensureCollectorGapRow({
+            clock: () => new Date(),
+            connectorId: input.config.connector.connector_id,
+            details: `pending ${recordsPending} >= maxQueueDepth ${input.policy.maxQueueDepth}`,
+            outbox: input.outbox,
+            reason: "policy_budget",
+            retryable: true,
+            ...(input.config.runId ? { runId: input.config.runId } : {}),
+            sourceInstanceId: input.config.sourceInstanceId,
+        });
+    }
+    const summaryAfterGap = input.outbox.summary({ sourceInstanceId: input.config.sourceInstanceId });
+    await safeHeartbeat(input.client, {
+        connector_id: input.config.connector.connector_id,
+        records_pending: recordsPending,
+        source_instance_id: input.config.sourceInstanceId,
+        status: heartbeatStatusForSummary(summaryAfterGap, input.policy),
+    });
+    return {
+        done: null,
+        enqueuedBatches: 0,
+        flushedState: null,
+        outboxSummary: summaryAfterGap,
+        priorState: Object.freeze({}),
+        recordsQueued: 0,
+        recoveredLeases: input.recoveredLeases,
+        satisfiedBindings: input.satisfiedBindings,
+        sentBatches: input.preScanDrain.sentByKind.record_batch ?? 0,
+        skippedScanForBacklog: true,
+        statePutFailed: false,
+        streamingBufferHighWaterMark: 0,
+    };
+}
+async function readPriorStateOrBlock(input) {
+    try {
+        throwIfAborted(input.config.abortSignal);
+        const projection = await input.client.getSourceInstanceState({ sourceInstanceId: input.config.sourceInstanceId });
+        return projection.state && typeof projection.state === "object"
+            ? Object.freeze({ ...projection.state })
+            : Object.freeze({});
     }
     catch (error) {
-        await safeHeartbeat(client, {
-            connector_id: config.connector.connector_id,
-            records_pending: (await queue.list()).filter((item) => item.status !== "sent").length,
-            source_instance_id: config.sourceInstanceId,
+        await safeHeartbeat(input.client, {
+            connector_id: input.config.connector.connector_id,
+            records_pending: input.recordsPending,
+            source_instance_id: input.config.sourceInstanceId,
             status: "blocked",
         });
-        throw new CollectorStateReadError(`failed to read prior state for ${config.sourceInstanceId}: ${error instanceof Error ? error.message : String(error)}`, error);
+        throw new CollectorStateReadError(`failed to read prior state for ${input.config.sourceInstanceId}: ${error instanceof Error ? error.message : String(error)}`, error);
     }
-    await client.heartbeat({
-        connector_id: config.connector.connector_id,
-        records_pending: (await queue.list()).filter((item) => item.status !== "sent").length,
-        source_instance_id: config.sourceInstanceId,
-        status: "starting",
+}
+async function streamConnectorIntoOutbox(input) {
+    throwIfAborted(input.abortSignal);
+    const child = spawnConnector(input.config.connector, {
+        baseUrl: input.config.baseUrl,
+        deviceToken: input.config.deviceToken,
+        ...(input.config.runId ? { runId: input.config.runId } : {}),
     });
-    const messages = await collectConnectorMessages(config.connector, {
-        baseUrl: config.baseUrl,
-        deviceToken: config.deviceToken,
-        ...(config.runId ? { runId: config.runId } : {}),
-    }, priorState);
-    const records = messages.filter((msg) => msg.type === "RECORD");
-    const done = messages.findLast((msg) => msg.type === "DONE") ?? null;
-    const inScopeStreams = new Set(config.connector.streams);
-    const bufferedState = projectEmittedState(messages, inScopeStreams, config.connector.connector_id);
+    const stderr = new BoundedStderrBuffer(COLLECTOR_STDERR_MAX_BYTES);
+    const inScopeStreams = new Set(input.config.connector.streams);
+    const bufferedState = {};
+    let batchSeq = nextOutboxBatchSeq(input.outbox, input.config.sourceInstanceId);
+    let pendingRecords = [];
+    let bufferHighWaterMark = 0;
     let recordsQueued = 0;
     let enqueuedBatches = 0;
-    let batchSeq = nextBatchSeq(await queue.list(), config.sourceInstanceId);
-    for (const chunk of chunkRecords(records, batchSize)) {
-        const batchId = `${config.sourceInstanceId}-${batchSeq}-${randomUUID()}`;
+    let done = null;
+    const flushPendingBatch = () => {
+        if (pendingRecords.length === 0) {
+            return;
+        }
+        const chunk = pendingRecords;
+        pendingRecords = [];
+        const batchId = buildOutboxBatchId({
+            batchSeq,
+            connectorId: input.config.connector.connector_id,
+            records: chunk,
+            sourceInstanceId: input.config.sourceInstanceId,
+        });
         const envelopes = chunk.map((record) => buildLocalDeviceRecordEnvelope({
             batchId,
             batchSeq,
-            connectorId: config.connector.connector_id,
-            deviceId: config.deviceId,
+            connectorId: input.config.connector.connector_id,
+            deviceId: input.config.deviceId,
             record,
-            sourceInstanceId: config.sourceInstanceId,
+            sourceInstanceId: input.config.sourceInstanceId,
         }));
-        await queue.enqueue({ batchId, batchSeq, records: envelopes, sourceInstanceId: config.sourceInstanceId });
+        input.outbox.enqueue({
+            id: buildLocalDeviceOutboxId({
+                kind: "record_batch",
+                parts: [input.config.connector.connector_id, batchSeq, batchId],
+                sourceInstanceId: input.config.sourceInstanceId,
+            }),
+            kind: "record_batch",
+            payload: {
+                batchId,
+                batchSeq,
+                connectorId: input.config.connector.connector_id,
+                deviceId: input.config.deviceId,
+                records: envelopes,
+                sourceInstanceId: input.config.sourceInstanceId,
+            },
+            sourceInstanceId: input.config.sourceInstanceId,
+        });
         recordsQueued += envelopes.length;
         enqueuedBatches++;
         batchSeq++;
-    }
-    const sentBatches = await drainCollectorQueue({ client, queue });
-    const pendingAfterDrain = (await queue.list()).filter((item) => item.status !== "sent").length;
-    let flushedState = null;
-    let statePutFailed = false;
-    if (pendingAfterDrain === 0 && Object.keys(bufferedState).length > 0) {
-        try {
-            await client.putSourceInstanceState({
-                sourceInstanceId: config.sourceInstanceId,
-                state: bufferedState,
-            });
-            flushedState = Object.freeze({ ...bufferedState });
+    };
+    const handleMessage = (message) => {
+        if (message.type === "RECORD") {
+            pendingRecords.push(message);
+            if (pendingRecords.length > bufferHighWaterMark) {
+                bufferHighWaterMark = pendingRecords.length;
+            }
+            if (pendingRecords.length >= input.batchSize) {
+                flushPendingBatch();
+            }
+            return;
         }
-        catch (error) {
-            statePutFailed = true;
-            await safeHeartbeat(client, {
-                connector_id: config.connector.connector_id,
-                records_pending: pendingAfterDrain,
-                source_instance_id: config.sourceInstanceId,
-                status: "retrying",
-            });
-            process.stderr.write(`${config.connector.connector_id} state PUT failed: ${error instanceof Error ? error.message : String(error)}\n`);
+        if (message.type === "STATE") {
+            if (!inScopeStreams.has(message.stream)) {
+                process.stderr.write(`${input.config.connector.connector_id} dropped out-of-scope STATE for stream '${message.stream}'\n`);
+                return;
+            }
+            bufferedState[message.stream] = message.cursor;
+            return;
         }
+        if (message.type === "DONE") {
+            done = message;
+        }
+    };
+    const abortListener = input.abortSignal
+        ? () => {
+            try {
+                child.kill("SIGTERM");
+            }
+            catch {
+            }
+            setTimeout(() => {
+                try {
+                    if (!child.killed) {
+                        child.kill("SIGKILL");
+                    }
+                }
+                catch {
+                }
+            }, 1000).unref?.();
+        }
+        : null;
+    if (input.abortSignal && abortListener) {
+        input.abortSignal.addEventListener("abort", abortListener, { once: true });
     }
-    if (!statePutFailed) {
-        await client.heartbeat({
-            connector_id: config.connector.connector_id,
-            records_pending: pendingAfterDrain,
-            source_instance_id: config.sourceInstanceId,
-            status: pendingAfterDrain > 0 ? "retrying" : "healthy",
+    const exitPromise = new Promise((resolve, reject) => {
+        child.once("error", reject);
+        child.once("close", resolve);
+    });
+    const outputPromise = (async () => {
+        const lines = createInterface({ input: child.stdout, terminal: false });
+        for await (const line of lines) {
+            if (!line.trim()) {
+                continue;
+            }
+            handleMessage(JSON.parse(line));
+        }
+    })();
+    child.stdin.on("error", () => {
+    });
+    child.stderr.on("data", (chunk) => stderr.push(chunk));
+    child.stdin.end(`${JSON.stringify(buildCollectorStartMessage(input.config.connector.streams, input.config.connector.streamsToBackfill, input.priorState))}\n`);
+    let exitCode;
+    try {
+        [exitCode] = await Promise.all([exitPromise, outputPromise]);
+    }
+    catch (error) {
+        if (input.abortSignal && abortListener) {
+            input.abortSignal.removeEventListener("abort", abortListener);
+        }
+        flushPendingBatch();
+        const details = sanitizeCollectorGapDetails(error instanceof Error ? error.message : String(error));
+        recordConnectorChildFailureGap({
+            details,
+            enqueuedBatches,
+            input,
         });
+        throw new Error(`${input.config.connector.connector_id} connector failed to start or stream output: ${details || "unknown error"}`);
     }
+    if (input.abortSignal && abortListener) {
+        input.abortSignal.removeEventListener("abort", abortListener);
+    }
+    if (input.abortSignal?.aborted) {
+        flushPendingBatch();
+        throw input.abortSignal.reason instanceof Error
+            ? input.abortSignal.reason
+            : new DOMException("Aborted", "AbortError");
+    }
+    if (exitCode !== 0) {
+        flushPendingBatch();
+        const details = sanitizeCollectorGapDetails(`exit ${exitCode}: ${stderr.toString().trim()}`);
+        recordConnectorChildFailureGap({
+            details,
+            enqueuedBatches,
+            input,
+        });
+        throw new Error(`${input.config.connector.connector_id} connector exited ${exitCode}: ${details || "unknown error"}`);
+    }
+    flushPendingBatch();
     return {
+        bufferedState: Object.freeze({ ...bufferedState }),
+        bufferHighWaterMark,
         done,
         enqueuedBatches,
-        flushedState,
-        priorState,
         recordsQueued,
-        satisfiedBindings,
-        sentBatches,
-        statePutFailed,
     };
 }
-function projectEmittedState(messages, inScopeStreams, connectorId) {
-    const projected = {};
-    for (const message of messages) {
-        if (message.type !== "STATE") {
-            continue;
-        }
-        if (!inScopeStreams.has(message.stream)) {
-            process.stderr.write(`${connectorId} dropped out-of-scope STATE for stream '${message.stream}'\n`);
-            continue;
-        }
-        projected[message.stream] = message.cursor;
+function recordConnectorChildFailureGap(input) {
+    if (input.enqueuedBatches === 0) {
+        return;
     }
-    return projected;
+    ensureCollectorGapRow({
+        clock: () => new Date(),
+        connectorId: input.input.config.connector.connector_id,
+        details: input.details,
+        outbox: input.input.outbox,
+        reason: "connector_child_failure",
+        retryable: true,
+        ...(input.input.config.runId ? { runId: input.input.config.runId } : {}),
+        sourceInstanceId: input.input.config.sourceInstanceId,
+    });
+}
+async function maybeCommitCheckpoint(input) {
+    if (hasCheckpointBlockingOutboxWork(input.outbox, input.config.sourceInstanceId) ||
+        Object.keys(input.bufferedState).length === 0) {
+        return { flushedState: null, statePutFailed: false };
+    }
+    const checkpointId = buildLocalDeviceOutboxId({
+        kind: "checkpoint",
+        parts: [input.config.connector.connector_id, input.bufferedState],
+        sourceInstanceId: input.config.sourceInstanceId,
+    });
+    input.outbox.enqueue({
+        id: checkpointId,
+        kind: "checkpoint",
+        payload: {
+            connectorId: input.config.connector.connector_id,
+            sourceInstanceId: input.config.sourceInstanceId,
+            state: input.bufferedState,
+        },
+        sourceInstanceId: input.config.sourceInstanceId,
+    });
+    const checkpointDrain = await drainCollectorOutbox({
+        ...(input.config.abortSignal ? { abortSignal: input.config.abortSignal } : {}),
+        client: input.client,
+        connectorId: input.config.connector.connector_id,
+        holderId: input.holderId,
+        outbox: input.outbox,
+        policy: input.policy,
+        sourceInstanceId: input.config.sourceInstanceId,
+    });
+    const checkpointAfter = input.outbox.get(checkpointId);
+    if (checkpointAfter?.status === "succeeded") {
+        return { flushedState: Object.freeze({ ...input.bufferedState }), statePutFailed: false };
+    }
+    await safeHeartbeat(input.client, {
+        connector_id: input.config.connector.connector_id,
+        records_pending: pendingOutboxWorkCount(input.afterRecordsSummary),
+        source_instance_id: input.config.sourceInstanceId,
+        status: "retrying",
+    });
+    process.stderr.write(`${input.config.connector.connector_id} checkpoint not yet committed (drained ${checkpointDrain.sent} this pass; ${checkpointAfter?.last_error ?? "no error"})\n`);
+    return { flushedState: null, statePutFailed: true };
+}
+async function recoverResolvedLocalCollectorGaps(input) {
+    if (hasCheckpointBlockingOutboxWork(input.outbox, input.config.sourceInstanceId)) {
+        return;
+    }
+    const succeededGaps = input.outbox
+        .list({ sourceInstanceId: input.config.sourceInstanceId })
+        .filter((item) => item.kind === "gap" && item.status === "succeeded");
+    for (const item of succeededGaps) {
+        let payload;
+        try {
+            payload = assertGapPayload(item.payload, item.id);
+        }
+        catch (error) {
+            process.stderr.write(`${input.config.connector.connector_id} skipped malformed succeeded gap recovery ${item.id}: ${error instanceof Error ? error.message : String(error)}\n`);
+            continue;
+        }
+        try {
+            await input.client.recoverLocalCollectorGap({
+                connector_id: payload.connectorId,
+                reason: payload.reason,
+                source_instance_id: payload.sourceInstanceId,
+                ...(input.config.runId ? { recovered_run_id: input.config.runId } : {}),
+                ...(payload.stream ? { stream: payload.stream } : {}),
+                ...(payload.streamBoundary ? { stream_boundary: payload.streamBoundary } : {}),
+            });
+            input.outbox.deleteSucceeded(item.id);
+        }
+        catch (error) {
+            process.stderr.write(`${input.config.connector.connector_id} local gap recovery deferred for ${item.id}: ${error instanceof Error ? error.message : String(error)}\n`);
+        }
+    }
 }
 async function safeHeartbeat(client, request) {
     try {
@@ -168,9 +491,335 @@ export function transformRecordsToCollectorEnvelopes(input) {
         sourceInstanceId: input.sourceInstanceId,
     }));
 }
+function ensureCollectorGapRow(input) {
+    const firstSeenAt = input.clock().toISOString();
+    const idParts = [
+        input.connectorId,
+        input.sourceInstanceId,
+        input.reason,
+        input.stream ?? null,
+        input.streamBoundary ?? null,
+    ];
+    const id = buildLocalDeviceOutboxId({
+        kind: "gap",
+        parts: idParts,
+        sourceInstanceId: input.sourceInstanceId,
+    });
+    const existing = input.outbox.get(id);
+    if (existing) {
+        return existing;
+    }
+    const payload = {
+        connectorId: input.connectorId,
+        firstSeenAt,
+        nextAttemptBackoffMs: DEFAULT_GAP_RETRY_BACKOFF_MS,
+        reason: input.reason,
+        retryable: input.retryable,
+        sourceInstanceId: input.sourceInstanceId,
+    };
+    if (input.stream) {
+        payload.stream = input.stream;
+    }
+    if (input.streamBoundary) {
+        payload.streamBoundary = input.streamBoundary;
+    }
+    if (input.runId) {
+        payload.firstSeenRunId = input.runId;
+    }
+    const details = input.details ? sanitizeCollectorGapDetails(input.details) : null;
+    if (details) {
+        payload.details = details;
+    }
+    return input.outbox.enqueue({
+        id,
+        kind: "gap",
+        payload,
+        sourceInstanceId: input.sourceInstanceId,
+    });
+}
+function sanitizeCollectorGapDetails(value) {
+    let next = String(value)
+        .replace(KEYED_SECRET_RE, (_match, marker) => `${marker}=[REDACTED]`)
+        .replace(OTP_RE, "[REDACTED_OTP]")
+        .replace(LONG_OPAQUE_RE, "[REDACTED]")
+        .replace(/\s+/g, " ")
+        .trim();
+    if (next.length > COLLECTOR_GAP_DETAILS_MAX_CHARS) {
+        next = `${next.slice(0, COLLECTOR_GAP_DETAILS_MAX_CHARS - 1)}…`;
+    }
+    return next;
+}
+export async function drainCollectorOutbox(input) {
+    const sentByKind = {};
+    const result = {
+        deadLettered: 0,
+        durationBudgetExceeded: false,
+        failed: 0,
+        iterations: 0,
+        sent: 0,
+        sentByKind,
+    };
+    const startedAt = Date.now();
+    for (let i = 0; i < input.policy.maxDrainIterations; i++) {
+        throwIfAborted(input.abortSignal);
+        if (Date.now() - startedAt >= input.policy.maxDrainDurationMs) {
+            result.durationBudgetExceeded = true;
+            return result;
+        }
+        const claimed = claimReadyOutboxItems(input);
+        if (claimed.length === 0) {
+            return result;
+        }
+        result.iterations++;
+        for (const item of claimed) {
+            await drainClaimedOutboxItem(input, item, result, sentByKind);
+        }
+    }
+    return result;
+}
+function claimReadyOutboxItems(input) {
+    const claimInput = {
+        holder: input.holderId,
+        leaseMs: input.policy.leaseMs,
+        limit: input.policy.drainBatchSize,
+    };
+    if (input.sourceInstanceId) {
+        claimInput.sourceInstanceId = input.sourceInstanceId;
+    }
+    return input.outbox.claimReady(claimInput);
+}
+async function drainClaimedOutboxItem(input, item, result, sentByKind) {
+    throwIfAborted(input.abortSignal);
+    try {
+        await sendOutboxItem(input.client, item);
+        input.outbox.acknowledge({ holder: input.holderId, id: item.id, leaseEpoch: item.lease_epoch });
+        result.sent++;
+        sentByKind[item.kind] = (sentByKind[item.kind] ?? 0) + 1;
+    }
+    catch (error) {
+        failOutboxItem(input, item, error, result);
+    }
+}
+function failOutboxItem(input, item, error, result) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (error instanceof OutboxPayloadShapeError || item.attempt_count + 1 >= input.policy.maxAttempts) {
+        input.outbox.deadLetter({
+            error: message,
+            holder: input.holderId,
+            id: item.id,
+            leaseEpoch: item.lease_epoch,
+        });
+        result.deadLettered++;
+        return;
+    }
+    input.outbox.failRetryable({
+        error: message,
+        holder: input.holderId,
+        id: item.id,
+        leaseEpoch: item.lease_epoch,
+        retryBackoffMs: input.policy.retryBackoffMs * (item.attempt_count + 1),
+    });
+    result.failed++;
+}
+class OutboxPayloadShapeError extends Error {
+    constructor(message) {
+        super(message);
+        this.name = "OutboxPayloadShapeError";
+    }
+}
+const DEFAULT_GAP_RETRY_BACKOFF_MS = 15 * 60_000;
+async function sendOutboxItem(client, item) {
+    if (item.kind === "record_batch") {
+        const payload = assertRecordBatchPayload(item.payload, item.id);
+        if (payload.records.length === 0) {
+            throw new OutboxPayloadShapeError(`record_batch payload has no records: ${item.id}`);
+        }
+        await client.ingestBatch({
+            batch_id: payload.batchId,
+            batch_seq: payload.batchSeq,
+            body_hash: hashCanonicalJson(payload.records),
+            connector_id: payload.connectorId,
+            device_id: payload.deviceId,
+            records: payload.records.map((record) => ({
+                data: record.data,
+                emitted_at: record.emitted_at,
+                record_key: record.record_key,
+                stream: record.stream,
+            })),
+            source_instance_id: payload.sourceInstanceId,
+        });
+        return;
+    }
+    if (item.kind === "checkpoint") {
+        const payload = assertCheckpointPayload(item.payload, item.id);
+        await client.putSourceInstanceState({
+            sourceInstanceId: payload.sourceInstanceId,
+            state: payload.state,
+        });
+        return;
+    }
+    if (item.kind === "gap") {
+        const payload = assertGapPayload(item.payload, item.id);
+        await client.ackLocalCollectorGap({
+            connector_id: payload.connectorId,
+            first_seen_at: payload.firstSeenAt,
+            next_attempt_backoff_ms: payload.nextAttemptBackoffMs,
+            reason: payload.reason,
+            retryable: payload.retryable,
+            source_instance_id: payload.sourceInstanceId,
+            ...(payload.stream ? { stream: payload.stream } : {}),
+            ...(payload.streamBoundary ? { stream_boundary: payload.streamBoundary } : {}),
+            ...(payload.firstSeenRunId ? { first_seen_run_id: payload.firstSeenRunId } : {}),
+            ...(payload.firstSeenRunId ? { last_run_id: payload.firstSeenRunId } : {}),
+            ...(payload.details ? { details: payload.details } : {}),
+        });
+        return;
+    }
+    throw new OutboxPayloadShapeError(`unsupported outbox kind ${item.kind} for id ${item.id}`);
+}
+function assertRecordBatchPayload(payload, id) {
+    if (!isRecord(payload)) {
+        throw new OutboxPayloadShapeError(`record_batch payload is not an object: ${id}`);
+    }
+    if (typeof payload.batchId !== "string" ||
+        typeof payload.batchSeq !== "number" ||
+        typeof payload.connectorId !== "string" ||
+        typeof payload.deviceId !== "string" ||
+        typeof payload.sourceInstanceId !== "string" ||
+        !Array.isArray(payload.records) ||
+        !payload.records.every(isLocalDeviceRecordEnvelope)) {
+        throw new OutboxPayloadShapeError(`record_batch payload missing required fields: ${id}`);
+    }
+    return {
+        batchId: payload.batchId,
+        batchSeq: payload.batchSeq,
+        connectorId: payload.connectorId,
+        deviceId: payload.deviceId,
+        records: payload.records,
+        sourceInstanceId: payload.sourceInstanceId,
+    };
+}
+function assertGapPayload(payload, id) {
+    if (!isRecord(payload)) {
+        throw new OutboxPayloadShapeError(`gap payload is not an object: ${id}`);
+    }
+    if (typeof payload.connectorId !== "string" ||
+        typeof payload.sourceInstanceId !== "string" ||
+        typeof payload.firstSeenAt !== "string" ||
+        typeof payload.nextAttemptBackoffMs !== "number" ||
+        typeof payload.retryable !== "boolean" ||
+        (payload.reason !== "policy_budget" && payload.reason !== "connector_child_failure") ||
+        (payload.stream !== undefined && typeof payload.stream !== "string") ||
+        (payload.streamBoundary !== undefined && typeof payload.streamBoundary !== "string") ||
+        (payload.firstSeenRunId !== undefined && typeof payload.firstSeenRunId !== "string") ||
+        (payload.details !== undefined && typeof payload.details !== "string")) {
+        throw new OutboxPayloadShapeError(`gap payload missing or invalid fields: ${id}`);
+    }
+    const gap = {
+        connectorId: payload.connectorId,
+        firstSeenAt: payload.firstSeenAt,
+        nextAttemptBackoffMs: payload.nextAttemptBackoffMs,
+        reason: payload.reason,
+        retryable: payload.retryable,
+        sourceInstanceId: payload.sourceInstanceId,
+    };
+    if (typeof payload.stream === "string") {
+        gap.stream = payload.stream;
+    }
+    if (typeof payload.streamBoundary === "string") {
+        gap.streamBoundary = payload.streamBoundary;
+    }
+    if (typeof payload.firstSeenRunId === "string") {
+        gap.firstSeenRunId = payload.firstSeenRunId;
+    }
+    if (typeof payload.details === "string") {
+        gap.details = payload.details;
+    }
+    return gap;
+}
+function assertCheckpointPayload(payload, id) {
+    if (!isRecord(payload)) {
+        throw new OutboxPayloadShapeError(`checkpoint payload is not an object: ${id}`);
+    }
+    if (typeof payload.connectorId !== "string" ||
+        typeof payload.sourceInstanceId !== "string" ||
+        !isRecord(payload.state)) {
+        throw new OutboxPayloadShapeError(`checkpoint payload missing required fields: ${id}`);
+    }
+    return {
+        connectorId: payload.connectorId,
+        sourceInstanceId: payload.sourceInstanceId,
+        state: payload.state,
+    };
+}
+function isLocalDeviceRecordEnvelope(value) {
+    return (isRecord(value) &&
+        typeof value.batch_id === "string" &&
+        typeof value.batch_seq === "number" &&
+        typeof value.body_hash === "string" &&
+        typeof value.connector_id === "string" &&
+        isRecord(value.data) &&
+        typeof value.device_id === "string" &&
+        typeof value.emitted_at === "string" &&
+        typeof value.record_key === "string" &&
+        typeof value.source_instance_id === "string" &&
+        typeof value.stream === "string");
+}
+function isRecord(value) {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function buildOutboxBatchId(input) {
+    return `local-batch:${hashCanonicalJson({
+        batch_seq: input.batchSeq,
+        connector_id: input.connectorId,
+        records: input.records.map((record) => ({
+            data: record.data,
+            key: String(record.key),
+            stream: record.stream,
+        })),
+        source_instance_id: input.sourceInstanceId,
+    })}`;
+}
+function pendingOutboxWorkCount(summary) {
+    return summary.ready + summary.leased;
+}
+function hasScanBlockingOutboxWork(outbox, sourceInstanceId) {
+    return outbox.list({ sourceInstanceId }).some((item) => item.kind !== "gap" && item.status !== "succeeded");
+}
+function hasCheckpointBlockingOutboxWork(outbox, sourceInstanceId) {
+    return outbox.list({ sourceInstanceId }).some((item) => item.status !== "succeeded");
+}
+function heartbeatStatusForSummary(summary, policy) {
+    if (summary.deadLetter > 0) {
+        return "blocked";
+    }
+    const pending = pendingOutboxWorkCount(summary);
+    if (policy && pending >= policy.maxQueueDepth) {
+        return "blocked";
+    }
+    if (pending > 0) {
+        return "retrying";
+    }
+    return "healthy";
+}
+function nextOutboxBatchSeq(outbox, sourceInstanceId) {
+    const items = outbox.list({ sourceInstanceId });
+    let max = 0;
+    for (const item of items) {
+        if (item.kind !== "record_batch") {
+            continue;
+        }
+        const payload = item.payload;
+        if (typeof payload?.batchSeq === "number" && payload.batchSeq > max) {
+            max = payload.batchSeq;
+        }
+    }
+    return max + 1;
+}
 export async function drainCollectorQueue(input) {
     let sent = 0;
     for (;;) {
+        throwIfAborted(input.abortSignal);
         const item = await input.queue.dequeueReady();
         if (!item) {
             return sent;
@@ -184,6 +833,20 @@ export async function drainCollectorQueue(input) {
             await input.queue.markRetry(item.batch_id, error instanceof Error ? error.message : String(error));
             return sent;
         }
+    }
+}
+export function recoverAndSummarizeOutbox(outbox, input = {}) {
+    const recovered = input.sourceInstanceId
+        ? outbox.recoverExpiredLeases({ sourceInstanceId: input.sourceInstanceId })
+        : outbox.recoverExpiredLeases();
+    const summary = input.sourceInstanceId
+        ? outbox.summary({ sourceInstanceId: input.sourceInstanceId })
+        : outbox.summary();
+    return { recovered, summary };
+}
+function throwIfAborted(signal) {
+    if (signal?.aborted) {
+        throw signal.reason instanceof Error ? signal.reason : new DOMException("Aborted", "AbortError");
     }
 }
 async function sendQueueItem(client, item) {
@@ -216,38 +879,42 @@ function buildCollectorChildEnv(context) {
     }
     return env;
 }
-async function collectConnectorMessages(connector, childContext, priorState) {
-    const child = spawnConnector(connector, childContext);
-    const messages = [];
-    const stderr = [];
-    const exitPromise = new Promise((resolve, reject) => {
-        child.once("error", reject);
-        child.once("close", resolve);
-    });
-    const outputPromise = (async () => {
-        const lines = createInterface({ input: child.stdout, terminal: false });
-        for await (const line of lines) {
-            if (!line.trim()) {
+class BoundedStderrBuffer {
+    #limit;
+    #chunks = [];
+    #size = 0;
+    #dropped = 0;
+    constructor(limit) {
+        this.#limit = Math.max(1024, limit);
+    }
+    push(chunk) {
+        this.#chunks.push(chunk);
+        this.#size += chunk.length;
+        while (this.#size > this.#limit && this.#chunks.length > 0) {
+            const head = this.#chunks[0];
+            if (!head) {
+                break;
+            }
+            const overflow = this.#size - this.#limit;
+            if (head.length <= overflow) {
+                this.#chunks.shift();
+                this.#size -= head.length;
+                this.#dropped += head.length;
                 continue;
             }
-            messages.push(JSON.parse(line));
+            this.#chunks[0] = head.subarray(overflow);
+            this.#size -= overflow;
+            this.#dropped += overflow;
+            break;
         }
-    })();
-    child.stdin.on("error", () => {
-    });
-    child.stderr.on("data", (chunk) => stderr.push(chunk));
-    child.stdin.end(`${JSON.stringify(buildCollectorStartMessage(connector.streams, connector.streamsToBackfill, priorState))}\n`);
-    let exitCode;
-    try {
-        [exitCode] = await Promise.all([exitPromise, outputPromise]);
     }
-    catch (error) {
-        throw new Error(`${connector.connector_id} connector failed to start or stream output: ${error instanceof Error ? error.message : String(error)}`);
+    toString() {
+        const body = Buffer.concat(this.#chunks).toString("utf8");
+        if (this.#dropped === 0) {
+            return body;
+        }
+        return `[truncated ${this.#dropped} stderr bytes]\n${body}`;
     }
-    if (exitCode !== 0) {
-        throw new Error(`${connector.connector_id} connector exited ${exitCode}: ${Buffer.concat(stderr).toString("utf8").trim()}`);
-    }
-    return messages;
 }
 function spawnConnector(connector, childContext) {
     const env = { ...process.env, ...buildCollectorChildEnv(childContext), ...connector.env };
@@ -261,15 +928,4 @@ function buildCollectorChildPath(pathValue) {
     return [join(PACKAGE_ROOT, "node_modules", ".bin"), join(REPO_ROOT, "node_modules", ".bin"), pathValue]
         .filter((part) => Boolean(part))
         .join(delimiter);
-}
-function chunkRecords(records, size) {
-    const chunks = [];
-    for (let index = 0; index < records.length; index += size) {
-        chunks.push(records.slice(index, index + size));
-    }
-    return chunks;
-}
-function nextBatchSeq(items, sourceInstanceId) {
-    return (Math.max(0, ...items.filter((item) => item.source_instance_id === sourceInstanceId).map((item) => item.batch_seq)) +
-        1);
 }
