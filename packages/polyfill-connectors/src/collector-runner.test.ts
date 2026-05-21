@@ -1984,21 +1984,21 @@ test("runCollectorConnector drains a prior pass's enqueued backlog before scanni
       },
       deviceId: "device-1",
       deviceToken: "device-token",
-      // Tiny retry backoff so pass 2 can claim the retryable batches
-      // without needing to advance a fake clock.
-      outboxPolicy: { retryBackoffMs: 1 },
       queuePath,
       sourceInstanceId: "src-1",
     } as const;
 
-    const pass1 = await runCollectorConnector(baseConfig);
+    const pass1 = await runCollectorConnector({
+      ...baseConfig,
+      // Stop after one drain iteration so pass 1 leaves failed-but-ready
+      // durable work for pass 2 without relying on timer precision.
+      outboxPolicy: { maxDrainIterations: 1, retryBackoffMs: 0 },
+    });
     assert.equal(pass1.enqueuedBatches, 3, "pass 1 must enqueue three durable batches");
     assert.equal(pass1.sentBatches, 0, "pass 1 must not acknowledge any batch (ingest fails)");
     assert.equal(pass1.flushedState, null, "checkpoint must not advance while record work pending");
     assert.equal(ingestSucceededCount, 0);
 
-    // Brief wait so the retry backoff (1ms) elapses for every retried row.
-    await new Promise((resolve) => setTimeout(resolve, 25));
     ingestShouldFail = false;
     const eventsBeforePass2 = harness.events.length;
     const pass2Started = harness.ingestedBatches.length;
@@ -2023,6 +2023,7 @@ test("runCollectorConnector drains a prior pass's enqueued backlog before scanni
     const pass2 = await runCollectorConnector({
       ...baseConfig,
       connector: { ...baseConfig.connector, args: [pass2Fixture] },
+      outboxPolicy: { retryBackoffMs: 0 },
     });
 
     assert.equal(pass2.recordsQueued, 0, "pass 2 child must not produce new records");
