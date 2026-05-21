@@ -2,6 +2,7 @@
   "name": "pdpp-reference-implementation",
   "version": "0.1.0",
   "description": "Forkable PDPP reference implementation with AS/RS, runtime, CLI, and conformance-style tests.",
+  "private": true,
   "type": "module",
   "bin": {
     "pdpp": "./cli/index.js"

@@ -27,6 +27,7 @@
     "cli:connect-smoke": "node scripts/cli-acceptance-smoke.mjs local-connect",
     "release": "semantic-release",
     "release:dry-run": "semantic-release --dry-run --no-ci",
+    "release:policy-check": "node scripts/check-package-release-policy.mjs",
     "reference-implementation:test": "pnpm --dir reference-implementation run test",
     "reference-implementation:server": "pnpm --dir reference-implementation run server",
     "reference-implementation:server:dev": "pnpm --dir reference-implementation run dev",

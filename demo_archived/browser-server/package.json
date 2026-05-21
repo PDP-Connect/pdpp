@@ -1,6 +1,7 @@
 {
   "name": "browser-server",
   "version": "1.0.0",
+  "private": true,
   "type": "module",
   "dependencies": {
     "playwright": "1.43.0",

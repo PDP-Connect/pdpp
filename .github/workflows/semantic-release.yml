@@ -94,6 +94,9 @@ jobs:
       - name: Check spec docs drift
         run: pnpm spec:check
 
+      - name: Check package release policy
+        run: pnpm release:policy-check
+
       - name: Typecheck web app
         run: pnpm --dir apps/web run types:check
 
