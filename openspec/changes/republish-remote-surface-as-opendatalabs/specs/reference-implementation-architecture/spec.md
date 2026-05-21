@@ -80,7 +80,7 @@ PDPP/reference-only concepts — including but not limited to `_ref`, `run_id`, 
 #### Scenario: Registry metadata is declared
 
 - **WHEN** maintainers inspect `package.json`
-- **THEN** the manifest SHALL include `repository`, `bugs`, and `homepage` fields
+- **THEN** the manifest SHALL include `repository`, `bugs`, and `homepage` fields pointing at `https://github.com/vana-com/remote-surface` (specifically `git+https://github.com/vana-com/remote-surface.git`, `https://github.com/vana-com/remote-surface/issues`, and `https://github.com/vana-com/remote-surface#readme` or a published project landing page)
 - **AND** it SHALL include a non-empty `keywords` array describing the substrate's purpose
 
 #### Scenario: Publish configuration is declared
@@ -92,14 +92,38 @@ PDPP/reference-only concepts — including but not limited to `_ref`, `run_id`, 
 #### Scenario: Supported runtime is declared
 
 - **WHEN** maintainers inspect `package.json` and the README
-- **THEN** `engines.node` SHALL declare the supported Node major(s)
+- **THEN** `engines.node` SHALL declare the supported Node major(s) and SHALL be at least as strict as `>=22.14.0` (matching sibling publishable packages `@pdpp/cli` and `@pdpp/local-collector`)
 - **AND** the README SHALL state the module-resolution contract (ESM-only or dual ESM/CJS) and any browser-API assumptions
+
+#### Scenario: Security disclosure contact is declared
+
+- **WHEN** a reader inspects `SECURITY.md` or the README "Reporting vulnerabilities" section
+- **THEN** the documented security contact SHALL be `security@vana.org`
+- **AND** the contact SHALL be reachable for both substrate and reference-implementation vulnerability reports
 
 #### Scenario: Release policy script knows the renamed package
 
 - **WHEN** the release-policy checker (`scripts/check-package-release-policy.mjs`) runs
 - **THEN** `@opendatalabs/remote-surface` SHALL be included in the gated package list
 - **AND** a failure of the checker SHALL block publication readiness
+
+### Requirement: Deferred release-management decisions SHALL gate public publication
+
+Two decisions are non-blocking for accepting this change and for running the worker lanes that rename the package, split the reference subpath, add license boilerplate, and fill in registry metadata. They are blocking for the first public npm publish and MUST be resolved before `package.json#private` flips from `true` to `false`.
+
+#### Scenario: Reference-subpath deprecation horizon is recorded before public publish
+
+- **WHEN** the package is prepared for its first public npm publish
+- **THEN** the owner SHALL have recorded a concrete deprecation horizon for the `./server` re-export of `./reference` symbols (for example, "removed in the first post-publish minor", "removed by version X.Y.0", or an explicit indefinite-retention decision)
+- **AND** the `@deprecated` jsdoc on the re-export SHALL be updated to reflect that horizon
+- **AND** until that horizon is recorded, worker lanes MAY ship a placeholder horizon and SHALL NOT block other publish-readiness work on the answer
+
+#### Scenario: LICENSE copyright holder is finalized before public publish
+
+- **WHEN** the package is prepared for its first public npm publish
+- **THEN** both `packages/remote-surface/LICENSE` and `reference-implementation/LICENSE` SHALL carry an explicit, owner-accepted copyright holder line
+- **AND** while the package remains `private: true` and internal, worker lanes MAY land Apache-2.0 boilerplate with a placeholder holder line (for example, "Copyright \[year] OpenDataLabs contributors")
+- **AND** the placeholder SHALL be replaced before `package.json#private` flips from `true` to `false`
 
 ### Requirement: This change SHALL not rename or publish the package itself
 

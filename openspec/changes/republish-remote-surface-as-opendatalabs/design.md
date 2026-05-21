@@ -43,17 +43,19 @@ The current `dist/server/`, `dist/protocol/`, `dist/leases/`, and `dist/testing/
 
 ### Publish-readiness metadata
 
-`package.json` gains the metadata required for a credible npm landing once the owner names the public repo and contact:
+`package.json` gains the metadata required for a credible npm landing. The owner has now answered the inputs that were previously deferred; concrete values are recorded here so worker lanes do not have to re-litigate them:
 
-- `repository` (git URL of the public OpenDataLabs source of truth, once chosen).
-- `bugs` (issue tracker URL).
-- `homepage` (project landing or README anchor).
-- `keywords` (descriptive — e.g. `remote-surface`, `browser`, `neko`, `cdp`, `streaming`, `clipboard`, `ime`).
+- `repository` → `git+https://github.com/vana-com/remote-surface.git`. Source of truth is the public `vana-com/remote-surface` GitHub repo, even though development continues inside the PDPP monorepo until release prep.
+- `bugs` → `https://github.com/vana-com/remote-surface/issues`.
+- `homepage` → `https://github.com/vana-com/remote-surface#readme` (a project landing page MAY replace this once it exists; the README anchor is the minimum credible value).
+- `keywords` (descriptive — e.g. `remote-surface`, `browser`, `neko`, `cdp`, `streaming`, `clipboard`, `mobile-ime`, `webrtc`).
 - `publishConfig.access: "public"`.
 - `publishConfig.provenance: true` (commented placeholder; depends on the publishing pipeline picked by `standardize-pdpp-package-publishing`).
-- `engines.node` (commit to the Node major(s) PDPP supports — owner picks).
+- `engines.node` → `>=22.14.0`. This matches the existing sibling publishable packages (`@pdpp/cli` and `@pdpp/local-collector` both pin `>=22.14.0`), keeps the substrate on a still-supported LTS floor for the 2026 publish window, and avoids introducing a second supported runtime contract within the same monorepo. Release-policy or CI lanes MAY additionally validate Node 24, which is the Active LTS line during the 2026 publish window.
 
-These fields are required to be present in the spec sense; the actual values are stubbed in code lanes once the owner answers.
+Security disclosure contact: `security@vana.org`. This drives the `SECURITY.md` "Reporting a Vulnerability" section and the README "Reporting vulnerabilities" paragraph. The contact is shared with the parent organization on purpose — substrate security reports route through the same triage as the rest of the public surface.
+
+These fields are required to be present in the spec sense; the values above are the owner-confirmed inputs that worker lanes apply verbatim.
 
 ### Sequencing
 
@@ -94,11 +96,17 @@ Out of scope:
 - Spec deltas explicitly name `@opendatalabs/remote-surface`, the `./reference` subpath, Apache-2.0 for code, and CC-BY-4.0 for docs.
 - Owner-only follow-ups appear in `tasks.md` as flagged, unticked items so workers know not to invent answers.
 
-## Owner Decisions Still Needed
+## Owner Decisions
 
-1. **Public repo URL.** Confirms `repository`, `bugs`, `homepage` values and the `LICENSE` file copyright holder line.
-2. **Security disclosure contact.** Blocks `SECURITY.md` and the README "Reporting vulnerabilities" section.
-3. **Supported Node majors.** Drives `engines.node`.
-4. **Reference-subpath deprecation horizon.** How long the `/server` re-export of `/reference` symbols survives (one internal cycle, two, indefinite).
-5. **`reference-implementation/LICENSE` posture.** Confirm Apache-2.0 mirror (the proposal assumes yes; owner should sign off explicitly since the reference is more than just code).
-6. **Community-Spec-1.0 reservation.** Confirm we are deferring formal-spec licensing rather than declining it. Affects future spec changes only.
+### Resolved (worker lanes may apply verbatim)
+
+1. **Public repo URL** — `https://github.com/vana-com/remote-surface`. Drives `repository` (`git+https://github.com/vana-com/remote-surface.git`), `bugs` (`https://github.com/vana-com/remote-surface/issues`), and `homepage` (`https://github.com/vana-com/remote-surface#readme`).
+2. **Security disclosure contact** — `security@vana.org`. Drives `SECURITY.md` and the README contact section.
+3. **Supported Node majors** — `engines.node: ">=22.14.0"`. Selected by repo precedent: `packages/cli/package.json` and `packages/local-collector/package.json` both already pin `>=22.14.0`, the repo `.nvmrc` is on the current line, and Node 22 remains a supported LTS floor during the 2026 publish window. Node 24 is the current Active LTS line, so release-policy or CI lanes MAY validate both Node 22 and Node 24 without changing the manifest floor.
+4. **`reference-implementation/LICENSE` posture** — Apache-2.0 mirror, confirmed implicitly by the proposal's license posture (code and reference implementations share Apache-2.0). The owner-decision task is collapsed into the license posture task; no separate sign-off is required unless the owner explicitly overrides it.
+5. **Community-Spec-1.0 reservation** — reserved, not declined. Recorded in the spec deltas. No further decision needed for this change; any future formal-spec artifact MUST propose its own license selection in a separate OpenSpec change.
+
+### Deferred (release-management, non-blocking for this change)
+
+6. **Reference-subpath deprecation horizon** — how long the `./server` re-export of `./reference` symbols survives (one internal cycle, two, or indefinite). The legacy re-export is annotated `@deprecated` from day one (Tasks §2.5) so consumers see the migration signal regardless of the horizon. The actual removal date is a release-management decision that the owner MAY answer at any point before the first public npm publish. Worker lanes that perform the rename and the subpath split MUST NOT block on this answer; they SHALL ship the `@deprecated` re-export with a placeholder horizon (e.g. "removed in the first post-publish minor") that the release-prep step can tighten.
+7. **`LICENSE` copyright holder line** — the final attributed copyright holder for both `packages/remote-surface/LICENSE` and `reference-implementation/LICENSE`. While the package remains `private: true` and internal, the worker lane that adds `LICENSE` MAY land standard Apache-2.0 boilerplate with a placeholder holder line (e.g. "Copyright \\\[year] OpenDataLabs contributors"). An explicit, owner-accepted copyright line MUST be in place before the package flips to `private: false` and is published to npm. This deferral exists so that license boilerplate, validator wiring, and `files` allowlist work can land on the internal cadence without waiting for the legal-name decision.

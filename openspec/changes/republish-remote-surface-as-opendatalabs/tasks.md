@@ -26,22 +26,23 @@
 - [ ] 2.6 Shrink the reference-token allowlist in `scripts/validate-package.mjs` so `_ref`, `run_id`, and `interaction_id` are only permitted under `dist/reference/**`. Any match outside that path fails the validator.
 - [ ] 2.7 Run `pnpm --filter @opendatalabs/remote-surface verify`; commit when green.
 
-## 3. License Files (worker lane, after §7.5)
+## 3. License Files (worker lane — placeholder copyright holder permitted while `private: true`; final holder line gated on §7.5 before public publish)
 
-- [ ] 3.1 Add `packages/remote-surface/LICENSE` with the Apache-2.0 text and the copyright line confirmed in §7.5.
+- [ ] 3.1 Add `packages/remote-surface/LICENSE` with the Apache-2.0 text. Until the owner confirms the final holder line in §7.5, use the placeholder `"Copyright [year] OpenDataLabs contributors"`. Replace with the final holder line before flipping `private: false`.
 - [ ] 3.2 Flip `packages/remote-surface/package.json#license` from `ISC` to `Apache-2.0`.
 - [ ] 3.3 Add `LICENSE` to `package.json#files` and to `allowedPackageFilePatterns` in `scripts/validate-package.mjs`.
-- [ ] 3.4 Add `reference-implementation/LICENSE` (Apache-2.0 mirror).
+- [ ] 3.4 Add `reference-implementation/LICENSE` (Apache-2.0 mirror, same holder line as §3.1).
 - [ ] 3.5 Add repo-root `LICENSE-docs` containing the CC-BY-4.0 text; link it from `docs/` and `design-notes/` indexes so prose contributors see the license.
 - [ ] 3.6 Confirm the packed tarball contains `LICENSE`; re-run `pnpm --filter @opendatalabs/remote-surface validate:package`.
 
-## 4. Publish-Readiness Metadata (worker lane, after §7.1, §7.2, §7.3)
+## 4. Publish-Readiness Metadata (worker lane — owner inputs resolved in §7)
 
-- [ ] 4.1 Fill in `repository`, `bugs`, `homepage` in `packages/remote-surface/package.json` using the values from §7.1.
+- [ ] 4.1 Fill in `packages/remote-surface/package.json` with the resolved owner values: `"repository": { "type": "git", "url": "git+https://github.com/vana-com/remote-surface.git" }`, `"bugs": { "url": "https://github.com/vana-com/remote-surface/issues" }`, `"homepage": "https://github.com/vana-com/remote-surface#readme"`.
 - [ ] 4.2 Add `keywords` (suggested seed: `remote-surface`, `browser`, `neko`, `cdp`, `streaming`, `clipboard`, `mobile-ime`, `webrtc`).
 - [ ] 4.3 Add `publishConfig.access: "public"`; add a commented `publishConfig.provenance: true` placeholder.
-- [ ] 4.4 Add `engines.node` using the major(s) from §7.3.
-- [ ] 4.5 Document the supported runtime contract (Node major, ESM-only, browser API surface) in the README "Supported runtime assumptions" paragraph.
+- [ ] 4.4 Add `"engines": { "node": ">=22.14.0" }` (matches sibling `@pdpp/cli` and `@pdpp/local-collector`; rationale recorded in design.md).
+- [ ] 4.5 Document the supported runtime contract (`Node >=22.14.0`, ESM-only, browser API surface) in the README "Supported runtime assumptions" paragraph.
+- [ ] 4.6 Add `SECURITY.md` and a README "Reporting vulnerabilities" paragraph that route security reports to `security@vana.org`.
 
 ## 5. Release-Policy Wiring (worker lane, gated on `standardize-pdpp-package-publishing`)
 
@@ -57,15 +58,20 @@
 - [ ] 6.5 After §3, `npm pack` output for the package contains `LICENSE`.
 - [ ] 6.6 After §4, `package.json` round-trips through validator with `repository`, `bugs`, `homepage`, `keywords`, `publishConfig.access`, and `engines.node` set to concrete values.
 
-## 7. Owner Decisions (not for workers)
+## 7. Owner Decisions
 
-- [ ] 7.1 Public repo URL for `@opendatalabs/remote-surface` (used in `repository`, `bugs`, `homepage`).
-- [ ] 7.2 Security disclosure contact (drives `SECURITY.md` + README contact section).
-- [ ] 7.3 Supported Node major(s) (drives `engines.node`).
-- [ ] 7.4 Deprecation horizon for the `./server` re-export of `./reference` symbols (one internal cycle, two, or indefinite).
-- [ ] 7.5 Copyright holder line for `LICENSE` and `reference-implementation/LICENSE` (e.g. "Copyright 2026 OpenDataLabs" or a personal name).
-- [ ] 7.6 Confirm `reference-implementation/LICENSE` is Apache-2.0 (the design assumes yes).
-- [ ] 7.7 Confirm Community-Spec-1.0 is reserved (not declined) for future formal-spec artifacts.
+### Resolved (worker lanes apply verbatim)
+
+- [x] 7.1 Public repo URL → `https://github.com/vana-com/remote-surface`. Manifest values are spelled out in §4.1.
+- [x] 7.2 Security disclosure contact → `security@vana.org`. §4.6 wires `SECURITY.md` and the README contact section.
+- [x] 7.3 Supported Node major(s) → `engines.node: ">=22.14.0"` (matches sibling `@pdpp/cli` and `@pdpp/local-collector`; rationale in design.md).
+- [x] 7.6 `reference-implementation/LICENSE` is Apache-2.0 (mirror of package code license; collapsed into §3.4).
+- [x] 7.7 Community-Spec-1.0 is reserved (not declined) for future formal-spec artifacts; recorded in the spec deltas.
+
+### Deferred (release-management, MUST be answered before public npm publish; non-blocking for this change and for worker lanes §1–§6)
+
+- [ ] 7.4 Reference-subpath deprecation horizon for the `./server` re-export of `./reference` symbols. Workers ship the `@deprecated` jsdoc immediately with a placeholder horizon ("removed in the first post-publish minor"); owner tightens the horizon during release prep.
+- [ ] 7.5 Final `LICENSE` copyright holder line for `packages/remote-surface/LICENSE` and `reference-implementation/LICENSE`. While the package is `private: true`, workers MAY land Apache-2.0 boilerplate with a placeholder holder ("Copyright \[year] OpenDataLabs contributors"). An explicit, owner-accepted holder line MUST be in place before the `private: false` flip and the npm publish.
 
 ## Acceptance checks
 
