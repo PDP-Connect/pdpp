@@ -9,6 +9,8 @@ const SERVICE_WORKER_KNOWN_TYPES_PATTERN = /PDPP_KNOWN_PUSH_TYPES\.has\(payload\
 const SERVICE_WORKER_ASSISTANCE_TYPE_ALLOWED_PATTERN = /pdpp\.assistance_requested/;
 const SERVICE_WORKER_PENDING_TYPE_ALLOWED_PATTERN = /pdpp\.pending_interaction/;
 const SERVICE_WORKER_TEST_TYPE_ALLOWED_PATTERN = /pdpp\.test_notification/;
+const SERVICE_WORKER_SKIP_WAITING_PATTERN = /self\.skipWaiting\(\)/;
+const SERVICE_WORKER_CLIENTS_CLAIM_PATTERN = /self\.clients\.claim\(\)/;
 const SERVICE_WORKER_DASHBOARD_URL_ALLOWLIST_PATTERN = /url === "\/dashboard" \|\| url\.startsWith\("\/dashboard\/"\)/;
 const SERVICE_WORKER_DASHBOARD_URL_HELPER_USE_PATTERN = /pdppIsAllowedDashboardUrl\(rawUrl\)/;
 const SERVICE_WORKER_DASHBOARD_PREFIX_TRAVERSAL_PATTERN = /rawUrl\.startsWith\("\/dashboard"\)/;
@@ -31,6 +33,7 @@ const MANIFEST_ICON_512_PATTERN = /\/icon-512\.png/;
 const APP_ROUTER_MANIFEST_PATTERN = /export default function manifest\(\)/;
 const SERVICE_WORKER_REGISTER_PATTERN = /navigator\.serviceWorker\.register\("\/pdpp-dashboard-sw\.js"\)/;
 const SERVICE_WORKER_LOOKUP_PATTERN = /navigator\.serviceWorker\.getRegistration\("\/"\)/;
+const SERVICE_WORKER_UPDATE_PATTERN = /registration\?\.update\(\)/;
 const PUSH_SUBSCRIBE_PATTERN = /registration\.pushManager\.subscribe/;
 const PUSH_EXISTING_SUBSCRIPTION_PATTERN = /registration\.pushManager\.getSubscription\(\)/;
 const WEB_PUSH_POST_PATTERN = /fetch\("\/_ref\/web-push\/subscriptions"/;
@@ -86,6 +89,8 @@ test("dashboard service worker fails closed and click-through targets dashboard-
   assert.match(src, SERVICE_WORKER_ASSISTANCE_TYPE_ALLOWED_PATTERN);
   assert.match(src, SERVICE_WORKER_PENDING_TYPE_ALLOWED_PATTERN);
   assert.match(src, SERVICE_WORKER_TEST_TYPE_ALLOWED_PATTERN);
+  assert.match(src, SERVICE_WORKER_SKIP_WAITING_PATTERN);
+  assert.match(src, SERVICE_WORKER_CLIENTS_CLAIM_PATTERN);
   assert.match(src, SERVICE_WORKER_DASHBOARD_URL_ALLOWLIST_PATTERN);
   assert.match(src, SERVICE_WORKER_DASHBOARD_URL_HELPER_USE_PATTERN);
   assert.match(src, SERVICE_WORKER_UNIQUE_TEST_TAG_PATTERN);
@@ -137,6 +142,7 @@ test("dashboard notification setup registers, posts, reuses, and deletes browser
   const src = await readFile(join(HERE, "web-push-settings.tsx"), "utf8");
   assert.match(src, SERVICE_WORKER_REGISTER_PATTERN);
   assert.match(src, SERVICE_WORKER_LOOKUP_PATTERN);
+  assert.match(src, SERVICE_WORKER_UPDATE_PATTERN);
   assert.match(src, PUSH_EXISTING_SUBSCRIPTION_PATTERN);
   assert.match(src, PUSH_SUBSCRIBE_PATTERN);
   assert.match(src, WEB_PUSH_POST_PATTERN);

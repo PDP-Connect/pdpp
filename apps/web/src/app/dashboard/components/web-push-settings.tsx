@@ -390,6 +390,7 @@ export function WebPushSettings({
     }
     try {
       const registration = await navigator.serviceWorker.getRegistration("/");
+      await registration?.update().catch(() => undefined);
       setSwState(registration ? "registered" : "absent");
       const existing = await registration?.pushManager.getSubscription();
       setEndpoint(existing?.endpoint ?? null);
@@ -416,6 +417,7 @@ export function WebPushSettings({
           return;
         }
         setSwState(registration ? "registered" : "absent");
+        await registration?.update().catch(() => undefined);
         const existing = await registration?.pushManager.getSubscription();
         if (cancelled) {
           return;

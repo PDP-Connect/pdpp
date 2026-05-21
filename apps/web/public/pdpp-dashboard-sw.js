@@ -5,6 +5,14 @@ const PDPP_KNOWN_PUSH_TYPES = new Set([
 ]);
 const PDPP_TEST_NOTIFICATION_URL = "/dashboard";
 
+self.addEventListener("install", () => {
+  self.skipWaiting();
+});
+
+self.addEventListener("activate", (event) => {
+  event.waitUntil(self.clients.claim());
+});
+
 function pdppDefaultFallbackUrl(type) {
   return type === "pdpp.test_notification" ? PDPP_TEST_NOTIFICATION_URL : "/dashboard/runs";
 }
