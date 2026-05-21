@@ -1,0 +1,682 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import type { WebPushConfig, WebPushSubscriptionSummary } from "../lib/ref-client.ts";
+import { Section } from "./primitives.tsx";
+
+function urlBase64ToUint8Array(base64String: string) {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const rawData = window.atob(base64);
+  return Uint8Array.from([...rawData].map((char) => char.charCodeAt(0)));
+}
+
+// Each row in the diagnostic checklist. Unknown state means indeterminate,
+// so the owner can distinguish "checked and fine" from "could not tell here".
+type DiagnosticState = "ok" | "warn" | "fail" | "unknown";
+interface DiagnosticRow {
+  detail: string;
+  label: string;
+  state: DiagnosticState;
+}
+
+interface DeviceStatus {
+  detail: string;
+  title: string;
+}
+
+interface SetupStep {
+  detail: string;
+  label: string;
+  state: DiagnosticState;
+}
+
+function detectSupport(config: WebPushConfig) {
+  if (!window.isSecureContext) {
+    return "Web Push needs HTTPS or localhost.";
+  }
+  if (!("serviceWorker" in navigator)) {
+    return "This browser does not support service workers.";
+  }
+  if (!("PushManager" in window)) {
+    return "This browser does not support the Push API.";
+  }
+  if (!("Notification" in window)) {
+    return "This browser does not support browser notifications.";
+  }
+  if (!(config.enabled && config.public_key)) {
+    return config.unavailable_reason || "Server VAPID keys are not configured.";
+  }
+  if (Notification.permission === "denied") {
+    return "Notifications are denied. Change browser or OS notification settings to opt in.";
+  }
+  return null;
+}
+
+function diagnosticMarker(state: DiagnosticState) {
+  if (state === "ok") {
+    return "[ok]";
+  }
+  if (state === "warn") {
+    return "[!]";
+  }
+  if (state === "fail") {
+    return "[x]";
+  }
+  return "[?]";
+}
+
+function hasWindowFeature(feature: string) {
+  return typeof window !== "undefined" && feature in window;
+}
+
+function hasNavigatorFeature(feature: string) {
+  return typeof navigator !== "undefined" && feature in navigator;
+}
+
+async function webPushResponseError(response: Response, fallbackAction: string) {
+  let detail: string | null = null;
+  try {
+    const body = (await response.json()) as { error?: { code?: string; message?: string }; message?: string };
+    detail = body.error?.message || body.message || body.error?.code || null;
+  } catch {
+    detail = null;
+  }
+  return new Error(detail ? `${fallbackAction}: ${detail}` : `${fallbackAction} (${response.status})`);
+}
+
+function diagnosticToneClass(state: DiagnosticState) {
+  if (state === "ok") {
+    return "text-emerald-700 dark:text-emerald-400";
+  }
+  if (state === "warn") {
+    return "text-amber-700 dark:text-amber-400";
+  }
+  if (state === "fail") {
+    return "text-red-700 dark:text-red-400";
+  }
+  return "text-muted-foreground";
+}
+
+function setupStepToneClass(state: DiagnosticState) {
+  if (state === "ok") {
+    return "border-[color:var(--success)]/30 bg-[color:var(--success-wash)] text-foreground";
+  }
+  if (state === "fail") {
+    return "border-destructive/30 bg-destructive/5 text-foreground";
+  }
+  if (state === "warn") {
+    return "border-[color:var(--warning)]/30 bg-[color:var(--warning-wash)] text-foreground";
+  }
+  return "border-border/70 bg-background/70 text-foreground";
+}
+
+function secureContextRow(): DiagnosticRow {
+  if (typeof window === "undefined") {
+    return { label: "Secure context (HTTPS/localhost)", state: "unknown", detail: "Server-rendered" };
+  }
+  if (window.isSecureContext) {
+    return { label: "Secure context (HTTPS/localhost)", state: "ok", detail: window.location.origin };
+  }
+  return {
+    label: "Secure context (HTTPS/localhost)",
+    state: "fail",
+    detail: "Page is not served over a secure origin.",
+  };
+}
+
+function featureRow(label: string, present: boolean, presentDetail: string, missingDetail: string): DiagnosticRow {
+  return present ? { label, state: "ok", detail: presentDetail } : { label, state: "fail", detail: missingDetail };
+}
+
+function vapidRow(config: WebPushConfig): DiagnosticRow {
+  if (config.enabled && config.public_key) {
+    return {
+      label: "Server VAPID keys configured",
+      state: "ok",
+      detail: "/_ref/web-push/config reports enabled",
+    };
+  }
+  return {
+    label: "Server VAPID keys configured",
+    state: "fail",
+    detail: config.unavailable_reason || "Server VAPID keys are not configured.",
+  };
+}
+
+function swRow(swState: "registered" | "absent" | "unknown" | "unsupported"): DiagnosticRow {
+  const label = "Service worker registered";
+  if (swState === "registered") {
+    return { label, state: "ok", detail: "/pdpp-dashboard-sw.js controls /" };
+  }
+  if (swState === "absent") {
+    return { label, state: "warn", detail: "Not registered yet - use Enable this device." };
+  }
+  if (swState === "unsupported") {
+    return { label, state: "fail", detail: "Browser lacks serviceWorker." };
+  }
+  return { label, state: "unknown", detail: "Could not inspect registration." };
+}
+
+function permissionRow(permission: NotificationPermission | "unknown"): DiagnosticRow {
+  const label = "Notification permission granted";
+  if (permission === "granted") {
+    return { label, state: "ok", detail: 'Notification.permission === "granted"' };
+  }
+  if (permission === "denied") {
+    return {
+      label,
+      state: "fail",
+      detail: 'Notification.permission === "denied" - change browser/OS notification settings to opt in.',
+    };
+  }
+  if (permission === "default") {
+    return { label, state: "warn", detail: "Permission has not been requested on this device - use Enable this device." };
+  }
+  return { label, state: "unknown", detail: "Notification API not available." };
+}
+
+function browserSubscriptionRow(endpoint: string | null, matchesThisBrowser: boolean): DiagnosticRow {
+  const label = "Browser push subscription active";
+  if (!endpoint) {
+    return {
+      label,
+      state: "warn",
+      detail:
+        "No active subscription on this device - use Enable this device to create one (installing the PWA alone does not subscribe).",
+    };
+  }
+  if (matchesThisBrowser) {
+    return { label, state: "ok", detail: "Browser endpoint is registered for this owner on the server." };
+  }
+  return {
+    label,
+    state: "warn",
+    detail: "Browser has a subscription but the server does not list it for this owner - use Enable this device to re-register.",
+  };
+}
+
+function deliveryHealthRow(lastSubscription: WebPushSubscriptionSummary | undefined): DiagnosticRow {
+  const label = "Last delivery health";
+  if (lastSubscription?.last_failure_reason) {
+    return {
+      label,
+      state: "warn",
+      detail: `Most recent failure: ${lastSubscription.last_failure_reason} (${lastSubscription.last_failure_at ?? "unknown time"}). Use Enable this device on the affected device to re-subscribe.`,
+    };
+  }
+  if (lastSubscription?.last_success_at) {
+    return { label, state: "ok", detail: `Last success: ${lastSubscription.last_success_at}.` };
+  }
+  return { label, state: "unknown", detail: "No delivery attempt recorded yet." };
+}
+
+function deviceStatus({
+  unavailable,
+  permission,
+  endpoint,
+  matchesThisBrowser,
+  swState,
+}: {
+  unavailable: string | null;
+  permission: NotificationPermission | "unknown";
+  endpoint: string | null;
+  matchesThisBrowser: boolean;
+  swState: "registered" | "absent" | "unknown" | "unsupported";
+}): DeviceStatus {
+  if (unavailable) {
+    return {
+      title: "This browser cannot receive dashboard notifications.",
+      detail: unavailable,
+    };
+  }
+  if (permission === "unknown" && swState === "unknown") {
+    return {
+      title: "Checking this device...",
+      detail: "Inspecting browser permission and subscription state.",
+    };
+  }
+  if (permission === "denied") {
+    return {
+      title: "Notifications are blocked for this browser.",
+      detail: "Change browser or OS notification settings, then return here and enable this device.",
+    };
+  }
+  if (matchesThisBrowser) {
+    return {
+      title: "This device is subscribed.",
+      detail: "Pending connector interactions can send browser notifications to this browser or installed app.",
+    };
+  }
+  if (endpoint) {
+    return {
+      title: "This browser has a local subscription, but the server does not recognize it.",
+      detail: "Enable this device again to repair the server-side subscription.",
+    };
+  }
+  if (permission === "granted") {
+    return {
+      title: "Notifications are allowed, but this device is not subscribed.",
+      detail: "Enable this device once so PDPP can send alerts here.",
+    };
+  }
+  return {
+    title: "This device is not subscribed yet.",
+    detail: "Installing the PWA only adds the app icon. You still need to enable notifications from this device.",
+  };
+}
+
+function buildSetupSteps({
+  unavailable,
+  permission,
+  endpoint,
+  matchesThisBrowser,
+  testStatus,
+}: {
+  unavailable: string | null;
+  permission: NotificationPermission | "unknown";
+  endpoint: string | null;
+  matchesThisBrowser: boolean;
+  testStatus: string | null;
+}): SetupStep[] {
+  const permissionState: DiagnosticState =
+    permission === "granted" ? "ok" : permission === "denied" ? "fail" : unavailable ? "fail" : "warn";
+  const subscriptionState: DiagnosticState = matchesThisBrowser ? "ok" : unavailable ? "fail" : endpoint ? "warn" : "warn";
+  const testState: DiagnosticState =
+    testStatus?.startsWith("Test notification sent") || testStatus?.startsWith("Test notification delivered")
+      ? "unknown"
+      : matchesThisBrowser
+        ? "unknown"
+        : "warn";
+
+  return [
+    {
+      label: "Open the right device",
+      state: "ok",
+      detail: "This page configures notifications only for the browser or installed app you are using right now.",
+    },
+    {
+      label: "Allow notifications",
+      state: permissionState,
+      detail:
+        permission === "granted"
+          ? "Browser permission is granted."
+          : permission === "denied"
+            ? "Browser or OS settings currently block notifications."
+            : "Tap Enable this device and approve the browser prompt.",
+    },
+    {
+      label: "Subscribe this device",
+      state: subscriptionState,
+      detail: matchesThisBrowser
+        ? "The server recognizes this browser's push subscription."
+        : endpoint
+          ? "The browser has a local subscription, but the server needs it re-registered."
+          : "A PWA install is not enough; this step creates the push subscription.",
+    },
+    {
+      label: "Send a test",
+      state: testState,
+      detail:
+        testStatus?.startsWith("Test notification sent") || testStatus?.startsWith("Test notification delivered")
+          ? "The push provider accepted the test. Only the device can confirm whether it displayed."
+          : "Use Send test notification after this device is subscribed.",
+    },
+  ];
+}
+
+function buildDiagnostics({
+  config,
+  swState,
+  permission,
+  endpoint,
+  matchesThisBrowser,
+  subscriptions,
+  lastSubscription,
+}: {
+  config: WebPushConfig;
+  swState: "registered" | "absent" | "unknown" | "unsupported";
+  permission: NotificationPermission | "unknown";
+  endpoint: string | null;
+  matchesThisBrowser: boolean;
+  subscriptions: WebPushSubscriptionSummary[];
+  lastSubscription: WebPushSubscriptionSummary | undefined;
+}): DiagnosticRow[] {
+  return [
+    secureContextRow(),
+    featureRow(
+      "Service Worker API available",
+      hasNavigatorFeature("serviceWorker"),
+      "navigator.serviceWorker present",
+      "Browser does not expose serviceWorker."
+    ),
+    featureRow(
+      "Push API (PushManager) available",
+      hasWindowFeature("PushManager"),
+      "window.PushManager present",
+      "Browser does not expose PushManager."
+    ),
+    featureRow(
+      "Notification API available",
+      hasWindowFeature("Notification"),
+      "window.Notification present",
+      "Browser does not expose Notification."
+    ),
+    vapidRow(config),
+    swRow(swState),
+    permissionRow(permission),
+    browserSubscriptionRow(endpoint, matchesThisBrowser),
+    {
+      label: "Server-tracked subscriptions for this owner",
+      state: subscriptions.length > 0 ? "ok" : "warn",
+      detail:
+        subscriptions.length > 0
+          ? `${subscriptions.length} saved across all of this owner's devices.`
+          : "Server has no saved subscriptions yet for this owner.",
+    },
+    deliveryHealthRow(lastSubscription),
+  ];
+}
+
+export function WebPushSettings({
+  config,
+  subscriptions,
+}: {
+  config: WebPushConfig;
+  subscriptions: WebPushSubscriptionSummary[];
+}) {
+  const [status, setStatus] = useState("Checking this browser...");
+  const [busy, setBusy] = useState(false);
+  const [endpoint, setEndpoint] = useState<string | null>(null);
+  const [unavailable, setUnavailable] = useState<string | null>(null);
+  const [testStatus, setTestStatus] = useState<string | null>(null);
+  const [permission, setPermission] = useState<NotificationPermission | "unknown">("unknown");
+  const [swState, setSwState] = useState<"registered" | "absent" | "unknown" | "unsupported">("unknown");
+  const [showDetails, setShowDetails] = useState(false);
+
+  async function refreshSubscriptionState() {
+    if (!hasNavigatorFeature("serviceWorker")) {
+      setSwState("unsupported");
+      return;
+    }
+    try {
+      const registration = await navigator.serviceWorker.getRegistration("/");
+      await registration?.update().catch(() => undefined);
+      setSwState(registration ? "registered" : "absent");
+      const existing = await registration?.pushManager.getSubscription();
+      setEndpoint(existing?.endpoint ?? null);
+    } catch {
+      setSwState("unknown");
+    }
+  }
+
+  useEffect(() => {
+    const reason = detectSupport(config);
+    setUnavailable(reason);
+    if ("Notification" in window) {
+      setPermission(Notification.permission);
+    }
+    setStatus(reason ? "Unavailable in this browser" : `Permission: ${Notification.permission}`);
+    if (reason) {
+      return;
+    }
+    let cancelled = false;
+    navigator.serviceWorker
+      .getRegistration("/")
+      .then(async (registration) => {
+        if (cancelled) {
+          return;
+        }
+        setSwState(registration ? "registered" : "absent");
+        await registration?.update().catch(() => undefined);
+        const existing = await registration?.pushManager.getSubscription();
+        if (cancelled) {
+          return;
+        }
+        if (existing) {
+          setEndpoint(existing.endpoint);
+          setStatus("Web Push is enabled for this browser.");
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setSwState("unknown");
+          setStatus("Could not inspect this browser's Web Push subscription.");
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [config]);
+
+  async function enable() {
+    if (!config.public_key) {
+      return;
+    }
+    setBusy(true);
+    setTestStatus(null);
+    try {
+      const registration = await navigator.serviceWorker.register("/pdpp-dashboard-sw.js");
+      setSwState("registered");
+      const result = await Notification.requestPermission();
+      setPermission(result);
+      if (result !== "granted") {
+        setStatus(
+          result === "denied"
+            ? "Permission denied. Enable notifications in browser settings."
+            : "Permission was not granted."
+        );
+        return;
+      }
+      const subscription =
+        (await registration.pushManager.getSubscription()) ??
+        (await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(config.public_key),
+        }));
+      const response = await fetch("/_ref/web-push/subscriptions", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({
+          subscription: subscription.toJSON(),
+          platform: navigator.platform || null,
+          device_label: "Dashboard browser",
+        }),
+      });
+      if (!response.ok) {
+        throw await webPushResponseError(response, "Subscription failed");
+      }
+      setEndpoint(subscription.endpoint);
+      setStatus("Web Push is enabled for this browser.");
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : "Failed to enable Web Push.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function sendTest() {
+    setBusy(true);
+    setTestStatus("Sending test notification...");
+    try {
+      const response = await fetch("/_ref/web-push/test", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+      });
+      if (!response.ok) {
+        throw await webPushResponseError(response, "Test notification failed");
+      }
+      const body = (await response.json()) as {
+        attempted?: number;
+        sent?: number;
+        unavailable?: boolean;
+      };
+      if (body.unavailable) {
+        setTestStatus("Web Push is unavailable on the server.");
+      } else if ((body.sent ?? 0) > 0) {
+        setTestStatus(`Test notification sent to ${body.sent} subscription${body.sent === 1 ? "" : "s"}.`);
+      } else if ((body.attempted ?? 0) === 0) {
+        setTestStatus("No active subscriptions for this owner. Enable this device first.");
+      } else {
+        setTestStatus("Push provider did not accept the test notification. Re-enable Web Push for this browser.");
+      }
+    } catch (err) {
+      setTestStatus(err instanceof Error ? err.message : "Failed to send test notification.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function disable() {
+    setBusy(true);
+    setTestStatus(null);
+    try {
+      const registration = await navigator.serviceWorker.getRegistration("/");
+      const subscription = await registration?.pushManager.getSubscription();
+      const targetEndpoint = subscription?.endpoint ?? endpoint;
+      if (subscription) {
+        await subscription.unsubscribe();
+      }
+      if (targetEndpoint) {
+        const response = await fetch("/_ref/web-push/subscriptions", {
+          method: "DELETE",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          body: JSON.stringify({ endpoint: targetEndpoint }),
+        });
+        if (!response.ok) {
+          throw await webPushResponseError(response, "Unsubscribe failed");
+        }
+      }
+      setEndpoint(null);
+      setStatus("Web Push is disabled for this browser.");
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : "Failed to disable Web Push.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Per-device install reminder. Each browser/PWA install needs its own
+  // pushManager.subscribe() — installing the PWA does not create a push
+  // subscription on its own.
+  const caveat =
+    "Mobile browsers may require opening the installed dashboard app before notifications can arrive. Each phone, tablet, and browser profile must be enabled separately.";
+
+  const lastSubscription = subscriptions[0];
+  const matchesThisBrowser = endpoint ? subscriptions.some((s) => s.endpoint === endpoint && !s.revoked_at) : false;
+  const currentDeviceStatus = deviceStatus({ unavailable, permission, endpoint, matchesThisBrowser, swState });
+  const setupSteps = buildSetupSteps({ unavailable, permission, endpoint, matchesThisBrowser, testStatus });
+
+  const diagnostics = buildDiagnostics({
+    config,
+    swState,
+    permission,
+    endpoint,
+    matchesThisBrowser,
+    subscriptions,
+    lastSubscription,
+  });
+
+  return (
+    <Section
+      description="Optional browser-native alerts for pending connector interactions."
+      title="Browser notifications"
+    >
+      <div className="rounded-lg border border-border/80 bg-card/60 p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="pdpp-body font-medium">{currentDeviceStatus.title}</p>
+            <p className="pdpp-caption mt-1 max-w-3xl text-muted-foreground">{currentDeviceStatus.detail}</p>
+            <p className="pdpp-caption mt-1 max-w-3xl text-muted-foreground">{caveat}</p>
+          </div>
+          <div className="flex gap-2">
+            <button
+              className="rounded-md bg-foreground px-3 py-1.5 text-background text-sm disabled:opacity-50"
+              disabled={busy || Boolean(unavailable)}
+              onClick={enable}
+              type="button"
+            >
+              Enable this device
+            </button>
+            <button
+              className="rounded-md border border-border px-3 py-1.5 text-sm disabled:opacity-50"
+              disabled={busy || !endpoint}
+              onClick={disable}
+              type="button"
+            >
+              Disable this device
+            </button>
+            <button
+              className="rounded-md border border-border px-3 py-1.5 text-sm disabled:opacity-50"
+              disabled={busy || !endpoint || Boolean(unavailable)}
+              onClick={sendTest}
+              type="button"
+            >
+              Send test notification
+            </button>
+          </div>
+        </div>
+        <ol className="mt-4 grid gap-2 md:grid-cols-4">
+          {setupSteps.map((step) => (
+            <li className={`rounded-md border px-3 py-2 ${setupStepToneClass(step.state)}`} key={step.label}>
+              <div className="pdpp-caption flex items-center gap-2 font-medium">
+                <span aria-hidden="true" className={`font-mono ${diagnosticToneClass(step.state)}`}>
+                  {diagnosticMarker(step.state)}
+                </span>
+                {step.label}
+              </div>
+              <p className="pdpp-caption mt-1 text-muted-foreground">{step.detail}</p>
+            </li>
+          ))}
+        </ol>
+        <p className="pdpp-caption mt-3 text-muted-foreground">Last check: {status}</p>
+        {testStatus ? <p className="pdpp-caption mt-3 text-muted-foreground">{testStatus}</p> : null}
+        {subscriptions.length > 0 ? (
+          <p className="pdpp-caption mt-3 text-muted-foreground">
+            {subscriptions.length} saved browser subscription{subscriptions.length === 1 ? "" : "s"}. Last status:{" "}
+            {lastSubscription?.last_failure_reason || lastSubscription?.last_success_at || "not used yet"}.
+          </p>
+        ) : null}
+
+        <div className="mt-4 border-border/60 border-t pt-3">
+          <button
+            aria-controls="web-push-diagnostics"
+            aria-expanded={showDetails}
+            className="pdpp-caption text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+            onClick={async () => {
+              const next = !showDetails;
+              setShowDetails(next);
+              if (next) {
+                await refreshSubscriptionState();
+              }
+            }}
+            type="button"
+          >
+            {showDetails ? "Hide diagnostics" : "Show diagnostics"}
+          </button>
+          {showDetails ? (
+            <ul aria-label="Web Push diagnostics" className="mt-3 space-y-1.5" id="web-push-diagnostics">
+              {diagnostics.map((row) => (
+                <li className="pdpp-caption flex items-start gap-2" key={row.label}>
+                  <span
+                    aria-hidden="true"
+                    className={`inline-block w-10 shrink-0 font-mono ${diagnosticToneClass(row.state)}`}
+                  >
+                    {diagnosticMarker(row.state)}
+                  </span>
+                  <span className="min-w-0">
+                    <span className="font-medium text-foreground">{row.label}</span>
+                    <span className="ml-2 text-muted-foreground">{row.detail}</span>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      </div>
+    </Section>
+  );
+}
