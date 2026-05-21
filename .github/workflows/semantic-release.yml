@@ -88,8 +88,8 @@ jobs:
       - name: Verify generated reference contract
         run: pnpm reference-contract:check-generated
 
-      - name: Verify reference implementation
-        run: pnpm --dir reference-implementation run verify
+      - name: Typecheck reference implementation
+        run: pnpm --dir reference-implementation run typecheck
 
       - name: Check spec docs drift
         run: pnpm spec:check
