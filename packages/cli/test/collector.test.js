@@ -205,7 +205,7 @@ test('spawnCollectorRunner falls back to @pdpp/local-collector when monorepo run
   await mkdir(join(dir, 'dist', 'local-collector', 'bin'), { recursive: true });
   await writeFile(
     join(dir, 'package.json'),
-    JSON.stringify({ bin: { 'pdpp-local-collector': './dist/local-collector/bin/pdpp-local-collector.js' } }),
+    JSON.stringify({ bin: { 'pdpp-local-collector': 'dist/local-collector/bin/pdpp-local-collector.js' } }),
   );
   await writeFile(join(dir, 'dist', 'local-collector', 'bin', 'pdpp-local-collector.js'), '');
 

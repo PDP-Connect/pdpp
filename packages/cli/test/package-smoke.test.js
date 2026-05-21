@@ -13,7 +13,7 @@ test('package manifest stays intentionally narrow', () => {
   const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 
   assert.equal(manifest.name, '@pdpp/cli');
-  assert.deepEqual(manifest.bin, { pdpp: './bin/pdpp.js' });
+  assert.deepEqual(manifest.bin, { pdpp: 'bin/pdpp.js' });
   assert.equal(manifest.publishConfig.tag, 'beta');
   assert.equal(manifest.publishConfig.provenance, false);
   assert.equal(Object.hasOwn(manifest, 'dependencies'), false);
