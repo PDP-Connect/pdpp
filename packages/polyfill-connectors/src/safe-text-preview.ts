@@ -73,11 +73,15 @@ function isForbiddenCodePoint(codeUnit: number): boolean {
  * Check if a string contains any forbidden code points.
  * Returns { isSafe: boolean, firstOffendingIndex?: number, offendingCodeUnit?: number }
  */
-function checkStringForForbidden(value: string): {
-  isSafe: boolean;
-  firstOffendingIndex?: number;
-  offendingCodeUnit?: number;
-} {
+type ForbiddenCheckResult =
+  | { isSafe: true }
+  | {
+      isSafe: false;
+      firstOffendingIndex: number;
+      offendingCodeUnit: number;
+    };
+
+function checkStringForForbidden(value: string): ForbiddenCheckResult {
   for (let i = 0; i < value.length; i++) {
     const codeUnit = value.charCodeAt(i);
     if (isForbiddenCodePoint(codeUnit)) {
@@ -94,14 +98,13 @@ function checkStringForForbidden(value: string): {
 /**
  * Decode a buffer to UTF-8 with validation. Returns { success: boolean, text?: string, reason?: string }
  */
-function decodeBuffer(buf: Buffer | Uint8Array): {
-  success: boolean;
-  text?: string;
-  reason?: string;
-} {
+type DecodeBufferResult = { success: true; text: string } | { success: false; reason: string };
+
+function decodeBuffer(buf: Buffer | Uint8Array): DecodeBufferResult {
   // Prefer Buffer.isUtf8 if available (Node 19+).
   // Use type assertion since this function is available in Node 19+ but not in older TS type definitions.
-  const isUtf8 = (Buffer as unknown as { isUtf8?: (buf: Buffer) => boolean }).isUtf8;
+  const bufferWithUtf8 = Buffer as typeof Buffer & { isUtf8?: (buf: Buffer) => boolean };
+  const isUtf8 = bufferWithUtf8.isUtf8;
   if (typeof isUtf8 === "function" && buf instanceof Buffer) {
     if (!isUtf8(buf)) {
       return { success: false, reason: "invalid UTF-8 sequence in buffer" };
@@ -114,7 +117,7 @@ function decodeBuffer(buf: Buffer | Uint8Array): {
     const decoder = new TextDecoder("utf-8", { fatal: true });
     const text = decoder.decode(buf);
     return { success: true, text };
-  } catch (err) {
+  } catch {
     return { success: false, reason: "invalid UTF-8 sequence in buffer" };
   }
 }
@@ -139,7 +142,7 @@ function truncateString(text: string, maxChars: number): { result: string; wasTr
     }
   }
 
-  const truncated = text.slice(0, truncateAt) + "…";
+  const truncated = `${text.slice(0, truncateAt)}…`;
   return { result: truncated, wasTruncated: true };
 }
 
@@ -196,7 +199,7 @@ export function safeTextPreview(value: unknown, maxChars: number = PDPP_PREVIEW_
         reason: decoded.reason || "invalid UTF-8",
       };
     }
-    text = decoded.text!;
+    text = decoded.text;
   } else if (value instanceof Uint8Array) {
     originalLength = value.length;
     const decoded = decodeBuffer(value);
@@ -209,7 +212,7 @@ export function safeTextPreview(value: unknown, maxChars: number = PDPP_PREVIEW_
         reason: decoded.reason || "invalid UTF-8",
       };
     }
-    text = decoded.text!;
+    text = decoded.text;
   } else {
     // Any other type (number, object, etc.) → empty.
     return {
@@ -235,8 +238,8 @@ export function safeTextPreview(value: unknown, maxChars: number = PDPP_PREVIEW_
   // Check for forbidden code points in the decoded/original string.
   const forbidden = checkStringForForbidden(text);
   if (!forbidden.isSafe) {
-    const offendingIndex = forbidden.firstOffendingIndex!;
-    const codeUnit = forbidden.offendingCodeUnit!;
+    const offendingIndex = forbidden.firstOffendingIndex;
+    const codeUnit = forbidden.offendingCodeUnit;
     const reason =
       codeUnit === 0x00_00
         ? `U+0000 at offset ${offendingIndex}`

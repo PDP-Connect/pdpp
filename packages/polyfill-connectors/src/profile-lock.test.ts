@@ -128,14 +128,14 @@ test("withProfileLockMutex: a throwing critical section does not poison the queu
   const log: string[] = [];
   await assert.rejects(
     () =>
-      withProfileLockMutex(dir, async () => {
+      withProfileLockMutex(dir, () => {
         log.push("first-enter");
         throw new Error("boom");
       }),
     /boom/
   );
   // Subsequent call still runs cleanly.
-  await withProfileLockMutex(dir, async () => {
+  await withProfileLockMutex(dir, () => {
     log.push("second-enter");
   });
   assert.deepEqual(log, ["first-enter", "second-enter"]);

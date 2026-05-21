@@ -83,7 +83,9 @@ const profileMutex = new Map<string, Promise<unknown>>();
  * mutex chain is preserved regardless (subsequent callers wait for
  * settlement, not for success).
  */
-export async function withProfileLockMutex<T>(profileDir: string, criticalSection: () => Promise<T>): Promise<T> {
+type MaybePromise<T> = T | Promise<T>;
+
+export async function withProfileLockMutex<T>(profileDir: string, criticalSection: () => MaybePromise<T>): Promise<T> {
   const prior = profileMutex.get(profileDir) ?? Promise.resolve();
   let releaseAfter: () => void = () => undefined;
   const ours = new Promise<void>((resolve) => {

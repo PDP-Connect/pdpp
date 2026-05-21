@@ -2,12 +2,7 @@
 // they can be unit-tested in isolation (see parsers.test.ts). The IMAP
 // client, its side effects, and clock-dependent helpers live in index.ts.
 
-import type {
-  MessageAddressObject,
-  MessageEnvelopeObject,
-  MessageStructureObject,
-  // biome-ignore lint/correctness/noUnresolvedImports: imapflow is declared in package.json; Biome's resolver doesn't see it here
-} from "imapflow";
+import type { MessageAddressObject, MessageEnvelopeObject, MessageStructureObject } from "imapflow";
 import type { AttachmentRecord, BodySource, ClassifiedBody, ThreadAggregate } from "./types.ts";
 
 // ─── Module-scoped regexes (Biome useTopLevelRegex) ─────────────────────
@@ -176,6 +171,27 @@ export function sanitizeForJsonl(v: unknown): unknown {
 
 // ─── BODYSTRUCTURE walking ──────────────────────────────────────────────
 
+function isAttachmentLikeBodystructureLeaf(node: MessageStructureObject): boolean {
+  const disposition = node.disposition;
+  const filename = node.dispositionParameters?.filename ?? node.parameters?.name ?? null;
+  const contentId = node.id || null;
+  const isTextLeaf = typeof node.type === "string" && node.type.startsWith("text/");
+
+  if (disposition === "attachment") {
+    return true;
+  }
+  if (filename) {
+    return true;
+  }
+  if (disposition !== "inline") {
+    return false;
+  }
+
+  // Inline body alternatives are not attachments; cid-referenced non-text
+  // leaves are real files even when presented inline.
+  return !isTextLeaf && Boolean(contentId);
+}
+
 /**
  * Walk a BODYSTRUCTURE tree and emit an AttachmentRecord for every leaf
  * whose disposition is attachment/inline or which carries a filename
@@ -206,10 +222,7 @@ export function decodeBodystructureForAttachments(
       });
       return;
     }
-    const disposition = node.disposition;
     const filename = node.dispositionParameters?.filename ?? node.parameters?.name ?? null;
-    const contentId = node.id || null;
-    const isTextLeaf = typeof node.type === "string" && node.type.startsWith("text/");
 
     // Classifier (RFC 2045 / RFC 2183 grounded):
     //   - disposition=attachment    → always a real attachment.
@@ -231,19 +244,7 @@ export function decodeBodystructureForAttachments(
     // real mailbox. Verified against IMAP truth on a sample of 480
     // messages across 2020/2022/2024/2026: this classifier emits exactly
     // the truth set (zero false-positives, zero missed real attachments).
-    let isAttachmentLike: boolean;
-    if (disposition === "attachment") {
-      isAttachmentLike = true;
-    } else if (filename) {
-      isAttachmentLike = true;
-    } else if (disposition === "inline") {
-      // No filename. Keep only inline non-text leaves that carry a
-      // Content-ID (cid:-referenced files); drop body alternatives.
-      isAttachmentLike = !isTextLeaf && Boolean(contentId);
-    } else {
-      isAttachmentLike = false;
-    }
-    if (!isAttachmentLike) {
+    if (!isAttachmentLikeBodystructureLeaf(node)) {
       return;
     }
     const partIndex = p || "1";
@@ -254,7 +255,7 @@ export function decodeBodystructureForAttachments(
       content_type: node.type || null,
       size_bytes: typeof node.size === "number" ? node.size : null,
       content_id: node.id || null,
-      is_inline: disposition === "inline",
+      is_inline: node.disposition === "inline",
       encoding: node.encoding || null,
       part_index: partIndex,
       message_received_at: receivedAt,

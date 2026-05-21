@@ -2,6 +2,20 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { PDPP_PREVIEW_MAX_CHARS, safeTextPreview } from "./safe-text-preview.ts";
 
+function assertTextPreview(preview: string | null): string {
+  if (typeof preview !== "string") {
+    assert.fail("expected preview to be a string");
+  }
+  return preview;
+}
+
+function assertReasonIncludes(reason: string | null, expected: string): void {
+  if (typeof reason !== "string") {
+    assert.fail("expected reason to be a string");
+  }
+  assert.ok(reason.includes(expected));
+}
+
 test("empty string → empty, preview null", () => {
   const result = safeTextPreview("");
   assert.equal(result.kind, "empty");
@@ -49,9 +63,10 @@ test("5000 x's → text, truncated with ellipsis", () => {
   assert.equal(result.truncated, true);
   assert.equal(result.originalLength, 5000);
   // Should be 4000 x's + U+2026
-  assert.equal(result.preview!.length, 4001);
-  assert(result.preview!.endsWith("…"));
-  assert.equal(result.preview!.slice(0, 4000), "x".repeat(4000));
+  const preview = assertTextPreview(result.preview);
+  assert.equal(preview.length, 4001);
+  assert(preview.endsWith("…"));
+  assert.equal(preview.slice(0, 4000), "x".repeat(4000));
 });
 
 test("string with U+0000 (NUL) → binary", () => {
@@ -59,8 +74,8 @@ test("string with U+0000 (NUL) → binary", () => {
   const result = safeTextPreview(input);
   assert.equal(result.kind, "binary");
   assert.equal(result.preview, null);
-  assert(result.reason!.includes("U+0000"));
-  assert(result.reason!.includes("offset 5"));
+  assertReasonIncludes(result.reason, "U+0000");
+  assertReasonIncludes(result.reason, "offset 5");
   assert.equal(result.originalLength, 11);
 });
 
@@ -77,7 +92,7 @@ test("string with forbidden C0 control (U+000B vertical tab) → binary", () => 
   const result = safeTextPreview(input);
   assert.equal(result.kind, "binary");
   assert.equal(result.preview, null);
-  assert(result.reason!.includes("U+000B"));
+  assertReasonIncludes(result.reason, "U+000B");
 });
 
 test("string with forbidden C0 control (U+000C form feed) → binary", () => {
@@ -85,7 +100,7 @@ test("string with forbidden C0 control (U+000C form feed) → binary", () => {
   const result = safeTextPreview(input);
   assert.equal(result.kind, "binary");
   assert.equal(result.preview, null);
-  assert(result.reason!.includes("U+000C"));
+  assertReasonIncludes(result.reason, "U+000C");
 });
 
 test("string with forbidden C0 control (U+001E record separator) → binary", () => {
@@ -93,7 +108,7 @@ test("string with forbidden C0 control (U+001E record separator) → binary", ()
   const result = safeTextPreview(input);
   assert.equal(result.kind, "binary");
   assert.equal(result.preview, null);
-  assert(result.reason!.includes("U+001E"));
+  assertReasonIncludes(result.reason, "U+001E");
 });
 
 test("string with DEL (U+007F) → binary", () => {
@@ -101,7 +116,7 @@ test("string with DEL (U+007F) → binary", () => {
   const result = safeTextPreview(input);
   assert.equal(result.kind, "binary");
   assert.equal(result.preview, null);
-  assert(result.reason!.includes("U+007F"));
+  assertReasonIncludes(result.reason, "U+007F");
 });
 
 test("string with C1 control (U+0080) → binary", () => {
@@ -109,7 +124,7 @@ test("string with C1 control (U+0080) → binary", () => {
   const result = safeTextPreview(input);
   assert.equal(result.kind, "binary");
   assert.equal(result.preview, null);
-  assert(result.reason!.includes("U+0080"));
+  assertReasonIncludes(result.reason, "U+0080");
 });
 
 test("string with C1 control (U+009F) → binary", () => {
@@ -117,7 +132,7 @@ test("string with C1 control (U+009F) → binary", () => {
   const result = safeTextPreview(input);
   assert.equal(result.kind, "binary");
   assert.equal(result.preview, null);
-  assert(result.reason!.includes("U+009F"));
+  assertReasonIncludes(result.reason, "U+009F");
 });
 
 test("Buffer with valid UTF-8 → text", () => {
@@ -134,7 +149,7 @@ test("Buffer with invalid UTF-8 (0xFF 0xFF) → binary", () => {
   const result = safeTextPreview(buf);
   assert.equal(result.kind, "binary");
   assert.equal(result.preview, null);
-  assert(result.reason!.includes("UTF-8"));
+  assertReasonIncludes(result.reason, "UTF-8");
   assert.equal(result.originalLength, 2);
 });
 
@@ -143,7 +158,7 @@ test("Buffer containing NUL byte → binary", () => {
   const result = safeTextPreview(buf);
   assert.equal(result.kind, "binary");
   assert.equal(result.preview, null);
-  assert(result.reason!.includes("U+0000"));
+  assertReasonIncludes(result.reason, "U+0000");
 });
 
 test("valid 4-byte UTF-8 emoji (U+10000) → text", () => {
@@ -198,13 +213,13 @@ test("truncation does not split a surrogate pair", () => {
   // 3999 x's + 😀 (U+1F600, which is a 2-code-unit surrogate pair) + "yy"
   // At maxChars=4000, we'd naturally truncate after the high surrogate of 😀.
   // We should back off by 1, leaving just the x's.
-  const input = "x".repeat(3999) + "😀yy";
+  const input = `${"x".repeat(3999)}😀yy`;
   const result = safeTextPreview(input, 4000);
   assert.equal(result.kind, "text");
   assert.equal(result.truncated, true);
   // After truncating at 4000, we'd cut the high surrogate of the emoji.
   // So we back off by 1, giving us 3999 x's + ellipsis.
-  assert.equal(result.preview, "x".repeat(3999) + "…");
+  assert.equal(result.preview, `${"x".repeat(3999)}…`);
 });
 
 test("custom maxChars parameter is respected", () => {
@@ -212,9 +227,10 @@ test("custom maxChars parameter is respected", () => {
   assert.equal(result.kind, "text");
   assert.equal(result.truncated, true);
   // Should be 50 a's + ellipsis
-  assert.equal(result.preview!.length, 51);
-  assert.equal(result.preview!.slice(0, 50), "a".repeat(50));
-  assert(result.preview!.endsWith("…"));
+  const preview = assertTextPreview(result.preview);
+  assert.equal(preview.length, 51);
+  assert.equal(preview.slice(0, 50), "a".repeat(50));
+  assert(preview.endsWith("…"));
 });
 
 test("PDPP_PREVIEW_MAX_CHARS is a reasonable default", () => {
@@ -234,7 +250,7 @@ test("Uint8Array with invalid UTF-8 → binary", () => {
   const result = safeTextPreview(arr);
   assert.equal(result.kind, "binary");
   assert.equal(result.preview, null);
-  assert(result.reason!.includes("UTF-8"));
+  assertReasonIncludes(result.reason, "UTF-8");
 });
 
 test("very long UTF-8 multibyte sequence → text, respects maxChars", () => {
@@ -245,8 +261,9 @@ test("very long UTF-8 multibyte sequence → text, respects maxChars", () => {
   assert.equal(result.kind, "text");
   assert.equal(result.truncated, true);
   // 100 emoji + ellipsis = 101 characters
-  assert.equal(result.preview!.length, 101);
-  assert(result.preview!.endsWith("…"));
+  const preview = assertTextPreview(result.preview);
+  assert.equal(preview.length, 101);
+  assert(preview.endsWith("…"));
 });
 
 test("mixed ASCII and multibyte UTF-8 → text", () => {
@@ -261,12 +278,12 @@ test("string ending with high surrogate that needs truncation → backs off corr
   // Create exactly maxChars characters where the last one is a high surrogate.
   // We use a 2-code-unit character at position maxChars-1.
   const maxChars = 10;
-  const input = "a".repeat(9) + "😀"; // 9 + 2 = 11 code units total
+  const input = `${"a".repeat(9)}😀`; // 9 + 2 = 11 code units total
   const result = safeTextPreview(input, maxChars);
   assert.equal(result.kind, "text");
   assert.equal(result.truncated, true);
   // We should back off from the surrogate pair and get 9 a's + ellipsis
-  assert.equal(result.preview, "a".repeat(9) + "…");
+  assert.equal(result.preview, `${"a".repeat(9)}…`);
 });
 
 test("ELF magic bytes (binary) → binary", () => {
@@ -275,7 +292,7 @@ test("ELF magic bytes (binary) → binary", () => {
   assert.equal(result.kind, "binary");
   assert.equal(result.preview, null);
   // 0x7F is DEL (U+007F), which is forbidden
-  assert(result.reason!.includes("U+007F"));
+  assertReasonIncludes(result.reason, "U+007F");
 });
 
 test("JPEG magic bytes (binary) → binary", () => {
@@ -283,7 +300,7 @@ test("JPEG magic bytes (binary) → binary", () => {
   const result = safeTextPreview(buf);
   assert.equal(result.kind, "binary");
   assert.equal(result.preview, null);
-  assert(result.reason!.includes("UTF-8"));
+  assertReasonIncludes(result.reason, "UTF-8");
 });
 
 test("truncation appends exactly one U+2026 character", () => {
@@ -291,7 +308,8 @@ test("truncation appends exactly one U+2026 character", () => {
   const result = safeTextPreview(input);
   assert.equal(result.kind, "text");
   // The last character should be U+2026
-  assert.equal(result.preview!.charCodeAt(result.preview!.length - 1), 0x20_26);
+  const preview = assertTextPreview(result.preview);
+  assert.equal(preview.charCodeAt(preview.length - 1), 0x20_26);
 });
 
 test("reason field is null for 'text' kind", () => {
@@ -330,7 +348,7 @@ test("string with first forbidden byte at offset 0 → reason includes offset 0"
   const input = "\x00start";
   const result = safeTextPreview(input);
   assert.equal(result.kind, "binary");
-  assert(result.reason!.includes("offset 0"));
+  assertReasonIncludes(result.reason, "offset 0");
 });
 
 test("string longer than default PDPP_PREVIEW_MAX_CHARS with no custom max", () => {
@@ -338,13 +356,13 @@ test("string longer than default PDPP_PREVIEW_MAX_CHARS with no custom max", () 
   const result = safeTextPreview(input); // uses default
   assert.equal(result.kind, "text");
   assert.equal(result.truncated, true);
-  assert.equal(result.preview!.length, PDPP_PREVIEW_MAX_CHARS + 1); // max + ellipsis
+  assert.equal(assertTextPreview(result.preview).length, PDPP_PREVIEW_MAX_CHARS + 1); // max + ellipsis
 });
 
 test("buffer of all null bytes → binary, reason mentions U+0000", () => {
   const buf = Buffer.from([0x00, 0x00, 0x00]);
   const result = safeTextPreview(buf);
   assert.equal(result.kind, "binary");
-  assert(result.reason!.includes("U+0000"));
+  assertReasonIncludes(result.reason, "U+0000");
   assert.equal(result.originalLength, 3);
 });
