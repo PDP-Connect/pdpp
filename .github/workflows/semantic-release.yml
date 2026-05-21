@@ -174,7 +174,7 @@ jobs:
 
   release:
     name: publish GitHub and npm release
-    needs: [resolve-version, quality, validate-release-images]
+    needs: [resolve-version, quality]
     if: needs.resolve-version.outputs.new-release-published == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -216,7 +216,7 @@ jobs:
 
   publish-images:
     name: publish release image ${{ matrix.image }}
-    needs: release
+    needs: [release, validate-release-images]
     if: needs.release.outputs.published == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
