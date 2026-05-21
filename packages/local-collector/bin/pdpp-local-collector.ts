@@ -73,6 +73,11 @@ export interface CliOptions {
 
 const HELP_TEXT = `pdpp-local-collector — PDPP local collector runner.
 
+Ownership: the local device/host supervisor decides when filesystem-class
+collectors run. The reference server owns enrollment, ingestion, state, health
+diagnostics, and optional desired-freshness/request-run signals; it does not
+start local processes.
+
 Subcommands:
   advertise                       Print runtime capabilities and protocol version.
   status                          Print local durable outbox health as JSON.
@@ -94,6 +99,8 @@ Subcommands:
           [--run-id <id>]
 
 Public connectors: ${BUNDLED_CONNECTOR_IDS.join(", ")}.
+Connection id is the stable source identity for one device/account/home binding;
+enrollment responses currently return it as source_instance_id.
 Browser-bound connectors stay in the monorepo until each has its own
 publishability review.
 
@@ -247,6 +254,7 @@ export interface LocalOutboxStatusOutput {
     version: string;
   };
   source: {
+    connection_id: string | null;
     source_instance_id: string | null;
   };
 }
@@ -292,6 +300,7 @@ export function inspectLocalOutboxStatus(options: CliOptions): LocalOutboxStatus
       version: LOCAL_COLLECTOR_PACKAGE_VERSION,
     },
     source: {
+      connection_id: options.sourceInstanceId ?? null,
       source_instance_id: options.sourceInstanceId ?? null,
     },
   };

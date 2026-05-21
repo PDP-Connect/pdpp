@@ -7,6 +7,13 @@ ships only the local collector runner, the device-exporter client, and bundled
 Claude Code / Codex connector entrypoints. Browser/Patchright-backed connectors
 stay out of this package until each has its own publishability review.
 
+For filesystem-class collectors, the local device or host supervisor decides
+when the process runs. The reference server owns enrollment, ingestion, state,
+health diagnostics, and optional desired-freshness/request-run signals, but it
+does not start local processes. `PDPP_CONNECTION_ID` is the stable
+connection/source identity for a specific device/account/home binding; the
+enrollment response currently names that value `source_instance_id`.
+
 ## Usage
 
 ```bash
