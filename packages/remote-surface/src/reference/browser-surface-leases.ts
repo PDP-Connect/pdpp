@@ -541,13 +541,16 @@ export class BrowserSurfaceLeaseManager {
       token += 1;
       return token;
     });
+    const filteredSurfaceIds = new Set<string>();
     for (const surface of options.initialSurfaces ?? []) {
       if (this.#isCompatibleInitialSurface(surface)) {
         this.#surfaces.set(surface.surface_id, surface);
+      } else {
+        filteredSurfaceIds.add(surface.surface_id);
       }
     }
     for (const lease of options.initialLeases ?? []) {
-      if (lease.surface_id && !this.#surfaces.has(lease.surface_id)) {
+      if (lease.surface_id && filteredSurfaceIds.has(lease.surface_id)) {
         continue;
       }
       this.#leases.set(lease.lease_id, lease);
