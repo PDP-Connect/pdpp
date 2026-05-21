@@ -72,6 +72,10 @@ const SVG_CSS_COLOR_FUNCTION_PATTERN = /oklch\(|lab\(|lch\(|color\(/i;
 const SVG_BACKGROUND_PATTERN = /<rect[^>]+width="32"[^>]+height="32"[^>]+fill="#f8f6f0"/;
 const SVG_BRAND_COPPER_PATTERN = /fill="#a05533"/;
 const SVG_BRAND_BLUE_PATTERN = /fill="#2c73d9"/;
+const ENABLE_CLEARS_TEST_STATUS_PATTERN =
+  /async function enable\(\)[\s\S]*?setBusy\(true\);\s*setTestStatus\(null\);/;
+const DISABLE_CLEARS_TEST_STATUS_PATTERN =
+  /async function disable\(\)[\s\S]*?setBusy\(true\);\s*setTestStatus\(null\);/;
 
 test("WebPushSettings renders unsupported, denied-permission, insecure-context, VAPID, and iOS/PWA caveat states", async () => {
   const src = await readFile(join(HERE, "web-push-settings.tsx"), "utf8");
@@ -166,6 +170,16 @@ test("dashboard test notification button posts to /_ref/web-push/test and gates 
   assert.match(src, DIAGNOSTICS_SEND_TEST_BUTTON_PATTERN);
   assert.match(src, DIAGNOSTICS_SEND_DISABLED_PATTERN);
   assert.match(src, DIAGNOSTICS_NO_SUBSCRIPTIONS_PATTERN);
+});
+
+// After a successful send-test, the status line would otherwise read
+// "Test notification sent..." even after the owner disabled this device or
+// re-enabled it. Clearing testStatus on those transitions prevents that
+// stale, misleading message from outliving the subscription it describes.
+test("dashboard Web Push enable and disable clear any stale test-notification status", async () => {
+  const src = await readFile(join(HERE, "web-push-settings.tsx"), "utf8");
+  assert.match(src, ENABLE_CLEARS_TEST_STATUS_PATTERN);
+  assert.match(src, DISABLE_CLEARS_TEST_STATUS_PATTERN);
 });
 
 test("dashboard Web Push actions surface structured endpoint error details", async () => {

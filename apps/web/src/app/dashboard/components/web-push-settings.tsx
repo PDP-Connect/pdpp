@@ -454,6 +454,7 @@ export function WebPushSettings({
       return;
     }
     setBusy(true);
+    setTestStatus(null);
     try {
       const registration = await navigator.serviceWorker.register("/pdpp-dashboard-sw.js");
       setSwState("registered");
@@ -530,6 +531,7 @@ export function WebPushSettings({
 
   async function disable() {
     setBusy(true);
+    setTestStatus(null);
     try {
       const registration = await navigator.serviceWorker.getRegistration("/");
       const subscription = await registration?.pushManager.getSubscription();
