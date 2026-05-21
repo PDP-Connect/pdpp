@@ -56,8 +56,10 @@ self.addEventListener("push", (event) => {
       const targetUrl = pdppIsAllowedDashboardUrl(rawUrl) ? rawUrl : fallbackUrl;
       const title = typeof payload.title === "string" ? payload.title : pdppDefaultTitle(payload.type);
       const body = typeof payload.body === "string" ? payload.body : pdppDefaultBody(payload.type);
+      const isTestNotification = payload.type === "pdpp.test_notification";
       await self.registration.showNotification(title, {
         body,
+        renotify: isTestNotification,
         tag: pdppDefaultTag(payload),
         data: { url: targetUrl },
       });
