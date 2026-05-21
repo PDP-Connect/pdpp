@@ -7,7 +7,7 @@
   "main": "./dist/local-collector/src/runner.js",
   "types": "./dist/local-collector/src/runner.d.ts",
   "bin": {
-    "pdpp-local-collector": "./dist/local-collector/bin/pdpp-local-collector.js"
+    "pdpp-local-collector": "dist/local-collector/bin/pdpp-local-collector.js"
   },
   "exports": {
     "./runner": {

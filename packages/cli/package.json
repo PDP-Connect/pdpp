@@ -4,7 +4,7 @@
   "description": "Command-line tools for PDPP providers.",
   "type": "module",
   "bin": {
-    "pdpp": "./bin/pdpp.js"
+    "pdpp": "bin/pdpp.js"
   },
   "exports": {
     ".": "./src/index.js",
