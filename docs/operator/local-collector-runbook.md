@@ -47,11 +47,13 @@ Expected output (capabilities may grow):
 ```json
 {
   "runtime": "collector",
-  "bindings": ["network", "browser", "filesystem", "local_device"]
+  "bindings": ["network", "filesystem", "local_device"],
+  "collector_protocol_version": "1",
+  "bundled_connectors": ["claude_code", "codex"]
 }
 ```
 
-Both `claude_code` and `codex` require the `filesystem` binding, which the collector advertises by default. A connector that requires a binding the collector does not advertise will fail before spawn with `runtime_capability_mismatch` &mdash; you do not need to discover that empirically.
+Both `claude_code` and `codex` require the `filesystem` binding, which the collector advertises by default. The published package intentionally does not bundle the `browser` binding; browser-bound connectors stay in the monorepo until each has its own publishability review. A connector that requires a binding the collector does not advertise will fail before spawn with `runtime_capability_mismatch` &mdash; you do not need to discover that empirically.
 
 ## Step 2 &mdash; Mint an enrollment code
 
