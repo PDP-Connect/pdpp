@@ -1,12 +1,37 @@
 #!/usr/bin/env node
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ALLOW_CUSTOM_COMMAND_ENV, CollectorCustomCommandRefusedError, CollectorUsageError, } from "../src/errors.js";
 import { BUNDLED_CONNECTOR_IDS, COLLECTOR_PROTOCOL_VERSION, COLLECTOR_RUNTIME_CAPABILITIES, LocalDeviceOutbox, enrollCollector, getBundledConnector, isMainModule, runCollectorConnector, } from "../src/runner.js";
 const DEFAULT_QUEUE_PATH = join(dirname(fileURLToPath(import.meta.url)), "..", ".pdpp-data", "collector-runner-queue.json");
 const LOCAL_COLLECTOR_PACKAGE_NAME = "@pdpp/local-collector";
-const LOCAL_COLLECTOR_PACKAGE_VERSION = "0.0.0";
+const LOCAL_COLLECTOR_PACKAGE_VERSION_FALLBACK = "0.0.0";
+export function resolveLocalCollectorPackageVersion(startUrl = import.meta.url) {
+    let current = typeof startUrl === "string" && !startUrl.startsWith("file:")
+        ? dirname(startUrl)
+        : dirname(fileURLToPath(startUrl));
+    for (;;) {
+        const manifestPath = join(current, "package.json");
+        if (existsSync(manifestPath)) {
+            try {
+                const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+                if (manifest.name === LOCAL_COLLECTOR_PACKAGE_NAME &&
+                    typeof manifest.version === "string" &&
+                    manifest.version) {
+                    return manifest.version;
+                }
+            }
+            catch {
+            }
+        }
+        const parent = dirname(current);
+        if (parent === current) {
+            return LOCAL_COLLECTOR_PACKAGE_VERSION_FALLBACK;
+        }
+        current = parent;
+    }
+}
 const HELP_TEXT = `pdpp-local-collector — PDPP local collector runner.
 
 Ownership: the local device/host supervisor decides when filesystem-class
@@ -153,7 +178,7 @@ export function inspectLocalOutboxStatus(options) {
         },
         package: {
             name: LOCAL_COLLECTOR_PACKAGE_NAME,
-            version: LOCAL_COLLECTOR_PACKAGE_VERSION,
+            version: resolveLocalCollectorPackageVersion(),
         },
         source: {
             connection_id: options.sourceInstanceId ?? null,

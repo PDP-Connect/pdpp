@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { tmpdir } from 'node:os';
@@ -23,6 +23,7 @@ import {
   buildLocalOutboxDoctor,
   inspectLocalOutboxStatus,
   parseArgs,
+  resolveLocalCollectorPackageVersion,
   scopedDefaultQueuePath,
   summarizeRunResultForCli,
 } from '../bin/pdpp-local-collector.ts';
@@ -67,6 +68,18 @@ test('bundled connector versions map covers every bundled id', () => {
 
 test('runner exports the durable local outbox substrate without private package imports', () => {
   assert.equal(typeof LocalDeviceOutbox, 'function');
+});
+
+test('local collector CLI resolves the installed package manifest version', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'pdpp-local-collector-version-'));
+  const binPath = join(root, 'dist', 'local-collector', 'bin', 'pdpp-local-collector.js');
+  await mkdir(join(root, 'dist', 'local-collector', 'bin'), { recursive: true });
+  await writeFile(
+    join(root, 'package.json'),
+    JSON.stringify({ name: '@pdpp/local-collector', version: '0.1.0-beta.99' })
+  );
+
+  assert.equal(resolveLocalCollectorPackageVersion(binPath), '0.1.0-beta.99');
 });
 
 test('local collector package no longer ships the temporary legacy JSON queue migration bridge', async () => {
