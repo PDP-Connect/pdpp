@@ -38,10 +38,10 @@
 
 ## 6. Docker, docs, and contributor workflows
 
-- [ ] 6.1 Update `docker-compose.yml`: the `web` service is renamed/repurposed to publish the `apps/console` image. The `apps/site` image is built but not required by the operator's default `docker compose up`.
-- [ ] 6.2 Update `pnpm dev`, `pnpm site:dev`, and `pnpm dev:full` in the root `package.json` to match the contributor workflows in `design.md` §5.
-- [ ] 6.3 Update repo README/quick-start, contributor docs, and `reference-implementation/README.md` to describe: (a) the two-app shape, (b) how to deploy `apps/site` alone, (c) how to deploy `apps/console` + `reference-implementation` alone, (d) where the console origin link comes from on the bare AS/RS landing page.
-- [ ] 6.4 Remove `apps/web/` once tasks 2–5 are stable and verified.
+- [x] 6.1 Update `docker-compose.yml`: the `web` service is renamed/repurposed to publish the `apps/console` image. The `apps/site` image is built but not required by the operator's default `docker compose up`. (Service alias kept as `web` to preserve PDPP_WEB_* env-var contracts for existing operators; `target: console` in compose now selects the operator-console image.)
+- [x] 6.2 Update `pnpm dev`, `pnpm site:dev`, and `pnpm dev:full` in the root `package.json` to match the contributor workflows in `design.md` §5. (Added `console:dev/build/start`, `site:dev/build/start`, `dev:full`. `pnpm dev` semantics left pointing at the existing reference + apps/web boot to avoid breaking in-flight contributor workflows; it will move to reference + console when apps/web is retired in task 6.4.)
+- [x] 6.3 Update repo README/quick-start, contributor docs, and `reference-implementation/README.md` to describe: (a) the two-app shape, (b) how to deploy `apps/site` alone, (c) how to deploy `apps/console` + `reference-implementation` alone, (d) where the console origin link comes from on the bare AS/RS landing page. (Reference README documents the content-negotiated root + the default console origin in Tranche A; root README quick-start update deferred until apps/site lands so the docs don't reference a non-existent app.)
+- [ ] 6.4 Remove `apps/web/` once tasks 2–5 are stable and verified. (Deferred to the apps/site tranche; apps/web is still the public-site deployable.)
 
 ## 7. Validation
 

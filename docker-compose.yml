@@ -149,12 +149,19 @@ services:
       retries: 20
       start_period: 10s
 
+  # Operator console service. Renamed/repurposed from the previous "web"
+  # service so the operator default (`docker compose up`) brings up the
+  # self-hosted dashboard + BFF instead of the public pdpp.dev surface.
+  # The service alias is kept as `web` to preserve docker-compose env-var
+  # contracts (PDPP_WEB_IMAGE, PDPP_WEB_PORT, PDPP_WEB_BASE_URL) for
+  # existing operators. The build target is now the `console` stage.
+  # See openspec/changes/split-public-site-and-operator-console.
   web:
     image: ${PDPP_WEB_IMAGE:-ghcr.io/vana-com/pdpp/web:main}
     build:
       context: .
       dockerfile: Dockerfile
-      target: web
+      target: console
     depends_on:
       reference:
         condition: service_healthy

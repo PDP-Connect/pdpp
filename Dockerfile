@@ -25,6 +25,7 @@ FROM base AS deps
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
 COPY apps/web/package.json apps/web/package.json
+COPY apps/console/package.json apps/console/package.json
 COPY packages/pdpp-brand/package.json packages/pdpp-brand/package.json
 COPY packages/polyfill-connectors/package.json packages/polyfill-connectors/package.json
 COPY packages/reference-contract/package.json packages/reference-contract/package.json
@@ -40,6 +41,10 @@ COPY . .
 FROM source AS web-builder
 
 RUN pnpm --filter pdpp-web build
+
+FROM source AS console-builder
+
+RUN pnpm --filter pdpp-console build
 
 FROM base AS reference
 
@@ -90,3 +95,22 @@ COPY --from=web-builder /app/spec-*.md ./
 EXPOSE 3000
 
 CMD ["node", "apps/web/server.js"]
+
+# Operator console: self-hosted dashboard + BFF proxy to the AS/RS. This is
+# the default target for `docker compose up` (see docker-compose.yml `web`
+# service). The public-site image is still built as the `web` stage above
+# until apps/site lands in a follow-up tranche. See
+# openspec/changes/split-public-site-and-operator-console.
+FROM base AS console
+
+ENV NODE_ENV=production \
+    HOSTNAME=0.0.0.0 \
+    PORT=3000
+
+COPY --from=console-builder /app/apps/console/.next/standalone ./
+COPY --from=console-builder /app/apps/console/.next/static ./apps/console/.next/static
+COPY --from=console-builder /app/apps/console/public ./apps/console/public
+
+EXPOSE 3000
+
+CMD ["node", "apps/console/server.js"]
