@@ -551,6 +551,7 @@ test('next_action: structured attention projects a non-secret CTA with source=st
     reason_code: 'push_approval',
     response_contract: 'none',
     source: 'structured',
+    notification_state: 'pending',
   });
 });
 

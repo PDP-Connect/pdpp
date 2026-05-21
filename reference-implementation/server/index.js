@@ -144,6 +144,7 @@ import {
   listPendingApprovals,
 } from './ref-control.ts';
 import { isHealthRelevant as isAttentionHealthRelevant } from '../runtime/attention.ts';
+import { getDefaultConnectorAttentionStore } from './stores/connector-attention-store.js';
 import {
   DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN,
   DEFAULT_PRE_REGISTERED_PUBLIC_CLIENTS,
@@ -7602,6 +7603,25 @@ function createReferenceSchedulerManager({
               routeTo: 'run',
               runId,
               log: logger,
+              // Record the durable notification outcome on the structured
+              // attention row the runtime writer just upserted. The attention
+              // id is the runtime writer's default `att_<runId>_<requestId>`
+              // — kept deterministic so the scheduler seam (which does not
+              // own the per-run writer instance) can address it. A non-default
+              // factory is only used by tests, which do not flow through this
+              // production push path.
+              recordOutcome: async ({ state, reason }) => {
+                const requestId = typeof interaction?.request_id === 'string' ? interaction.request_id : null;
+                if (!requestId) return;
+                const attentionStore = getDefaultConnectorAttentionStore();
+                if (typeof attentionStore.recordNotificationOutcomeById !== 'function') return;
+                await attentionStore.recordNotificationOutcomeById({
+                  attentionId: `att_${runId}_${requestId}`,
+                  outcome: state,
+                  reason: reason || null,
+                  now: new Date().toISOString(),
+                });
+              },
             });
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);

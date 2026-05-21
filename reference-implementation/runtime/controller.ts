@@ -924,6 +924,32 @@ async function fireNtfy(
   }
 }
 
+async function buildAttentionOutcomeRecorder(args: { runId: string; requestId: string | null }) {
+  const requestId = args.requestId;
+  if (!requestId) return null;
+  const runId = args.runId;
+  // Lazy import keeps the runtime startup graph small; this module is only
+  // loaded when an interaction actually fires push delivery.
+  const { getDefaultConnectorAttentionStore } = await import("../server/stores/connector-attention-store.js");
+  const store = getDefaultConnectorAttentionStore() as {
+    recordNotificationOutcomeById?: (input: {
+      attentionId: string;
+      outcome: string;
+      reason: string | null;
+      now: string;
+    }) => Promise<unknown>;
+  };
+  if (typeof store.recordNotificationOutcomeById !== "function") return null;
+  return async ({ state, reason }: { state: string; reason: string | null }) => {
+    await store.recordNotificationOutcomeById!({
+      attentionId: `att_${runId}_${requestId}`,
+      outcome: state,
+      reason: reason || null,
+      now: new Date().toISOString(),
+    });
+  };
+}
+
 async function fireWebPush(
   args: {
     interaction: RuntimeInteraction;
@@ -935,12 +961,18 @@ async function fireWebPush(
 ): Promise<void> {
   try {
     const { fanoutPendingInteractionWebPush } = await import("../server/web-push-notifications.js");
+    const requestId =
+      typeof (args.interaction as { request_id?: unknown }).request_id === "string"
+        ? ((args.interaction as { request_id: string }).request_id)
+        : null;
+    const recordOutcome = await buildAttentionOutcomeRecorder({ runId: args.runId, requestId });
     await fanoutPendingInteractionWebPush({
       interaction: args.interaction,
       connectorDisplayName: args.connectorDisplayName,
       ownerSubjectId: args.ownerSubjectId,
       runId: args.runId,
       log: args.log as Console,
+      ...(recordOutcome ? { recordOutcome } : {}),
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -959,12 +991,18 @@ async function fireAssistanceWebPush(
 ): Promise<void> {
   try {
     const { fanoutAssistanceWebPush } = await import("../server/web-push-notifications.js");
+    const requestId =
+      typeof args.assistance.assistance_request_id === "string"
+        ? (args.assistance.assistance_request_id as string)
+        : null;
+    const recordOutcome = await buildAttentionOutcomeRecorder({ runId: args.runId, requestId });
     await fanoutAssistanceWebPush({
       assistance: args.assistance,
       connectorDisplayName: args.connectorDisplayName,
       ownerSubjectId: args.ownerSubjectId,
       runId: args.runId,
       log: args.log as Console,
+      ...(recordOutcome ? { recordOutcome } : {}),
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

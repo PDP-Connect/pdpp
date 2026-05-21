@@ -472,3 +472,85 @@ test(
     assert.deepEqual(rows, []);
   }),
 );
+
+// ─── Notification-state writer tests ───────────────────────────────────────
+
+test('writer.recordNotificationOutcome updates the tracked row without touching lifecycle', async () => {
+  const store = createFakeStore();
+  const writer = createAttentionWriter({
+    connectorId: 'codex',
+    connectorInstanceId: 'cin_codex_a',
+    runId: 'run_notify_1',
+    store,
+  });
+  const attentionId = await writer.recordInteractionRequest({
+    request_id: 'int_1',
+    kind: 'manual_action',
+    stream: 'conversations',
+  });
+  assert.ok(attentionId);
+
+  const next = await writer.recordNotificationOutcome(attentionId, 'sent', null);
+  assert.ok(next, 'recordNotificationOutcome should return the updated record');
+  assert.equal(next.notification_state, 'sent');
+  assert.equal(next.lifecycle, 'open', 'notification outcome must NOT close the prompt');
+
+  // Confirm the writer re-upserted the same row id (no fan-out).
+  assert.equal(store.upsertCalls.length, 2);
+  assert.equal(store.upsertCalls[1].record.id, attentionId);
+  assert.equal(store.upsertCalls[1].record.notification_state, 'sent');
+});
+
+test('writer.recordNotificationOutcome records failed delivery and keeps prompt open', async () => {
+  const store = createFakeStore();
+  const writer = createAttentionWriter({
+    connectorId: 'codex',
+    connectorInstanceId: 'cin_codex_a',
+    runId: 'run_notify_2',
+    store,
+  });
+  const attentionId = await writer.recordInteractionRequest({
+    request_id: 'int_a',
+    kind: 'manual_action',
+    stream: 'conversations',
+  });
+
+  const next = await writer.recordNotificationOutcome(
+    attentionId,
+    'failed',
+    'transport: 410 gone',
+  );
+  assert.ok(next);
+  assert.equal(next.notification_state, 'failed');
+  assert.equal(next.notification_reason, 'transport: 410 gone');
+  assert.equal(next.lifecycle, 'open', 'failed delivery does NOT terminate the attention');
+});
+
+test('writer.recordNotificationOutcome returns null when attentionId is not tracked', async () => {
+  const store = createFakeStore();
+  const writer = createAttentionWriter({
+    connectorId: 'codex',
+    connectorInstanceId: 'cin_codex_a',
+    runId: 'run_notify_3',
+    store,
+  });
+  const next = await writer.recordNotificationOutcome('att_nonexistent', 'sent', null);
+  assert.equal(next, null);
+});
+
+test('writer.attentionIdForRequest exposes the deterministic id for the push seam', async () => {
+  const store = createFakeStore();
+  const writer = createAttentionWriter({
+    connectorId: 'codex',
+    connectorInstanceId: 'cin_codex_a',
+    runId: 'run_lookup_1',
+    store,
+  });
+  const attentionId = await writer.recordInteractionRequest({
+    request_id: 'int_lookup',
+    kind: 'manual_action',
+    stream: 'conversations',
+  });
+  assert.equal(writer.attentionIdForRequest('int_lookup'), attentionId);
+  assert.equal(writer.attentionIdForRequest('missing'), null);
+});

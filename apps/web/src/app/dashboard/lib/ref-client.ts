@@ -272,6 +272,16 @@ export interface RefNextAction {
   reason_code: string | null;
   response_contract: "response_required" | "none" | null;
   source: "none" | "schedule_fallback" | "structured";
+  /**
+   * Durable notification delivery state for the attention prompt
+   * driving this CTA. `null` for schedule-fallback CTAs (the durable
+   * record is unknown) and for older snapshots that pre-date this
+   * field. The dashboard renders "we notified you / delivery failed /
+   * quiet hours" without rereading transport logs. Per the
+   * schedule/manual-attention spec, `failed` MUST remain visible
+   * — notification failure is not permission to relaunch the run.
+   */
+  notification_state?: "acknowledged" | "failed" | "pending" | "sent" | "suppressed" | null;
 }
 
 export type RefAttentionAxis = "acknowledged" | "in_progress" | "none" | "open";

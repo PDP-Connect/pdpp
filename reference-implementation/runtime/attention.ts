@@ -90,6 +90,32 @@ export type ResponseContract = "none" | "response_required";
 export type Sensitivity = "none" | "non_secret" | "secret";
 
 /**
+ * Durable notification delivery state per the schedule/manual-attention
+ * policy. The state is recorded on the attention record so the operator
+ * console can answer "did we tell the owner?" without re-querying push
+ * transport logs, and so notification failure does not become permission
+ * to repeatedly relaunch the same scheduled run.
+ *
+ *   - `pending`      : the attention exists but no delivery has been
+ *                      attempted yet (default at create).
+ *   - `sent`         : the channel accepted at least one delivery for the
+ *                      current record.
+ *   - `suppressed`   : delivery was intentionally skipped (no opted-in
+ *                      channel, secret sensitivity, quiet hours for an
+ *                      informational tier, or no actionable owner_action).
+ *   - `failed`       : the channel rejected delivery. The attention SHALL
+ *                      remain visible (the projection still surfaces
+ *                      needs_attention) and another scheduled run SHALL
+ *                      NOT be relaunched merely because notification
+ *                      failed.
+ *   - `acknowledged` : the owner has seen the prompt in-band (dashboard
+ *                      open, lifecycle transitioned to acknowledged /
+ *                      in_progress). Recorded so silent suppression and
+ *                      noisy repeats can both be avoided.
+ */
+export type NotificationState = "acknowledged" | "failed" | "pending" | "sent" | "suppressed";
+
+/**
  * Generic attachment kinds.  Implementation details (Playwright Page, n.eko
  * stream URL, CDP wsUrl, QR raw bytes) stay outside this module — only the
  * reference and a redaction-safe label appear here.
@@ -138,6 +164,22 @@ export interface AttentionRecord {
    * runtime never trusts a caller to hand-classify metadata as safe.
    */
   readonly metadata: Readonly<Record<string, unknown>>;
+  /**
+   * Durable notification delivery state. Defaults to `"pending"` on
+   * create; updated by the notification fanout path via
+   * `recordNotificationOutcome`. Persists on the same record as the
+   * lifecycle so a process restart does not lose the fact that a
+   * delivery has been attempted (or has failed).
+   */
+  readonly notification_state: NotificationState;
+  /** ISO-8601 time the last notification outcome was recorded. */
+  readonly notification_updated_at: string | null;
+  /**
+   * Short, redaction-safe reason explaining the latest notification
+   * outcome (e.g. "no_opted_in_channel", "quiet_hours", "vapid_rejected").
+   * Free-form opaque label; never contains owner copy or secret content.
+   */
+  readonly notification_reason: string | null;
 }
 
 // ─── Construction ──────────────────────────────────────────────────────────
@@ -182,6 +224,9 @@ export function createAttention(input: CreateAttentionInput): AttentionRecord {
     action_target: input.action_target ?? null,
     attachments: input.attachments ?? [],
     metadata: Object.freeze({ ...redactMetadata(input.metadata ?? {}) }),
+    notification_state: "pending",
+    notification_updated_at: null,
+    notification_reason: null,
   };
 }
 
@@ -218,7 +263,66 @@ export function transition(record: AttentionRecord, input: TransitionInput): Att
       `attention: invalid transition ${record.lifecycle} -> ${input.to} for ${record.id}`,
     );
   }
-  return { ...record, lifecycle: input.to, updated_at: input.now };
+  // Lifecycle progress into acknowledged/in_progress is the canonical
+  // signal that the owner has seen the prompt — promote the durable
+  // notification state in lockstep so the projection can answer
+  // "is the owner aware?" without re-reading transport logs.
+  const promotedNotification: NotificationState | null =
+    input.to === "acknowledged" || input.to === "in_progress" ? "acknowledged" : null;
+  return {
+    ...record,
+    lifecycle: input.to,
+    updated_at: input.now,
+    notification_state: promotedNotification ?? record.notification_state,
+    notification_updated_at: promotedNotification ? input.now : record.notification_updated_at,
+    notification_reason: promotedNotification ? "owner_acknowledged" : record.notification_reason,
+  };
+}
+
+// ─── Notification state ────────────────────────────────────────────────────
+
+export interface NotificationOutcomeInput {
+  readonly outcome: NotificationState;
+  readonly now: string;
+  /** Opaque, redaction-safe reason label. Never holds owner copy or secrets. */
+  readonly reason?: string | null;
+}
+
+const VALID_NOTIFICATION_STATES: ReadonlySet<NotificationState> = new Set([
+  "acknowledged",
+  "failed",
+  "pending",
+  "sent",
+  "suppressed",
+]);
+
+/**
+ * Pure transition helper for the durable notification axis. The runtime
+ * calls this from the push fanout seam so the operator console reflects
+ * whether delivery actually reached the owner. Lifecycle is independent:
+ * a `failed` notification SHALL NOT terminate the attention, because the
+ * unresolved owner action is still real — the spec scenario "Notification
+ * failure does not cause a run storm" requires the attention to stay
+ * visible while the failure is recorded.
+ */
+export function recordNotificationOutcome(
+  record: AttentionRecord,
+  input: NotificationOutcomeInput,
+): AttentionRecord {
+  if (!VALID_NOTIFICATION_STATES.has(input.outcome)) {
+    throw new Error(`attention: invalid notification outcome ${input.outcome}`);
+  }
+  const reason = typeof input.reason === "string" && input.reason.trim() ? input.reason.trim() : null;
+  return {
+    ...record,
+    notification_state: input.outcome,
+    notification_updated_at: input.now,
+    notification_reason: reason,
+  };
+}
+
+export function isNotificationDeliveryFailed(record: AttentionRecord): boolean {
+  return record.notification_state === "failed";
 }
 
 // ─── Dedupe / cooldown / supersession ──────────────────────────────────────

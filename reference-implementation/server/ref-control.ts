@@ -1278,6 +1278,7 @@ function selectAttentionEvidence(input: {
       reasonCode: picked.reason_code,
       responseContract: picked.response_contract,
       sensitivity: picked.sensitivity,
+      notificationState: pickedNotificationState(picked),
     };
   }
   if (input.humanAttentionNeeded) {
@@ -1289,6 +1290,7 @@ function selectAttentionEvidence(input: {
       ownerAction: null,
       reasonCode: input.lastErrorCode ?? "needs_human_attention",
       responseContract: null,
+      notificationState: null,
     };
   }
   return null;
@@ -1327,6 +1329,23 @@ function ownerActionForEvidence(
 ): ConnectionAttentionEvidence["ownerAction"] {
   if (action === "none") return null;
   return action;
+}
+
+/**
+ * Read the durable notification axis off the persisted attention record.
+ * Older rows persisted before the `notification_state` field landed
+ * default to `"pending"` so the projection stays honest without
+ * fabricating delivery evidence. Returns a non-null, non-undefined
+ * value so the projection contract stays exact.
+ */
+function pickedNotificationState(
+  record: AttentionRecord,
+): "acknowledged" | "failed" | "pending" | "sent" | "suppressed" {
+  const raw = (record as { notification_state?: unknown }).notification_state;
+  if (raw === "acknowledged" || raw === "failed" || raw === "pending" || raw === "sent" || raw === "suppressed") {
+    return raw;
+  }
+  return "pending";
 }
 
 /**

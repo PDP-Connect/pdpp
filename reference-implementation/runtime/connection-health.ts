@@ -224,6 +224,17 @@ export interface NextAction {
    * precision. `none` is reserved for non-needs-attention states.
    */
   readonly source: "none" | "schedule_fallback" | "structured";
+  /**
+   * Durable notification delivery state for the attention prompt
+   * driving this CTA. `null` for schedule-fallback CTAs (the precise
+   * record is unknown) and for non-attention states. The dashboard
+   * uses this to render "we notified you on another device" vs.
+   * "delivery failed — open the dashboard" without rereading
+   * transport logs. The spec scenario "Notification failure does not
+   * cause a run storm" requires this to remain visible even after
+   * the push channel rejects delivery.
+   */
+  readonly notification_state: "acknowledged" | "failed" | "pending" | "sent" | "suppressed" | null;
 }
 
 /**
@@ -324,6 +335,13 @@ export interface ConnectionAttentionEvidence {
    * the operator payload).
    */
   readonly sensitivity?: "non_secret" | "none" | "secret";
+  /**
+   * Durable notification delivery state for the prompt. Forwarded to
+   * `NextAction.notification_state`. `null` for fallback evidence
+   * synthesized from `human_attention_needed` (no structured record
+   * exists, so delivery state is unknown).
+   */
+  readonly notificationState?: "acknowledged" | "failed" | "pending" | "sent" | "suppressed" | null;
 }
 
 /** Coverage rollup. Caller aggregates per-stream evidence into one axis. */
@@ -731,6 +749,11 @@ function snapshot(args: SnapshotArgs): ConnectionHealthSnapshot {
 function projectNextAction(attention: ConnectionAttentionEvidence): NextAction {
   const isStructured = attention.id !== null && attention.ownerAction !== null;
   const source: NextAction["source"] = isStructured ? "structured" : "schedule_fallback";
+  // Schedule-fallback evidence has no durable record, so notification
+  // state is unknown — surface `null` rather than fabricating `pending`.
+  const notificationState: NextAction["notification_state"] = isStructured
+    ? attention.notificationState ?? "pending"
+    : null;
   if (attention.sensitivity === "secret") {
     // Block every potentially-revealing field; keep the bare minimum so
     // the dashboard can still render "owner action needed" with a
@@ -743,6 +766,7 @@ function projectNextAction(attention: ConnectionAttentionEvidence): NextAction {
       reason_code: attention.reasonCode,
       response_contract: attention.responseContract,
       source,
+      notification_state: notificationState,
     };
   }
   return {
@@ -753,6 +777,7 @@ function projectNextAction(attention: ConnectionAttentionEvidence): NextAction {
     reason_code: attention.reasonCode,
     response_contract: attention.responseContract,
     source,
+    notification_state: notificationState,
   };
 }
 

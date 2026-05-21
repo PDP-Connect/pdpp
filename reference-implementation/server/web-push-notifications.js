@@ -532,6 +532,7 @@ async function sendPayloadToOwnerSubscriptions({
 }) {
   const subscriptions = await store.listActiveRaw(ownerSubjectId);
   let sent = 0;
+  const failures = [];
   await Promise.all(
     subscriptions.map(async (record) => {
       try {
@@ -540,14 +541,69 @@ async function sendPayloadToOwnerSubscriptions({
         sent += 1;
       } catch (err) {
         const reason = err instanceof Error ? err.message : String(err);
+        failures.push(reason);
         await store.markFailure(record.endpoint, reason, { revoke: shouldRevokeForWebPushError(err) });
         log.warn?.(`[controller] web push ${logContext} failed: ${reason}`);
       }
     }),
   );
-  return { attempted: subscriptions.length, sent, unavailable: false };
+  return { attempted: subscriptions.length, sent, unavailable: false, failureReasons: failures };
 }
 
+/**
+ * Map a push-fanout result onto the durable `notification_state` axis on
+ * an attention record. The spec contract requires the operator console
+ * to be able to answer "did we tell the owner?" without rereading
+ * transport logs.
+ *
+ *   - `attempted === 0 && unavailable`            → no channel configured. Record `suppressed`.
+ *   - `attempted === 0 && suppressed`             → policy suppression (quiet hours, etc.). Record `suppressed`.
+ *   - `attempted === 0`                           → no opted-in subscriptions. Record `suppressed`.
+ *   - `sent > 0`                                  → at least one delivery accepted. Record `sent`.
+ *   - `attempted > 0 && sent === 0`               → every subscription rejected. Record `failed`.
+ */
+export function classifyPushFanoutOutcome(result) {
+  if (!result || typeof result !== 'object') {
+    return { state: 'failed', reason: 'no_result' };
+  }
+  if (result.unavailable) {
+    return { state: 'suppressed', reason: 'channel_unavailable' };
+  }
+  if (result.suppressed) {
+    return { state: 'suppressed', reason: 'policy_suppressed' };
+  }
+  const attempted = Number(result.attempted || 0);
+  const sent = Number(result.sent || 0);
+  if (attempted === 0) {
+    return { state: 'suppressed', reason: 'no_opted_in_channel' };
+  }
+  if (sent > 0) {
+    return { state: 'sent', reason: null };
+  }
+  const failures = Array.isArray(result.failureReasons) ? result.failureReasons.filter(Boolean) : [];
+  const top = failures[0];
+  return { state: 'failed', reason: top ? `transport: ${top.slice(0, 120)}` : 'transport_failed' };
+}
+
+/**
+ * @param {object} args
+ * @param {object} [args.config]
+ * @param {object} [args.store]
+ * @param {Function} [args.sender]
+ * @param {object} args.interaction
+ * @param {string} args.connectorDisplayName
+ * @param {string} args.ownerSubjectId
+ * @param {'interaction'|'run'} [args.routeTo]
+ * @param {string} args.runId
+ * @param {object} [args.log]
+ * @param {((outcome: { state: string; reason: string | null }) => Promise<void>) | null} [args.recordOutcome]
+ *   Optional durable-attention recorder. When provided, the fanout
+ *   classifies its delivery result into a `notification_state` and
+ *   invokes the callback so the operator console can render
+ *   "we notified the owner" vs "delivery failed" without rereading
+ *   transport logs. Callback failure is logged but never propagated:
+ *   failing to record the outcome must not break notification fanout.
+ */
 export async function fanoutPendingInteractionWebPush({
   config = resolveWebPushConfig(),
   store = getDefaultWebPushSubscriptionStore(),
@@ -558,6 +614,41 @@ export async function fanoutPendingInteractionWebPush({
   routeTo = 'interaction',
   runId,
   log = console,
+  recordOutcome = null,
+}) {
+  const result = await fanoutPendingInteractionWebPushImpl({
+    config,
+    store,
+    sender,
+    interaction,
+    connectorDisplayName,
+    ownerSubjectId,
+    routeTo,
+    runId,
+    log,
+  });
+  if (typeof recordOutcome === 'function') {
+    const classified = classifyPushFanoutOutcome(result);
+    try {
+      await recordOutcome(classified);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      log.warn?.(`[controller] web push outcome recorder for run ${runId} failed: ${message}`);
+    }
+  }
+  return result;
+}
+
+async function fanoutPendingInteractionWebPushImpl({
+  config,
+  store,
+  sender,
+  interaction,
+  connectorDisplayName,
+  ownerSubjectId,
+  routeTo,
+  runId,
+  log,
 }) {
   if (!config.enabled) {
     return { attempted: 0, sent: 0, unavailable: true };
@@ -586,6 +677,18 @@ export async function fanoutPendingInteractionWebPush({
   });
 }
 
+/**
+ * @param {object} args
+ * @param {object} [args.config]
+ * @param {object} [args.store]
+ * @param {Function} [args.sender]
+ * @param {Record<string, unknown>} args.assistance
+ * @param {string} args.connectorDisplayName
+ * @param {string} args.ownerSubjectId
+ * @param {string} args.runId
+ * @param {object} [args.log]
+ * @param {((outcome: { state: string; reason: string | null }) => Promise<void>) | null} [args.recordOutcome]
+ */
 export async function fanoutAssistanceWebPush({
   config = resolveWebPushConfig(),
   store = getDefaultWebPushSubscriptionStore(),
@@ -595,6 +698,39 @@ export async function fanoutAssistanceWebPush({
   ownerSubjectId,
   runId,
   log = console,
+  recordOutcome = null,
+}) {
+  const result = await fanoutAssistanceWebPushImpl({
+    config,
+    store,
+    sender,
+    assistance,
+    connectorDisplayName,
+    ownerSubjectId,
+    runId,
+    log,
+  });
+  if (typeof recordOutcome === 'function') {
+    const classified = classifyPushFanoutOutcome(result);
+    try {
+      await recordOutcome(classified);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      log.warn?.(`[controller] web push assistance outcome recorder for run ${runId} failed: ${message}`);
+    }
+  }
+  return result;
+}
+
+async function fanoutAssistanceWebPushImpl({
+  config,
+  store,
+  sender,
+  assistance,
+  connectorDisplayName,
+  ownerSubjectId,
+  runId,
+  log,
 }) {
   if (!config.enabled) {
     return { attempted: 0, sent: 0, unavailable: true };

@@ -10,8 +10,10 @@ import {
   expireIfDue,
   isExpired,
   isHealthRelevant,
+  isNotificationDeliveryFailed,
   isTerminal,
   pushPayload,
+  recordNotificationOutcome,
   transition,
 } from '../runtime/attention.ts';
 
@@ -575,4 +577,69 @@ test('push channel — owner missing the push still sees the same attention via 
   assert.equal(rec.attachments[0].kind, 'browser_surface');
   // Same record is health-relevant whether or not push fired.
   assert.equal(isHealthRelevant(rec, NOW), true);
+});
+
+// ─── Notification state ─────────────────────────────────────────────────────
+
+test('notification state defaults to pending on create', () => {
+  const rec = createAttention(input({ sensitivity: 'non_secret' }));
+  assert.equal(rec.notification_state, 'pending');
+  assert.equal(rec.notification_updated_at, null);
+  assert.equal(rec.notification_reason, null);
+});
+
+test('recordNotificationOutcome records sent without touching lifecycle', () => {
+  const rec = createAttention(input({ sensitivity: 'non_secret' }));
+  const next = recordNotificationOutcome(rec, { outcome: 'sent', now: '2026-05-19T12:01:00.000Z' });
+  assert.equal(next.lifecycle, 'open');
+  assert.equal(next.notification_state, 'sent');
+  assert.equal(next.notification_updated_at, '2026-05-19T12:01:00.000Z');
+  assert.equal(next.notification_reason, null);
+});
+
+test('recordNotificationOutcome records failed and preserves lifecycle (no run-storm permission)', () => {
+  const rec = createAttention(input({ sensitivity: 'non_secret' }));
+  const next = recordNotificationOutcome(rec, {
+    outcome: 'failed',
+    now: '2026-05-19T12:02:00.000Z',
+    reason: 'transport: 410 gone',
+  });
+  assert.equal(next.lifecycle, 'open', 'attention remains open after delivery failure');
+  assert.equal(isNotificationDeliveryFailed(next), true);
+  assert.equal(next.notification_state, 'failed');
+  assert.equal(next.notification_reason, 'transport: 410 gone');
+});
+
+test('recordNotificationOutcome accepts suppressed with reason', () => {
+  const rec = createAttention(input({ sensitivity: 'non_secret' }));
+  const next = recordNotificationOutcome(rec, {
+    outcome: 'suppressed',
+    now: '2026-05-19T12:03:00.000Z',
+    reason: 'quiet_hours',
+  });
+  assert.equal(next.notification_state, 'suppressed');
+  assert.equal(next.notification_reason, 'quiet_hours');
+});
+
+test('recordNotificationOutcome rejects invalid outcomes', () => {
+  const rec = createAttention(input({ sensitivity: 'non_secret' }));
+  assert.throws(() => recordNotificationOutcome(rec, { outcome: 'maybe', now: NOW }));
+});
+
+test('lifecycle transition to acknowledged promotes notification state to acknowledged', () => {
+  const rec = createAttention(input({ sensitivity: 'non_secret' }));
+  assert.equal(rec.notification_state, 'pending');
+  const acked = transition(rec, { to: 'acknowledged', now: '2026-05-19T12:04:00.000Z' });
+  assert.equal(acked.notification_state, 'acknowledged');
+  assert.equal(acked.notification_reason, 'owner_acknowledged');
+});
+
+test('lifecycle transition to resolved does NOT touch notification state', () => {
+  const rec = createAttention(input({ sensitivity: 'non_secret' }));
+  const withDelivery = recordNotificationOutcome(rec, {
+    outcome: 'sent',
+    now: '2026-05-19T12:05:00.000Z',
+  });
+  const resolved = transition(withDelivery, { to: 'resolved', now: '2026-05-19T12:06:00.000Z' });
+  assert.equal(resolved.notification_state, 'sent', 'sent state survives resolution for audit');
 });

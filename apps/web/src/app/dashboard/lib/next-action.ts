@@ -44,6 +44,16 @@ export interface FormattedNextAction {
    */
   label: string;
   variant: NextActionVariant;
+  /**
+   * Short non-secret hint about whether we have actually notified the
+   * owner about this prompt. `null` means there is nothing the
+   * operator should know about the notification axis (e.g. the
+   * default `pending` state where a delivery attempt is in flight,
+   * or schedule-fallback where the durable record is unknown).
+   * `failed` MUST remain visible — per spec, notification failure is
+   * not permission to relaunch the run.
+   */
+  notificationHint: string | null;
 }
 
 /**
@@ -124,5 +134,29 @@ export function formatNextAction(action: RefNextAction | null | undefined): Form
     caveat,
     actionTarget: action.action_target ?? null,
     variant: action.source === "schedule_fallback" ? "schedule_fallback" : "structured",
+    notificationHint: formatNotificationHint(action.notification_state ?? null),
   };
+}
+
+/**
+ * Convert the durable notification axis into a short non-secret hint
+ * for the operator. The spec is explicit that `failed` must remain
+ * visible — silently swallowing delivery failure is the failure mode
+ * this surface prevents. `pending` and `acknowledged` return `null`
+ * to keep the CTA chrome quiet when there is nothing surprising to
+ * surface.
+ */
+function formatNotificationHint(state: NonNullable<RefNextAction["notification_state"]> | null): string | null {
+  switch (state) {
+    case "sent":
+      return "Notification sent to your devices.";
+    case "failed":
+      return "Notification delivery failed — open the dashboard to act.";
+    case "suppressed":
+      return "Notifications paused (no opted-in device, quiet hours, or policy).";
+    case "acknowledged":
+    case "pending":
+    case null:
+      return null;
+  }
 }

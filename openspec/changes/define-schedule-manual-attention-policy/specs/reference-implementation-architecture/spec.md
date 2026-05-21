@@ -64,12 +64,13 @@ The reference SHALL model owner/operator attention as a durable typed request ke
 
 ### Requirement: Reference notification policy SHALL avoid silent failures and noisy repeats
 
-The reference SHALL surface manual-attention requirements through explicit notification policy. It SHALL avoid both silent suppression and repeated unresolved alerts.
+The reference SHALL surface manual-attention requirements through explicit notification policy. It SHALL avoid both silent suppression and repeated unresolved alerts. Notification delivery state SHALL be persisted on the durable attention record so the operator console can answer "did we tell the owner?" without rereading transport logs.
 
 #### Scenario: Owner is notified with bounded repetition
 
 - **WHEN** a new attention request requires owner/operator action
 - **THEN** the reference SHALL mark notification as pending, sent, suppressed, failed, or acknowledged according to delivery outcome
+- **AND** the notification state SHALL be a durable axis on the attention record, persisted alongside lifecycle and updated by the notification fanout path even when delivery is short-circuited (channel unavailable, no opted-in subscription, policy-suppressed)
 - **AND** repeated notifications for the same unresolved request SHALL be governed by quiet-hour and suppression policy
 - **AND** the reference SHALL keep the request visible until it is resolved, expired, or intentionally dismissed
 
@@ -77,7 +78,20 @@ The reference SHALL surface manual-attention requirements through explicit notif
 
 - **WHEN** notification delivery fails for an attention request
 - **THEN** the reference SHALL preserve the unresolved attention request and notification failure state
+- **AND** the durable attention record SHALL record `notification_state: failed` without changing `lifecycle`, so the projection continues to surface needs_attention
 - **AND** it SHALL NOT treat notification failure as permission to repeatedly launch the same scheduled run
+
+#### Scenario: Owner-side acknowledgement is recorded as a notification outcome
+
+- **WHEN** the owner advances an attention prompt past `open` (lifecycle transitions to `acknowledged` or `in_progress`)
+- **THEN** the durable notification state SHALL be updated to `acknowledged`
+- **AND** the operator console SHALL be able to distinguish "we delivered the push" from "the owner has seen the prompt" without inspecting transport logs
+
+#### Scenario: Operator-visible notification state degrades honestly when evidence is missing
+
+- **WHEN** the projection has no structured attention record and is falling back to the schedule's `human_attention_needed` flag
+- **THEN** the operator-visible notification state for that CTA SHALL be null (unknown)
+- **AND** the dashboard SHALL NOT fabricate a `sent`/`pending` claim that the durable evidence cannot support
 
 ### Requirement: Reference local collector scheduling SHALL remain host-supervisor-owned
 
