@@ -30,11 +30,11 @@
 
 ## 5. Reference server: content-negotiated `/`
 
-- [ ] 5.1 In `reference-implementation/server/index.js`, replace the AS root handler at line ~2072 so the existing JSON discovery response is served only when the client wants JSON (Accept header negotiation, content type, or explicit `?format=json`). Existing JSON-shaped clients SHALL get byte-identical bytes.
-- [ ] 5.2 For browsers (`Accept: text/html`), serve a small operator landing page produced by `reference-implementation/server/hosted-ui.js` (or an equivalent server-rendered HTML module). The page SHALL say what the AS/RS is, the configured console origin (if known) or `http://localhost:3002` as the default, and link to the existing well-known discovery endpoints.
-- [ ] 5.3 Apply the same browser-friendly landing-page treatment to the RS root handler (line ~5180 in current `index.js`). The RS landing page MAY share template with the AS landing page.
-- [ ] 5.4 Add tests proving (a) `Accept: application/json` returns the existing discovery JSON unchanged, (b) `Accept: text/html` returns HTML containing the configured console-origin link and links to the well-known discovery URLs, and (c) clients with no Accept header keep the existing default.
-- [ ] 5.5 Update reference docs (`reference-implementation/README.md` or equivalent) to describe the bare-server browser landing behavior.
+- [x] 5.1 In `reference-implementation/server/index.js`, replace the AS root handler at line ~2072 so the existing JSON discovery response is served only when the client wants JSON (Accept header negotiation, content type, or explicit `?format=json`). Existing JSON-shaped clients SHALL get byte-identical bytes.
+- [x] 5.2 For browsers (`Accept: text/html`), serve a small operator landing page produced by `reference-implementation/server/hosted-ui.js` (or an equivalent server-rendered HTML module). The page SHALL say what the AS/RS is, the configured console origin (if known) or `http://localhost:3002` as the default, and link to the existing well-known discovery endpoints.
+- [x] 5.3 Apply the same browser-friendly landing-page treatment to the RS root handler (line ~5180 in current `index.js`). The RS landing page MAY share template with the AS landing page.
+- [x] 5.4 Add tests proving (a) `Accept: application/json` returns the existing discovery JSON unchanged, (b) `Accept: text/html` returns HTML containing the configured console-origin link and links to the well-known discovery URLs, and (c) clients with no Accept header keep the existing default.
+- [x] 5.5 Update reference docs (`reference-implementation/README.md` or equivalent) to describe the bare-server browser landing behavior.
 
 ## 6. Docker, docs, and contributor workflows
 

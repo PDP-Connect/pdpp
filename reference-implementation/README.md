@@ -60,6 +60,18 @@ The current reference is centered on one architectural claim:
 - `GET /.well-known/oauth-protected-resource`
 - `GET /.well-known/oauth-authorization-server`
 
+The bare AS/RS root (`GET /`) is content-negotiated:
+
+- `Accept: application/json` (or `?format=json`, or no `Accept` header) returns
+  the existing discovery-index envelope byte-for-byte. Existing JSON-shaped
+  clients are unaffected.
+- `Accept: text/html` returns a small operator/admin landing page that names
+  this server, links to the well-known discovery endpoint above, and points at
+  the operator console origin (taken from `PDPP_REFERENCE_ORIGIN`, defaulting
+  to `http://localhost:3002`). The landing page is reachable from
+  `reference-implementation` alone and does not require `apps/console` to be
+  running. See `openspec/changes/split-public-site-and-operator-console`.
+
 Protected-resource metadata includes advisory agent discovery. The generated
 CLI command is:
 

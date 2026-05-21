@@ -136,6 +136,7 @@ import {
   renderResultState,
   renderSurface,
 } from './hosted-ui.js';
+import { servedRootLandingIfBrowser } from './reference-root-landing.js';
 import {
   collectRecordsTimelineEntries,
   getConnectorAttentionProjection,
@@ -2096,6 +2097,19 @@ function buildAsApp(opts = {}) {
   // route is an Express host adapter: it owns request-id/header wiring and
   // response writing; the operation owns the envelope shape.
   app.get('/', { contract: 'getAsDiscoveryIndex' }, (req, res) => {
+    // Browsers see an operator/admin landing that names this AS, names the
+    // configured console origin, and links to the well-known discovery
+    // endpoint. JSON-shaped clients still receive the existing envelope
+    // byte-for-byte. See openspec/changes/split-public-site-and-operator-console.
+    if (
+      servedRootLandingIfBrowser(req, res, {
+        role: 'authorization_server',
+        providerName,
+        referenceRevision,
+      })
+    ) {
+      return;
+    }
     res.json(
       executeAsDiscoveryIndex({
         providerName,
@@ -5199,11 +5213,32 @@ function buildRsApp(opts = {}) {
     next();
   });
 
+  // Shared hosted-UI stylesheet, mounted on the RS app so the browser-friendly
+  // RS root landing (see below) can load styles from its own origin without
+  // depending on the AS port being reachable.
+  app.get(HOSTED_UI_CSS_PATH, (req, res) => {
+    res.setHeader('Content-Type', 'text/css; charset=utf-8');
+    res.setHeader('Cache-Control', 'public, max-age=300');
+    res.send(HOSTED_UI_CSS);
+  });
+
   // Cold-start discovery index: a tiny unauthenticated pointer at `/` so a
   // probe at the RS root learns where the well-known endpoint, capability
   // schema, and core query base live before guessing at REST/LLM-API
   // conventions. See openspec/changes/polish-reference-api-discovery-seams.
   app.get('/', { contract: 'getRsDiscoveryIndex' }, (req, res) => {
+    // Browser-friendly landing for the RS root (mirrors the AS handler).
+    // JSON discovery is preserved byte-for-byte for JSON-shaped clients.
+    // See openspec/changes/split-public-site-and-operator-console.
+    if (
+      servedRootLandingIfBrowser(req, res, {
+        role: 'resource_server',
+        providerName,
+        referenceRevision,
+      })
+    ) {
+      return;
+    }
     const { envelope } = executeRsDiscoveryIndex({
       providerName,
       referenceRevision,
