@@ -1570,12 +1570,16 @@ test("runCollectorConnector persists complete-scan checkpoint across undrained b
       },
       deviceId: "device-1",
       deviceToken: "device-token",
-      outboxPolicy: { retryBackoffMs: 1 },
       queuePath,
       sourceInstanceId: "src-1",
     } as const;
 
-    const pass1 = await runCollectorConnector(baseConfig);
+    const pass1 = await runCollectorConnector({
+      ...baseConfig,
+      // Leave the failed record batches durable and immediately ready for
+      // pass 2; the next scan should prove checkpoint replay, not timer jitter.
+      outboxPolicy: { maxDrainIterations: 1, retryBackoffMs: 0 },
+    });
     assert.equal(pass1.scanBudgetExceeded, false);
     assert.equal(pass1.enqueuedBatches, 3);
     assert.equal(pass1.flushedState, null);
@@ -1593,7 +1597,6 @@ test("runCollectorConnector persists complete-scan checkpoint across undrained b
       afterPass1.close();
     }
 
-    await new Promise((resolve) => setTimeout(resolve, 25));
     ingestShouldFail = false;
     const eventsBeforePass2 = harness.events.length;
     const pass2Fixture = await writeFixtureConnector({
@@ -1622,6 +1625,7 @@ test("runCollectorConnector persists complete-scan checkpoint across undrained b
     const pass2 = await runCollectorConnector({
       ...baseConfig,
       connector: { ...baseConfig.connector, args: [pass2Fixture] },
+      outboxPolicy: { retryBackoffMs: 0 },
     });
 
     assert.deepEqual(pass2.priorState, { messages: "m-30" });
