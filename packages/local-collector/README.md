@@ -10,19 +10,19 @@ stay out of this package until each has its own publishability review.
 ## Usage
 
 ```bash
-# @pdpp/local-collector package, npx-launched pdpp-local-collector binary
-npx -y @pdpp/local-collector advertise
+# @pdpp/local-collector@beta package, npx-launched pdpp-local-collector binary
+npx -y @pdpp/local-collector@beta advertise
 
-# @pdpp/local-collector package, npx-launched pdpp-local-collector binary
-npx -y @pdpp/local-collector enroll \
+# @pdpp/local-collector@beta package, npx-launched pdpp-local-collector binary
+npx -y @pdpp/local-collector@beta enroll \
   --base-url https://<reference-host> \
   --code <one-time-code>
 
-# @pdpp/local-collector package, npx-launched pdpp-local-collector binary
+# @pdpp/local-collector@beta package, npx-launched pdpp-local-collector binary
 PDPP_LOCAL_DEVICE_ID=<device_id> \
 PDPP_LOCAL_DEVICE_TOKEN=<device_token> \
 PDPP_CONNECTION_ID=<source_instance_id> \
-npx -y @pdpp/local-collector run \
+npx -y @pdpp/local-collector@beta run \
   --base-url https://<reference-host> \
   --connector claude_code
 ```
@@ -34,8 +34,8 @@ before persisting records or state.
 Install globally if you prefer a persistent binary:
 
 ```bash
-# @pdpp/local-collector package, installs the pdpp-local-collector binary
-npm i -g @pdpp/local-collector
+# @pdpp/local-collector@beta package, installs the pdpp-local-collector binary
+npm i -g @pdpp/local-collector@beta
 pdpp-local-collector advertise
 ```
 

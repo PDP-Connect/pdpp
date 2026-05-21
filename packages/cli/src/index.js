@@ -38,9 +38,9 @@ Reference diagnostics (reference server only):
 
 Notes:
   Do not ask users for owner bearer tokens for routine delegated access.
-  "pdpp collector" is a thin @pdpp/cli shim. Install @pdpp/local-collector
-  once, or use "npx -y @pdpp/local-collector ..." directly, for filesystem
-  collectors like Claude Code and Codex.
+  "pdpp collector" is a thin @pdpp/cli shim. Install @pdpp/local-collector@beta
+  once, or use "npx -y @pdpp/local-collector@beta ..." directly, for filesystem
+  collectors like Claude Code and Codex until the package is promoted to latest.
   "pdpp ref" commands require a running PDPP reference server and an owner session.
   "pdpp ref login" caches an owner session in project-local .pdpp/ with mode 0600;
   later "pdpp ref" commands use the cache when --owner-session and

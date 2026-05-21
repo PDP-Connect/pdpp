@@ -31,7 +31,8 @@ implementation tranche that follows is bounded and reviewable.
   (a) resolves `@pdpp/local-collector` via Node module resolution (falling
   back to the monorepo workspace walk when present); (b) on
   `MODULE_NOT_FOUND`, prints a single actionable install hint
-  (`npm i -g @pdpp/local-collector` or `npx -y @pdpp/local-collector ...`);
+  (`npm i -g @pdpp/local-collector@beta` or
+  `npx -y @pdpp/local-collector@beta ...` until stable promotion);
   (c) spawns the runner with the operator's argv.
 - Extract a filesystem-only collector runtime slice into `src/runner/` in
   `@pdpp/polyfill-connectors` (still the source of truth in the monorepo) that

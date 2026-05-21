@@ -584,7 +584,8 @@ Reverse proxies must also forward WebSocket upgrade traffic for
 
 CI builds the Docker targets on pull requests without pushing images. On
 `main`, semantic-release creates GitHub releases from Conventional Commits and
-the same release workflow publishes stable GHCR tags for both Docker targets:
+the same release workflow publishes npm beta packages (`@pdpp/cli@beta` and
+`@pdpp/local-collector@beta`) plus stable GHCR tags for both Docker targets:
 `${version}`, `${major}.${minor}`, `latest`, and `sha-*`. Maintainers should
 make the first published GHCR packages public in GitHub's package settings if
 the registry creates them private.
@@ -595,10 +596,10 @@ Maintainers can preview the next release calculation locally:
 GITHUB_TOKEN=$(gh auth token) pnpm release:dry-run
 ```
 
-The release path uses GitHub Actions credentials for GitHub releases and GHCR.
-It does not publish npm packages and must not bundle `.env.local`, owner
-passwords, connector credentials, SQLite data, model cache files, or browser
-profiles into images.
+The release path uses GitHub Actions credentials for GitHub releases and GHCR,
+and npm trusted publishing for public packages. It must not bundle `.env.local`,
+owner passwords, connector credentials, SQLite data, model cache files, or
+browser profiles into images.
 
 ### Example third-party client app
 

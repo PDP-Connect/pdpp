@@ -127,7 +127,7 @@ test('packed CLI installs and starts in an empty project', () => {
     assert.match(collectorResult.stderr, /@pdpp\/local-collector/);
     assert.match(
       collectorResult.stderr,
-      /npm i -g @pdpp\/local-collector|npx -y @pdpp\/local-collector/,
+      /npm i -g @pdpp\/local-collector@beta|npx -y @pdpp\/local-collector@beta/,
     );
     assert.doesNotMatch(collectorResult.stderr, /not distributed with @pdpp\/cli yet/);
   } finally {

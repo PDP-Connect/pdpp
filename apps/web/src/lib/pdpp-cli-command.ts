@@ -6,6 +6,7 @@ export const pdppCliConnectCommand = createPdppCliCommand(PDPP_CLI_PROVIDER_PLAC
 export const pdppCliInstallCommand = `npx -y ${pdppCliPackageInfo.packageSpecifier} --help`;
 export const pdppCliTokenCompletionUnavailable = pdppCliPackageInfo.noOwnerToken !== true;
 export const localCollectorPackageName = "@pdpp/local-collector";
+export const localCollectorPackageSpecifier = `${localCollectorPackageName}@beta`;
 
 /**
  * Rewrite a canonical `pdpp ...` invocation (as advertised in dashboard/docs
@@ -24,18 +25,19 @@ export function pdppCliNoInstallCommand(cliCommand: string): string | null {
 }
 
 /**
- * Render the public `@pdpp/local-collector` enrollment command for a freshly
+ * Render the public `@pdpp/local-collector@beta` enrollment command for a freshly
  * minted enrollment code. Operators paste this on the host that has Claude
  * Code / Codex data to exchange the one-time code for a device-scoped
  * credential. `@pdpp/cli` owns the `pdpp` binary; the runner package owns the
- * `pdpp-local-collector` binary and npx package invocation.
+ * `pdpp-local-collector` binary and npx package invocation. Keep the beta tag
+ * until the package's npm latest tag is intentionally promoted.
  */
 export function pdppLocalCollectorEnrollCommand(args: {
   baseUrl: string;
   code: string;
   deviceLabel?: string | null | undefined;
 }): string {
-  const parts = ["npx", "-y", localCollectorPackageName, "enroll", "--base-url", args.baseUrl, "--code", args.code];
+  const parts = ["npx", "-y", localCollectorPackageSpecifier, "enroll", "--base-url", args.baseUrl, "--code", args.code];
   const label = args.deviceLabel?.trim();
   if (label) {
     parts.push("--device-label", JSON.stringify(label));
@@ -44,7 +46,7 @@ export function pdppLocalCollectorEnrollCommand(args: {
 }
 
 /**
- * Render the public `@pdpp/local-collector` run command. The device id, device
+ * Render the public `@pdpp/local-collector@beta` run command. The device id, device
  * token, and source instance id come from a prior enrollment response and are
  * passed as env vars so the dashboard never embeds secrets in generated
  * commands.
@@ -53,7 +55,7 @@ export function pdppLocalCollectorRunCommand(args: { baseUrl: string; connectorI
   return [
     "npx",
     "-y",
-    localCollectorPackageName,
+    localCollectorPackageSpecifier,
     "run",
     "--base-url",
     args.baseUrl,

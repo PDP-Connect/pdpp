@@ -70,9 +70,12 @@ services:
       # Browser-backed connectors that need a visible browser (ChatGPT, USAA,
       # etc.) cannot run inside this container — see
       # `openspec/changes/introduce-local-collector-runner`. Run them via the
-      # local collector runner on a host that can render a visible Chromium:
+      # workspace collector on a host that can render a visible Chromium:
       #   pnpm exec pdpp collector enroll --base-url <url> --code <code>
       #   pnpm exec pdpp collector run    --base-url <url> --connector <id> ...
+      # The public @pdpp/local-collector@beta package currently ships the
+      # filesystem-class Claude Code / Codex collectors, not browser-backed
+      # Patchright connectors.
     ports:
       - "7662:7662"
       - "7663:7663"
