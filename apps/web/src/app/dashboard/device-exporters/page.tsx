@@ -45,7 +45,7 @@ export default async function DeviceExportersPage() {
       <DashboardShell active="device-exporters">
         <PageHeader
           count={`${devices.length}`}
-          description="Reference-experimental diagnostics for local device exporter agents. Owner/operator surface only; not PDPP Core or Collection Profile protocol documentation."
+          description="Reference-experimental diagnostics for local collector agents. The device or host supervisor decides when local collectors run; the server owns enrollment, ingestion, state, health, and advisory freshness/run signals."
           meta={
             <>
               <MetaPill label="surface" tone="protocol" value="reference-experimental" />
@@ -60,12 +60,12 @@ export default async function DeviceExportersPage() {
         </Section>
 
         <Section
-          description="Heartbeat freshness, ingest counts, stale/revoked state, and last exporter error."
+          description="Server-side registration, ingestion, health, diagnostics, and per-connection source identity. Run cadence remains local-supervisor owned."
           title="Enrolled devices"
         >
           {devices.length === 0 ? (
             <EmptyState
-              hint="Create an enrollment code, run a local exporter agent, then refresh this page after its first heartbeat."
+              hint="Create an enrollment code, run a local collector from a host supervisor or shell, then refresh this page after its first heartbeat."
               title="No local device exporters enrolled"
             />
           ) : (
@@ -160,6 +160,11 @@ function SourceInstanceCard({ source }: { source: DeviceSourceInstance }) {
           <h3 className="pdpp-body truncate font-medium text-foreground">{sourceLabel(source)}</h3>
           <p className="pdpp-caption truncate text-muted-foreground">
             {source.connector_id} / {source.local_binding_name}
+          </p>
+          <p className="pdpp-caption mt-1 flex min-w-0 items-center gap-1 text-muted-foreground">
+            connection
+            <code className="truncate font-mono text-foreground/80">{source.source_instance_id}</code>
+            <CopyButton ariaLabel={`Copy ${source.source_instance_id}`} value={source.source_instance_id} />
           </p>
         </div>
         <span className="pdpp-caption text-muted-foreground">ingest {formatRelativeTime(source.last_ingest_at)}</span>

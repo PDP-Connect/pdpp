@@ -5,6 +5,25 @@ ingests records into a PDPP reference deployment with a device-scoped token.
 Use it for Claude Code and Codex data that the Docker reference container cannot
 read directly.
 
+## Ownership Model
+
+For filesystem-class local collectors, the device or host supervisor owns when a
+collector process runs. Use `launchd`, `systemd`, cron, or another local
+supervisor to decide cadence, retries, and host-level resource limits. The
+reference server does not start arbitrary local processes or own a scheduler for
+these collectors.
+
+The reference server owns the remote side of the lane: enrollment, device token
+validation, record ingestion, connector state persistence, health diagnostics,
+and optional desired-freshness or request-run signals for operators. Treat those
+signals as advisory until a future spec defines a control protocol; they do not
+replace the local supervisor.
+
+`PDPP_CONNECTION_ID` identifies the source connection being collected, even when
+today's enrollment response field is named `source_instance_id`. Use a distinct
+connection id per device/account/home/user binding so multiple hosts or
+accounts do not share cursor state, outbox rows, or dashboard diagnostics.
+
 The public runner package is `@pdpp/local-collector`. The `@pdpp/cli` package
 owns the `pdpp` binary and keeps a compatibility shim at `pdpp collector ...`,
 but new operator docs should lead with `npx -y @pdpp/local-collector@beta ...`
@@ -70,10 +89,12 @@ npx -y @pdpp/local-collector@beta enroll \
 ```
 
 The JSON response contains `device_id`, `device_token`, and
-`source_instance_id`. Treat `device_token` like an API key. Do not commit it,
-paste it into issue trackers, print it in logs, or include it in support
-screenshots. The token is device-scoped and ingest-only, but it can still write
-records to that collector lane.
+`source_instance_id`. Store `source_instance_id` as `PDPP_CONNECTION_ID`; it is
+the connection/source identity for this device/account/home binding. Treat
+`device_token` like an API key. Do not commit it, paste it into issue trackers,
+print it in logs, or include it in support screenshots. The token is
+device-scoped and ingest-only, but it can still write records to that collector
+lane.
 
 ## Run
 
@@ -247,7 +268,8 @@ launchctl print "gui/$(id -u)/fish.vivid.pdpp.local-collector.claude-code"
 
 Use one service/timer per connection when a host exports multiple sources. The
 shared reference server distinguishes them by `PDPP_CONNECTION_ID`, not by the
-connector type alone.
+connector type alone, and the local supervisor remains responsible for deciding
+when each service/timer runs.
 
 ## Docker Moves And Reference URL Changes
 

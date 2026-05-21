@@ -137,6 +137,10 @@ test('local collector status reports aggregate durable outbox health without pay
     assert.equal(status.db.exists, true);
     assert.equal(status.configured_device.device_id_configured, true);
     assert.equal(status.configured_device.device_token_configured, true);
+    assert.deepEqual(status.source, {
+      connection_id: 'src-1',
+      source_instance_id: 'src-1',
+    });
     assert.deepEqual(status.outbox.counts, {
       dead_letter: 0,
       leased: 1,

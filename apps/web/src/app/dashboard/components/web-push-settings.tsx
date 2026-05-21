@@ -74,6 +74,17 @@ function hasNavigatorFeature(feature: string) {
   return typeof navigator !== "undefined" && feature in navigator;
 }
 
+async function webPushResponseError(response: Response, fallbackAction: string) {
+  let detail: string | null = null;
+  try {
+    const body = (await response.json()) as { error?: { code?: string; message?: string }; message?: string };
+    detail = body.error?.message || body.message || body.error?.code || null;
+  } catch {
+    detail = null;
+  }
+  return new Error(detail ? `${fallbackAction}: ${detail}` : `${fallbackAction} (${response.status})`);
+}
+
 function diagnosticToneClass(state: DiagnosticState) {
   if (state === "ok") {
     return "text-emerald-700 dark:text-emerald-400";
@@ -473,7 +484,7 @@ export function WebPushSettings({
         }),
       });
       if (!response.ok) {
-        throw new Error(`Subscription failed (${response.status})`);
+        throw await webPushResponseError(response, "Subscription failed");
       }
       setEndpoint(subscription.endpoint);
       setStatus("Web Push is enabled for this browser.");
@@ -494,7 +505,7 @@ export function WebPushSettings({
         headers: { Accept: "application/json" },
       });
       if (!response.ok) {
-        throw new Error(`Test notification failed (${response.status})`);
+        throw await webPushResponseError(response, "Test notification failed");
       }
       const body = (await response.json()) as {
         attempted?: number;
@@ -534,7 +545,7 @@ export function WebPushSettings({
           body: JSON.stringify({ endpoint: targetEndpoint }),
         });
         if (!response.ok) {
-          throw new Error(`Unsubscribe failed (${response.status})`);
+          throw await webPushResponseError(response, "Unsubscribe failed");
         }
       }
       setEndpoint(null);
