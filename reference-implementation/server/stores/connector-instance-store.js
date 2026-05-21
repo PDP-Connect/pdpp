@@ -193,13 +193,31 @@ export async function resolveOwnerConnectorInstanceNamespace({
     }
   }
 
-  const instance = await connectorInstanceStore.ensureLegacyDefault({
-    ownerSubjectId,
-    connectorId,
-    displayName: displayName ?? connectorId,
-    now,
-  });
-  return namespaceFromInstance(instance, { selector: 'connector_id', createdLegacyDefault: true });
+  try {
+    const instance = await connectorInstanceStore.ensureLegacyDefault({
+      ownerSubjectId,
+      connectorId,
+      displayName: displayName ?? connectorId,
+      now,
+    });
+    return namespaceFromInstance(instance, { selector: 'connector_id', createdLegacyDefault: true });
+  } catch (err) {
+    // The connector_instances row references connectors(connector_id). If
+    // the connector is not registered (e.g. the grant points at a stale
+    // connector id or a synthetic native-storage id that never lived in
+    // the catalog), the legacy-default upsert fails its FK check. Surface
+    // this as a clean connector_instance_not_found so the caller can map
+    // it to the right "unknown connector" 404 instead of bubbling SQLite's
+    // 500.
+    if (err?.code === 'SQLITE_CONSTRAINT_FOREIGNKEY' || err?.code === '23503') {
+      throw new ConnectorInstanceResolutionError(
+        'connector_instance_not_found',
+        `Connector '${connectorId}' is not registered; no connector instance namespace available.`,
+        { ownerSubjectId, connectorId },
+      );
+    }
+    throw err;
+  }
 }
 
 export function createSqliteConnectorInstanceStore() {

@@ -1471,15 +1471,23 @@ function buildOwnerReadGrant(streamName) {
 async function resolveOwnerManifestFromScope(ownerScope, opts = {}) {
   let storageBinding = ownerScope.storage_binding || null;
   if (ownerScope.public_scope === 'polyfill' && storageBinding?.connector_id) {
-    const namespace = await resolveOwnerConnectorInstanceNamespace({
-      ownerSubjectId: ownerScope.owner_subject_id || OWNER_AUTH_DEFAULT_SUBJECT_ID,
-      connectorId: storageBinding.connector_id,
-      connectorInstanceId: storageBinding.connector_instance_id,
-      connectorInstanceStore: createRequestConnectorInstanceStore(),
-      allowLegacyDefault: true,
-      displayName: storageBinding.connector_id,
-    });
-    storageBinding = storageTargetForConnectorNamespace(namespace);
+    try {
+      const namespace = await resolveOwnerConnectorInstanceNamespace({
+        ownerSubjectId: ownerScope.owner_subject_id || OWNER_AUTH_DEFAULT_SUBJECT_ID,
+        connectorId: storageBinding.connector_id,
+        connectorInstanceId: storageBinding.connector_instance_id,
+        connectorInstanceStore: createRequestConnectorInstanceStore(),
+        allowLegacyDefault: true,
+        displayName: storageBinding.connector_id,
+      });
+      storageBinding = storageTargetForConnectorNamespace(namespace);
+    } catch (err) {
+      // Fall through to manifest-not-found if the connector is not
+      // registered; route-level not_found mapping then returns a 404.
+      if (err?.code !== 'connector_instance_not_found') {
+        throw err;
+      }
+    }
   }
   const manifest = await getManifestForStorageBinding(storageBinding, opts);
   if (!manifest) {
@@ -1501,16 +1509,31 @@ async function resolveOwnerManifest(req, opts = {}) {
 
 async function resolveGrantManifest(tokenInfo, opts = {}) {
   let storageBinding = resolveGrantStorageBinding(tokenInfo);
-  if (storageBinding?.connector_id) {
-    const namespace = await resolveOwnerConnectorInstanceNamespace({
-      ownerSubjectId: tokenInfo?.grant?.subject?.id || tokenInfo?.subject_id || OWNER_AUTH_DEFAULT_SUBJECT_ID,
-      connectorId: storageBinding.connector_id,
-      connectorInstanceId: storageBinding.connector_instance_id,
-      connectorInstanceStore: createRequestConnectorInstanceStore(),
-      allowLegacyDefault: true,
-      displayName: storageBinding.connector_id,
-    });
-    storageBinding = storageTargetForConnectorNamespace(namespace);
+  // Only resolve a connector_instance namespace for polyfill connector
+  // sources. Native provider grants point at synthetic storage bindings
+  // whose connector_id is not registered in the `connectors` catalog, so
+  // forcing a connector_instances upsert would FK-fail and surface as
+  // a 500 instead of the intended client-error rejection downstream.
+  const grantSourceKind = tokenInfo?.grant?.source?.kind;
+  if (storageBinding?.connector_id && grantSourceKind !== 'provider_native') {
+    try {
+      const namespace = await resolveOwnerConnectorInstanceNamespace({
+        ownerSubjectId: tokenInfo?.grant?.subject?.id || tokenInfo?.subject_id || OWNER_AUTH_DEFAULT_SUBJECT_ID,
+        connectorId: storageBinding.connector_id,
+        connectorInstanceId: storageBinding.connector_instance_id,
+        connectorInstanceStore: createRequestConnectorInstanceStore(),
+        allowLegacyDefault: true,
+        displayName: storageBinding.connector_id,
+      });
+      storageBinding = storageTargetForConnectorNamespace(namespace);
+    } catch (err) {
+      // If the connector is not registered, fall through to the
+      // manifest-not-found path below so the route returns a clean 404
+      // ("Unknown connector: …") instead of bubbling a 500.
+      if (err?.code !== 'connector_instance_not_found') {
+        throw err;
+      }
+    }
   }
   const source = buildClientSourceDescriptor(tokenInfo);
   const manifest = await getManifestForStorageBinding(storageBinding, opts);

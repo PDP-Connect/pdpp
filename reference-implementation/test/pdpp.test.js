@@ -10,6 +10,7 @@ import { parsePendingConsentRequestUri } from '../server/auth.js';
 import { getDb } from '../server/db.js';
 import { ingestRecord } from '../server/records.js';
 import { runConnector, loadSyncState } from '../runtime/index.js';
+import { makeLegacyConnectorInstanceId } from '../server/stores/connector-instance-store.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, '..');
@@ -4813,12 +4814,13 @@ test('PDPP reference implementation integration', async (t) => {
         streams: [{ name: 'top_artists' }],
       });
 
+      const grantConnectorInstanceId = makeLegacyConnectorInstanceId('u1', spotifyManifest.connector_id);
       const insertGrantState = getDb().prepare(`
-        INSERT INTO grant_connector_state(grant_id, connector_id, stream, state_json, updated_at)
-        VALUES(?, ?, ?, ?, ?)
+        INSERT INTO grant_connector_state(grant_id, connector_id, connector_instance_id, stream, state_json, updated_at)
+        VALUES(?, ?, ?, ?, ?, ?)
       `);
-      insertGrantState.run(approved.grant.grant_id, spotifyManifest.connector_id, 'top_artists', JSON.stringify({ cursor: 'granted_cursor' }), '2026-04-18T10:00:00.000Z');
-      insertGrantState.run(approved.grant.grant_id, spotifyManifest.connector_id, 'recently_played', JSON.stringify({ cursor: 'hidden_cursor' }), '2026-04-18T11:00:00.000Z');
+      insertGrantState.run(approved.grant.grant_id, spotifyManifest.connector_id, grantConnectorInstanceId, 'top_artists', JSON.stringify({ cursor: 'granted_cursor' }), '2026-04-18T10:00:00.000Z');
+      insertGrantState.run(approved.grant.grant_id, spotifyManifest.connector_id, grantConnectorInstanceId, 'recently_played', JSON.stringify({ cursor: 'hidden_cursor' }), '2026-04-18T11:00:00.000Z');
 
       const getResp = await fetchJson(
         `${rsUrl}/v1/state/${encodeURIComponent(spotifyManifest.connector_id)}?grant_id=${encodeURIComponent(approved.grant.grant_id)}`,
