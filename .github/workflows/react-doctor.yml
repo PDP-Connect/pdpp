@@ -1,0 +1,40 @@
+name: react-doctor
+
+# Regression-only React health check on the Next.js web app.
+#
+# Why regression-only: the existing app has a baseline score of 72 with ~30
+# error and ~367 warning diagnostics on first scan. We do not gate on an
+# absolute floor; we only fail when a PR introduces *new* findings against
+# main. Owner can promote to a score floor later once the baseline is paid down.
+
+on:
+  pull_request:
+    paths:
+      - "apps/web/**"
+      - ".github/workflows/react-doctor.yml"
+  workflow_dispatch: {}
+
+concurrency:
+  group: react-doctor-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  react-doctor:
+    name: regression scan vs main
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Need history so --diff main can walk back to the merge base.
+          fetch-depth: 0
+
+      - name: Run React Doctor (diff vs main)
+        uses: millionco/react-doctor@main
+        with:
+          diff: main
+          fail-on: warning
+          annotations: true
+          github-token: ${{ secrets.GITHUB_TOKEN }}
