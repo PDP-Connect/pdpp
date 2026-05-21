@@ -92,7 +92,7 @@ PDPP/reference-only concepts — including but not limited to `_ref`, `run_id`, 
 #### Scenario: Supported runtime is declared
 
 - **WHEN** maintainers inspect `package.json` and the README
-- **THEN** `engines.node` SHALL declare the supported Node major(s) and SHALL be at least as strict as `>=22.14.0` (matching sibling publishable packages `@pdpp/cli` and `@pdpp/local-collector`)
+- **THEN** `engines.node` SHALL declare the supported Node major(s) and SHALL be at least as strict as `>=24`
 - **AND** the README SHALL state the module-resolution contract (ESM-only or dual ESM/CJS) and any browser-API assumptions
 
 #### Scenario: Security disclosure contact is declared

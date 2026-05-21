@@ -40,8 +40,8 @@
 - [ ] 4.1 Fill in `packages/remote-surface/package.json` with the resolved owner values: `"repository": { "type": "git", "url": "git+https://github.com/vana-com/remote-surface.git" }`, `"bugs": { "url": "https://github.com/vana-com/remote-surface/issues" }`, `"homepage": "https://github.com/vana-com/remote-surface#readme"`.
 - [ ] 4.2 Add `keywords` (suggested seed: `remote-surface`, `browser`, `neko`, `cdp`, `streaming`, `clipboard`, `mobile-ime`, `webrtc`).
 - [ ] 4.3 Add `publishConfig.access: "public"`; add a commented `publishConfig.provenance: true` placeholder.
-- [ ] 4.4 Add `"engines": { "node": ">=22.14.0" }` (matches sibling `@pdpp/cli` and `@pdpp/local-collector`; rationale recorded in design.md).
-- [ ] 4.5 Document the supported runtime contract (`Node >=22.14.0`, ESM-only, browser API surface) in the README "Supported runtime assumptions" paragraph.
+- [ ] 4.4 Add `"engines": { "node": ">=24" }` for the 2026 Active LTS line.
+- [ ] 4.5 Document the supported runtime contract (`Node >=24`, ESM-only, browser API surface) in the README "Supported runtime assumptions" paragraph.
 - [ ] 4.6 Add `SECURITY.md` and a README "Reporting vulnerabilities" paragraph that route security reports to `security@vana.org`.
 
 ## 5. Release-Policy Wiring (worker lane, gated on `standardize-pdpp-package-publishing`)
@@ -64,7 +64,7 @@
 
 - [x] 7.1 Public repo URL → `https://github.com/vana-com/remote-surface`. Manifest values are spelled out in §4.1.
 - [x] 7.2 Security disclosure contact → `security@vana.org`. §4.6 wires `SECURITY.md` and the README contact section.
-- [x] 7.3 Supported Node major(s) → `engines.node: ">=22.14.0"` (matches sibling `@pdpp/cli` and `@pdpp/local-collector`; rationale in design.md).
+- [x] 7.3 Supported Node major(s) → `engines.node: ">=24"` (2026 Active LTS line for this new package; rationale in design.md).
 - [x] 7.6 `reference-implementation/LICENSE` is Apache-2.0 (mirror of package code license; collapsed into §3.4).
 - [x] 7.7 Community-Spec-1.0 is reserved (not declined) for future formal-spec artifacts; recorded in the spec deltas.
 
