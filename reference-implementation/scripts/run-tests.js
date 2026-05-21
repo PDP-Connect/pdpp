@@ -3,6 +3,7 @@ import { availableParallelism } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
+import { buildScrubbedTestEnv } from './test-env.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = dirname(__dirname);
@@ -18,10 +19,7 @@ function runNodeTest(filePath, extraArgs) {
     const child = spawn(process.execPath, ['--test', ...extraArgs, filePath], {
       cwd: repoRoot,
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: {
-        ...process.env,
-        PDPP_RUNTIME_QUIET: process.env.PDPP_RUNTIME_QUIET || '1',
-      },
+      env: buildScrubbedTestEnv(process.env),
     });
     let output = '';
 
