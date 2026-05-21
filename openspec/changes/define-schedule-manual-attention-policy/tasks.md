@@ -16,4 +16,4 @@
 
 - [x] 3.1 Run `openspec validate define-schedule-manual-attention-policy --strict`.
 - [x] 3.2 Confirm no package publishing, PWA, local collector runner, or behavioral runtime files were touched.
-- [ ] 3.3 Write the worker report to `tmp/workstreams/schedule-attention-open-spec.md`.
+- [x] 3.3 Owner-review the policy against the prior-art note and confirm it remains a design-only tranche.

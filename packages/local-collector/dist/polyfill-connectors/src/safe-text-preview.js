@@ -37,7 +37,8 @@ function checkStringForForbidden(value) {
     return { isSafe: true };
 }
 function decodeBuffer(buf) {
-    const isUtf8 = Buffer.isUtf8;
+    const bufferWithUtf8 = Buffer;
+    const isUtf8 = bufferWithUtf8.isUtf8;
     if (typeof isUtf8 === "function" && buf instanceof Buffer) {
         if (!isUtf8(buf)) {
             return { success: false, reason: "invalid UTF-8 sequence in buffer" };
@@ -49,7 +50,7 @@ function decodeBuffer(buf) {
         const text = decoder.decode(buf);
         return { success: true, text };
     }
-    catch (err) {
+    catch {
         return { success: false, reason: "invalid UTF-8 sequence in buffer" };
     }
 }
@@ -64,7 +65,7 @@ function truncateString(text, maxChars) {
             truncateAt--;
         }
     }
-    const truncated = text.slice(0, truncateAt) + "…";
+    const truncated = `${text.slice(0, truncateAt)}…`;
     return { result: truncated, wasTruncated: true };
 }
 export function safeTextPreview(value, maxChars = PDPP_PREVIEW_MAX_CHARS) {
