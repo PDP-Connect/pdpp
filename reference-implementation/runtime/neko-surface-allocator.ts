@@ -5,7 +5,7 @@ import {
   type BrowserSurfaceHealth,
   type EnsureBrowserSurfaceRequest,
   type StopBrowserSurfaceRequest,
-} from "@pdpp/remote-surface/leases";
+} from "@opendatalabs/remote-surface/leases";
 
 const DEFAULT_ALLOCATOR_TIMEOUT_MS = 5_000;
 const VALID_HEALTH = new Set<BrowserSurfaceHealth>(["starting", "ready", "unhealthy", "stopping"]);

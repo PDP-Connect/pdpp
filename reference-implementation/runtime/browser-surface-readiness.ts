@@ -48,7 +48,7 @@
  * Connectors that don't need a managed surface skip this entirely.
  */
 
-import type { BrowserSurface } from "@pdpp/remote-surface/leases";
+import type { BrowserSurface } from "@opendatalabs/remote-surface/leases";
 
 export const BROWSER_SURFACE_READINESS_PROBE_CODES = [
   "browser_surface_not_ready",

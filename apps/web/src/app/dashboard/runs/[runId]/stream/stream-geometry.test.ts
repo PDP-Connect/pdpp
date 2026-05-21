@@ -9,7 +9,7 @@ import {
   pointToStreamViewport,
   viewportPayloadsAreEquivalent,
   viewportsAreEquivalent,
-} from "@pdpp/remote-surface/client";
+} from "@opendatalabs/remote-surface/client";
 
 test("buildViewportPayload keeps viewport dimensions in CSS pixels and sends DPR separately", () => {
   assert.deepEqual(

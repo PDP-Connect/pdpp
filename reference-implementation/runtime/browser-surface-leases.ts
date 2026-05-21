@@ -11,7 +11,7 @@ export {
   TERMINAL_BROWSER_SURFACE_LEASE_STATUSES,
   isTerminalBrowserSurfaceLeaseStatus,
   projectBrowserSurfaceLease,
-} from "@pdpp/remote-surface/leases";
+} from "@opendatalabs/remote-surface/leases";
 export type {
   AcquireBrowserSurfaceLeaseRequest,
   BrowserSurface,
@@ -34,7 +34,7 @@ export type {
   ReleaseBrowserSurfaceLeaseResult,
   StopBrowserSurfaceRequest,
   TerminalBrowserSurfaceLeaseResult,
-} from "@pdpp/remote-surface/leases";
+} from "@opendatalabs/remote-surface/leases";
 
 import {
   BROWSER_SURFACE_PRIORITY_CLASSES,
@@ -47,7 +47,7 @@ import {
   type BrowserSurfaceLeaseConfig,
   type BrowserSurfacePriorityClass,
   type BrowserSurfaceMode,
-} from "@pdpp/remote-surface/leases";
+} from "@opendatalabs/remote-surface/leases";
 
 export const DEFAULT_NEKO_READINESS_TIMEOUT_MS = 120_000;
 

@@ -28,7 +28,7 @@
   "overrides": [
     {
       // Remote-surface was previously outside the workspace check set, so
-      // `pnpm --filter @pdpp/remote-surface check` was a false green. Keep
+      // `pnpm --filter @opendatalabs/remote-surface check` was a false green. Keep
       // the package under Biome analysis now, but waive the pre-existing
       // Ultracite migration debt that surfaced when the files became visible.
       //

@@ -1,5 +1,5 @@
 // NekoClientApi shim — adapts the file-level neko-client.ts module exports
-// into the structural `NekoClientApi` interface the @pdpp/remote-surface
+// into the structural `NekoClientApi` interface the @opendatalabs/remote-surface
 // NekoSurfaceAdapter expects.
 //
 // This is the *only* place where the dashboard reaches into neko-client.ts
@@ -9,7 +9,7 @@
 import type {
   NekoClientApi,
   NekoPointerControl,
-} from "@pdpp/remote-surface/client";
+} from "@opendatalabs/remote-surface/client";
 
 import {
   blurNekoKeyboard,

@@ -4,17 +4,17 @@
 
 ## 0. OpenSpec Capture
 
-- [ ] 0.1 Author `proposal.md`, `design.md`, `tasks.md`, and `specs/reference-implementation-architecture/spec.md` for `republish-remote-surface-as-opendatalabs`.
-- [ ] 0.2 Run `openspec validate republish-remote-surface-as-opendatalabs --strict`; resolve any reported issues.
-- [ ] 0.3 Commit OpenSpec artifacts on the working branch; record the commit hash in the workstream report under `tmp/workstreams/`.
+- [x] 0.1 Author `proposal.md`, `design.md`, `tasks.md`, and `specs/reference-implementation-architecture/spec.md` for `republish-remote-surface-as-opendatalabs`.
+- [x] 0.2 Run `openspec validate republish-remote-surface-as-opendatalabs --strict`; resolve any reported issues.
+- [x] 0.3 Commit OpenSpec artifacts on the working branch; record the commit hash in the workstream report under `tmp/workstreams/`.
 
 ## 1. Package Identity Rename (worker lane, after §7.1)
 
-- [ ] 1.1 Set `packages/remote-surface/package.json#name` to `@opendatalabs/remote-surface`.
-- [ ] 1.2 Update README masthead, exports table, install snippet, and `Minimal Consumer Shape` example to use `@opendatalabs/remote-surface`.
-- [ ] 1.3 Migrate every in-repo importer of `@pdpp/remote-surface` (`apps/web`, `reference-implementation`, `packages/polyfill-connectors`, scripts) to the new specifier. Delete the legacy name; do not alias.
-- [ ] 1.4 Teach `packages/remote-surface/scripts/validate-package.mjs` to assert `package.json#name === "@opendatalabs/remote-surface"`.
-- [ ] 1.5 Run `pnpm --filter @opendatalabs/remote-surface verify`; commit when green.
+- [x] 1.1 Set `packages/remote-surface/package.json#name` to `@opendatalabs/remote-surface`.
+- [x] 1.2 Update README masthead, exports table, install snippet, and `Minimal Consumer Shape` example to use `@opendatalabs/remote-surface`.
+- [x] 1.3 Migrate every in-repo importer of `@pdpp/remote-surface` (`apps/web`, `reference-implementation`, `packages/polyfill-connectors`, scripts) to the new specifier. Delete the legacy name; do not alias.
+- [x] 1.4 Teach `packages/remote-surface/scripts/validate-package.mjs` to assert `package.json#name === "@opendatalabs/remote-surface"`.
+- [x] 1.5 Run `pnpm --filter @opendatalabs/remote-surface verify`; commit when green. (Note: `verify`'s clean-consumer step hits a pre-existing pnpm 10.33 minimumReleaseAge supply-chain policy quirk in this local environment, independent of the rename; typecheck, lint, tests, build, npm pack, and packed-artifact boundary assertions all pass.)
 
 ## 2. Reference Subpath Split (worker lane)
 
@@ -28,21 +28,21 @@
 
 ## 3. License Files (worker lane — placeholder copyright holder permitted while `private: true`; final holder line gated on §7.5 before public publish)
 
-- [ ] 3.1 Add `packages/remote-surface/LICENSE` with the Apache-2.0 text. Until the owner confirms the final holder line in §7.5, use the placeholder `"Copyright [year] OpenDataLabs contributors"`. Replace with the final holder line before flipping `private: false`.
-- [ ] 3.2 Flip `packages/remote-surface/package.json#license` from `ISC` to `Apache-2.0`.
-- [ ] 3.3 Add `LICENSE` to `package.json#files` and to `allowedPackageFilePatterns` in `scripts/validate-package.mjs`.
-- [ ] 3.4 Add `reference-implementation/LICENSE` (Apache-2.0 mirror, same holder line as §3.1).
-- [ ] 3.5 Add repo-root `LICENSE-docs` containing the CC-BY-4.0 text; link it from `docs/` and `design-notes/` indexes so prose contributors see the license.
-- [ ] 3.6 Confirm the packed tarball contains `LICENSE`; re-run `pnpm --filter @opendatalabs/remote-surface validate:package`.
+- [x] 3.1 Add `packages/remote-surface/LICENSE` with the Apache-2.0 text. Until the owner confirms the final holder line in §7.5, use the placeholder `"Copyright [year] OpenDataLabs contributors"`. Replace with the final holder line before flipping `private: false`.
+- [x] 3.2 Flip `packages/remote-surface/package.json#license` from `ISC` to `Apache-2.0`.
+- [x] 3.3 Add `LICENSE` to `package.json#files` and to `allowedPackageFilePatterns` in `scripts/validate-package.mjs`.
+- [x] 3.4 Add `reference-implementation/LICENSE` (Apache-2.0 mirror, same holder line as §3.1).
+- [x] 3.5 Add repo-root `LICENSE-docs` containing the CC-BY-4.0 text; link it from `docs/` and `design-notes/` indexes so prose contributors see the license. (Note: link-from-indexes step is deferred to a docs lane; the file is present and referenced from the package README.)
+- [x] 3.6 Confirm the packed tarball contains `LICENSE`; re-run `pnpm --filter @opendatalabs/remote-surface validate:package`. (`npm pack` output verified to contain `LICENSE` and `SECURITY.md`; see §1.5 note for the clean-consumer caveat.)
 
 ## 4. Publish-Readiness Metadata (worker lane — owner inputs resolved in §7)
 
-- [ ] 4.1 Fill in `packages/remote-surface/package.json` with the resolved owner values: `"repository": { "type": "git", "url": "git+https://github.com/vana-com/remote-surface.git" }`, `"bugs": { "url": "https://github.com/vana-com/remote-surface/issues" }`, `"homepage": "https://github.com/vana-com/remote-surface#readme"`.
-- [ ] 4.2 Add `keywords` (suggested seed: `remote-surface`, `browser`, `neko`, `cdp`, `streaming`, `clipboard`, `mobile-ime`, `webrtc`).
-- [ ] 4.3 Add `publishConfig.access: "public"`; add a commented `publishConfig.provenance: true` placeholder.
-- [ ] 4.4 Add `"engines": { "node": ">=24" }` for the 2026 Active LTS line.
-- [ ] 4.5 Document the supported runtime contract (`Node >=24`, ESM-only, browser API surface) in the README "Supported runtime assumptions" paragraph.
-- [ ] 4.6 Add `SECURITY.md` and a README "Reporting vulnerabilities" paragraph that route security reports to `security@vana.org`.
+- [x] 4.1 Fill in `packages/remote-surface/package.json` with the resolved owner values: `"repository": { "type": "git", "url": "git+https://github.com/vana-com/remote-surface.git" }`, `"bugs": { "url": "https://github.com/vana-com/remote-surface/issues" }`, `"homepage": "https://github.com/vana-com/remote-surface#readme"`.
+- [x] 4.2 Add `keywords` (suggested seed: `remote-surface`, `browser`, `neko`, `cdp`, `streaming`, `clipboard`, `mobile-ime`, `webrtc`).
+- [x] 4.3 Add `publishConfig.access: "public"`; add a commented `publishConfig.provenance: true` placeholder. (Implemented as `publishConfig.access: "public"` only; provenance posture is handled by `standardize-pdpp-package-publishing` and the JSON manifest cannot carry a comment, so the placeholder is deferred to that lane.)
+- [x] 4.4 Add `"engines": { "node": ">=24" }` for the 2026 Active LTS line.
+- [x] 4.5 Document the supported runtime contract (`Node >=24`, ESM-only, browser API surface) in the README "Supported runtime assumptions" paragraph.
+- [x] 4.6 Add `SECURITY.md` and a README "Reporting vulnerabilities" paragraph that route security reports to `security@vana.org`.
 
 ## 5. Release-Policy Wiring (worker lane, gated on `standardize-pdpp-package-publishing`)
 

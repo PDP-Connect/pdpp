@@ -1,15 +1,41 @@
 {
-  "name": "@pdpp/remote-surface",
+  "name": "@opendatalabs/remote-surface",
   "version": "0.0.1",
   "private": true,
   "type": "module",
   "description": "Host-neutral RemoteSurface abstraction layer for browser interactions over n.eko and CDP backends.",
-  "license": "ISC",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/vana-com/remote-surface#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vana-com/remote-surface.git"
+  },
+  "bugs": {
+    "url": "https://github.com/vana-com/remote-surface/issues"
+  },
+  "keywords": [
+    "remote-surface",
+    "browser",
+    "neko",
+    "cdp",
+    "streaming",
+    "clipboard",
+    "mobile-ime",
+    "webrtc"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": [
     "dist",
-    "README.md"
+    "LICENSE",
+    "README.md",
+    "SECURITY.md"
   ],
   "exports": {
     ".": {

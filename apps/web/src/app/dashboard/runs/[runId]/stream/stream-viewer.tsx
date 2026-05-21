@@ -38,7 +38,7 @@ import {
   setNekoRemoteCopyFallback,
   setNekoViewportLayout,
 } from "./neko-client.ts";
-import { CdpSurfaceAdapter, NekoSurfaceAdapter } from "@pdpp/remote-surface/client";
+import { CdpSurfaceAdapter, NekoSurfaceAdapter } from "@opendatalabs/remote-surface/client";
 import { createNekoClientApi } from "./neko-client-api-shim.ts";
 import {
   assessClipboardCapabilities,
@@ -65,12 +65,12 @@ import {
   viewportCaptureSize,
   viewportInfoFromPayload,
   type StreamViewportInfo,
-} from "@pdpp/remote-surface/client";
+} from "@opendatalabs/remote-surface/client";
 import {
   assessNekoMediaSettle,
   createNekoMediaSettleState,
   type NekoMediaSettleSample,
-} from "@pdpp/remote-surface/backends/neko";
+} from "@opendatalabs/remote-surface/backends/neko";
 import {
   createStreamViewerControlState,
   localSurfaceCanDisplayPresentation,

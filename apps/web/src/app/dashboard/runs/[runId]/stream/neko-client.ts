@@ -17,7 +17,7 @@ import {
   type NekoTouchScrollBridgeEnvironment,
   type NekoTouchScrollIntentInput,
   type NekoViewportLayout,
-} from "@pdpp/remote-surface/backends/neko";
+} from "@opendatalabs/remote-surface/backends/neko";
 
 export interface NekoClientConfig {
   login?: {
@@ -2355,7 +2355,7 @@ export function stopNeko(container: HTMLElement): void {
   mountEl = null;
 }
 
-// ── Exports consumed by @pdpp/remote-surface NekoClientApi shim ──────
+// ── Exports consumed by @opendatalabs/remote-surface NekoClientApi shim ──────
 // These are narrow accessors over module-private state so the
 // stream-viewer can construct a NekoSurfaceAdapter without importing
 // neko-client.ts internals into the package. They are additive — no

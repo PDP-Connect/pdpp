@@ -1,4 +1,4 @@
-# @pdpp/remote-surface
+# @opendatalabs/remote-surface
 
 Generic remote-surface substrate for browser interactions. It owns host-neutral
 protocol shapes, viewer/controller interfaces, backend adapter contracts,
@@ -14,7 +14,7 @@ This is the architectural shape recommended in:
 
 ## Boundary
 
-`@pdpp/remote-surface` is deliberately OSS-spinnable. Package APIs use generic
+`@opendatalabs/remote-surface` is deliberately OSS-spinnable. Package APIs use generic
 concepts such as sessions, scoped tokens, targets, event/input/viewport/
 clipboard channels, backend capabilities, and redacted diagnostics.
 
@@ -32,34 +32,34 @@ This package must not import `reference-implementation`, `apps/web`,
 
 ## Exports
 
-- `@pdpp/remote-surface` — facade for current public types, leases, early
+- `@opendatalabs/remote-surface` — facade for current public types, leases, early
   adapters/controllers, and host-neutral API types.
-- `@pdpp/remote-surface/adapters` — concrete `RemoteSurface` adapter classes
+- `@opendatalabs/remote-surface/adapters` — concrete `RemoteSurface` adapter classes
   and their dependency-injection contracts.
-- `@pdpp/remote-surface/protocol` — JSON-safe session, token, target,
+- `@opendatalabs/remote-surface/protocol` — JSON-safe session, token, target,
   capability, event, input, viewport, clipboard, diagnostics, and safe backend
   descriptor shapes plus descriptor safety helpers.
-- `@pdpp/remote-surface/server` — `RemoteSurfaceSessionBroker` and
+- `@opendatalabs/remote-surface/server` — `RemoteSurfaceSessionBroker` and
   host-adapter interfaces for create/register/attach/authorize/revoke,
   channels, diagnostics, and `createSurfaceSessionStore` for host-neutral
   session/action persistence.
-- `@pdpp/remote-surface/client` — viewer lifecycle, input dispatch,
+- `@opendatalabs/remote-surface/client` — viewer lifecycle, input dispatch,
   clipboard policy, viewport reporting, telemetry, and lifecycle interfaces.
-- `@pdpp/remote-surface/backends/neko` — n.eko backend contracts and safe
+- `@opendatalabs/remote-surface/backends/neko` — n.eko backend contracts and safe
   same-origin client descriptor shapes.
-- `@pdpp/remote-surface/backends/cdp` — CDP fallback contracts that keep raw
+- `@opendatalabs/remote-surface/backends/cdp` — CDP fallback contracts that keep raw
   CDP HTTP/WebSocket authority server-side.
-- `@pdpp/remote-surface/backends/types` — generic backend
+- `@opendatalabs/remote-surface/backends/types` — generic backend
   adapter/lifecycle contracts plus future-backend seams for VNC/Kasm-like
   adapters. The package names those kinds but does not implement them in this
   tranche.
-- `@pdpp/remote-surface/controllers` — pointer controller primitives shared by
+- `@opendatalabs/remote-surface/controllers` — pointer controller primitives shared by
   adapters.
-- `@pdpp/remote-surface/diagnostics` — redacted diagnostics event helpers and
+- `@opendatalabs/remote-surface/diagnostics` — redacted diagnostics event helpers and
   bounded in-memory buffers.
-- `@pdpp/remote-surface/ime` — mobile text-input and keysym helpers.
-- `@pdpp/remote-surface/leases` — browser-surface lease substrate.
-- `@pdpp/remote-surface/testing` — fake broker and deterministic test
+- `@opendatalabs/remote-surface/ime` — mobile text-input and keysym helpers.
+- `@opendatalabs/remote-surface/leases` — browser-surface lease substrate.
+- `@opendatalabs/remote-surface/testing` — fake broker and deterministic test
   capabilities for package/host conformance tests.
 
 ## What Is Extracted
@@ -84,13 +84,13 @@ process ownership, and product UX.
 Install from a packed artifact during local release validation:
 
 ```bash
-pnpm add /path/to/pdpp/packages/remote-surface/pdpp-remote-surface-0.0.1.tgz
+pnpm add /path/to/pdpp/packages/remote-surface/opendatalabs-remote-surface-0.0.1.tgz
 ```
 
 Create a host-owned session store and map it to your own routes:
 
 ```ts
-import { createSurfaceSessionStore } from "@pdpp/remote-surface/server";
+import { createSurfaceSessionStore } from "@opendatalabs/remote-surface/server";
 
 const sessions = createSurfaceSessionStore();
 
@@ -110,7 +110,7 @@ sessions.attach({
 Validate browser-visible backend descriptors before returning them to a client:
 
 ```ts
-import { buildNekoSafeClientDescriptor } from "@pdpp/remote-surface/backends/neko";
+import { buildNekoSafeClientDescriptor } from "@opendatalabs/remote-surface/backends/neko";
 
 const descriptor = buildNekoSafeClientDescriptor({
   proxyPath: "/remote-surface/surface-session-123/neko",
@@ -124,7 +124,7 @@ token/session/action to its own authorization model and backend process.
 Acquire browser-surface capacity through the host-neutral lease facade:
 
 ```ts
-import { DEFAULT_NEKO_PRIORITY_RANKS, createSurfaceLeaseManager } from "@pdpp/remote-surface/leases";
+import { DEFAULT_NEKO_PRIORITY_RANKS, createSurfaceLeaseManager } from "@opendatalabs/remote-surface/leases";
 
 const leases = createSurfaceLeaseManager({
   config: {
@@ -153,7 +153,7 @@ leases.renewLease({
 Mount a client adapter by supplying the host-owned browser client bridge:
 
 ```ts
-import { NekoSurfaceAdapter } from "@pdpp/remote-surface/adapters";
+import { NekoSurfaceAdapter } from "@opendatalabs/remote-surface/adapters";
 
 const adapter = new NekoSurfaceAdapter({
   config: {
@@ -200,7 +200,7 @@ The package remains `private: true` until release preparation. Maintainers can
 still validate the publish shape locally:
 
 ```bash
-pnpm --filter @pdpp/remote-surface verify
+pnpm --filter @opendatalabs/remote-surface verify
 ```
 
 That command typechecks, lints, runs package-local tests, builds `dist`, packs
@@ -236,6 +236,33 @@ hidden `<textarea>` capturing `beforeinput`, `input`, and `compositionstart`/
 `compositionupdate`/`compositionend` events, then translating them into
 either X11 keysym events (for ASCII keystrokes) or text-commit batches
 (for IME composition results).
+
+## Supported runtime assumptions
+
+- **Node.js**: `>=24` (the 2026 Active LTS line). The package targets the
+  current LTS rather than the older Node 22 floor used by sibling `@pdpp/*`
+  packages.
+- **Module resolution**: ESM-only. The package ships `"type": "module"` and
+  does not provide a CommonJS build.
+- **Browser**: client adapters require a modern DOM (Web Crypto, `MutationObserver`,
+  `IntersectionObserver`, `compositionstart`/`compositionupdate`/`compositionend`
+  input events, `navigator.clipboard`). They do not polyfill missing APIs.
+- **TypeScript**: the package ships declarations targeting `module: NodeNext`,
+  `moduleResolution: NodeNext`, and `target: ES2023` consumers.
+
+## Reporting vulnerabilities
+
+Security issues should go to `security@vana.org`. See
+[`SECURITY.md`](./SECURITY.md) for the full disclosure policy. The same
+contact covers vulnerabilities discovered in the reference implementation
+that consumes this package.
+
+## License
+
+`@opendatalabs/remote-surface` is licensed under
+[Apache-2.0](./LICENSE). The reference implementation that consumes it
+shares the same license; documentation under `docs/` and `design-notes/`
+is licensed under [CC-BY-4.0](../../LICENSE-docs).
 
 ## Status
 

@@ -12,7 +12,7 @@
 import type {
   BrowserSurface,
   BrowserSurfaceLease,
-} from "@pdpp/remote-surface/leases";
+} from "@opendatalabs/remote-surface/leases";
 import { allowUnboundedReadAcknowledged, getOne, iterateDynamicSqlAcknowledged, referenceQueries } from "../lib/db.ts";
 import { listSpineCorrelations, type SpineSummary } from "../lib/spine.ts";
 import {

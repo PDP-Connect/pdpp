@@ -10,7 +10,7 @@ import {
   type BrowserSurfaceHealth,
   type EnsureBrowserSurfaceRequest,
   type StopBrowserSurfaceRequest,
-} from "@pdpp/remote-surface/leases";
+} from "@opendatalabs/remote-surface/leases";
 
 const DEFAULT_DOCKER_SOCKET_PATH = "/var/run/docker.sock";
 const DEFAULT_LABEL_NAMESPACE = "org.pdpp.reference.neko";

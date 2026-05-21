@@ -42,7 +42,7 @@ import {
   type BrowserSurfaceLeaseManager,
   type BrowserSurfaceProjection,
   projectBrowserSurfaceLease,
-} from "@pdpp/remote-surface/leases";
+} from "@opendatalabs/remote-surface/leases";
 import { browserSurfaceLeaseEnv } from "./browser-surface-leases.ts";
 import {
   type BrowserSurfaceReadinessProbe,

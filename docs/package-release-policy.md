@@ -11,9 +11,9 @@ branch while the reference implementation is pre-launch, and every publishable
 - `@pdpp/cli`
 - `@pdpp/local-collector`
 
-Packages such as `@pdpp/remote-surface`, `@pdpp/polyfill-connectors`,
-`@pdpp/reference-contract`, and `@pdpp/brand` remain private unless a future
-OpenSpec change explicitly makes them publishable.
+Packages such as `@opendatalabs/remote-surface` (formerly `@pdpp/remote-surface`),
+`@pdpp/polyfill-connectors`, `@pdpp/reference-contract`, and `@pdpp/brand` remain
+private unless a future OpenSpec change explicitly makes them publishable.
 
 ## Versioning
 

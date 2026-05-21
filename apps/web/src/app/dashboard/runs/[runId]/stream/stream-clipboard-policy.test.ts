@@ -7,7 +7,7 @@ import {
   classifyClipboardBrowser,
   clipboardLengthBucket,
   decideClipboardPolicy,
-} from "@pdpp/remote-surface/client";
+} from "@opendatalabs/remote-surface/client";
 
 function capabilities(overrides: Partial<ClipboardCapabilityInput> = {}): ClipboardCapabilities {
   return assessClipboardCapabilities({

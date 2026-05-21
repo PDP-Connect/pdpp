@@ -9,8 +9,8 @@ export {
   type SharpnessTelemetry,
   type StreamCaptureTarget,
   type StreamCaptureTargetContextInput,
-} from "@pdpp/remote-surface/diagnostics";
-import { computeSharpnessTelemetryFromLuma, type SharpnessTelemetry } from "@pdpp/remote-surface/diagnostics";
+} from "@opendatalabs/remote-surface/diagnostics";
+import { computeSharpnessTelemetryFromLuma, type SharpnessTelemetry } from "@opendatalabs/remote-surface/diagnostics";
 
 const DEFAULT_SHARPNESS_SAMPLE_WIDTH = 160;
 

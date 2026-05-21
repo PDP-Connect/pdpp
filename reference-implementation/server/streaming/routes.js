@@ -41,7 +41,7 @@ import {
   normalizeReferenceWireViewportPayload,
   parseReferenceWireInputPayload,
   parseReferenceWireInputTelemetryCursor,
-} from '@pdpp/remote-surface/protocol';
+} from '@opendatalabs/remote-surface/protocol';
 import { emitSpineEvent } from '../../lib/spine.ts';
 import { createInputTelemetry } from './input-telemetry.js';
 import { registerRemoteTelemetrySink } from './remote-telemetry-registry.js';

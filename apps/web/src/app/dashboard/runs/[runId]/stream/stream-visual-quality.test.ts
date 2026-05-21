@@ -5,7 +5,7 @@ import {
   computeSharpnessTelemetryFromLuma,
   computeStreamCaptureTarget,
   computeStreamCaptureTargetForContext,
-} from "@pdpp/remote-surface/diagnostics";
+} from "@opendatalabs/remote-surface/diagnostics";
 
 test("computePixelFitTelemetry identifies exact CSS-pixel mapping separately from physical pixels", () => {
   const fit = computePixelFitTelemetry({
