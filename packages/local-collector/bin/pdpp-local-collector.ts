@@ -23,7 +23,7 @@
  * Spec: openspec/changes/publish-pdpp-local-collector/design.md.
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -52,7 +52,41 @@ const DEFAULT_QUEUE_PATH = join(
   "collector-runner-queue.json"
 );
 const LOCAL_COLLECTOR_PACKAGE_NAME = "@pdpp/local-collector";
-const LOCAL_COLLECTOR_PACKAGE_VERSION = "0.0.0";
+const LOCAL_COLLECTOR_PACKAGE_VERSION_FALLBACK = "0.0.0";
+
+export function resolveLocalCollectorPackageVersion(startUrl: string | URL = import.meta.url): string {
+  let current =
+    typeof startUrl === "string" && !startUrl.startsWith("file:")
+      ? dirname(startUrl)
+      : dirname(fileURLToPath(startUrl));
+
+  for (;;) {
+    const manifestPath = join(current, "package.json");
+    if (existsSync(manifestPath)) {
+      try {
+        const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+          name?: unknown;
+          version?: unknown;
+        };
+        if (
+          manifest.name === LOCAL_COLLECTOR_PACKAGE_NAME &&
+          typeof manifest.version === "string" &&
+          manifest.version
+        ) {
+          return manifest.version;
+        }
+      } catch {
+        // Keep walking; malformed parent manifests should not break diagnostics.
+      }
+    }
+
+    const parent = dirname(current);
+    if (parent === current) {
+      return LOCAL_COLLECTOR_PACKAGE_VERSION_FALLBACK;
+    }
+    current = parent;
+  }
+}
 
 export interface CliOptions {
   args?: string[];
@@ -297,7 +331,7 @@ export function inspectLocalOutboxStatus(options: CliOptions): LocalOutboxStatus
     },
     package: {
       name: LOCAL_COLLECTOR_PACKAGE_NAME,
-      version: LOCAL_COLLECTOR_PACKAGE_VERSION,
+      version: resolveLocalCollectorPackageVersion(),
     },
     source: {
       connection_id: options.sourceInstanceId ?? null,
