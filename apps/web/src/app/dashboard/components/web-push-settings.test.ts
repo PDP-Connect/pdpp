@@ -39,10 +39,16 @@ const DIAGNOSTICS_TOGGLE_SHOW_PATTERN = /Show diagnostics/;
 const DIAGNOSTICS_TOGGLE_HIDE_PATTERN = /Hide diagnostics/;
 const DIAGNOSTICS_ARIA_LABEL_PATTERN = /aria-label="Web Push diagnostics"/;
 const DIAGNOSTICS_PWA_INSTALL_PATTERN = /installing the PWA alone does not subscribe/;
-const DIAGNOSTICS_PER_DEVICE_ENABLE_PATTERN = /Each device must tap Enable here once/;
+const DIAGNOSTICS_PER_DEVICE_ENABLE_PATTERN = /Each phone, tablet, and browser profile must be enabled separately/;
+const DIAGNOSTICS_SETUP_STEP_DEVICE_PATTERN = /Open the right device/;
+const DIAGNOSTICS_SETUP_STEP_PERMISSION_PATTERN = /Allow notifications/;
+const DIAGNOSTICS_SETUP_STEP_SUBSCRIBE_PATTERN = /Subscribe this device/;
+const DIAGNOSTICS_SETUP_STEP_TEST_PATTERN = /Send a test/;
+const DIAGNOSTICS_ENABLE_DEVICE_BUTTON_PATTERN = />\s*Enable this device\s*</;
+const DIAGNOSTICS_DISABLE_DEVICE_BUTTON_PATTERN = />\s*Disable this device\s*</;
 const DIAGNOSTICS_TEST_PUSH_PATTERN = /fetch\("\/_ref\/web-push\/test"/;
 const DIAGNOSTICS_TEST_PUSH_METHOD_PATTERN = /method:\s*"POST"/;
-const DIAGNOSTICS_SEND_TEST_BUTTON_PATTERN = />\s*Send test\s*</;
+const DIAGNOSTICS_SEND_TEST_BUTTON_PATTERN = />\s*Send test notification\s*</;
 const DIAGNOSTICS_SEND_DISABLED_PATTERN = /disabled=\{busy \|\| !endpoint \|\| Boolean\(unavailable\)\}/;
 const DIAGNOSTICS_NO_SUBSCRIPTIONS_PATTERN = /No active subscriptions for this owner/;
 const SSR_SAFE_WINDOW_HELPER_DEF_PATTERN = /function hasWindowFeature\(/;
@@ -66,8 +72,8 @@ test("WebPushSettings renders unsupported, denied-permission, insecure-context, 
     "Notification",
     'Notification.permission === "denied"',
     "Server VAPID keys are not configured",
-    "iOS and some mobile browsers require installing this dashboard as a PWA",
-    "ntfy/current and in-dashboard pending interactions stay available",
+    "Mobile browsers may require opening the installed dashboard app before notifications can arrive",
+    "Installing the PWA only adds the app icon",
   ]) {
     assert.match(src, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
@@ -140,9 +146,22 @@ test("dashboard test notification button posts to /_ref/web-push/test and gates 
   const src = await readFile(join(HERE, "web-push-settings.tsx"), "utf8");
   assert.match(src, DIAGNOSTICS_TEST_PUSH_PATTERN);
   assert.match(src, DIAGNOSTICS_TEST_PUSH_METHOD_PATTERN);
+  assert.match(src, DIAGNOSTICS_ENABLE_DEVICE_BUTTON_PATTERN);
+  assert.match(src, DIAGNOSTICS_DISABLE_DEVICE_BUTTON_PATTERN);
   assert.match(src, DIAGNOSTICS_SEND_TEST_BUTTON_PATTERN);
   assert.match(src, DIAGNOSTICS_SEND_DISABLED_PATTERN);
   assert.match(src, DIAGNOSTICS_NO_SUBSCRIPTIONS_PATTERN);
+});
+
+test("dashboard Web Push setup explains install, permission, subscription, and test as separate states", async () => {
+  const src = await readFile(join(HERE, "web-push-settings.tsx"), "utf8");
+  assert.match(src, DIAGNOSTICS_SETUP_STEP_DEVICE_PATTERN);
+  assert.match(src, DIAGNOSTICS_SETUP_STEP_PERMISSION_PATTERN);
+  assert.match(src, DIAGNOSTICS_SETUP_STEP_SUBSCRIBE_PATTERN);
+  assert.match(src, DIAGNOSTICS_SETUP_STEP_TEST_PATTERN);
+  assert.match(src, /A PWA install is not enough/);
+  assert.match(src, /This device is subscribed/);
+  assert.match(src, /server does not recognize it/);
 });
 
 test("dashboard exposes diagnostic checklist covering every web push precondition", async () => {
