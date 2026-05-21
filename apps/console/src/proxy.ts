@@ -1,11 +1,8 @@
-import { isMarkdownPreferred, rewritePath } from "fumadocs-core/negotiation";
 import { type NextRequest, NextResponse } from "next/server";
 import { OWNER_AUTH_COOKIE_NAME } from "pdpp-reference-implementation/owner-session";
 import { resolveReferenceTopology } from "pdpp-reference-implementation/reference-topology";
 import { normalizeDashboardReturnTo } from "@/app/dashboard/lib/return-to.ts";
-import { redirectSandboxAliasPath, rewriteSandboxCanonicalPath } from "./proxy-paths.ts";
 
-const { rewrite: rewriteLLM } = rewritePath("/docs{/*path}", "/llms.mdx/docs{/*path}");
 const referenceTopology = resolveReferenceTopology();
 const AS_PROXY_TARGET = referenceTopology.asInternalUrl;
 const RS_PROXY_TARGET = referenceTopology.rsInternalUrl;
@@ -71,24 +68,6 @@ function resolveReferenceProxyTarget(pathname: string): string | null {
 }
 
 export default function proxy(request: NextRequest) {
-  if (isMarkdownPreferred(request)) {
-    const result = rewriteLLM(request.nextUrl.pathname);
-
-    if (result) {
-      return NextResponse.rewrite(new URL(result, request.nextUrl));
-    }
-  }
-
-  const canonicalRewrite = rewriteSandboxCanonicalPath(request.nextUrl.pathname);
-  if (canonicalRewrite) {
-    return NextResponse.rewrite(new URL(`${canonicalRewrite}${request.nextUrl.search}`, request.nextUrl));
-  }
-
-  const canonicalAliasRedirect = redirectSandboxAliasPath(request.nextUrl.pathname);
-  if (canonicalAliasRedirect) {
-    return NextResponse.redirect(new URL(`${canonicalAliasRedirect}${request.nextUrl.search}`, request.nextUrl), 308);
-  }
-
   if (request.nextUrl.pathname === "/dashboard" || request.nextUrl.pathname.startsWith("/dashboard/")) {
     // Optimistic auth-redirect: if owner-auth might be enabled and the
     // session cookie is missing, bounce to /owner/login *before* any
@@ -138,18 +117,8 @@ export default function proxy(request: NextRequest) {
 
 export const config = {
   matcher: [
-    "/docs",
-    "/docs/:path*",
     "/dashboard",
     "/dashboard/:path*",
-    "/sandbox/_ref",
-    "/sandbox/_ref/:path*",
-    "/sandbox/.well-known",
-    "/sandbox/.well-known/:path*",
-    "/sandbox/ref",
-    "/sandbox/ref/:path*",
-    "/sandbox/well-known",
-    "/sandbox/well-known/:path*",
     "/.well-known/:path*",
     "/oauth/:path*",
     "/agent-connect",

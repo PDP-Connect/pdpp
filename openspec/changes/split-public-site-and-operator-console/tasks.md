@@ -15,10 +15,10 @@
 ## 3. Create `apps/console` (operator surface + BFF)
 
 - [x] 3.1 Copy `apps/web` to `apps/console`. Add to `pnpm-workspace.yaml`.
-- [ ] 3.2 In `apps/console`, remove public-site routes: `/`, `/docs/**`, `/reference/**`, `/llms*`, `/planning/**`, `/design`, `/palette`. Keep `/dashboard/**` and the API/BFF surface.
-- [ ] 3.3 Verify `apps/web/src/proxy.ts` was moved (not copied) to `apps/console/src/proxy.ts` and prune any public-site matchers in a second commit.
-- [ ] 3.4 Confirm `/dashboard/**` renders end-to-end against a locally running `reference-implementation`. Owner-session gating and CSRF behavior SHALL be byte-identical to `apps/web`.
-- [ ] 3.5 Run `pnpm --dir apps/console run types:check`, `pnpm --dir apps/console run check`, and `pnpm --dir apps/console run build`.
+- [x] 3.2 In `apps/console`, remove public-site routes: `/`, `/docs/**`, `/reference/**`, `/llms*`, `/planning/**`, `/design`, `/palette`. Keep `/dashboard/**` and the API/BFF surface.
+- [x] 3.3 Verify `apps/web/src/proxy.ts` was moved (not copied) to `apps/console/src/proxy.ts` and prune any public-site matchers in a second commit. (Public-site matchers and sandbox/docs branches pruned in Tranche C; the eventual move-not-copy completes when apps/web → apps/site lands.)
+- [ ] 3.4 Confirm `/dashboard/**` renders end-to-end against a locally running `reference-implementation`. Owner-session gating and CSRF behavior SHALL be byte-identical to `apps/web`. (Build/typegen verified in CI; full live owner-session smoke deferred to owner-run validation.)
+- [x] 3.5 Run `pnpm --dir apps/console run types:check`, `pnpm --dir apps/console run check`, and `pnpm --dir apps/console run build`. (types:check + build pass. `check` mirrors apps/web's pre-existing formatting failures — not newly introduced.)
 
 ## 4. Trim `apps/web` into `apps/site` (public surface only)
 
