@@ -275,6 +275,26 @@ publishing/OIDC, and provenance. This change extends that pipeline:
   if a future browser-class connector needs Patchright the connector
   package itself owns that script.
 
+**Release operation gate:**
+
+`@pdpp/cli` already exists on npm under the `@pdpp` scope, so this repository
+has precedent for publishing PDPP packages. That precedent does not, by itself,
+make `@pdpp/local-collector` publishable from every environment:
+
+- The local workstation is not logged in to npm, so it cannot perform a direct
+  first publish.
+- The repository has no visible `NPM_TOKEN` GitHub secret.
+- The GitHub Actions workflow is configured for OIDC/trusted publishing, but
+  npm trusted publishing is package-specific. Because `@pdpp/local-collector`
+  does not yet exist on npm, the first publish still needs an owner-controlled
+  npm setup step or a release environment that is explicitly authorized to
+  create the package.
+
+Therefore this implementation can make the package release-ready and can prove
+the tarball/install/run path locally, but it does not treat actual npm
+publication as completed until the package exists on npm and a real
+post-publish `npx -y @pdpp/local-collector ...` smoke has passed.
+
 ### 6. Reference-server compatibility surface (minimum)
 
 - Device row gains `collector_protocol_version` (text, non-null on
