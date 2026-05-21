@@ -43,6 +43,8 @@ RUN pnpm --filter pdpp-web build
 
 FROM base AS reference
 
+ARG TARGETARCH
+
 # `.git` is excluded from the Docker build context (.dockerignore), so the
 # runtime cannot derive a real git revision at startup and falls back to
 # `+unknown`. Pass the real revision in at build time so production images
@@ -60,9 +62,13 @@ COPY --from=source /app /app
 
 # Runtime browser assets are installed outside /app, so the deps-stage
 # postinstall cache is not present in final images. Install real Chrome for
-# Patchright's recommended channel plus bundled Chromium as an explicit
-# fallback for the isolated launcher.
-RUN pnpm --dir packages/polyfill-connectors exec patchright install --with-deps chrome chromium
+# Patchright's recommended channel where Linux supports it, plus bundled
+# Chromium as an explicit fallback for the isolated launcher.
+RUN if [ "$TARGETARCH" = "arm64" ]; then \
+      pnpm --dir packages/polyfill-connectors exec patchright install --with-deps chromium; \
+    else \
+      pnpm --dir packages/polyfill-connectors exec patchright install --with-deps chrome chromium; \
+    fi
 
 EXPOSE 7662 7663
 
