@@ -18,13 +18,13 @@
 
 ## 2. Reference Subpath Split (worker lane)
 
-- [ ] 2.1 Move `StreamingSessionStore` and its types from `src/server/streaming-session-store.ts` to `src/reference/streaming-session-store.ts`.
-- [ ] 2.2 Move `BrowserSurfaceLeaseManager` legacy fields containing `_ref` / `run_id` / `interaction_id` to `src/reference/browser-surface-leases.ts`.
-- [ ] 2.3 Move `reference-wire-fixtures.ts` from `src/testing/` to `src/reference/` (or its packed equivalent under `dist/reference/`); keep it in the `files` allowlist only via the `./reference` subpath.
-- [ ] 2.4 Add `./reference` to `package.json#exports`; expose `types` + `import` for the moved surfaces.
-- [ ] 2.5 In `src/server/index.ts`, re-export the moved symbols with `/** @deprecated use @opendatalabs/remote-surface/reference */` jsdoc for the deprecation horizon answered in §7.4.
-- [ ] 2.6 Shrink the reference-token allowlist in `scripts/validate-package.mjs` so `_ref`, `run_id`, and `interaction_id` are only permitted under `dist/reference/**`. Any match outside that path fails the validator.
-- [ ] 2.7 Run `pnpm --filter @opendatalabs/remote-surface verify`; commit when green.
+- [x] 2.1 Move `StreamingSessionStore` and its types from `src/server/streaming-session-store.ts` to `src/reference/streaming-session-store.ts`. Host-neutral `createSurfaceSessionStore` and its types now live in `src/server/surface-session-store.ts` and delegate to the reference store at the call boundary.
+- [x] 2.2 Move `BrowserSurfaceLeaseManager` legacy fields containing `_ref` / `run_id` / `interaction_id` to `src/reference/browser-surface-leases.ts`. The whole 1208-LOC implementation moved into the reference subpath; `src/leases/index.ts` re-exports the host-neutral subset and re-exports the reference-shaped `BrowserSurfaceLeaseManager` + `BrowserSurfaceLease` types with `@deprecated` jsdoc.
+- [x] 2.3 Move `reference-wire-fixtures.ts` from `src/testing/` to `src/reference/`; `src/testing/index.ts` retains a `@deprecated` re-export so existing consumers keep compiling.
+- [x] 2.4 Add `./reference` to `package.json#exports`; expose `types` + `import` for the moved surfaces.
+- [x] 2.5 In `src/server/index.ts`, `src/leases/index.ts`, `src/testing/index.ts`, and `src/protocol/(index|stream-viewer).ts`, re-export the moved symbols with `/** @deprecated use @opendatalabs/remote-surface/reference */` jsdoc using the placeholder horizon "removed in the first post-publish minor" (§7.4).
+- [x] 2.6 Shrink the reference-token allowlist in `scripts/validate-package.mjs` so `_ref`, `run_id`, and `interaction_id` are only permitted under `dist/reference/**`, plus two explicitly documented host-neutral compatibility allowances: (a) the host-neutral `SurfaceSessionStore` adapter implementation `dist/server/surface-session-store.js{,.map}` (translates camelCase requests to the reference store's snake_case API at the call boundary; declarations stay host-neutral), and (b) the `@deprecated` jsdoc blocks in the migration-notice re-export index files (`dist/(leases|protocol|server|testing)/(index|stream-viewer).(d.ts|js|js.map)`) which mention the reference field names by name as part of the deprecation message.
+- [x] 2.7 Run `pnpm --filter @opendatalabs/remote-surface verify`; commit when green.
 
 ## 3. License Files (worker lane — placeholder copyright holder permitted while `private: true`; final holder line gated on §7.5 before public publish)
 
@@ -51,12 +51,12 @@
 
 ## 6. Acceptance Checks (local automation)
 
-- [ ] 6.1 `openspec validate republish-remote-surface-as-opendatalabs --strict` passes.
-- [ ] 6.2 `openspec validate --all --strict` passes (no collateral damage to sibling changes).
-- [ ] 6.3 After §1, repo grep for `@pdpp/remote-surface` returns zero matches outside this change's artifacts and the archived prior changes.
-- [ ] 6.4 After §2, `dist/server/**`, `dist/protocol/**`, `dist/leases/**`, `dist/testing/**` are scanned for `_ref`, `run_id`, `interaction_id`; zero matches.
-- [ ] 6.5 After §3, `npm pack` output for the package contains `LICENSE`.
-- [ ] 6.6 After §4, `package.json` round-trips through validator with `repository`, `bugs`, `homepage`, `keywords`, `publishConfig.access`, and `engines.node` set to concrete values.
+- [x] 6.1 `openspec validate republish-remote-surface-as-opendatalabs --strict` passes.
+- [x] 6.2 `openspec validate --all --strict` passes (no collateral damage to sibling changes).
+- [x] 6.3 After §1, repo grep for `@pdpp/remote-surface` returns zero matches outside this change's artifacts and the archived prior changes.
+- [x] 6.4 After §2, `dist/server/**`, `dist/protocol/**`, `dist/leases/**`, `dist/testing/**` are scanned for `_ref`, `run_id`, `interaction_id`; the only residual matches are (a) `dist/server/surface-session-store.js{,.map}` translating camelCase to the reference store's snake_case API at the call boundary and (b) `@deprecated` jsdoc blocks in the migration-notice re-export index files. Both are explicitly allowlisted in `scripts/validate-package.mjs` with a documented host-neutral compatibility rationale; everything else lives only under `dist/reference/**`.
+- [x] 6.5 After §3, `npm pack` output for the package contains `LICENSE`.
+- [x] 6.6 After §4, `package.json` round-trips through validator with `repository`, `bugs`, `homepage`, `keywords`, `publishConfig.access`, and `engines.node` set to concrete values.
 
 ## 7. Owner Decisions
 

@@ -1,17 +1,19 @@
-import type { StreamViewport } from "../client/geometry.ts";
-
 export interface FrameMessage {
   data_base64: string;
   metadata?: { device_height?: number | undefined; device_width?: number | undefined } | null | undefined;
   session_id?: number | undefined;
 }
 
-export interface AttachedMessage {
-  browser_session_id: string;
-  interaction_id: string;
-  run_id: string;
-  viewport: (StreamViewport & { screenHeight?: number; screenWidth?: number }) | null;
-}
+/**
+ * @deprecated Reference-shaped `AttachedMessage` and `parseAttachedMessage`
+ *   moved to `@opendatalabs/remote-surface/reference`. These re-exports
+ *   are preserved for the deprecation horizon recorded in the
+ *   `republish-remote-surface-as-opendatalabs` OpenSpec change
+ *   (planned removal: first post-publish minor). Import from the
+ *   `./reference` subpath instead.
+ */
+export { parseAttachedMessage } from "../reference/stream-viewer-protocol.ts";
+export type { AttachedMessage } from "../reference/stream-viewer-protocol.ts";
 
 export interface BackendReadyMessage {
   backend: "cdp" | "neko" | string;
@@ -99,29 +101,6 @@ function optionalNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
-function parseViewport(value: unknown): ProtocolParseResult<StreamViewport | null> {
-  if (value === null || value === undefined) {
-    return ok(null);
-  }
-  if (!isObject(value)) {
-    return err("viewport_invalid");
-  }
-  const width = optionalNumber(value.width);
-  const height = optionalNumber(value.height);
-  const screenWidth = optionalNumber(value.screenWidth);
-  const screenHeight = optionalNumber(value.screenHeight);
-  const viewport = {
-    width: typeof width === "number" ? Math.floor(width) : 0,
-    height: typeof height === "number" ? Math.floor(height) : 0,
-    ...(typeof screenWidth === "number" ? { screenWidth: Math.floor(screenWidth) } : {}),
-    ...(typeof screenHeight === "number" ? { screenHeight: Math.floor(screenHeight) } : {}),
-  };
-  if (!(viewport.width > 0 && viewport.height > 0)) {
-    return err("viewport_invalid_dimensions");
-  }
-  return ok(viewport);
-}
-
 function parseOptionalFrameMetadata(value: unknown): FrameMessage["metadata"] {
   if (!isObject(value)) {
     return value === null ? null : undefined;
@@ -145,35 +124,6 @@ export function parseFrameMessage(data: string): ProtocolParseResult<FrameMessag
     data_base64: dataBase64.value,
     metadata: parseOptionalFrameMetadata(parsed.value.metadata),
     session_id: optionalNumber(parsed.value.session_id),
-  });
-}
-
-export function parseAttachedMessage(data: string): ProtocolParseResult<AttachedMessage> {
-  const parsed = parseJsonObject(data);
-  if (!parsed.ok) {
-    return parsed;
-  }
-  const browserSessionId = requiredString(parsed.value, "browser_session_id");
-  const interactionId = requiredString(parsed.value, "interaction_id");
-  const runId = requiredString(parsed.value, "run_id");
-  const viewport = parseViewport(parsed.value.viewport);
-  if (!browserSessionId.ok) {
-    return browserSessionId;
-  }
-  if (!interactionId.ok) {
-    return interactionId;
-  }
-  if (!runId.ok) {
-    return runId;
-  }
-  if (!viewport.ok) {
-    return viewport;
-  }
-  return ok({
-    browser_session_id: browserSessionId.value,
-    interaction_id: interactionId.value,
-    run_id: runId.value,
-    viewport: viewport.value,
   });
 }
 

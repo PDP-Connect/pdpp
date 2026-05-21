@@ -176,80 +176,27 @@ export type JsonValue = null | boolean | number | string | JsonValue[] | JsonObj
 export type JsonObject = {
     readonly [key: string]: JsonValue;
 };
-export type ReferenceWireInputPayload = Record<string, unknown>;
-export interface ReferenceWireViewportPayload {
-    width: number;
-    height: number;
-    deviceScaleFactor?: number;
-    screenWidth?: number;
-    screenHeight?: number;
-    hasTouch?: boolean;
-    mobile?: true;
-    userAgent?: string;
-}
-export interface ReferenceWireInputTelemetryCursor {
-    since: number;
-}
-export interface ReferenceWireInputTelemetryRecord {
-    readonly [key: string]: JsonValue | undefined;
-    seq?: number;
-    serverAtMs?: number;
-    source?: string;
-    kind?: string;
-}
-export interface ReferenceWireBackendReadyPayload {
-    backend: string;
-    browser_owner_mode: string | null;
-    client_config_path: string | null;
-    iframe_path: string | null;
-    stealth_mode: string | null;
-}
-export interface ReferenceWireAttachedPayload {
-    run_id: string;
-    interaction_id: string;
-    browser_session_id: string;
-    viewport: JsonValue;
-}
-export interface ReferenceWireFramePayload {
-    session_id: number;
-    data_base64: string;
-    metadata: JsonValue;
-}
-export interface ReferenceWireNamedSseEvent {
-    name: string;
-    data: unknown;
-}
-export declare class RemoteSurfaceProtocolError extends Error {
-    readonly path: string;
-    constructor(message: string, path?: string);
-}
+/**
+ * @deprecated Reference-shaped wire payload types moved to
+ *   `@opendatalabs/remote-surface/reference`. These re-exports are
+ *   preserved for the deprecation horizon recorded in the
+ *   `republish-remote-surface-as-opendatalabs` OpenSpec change
+ *   (planned removal: first post-publish minor). Import from the
+ *   `./reference` subpath instead.
+ */
+export type { ReferenceWireAttachedPayload, ReferenceWireBackendReadyPayload, ReferenceWireFramePayload, ReferenceWireInputPayload, ReferenceWireInputTelemetryCursor, ReferenceWireInputTelemetryRecord, ReferenceWireNamedSseEvent, ReferenceWireViewportPayload, } from "../reference/protocol-wire.ts";
+export { RemoteSurfaceProtocolError } from "./errors.ts";
 export declare function parseRemoteSurfaceEventPayload(value: unknown): RemoteSurfaceEventPayload;
 export declare function parseRemoteSurfaceInputPayload(value: unknown): RemoteSurfaceInputPayload;
 export declare function parseRemoteSurfaceViewportPayload(value: unknown): RemoteSurfaceViewportPayload;
 export declare function parseRemoteSurfaceClipboardPayload(value: unknown): RemoteSurfaceClipboardPayload;
 export declare function parseRemoteSurfaceDiagnosticsPayload(value: unknown): RemoteSurfaceDiagnosticsPayload;
-export declare function parseReferenceWireInputPayload(value: unknown): ReferenceWireInputPayload;
-export declare function normalizeReferenceWireViewportPayload(value: unknown): ReferenceWireViewportPayload | null;
-export declare function parseReferenceWireInputTelemetryCursor(value: unknown): ReferenceWireInputTelemetryCursor;
-export declare function parseReferenceWireInputTelemetryRecord(value: unknown): ReferenceWireInputTelemetryRecord | null;
-export declare function buildReferenceWireAttachedPayload({ runId, interactionId, browserSessionId, viewport, }: {
-    runId: string;
-    interactionId: string;
-    browserSessionId: string;
-    viewport: unknown;
-}): ReferenceWireAttachedPayload;
-export declare function buildReferenceWireFramePayload(frame: {
-    sessionId?: unknown;
-    data?: unknown;
-    metadata?: unknown;
-}): ReferenceWireFramePayload;
-export declare function buildReferenceWireCompanionEventPayload(event: unknown): ReferenceWireNamedSseEvent | null;
-export declare function buildReferenceWireBackendReadyPayload({ backend, token, browserOwnerMode, stealthMode, }: {
-    backend: unknown;
-    token: string;
-    browserOwnerMode?: (() => unknown) | null;
-    stealthMode?: (() => unknown) | null;
-}): ReferenceWireBackendReadyPayload;
+/**
+ * @deprecated Reference-shaped wire payload helpers moved to
+ *   `@opendatalabs/remote-surface/reference`. See the type re-export
+ *   block above for the deprecation horizon.
+ */
+export { buildReferenceWireAttachedPayload, buildReferenceWireBackendReadyPayload, buildReferenceWireCompanionEventPayload, buildReferenceWireFramePayload, normalizeReferenceWireViewportPayload, parseReferenceWireInputPayload, parseReferenceWireInputTelemetryCursor, parseReferenceWireInputTelemetryRecord, } from "../reference/protocol-wire.ts";
 export declare function parseSafeRemoteSurfaceBackendDescriptor(value: unknown): SafeRemoteSurfaceBackendDescriptor;
 export declare function parseRemoteSurfaceTargetDescriptor(value: unknown): RemoteSurfaceTargetDescriptor;
 export declare function isSafeRemoteSurfaceBackendDescriptor(descriptor: SafeRemoteSurfaceBackendDescriptor): boolean;

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { parseAttachedMessage } from "./stream-viewer-protocol.ts";
 import {
-  parseAttachedMessage,
   parseBackendReadyMessage,
   parseClipboardMessage,
   parseFrameMessage,
@@ -10,7 +10,7 @@ import {
   parsePopupOpenedMessage,
   parseStreamErrorMessage,
   parseUrlChangedMessage,
-} from "./stream-viewer.ts";
+} from "../protocol/stream-viewer.ts";
 
 test("parseAttachedMessage validates scope and viewport shape", () => {
   assert.deepEqual(

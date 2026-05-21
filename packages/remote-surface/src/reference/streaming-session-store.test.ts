@@ -3,12 +3,12 @@ import test from "node:test";
 
 import {
   __test__,
-  createSurfaceSessionStore,
   createStreamingSessionStore,
   DEFAULT_MINT_IDEMPOTENCY_TTL_MS,
   DEFAULT_STREAMING_SESSION_TTL_MS,
   MAX_IDEMPOTENCY_KEY_LEN,
 } from "./index.ts";
+import { createSurfaceSessionStore } from "../server/index.ts";
 
 function freshClock() {
   let t = 1_000_000_000;

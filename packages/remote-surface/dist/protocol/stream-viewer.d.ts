@@ -1,4 +1,3 @@
-import type { StreamViewport } from "../client/geometry.ts";
 export interface FrameMessage {
     data_base64: string;
     metadata?: {
@@ -7,15 +6,16 @@ export interface FrameMessage {
     } | null | undefined;
     session_id?: number | undefined;
 }
-export interface AttachedMessage {
-    browser_session_id: string;
-    interaction_id: string;
-    run_id: string;
-    viewport: (StreamViewport & {
-        screenHeight?: number;
-        screenWidth?: number;
-    }) | null;
-}
+/**
+ * @deprecated Reference-shaped `AttachedMessage` and `parseAttachedMessage`
+ *   moved to `@opendatalabs/remote-surface/reference`. These re-exports
+ *   are preserved for the deprecation horizon recorded in the
+ *   `republish-remote-surface-as-opendatalabs` OpenSpec change
+ *   (planned removal: first post-publish minor). Import from the
+ *   `./reference` subpath instead.
+ */
+export { parseAttachedMessage } from "../reference/stream-viewer-protocol.ts";
+export type { AttachedMessage } from "../reference/stream-viewer-protocol.ts";
 export interface BackendReadyMessage {
     backend: "cdp" | "neko" | string;
     browser_owner_mode?: string | null | undefined;
@@ -56,7 +56,6 @@ export type ProtocolParseResult<T> = {
     ok: false;
 };
 export declare function parseFrameMessage(data: string): ProtocolParseResult<FrameMessage>;
-export declare function parseAttachedMessage(data: string): ProtocolParseResult<AttachedMessage>;
 export declare function parseBackendReadyMessage(data: string): ProtocolParseResult<BackendReadyMessage>;
 export declare function parseUrlChangedMessage(data: string): ProtocolParseResult<UrlChangedMessage>;
 export declare function parsePopupOpenedMessage(data: string): ProtocolParseResult<PopupOpenedMessage>;

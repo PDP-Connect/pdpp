@@ -82,6 +82,10 @@
       "types": "./dist/protocol/index.d.ts",
       "import": "./dist/protocol/index.js"
     },
+    "./reference": {
+      "types": "./dist/reference/index.d.ts",
+      "import": "./dist/reference/index.js"
+    },
     "./server": {
       "types": "./dist/server/index.d.ts",
       "import": "./dist/server/index.js"

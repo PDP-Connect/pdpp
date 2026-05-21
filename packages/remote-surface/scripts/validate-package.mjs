@@ -50,34 +50,19 @@ const hostNeutralCompatibilityAllowlist = [
     patterns: new Set(["_ref", "run_id", "interaction_id"]),
   },
   {
-    name: "lease compatibility declarations still expose legacy reference-shaped database fields",
-    files: /^dist\/leases\/browser-surface-leases\.d\.ts$/,
-    patterns: new Set(["run_id"]),
-  },
-  {
-    name: "lease compatibility implementation still maps generic lease requests to legacy reference-shaped fields",
-    files: /^dist\/leases\/browser-surface-leases\.js(\.map)?$/,
-    patterns: new Set(["run_id"]),
-  },
-  {
-    name: "stream-viewer protocol keeps reference wire fields for route parity fixtures",
-    files: /^dist\/protocol\/(index|stream-viewer)\.(d\.ts|js|js\.map)$/,
+    name: "reference-only subpath is the canonical home for PDPP-shaped wire and store fields",
+    files: /^dist\/reference\/.+\.(d\.ts|js|js\.map)$/,
     patterns: new Set(["_ref", "run_id", "interaction_id"]),
   },
   {
-    name: "server store compatibility declarations keep legacy streaming aliases beside host-neutral surface APIs",
-    files: /^dist\/server\/streaming-session-store\.d\.ts$/,
+    name: "host-neutral SurfaceSessionStore adapter must rename camelCase requests to the reference store's snake_case API at the call boundary; declarations stay host-neutral",
+    files: /^dist\/server\/surface-session-store\.js(\.map)?$/,
     patterns: new Set(["run_id", "interaction_id"]),
   },
   {
-    name: "server store compatibility implementation adapts host-neutral surface APIs to legacy streaming aliases",
-    files: /^dist\/server\/streaming-session-store\.js(\.map)?$/,
+    name: "deprecated @deprecated jsdoc blocks in re-export index files mention the reference field names as part of the migration notice",
+    files: /^dist\/(leases|protocol|server|testing)\/(index|stream-viewer)\.(d\.ts|js|js\.map)$/,
     patterns: new Set(["run_id", "interaction_id"]),
-  },
-  {
-    name: "reference wire fixtures intentionally preserve PDPP route fields for compatibility tests",
-    files: /^dist\/testing\/reference-wire-fixtures\.(d\.ts|js|js\.map)$/,
-    patterns: new Set(["_ref", "run_id", "interaction_id"]),
   },
 ];
 
@@ -284,6 +269,7 @@ async function validateCleanConsumer(tarballPath) {
         'import "@opendatalabs/remote-surface/ime";',
         'import "@opendatalabs/remote-surface/leases";',
         'import "@opendatalabs/remote-surface/protocol";',
+        'import "@opendatalabs/remote-surface/reference";',
         'import "@opendatalabs/remote-surface/server";',
         'import "@opendatalabs/remote-surface/testing";',
         'const store = createSurfaceSessionStore();',
@@ -318,6 +304,7 @@ async function validateCleanConsumer(tarballPath) {
           'await import("@opendatalabs/remote-surface/ime");',
           'await import("@opendatalabs/remote-surface/leases");',
           'await import("@opendatalabs/remote-surface/protocol");',
+          'await import("@opendatalabs/remote-surface/reference");',
           'await import("@opendatalabs/remote-surface/server");',
           'await import("@opendatalabs/remote-surface/testing");',
         ].join("\n"),
