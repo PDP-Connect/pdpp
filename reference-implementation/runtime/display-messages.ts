@@ -47,6 +47,18 @@ export const DISPLAY_MESSAGES: Record<string, string> = {
   controller_restarted: "We restarted in the middle — we'll try again",
   consent_expiring_soon: "Your sign-in will expire soon",
 
+  // ─── Chase statements-PDF probe diagnostics ────────────────────────────
+  // Emitted by `chase` during HTTP-response inspection while scanning the
+  // statements page. These three are diagnostic-bucket reasons (matched
+  // probe / unmatched probe / probe error), but the completeness test
+  // scans every `reason: "<code>"` literal in connector source, so they
+  // need vetted end-user copy here too. Reaching the dashboard layer
+  // would be unusual but should still read like English, not protocol
+  // jargon.
+  body_error: "We hit a problem reading a Chase statement page",
+  not_expected_body: "A Chase page didn't look like a statement we recognize",
+  matched: "We found a Chase statement to import",
+
   // ─── Connector SKIP_RESULT reasons (catalog scan) ──────────────────────
   ambiguous_multi_account_overview: "We couldn't tell which account view to use",
   archive_not_found: "We couldn't find an export archive to read",

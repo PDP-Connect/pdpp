@@ -454,6 +454,18 @@ function assertMalformedPolyfillClientArtifacts({
   assert.equal(stderr, '');
 }
 
+// Strip the one-line "warning: \"pdpp <group> <sub>\" is deprecated; use
+// \"pdpp ref <group> <sub>\" instead." emitted by the legacy operator
+// aliases (cli/index.js:126). The aliases route to the same handlers as
+// the canonical `pdpp ref ...` forms, so the warning is operationally
+// invisible to test expectations that assert `stderr === ''`. Coverage
+// of the deprecation behavior itself lives in the dedicated legacy-alias
+// test below.
+const LEGACY_ALIAS_DEPRECATION_RE = /^warning: "pdpp [^"]+" is deprecated; use "[^"]+" instead\.\n/gm;
+function scrubLegacyAliasWarning(stderr) {
+  return (stderr || '').replace(LEGACY_ALIAS_DEPRECATION_RE, '');
+}
+
 async function runCli(args, env = {}) {
   const { stdout, stderr } = await execFile(process.execPath, [CLI_PATH, ...args], {
     cwd: REFERENCE_IMPL_DIR,
@@ -478,7 +490,7 @@ async function runCli(args, env = {}) {
 
   return {
     stdout,
-    stderr,
+    stderr: scrubLegacyAliasWarning(stderr),
     json,
   };
 }
@@ -501,7 +513,7 @@ async function runCliExpectFailure(args, env = {}) {
   } catch (error) {
     return {
       stdout: error.stdout || '',
-      stderr: error.stderr || '',
+      stderr: scrubLegacyAliasWarning(error.stderr || ''),
       code: error.code,
     };
   }
@@ -6888,5 +6900,38 @@ rl.on('line', (line) => {
       assert.notEqual(result.code, 0);
       assert.match(result.stderr, /connector_id must be a single non-empty string for polyfill owner access/);
     });
+  });
+});
+
+// Explicit coverage for the `pdpp ref` migration deprecation hint emitted
+// by cli/index.js when legacy operator aliases are invoked. The
+// per-call-site stderr assertions in this file scrub this warning via
+// `scrubLegacyAliasWarning`; this test pins the warning behavior itself
+// so a future change to the alias surface still trips a test rather than
+// silently being masked.
+test('legacy operator aliases emit a deprecation hint pointing at `pdpp ref ...`', async () => {
+  await withHarness(async ({ asUrl }) => {
+    // Use a bogus identifier so the handler returns quickly; we only
+    // need to observe the stderr deprecation line, not a successful
+    // round-trip.
+    const { stderr } = await execFile(
+      process.execPath,
+      [CLI_PATH, 'trace', 'show', 'trc_nope', '--as-url', asUrl, '--format', 'json'],
+      {
+        cwd: REFERENCE_IMPL_DIR,
+        env: {
+          ...process.env,
+          PDPP_AS_URL: '',
+          PDPP_RS_URL: '',
+          AS_URL: '',
+          RS_URL: '',
+        },
+      },
+    ).catch((error) => ({ stderr: error.stderr || '' }));
+    assert.match(
+      stderr,
+      /^warning: "pdpp trace show" is deprecated; use "pdpp ref trace show" instead\.$/m,
+      'legacy `pdpp trace show` alias should emit a single deprecation hint on stderr',
+    );
   });
 });

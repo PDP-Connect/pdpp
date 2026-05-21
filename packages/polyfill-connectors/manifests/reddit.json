@@ -14,7 +14,7 @@
     }
   },
   "capabilities": {
-    "human_interaction": [],
+    "human_interaction": ["credentials"],
     "refresh_policy": {
       "recommended_mode": "manual",
       "maximum_staleness_seconds": 86400,
