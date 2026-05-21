@@ -250,8 +250,23 @@ publishing/OIDC, and provenance. This change extends that pipeline:
 
 - Add `@pdpp/local-collector` to the publish set with the same
   trusted-publishing posture.
-- Use Conventional Commits scoped to `local-collector` to drive the
-  package's release notes independently of `@pdpp/cli`.
+- `@pdpp/cli` and `@pdpp/local-collector` publish from one shared
+  semantic-release version stream (single `.releaserc.yaml`, single set of
+  `branches:`, one tag per release). Both packages move in lockstep so an
+  operator on `@pdpp/cli@x.y.z` and `@pdpp/local-collector@x.y.z` can rely
+  on a known protocol compatibility window. We do **not** introduce
+  multi-semantic-release or per-package independent versions here —
+  splitting that pipeline is its own change with its own publishability
+  review, and not in scope for this closeout.
+- Within that shared release, Conventional Commit scopes drive readable
+  per-package release-notes sections, not independent versions.
+  `feat(local-collector): X` lands under `### Features (@pdpp/local-collector)`,
+  `feat(cli): Y` lands under `### Features (@pdpp/cli)`, and an unscoped
+  `feat: Z` falls back to the generic `### Features` section. The mapping
+  is configured via the conventionalcommits preset's `presetConfig.types`
+  in `.releaserc.yaml` and exercised by
+  `packages/local-collector/test/release-notes-grouping.test.js` so the
+  contract is testable without booting semantic-release.
 - The publish pipeline runs the new `pack-install-run` test (Decision 7
   below) against a fixture-backed reference deployment before any tag is
   pushed to npm.

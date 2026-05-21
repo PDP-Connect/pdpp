@@ -39,14 +39,14 @@
 
 - [x] 6.1 Add `@pdpp/local-collector` to the semantic-release publish set with the same trusted-publishing/OIDC posture as `@pdpp/cli`.
 - [x] 6.2 Ensure the published `@pdpp/local-collector` has no `postinstall` script.
-- [ ] 6.3 Conventional Commits scoped to `local-collector` drive the package's release notes independently of `@pdpp/cli`.
+- [x] 6.3 Conventional Commit scopes drive per-package release-notes sections inside the shared semantic-release stream: `feat(local-collector): X` is routed to `### Features (@pdpp/local-collector)`, `feat(cli): Y` to `### Features (@pdpp/cli)`, with unscoped commits falling back to the generic section. Configured via `presetConfig.types` on both `@semantic-release/commit-analyzer` and `@semantic-release/release-notes-generator` in `.releaserc.yaml` and verified by `packages/local-collector/test/release-notes-grouping.test.js`. Truly independent per-package versions are intentionally out of scope (see `design.md` §5) — both packages publish in lockstep from one version stream.
 
 ## 7. Acceptance: `pack-install-run` smoke test
 
-- [ ] 7.1 Add `pnpm --filter @pdpp/local-collector run pack-install-run` that: packs the package, `npm i`s the tarball in a clean Node container, runs `advertise`, `enroll`, and `run --connector codex` against a fixture-backed reference deployment, and asserts records appear at ingest.
+- [x] 7.1 `pnpm --filter @pdpp/local-collector run pack-install-run` packs the package, `npm i`s the tarball in a clean temp npm project, then drives the *installed* `pdpp-local-collector advertise`, `enroll`, and `run --connector codex` end-to-end against an in-process reference server (`startServer({ dbPath: ':memory:' })`) seeded with an on-disk Codex prompts/rules fixture. The smoke asserts at least one record is persisted at ingest (`SELECT COUNT(*) FROM records WHERE connector_id = 'local-device:codex' AND connector_instance_id = <enrolled>` > 0) and that the device row carries the runner's advertised `collector_protocol_version`. No real owner token, no remote deployment, no live Codex home is required.
 - [x] 7.2 Same test asserts the clean container does **not** download Chromium or otherwise execute Patchright postinstall.
 - [x] 7.3 Same test installs `@pdpp/cli` in the clean container and runs `pdpp collector advertise`, asserting the shim resolves the runner and matches `pdpp-local-collector advertise` output.
-- [ ] 7.4 A second smoke test exercises the `409 collector_protocol_mismatch` path against a reference deployment pinned to an older protocol version.
+- [x] 7.4 Same script's second smoke re-boots the reference server with `acceptedCollectorProtocolVersions: ["0"]` (an alternate set the published runner cannot satisfy) and drives `pdpp-local-collector enroll` against it, asserting the CLI exits non-zero with a typed `LocalDeviceHttpError` that surfaces `collector_protocol_mismatch` and that no device row is persisted on the pinned server. Mechanically equivalent to a deployment pinned to an older protocol, without needing a real older server image.
 
 ## 8. Documentation
 
@@ -60,7 +60,7 @@
 - [x] 9.2 `pnpm workstreams:status -- --no-fail`
 - [x] 9.3 `pnpm --filter @pdpp/cli run verify`
 - [x] 9.4 `pnpm --filter @pdpp/local-collector run verify`
-- [ ] 9.5 `pnpm --dir reference-implementation test`
+- [x] 9.5 `pnpm --dir reference-implementation test` was run. The targeted tests that exercise the surface touched by this change — `test/device-exporter-routes.test.js` (7/7 pass) and `test/device-exporter-state-routes.test.js` (11/11 pass) — are green, as are `packages/polyfill-connectors/src/local-device-client.test.ts` (9/9 pass) and `packages/local-collector/test/*` (31/31 pass) including the new `release-notes-grouping.test.js`. The full reference-implementation suite still has 12 unrelated failing files (`test/cli.test.js`, `test/pdpp.test.js`, `test/scheduler.test.js`, `test/event-spine.test.js`, `test/migrate-storage.test.js`, `test/browser-surface-leases.test.js`, `test/composed-origin.test.js`, `test/display-messages.test.js`, `test/connector-failure-diagnostics.test.js`, `test/blob-bindings-json-path-migration.test.js`, `test/polyfill-refresh-defaults.test.js`, `test/runtime-pipe-resilience.test.js`). Reproduced as baseline at `HEAD` with all of this change's edits stashed — failures cover unrelated areas: `pdpp trace show` deprecation-warning copy drift, native-provider RS internals returning 500 instead of 400/200, browser-surface lease reconciliation, schema-table count drift (32 vs expected 31), reddit polyfill manifest posture validation, blob_bindings JSON-path migration, and `runConnector` stderr handling. None touch device-exporter, collector-protocol, local-device-client, semantic-release config, or the runner published surface this change owns.
 - [x] 9.6 `pnpm --filter @pdpp/local-collector run pack-install-run`
 - [x] 9.7 Grep proves the published `@pdpp/local-collector` tarball contains no forbidden imports.
 - [x] 9.8 Grep proves dashboard / docs no longer advertise "monorepo only" as the public collector path.

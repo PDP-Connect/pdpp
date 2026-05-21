@@ -4,11 +4,116 @@ branches:
     prerelease: true
 tagFormat: "v${version}"
 preset: "conventionalcommits"
+# Both @pdpp/cli and @pdpp/local-collector publish from a single shared
+# version stream. To keep the release-notes per-package readable, we
+# define typed sections per Conventional Commit scope so e.g.
+# `feat(local-collector): ...` lands under "Features (@pdpp/local-collector)"
+# and `feat(cli): ...` lands under "Features (@pdpp/cli)", with commits
+# that don't carry a recognised scope falling back to the generic sections.
+# See openspec/changes/publish-pdpp-local-collector/design.md §5.
 plugins:
   - - "@semantic-release/commit-analyzer"
     - preset: conventionalcommits
+      presetConfig:
+        types:
+          - type: feat
+            scope: local-collector
+            section: "Features (@pdpp/local-collector)"
+          - type: fix
+            scope: local-collector
+            section: "Bug Fixes (@pdpp/local-collector)"
+          - type: perf
+            scope: local-collector
+            section: "Performance Improvements (@pdpp/local-collector)"
+          - type: feat
+            scope: cli
+            section: "Features (@pdpp/cli)"
+          - type: fix
+            scope: cli
+            section: "Bug Fixes (@pdpp/cli)"
+          - type: perf
+            scope: cli
+            section: "Performance Improvements (@pdpp/cli)"
+          - type: feat
+            section: "Features"
+          - type: fix
+            section: "Bug Fixes"
+          - type: perf
+            section: "Performance Improvements"
+          - type: revert
+            section: "Reverts"
+          - type: docs
+            section: "Documentation"
+            hidden: true
+          - type: style
+            section: "Styles"
+            hidden: true
+          - type: chore
+            section: "Miscellaneous Chores"
+            hidden: true
+          - type: refactor
+            section: "Code Refactoring"
+            hidden: true
+          - type: test
+            section: "Tests"
+            hidden: true
+          - type: build
+            section: "Build System"
+            hidden: true
+          - type: ci
+            section: "Continuous Integration"
+            hidden: true
   - - "@semantic-release/release-notes-generator"
     - preset: conventionalcommits
+      presetConfig:
+        types:
+          - type: feat
+            scope: local-collector
+            section: "Features (@pdpp/local-collector)"
+          - type: fix
+            scope: local-collector
+            section: "Bug Fixes (@pdpp/local-collector)"
+          - type: perf
+            scope: local-collector
+            section: "Performance Improvements (@pdpp/local-collector)"
+          - type: feat
+            scope: cli
+            section: "Features (@pdpp/cli)"
+          - type: fix
+            scope: cli
+            section: "Bug Fixes (@pdpp/cli)"
+          - type: perf
+            scope: cli
+            section: "Performance Improvements (@pdpp/cli)"
+          - type: feat
+            section: "Features"
+          - type: fix
+            section: "Bug Fixes"
+          - type: perf
+            section: "Performance Improvements"
+          - type: revert
+            section: "Reverts"
+          - type: docs
+            section: "Documentation"
+            hidden: true
+          - type: style
+            section: "Styles"
+            hidden: true
+          - type: chore
+            section: "Miscellaneous Chores"
+            hidden: true
+          - type: refactor
+            section: "Code Refactoring"
+            hidden: true
+          - type: test
+            section: "Tests"
+            hidden: true
+          - type: build
+            section: "Build System"
+            hidden: true
+          - type: ci
+            section: "Continuous Integration"
+            hidden: true
   - - "@semantic-release/npm"
     - pkgRoot: "packages/cli"
   - - "@semantic-release/npm"
