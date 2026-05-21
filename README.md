@@ -205,41 +205,49 @@ PDPP_WEB_ALLOWED_DEV_ORIGINS=pdpp-dev.example.test,192.168.0.2
 Reverse proxies must also forward WebSocket upgrade traffic for
 `/_next/webpack-hmr`; otherwise the page loads but Next HMR cannot connect.
 
-#### Browser-backed connectors in Docker
+#### Local collectors and browser-backed connectors in Docker
 
 Connectors like ChatGPT and USAA need a real browser the operator can see and
 click for login, OTP, or Cloudflare challenges. The provider/control-plane
 container cannot render a visible browser; those connectors must run in a
-**local collector runner** on a host the operator can see, paired to the
-provider via device-scoped enrollment. See
+**workspace local collector runner** on a host the operator can see, paired to
+the provider via device-scoped enrollment. See
 `openspec/changes/introduce-local-collector-runner/design.md` for the full
 design.
 
+The public `@pdpp/local-collector@beta` package currently ships only the
+filesystem-class Claude Code and Codex collectors. Browser/Patchright-backed
+connectors remain in the monorepo runner until each has its own publishability
+review.
+
 ```bash
-# 0. From a checkout of this repo on the operator's host: pnpm install.
+# Claude Code / Codex from any host with Node 22.14+:
+npx -y @pdpp/local-collector@beta advertise
+npx -y @pdpp/local-collector@beta enroll \
+  --base-url http://localhost:7662 \
+  --code <enrollment-code-from-provider>
 
-# 1. Check the runtime profile the collector will advertise.
+# Browser-backed connectors from a checkout of this repo on the operator's host:
+pnpm install
 pnpm exec pdpp collector advertise
-
-# 2. Pair the collector to the provider.
 pnpm exec pdpp collector enroll \
   --base-url http://localhost:7662 \
   --code <enrollment-code-from-provider>
-# The collector prints a device id + token; persist them somewhere safe.
 
-# 3. Run a connector through the collector. The collector advertises a
-#    `browser` capability and uses the host's isolated Patchright profile.
+# The collector prints a device id + token; persist them somewhere safe.
 PDPP_LOCAL_DEVICE_ID=<id> PDPP_LOCAL_DEVICE_TOKEN=<token> \
-PDPP_SOURCE_INSTANCE_ID=<source-instance> \
+PDPP_CONNECTION_ID=<source-instance> \
 pnpm exec pdpp collector run \
   --base-url http://localhost:7662 \
   --connector chatgpt
 ```
 
-`pdpp collector ...` is a thin wrapper over
-`packages/polyfill-connectors/bin/collector-runner.ts`. The runner currently
-ships in the workspace package, so the wrapper needs a monorepo checkout —
-when invoked from a pure npm install it fails fast with instructions.
+`pdpp collector ...` is a thin `@pdpp/cli` shim. In a monorepo checkout it
+prefers `packages/polyfill-connectors/bin/collector-runner.ts` so development
+and browser-backed connector work can use workspace-only dependencies. Outside
+the repo it resolves an installed `@pdpp/local-collector` package; until npm
+`latest` is intentionally promoted, install that package as
+`@pdpp/local-collector@beta`.
 
 When a HEADED browser-backed connector is attempted inside the
 provider/control-plane container, headed acquisitions fail closed before
@@ -259,14 +267,14 @@ Current Docker connector-support posture:
 | OpenAI Codex CLI, Claude Code | Filesystem-only; supported in same-host Docker when host agent state is mounted read-only. | Point `PDPP_DOCKER_CLAUDE_CODE_HOME` and `PDPP_DOCKER_CODEX_HOME` at `${HOME}/.claude` and `${HOME}/.codex` (or any host directory holding those layouts). The compose file already mounts them read-only to `/imports/claude` and `/imports/codex` and sets `CLAUDE_CODE_HOME` / `CLAUDE_CODE_PROJECTS_DIR` / `CODEX_HOME` accordingly. | Default Compose seeds those host overrides to `./packages/polyfill-connectors/.pdpp-imports/{claude,codex}` (empty on a fresh checkout); the source-preflight will fail until the host paths are set. Multi-device collection belongs to the proposed `design-local-device-exporter-collection` topology. |
 | WhatsApp, Google Takeout, Twitter archive, Apple Health, iCal | Filesystem-only; supported in Docker via the `pdpp-home` named volume. | Drop extracted exports into the volume at `/root/.pdpp/imports/<connector>/`, or override the connector-specific `*_DIR` env var. iCal also accepts `ICAL_SUBSCRIPTION_URL` (pure HTTP, no mount needed). | Defaults already point at `~/.pdpp/imports/<connector>/` which the named volume covers; `docker cp` or a one-time bind-mount is the simplest way to seed the volume. |
 | iMessage | Filesystem-only; **not supported in Linux Docker**. | iMessage is hardcoded to `~/Library/Messages/chat.db` (macOS-format SQLite). | Effectively macOS-only; runs on the host, not in Linux containers. |
-| Amazon, Chase, ChatGPT, Reddit, USAA + scaffolded browser-scrapers (Anthropic, Shopify, HEB, Whole Foods, LinkedIn, Meta, Loom, Uber, DoorDash) | Browser-backed; Docker needs the local collector runner on a visible-browser host. | Pair the collector with `pdpp collector enroll`, then run connectors via `pdpp collector run`. | Inside the provider/control-plane container, headed-browser acquisitions fail closed with `headed_browser_unavailable` (`packages/polyfill-connectors/src/browser-launch.ts:decideContainerHeadedBrowserGate`); browser-backed connectors must run in a local collector runtime that advertises a `browser` binding. The four "verified" entries are end-to-end maintainer-verified; the rest are scaffolded and need DOM selectors before they're usable. |
+| Amazon, Chase, ChatGPT, Reddit, USAA + scaffolded browser-scrapers (Anthropic, Shopify, HEB, Whole Foods, LinkedIn, Meta, Loom, Uber, DoorDash) | Browser-backed; Docker needs the workspace local collector runner on a visible-browser host. | Pair the workspace collector with `pnpm exec pdpp collector enroll`, then run connectors via `pnpm exec pdpp collector run`. | These connectors are not in `@pdpp/local-collector@beta` yet. Inside the provider/control-plane container, headed-browser acquisitions fail closed with `headed_browser_unavailable` (`packages/polyfill-connectors/src/browser-launch.ts:decideContainerHeadedBrowserGate`); browser-backed connectors must run in a local runtime that advertises a `browser` binding. The four "verified" entries are end-to-end maintainer-verified; the rest are scaffolded and need DOM selectors before they're usable. |
 | Spotify, Pocket | Blocked upstream. | n/a | Spotify's OAuth app registration is frozen as of Feb 2026; Pocket sunset 2025-07-08. |
 
 CI builds Docker targets on pull requests without pushing images. On `main`,
 semantic-release creates GitHub releases from Conventional Commits and the same
-release workflow publishes stable GHCR tags for both Docker targets. Maintainers
-should make the first published GHCR packages public in GitHub's package
-settings if the registry creates them private.
+release workflow publishes npm beta packages plus stable GHCR tags for both
+Docker targets. Maintainers should make the first published GHCR packages
+public in GitHub's package settings if the registry creates them private.
 
 Run the reference implementation server:
 
@@ -299,8 +307,12 @@ GITHUB_TOKEN=$(gh auth token) pnpm release:dry-run
 ```
 
 The release workflow validates generated reference-contract artifacts, verifies
-the reference implementation, typechecks the web app, builds both Docker image
-targets, creates the GitHub release and `v${version}` tag, then publishes:
+the reference implementation, typechecks the web app, publishes the npm package
+release train, builds both Docker image targets, creates the GitHub release and
+`v${version}` tag, then publishes:
+
+- `@pdpp/cli@beta`
+- `@pdpp/local-collector@beta`
 
 - `ghcr.io/vana-com/pdpp/reference:${version}`
 - `ghcr.io/vana-com/pdpp/reference:${major}.${minor}`
@@ -309,9 +321,9 @@ targets, creates the GitHub release and `v${version}` tag, then publishes:
 - matching `web` tags
 
 Release automation uses GitHub Actions credentials for GitHub releases and
-GHCR. It does not publish npm packages and must not bundle `.env.local`, owner
-passwords, connector credentials, SQLite data, model cache files, or browser
-profiles into images.
+GHCR, and npm trusted publishing for public packages. It must not bundle
+`.env.local`, owner passwords, connector credentials, SQLite data, model cache
+files, or browser profiles into images.
 
 ## Authority order
 

@@ -53,7 +53,7 @@ test("pdppCliNoInstallCommand returns null for non-pdpp commands", () => {
 test("pdppCliCollectorEnrollCommand renders the canonical enroll form", () => {
   assert.equal(
     pdppCliCollectorEnrollCommand({ baseUrl: "http://127.0.0.1:7662", code: "abc-123" }),
-    "npx -y @pdpp/local-collector enroll --base-url http://127.0.0.1:7662 --code abc-123"
+    "npx -y @pdpp/local-collector@beta enroll --base-url http://127.0.0.1:7662 --code abc-123"
   );
 });
 
@@ -64,7 +64,7 @@ test("pdppCliCollectorEnrollCommand appends a quoted --device-label when provide
       code: "code-1",
       deviceLabel: "the owner's laptop",
     }),
-    'npx -y @pdpp/local-collector enroll --base-url https://ref.example.com --code code-1 --device-label "the owner\'s laptop"'
+    'npx -y @pdpp/local-collector@beta enroll --base-url https://ref.example.com --code code-1 --device-label "the owner\'s laptop"'
   );
 });
 
@@ -75,18 +75,18 @@ test("pdppCliCollectorEnrollCommand ignores empty device labels", () => {
       code: "code-1",
       deviceLabel: "   ",
     }),
-    "npx -y @pdpp/local-collector enroll --base-url https://ref.example.com --code code-1"
+    "npx -y @pdpp/local-collector@beta enroll --base-url https://ref.example.com --code code-1"
   );
 });
 
 test("pdppCliCollectorRunCommand renders the canonical run form", () => {
   assert.equal(
     pdppCliCollectorRunCommand({ baseUrl: "http://127.0.0.1:7662", connectorId: "claude_code" }),
-    "npx -y @pdpp/local-collector run --base-url http://127.0.0.1:7662 --connector claude_code"
+    "npx -y @pdpp/local-collector@beta run --base-url http://127.0.0.1:7662 --connector claude_code"
   );
   assert.equal(
     pdppCliCollectorRunCommand({ baseUrl: "https://ref.example.com", connectorId: "codex" }),
-    "npx -y @pdpp/local-collector run --base-url https://ref.example.com --connector codex"
+    "npx -y @pdpp/local-collector@beta run --base-url https://ref.example.com --connector codex"
   );
 });
 

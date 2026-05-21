@@ -38,8 +38,9 @@ takes to the server.
 
 - Operator with only `node` + `npm` + local Claude/Codex data on disk can run
   the collector against a remote reference deployment in **one shell command**
-  per phase (advertise / enroll / run) using `npx -y @pdpp/local-collector` or
-  via `pdpp collector` once `@pdpp/cli` is also installed.
+  per phase (advertise / enroll / run) using `npx -y @pdpp/local-collector@beta`
+  while the package is beta-tagged, or via `pdpp collector` once `@pdpp/cli`
+  and `@pdpp/local-collector@beta` are also installed.
 - Keep `@pdpp/cli` slim. The published `@pdpp/cli` tarball SHOULD NOT pull
   Playwright, Patchright, Chromium, `better-sqlite3`, `pdf-parse`, or
   `imapflow` even when `pdpp collector` is invoked.
@@ -103,7 +104,8 @@ and obscures the supply chain at the operator's host.
      own `node_modules`;
   3. fail fast with one line:
      `pdpp collector requires @pdpp/local-collector. Install once with
-     "npm i -g @pdpp/local-collector" or run "npx -y @pdpp/local-collector ..."`.
+     "npm i -g @pdpp/local-collector@beta" or run
+     "npx -y @pdpp/local-collector@beta ..."`.
 
 This preserves the boundary set by `unify-pdpp-cli-command-surface`
 (`@pdpp/cli` is the only public owner of `pdpp`) while letting the collector
@@ -212,10 +214,10 @@ The supported operator path for a fresh host with only Node and local agent
 homes is:
 
 ```bash
-# one-time install (either form is supported)
-npm i -g @pdpp/local-collector
+# one-time install (either form is supported while the package is beta-tagged)
+npm i -g @pdpp/local-collector@beta
 # or use npx for each invocation:
-#   npx -y @pdpp/local-collector advertise
+#   npx -y @pdpp/local-collector@beta advertise
 
 # sanity check capabilities (network, filesystem, local_device)
 pdpp-local-collector advertise
@@ -290,10 +292,11 @@ make `@pdpp/local-collector` publishable from every environment:
   npm setup step or a release environment that is explicitly authorized to
   create the package.
 
-Therefore this implementation can make the package release-ready and can prove
-the tarball/install/run path locally, but it does not treat actual npm
-publication as completed until the package exists on npm and a real
-post-publish `npx -y @pdpp/local-collector ...` smoke has passed.
+The first npm package bootstrap and trusted-publishing setup have now been
+completed. Until the package is promoted from the `beta` dist-tag to `latest`,
+all public copy and dashboard commands must pin `@pdpp/local-collector@beta`;
+untagged `@pdpp/local-collector` would resolve npm `latest` and may install an
+older bootstrap package.
 
 ### 6. Reference-server compatibility surface (minimum)
 

@@ -29,16 +29,17 @@ State is authoritative on the server. Before each connector pass the runner fetc
 - A PDPP reference deployment reachable at a stable URL (e.g. `http://server.local:7662` or `https://peregrine-dev.vivid.fish`). See `reference-implementation/docs/migrate-storage.md` and the Docker compose under `reference-implementation/docker/` for the deployment side.
 - Owner session for that deployment so you can mint enrollment codes from `/dashboard/device-exporters`.
 - Node.js 22.14+ and npm on the host that owns the data.
-- `@pdpp/local-collector` installed globally, or `npx -y @pdpp/local-collector`
-  available for one-shot execution. A PDPP monorepo checkout is only needed for
-  development or unpublished connector work.
+- `@pdpp/local-collector@beta` installed globally, or
+  `npx -y @pdpp/local-collector@beta` available for one-shot execution until
+  the package is promoted from beta to latest. A PDPP monorepo checkout is only
+  needed for development or unpublished connector work.
 
 ## Step 1 &mdash; Confirm collector runtime capabilities
 
 On the host with Claude/Codex data:
 
 ```bash
-npx -y @pdpp/local-collector advertise
+npx -y @pdpp/local-collector@beta advertise
 ```
 
 Expected output (capabilities may grow):
@@ -65,8 +66,8 @@ Use the "Create enrollment code" form:
 After "Create code" the dashboard renders:
 
 1. The raw enrollment code (copy button).
-2. A pre-filled `npx -y @pdpp/local-collector enroll` command targeting the deployment's public origin.
-3. Pre-filled `npx -y @pdpp/local-collector run --connector claude_code|codex` commands with `PDPP_LOCAL_DEVICE_ID`, `PDPP_LOCAL_DEVICE_TOKEN`, `PDPP_CONNECTION_ID` placeholders.
+2. A pre-filled `npx -y @pdpp/local-collector@beta enroll` command targeting the deployment's public origin.
+3. Pre-filled `npx -y @pdpp/local-collector@beta run --connector claude_code|codex` commands with `PDPP_LOCAL_DEVICE_ID`, `PDPP_LOCAL_DEVICE_TOKEN`, `PDPP_CONNECTION_ID` placeholders.
 
 You do not need to memorize the route or the env var names; the dashboard advertises the exact command.
 
@@ -75,7 +76,7 @@ You do not need to memorize the route or the env var names; the dashboard advert
 On the host with the data, paste the command the dashboard rendered. Example:
 
 ```bash
-npx -y @pdpp/local-collector enroll \
+npx -y @pdpp/local-collector@beta enroll \
   --base-url https://peregrine-dev.vivid.fish \
   --code <one-time-code> \
   --device-label "the owner's laptop"
@@ -97,13 +98,13 @@ Persist the device id, device token, and `source_instance_id`. `connector_instan
 
 ## Step 4 &mdash; Run a connector pass
 
-Paste the `pdpp collector run` command from the dashboard, filling the three env vars from the enrollment response:
+Paste the `@pdpp/local-collector@beta run` command from the dashboard, filling the three env vars from the enrollment response:
 
 ```bash
 PDPP_LOCAL_DEVICE_ID=dev_... \
 PDPP_LOCAL_DEVICE_TOKEN=dvtk_... \
 PDPP_CONNECTION_ID=si_... \
-  npx -y @pdpp/local-collector run \
+  npx -y @pdpp/local-collector@beta run \
     --base-url https://peregrine-dev.vivid.fish \
     --connector claude_code
 ```
@@ -171,8 +172,8 @@ bug. The current deferred set is documented in
 **Requesting the coverage diagnostic.** Coverage is opt-in per run via the
 `coverage_diagnostics` stream in `START.scope.streams`. The scheduler-driven
 flows enroll this stream alongside the declared content streams; ad-hoc
-`pdpp collector run` invocations that pass an explicit `--streams` list need to
-include `coverage_diagnostics` to see the per-store status. See
+`@pdpp/local-collector@beta run` invocations that pass an explicit `--streams`
+list need to include `coverage_diagnostics` to see the per-store status. See
 `docs/operator/local-collector-runbook.md`§"Step 4" above for the standard
 invocation, which is unscoped and therefore exercises everything declared in
 the manifest.

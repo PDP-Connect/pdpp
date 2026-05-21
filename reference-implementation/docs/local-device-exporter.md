@@ -9,11 +9,11 @@ For the end-to-end operator path against the Docker reference deployment (Claude
 ## Run
 
 1. Open `/dashboard/device-exporters`.
-2. Create an enrollment code for a connector id and local binding name. The dashboard then renders the matching `pdpp collector enroll` and `pdpp collector run` commands pre-filled with the public reference base URL and the freshly minted code.
+2. Create an enrollment code for a connector id and local binding name. The dashboard then renders matching `npx -y @pdpp/local-collector@beta enroll` and `npx -y @pdpp/local-collector@beta run` commands pre-filled with the public reference base URL and the freshly minted code.
 3. On the device that has the local data, run the canonical collector flow (preferred &mdash; this is the only path that exercises STATE load/replay/persist through the device-scoped state route):
 
 ```bash
-pnpm exec pdpp collector enroll \
+npx -y @pdpp/local-collector@beta enroll \
   --base-url http://127.0.0.1:7662 \
   --code <enrollment-code>
 ```
@@ -24,14 +24,14 @@ pnpm exec pdpp collector enroll \
 PDPP_LOCAL_DEVICE_ID=<device_id> \
 PDPP_LOCAL_DEVICE_TOKEN=<device_token> \
 PDPP_CONNECTION_ID=<connection_id> \
-  pnpm exec pdpp collector run --base-url http://127.0.0.1:7662 --connector claude_code
+  npx -y @pdpp/local-collector@beta run --base-url http://127.0.0.1:7662 --connector claude_code
 ```
 
 Swap `--connector claude_code` for `codex` (or any other in-runtime-profile connector) to run a different lane. Re-running is safe: prior STATE replays into the next `START` envelope and emitted STATE is only persisted after records are durably accepted.
 
 ### Legacy lane (no STATE sync)
 
-The older single-purpose script under `packages/polyfill-connectors/bin/local-device-exporter.ts` is still present as a compatibility shim. It does not participate in STATE sync and is being retired by `introduce-local-collector-runner`. Prefer the `pdpp collector` flow above.
+The older single-purpose script under `packages/polyfill-connectors/bin/local-device-exporter.ts` is still present as a compatibility shim. It does not participate in STATE sync and is being retired by `introduce-local-collector-runner`. Prefer the `@pdpp/local-collector@beta` flow above.
 
 ```bash
 pnpm --dir packages/polyfill-connectors exec tsx bin/local-device-exporter.ts enroll \

@@ -12,11 +12,12 @@ cannot run on its own. Runner-owned flags are documented by
 Distribution:
   The collector runtime ships in @pdpp/local-collector, a separate npm
   package owned by the PDPP monorepo. @pdpp/cli stays slim and resolves
-  the runner lazily:
-    # @pdpp/local-collector package, installs pdpp-local-collector
-    npm i -g @pdpp/local-collector
-    # @pdpp/local-collector package, npx-launched pdpp-local-collector
-    npx -y @pdpp/local-collector advertise
+  the runner lazily. Until the package is promoted from beta to latest,
+  install or run the beta dist-tag explicitly:
+    # @pdpp/local-collector@beta package, installs pdpp-local-collector
+    npm i -g @pdpp/local-collector@beta
+    # @pdpp/local-collector@beta package, npx-launched pdpp-local-collector
+    npx -y @pdpp/local-collector@beta advertise
   See openspec/changes/publish-pdpp-local-collector/design.md.
 
 Usage:

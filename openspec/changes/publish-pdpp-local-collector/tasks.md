@@ -23,7 +23,7 @@
 ## 4. `@pdpp/cli` Shim Update
 
 - [x] 4.1 Replace `resolveCollectorRunnerScript` with a resolver that prefers `require.resolve('@pdpp/local-collector/package.json')` and keeps the monorepo workspace walk as a fallback for in-repo dev.
-- [x] 4.2 Replace the multi-line monorepo `RUNNER_MISSING_MESSAGE` with a single actionable install hint (`npm i -g @pdpp/local-collector` or `npx -y @pdpp/local-collector ...`).
+- [x] 4.2 Replace the multi-line monorepo `RUNNER_MISSING_MESSAGE` with a single actionable install hint (`npm i -g @pdpp/local-collector@beta` or `npx -y @pdpp/local-collector@beta ...` until stable promotion).
 - [x] 4.3 Remove the "monorepo only" copy from `pdpp collector --help`; defer runner-owned flag descriptions to `pdpp-local-collector --help`.
 - [x] 4.4 `pdpp collector` MUST NOT add a transitive runtime dependency on `@pdpp/local-collector`; resolution is lazy and the shim survives `@pdpp/local-collector` being absent.
 
@@ -51,7 +51,7 @@
 ## 8. Documentation
 
 - [x] 8.1 Add `docs/local-collector.md` covering install, enroll, run, troubleshooting, and the protocol-version compatibility surface.
-- [x] 8.2 Update `pdpp connect` and dashboard onboarding copy: the supported public path is `npx -y @pdpp/local-collector ...` (no monorepo clone required for Claude/Codex).
+- [x] 8.2 Update `pdpp connect` and dashboard onboarding copy: the supported public path is `npx -y @pdpp/local-collector@beta ...` while the package is beta-tagged (no monorepo clone required for Claude/Codex).
 - [x] 8.3 Update `unify-pdpp-cli-command-surface` cross-references in dashboard help so every displayed command names which public package it lives in.
 
 ## 9. Validation

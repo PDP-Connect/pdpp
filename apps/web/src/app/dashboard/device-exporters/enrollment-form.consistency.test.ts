@@ -1,6 +1,6 @@
 /**
  * Asserts that the device-exporters enrollment form surfaces the canonical
- * `@pdpp/local-collector` enroll / run invocations via the shared
+ * `@pdpp/local-collector@beta` enroll / run invocations via the shared
  * helpers in apps/web/src/lib/pdpp-cli-command.ts, and exposes stable test
  * hooks for the rendered commands. The operator-readiness runbook in
  * docs/operator/local-collector-runbook.md depends on this surface; if it
@@ -24,7 +24,7 @@ const FORM_PATH = "apps/web/src/app/dashboard/device-exporters/enrollment-form.t
 
 const COLLECTOR_ENROLL_HELPER = /pdppLocalCollectorEnrollCommand/;
 const COLLECTOR_RUN_HELPER = /pdppLocalCollectorRunCommand/;
-const LOCAL_COLLECTOR_PACKAGE = /@pdpp\/local-collector/;
+const LOCAL_COLLECTOR_PACKAGE = /@pdpp\/local-collector@beta/;
 const ENROLL_TESTID = /data-testid="collector-enroll-command"/;
 const RUN_TESTID_CLAUDE = /data-testid={`collector-run-command-/;
 const SUPPORTED_CONNECTORS = /COLLECTOR_RUN_CONNECTORS\s*=\s*\["claude_code",\s*"codex"\]/;
@@ -33,7 +33,7 @@ test("enrollment form derives the canonical local collector commands via shared 
   const src = await read(FORM_PATH);
   assert.match(src, COLLECTOR_ENROLL_HELPER, "form must call pdppLocalCollectorEnrollCommand");
   assert.match(src, COLLECTOR_RUN_HELPER, "form must call pdppLocalCollectorRunCommand");
-  assert.match(src, LOCAL_COLLECTOR_PACKAGE, "form must surface the public @pdpp/local-collector path");
+  assert.match(src, LOCAL_COLLECTOR_PACKAGE, "form must surface the public @pdpp/local-collector@beta path");
 });
 
 test("enrollment form exposes stable test hooks for the rendered commands", async () => {
@@ -48,7 +48,7 @@ test("enrollment form advertises claude_code and codex as the operator-ready con
 });
 
 const RUNBOOK_CROSS_REF = /docs\/operator\/local-collector-runbook\.md/;
-const PDPP_COLLECTOR_ENROLL_LITERAL = /pdpp collector enroll/;
+const PDPP_COLLECTOR_ENROLL_LITERAL = /@pdpp\/local-collector@beta enroll/;
 
 test("local-device-exporter runbook cross-references the operator runbook", async () => {
   const legacyDoc = await read("reference-implementation/docs/local-device-exporter.md");
@@ -60,6 +60,6 @@ test("local-device-exporter runbook cross-references the operator runbook", asyn
   assert.match(
     legacyDoc,
     PDPP_COLLECTOR_ENROLL_LITERAL,
-    "legacy lane doc must surface the canonical pdpp collector enroll command"
+    "legacy lane doc must surface the canonical @pdpp/local-collector@beta enroll command"
   );
 });
