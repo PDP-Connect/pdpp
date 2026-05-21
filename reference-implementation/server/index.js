@@ -6648,20 +6648,32 @@ function buildRsApp(opts = {}) {
     // `{ deleted_record_count }` event payload locally.
     app.delete('/v1/streams/:stream/records', requireToken, requireOwner, async (req, res) => {
       const connectorId = resolveSingleConnectorIdQueryValue(req.query.connector_id);
+      const connectorInstanceId = resolveSingleConnectorIdQueryValue(req.query.connector_instance_id);
       const mutationContext = buildMutationContext(req, res, {
         connectorId,
+        connectorInstanceId,
         operation: 'delete_stream_records',
         streamId: req.params.stream,
       });
       try {
+        let storageNamespace = null;
         const dependencies = {
           hasManifestStream: async (cid, streamName) => {
             const manifest = await resolveRegisteredConnectorManifest(cid);
-            return Boolean(
+            const visible = Boolean(
               (manifest.streams || []).find((stream) => stream.name === streamName),
             );
+            if (visible) {
+              storageNamespace = await resolveOwnerConnectorNamespace(req, cid, { connectorInstanceId });
+            }
+            return visible;
           },
-          deleteAllRecords: (cid, streamName) => deleteAllRecords(cid, streamName),
+          deleteAllRecords: async (cid, streamName) => {
+            const namespace = storageNamespace ?? await resolveOwnerConnectorNamespace(req, cid, {
+              connectorInstanceId,
+            });
+            return deleteAllRecords(storageTargetForConnectorNamespace(namespace), streamName);
+          },
         };
         let output;
         try {
@@ -6708,22 +6720,34 @@ function buildRsApp(opts = {}) {
     // `{ deleted_record_count }` event payload locally.
     app.delete('/v1/streams/:stream/records/:id', requireToken, requireOwner, async (req, res) => {
       const connectorId = resolveSingleConnectorIdQueryValue(req.query.connector_id);
+      const connectorInstanceId = resolveSingleConnectorIdQueryValue(req.query.connector_instance_id);
       const requestedRecordId = decodeURIComponent(req.params.id);
       const mutationContext = buildMutationContext(req, res, {
         connectorId,
+        connectorInstanceId,
         operation: 'delete_record',
         streamId: req.params.stream,
         requestedRecordId,
       });
       try {
+        let storageNamespace = null;
         const dependencies = {
           hasManifestStream: async (cid, streamName) => {
             const manifest = await resolveRegisteredConnectorManifest(cid);
-            return Boolean(
+            const visible = Boolean(
               (manifest.streams || []).find((stream) => stream.name === streamName),
             );
+            if (visible) {
+              storageNamespace = await resolveOwnerConnectorNamespace(req, cid, { connectorInstanceId });
+            }
+            return visible;
           },
-          deleteRecord: (cid, streamName, recordId) => deleteRecord(cid, streamName, recordId),
+          deleteRecord: async (cid, streamName, recordId) => {
+            const namespace = storageNamespace ?? await resolveOwnerConnectorNamespace(req, cid, {
+              connectorInstanceId,
+            });
+            return deleteRecord(storageTargetForConnectorNamespace(namespace), streamName, recordId);
+          },
         };
         let output;
         try {
