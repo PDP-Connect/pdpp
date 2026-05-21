@@ -178,6 +178,57 @@ list need to include `coverage_diagnostics` to see the per-store status. See
 invocation, which is unscoped and therefore exercises everything declared in
 the manifest.
 
+## Completeness sanity check
+
+The dashboard's per-connection record count reflects only records the server
+has retained. A local collector can have additional work pending in its
+outbox that has not yet been drained &mdash; counting those as zero would
+make the dashboard imply completeness it cannot guarantee. Two lightweight
+checks let you verify the two sides agree without deep forensic work.
+
+**Device side.** From the same host where the collector runs:
+
+```bash
+PDPP_LOCAL_DEVICE_ID=dev_... \
+PDPP_LOCAL_DEVICE_TOKEN=dvtk_... \
+PDPP_CONNECTION_ID=si_... \
+  npx -y @pdpp/local-collector@beta doctor
+```
+
+The JSON output's `outbox.counts` carries `pending`, `retrying`, `leased`,
+`dead_letter`, and `sent` totals for the local SQLite outbox keyed by the
+configured `source_instance_id`. `status: "ok"` means no dead-letter rows
+and a healthy lease table; `status: "warning"` or `"critical"` points at
+the specific check that failed.
+
+**Server side.** Hit `/_ref/device-exporters/source-instances` (or read it
+through `/dashboard/device-exporters`) and compare per source instance:
+
+- `accepted_record_count` &mdash; records the server has durably retained.
+- `records_pending` &mdash; the latest heartbeat's snapshot of work still
+  queued on the device. The records-list header surfaces the sum of this
+  field across all enrolled sources as `+N pending on devices` whenever it
+  is non-zero, so an owner glancing at the dashboard sees the gap rather
+  than a falsely complete total.
+- `outbox_state` &mdash; one of `drained`, `pending`, `retrying`,
+  `backlog`, `stale`, `dead_letter`, or `unknown`. Anything other than
+  `drained` means the device still owes the server work; chase down the
+  reason on the device with `doctor`.
+
+When `outbox.counts.pending` on the device equals `records_pending` reported
+by the server, and `outbox.counts.dead_letter` is zero, you have
+reasonable confidence the two sides agree: every batch the collector has
+locally is either already retained or accounted for as pending. If they
+diverge, the most common causes are (a) the collector is mid-drain and a
+new heartbeat will reconcile them within a minute, or (b) the device token
+has been revoked or rotated and ingest is failing &mdash; the device's
+last `last_error` and the device-exporters page surface that case
+honestly.
+
+This is intentionally a coarse check, not a forensic one. For per-record
+attribution, use the connector's `coverage_diagnostics` stream described
+above.
+
 ## Docker moves and URL changes
 
 When the Docker reference deployment moves, update `PDPP_REFERENCE_BASE_URL` in

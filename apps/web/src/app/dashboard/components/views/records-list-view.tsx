@@ -47,6 +47,7 @@ export function RecordsListView({
   overviews,
   routes,
   interactive,
+  pendingOnDevices,
   pollerSlot,
   now: nowOverride,
 }: {
@@ -54,6 +55,15 @@ export function RecordsListView({
   routes: Routes;
   /** True for live /dashboard, false for sandbox (no Sync now action). */
   interactive: boolean;
+  /**
+   * Aggregate `records_pending` across all device source instances. The
+   * top-line `totalRecords` only reflects records the server has
+   * retained, so this number is the honest delta between "ingested" and
+   * "captured by a local collector but still on a device". The live
+   * page passes this from `/_ref/device-exporters/source-instances`; the
+   * sandbox can omit it (defaults to 0).
+   */
+  pendingOnDevices?: number;
   /** Optional client-side poller; live dashboard injects RecordsPagePoller. */
   pollerSlot?: ReactNode;
   /**
@@ -103,10 +113,14 @@ export function RecordsListView({
             Activity timeline →
           </Link>
         }
-        count={`${totalRecords.toLocaleString()} records · ${totalStreams} streams · ${withData.length} connections`}
+        count={
+          pendingOnDevices && pendingOnDevices > 0
+            ? `${totalRecords.toLocaleString()} retained records · ${totalStreams} streams · ${withData.length} connections · +${pendingOnDevices.toLocaleString()} pending on devices`
+            : `${totalRecords.toLocaleString()} retained records · ${totalStreams} streams · ${withData.length} connections`
+        }
         description={
           interactive
-            ? "Owner control plane for your connections. Click Sync now to pull fresh data; drill in to browse streams and records."
+            ? "Owner control plane for your connections. Counts reflect records the server has retained; local-collector backlogs surface as 'pending on devices' here and per-connection below. Click Sync now to pull fresh data; drill in to browse streams and records."
             : "Sandbox demo: deterministic mock connections. Click into a connection to browse streams and records."
         }
         title="Records"
@@ -195,7 +209,7 @@ function ReadOnlyConnectorRow({ overview, routes }: { overview: ConnectorOvervie
           <span className="pdpp-caption block truncate font-mono text-muted-foreground">{connector.connector_id}</span>
         </div>
         <div className="pdpp-caption flex shrink-0 flex-col gap-0.5 text-muted-foreground tabular-nums sm:items-end sm:text-right">
-            <span>
+          <span>
             {totalRecords.toLocaleString()} records · {displayedStreamCount} stream
             {displayedStreamCount === 1 ? "" : "s"}
           </span>
