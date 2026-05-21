@@ -35,7 +35,9 @@ Generated from `packages/reference-contract/src/reference/`. Reference-designate
 | **DELETE** | `/_ref/connections/{connectorInstanceId}/schedule` | `refDeleteConnectionSchedule` | Delete the schedule config for one configured connection. |
 | **POST** | `/_ref/runs/{runId}/interaction` | `refRunInteraction` | Owner-only control surface: answer the current pending interaction for an active controller-managed run. Reference-only; not part of the public PDPP API. |
 | **GET** | `/_ref/records/timeline` | `refRecordsTimeline` | Server-backed cross-connector recent-record feed for the Records > Timeline UI. |
-| **GET** | `/_ref/dataset/summary` | `refDatasetSummary` | Aggregate dataset summary: live record counts, retained-history bytes, timespan bounds, and top connectors. |
+| **GET** | `/_ref/dataset/summary` | `refDatasetSummary` | Projection-backed dataset summary: record counts, retained-history bytes, timespan bounds, top connectors, and freshness metadata. |
+| **POST** | `/_ref/dataset/summary/rebuild` | `refDatasetSummaryRebuild` | Owner-triggered rebuild of the projection-backed dataset summary from durable reference state. |
+| **POST** | `/_ref/dataset/summary/reconcile` | `refDatasetSummaryReconcile` | Owner-triggered reconciliation of dirty dataset-summary record-time bounds from durable reference state. |
 
 ## refSearch
 
@@ -639,7 +641,33 @@ Server-backed cross-connector recent-record feed for the Records > Timeline UI.
 
 `GET /_ref/dataset/summary`
 
-Aggregate dataset summary: live record counts, retained-history bytes, timespan bounds, and top connectors.
+Projection-backed dataset summary: record counts, retained-history bytes, timespan bounds, top connectors, and freshness metadata.
+
+### Responses
+
+- `200` — JSON body
+- `400` — Invalid request
+- `404` — Not found
+- `409` — Conflict (e.g. run_already_active)
+
+## refDatasetSummaryRebuild
+
+`POST /_ref/dataset/summary/rebuild`
+
+Owner-triggered rebuild of the projection-backed dataset summary from durable reference state.
+
+### Responses
+
+- `200` — JSON body
+- `400` — Invalid request
+- `404` — Not found
+- `409` — Conflict (e.g. run_already_active)
+
+## refDatasetSummaryReconcile
+
+`POST /_ref/dataset/summary/reconcile`
+
+Owner-triggered reconciliation of dirty dataset-summary record-time bounds from durable reference state.
 
 ### Responses
 
