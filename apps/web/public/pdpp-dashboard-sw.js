@@ -10,7 +10,10 @@ function pdppDefaultFallbackUrl(type) {
 }
 
 function pdppDefaultTag(payload) {
-  if (payload.type === "pdpp.test_notification") return "pdpp-test-notification";
+  if (payload.type === "pdpp.test_notification") {
+    const suffix = typeof payload.timestamp === "string" ? payload.timestamp : Date.now();
+    return `pdpp-test-notification-${suffix}`;
+  }
   if (typeof payload.assistance_request_id === "string") return `pdpp-${payload.assistance_request_id}`;
   if (typeof payload.interaction_id === "string") return `pdpp-${payload.interaction_id}`;
   return "pdpp-pending-interaction";

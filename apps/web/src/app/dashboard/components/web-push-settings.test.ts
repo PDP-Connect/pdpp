@@ -12,6 +12,7 @@ const SERVICE_WORKER_TEST_TYPE_ALLOWED_PATTERN = /pdpp\.test_notification/;
 const SERVICE_WORKER_DASHBOARD_URL_ALLOWLIST_PATTERN = /url === "\/dashboard" \|\| url\.startsWith\("\/dashboard\/"\)/;
 const SERVICE_WORKER_DASHBOARD_URL_HELPER_USE_PATTERN = /pdppIsAllowedDashboardUrl\(rawUrl\)/;
 const SERVICE_WORKER_DASHBOARD_PREFIX_TRAVERSAL_PATTERN = /rawUrl\.startsWith\("\/dashboard"\)/;
+const SERVICE_WORKER_UNIQUE_TEST_TAG_PATTERN = /pdpp-test-notification-\$\{suffix\}/;
 const SERVICE_WORKER_MATCH_CLIENTS_PATTERN = /clients\.matchAll/;
 const SERVICE_WORKER_OPEN_WINDOW_PATTERN = /clients\.openWindow\(url\)/;
 const SENSITIVE_WORD_PATTERN = /password|cookie|token|otp|answer/i;
@@ -87,6 +88,7 @@ test("dashboard service worker fails closed and click-through targets dashboard-
   assert.match(src, SERVICE_WORKER_TEST_TYPE_ALLOWED_PATTERN);
   assert.match(src, SERVICE_WORKER_DASHBOARD_URL_ALLOWLIST_PATTERN);
   assert.match(src, SERVICE_WORKER_DASHBOARD_URL_HELPER_USE_PATTERN);
+  assert.match(src, SERVICE_WORKER_UNIQUE_TEST_TAG_PATTERN);
   // Reject the looser prefix check that would also accept e.g. "/dashboardevil".
   assert.doesNotMatch(src, SERVICE_WORKER_DASHBOARD_PREFIX_TRAVERSAL_PATTERN);
   assert.match(src, SERVICE_WORKER_MATCH_CLIENTS_PATTERN);
@@ -162,6 +164,7 @@ test("dashboard Web Push setup explains install, permission, subscription, and t
   assert.match(src, /A PWA install is not enough/);
   assert.match(src, /This device is subscribed/);
   assert.match(src, /server does not recognize it/);
+  assert.match(src, /Only the device can confirm whether it displayed/);
 });
 
 test("dashboard exposes diagnostic checklist covering every web push precondition", async () => {

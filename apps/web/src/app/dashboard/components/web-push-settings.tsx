@@ -273,7 +273,7 @@ function buildSetupSteps({
   const subscriptionState: DiagnosticState = matchesThisBrowser ? "ok" : unavailable ? "fail" : endpoint ? "warn" : "warn";
   const testState: DiagnosticState =
     testStatus?.startsWith("Test notification sent") || testStatus?.startsWith("Test notification delivered")
-      ? "ok"
+      ? "unknown"
       : matchesThisBrowser
         ? "unknown"
         : "warn";
@@ -307,8 +307,8 @@ function buildSetupSteps({
       label: "Send a test",
       state: testState,
       detail:
-        testState === "ok"
-          ? "A test notification was accepted by the push provider."
+        testStatus?.startsWith("Test notification sent") || testStatus?.startsWith("Test notification delivered")
+          ? "The push provider accepted the test. Only the device can confirm whether it displayed."
           : "Use Send test notification after this device is subscribed.",
     },
   ];
