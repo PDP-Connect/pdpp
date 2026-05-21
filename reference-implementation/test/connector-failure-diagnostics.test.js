@@ -167,6 +167,15 @@ async function runStub({ stderrText, exitCode = 1 }) {
       rsUrl: 'http://127.0.0.1:1',
       onProgress: () => {},
       onInteraction: () => ({ type: 'INTERACTION_RESPONSE', status: 'cancelled' }),
+      // No server harness; runConnector reads pending detail gaps at
+      // start, which would otherwise hit a closed DB. Provide an empty
+      // store so the runtime exercises only the stderr-diagnostic path
+      // these tests are meant to verify.
+      detailGapStore: {
+        async listPendingGaps() { return []; },
+        async upsertPendingGap() { return null; },
+        async markGapStatus() { return null; },
+      },
     });
   } catch (err) {
     outcomeError = err;

@@ -146,34 +146,43 @@ export async function resolveOwnerConnectorInstanceNamespace({
   if (connectorInstanceId) {
     const instance = await connectorInstanceStore.get(connectorInstanceId);
     if (!instance) {
-      throw new ConnectorInstanceResolutionError(
-        'connector_instance_not_found',
-        `Connector instance '${connectorInstanceId}' does not exist.`,
-        { ownerSubjectId, connectorId, connectorInstanceId },
-      );
+      // The runtime sometimes passes connectorInstanceId === connectorId as
+      // a "default instance for this connector" hint. When a connector_id
+      // and allowLegacyDefault are also available, fall through to the
+      // legacy-default path instead of failing the lookup outright.
+      if (allowLegacyDefault && connectorId && connectorInstanceId === connectorId) {
+        // intentional fall-through to the connector_id resolution path
+      } else {
+        throw new ConnectorInstanceResolutionError(
+          'connector_instance_not_found',
+          `Connector instance '${connectorInstanceId}' does not exist.`,
+          { ownerSubjectId, connectorId, connectorInstanceId },
+        );
+      }
+    } else {
+      if (instance.ownerSubjectId !== ownerSubjectId) {
+        throw new ConnectorInstanceResolutionError(
+          'connector_instance_owner_mismatch',
+          `Connector instance '${connectorInstanceId}' does not belong to owner '${ownerSubjectId}'.`,
+          { ownerSubjectId, actualOwnerSubjectId: instance.ownerSubjectId, connectorId, connectorInstanceId },
+        );
+      }
+      if (connectorId && instance.connectorId !== connectorId) {
+        throw new ConnectorInstanceResolutionError(
+          'connector_instance_connector_mismatch',
+          `Connector instance '${connectorInstanceId}' belongs to connector '${instance.connectorId}', not '${connectorId}'.`,
+          { ownerSubjectId, connectorId, actualConnectorId: instance.connectorId, connectorInstanceId },
+        );
+      }
+      if (instance.status !== 'active') {
+        throw new ConnectorInstanceResolutionError(
+          'connector_instance_inactive',
+          `Connector instance '${connectorInstanceId}' is '${instance.status}', not active.`,
+          { ownerSubjectId, connectorId: instance.connectorId, connectorInstanceId, status: instance.status },
+        );
+      }
+      return namespaceFromInstance(instance, { selector: 'connector_instance_id' });
     }
-    if (instance.ownerSubjectId !== ownerSubjectId) {
-      throw new ConnectorInstanceResolutionError(
-        'connector_instance_owner_mismatch',
-        `Connector instance '${connectorInstanceId}' does not belong to owner '${ownerSubjectId}'.`,
-        { ownerSubjectId, actualOwnerSubjectId: instance.ownerSubjectId, connectorId, connectorInstanceId },
-      );
-    }
-    if (connectorId && instance.connectorId !== connectorId) {
-      throw new ConnectorInstanceResolutionError(
-        'connector_instance_connector_mismatch',
-        `Connector instance '${connectorInstanceId}' belongs to connector '${instance.connectorId}', not '${connectorId}'.`,
-        { ownerSubjectId, connectorId, actualConnectorId: instance.connectorId, connectorInstanceId },
-      );
-    }
-    if (instance.status !== 'active') {
-      throw new ConnectorInstanceResolutionError(
-        'connector_instance_inactive',
-        `Connector instance '${connectorInstanceId}' is '${instance.status}', not active.`,
-        { ownerSubjectId, connectorId: instance.connectorId, connectorInstanceId, status: instance.status },
-      );
-    }
-    return namespaceFromInstance(instance, { selector: 'connector_instance_id' });
   }
 
   if (!connectorId) {

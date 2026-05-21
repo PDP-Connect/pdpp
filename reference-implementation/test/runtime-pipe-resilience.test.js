@@ -251,6 +251,13 @@ test('runConnector: connector that exits before reading START does not crash the
       rsUrl: 'http://127.0.0.1:1',
       onProgress: () => {},
       onInteraction: () => ({ type: 'INTERACTION_RESPONSE', status: 'cancelled' }),
+      // No server harness; supply an empty detail-gap store so the
+      // runtime exercises only the pipe-resilience path under test.
+      detailGapStore: {
+        async listPendingGaps() { return []; },
+        async upsertPendingGap() { return null; },
+        async markGapStatus() { return null; },
+      },
     });
   } catch (err) {
     outcomeError = err;

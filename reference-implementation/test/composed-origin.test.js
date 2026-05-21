@@ -305,6 +305,11 @@ async function makeClaudeCodeFixture() {
   const projectsDir = join(claudeHome, 'projects');
   const projectDir = join(projectsDir, '-home-test-safe-project');
   await mkdir(projectDir, { recursive: true });
+  // The Claude Code connector reads .claude/skills and .claude/commands
+  // even when empty; create them so the run doesn't fail before exercising
+  // the origin-routing behavior this test targets.
+  await mkdir(join(claudeHome, 'skills'), { recursive: true });
+  await mkdir(join(claudeHome, 'commands'), { recursive: true });
   const sessionId = '00000000-0000-4000-8000-000000000001';
   const lines = [
     {
