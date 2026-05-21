@@ -23,6 +23,40 @@ const nextConfig = {
   ...(allowedDevOrigins.length > 0 ? { allowedDevOrigins } : {}),
   output: 'standalone',
   outputFileTracingRoot: path.join(__dirname, '../..'),
+  // Runtime file reads outside the bundled output need explicit tracing
+  // includes so Next copies them into the standalone deploy. Without these,
+  // /planning, /reference/coverage, the well-known agent-skill catalog, and
+  // /llms-full.txt 500 on Vercel because the markdown they read is absent.
+  outputFileTracingIncludes: {
+    '/planning': [
+      '../../openspec/**/*.md',
+      '../../pnpm-workspace.yaml',
+      '.generated/openspec-git-metadata.json',
+    ],
+    '/planning/**': [
+      '../../openspec/**/*.md',
+      '../../pnpm-workspace.yaml',
+      '.generated/openspec-git-metadata.json',
+    ],
+    // resolveRepoRoot() looks for a directory containing both
+    // pnpm-workspace.yaml and openspec/, so a stub openspec marker is needed
+    // even for routes that only read docs/agent-skills.
+    '/well-known/skills/**': [
+      '../../docs/agent-skills/**/*.md',
+      '../../openspec/README.md',
+      '../../pnpm-workspace.yaml',
+    ],
+    '/llms-full.txt': [
+      '../../docs/agent-skills/**/*.md',
+      '../../openspec/README.md',
+      '../../pnpm-workspace.yaml',
+    ],
+    '/llms.txt': [
+      '../../docs/agent-skills/**/*.md',
+      '../../openspec/README.md',
+      '../../pnpm-workspace.yaml',
+    ],
+  },
   reactStrictMode: true,
   experimental: {
     // The default is host CPU count minus one (23 on the owner workstation),

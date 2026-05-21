@@ -392,4 +392,14 @@ function validateCoverageRows(rows: readonly CoverageRow[]): void {
   }
 }
 
-validateCoverageRows(coverageRows);
+// Disk-path validation runs at module load to catch evidence drift during
+// dev and `next build`. In a deployed standalone build the referenced source
+// files are stripped from the trace, so we soft-fail rather than crash a live
+// page — the build has already enforced the invariant.
+try {
+  validateCoverageRows(coverageRows);
+} catch (err) {
+  if (process.env.NODE_ENV !== "production") {
+    throw err;
+  }
+}
