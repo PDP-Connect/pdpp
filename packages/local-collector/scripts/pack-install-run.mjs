@@ -165,7 +165,13 @@ async function runFixtureBackedEnrollRunSmoke({ projectDir, env, advertisedProto
   log("Booting in-process reference server for fixture-backed enroll/run smoke...");
   const { startServer } = await import(`file://${referenceServerEntry}`);
   const { getDb } = await import(`file://${referenceDbModule}`);
-  const server = await startServer({ asPort: 0, dbPath: ":memory:", quiet: true, rsPort: 0 });
+  const server = await startServer({
+    asPort: 0,
+    dbPath: ":memory:",
+    ownerAuthPassword: "",
+    quiet: true,
+    rsPort: 0,
+  });
   const baseUrl = `http://127.0.0.1:${server.asPort}`;
   const codexHome = await prepareCodexFixture();
   try {
@@ -282,6 +288,7 @@ async function runProtocolMismatchSmoke({ projectDir, env }) {
     acceptedCollectorProtocolVersions: ["0"],
     asPort: 0,
     dbPath: ":memory:",
+    ownerAuthPassword: "",
     quiet: true,
     rsPort: 0,
   });

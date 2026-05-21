@@ -213,6 +213,7 @@ test("LocalDeviceHttpError tolerates non-JSON bodies without exposing a parsed c
         if (err instanceof LocalDeviceHttpError) {
           assert.equal(err.status, 502);
           assert.equal(err.code, null);
+          assert.equal(err.message.includes("<html>"), false);
         }
         return true;
       }

@@ -14,8 +14,7 @@ export class LocalDeviceHttpError extends Error {
     constructor(status, body) {
         const parsed = parseLocalDeviceErrorEnvelope(body);
         const detail = parsed?.code ? ` ${parsed.code}` : "";
-        const trimmedBody = body && body.length > 0 ? `: ${body.slice(0, 512)}` : "";
-        super(`local device request failed: ${status}${detail}${trimmedBody}`);
+        super(`local device request failed: ${status}${detail}`);
         this.name = "LocalDeviceHttpError";
         this.status = status;
         this.body = body;
