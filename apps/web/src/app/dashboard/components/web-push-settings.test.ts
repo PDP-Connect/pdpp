@@ -25,6 +25,8 @@ const MANIFEST_APPLE_ICON_SIZE_PATTERN = /sizes:\s*"180x180"/;
 const MANIFEST_MASKABLE_PATTERN = /purpose:\s*"maskable"/;
 const MANIFEST_ICON_PATTERN = /\/icon\.svg/;
 const MANIFEST_ANY_SIZE_PATTERN = /sizes:\s*"any"/;
+const MANIFEST_ICON_192_PATTERN = /\/icon-192\.png/;
+const MANIFEST_ICON_512_PATTERN = /\/icon-512\.png/;
 const APP_ROUTER_MANIFEST_PATTERN = /export default function manifest\(\)/;
 const SERVICE_WORKER_REGISTER_PATTERN = /navigator\.serviceWorker\.register\("\/pdpp-dashboard-sw\.js"\)/;
 const SERVICE_WORKER_LOOKUP_PATTERN = /navigator\.serviceWorker\.getRegistration\("\/"\)/;
@@ -98,6 +100,15 @@ test("dashboard exposes installable PWA manifest for mobile Web Push setup", asy
   assert.match(src, MANIFEST_MASKABLE_PATTERN);
   assert.match(src, MANIFEST_ICON_PATTERN);
   assert.match(src, MANIFEST_ANY_SIZE_PATTERN);
+  assert.match(src, MANIFEST_ICON_192_PATTERN);
+  assert.match(src, MANIFEST_ICON_512_PATTERN);
+});
+
+test("dashboard PWA manifest icons resolve to static PNG assets", async () => {
+  for (const file of ["apple-icon.png", "icon-192.png", "icon-512.png"]) {
+    const data = await readFile(join(APP_ROOT, "public", file));
+    assert.deepEqual([...data.subarray(0, 8)], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  }
 });
 
 test("dashboard launcher SVG icon uses Android-safe paint values", async () => {
