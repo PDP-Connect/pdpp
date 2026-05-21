@@ -56,6 +56,11 @@ const DIAGNOSTICS_TEST_PUSH_METHOD_PATTERN = /method:\s*"POST"/;
 const DIAGNOSTICS_SEND_TEST_BUTTON_PATTERN = />\s*Send test notification\s*</;
 const DIAGNOSTICS_SEND_DISABLED_PATTERN = /disabled=\{busy \|\| !endpoint \|\| Boolean\(unavailable\)\}/;
 const DIAGNOSTICS_NO_SUBSCRIPTIONS_PATTERN = /No active subscriptions for this owner/;
+const WEB_PUSH_RESPONSE_ERROR_HELPER_PATTERN = /async function webPushResponseError\(response: Response, fallbackAction: string\)/;
+const WEB_PUSH_RESPONSE_ERROR_MESSAGE_PATTERN = /body\.error\?\.message \|\| body\.message \|\| body\.error\?\.code/;
+const WEB_PUSH_SUBSCRIBE_STRUCTURED_ERROR_PATTERN = /throw await webPushResponseError\(response, "Subscription failed"\)/;
+const WEB_PUSH_TEST_STRUCTURED_ERROR_PATTERN = /throw await webPushResponseError\(response, "Test notification failed"\)/;
+const WEB_PUSH_UNSUBSCRIBE_STRUCTURED_ERROR_PATTERN = /throw await webPushResponseError\(response, "Unsubscribe failed"\)/;
 const SSR_SAFE_WINDOW_HELPER_DEF_PATTERN = /function hasWindowFeature\(/;
 const SSR_SAFE_NAVIGATOR_HELPER_DEF_PATTERN = /function hasNavigatorFeature\(/;
 const SSR_SAFE_WINDOW_HELPER_GUARD_PATTERN = /typeof window !== "undefined"/;
@@ -161,6 +166,15 @@ test("dashboard test notification button posts to /_ref/web-push/test and gates 
   assert.match(src, DIAGNOSTICS_SEND_TEST_BUTTON_PATTERN);
   assert.match(src, DIAGNOSTICS_SEND_DISABLED_PATTERN);
   assert.match(src, DIAGNOSTICS_NO_SUBSCRIPTIONS_PATTERN);
+});
+
+test("dashboard Web Push actions surface structured endpoint error details", async () => {
+  const src = await readFile(join(HERE, "web-push-settings.tsx"), "utf8");
+  assert.match(src, WEB_PUSH_RESPONSE_ERROR_HELPER_PATTERN);
+  assert.match(src, WEB_PUSH_RESPONSE_ERROR_MESSAGE_PATTERN);
+  assert.match(src, WEB_PUSH_SUBSCRIBE_STRUCTURED_ERROR_PATTERN);
+  assert.match(src, WEB_PUSH_TEST_STRUCTURED_ERROR_PATTERN);
+  assert.match(src, WEB_PUSH_UNSUBSCRIBE_STRUCTURED_ERROR_PATTERN);
 });
 
 test("dashboard Web Push setup explains install, permission, subscription, and test as separate states", async () => {
