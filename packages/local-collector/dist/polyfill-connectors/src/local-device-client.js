@@ -10,12 +10,31 @@ export const LOCAL_DEVICE_ENDPOINTS = {
 export class LocalDeviceHttpError extends Error {
     body;
     status;
+    code;
     constructor(status, body) {
-        super(`local device request failed: ${status}`);
+        const parsed = parseLocalDeviceErrorEnvelope(body);
+        const detail = parsed?.code ? ` ${parsed.code}` : "";
+        const trimmedBody = body && body.length > 0 ? `: ${body.slice(0, 512)}` : "";
+        super(`local device request failed: ${status}${detail}${trimmedBody}`);
         this.name = "LocalDeviceHttpError";
         this.status = status;
         this.body = body;
+        this.code = parsed?.code ?? null;
     }
+}
+function parseLocalDeviceErrorEnvelope(body) {
+    if (!body) {
+        return null;
+    }
+    try {
+        const parsed = JSON.parse(body);
+        if (parsed && typeof parsed === "object" && parsed.error && typeof parsed.error.code === "string") {
+            return { code: parsed.error.code };
+        }
+    }
+    catch {
+    }
+    return null;
 }
 export class LocalDeviceClient {
     #baseUrl;

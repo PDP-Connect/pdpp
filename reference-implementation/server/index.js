@@ -2010,6 +2010,15 @@ function buildAsApp(opts = {}) {
   const nativeMode = !!resolveNativeManifest(opts);
   const providerName = resolveProviderName(opts);
   const referenceRevision = resolveReferenceRevision(opts);
+  // Allow tests / fixture-backed smokes to pin the server to an old or
+  // alternate accepted-protocol set so we can exercise the 409
+  // collector_protocol_mismatch path without bumping the global
+  // SUPPORTED_COLLECTOR_PROTOCOL_VERSIONS. Falls back to the global set
+  // for normal operation.
+  const acceptedCollectorProtocolVersions = Array.isArray(opts.acceptedCollectorProtocolVersions)
+    && opts.acceptedCollectorProtocolVersions.length > 0
+    ? Object.freeze([...opts.acceptedCollectorProtocolVersions])
+    : SUPPORTED_COLLECTOR_PROTOCOL_VERSIONS;
   const controller = opts.controller || null;
   const consentStore = createConsentStore();
   const ownerDeviceAuthStore = createOwnerDeviceAuthStore();
@@ -2128,7 +2137,7 @@ function buildAsApp(opts = {}) {
   // reference-implementation-architecture/spec.md
   function enforceCollectorProtocolVersion(req, res) {
     const received = readCollectorProtocolHeader(req.headers);
-    if (!isAcceptedCollectorProtocolVersion(received)) {
+    if (!isAcceptedCollectorProtocolVersion(received, acceptedCollectorProtocolVersions)) {
       const body = {
         error: {
           type: typeFor(409),
@@ -2136,7 +2145,7 @@ function buildAsApp(opts = {}) {
           message: received
             ? `Collector protocol version '${received}' is not accepted by this reference server.`
             : 'Collector protocol version header X-PDPP-Collector-Protocol is required.',
-          ...buildCollectorProtocolMismatchBody(received),
+          ...buildCollectorProtocolMismatchBody(received, acceptedCollectorProtocolVersions),
         },
       };
       body.error.request_id = ensureRequestId(res);
@@ -7209,6 +7218,7 @@ export async function startServer(opts = {}) {
     nativeManifest: nativeConfig?.nativeManifest || null,
     controller,
     providerName,
+    acceptedCollectorProtocolVersions: opts.acceptedCollectorProtocolVersions,
     dbPath: opts.dbPath || DB_PATH,
     enableDynamicClientRegistration: resolveDynamicClientRegistrationEnabled(opts),
     dynamicClientRegistrationInitialAccessTokens: resolveDynamicClientRegistrationInitialAccessTokens(opts),

@@ -40,11 +40,14 @@ export interface CollectorProtocolMismatch {
   readonly received_version: string | null;
 }
 
-export function isAcceptedCollectorProtocolVersion(version: string | null | undefined): boolean {
+export function isAcceptedCollectorProtocolVersion(
+  version: string | null | undefined,
+  acceptedVersions: readonly string[] = SUPPORTED_COLLECTOR_PROTOCOL_VERSIONS,
+): boolean {
   if (typeof version !== "string" || version.length === 0) {
     return false;
   }
-  return SUPPORTED_COLLECTOR_PROTOCOL_VERSIONS.includes(version);
+  return acceptedVersions.includes(version);
 }
 
 export function readCollectorProtocolHeader(headers: Record<string, string | string[] | undefined>): string | null {
@@ -59,9 +62,12 @@ export function readCollectorProtocolHeader(headers: Record<string, string | str
   return null;
 }
 
-export function buildCollectorProtocolMismatchBody(receivedVersion: string | null): CollectorProtocolMismatch {
+export function buildCollectorProtocolMismatchBody(
+  receivedVersion: string | null,
+  acceptedVersions: readonly string[] = SUPPORTED_COLLECTOR_PROTOCOL_VERSIONS,
+): CollectorProtocolMismatch {
   return {
-    accepted_versions: [...SUPPORTED_COLLECTOR_PROTOCOL_VERSIONS],
+    accepted_versions: [...acceptedVersions],
     received_version: receivedVersion,
   };
 }

@@ -177,6 +177,51 @@ test("LocalDeviceClient state methods reject 401/403 with LocalDeviceHttpError",
   }
 });
 
+test("LocalDeviceHttpError surfaces a typed PDPP code from the response envelope", async () => {
+  const server = await startStatusServer(
+    409,
+    '{"error":{"type":"conflict","code":"collector_protocol_mismatch","accepted_versions":["2"],"received_version":"1"}}'
+  );
+  try {
+    const client = new LocalDeviceClient({ baseUrl: server.url });
+    await assert.rejects(
+      () => client.exchangeEnrollment({ enrollment_code: "x" }),
+      (err: unknown) => {
+        assert.ok(err instanceof LocalDeviceHttpError);
+        if (err instanceof LocalDeviceHttpError) {
+          assert.equal(err.status, 409);
+          assert.equal(err.code, "collector_protocol_mismatch");
+          assert.match(err.message, /409/);
+          assert.match(err.message, /collector_protocol_mismatch/);
+        }
+        return true;
+      }
+    );
+  } finally {
+    await server.close();
+  }
+});
+
+test("LocalDeviceHttpError tolerates non-JSON bodies without exposing a parsed code", async () => {
+  const server = await startStatusServer(502, "<html>upstream down</html>");
+  try {
+    const client = new LocalDeviceClient({ baseUrl: server.url });
+    await assert.rejects(
+      () => client.exchangeEnrollment({ enrollment_code: "x" }),
+      (err: unknown) => {
+        assert.ok(err instanceof LocalDeviceHttpError);
+        if (err instanceof LocalDeviceHttpError) {
+          assert.equal(err.status, 502);
+          assert.equal(err.code, null);
+        }
+        return true;
+      }
+    );
+  } finally {
+    await server.close();
+  }
+});
+
 test("LocalDeviceClient state methods surface 404 unknown source instance", async () => {
   const server = await startStatusServer(404, '{"error":{"code":"not_found"}}');
   try {

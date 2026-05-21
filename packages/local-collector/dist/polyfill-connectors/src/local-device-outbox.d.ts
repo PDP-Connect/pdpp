@@ -84,6 +84,27 @@ export declare class LocalDeviceOutbox {
     }): number;
     get(id: string): LocalDeviceOutboxItem | null;
     deleteSucceeded(id: string): boolean;
+    hasNonSucceededWork(input: {
+        excludeKinds?: readonly LocalDeviceOutboxKind[];
+        kinds?: readonly LocalDeviceOutboxKind[];
+        sourceInstanceId: string;
+    }): boolean;
+    hasNonSucceededPredecessor(input: {
+        beforeInsertOrder: number;
+        kinds: readonly LocalDeviceOutboxKind[];
+        sourceInstanceId: string;
+    }): boolean;
+    countOpenGaps(input: {
+        sourceInstanceId: string;
+    }): number;
+    listByKind(input: {
+        kind: LocalDeviceOutboxKind;
+        sourceInstanceId: string;
+        statuses?: readonly LocalDeviceOutboxStatus[];
+    }): LocalDeviceOutboxItem[];
+    maxRecordBatchSeq(input: {
+        sourceInstanceId: string;
+    }): number;
     list(input?: {
         sourceInstanceId?: string;
     }): LocalDeviceOutboxItem[];

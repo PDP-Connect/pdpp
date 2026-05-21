@@ -138,13 +138,41 @@ export interface RecoverLocalCollectorGapRequest {
 export class LocalDeviceHttpError extends Error {
   readonly body: string;
   readonly status: number;
+  /**
+   * Typed PDPP error code parsed from the response body when the server
+   * returned a structured `{ error: { code, ... } }` envelope. Lets
+   * callers and operator-facing CLI output discriminate cases like
+   * `collector_protocol_mismatch` from a generic 409 without re-parsing
+   * the body. `null` when the body is empty, not JSON, or lacks an
+   * `error.code` field.
+   */
+  readonly code: string | null;
 
   constructor(status: number, body: string) {
-    super(`local device request failed: ${status}`);
+    const parsed = parseLocalDeviceErrorEnvelope(body);
+    const detail = parsed?.code ? ` ${parsed.code}` : "";
+    const trimmedBody = body && body.length > 0 ? `: ${body.slice(0, 512)}` : "";
+    super(`local device request failed: ${status}${detail}${trimmedBody}`);
     this.name = "LocalDeviceHttpError";
     this.status = status;
     this.body = body;
+    this.code = parsed?.code ?? null;
   }
+}
+
+function parseLocalDeviceErrorEnvelope(body: string): { code: string } | null {
+  if (!body) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(body) as { error?: { code?: unknown } };
+    if (parsed && typeof parsed === "object" && parsed.error && typeof parsed.error.code === "string") {
+      return { code: parsed.error.code };
+    }
+  } catch {
+    // Body wasn't JSON. Fall through to null.
+  }
+  return null;
 }
 
 export class LocalDeviceClient {
