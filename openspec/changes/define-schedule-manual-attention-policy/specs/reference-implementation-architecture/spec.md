@@ -18,6 +18,14 @@ Reference schedules SHALL express desired data freshness and launch eligibility 
 - **THEN** the reference SHALL continue to expose the desired freshness policy separately from the current launch eligibility
 - **AND** it SHALL NOT report the connection as fresh merely because automatic launches are suppressed
 
+#### Scenario: Resolved attention does not replay an unbounded schedule backlog
+
+- **WHEN** a schedule has missed one or more due instants while launch was paused or suppressed for owner/operator attention
+- **AND** the attention request is resolved or explicitly overridden
+- **THEN** the reference SHALL NOT automatically start one run for every missed due instant
+- **AND** it SHALL make the schedule eligible for the next normal launch or at most one latest-state catch-up run by default
+- **AND** any broader backfill SHALL be explicit, bounded, and available only when the connector declares safe interval semantics
+
 ### Requirement: Reference runs SHALL be bounded attempts when owner/operator attention is required
 
 Reference runs SHALL remain bounded execution attempts. A run that discovers a required owner/operator action SHALL finish with a typed waiting-for-operator outcome or equivalent terminal evidence rather than remaining active indefinitely.
