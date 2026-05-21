@@ -11,6 +11,14 @@ For multi-agent work, worker handoffs, or parallel implementation lanes, read
 the local playbook for worktrees, task packets, validation, reporting, and owner
 merge gates.
 
+Before writing or editing prose in any spec, design note, README, site copy,
+operator/dashboard string, or release note, read
+`docs/voice-and-framing.md`. It is the durable voice/framing guide that keeps
+PDPP-as-protocol above OAuth/RAR, separates Core from Collection Profile from
+reference implementation from operator console, and lists phrasings to avoid
+(hosted-service semantics, cybersecurity framing, owner-voice drift, unqualified
+connector claims, Vana/DTI overreach).
+
 ## When OpenSpec applies
 
 Write a change proposal when any of these are true:
