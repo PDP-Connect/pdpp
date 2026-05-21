@@ -49,10 +49,9 @@ test('fresh DB has json_path in blob_bindings PK + CHECK constraint', () => {
     assert.ok(tableColumns(raw, 'blob_bindings').includes('json_path'));
 
     // The default for new rows is '@record'.
-    raw.exec(`
-      INSERT INTO blobs (blob_id, connector_id, stream, record_key, mime_type, size_bytes, sha256, data)
-      VALUES ('blob_sha256_aa', 'c1', 's1', 'r1', 'application/octet-stream', 1, 'aa', x'aa');
-    `);
+    raw.prepare(
+      'INSERT INTO blobs (blob_id, connector_id, connector_instance_id, stream, record_key, mime_type, size_bytes, sha256, data) VALUES (?,?,?,?,?,?,?,?,?)'
+    ).run('blob_sha256_aa', 'c1', legacyInstanceId('c1'), 's1', 'r1', 'application/octet-stream', 1, 'aa', Buffer.from([0xaa]));
     raw.prepare(
       'INSERT INTO blob_bindings (blob_id, connector_id, connector_instance_id, stream, record_key) VALUES (?,?,?,?,?)'
     ).run('blob_sha256_aa', 'c1', legacyInstanceId('c1'), 's1', 'r1');
@@ -204,12 +203,12 @@ test('uniq_blobs_sha256 actually rejects duplicate sha256 values', () => {
   const raw = new Database(dbPath);
   try {
     raw.prepare(
-      'INSERT INTO blobs (blob_id, connector_id, stream, record_key, mime_type, size_bytes, sha256, data) VALUES (?,?,?,?,?,?,?,?)'
-    ).run('blob_sha256_a', 'c', 's', 'r', 'application/octet-stream', 1, 'shared_sha', Buffer.from([0xaa]));
+      'INSERT INTO blobs (blob_id, connector_id, connector_instance_id, stream, record_key, mime_type, size_bytes, sha256, data) VALUES (?,?,?,?,?,?,?,?,?)'
+    ).run('blob_sha256_a', 'c', legacyInstanceId('c'), 's', 'r', 'application/octet-stream', 1, 'shared_sha', Buffer.from([0xaa]));
     assert.throws(
       () => raw.prepare(
-        'INSERT INTO blobs (blob_id, connector_id, stream, record_key, mime_type, size_bytes, sha256, data) VALUES (?,?,?,?,?,?,?,?)'
-      ).run('blob_sha256_b', 'c', 's', 'r', 'application/octet-stream', 1, 'shared_sha', Buffer.from([0xbb])),
+        'INSERT INTO blobs (blob_id, connector_id, connector_instance_id, stream, record_key, mime_type, size_bytes, sha256, data) VALUES (?,?,?,?,?,?,?,?,?)'
+      ).run('blob_sha256_b', 'c', legacyInstanceId('c'), 's', 'r', 'application/octet-stream', 1, 'shared_sha', Buffer.from([0xbb])),
       /UNIQUE constraint failed: blobs\.sha256/,
     );
   } finally {
@@ -224,8 +223,8 @@ test('PK includes json_path: same blob can bind to same record at multiple json_
   const raw = new Database(dbPath);
   try {
     raw.prepare(
-      'INSERT INTO blobs (blob_id, connector_id, stream, record_key, mime_type, size_bytes, sha256, data) VALUES (?,?,?,?,?,?,?,?)'
-    ).run('blob_sha256_x', 'c1', 's1', 'r1', 'application/octet-stream', 1, 'x', Buffer.from([0xaa]));
+      'INSERT INTO blobs (blob_id, connector_id, connector_instance_id, stream, record_key, mime_type, size_bytes, sha256, data) VALUES (?,?,?,?,?,?,?,?,?)'
+    ).run('blob_sha256_x', 'c1', legacyInstanceId('c1'), 's1', 'r1', 'application/octet-stream', 1, 'x', Buffer.from([0xaa]));
     raw.prepare(
       'INSERT INTO blob_bindings (blob_id, connector_id, connector_instance_id, stream, record_key, json_path) VALUES (?,?,?,?,?,?)'
     ).run('blob_sha256_x', 'c1', legacyInstanceId('c1'), 's1', 'r1', '/output_preview');
