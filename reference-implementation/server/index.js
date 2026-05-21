@@ -138,10 +138,12 @@ import {
 } from './hosted-ui.js';
 import {
   collectRecordsTimelineEntries,
+  getConnectorAttentionProjection,
   getConnectorDetail,
   listConnectorSummaries,
   listPendingApprovals,
 } from './ref-control.ts';
+import { isHealthRelevant as isAttentionHealthRelevant } from '../runtime/attention.ts';
 import {
   DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN,
   DEFAULT_PRE_REGISTERED_PUBLIC_CLIENTS,
@@ -7555,6 +7557,28 @@ function createReferenceSchedulerManager({
       isNeedsHuman: (connectorId, connectorInstanceId) =>
         controller.isNeedsHuman(connectorId, { connectorInstanceId }) ||
         Boolean(controller.getActiveRun(connectorId, { connectorInstanceId })),
+      hasUnresolvedAttention: async (connectorId, connectorInstanceId) => {
+        // Durable attention projection. The in-memory `isNeedsHuman` flag
+        // is process-local; this probe consults the structured
+        // attention_request store so a scheduled tick after process
+        // restart still recognizes unresolved owner action and does not
+        // launch a doomed run. The projection is read-bounded
+        // (`listOpenAttentionForConnection` clamps `limit` to 50) and
+        // returns the most-recently-updated open record first.
+        const projection = await getConnectorAttentionProjection(connectorId, { connectorInstanceId });
+        if (projection.unreliable) {
+          // Probe failure must not silently suppress launches — surface
+          // the schedule as eligible so a freshness gap is preferred over
+          // an invisible pause.
+          return null;
+        }
+        const nowIso = new Date().toISOString();
+        for (const record of projection.records) {
+          if (!isAttentionHealthRelevant(record, nowIso)) continue;
+          return { key: record.dedupe_key || record.id, reason: record.reason_code };
+        }
+        return null;
+      },
       onInteraction: async (interaction) => {
         const connectorDisplayName =
           typeof interaction?.connector_display_name === 'string' && interaction.connector_display_name.trim()

@@ -170,9 +170,44 @@ export type SetStateHandler = (connectorId: string, state: unknown, connectorIns
 export type NeedsHumanHandler = (connectorId: string, connectorInstanceId?: string) => void;
 export type IsNeedsHumanHandler = (connectorId: string, connectorInstanceId?: string) => boolean;
 
+/**
+ * Probe for durable unresolved owner/operator attention keyed to a
+ * connection/source. When this returns a non-null evidence object, the
+ * scheduler treats the schedule as paused-for-attention: it does not
+ * launch another automatic run, it emits at most one skip record per
+ * attention identity, and it does not replay missed ticks once the
+ * evidence is gone.
+ *
+ * The `key` is an opaque, owner-controlled string (typically the
+ * `dedupe_key` or `attention_id` of the unresolved request) that the
+ * scheduler uses to dedupe its own skip records. Two consecutive probes
+ * returning the same `key` are treated as the same attention; a probe
+ * returning a different `key` re-arms the skip emitter so the operator
+ * sees a fresh audit line.
+ *
+ * The handler MAY return null/undefined or throw to signal "no relevant
+ * attention or unable to determine". A throw is treated as "no evidence"
+ * — the scheduler must never silently suppress launches when the durable
+ * store is unreachable, because that would itself hide a real freshness
+ * problem.
+ */
+export interface UnresolvedAttentionEvidence {
+  readonly key: string;
+  readonly reason?: string | null;
+}
+export type HasUnresolvedAttentionHandler = (
+  connectorId: string,
+  connectorInstanceId?: string
+) =>
+  | Promise<UnresolvedAttentionEvidence | null | undefined>
+  | UnresolvedAttentionEvidence
+  | null
+  | undefined;
+
 export interface SchedulerOptions {
   connectors: readonly ConnectorSchedule[];
   getState?: GetStateHandler;
+  hasUnresolvedAttention?: HasUnresolvedAttentionHandler;
   isNeedsHuman?: IsNeedsHumanHandler;
   markNeedsHuman?: NeedsHumanHandler;
   onInteraction: InteractionHandler;
@@ -377,6 +412,12 @@ interface SchedulerRuntime {
   // clearNeedsHuman / runNow so the next automatic tick emits a fresh skip.
   readonly notifiedNeedsHumanSkips: Set<string>;
   readonly notifiedNotReadySkips: Map<string, string>;
+  // Tracks the durable attention key (from `hasUnresolvedAttention`) for
+  // which we last emitted a suppression skip record. Keyed by
+  // connector_instance_id. A different key means a fresh attention
+  // identity and re-arms the emitter; an absent key (attention resolved)
+  // clears the entry so the next observed suppression emits a new skip.
+  readonly notifiedAttentionSkips: Map<string, string>;
   running: boolean;
   readonly timers: NodeJS.Timeout[];
 }
@@ -393,6 +434,7 @@ function buildRuntime(): SchedulerRuntime {
     notifiedDisabledGrantFailures: new Set(),
     notifiedNeedsHumanSkips: new Set(),
     notifiedNotReadySkips: new Map(),
+    notifiedAttentionSkips: new Map(),
     running: false,
     timers: [],
   };
@@ -490,6 +532,27 @@ function buildDisabledGrantSkip(
     startedAt: nowIso(),
     completedAt: nowIso(),
     error: `${terminalReason} grant no longer usable`,
+    attempt: 0,
+  };
+}
+
+function buildUnresolvedAttentionSkip(
+  connectorId: string,
+  evidence: UnresolvedAttentionEvidence,
+  connectorInstanceId?: string
+): RunRecord {
+  const tail = evidence.reason ? `: ${evidence.reason} (${evidence.key})` : `: ${evidence.key}`;
+  return {
+    connectorId,
+    connectorInstanceId: connectorInstanceId ?? null,
+    source: buildScheduledRunSource(connectorId),
+    status: "skipped",
+    recordsEmitted: 0,
+    checkpointSummary: null,
+    knownGaps: [],
+    startedAt: nowIso(),
+    completedAt: nowIso(),
+    error: `attention_unresolved${tail}`,
     attempt: 0,
   };
 }
@@ -1011,6 +1074,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
       // no-op
     },
     isNeedsHuman = () => false,
+    hasUnresolvedAttention = () => null,
   } = opts;
 
   const runtime = buildRuntime();
@@ -1299,6 +1363,43 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
       // interaction. Manual runs (isManual=true) bypass this gate so the owner
       // can resolve the issue. The controller also clears the flag on runNow.
       if (!isManual) {
+        // Durable attention is the highest-priority gate. If an
+        // equivalent unresolved attention request exists for this
+        // connection/source, no other policy result matters: we do not
+        // launch another automatic run, we emit at most one skip record
+        // per attention identity, and we leave `lastRunTime` alone so
+        // the schedule stays eligible for a single latest-only catch-up
+        // once the attention resolves.
+        //
+        // Probe failures are treated as "no evidence" — silently
+        // suppressing launches when the durable store is unreachable
+        // would itself hide a freshness problem.
+        let attentionEvidence: UnresolvedAttentionEvidence | null = null;
+        try {
+          const observed = await hasUnresolvedAttention(connectorId, connectorInstanceId);
+          attentionEvidence = observed ?? null;
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error(`[scheduler] attention probe failed for ${connectorId}: ${message}`);
+          attentionEvidence = null;
+        }
+        if (attentionEvidence?.key) {
+          const previousKey = runtime.notifiedAttentionSkips.get(key);
+          if (previousKey === attentionEvidence.key) {
+            return null;
+          }
+          runtime.notifiedAttentionSkips.set(key, attentionEvidence.key);
+          return recordAndNotify(
+            buildUnresolvedAttentionSkip(connectorId, attentionEvidence, connectorInstanceId)
+          );
+        }
+        // No durable attention evidence. Clear suppression so the next
+        // observed attention emits a fresh skip record. This is also the
+        // seam that enforces latest-only catch-up: once attention clears,
+        // the next eligible tick fires exactly one run regardless of how
+        // many ticks were skipped while attention was open.
+        runtime.notifiedAttentionSkips.delete(key);
+
         if (!automationPolicy.allowed_to_start) {
           const reason = automationPolicy.reason || "automatic run is not allowed by connector policy";
           const dedupeReason = `automation_policy_blocked:${reason}`;
