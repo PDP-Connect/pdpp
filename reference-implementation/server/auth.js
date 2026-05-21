@@ -54,6 +54,10 @@ async function pgExec(sql, params = []) {
 }
 
 let configuredNativeManifest = null;
+const LEGACY_LOCAL_CONNECTOR_MANIFEST_ALIASES = new Map([
+  ['claude_code', 'https://registry.pdpp.org/connectors/claude-code'],
+  ['codex', 'https://registry.pdpp.org/connectors/codex'],
+]);
 const PENDING_CONSENT_REQUEST_URI_PREFIX = 'urn:pdpp:pending-consent:';
 const SUPPORTED_CLIENT_AUTH_METHODS = new Set(['none']);
 const SUPPORTED_REGISTRATION_MODES = new Set(['dynamic', 'pre_registered_public']);
@@ -2264,7 +2268,21 @@ export async function listRegisteredConnectorIds() {
 export async function getConnectorManifest(connectorId) {
   if (!connectorId) return null;
 
-  const row = isPostgresStorageBackend()
+  const row = await getConnectorManifestRow(connectorId);
+  if (!row) return null;
+  try {
+    return parseAndValidateConnectorManifestRow(row, connectorId);
+  } catch (err) {
+    const legacyAlias = await getLegacyLocalConnectorAliasManifest(connectorId);
+    if (legacyAlias) {
+      return legacyAlias;
+    }
+    throw err;
+  }
+}
+
+async function getConnectorManifestRow(connectorId) {
+  return isPostgresStorageBackend()
     ? await pgOne(
         `SELECT manifest::text AS manifest
          FROM connectors
@@ -2272,7 +2290,9 @@ export async function getConnectorManifest(connectorId) {
         [connectorId],
       )
     : getOne(referenceQueries.authConnectorsGetManifestById, [connectorId]);
-  if (!row) return null;
+}
+
+function parseAndValidateConnectorManifestRow(row, connectorId) {
   try {
     const manifest = JSON.parse(row.manifest);
     // Read-path validation: skip the reference cursor_field sort-compat check
@@ -2284,6 +2304,18 @@ export async function getConnectorManifest(connectorId) {
   } catch {
     throw invalidConnectorManifest(`Connector manifest for ${connectorId} is malformed or no longer valid`, 'connector_invalid');
   }
+}
+
+async function getLegacyLocalConnectorAliasManifest(connectorId) {
+  const canonicalConnectorId = LEGACY_LOCAL_CONNECTOR_MANIFEST_ALIASES.get(connectorId);
+  if (!canonicalConnectorId) return null;
+  const canonicalRow = await getConnectorManifestRow(canonicalConnectorId);
+  if (!canonicalRow) return null;
+  const manifest = parseAndValidateConnectorManifestRow(canonicalRow, canonicalConnectorId);
+  return {
+    ...cloneJson(manifest),
+    connector_id: connectorId,
+  };
 }
 
 export async function getManifestForStorageBinding(storageBinding, opts = {}) {
