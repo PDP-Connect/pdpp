@@ -39,7 +39,7 @@
 
 - [x] 4.1 Fill in `packages/remote-surface/package.json` with the resolved owner values: `"repository": { "type": "git", "url": "git+https://github.com/vana-com/remote-surface.git" }`, `"bugs": { "url": "https://github.com/vana-com/remote-surface/issues" }`, `"homepage": "https://github.com/vana-com/remote-surface#readme"`.
 - [x] 4.2 Add `keywords` (suggested seed: `remote-surface`, `browser`, `neko`, `cdp`, `streaming`, `clipboard`, `mobile-ime`, `webrtc`).
-- [x] 4.3 Add `publishConfig.access: "public"`; add a commented `publishConfig.provenance: true` placeholder. (Implemented as `publishConfig.access: "public"` only; provenance posture is handled by `standardize-pdpp-package-publishing` and the JSON manifest cannot carry a comment, so the placeholder is deferred to that lane.)
+- [ ] 4.3 Add `publishConfig.access: "public"`; add a commented `publishConfig.provenance: true` placeholder. (Deferred to §5.1: the merged `standardize-pdpp-package-publishing` release policy in `docs/package-release-policy.md` and `scripts/check-package-release-policy.mjs` forbids `publishConfig` on any package with `private: true`. While this package remains `private: true` (gated on §7.5), the manifest cannot carry `publishConfig` without failing `pnpm release:policy-check`. The §5.1 lane that teaches the checker about `@opendatalabs/remote-surface` SHALL re-add `publishConfig.access: "public"` at the same time it makes the package recognizable as publishable, so the manifest never carries `publishConfig` while still `private: true`. The earlier implementation landed `publishConfig.access: "public"` prematurely and was removed by the adjacent package-policy lane.)
 - [x] 4.4 Add `"engines": { "node": ">=24" }` for the 2026 Active LTS line.
 - [x] 4.5 Document the supported runtime contract (`Node >=24`, ESM-only, browser API surface) in the README "Supported runtime assumptions" paragraph.
 - [x] 4.6 Add `SECURITY.md` and a README "Reporting vulnerabilities" paragraph that route security reports to `security@vana.org`.
@@ -56,7 +56,7 @@
 - [x] 6.3 After §1, repo grep for `@pdpp/remote-surface` returns zero matches outside this change's artifacts and the archived prior changes.
 - [x] 6.4 After §2, `dist/server/**`, `dist/protocol/**`, `dist/leases/**`, `dist/testing/**` are scanned for `_ref`, `run_id`, `interaction_id`; the only residual matches are (a) `dist/server/surface-session-store.js{,.map}` translating camelCase to the reference store's snake_case API at the call boundary and (b) `@deprecated` jsdoc blocks in the migration-notice re-export index files. Both are explicitly allowlisted in `scripts/validate-package.mjs` with a documented host-neutral compatibility rationale; everything else lives only under `dist/reference/**`.
 - [x] 6.5 After §3, `npm pack` output for the package contains `LICENSE`.
-- [x] 6.6 After §4, `package.json` round-trips through validator with `repository`, `bugs`, `homepage`, `keywords`, `publishConfig.access`, and `engines.node` set to concrete values.
+- [x] 6.6 After §4, `package.json` round-trips through validator with `repository`, `bugs`, `homepage`, `keywords`, and `engines.node` set to concrete values. (`publishConfig.access` is deferred along with §4.3 until §5.1 wires `@opendatalabs/remote-surface` into the checker; while `private: true`, the release policy forbids `publishConfig`.)
 
 ## 7. Owner Decisions
 
