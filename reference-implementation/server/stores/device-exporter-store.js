@@ -234,11 +234,13 @@ export function createSqliteDeviceExporterStore() {
       exec(referenceQueries.deviceExportersRevokeDevice, [revokedAt, revokedAt, deviceId]);
       exec(referenceQueries.deviceExportersRevokeCredentialsForDevice, [revokedAt, deviceId]);
       // Cascade revoke to the local-collector source instances bound to this
-      // device and the connector_instances they reference, so the operator
-      // surfaces (/_ref/connectors, device diagnostics) stop treating those
-      // rows as live after the device is revoked.
-      exec(referenceQueries.deviceExportersRevokeConnectorInstancesForDevice, [revokedAt, revokedAt, deviceId]);
+      // device and, where safe, to the connector_instances those source
+      // instances reference. Source instances are revoked first so the
+      // connector_instance update can use NOT EXISTS to spare any
+      // connector_instance still referenced by another device's non-revoked
+      // source instance (stable-binding re-enrollment lane).
       exec(referenceQueries.deviceExportersRevokeSourceInstancesForDevice, [revokedAt, revokedAt, deviceId]);
+      exec(referenceQueries.deviceExportersRevokeConnectorInstancesForDevice, [revokedAt, revokedAt, deviceId]);
     },
 
     markDeviceHeartbeat(deviceId, record) {
@@ -440,25 +442,33 @@ export function createPostgresDeviceExporterStore() {
       await postgresQuery(`UPDATE device_exporters SET status = 'revoked', revoked_at = $1, updated_at = $1 WHERE device_id = $2`, [revokedAt, deviceId]);
       await postgresQuery(`UPDATE device_ingest_credentials SET status = 'revoked', revoked_at = $1 WHERE device_id = $2 AND status <> 'revoked'`, [revokedAt, deviceId]);
       // Cascade revoke to the local-collector source instances bound to this
-      // device and the connector_instances they reference, so the operator
-      // surfaces (/_ref/connectors, device diagnostics) stop treating those
-      // rows as live after the device is revoked.
-      await postgresQuery(
-        `UPDATE connector_instances
-            SET status = 'revoked', revoked_at = $1, updated_at = $1
-          WHERE status <> 'revoked'
-            AND connector_instance_id IN (
-              SELECT connector_instance_id
-              FROM device_source_instances
-              WHERE device_id = $2
-                AND connector_instance_id IS NOT NULL
-            )`,
-        [revokedAt, deviceId],
-      );
+      // device and, where safe, to the connector_instances those source
+      // instances reference. Source instances are revoked first so the
+      // connector_instance update can use NOT EXISTS to spare any
+      // connector_instance still referenced by another device's non-revoked
+      // source instance (stable-binding re-enrollment lane).
       await postgresQuery(
         `UPDATE device_source_instances
             SET status = 'revoked', revoked_at = $1, updated_at = $1
           WHERE device_id = $2 AND status <> 'revoked'`,
+        [revokedAt, deviceId],
+      );
+      await postgresQuery(
+        `UPDATE connector_instances ci
+            SET status = 'revoked', revoked_at = $1, updated_at = $1
+          WHERE ci.status <> 'revoked'
+            AND ci.connector_instance_id IN (
+              SELECT connector_instance_id
+              FROM device_source_instances
+              WHERE device_id = $2
+                AND connector_instance_id IS NOT NULL
+            )
+            AND NOT EXISTS (
+              SELECT 1
+              FROM device_source_instances active
+              WHERE active.connector_instance_id = ci.connector_instance_id
+                AND active.status <> 'revoked'
+            )`,
         [revokedAt, deviceId],
       );
     },

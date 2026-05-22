@@ -275,10 +275,117 @@ async function runRevokeCascade({ makeDeviceStore, makeConnectorInstanceStore, s
   assert.equal(keptInstance.revokedAt, null);
 }
 
+// Shared connector_instance case: the stable-binding re-enrollment lane lets
+// two devices (e.g. an old laptop re-enrolled as a new device) reference the
+// same connector_instance via separate device_source_instances. Revoking one
+// device must leave the connector_instance active while the other device's
+// source instance still references it. Only after the last referencing source
+// instance is revoked may the connector_instance flip to revoked.
+async function runRevokeCascadeShared({ makeDeviceStore, makeConnectorInstanceStore, seedConnector, now }) {
+  await seedConnector('local.files');
+
+  const deviceStore = await makeDeviceStore();
+  const instanceStore = await makeConnectorInstanceStore();
+
+  await instanceStore.upsert({
+    connectorInstanceId: 'cin_shared',
+    ownerSubjectId: 'owner_1',
+    connectorId: 'local.files',
+    displayName: 'Shared stable binding',
+    status: 'active',
+    sourceKind: 'local_device',
+    sourceBindingKey: 'shared',
+    sourceBinding: { kind: 'local_device', label: 'shared' },
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  await deviceStore.createDevice({
+    deviceId: 'dev_old',
+    ownerSubjectId: 'owner_1',
+    displayName: 'Old laptop enrollment',
+    createdAt: now,
+    updatedAt: now,
+  });
+  await deviceStore.createDevice({
+    deviceId: 'dev_new',
+    ownerSubjectId: 'owner_1',
+    displayName: 'Re-enrolled laptop',
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  await deviceStore.upsertSourceInstance({
+    sourceInstanceId: 'src_old',
+    deviceId: 'dev_old',
+    connectorId: 'local.files',
+    connectorInstanceId: 'cin_shared',
+    localBindingId: 'photos',
+    displayName: 'Photos (old enrollment)',
+    createdAt: now,
+    updatedAt: now,
+  });
+  await deviceStore.upsertSourceInstance({
+    sourceInstanceId: 'src_new',
+    deviceId: 'dev_new',
+    connectorId: 'local.files',
+    connectorInstanceId: 'cin_shared',
+    localBindingId: 'photos',
+    displayName: 'Photos (new enrollment)',
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  // Revoking the old device must revoke its own source instance but MUST NOT
+  // revoke the shared connector_instance — the new device's source instance
+  // is still active and references it.
+  await deviceStore.revokeDevice('dev_old', LATER);
+
+  const oldSource = await deviceStore.getSourceInstance('dev_old', 'src_old');
+  assert.equal(oldSource.status, 'revoked');
+  assert.equal(oldSource.revokedAt, LATER);
+
+  const newSource = await deviceStore.getSourceInstance('dev_new', 'src_new');
+  assert.equal(newSource.status, 'active');
+  assert.equal(newSource.revokedAt, null);
+
+  const sharedAfterFirst = await instanceStore.get('cin_shared');
+  assert.equal(sharedAfterFirst.status, 'active', 'shared connector_instance must remain active while another device references it');
+  assert.equal(sharedAfterFirst.revokedAt, null);
+
+  // Now revoke the second device. With no remaining non-revoked source
+  // instances referencing it, the shared connector_instance must flip to
+  // revoked.
+  const EVEN_LATER = '2026-04-30T12:02:00.000Z';
+  await deviceStore.revokeDevice('dev_new', EVEN_LATER);
+
+  const sharedAfterSecond = await instanceStore.get('cin_shared');
+  assert.equal(sharedAfterSecond.status, 'revoked');
+  assert.equal(sharedAfterSecond.revokedAt, EVEN_LATER);
+}
+
 test('SQLite revokeDevice cascades revoked status to device source instances and their connector_instances', async () => {
   initDb();
   try {
     await runRevokeCascade({
+      makeDeviceStore: () => createSqliteDeviceExporterStore(),
+      makeConnectorInstanceStore: () => createSqliteConnectorInstanceStore(),
+      seedConnector: async (connectorId) => {
+        getDb()
+          .prepare('INSERT INTO connectors(connector_id, manifest, created_at) VALUES (?, ?, ?)')
+          .run(connectorId, JSON.stringify({ connector_id: connectorId, version: '1.0.0', streams: [] }), NOW);
+      },
+      now: NOW,
+    });
+  } finally {
+    closeDb();
+  }
+});
+
+test('SQLite revokeDevice spares connector_instance shared with another active device source', async () => {
+  initDb();
+  try {
+    await runRevokeCascadeShared({
       makeDeviceStore: () => createSqliteDeviceExporterStore(),
       makeConnectorInstanceStore: () => createSqliteConnectorInstanceStore(),
       seedConnector: async (connectorId) => {
@@ -304,6 +411,33 @@ test('Postgres revokeDevice cascades revoked status when PDPP_TEST_POSTGRES_URL 
   try {
     await cleanup();
     await runRevokeCascade({
+      makeDeviceStore: () => createPostgresDeviceExporterStore(),
+      makeConnectorInstanceStore: () => createPostgresConnectorInstanceStore(),
+      seedConnector: async (connectorId) => {
+        await postgresQuery(
+          `INSERT INTO connectors(connector_id, manifest, created_at) VALUES ($1, $2::jsonb, $3)`,
+          [connectorId, JSON.stringify({ connector_id: connectorId, version: '1.0.0', streams: [] }), NOW],
+        );
+      },
+      now: NOW,
+    });
+  } finally {
+    await cleanup();
+    await closePostgresStorage();
+  }
+});
+
+test('Postgres revokeDevice spares shared connector_instance when PDPP_TEST_POSTGRES_URL is set', { skip: !process.env.PDPP_TEST_POSTGRES_URL }, async () => {
+  await initPostgresStorage({ backend: 'postgres', databaseUrl: process.env.PDPP_TEST_POSTGRES_URL });
+  const cleanup = async () => {
+    await postgresQuery(`DELETE FROM device_source_instances WHERE device_id IN ('dev_old', 'dev_new')`);
+    await postgresQuery(`DELETE FROM device_exporters WHERE device_id IN ('dev_old', 'dev_new')`);
+    await postgresQuery(`DELETE FROM connector_instances WHERE connector_instance_id = 'cin_shared'`);
+    await postgresQuery(`DELETE FROM connectors WHERE connector_id = 'local.files'`);
+  };
+  try {
+    await cleanup();
+    await runRevokeCascadeShared({
       makeDeviceStore: () => createPostgresDeviceExporterStore(),
       makeConnectorInstanceStore: () => createPostgresConnectorInstanceStore(),
       seedConnector: async (connectorId) => {
