@@ -20,6 +20,7 @@ import {
   mapWithConcurrency,
   projectConnectorOutboxAxisFromHeartbeats,
   projectConnectorSummaryConnectionHealth,
+  projectLocalDeviceProgress,
 } from '../server/ref-control.ts';
 
 const NOW = '2026-05-19T12:00:00.000Z';
@@ -36,6 +37,7 @@ function hbRow(overrides = {}) {
     deviceRevokedAt: null,
     lastHeartbeatAt: FRESH,
     lastHeartbeatStatus: 'healthy',
+    lastIngestAt: FRESH,
     recordsPending: 0,
     updatedAt: FRESH,
     ...overrides,
@@ -558,6 +560,49 @@ test('connector outbox rollup: pending + stale heartbeat surfaces stalled', () =
   ];
   const r = projectConnectorOutboxAxisFromHeartbeats(rows, { nowIso: NOW });
   assert.equal(r.axis, 'stalled');
+});
+
+// ─── Local-device progress projection ────────────────────────────────────
+
+test('projectLocalDeviceProgress: no rows → null', () => {
+  assert.equal(projectLocalDeviceProgress([]), null);
+});
+
+test('projectLocalDeviceProgress: only revoked / inactive rows → null', () => {
+  // No trusted heartbeat — we must not surface device-side progress
+  // derived from a revoked or inactive row.
+  const out = projectLocalDeviceProgress([
+    hbRow({ deviceStatus: 'revoked', deviceRevokedAt: FRESH }),
+    hbRow({ sourceStatus: 'revoked', sourceInstanceId: 'src_x', deviceId: 'dev_x' }),
+  ]);
+  assert.equal(out, null);
+});
+
+test('projectLocalDeviceProgress: surfaces most-recent trusted heartbeat / ingest', () => {
+  const out = projectLocalDeviceProgress([
+    hbRow({ sourceInstanceId: 'src_a', lastHeartbeatAt: OLD, lastIngestAt: OLD, recordsPending: 1 }),
+    hbRow({ sourceInstanceId: 'src_b', deviceId: 'dev_b', lastHeartbeatAt: FRESH, lastIngestAt: FRESH, recordsPending: 3 }),
+  ]);
+  assert.equal(out?.last_heartbeat_at, FRESH);
+  assert.equal(out?.last_ingest_at, FRESH);
+  assert.equal(out?.records_pending, 4);
+  assert.equal(out?.source_count, 2);
+});
+
+test('projectLocalDeviceProgress: scoped rows (single connector_instance_id) do not leak from another instance', () => {
+  // The store is expected to scope rows by connector_instance_id before
+  // passing them in. The projection just rolls up the rows it receives.
+  const out = projectLocalDeviceProgress([
+    hbRow({
+      sourceInstanceId: 'src_z',
+      connectorInstanceId: 'cin_other',
+      lastHeartbeatAt: FRESH,
+      lastIngestAt: null,
+    }),
+  ]);
+  assert.equal(out?.source_count, 1);
+  assert.equal(out?.last_heartbeat_at, FRESH);
+  assert.equal(out?.last_ingest_at, null);
 });
 
 // ─── projectConnectorSummaryConnectionHealth honors outbox input ──────────

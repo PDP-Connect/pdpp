@@ -12,7 +12,7 @@
  */
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { RefConnectionHealthSnapshot } from "./ref-client.ts";
+import type { RefConnectionHealthSnapshot, RefLocalDeviceProgress } from "./ref-client.ts";
 import { getOwnerToken, getRsInternalUrl, ReferenceServerUnreachableError } from "./owner-token.ts";
 import { verifyDashboardSession } from "./verify-session.ts";
 
@@ -392,6 +392,14 @@ export interface ConnectorOverview {
   lastRun: ConnectorRunRef | null;
   /** Most recent SUCCEEDED run. Drives the "last synced" timestamp + delta. */
   lastSuccessfulRun: ConnectorRunRef | null;
+  /**
+   * Push-mode (local-device exporter) durable progress for this connection.
+   * Populated only when the reference server has a trusted device-side
+   * heartbeat row scoped to this `connectorInstanceId`. The records page
+   * uses this to render "last device ingest" / "last device heartbeat"
+   * instead of "no scheduler run yet".
+   */
+  localDeviceProgress?: RefLocalDeviceProgress | null;
   streamCount?: number;
   streams: StreamSummary[];
   totalRetainedBytes?: number | null;

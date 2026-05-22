@@ -242,6 +242,70 @@ test("formatLastDurableProgress reports 'Never run' when there is no evidence at
   assert.equal(out.unavailable, false);
 });
 
+test("formatLastDurableProgress surfaces last device ingest for push-mode local-device connectors with no scheduler run", () => {
+  const out = formatLastDurableProgress({
+    hasError: false,
+    lastRun: null,
+    lastSuccessfulRun: null,
+    localDeviceProgress: {
+      last_heartbeat_at: "2026-05-22T16:30:00Z",
+      last_heartbeat_status: "healthy",
+      last_ingest_at: "2026-05-22T16:35:00Z",
+      records_pending: 0,
+      source_count: 1,
+    },
+    totalRecords: 12,
+  });
+  assert.equal(out.unavailable, false);
+  assert.equal(out.label.includes("Last device ingest"), true);
+  // Must not fall back to the "no scheduler run yet" caveat once we have
+  // honest local-device evidence.
+  assert.equal(out.label.includes("no scheduler run"), false);
+});
+
+test("formatLastDurableProgress falls back to last device heartbeat when no ingest timestamp is present", () => {
+  const out = formatLastDurableProgress({
+    hasError: false,
+    lastRun: null,
+    lastSuccessfulRun: null,
+    localDeviceProgress: {
+      last_heartbeat_at: "2026-05-22T16:30:00Z",
+      last_heartbeat_status: "healthy",
+      last_ingest_at: null,
+      records_pending: 0,
+      source_count: 1,
+    },
+    totalRecords: 0,
+  });
+  assert.equal(out.label.includes("Last device heartbeat"), true);
+});
+
+test("formatLastDurableProgress still prefers scheduler-run evidence over local-device heartbeat when both exist", () => {
+  const out = formatLastDurableProgress({
+    hasError: false,
+    lastRun: null,
+    lastSuccessfulRun: {
+      run_id: "r9",
+      first_at: "x",
+      last_at: "y",
+      event_count: 3,
+      status: "succeeded",
+      failure_reason: null,
+      known_gaps: [],
+    },
+    localDeviceProgress: {
+      last_heartbeat_at: "2026-05-22T16:30:00Z",
+      last_heartbeat_status: "healthy",
+      last_ingest_at: "2026-05-22T16:35:00Z",
+      records_pending: 0,
+      source_count: 1,
+    },
+    totalRecords: 12,
+  });
+  assert.equal(out.label.includes("Last success"), true);
+  assert.equal(out.label.includes("Last device"), false);
+});
+
 test("summarizeOutboxForRow returns null for idle and a label otherwise", () => {
   assert.equal(summarizeOutboxForRow(snapshot()), null);
   const stalled = summarizeOutboxForRow(

@@ -135,6 +135,7 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
     hasError: Boolean(overview.error),
     lastRun,
     lastSuccessfulRun,
+    localDeviceProgress: overview.localDeviceProgress ?? null,
     totalRecords,
   });
 
@@ -183,6 +184,7 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
             hasError={Boolean(overview.error)}
             lastRun={lastRun}
             lastSuccessfulRun={lastSuccessfulRun}
+            localDeviceProgress={overview.localDeviceProgress ?? null}
             totalRecords={totalRecords}
           />
           {hasPartialCoverageHint ? (
@@ -544,11 +546,13 @@ function ConnectorFreshnessLine({
   hasError,
   lastRun,
   lastSuccessfulRun,
+  localDeviceProgress,
   totalRecords,
 }: {
   hasError: boolean;
   lastRun: ConnectorRunRef | null;
   lastSuccessfulRun: ConnectorRunRef | null;
+  localDeviceProgress?: import("../lib/ref-client.ts").RefLocalDeviceProgress | null;
   totalRecords: number;
 }) {
   if (hasError) {
@@ -587,6 +591,33 @@ function ConnectorFreshnessLine({
         <span>{lastRun.status.replace(/_/g, " ")}</span>
       </span>
     );
+  }
+
+  // Push-mode local-device exporters bypass scheduler_run_history. When
+  // the reference server has a trusted heartbeat row for THIS connection,
+  // surface its evidence here rather than the generic "records present ·
+  // no scheduler run yet" fallback. We render `last device ingest` when
+  // an ingest-batch outcome exists and `last device heartbeat` otherwise;
+  // either is honest durable progress.
+  if (localDeviceProgress) {
+    const ingestAt = localDeviceProgress.last_ingest_at;
+    const heartbeatAt = localDeviceProgress.last_heartbeat_at;
+    if (ingestAt) {
+      return (
+        <span className="inline-flex items-center gap-1" data-testid="freshness-device-ingest">
+          <span>last device ingest:</span>
+          <Timestamp value={ingestAt} />
+        </span>
+      );
+    }
+    if (heartbeatAt) {
+      return (
+        <span className="inline-flex items-center gap-1" data-testid="freshness-device-heartbeat">
+          <span>last device heartbeat:</span>
+          <Timestamp value={heartbeatAt} />
+        </span>
+      );
+    }
   }
 
   if (totalRecords > 0) {
