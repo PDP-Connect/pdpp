@@ -24,11 +24,32 @@ import {
 const CONSOLE_ORIGIN = 'http://console.test.local:9999';
 
 async function closeServer(server) {
+  try {
+    server.schedulerManager?.stop?.();
+  } catch {}
+  try {
+    server.abortStartupBackfill?.('test shutdown');
+  } catch {}
   server.asServer.closeAllConnections();
   server.rsServer.closeAllConnections();
+  const backfillDone = server.startupBackfillDone
+    ? new Promise((resolve) => {
+        const timer = setTimeout(resolve, 2000);
+        Promise.resolve(server.startupBackfillDone)
+          .catch(() => {})
+          .finally(() => {
+            clearTimeout(timer);
+            resolve();
+          });
+      })
+    : Promise.resolve();
   await Promise.allSettled([
     new Promise((resolve) => server.asServer.close(resolve)),
     new Promise((resolve) => server.rsServer.close(resolve)),
+    backfillDone,
+    server.controller?.drainActiveRuns
+      ? server.controller.drainActiveRuns(1000).catch(() => {})
+      : Promise.resolve(),
   ]);
 }
 
@@ -38,6 +59,9 @@ async function withServer(fn) {
   const server = await startServer({
     asPort: 0,
     rsPort: 0,
+    quiet: true,
+    dbPath: ':memory:',
+    autoEnrollEligibleSchedules: false,
     ignoreAmbientPublicUrls: true,
     skipBackfill: true,
   });
