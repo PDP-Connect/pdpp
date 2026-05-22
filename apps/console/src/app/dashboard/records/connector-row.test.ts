@@ -177,14 +177,19 @@ test("connector-row freshness line refuses to render content when evidence colle
 
 const SYNCING_LABEL = /"Syncing"/;
 const OUTBOX_ACTIVE_GUARD = /health\.axes\.outbox === "active"/;
+const SYNCING_RUNNING_TONE = /label: "Syncing"[\s\S]*tone: "running"/;
 const FRESHNESS_DEVICE_BOTH = /data-testid="freshness-device-both"/;
 const LAST_CHECKED_LABEL = /last checked:/;
 const LAST_INGEST_LABEL = /last ingest:/;
+const RETAINED_BREAKDOWN = /data-testid="retained-bytes-breakdown"/;
+const RETAINED_CURRENT_LABEL = /current \$\{formatBytes\(currentBytes\)\}/;
+const RETAINED_HISTORY_LABEL = /history \$\{formatBytes\(historyBytes\)\}/;
 
 test("connector-row shows 'Syncing' label when outbox is active during idle state", async () => {
   const src = await readFile(ROW_FILE, "utf8");
   assert.match(src, SYNCING_LABEL);
   assert.match(src, OUTBOX_ACTIVE_GUARD);
+  assert.match(src, SYNCING_RUNNING_TONE);
 });
 
 test("connector-row freshness line shows both last-checked and last-ingest when both are present", async () => {
@@ -201,4 +206,11 @@ test("connector-row outbox-active branch returns a label only, not a RunningBadg
   const displayFn = nextFnStart > 0 ? src.slice(displayFnStart, nextFnStart) : src.slice(displayFnStart);
   assert.equal(displayFn.includes("RunningBadge"), false,
     "connectionHealthDisplay must not reference RunningBadge");
+});
+
+test("connector-row explains retained bytes as current records plus retained history", async () => {
+  const src = await readFile(ROW_FILE, "utf8");
+  assert.match(src, RETAINED_BREAKDOWN);
+  assert.match(src, RETAINED_CURRENT_LABEL);
+  assert.match(src, RETAINED_HISTORY_LABEL);
 });

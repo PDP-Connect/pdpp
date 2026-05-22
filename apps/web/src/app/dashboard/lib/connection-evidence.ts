@@ -312,10 +312,10 @@ export function formatLastDurableProgress(input: {
   const lastIngestAt = input.localDeviceProgress?.last_ingest_at ?? null;
   const lastHeartbeatAt = input.localDeviceProgress?.last_heartbeat_at ?? null;
   if (lastIngestAt) {
-    return { label: `Last device ingest · ${lastIngestAt}`, unavailable: false };
+    return { label: `Last ingest · ${lastIngestAt}`, unavailable: false };
   }
   if (lastHeartbeatAt) {
-    return { label: `Last device heartbeat · ${lastHeartbeatAt}`, unavailable: false };
+    return { label: `Last checked · ${lastHeartbeatAt}`, unavailable: false };
   }
   if (input.totalRecords > 0) {
     // Records exist without a scheduler-managed run and without a trusted

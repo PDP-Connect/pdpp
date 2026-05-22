@@ -242,7 +242,7 @@ test("formatLastDurableProgress reports 'Never run' when there is no evidence at
   assert.equal(out.unavailable, false);
 });
 
-test("formatLastDurableProgress surfaces last device ingest for push-mode local-device connectors with no scheduler run", () => {
+test("formatLastDurableProgress surfaces last ingest for push-mode local-device connectors with no scheduler run", () => {
   const out = formatLastDurableProgress({
     hasError: false,
     lastRun: null,
@@ -257,13 +257,13 @@ test("formatLastDurableProgress surfaces last device ingest for push-mode local-
     totalRecords: 12,
   });
   assert.equal(out.unavailable, false);
-  assert.equal(out.label.includes("Last device ingest"), true);
+  assert.equal(out.label.includes("Last ingest"), true);
   // Must not fall back to the "no scheduler run yet" caveat once we have
   // honest local-device evidence.
   assert.equal(out.label.includes("no scheduler run"), false);
 });
 
-test("formatLastDurableProgress falls back to last device heartbeat when no ingest timestamp is present", () => {
+test("formatLastDurableProgress falls back to last checked when no ingest timestamp is present", () => {
   const out = formatLastDurableProgress({
     hasError: false,
     lastRun: null,
@@ -277,7 +277,7 @@ test("formatLastDurableProgress falls back to last device heartbeat when no inge
     },
     totalRecords: 0,
   });
-  assert.equal(out.label.includes("Last device heartbeat"), true);
+  assert.equal(out.label.includes("Last checked"), true);
 });
 
 test("formatLastDurableProgress still prefers scheduler-run evidence over local-device heartbeat when both exist", () => {

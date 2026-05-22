@@ -62,6 +62,7 @@ function toConnectorOverview(summary: RefConnectorSummary, streams: StreamSummar
     connectorInstanceId: summary.connector_instance_id ?? summary.connection_id,
     streams,
     streamCount: summary.stream_count,
+    retainedBytes: summary.retained_bytes ?? null,
     totalRetainedBytes: summary.total_retained_bytes,
     totalRecords: summary.total_records,
     localDeviceProgress: summary.local_device_progress ?? null,

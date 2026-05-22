@@ -118,7 +118,7 @@ type Freshness = ReferenceFreshness;
 interface RecordProjection {
   readonly byStream: Map<string, StreamProjection>;
   readonly freshness: Freshness;
-  readonly retainedBytes: number | null;
+  readonly retainedBytes: RetainedBytesBreakdown | null;
   readonly totalRecords: number;
 }
 
@@ -138,6 +138,13 @@ interface RetainedBytesRow {
   readonly blob_bytes?: number | string | null;
   readonly record_changes_json_bytes?: number | string | null;
   readonly record_json_bytes?: number | string | null;
+}
+
+export interface RetainedBytesBreakdown {
+  readonly blob_bytes: number;
+  readonly record_changes_json_bytes: number;
+  readonly record_json_bytes: number;
+  readonly total_bytes: number;
 }
 
 interface ConnectorInstanceRow {
@@ -218,10 +225,11 @@ interface ControllerLike {
  * outboxes. Surfaced for local-device connections that bypass
  * `scheduler_run_history` (records are pushed from a device outbox).
  *
- * The dashboard renders these without inventing precision: "last device
- * heartbeat: X", "last device ingest: X". When no trusted heartbeat row
- * exists for the `connector_instance_id`, the field is `null` and the
- * dashboard falls back to its existing scheduler-based labels.
+ * The dashboard renders these without inventing precision: "last checked: X"
+ * for heartbeat evidence and "last ingest: X" for ingest-batch evidence.
+ * When no trusted heartbeat row exists for the `connector_instance_id`, the
+ * field is `null` and the dashboard falls back to its existing
+ * scheduler-based labels.
  *
  * Scoped strictly to `connector_instance_id` to prevent one device's
  * heartbeat from painting another device's pill.
@@ -262,6 +270,12 @@ export interface ConnectorSummary {
   readonly schedule: unknown;
   readonly stream_count?: number;
   readonly streams: string[];
+  /**
+   * Storage bytes by retention class. `total_retained_bytes` is kept for
+   * compatibility; this breakdown lets the operator distinguish current live
+   * records from retained change history.
+   */
+  readonly retained_bytes?: RetainedBytesBreakdown | null;
   readonly total_records: number;
   readonly total_retained_bytes?: number | null;
 }
@@ -498,7 +512,7 @@ async function getLatestRunSummary(
 async function getRetainedBytesForConnection(
   connectorId: string,
   connectorInstanceId: string,
-): Promise<number | null> {
+): Promise<RetainedBytesBreakdown | null> {
   const row = isPostgresStorageBackend()
     ? (await postgresQuery(
         `SELECT
@@ -530,11 +544,15 @@ async function getRetainedBytesForConnection(
   if (!row) {
     return null;
   }
-  return (
-    Number(row.record_json_bytes || 0)
-    + Number(row.record_changes_json_bytes || 0)
-    + Number(row.blob_bytes || 0)
-  );
+  const recordJsonBytes = Number(row.record_json_bytes || 0);
+  const recordChangesJsonBytes = Number(row.record_changes_json_bytes || 0);
+  const blobBytes = Number(row.blob_bytes || 0);
+  return {
+    blob_bytes: blobBytes,
+    record_changes_json_bytes: recordChangesJsonBytes,
+    record_json_bytes: recordJsonBytes,
+    total_bytes: recordJsonBytes + recordChangesJsonBytes + blobBytes,
+  };
 }
 
 async function getConnectorRecordProjection(
@@ -1876,12 +1894,22 @@ export async function listConnectorSummaries(
       const refreshPolicy = extractRefreshPolicy(manifest);
       const localDeviceProgress =
         instance.sourceKind === "local_device" ? projectLocalDeviceProgress(outbox.heartbeats) : null;
+      // A heartbeat can satisfy freshness only when it represents a healthy
+      // check with no known local backlog. Active/pending outboxes still show
+      // progress via the outbox axis rather than a false "fresh" claim.
+      const canUseHeartbeatForFreshness =
+        localDeviceProgress?.last_heartbeat_status === "healthy"
+          && (localDeviceProgress.records_pending == null || localDeviceProgress.records_pending === 0);
+      const freshnessHeartbeatAt =
+        canUseHeartbeatForFreshness
+          ? localDeviceProgress.last_heartbeat_at
+          : null;
       const freshness = buildConnectorFreshness({
         lastRun,
         lastSuccessfulRun,
         live,
         refreshPolicy,
-        lastHeartbeatAt: localDeviceProgress?.last_heartbeat_at ?? null,
+        lastHeartbeatAt: freshnessHeartbeatAt,
       });
       const connectionHealth = projectConnectorSummaryConnectionHealth({
         attentionRecords: attention.records,
@@ -1911,10 +1939,11 @@ export async function listConnectorSummaries(
         local_device_progress: localDeviceProgress,
         manifest_version: manifest.version || null,
         next_action: connectionHealth.next_action,
+        retained_bytes: live.retainedBytes,
         streams: (manifest.streams || []).map((stream) => stream.name),
         stream_count: live.byStream.size,
         total_records: live.totalRecords,
-        total_retained_bytes: live.retainedBytes,
+        total_retained_bytes: live.retainedBytes?.total_bytes ?? null,
         freshness,
         refresh_policy: refreshPolicy,
         schedule,

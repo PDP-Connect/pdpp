@@ -40,6 +40,7 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
     isRunning,
     lastRun,
     lastSuccessfulRun,
+    retainedBytes,
     streamCount,
     streams,
     totalRecords,
@@ -175,11 +176,7 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
             · {displayedStreamCount} stream
             {displayedStreamCount === 1 ? "" : "s"}
           </span>
-          {typeof totalRetainedBytes === "number" ? (
-            <span title={`${totalRetainedBytes.toLocaleString()} retained bytes`}>
-              {formatBytes(totalRetainedBytes)} retained
-            </span>
-          ) : null}
+          <RetainedBytesLine retainedBytes={retainedBytes ?? null} totalRetainedBytes={totalRetainedBytes ?? null} />
           <ConnectorFreshnessLine
             hasError={Boolean(overview.error)}
             lastRun={lastRun}
@@ -466,7 +463,7 @@ function connectionHealthDisplay(
   label: string;
   shape?: "circle" | "diamond" | "triangle";
   title: string;
-  tone: "success" | "danger" | "neutral" | "warning";
+  tone: "success" | "danger" | "neutral" | "running" | "warning";
 } {
   const reason = health.reason_code ? ` · ${health.reason_code}` : "";
   switch (health.state) {
@@ -492,7 +489,7 @@ function connectionHealthDisplay(
       // "Never run" is only honest when there is no durable progress evidence
       // at all (no runs, no records, no heartbeat).
       if (health.axes.outbox === "active") {
-        return { label: "Syncing", title: "Device outbox is actively draining", tone: "neutral" };
+        return { label: "Syncing", title: "Device outbox is actively draining", tone: "running" };
       }
       return {
         label: hasDurableProgress ? "Idle" : "Never run",
@@ -511,12 +508,15 @@ function connectionHealthDisplay(
   }
 }
 
-function connectionHealthTextClass(tone: "success" | "danger" | "neutral" | "warning"): string {
+function connectionHealthTextClass(tone: "success" | "danger" | "neutral" | "running" | "warning"): string {
   if (tone === "danger") {
     return "text-destructive";
   }
   if (tone === "warning") {
     return "text-[color:var(--warning)]";
+  }
+  if (tone === "running") {
+    return "text-blue-700 dark:text-blue-300";
   }
   return "text-muted-foreground";
 }
@@ -544,6 +544,45 @@ function axisChipClass(tone: EvidenceTone): string {
     return "border border-destructive/40 bg-destructive/5 text-destructive";
   }
   return "border border-muted-foreground/30 bg-muted/40 text-muted-foreground";
+}
+
+function RetainedBytesLine({
+  retainedBytes,
+  totalRetainedBytes,
+}: {
+  retainedBytes: ConnectorOverview["retainedBytes"] | null;
+  totalRetainedBytes: number | null;
+}) {
+  if (typeof totalRetainedBytes !== "number") {
+    return null;
+  }
+  const currentBytes = retainedBytes?.record_json_bytes ?? null;
+  const historyBytes = retainedBytes?.record_changes_json_bytes ?? null;
+  const blobBytes = retainedBytes?.blob_bytes ?? null;
+  const hasBreakdown = currentBytes !== null || historyBytes !== null || blobBytes !== null;
+  const detailParts = [
+    typeof currentBytes === "number" ? `current ${formatBytes(currentBytes)}` : null,
+    typeof historyBytes === "number" && historyBytes > 0 ? `history ${formatBytes(historyBytes)}` : null,
+    typeof blobBytes === "number" && blobBytes > 0 ? `blobs ${formatBytes(blobBytes)}` : null,
+  ].filter((part): part is string => part !== null);
+  return (
+    <>
+      <span
+        title={
+          hasBreakdown
+            ? `${totalRetainedBytes.toLocaleString()} retained bytes (${detailParts.join(", ")})`
+            : `${totalRetainedBytes.toLocaleString()} retained bytes`
+        }
+      >
+        {formatBytes(totalRetainedBytes)} retained
+      </span>
+      {detailParts.length > 1 ? (
+        <span className="text-muted-foreground/70" data-testid="retained-bytes-breakdown">
+          {detailParts.join(" · ")}
+        </span>
+      ) : null}
+    </>
+  );
 }
 
 function ConnectorFreshnessLine({

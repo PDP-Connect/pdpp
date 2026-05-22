@@ -247,6 +247,13 @@ export interface RefLocalDeviceProgress {
   source_count: number;
 }
 
+export interface RefRetainedBytesBreakdown {
+  blob_bytes: number;
+  record_changes_json_bytes: number;
+  record_json_bytes: number;
+  total_bytes: number;
+}
+
 export interface RefConnectorSummary {
   connection_health: RefConnectionHealthSnapshot;
   connection_id: string;
@@ -270,6 +277,7 @@ export interface RefConnectorSummary {
   schedule: RefSchedule | null;
   streams: string[];
   stream_count?: number;
+  retained_bytes?: RefRetainedBytesBreakdown | null;
   total_records: number;
   total_retained_bytes?: number | null;
 }
