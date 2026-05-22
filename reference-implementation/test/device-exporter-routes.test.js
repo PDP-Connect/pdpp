@@ -205,6 +205,69 @@ test('device exporter routes enroll, heartbeat, ingest idempotently, isolate sou
   });
 });
 
+test('re-enrolling the same connector + local_binding_name resumes one stable connector_instance', async () => {
+  // Regression: source_binding_key for local-device instances used to
+  // include the per-enrollment device_id and source_instance_id, so a
+  // second enroll for the same owner-chosen binding forked a brand new
+  // connector_instances row instead of upserting/resuming the existing
+  // one. The stable identity is (owner, connector, local_device,
+  // local_binding_name).
+  await withServer(async ({ asUrl }) => {
+    const first = await enrollDevice(asUrl, 'laptop-stable');
+    const second = await enrollDevice(asUrl, 'laptop-stable');
+    assert.equal(
+      second.connector_instance_id,
+      first.connector_instance_id,
+      're-enrollment must resume the same connector_instance_id',
+    );
+    assert.notEqual(
+      second.device_id,
+      first.device_id,
+      'each enroll still mints a fresh device_id',
+    );
+    assert.notEqual(
+      second.source_instance_id,
+      first.source_instance_id,
+      'each enroll still mints a fresh source_instance_id',
+    );
+
+    const activeRows = getDb()
+      .prepare(
+        `SELECT connector_instance_id, source_kind, status, source_binding_json
+           FROM connector_instances
+          WHERE connector_id = ? AND source_kind = 'local_device'`,
+      )
+      .all('codex');
+    assert.equal(
+      activeRows.length,
+      1,
+      're-enrollment must not fork a second connector_instances row',
+    );
+    assert.equal(activeRows[0].connector_instance_id, first.connector_instance_id);
+    assert.equal(activeRows[0].status, 'active');
+    // Debugging payload retains the most recent device/source identifiers
+    // for inspection, even though they no longer participate in identity.
+    const binding = JSON.parse(activeRows[0].source_binding_json);
+    assert.equal(binding.kind, 'local_device');
+    assert.equal(binding.local_binding_name, 'laptop-stable');
+    assert.equal(binding.device_id, second.device_id);
+    assert.equal(binding.source_instance_id, second.source_instance_id);
+
+    // A re-enrollment with a different local_binding_name DOES fork a
+    // separate connector_instance, as expected.
+    const other = await enrollDevice(asUrl, 'laptop-other');
+    assert.notEqual(other.connector_instance_id, first.connector_instance_id);
+    const distinctRows = getDb()
+      .prepare(
+        `SELECT connector_instance_id FROM connector_instances
+          WHERE connector_id = ? AND source_kind = 'local_device'
+          ORDER BY connector_instance_id`,
+      )
+      .all('codex');
+    assert.equal(distinctRows.length, 2);
+  });
+});
+
 test('device exporter enrollment keeps connector type display names separate from device labels', async () => {
   await withServer(async ({ asUrl }) => {
     const codeResp = await postJson(`${asUrl}/_ref/device-exporters/enrollment-codes`, {

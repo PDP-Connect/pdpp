@@ -2373,11 +2373,13 @@ function buildAsApp(opts = {}) {
         lastIngestAt: null,
       };
       const device = devicesById.get(source.deviceId);
-      const sourceBinding = deviceExporterSourceBinding(source.deviceId, source);
+      const identityKey = makeConnectorInstanceSourceBindingKey(
+        deviceExporterSourceBindingIdentity(source.localBindingId),
+      );
       const connectorInstance = source.connectorInstanceId
         ? connectorInstancesById.get(source.connectorInstanceId)
         : device
-          ? connectorInstancesByBinding.get(`${source.connectorId}\nlocal_device\n${makeConnectorInstanceSourceBindingKey(sourceBinding)}`)
+          ? connectorInstancesByBinding.get(`${source.connectorId}\nlocal_device\n${identityKey}`)
           : null;
       const gapStats = localCollectorGapStats.get(source.sourceInstanceId) || null;
       const outboxDiagnostics = source.outboxDiagnostics ?? null;
@@ -2477,6 +2479,26 @@ function buildAsApp(opts = {}) {
     return [];
   }
 
+  // Stable identity for a local-device connector_instance.
+  //
+  // We deliberately exclude `device_id` and `source_instance_id` from the
+  // hashed identity: both are minted fresh on every enroll, so including
+  // them would cause repeated enrollments for the same owner-chosen binding
+  // to fork a new connector_instances row instead of resuming the existing
+  // one. The owner-chosen `local_binding_name` is the semantic key — it is
+  // the persistent name the owner assigned to "this binding" when they
+  // created the enrollment code.
+  function deviceExporterSourceBindingIdentity(localBindingName) {
+    return {
+      kind: 'local_device',
+      local_binding_name: localBindingName,
+    };
+  }
+
+  // Full source_binding payload stored as source_binding_json on the
+  // connector_instances row. The volatile fields are intentionally kept
+  // here for debugging/inspection but they do NOT contribute to the
+  // source_binding_key (see deviceExporterSourceBindingIdentity).
   function deviceExporterSourceBinding(deviceId, sourceInstance) {
     return {
       kind: 'local_device',
@@ -2500,12 +2522,12 @@ function buildAsApp(opts = {}) {
       }
       return null;
     }
-    const sourceBinding = deviceExporterSourceBinding(deviceId, sourceInstance);
+    const identity = deviceExporterSourceBindingIdentity(sourceInstance.localBindingId);
     const instance = await store.getByBinding({
       ownerSubjectId,
       connectorId: sourceInstance.connectorId,
       sourceKind: 'local_device',
-      sourceBindingKey: makeConnectorInstanceSourceBindingKey(sourceBinding),
+      sourceBindingKey: makeConnectorInstanceSourceBindingKey(identity),
     });
     if (!instance || instance.status !== 'active') {
       return null;
@@ -4179,12 +4201,21 @@ function buildAsApp(opts = {}) {
         createdAt: now.toISOString(),
       });
       await ensureReferenceConnectorCatalogEntry(enrollment.connectorId, enrollment.displayName || displayName);
+      // The identity used to hash source_binding_key is intentionally
+      // narrower than the source_binding payload we store for debugging:
+      // device_id and source_instance_id are minted fresh per enroll, so
+      // hashing them would fork a new connector_instances row on every
+      // re-enrollment. Keying on (owner, connector_id, local_device,
+      // local_binding_name) lets a re-enrollment for the same owner-chosen
+      // binding upsert into the existing row instead.
+      const sourceBindingIdentity = deviceExporterSourceBindingIdentity(enrollment.localBindingId);
       const connectorInstance = await createRequestConnectorInstanceStore().upsert({
         ownerSubjectId: enrollment.ownerSubjectId,
         connectorId: enrollment.connectorId,
         displayName,
         status: 'active',
         sourceKind: 'local_device',
+        sourceBindingKey: makeConnectorInstanceSourceBindingKey(sourceBindingIdentity),
         sourceBinding: {
           kind: 'local_device',
           device_id: deviceId,
