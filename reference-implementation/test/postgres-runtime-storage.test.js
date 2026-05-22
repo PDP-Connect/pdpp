@@ -24,7 +24,7 @@ import {
   revokeGrant,
   seedPreRegisteredClients,
 } from '../server/auth.js';
-import { initDb, closeDb } from '../server/db.js';
+import { initDb, closeDb, getDb } from '../server/db.js';
 import {
   postgresPersistContentAddressedBlob,
 } from '../server/postgres-records.js';
@@ -64,6 +64,11 @@ import {
   listDatasetTopConnectorCandidates,
   queryRecords,
 } from '../server/records.js';
+import {
+  getRetainedSizeGlobal,
+  listRetainedSizeConnections,
+  rebuildRetainedSize,
+} from '../server/retained-size-read-model.js';
 import { createBlobStore } from '../server/stores/blob-store.js';
 import { createConnectorStateStore } from '../server/stores/connector-state-store.ts';
 import { createSchedulerStore } from '../server/stores/scheduler-store.ts';
@@ -204,6 +209,23 @@ if (!POSTGRES_URL) {
     };
 
     initDb(':memory:');
+    getDb()
+      .prepare(
+        `INSERT INTO retained_size_global(
+           projection_key,
+           current_record_json_bytes,
+           record_history_json_bytes,
+           blob_bytes,
+           record_count,
+           record_history_count,
+           blob_count,
+           dirty,
+           computed_at,
+           metadata_json
+         )
+         VALUES('global', 999999, 999999, 999999, 999999, 0, 0, 0, '2000-01-01T00:00:00.000Z', '{}')`,
+      )
+      .run();
     await initPostgresStorage({ backend: 'postgres', databaseUrl: POSTGRES_URL });
     configureSemanticBackend(makeStubBackend());
 
@@ -350,6 +372,17 @@ if (!POSTGRES_URL) {
           (candidate) => candidate.connector_id === connectorId && candidate.record_count >= 2,
         ),
       );
+
+      await rebuildRetainedSize();
+      const retainedGlobal = await getRetainedSizeGlobal();
+      assert.notEqual(retainedGlobal.current_record_json_bytes, 999999);
+      assert.ok(retainedGlobal.record_count >= 4);
+      assert.equal(retainedGlobal.metadata.state, 'fresh');
+      const retainedConnections = await listRetainedSizeConnections({
+        connectorInstanceId: accountA.connector_instance_id,
+      });
+      assert.equal(retainedConnections.length, 1);
+      assert.ok(retainedConnections[0].total_retained_bytes > 0);
 
       const grantInit = await initiateGrant({
         client_id: clientId,

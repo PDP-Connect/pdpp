@@ -850,6 +850,94 @@ export async function bootstrapPostgresSchema() {
         updated_at TEXT NOT NULL,
         PRIMARY KEY(connector_instance_id, stream)
       );
+
+      -- Retained-size read model (reference-only, owner-facing).
+      -- See openspec/changes/add-retained-size-read-model/ for spec delta.
+      -- Mirrors the SQLite schema in db.js; same column meaning so the
+      -- backend-agnostic projection module can issue the same statements.
+      CREATE TABLE IF NOT EXISTS retained_size_global (
+        projection_key            TEXT PRIMARY KEY,
+        current_record_json_bytes BIGINT NOT NULL DEFAULT 0,
+        record_history_json_bytes BIGINT NOT NULL DEFAULT 0,
+        blob_bytes                BIGINT NOT NULL DEFAULT 0,
+        record_count              BIGINT NOT NULL DEFAULT 0,
+        record_history_count      BIGINT NOT NULL DEFAULT 0,
+        blob_count                BIGINT NOT NULL DEFAULT 0,
+        dirty                     INTEGER NOT NULL DEFAULT 1,
+        computed_at               TEXT,
+        metadata_json             JSONB
+      );
+
+      CREATE TABLE IF NOT EXISTS retained_size_connection (
+        connector_instance_id     TEXT PRIMARY KEY,
+        connector_id              TEXT NOT NULL,
+        current_record_json_bytes BIGINT NOT NULL DEFAULT 0,
+        record_history_json_bytes BIGINT NOT NULL DEFAULT 0,
+        blob_bytes                BIGINT NOT NULL DEFAULT 0,
+        record_count              BIGINT NOT NULL DEFAULT 0,
+        record_history_count      BIGINT NOT NULL DEFAULT 0,
+        blob_count                BIGINT NOT NULL DEFAULT 0,
+        dirty                     INTEGER NOT NULL DEFAULT 1,
+        computed_at               TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_pg_retained_size_connection_connector
+        ON retained_size_connection(connector_id);
+
+      CREATE TABLE IF NOT EXISTS retained_size_stream (
+        connector_instance_id     TEXT NOT NULL,
+        connector_id              TEXT NOT NULL,
+        stream                    TEXT NOT NULL,
+        current_record_json_bytes BIGINT NOT NULL DEFAULT 0,
+        record_history_json_bytes BIGINT NOT NULL DEFAULT 0,
+        blob_bytes                BIGINT NOT NULL DEFAULT 0,
+        record_count              BIGINT NOT NULL DEFAULT 0,
+        record_history_count      BIGINT NOT NULL DEFAULT 0,
+        blob_count                BIGINT NOT NULL DEFAULT 0,
+        dirty                     INTEGER NOT NULL DEFAULT 1,
+        computed_at               TEXT,
+        PRIMARY KEY(connector_instance_id, stream)
+      );
+
+      CREATE TABLE IF NOT EXISTS retained_size_record_family (
+        connector_instance_id     TEXT NOT NULL,
+        connector_id              TEXT NOT NULL,
+        stream                    TEXT NOT NULL,
+        record_family             TEXT NOT NULL,
+        current_record_json_bytes BIGINT NOT NULL DEFAULT 0,
+        record_history_json_bytes BIGINT NOT NULL DEFAULT 0,
+        blob_bytes                BIGINT NOT NULL DEFAULT 0,
+        record_count              BIGINT NOT NULL DEFAULT 0,
+        record_history_count      BIGINT NOT NULL DEFAULT 0,
+        blob_count                BIGINT NOT NULL DEFAULT 0,
+        dirty                     INTEGER NOT NULL DEFAULT 1,
+        computed_at               TEXT,
+        PRIMARY KEY(connector_instance_id, stream, record_family)
+      );
+
+      CREATE TABLE IF NOT EXISTS retained_size_top_rows (
+        scope                     TEXT NOT NULL,
+        measure                   TEXT NOT NULL,
+        rank                      INTEGER NOT NULL,
+        grain_key                 TEXT NOT NULL,
+        connector_instance_id     TEXT,
+        connector_id              TEXT,
+        stream                    TEXT,
+        record_key                TEXT,
+        blob_id                   TEXT,
+        current_record_json_bytes BIGINT NOT NULL DEFAULT 0,
+        record_history_json_bytes BIGINT NOT NULL DEFAULT 0,
+        blob_bytes                BIGINT NOT NULL DEFAULT 0,
+        total_retained_bytes      BIGINT NOT NULL DEFAULT 0,
+        record_count              BIGINT NOT NULL DEFAULT 0,
+        record_history_count      BIGINT NOT NULL DEFAULT 0,
+        blob_count                BIGINT NOT NULL DEFAULT 0,
+        dirty                     INTEGER NOT NULL DEFAULT 1,
+        computed_at               TEXT,
+        metadata_json             JSONB,
+        PRIMARY KEY(scope, measure, rank)
+      );
+      CREATE INDEX IF NOT EXISTS idx_pg_retained_size_top_rows_lookup
+        ON retained_size_top_rows(scope, measure, total_retained_bytes DESC, rank ASC);
     `);
     await migratePostgresSpineSourceColumns(client);
     await migratePostgresDeviceExporterColumns(client);

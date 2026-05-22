@@ -246,7 +246,8 @@ export async function postgresIngestRecord(storageTarget, record) {
 
   const outcome = await withPostgresTransaction(async (client) => {
     const currentResult = await client.query(
-      `SELECT record_json, deleted
+      `SELECT record_json, deleted,
+              COALESCE(octet_length(record_json::text), 0)::bigint AS record_json_bytes
        FROM records
        WHERE connector_instance_id = $1 AND stream = $2 AND record_key = $3
        FOR UPDATE`,
@@ -262,6 +263,10 @@ export async function postgresIngestRecord(storageTarget, record) {
     }
 
     const nextVersion = await allocateNextVersion(client, connectorId, connectorInstanceId, stream);
+    const currentRecordJsonBytes = current && !current.deleted
+      ? Number(current.record_json_bytes || 0)
+      : 0;
+    let nextRecordJsonBytes = 0;
 
     if (op === 'delete') {
       await client.query(
@@ -277,7 +282,7 @@ export async function postgresIngestRecord(storageTarget, record) {
         [connectorId, connectorInstanceId, stream, recordKey, nextVersion, JSON.stringify(current.record_json), effectiveEmittedAt],
       );
     } else {
-      await client.query(
+      const stored = await client.query(
         `INSERT INTO records
            (connector_id, connector_instance_id, stream, record_key, record_json, emitted_at, version, deleted, deleted_at, cursor_value, primary_key_text)
          VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, FALSE, NULL, $8, $9)
@@ -289,9 +294,11 @@ export async function postgresIngestRecord(storageTarget, record) {
                deleted = FALSE,
                deleted_at = NULL,
                cursor_value = EXCLUDED.cursor_value,
-               primary_key_text = EXCLUDED.primary_key_text`,
+               primary_key_text = EXCLUDED.primary_key_text
+         RETURNING COALESCE(octet_length(record_json::text), 0)::bigint AS record_json_bytes`,
         [connectorId, connectorInstanceId, stream, recordKey, recordJson, effectiveEmittedAt, nextVersion, null, recordKey],
       );
+      nextRecordJsonBytes = Number(stored.rows[0]?.record_json_bytes || 0);
       await client.query(
         `INSERT INTO record_changes
            (connector_id, connector_instance_id, stream, record_key, version, record_json, emitted_at, deleted, deleted_at)
@@ -300,7 +307,19 @@ export async function postgresIngestRecord(storageTarget, record) {
       );
     }
 
+    const insertedChangeJsonBytes = op === 'delete' ? currentRecordJsonBytes : nextRecordJsonBytes;
+    let prunedBytesForDelta = 0;
+    let prunedRowsForDelta = 0;
     if (changeHistoryLimit > 0) {
+      const pruned = await client.query(
+        `SELECT COUNT(*)::bigint AS count,
+                COALESCE(SUM(octet_length(COALESCE(record_json::text, ''))), 0)::bigint AS bytes
+           FROM record_changes
+          WHERE connector_instance_id = $1 AND stream = $2 AND version <= $3`,
+        [connectorInstanceId, stream, nextVersion - changeHistoryLimit],
+      );
+      prunedRowsForDelta = Number(pruned.rows[0]?.count || 0);
+      prunedBytesForDelta = Number(pruned.rows[0]?.bytes || 0);
       await client.query(
         `DELETE FROM record_changes
          WHERE connector_instance_id = $1 AND stream = $2 AND version <= $3`,
@@ -308,12 +327,26 @@ export async function postgresIngestRecord(storageTarget, record) {
       );
     }
 
-    return { kind: 'changed', op };
+    return {
+      kind: 'changed',
+      op,
+      retainedSizeDelta: {
+        connectorInstanceId,
+        connectorId,
+        stream,
+        currentRecordJsonBytesDelta: op === 'delete'
+          ? -currentRecordJsonBytes
+          : nextRecordJsonBytes - currentRecordJsonBytes,
+        recordHistoryJsonBytesDelta: insertedChangeJsonBytes - prunedBytesForDelta,
+        recordCountDelta: op === 'delete' ? -1 : current?.deleted ? 1 : current ? 0 : 1,
+        recordHistoryCountDelta: 1 - prunedRowsForDelta,
+      },
+    };
   });
 
   return outcome.kind === 'noop'
     ? { accepted: true, changed: false }
-    : { accepted: true, changed: true };
+    : { accepted: true, changed: true, retainedSizeDelta: outcome.retainedSizeDelta };
 }
 
 export async function postgresDeleteRecord(storageTarget, stream, recordId) {
@@ -535,13 +568,14 @@ export async function postgresPersistContentAddressedBlob({ connectorId, connect
     // binding (the blob belongs to the record as a whole). The
     // migrate-storage tool uses RFC 6901 JSON Pointers for field-level
     // extractions. See docs/binary-content-invariant-design-brief.md §4.6.
-    await client.query(
+    const binding = await client.query(
       `INSERT INTO blob_bindings (blob_id, connector_id, connector_instance_id, stream, record_key, json_path)
        VALUES ($1, $2, $3, $4, $5, '@record')
-       ON CONFLICT DO NOTHING`,
+       ON CONFLICT DO NOTHING
+       RETURNING blob_id`,
       [blobId, connectorId, effectiveConnectorInstanceId, stream, recordKey],
     );
-    return storedRow;
+    return { ...storedRow, binding_inserted: binding.rowCount > 0 };
   });
 
   return {
@@ -549,6 +583,7 @@ export async function postgresPersistContentAddressedBlob({ connectorId, connect
     sha256,
     size_bytes: Number(row.size_bytes),
     mime_type: row.mime_type || mimeType,
+    binding_inserted: Boolean(row.binding_inserted),
   };
 }
 

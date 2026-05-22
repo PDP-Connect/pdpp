@@ -908,6 +908,106 @@ CREATE TABLE IF NOT EXISTS semantic_search_snapshots (
   results_json  TEXT NOT NULL,
   created_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Retained-size read model (reference-only, owner-facing).
+-- See openspec/changes/add-retained-size-read-model/ for the spec delta.
+--
+-- Three projection tables for three finite grains: global, connection,
+-- stream. The global row carries owner-facing metadata about projection
+-- freshness; connection and stream rows are bounded by the connector
+-- instance/manifest, never by JSON path. All byte measures are logical
+-- (UTF-8 record JSON, retained record_changes JSON, retained blob bytes).
+-- Physical storage metrics are deliberately out of scope.
+CREATE TABLE IF NOT EXISTS retained_size_global (
+  projection_key                TEXT PRIMARY KEY,
+  current_record_json_bytes     INTEGER NOT NULL DEFAULT 0,
+  record_history_json_bytes     INTEGER NOT NULL DEFAULT 0,
+  blob_bytes                    INTEGER NOT NULL DEFAULT 0,
+  record_count                  INTEGER NOT NULL DEFAULT 0,
+  record_history_count          INTEGER NOT NULL DEFAULT 0,
+  blob_count                    INTEGER NOT NULL DEFAULT 0,
+  -- 1 means a write happened that the projection could not safely
+  -- incrementally apply (e.g. a bulk delete). Hot reads must surface this
+  -- as 'stale' rather than presenting the row as fresh truth.
+  dirty                         INTEGER NOT NULL DEFAULT 1,
+  computed_at                   TEXT,
+  -- JSON metadata: { state, stale_since, rebuild_status, last_error }.
+  -- Same shape as dataset_summary_projection.metadata_json so the
+  -- existing dashboard surface stays consistent.
+  metadata_json                 TEXT
+);
+
+CREATE TABLE IF NOT EXISTS retained_size_connection (
+  connector_instance_id         TEXT NOT NULL,
+  connector_id                  TEXT NOT NULL,
+  current_record_json_bytes     INTEGER NOT NULL DEFAULT 0,
+  record_history_json_bytes     INTEGER NOT NULL DEFAULT 0,
+  blob_bytes                    INTEGER NOT NULL DEFAULT 0,
+  record_count                  INTEGER NOT NULL DEFAULT 0,
+  record_history_count          INTEGER NOT NULL DEFAULT 0,
+  blob_count                    INTEGER NOT NULL DEFAULT 0,
+  dirty                         INTEGER NOT NULL DEFAULT 1,
+  computed_at                   TEXT,
+  PRIMARY KEY(connector_instance_id)
+);
+CREATE INDEX IF NOT EXISTS idx_retained_size_connection_connector
+  ON retained_size_connection(connector_id);
+
+CREATE TABLE IF NOT EXISTS retained_size_stream (
+  connector_instance_id         TEXT NOT NULL,
+  connector_id                  TEXT NOT NULL,
+  stream                        TEXT NOT NULL,
+  current_record_json_bytes     INTEGER NOT NULL DEFAULT 0,
+  record_history_json_bytes     INTEGER NOT NULL DEFAULT 0,
+  blob_bytes                    INTEGER NOT NULL DEFAULT 0,
+  record_count                  INTEGER NOT NULL DEFAULT 0,
+  record_history_count          INTEGER NOT NULL DEFAULT 0,
+  blob_count                    INTEGER NOT NULL DEFAULT 0,
+  dirty                         INTEGER NOT NULL DEFAULT 1,
+  computed_at                   TEXT,
+  PRIMARY KEY(connector_instance_id, stream)
+);
+
+CREATE TABLE IF NOT EXISTS retained_size_record_family (
+  connector_instance_id         TEXT NOT NULL,
+  connector_id                  TEXT NOT NULL,
+  stream                        TEXT NOT NULL,
+  record_family                 TEXT NOT NULL,
+  current_record_json_bytes     INTEGER NOT NULL DEFAULT 0,
+  record_history_json_bytes     INTEGER NOT NULL DEFAULT 0,
+  blob_bytes                    INTEGER NOT NULL DEFAULT 0,
+  record_count                  INTEGER NOT NULL DEFAULT 0,
+  record_history_count          INTEGER NOT NULL DEFAULT 0,
+  blob_count                    INTEGER NOT NULL DEFAULT 0,
+  dirty                         INTEGER NOT NULL DEFAULT 1,
+  computed_at                   TEXT,
+  PRIMARY KEY(connector_instance_id, stream, record_family)
+);
+
+CREATE TABLE IF NOT EXISTS retained_size_top_rows (
+  scope                         TEXT NOT NULL,
+  measure                       TEXT NOT NULL,
+  rank                          INTEGER NOT NULL,
+  grain_key                     TEXT NOT NULL,
+  connector_instance_id         TEXT,
+  connector_id                  TEXT,
+  stream                        TEXT,
+  record_key                    TEXT,
+  blob_id                       TEXT,
+  current_record_json_bytes     INTEGER NOT NULL DEFAULT 0,
+  record_history_json_bytes     INTEGER NOT NULL DEFAULT 0,
+  blob_bytes                    INTEGER NOT NULL DEFAULT 0,
+  total_retained_bytes          INTEGER NOT NULL DEFAULT 0,
+  record_count                  INTEGER NOT NULL DEFAULT 0,
+  record_history_count          INTEGER NOT NULL DEFAULT 0,
+  blob_count                    INTEGER NOT NULL DEFAULT 0,
+  dirty                         INTEGER NOT NULL DEFAULT 1,
+  computed_at                   TEXT,
+  metadata_json                 TEXT,
+  PRIMARY KEY(scope, measure, rank)
+);
+CREATE INDEX IF NOT EXISTS idx_retained_size_top_rows_lookup
+  ON retained_size_top_rows(scope, measure, total_retained_bytes DESC, rank ASC);
 `;
 
 /**

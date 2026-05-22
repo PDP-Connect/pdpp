@@ -33,6 +33,8 @@ const REF_READ_ROUTES = [
   '/_ref/grants/grant_does_not_exist/timeline',
   '/_ref/runs/run_does_not_exist/timeline',
   '/_ref/dataset/summary',
+  '/_ref/dataset/size',
+  '/_ref/dataset/top',
   '/_ref/connectors',
   '/_ref/connectors/connector_does_not_exist',
   '/_ref/approvals',

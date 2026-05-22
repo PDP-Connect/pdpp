@@ -34,7 +34,10 @@ import {
 import { getConnectorManifest } from "./auth.js";
 import { deriveReferenceFreshness, type ReferenceFreshness } from "./freshness.ts";
 import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.js";
-import { listAllStreams } from "./records.js";
+import {
+  listRetainedSizeConnections,
+  listRetainedSizeStreams,
+} from "./retained-size-read-model.js";
 import {
   chooseDisplayTimestamp,
   compareTimestampValues,
@@ -107,12 +110,6 @@ interface ConnectorRow {
 const NON_PUBLIC_CONNECTOR_ID_PARTS = ["manual_action_stub", "manual-action-stub", "stream-test-stub"];
 const REFERENCE_OWNER_SUBJECT_ID = "owner_local";
 
-interface StreamAggregateRow {
-  readonly last_updated: string | null;
-  readonly record_count: number;
-  readonly stream: string;
-}
-
 type Freshness = ReferenceFreshness;
 
 interface RecordProjection {
@@ -132,12 +129,6 @@ interface RecordProjectionRow {
   readonly last_updated: string | null;
   readonly record_count: number | string | null;
   readonly stream: string;
-}
-
-interface RetainedBytesRow {
-  readonly blob_bytes?: number | string | null;
-  readonly record_changes_json_bytes?: number | string | null;
-  readonly record_json_bytes?: number | string | null;
 }
 
 export interface RetainedBytesBreakdown {
@@ -510,42 +501,20 @@ async function getLatestRunSummary(
 }
 
 async function getRetainedBytesForConnection(
-  connectorId: string,
   connectorInstanceId: string,
 ): Promise<RetainedBytesBreakdown | null> {
-  const row = isPostgresStorageBackend()
-    ? (await postgresQuery(
-        `SELECT
-           (
-             SELECT COALESCE(SUM(octet_length(record_json::text)), 0)
-             FROM records
-             WHERE connector_id = $1 AND connector_instance_id = $2 AND deleted = false
-           ) AS record_json_bytes,
-           (
-             SELECT COALESCE(SUM(octet_length(record_json::text)), 0)
-             FROM record_changes
-             WHERE connector_id = $1 AND connector_instance_id = $2 AND record_json IS NOT NULL
-           ) AS record_changes_json_bytes,
-           (
-             SELECT COALESCE(SUM(size_bytes), 0)
-             FROM blobs
-             WHERE connector_id = $1 AND connector_instance_id = $2
-           ) AS blob_bytes`,
-        [connectorId, connectorInstanceId],
-      )).rows[0] as RetainedBytesRow | undefined
-    : getOne<RetainedBytesRow>(referenceQueries.recordsGetRetainedByConnectorInstance, [
-        connectorId,
-        connectorInstanceId,
-        connectorId,
-        connectorInstanceId,
-        connectorId,
-        connectorInstanceId,
-      ]);
+  const row = (await listRetainedSizeConnections({ connectorInstanceId }))[0] as
+    | {
+        current_record_json_bytes?: number;
+        record_history_json_bytes?: number;
+        blob_bytes?: number;
+      }
+    | undefined;
   if (!row) {
     return null;
   }
-  const recordJsonBytes = Number(row.record_json_bytes || 0);
-  const recordChangesJsonBytes = Number(row.record_changes_json_bytes || 0);
+  const recordJsonBytes = Number(row.current_record_json_bytes || 0);
+  const recordChangesJsonBytes = Number(row.record_history_json_bytes || 0);
   const blobBytes = Number(row.blob_bytes || 0);
   return {
     blob_bytes: blobBytes,
@@ -561,35 +530,23 @@ async function getConnectorRecordProjection(
 ): Promise<RecordProjection> {
   let rows: RecordProjectionRow[];
   if (connectorInstanceId) {
-    rows = isPostgresStorageBackend()
-      ? (await postgresQuery(
-          `SELECT stream,
-                  COUNT(*)::int AS record_count,
-                  MAX(emitted_at) AS last_updated
-           FROM records
-           WHERE connector_id = $1
-             AND connector_instance_id = $2
-             AND deleted = false
-           GROUP BY stream
-           ORDER BY stream ASC`,
-          [connectorId, connectorInstanceId],
-        )).rows as RecordProjectionRow[]
-      : [...allowUnboundedReadAcknowledged<StreamAggregateRow>(
-          referenceQueries.recordsAggregateStreamsByConnectorInstance,
-          [connectorId, connectorInstanceId],
-        )];
-  } else if (isPostgresStorageBackend()) {
-    rows = (await listAllStreams(connectorId)).map(
-      (row: { name: string; record_count: number; last_updated: string | null }) => ({
-        stream: row.name,
-        record_count: row.record_count,
-        last_updated: row.last_updated,
-      })
-    );
+    rows = (await listRetainedSizeStreams({ connectorInstanceId })).map(
+      (row: { stream: string; record_count?: number }) => ({
+        stream: row.stream,
+        record_count: Number(row.record_count || 0),
+        last_updated: null,
+      }),
+    ) as RecordProjectionRow[];
   } else {
-    rows = [...allowUnboundedReadAcknowledged<StreamAggregateRow>(referenceQueries.recordsAggregateStreamsByConnector, [
-      connectorId,
-    ])];
+    rows = (await listRetainedSizeStreams({})).filter(
+      (row: { connector_id?: string }) => row.connector_id === connectorId,
+    ).map(
+      (row: { stream: string; record_count?: number }) => ({
+        stream: row.stream,
+        record_count: Number(row.record_count || 0),
+        last_updated: null,
+      }),
+    ) as RecordProjectionRow[];
   }
   const byStream = new Map<string, StreamProjection>();
   let latest: string | null = null;
@@ -609,7 +566,7 @@ async function getConnectorRecordProjection(
     byStream,
     freshness: buildFreshness(latest),
     retainedBytes: connectorInstanceId
-      ? await getRetainedBytesForConnection(connectorId, connectorInstanceId)
+      ? await getRetainedBytesForConnection(connectorInstanceId)
       : null,
     totalRecords: rows.reduce((sum, row) => sum + Number(row.record_count || 0), 0),
   };

@@ -50,6 +50,11 @@ import {
   applyDatasetSummaryRecordDelta,
   markDatasetSummaryProjectionStale,
 } from './dataset-summary-read-model.js';
+import {
+  applyRetainedSizeRecordDelta,
+  markRetainedSizeConnectionDirty,
+  markRetainedSizeStreamDirty,
+} from './retained-size-read-model.js';
 
 function nowIso() {
   return new Date().toISOString();
@@ -101,6 +106,19 @@ function getPrunedRecordChangeJsonBytes(connectorInstanceId, stream, versionBefo
     )
     .get(connectorInstanceId, stream, versionBefore);
   return Number(row?.bytes || 0);
+}
+
+function getPrunedRecordChangeCount(connectorInstanceId, stream, versionBefore) {
+  const row = getDb()
+    .prepare(
+      `SELECT COUNT(*) AS count
+         FROM record_changes
+        WHERE connector_instance_id = ?
+          AND stream = ?
+          AND version <= ?`,
+    )
+    .get(connectorInstanceId, stream, versionBefore);
+  return Number(row?.count || 0);
 }
 
 /**
@@ -179,6 +197,11 @@ export async function ingestRecord(storageTarget, record) {
       const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
       const { stream, key, data, op = 'upsert' } = record;
       const recordKey = encodeKey(key);
+      if (outcome.retainedSizeDelta) {
+        await applyRetainedSizeRecordDelta(outcome.retainedSizeDelta);
+      } else {
+        await markRetainedSizeStreamDirty({ connectorInstanceId, stream });
+      }
       if (op === 'delete') {
         await lexicalIndexDelete({ connectorId, connectorInstanceId, stream, recordKey });
         await semanticIndexDelete({ connectorId, connectorInstanceId, stream, recordKey });
@@ -260,38 +283,46 @@ export async function ingestRecord(storageTarget, record) {
 
     maybeFault('after-record-changes-append', { connectorId, connectorInstanceId, stream, recordKey, nextVersion, op });
 
+    const sharedRecordCountDelta = op === 'delete' ? -1 : current?.deleted ? 1 : current ? 0 : 1;
+    const sharedRecordJsonBytesDelta = op === 'delete'
+      ? -byteLength(current.record_json)
+      : byteLength(recordJson) - (current && !current.deleted ? byteLength(current.record_json) : 0);
+    const insertedChangeJsonBytes = byteLength(op === 'delete' ? current.record_json : recordJson);
+    let prunedBytesForDelta = 0;
+    let prunedRowsForDelta = 0;
     if (changeHistoryLimit > 0) {
-      const prunedBytes = getPrunedRecordChangeJsonBytes(connectorInstanceId, stream, nextVersion - changeHistoryLimit);
+      prunedBytesForDelta = getPrunedRecordChangeJsonBytes(connectorInstanceId, stream, nextVersion - changeHistoryLimit);
+      prunedRowsForDelta = getPrunedRecordChangeCount(connectorInstanceId, stream, nextVersion - changeHistoryLimit);
       exec(
         referenceQueries.recordsIngestPruneRecordChanges,
         [connectorInstanceId, stream, nextVersion - changeHistoryLimit],
       );
-      applyDatasetSummaryRecordDelta({
-        connectorId,
-        stream,
-        emittedAt: effectiveEmittedAt,
-        consentTimeField: getManifestConsentTimeField(connectorId, stream),
-        recordCountDelta: op === 'delete' ? -1 : current?.deleted ? 1 : current ? 0 : 1,
-        recordJsonBytesDelta: op === 'delete'
-          ? -byteLength(current.record_json)
-          : byteLength(recordJson) - (current && !current.deleted ? byteLength(current.record_json) : 0),
-        recordChangesJsonBytesDelta: byteLength(op === 'delete' ? current.record_json : recordJson) - prunedBytes,
-        dirtyRecordTimeBounds: true,
-      });
-    } else {
-      applyDatasetSummaryRecordDelta({
-        connectorId,
-        stream,
-        emittedAt: effectiveEmittedAt,
-        consentTimeField: getManifestConsentTimeField(connectorId, stream),
-        recordCountDelta: op === 'delete' ? -1 : current?.deleted ? 1 : current ? 0 : 1,
-        recordJsonBytesDelta: op === 'delete'
-          ? -byteLength(current.record_json)
-          : byteLength(recordJson) - (current && !current.deleted ? byteLength(current.record_json) : 0),
-        recordChangesJsonBytesDelta: byteLength(op === 'delete' ? current.record_json : recordJson),
-        dirtyRecordTimeBounds: true,
-      });
     }
+    applyDatasetSummaryRecordDelta({
+      connectorId,
+      stream,
+      emittedAt: effectiveEmittedAt,
+      consentTimeField: getManifestConsentTimeField(connectorId, stream),
+      recordCountDelta: sharedRecordCountDelta,
+      recordJsonBytesDelta: sharedRecordJsonBytesDelta,
+      recordChangesJsonBytesDelta: insertedChangeJsonBytes - prunedBytesForDelta,
+      dirtyRecordTimeBounds: true,
+    });
+    // Retained-size projection delta mirrors the dataset-summary delta but
+    // is grain-aware (connector_instance_id, connector_id, stream). The
+    // dataset-summary projection is global only; the retained-size
+    // projection serves the bounded `_ref` reads at every supported grain.
+    // Maintenance failures cannot retroactively roll back the durable record
+    // mutation — the projection module marks rows dirty internally.
+    applyRetainedSizeRecordDelta({
+      connectorInstanceId,
+      connectorId,
+      stream,
+      currentRecordJsonBytesDelta: sharedRecordJsonBytesDelta,
+      recordHistoryJsonBytesDelta: insertedChangeJsonBytes - prunedBytesForDelta,
+      recordCountDelta: sharedRecordCountDelta,
+      recordHistoryCountDelta: 1 - prunedRowsForDelta,
+    });
 
     return { kind: 'changed', op };
   });
@@ -2028,6 +2059,11 @@ export async function deleteRecord(storageTarget, stream, recordId) {
     if (outcome.changed) {
       const connectorId = resolveStorageConnectorId(storageTarget);
       const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
+      if (outcome.retainedSizeDelta) {
+        await applyRetainedSizeRecordDelta(outcome.retainedSizeDelta);
+      } else {
+        await markRetainedSizeStreamDirty({ connectorInstanceId, stream });
+      }
       await lexicalIndexDelete({ connectorId, connectorInstanceId, stream, recordKey: recordId });
       await semanticIndexDelete({ connectorId, connectorInstanceId, stream, recordKey: recordId });
     }
@@ -2070,34 +2106,35 @@ export async function deleteRecord(storageTarget, stream, recordId) {
 
     maybeDeleteFault('after-record-changes-append', { connectorId, connectorInstanceId, stream, recordId, nextVersion });
 
+    let prunedBytesForDelta = 0;
+    let prunedRowsForDelta = 0;
     if (changeHistoryLimit > 0) {
-      const prunedBytes = getPrunedRecordChangeJsonBytes(connectorInstanceId, stream, nextVersion - changeHistoryLimit);
+      prunedBytesForDelta = getPrunedRecordChangeJsonBytes(connectorInstanceId, stream, nextVersion - changeHistoryLimit);
+      prunedRowsForDelta = getPrunedRecordChangeCount(connectorInstanceId, stream, nextVersion - changeHistoryLimit);
       exec(
         referenceQueries.recordsIngestPruneRecordChanges,
         [connectorInstanceId, stream, nextVersion - changeHistoryLimit],
       );
-      applyDatasetSummaryRecordDelta({
-        connectorId,
-        stream,
-        emittedAt: now,
-        consentTimeField: getManifestConsentTimeField(connectorId, stream),
-        recordCountDelta: -1,
-        recordJsonBytesDelta: -byteLength(current.record_json),
-        recordChangesJsonBytesDelta: byteLength(current.record_json) - prunedBytes,
-        dirtyRecordTimeBounds: true,
-      });
-    } else {
-      applyDatasetSummaryRecordDelta({
-        connectorId,
-        stream,
-        emittedAt: now,
-        consentTimeField: getManifestConsentTimeField(connectorId, stream),
-        recordCountDelta: -1,
-        recordJsonBytesDelta: -byteLength(current.record_json),
-        recordChangesJsonBytesDelta: byteLength(current.record_json),
-        dirtyRecordTimeBounds: true,
-      });
     }
+    applyDatasetSummaryRecordDelta({
+      connectorId,
+      stream,
+      emittedAt: now,
+      consentTimeField: getManifestConsentTimeField(connectorId, stream),
+      recordCountDelta: -1,
+      recordJsonBytesDelta: -byteLength(current.record_json),
+      recordChangesJsonBytesDelta: byteLength(current.record_json) - prunedBytesForDelta,
+      dirtyRecordTimeBounds: true,
+    });
+    applyRetainedSizeRecordDelta({
+      connectorInstanceId,
+      connectorId,
+      stream,
+      currentRecordJsonBytesDelta: -byteLength(current.record_json),
+      recordHistoryJsonBytesDelta: byteLength(current.record_json) - prunedBytesForDelta,
+      recordCountDelta: -1,
+      recordHistoryCountDelta: 1 - prunedRowsForDelta,
+    });
 
     return { kind: 'changed' };
   });
@@ -2124,8 +2161,8 @@ export async function listAllStreams(storageTarget) {
   // connector's manifest declares at most a few dozen streams, well under
   // the registry's @max_rows=256 cap on the records table read.
   const rows = allowUnboundedReadAcknowledged(
-    referenceQueries.recordsAggregateStreamsByConnector,
-    [connectorInstanceId],
+    referenceQueries.recordsAggregateStreamsByConnectorInstance,
+    [connectorId, connectorInstanceId],
   );
 
   return rows.map((row) => ({
@@ -2144,6 +2181,9 @@ export async function deleteAllRecords(storageTarget, stream) {
     const deletedRecordCount = await postgresDeleteAllRecords(storageTarget, stream);
     const connectorId = resolveStorageConnectorId(storageTarget);
     const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
+    if (deletedRecordCount > 0) {
+      await markRetainedSizeStreamDirty({ connectorInstanceId, stream });
+    }
     await lexicalIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
     await semanticIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
     return deletedRecordCount;
@@ -2161,6 +2201,7 @@ export async function deleteAllRecords(storageTarget, stream) {
   exec(referenceQueries.recordsDeleteDeleteVersionCounterByStream, [connectorInstanceId, stream]);
   if (deletedRecordCount > 0) {
     markDatasetSummaryProjectionStale('bulk stream record delete bypassed exact dataset summary projection deltas');
+    await markRetainedSizeStreamDirty({ connectorInstanceId, stream });
   }
   await lexicalIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
   await semanticIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
@@ -2206,11 +2247,13 @@ export async function deleteAllRecordsForConnector(connectorId) {
     exec(referenceQueries.recordsDeleteDeleteRecordChangesByStream, [connectorInstanceId, stream]);
     exec(referenceQueries.recordsDeleteDeleteVersionCounterByStream, [connectorInstanceId, stream]);
     exec(referenceQueries.recordsDeleteDeleteBlobBindingsByStream, [connectorInstanceId, stream]);
+    await markRetainedSizeStreamDirty({ connectorInstanceId, stream });
     await lexicalIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
     await semanticIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
   }
   if (deletedCount > 0) {
     markDatasetSummaryProjectionStale('bulk connector record delete bypassed exact dataset summary projection deltas');
+    await markRetainedSizeConnectionDirty({ connectorInstanceId: null });
   }
 
   return { deletedCount, streams };

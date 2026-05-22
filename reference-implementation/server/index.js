@@ -72,6 +72,16 @@ import {
   reconcileDirtyDatasetSummaryRecordTimeBounds,
   rebuildDatasetSummaryProjection,
 } from './dataset-summary-read-model.js';
+import {
+  applyRetainedSizeBlobDelta,
+  getRetainedSizeGlobal,
+  listRetainedSizeConnections,
+  listRetainedSizeRecordFamilies,
+  listRetainedSizeStreams,
+  listRetainedSizeTop,
+  rebuildRetainedSize,
+  reconcileDirtyRetainedSize,
+} from './retained-size-read-model.js';
 import { getLexicalIndexBackfillProgress, lexicalIndexBackfillForManifest, runLexicalSearch } from './search.js';
 import { runHybridSearch } from './search-hybrid.js';
 import { reconcilePolyfillManifests } from './polyfill-manifest-reconcile.ts';
@@ -2010,9 +2020,19 @@ function decorateRecordBlobRefs(record) {
   return next;
 }
 
-function persistContentAddressedBlob({ connectorId, connectorInstanceId, stream, recordKey, mimeType, data }) {
+async function persistContentAddressedBlob({ connectorId, connectorInstanceId, stream, recordKey, mimeType, data }) {
   if (isPostgresStorageBackend()) {
-    return postgresPersistContentAddressedBlob({ connectorId, connectorInstanceId, stream, recordKey, mimeType, data });
+    const stored = await postgresPersistContentAddressedBlob({ connectorId, connectorInstanceId, stream, recordKey, mimeType, data });
+    if (stored.binding_inserted) {
+      await applyRetainedSizeBlobDelta({
+        connectorInstanceId,
+        connectorId,
+        stream,
+        blobBytesDelta: Number(stored.size_bytes || 0),
+        blobCountDelta: 1,
+      });
+    }
+    return stored;
   }
 
   const sha256 = createHash('sha256').update(data).digest('hex');
@@ -2030,9 +2050,18 @@ function persistContentAddressedBlob({ connectorId, connectorInstanceId, stream,
       throw err;
     }
 
-    exec(referenceQueries.blobsInsertBinding, [blobId, connectorId, connectorInstanceId, stream, recordKey]);
+    const bindingResult = exec(referenceQueries.blobsInsertBinding, [blobId, connectorId, connectorInstanceId, stream, recordKey]);
     if (insertResult.changes > 0) {
       applyDatasetSummaryBlobDelta({ blobBytesDelta: sizeBytes });
+    }
+    if (bindingResult.changes > 0) {
+      applyRetainedSizeBlobDelta({
+        connectorInstanceId,
+        connectorId,
+        stream,
+        blobBytesDelta: sizeBytes,
+        blobCountDelta: 1,
+      });
     }
 
     return row;
@@ -3692,6 +3721,47 @@ function buildAsApp(opts = {}) {
     ...(streamSeeds ? { listStreamProjectionSeeds: () => listDatasetSummaryStreamProjectionSeeds() } : {}),
   });
 
+  const getRetainedSizeDatasetSummaryProjection = async () => {
+    const [global, connections, streams] = await Promise.all([
+      getRetainedSizeGlobal(),
+      listRetainedSizeConnections({}),
+      listRetainedSizeStreams({}),
+    ]);
+    return {
+      counts: {
+        connector_count: connections.length,
+        stream_count: streams.length,
+        record_count: Number(global.record_count || 0),
+      },
+      retained_bytes: {
+        record_json_bytes: Number(global.current_record_json_bytes || 0),
+        record_changes_json_bytes: Number(global.record_history_json_bytes || 0),
+        blob_bytes: Number(global.blob_bytes || 0),
+      },
+      record_time_bounds: { earliest: null, latest: null },
+      ingested_time_bounds: { earliest: null, latest: null },
+      top_connector_candidates: [...connections]
+        .sort((a, b) => {
+          const byCount = Number(b.record_count || 0) - Number(a.record_count || 0);
+          if (byCount !== 0) return byCount;
+          return String(a.connector_instance_id || '').localeCompare(String(b.connector_instance_id || ''));
+        })
+        .slice(0, 8)
+        .map((row) => ({
+          connector_id: row.connector_id,
+          record_count: Number(row.record_count || 0),
+        })),
+      metadata: {
+        computed_at: global.computed_at,
+        state: global.metadata?.state || (global.dirty ? 'stale' : 'fresh'),
+        stale_since: global.metadata?.stale_since || null,
+        rebuild_status: global.metadata?.rebuild_status || 'idle',
+        last_error: global.metadata?.last_error || null,
+        source_high_watermark: global.metadata?.source_high_watermark || null,
+      },
+    };
+  };
+
   app.get('/_ref/dataset/summary', { contract: 'refDatasetSummary' }, ownerAuth.requireOwnerSession, async (req, res) => {
     try {
       // Cache the records aggregate so `record_count` and `*_ingested_at`
@@ -3707,10 +3777,9 @@ function buildAsApp(opts = {}) {
       };
 
       const summary = await executeRefDatasetSummary(buildDatasetSummaryDependencies(aggregate, {
-        // The projection read model is currently SQLite-backed. In Postgres
-        // deployments, using it would serve stale data from an unrelated local
-        // SQLite file, so Postgres reads the canonical records tables directly.
-        projection: isPostgresStorageBackend() ? null : () => getDatasetSummaryProjection(),
+        projection: isPostgresStorageBackend()
+          ? getRetainedSizeDatasetSummaryProjection
+          : () => getDatasetSummaryProjection(),
       }));
       res.json(summary);
     } catch (err) {
@@ -3729,7 +3798,10 @@ function buildAsApp(opts = {}) {
         return cachedAggregate;
       };
       if (isPostgresStorageBackend()) {
-        const summary = await executeRefDatasetSummary(buildDatasetSummaryDependencies(aggregate, { projection: null }));
+        await rebuildRetainedSize();
+        const summary = await executeRefDatasetSummary(buildDatasetSummaryDependencies(aggregate, {
+          projection: getRetainedSizeDatasetSummaryProjection,
+        }));
         res.json(summary);
         return;
       }
@@ -3766,17 +3838,13 @@ function buildAsApp(opts = {}) {
     const requestAbort = createRequestAbortSignal(req, 'dataset summary reconcile request closed');
     try {
       if (isPostgresStorageBackend()) {
-        let cachedAggregate = null;
-        const aggregate = async () => {
-          if (cachedAggregate === null) {
-            cachedAggregate = await getDatasetRecordsAggregate();
-          }
-          return cachedAggregate;
-        };
-        const summary = await executeRefDatasetSummary(buildDatasetSummaryDependencies(aggregate, { projection: null }));
+        const result = await reconcileDirtyRetainedSize();
+        const summary = await executeRefDatasetSummary(buildDatasetSummaryDependencies(() => {
+          throw new Error('dataset summary reconcile response must use retained-size projection');
+        }, { projection: getRetainedSizeDatasetSummaryProjection }));
         res.json({
           object: 'dataset_summary_reconcile',
-          reconciled: 0,
+          reconciled: result.streams || 0,
           deferred: 0,
           residual: 0,
           summary,
@@ -3816,6 +3884,103 @@ function buildAsApp(opts = {}) {
       handleError(res, err);
     } finally {
       requestAbort.cleanup();
+    }
+  });
+
+  app.get('/_ref/dataset/size', { contract: 'refDatasetSize' }, ownerAuth.requireOwnerSession, async (req, res) => {
+    try {
+      const grain = typeof req.query.grain === 'string' && req.query.grain
+        ? req.query.grain
+        : 'global';
+      if (!['global', 'connection', 'stream', 'record_family'].includes(grain)) {
+        const err = new Error(`unsupported retained-size grain '${grain}'`);
+        err.code = 'invalid_request';
+        throw err;
+      }
+      const connectorInstanceId = typeof req.query.connector_instance_id === 'string'
+        ? req.query.connector_instance_id
+        : undefined;
+      const stream = typeof req.query.stream === 'string' ? req.query.stream : undefined;
+      const recordFamily = typeof req.query.record_family === 'string' ? req.query.record_family : undefined;
+      let rows;
+      if (grain === 'global') {
+        rows = [await getRetainedSizeGlobal()];
+      } else if (grain === 'connection') {
+        rows = await listRetainedSizeConnections({ connectorInstanceId });
+      } else if (grain === 'stream') {
+        rows = await listRetainedSizeStreams({ connectorInstanceId, stream });
+      } else {
+        rows = await listRetainedSizeRecordFamilies({ connectorInstanceId, stream, recordFamily });
+      }
+      const global = await getRetainedSizeGlobal();
+      res.json({
+        object: 'ref_dataset_size',
+        grain,
+        rows,
+        projection: {
+          computed_at: global.computed_at,
+          dirty: global.dirty,
+          metadata: global.metadata,
+        },
+      });
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
+  app.get('/_ref/dataset/top', { contract: 'refDatasetTop' }, ownerAuth.requireOwnerSession, async (req, res) => {
+    try {
+      const scope = typeof req.query.scope === 'string' && req.query.scope
+        ? req.query.scope
+        : 'connection';
+      const measure = typeof req.query.measure === 'string' && req.query.measure
+        ? req.query.measure
+        : 'total_retained_bytes';
+      const rows = await listRetainedSizeTop({
+        scope,
+        measure,
+        limit: req.query.limit,
+      });
+      const global = await getRetainedSizeGlobal();
+      res.json({
+        object: 'ref_dataset_top',
+        scope,
+        measure,
+        rows,
+        projection: {
+          computed_at: global.computed_at,
+          dirty: Boolean(global.dirty || rows.some((row) => row.dirty)),
+          metadata: rows[0]?.metadata || global.metadata,
+        },
+      });
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
+  app.post('/_ref/dataset/size/rebuild', { contract: 'refDatasetSizeRebuild' }, ownerAuth.requireOwnerSession, async (req, res) => {
+    try {
+      const projection = await rebuildRetainedSize();
+      res.json({
+        object: 'ref_dataset_size_rebuild',
+        projection,
+      });
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
+  app.post('/_ref/dataset/size/reconcile', { contract: 'refDatasetSizeReconcile' }, ownerAuth.requireOwnerSession, async (req, res) => {
+    try {
+      const result = await reconcileDirtyRetainedSize();
+      const projection = await getRetainedSizeGlobal();
+      res.json({
+        object: 'ref_dataset_size_reconcile',
+        ...result,
+        projection,
+      });
+    } catch (err) {
+      handleError(res, err);
     }
   });
 

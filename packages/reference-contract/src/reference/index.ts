@@ -290,6 +290,99 @@ const DatasetSummaryResponseSchema = {
   ],
 };
 
+const RetainedSizeProjectionSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    computed_at: { type: ["string", "null"] },
+    dirty: { type: "boolean" },
+    metadata: { type: ["object", "null"], additionalProperties: true },
+  },
+  required: ["computed_at", "dirty", "metadata"],
+};
+
+const RetainedSizeRowSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    grain: { type: "string" },
+    connector_instance_id: { type: ["string", "null"] },
+    connector_id: { type: ["string", "null"] },
+    stream: { type: ["string", "null"] },
+    record_family: { type: ["string", "null"] },
+    current_record_json_bytes: { type: "integer", minimum: 0 },
+    record_history_json_bytes: { type: "integer", minimum: 0 },
+    blob_bytes: { type: "integer", minimum: 0 },
+    total_retained_bytes: { type: "integer", minimum: 0 },
+    record_count: { type: "integer", minimum: 0 },
+    record_history_count: { type: "integer", minimum: 0 },
+    blob_count: { type: "integer", minimum: 0 },
+    dirty: { type: "boolean" },
+    computed_at: { type: ["string", "null"] },
+    metadata: { type: ["object", "null"], additionalProperties: true },
+  },
+  required: [
+    "grain",
+    "current_record_json_bytes",
+    "record_history_json_bytes",
+    "blob_bytes",
+    "total_retained_bytes",
+    "record_count",
+    "record_history_count",
+    "blob_count",
+    "dirty",
+    "computed_at",
+  ],
+};
+
+const RetainedSizeTopRowSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    ...RetainedSizeRowSchema.properties,
+    scope: { type: "string" },
+    measure: { type: "string" },
+    rank: { type: "integer", minimum: 1 },
+    grain_key: { type: "string" },
+    record_key: { type: ["string", "null"] },
+    blob_id: { type: ["string", "null"] },
+  },
+  required: [
+    ...RetainedSizeRowSchema.required,
+    "scope",
+    "measure",
+    "rank",
+    "grain_key",
+    "record_key",
+    "blob_id",
+  ],
+};
+
+const RetainedSizeResponseSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    object: { const: "ref_dataset_size" },
+    grain: { type: "string" },
+    rows: { type: "array", items: RetainedSizeRowSchema },
+    projection: RetainedSizeProjectionSchema,
+  },
+  required: ["object", "grain", "rows", "projection"],
+};
+
+const RetainedSizeTopResponseSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    object: { const: "ref_dataset_top" },
+    scope: { type: "string" },
+    measure: { type: "string" },
+    rows: { type: "array", items: RetainedSizeTopRowSchema },
+    projection: RetainedSizeProjectionSchema,
+  },
+  required: ["object", "scope", "measure", "rows", "projection"],
+};
+
 const TimelineEntrySchema = {
   type: "object",
   additionalProperties: true,
@@ -1157,6 +1250,116 @@ export const referenceManifests = [
             summary: DatasetSummaryResponseSchema,
           },
           required: ["object", "reconciled", "deferred", "summary"],
+        },
+      },
+      ...CommonErrors,
+    },
+  },
+  {
+    id: "refDatasetSize",
+    method: "GET",
+    path: "/_ref/dataset/size",
+    surface: "reference",
+    tags: ["reference", "dataset"],
+    summary:
+      "Projection-backed retained logical bytes by finite dataset grain.",
+    request: {
+      query: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          grain: { type: "string", enum: ["global", "connection", "stream", "record_family"] },
+          connector_instance_id: { type: "string" },
+          stream: { type: "string" },
+          record_family: { type: "string" },
+        },
+      },
+    },
+    responses: {
+      200: { schema: RetainedSizeResponseSchema },
+      ...CommonErrors,
+    },
+  },
+  {
+    id: "refDatasetTop",
+    method: "GET",
+    path: "/_ref/dataset/top",
+    surface: "reference",
+    tags: ["reference", "dataset"],
+    summary:
+      "Bounded retained-size heavy hitters for owner dataset introspection.",
+    request: {
+      query: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          scope: { type: "string", enum: ["connection", "stream", "record", "blob"] },
+          measure: {
+            type: "string",
+            enum: [
+              "total_retained_bytes",
+              "current_record_json_bytes",
+              "record_history_json_bytes",
+              "blob_bytes",
+              "record_count",
+              "record_history_count",
+              "blob_count",
+            ],
+          },
+          limit: { type: "integer", minimum: 1, maximum: 25 },
+        },
+      },
+    },
+    responses: {
+      200: { schema: RetainedSizeTopResponseSchema },
+      ...CommonErrors,
+    },
+  },
+  {
+    id: "refDatasetSizeRebuild",
+    method: "POST",
+    path: "/_ref/dataset/size/rebuild",
+    surface: "reference",
+    tags: ["reference", "dataset"],
+    summary:
+      "Owner-triggered rebuild of retained-size projection rows from durable reference state.",
+    request: {},
+    responses: {
+      200: {
+        schema: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            object: { const: "ref_dataset_size_rebuild" },
+            projection: RetainedSizeRowSchema,
+          },
+          required: ["object", "projection"],
+        },
+      },
+      ...CommonErrors,
+    },
+  },
+  {
+    id: "refDatasetSizeReconcile",
+    method: "POST",
+    path: "/_ref/dataset/size/reconcile",
+    surface: "reference",
+    tags: ["reference", "dataset"],
+    summary:
+      "Owner-triggered reconciliation of dirty retained-size projection rows from durable reference state.",
+    request: {},
+    responses: {
+      200: {
+        schema: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            object: { const: "ref_dataset_size_reconcile" },
+            streams: { type: "integer", minimum: 0 },
+            connections: { type: "integer", minimum: 0 },
+            projection: RetainedSizeRowSchema,
+          },
+          required: ["object", "streams", "connections", "projection"],
         },
       },
       ...CommonErrors,

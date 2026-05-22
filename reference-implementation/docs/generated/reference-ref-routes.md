@@ -38,6 +38,10 @@ Generated from `packages/reference-contract/src/reference/`. Reference-designate
 | **GET** | `/_ref/dataset/summary` | `refDatasetSummary` | Projection-backed dataset summary: record counts, retained-history bytes, timespan bounds, top connectors, and freshness metadata. |
 | **POST** | `/_ref/dataset/summary/rebuild` | `refDatasetSummaryRebuild` | Owner-triggered rebuild of the projection-backed dataset summary from durable reference state. |
 | **POST** | `/_ref/dataset/summary/reconcile` | `refDatasetSummaryReconcile` | Owner-triggered reconciliation of dirty dataset-summary record-time bounds from durable reference state. |
+| **GET** | `/_ref/dataset/size` | `refDatasetSize` | Projection-backed retained logical bytes by finite dataset grain. |
+| **GET** | `/_ref/dataset/top` | `refDatasetTop` | Bounded retained-size heavy hitters for owner dataset introspection. |
+| **POST** | `/_ref/dataset/size/rebuild` | `refDatasetSizeRebuild` | Owner-triggered rebuild of retained-size projection rows from durable reference state. |
+| **POST** | `/_ref/dataset/size/reconcile` | `refDatasetSizeReconcile` | Owner-triggered reconciliation of dirty retained-size projection rows from durable reference state. |
 
 ## refSearch
 
@@ -668,6 +672,71 @@ Owner-triggered rebuild of the projection-backed dataset summary from durable re
 `POST /_ref/dataset/summary/reconcile`
 
 Owner-triggered reconciliation of dirty dataset-summary record-time bounds from durable reference state.
+
+### Responses
+
+- `200` — JSON body
+- `400` — Invalid request
+- `404` — Not found
+- `409` — Conflict (e.g. run_already_active)
+
+## refDatasetSize
+
+`GET /_ref/dataset/size`
+
+Projection-backed retained logical bytes by finite dataset grain.
+
+### Query parameters
+
+- `grain` — enum `global | connection | stream | record_family`
+- `connector_instance_id` — string
+- `stream` — string
+- `record_family` — string
+
+### Responses
+
+- `200` — JSON body
+- `400` — Invalid request
+- `404` — Not found
+- `409` — Conflict (e.g. run_already_active)
+
+## refDatasetTop
+
+`GET /_ref/dataset/top`
+
+Bounded retained-size heavy hitters for owner dataset introspection.
+
+### Query parameters
+
+- `scope` — enum `connection | stream | record | blob`
+- `measure` — enum `total_retained_bytes | current_record_json_bytes | record_history_json_bytes | blob_bytes | record_count | record_history_count | blob_count`
+- `limit` — integer · min: 1 · max: 25
+
+### Responses
+
+- `200` — JSON body
+- `400` — Invalid request
+- `404` — Not found
+- `409` — Conflict (e.g. run_already_active)
+
+## refDatasetSizeRebuild
+
+`POST /_ref/dataset/size/rebuild`
+
+Owner-triggered rebuild of retained-size projection rows from durable reference state.
+
+### Responses
+
+- `200` — JSON body
+- `400` — Invalid request
+- `404` — Not found
+- `409` — Conflict (e.g. run_already_active)
+
+## refDatasetSizeReconcile
+
+`POST /_ref/dataset/size/reconcile`
+
+Owner-triggered reconciliation of dirty retained-size projection rows from durable reference state.
 
 ### Responses
 

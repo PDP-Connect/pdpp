@@ -6,6 +6,7 @@ import test from 'node:test';
 
 import { closeDb, getDb, initDb } from '../server/db.js';
 import { listConnectorSummaries } from '../server/ref-control.ts';
+import { rebuildRetainedSize } from '../server/retained-size-read-model.js';
 import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
 
 const CONNECTOR_ID = 'https://test.pdpp.dev/connectors/connection-first-records';
@@ -119,6 +120,13 @@ test('reference connector summaries project concrete connection rows with instan
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
     )
     .run('blob_work_1', CONNECTOR_ID, WORK_INSTANCE_ID, 'files', 'file_1', 'application/pdf', 4096, 'abc123');
+  getDb()
+    .prepare(
+      `INSERT INTO blob_bindings(blob_id, connector_id, connector_instance_id, stream, record_key, json_path)
+       VALUES (?, ?, ?, ?, ?, '@record')`,
+    )
+    .run('blob_work_1', CONNECTOR_ID, WORK_INSTANCE_ID, 'files', 'file_1');
+  await rebuildRetainedSize();
 
   const summaries = await listConnectorSummaries();
   const rows = summaries.filter((row) => row.connector_id === CONNECTOR_ID);
@@ -164,6 +172,13 @@ test('reference connector summaries project local-device storage records under p
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
     )
     .run('blob_local_device_1', storageConnectorId, WORK_INSTANCE_ID, 'messages', 'local_msg_1', 'text/plain', 2048, 'def456');
+  getDb()
+    .prepare(
+      `INSERT INTO blob_bindings(blob_id, connector_id, connector_instance_id, stream, record_key, json_path)
+       VALUES (?, ?, ?, ?, ?, '@record')`,
+    )
+    .run('blob_local_device_1', storageConnectorId, WORK_INSTANCE_ID, 'messages', 'local_msg_1');
+  await rebuildRetainedSize();
 
   const summaries = await listConnectorSummaries();
   const work = summaries.find(
