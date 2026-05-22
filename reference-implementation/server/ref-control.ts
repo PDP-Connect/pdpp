@@ -146,6 +146,7 @@ interface ConnectorInstanceRow {
   readonly displayName: string;
   readonly ownerSubjectId: string;
   readonly revokedAt: string | null;
+  readonly sourceKind: string;
   readonly status: string;
 }
 
@@ -684,6 +685,13 @@ function getConnectorInstanceStore() {
   return isPostgresStorageBackend()
     ? createPostgresConnectorInstanceStore()
     : createSqliteConnectorInstanceStore();
+}
+
+function recordStorageConnectorIdForConnection(instance: ConnectorInstanceRow): string {
+  if (instance.sourceKind === "local_device") {
+    return `local-device:${encodeURIComponent(instance.connectorId)}`;
+  }
+  return instance.connectorId;
 }
 
 async function listConnectorInstanceRowsForDashboard(
@@ -1751,7 +1759,10 @@ export async function listConnectorSummaries(
       if (!isPublicReferenceConnector({ connector_id: connectorId, manifest: JSON.stringify(manifest) }, manifest)) {
         return null;
       }
-      const live = await getConnectorRecordProjection(connectorId, connectorInstanceId);
+      const live = await getConnectorRecordProjection(
+        recordStorageConnectorIdForConnection(instance),
+        connectorInstanceId,
+      );
       const [schedule, lastRun, lastSuccessfulRun, detailGaps, outbox, attention, remoteSurface] =
         await Promise.all([
           getScheduleFrom(controller, connectorId),

@@ -42,7 +42,7 @@ function seedConnector() {
     .run(CONNECTOR_ID, JSON.stringify(manifest), NOW);
 }
 
-async function seedInstances() {
+async function seedInstances({ sourceKind = 'local_device' } = {}) {
   const store = createSqliteConnectorInstanceStore();
   await store.upsert({
     connectorInstanceId: WORK_INSTANCE_ID,
@@ -50,9 +50,9 @@ async function seedInstances() {
     connectorId: CONNECTOR_ID,
     displayName: 'Work laptop',
     status: 'active',
-    sourceKind: 'local_device',
+    sourceKind,
     sourceBindingKey: 'work',
-    sourceBinding: { kind: 'local_device', device: 'work' },
+    sourceBinding: { kind: sourceKind, device: 'work' },
     createdAt: NOW,
     updatedAt: NOW,
   });
@@ -62,32 +62,32 @@ async function seedInstances() {
     connectorId: CONNECTOR_ID,
     displayName: 'Personal laptop',
     status: 'active',
-    sourceKind: 'local_device',
+    sourceKind,
     sourceBindingKey: 'personal',
-    sourceBinding: { kind: 'local_device', device: 'personal' },
+    sourceBinding: { kind: sourceKind, device: 'personal' },
     createdAt: NOW,
     updatedAt: NOW,
   });
 }
 
-function seedRecord({ connectorInstanceId, stream, key, data, emittedAt, version }) {
+function seedRecord({ connectorId = CONNECTOR_ID, connectorInstanceId, stream, key, data, emittedAt, version }) {
   getDb()
     .prepare(
       `INSERT INTO records(connector_id, connector_instance_id, stream, record_key, record_json, emitted_at, version, deleted)
        VALUES (?, ?, ?, ?, ?, ?, ?, 0)`,
     )
-    .run(CONNECTOR_ID, connectorInstanceId, stream, key, JSON.stringify(data), emittedAt, version);
+    .run(connectorId, connectorInstanceId, stream, key, JSON.stringify(data), emittedAt, version);
   getDb()
     .prepare(
       `INSERT INTO record_changes(connector_id, connector_instance_id, stream, record_key, version, record_json, emitted_at, deleted)
        VALUES (?, ?, ?, ?, ?, ?, ?, 0)`,
     )
-    .run(CONNECTOR_ID, connectorInstanceId, stream, key, version, JSON.stringify(data), emittedAt);
+    .run(connectorId, connectorInstanceId, stream, key, version, JSON.stringify(data), emittedAt);
 }
 
 test('reference connector summaries project concrete connection rows with instance-scoped records', withTmpDb(async () => {
   seedConnector();
-  await seedInstances();
+  await seedInstances({ sourceKind: 'manual' });
 
   seedRecord({
     connectorInstanceId: WORK_INSTANCE_ID,
@@ -142,4 +142,45 @@ test('reference connector summaries project concrete connection rows with instan
   assert.equal(personal.stream_count, 1);
   assert.ok(personal.total_retained_bytes > 0);
   assert.ok(personal.total_retained_bytes < work.total_retained_bytes);
+}));
+
+test('reference connector summaries project local-device storage records under public connection rows', withTmpDb(async () => {
+  seedConnector();
+  await seedInstances();
+
+  const storageConnectorId = `local-device:${encodeURIComponent(CONNECTOR_ID)}`;
+  seedRecord({
+    connectorId: storageConnectorId,
+    connectorInstanceId: WORK_INSTANCE_ID,
+    stream: 'messages',
+    key: 'local_msg_1',
+    data: { id: 'local_msg_1', text: 'stored through local-device namespace' },
+    emittedAt: '2026-05-20T12:04:00.000Z',
+    version: 1,
+  });
+  getDb()
+    .prepare(
+      `INSERT INTO blobs(blob_id, connector_id, connector_instance_id, stream, record_key, mime_type, size_bytes, sha256, data)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+    )
+    .run('blob_local_device_1', storageConnectorId, WORK_INSTANCE_ID, 'messages', 'local_msg_1', 'text/plain', 2048, 'def456');
+
+  const summaries = await listConnectorSummaries();
+  const work = summaries.find(
+    (row) => row.connector_id === CONNECTOR_ID && row.connector_instance_id === WORK_INSTANCE_ID,
+  );
+  const personal = summaries.find(
+    (row) => row.connector_id === CONNECTOR_ID && row.connector_instance_id === PERSONAL_INSTANCE_ID,
+  );
+  assert.ok(work);
+  assert.ok(personal);
+
+  assert.equal(work.connector_id, CONNECTOR_ID);
+  assert.equal(work.connector_instance_id, WORK_INSTANCE_ID);
+  assert.equal(work.total_records, 1);
+  assert.equal(work.stream_count, 1);
+  assert.ok(work.total_retained_bytes >= 2048);
+
+  assert.equal(personal.total_records, 0);
+  assert.equal(personal.stream_count, 0);
 }));
