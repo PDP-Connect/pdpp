@@ -205,6 +205,41 @@ test('device exporter routes enroll, heartbeat, ingest idempotently, isolate sou
   });
 });
 
+test('device exporter enrollment keeps connector type display names separate from device labels', async () => {
+  await withServer(async ({ asUrl }) => {
+    const codeResp = await postJson(`${asUrl}/_ref/device-exporters/enrollment-codes`, {
+      connector_id: 'claude_code',
+      display_name: 'simon@192.168.1.7 Claude Code',
+      local_binding_name: 'simon-laptop',
+    });
+    assert.equal(codeResp.status, 201);
+
+    const enrollResp = await postJson(
+      `${asUrl}/_ref/device-exporters/enroll`,
+      {
+        device_label: 'simon@192.168.1.7 Claude Code',
+        enrollment_code: codeResp.body.enrollment_code,
+      },
+      PROTOCOL_HEADERS,
+    );
+    assert.equal(enrollResp.status, 201);
+
+    const connectorRow = getDb()
+      .prepare('SELECT manifest FROM connectors WHERE connector_id = ?')
+      .get('claude_code');
+    assert.ok(connectorRow);
+    const connectorManifest = JSON.parse(connectorRow.manifest);
+    assert.equal(connectorManifest.connector_id, 'claude_code');
+    assert.equal(connectorManifest.display_name, 'Claude Code');
+    assert.ok(connectorManifest.streams.some((stream) => stream.name === 'sessions'));
+
+    const instanceRow = getDb()
+      .prepare('SELECT display_name FROM connector_instances WHERE connector_instance_id = ?')
+      .get(enrollResp.body.connector_instance_id);
+    assert.equal(instanceRow.display_name, 'simon@192.168.1.7 Claude Code');
+  });
+});
+
 test('enroll rejects missing collector protocol header with 409 collector_protocol_mismatch and persists nothing', async () => {
   await withServer(async ({ asUrl }) => {
     const codeResp = await postJson(`${asUrl}/_ref/device-exporters/enrollment-codes`, {

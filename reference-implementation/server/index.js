@@ -5,7 +5,7 @@
  * Starts on port 7662 (AS/introspection) and 7663 (RS query API).
  */
 import { createHash, randomBytes } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 
 import { closeDb, getDb, initDb } from './db.js';
 import {
@@ -523,10 +523,43 @@ function referenceLocalDeviceStorageTarget(connectorId, connectorInstanceId) {
   };
 }
 
-async function ensureReferenceConnectorCatalogEntry(connectorId, displayName) {
+const REFERENCE_LOCAL_CONNECTOR_CATALOG_MANIFESTS = new Map([
+  ['claude_code', { entryName: 'claude_code.json', displayName: 'Claude Code' }],
+  ['codex', { entryName: 'codex.json', displayName: 'OpenAI Codex CLI' }],
+]);
+
+function readReferenceLocalConnectorCatalogManifest(connectorId) {
+  const local = REFERENCE_LOCAL_CONNECTOR_CATALOG_MANIFESTS.get(connectorId);
+  if (!local) return null;
+  try {
+    const raw = readFileSync(
+      new URL(`../../packages/polyfill-connectors/manifests/${local.entryName}`, import.meta.url),
+      'utf8',
+    );
+    const manifest = JSON.parse(raw);
+    return {
+      ...manifest,
+      connector_id: connectorId,
+      display_name: manifest.display_name || local.displayName,
+    };
+  } catch {
+    return {
+      connector_id: connectorId,
+      display_name: local.displayName,
+      streams: [],
+    };
+  }
+}
+
+async function ensureReferenceConnectorCatalogEntry(connectorId, connectorDisplayName) {
+  const localCollectorManifest = readReferenceLocalConnectorCatalogManifest(connectorId);
+  if (localCollectorManifest) {
+    await registerConnector(localCollectorManifest);
+    return;
+  }
   const manifest = {
     connector_id: connectorId,
-    display_name: displayName || connectorId,
+    display_name: connectorDisplayName || connectorId,
     streams: [],
   };
   if (isPostgresStorageBackend()) {
