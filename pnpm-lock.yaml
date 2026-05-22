@@ -265,6 +265,18 @@ importers:
         specifier: ^4.3.6
         version: 4.3.6
 
+  packages/mcp-server:
+    dependencies:
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.29.0
+        version: 1.29.0(zod@3.25.76)
+      '@pdpp/cli':
+        specifier: workspace:*
+        version: link:../cli
+      zod:
+        specifier: ^3.25.76
+        version: 3.25.76
+
   packages/pdpp-brand:
     dependencies:
       '@fontsource-variable/geist':
