@@ -37,6 +37,7 @@ function hbRow(overrides = {}) {
     deviceRevokedAt: null,
     lastHeartbeatAt: FRESH,
     lastHeartbeatStatus: 'healthy',
+    lastIngestAt: FRESH,
     recordsPending: 0,
     updatedAt: FRESH,
     ...overrides,
@@ -579,8 +580,8 @@ test('projectLocalDeviceProgress: only revoked / inactive rows → null', () => 
 
 test('projectLocalDeviceProgress: surfaces most-recent trusted heartbeat / ingest', () => {
   const out = projectLocalDeviceProgress([
-    hbRow({ sourceInstanceId: 'src_a', lastHeartbeatAt: OLD, updatedAt: OLD, recordsPending: 1 }),
-    hbRow({ sourceInstanceId: 'src_b', deviceId: 'dev_b', lastHeartbeatAt: FRESH, updatedAt: FRESH, recordsPending: 3 }),
+    hbRow({ sourceInstanceId: 'src_a', lastHeartbeatAt: OLD, lastIngestAt: OLD, recordsPending: 1 }),
+    hbRow({ sourceInstanceId: 'src_b', deviceId: 'dev_b', lastHeartbeatAt: FRESH, lastIngestAt: FRESH, recordsPending: 3 }),
   ]);
   assert.equal(out?.last_heartbeat_at, FRESH);
   assert.equal(out?.last_ingest_at, FRESH);
@@ -596,11 +597,12 @@ test('projectLocalDeviceProgress: scoped rows (single connector_instance_id) do 
       sourceInstanceId: 'src_z',
       connectorInstanceId: 'cin_other',
       lastHeartbeatAt: FRESH,
-      updatedAt: FRESH,
+      lastIngestAt: null,
     }),
   ]);
   assert.equal(out?.source_count, 1);
   assert.equal(out?.last_heartbeat_at, FRESH);
+  assert.equal(out?.last_ingest_at, null);
 });
 
 // ─── projectConnectorSummaryConnectionHealth honors outbox input ──────────

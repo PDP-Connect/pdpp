@@ -157,6 +157,7 @@ async function runConformance(makeStore) {
   assert.equal(byConnector[0].deviceStatus, 'active');
   assert.equal(byConnector[0].sourceStatus, 'active');
   assert.equal(byConnector[0].connectorInstanceId, 'cin_local_files_dev_1');
+  assert.equal(byConnector[0].lastIngestAt, NOW);
 
   // Instance-scoped query must not leak rows from a different
   // connector_instance_id. This is the foundation of per-connection
@@ -169,6 +170,7 @@ async function runConformance(makeStore) {
   );
   assert.equal(byInstance.length, 1);
   assert.equal(byInstance[0].connectorInstanceId, 'cin_local_files_dev_1');
+  assert.equal(byInstance[0].lastIngestAt, NOW);
   const byOtherInstance = await driver.call(
     'listSourceInstanceHeartbeatsByConnector',
     'local.files',

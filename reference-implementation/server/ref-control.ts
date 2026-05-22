@@ -1137,6 +1137,7 @@ interface HeartbeatRow {
   readonly deviceRevokedAt: string | null;
   readonly lastHeartbeatAt: string | null;
   readonly lastHeartbeatStatus: string | null;
+  readonly lastIngestAt: string | null;
   readonly recordsPending: number | null;
   readonly updatedAt: string | null;
 }
@@ -1293,10 +1294,8 @@ export function projectLocalDeviceProgress(
         lastHeartbeatStatus = row.lastHeartbeatStatus;
       }
     }
-    if (row.updatedAt !== null) {
-      if (lastIngestAt === null || row.updatedAt > lastIngestAt) {
-        lastIngestAt = row.updatedAt;
-      }
+    if (row.lastIngestAt !== null && (lastIngestAt === null || row.lastIngestAt > lastIngestAt)) {
+      lastIngestAt = row.lastIngestAt;
     }
     if (typeof row.recordsPending === "number") {
       recordsPending += row.recordsPending;

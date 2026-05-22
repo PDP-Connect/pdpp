@@ -52,6 +52,9 @@ const NO_LAST_SUCCESS_TESTID = /data-testid="diagnostics-no-last-success"/;
 // guard is readable. Match the connector_id predicate without locking the
 // surrounding whitespace.
 const PAGE_FILTERS_BY_CONNECTOR = /s\.connector_id === connectorId/;
+const PAGE_REQUESTS_SCOPED_SOURCE_INSTANCES =
+  /listDeviceExporterSourceInstances\(\{\s*connector_instance_id: connectorInstanceId \?\? undefined\s*\}\)/;
+const PAGE_MAPS_LOCAL_DEVICE_PROGRESS = /localDeviceProgress: summary\.local_device_progress \?\? null/;
 const PAGE_ALL_SETTLED = /Promise\.allSettled/;
 const PAGE_SCHEDULE_ERROR_BINDING = /scheduleError = errorMessage/;
 const PAGE_SOURCES_ERROR_BINDING = /sourceInstancesError = errorMessage/;
@@ -114,6 +117,12 @@ test("connection-diagnostics scopes source instances to the current connector vi
   // discoverable together.
   const page = await readFile(PAGE_FILE, "utf8");
   assert.match(page, PAGE_FILTERS_BY_CONNECTOR);
+  assert.match(page, PAGE_REQUESTS_SCOPED_SOURCE_INSTANCES);
+});
+
+test("connector detail page preserves local-device progress on its overview projection", async () => {
+  const page = await readFile(PAGE_FILE, "utf8");
+  assert.match(page, PAGE_MAPS_LOCAL_DEVICE_PROGRESS);
 });
 
 test("connector detail page uses Promise.allSettled so one failing fetch does not zero the others", async () => {

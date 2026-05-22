@@ -781,7 +781,7 @@ export async function listDeviceExporters(): Promise<ListResponse<DeviceExporter
 }
 
 export async function listDeviceExporterSourceInstances(
-  opts: { device_id?: string } = {}
+  opts: { connector_instance_id?: string; device_id?: string } = {}
 ): Promise<ListResponse<DeviceSourceInstance>> {
   return (await refFetch(
     "/_ref/device-exporters/source-instances",

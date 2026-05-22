@@ -4277,9 +4277,17 @@ function buildAsApp(opts = {}) {
       const requestedDeviceId = typeof req.query.device_id === 'string' && req.query.device_id.trim()
         ? req.query.device_id.trim()
         : null;
+      const requestedConnectorInstanceId =
+        typeof req.query.connector_instance_id === 'string' && req.query.connector_instance_id.trim()
+          ? req.query.connector_instance_id.trim()
+          : null;
       const data = diagnostics
         .flatMap((device) => device.source_instances)
-        .filter((source) => !requestedDeviceId || source.device_id === requestedDeviceId);
+        .filter((source) => !requestedDeviceId || source.device_id === requestedDeviceId)
+        .filter(
+          (source) =>
+            !requestedConnectorInstanceId || source.connector_instance_id === requestedConnectorInstanceId,
+        );
       res.json({ object: 'list', data });
     } catch (err) {
       handleError(res, err);

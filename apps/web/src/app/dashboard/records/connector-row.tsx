@@ -597,8 +597,8 @@ function ConnectorFreshnessLine({
   // the reference server has a trusted heartbeat row for THIS connection,
   // surface its evidence here rather than the generic "records present ·
   // no scheduler run yet" fallback. We render `last device ingest` when
-  // the row has been ingested-updated and `last device heartbeat`
-  // otherwise; either is honest durable progress.
+  // an ingest-batch outcome exists and `last device heartbeat` otherwise;
+  // either is honest durable progress.
   if (localDeviceProgress) {
     const ingestAt = localDeviceProgress.last_ingest_at;
     const heartbeatAt = localDeviceProgress.last_heartbeat_at;

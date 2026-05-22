@@ -693,6 +693,17 @@ test('device-exporter diagnostics scope heartbeat, ingest, and local-collector g
     assert.equal(secondSource.accepted_record_count, 0);
     assert.equal(secondSource.last_ingest_at, null);
 
+    const scopedSourcesResp = await fetch(
+      `${asUrl}/_ref/device-exporters/source-instances?connector_instance_id=${encodeURIComponent(first.connector_instance_id)}`,
+      { headers: { Accept: 'application/json' } },
+    );
+    assert.equal(scopedSourcesResp.status, 200);
+    const scopedSources = await scopedSourcesResp.json();
+    assert.deepEqual(
+      scopedSources.data.map((source) => source.connector_instance_id),
+      [first.connector_instance_id],
+    );
+
     // Local-collector gap counts scoped per source instance.
     assert.equal(firstSource.local_collector_gaps.pending_count, 0);
     assert.deepEqual(firstSource.local_collector_gaps.reasons, []);

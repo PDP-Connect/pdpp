@@ -64,6 +64,7 @@ function toConnectorOverview(summary: RefConnectorSummary, streams: StreamSummar
     streamCount: summary.stream_count,
     totalRetainedBytes: summary.total_retained_bytes,
     totalRecords: summary.total_records,
+    localDeviceProgress: summary.local_device_progress ?? null,
     lastRun,
     lastSuccessfulRun,
     isRunning: lastRun != null && new Set(["started", "in_progress"]).has(lastRun.status),
@@ -118,7 +119,7 @@ export default async function ConnectorPage({ params }: { params: Promise<{ conn
     // than silently zeroing the section.
     const [scheduleResult, sourcesResult] = await Promise.allSettled([
       getConnectorSchedule(connectorId),
-      listDeviceExporterSourceInstances(),
+      listDeviceExporterSourceInstances({ connector_instance_id: connectorInstanceId ?? undefined }),
     ]);
     connectionHealth = summary.connection_health ?? null;
     if (scheduleResult.status === "fulfilled") {
@@ -127,11 +128,7 @@ export default async function ConnectorPage({ params }: { params: Promise<{ conn
       scheduleError = errorMessage(scheduleResult.reason);
     }
     if (sourcesResult.status === "fulfilled") {
-      sourceInstances = sourcesResult.value.data.filter(
-        (s) =>
-          s.connector_id === connectorId &&
-          (!connectorInstanceId || !s.connector_instance_id || s.connector_instance_id === connectorInstanceId)
-      );
+      sourceInstances = sourcesResult.value.data.filter((s) => s.connector_id === connectorId);
     } else {
       sourceInstancesError = errorMessage(sourcesResult.reason);
     }
