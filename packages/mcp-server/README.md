@@ -15,7 +15,7 @@ access token already cached by `pdpp connect`.
 - **Not a grant-issuance surface.** If the cache is empty or the token is invalid, the
   adapter exits / surfaces an error directing the operator at `pdpp connect`.
 - **Not an owner-mode bypass.** `PDPP_OWNER_TOKEN` and other owner credentials are
-  ignored by default.
+  refused by default.
 - **Not a proxy.** Per-client consent and confused-deputy mitigations would be required
   before this package ever accepted MCP-client tokens; that is out of scope.
 
