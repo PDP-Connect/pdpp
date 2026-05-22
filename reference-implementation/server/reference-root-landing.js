@@ -116,9 +116,10 @@ function renderRootLanding({
  * Negotiation rules:
  *   - explicit `?format=json` → JSON path (caller proceeds).
  *   - `Accept` containing `application/json` → JSON path.
- *   - Otherwise, if the client accepts HTML (`Accept: text/html` or
- *     `Accept: *\/*` from browsers), render the landing page and return true.
- *   - No Accept header → JSON (preserves the existing default for tooling).
+ *   - Otherwise, if the client explicitly prefers HTML (`Accept: text/html`),
+ *     render the landing page and return true.
+ *   - No Accept header or `Accept: *\/*` → JSON (preserves the existing
+ *     default for tooling and curl-like probes).
  */
 export function servedRootLandingIfBrowser(req, res, options) {
   const role = options.role;
