@@ -581,8 +581,8 @@ export async function postgresGetDatasetRecordsAggregate() {
   const result = await postgresQuery(`
     SELECT
       COUNT(*)::int AS record_count,
-      COUNT(DISTINCT connector_id)::int AS connector_count,
-      COUNT(DISTINCT connector_id || ':' || stream)::int AS stream_count,
+      COUNT(DISTINCT connector_instance_id)::int AS connector_count,
+      COUNT(DISTINCT connector_instance_id || ':' || stream)::int AS stream_count,
       COALESCE(SUM(octet_length(record_json::text)), 0)::bigint AS record_json_bytes,
       MIN(emitted_at) AS earliest_ingested_at,
       MAX(emitted_at) AS latest_ingested_at

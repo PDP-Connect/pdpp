@@ -39,7 +39,7 @@ export function OverviewHero({ summary, recordsHref }: { summary: DatasetSummary
         <span className="font-normal text-muted-foreground"> records from </span>
         <span>{formatInteger(summary.connector_count)}</span>
         <span className="font-normal text-muted-foreground">
-          {summary.connector_count === 1 ? " connector" : " connectors"}
+          {summary.connector_count === 1 ? " connection" : " connections"}
         </span>
         {summary.earliest_record_time ? (
           <>
@@ -267,6 +267,9 @@ function formatInteger(n: number): string {
  * swallows the row. Fall through to the raw id for non-URL connector ids.
  */
 function displayConnectorSlug(connectorId: string): string {
+  if (connectorId.startsWith("local-device:")) {
+    return connectorId.slice("local-device:".length).replaceAll("_", "-");
+  }
   try {
     const url = new URL(connectorId);
     const segments = url.pathname.split("/").filter(Boolean);

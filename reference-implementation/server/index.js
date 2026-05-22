@@ -3658,6 +3658,40 @@ function buildAsApp(opts = {}) {
   // protocol surface — `record_json_bytes` remains an adapter-native operator
   // diagnostic per `define-reference-operation-environments` contract
   // correction (4); the operation preserves that constraint.
+  const buildDatasetSummaryDependencies = (aggregate, { projection, streamSeeds = false } = {}) => ({
+    getProjection: projection,
+    getCounts: async () => {
+      const agg = await aggregate();
+      return {
+        connector_count: agg.connector_count,
+        stream_count: agg.stream_count,
+        record_count: agg.record_count,
+      };
+    },
+    getRetainedBytes: async () => {
+      const [agg, recordChangesJsonBytes, blobBytes] = await Promise.all([
+        aggregate(),
+        getDatasetRecordChangesBytes(),
+        getDatasetBlobBytes(),
+      ]);
+      return {
+        record_json_bytes: agg.record_json_bytes,
+        record_changes_json_bytes: recordChangesJsonBytes,
+        blob_bytes: blobBytes,
+      };
+    },
+    getRecordTimeBounds: () => getDatasetRecordTimeBounds(),
+    getIngestedTimeBounds: async () => {
+      const agg = await aggregate();
+      return {
+        earliest: agg.earliest_ingested_at,
+        latest: agg.latest_ingested_at,
+      };
+    },
+    listTopConnectorCandidates: () => listDatasetTopConnectorCandidates(),
+    ...(streamSeeds ? { listStreamProjectionSeeds: () => listDatasetSummaryStreamProjectionSeeds() } : {}),
+  });
+
   app.get('/_ref/dataset/summary', { contract: 'refDatasetSummary' }, ownerAuth.requireOwnerSession, async (req, res) => {
     try {
       // Cache the records aggregate so `record_count` and `*_ingested_at`
@@ -3672,38 +3706,12 @@ function buildAsApp(opts = {}) {
         return cachedAggregate;
       };
 
-      const summary = await executeRefDatasetSummary({
-        getProjection: () => getDatasetSummaryProjection(),
-        getCounts: async () => {
-          const agg = await aggregate();
-          return {
-            connector_count: agg.connector_count,
-            stream_count: agg.stream_count,
-            record_count: agg.record_count,
-          };
-        },
-        getRetainedBytes: async () => {
-          const [agg, recordChangesJsonBytes, blobBytes] = await Promise.all([
-            aggregate(),
-            getDatasetRecordChangesBytes(),
-            getDatasetBlobBytes(),
-          ]);
-          return {
-            record_json_bytes: agg.record_json_bytes,
-            record_changes_json_bytes: recordChangesJsonBytes,
-            blob_bytes: blobBytes,
-          };
-        },
-        getRecordTimeBounds: () => getDatasetRecordTimeBounds(),
-        getIngestedTimeBounds: async () => {
-          const agg = await aggregate();
-          return {
-            earliest: agg.earliest_ingested_at,
-            latest: agg.latest_ingested_at,
-          };
-        },
-        listTopConnectorCandidates: () => listDatasetTopConnectorCandidates(),
-      });
+      const summary = await executeRefDatasetSummary(buildDatasetSummaryDependencies(aggregate, {
+        // The projection read model is currently SQLite-backed. In Postgres
+        // deployments, using it would serve stale data from an unrelated local
+        // SQLite file, so Postgres reads the canonical records tables directly.
+        projection: isPostgresStorageBackend() ? null : () => getDatasetSummaryProjection(),
+      }));
       res.json(summary);
     } catch (err) {
       handleError(res, err);
@@ -3720,37 +3728,13 @@ function buildAsApp(opts = {}) {
         }
         return cachedAggregate;
       };
+      if (isPostgresStorageBackend()) {
+        const summary = await executeRefDatasetSummary(buildDatasetSummaryDependencies(aggregate, { projection: null }));
+        res.json(summary);
+        return;
+      }
       const projection = await rebuildDatasetSummaryProjection({
-        getCounts: async () => {
-          const agg = await aggregate();
-          return {
-            connector_count: agg.connector_count,
-            stream_count: agg.stream_count,
-            record_count: agg.record_count,
-          };
-        },
-        getRetainedBytes: async () => {
-          const [agg, recordChangesJsonBytes, blobBytes] = await Promise.all([
-            aggregate(),
-            getDatasetRecordChangesBytes(),
-            getDatasetBlobBytes(),
-          ]);
-          return {
-            record_json_bytes: agg.record_json_bytes,
-            record_changes_json_bytes: recordChangesJsonBytes,
-            blob_bytes: blobBytes,
-          };
-        },
-        getRecordTimeBounds: () => getDatasetRecordTimeBounds(),
-        getIngestedTimeBounds: async () => {
-          const agg = await aggregate();
-          return {
-            earliest: agg.earliest_ingested_at,
-            latest: agg.latest_ingested_at,
-          };
-        },
-        listTopConnectorCandidates: () => listDatasetTopConnectorCandidates(),
-        listStreamProjectionSeeds: () => listDatasetSummaryStreamProjectionSeeds(),
+        ...buildDatasetSummaryDependencies(aggregate, { streamSeeds: true }),
       }, { signal: requestAbort.signal });
       const summary = await executeRefDatasetSummary({
         getProjection: () => projection,
@@ -3781,6 +3765,24 @@ function buildAsApp(opts = {}) {
   app.post('/_ref/dataset/summary/reconcile', { contract: 'refDatasetSummaryReconcile' }, ownerAuth.requireOwnerSession, async (req, res) => {
     const requestAbort = createRequestAbortSignal(req, 'dataset summary reconcile request closed');
     try {
+      if (isPostgresStorageBackend()) {
+        let cachedAggregate = null;
+        const aggregate = async () => {
+          if (cachedAggregate === null) {
+            cachedAggregate = await getDatasetRecordsAggregate();
+          }
+          return cachedAggregate;
+        };
+        const summary = await executeRefDatasetSummary(buildDatasetSummaryDependencies(aggregate, { projection: null }));
+        res.json({
+          object: 'dataset_summary_reconcile',
+          reconciled: 0,
+          deferred: 0,
+          residual: 0,
+          summary,
+        });
+        return;
+      }
       const result = await reconcileDirtyDatasetSummaryRecordTimeBounds({
         getStreamRecordTimeBounds: (connectorId, stream, consentTimeField) =>
           getDatasetSummaryStreamRecordTimeBounds(connectorId, stream, consentTimeField),

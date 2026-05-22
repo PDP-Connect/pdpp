@@ -565,8 +565,8 @@ test('_ref dataset summary', async (t) => {
       const body = await resp.json();
       assert.equal(resp.status, 200);
       assert.equal(body.object, 'dataset_summary');
-      assert.equal(body.connector_count, 1, 'one distinct connector_id with live records');
-      assert.equal(body.stream_count, 3, 'distinct (connector_id, stream) pairs with live records');
+      assert.equal(body.connector_count, 1, 'one configured connection with live records');
+      assert.equal(body.stream_count, 3, 'distinct connection/stream pairs with live records');
       assert.equal(body.record_count, 4);
       assert.ok(body.record_json_bytes > 0, 'record_json_bytes should be positive with seeded records');
       assert.ok(

@@ -68,7 +68,7 @@ test('ref.dataset.summary returns the full dataset_summary envelope', async () =
   ]);
   assert.deepEqual(summary.projection, {
     computed_at: null,
-    state: 'refreshing',
+    state: 'fresh',
     stale_since: null,
     rebuild_status: 'idle',
     last_error: null,

@@ -2297,8 +2297,10 @@ export async function putSyncState(storageTarget, stateMap, opts = {}) {
  * - `record_count`, `connector_count`, `stream_count`, and `record_json_bytes`
  *   count only live (non-soft-deleted) records — what normal reads would
  *   surface.
- * - `connector_count` and `stream_count` are distinct `(connector_id, stream)`
- *   observations in the live records table, not manifest-declared counts.
+ * - `connector_count` is the legacy wire name for live configured
+ *   connections (`connector_instance_id`); `stream_count` counts distinct
+ *   `(connector_instance_id, stream)` observations in the live records table,
+ *   not manifest-declared counts.
  * - `record_changes_json_bytes` sums the `record_changes` table — historical
  *   versions retained by design for change tracking. Included in
  *   `total_retained_bytes` because the substrate is honestly holding them.

@@ -542,6 +542,7 @@ export interface DatasetSummary {
   blob_bytes: number;
   /** When the returned summary values were produced by the reference projection, when available. */
   computed_at?: string | null;
+  /** Legacy wire name; the operator console treats this as configured connections with retained records. */
   connector_count: number;
   /** Substrate ingestion bounds (when the runtime wrote the row). Not the real age of the data. */
   earliest_ingested_at: string | null;
