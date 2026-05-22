@@ -156,6 +156,25 @@ async function runConformance(makeStore) {
   assert.equal(byConnector[0].sourceInstanceId, 'src_1');
   assert.equal(byConnector[0].deviceStatus, 'active');
   assert.equal(byConnector[0].sourceStatus, 'active');
+  assert.equal(byConnector[0].connectorInstanceId, 'cin_local_files_dev_1');
+
+  // Instance-scoped query must not leak rows from a different
+  // connector_instance_id. This is the foundation of per-connection
+  // dashboard health for connectors (e.g. two Claude Code laptops) that
+  // share a `connector_id` but project independent rows.
+  const byInstance = await driver.call(
+    'listSourceInstanceHeartbeatsByConnector',
+    'local.files',
+    { connectorInstanceId: 'cin_local_files_dev_1' },
+  );
+  assert.equal(byInstance.length, 1);
+  assert.equal(byInstance[0].connectorInstanceId, 'cin_local_files_dev_1');
+  const byOtherInstance = await driver.call(
+    'listSourceInstanceHeartbeatsByConnector',
+    'local.files',
+    { connectorInstanceId: 'cin_local_files_nonexistent' },
+  );
+  assert.equal(byOtherInstance.length, 0);
 
   await driver.call('revokeDevice', 'dev_1', LATER);
   assert.equal((await driver.call('getDevice', 'dev_1')).status, 'revoked');

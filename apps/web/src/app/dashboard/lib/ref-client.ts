@@ -230,6 +230,23 @@ export interface RefSchedule {
   updated_at: string;
 }
 
+/**
+ * Push-mode (local-device exporter) durable progress evidence. `null` /
+ * absent for scheduler-managed connections; populated only when a trusted
+ * device-side heartbeat row exists scoped to this `connector_instance_id`.
+ *
+ * The dashboard renders this in place of "no scheduler run yet" for
+ * local-device connectors. Mirrors `LocalDeviceProgress` from
+ * `reference-implementation/server/ref-control.ts`.
+ */
+export interface RefLocalDeviceProgress {
+  last_heartbeat_at: string | null;
+  last_heartbeat_status: string | null;
+  last_ingest_at: string | null;
+  records_pending: number | null;
+  source_count: number;
+}
+
 export interface RefConnectorSummary {
   connection_health: RefConnectionHealthSnapshot;
   connection_id: string;
@@ -240,6 +257,12 @@ export interface RefConnectorSummary {
   freshness: Record<string, unknown>;
   last_run: RefConnectorRunSummary | null;
   last_successful_run: RefConnectorRunSummary | null;
+  /**
+   * Per-instance durable progress for local-device connectors. Absent on
+   * scheduler-managed rows and on local-device rows with no trusted
+   * heartbeat yet.
+   */
+  local_device_progress?: RefLocalDeviceProgress | null;
   manifest_version: string | null;
   /** Top-level mirror of `connection_health.next_action`. */
   next_action: RefNextAction | null;

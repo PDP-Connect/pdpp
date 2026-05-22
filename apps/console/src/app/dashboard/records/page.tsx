@@ -43,6 +43,7 @@ function toConnectorOverview(summary: RefConnectorSummary): ConnectorOverview {
     },
     connectorDisplayName: summary.connector_display_name,
     connectorInstanceId: summary.connector_instance_id ?? summary.connection_id,
+    localDeviceProgress: summary.local_device_progress ?? null,
     streams: summary.streams.map((name) => ({
       object: "stream",
       name,

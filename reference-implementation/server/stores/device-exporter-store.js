@@ -111,6 +111,7 @@ function mapSourceInstanceHeartbeatRow(row) {
     sourceInstanceId: row.source_instance_id,
     deviceId: row.device_id,
     connectorId: row.connector_id,
+    connectorInstanceId: row.connector_instance_id ?? null,
     sourceStatus: row.source_status,
     deviceStatus: row.device_status,
     deviceRevokedAt: row.device_revoked_at ?? null,
@@ -330,10 +331,11 @@ export function createSqliteDeviceExporterStore() {
       );
     },
 
-    listSourceInstanceHeartbeatsByConnector(connectorId) {
+    listSourceInstanceHeartbeatsByConnector(connectorId, options) {
+      const connectorInstanceId = options?.connectorInstanceId ?? null;
       return allowUnboundedReadAcknowledged(
         referenceQueries.deviceExportersListSourceInstanceHeartbeatsByConnector,
-        [connectorId],
+        [connectorId, connectorInstanceId, connectorInstanceId],
       ).map(mapSourceInstanceHeartbeatRow);
     },
 
@@ -606,11 +608,13 @@ export function createPostgresDeviceExporterStore() {
       return result.rows.map(mapSourceInstance);
     },
 
-    async listSourceInstanceHeartbeatsByConnector(connectorId) {
+    async listSourceInstanceHeartbeatsByConnector(connectorId, options) {
+      const connectorInstanceId = options?.connectorInstanceId ?? null;
       const result = await postgresQuery(
         `SELECT dsi.source_instance_id,
                 dsi.device_id,
                 dsi.connector_id,
+                dsi.connector_instance_id,
                 dsi.status AS source_status,
                 dsi.last_heartbeat_at,
                 dsi.last_heartbeat_status,
@@ -622,8 +626,9 @@ export function createPostgresDeviceExporterStore() {
            FROM device_source_instances dsi
            JOIN device_exporters de ON de.device_id = dsi.device_id
           WHERE dsi.connector_id = $1
+            AND ($2::text IS NULL OR dsi.connector_instance_id = $2)
           ORDER BY (dsi.last_heartbeat_at IS NULL), dsi.last_heartbeat_at DESC NULLS LAST, dsi.device_id ASC, dsi.source_instance_id ASC`,
-        [connectorId],
+        [connectorId, connectorInstanceId],
       );
       return result.rows.map(mapSourceInstanceHeartbeatRow);
     },

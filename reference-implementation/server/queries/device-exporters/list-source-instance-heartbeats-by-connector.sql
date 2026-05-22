@@ -5,6 +5,7 @@
 SELECT dsi.source_instance_id,
        dsi.device_id,
        dsi.connector_id,
+       dsi.connector_instance_id,
        dsi.status AS source_status,
        dsi.last_heartbeat_at,
        dsi.last_heartbeat_status,
@@ -16,4 +17,5 @@ SELECT dsi.source_instance_id,
 FROM device_source_instances dsi
 JOIN device_exporters de ON de.device_id = dsi.device_id
 WHERE dsi.connector_id = ?
+  AND (? IS NULL OR dsi.connector_instance_id = ?)
 ORDER BY (dsi.last_heartbeat_at IS NULL), dsi.last_heartbeat_at DESC, dsi.device_id ASC, dsi.source_instance_id ASC

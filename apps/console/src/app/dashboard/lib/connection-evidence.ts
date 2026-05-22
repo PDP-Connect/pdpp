@@ -15,7 +15,12 @@
  * without a browser harness.
  */
 
-import type { DeviceSourceInstance, RefConnectionHealthSnapshot, RefSchedule } from "./ref-client.ts";
+import type {
+  DeviceSourceInstance,
+  RefConnectionHealthSnapshot,
+  RefLocalDeviceProgress,
+  RefSchedule,
+} from "./ref-client.ts";
 import type { ConnectorOverview, ConnectorRunRef } from "./rs-client.ts";
 
 export type EvidenceTone = "neutral" | "success" | "warning" | "danger";
@@ -271,8 +276,10 @@ export interface LastDurableProgress {
  *   - if evidence collection failed (`hasError`), say "Unavailable";
  *   - else if there is a successful run, summarize its end time + event count;
  *   - else if there is any run, summarize the attempt + status;
- *   - else if records exist without scheduler-managed run history, surface
- *     that explicitly (push-mode local-device exporters land here);
+ *   - else if a local-device exporter has reported a durable ingest or
+ *     heartbeat, surface that (push-mode collectors bypass
+ *     `scheduler_run_history` and land here);
+ *   - else if records exist with no other evidence, say so explicitly;
  *   - else "Never run".
  *
  * Never returns `0` for event counts unless that count was actually observed.
@@ -281,6 +288,7 @@ export function formatLastDurableProgress(input: {
   hasError: boolean;
   lastRun: ConnectorRunRef | null;
   lastSuccessfulRun: ConnectorRunRef | null;
+  localDeviceProgress?: RefLocalDeviceProgress | null;
   totalRecords: number;
 }): LastDurableProgress {
   if (input.hasError) {
@@ -299,9 +307,19 @@ export function formatLastDurableProgress(input: {
       unavailable: false,
     };
   }
+  // Push-mode local-device exporters: any trusted heartbeat / ingest is
+  // durable progress, even without a scheduler-managed run.
+  const lastIngestAt = input.localDeviceProgress?.last_ingest_at ?? null;
+  const lastHeartbeatAt = input.localDeviceProgress?.last_heartbeat_at ?? null;
+  if (lastIngestAt) {
+    return { label: `Last device ingest · ${lastIngestAt}`, unavailable: false };
+  }
+  if (lastHeartbeatAt) {
+    return { label: `Last device heartbeat · ${lastHeartbeatAt}`, unavailable: false };
+  }
   if (input.totalRecords > 0) {
-    // Records exist without a scheduler-managed run — typical of push-mode
-    // local-device exporters whose progress lands outside scheduler_run_history.
+    // Records exist without a scheduler-managed run and without a trusted
+    // heartbeat — honest but non-specific.
     return { label: "Records present · no scheduler run yet", unavailable: false };
   }
   return { label: "Never run", unavailable: false };

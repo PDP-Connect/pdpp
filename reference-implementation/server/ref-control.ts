@@ -213,6 +213,27 @@ interface ControllerLike {
   getSchedule?(connectorId: string): Promise<unknown>;
 }
 
+/**
+ * Durable progress evidence sourced from device-side heartbeats and
+ * outboxes. Surfaced for local-device connections that bypass
+ * `scheduler_run_history` (records are pushed from a device outbox).
+ *
+ * The dashboard renders these without inventing precision: "last device
+ * heartbeat: X", "last device ingest: X". When no trusted heartbeat row
+ * exists for the `connector_instance_id`, the field is `null` and the
+ * dashboard falls back to its existing scheduler-based labels.
+ *
+ * Scoped strictly to `connector_instance_id` to prevent one device's
+ * heartbeat from painting another device's pill.
+ */
+export interface LocalDeviceProgress {
+  readonly last_heartbeat_at: string | null;
+  readonly last_heartbeat_status: string | null;
+  readonly last_ingest_at: string | null;
+  readonly records_pending: number | null;
+  readonly source_count: number;
+}
+
 export interface ConnectorSummary {
   readonly connection_health: ConnectionHealthSnapshot;
   readonly connection_id: string;
@@ -223,6 +244,12 @@ export interface ConnectorSummary {
   readonly freshness: Freshness;
   readonly last_run: ConnectorRunSummary | null;
   readonly last_successful_run: ConnectorRunSummary | null;
+  /**
+   * Push-mode (local-device exporter) durable progress evidence. `null`
+   * for scheduler-managed connections and for local-device connections
+   * with no trusted heartbeat row yet.
+   */
+  readonly local_device_progress: LocalDeviceProgress | null;
   readonly manifest_version: string | null;
   /**
    * Top-level mirror of `connection_health.next_action`. Mirrored at the
@@ -1104,6 +1131,7 @@ interface HeartbeatRow {
   readonly sourceInstanceId: string;
   readonly deviceId: string;
   readonly connectorId: string;
+  readonly connectorInstanceId: string | null;
   readonly sourceStatus: string;
   readonly deviceStatus: string;
   readonly deviceRevokedAt: string | null;
@@ -1213,18 +1241,75 @@ function normalizeHeartbeatStatusForAxis(
  */
 export async function getConnectorOutboxAxis(
   connectorId: string,
-): Promise<{ axis: OutboxAxis; unreliable: boolean }> {
+  options: { readonly connectorInstanceId?: string | null } = {},
+): Promise<{ axis: OutboxAxis; heartbeats: readonly HeartbeatRow[]; unreliable: boolean }> {
   const store = getDefaultDeviceExporterStore();
   if (typeof store.listSourceInstanceHeartbeatsByConnector !== "function") {
-    return { axis: "unknown", unreliable: false };
+    return { axis: "unknown", heartbeats: [], unreliable: false };
   }
+  const connectorInstanceId = options.connectorInstanceId ?? null;
   try {
-    const rows = (await store.listSourceInstanceHeartbeatsByConnector(connectorId)) as readonly HeartbeatRow[];
+    // Scope to a single `connector_instance_id` when the caller knows it.
+    // Two enrolled devices that share a `connector_id` (e.g. two Claude
+    // Code laptops) project independent rows; without this scope a stalled
+    // heartbeat on device A would degrade device B's connection-health pill.
+    const rows = (await store.listSourceInstanceHeartbeatsByConnector(
+      connectorId,
+      connectorInstanceId !== null ? { connectorInstanceId } : undefined,
+    )) as readonly HeartbeatRow[];
     const result = projectConnectorOutboxAxisFromHeartbeats(rows, { nowIso: new Date().toISOString() });
-    return { axis: result.axis, unreliable: result.unreliable };
+    return { axis: result.axis, heartbeats: rows, unreliable: result.unreliable };
   } catch {
-    return { axis: "unknown", unreliable: true };
+    return { axis: "unknown", heartbeats: [], unreliable: true };
   }
+}
+
+/**
+ * Project a single `LocalDeviceProgress` from already-collected heartbeat
+ * rows. Pure — the caller (typically `getConnectorOutboxAxis`) is
+ * responsible for scoping the rows to one `connector_instance_id`.
+ *
+ * Returns `null` when no trusted source rows exist; we do not surface
+ * device-side progress derived solely from revoked / inactive rows.
+ */
+export function projectLocalDeviceProgress(
+  heartbeats: readonly HeartbeatRow[],
+): LocalDeviceProgress | null {
+  const trusted = heartbeats.filter(
+    (row) => row.deviceStatus === "active" && row.sourceStatus === "active" && row.deviceRevokedAt === null,
+  );
+  if (trusted.length === 0) {
+    return null;
+  }
+  let lastHeartbeatAt: string | null = null;
+  let lastHeartbeatStatus: string | null = null;
+  let lastIngestAt: string | null = null;
+  let recordsPending = 0;
+  let sawPending = false;
+  for (const row of trusted) {
+    if (row.lastHeartbeatAt !== null) {
+      if (lastHeartbeatAt === null || row.lastHeartbeatAt > lastHeartbeatAt) {
+        lastHeartbeatAt = row.lastHeartbeatAt;
+        lastHeartbeatStatus = row.lastHeartbeatStatus;
+      }
+    }
+    if (row.updatedAt !== null) {
+      if (lastIngestAt === null || row.updatedAt > lastIngestAt) {
+        lastIngestAt = row.updatedAt;
+      }
+    }
+    if (typeof row.recordsPending === "number") {
+      recordsPending += row.recordsPending;
+      sawPending = true;
+    }
+  }
+  return {
+    last_heartbeat_at: lastHeartbeatAt,
+    last_heartbeat_status: lastHeartbeatStatus,
+    last_ingest_at: lastIngestAt,
+    records_pending: sawPending ? recordsPending : null,
+    source_count: trusted.length,
+  };
 }
 
 function combineUnreliableSources(
@@ -1769,7 +1854,7 @@ export async function listConnectorSummaries(
           getLatestRunSummary(connectorId),
           getLatestRunSummary(connectorId, "succeeded"),
           getConnectorDetailGapProjection(connectorId, connectorInstanceId),
-          getConnectorOutboxAxis(connectorId),
+          getConnectorOutboxAxis(connectorId, { connectorInstanceId }),
           getConnectorAttentionProjection(connectorId, { connectorInstanceId }),
           getConnectorBrowserSurfaceProjection(connectorId),
         ]);
@@ -1798,6 +1883,15 @@ export async function listConnectorSummaries(
         schedule,
       });
       const connectorDisplayName = manifest.display_name || connectorId;
+      // Local-device connections push records from a device outbox and
+      // never write `scheduler_run_history` rows. Without a per-instance
+      // progress projection, the records page reads `lastRun == null` and
+      // shows "no scheduler run yet" even when the device is actively
+      // ingesting. We only surface this for `local_device` source-kind
+      // instances; scheduler-managed connections leave the field `null`
+      // so the dashboard's existing run-based labels stay authoritative.
+      const localDeviceProgress =
+        instance.sourceKind === "local_device" ? projectLocalDeviceProgress(outbox.heartbeats) : null;
       return {
         connection_id: connectorInstanceId,
         connection_health: connectionHealth,
@@ -1805,6 +1899,7 @@ export async function listConnectorSummaries(
         connector_id: connectorId,
         connector_instance_id: connectorInstanceId,
         display_name: instance.displayName || connectorDisplayName,
+        local_device_progress: localDeviceProgress,
         manifest_version: manifest.version || null,
         next_action: connectionHealth.next_action,
         streams: (manifest.streams || []).map((stream) => stream.name),
