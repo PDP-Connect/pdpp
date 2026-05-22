@@ -19,12 +19,14 @@ import type { Routes } from "./routes.ts";
 
 export interface SearchRecordHit {
   connectorId: string;
+  displayAt: string;
   emittedAt: string;
   hybridSources?: ("lexical" | "semantic")[];
   recordId: string;
   semanticOnly?: boolean;
   snippet: string;
   stream: string;
+  timestampLabel: string;
 }
 
 export interface SearchData {
@@ -288,12 +290,18 @@ const DEMO_SUFFIX_RE = /_demo$/;
 
 function RecordRow({ hit, query, routes }: { hit: SearchRecordHit; query: string; routes: Routes }) {
   const href = routes.record(hit.connectorId, hit.stream, hit.recordId);
+  const timestampTitle =
+    hit.displayAt === hit.emittedAt
+      ? "emitted timestamp"
+      : `${hit.timestampLabel} timestamp; emitted ${hit.emittedAt}`;
   return (
     <Link
       className="grid gap-1 px-2 py-2 text-xs hover:bg-muted/50 sm:grid-cols-[10rem_9rem_1fr] sm:items-baseline sm:gap-4"
       href={href}
     >
-      <Timestamp className="whitespace-nowrap text-muted-foreground" value={hit.emittedAt} />
+      <span title={timestampTitle}>
+        <Timestamp className="whitespace-nowrap text-muted-foreground" value={hit.displayAt} />
+      </span>
       <span className="flex items-baseline gap-2 whitespace-nowrap">
         <span className="truncate font-medium">{hit.connectorId.replace(DEMO_SUFFIX_RE, "")}</span>
         <span className="truncate text-muted-foreground">{hit.stream}</span>

@@ -15,6 +15,7 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { buttonVariants } from "@/components/ui/button.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
+import { shouldShowInPrimaryConnections } from "../../lib/records-list-classification.ts";
 import type { ConnectorOverview, ConnectorRunRef } from "../../lib/rs-client.ts";
 import { ConnectorRow } from "../../records/connector-row.tsx";
 import { DataList, PageHeader, Section } from "../primitives.tsx";
@@ -74,8 +75,8 @@ export function RecordsListView({
    */
   now?: number;
 }) {
-  const withData = overviews.filter((o) => o.totalRecords > 0 || o.lastRun);
-  const empty = overviews.filter((o) => o.totalRecords === 0 && !o.lastRun && !o.error);
+  const withData = overviews.filter(shouldShowInPrimaryConnections);
+  const empty = overviews.filter((o) => !shouldShowInPrimaryConnections(o));
   const sorted = [...withData].sort((a, b) => {
     const [ak, at, an] = connectorSortKey(a);
     const [bk, bt, bn] = connectorSortKey(b);

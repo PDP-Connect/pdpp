@@ -15,12 +15,19 @@ import {
   getRecord,
   isHybridRetrievalAdvertised,
   isSemanticRetrievalAdvertised,
+  listConnectorManifests,
   type SearchResultHit,
   type SearchResultPage,
   searchRecordsHybrid,
   searchRecordsLexical,
   searchRecordsSemantic,
 } from "../lib/rs-client.ts";
+import {
+  lookupSearchTimestampMetadata,
+  pickSearchDisplayTimestamp,
+  searchTimestampMetadataKey,
+  type SearchTimestampMetadata,
+} from "../lib/search-record-timestamps.ts";
 import { summarize } from "../lib/timeline-summaries.ts";
 import { verifyDashboardSession } from "../lib/verify-session.ts";
 
@@ -40,6 +47,7 @@ const SEMANTIC_UPLIFT_LIMIT = 10;
 
 interface RecordHit {
   connectorId: string;
+  displayAt: string;
   emittedAt: string;
   // Which sources the hybrid endpoint reported for this specific record.
   // Undefined when hybrid retrieval was not used.
@@ -50,6 +58,7 @@ interface RecordHit {
   semanticOnly?: boolean;
   snippet: string;
   stream: string;
+  timestampLabel: string;
 }
 
 interface RecordPage {
@@ -83,25 +92,47 @@ interface RetrievalNotice {
  * If hydration fails (record removed between index match and read, etc.)
  * we degrade to a stream-and-key label so the row still renders.
  */
-async function hitToRecordHit(hit: SearchResultHit): Promise<RecordHit> {
-  let snippet: string;
-  if (hit.snippet?.text) {
-    snippet = hit.snippet.text;
-  } else {
-    try {
-      const record = await getRecord(hit.connector_id, hit.stream, hit.record_key);
-      const data = (record.data ?? {}) as Record<string, unknown>;
-      snippet = summarize(hit.connector_id, hit.stream, data) || `${hit.stream}/${hit.record_key}`;
-    } catch {
-      snippet = `${hit.stream}/${hit.record_key}`;
+async function buildSearchTimestampMetadata(): Promise<Map<string, SearchTimestampMetadata>> {
+  const metadata = new Map<string, SearchTimestampMetadata>();
+  for (const manifest of await listConnectorManifests()) {
+    for (const stream of manifest.streams ?? []) {
+      metadata.set(searchTimestampMetadataKey(manifest.connector_id, stream.name), {
+        consent_time_field: typeof stream.consent_time_field === "string" ? stream.consent_time_field : null,
+        cursor_field: typeof stream.cursor_field === "string" ? stream.cursor_field : null,
+      });
     }
   }
+  return metadata;
+}
+
+async function hitToRecordHit(
+  hit: SearchResultHit,
+  timestampMetadataByKey: ReadonlyMap<string, SearchTimestampMetadata>
+): Promise<RecordHit> {
+  let data: Record<string, unknown> | null = null;
+  try {
+    const record = await getRecord(hit.connector_id, hit.stream, hit.record_key);
+    data = record.data && typeof record.data === "object" ? (record.data as Record<string, unknown>) : null;
+  } catch {
+    data = null;
+  }
+  const snippet =
+    hit.snippet?.text ??
+    (data ? summarize(hit.connector_id, hit.stream, data) : null) ??
+    `${hit.stream}/${hit.record_key}`;
+  const displayTimestamp = pickSearchDisplayTimestamp({
+    data,
+    emittedAt: hit.emitted_at,
+    metadata: lookupSearchTimestampMetadata(timestampMetadataByKey, hit.connector_id, hit.stream),
+  });
   return {
     connectorId: hit.connector_id,
     stream: hit.stream,
     recordId: hit.record_key,
+    displayAt: displayTimestamp.value,
     emittedAt: hit.emitted_at,
     snippet,
+    timestampLabel: displayTimestamp.label,
   };
 }
 
@@ -160,10 +191,13 @@ async function searchRecords(query: string, cursor: string | null, prevStack: st
     if (hybridResult.page) {
       // Hybrid succeeded — use its results as the sole source for page 1.
       // Lexical still drives pages 2+; hybrid is a first-page quality boost.
-      const lexicalPage = await searchRecordsLexical(query, { limit: PAGE_LIMIT });
+      const [lexicalPage, timestampMetadataByKey] = await Promise.all([
+        searchRecordsLexical(query, { limit: PAGE_LIMIT }),
+        buildSearchTimestampMetadata(),
+      ]);
       const hybridHits = await Promise.all(
         hybridResult.page.data.map(async (h: SearchResultHit) => {
-          const base = await hitToRecordHit(h);
+          const base = await hitToRecordHit(h, timestampMetadataByKey);
           return {
             ...base,
             hybridSources: Array.isArray(h.retrieval_sources) ? h.retrieval_sources : undefined,
@@ -227,7 +261,8 @@ async function searchRecords(query: string, cursor: string | null, prevStack: st
   ]);
 
   const semanticPage = semanticResult.page;
-  const lexicalHits = await Promise.all(lexicalPage.data.map((h) => hitToRecordHit(h)));
+  const timestampMetadataByKey = await buildSearchTimestampMetadata();
+  const lexicalHits = await Promise.all(lexicalPage.data.map((h) => hitToRecordHit(h, timestampMetadataByKey)));
 
   let upliftHits: RecordHit[] = [];
   let dedupedOutCount = 0;
@@ -239,7 +274,7 @@ async function searchRecords(query: string, cursor: string | null, prevStack: st
     dedupedOutCount = semanticPage.data.length - semanticOnly.length;
     upliftHits = await Promise.all(
       semanticOnly.map(async (h: SearchResultHit) => {
-        const base = await hitToRecordHit(h);
+        const base = await hitToRecordHit(h, timestampMetadataByKey);
         return { ...base, semanticOnly: true };
       })
     );

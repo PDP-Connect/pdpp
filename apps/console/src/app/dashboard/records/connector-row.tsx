@@ -285,7 +285,7 @@ function RunStatus({
   // for the resource server, whether through a scheduler-managed run
   // (lastRun/lastSuccessfulRun) or a push-mode local-device exporter that
   // bypasses the scheduler entirely (hasRecords).
-  const hasDurableProgress = Boolean(lastRun) || Boolean(lastSuccessfulRun) || hasRecords;
+  const hasDurableProgress = hasRecords;
   if (connectionHealth) {
     return (
       <ConnectionHealthStatus
@@ -468,6 +468,13 @@ function connectionHealthDisplay(
   const reason = health.reason_code ? ` · ${health.reason_code}` : "";
   switch (health.state) {
     case "healthy":
+      if (!hasDurableProgress) {
+        return {
+          label: "No data yet",
+          title: "Last check completed, but this connection has no retained records yet",
+          tone: "neutral",
+        };
+      }
       return { label: "Healthy", title: "Required coverage is current and complete", tone: "success" };
     case "needs_attention":
       return { label: "Needs attention", shape: "diamond", title: `Owner action required${reason}`, tone: "warning" };
