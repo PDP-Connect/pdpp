@@ -63,12 +63,59 @@ export const MIGRATION_PAIRS = [
   },
 ];
 
-// Tables keyed by connector_instance_id that hold authoritative state.
-// Order matters: record_changes references no FK but uses
-// (connector_instance_id, stream, version) as PK, so we re-allocate version
-// during copy. blobs is referenced by blob_bindings via blob_id (not by
-// connector_instance_id), so we copy bindings while leaving the blob row
-// untouched — the blob is content-addressed and may be shared.
+// ──────────────────────────────────────────────────────────────────────
+// Schema classification
+//
+// Every table below is verified against
+// reference-implementation/server/postgres-storage.js to have a
+// `connector_instance_id` column (and either a PK or index that uses it).
+// Tables WITHOUT that column — notably lexical_search_snapshots and
+// semantic_search_snapshots — are NEVER targeted by per-instance DELETE
+// or COUNT. Those snapshots are pagination cursors keyed by snapshot_id,
+// TTL-bounded, with a plan_hash that auto-invalidates when the per-
+// connector plan changes (see search.js::hashPlan,
+// search-semantic.js::hashSemanticPlan).
+//
+// Categories:
+//   AUTHORITATIVE_INSTANCE_TABLES
+//     Per-instance authoritative data. Copied source → target before
+//     the source rows are deleted. Backed up first.
+//
+//   TARGET_REBUILD_PER_STREAM_TABLES
+//     Search-derived rows keyed by (connector_instance_id, stream). When
+//     we copy records into a target stream the target's derived rows for
+//     that stream may become stale (new record_keys, changed fingerprint).
+//     We clear them on the target for the affected streams; the runtime
+//     rebuilds lazily on next query.
+//
+//   SOURCE_CLEAR_ONLY_TABLES
+//     Per-instance rows that are operationally bound to the source
+//     instance and MUST NOT be carried over to the target:
+//       - controller_active_runs:    in-flight run rows; a soon-purged
+//                                    instance can have nothing running.
+//       - connector_schedules:       target already has its own schedule.
+//       - connector_detail_gaps:     pending detail-fetch TODOs against
+//                                    a stale instance id; target will
+//                                    rediscover gaps on its own.
+//       - connector_attention_records: operational alerts surfaced for
+//                                    the source instance; resetting them
+//                                    is the desired behavior post-merge.
+//     Backed up, then cleared from the source. Never migrated.
+//
+//   IGNORED tables (mentioned for completeness, NOT in any list below):
+//     - lexical_search_snapshots, semantic_search_snapshots — no CII
+//       column, plan_hash already invalidates stale cursors.
+//     - blobs — content-addressed, shared across instances.
+//     - browser_surfaces, browser_surface_leases — keyed by connector_id /
+//       surface_id, not CII; runtime owns lifecycle.
+//     - spine_events, tokens, grants, pending_consents,
+//       source_webhook_events, device_enrollment_codes,
+//       device_exporters, device_ingest_*, oauth_clients,
+//       owner_device_auth, web_push_subscriptions — not CII-keyed.
+//     - device_source_instances — handled explicitly (see
+//       DEVICE_BINDING_TABLES below).
+// ──────────────────────────────────────────────────────────────────────
+
 export const AUTHORITATIVE_INSTANCE_TABLES = Object.freeze([
   'records',
   'record_changes',
@@ -78,22 +125,46 @@ export const AUTHORITATIVE_INSTANCE_TABLES = Object.freeze([
   'grant_connector_state',
   'scheduler_run_history',
   'scheduler_last_run_times',
-  'controller_active_runs',
 ]);
 
-// Derived/search tables — dropped for the source instance after migration,
-// since the runtime rebuilds these lazily (search.js::rebuildLexicalIndexForStream,
-// search-semantic.js::rebuildSemanticIndexForStream). We do not attempt to
-// rewrite the rows; clearing them on both source and target's affected
-// streams forces a clean rebuild on next query.
-export const DERIVED_INSTANCE_TABLES = Object.freeze([
+export const TARGET_REBUILD_PER_STREAM_TABLES = Object.freeze([
   'lexical_search_index',
   'lexical_search_meta',
-  'lexical_search_snapshots',
   'semantic_search_blob',
   'semantic_search_meta',
-  'semantic_search_snapshots',
   'semantic_search_backfill_progress',
+]);
+
+export const SOURCE_CLEAR_ONLY_TABLES = Object.freeze([
+  'controller_active_runs',
+  'connector_schedules',
+  'connector_detail_gaps',
+  'connector_attention_records',
+]);
+
+// Snapshots tables are intentionally NOT in any per-instance list above.
+// They have no connector_instance_id column; per-instance DELETE/COUNT
+// against them would fail. Exported only so the test suite can assert
+// the script never references them by connector_instance_id.
+export const SCHEMA_TABLES_WITHOUT_CONNECTOR_INSTANCE_ID = Object.freeze([
+  'lexical_search_snapshots',
+  'semantic_search_snapshots',
+  'blobs',
+  'browser_surfaces',
+  'browser_surface_leases',
+  'spine_events',
+  'tokens',
+  'grants',
+  'pending_consents',
+  'source_webhook_events',
+  'device_enrollment_codes',
+  'device_exporters',
+  'device_ingest_batch_outcomes',
+  'device_ingest_credentials',
+  'oauth_clients',
+  'owner_device_auth',
+  'web_push_subscriptions',
+  'connectors',
 ]);
 
 // Tables that bind a device's local source to a connector_instance. After
@@ -102,4 +173,17 @@ export const DERIVED_INSTANCE_TABLES = Object.freeze([
 // being retired. Owner decision is communicated via purgeSourceInstance.
 export const DEVICE_BINDING_TABLES = Object.freeze([
   'device_source_instances',
+]);
+
+// All tables the source side will touch when computing row counts and
+// backups. Source-clear-only rows are included so the preview accurately
+// reflects what will be deleted from the source.
+export const SOURCE_TOUCHED_TABLES = Object.freeze([
+  ...AUTHORITATIVE_INSTANCE_TABLES,
+  ...SOURCE_CLEAR_ONLY_TABLES,
+  // Source's own per-stream search-derived rows are dropped too —
+  // otherwise they would point at a connector_instance_id that no
+  // longer exists once the source is purged.
+  ...TARGET_REBUILD_PER_STREAM_TABLES,
+  ...DEVICE_BINDING_TABLES,
 ]);

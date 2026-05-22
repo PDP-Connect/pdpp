@@ -1,15 +1,67 @@
 /**
  * Static checks for the migration script: argument parser, plan shape,
- * and table-name invariants. Does not connect to a database.
+ * table classification invariants, and — most importantly — assertions
+ * against the live postgres-storage.js schema so the snapshot-table
+ * regression (DELETE … WHERE connector_instance_id against a table that
+ * has no such column) cannot recur.
+ *
+ * Does not connect to a database.
  *
  * Run: node --test reference-implementation/scripts/migrate-active-connection-data/migrate-active-connection-data.test.mjs
  */
 
+import fs from 'node:fs';
+import path from 'node:path';
+import url from 'node:url';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { MIGRATION_PAIRS, AUTHORITATIVE_INSTANCE_TABLES, DERIVED_INSTANCE_TABLES } from './plan.mjs';
+import {
+  MIGRATION_PAIRS,
+  AUTHORITATIVE_INSTANCE_TABLES,
+  TARGET_REBUILD_PER_STREAM_TABLES,
+  SOURCE_CLEAR_ONLY_TABLES,
+  SOURCE_TOUCHED_TABLES,
+  DEVICE_BINDING_TABLES,
+  SCHEMA_TABLES_WITHOUT_CONNECTOR_INSTANCE_ID,
+} from './plan.mjs';
 import { parseArgs, makeRunId } from './cli.mjs';
+
+const __dirname = path.dirname(url.fileURLToPath(import.meta.url));
+const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
+const POSTGRES_STORAGE = path.join(REPO_ROOT, 'reference-implementation', 'server', 'postgres-storage.js');
+const CLI_PATH = path.join(__dirname, 'cli.mjs');
+
+function readPostgresStorageSource() {
+  if (!fs.existsSync(POSTGRES_STORAGE)) {
+    throw new Error(`postgres-storage.js not found at ${POSTGRES_STORAGE}`);
+  }
+  return fs.readFileSync(POSTGRES_STORAGE, 'utf8');
+}
+
+function parseTableBodies(src) {
+  // Capture `CREATE TABLE IF NOT EXISTS <name> ( ... )` blocks. We use a
+  // permissive regex: the table body ends at the first ')' followed by a
+  // backtick or semicolon at the outer template-literal/statement level.
+  // postgres-storage.js consistently emits each CREATE TABLE inside its
+  // own template literal so this works in practice; if the layout changes
+  // the assertion below will fail loudly.
+  const out = {};
+  const re = /CREATE TABLE IF NOT EXISTS ([a-z_]+)\s*\(([\s\S]*?)\)\s*[`;]/g;
+  let m;
+  while ((m = re.exec(src)) !== null) {
+    out[m[1]] = m[2];
+  }
+  return out;
+}
+
+function readCliSource() {
+  return fs.readFileSync(CLI_PATH, 'utf8');
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Plan-shape invariants
+// ──────────────────────────────────────────────────────────────────────
 
 test('plan: every pair has at least one source', () => {
   for (const pair of MIGRATION_PAIRS) {
@@ -56,17 +108,169 @@ test('plan: source ids do not overlap target ids', () => {
   }
 });
 
-test('table lists: authoritative and derived sets are disjoint', () => {
-  const a = new Set(AUTHORITATIVE_INSTANCE_TABLES);
-  for (const t of DERIVED_INSTANCE_TABLES) {
-    assert.equal(a.has(t), false, `${t} is in both AUTHORITATIVE and DERIVED lists`);
+// ──────────────────────────────────────────────────────────────────────
+// Table-list shape invariants
+// ──────────────────────────────────────────────────────────────────────
+
+test('table lists: authoritative/rebuild/source-clear/binding/without-cii are pairwise disjoint', () => {
+  const lists = [
+    ['AUTHORITATIVE_INSTANCE_TABLES', AUTHORITATIVE_INSTANCE_TABLES],
+    ['TARGET_REBUILD_PER_STREAM_TABLES', TARGET_REBUILD_PER_STREAM_TABLES],
+    ['SOURCE_CLEAR_ONLY_TABLES', SOURCE_CLEAR_ONLY_TABLES],
+    ['DEVICE_BINDING_TABLES', DEVICE_BINDING_TABLES],
+    ['SCHEMA_TABLES_WITHOUT_CONNECTOR_INSTANCE_ID', SCHEMA_TABLES_WITHOUT_CONNECTOR_INSTANCE_ID],
+  ];
+  for (let i = 0; i < lists.length; i++) {
+    for (let j = i + 1; j < lists.length; j++) {
+      const a = new Set(lists[i][1]);
+      for (const t of lists[j][1]) {
+        assert.equal(a.has(t), false,
+          `table "${t}" appears in both ${lists[i][0]} and ${lists[j][0]}`);
+      }
+    }
   }
 });
 
-test('table lists: authoritative table names look like Postgres identifiers', () => {
-  for (const t of [...AUTHORITATIVE_INSTANCE_TABLES, ...DERIVED_INSTANCE_TABLES]) {
+test('table lists: identifiers look like Postgres identifiers', () => {
+  const all = [
+    ...AUTHORITATIVE_INSTANCE_TABLES,
+    ...TARGET_REBUILD_PER_STREAM_TABLES,
+    ...SOURCE_CLEAR_ONLY_TABLES,
+    ...DEVICE_BINDING_TABLES,
+    ...SCHEMA_TABLES_WITHOUT_CONNECTOR_INSTANCE_ID,
+  ];
+  for (const t of all) {
     assert.match(t, /^[a-z][a-z0-9_]+$/, `suspicious table identifier: ${t}`);
   }
+});
+
+test('table lists: SOURCE_TOUCHED_TABLES is the union of source-side categories', () => {
+  const expected = new Set([
+    ...AUTHORITATIVE_INSTANCE_TABLES,
+    ...SOURCE_CLEAR_ONLY_TABLES,
+    ...TARGET_REBUILD_PER_STREAM_TABLES,
+    ...DEVICE_BINDING_TABLES,
+  ]);
+  assert.equal(SOURCE_TOUCHED_TABLES.length, expected.size,
+    'SOURCE_TOUCHED_TABLES has duplicates or missing entries');
+  for (const t of SOURCE_TOUCHED_TABLES) {
+    assert.ok(expected.has(t), `unexpected entry in SOURCE_TOUCHED_TABLES: ${t}`);
+  }
+});
+
+// ──────────────────────────────────────────────────────────────────────
+// Schema assertions — read postgres-storage.js, classify each CREATE TABLE
+// ──────────────────────────────────────────────────────────────────────
+
+test('schema: every table in SOURCE_TOUCHED_TABLES actually has connector_instance_id', () => {
+  const bodies = parseTableBodies(readPostgresStorageSource());
+  for (const t of SOURCE_TOUCHED_TABLES) {
+    assert.ok(bodies[t], `postgres-storage.js does not declare CREATE TABLE IF NOT EXISTS ${t}`);
+    assert.match(bodies[t], /connector_instance_id/,
+      `table "${t}" is listed as per-instance but its CREATE TABLE has no connector_instance_id column`);
+  }
+});
+
+test('schema: every table in TARGET_REBUILD_PER_STREAM_TABLES has connector_instance_id AND a stream column', () => {
+  const bodies = parseTableBodies(readPostgresStorageSource());
+  for (const t of TARGET_REBUILD_PER_STREAM_TABLES) {
+    assert.ok(bodies[t], `missing CREATE TABLE for ${t}`);
+    assert.match(bodies[t], /connector_instance_id/, `${t} has no connector_instance_id`);
+    // Either a "stream" column or a "scope_key" column — semantic_search_blob
+    // uses scope_key in place of stream, but our cli targets only the
+    // canonical stream-keyed ones. Allow scope_key for parity with the
+    // semantic blob table.
+    assert.ok(
+      /\bstream\b/.test(bodies[t]) || /\bscope_key\b/.test(bodies[t]),
+      `${t} has neither a stream nor scope_key column — cannot be safely per-stream invalidated`,
+    );
+  }
+});
+
+test('schema: tables we omit from per-instance ops do NOT have connector_instance_id (or are intentional)', () => {
+  const bodies = parseTableBodies(readPostgresStorageSource());
+  // These are explicitly listed as having no CII column.
+  const mustNotHaveCII = ['lexical_search_snapshots', 'semantic_search_snapshots'];
+  for (const t of mustNotHaveCII) {
+    assert.ok(bodies[t], `missing CREATE TABLE for ${t}`);
+    assert.equal(/connector_instance_id/.test(bodies[t]), false,
+      `${t} unexpectedly has a connector_instance_id column — re-evaluate classification`);
+  }
+});
+
+test('schema regression: cli.mjs MUST NOT mention snapshot tables in any DML against connector_instance_id', () => {
+  const cli = readCliSource();
+  // The bug we are guarding against: any code path that issues
+  //   DELETE/SELECT/COUNT FROM lexical_search_snapshots WHERE connector_instance_id = …
+  // The snapshot tables have no such column. Forbid any reference in cli.mjs.
+  for (const t of ['lexical_search_snapshots', 'semantic_search_snapshots']) {
+    assert.equal(cli.includes(t) && /WHERE connector_instance_id/.test(cli) && new RegExp(`${t}[^a-z_]`).test(cli.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, '')), false,
+      `cli.mjs references ${t} outside of comments — this caused the per-instance DELETE bug`);
+  }
+});
+
+test('schema: SOURCE_CLEAR_ONLY_TABLES are tables we want to drop on source, never copy', () => {
+  // controller_active_runs has connector_instance_id as PRIMARY KEY — copying
+  // a source row to the target would collide if the target had its own
+  // active run. Clear-only is the correct classification.
+  const bodies = parseTableBodies(readPostgresStorageSource());
+  for (const t of SOURCE_CLEAR_ONLY_TABLES) {
+    assert.ok(bodies[t], `missing CREATE TABLE for ${t}`);
+    assert.match(bodies[t], /connector_instance_id/, `${t} has no connector_instance_id`);
+  }
+});
+
+test('schema completeness: every CII-keyed table in postgres-storage.js is classified somewhere', () => {
+  const bodies = parseTableBodies(readPostgresStorageSource());
+  const ciiKeyed = Object.entries(bodies)
+    .filter(([, body]) => /connector_instance_id/.test(body))
+    .map(([name]) => name);
+  // Explicitly-ignored CII-keyed tables. `blobs` declares
+  // connector_instance_id as denormalised metadata, but the row itself
+  // is content-addressed by sha256 / blob_id and shared across
+  // instances — blob_bindings is the per-instance owner table. We must
+  // not delete from `blobs` during instance purge, and we don't copy it
+  // either.
+  const intentionallyIgnored = new Set([
+    'blobs',
+    ...SCHEMA_TABLES_WITHOUT_CONNECTOR_INSTANCE_ID,
+  ]);
+  const classified = new Set([
+    ...AUTHORITATIVE_INSTANCE_TABLES,
+    ...TARGET_REBUILD_PER_STREAM_TABLES,
+    ...SOURCE_CLEAR_ONLY_TABLES,
+    ...DEVICE_BINDING_TABLES,
+    'connector_instances', // identity row, handled specially
+    ...intentionallyIgnored,
+  ]);
+  const missing = ciiKeyed.filter((t) => !classified.has(t));
+  assert.equal(missing.length, 0,
+    `postgres-storage.js has CII-keyed tables not classified by plan.mjs: ${missing.join(', ')}`);
+});
+
+// ──────────────────────────────────────────────────────────────────────
+// CLI behavior tests
+// ──────────────────────────────────────────────────────────────────────
+
+test('cli: only uses backup-then-delete sequencing (no DELETE before CREATE TABLE backup)', () => {
+  const cli = readCliSource();
+  // Sanity check that backup tables are created before any delete pass.
+  // The backup statement uses a dynamic `${backupName}` identifier built
+  // from `mig_<runId>_…`, so we match the literal prefix string.
+  const firstBackup = cli.indexOf('mig_${tableSuffix}');
+  const firstDelete = cli.search(/DELETE FROM\s+"/);
+  assert.ok(firstBackup > 0, 'expected mig_<runId> backup-table creation in cli.mjs');
+  assert.ok(firstDelete > 0, 'expected DELETE FROM statements in cli.mjs');
+  assert.ok(firstBackup < firstDelete,
+    'first DELETE appears before first backup CREATE TABLE — backup-then-delete ordering broken');
+});
+
+test('cli: target-side per-stream invalidation is scoped to invalidated streams only', () => {
+  const cli = readCliSource();
+  // We expect the invalidation block to use `stream = ANY(...)` against
+  // targetInstanceId — not a blanket `DELETE FROM lexical_search_index`.
+  assert.match(cli, /stream\s*=\s*ANY\(\$2::text\[\]\)/,
+    'expected target search-derived invalidation to be scoped by stream array');
 });
 
 test('parseArgs: defaults', () => {

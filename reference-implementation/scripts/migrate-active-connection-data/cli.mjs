@@ -12,20 +12,29 @@
  *             schedule. No backup tables, no row writes.
  *   apply     Run the full migration:
  *               1. Snapshot affected rows into backup tables prefixed
- *                  mig_<runId>_<table>
+ *                  mig_<runId>_<table>. Backups live inside the same
+ *                  transaction as the writes — on COMMIT they persist
+ *                  alongside the migrated data; on ROLLBACK (dry-run or
+ *                  failure) they vanish together with everything else.
  *               2. Copy unique (stream, record_key) rows from source to
- *                  target, re-allocating version per target stream
+ *                  target, re-allocating version per target stream.
  *               3. Copy connector_state / grant_connector_state /
  *                  scheduler_* / blob_bindings rows that don't exist on
- *                  target (no overwrite)
- *               4. Delete source rows from authoritative + derived tables
- *               5. Retarget or drop device_source_instances bindings
- *               6. Update target display_name on connector_instances and
- *                  any device_source_instances pointing at the target
- *               7. Delete the source connector_instances row when
- *                  purgeSourceInstance is true
+ *                  target (no overwrite).
+ *               4. Invalidate target's per-stream search-derived rows
+ *                  for any stream we copied records into, so search
+ *                  results cannot stay stale.
+ *               5. Delete source rows from authoritative + source-clear-
+ *                  only tables, and the source's own per-stream search-
+ *                  derived rows.
+ *               6. Retarget or drop device_source_instances bindings.
+ *               7. Update target display_name on connector_instances and
+ *                  any device_source_instances pointing at the target.
+ *               8. Delete the source connector_instances row when
+ *                  purgeSourceInstance is true.
  *             All steps run inside one transaction per pair. --dry-run runs
- *             the full transaction but ROLLBACKs at the end.
+ *             the full transaction but ROLLBACKs at the end, which also
+ *             drops the in-transaction backup tables.
  *   verify    Re-runs the preview after apply and checks every source row
  *             count is zero in the authoritative tables and target row
  *             counts have grown by the migrated delta. Read-only.
@@ -36,6 +45,10 @@
  *   - Refuses to run if PDPP_STORAGE_BACKEND != 'postgres'.
  *   - Refuses to run if PDPP_DATABASE_URL is unset.
  *   - Honours --dry-run: opens tx, performs every write, then ROLLBACK.
+ *   - Never references lexical_search_snapshots or semantic_search_snapshots
+ *     by connector_instance_id — those tables have no such column. They
+ *     are snapshot_id-keyed pagination cursors, TTL-bounded, with a
+ *     plan_hash that auto-invalidates stale cursors.
  *
  * Usage:
  *   node reference-implementation/scripts/migrate-active-connection-data/cli.mjs preview
@@ -44,7 +57,14 @@
  *   node reference-implementation/scripts/migrate-active-connection-data/cli.mjs verify
  */
 
-import { MIGRATION_PAIRS, AUTHORITATIVE_INSTANCE_TABLES, DERIVED_INSTANCE_TABLES } from './plan.mjs';
+import {
+  MIGRATION_PAIRS,
+  AUTHORITATIVE_INSTANCE_TABLES,
+  TARGET_REBUILD_PER_STREAM_TABLES,
+  SOURCE_CLEAR_ONLY_TABLES,
+  SOURCE_TOUCHED_TABLES,
+  DEVICE_BINDING_TABLES,
+} from './plan.mjs';
 
 // `pg` is loaded lazily so the module is importable in environments where
 // the dependency is not yet installed (e.g. CI scripts hitting parseArgs).
@@ -151,7 +171,7 @@ async function fetchInstance(pool, instanceId) {
 
 async function instanceRowCounts(pool, instanceId) {
   const out = {};
-  for (const table of [...AUTHORITATIVE_INSTANCE_TABLES, ...DERIVED_INSTANCE_TABLES, 'device_source_instances']) {
+  for (const table of SOURCE_TOUCHED_TABLES) {
     const r = await pool.query(
       `SELECT COUNT(*)::int AS count FROM "${table}" WHERE connector_instance_id = $1`,
       [instanceId],
@@ -274,12 +294,15 @@ async function applyPair(pool, pair, runId, opts) {
 
     if (opts.dryRun) {
       await client.query('ROLLBACK');
-      console.log('  (dry-run: ROLLBACK)');
+      console.log('  (dry-run: ROLLBACK — backup tables created in this tx are dropped too)');
     } else {
       await client.query('COMMIT');
       console.log('  COMMIT');
     }
   } catch (err) {
+    // ROLLBACK drops the backup tables created in the same transaction
+    // along with every other change — the database returns to its
+    // pre-pair state, which is exactly what we want on a failed apply.
     try { await client.query('ROLLBACK'); } catch {}
     pairReport.error = err.message;
     throw err;
@@ -290,11 +313,22 @@ async function applyPair(pool, pair, runId, opts) {
 }
 
 async function drainSource({ client, runId, sourceInstanceId, targetInstanceId, targetConnectorId, purgeSourceInstance, skipMigration }) {
-  const report = { sourceInstanceId, targetInstanceId, copied: {}, deleted: {}, backedUp: {} };
+  const report = {
+    sourceInstanceId,
+    targetInstanceId,
+    copied: {},
+    deleted: {},
+    backedUp: {},
+    targetStreamsInvalidated: [],
+  };
   const tableSuffix = `${runId}_${sourceInstanceId.slice(0, 16)}`;
 
-  // 1. Backup every authoritative + binding + derived row keyed by this source.
-  for (const table of [...AUTHORITATIVE_INSTANCE_TABLES, ...DERIVED_INSTANCE_TABLES, 'device_source_instances']) {
+  // 1. Backup every per-instance row keyed by this source. SOURCE_TOUCHED_TABLES
+  //    is the verified allow-list — every name here has a connector_instance_id
+  //    column (see plan.mjs::SCHEMA_TABLES_WITHOUT_CONNECTOR_INSTANCE_ID for
+  //    the negative list). Backup tables created here are scoped to the
+  //    pair's transaction: COMMIT persists them, ROLLBACK drops them.
+  for (const table of SOURCE_TOUCHED_TABLES) {
     const backupName = `mig_${tableSuffix}_${table}`;
     const bk = await client.query(
       `CREATE TABLE "${backupName}" AS
@@ -312,6 +346,9 @@ async function drainSource({ client, runId, sourceInstanceId, targetInstanceId, 
     [sourceInstanceId],
   );
   report.backedUp.connector_instances = 1;
+
+  // Track which target streams need search-derived rebuild.
+  const targetStreamsTouched = new Set();
 
   if (!skipMigration && targetInstanceId) {
     // 2. records — copy unique (stream, record_key). Allocate a fresh
@@ -358,12 +395,13 @@ async function drainSource({ client, runId, sourceInstanceId, targetInstanceId, 
       );
 
       if (uniqueRows.rows.length > 0) {
+        targetStreamsTouched.add(stream);
         const bump = await client.query(
           `UPDATE version_counter
-              SET max_version = max_version + $4
+              SET max_version = max_version + $3
             WHERE connector_instance_id = $1 AND stream = $2
             RETURNING max_version`,
-          [targetInstanceId, stream, /* unused */ null, uniqueRows.rows.length],
+          [targetInstanceId, stream, uniqueRows.rows.length],
         );
         const newMax = Number(bump.rows[0].max_version);
         const baseVersion = newMax - uniqueRows.rows.length;
@@ -473,9 +511,45 @@ async function drainSource({ client, runId, sourceInstanceId, targetInstanceId, 
     report.copied.scheduler_last_run_times = slrtResult.rowCount || 0;
   }
 
-  // 3. Delete source rows. Authoritative tables first, then derived
-  //    (search) tables — runtime rebuilds search lazily on first query.
-  for (const table of [...AUTHORITATIVE_INSTANCE_TABLES, ...DERIVED_INSTANCE_TABLES]) {
+  // 3. Invalidate target's per-stream search-derived rows for any stream we
+  //    copied records into. The runtime rebuilds these lazily
+  //    (search.js::rebuildLexicalIndexForStream,
+  //    search-semantic.js::rebuildSemanticIndexForStream) on next query.
+  //
+  //    NOTE: lexical_search_snapshots and semantic_search_snapshots are
+  //    NOT touched here — they have no connector_instance_id column.
+  //    Stale pagination cursors are handled by their plan_hash mismatch
+  //    and TTL.
+  if (targetInstanceId && targetStreamsTouched.size > 0) {
+    const streamsArr = [...targetStreamsTouched];
+    for (const table of TARGET_REBUILD_PER_STREAM_TABLES) {
+      const r = await client.query(
+        `DELETE FROM "${table}"
+          WHERE connector_instance_id = $1
+            AND stream = ANY($2::text[])`,
+        [targetInstanceId, streamsArr],
+      );
+      report.targetRebuildCleared = report.targetRebuildCleared || {};
+      report.targetRebuildCleared[table] = r.rowCount || 0;
+    }
+    report.targetStreamsInvalidated = streamsArr;
+  }
+
+  // 4. Delete source rows.
+  //    - AUTHORITATIVE_INSTANCE_TABLES: we just copied them; safe to clear.
+  //    - SOURCE_CLEAR_ONLY_TABLES: runtime/in-flight data that must not be
+  //      carried over. controller_active_runs especially must be cleared,
+  //      otherwise a row pointing at a purged instance would block a new
+  //      run from claiming the (connector_instance_id) PK on the target.
+  //    - TARGET_REBUILD_PER_STREAM_TABLES (source side): the source's own
+  //      search-derived rows; the runtime would rebuild from a missing
+  //      instance otherwise. Dropping is correct.
+  const sourceClearTables = [
+    ...AUTHORITATIVE_INSTANCE_TABLES,
+    ...SOURCE_CLEAR_ONLY_TABLES,
+    ...TARGET_REBUILD_PER_STREAM_TABLES,
+  ];
+  for (const table of sourceClearTables) {
     const r = await client.query(
       `DELETE FROM "${table}" WHERE connector_instance_id = $1`,
       [sourceInstanceId],
@@ -483,17 +557,19 @@ async function drainSource({ client, runId, sourceInstanceId, targetInstanceId, 
     report.deleted[table] = r.rowCount || 0;
   }
 
-  // 4. device_source_instances — drop bindings tied to the source instance.
+  // 5. device_source_instances — drop bindings tied to the source instance.
   //    These are device-local pointers; if a device still represents the
   //    active connection it already has a separate binding pointing at
   //    targetInstanceId. If not, the operator re-enrolls.
-  const dsiResult = await client.query(
-    `DELETE FROM device_source_instances WHERE connector_instance_id = $1`,
-    [sourceInstanceId],
-  );
-  report.deleted.device_source_instances = dsiResult.rowCount || 0;
+  for (const table of DEVICE_BINDING_TABLES) {
+    const dsiResult = await client.query(
+      `DELETE FROM "${table}" WHERE connector_instance_id = $1`,
+      [sourceInstanceId],
+    );
+    report.deleted[table] = dsiResult.rowCount || 0;
+  }
 
-  // 5. Purge the connector_instances row if requested.
+  // 6. Purge the connector_instances row if requested.
   if (purgeSourceInstance) {
     const ciResult = await client.query(
       `DELETE FROM connector_instances WHERE connector_instance_id = $1`,
@@ -579,4 +655,4 @@ if (isMain) {
   });
 }
 
-export { parseArgs, makeRunId, previewCommand, applyCommand, verifyCommand };
+export { parseArgs, makeRunId, previewCommand, applyCommand, verifyCommand, drainSource };
