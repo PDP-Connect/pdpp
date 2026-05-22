@@ -2,7 +2,7 @@
 
 - [ ] 1.1 Land this proposal, design, and the two spec deltas (`reference-surface-topology`, `reference-implementation-architecture`) as a reviewable artifact set.
 - [ ] 1.2 Update `design-notes/public-site-vs-reference-server-split-2026-05-21.md` to status `decided` once the change is merged, linking back to this OpenSpec change.
-- [ ] 1.3 Run `openspec validate split-public-site-and-operator-console --strict` and `openspec validate --all --strict`.
+- [x] 1.3 Run `openspec validate split-public-site-and-operator-console --strict` and `openspec validate --all --strict`.
 
 ## 2. Extract `packages/operator-ui` (no app split yet)
 
@@ -45,8 +45,8 @@
 
 ## 7. Validation
 
-- [ ] 7.1 Run `openspec validate split-public-site-and-operator-console --strict`.
-- [ ] 7.2 Run `openspec validate --all --strict`.
+- [x] 7.1 Run `openspec validate split-public-site-and-operator-console --strict`.
+- [x] 7.2 Run `openspec validate --all --strict`.
 - [ ] 7.3 Run `pnpm --dir apps/site run types:check`, `check`, and `build`.
 - [ ] 7.4 Run `pnpm --dir apps/console run types:check`, `check`, and `build`.
 - [ ] 7.5 Run targeted `reference-implementation` tests for the new content-negotiated root handlers: `pnpm --dir reference-implementation run verify` plus any new `node --test` files added in task 5.
