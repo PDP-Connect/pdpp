@@ -148,6 +148,17 @@ export function observeJsonlFields(obj, obs, forcedSessionId) {
         }
     }
 }
+function updateSessionAccumulatorFromCurrentLine(sessionAccumulators, projectDir, obs, obj, messageCountDelta) {
+    if (!obs.sessionId) {
+        return;
+    }
+    updateSessionAccumulator(sessionAccumulators, projectDir, {
+        ...obs,
+        firstTimestamp: obj.timestamp ?? null,
+        lastTimestamp: obj.timestamp ?? null,
+        messageCount: messageCountDelta,
+    });
+}
 export function isMessageType(type) {
     return type === "user" || type === "assistant";
 }
@@ -357,11 +368,12 @@ async function parseJsonlFile(args) {
                 message: `  ${path}: ${lineCount} lines parsed`,
             });
         }
+        const messageCountBeforeLine = obs.messageCount;
         observeJsonlFields(obj, obs, forcedSessionId);
         await processJsonlLine({ buildOnly, deps: { emitRecord, requested }, obj, obs });
-    }
-    if (buildOnly) {
-        updateSessionAccumulator(sessionAccumulators, projectDir, obs);
+        if (buildOnly) {
+            updateSessionAccumulatorFromCurrentLine(sessionAccumulators, projectDir, obs, obj, obs.messageCount - messageCountBeforeLine);
+        }
     }
     return obs.sessionId;
 }
@@ -732,7 +744,8 @@ if (isMainModule(import.meta.url)) {
             const baseDir = process.env.CLAUDE_CODE_PROJECTS_DIR || join(claudeHome, "projects");
             await assertRequestedClaudeSources({ baseDir, claudeHome, requested });
             const typedState = state;
-            const fileMtimes = streamFileMtimes(typedState, "messages") ?? typedState.file_mtimes ?? {};
+            const messageFileMtimes = streamFileMtimes(typedState, "messages") ?? typedState.file_mtimes ?? {};
+            const sessionFileMtimes = streamFileMtimes(typedState, "sessions") ?? {};
             const skillsMtimes = streamFileMtimes(typedState, "skills") ?? {};
             const slashCommandMtimes = streamFileMtimes(typedState, "slash_commands") ?? {};
             const memoryNoteMtimes = streamFileMtimes(typedState, "memory_notes") ?? {};
@@ -753,15 +766,16 @@ if (isMainModule(import.meta.url)) {
             if (!needsProjects) {
                 return;
             }
-            const newMtimes = { ...fileMtimes };
+            const newMessageFileMtimes = { ...messageFileMtimes };
+            const newSessionFileMtimes = { ...sessionFileMtimes };
             const sessionAccumulators = new Map();
             await scanProjectDirs({
                 baseDir,
                 buildOnly: true,
                 emit,
                 emitRecord,
-                fileMtimes,
-                newMtimes,
+                fileMtimes: sessionFileMtimes,
+                newMtimes: newSessionFileMtimes,
                 memoryNoteMtimes,
                 newMemoryNoteMtimes,
                 requested,
@@ -772,7 +786,7 @@ if (isMainModule(import.meta.url)) {
                 await emit({
                     type: "STATE",
                     stream: "sessions",
-                    cursor: { fetched_at: nowIso() },
+                    cursor: { file_mtimes: newSessionFileMtimes, fetched_at: nowIso() },
                 });
             }
             if (requested.has("memory_notes")) {
@@ -788,8 +802,8 @@ if (isMainModule(import.meta.url)) {
                     buildOnly: false,
                     emit,
                     emitRecord,
-                    fileMtimes,
-                    newMtimes,
+                    fileMtimes: messageFileMtimes,
+                    newMtimes: newMessageFileMtimes,
                     requested,
                     sessionAccumulators,
                 });
@@ -798,7 +812,7 @@ if (isMainModule(import.meta.url)) {
                 await emit({
                     type: "STATE",
                     stream: "messages",
-                    cursor: { file_mtimes: newMtimes, fetched_at: nowIso() },
+                    cursor: { file_mtimes: newMessageFileMtimes, fetched_at: nowIso() },
                 });
             }
         },

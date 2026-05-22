@@ -15,8 +15,9 @@
  *   skills          — user-authored skills under ~/.claude/skills/<skill>/SKILL.md
  *   slash_commands  — user-authored slash commands under ~/.claude/commands/*.md
  *
- * Incremental via file-modified time: if a jsonl file's mtime hasn't changed
- * since last run, we skip re-parsing it entirely.
+ * Incremental via file-modified time. Session aggregation and child record
+ * emission keep separate JSONL cursors so missing session summaries can be
+ * backfilled without re-emitting unchanged messages and attachments.
  *
  * Honors CLAUDE_CODE_PROJECTS_DIR override; defaults to ~/.claude/projects.
  * Skills/commands live under ~/.claude (overridable via CLAUDE_CODE_HOME).
@@ -159,9 +160,10 @@ async function* iterJsonlLines(path: string): AsyncGenerator<JsonlObject> {
 
 // ─── Per-file parse observations ────────────────────────────────────────
 
-/** Running observations pinned from a single JSONL file's lines. Only the
- *  first non-null value wins for metadata; timestamps widen to cover the
- *  min/max seen so the session aggregate covers the full file span. */
+/** Running observations from a single JSONL file's lines. The session id
+ *  tracks the current line unless a forced id is supplied for subagent files.
+ *  Metadata is first-non-null within the file; timestamps widen to cover the
+ *  full observed file span. */
 export interface JsonlObservations {
   cwd: string | null;
   entrypoint: string | null;
@@ -189,10 +191,10 @@ export function makeJsonlObservations(forcedSessionId: string | null): JsonlObse
 }
 
 /**
- * Fold one JSONL object into running observations. Pure, no emit. The
- * session id sticks on first sighting unless a `forcedSessionId` is set
- * (subagent files reuse the parent session id from the directory name).
- * Other metadata fields follow the same first-wins rule; timestamps
+ * Fold one JSONL object into running observations. Pure, no emit. Top-level
+ * agent JSONL files can contain lines for more than one session, so the
+ * session id intentionally follows the current line unless a `forcedSessionId`
+ * is set. Other metadata fields follow first-non-null semantics; timestamps
  * widen the observed [first, last] range.
  */
 export function observeJsonlFields(obj: JsonlObject, obs: JsonlObservations, forcedSessionId: string | null): void {
@@ -222,6 +224,24 @@ export function observeJsonlFields(obj: JsonlObject, obs: JsonlObservations, for
       obs.lastTimestamp = obj.timestamp;
     }
   }
+}
+
+function updateSessionAccumulatorFromCurrentLine(
+  sessionAccumulators: Map<string, SessionAccumulator>,
+  projectDir: string,
+  obs: JsonlObservations,
+  obj: JsonlObject,
+  messageCountDelta: number
+): void {
+  if (!obs.sessionId) {
+    return;
+  }
+  updateSessionAccumulator(sessionAccumulators, projectDir, {
+    ...obs,
+    firstTimestamp: obj.timestamp ?? null,
+    lastTimestamp: obj.timestamp ?? null,
+    messageCount: messageCountDelta,
+  });
 }
 
 // ─── Type predicates ────────────────────────────────────────────────────
@@ -569,14 +589,18 @@ async function parseJsonlFile(args: ParseJsonlFileArgs): Promise<string | null> 
         message: `  ${path}: ${lineCount} lines parsed`,
       });
     }
+    const messageCountBeforeLine = obs.messageCount;
     observeJsonlFields(obj, obs, forcedSessionId);
     await processJsonlLine({ buildOnly, deps: { emitRecord, requested }, obj, obs });
-  }
-
-  // Only update the accumulator on the build pass. On the emit pass,
-  // accumulators are already populated and we must not double-count.
-  if (buildOnly) {
-    updateSessionAccumulator(sessionAccumulators, projectDir, obs);
+    if (buildOnly) {
+      updateSessionAccumulatorFromCurrentLine(
+        sessionAccumulators,
+        projectDir,
+        obs,
+        obj,
+        obs.messageCount - messageCountBeforeLine
+      );
+    }
   }
   return obs.sessionId;
 }
@@ -1073,7 +1097,7 @@ async function runSkillsAndCommands(
 
 function streamFileMtimes(
   state: ClaudeCodeState,
-  stream: "memory_notes" | "messages" | "skills" | "slash_commands"
+  stream: "memory_notes" | "messages" | "sessions" | "skills" | "slash_commands"
 ): Record<string, number> | undefined {
   return state[stream]?.file_mtimes;
 }
@@ -1090,12 +1114,13 @@ if (isMainModule(import.meta.url)) {
       const baseDir = process.env.CLAUDE_CODE_PROJECTS_DIR || join(claudeHome, "projects");
       await assertRequestedClaudeSources({ baseDir, claudeHome, requested });
       const typedState = state as ClaudeCodeState;
-      // STATE is stream-keyed per Collection Profile: `state` is
-      // { <stream>: <cursor>, ... }. This connector emits STATE with
-      // stream='messages', cursor={file_mtimes:{...}}, so reads must
-      // qualify by that stream. Fall back to top-level for pre-fix state.
-      const fileMtimes: Record<string, number> =
+      // STATE is stream-keyed per Collection Profile. JSONL child emits and
+      // session aggregation use separate cursors so sessions can backfill
+      // without re-emitting unchanged child records. Fall back to top-level
+      // for pre-stream-keyed message state.
+      const messageFileMtimes: Record<string, number> =
         streamFileMtimes(typedState, "messages") ?? typedState.file_mtimes ?? {};
+      const sessionFileMtimes = streamFileMtimes(typedState, "sessions") ?? {};
       const skillsMtimes = streamFileMtimes(typedState, "skills") ?? {};
       const slashCommandMtimes = streamFileMtimes(typedState, "slash_commands") ?? {};
       const memoryNoteMtimes = streamFileMtimes(typedState, "memory_notes") ?? {};
@@ -1122,7 +1147,8 @@ if (isMainModule(import.meta.url)) {
         return;
       }
 
-      const newMtimes: Record<string, number> = { ...fileMtimes };
+      const newMessageFileMtimes: Record<string, number> = { ...messageFileMtimes };
+      const newSessionFileMtimes: Record<string, number> = { ...sessionFileMtimes };
       const sessionAccumulators = new Map<string, SessionAccumulator>();
 
       // Parent-first emit (Tranche C 2026-04-23): sessions must emit
@@ -1141,8 +1167,8 @@ if (isMainModule(import.meta.url)) {
         buildOnly: true,
         emit,
         emitRecord,
-        fileMtimes,
-        newMtimes,
+        fileMtimes: sessionFileMtimes,
+        newMtimes: newSessionFileMtimes,
         memoryNoteMtimes,
         newMemoryNoteMtimes,
         requested,
@@ -1154,7 +1180,7 @@ if (isMainModule(import.meta.url)) {
         await emit({
           type: "STATE",
           stream: "sessions",
-          cursor: { fetched_at: nowIso() },
+          cursor: { file_mtimes: newSessionFileMtimes, fetched_at: nowIso() },
         });
       }
 
@@ -1174,8 +1200,8 @@ if (isMainModule(import.meta.url)) {
           buildOnly: false,
           emit,
           emitRecord,
-          fileMtimes,
-          newMtimes,
+          fileMtimes: messageFileMtimes,
+          newMtimes: newMessageFileMtimes,
           requested,
           sessionAccumulators,
         });
@@ -1185,7 +1211,7 @@ if (isMainModule(import.meta.url)) {
         await emit({
           type: "STATE",
           stream: "messages",
-          cursor: { file_mtimes: newMtimes, fetched_at: nowIso() },
+          cursor: { file_mtimes: newMessageFileMtimes, fetched_at: nowIso() },
         });
       }
     },
