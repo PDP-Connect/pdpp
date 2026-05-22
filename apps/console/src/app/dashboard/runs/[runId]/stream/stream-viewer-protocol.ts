@@ -1,1 +1,1 @@
-export * from "@pdpp/remote-surface/protocol";
+export * from "@opendatalabs/remote-surface/protocol";

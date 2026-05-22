@@ -48,7 +48,10 @@ const SOURCE_LOCAL_GAPS_TESTID = /data-testid="diagnostics-local-gaps"/;
 const SOURCE_LOCAL_GAPS_MISSING_TESTID = /data-testid="diagnostics-local-gaps-missing"/;
 const NEVER_INGESTED_COPY = /never ingested/;
 const NO_LAST_SUCCESS_TESTID = /data-testid="diagnostics-no-last-success"/;
-const PAGE_FILTERS_BY_CONNECTOR = /\.filter\(\(s\) => s\.connector_id === connectorId\)/;
+// The filter has been split across multiple lines so the connector_instance_id
+// guard is readable. Match the connector_id predicate without locking the
+// surrounding whitespace.
+const PAGE_FILTERS_BY_CONNECTOR = /s\.connector_id === connectorId/;
 const PAGE_ALL_SETTLED = /Promise\.allSettled/;
 const PAGE_SCHEDULE_ERROR_BINDING = /scheduleError = errorMessage/;
 const PAGE_SOURCES_ERROR_BINDING = /sourceInstancesError = errorMessage/;
@@ -125,4 +128,27 @@ test("connector detail page uses Promise.allSettled so one failing fetch does no
 test("connector detail page mounts <ConnectionDiagnostics>", async () => {
   const page = await readFile(PAGE_FILE, "utf8");
   assert.match(page, PAGE_MOUNTS_DIAGNOSTICS);
+});
+
+// Multi-device clarity: when the connection has bound source instances,
+// the page header must surface the device label(s) so two filesystem-class
+// instances of the same connector are visually distinguishable, and it
+// must mention any pending records still on devices.
+
+const PAGE_DERIVES_DEVICE_LABELS = /summarizeSourceInstancesForHeader/;
+const PAGE_RENDERS_DEVICE_LABELS_TESTID = /data-testid="records-device-labels"/;
+const PAGE_DERIVES_PENDING_ON_DEVICES =
+  /summarizeSourceInstancesForHeader[\s\S]{0,200}pendingOnDevices/;
+const PAGE_RENDERS_PENDING_ON_DEVICES = /pending on devices/;
+
+test("connector detail page surfaces device labels for bound source instances", async () => {
+  const page = await readFile(PAGE_FILE, "utf8");
+  assert.match(page, PAGE_DERIVES_DEVICE_LABELS);
+  assert.match(page, PAGE_RENDERS_DEVICE_LABELS_TESTID);
+});
+
+test("connector detail page surfaces pending-on-devices delta when source instances report queued work", async () => {
+  const page = await readFile(PAGE_FILE, "utf8");
+  assert.match(page, PAGE_DERIVES_PENDING_ON_DEVICES);
+  assert.match(page, PAGE_RENDERS_PENDING_ON_DEVICES);
 });

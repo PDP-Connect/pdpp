@@ -691,6 +691,14 @@ function NextActionPill({
           {formatted.caveat}
         </span>
       ) : null}
+      {formatted.notificationHint ? (
+        <span
+          className="pdpp-caption text-muted-foreground"
+          data-testid="next-action-notification-hint"
+        >
+          {formatted.notificationHint}
+        </span>
+      ) : null}
     </div>
   );
 }

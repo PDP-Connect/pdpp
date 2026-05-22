@@ -48,6 +48,16 @@ function recommendedIntervalLabel(policy: RefConnectorSummary["refresh_policy"])
   return formatInterval(policy.recommended_interval_seconds);
 }
 
+/**
+ * Records routing keys on `connection_id` / `connector_instance_id` when the
+ * schedule belongs to a specific instance; bare `connector_id` is only a
+ * legacy fallback used while a single-instance row still exists.
+ */
+function recordsHrefForSummary(summary: RefConnectorSummary): string {
+  const routeId = summary.connection_id ?? summary.connector_instance_id ?? summary.connector_id;
+  return `/dashboard/records/${encodeURIComponent(routeId)}`;
+}
+
 function modeLabel(mode: RefSchedule["effective_mode"]): string {
   if (mode === "automatic") {
     return "automatic";
@@ -59,9 +69,15 @@ function modeLabel(mode: RefSchedule["effective_mode"]): string {
 }
 
 function automationModeLabel(mode: RefSchedule["automation_mode"]): string {
-  if (mode === "unattended") return "unattended";
-  if (mode === "assisted") return "assisted";
-  if (mode === "ask_before_run") return "ask before run";
+  if (mode === "unattended") {
+    return "unattended";
+  }
+  if (mode === "assisted") {
+    return "assisted";
+  }
+  if (mode === "ask_before_run") {
+    return "ask before run";
+  }
   return "manual only";
 }
 
@@ -134,6 +150,7 @@ export function ScheduleRow({ summary, runsHref }: ScheduleRowProps) {
   const schedule = summary.schedule;
   const policy = summary.refresh_policy;
   const displayName = summary.display_name || summary.connector_id;
+  const recordsHref = recordsHrefForSummary(summary);
   const activeRunId = schedule?.active_run_id;
   const needsHuman = schedule?.human_attention_needed ?? false;
   const recInterval = recommendedIntervalLabel(policy);
@@ -152,10 +169,7 @@ export function ScheduleRow({ summary, runsHref }: ScheduleRowProps) {
         <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
           {/* Identity */}
           <div className="min-w-0 flex-1">
-            <Link
-              className="pdpp-body font-medium text-foreground hover:underline"
-              href={`/dashboard/records/${encodeURIComponent(summary.connector_id)}`}
-            >
+            <Link className="pdpp-body font-medium text-foreground hover:underline" href={recordsHref}>
               {displayName}
             </Link>
             <div className="pdpp-caption mt-0.5 truncate font-mono text-muted-foreground">{summary.connector_id}</div>
@@ -261,8 +275,8 @@ export function ScheduleRow({ summary, runsHref }: ScheduleRowProps) {
         {/* Ineligibility reason: stale enabled row + manifest policy changed */}
         {ineligibilityReason && (
           <p className="pdpp-caption text-amber-700 dark:text-amber-400">
-            <strong>Not running automatically.</strong> {ineligibilityReason} Manual run remains available; pause or delete this
-            schedule to reflect operator intent.
+            <strong>Not running automatically.</strong> {ineligibilityReason} Manual run remains available; pause or
+            delete this schedule to reflect operator intent.
           </p>
         )}
 

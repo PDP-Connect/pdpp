@@ -113,3 +113,43 @@ test("humanizeReasonCode normalizes snake_case and ignores empty input", () => {
   assert.equal(humanizeReasonCode("manual-verification"), "Manual verification");
   assert.equal(humanizeReasonCode("browser_runtime_not_configured"), "Browser runtime not configured");
 });
+
+test("formatNextAction emits no notification hint for pending state (default chrome stays quiet)", () => {
+  const out = formatNextAction(structuredAction({ notification_state: "pending" }));
+  assert.ok(out);
+  assert.equal(out.notificationHint, null);
+});
+
+test("formatNextAction emits a confidence-positive hint for sent state", () => {
+  const out = formatNextAction(structuredAction({ notification_state: "sent" }));
+  assert.ok(out);
+  assert.match(out.notificationHint ?? "", /sent/i);
+});
+
+test("formatNextAction emits an action-required hint for failed delivery — must remain visible", () => {
+  // The spec requires notification failure to be surfaced rather than
+  // swallowed. The dashboard hint mirrors that contract.
+  const out = formatNextAction(structuredAction({ notification_state: "failed" }));
+  assert.ok(out);
+  assert.match(out.notificationHint ?? "", /failed/i);
+});
+
+test("formatNextAction emits a soft hint for suppressed state (quiet hours / no channel)", () => {
+  const out = formatNextAction(structuredAction({ notification_state: "suppressed" }));
+  assert.ok(out);
+  assert.match(out.notificationHint ?? "", /paused|suppress/i);
+});
+
+test("formatNextAction stays quiet when notification state is absent (schedule_fallback or older snapshots)", () => {
+  const out = formatNextAction({
+    action_target: null,
+    attention_id: null,
+    expires_at: null,
+    owner_action: null,
+    reason_code: "browser_runtime_not_configured",
+    response_contract: null,
+    source: "schedule_fallback",
+  });
+  assert.ok(out);
+  assert.equal(out.notificationHint, null);
+});

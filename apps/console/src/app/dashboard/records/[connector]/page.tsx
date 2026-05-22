@@ -150,6 +150,16 @@ export default async function ConnectorPage({ params }: { params: Promise<{ conn
   const totalRecords = streams.reduce((sum, s) => sum + s.record_count, 0);
   const displayName = manifest.display_name ?? manifest.name ?? connectorId;
   const running = overview?.isRunning ?? false;
+  // Source instances surface the device(s) that fed this connection. For
+  // filesystem-class collectors (claude_code, codex), the same connector
+  // type can be active on multiple devices; without these labels, two
+  // claude_code instances are visually indistinguishable.
+  const { deviceLabels, pendingOnDevices } = summarizeSourceInstancesForHeader(sourceInstances);
+  const headerCount = formatConnectorHeaderCount({
+    pendingOnDevices,
+    streamCount: streams.length,
+    totalRecords,
+  });
 
   return (
     <DashboardShell active="records">
@@ -174,23 +184,14 @@ export default async function ConnectorPage({ params }: { params: Promise<{ conn
           </>
         }
         breadcrumbs={[{ label: "Records", href: "/dashboard/records" }, { label: displayName }]}
-        count={`${totalRecords.toLocaleString()} records · ${streams.length} stream${streams.length === 1 ? "" : "s"}`}
+        count={headerCount}
         description={
-          <>
-            <code className="font-mono text-xs">{connectionId}</code>
-            {connectionId !== connectorId ? (
-              <>
-                {" · "}
-                <span>Type: {connectorId}</span>
-              </>
-            ) : null}
-            {manifest.provider_id ? (
-              <>
-                {" · "}
-                <span>Provider: {manifest.provider_id}</span>
-              </>
-            ) : null}
-          </>
+          <ConnectionIdentityLine
+            connectionId={connectionId}
+            connectorId={connectorId}
+            deviceLabels={deviceLabels}
+            providerId={manifest.provider_id ?? null}
+          />
         }
         title={displayName}
       />
@@ -274,6 +275,90 @@ export default async function ConnectorPage({ params }: { params: Promise<{ conn
       </Section>
     </DashboardShell>
   );
+}
+
+/**
+ * Identity line under the connector title. Surfaces:
+ * - the durable `connection_id` (also the records-route key);
+ * - the connector type when it differs from the connection id (legacy single-instance rows);
+ * - the manifest's `provider_id` when present;
+ * - the bound device label(s) so two filesystem-class instances of the
+ *   same connector type are visually distinguishable.
+ *
+ * Kept as a small helper to keep `ConnectorPage` under the cognitive
+ * complexity budget while still rendering JSX inline.
+ */
+function ConnectionIdentityLine({
+  connectionId,
+  connectorId,
+  deviceLabels,
+  providerId,
+}: {
+  connectionId: string;
+  connectorId: string;
+  deviceLabels: readonly string[];
+  providerId: string | null;
+}) {
+  return (
+    <>
+      <code className="font-mono text-xs">{connectionId}</code>
+      {connectionId === connectorId ? null : (
+        <>
+          {" · "}
+          <span>Type: {connectorId}</span>
+        </>
+      )}
+      {providerId ? (
+        <>
+          {" · "}
+          <span>Provider: {providerId}</span>
+        </>
+      ) : null}
+      {deviceLabels.length > 0 ? (
+        <>
+          {" · "}
+          <span data-testid="records-device-labels">
+            Device{deviceLabels.length === 1 ? "" : "s"}: {deviceLabels.join(", ")}
+          </span>
+        </>
+      ) : null}
+    </>
+  );
+}
+
+function summarizeSourceInstancesForHeader(sourceInstances: readonly DeviceSourceInstance[]): {
+  deviceLabels: string[];
+  pendingOnDevices: number;
+} {
+  const deviceLabels: string[] = [];
+  let pendingOnDevices = 0;
+  for (const source of sourceInstances) {
+    const label = source.display_name ?? source.local_binding_name ?? source.device_id;
+    if (typeof label === "string" && label.length > 0) {
+      deviceLabels.push(label);
+    }
+    if (typeof source.records_pending === "number") {
+      pendingOnDevices += source.records_pending;
+    }
+  }
+  return { deviceLabels, pendingOnDevices };
+}
+
+function formatConnectorHeaderCount({
+  pendingOnDevices,
+  streamCount,
+  totalRecords,
+}: {
+  pendingOnDevices: number;
+  streamCount: number;
+  totalRecords: number;
+}): string {
+  const streamLabel = `${streamCount} stream${streamCount === 1 ? "" : "s"}`;
+  const base = `${totalRecords.toLocaleString()} records · ${streamLabel}`;
+  if (pendingOnDevices > 0) {
+    return `${base} · +${pendingOnDevices.toLocaleString()} pending on devices`;
+  }
+  return base;
 }
 
 function errorMessage(reason: unknown): string {

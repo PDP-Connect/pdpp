@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { Button } from "@/components/ui/button.tsx";
 import { CopyButton } from "../components/copy-button.tsx";
 import { DataList, MetaPill, PageHeader, Section, StatusBadge } from "../components/primitives.tsx";
@@ -152,6 +153,13 @@ function DeviceRow({ device }: { device: DeviceExporter }) {
 function SourceInstanceCard({ source }: { source: DeviceSourceInstance }) {
   const lastError = formatLastError(source.last_error);
   const outbox = formatSourceOutboxState(source);
+  // `source_instance_id` identifies the device-side binding row; the durable
+  // server-side connection identity is `connector_instance_id`. Surface both
+  // honestly: the records dashboard, schedules, and ref API key on
+  // connector_instance_id, so that is the value worth copying into URLs.
+  const recordsHref = source.connector_instance_id
+    ? `/dashboard/records/${encodeURIComponent(source.connector_instance_id)}`
+    : null;
 
   return (
     <li className="rounded-md border border-border/70 bg-muted/20 p-3">
@@ -161,8 +169,28 @@ function SourceInstanceCard({ source }: { source: DeviceSourceInstance }) {
           <p className="pdpp-caption truncate text-muted-foreground">
             {source.connector_id} / {source.local_binding_name}
           </p>
-          <p className="pdpp-caption mt-1 flex min-w-0 items-center gap-1 text-muted-foreground">
-            connection
+          {source.connector_instance_id ? (
+            <p className="pdpp-caption mt-1 flex min-w-0 items-center gap-1 text-muted-foreground">
+              connection
+              <code className="truncate font-mono text-foreground/80">{source.connector_instance_id}</code>
+              <CopyButton ariaLabel={`Copy ${source.connector_instance_id}`} value={source.connector_instance_id} />
+              {recordsHref ? (
+                <Link className="ml-1 underline-offset-2 hover:underline" href={recordsHref}>
+                  Records →
+                </Link>
+              ) : null}
+            </p>
+          ) : (
+            <p
+              className="pdpp-caption mt-1 flex min-w-0 items-center gap-1 text-muted-foreground"
+              data-testid="source-no-connector-instance"
+              title="This device source has not yet been bound to a connector instance on the server."
+            >
+              connection: not bound yet
+            </p>
+          )}
+          <p className="pdpp-caption flex min-w-0 items-center gap-1 text-muted-foreground">
+            source
             <code className="truncate font-mono text-foreground/80">{source.source_instance_id}</code>
             <CopyButton ariaLabel={`Copy ${source.source_instance_id}`} value={source.source_instance_id} />
           </p>

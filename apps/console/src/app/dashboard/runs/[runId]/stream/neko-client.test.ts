@@ -12,7 +12,7 @@ import {
   selectNekoScreenStateSizeForLayout,
   shouldUseNekoTouchScrollBridge,
   takeNekoTouchScrollSteps,
-} from "@pdpp/remote-surface/backends/neko";
+} from "@opendatalabs/remote-surface/backends/neko";
 import { buildNekoClientProps } from "./neko-client.ts";
 
 const PORTRAIT_LAYOUT: NekoViewportLayout = {
