@@ -1743,18 +1743,34 @@ function buildConnectorFreshness({
   lastSuccessfulRun,
   live,
   refreshPolicy,
+  lastHeartbeatAt,
 }: {
   lastRun: ConnectorRunSummary | null;
   lastSuccessfulRun: ConnectorRunSummary | null;
   live: RecordProjection;
   refreshPolicy: unknown;
+  /**
+   * For local-device (push-mode) connections there is no scheduler run
+   * to anchor freshness. A recent healthy heartbeat is evidence the
+   * collector checked in, so use it as a fallback `recordLastUpdatedAt`
+   * when no run-based timestamp is available. Omit or pass `null` for
+   * scheduler-managed connections.
+   */
+  lastHeartbeatAt?: string | null;
 }): Freshness {
+  // For local-device connections with no scheduler run, prefer the
+  // heartbeat timestamp as a freshness anchor. A recent heartbeat is
+  // honest evidence the collector is alive even if no new data arrived.
+  const recordLastUpdatedAt =
+    lastRun == null && lastHeartbeatAt != null
+      ? lastHeartbeatAt
+      : (live.freshness.captured_at ?? null);
   return deriveReferenceFreshness({
     lastAttemptedAt: lastRun?.last_at ?? null,
     lastAttemptStatus: lastRun?.status ?? null,
     lastSuccessfulRunAt: lastSuccessfulRun?.last_at ?? null,
     maximumStalenessSeconds: getMaximumStalenessSeconds(refreshPolicy),
-    recordLastUpdatedAt: live.freshness.captured_at ?? null,
+    recordLastUpdatedAt,
   });
 }
 
@@ -1858,11 +1874,14 @@ export async function listConnectorSummaries(
           getConnectorBrowserSurfaceProjection(connectorId),
         ]);
       const refreshPolicy = extractRefreshPolicy(manifest);
+      const localDeviceProgress =
+        instance.sourceKind === "local_device" ? projectLocalDeviceProgress(outbox.heartbeats) : null;
       const freshness = buildConnectorFreshness({
         lastRun,
         lastSuccessfulRun,
         live,
         refreshPolicy,
+        lastHeartbeatAt: localDeviceProgress?.last_heartbeat_at ?? null,
       });
       const connectionHealth = projectConnectorSummaryConnectionHealth({
         attentionRecords: attention.records,
@@ -1882,15 +1901,6 @@ export async function listConnectorSummaries(
         schedule,
       });
       const connectorDisplayName = manifest.display_name || connectorId;
-      // Local-device connections push records from a device outbox and
-      // never write `scheduler_run_history` rows. Without a per-instance
-      // progress projection, the records page reads `lastRun == null` and
-      // shows "no scheduler run yet" even when the device is actively
-      // ingesting. We only surface this for `local_device` source-kind
-      // instances; scheduler-managed connections leave the field `null`
-      // so the dashboard's existing run-based labels stay authoritative.
-      const localDeviceProgress =
-        instance.sourceKind === "local_device" ? projectLocalDeviceProgress(outbox.heartbeats) : null;
       return {
         connection_id: connectorInstanceId,
         connection_health: connectionHealth,

@@ -444,6 +444,10 @@ function ConnectionHealthStatus({
     content
   );
 
+  // RunningBadge requires a scheduler run context. For local-device
+  // connections whose outbox is active but whose health state now shows
+  // "Syncing", the running dot is already embedded in the pill label via
+  // the "running" tone in StatusDot — no separate badge needed.
   if (running || health.badges.syncing) {
     return (
       <span className="inline-flex items-center gap-2">
@@ -486,10 +490,14 @@ function connectionHealthDisplay(
         tone: "warning",
       };
     case "idle":
+      // When the outbox axis reports active work in progress, labeling the
+      // row "Idle" directly contradicts the evidence. Use "Syncing" instead
+      // so the operator knows the device collector is draining its outbox.
       // "Never run" is only honest when there is no durable progress evidence
-      // at all. A local-device exporter that pushes records without a
-      // scheduler-managed run still has durable progress, and labeling it
-      // "Never run" would contradict the record count next to it.
+      // at all (no runs, no records, no heartbeat).
+      if (health.axes.outbox === "active") {
+        return { label: "Syncing", title: "Device outbox is actively draining", tone: "neutral" };
+      }
       return {
         label: hasDurableProgress ? "Idle" : "Never run",
         title: hasDurableProgress ? "No active work" : "No durable progress yet",
@@ -595,17 +603,27 @@ function ConnectorFreshnessLine({
 
   // Push-mode local-device exporters bypass scheduler_run_history. When
   // the reference server has a trusted heartbeat row for THIS connection,
-  // surface its evidence here rather than the generic "records present ·
-  // no scheduler run yet" fallback. We render `last device ingest` when
-  // an ingest-batch outcome exists and `last device heartbeat` otherwise;
-  // either is honest durable progress.
+  // surface its evidence here. Distinguishing "last checked" (heartbeat)
+  // from "last ingest" (batch outcome) is important: a collector that
+  // checked in recently but found nothing new is fresh, not stale.
   if (localDeviceProgress) {
     const ingestAt = localDeviceProgress.last_ingest_at;
     const heartbeatAt = localDeviceProgress.last_heartbeat_at;
+    if (heartbeatAt && ingestAt) {
+      return (
+        <span className="inline-flex items-center gap-1" data-testid="freshness-device-both">
+          <span>last checked:</span>
+          <Timestamp value={heartbeatAt} />
+          <span aria-hidden>·</span>
+          <span>last ingest:</span>
+          <Timestamp value={ingestAt} />
+        </span>
+      );
+    }
     if (ingestAt) {
       return (
         <span className="inline-flex items-center gap-1" data-testid="freshness-device-ingest">
-          <span>last device ingest:</span>
+          <span>last ingest:</span>
           <Timestamp value={ingestAt} />
         </span>
       );
@@ -613,7 +631,7 @@ function ConnectorFreshnessLine({
     if (heartbeatAt) {
       return (
         <span className="inline-flex items-center gap-1" data-testid="freshness-device-heartbeat">
-          <span>last device heartbeat:</span>
+          <span>last checked:</span>
           <Timestamp value={heartbeatAt} />
         </span>
       );

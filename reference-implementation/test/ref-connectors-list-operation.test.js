@@ -1059,3 +1059,60 @@ test('LIST_CONNECTOR_SUMMARIES_CONCURRENCY exports a sensible bound', () => {
   // upper bound at a clearly conservative number.
   assert.equal(LIST_CONNECTOR_SUMMARIES_CONCURRENCY <= 32, true);
 });
+
+// ─── local-device operator-ideal: freshness from heartbeat ───────────────
+
+test('projectLocalDeviceProgress: surfaces last_heartbeat_at and last_ingest_at from trusted rows', () => {
+  const rows = [
+    hbRow({ lastHeartbeatAt: FRESH, lastHeartbeatStatus: 'healthy', lastIngestAt: FRESH }),
+  ];
+  const p = projectLocalDeviceProgress(rows);
+  assert.ok(p, 'expected non-null progress for trusted row');
+  assert.equal(p.last_heartbeat_at, FRESH);
+  assert.equal(p.last_ingest_at, FRESH);
+  assert.equal(p.source_count, 1);
+});
+
+test('projectLocalDeviceProgress: returns null when all rows are revoked or inactive', () => {
+  const rows = [
+    hbRow({ deviceStatus: 'revoked', deviceRevokedAt: OLD }),
+    hbRow({ sourceStatus: 'inactive' }),
+  ];
+  const p = projectLocalDeviceProgress(rows);
+  assert.equal(p, null);
+});
+
+test('projectLocalDeviceProgress: records_pending is null when no row reports a count', () => {
+  const rows = [hbRow({ recordsPending: undefined })];
+  const p = projectLocalDeviceProgress(rows);
+  assert.ok(p);
+  assert.equal(p.records_pending, null);
+});
+
+test('projectLocalDeviceProgress: sums records_pending across multiple trusted rows', () => {
+  const rows = [
+    hbRow({ sourceInstanceId: 'src_1', recordsPending: 3 }),
+    hbRow({ sourceInstanceId: 'src_2', deviceId: 'dev_2', recordsPending: 5 }),
+  ];
+  const p = projectLocalDeviceProgress(rows);
+  assert.ok(p);
+  assert.equal(p.records_pending, 8);
+  assert.equal(p.source_count, 2);
+});
+
+test('connection health idle+outbox=active projects state=idle (label change is UI-side)', () => {
+  // The connection-health projection itself doesn't change the headline
+  // state when outbox is active — it stays "idle". The UI layer reads
+  // axes.outbox==="active" and shows "Syncing" instead of "Idle". This
+  // test pins that the projection stays conservative and doesn't invent
+  // a new state value.
+  const snapshot = projectConnectorSummaryConnectionHealth({
+    freshness: { status: 'unknown' },
+    lastRun: null,
+    lastSuccessfulRun: null,
+    outbox: { axis: 'active' },
+    schedule: null,
+  });
+  assert.equal(snapshot.state, 'idle');
+  assert.equal(snapshot.axes.outbox, 'active');
+});

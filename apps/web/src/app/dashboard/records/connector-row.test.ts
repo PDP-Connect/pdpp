@@ -172,3 +172,42 @@ test("connector-row freshness line refuses to render content when evidence colle
   assert.match(src, FRESHNESS_RESPECTS_ERROR);
   assert.match(src, FRESHNESS_UNAVAILABLE_RENDER);
 });
+
+// ─── local-device operator-ideal assertions ──────────────────────────────
+//
+// Goal 1: outbox=active on an idle row should show "Syncing", not "Idle".
+// Goal 2: freshness line shows both "last checked" and "last ingest" when
+//   localDeviceProgress has both timestamps.
+
+const SYNCING_LABEL = /"Syncing"/;
+const OUTBOX_ACTIVE_GUARD = /health\.axes\.outbox === "active"/;
+const FRESHNESS_DEVICE_BOTH = /data-testid="freshness-device-both"/;
+const LAST_CHECKED_LABEL = /last checked:/;
+const LAST_INGEST_LABEL = /last ingest:/;
+
+test("connector-row shows 'Syncing' label when outbox is active during idle state", async () => {
+  const src = await readFile(ROW_FILE, "utf8");
+  assert.match(src, SYNCING_LABEL);
+  assert.match(src, OUTBOX_ACTIVE_GUARD);
+});
+
+test("connector-row freshness line shows both last-checked and last-ingest when both are present", async () => {
+  const src = await readFile(ROW_FILE, "utf8");
+  assert.match(src, FRESHNESS_DEVICE_BOTH);
+  assert.match(src, LAST_CHECKED_LABEL);
+  assert.match(src, LAST_INGEST_LABEL);
+});
+
+test("connector-row outbox-active branch returns a label only, not a RunningBadge", async () => {
+  // connectionHealthDisplay is a pure label factory — it must never
+  // instantiate UI components. RunningBadge lives in ConnectionHealthStatus
+  // and only fires when `running || health.badges.syncing`. The "Syncing"
+  // label on an outbox-active idle row is conveyed by the text alone.
+  const src = await readFile(ROW_FILE, "utf8");
+  const displayFnStart = src.indexOf("function connectionHealthDisplay");
+  // Find the closing brace of the function (next top-level "function" after it)
+  const nextFnStart = src.indexOf("\nfunction ", displayFnStart + 1);
+  const displayFn = nextFnStart > 0 ? src.slice(displayFnStart, nextFnStart) : src.slice(displayFnStart);
+  assert.equal(displayFn.includes("RunningBadge"), false,
+    "connectionHealthDisplay must not reference RunningBadge");
+});

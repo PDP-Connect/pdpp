@@ -172,3 +172,33 @@ test("connector-row freshness line refuses to render content when evidence colle
   assert.match(src, FRESHNESS_RESPECTS_ERROR);
   assert.match(src, FRESHNESS_UNAVAILABLE_RENDER);
 });
+
+// ─── local-device operator-ideal assertions ──────────────────────────────
+
+const SYNCING_LABEL = /"Syncing"/;
+const OUTBOX_ACTIVE_GUARD = /health\.axes\.outbox === "active"/;
+const FRESHNESS_DEVICE_BOTH = /data-testid="freshness-device-both"/;
+const LAST_CHECKED_LABEL = /last checked:/;
+const LAST_INGEST_LABEL = /last ingest:/;
+
+test("connector-row shows 'Syncing' label when outbox is active during idle state", async () => {
+  const src = await readFile(ROW_FILE, "utf8");
+  assert.match(src, SYNCING_LABEL);
+  assert.match(src, OUTBOX_ACTIVE_GUARD);
+});
+
+test("connector-row freshness line shows both last-checked and last-ingest when both are present", async () => {
+  const src = await readFile(ROW_FILE, "utf8");
+  assert.match(src, FRESHNESS_DEVICE_BOTH);
+  assert.match(src, LAST_CHECKED_LABEL);
+  assert.match(src, LAST_INGEST_LABEL);
+});
+
+test("connector-row outbox-active branch returns a label only, not a RunningBadge", async () => {
+  const src = await readFile(ROW_FILE, "utf8");
+  const displayFnStart = src.indexOf("function connectionHealthDisplay");
+  const nextFnStart = src.indexOf("\nfunction ", displayFnStart + 1);
+  const displayFn = nextFnStart > 0 ? src.slice(displayFnStart, nextFnStart) : src.slice(displayFnStart);
+  assert.equal(displayFn.includes("RunningBadge"), false,
+    "connectionHealthDisplay must not reference RunningBadge");
+});
