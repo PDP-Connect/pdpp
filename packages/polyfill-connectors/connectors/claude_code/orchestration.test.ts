@@ -41,6 +41,8 @@ import type { SessionAccumulator } from "./types.ts";
  * `sessionId` field.
  */
 const SYNTHETIC_SESSION_ID = "12345678-1234-orch";
+const MIXED_AGENT_USER_SESSION_ID = "11111111-1111-4111-8111-111111111111";
+const MIXED_AGENT_PARENT_SESSION_ID = "22222222-2222-4222-8222-222222222222";
 
 async function makeSyntheticProjectTree(): Promise<{ baseDir: string; cleanup: () => Promise<void> }> {
   const root = await mkdtemp(join(tmpdir(), "pdpp-cc-orch-"));
@@ -258,6 +260,139 @@ test("scanProjectDirs: unchanged file mtime skips child records on an incrementa
     assert.equal(secondPass.emitted.length, 0, "unchanged mtimes skip re-emitting child records");
   } finally {
     await cleanup();
+  }
+});
+
+test("scanProjectDirs: session aggregation can backfill independently from message mtimes", async () => {
+  const { baseDir, cleanup } = await makeSyntheticProjectTree();
+  try {
+    const requestedChildren = makeRequested(["messages", "attachments"]);
+    const firstPass = makeRecordingEmit();
+    const messageMtimes: Record<string, number> = {};
+
+    await scanProjectDirs({
+      baseDir,
+      buildOnly: false,
+      emit: silentEmit(),
+      emitRecord: firstPass.emitRecord,
+      fileMtimes: {},
+      newMtimes: messageMtimes,
+      requested: requestedChildren,
+      sessionAccumulators: new Map(),
+    });
+
+    assert.equal(firstPass.emitted.filter((r) => r.stream === "messages").length, 3, "message state is current");
+    assert.equal(Object.keys(messageMtimes).length, 2, "message cursor captured JSONL mtimes");
+
+    const requestedSessions = makeRequested(["sessions"]);
+    const sessionAccumulators = new Map<string, SessionAccumulator>();
+    const sessionMtimes: Record<string, number> = {};
+
+    await scanProjectDirs({
+      baseDir,
+      buildOnly: true,
+      emit: silentEmit(),
+      emitRecord: makeRecordingEmit().emitRecord,
+      fileMtimes: {},
+      newMtimes: sessionMtimes,
+      requested: requestedSessions,
+      sessionAccumulators,
+    });
+
+    assert.equal(
+      sessionAccumulators.size,
+      1,
+      "empty session cursor reparses JSONL even when message cursor is current"
+    );
+    assert.equal(
+      Object.keys(sessionMtimes).length,
+      Object.keys(messageMtimes).length,
+      "session cursor is captured separately"
+    );
+  } finally {
+    await cleanup();
+  }
+});
+
+test("scanProjectDirs: one top-level agent JSONL can emit summaries for each per-line session id", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pdpp-cc-mixed-agent-"));
+  const projectDir = join(root, "-Users-test-mixed-agent");
+  try {
+    await mkdir(projectDir, { recursive: true });
+    await writeFile(
+      join(projectDir, "agent-example.jsonl"),
+      `${[
+        {
+          sessionId: MIXED_AGENT_USER_SESSION_ID,
+          type: "user",
+          uuid: "33333333-3333-4333-8333-333333333333",
+          timestamp: "2026-04-23T10:00:00.000Z",
+          cwd: "/Users/user/mixed-agent",
+          message: { content: "delegate task" },
+        },
+        {
+          sessionId: MIXED_AGENT_PARENT_SESSION_ID,
+          type: "assistant",
+          uuid: "44444444-4444-4444-8444-444444444444",
+          parentUuid: "33333333-3333-4333-8333-333333333333",
+          timestamp: "2026-04-23T10:00:01.000Z",
+          cwd: "/Users/user/mixed-agent",
+          message: { content: "worker accepted" },
+        },
+      ]
+        .map((l) => JSON.stringify(l))
+        .join("\n")}\n`,
+      "utf8"
+    );
+
+    const requested = makeRequested(["sessions", "messages"]);
+    const sessionAccumulators = new Map<string, SessionAccumulator>();
+    const harness = makeRecordingEmit();
+
+    await scanProjectDirs({
+      baseDir: root,
+      buildOnly: true,
+      emit: silentEmit(),
+      emitRecord: harness.emitRecord,
+      fileMtimes: {},
+      newMtimes: {},
+      requested,
+      sessionAccumulators,
+    });
+    await emitSessionsFromAccumulators({ emitRecord: harness.emitRecord, requested, sessionAccumulators });
+    await scanProjectDirs({
+      baseDir: root,
+      buildOnly: false,
+      emit: silentEmit(),
+      emitRecord: harness.emitRecord,
+      fileMtimes: {},
+      newMtimes: {},
+      requested,
+      sessionAccumulators,
+    });
+
+    const sessions = harness.emitted.filter((r) => r.stream === "sessions");
+    assert.deepEqual(
+      sessions.map((r) => r.data.id).sort(),
+      [MIXED_AGENT_PARENT_SESSION_ID, MIXED_AGENT_USER_SESSION_ID].sort(),
+      "both per-line session ids get parent summaries"
+    );
+    assert.deepEqual(
+      sessions.map((r) => [r.data.id, r.data.message_count]).sort(),
+      [
+        [MIXED_AGENT_PARENT_SESSION_ID, 1],
+        [MIXED_AGENT_USER_SESSION_ID, 1],
+      ].sort(),
+      "message_count is attributed to the matching line session"
+    );
+    const messages = harness.emitted.filter((r) => r.stream === "messages");
+    assert.deepEqual(
+      messages.map((r) => r.data.session_id),
+      [MIXED_AGENT_USER_SESSION_ID, MIXED_AGENT_PARENT_SESSION_ID],
+      "child messages keep their per-line session ids"
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });
 
