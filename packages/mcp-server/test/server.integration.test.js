@@ -130,7 +130,7 @@ test('schema tool returns RS schema verbatim under the scoped token', async () =
   await server.close();
 });
 
-test('query_records forwards supported query params and ignores unsupported keys', async () => {
+test('query_records forwards supported query params', async () => {
   const { fetch, calls } = makeFakeRs();
   const { client, server } = await connectClient(fetch);
 
@@ -149,6 +149,23 @@ test('query_records forwards supported query params and ignores unsupported keys
   assert.equal(callUrl.searchParams.get('limit'), '25');
   assert.deepEqual(callUrl.searchParams.getAll('fields'), ['id', 'amount']);
   assert.equal(callUrl.searchParams.get('cursor'), null);
+
+  await client.close();
+  await server.close();
+});
+
+test('query_records rejects unsupported MCP arguments before hitting RS', async () => {
+  const { fetch, calls } = makeFakeRs();
+  const { client, server } = await connectClient(fetch);
+
+  const result = await client.callTool({
+    name: 'query_records',
+    arguments: { stream: 'orders', unsupported_extra: true },
+  });
+
+  assert.equal(result.isError, true);
+  assert.equal(calls.some((entry) => entry.url.includes('/v1/streams/orders/records')), false);
+  assert.match(result.content[0].text, /unsupported_extra|Unrecognized key/);
 
   await client.close();
   await server.close();

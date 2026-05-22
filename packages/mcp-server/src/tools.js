@@ -19,6 +19,8 @@ const SUPPORTED_QUERY_KEYS = new Set([
   'changes_since',
 ]);
 
+const EMPTY_TOOL_INPUT_SCHEMA = z.object({}).strict();
+
 /**
  * Build the static tool definitions. Descriptions are constant — they are never derived
  * from manifest, stream, or record data. RS payloads are returned as data; nothing is
@@ -32,7 +34,7 @@ export function buildTools({ rs, providerUrl }) {
       description:
         'Return the grant-scoped PDPP schema document from GET /v1/schema. Read-only.',
       annotations: READ_ONLY_ANNOTATIONS,
-      inputSchema: {},
+      inputSchema: EMPTY_TOOL_INPUT_SCHEMA,
       handler: async () => {
         const response = await rs.getJson('/v1/schema');
         return toToolResult(response, providerUrl);
@@ -44,7 +46,7 @@ export function buildTools({ rs, providerUrl }) {
       description:
         'List streams the configured scoped grant can read. Calls GET /v1/streams. Read-only.',
       annotations: READ_ONLY_ANNOTATIONS,
-      inputSchema: {},
+      inputSchema: EMPTY_TOOL_INPUT_SCHEMA,
       handler: async () => {
         const response = await rs.getJson('/v1/streams');
         return toToolResult(response, providerUrl);
@@ -58,18 +60,20 @@ export function buildTools({ rs, providerUrl }) {
         'GET /v1/streams/{stream}/records. Supported params: limit, cursor, order, ' +
         'filter, fields, view, expand, expand_limit, changes_since. Read-only.',
       annotations: READ_ONLY_ANNOTATIONS,
-      inputSchema: {
-        stream: z.string().min(1).describe('Stream name as returned by list_streams.'),
-        limit: z.number().int().positive().max(1000).optional(),
-        cursor: z.string().optional(),
-        order: z.string().optional(),
-        filter: z.string().optional(),
-        fields: z.array(z.string()).optional(),
-        view: z.string().optional(),
-        expand: z.array(z.string()).optional(),
-        expand_limit: z.number().int().positive().max(100).optional(),
-        changes_since: z.string().optional(),
-      },
+      inputSchema: z
+        .object({
+          stream: z.string().min(1).describe('Stream name as returned by list_streams.'),
+          limit: z.number().int().positive().max(1000).optional(),
+          cursor: z.string().optional(),
+          order: z.string().optional(),
+          filter: z.string().optional(),
+          fields: z.array(z.string()).optional(),
+          view: z.string().optional(),
+          expand: z.array(z.string()).optional(),
+          expand_limit: z.number().int().positive().max(100).optional(),
+          changes_since: z.string().optional(),
+        })
+        .strict(),
       handler: async (args) => {
         const stream = requireSafeName(args?.stream, 'stream');
         const query = pickQuery(args, SUPPORTED_QUERY_KEYS);
@@ -87,13 +91,15 @@ export function buildTools({ rs, providerUrl }) {
         'search envelope verbatim. If the deployment does not advertise search, the RS ' +
         'error envelope is preserved in the tool result. Read-only.',
       annotations: READ_ONLY_ANNOTATIONS,
-      inputSchema: {
-        q: z.string().min(1).describe('Search query string.'),
-        streams: z.array(z.string()).optional(),
-        limit: z.number().int().positive().max(200).optional(),
-        cursor: z.string().optional(),
-        mode: z.enum(['lexical', 'semantic', 'hybrid']).optional(),
-      },
+      inputSchema: z
+        .object({
+          q: z.string().min(1).describe('Search query string.'),
+          streams: z.array(z.string()).optional(),
+          limit: z.number().int().positive().max(200).optional(),
+          cursor: z.string().optional(),
+          mode: z.enum(['lexical', 'semantic', 'hybrid']).optional(),
+        })
+        .strict(),
       handler: async (args) => {
         const query = {
           q: args.q,
@@ -114,16 +120,18 @@ export function buildTools({ rs, providerUrl }) {
         'using the configured scoped token. Returns base64 bytes and the RS-reported mime ' +
         'type. Read-only.',
       annotations: READ_ONLY_ANNOTATIONS,
-      inputSchema: {
-        blob_id: z
-          .string()
-          .min(1)
-          .describe('Blob identifier returned by a previous query_records or search call.'),
-        range: z
-          .string()
-          .regex(/^bytes=\d+-\d*$/, { message: 'range must look like bytes=0-1023' })
-          .optional(),
-      },
+      inputSchema: z
+        .object({
+          blob_id: z
+            .string()
+            .min(1)
+            .describe('Blob identifier returned by a previous query_records or search call.'),
+          range: z
+            .string()
+            .regex(/^bytes=\d+-\d*$/, { message: 'range must look like bytes=0-1023' })
+            .optional(),
+        })
+        .strict(),
       handler: async (args) => {
         const blobId = requireSafeName(args.blob_id, 'blob_id');
         const headers = args.range ? { Range: args.range } : undefined;
