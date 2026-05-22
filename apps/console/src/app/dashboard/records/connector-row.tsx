@@ -202,6 +202,7 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
             connectionHealth={connectionHealth}
             hasRecords={totalRecords > 0}
             lastRun={lastRun}
+            lastSuccessfulRun={lastSuccessfulRun}
             running={running}
             runStart={running ? effectiveStartIso : lastRun?.first_at}
             runsHref={runsHref}
@@ -270,6 +271,7 @@ function RunStatus({
   running,
   runStart,
   lastRun,
+  lastSuccessfulRun,
   runsHref,
 }: {
   connectionHealth?: ConnectorOverview["connectionHealth"];
@@ -277,11 +279,18 @@ function RunStatus({
   running: boolean;
   runStart: string | undefined;
   lastRun: ConnectorRunRef | null;
+  lastSuccessfulRun: ConnectorRunRef | null;
   runsHref: string;
 }) {
+  // Durable progress = any evidence that this connection has produced data
+  // for the resource server, whether through a scheduler-managed run
+  // (lastRun/lastSuccessfulRun) or a push-mode local-device exporter that
+  // bypasses the scheduler entirely (hasRecords).
+  const hasDurableProgress = Boolean(lastRun) || Boolean(lastSuccessfulRun) || hasRecords;
   if (connectionHealth) {
     return (
       <ConnectionHealthStatus
+        hasDurableProgress={hasDurableProgress}
         health={connectionHealth}
         lastRun={lastRun}
         running={running}
@@ -401,19 +410,21 @@ function RunStatus({
 }
 
 function ConnectionHealthStatus({
+  hasDurableProgress,
   health,
   lastRun,
   running,
   runStart,
   runsHref,
 }: {
+  hasDurableProgress: boolean;
   health: NonNullable<ConnectorOverview["connectionHealth"]>;
   lastRun: ConnectorRunRef | null;
   running: boolean;
   runStart: string | undefined;
   runsHref: string;
 }) {
-  const { label, shape, tone, title } = connectionHealthDisplay(health, Boolean(lastRun));
+  const { label, shape, tone, title } = connectionHealthDisplay(health, hasDurableProgress);
   const content = (
     <span className={`pdpp-caption inline-flex items-center gap-1 ${connectionHealthTextClass(tone)}`} title={title}>
       <StatusDot shape={shape} tone={tone} />
@@ -448,7 +459,7 @@ function ConnectionHealthStatus({
 
 function connectionHealthDisplay(
   health: NonNullable<ConnectorOverview["connectionHealth"]>,
-  hasLastRun: boolean
+  hasDurableProgress: boolean
 ): {
   label: string;
   shape?: "circle" | "diamond" | "triangle";
@@ -473,9 +484,13 @@ function connectionHealthDisplay(
         tone: "warning",
       };
     case "idle":
+      // "Never run" is only honest when there is no durable progress evidence
+      // at all. A local-device exporter that pushes records without a
+      // scheduler-managed run still has durable progress, and labeling it
+      // "Never run" would contradict the record count next to it.
       return {
-        label: hasLastRun ? "Idle" : "Never run",
-        title: hasLastRun ? "No active work" : "Never run",
+        label: hasDurableProgress ? "Idle" : "Never run",
+        title: hasDurableProgress ? "No active work" : "No durable progress yet",
         tone: "neutral",
       };
     case "unknown":
@@ -575,7 +590,7 @@ function ConnectorFreshnessLine({
   }
 
   if (totalRecords > 0) {
-    return <span>records present · no run history</span>;
+    return <span>records present · no scheduler run yet</span>;
   }
 
   return <span>last sync: never</span>;

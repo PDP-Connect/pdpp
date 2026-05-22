@@ -172,10 +172,10 @@ export function RecordsListView({
         <Section
           description={
             interactive
-              ? "These connections are registered and can be synced. Click Sync now to pull initial data."
+              ? "These connections are registered but have no durable progress yet. Click Sync now to pull initial data, or wait for a local-collector device to push its first records."
               : "These mock connections are registered but have no seeded records."
           }
-          title={`Registered but never run (${empty.length})`}
+          title={`No data yet (${empty.length})`}
         >
           <DataList>
             {empty.map((o) =>
@@ -241,7 +241,7 @@ function RowFreshness({
       </span>
     );
   }
-  return <span>no run history</span>;
+  return <span>no scheduler run yet</span>;
 }
 
 type HealthStatTone = "neutral" | "success" | "warning" | "danger" | "active";
@@ -259,7 +259,7 @@ function freshnessLabel(stale: number, noRunHistory: number): string {
     return "Stale >7d";
   }
   if (noRunHistory > 0) {
-    return "No run history";
+    return "No scheduler run";
   }
   return "All fresh";
 }

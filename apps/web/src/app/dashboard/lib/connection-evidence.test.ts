@@ -220,7 +220,7 @@ test("formatLastDurableProgress reports last attempt when no success and no erro
   assert.equal(out.label.includes("failed"), true);
 });
 
-test("formatLastDurableProgress reports 'records present · no run history' when records exist without runs", () => {
+test("formatLastDurableProgress reports 'records present · no scheduler run yet' when records exist without runs", () => {
   const out = formatLastDurableProgress({
     hasError: false,
     lastRun: null,
@@ -228,6 +228,7 @@ test("formatLastDurableProgress reports 'records present · no run history' when
     totalRecords: 7,
   });
   assert.equal(out.label.includes("Records present"), true);
+  assert.equal(out.label.includes("no scheduler run"), true);
 });
 
 test("formatLastDurableProgress reports 'Never run' when there is no evidence at all", () => {

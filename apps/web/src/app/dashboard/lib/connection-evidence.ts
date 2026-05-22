@@ -271,7 +271,8 @@ export interface LastDurableProgress {
  *   - if evidence collection failed (`hasError`), say "Unavailable";
  *   - else if there is a successful run, summarize its end time + event count;
  *   - else if there is any run, summarize the attempt + status;
- *   - else if records exist without run history, surface that explicitly;
+ *   - else if records exist without scheduler-managed run history, surface
+ *     that explicitly (push-mode local-device exporters land here);
  *   - else "Never run".
  *
  * Never returns `0` for event counts unless that count was actually observed.
@@ -299,7 +300,9 @@ export function formatLastDurableProgress(input: {
     };
   }
   if (input.totalRecords > 0) {
-    return { label: "Records present · no run history", unavailable: false };
+    // Records exist without a scheduler-managed run — typical of push-mode
+    // local-device exporters whose progress lands outside scheduler_run_history.
+    return { label: "Records present · no scheduler run yet", unavailable: false };
   }
   return { label: "Never run", unavailable: false };
 }
