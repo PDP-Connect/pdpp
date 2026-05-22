@@ -27,7 +27,7 @@ import {
   DEVICE_BINDING_TABLES,
   IGNORED_PER_INSTANCE_TABLES,
 } from './plan.mjs';
-import { parseArgs, makeRunId } from './cli.mjs';
+import { parseArgs, makeRunId, recordStorageConnectorIdForInstance } from './cli.mjs';
 
 const __dirname = path.dirname(url.fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -331,6 +331,22 @@ test('cli: target-side semantic_search_blob invalidation is scoped to scope_key 
   // — never `stream = ANY(...)` against semantic_search_blob.
   assert.match(cli, /scope_key\s+LIKE\s+ANY\(\$2::text\[\]\)/,
     'expected semantic_search_blob invalidation to use scope_key LIKE ANY(prefix[])');
+});
+
+test('cli: local-device migration rows use the storage connector id, not the public connector id', () => {
+  assert.equal(
+    recordStorageConnectorIdForInstance({ connector_id: 'claude_code', source_kind: 'local_device' }),
+    'local-device:claude_code',
+  );
+  assert.equal(
+    recordStorageConnectorIdForInstance({ connector_id: 'custom/with space', source_kind: 'local_device' }),
+    'local-device:custom%2Fwith%20space',
+  );
+  assert.equal(
+    recordStorageConnectorIdForInstance({ connector_id: 'gmail', source_kind: 'remote_api' }),
+    'gmail',
+  );
+  assert.equal(recordStorageConnectorIdForInstance(null), null);
 });
 
 test('cli: blob reattribution exists and only updates metadata, never duplicates bytes', () => {

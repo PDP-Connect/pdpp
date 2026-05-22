@@ -78,6 +78,14 @@ function scopeKeyLikePrefixForStream(stream) {
   return `${JSON.stringify([stream]).slice(0, -1)},%`;
 }
 
+function recordStorageConnectorIdForInstance(instance) {
+  if (!instance) return null;
+  if (instance.source_kind === 'local_device') {
+    return `local-device:${encodeURIComponent(instance.connector_id)}`;
+  }
+  return instance.connector_id;
+}
+
 // `pg` is loaded lazily so the module is importable in environments where
 // the dependency is not yet installed (e.g. CI scripts hitting parseArgs).
 async function loadPgPool() {
@@ -159,6 +167,7 @@ async function previewCommand(pool, opts) {
       label: pair.label,
       targetInstanceId: pair.targetInstanceId,
       targetConnectorId: target?.connector_id ?? null,
+      targetStorageConnectorId: recordStorageConnectorIdForInstance(target),
       targetCurrentDisplayName: target?.display_name ?? null,
       targetDesiredDisplayName: pair.targetDisplayName,
       sources,
@@ -174,7 +183,7 @@ async function previewCommand(pool, opts) {
 
 async function fetchInstance(pool, instanceId) {
   const r = await pool.query(
-    `SELECT connector_instance_id, owner_subject_id, connector_id, display_name, status
+    `SELECT connector_instance_id, owner_subject_id, connector_id, source_kind, display_name, status
        FROM connector_instances WHERE connector_instance_id = $1`,
     [instanceId],
   );
@@ -215,6 +224,9 @@ function printPreview(summary) {
     console.log(`  target: ${pair.targetInstanceId ?? '(retire only)'}`);
     if (pair.targetInstanceId) {
       console.log(`    connector_id:   ${pair.targetConnectorId}`);
+      if (pair.targetStorageConnectorId !== pair.targetConnectorId) {
+        console.log(`    storage_id:     ${pair.targetStorageConnectorId}`);
+      }
       console.log(`    display_name:   "${pair.targetCurrentDisplayName}" → "${pair.targetDesiredDisplayName}"`);
     }
     for (const s of pair.sources) {
@@ -263,7 +275,7 @@ async function applyPair(pool, pair, runId, opts) {
 
     const target = pair.targetInstanceId
       ? (await client.query(
-          `SELECT connector_id FROM connector_instances WHERE connector_instance_id = $1`,
+          `SELECT connector_id, source_kind FROM connector_instances WHERE connector_instance_id = $1`,
           [pair.targetInstanceId],
         )).rows[0]
       : null;
@@ -277,7 +289,7 @@ async function applyPair(pool, pair, runId, opts) {
         runId,
         sourceInstanceId: sourceSpec.sourceInstanceId,
         targetInstanceId: pair.targetInstanceId,
-        targetConnectorId: target?.connector_id ?? null,
+        targetStorageConnectorId: recordStorageConnectorIdForInstance(target),
         purgeSourceInstance: !!sourceSpec.purgeSourceInstance,
         skipMigration: !!sourceSpec.skipMigration,
       });
@@ -324,7 +336,7 @@ async function applyPair(pool, pair, runId, opts) {
   return pairReport;
 }
 
-async function drainSource({ client, runId, sourceInstanceId, targetInstanceId, targetConnectorId, purgeSourceInstance, skipMigration }) {
+async function drainSource({ client, runId, sourceInstanceId, targetInstanceId, targetStorageConnectorId, purgeSourceInstance, skipMigration }) {
   const report = {
     sourceInstanceId,
     targetInstanceId,
@@ -383,7 +395,7 @@ async function drainSource({ client, runId, sourceInstanceId, targetInstanceId, 
         `INSERT INTO version_counter (connector_id, connector_instance_id, stream, max_version)
          VALUES ($1, $2, $3, 0)
          ON CONFLICT (connector_instance_id, stream) DO NOTHING`,
-        [targetConnectorId, targetInstanceId, stream],
+        [targetStorageConnectorId, targetInstanceId, stream],
       );
 
       // b) For each unique source record (stream, record_key) not on target,
@@ -427,7 +439,7 @@ async function drainSource({ client, runId, sourceInstanceId, targetInstanceId, 
                 emitted_at, version, deleted, deleted_at, cursor_value, primary_key_text)
              VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11)`,
             [
-              targetConnectorId, targetInstanceId, stream, r.record_key,
+              targetStorageConnectorId, targetInstanceId, stream, r.record_key,
               JSON.stringify(r.record_json),
               r.emitted_at, newVersion, r.deleted, r.deleted_at,
               r.cursor_value, r.primary_key_text,
@@ -439,7 +451,7 @@ async function drainSource({ client, runId, sourceInstanceId, targetInstanceId, 
                 record_json, emitted_at, deleted, deleted_at)
              VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9)`,
             [
-              targetConnectorId, targetInstanceId, stream, r.record_key, newVersion,
+              targetStorageConnectorId, targetInstanceId, stream, r.record_key, newVersion,
               JSON.stringify(r.record_json),
               r.emitted_at, r.deleted, r.deleted_at,
             ],
@@ -456,7 +468,7 @@ async function drainSource({ client, runId, sourceInstanceId, targetInstanceId, 
            FROM connector_state src
           WHERE src.connector_instance_id = $1 AND src.stream = $2
          ON CONFLICT (connector_instance_id, stream) DO NOTHING`,
-        [sourceInstanceId, stream, targetInstanceId, targetConnectorId],
+        [sourceInstanceId, stream, targetInstanceId, targetStorageConnectorId],
       );
       report.copied.connector_state = (report.copied.connector_state || 0) + (csResult.rowCount || 0);
 
@@ -467,7 +479,7 @@ async function drainSource({ client, runId, sourceInstanceId, targetInstanceId, 
            FROM grant_connector_state src
           WHERE src.connector_instance_id = $1 AND src.stream = $2
          ON CONFLICT (grant_id, connector_instance_id, stream) DO NOTHING`,
-        [sourceInstanceId, stream, targetInstanceId, targetConnectorId],
+        [sourceInstanceId, stream, targetInstanceId, targetStorageConnectorId],
       );
       report.copied.grant_connector_state = (report.copied.grant_connector_state || 0) + (gcsResult.rowCount || 0);
     }
@@ -491,7 +503,7 @@ async function drainSource({ client, runId, sourceInstanceId, targetInstanceId, 
                AND tgt.record_key = src.record_key
           )
        ON CONFLICT (blob_id, connector_instance_id, stream, record_key, json_path) DO NOTHING`,
-      [sourceInstanceId, targetInstanceId, targetConnectorId],
+      [sourceInstanceId, targetInstanceId, targetStorageConnectorId],
     );
     report.copied.blob_bindings = bbResult.rowCount || 0;
 
@@ -533,7 +545,7 @@ async function drainSource({ client, runId, sourceInstanceId, targetInstanceId, 
          ) pick
         WHERE b.blob_id = pick.blob_id
           AND b.connector_instance_id = $1`,
-      [sourceInstanceId, targetInstanceId, targetConnectorId],
+      [sourceInstanceId, targetInstanceId, targetStorageConnectorId],
     );
     report.reattributed = report.reattributed || {};
     report.reattributed.blobs = blobReattrResult.rowCount || 0;
@@ -568,7 +580,7 @@ async function drainSource({ client, runId, sourceInstanceId, targetInstanceId, 
               started_at, completed_at, error, attempt
          FROM scheduler_run_history
         WHERE connector_instance_id = $1`,
-      [sourceInstanceId, targetInstanceId, targetConnectorId],
+      [sourceInstanceId, targetInstanceId, targetStorageConnectorId],
     );
     report.copied.scheduler_run_history = srhResult.rowCount || 0;
 
@@ -579,7 +591,7 @@ async function drainSource({ client, runId, sourceInstanceId, targetInstanceId, 
        ON CONFLICT (connector_instance_id) DO UPDATE
          SET last_run_time_ms = GREATEST(scheduler_last_run_times.last_run_time_ms, EXCLUDED.last_run_time_ms),
              updated_at = EXCLUDED.updated_at`,
-      [sourceInstanceId, targetInstanceId, targetConnectorId],
+      [sourceInstanceId, targetInstanceId, targetStorageConnectorId],
     );
     report.copied.scheduler_last_run_times = slrtResult.rowCount || 0;
   }
@@ -755,4 +767,4 @@ if (isMain) {
   });
 }
 
-export { parseArgs, makeRunId, previewCommand, applyCommand, verifyCommand, drainSource };
+export { parseArgs, makeRunId, previewCommand, applyCommand, verifyCommand, drainSource, recordStorageConnectorIdForInstance };
