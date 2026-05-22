@@ -131,7 +131,49 @@ See `references/query-cookbook.md`. Quick map:
 
 Default to filtered queries over full-table scans. If `/v1/schema` declares a filter or `expand[]` that answers the task, prefer it.
 
-### 8. Renew, revoke, or forget when done
+### 8. Optional: MCP adapter over the same scoped token
+
+If your harness supports the [Model Context Protocol](https://modelcontextprotocol.io/),
+you can wrap the same scoped client token in an MCP stdio server instead of issuing
+raw HTTP requests. The adapter is a thin read-only client of the RS — every tool
+forwards to an existing `/v1/*` endpoint under the cached scoped token. There are
+no new credentials, scopes, or wire contracts.
+
+```jsonc
+// claude_desktop_config.json (or equivalent MCP client config)
+{
+  "mcpServers": {
+    "pdpp": {
+      "command": "npx",
+      "args": ["-y", "@pdpp/mcp-server@beta", "--provider-url", "https://pdpp.example.com"]
+    }
+  }
+}
+```
+
+Run `pdpp connect <provider-url>` first so a scoped client token is cached. The
+adapter exposes `schema`, `list_streams`, `query_records`, `search`, and
+`fetch_blob` tools plus the `pdpp://stream/{name}` resource template, all backed
+by the RS endpoints described in §7.
+
+Constraints (these mirror the hard rules above):
+
+- **stdio only.** Hosted/Streamable HTTP is intentionally out of scope; a separate
+  OpenSpec change is required to add it.
+- **No owner credentials.** The adapter refuses `PDPP_OWNER_TOKEN` and other
+  owner bearer tokens.
+- **No grant issuance.** If the cache is empty or the token is invalid, the
+  adapter surfaces an MCP error directing the operator to run `pdpp connect`.
+- **No new query semantics.** Unknown query arguments are rejected rather than
+  silently dropped.
+- **Read-only.** No tool mutates data, triggers collection, or modifies grants.
+
+The MCP adapter is a convenience for MCP-aware harnesses; the raw-HTTP path in
+this skill remains the canonical interface and the source of truth for query
+shapes. If `@pdpp/mcp-server` is not yet published to npm, consume it from the
+in-repo workspace package or use the raw-HTTP path.
+
+### 9. Renew, revoke, or forget when done
 
 - Token near expiry and the task continues → request a fresh grant. Do not introspect-then-extend; client tokens are not refreshable in the current reference.
 - Task complete → revoke: `POST $AS_URL/grants/<grant-id>/revoke`.

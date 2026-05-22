@@ -32,4 +32,4 @@
 - [x] 5.3 Run `openspec validate add-mcp-stdio-adapter --strict` and `openspec validate --all --strict`.
 - [x] 5.4 Run `pnpm --filter @pdpp/mcp-server run test` and any package build/typecheck scripts.
 - [x] 5.5 Run a manual MCP Inspector or equivalent stdio smoke and record concise evidence under `tmp/workstreams/`.
-- [ ] 5.6 Update PDPP agent-skill or README guidance to mention the MCP adapter as an alternative to raw HTTP after it is validated. *(Deferred to a follow-up — README in the new package documents usage; promoting it into the wider agent-skill docs should happen alongside published-beta release per the design's promotion-trigger guidance.)*
+- [x] 5.6 Update PDPP agent-skill or README guidance to mention the MCP adapter as an alternative to raw HTTP after it is validated. The `pdpp-data-access` skill now documents the MCP stdio adapter, its constraints (stdio-only, no owner tokens, no grant issuance, no new query semantics, read-only), and the install snippet. The package README also clarifies that promotion to a published `@pdpp/mcp-server@beta` requires a follow-up OpenSpec change under the package release policy.

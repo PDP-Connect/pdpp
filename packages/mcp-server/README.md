@@ -19,6 +19,15 @@ access token already cached by `pdpp connect`.
 - **Not a proxy.** Per-client consent and confused-deputy mitigations would be required
   before this package ever accepted MCP-client tokens; that is out of scope.
 
+## Publication status
+
+This package is a private workspace package (`"private": true`). It is consumed
+in-repo by the agent skill and integration tests. Promoting it to a published
+`@pdpp/mcp-server@beta` on npm requires a follow-up OpenSpec change under the
+[package release policy](../../docs/package-release-policy.md) (manifest opt-in,
+release-train wiring, and npm trusted-publisher bootstrap), matching the
+precedent established for `@pdpp/cli` and `@pdpp/local-collector`.
+
 ## Install (local agent harness)
 
 ```jsonc
