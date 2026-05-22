@@ -191,6 +191,13 @@ EnvironmentFile=/etc/pdpp/local-collector.secret
 ExecStart=/usr/bin/pdpp-local-collector run --connector %i
 ```
 
+If Node is installed under a user-managed prefix such as `nvm`, do not rely on
+systemd's minimal default `PATH`. Either point `ExecStart` at a wrapper that
+exports the Node bin directory first, or set an explicit `Environment=PATH=...`
+in the unit before invoking `pdpp-local-collector`. The installed npm binary
+uses a `#!/usr/bin/env node` shebang, so an interactive shell may work while
+the same command fails under systemd unless `node` is on the service `PATH`.
+
 Example timer:
 
 ```ini
