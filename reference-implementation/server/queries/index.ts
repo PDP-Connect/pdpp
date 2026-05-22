@@ -217,9 +217,11 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly deviceExportersListSourceInstanceHeartbeatsByConnector: SmallEnumerationQuery;
   readonly deviceExportersListSourceInstances: SmallEnumerationQuery;
   readonly deviceExportersMarkCredentialUsed: MutationQuery;
+  readonly deviceExportersRevokeConnectorInstancesForDevice: MutationQuery;
   readonly deviceExportersRevokeCredentialsForDevice: MutationQuery;
   readonly deviceExportersRevokeDevice: MutationQuery;
   readonly deviceExportersRevokeEnrollmentCode: MutationQuery;
+  readonly deviceExportersRevokeSourceInstancesForDevice: MutationQuery;
   readonly deviceExportersUpdateDeviceHeartbeat: MutationQuery;
   readonly deviceExportersUpdateSourceInstanceHeartbeat: MutationQuery;
   readonly deviceExportersUpsertSourceInstance: MutationQuery;

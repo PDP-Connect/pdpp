@@ -7,6 +7,10 @@ import {
   createPostgresDeviceExporterStore,
   createSqliteDeviceExporterStore,
 } from '../server/stores/device-exporter-store.js';
+import {
+  createPostgresConnectorInstanceStore,
+  createSqliteConnectorInstanceStore,
+} from '../server/stores/connector-instance-store.js';
 import { closePostgresStorage, initPostgresStorage, postgresQuery } from '../server/postgres-storage.js';
 
 const NOW = '2026-04-30T12:00:00.000Z';
@@ -174,6 +178,145 @@ test('SQLite DeviceExporterStore conforms to enrollment, credential, source, and
     );
   } finally {
     closeDb();
+  }
+});
+
+// Revoking a device exporter must cascade revoke status to the
+// device_source_instances bound to it AND to the connector_instances those
+// source instances reference. Otherwise the operator surfaces
+// (/_ref/connectors, device-exporter diagnostics) keep listing revoked local
+// collectors as live records rows, including zero-record duplicates.
+async function runRevokeCascade({ makeDeviceStore, makeConnectorInstanceStore, seedConnector, now }) {
+  await seedConnector('local.files');
+
+  const deviceStore = await makeDeviceStore();
+  const instanceStore = await makeConnectorInstanceStore();
+
+  await instanceStore.upsert({
+    connectorInstanceId: 'cin_dev_revoked',
+    ownerSubjectId: 'owner_1',
+    connectorId: 'local.files',
+    displayName: 'Revoked laptop binding',
+    status: 'active',
+    sourceKind: 'local_device',
+    sourceBindingKey: 'revoked',
+    sourceBinding: { kind: 'local_device', label: 'revoked' },
+    createdAt: now,
+    updatedAt: now,
+  });
+  await instanceStore.upsert({
+    connectorInstanceId: 'cin_dev_kept',
+    ownerSubjectId: 'owner_1',
+    connectorId: 'local.files',
+    displayName: 'Kept laptop binding',
+    status: 'active',
+    sourceKind: 'local_device',
+    sourceBindingKey: 'kept',
+    sourceBinding: { kind: 'local_device', label: 'kept' },
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  await deviceStore.createDevice({
+    deviceId: 'dev_revoke',
+    ownerSubjectId: 'owner_1',
+    displayName: 'Device to revoke',
+    createdAt: now,
+    updatedAt: now,
+  });
+  await deviceStore.createDevice({
+    deviceId: 'dev_keep',
+    ownerSubjectId: 'owner_1',
+    displayName: 'Device to keep',
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  await deviceStore.upsertSourceInstance({
+    sourceInstanceId: 'src_revoke',
+    deviceId: 'dev_revoke',
+    connectorId: 'local.files',
+    connectorInstanceId: 'cin_dev_revoked',
+    localBindingId: 'photos',
+    displayName: 'Photos on revoked device',
+    createdAt: now,
+    updatedAt: now,
+  });
+  await deviceStore.upsertSourceInstance({
+    sourceInstanceId: 'src_keep',
+    deviceId: 'dev_keep',
+    connectorId: 'local.files',
+    connectorInstanceId: 'cin_dev_kept',
+    localBindingId: 'photos',
+    displayName: 'Photos on kept device',
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  await deviceStore.revokeDevice('dev_revoke', LATER);
+
+  assert.equal((await deviceStore.getDevice('dev_revoke')).status, 'revoked');
+  const revokedSource = await deviceStore.getSourceInstance('dev_revoke', 'src_revoke');
+  assert.equal(revokedSource.status, 'revoked');
+  assert.equal(revokedSource.revokedAt, LATER);
+  const revokedInstance = await instanceStore.get('cin_dev_revoked');
+  assert.equal(revokedInstance.status, 'revoked');
+  assert.equal(revokedInstance.revokedAt, LATER);
+  assert.equal(revokedInstance.updatedAt, LATER);
+
+  // The other device, its source instance, and its connector_instance must
+  // remain untouched. Revoke is per-device, not global.
+  assert.equal((await deviceStore.getDevice('dev_keep')).status, 'active');
+  const keptSource = await deviceStore.getSourceInstance('dev_keep', 'src_keep');
+  assert.equal(keptSource.status, 'active');
+  assert.equal(keptSource.revokedAt, null);
+  const keptInstance = await instanceStore.get('cin_dev_kept');
+  assert.equal(keptInstance.status, 'active');
+  assert.equal(keptInstance.revokedAt, null);
+}
+
+test('SQLite revokeDevice cascades revoked status to device source instances and their connector_instances', async () => {
+  initDb();
+  try {
+    await runRevokeCascade({
+      makeDeviceStore: () => createSqliteDeviceExporterStore(),
+      makeConnectorInstanceStore: () => createSqliteConnectorInstanceStore(),
+      seedConnector: async (connectorId) => {
+        getDb()
+          .prepare('INSERT INTO connectors(connector_id, manifest, created_at) VALUES (?, ?, ?)')
+          .run(connectorId, JSON.stringify({ connector_id: connectorId, version: '1.0.0', streams: [] }), NOW);
+      },
+      now: NOW,
+    });
+  } finally {
+    closeDb();
+  }
+});
+
+test('Postgres revokeDevice cascades revoked status when PDPP_TEST_POSTGRES_URL is set', { skip: !process.env.PDPP_TEST_POSTGRES_URL }, async () => {
+  await initPostgresStorage({ backend: 'postgres', databaseUrl: process.env.PDPP_TEST_POSTGRES_URL });
+  const cleanup = async () => {
+    await postgresQuery(`DELETE FROM device_source_instances WHERE device_id IN ('dev_revoke', 'dev_keep')`);
+    await postgresQuery(`DELETE FROM device_exporters WHERE device_id IN ('dev_revoke', 'dev_keep')`);
+    await postgresQuery(`DELETE FROM connector_instances WHERE connector_instance_id IN ('cin_dev_revoked', 'cin_dev_kept')`);
+    await postgresQuery(`DELETE FROM connectors WHERE connector_id = 'local.files'`);
+  };
+  try {
+    await cleanup();
+    await runRevokeCascade({
+      makeDeviceStore: () => createPostgresDeviceExporterStore(),
+      makeConnectorInstanceStore: () => createPostgresConnectorInstanceStore(),
+      seedConnector: async (connectorId) => {
+        await postgresQuery(
+          `INSERT INTO connectors(connector_id, manifest, created_at) VALUES ($1, $2::jsonb, $3)`,
+          [connectorId, JSON.stringify({ connector_id: connectorId, version: '1.0.0', streams: [] }), NOW],
+        );
+      },
+      now: NOW,
+    });
+  } finally {
+    await cleanup();
+    await closePostgresStorage();
   }
 });
 
