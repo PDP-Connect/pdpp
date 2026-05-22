@@ -66,7 +66,7 @@ export const MIGRATION_PAIRS = [
 // ──────────────────────────────────────────────────────────────────────
 // Schema classification
 //
-// Every table below is verified against
+// Every table in the per-instance categories below is verified against
 // reference-implementation/server/postgres-storage.js to have a
 // `connector_instance_id` column (and either a PK or index that uses it).
 // Tables WITHOUT that column — notably lexical_search_snapshots and
@@ -81,12 +81,17 @@ export const MIGRATION_PAIRS = [
 //     Per-instance authoritative data. Copied source → target before
 //     the source rows are deleted. Backed up first.
 //
-//   TARGET_REBUILD_PER_STREAM_TABLES
-//     Search-derived rows keyed by (connector_instance_id, stream). When
-//     we copy records into a target stream the target's derived rows for
-//     that stream may become stale (new record_keys, changed fingerprint).
-//     We clear them on the target for the affected streams; the runtime
-//     rebuilds lazily on next query.
+//   TARGET_REBUILD_STREAM_KEYED_TABLES
+//     Search-derived rows keyed by (connector_instance_id, stream).
+//     Invalidated on the target via `stream = ANY($streams)`.
+//
+//   TARGET_REBUILD_SCOPE_KEYED_TABLES
+//     Search-derived rows keyed by (connector_instance_id, scope_key,
+//     record_key) — currently only `semantic_search_blob`. `scope_key`
+//     is the JSON-encoded scope tuple whose first element is the stream
+//     (see search-semantic.js::scopeKeyPrefixForStream → e.g. `["posts",`).
+//     Invalidated on the target via `scope_key LIKE ANY($prefixes)`,
+//     where each prefix is `scopeKeyPrefixForStream(stream) || '%'`.
 //
 //   SOURCE_CLEAR_ONLY_TABLES
 //     Per-instance rows that are operationally bound to the source
@@ -102,10 +107,12 @@ export const MIGRATION_PAIRS = [
 //                                    is the desired behavior post-merge.
 //     Backed up, then cleared from the source. Never migrated.
 //
-//   IGNORED tables (mentioned for completeness, NOT in any list below):
+//   IGNORED_PER_INSTANCE_TABLES (intentionally not touched):
 //     - lexical_search_snapshots, semantic_search_snapshots — no CII
 //       column, plan_hash already invalidates stale cursors.
-//     - blobs — content-addressed, shared across instances.
+//     - blobs — CII column present but content-addressed by blob_id;
+//       handled explicitly by the blob-reattribution step in cli.mjs
+//       (see drainSource), NOT as a per-CII clear.
 //     - browser_surfaces, browser_surface_leases — keyed by connector_id /
 //       surface_id, not CII; runtime owns lifecycle.
 //     - spine_events, tokens, grants, pending_consents,
@@ -127,12 +134,31 @@ export const AUTHORITATIVE_INSTANCE_TABLES = Object.freeze([
   'scheduler_last_run_times',
 ]);
 
-export const TARGET_REBUILD_PER_STREAM_TABLES = Object.freeze([
+// Search-derived per-instance tables keyed by (connector_instance_id, stream).
+// Invalidated on the target via `WHERE connector_instance_id = $1 AND stream = ANY($2)`.
+export const TARGET_REBUILD_STREAM_KEYED_TABLES = Object.freeze([
   'lexical_search_index',
   'lexical_search_meta',
-  'semantic_search_blob',
   'semantic_search_meta',
   'semantic_search_backfill_progress',
+]);
+
+// Search-derived per-instance tables keyed by (connector_instance_id, scope_key,
+// record_key). `scope_key` JSON-encodes the scope tuple whose first element is
+// the stream (see search-semantic.js::scopeKeyPrefixForStream — yields strings
+// like `["posts",`). Invalidated on the target via
+// `WHERE connector_instance_id = $1 AND (scope_key LIKE $p1 OR scope_key LIKE $p2 …)`.
+export const TARGET_REBUILD_SCOPE_KEYED_TABLES = Object.freeze([
+  'semantic_search_blob',
+]);
+
+// Union convenience for code paths that don't care about the keying shape —
+// e.g. backups, source-side bulk delete, classification assertions. Anything
+// that issues DML referencing `stream` MUST use TARGET_REBUILD_STREAM_KEYED_TABLES,
+// never this union.
+export const TARGET_REBUILD_ALL_TABLES = Object.freeze([
+  ...TARGET_REBUILD_STREAM_KEYED_TABLES,
+  ...TARGET_REBUILD_SCOPE_KEYED_TABLES,
 ]);
 
 export const SOURCE_CLEAR_ONLY_TABLES = Object.freeze([
@@ -142,11 +168,15 @@ export const SOURCE_CLEAR_ONLY_TABLES = Object.freeze([
   'connector_attention_records',
 ]);
 
-// Snapshots tables are intentionally NOT in any per-instance list above.
-// They have no connector_instance_id column; per-instance DELETE/COUNT
-// against them would fail. Exported only so the test suite can assert
-// the script never references them by connector_instance_id.
-export const SCHEMA_TABLES_WITHOUT_CONNECTOR_INSTANCE_ID = Object.freeze([
+// Tables intentionally omitted from all per-instance categories above. Most
+// have no `connector_instance_id` column at all — per-instance DELETE/COUNT
+// against them would fail outright. `blobs` is the exception: it does carry
+// a CII column, but the row identity is `blob_id` (sha256-derived) and rows
+// are shared across instances. Blob rows are handled by the dedicated
+// blob-reattribution step in cli.mjs::drainSource, not by bulk per-instance
+// DML. Exported so the test suite can assert the script never DELETEs or
+// COUNTs them by connector_instance_id.
+export const IGNORED_PER_INSTANCE_TABLES = Object.freeze([
   'lexical_search_snapshots',
   'semantic_search_snapshots',
   'blobs',
@@ -181,9 +211,11 @@ export const DEVICE_BINDING_TABLES = Object.freeze([
 export const SOURCE_TOUCHED_TABLES = Object.freeze([
   ...AUTHORITATIVE_INSTANCE_TABLES,
   ...SOURCE_CLEAR_ONLY_TABLES,
-  // Source's own per-stream search-derived rows are dropped too —
-  // otherwise they would point at a connector_instance_id that no
-  // longer exists once the source is purged.
-  ...TARGET_REBUILD_PER_STREAM_TABLES,
+  // Source's own search-derived rows are dropped too — otherwise they
+  // would point at a connector_instance_id that no longer exists once
+  // the source is purged. Both stream-keyed and scope-keyed tables are
+  // safe to clear by `WHERE connector_instance_id = $1` alone (the bulk
+  // source-clear path doesn't filter by stream/scope_key, only CII).
+  ...TARGET_REBUILD_ALL_TABLES,
   ...DEVICE_BINDING_TABLES,
 ]);

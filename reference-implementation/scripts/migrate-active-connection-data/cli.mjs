@@ -60,11 +60,23 @@
 import {
   MIGRATION_PAIRS,
   AUTHORITATIVE_INSTANCE_TABLES,
-  TARGET_REBUILD_PER_STREAM_TABLES,
+  TARGET_REBUILD_STREAM_KEYED_TABLES,
+  TARGET_REBUILD_SCOPE_KEYED_TABLES,
+  TARGET_REBUILD_ALL_TABLES,
   SOURCE_CLEAR_ONLY_TABLES,
   SOURCE_TOUCHED_TABLES,
   DEVICE_BINDING_TABLES,
 } from './plan.mjs';
+
+// Mirror of search-semantic.js::scopeKeyPrefixForStream. The semantic-search
+// blob table is keyed by (connector_instance_id, scope_key, record_key) where
+// scope_key is a JSON-encoded scope tuple whose first element is the stream
+// name. The prefix `["posts",` matches every scope_key in the `posts` stream.
+// `[`, `"`, `,` are not LIKE metacharacters in Postgres, so this is a safe
+// literal LIKE pattern.
+function scopeKeyLikePrefixForStream(stream) {
+  return `${JSON.stringify([stream]).slice(0, -1)},%`;
+}
 
 // `pg` is loaded lazily so the module is importable in environments where
 // the dependency is not yet installed (e.g. CI scripts hitting parseArgs).
@@ -325,9 +337,9 @@ async function drainSource({ client, runId, sourceInstanceId, targetInstanceId, 
 
   // 1. Backup every per-instance row keyed by this source. SOURCE_TOUCHED_TABLES
   //    is the verified allow-list — every name here has a connector_instance_id
-  //    column (see plan.mjs::SCHEMA_TABLES_WITHOUT_CONNECTOR_INSTANCE_ID for
-  //    the negative list). Backup tables created here are scoped to the
-  //    pair's transaction: COMMIT persists them, ROLLBACK drops them.
+  //    column (see plan.mjs::IGNORED_PER_INSTANCE_TABLES for the negative list).
+  //    Backup tables created here are scoped to the pair's transaction:
+  //    COMMIT persists them, ROLLBACK drops them.
   for (const table of SOURCE_TOUCHED_TABLES) {
     const backupName = `mig_${tableSuffix}_${table}`;
     const bk = await client.query(
@@ -463,8 +475,10 @@ async function drainSource({ client, runId, sourceInstanceId, targetInstanceId, 
     report.copied.record_changes = changesCopied;
 
     // e) blob_bindings — bind any blobs that were attached to source records
-    //    that we just copied. Blob rows themselves are content-addressed and
-    //    shared via sha256; we leave them alone.
+    //    that we just copied. Blob rows themselves are content-addressed by
+    //    sha256 / blob_id (PK), so the bytes are NOT duplicated. The owning
+    //    `blobs` row's metadata (connector_id/CII/stream/record_key) is
+    //    reattributed below.
     const bbResult = await client.query(
       `INSERT INTO blob_bindings (blob_id, connector_id, connector_instance_id, stream, record_key, json_path)
        SELECT src.blob_id, $3, $2, src.stream, src.record_key, src.json_path
@@ -480,6 +494,65 @@ async function drainSource({ client, runId, sourceInstanceId, targetInstanceId, 
       [sourceInstanceId, targetInstanceId, targetConnectorId],
     );
     report.copied.blob_bindings = bbResult.rowCount || 0;
+
+    // f) blobs — content-addressed by `blob_id` PK, so bytes are never
+    //    duplicated. BUT the `blobs` row also carries origin metadata
+    //    (connector_id, connector_instance_id, stream, record_key) which:
+    //      - Is summed by `get-retained-by-connector-instance.sql` for
+    //        per-(connector_id, CII) byte accounting.
+    //      - Acts as one of the rows returned by `postgresListBlobBindings`
+    //        (see queries/blobs/list-bindings-by-id.sql), participating in
+    //        the visibility decision for GET /v1/blobs/:blob_id.
+    //    After source purge, leaving the row attributed to the deleted
+    //    source breaks both: bytes vanish from target retention totals,
+    //    and the UNION row points at a CII that no longer exists.
+    //
+    //    Backup source-owned blobs metadata first, then reattribute the
+    //    metadata for any blob_id we just bound to target. We pick the
+    //    smallest (stream, record_key) target binding deterministically.
+    //    Blob bytes are NOT moved — only the metadata pointer.
+    const blobBackupName = `mig_${tableSuffix}_blobs`;
+    const blobBk = await client.query(
+      `CREATE TABLE "${blobBackupName}" AS
+         SELECT * FROM blobs WHERE connector_instance_id = $1`,
+      [sourceInstanceId],
+    );
+    report.backedUp.blobs = blobBk.rowCount ?? 0;
+
+    const blobReattrResult = await client.query(
+      `UPDATE blobs b
+          SET connector_id = $3,
+              connector_instance_id = $2,
+              stream = pick.stream,
+              record_key = pick.record_key
+         FROM (
+           SELECT DISTINCT ON (bb.blob_id) bb.blob_id, bb.stream, bb.record_key
+             FROM blob_bindings bb
+            WHERE bb.connector_instance_id = $2
+            ORDER BY bb.blob_id, bb.stream, bb.record_key
+         ) pick
+        WHERE b.blob_id = pick.blob_id
+          AND b.connector_instance_id = $1`,
+      [sourceInstanceId, targetInstanceId, targetConnectorId],
+    );
+    report.reattributed = report.reattributed || {};
+    report.reattributed.blobs = blobReattrResult.rowCount || 0;
+
+    // Count any source-origin blobs we did NOT reattribute (no target
+    // binding picked them up). Their bytes survive — we never DELETE FROM
+    // blobs anywhere in the codebase, matching production retention
+    // semantics — but their metadata still points at a CII that will be
+    // purged below. Surface the count so verify/preview can flag it.
+    const blobStrandedResult = await client.query(
+      `SELECT COUNT(*)::int AS count, COALESCE(SUM(size_bytes), 0)::bigint AS bytes
+         FROM blobs
+        WHERE connector_instance_id = $1`,
+      [sourceInstanceId],
+    );
+    report.strandedSourceBlobs = {
+      count: blobStrandedResult.rows[0]?.count ?? 0,
+      bytes: Number(blobStrandedResult.rows[0]?.bytes ?? 0),
+    };
 
     // f) scheduler_run_history — append-only audit, copy verbatim with
     //    instance/connector rewritten. (id is BIGSERIAL, auto-assigned.)
@@ -511,10 +584,15 @@ async function drainSource({ client, runId, sourceInstanceId, targetInstanceId, 
     report.copied.scheduler_last_run_times = slrtResult.rowCount || 0;
   }
 
-  // 3. Invalidate target's per-stream search-derived rows for any stream we
-  //    copied records into. The runtime rebuilds these lazily
+  // 3. Invalidate target's search-derived rows for any stream we copied
+  //    records into. The runtime rebuilds these lazily
   //    (search.js::rebuildLexicalIndexForStream,
   //    search-semantic.js::rebuildSemanticIndexForStream) on next query.
+  //
+  //    Two different keying shapes, and we MUST use the right WHERE clause
+  //    for each — semantic_search_blob is keyed by (CII, scope_key,
+  //    record_key), not by stream. Issuing `AND stream = ANY(...)` against
+  //    semantic_search_blob would 42703 "column does not exist".
   //
   //    NOTE: lexical_search_snapshots and semantic_search_snapshots are
   //    NOT touched here — they have no connector_instance_id column.
@@ -522,16 +600,35 @@ async function drainSource({ client, runId, sourceInstanceId, targetInstanceId, 
   //    and TTL.
   if (targetInstanceId && targetStreamsTouched.size > 0) {
     const streamsArr = [...targetStreamsTouched];
-    for (const table of TARGET_REBUILD_PER_STREAM_TABLES) {
+    report.targetRebuildCleared = report.targetRebuildCleared || {};
+
+    for (const table of TARGET_REBUILD_STREAM_KEYED_TABLES) {
       const r = await client.query(
         `DELETE FROM "${table}"
           WHERE connector_instance_id = $1
             AND stream = ANY($2::text[])`,
         [targetInstanceId, streamsArr],
       );
-      report.targetRebuildCleared = report.targetRebuildCleared || {};
       report.targetRebuildCleared[table] = r.rowCount || 0;
     }
+
+    // semantic_search_blob: derive scope_key LIKE prefixes from the touched
+    // streams. One DELETE per table, OR'd across prefixes via ANY(array_of_likes).
+    // Postgres' `scope_key LIKE ANY(ARRAY[...])` is the standard way to match
+    // multiple LIKE patterns in one statement.
+    if (TARGET_REBUILD_SCOPE_KEYED_TABLES.length > 0) {
+      const scopePrefixes = streamsArr.map(scopeKeyLikePrefixForStream);
+      for (const table of TARGET_REBUILD_SCOPE_KEYED_TABLES) {
+        const r = await client.query(
+          `DELETE FROM "${table}"
+            WHERE connector_instance_id = $1
+              AND scope_key LIKE ANY($2::text[])`,
+          [targetInstanceId, scopePrefixes],
+        );
+        report.targetRebuildCleared[table] = r.rowCount || 0;
+      }
+    }
+
     report.targetStreamsInvalidated = streamsArr;
   }
 
@@ -541,13 +638,16 @@ async function drainSource({ client, runId, sourceInstanceId, targetInstanceId, 
   //      carried over. controller_active_runs especially must be cleared,
   //      otherwise a row pointing at a purged instance would block a new
   //      run from claiming the (connector_instance_id) PK on the target.
-  //    - TARGET_REBUILD_PER_STREAM_TABLES (source side): the source's own
-  //      search-derived rows; the runtime would rebuild from a missing
-  //      instance otherwise. Dropping is correct.
+  //    - TARGET_REBUILD_ALL_TABLES (source side): the source's own
+  //      search-derived rows — both stream-keyed and scope-keyed. The
+  //      bulk source-side clear here filters by connector_instance_id
+  //      alone, so the keying-shape difference doesn't matter; every
+  //      source-owned row is dropped. The runtime would otherwise be
+  //      asked to rebuild against a missing instance.
   const sourceClearTables = [
     ...AUTHORITATIVE_INSTANCE_TABLES,
     ...SOURCE_CLEAR_ONLY_TABLES,
-    ...TARGET_REBUILD_PER_STREAM_TABLES,
+    ...TARGET_REBUILD_ALL_TABLES,
   ];
   for (const table of sourceClearTables) {
     const r = await client.query(

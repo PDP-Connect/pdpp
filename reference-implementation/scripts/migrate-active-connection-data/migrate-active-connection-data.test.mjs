@@ -19,11 +19,13 @@ import assert from 'node:assert/strict';
 import {
   MIGRATION_PAIRS,
   AUTHORITATIVE_INSTANCE_TABLES,
-  TARGET_REBUILD_PER_STREAM_TABLES,
+  TARGET_REBUILD_STREAM_KEYED_TABLES,
+  TARGET_REBUILD_SCOPE_KEYED_TABLES,
+  TARGET_REBUILD_ALL_TABLES,
   SOURCE_CLEAR_ONLY_TABLES,
   SOURCE_TOUCHED_TABLES,
   DEVICE_BINDING_TABLES,
-  SCHEMA_TABLES_WITHOUT_CONNECTOR_INSTANCE_ID,
+  IGNORED_PER_INSTANCE_TABLES,
 } from './plan.mjs';
 import { parseArgs, makeRunId } from './cli.mjs';
 
@@ -112,13 +114,14 @@ test('plan: source ids do not overlap target ids', () => {
 // Table-list shape invariants
 // ──────────────────────────────────────────────────────────────────────
 
-test('table lists: authoritative/rebuild/source-clear/binding/without-cii are pairwise disjoint', () => {
+test('table lists: authoritative/stream-rebuild/scope-rebuild/source-clear/binding/ignored are pairwise disjoint', () => {
   const lists = [
     ['AUTHORITATIVE_INSTANCE_TABLES', AUTHORITATIVE_INSTANCE_TABLES],
-    ['TARGET_REBUILD_PER_STREAM_TABLES', TARGET_REBUILD_PER_STREAM_TABLES],
+    ['TARGET_REBUILD_STREAM_KEYED_TABLES', TARGET_REBUILD_STREAM_KEYED_TABLES],
+    ['TARGET_REBUILD_SCOPE_KEYED_TABLES', TARGET_REBUILD_SCOPE_KEYED_TABLES],
     ['SOURCE_CLEAR_ONLY_TABLES', SOURCE_CLEAR_ONLY_TABLES],
     ['DEVICE_BINDING_TABLES', DEVICE_BINDING_TABLES],
-    ['SCHEMA_TABLES_WITHOUT_CONNECTOR_INSTANCE_ID', SCHEMA_TABLES_WITHOUT_CONNECTOR_INSTANCE_ID],
+    ['IGNORED_PER_INSTANCE_TABLES', IGNORED_PER_INSTANCE_TABLES],
   ];
   for (let i = 0; i < lists.length; i++) {
     for (let j = i + 1; j < lists.length; j++) {
@@ -134,13 +137,25 @@ test('table lists: authoritative/rebuild/source-clear/binding/without-cii are pa
 test('table lists: identifiers look like Postgres identifiers', () => {
   const all = [
     ...AUTHORITATIVE_INSTANCE_TABLES,
-    ...TARGET_REBUILD_PER_STREAM_TABLES,
+    ...TARGET_REBUILD_ALL_TABLES,
     ...SOURCE_CLEAR_ONLY_TABLES,
     ...DEVICE_BINDING_TABLES,
-    ...SCHEMA_TABLES_WITHOUT_CONNECTOR_INSTANCE_ID,
+    ...IGNORED_PER_INSTANCE_TABLES,
   ];
   for (const t of all) {
     assert.match(t, /^[a-z][a-z0-9_]+$/, `suspicious table identifier: ${t}`);
+  }
+});
+
+test('table lists: TARGET_REBUILD_ALL_TABLES is the union of stream- and scope-keyed', () => {
+  const expected = new Set([
+    ...TARGET_REBUILD_STREAM_KEYED_TABLES,
+    ...TARGET_REBUILD_SCOPE_KEYED_TABLES,
+  ]);
+  assert.equal(TARGET_REBUILD_ALL_TABLES.length, expected.size,
+    'TARGET_REBUILD_ALL_TABLES has duplicates or missing entries');
+  for (const t of TARGET_REBUILD_ALL_TABLES) {
+    assert.ok(expected.has(t), `unexpected entry in TARGET_REBUILD_ALL_TABLES: ${t}`);
   }
 });
 
@@ -148,7 +163,7 @@ test('table lists: SOURCE_TOUCHED_TABLES is the union of source-side categories'
   const expected = new Set([
     ...AUTHORITATIVE_INSTANCE_TABLES,
     ...SOURCE_CLEAR_ONLY_TABLES,
-    ...TARGET_REBUILD_PER_STREAM_TABLES,
+    ...TARGET_REBUILD_ALL_TABLES,
     ...DEVICE_BINDING_TABLES,
   ]);
   assert.equal(SOURCE_TOUCHED_TABLES.length, expected.size,
@@ -171,19 +186,27 @@ test('schema: every table in SOURCE_TOUCHED_TABLES actually has connector_instan
   }
 });
 
-test('schema: every table in TARGET_REBUILD_PER_STREAM_TABLES has connector_instance_id AND a stream column', () => {
+test('schema: every TARGET_REBUILD_STREAM_KEYED_TABLES table has connector_instance_id AND a stream column', () => {
   const bodies = parseTableBodies(readPostgresStorageSource());
-  for (const t of TARGET_REBUILD_PER_STREAM_TABLES) {
+  for (const t of TARGET_REBUILD_STREAM_KEYED_TABLES) {
     assert.ok(bodies[t], `missing CREATE TABLE for ${t}`);
     assert.match(bodies[t], /connector_instance_id/, `${t} has no connector_instance_id`);
-    // Either a "stream" column or a "scope_key" column — semantic_search_blob
-    // uses scope_key in place of stream, but our cli targets only the
-    // canonical stream-keyed ones. Allow scope_key for parity with the
-    // semantic blob table.
-    assert.ok(
-      /\bstream\b/.test(bodies[t]) || /\bscope_key\b/.test(bodies[t]),
-      `${t} has neither a stream nor scope_key column — cannot be safely per-stream invalidated`,
-    );
+    assert.match(bodies[t], /\bstream\b/,
+      `${t} is classified stream-keyed but has no stream column — would 42703 under \`stream = ANY(...)\``);
+  }
+});
+
+test('schema: every TARGET_REBUILD_SCOPE_KEYED_TABLES table has connector_instance_id AND a scope_key column (no stream column)', () => {
+  const bodies = parseTableBodies(readPostgresStorageSource());
+  for (const t of TARGET_REBUILD_SCOPE_KEYED_TABLES) {
+    assert.ok(bodies[t], `missing CREATE TABLE for ${t}`);
+    assert.match(bodies[t], /connector_instance_id/, `${t} has no connector_instance_id`);
+    assert.match(bodies[t], /\bscope_key\b/,
+      `${t} is classified scope-keyed but has no scope_key column`);
+    // The whole reason this category exists: must NOT be hit with a
+    // `stream = ANY(...)` predicate. The CREATE TABLE proves that.
+    assert.equal(/\bstream TEXT\b/.test(bodies[t]), false,
+      `${t} has a top-level stream column — should be classified stream-keyed, not scope-keyed`);
   }
 });
 
@@ -225,27 +248,24 @@ test('schema completeness: every CII-keyed table in postgres-storage.js is class
   const ciiKeyed = Object.entries(bodies)
     .filter(([, body]) => /connector_instance_id/.test(body))
     .map(([name]) => name);
-  // Explicitly-ignored CII-keyed tables. `blobs` declares
-  // connector_instance_id as denormalised metadata, but the row itself
-  // is content-addressed by sha256 / blob_id and shared across
-  // instances — blob_bindings is the per-instance owner table. We must
-  // not delete from `blobs` during instance purge, and we don't copy it
-  // either.
-  const intentionallyIgnored = new Set([
-    'blobs',
-    ...SCHEMA_TABLES_WITHOUT_CONNECTOR_INSTANCE_ID,
-  ]);
   const classified = new Set([
     ...AUTHORITATIVE_INSTANCE_TABLES,
-    ...TARGET_REBUILD_PER_STREAM_TABLES,
+    ...TARGET_REBUILD_ALL_TABLES,
     ...SOURCE_CLEAR_ONLY_TABLES,
     ...DEVICE_BINDING_TABLES,
     'connector_instances', // identity row, handled specially
-    ...intentionallyIgnored,
+    ...IGNORED_PER_INSTANCE_TABLES,
   ]);
   const missing = ciiKeyed.filter((t) => !classified.has(t));
   assert.equal(missing.length, 0,
     `postgres-storage.js has CII-keyed tables not classified by plan.mjs: ${missing.join(', ')}`);
+});
+
+test('schema completeness: every IGNORED_PER_INSTANCE_TABLES entry actually exists in postgres-storage.js', () => {
+  const bodies = parseTableBodies(readPostgresStorageSource());
+  const missing = IGNORED_PER_INSTANCE_TABLES.filter((t) => !bodies[t]);
+  assert.equal(missing.length, 0,
+    `IGNORED_PER_INSTANCE_TABLES lists tables not declared in postgres-storage.js: ${missing.join(', ')}`);
 });
 
 // ──────────────────────────────────────────────────────────────────────
@@ -271,6 +291,65 @@ test('cli: target-side per-stream invalidation is scoped to invalidated streams 
   // targetInstanceId — not a blanket `DELETE FROM lexical_search_index`.
   assert.match(cli, /stream\s*=\s*ANY\(\$2::text\[\]\)/,
     'expected target search-derived invalidation to be scoped by stream array');
+});
+
+test('cli regression: semantic_search_blob is NEVER referenced with a stream column predicate', () => {
+  // The fix: semantic_search_blob is keyed by (CII, scope_key, record_key).
+  // It has no `stream` column. Strip line comments and block comments
+  // (those reference the column legitimately in design notes) and check
+  // that the remaining executable code never combines that table name
+  // with a `stream` token in the same statement.
+  const cliRaw = readCliSource();
+  const cli = cliRaw
+    .replace(/\/\*[\s\S]*?\*\//g, '') // block comments
+    .replace(/(^|[^:])\/\/[^\n]*/g, '$1') // line comments (avoid splitting URLs)
+    .replace(/`[\s\S]*?`/g, (literal) => {
+      // Keep template literals — they ARE the SQL we care about.
+      return literal;
+    });
+
+  // Find every statement-ish chunk that mentions semantic_search_blob and
+  // verify it doesn't also mention a `stream` column predicate. We split
+  // by ); and ;` heuristically.
+  const chunks = cli.split(/;\s*\n|\)\s*;|\)\s*`,/);
+  for (const chunk of chunks) {
+    if (!chunk.includes('semantic_search_blob')) continue;
+    // Allow the literal word "stream" inside comments OR inside identifiers
+    // like "streams" (the variable name) — but flag anything that looks
+    // like a SQL predicate on a `stream` column.
+    assert.equal(
+      /\bstream\s*=/.test(chunk) || /\bstream\s+IN\s*\(/.test(chunk),
+      false,
+      `cli.mjs has a SQL chunk mentioning semantic_search_blob alongside a stream-column predicate. semantic_search_blob has no stream column; predicates must use scope_key.\nOffending chunk:\n${chunk.slice(0, 600)}`,
+    );
+  }
+});
+
+test('cli: target-side semantic_search_blob invalidation is scoped to scope_key LIKE prefixes', () => {
+  const cli = readCliSource();
+  // The scope-keyed invalidation must use `scope_key LIKE ANY($...::text[])`
+  // — never `stream = ANY(...)` against semantic_search_blob.
+  assert.match(cli, /scope_key\s+LIKE\s+ANY\(\$2::text\[\]\)/,
+    'expected semantic_search_blob invalidation to use scope_key LIKE ANY(prefix[])');
+});
+
+test('cli: blob reattribution exists and only updates metadata, never duplicates bytes', () => {
+  const cli = readCliSource();
+  // The fix for legacy-source blobs: UPDATE blobs metadata, never INSERT.
+  // If we ever switch to INSERT we'd duplicate sha256 bytes, breaking the
+  // unique-sha256 invariant.
+  assert.match(cli, /UPDATE\s+blobs\s+b\s+SET[\s\S]*?connector_instance_id/,
+    'expected an UPDATE blobs … SET connector_instance_id reattribution step');
+  // We must NOT issue any INSERT INTO blobs in this migration script.
+  assert.equal(/INSERT\s+INTO\s+blobs\b/i.test(cli), false,
+    'migration must not INSERT INTO blobs — bytes are content-addressed by sha256/blob_id');
+  // We must NOT delete from blobs either — matches production retention
+  // semantics (no DELETE FROM blobs anywhere in the codebase).
+  assert.equal(/DELETE\s+FROM\s+blobs\b/i.test(cli), false,
+    'migration must not DELETE FROM blobs — production retention never drops blob bytes');
+  // Source-origin blob rows must be backed up before reattribution.
+  assert.match(cli, /mig_\$\{tableSuffix\}_blobs/,
+    'expected blob backup table creation before reattribution');
 });
 
 test('parseArgs: defaults', () => {
