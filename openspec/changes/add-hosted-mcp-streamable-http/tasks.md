@@ -36,7 +36,7 @@
 
 - [x] 6.1 Run `openspec validate add-hosted-mcp-streamable-http --strict`.
 - [x] 6.2 Run MCP package tests and targeted reference tests.
-- [ ] 6.3 Run broader relevant verification if targeted checks pass.
-- [ ] 6.4 Commit the tranche.
-- [ ] 6.5 Build/deploy to `pdpp.vivid.fish` and verify public metadata plus `/mcp` behavior.
-- [ ] 6.6 Re-check the interrupted reference/web image publish closeout and leave deployment in a known state.
+- [x] 6.3 Run broader relevant verification if targeted checks pass.
+- [x] 6.4 Commit the tranche.
+- [x] 6.5 Build/deploy to `pdpp.vivid.fish` and verify public metadata plus `/mcp` behavior.
+- [x] 6.6 Re-check the interrupted reference/web image publish closeout and leave deployment in a known state.

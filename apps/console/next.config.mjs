@@ -65,6 +65,22 @@ const nextConfig = {
       },
     ];
   },
+  async rewrites() {
+    return [
+      {
+        source: '/.well-known/oauth-authorization-server',
+        destination: '/well-known/oauth-authorization-server',
+      },
+      {
+        source: '/.well-known/oauth-protected-resource/:path*',
+        destination: '/well-known/oauth-protected-resource/:path*',
+      },
+      {
+        source: '/.well-known/oauth-protected-resource',
+        destination: '/well-known/oauth-protected-resource',
+      },
+    ];
+  },
   webpack(config) {
     config.resolve.alias = {
       ...config.resolve.alias,

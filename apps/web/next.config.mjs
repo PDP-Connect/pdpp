@@ -200,6 +200,18 @@ const nextConfig = {
         source: '/.well-known/skills/:path*',
         destination: '/well-known/skills/:path*',
       },
+      {
+        source: '/.well-known/oauth-authorization-server',
+        destination: '/well-known/oauth-authorization-server',
+      },
+      {
+        source: '/.well-known/oauth-protected-resource/:path*',
+        destination: '/well-known/oauth-protected-resource/:path*',
+      },
+      {
+        source: '/.well-known/oauth-protected-resource',
+        destination: '/well-known/oauth-protected-resource',
+      },
       // Sandbox demo well-known metadata uses the same internal-path adapter:
       // handlers live under `well-known/**`; public URLs stay .well-known.
       {
