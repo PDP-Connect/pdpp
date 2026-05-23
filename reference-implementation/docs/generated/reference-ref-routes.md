@@ -688,10 +688,9 @@ Projection-backed retained logical bytes by finite dataset grain.
 
 ### Query parameters
 
-- `grain` — enum `global | connection | stream | record_family`
+- `grain` — enum `global | connection | stream`
 - `connector_instance_id` — string
 - `stream` — string
-- `record_family` — string
 
 ### Responses
 

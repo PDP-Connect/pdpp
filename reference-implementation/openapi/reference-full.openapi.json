@@ -16655,8 +16655,7 @@
               "enum": [
                 "global",
                 "connection",
-                "stream",
-                "record_family"
+                "stream"
               ]
             }
           },
@@ -16671,14 +16670,6 @@
           {
             "in": "query",
             "name": "stream",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "record_family",
             "required": false,
             "schema": {
               "type": "string"

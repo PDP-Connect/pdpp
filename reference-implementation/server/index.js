@@ -78,7 +78,6 @@ import {
   applyRetainedSizeBlobDelta,
   getRetainedSizeGlobal,
   listRetainedSizeConnections,
-  listRetainedSizeRecordFamilies,
   listRetainedSizeStreams,
   listRetainedSizeTop,
   rebuildRetainedSize,
@@ -4106,7 +4105,7 @@ function buildAsApp(opts = {}) {
       const grain = typeof req.query.grain === 'string' && req.query.grain
         ? req.query.grain
         : 'global';
-      if (!['global', 'connection', 'stream', 'record_family'].includes(grain)) {
+      if (!['global', 'connection', 'stream'].includes(grain)) {
         const err = new Error(`unsupported retained-size grain '${grain}'`);
         err.code = 'invalid_request';
         throw err;
@@ -4115,7 +4114,6 @@ function buildAsApp(opts = {}) {
         ? req.query.connector_instance_id
         : undefined;
       const stream = typeof req.query.stream === 'string' ? req.query.stream : undefined;
-      const recordFamily = typeof req.query.record_family === 'string' ? req.query.record_family : undefined;
       let rows;
       if (grain === 'global') {
         rows = [await getRetainedSizeGlobal()];
@@ -4123,8 +4121,6 @@ function buildAsApp(opts = {}) {
         rows = await listRetainedSizeConnections({ connectorInstanceId });
       } else if (grain === 'stream') {
         rows = await listRetainedSizeStreams({ connectorInstanceId, stream });
-      } else {
-        rows = await listRetainedSizeRecordFamilies({ connectorInstanceId, stream, recordFamily });
       }
       const global = await getRetainedSizeGlobal();
       res.json({

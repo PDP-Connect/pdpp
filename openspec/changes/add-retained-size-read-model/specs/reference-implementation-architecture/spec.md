@@ -109,10 +109,14 @@ typed logical-byte measures over finite, bounded grains.
 #### Scenario: Retained-size grains are finite
 
 - **WHEN** retained-size rows are requested
-- **THEN** supported grains SHALL be limited to global dataset, connection,
-  stream, and optional manifest-authored record family
+- **THEN** supported grains SHALL be limited to global dataset, connection, and
+  stream unless a later capability adds a manifest-authored record-family
+  classifier
 - **AND** the implementation SHALL NOT accept arbitrary JSON-path group-bys or
-  ad hoc dimensions in this capability.
+  ad hoc dimensions in this capability
+- **AND** it SHALL NOT advertise a record-family grain until rebuild and
+  incremental maintenance populate that grain from a real bounded
+  classification source.
 
 #### Scenario: Connection grain uses connector instance identity
 
@@ -121,7 +125,7 @@ typed logical-byte measures over finite, bounded grains.
 - **AND** stream and record-family rows SHALL remain attributable to that
   connection.
 
-#### Scenario: Record-family values are bounded
+#### Scenario: Future record-family values are bounded
 
 - **WHEN** a connector emits or classifies a record-family value for
   retained-size grouping

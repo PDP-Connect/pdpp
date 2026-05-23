@@ -31,7 +31,8 @@
 ## 4. Reference Reads
 
 - [x] 4.1 Add `GET /_ref/dataset/size` as a bounded projection read with
-  global, connection, stream, and record-family grain filters.
+  global, connection, and stream grain filters. Record-family remains deferred
+  until it has a real bounded classification source.
 - [x] 4.2 Add `GET /_ref/dataset/top` as a bounded projection read with
   capped result size and finite measure/scope values.
 - [x] 4.3 Update dashboard data access to use retained-size projection rows

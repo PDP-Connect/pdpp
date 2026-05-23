@@ -62,13 +62,13 @@ The read model SHOULD support:
 
 - global dataset;
 - connection (`connector_instance_id`);
-- stream (`connector_instance_id`, `connector_id`, `stream`);
-- optional record family (`connector_instance_id`, `connector_id`, `stream`,
-  `record_family`).
+- stream (`connector_instance_id`, `connector_id`, `stream`).
 
-`record_family` is optional and must be manifest-authored or otherwise
-bounded by a finite connector-authored enum. The server must not group by
-arbitrary JSON paths in this change.
+`record_family` is intentionally deferred. If added later, it must be
+manifest-authored or otherwise bounded by a finite connector-authored enum. The
+server must not group by arbitrary JSON paths in this change, and it must not
+advertise a record-family grain until rebuild and incremental maintenance
+populate it from a real classification source.
 
 ## Top-N Heavy Hitters
 

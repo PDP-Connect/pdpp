@@ -1268,10 +1268,9 @@ export const referenceManifests = [
         type: "object",
         additionalProperties: false,
         properties: {
-          grain: { type: "string", enum: ["global", "connection", "stream", "record_family"] },
+          grain: { type: "string", enum: ["global", "connection", "stream"] },
           connector_instance_id: { type: "string" },
           stream: { type: "string" },
-          record_family: { type: "string" },
         },
       },
     },
