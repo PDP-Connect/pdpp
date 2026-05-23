@@ -2870,16 +2870,18 @@ function buildAsApp(opts = {}) {
       .join('\n');
     const options = rows.length
       ? rows.map((row, index) => `
-          <label class="pdpp-option">
+          <label class="hosted-ui-option">
             <input type="radio" name="connector_id" value="${hostedEscape(row.id)}" ${index === 0 ? 'checked' : ''} />
-            <span>
-              <strong>${hostedEscape(row.label)}</strong>
-              <small>${hostedEscape(row.id)} · ${row.streamCount} streams</small>
+            <span class="hosted-ui-option-body">
+              <span class="hosted-ui-option-title">${hostedEscape(row.label)}</span>
+              <span class="hosted-ui-option-meta">${hostedEscape(row.id)} · ${row.streamCount} streams</span>
             </span>
           </label>
         `).join('\n')
-      : '<p>No connector manifests are registered on this reference server.</p>';
-    const submit = rows.length ? '<button type="submit">Continue to consent</button>' : '';
+      : '<p class="pdpp-body">No connector manifests are registered on this reference server.</p>';
+    const submit = rows.length
+      ? '<button type="submit" class="hosted-ui-button" data-variant="primary">Continue to consent</button>'
+      : '';
 
     return renderHostedDocument({
       title: `${providerName} — Choose MCP source`,
@@ -2888,7 +2890,7 @@ function buildAsApp(opts = {}) {
         renderPageIntro({
           eyebrow: 'MCP authorization',
           title: 'Choose what this MCP client can read',
-          lede: 'The client will receive a normal PDPP grant for one source. The MCP endpoint remains read-only and grant-scoped.',
+          lede: 'Choose the data source to authorize for this MCP connection. The MCP endpoint remains read-only and grant-scoped.',
         }),
         renderSurface({
           surface: 'human',
@@ -2896,7 +2898,7 @@ function buildAsApp(opts = {}) {
             <form method="GET" action="/oauth/authorize">
               <input type="hidden" name="_csrf" value="${hostedEscape(csrfToken)}" />
               ${hidden}
-              <div class="pdpp-stack">${options}</div>
+              <div class="hosted-ui-option-group">${options}</div>
               ${submit}
             </form>
           `,

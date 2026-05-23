@@ -307,6 +307,60 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
   font-size: 0.75rem;
 }
 
+.hosted-ui-option-group {
+  display: grid;
+  gap: 0.625rem;
+  margin: 0 0 1rem;
+}
+
+.hosted-ui-option {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.75rem;
+  align-items: start;
+  padding: 0.75rem 0.875rem;
+  border: 1px solid var(--border);
+  border-radius: 0.625rem;
+  background: var(--card);
+  cursor: pointer;
+}
+
+.hosted-ui-option:hover {
+  background: var(--muted);
+}
+
+.hosted-ui-option:has(input:checked) {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 1px var(--primary);
+}
+
+.hosted-ui-option input {
+  margin: 0.2rem 0 0;
+  accent-color: var(--primary);
+}
+
+.hosted-ui-option-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.hosted-ui-option-title {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--foreground);
+}
+
+.hosted-ui-option-meta {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  line-height: 1.45;
+  color: var(--muted-foreground);
+  overflow-wrap: anywhere;
+}
+
 .hosted-ui-actions {
   display: flex;
   gap: 0.75rem;

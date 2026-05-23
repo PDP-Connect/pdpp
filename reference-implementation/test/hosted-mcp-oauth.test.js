@@ -345,6 +345,40 @@ test('hosted MCP OAuth code flow issues a scoped client token usable at /mcp', a
   }
 });
 
+test('hosted MCP source selection uses hosted-ui option styles', async () => {
+  const server = await startOpenTestServer();
+  const asUrl = `http://localhost:${server.asPort}`;
+
+  try {
+    await registerSpotify(asUrl);
+    const client = await registerAuthCodeClient(asUrl);
+    const verifier = randomBytes(32).toString('base64url');
+    const authorizeUrl = new URL(`${asUrl}/oauth/authorize`);
+    authorizeUrl.searchParams.set('client_id', client.client_id);
+    authorizeUrl.searchParams.set('redirect_uri', 'https://client.example/callback');
+    authorizeUrl.searchParams.set('response_type', 'code');
+    authorizeUrl.searchParams.set('state', 'state-123');
+    authorizeUrl.searchParams.set('code_challenge', pkceChallenge(verifier));
+    authorizeUrl.searchParams.set('code_challenge_method', 'S256');
+
+    const resp = await fetch(authorizeUrl);
+    assert.equal(resp.status, 200);
+    const html = await resp.text();
+    assert.match(html, /Choose what this MCP client can read/);
+    assert.match(html, /class="hosted-ui-option-group"/);
+    assert.match(html, /class="hosted-ui-option"/);
+    assert.match(html, /class="hosted-ui-button" data-variant="primary"/);
+
+    const cssResp = await fetch(`${asUrl}/__pdpp/hosted-ui.css`);
+    assert.equal(cssResp.status, 200);
+    const css = await cssResp.text();
+    assert.match(css, /\.hosted-ui-option-group/);
+    assert.match(css, /\.hosted-ui-option\b/);
+  } finally {
+    await closeServer(server);
+  }
+});
+
 test('/mcp rejects missing and owner bearers', async () => {
   const server = await startOpenTestServer();
   const asUrl = `http://localhost:${server.asPort}`;
