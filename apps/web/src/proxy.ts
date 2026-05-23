@@ -8,7 +8,6 @@ import { redirectSandboxAliasPath, rewriteSandboxCanonicalPath } from "./proxy-p
 const { rewrite: rewriteLLM } = rewritePath("/docs{/*path}", "/llms.mdx/docs{/*path}");
 const referenceTopology = resolveReferenceTopology();
 const AS_PROXY_TARGET = referenceTopology.asInternalUrl;
-const RS_PROXY_TARGET = referenceTopology.rsInternalUrl;
 
 // Optimistic auth gate at the proxy layer (Next.js 16 BFF pattern). When
 // owner-auth is on and the BFF process holds the password, we could HMAC-
@@ -25,19 +24,9 @@ const OWNER_AUTH_PROBABLY_ENABLED =
   typeof process.env.PDPP_OWNER_PASSWORD === "string" && process.env.PDPP_OWNER_PASSWORD.length > 0;
 
 function resolveReferenceProxyTarget(pathname: string): string | null {
-  if (pathname === "/.well-known/oauth-protected-resource") {
-    return RS_PROXY_TARGET;
-  }
-  if (pathname === "/.well-known/oauth-authorization-server") {
-    return AS_PROXY_TARGET;
-  }
-  if (pathname.startsWith("/oauth/")) {
-    return AS_PROXY_TARGET;
-  }
+  // Public protocol paths use route handlers, not middleware rewrites, so
+  // responses do not expose Next's internal x-middleware-rewrite target.
   if (pathname === "/agent-connect" || pathname.startsWith("/agent-connect/")) {
-    return AS_PROXY_TARGET;
-  }
-  if (pathname === "/introspect") {
     return AS_PROXY_TARGET;
   }
   if (pathname.startsWith("/grants/") && pathname.endsWith("/revoke")) {
@@ -49,23 +38,11 @@ function resolveReferenceProxyTarget(pathname: string): string | null {
   if (pathname === "/neko" || pathname.startsWith("/neko/")) {
     return AS_PROXY_TARGET;
   }
-  if (pathname.startsWith("/owner/")) {
-    return AS_PROXY_TARGET;
-  }
-  if (pathname === "/device" || pathname.startsWith("/device/")) {
-    return AS_PROXY_TARGET;
-  }
-  if (pathname === "/consent" || pathname.startsWith("/consent/")) {
-    return AS_PROXY_TARGET;
-  }
   if (pathname.startsWith("/__pdpp/")) {
     return AS_PROXY_TARGET;
   }
   if (pathname === "/connectors" || pathname.startsWith("/connectors/")) {
     return AS_PROXY_TARGET;
-  }
-  if (pathname.startsWith("/v1/")) {
-    return RS_PROXY_TARGET;
   }
   return null;
 }
