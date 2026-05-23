@@ -50,4 +50,4 @@
 - [x] 7.5 Add `/oauth/token` refresh-token exchange that issues a new bearer for the same grant and rejects mismatched clients or revoked grants.
 - [x] 7.6 Update authorization-server metadata and tests for `refresh_token`.
 - [x] 7.7 Add hosted MCP operator setup docs for ChatGPT and Claude.
-- [ ] 7.8 Validate, commit, deploy, and smoke-test the public service.
+- [x] 7.8 Validate, commit, deploy, and smoke-test the public service.
