@@ -88,8 +88,9 @@ export function buildTools({ rs, providerUrl }) {
       title: 'Search PDPP records',
       description:
         'Search records via GET /v1/search using the scoped grant. Returns the RS ' +
-        'search envelope verbatim. If the deployment does not advertise search, the RS ' +
-        'error envelope is preserved in the tool result. Read-only.',
+        'search envelope plus ChatGPT-compatible structuredContent.results. If the ' +
+        'deployment does not advertise search, the RS error envelope is preserved in ' +
+        'the tool result. Read-only.',
       annotations: READ_ONLY_ANNOTATIONS,
       inputSchema: z
         .object({
@@ -109,7 +110,28 @@ export function buildTools({ rs, providerUrl }) {
           mode: args.mode,
         };
         const response = await rs.getJson('/v1/search', { query });
-        return toToolResult(response, providerUrl);
+        return toSearchToolResult(response, providerUrl);
+      },
+    },
+    {
+      name: 'fetch',
+      title: 'Fetch PDPP search result',
+      description:
+        'Fetch a single ChatGPT-compatible document by a result id returned from search. ' +
+        'The default id format is stream:record_id and is read through ' +
+        'GET /v1/streams/{stream}/records/{record_id}. Read-only.',
+      annotations: READ_ONLY_ANNOTATIONS,
+      inputSchema: z
+        .object({
+          id: z.string().min(1).describe('Search result id, usually stream:record_id.'),
+        })
+        .strict(),
+      handler: async (args) => {
+        const ref = parseRecordResultId(args.id);
+        const response = await rs.getJson(
+          `/v1/streams/${encodeURIComponent(ref.stream)}/records/${encodeURIComponent(ref.recordId)}`
+        );
+        return toFetchToolResult(response, providerUrl, args.id);
       },
     },
     {
@@ -247,6 +269,162 @@ function toToolResult(response, providerUrl) {
   return errorToolResult(response, providerUrl);
 }
 
+function toSearchToolResult(response, providerUrl) {
+  if (!response.ok) {
+    return errorToolResult(response, providerUrl);
+  }
+  const results = normalizeSearchResults(response.body);
+  return {
+    content: [
+      {
+        type: 'text',
+        text: JSON.stringify({ ...response.body, results }, null, 2),
+      },
+    ],
+    structuredContent: {
+      data: response.body,
+      results,
+      provider_url: providerUrl,
+      request_id: response.requestId,
+    },
+  };
+}
+
+function toFetchToolResult(response, providerUrl, requestedId) {
+  if (!response.ok) {
+    return errorToolResult(response, providerUrl);
+  }
+  const document = normalizeFetchedDocument(response.body, requestedId, providerUrl);
+  return {
+    content: [
+      {
+        type: 'text',
+        text: document.text,
+      },
+    ],
+    structuredContent: {
+      ...document,
+      data: response.body,
+      provider_url: providerUrl,
+      request_id: response.requestId,
+    },
+  };
+}
+
+function normalizeSearchResults(body) {
+  const candidates = Array.isArray(body?.results)
+    ? body.results
+    : Array.isArray(body?.data)
+      ? body.data
+      : Array.isArray(body?.hits)
+        ? body.hits
+        : [];
+  return candidates.map((hit, index) => {
+    const id = resultIdForHit(hit, index);
+    return {
+      id,
+      title: titleForRecord(hit, id),
+      url: urlForRecord(hit, id),
+    };
+  });
+}
+
+function resultIdForHit(hit, index) {
+  const directId = stringValue(hit?.result_id ?? hit?.resultId);
+  if (directId) return directId;
+
+  const stream = stringValue(hit?.stream ?? hit?.stream_name ?? hit?.streamName);
+  const recordId = stringValue(hit?.id ?? hit?.record_id ?? hit?.recordId ?? hit?.record_key ?? hit?.recordKey);
+  if (stream && recordId) {
+    return `${stream}:${recordId}`;
+  }
+
+  const fallback = stringValue(hit?.id ?? hit?.url);
+  return fallback || `result:${index + 1}`;
+}
+
+function parseRecordResultId(id) {
+  const value = requireSafeName(id, 'id');
+  const separator = value.indexOf(':');
+  if (separator <= 0 || separator === value.length - 1) {
+    throw new Error('id must use stream:record_id format');
+  }
+  return {
+    stream: requireSafeName(value.slice(0, separator), 'stream'),
+    recordId: requireSafeName(value.slice(separator + 1), 'record_id'),
+  };
+}
+
+function normalizeFetchedDocument(record, requestedId, providerUrl) {
+  const id = stringValue(record?.id ?? record?.record_id ?? record?.recordId) || requestedId;
+  const stream = stringValue(record?.stream ?? record?.stream_name ?? record?.streamName);
+  const resultId = stream && id && !requestedId.includes(':') ? `${stream}:${id}` : requestedId;
+  const title = titleForRecord(record, resultId);
+  const text = textForRecord(record);
+  const url = urlForRecord(record, resultId, providerUrl);
+  const metadata = metadataForRecord(record, { id: resultId, title, url });
+  return { id: resultId, title, text, url, metadata };
+}
+
+function titleForRecord(record, fallbackId) {
+  return (
+    stringValue(record?.title) ||
+    stringValue(record?.name) ||
+    stringValue(record?.subject) ||
+    stringValue(record?.snippet?.text) ||
+    stringValue(record?.summary) ||
+    fallbackId
+  );
+}
+
+function textForRecord(record) {
+  return (
+    stringValue(record?.text) ||
+    stringValue(record?.content) ||
+    stringValue(record?.body) ||
+    stringValue(record?.summary) ||
+    JSON.stringify(record, null, 2)
+  );
+}
+
+function urlForRecord(record, fallbackId, providerUrl) {
+  const directUrl = stringValue(record?.url ?? record?.record_url ?? record?.recordUrl ?? record?.href ?? record?.source_url ?? record?.sourceUrl);
+  if (directUrl) return directUrl;
+  if (providerUrl && fallbackId) {
+    const recordRef = parseRecordResultIdOrNull(fallbackId);
+    if (recordRef) {
+      const base = providerUrl.replace(/\/$/, '');
+      return `${base}/v1/streams/${encodeURIComponent(recordRef.stream)}/records/${encodeURIComponent(recordRef.recordId)}`;
+    }
+  }
+  return `pdpp://record/${encodeURIComponent(fallbackId)}`;
+}
+
+function parseRecordResultIdOrNull(id) {
+  try {
+    return parseRecordResultId(id);
+  } catch {
+    return null;
+  }
+}
+
+function metadataForRecord(record, omitted) {
+  if (!record || typeof record !== 'object') {
+    return {};
+  }
+  const metadata = record.metadata && typeof record.metadata === 'object' ? { ...record.metadata } : {};
+  for (const [key, value] of Object.entries(record)) {
+    if (['metadata', 'text', 'content', 'body'].includes(key)) continue;
+    if (Object.values(omitted).includes(value)) continue;
+    metadata[key] = value;
+  }
+  return metadata;
+}
+
+function stringValue(value) {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
 function toBlobToolResult(response, providerUrl) {
   if (response.ok) {
     const base64 = Buffer.isBuffer(response.body) ? response.body.toString('base64') : '';
@@ -292,4 +470,12 @@ function errorToolResult(response, providerUrl) {
   };
 }
 
-export const __internal = { requireSafeName, pickQuery, toToolResult, toBlobToolResult, resolveStreamName };
+export const __internal = {
+  requireSafeName,
+  pickQuery,
+  toToolResult,
+  toBlobToolResult,
+  toSearchToolResult,
+  toFetchToolResult,
+  resolveStreamName,
+};

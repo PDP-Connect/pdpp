@@ -1076,6 +1076,18 @@ export const publicManifests = [
     },
   },
   {
+    id: "getMcpProtectedResourceMetadata",
+    method: "GET",
+    path: "/.well-known/oauth-protected-resource/mcp",
+    surface: "public",
+    tags: ["metadata", "mcp", "oauth"],
+    summary:
+      "Return RFC 9728 protected-resource metadata for the hosted MCP endpoint.",
+    responses: {
+      200: { schema: ProtectedResourceMetadataSchema },
+    },
+  },
+  {
     id: "registerDynamicClient",
     method: "POST",
     path: "/oauth/register",

@@ -975,9 +975,9 @@ test('PDPP CLI smoke', async (t) => {
       assert.equal(result.json.pushed_authorization_request_supported, true);
       assert.equal(result.json.pushed_authorization_request_endpoint, `${asUrl}/oauth/par`);
       assert.equal(result.json.registration_endpoint, `${asUrl}/oauth/register`);
-      assert.equal('authorization_endpoint' in result.json, false);
-      assert.equal('response_types_supported' in result.json, false);
-      assert.equal('code_challenge_methods_supported' in result.json, false);
+      assert.equal(result.json.authorization_endpoint, `${asUrl}/oauth/authorize`);
+      assert.deepEqual(result.json.response_types_supported, ['code']);
+      assert.deepEqual(result.json.code_challenge_methods_supported, ['S256']);
       assert.deepEqual(result.json.token_endpoint_auth_methods_supported, ['none']);
       assert.ok(result.json.pdpp_provider_connect_capabilities.includes('owner_self_export'));
       assert.ok(result.json.pdpp_provider_connect_capabilities.includes('third_party_client_connect'));
@@ -1121,7 +1121,7 @@ test('PDPP CLI smoke', async (t) => {
       writeFileSync(requestPath, JSON.stringify({
         client_name: 'Native Longview',
         token_endpoint_auth_method: 'none',
-        application_type: 'native',
+        application_type: 'browser',
       }, null, 2));
 
       const result = await runCliExpectFailure(
@@ -1129,7 +1129,7 @@ test('PDPP CLI smoke', async (t) => {
       );
 
       assert.notEqual(result.code, 0);
-      assert.match(result.stderr, /application_type metadata is not supported/i);
+      assert.match(result.stderr, /Unsupported application_type/i);
     });
   });
 
@@ -1141,7 +1141,7 @@ test('PDPP CLI smoke', async (t) => {
         writeFileSync(unsupportedGrantTypesPath, JSON.stringify({
           client_name: 'Grant Types Longview',
           token_endpoint_auth_method: 'none',
-          grant_types: ['authorization_code'],
+          grant_types: ['client_credentials'],
         }, null, 2));
 
         const unsupportedGrantTypesResult = await runCliExpectFailure(
@@ -1149,13 +1149,13 @@ test('PDPP CLI smoke', async (t) => {
         );
 
         assert.notEqual(unsupportedGrantTypesResult.code, 0);
-        assert.match(unsupportedGrantTypesResult.stderr, /grant_types metadata is not supported/i);
+        assert.match(unsupportedGrantTypesResult.stderr, /Unsupported grant_types/i);
 
         const unsupportedResponseTypesPath = join(tmpDir, 'unsupported-response-types.json');
         writeFileSync(unsupportedResponseTypesPath, JSON.stringify({
           client_name: 'Response Types Longview',
           token_endpoint_auth_method: 'none',
-          response_types: ['code'],
+          response_types: ['token'],
         }, null, 2));
 
         const unsupportedResponseTypesResult = await runCliExpectFailure(
@@ -1163,7 +1163,7 @@ test('PDPP CLI smoke', async (t) => {
         );
 
         assert.notEqual(unsupportedResponseTypesResult.code, 0);
-        assert.match(unsupportedResponseTypesResult.stderr, /response_types metadata is not supported/i);
+        assert.match(unsupportedResponseTypesResult.stderr, /Unsupported response_types/i);
       } finally {
         rmSync(tmpDir, { recursive: true, force: true });
       }

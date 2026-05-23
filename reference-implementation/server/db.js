@@ -541,6 +541,29 @@ CREATE TABLE IF NOT EXISTS oauth_clients (
 CREATE INDEX IF NOT EXISTS idx_oauth_clients_registration_mode
   ON oauth_clients(registration_mode, created_at);
 
+CREATE TABLE IF NOT EXISTS oauth_authorization_codes (
+  id                    TEXT PRIMARY KEY,
+  device_code           TEXT NOT NULL UNIQUE,
+  code                  TEXT UNIQUE,
+  client_id             TEXT NOT NULL,
+  redirect_uri          TEXT NOT NULL,
+  state                 TEXT,
+  code_challenge        TEXT NOT NULL,
+  code_challenge_method TEXT NOT NULL,
+  status                TEXT NOT NULL DEFAULT 'pending',
+  grant_id              TEXT,
+  token_id              TEXT,
+  created_at            TEXT NOT NULL,
+  expires_at            TEXT NOT NULL,
+  issued_at             TEXT,
+  consumed_at           TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_oauth_authorization_codes_code
+  ON oauth_authorization_codes(code);
+CREATE INDEX IF NOT EXISTS idx_oauth_authorization_codes_client_status
+  ON oauth_authorization_codes(client_id, status, expires_at);
+
 CREATE TABLE IF NOT EXISTS records (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   connector_id  TEXT NOT NULL,

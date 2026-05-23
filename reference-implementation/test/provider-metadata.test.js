@@ -193,6 +193,11 @@ test('composed mode env drives browser-facing metadata when explicit public urls
       },
       skill_catalog: 'http://localhost:3200/.well-known/skills/index.json',
       skill: 'http://localhost:3200/.well-known/skills/pdpp-data-access/SKILL.md',
+      mcp: {
+        transport: 'streamable_http',
+        endpoint: 'http://localhost:3200/mcp',
+        no_owner_token: true,
+      },
       llms_txt: 'http://localhost:3200/llms.txt',
       llms_full_txt: 'http://localhost:3200/llms-full.txt',
     });
@@ -499,9 +504,9 @@ test('provider metadata routes expose current honest capability set', async () =
     assert.equal(authorizationServer.body.introspection_endpoint, `${asUrl}/introspect`);
     assert.equal(authorizationServer.body.pushed_authorization_request_endpoint, `${asUrl}/oauth/par`);
     assert.equal(authorizationServer.body.registration_endpoint, `${asUrl}/oauth/register`);
-    assert.equal('authorization_endpoint' in authorizationServer.body, false);
-    assert.equal('response_types_supported' in authorizationServer.body, false);
-    assert.equal('code_challenge_methods_supported' in authorizationServer.body, false);
+    assert.equal(authorizationServer.body.authorization_endpoint, `${asUrl}/oauth/authorize`);
+    assert.deepEqual(authorizationServer.body.response_types_supported, ['code']);
+    assert.deepEqual(authorizationServer.body.code_challenge_methods_supported, ['S256']);
     assert.deepEqual(authorizationServer.body.pdpp_provider_connect_capabilities, ['owner_self_export', 'cli_device_connect', 'third_party_client_connect']);
     assert.deepEqual(authorizationServer.body.pdpp_registration_modes_supported, ['dynamic', 'pre_registered_public']);
     assertPublicClientAdvertised(authorizationServer.body, 'pdpp_cli', 'PDPP CLI');
@@ -510,7 +515,10 @@ test('provider metadata routes expose current honest capability set', async () =
     assert.deepEqual(authorizationServer.body.token_endpoint_auth_methods_supported, ['none']);
     assert.equal(authorizationServer.body.device_authorization_endpoint, `${asUrl}/oauth/device_authorization`);
     assert.equal(authorizationServer.body.agent_connect_endpoint, `${asUrl}/agent-connect`);
-    assert.deepEqual(authorizationServer.body.grant_types_supported, ['urn:ietf:params:oauth:grant-type:device_code']);
+    assert.deepEqual(authorizationServer.body.grant_types_supported, [
+      'urn:ietf:params:oauth:grant-type:device_code',
+      'authorization_code',
+    ]);
   } finally {
     await closeServer(server);
   }

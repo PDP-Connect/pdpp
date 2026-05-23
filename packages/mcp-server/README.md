@@ -1,7 +1,8 @@
 # @pdpp/mcp-server
 
-Local stdio [Model Context Protocol](https://modelcontextprotocol.io/) adapter for read-only,
-grant-scoped access to a [PDPP](https://pdpp.vivid.fish) resource server.
+Local stdio and hosted Streamable HTTP [Model Context Protocol](https://modelcontextprotocol.io/)
+adapter for read-only, grant-scoped access to a [PDPP](https://pdpp.vivid.fish)
+resource server.
 
 The adapter is a thin client of the PDPP resource server (RS). It does not run connectors,
 issue grants, or replicate any RS authorization logic. Every data-bearing tool call is a
@@ -10,14 +11,13 @@ access token already cached by `pdpp connect`.
 
 ## What this is not
 
-- **Not a hosted MCP server.** stdio only. A Streamable HTTP variant requires a separate
-  OpenSpec change.
 - **Not a grant-issuance surface.** If the cache is empty or the token is invalid, the
   adapter exits / surfaces an error directing the operator at `pdpp connect`.
 - **Not an owner-mode bypass.** `PDPP_OWNER_TOKEN` and other owner credentials are
   refused by default.
 - **Not a proxy.** Per-client consent and confused-deputy mitigations would be required
-  before this package ever accepted MCP-client tokens; that is out of scope.
+  before this package accepted unvalidated MCP-client tokens. Hosted callers must
+  validate the bearer before passing it to this package.
 
 ## Publication status
 
@@ -66,9 +66,32 @@ All tools are read-only and forward to existing RS endpoints under the scoped to
 | `list_streams` | `GET /v1/streams` |
 | `query_records` | `GET /v1/streams/{stream}/records` |
 | `search` | `GET /v1/search` |
+| `fetch` | `GET /v1/streams/{stream}/records/{record_id}` |
 | `fetch_blob` | `GET /v1/blobs/{blob_id}` |
 
 Plus one resource template: `pdpp://stream/{name}` → `GET /v1/streams/{name}`.
+
+`search` preserves the RS envelope in `structuredContent.data` and also returns
+ChatGPT-compatible `structuredContent.results[]` entries with `id`, `title`, and `url`.
+`fetch` accepts result ids in `stream:record_id` form and returns `id`, `title`, `text`,
+`url`, and `metadata`.
+
+## Hosted Streamable HTTP helper
+
+Reference servers can mount hosted MCP by authenticating the incoming bearer themselves,
+then passing a Web `Request` plus scoped token to `handleStreamableHttpRequest()`:
+
+```js
+import { handleStreamableHttpRequest } from '@pdpp/mcp-server';
+
+const response = await handleStreamableHttpRequest(request, {
+  providerUrl: 'https://pdpp.example.com',
+  accessToken: scopedClientBearer,
+});
+```
+
+The helper creates a fresh server and Streamable HTTP transport per request with MCP
+session ids disabled.
 
 ## Errors
 

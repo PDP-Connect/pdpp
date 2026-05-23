@@ -692,6 +692,466 @@
         }
       }
     },
+    "/.well-known/oauth-protected-resource/mcp": {
+      "get": {
+        "operationId": "getMcpProtectedResourceMetadata",
+        "tags": [
+          "metadata",
+          "mcp",
+          "oauth"
+        ],
+        "summary": "Return RFC 9728 protected-resource metadata for the hosted MCP endpoint.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "resource": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "resource_name": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "authorization_servers": {
+                      "type": "array",
+                      "minItems": 1,
+                      "items": {
+                        "type": "string",
+                        "format": "uri"
+                      }
+                    },
+                    "bearer_methods_supported": {
+                      "type": "array",
+                      "minItems": 1,
+                      "items": {
+                        "const": "header"
+                      }
+                    },
+                    "pdpp_provider_connect_version": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "pdpp_self_export_supported": {
+                      "type": "boolean"
+                    },
+                    "pdpp_token_kinds_supported": {
+                      "type": "array",
+                      "minItems": 1,
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "owner",
+                          "client"
+                        ]
+                      }
+                    },
+                    "pdpp_core_query_base": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "pdpp_discovery_hints": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "schema_endpoint": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "query_base": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "search": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "endpoint": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "scope_param": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "filter_requires_single_stream": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "endpoint",
+                            "scope_param",
+                            "filter_requires_single_stream"
+                          ]
+                        },
+                        "aggregate": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "endpoint_template": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "required": [
+                            "endpoint_template"
+                          ]
+                        },
+                        "changes_since_bootstrap": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "blob_indirection": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "hybrid_pagination_supported": {
+                          "type": "boolean"
+                        },
+                        "connectors_endpoint": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "streams_endpoint_template": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "owner_polyfill_requires_source_kind_connector": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "schema_endpoint",
+                        "query_base",
+                        "changes_since_bootstrap",
+                        "blob_indirection",
+                        "connectors_endpoint",
+                        "streams_endpoint_template"
+                      ]
+                    },
+                    "pdpp_agent_discovery": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "advisory": {
+                          "const": true
+                        },
+                        "skill_name": {
+                          "const": "pdpp-data-access"
+                        },
+                        "recommended_flow": {
+                          "const": "pdpp agent"
+                        },
+                        "skill_catalog": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "skill": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "llms_txt": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "llms_full_txt": {
+                          "type": "string",
+                          "format": "uri"
+                        }
+                      },
+                      "required": [
+                        "advisory",
+                        "skill_name",
+                        "recommended_flow",
+                        "skill_catalog",
+                        "skill",
+                        "llms_txt",
+                        "llms_full_txt"
+                      ]
+                    },
+                    "capabilities": {
+                      "type": "object",
+                      "additionalProperties": true,
+                      "properties": {
+                        "lexical_retrieval": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "supported": {
+                              "type": "boolean"
+                            },
+                            "endpoint": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "cross_stream": {
+                              "type": "boolean"
+                            },
+                            "snippets": {
+                              "type": "boolean"
+                            },
+                            "default_limit": {
+                              "type": "integer",
+                              "minimum": 1
+                            },
+                            "max_limit": {
+                              "type": "integer",
+                              "minimum": 1
+                            },
+                            "score": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "properties": {
+                                "supported": {
+                                  "const": true
+                                },
+                                "kind": {
+                                  "const": "bm25"
+                                },
+                                "order": {
+                                  "const": "lower_is_better"
+                                },
+                                "value_semantics": {
+                                  "const": "implementation_relative"
+                                }
+                              },
+                              "required": [
+                                "supported",
+                                "kind",
+                                "order",
+                                "value_semantics"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "supported"
+                          ]
+                        },
+                        "semantic_retrieval": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "supported": {
+                              "type": "boolean"
+                            },
+                            "stability": {
+                              "type": "string",
+                              "enum": [
+                                "experimental"
+                              ]
+                            },
+                            "endpoint": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "cross_stream": {
+                              "type": "boolean"
+                            },
+                            "query_input": {
+                              "const": "text"
+                            },
+                            "snippets": {
+                              "type": "boolean"
+                            },
+                            "lexical_blending": {
+                              "type": "boolean"
+                            },
+                            "model": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "dimensions": {
+                              "type": "integer",
+                              "minimum": 1
+                            },
+                            "distance_metric": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "default_limit": {
+                              "type": "integer",
+                              "minimum": 1
+                            },
+                            "max_limit": {
+                              "type": "integer",
+                              "minimum": 1
+                            },
+                            "index_state": {
+                              "type": "string",
+                              "enum": [
+                                "built",
+                                "building",
+                                "stale"
+                              ]
+                            },
+                            "score": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "properties": {
+                                "supported": {
+                                  "const": true
+                                },
+                                "kind": {
+                                  "const": "semantic_distance"
+                                },
+                                "order": {
+                                  "const": "lower_is_better"
+                                },
+                                "value_semantics": {
+                                  "const": "distance"
+                                },
+                                "comparable_with": {
+                                  "type": "object",
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "backend_identity": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    "model": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    "dimensions": {
+                                      "type": "integer",
+                                      "minimum": 1
+                                    },
+                                    "distance_metric": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    "profile_id": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    "dtype": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    }
+                                  },
+                                  "required": [
+                                    "backend_identity",
+                                    "model",
+                                    "dimensions",
+                                    "distance_metric"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "supported",
+                                "kind",
+                                "order",
+                                "value_semantics",
+                                "comparable_with"
+                              ]
+                            },
+                            "language_bias": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "properties": {
+                                "primary": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "note": {
+                                  "type": "string",
+                                  "minLength": 1
+                                }
+                              },
+                              "required": [
+                                "primary"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "supported",
+                            "stability",
+                            "endpoint",
+                            "cross_stream",
+                            "query_input",
+                            "snippets",
+                            "lexical_blending",
+                            "model",
+                            "dimensions",
+                            "distance_metric",
+                            "default_limit",
+                            "max_limit",
+                            "index_state"
+                          ]
+                        },
+                        "hybrid_retrieval": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "supported": {
+                              "type": "boolean"
+                            },
+                            "stability": {
+                              "type": "string",
+                              "enum": [
+                                "experimental"
+                              ]
+                            },
+                            "endpoint": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "cross_stream": {
+                              "type": "boolean"
+                            },
+                            "default_limit": {
+                              "type": "integer",
+                              "minimum": 1
+                            },
+                            "max_limit": {
+                              "type": "integer",
+                              "minimum": 1
+                            },
+                            "cursor_supported": {
+                              "type": "boolean"
+                            },
+                            "sources": {
+                              "type": "array",
+                              "minItems": 2,
+                              "items": {
+                                "type": "string",
+                                "enum": [
+                                  "lexical",
+                                  "semantic"
+                                ]
+                              }
+                            }
+                          },
+                          "required": [
+                            "supported"
+                          ]
+                        }
+                      }
+                    }
+                  },
+                  "required": [
+                    "resource",
+                    "resource_name",
+                    "authorization_servers",
+                    "bearer_methods_supported",
+                    "pdpp_provider_connect_version",
+                    "pdpp_self_export_supported",
+                    "pdpp_token_kinds_supported",
+                    "pdpp_core_query_base"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/oauth/register": {
       "post": {
         "operationId": "registerDynamicClient",

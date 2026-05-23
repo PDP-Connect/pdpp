@@ -8,6 +8,7 @@ Generated from `packages/reference-contract/src/public/`. Do not edit by hand.
 | **GET** | `/` | `getAsDiscoveryIndex` | Unauthenticated cold-start pointer at the authorization server root. Names the AS well-known endpoint and the running reference revision so a probe learns the next hop without trial-and-error. |
 | **GET** | `/.well-known/oauth-authorization-server` | `getAuthorizationServerMetadata` | Return RFC 8414 authorization-server metadata with the reference provider-connect capability extensions. |
 | **GET** | `/.well-known/oauth-protected-resource` | `getProtectedResourceMetadata` | Return RFC 9728 protected-resource metadata advertising the PDPP query base and owner-self-export capabilities. |
+| **GET** | `/.well-known/oauth-protected-resource/mcp` | `getMcpProtectedResourceMetadata` | Return RFC 9728 protected-resource metadata for the hosted MCP endpoint. |
 | **POST** | `/oauth/register` | `registerDynamicClient` | Register a public client through the reference dynamic client registration profile. |
 | **POST** | `/oauth/par` | `createPushedAuthorizationRequest` | Stage a PDPP data-access request and receive a pending-consent request_uri plus authorization URL. |
 | **POST** | `/consent/approve` | `approveConsent` | Approve a pending data-access request through the JSON consent surface used by tests and automation. |
@@ -64,6 +65,16 @@ Return RFC 8414 authorization-server metadata with the reference provider-connec
 `GET /.well-known/oauth-protected-resource`
 
 Return RFC 9728 protected-resource metadata advertising the PDPP query base and owner-self-export capabilities.
+
+### Responses
+
+- `200` — JSON body
+
+## getMcpProtectedResourceMetadata
+
+`GET /.well-known/oauth-protected-resource/mcp`
+
+Return RFC 9728 protected-resource metadata for the hosted MCP endpoint.
 
 ### Responses
 

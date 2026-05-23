@@ -7,7 +7,7 @@
  * - Issues opaque bearer tokens (random strings)
  * - Implements RFC 7662-style introspection with PDPP extensions
  */
-import { randomBytes } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import { runWithSqliteBusyRetry } from './db.js';
 import {
   allowUnboundedReadAcknowledged,
@@ -60,6 +60,11 @@ const LEGACY_LOCAL_CONNECTOR_MANIFEST_ALIASES = new Map([
 ]);
 const PENDING_CONSENT_REQUEST_URI_PREFIX = 'urn:pdpp:pending-consent:';
 const SUPPORTED_CLIENT_AUTH_METHODS = new Set(['none']);
+const SUPPORTED_DYNAMIC_CLIENT_GRANT_TYPES = new Set(['authorization_code']);
+const SUPPORTED_DYNAMIC_CLIENT_RESPONSE_TYPES = new Set(['code']);
+const SUPPORTED_DYNAMIC_CLIENT_APPLICATION_TYPES = new Set(['web', 'native']);
+const SUPPORTED_AUTHORIZATION_CODE_CHALLENGE_METHODS = new Set(['S256']);
+const PKCE_CODE_VERIFIER_RE = /^[A-Za-z0-9._~-]{43,128}$/;
 const SUPPORTED_REGISTRATION_MODES = new Set(['dynamic', 'pre_registered_public']);
 const SUPPORTED_DYNAMIC_CLIENT_METADATA_FIELDS = new Set([
   'application_type',
@@ -301,6 +306,29 @@ function normalizeUriArray(value, fieldName) {
   return values.map((item) => normalizeUri(item, fieldName));
 }
 
+function isLoopbackRedirectHost(hostname) {
+  const normalized = String(hostname || '').toLowerCase();
+  return normalized === 'localhost' || normalized === '::1' || normalized.startsWith('127.');
+}
+
+function validateAuthorizationCodeRedirectUris(redirectUris = [], applicationType = 'web') {
+  for (const redirectUri of redirectUris) {
+    const parsed = new URL(redirectUri);
+    if (applicationType === 'native' && parsed.protocol === 'http:' && isLoopbackRedirectHost(parsed.hostname)) {
+      continue;
+    }
+    if (parsed.protocol !== 'https:') {
+      const err = new Error(
+        applicationType === 'native'
+          ? 'authorization_code redirect_uris must use https, or loopback http for native clients'
+          : 'authorization_code redirect_uris must use https for web clients',
+      );
+      err.code = 'invalid_client_metadata';
+      throw err;
+    }
+  }
+}
+
 function normalizeClientRegistrationMetadata(input = {}) {
   const tokenEndpointAuthMethod = input.token_endpoint_auth_method || 'none';
   if (!SUPPORTED_CLIENT_AUTH_METHODS.has(tokenEndpointAuthMethod)) {
@@ -338,26 +366,48 @@ function normalizeClientRegistrationMetadata(input = {}) {
   };
 
   if (metadata.grant_types?.length) {
-    const err = new Error('grant_types metadata is not supported by the current reference registration profile');
-    err.code = 'invalid_client_metadata';
-    throw err;
+    const unsupported = metadata.grant_types.filter((type) => !SUPPORTED_DYNAMIC_CLIENT_GRANT_TYPES.has(type));
+    if (unsupported.length) {
+      const err = new Error(`Unsupported grant_types metadata values: ${unsupported.join(', ')}`);
+      err.code = 'invalid_client_metadata';
+      throw err;
+    }
   }
 
   if (metadata.response_types?.length) {
-    const err = new Error('response_types metadata is not supported by the current reference registration profile');
-    err.code = 'invalid_client_metadata';
-    throw err;
+    const unsupported = metadata.response_types.filter((type) => !SUPPORTED_DYNAMIC_CLIENT_RESPONSE_TYPES.has(type));
+    if (unsupported.length) {
+      const err = new Error(`Unsupported response_types metadata values: ${unsupported.join(', ')}`);
+      err.code = 'invalid_client_metadata';
+      throw err;
+    }
   }
 
   if (metadata.application_type) {
-    const err = new Error('application_type metadata is not supported by the current reference registration profile');
+    if (!SUPPORTED_DYNAMIC_CLIENT_APPLICATION_TYPES.has(metadata.application_type)) {
+      const err = new Error(`Unsupported application_type metadata value: ${metadata.application_type}`);
+      err.code = 'invalid_client_metadata';
+      throw err;
+    }
+  }
+
+  const wantsAuthorizationCode =
+    metadata.grant_types?.includes('authorization_code') || metadata.response_types?.includes('code');
+  if (wantsAuthorizationCode && !metadata.redirect_uris?.length) {
+    const err = new Error('redirect_uris is required for authorization_code clients');
     err.code = 'invalid_client_metadata';
     throw err;
+  }
+  if (wantsAuthorizationCode) {
+    validateAuthorizationCodeRedirectUris(metadata.redirect_uris, metadata.application_type || 'web');
   }
 
   return {
     client_name: metadata.client_name,
     redirect_uris: metadata.redirect_uris,
+    grant_types: metadata.grant_types,
+    response_types: metadata.response_types,
+    application_type: metadata.application_type,
     client_uri: metadata.client_uri,
     logo_uri: metadata.logo_uri,
     policy_uri: metadata.policy_uri,
@@ -2640,6 +2690,233 @@ export async function approveGrant(deviceCode, subjectId = 'owner_local', opts =
   });
 
   return { grant, token };
+}
+
+function base64UrlSha256(value) {
+  return createHash('sha256').update(String(value)).digest('base64url');
+}
+
+function isUsableAuthorizationCodePkceChallenge(challenge, method) {
+  return (
+    isNonEmptyString(challenge)
+    && PKCE_CODE_VERIFIER_RE.test(challenge)
+    && SUPPORTED_AUTHORIZATION_CODE_CHALLENGE_METHODS.has(method)
+  );
+}
+
+function buildOAuthAuthorizationCodeError(code, message) {
+  const err = new Error(message);
+  err.code = code;
+  return err;
+}
+
+export async function stageOAuthAuthorizationCodeRequest({
+  deviceCode,
+  clientId,
+  redirectUri,
+  state = null,
+  codeChallenge,
+  codeChallengeMethod,
+  expiresInSeconds = 300,
+}) {
+  if (!isNonEmptyString(deviceCode)) {
+    throw buildOAuthAuthorizationCodeError('invalid_request', 'device_code is required');
+  }
+  if (!isNonEmptyString(clientId)) {
+    throw buildOAuthAuthorizationCodeError('invalid_request', 'client_id is required');
+  }
+  if (!isNonEmptyString(redirectUri)) {
+    throw buildOAuthAuthorizationCodeError('invalid_request', 'redirect_uri is required');
+  }
+  if (!isUsableAuthorizationCodePkceChallenge(codeChallenge, codeChallengeMethod)) {
+    throw buildOAuthAuthorizationCodeError('invalid_request', 'code_challenge_method must be S256 and code_challenge must be 43-128 characters');
+  }
+
+  const row = {
+    id: generateId('oac'),
+    deviceCode,
+    clientId,
+    redirectUri,
+    state: state || null,
+    codeChallenge,
+    codeChallengeMethod,
+    createdAt: nowIso(),
+    expiresAt: expiresInIso(expiresInSeconds),
+  };
+
+  if (isPostgresStorageBackend()) {
+    await pgExec(
+      `INSERT INTO oauth_authorization_codes(
+         id, device_code, client_id, redirect_uri, state, code_challenge,
+         code_challenge_method, status, created_at, expires_at
+       ) VALUES($1, $2, $3, $4, $5, $6, $7, 'pending', $8, $9)
+       ON CONFLICT(device_code) DO UPDATE SET
+         client_id = excluded.client_id,
+         redirect_uri = excluded.redirect_uri,
+         state = excluded.state,
+         code_challenge = excluded.code_challenge,
+         code_challenge_method = excluded.code_challenge_method,
+         status = 'pending',
+         code = NULL,
+         grant_id = NULL,
+         token_id = NULL,
+         created_at = excluded.created_at,
+         expires_at = excluded.expires_at,
+         issued_at = NULL,
+         consumed_at = NULL`,
+      [
+        row.id,
+        row.deviceCode,
+        row.clientId,
+        row.redirectUri,
+        row.state,
+        row.codeChallenge,
+        row.codeChallengeMethod,
+        row.createdAt,
+        row.expiresAt,
+      ],
+    );
+  } else {
+    exec(
+      referenceQueries.authOauthAuthorizationCodesUpsertPending,
+      [
+        row.id,
+        row.deviceCode,
+        row.clientId,
+        row.redirectUri,
+        row.state,
+        row.codeChallenge,
+        row.codeChallengeMethod,
+        row.createdAt,
+        row.expiresAt,
+      ],
+    );
+  }
+
+  return { ...row, status: 'pending' };
+}
+
+export async function issueOAuthAuthorizationCodeForDeviceCode(deviceCode, { grantId, token }) {
+  if (!isNonEmptyString(deviceCode)) return null;
+  const row = isPostgresStorageBackend()
+    ? await pgOne(
+        `SELECT id, device_code, client_id, redirect_uri, state, status, expires_at
+         FROM oauth_authorization_codes
+         WHERE device_code = $1`,
+        [deviceCode],
+      )
+    : getOne(referenceQueries.authOauthAuthorizationCodesGetByDeviceCode, [deviceCode]);
+
+  if (!row || row.status !== 'pending') return null;
+  if (isExpired(row)) {
+    if (isPostgresStorageBackend()) {
+      await pgExec(
+        `UPDATE oauth_authorization_codes SET status = 'expired' WHERE device_code = $1 AND status = 'pending'`,
+        [deviceCode],
+      );
+    } else {
+      exec(referenceQueries.authOauthAuthorizationCodesMarkExpiredByDeviceCode, [deviceCode]);
+    }
+    throw buildOAuthAuthorizationCodeError('invalid_request', 'OAuth authorization request has expired');
+  }
+
+  const code = generateId('oacode');
+  const issuedAt = nowIso();
+  const expiresAt = expiresInIso(300);
+  if (isPostgresStorageBackend()) {
+    await pgExec(
+      `UPDATE oauth_authorization_codes
+       SET code = $1, grant_id = $2, token_id = $3, status = 'issued',
+           issued_at = $4, expires_at = $5
+       WHERE device_code = $6 AND status = 'pending'`,
+      [code, grantId, token, issuedAt, expiresAt, deviceCode],
+    );
+  } else {
+    exec(
+      referenceQueries.authOauthAuthorizationCodesIssueForDeviceCode,
+      [code, grantId, token, issuedAt, expiresAt, deviceCode],
+    );
+  }
+
+  return {
+    code,
+    client_id: row.client_id,
+    redirect_uri: row.redirect_uri,
+    state: row.state || null,
+    expires_at: expiresAt,
+  };
+}
+
+export async function exchangeOAuthAuthorizationCode({
+  code,
+  clientId,
+  redirectUri,
+  codeVerifier,
+}) {
+  if (!isNonEmptyString(code)) {
+    throw buildOAuthAuthorizationCodeError('invalid_request', 'code is required');
+  }
+  if (!isNonEmptyString(clientId)) {
+    throw buildOAuthAuthorizationCodeError('invalid_request', 'client_id is required');
+  }
+  if (!isNonEmptyString(redirectUri)) {
+    throw buildOAuthAuthorizationCodeError('invalid_request', 'redirect_uri is required');
+  }
+  if (!isNonEmptyString(codeVerifier)) {
+    throw buildOAuthAuthorizationCodeError('invalid_request', 'code_verifier is required');
+  }
+  if (!PKCE_CODE_VERIFIER_RE.test(codeVerifier)) {
+    throw buildOAuthAuthorizationCodeError('invalid_request', 'code_verifier must be 43-128 unreserved URI characters');
+  }
+
+  const row = isPostgresStorageBackend()
+    ? await pgOne(
+        `SELECT id, code, client_id, redirect_uri, code_challenge, code_challenge_method,
+                status, grant_id, token_id, expires_at, consumed_at
+         FROM oauth_authorization_codes
+         WHERE code = $1`,
+        [code],
+      )
+    : getOne(referenceQueries.authOauthAuthorizationCodesGetByCode, [code]);
+
+  if (!row || row.status !== 'issued' || row.consumed_at) {
+    throw buildOAuthAuthorizationCodeError('invalid_grant', 'Authorization code is invalid or already used');
+  }
+  if (isExpired(row)) {
+    throw buildOAuthAuthorizationCodeError('invalid_grant', 'Authorization code has expired');
+  }
+  if (row.client_id !== clientId) {
+    throw buildOAuthAuthorizationCodeError('invalid_grant', 'Authorization code client_id mismatch');
+  }
+  if (row.redirect_uri !== redirectUri) {
+    throw buildOAuthAuthorizationCodeError('invalid_grant', 'Authorization code redirect_uri mismatch');
+  }
+  if (row.code_challenge_method !== 'S256' || base64UrlSha256(codeVerifier) !== row.code_challenge) {
+    throw buildOAuthAuthorizationCodeError('invalid_grant', 'Authorization code PKCE verification failed');
+  }
+
+  const consumedAt = nowIso();
+  const updated = isPostgresStorageBackend()
+    ? await pgExec(
+        `UPDATE oauth_authorization_codes
+         SET status = 'consumed', consumed_at = $1
+         WHERE code = $2 AND status = 'issued' AND consumed_at IS NULL`,
+        [consumedAt, code],
+      )
+    : exec(
+        referenceQueries.authOauthAuthorizationCodesConsumeCode,
+        [consumedAt, code],
+      );
+
+  if (!updated.changes) {
+    throw buildOAuthAuthorizationCodeError('invalid_grant', 'Authorization code is invalid or already used');
+  }
+
+  return {
+    access_token: row.token_id,
+    token_type: 'Bearer',
+    grant_id: row.grant_id,
+  };
 }
 
 /**

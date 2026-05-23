@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
-import { createPdppMcpServer } from '../src/server.js';
+import { createPdppMcpServer, handleStreamableHttpRequest } from '../src/server.js';
 
 /**
  * Build a fetch implementation that emulates the PDPP RS for one scoped token. The same
@@ -18,7 +18,25 @@ function makeFakeRs() {
     records: [{ id: 'o1', amount: 12 }, { id: 'o2', amount: 99 }],
     next_cursor: null,
   };
-  const SEARCH = { hits: [{ stream: 'orders', id: 'o2', score: 0.7 }] };
+  const SEARCH = {
+    hits: [
+      {
+        stream: 'orders',
+        id: 'o2',
+        title: 'Order o2',
+        url: 'https://merchant.test/o2',
+        score: 0.7,
+      },
+    ],
+  };
+  const ORDER_O2 = {
+    id: 'o2',
+    stream: 'orders',
+    title: 'Order o2',
+    text: 'Pasta order for $99.',
+    url: 'https://merchant.test/o2',
+    metadata: { amount: 99 },
+  };
   const STREAM_META = { name: 'orders', record_count: 2 };
   const BLOB = Buffer.from([10, 20, 30, 40, 50]);
 
@@ -49,6 +67,9 @@ function makeFakeRs() {
       const limit = url.searchParams.get('limit');
       const fields = url.searchParams.getAll('fields');
       return jsonResponse({ ...ORDERS, _echo: { limit, fields } });
+    }
+    if (url.pathname === '/v1/streams/orders/records/o2') {
+      return jsonResponse(ORDER_O2);
     }
     if (url.pathname === '/v1/streams/missing/records') {
       return new Response(
@@ -98,13 +119,13 @@ async function connectClient(fakeFetch) {
   return { client, server };
 }
 
-test('lists exactly the five read-only tools with read-only annotations', async () => {
+test('lists read-only tools with read-only annotations', async () => {
   const { fetch } = makeFakeRs();
   const { client, server } = await connectClient(fetch);
 
   const tools = await client.listTools();
   const names = tools.tools.map((tool) => tool.name).sort();
-  assert.deepEqual(names, ['fetch_blob', 'list_streams', 'query_records', 'schema', 'search']);
+  assert.deepEqual(names, ['fetch', 'fetch_blob', 'list_streams', 'query_records', 'schema', 'search']);
 
   for (const tool of tools.tools) {
     assert.equal(tool.annotations?.readOnlyHint, true, `${tool.name} must be readOnlyHint=true`);
@@ -200,6 +221,47 @@ test('search tool forwards q and returns hits', async () => {
   assert.equal(result.isError, undefined);
   assert.equal(result.structuredContent.data._echo.q, 'pasta');
   assert.equal(result.structuredContent.data.hits[0].id, 'o2');
+  assert.deepEqual(result.structuredContent.results, [
+    { id: 'orders:o2', title: 'Order o2', url: 'https://merchant.test/o2' },
+  ]);
+
+  await client.close();
+  await server.close();
+});
+
+test('fetch tool returns ChatGPT-compatible document shape', async () => {
+  const { fetch, calls } = makeFakeRs();
+  const { client, server } = await connectClient(fetch);
+
+  const result = await client.callTool({
+    name: 'fetch',
+    arguments: { id: 'orders:o2' },
+  });
+
+  assert.equal(result.isError, undefined);
+  assert.equal(result.structuredContent.id, 'orders:o2');
+  assert.equal(result.structuredContent.title, 'Order o2');
+  assert.equal(result.structuredContent.text, 'Pasta order for $99.');
+  assert.equal(result.structuredContent.url, 'https://merchant.test/o2');
+  assert.deepEqual(result.structuredContent.metadata.amount, 99);
+  assert.ok(calls.some((entry) => entry.url.endsWith('/v1/streams/orders/records/o2')));
+
+  await client.close();
+  await server.close();
+});
+
+test('fetch tool rejects path-traversal result ids before hitting RS', async () => {
+  const { fetch, calls } = makeFakeRs();
+  const { client, server } = await connectClient(fetch);
+
+  const result = await client.callTool({
+    name: 'fetch',
+    arguments: { id: 'orders:../../etc/passwd' },
+  });
+
+  assert.equal(result.isError, true);
+  assert.match(result.structuredContent.error.message, /invalid characters/);
+  assert.equal(calls.some((entry) => entry.url.includes('/v1/streams/orders/records')), false);
 
   await client.close();
   await server.close();
@@ -314,3 +376,57 @@ test('tool output never contains the bearer token', async () => {
   await client.close();
   await server.close();
 });
+
+test('Streamable HTTP helper handles initialize and tools/list statelessly', async () => {
+  const { fetch } = makeFakeRs();
+
+  const initialize = await postMcpJson(
+    {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: {
+        protocolVersion: '2025-06-18',
+        capabilities: {},
+        clientInfo: { name: 'http-test', version: '0.0.0' },
+      },
+    },
+    fetch
+  );
+  assert.equal(initialize.status, 200);
+  assert.equal(initialize.headers.get('mcp-session-id'), null);
+  const initialized = await initialize.json();
+  assert.equal(initialized.result.serverInfo.name, 'pdpp-mcp-server');
+
+  const tools = await postMcpJson(
+    {
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'tools/list',
+      params: {},
+    },
+    fetch
+  );
+  assert.equal(tools.status, 200);
+  const listed = await tools.json();
+  assert.ok(listed.result.tools.some((tool) => tool.name === 'fetch'));
+  assert.ok(listed.result.tools.some((tool) => tool.name === 'search'));
+});
+
+async function postMcpJson(message, fakeFetch) {
+  return await handleStreamableHttpRequest(
+    new Request('https://provider.test/mcp', {
+      method: 'POST',
+      headers: {
+        accept: 'application/json, text/event-stream',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(message),
+    }),
+    {
+      providerUrl: 'https://provider.test',
+      accessToken: 'scoped-token',
+      fetch: fakeFetch,
+    }
+  );
+}

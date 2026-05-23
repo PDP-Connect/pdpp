@@ -1,5 +1,6 @@
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 
 import { buildStreamResourceTemplate, buildTools } from './tools.js';
 import { RsClient } from './rs-client.js';
@@ -10,8 +11,8 @@ export const DEFAULT_SERVER_VERSION = '0.0.0';
 /**
  * Build an MCP server wired to a PDPP resource server through the supplied scoped token.
  *
- * The server registers exactly five read-only tools and one resource template. It does
- * not auto-connect to a transport — callers pass the transport explicitly so that tests
+ * The server registers read-only tools and one resource template. It does not
+ * auto-connect to a transport — callers pass the transport explicitly so that tests
  * can use the in-memory pair and CLI use can pass StdioServerTransport.
  */
 export function createPdppMcpServer({
@@ -76,6 +77,28 @@ export async function startStdioServer(options) {
   });
   await server.connect(transport);
   return { server, transport, closed };
+}
+
+/**
+ * Handle one hosted MCP Streamable HTTP request in stateless mode.
+ *
+ * The caller owns authentication and should pass an already-authorized scoped client
+ * bearer as accessToken. A fresh MCP server and transport are created per request so
+ * authorization state is never cached in an MCP session.
+ */
+export async function handleStreamableHttpRequest(request, options) {
+  const { server } = createPdppMcpServer(options);
+  const transport = new WebStandardStreamableHTTPServerTransport({
+    sessionIdGenerator: undefined,
+    enableJsonResponse: true,
+  });
+
+  try {
+    await server.connect(transport);
+    return await transport.handleRequest(request);
+  } finally {
+    await Promise.allSettled([transport.close(), server.close()]);
+  }
 }
 
 function toolHandlerError(error) {

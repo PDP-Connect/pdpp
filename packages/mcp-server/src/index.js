@@ -126,6 +126,12 @@ function readOption(argv, name) {
 }
 
 export { CredentialError, loadScopedCredential } from './credentials.js';
-export { createPdppMcpServer, startStdioServer, DEFAULT_SERVER_NAME, DEFAULT_SERVER_VERSION } from './server.js';
+export {
+  createPdppMcpServer,
+  handleStreamableHttpRequest,
+  startStdioServer,
+  DEFAULT_SERVER_NAME,
+  DEFAULT_SERVER_VERSION,
+} from './server.js';
 export { RsClient } from './rs-client.js';
 export { buildTools, buildStreamResourceTemplate, InvalidResourceUriError } from './tools.js';

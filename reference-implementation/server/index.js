@@ -36,9 +36,11 @@ import {
   introspect, revokeGrant,
   createConsentExchangeCode, consumeConsentExchangeCode,
   configureNativeManifest,
-  deleteRegisteredClient, listOwnerIssuedClients, listRegisteredConnectorIds,
+  deleteRegisteredClient, exchangeOAuthAuthorizationCode, getRegisteredClient,
+  issueOAuthAuthorizationCodeForDeviceCode, listOwnerIssuedClients, listRegisteredConnectorIds,
   registerDynamicClient, requireGrantContractAgainstManifest, requireResolvedPersistedGrantState, seedPreRegisteredClients,
   buildPendingConsentRequestUri,
+  stageOAuthAuthorizationCodeRequest,
 } from './auth.js';
 import { createBlobStore } from './stores/blob-store.js';
 import {
@@ -160,6 +162,7 @@ import {
   DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN,
   DEFAULT_PRE_REGISTERED_PUBLIC_CLIENTS,
 } from './reference-local-defaults.ts';
+import { handleStreamableHttpRequest } from '../../packages/mcp-server/src/server.js';
 import {
   resolveReferenceRevision,
   setReferenceRevisionHeader,
@@ -2765,6 +2768,144 @@ function buildAsApp(opts = {}) {
     };
   }
 
+  function parseAuthorizeAuthorizationDetails(query) {
+    const raw = query?.authorization_details;
+    if (raw == null || raw === '') return null;
+    if (Array.isArray(raw)) return raw;
+    if (typeof raw === 'object') return raw;
+    if (typeof raw !== 'string') {
+      const err = new Error('authorization_details must be JSON');
+      err.code = 'invalid_request';
+      throw err;
+    }
+    try {
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) {
+        const err = new Error('authorization_details must decode to an array');
+        err.code = 'invalid_request';
+        throw err;
+      }
+      return parsed;
+    } catch (err) {
+      err.code = err.code || 'invalid_request';
+      throw err;
+    }
+  }
+
+  function requireAuthorizeString(query, name) {
+    const value = query?.[name];
+    if (typeof value !== 'string' || !value.trim()) {
+      const err = new Error(`${name} is required`);
+      err.code = 'invalid_request';
+      throw err;
+    }
+    return value.trim();
+  }
+
+  function requireRegisteredRedirectUri(client, redirectUri) {
+    const redirectUris = Array.isArray(client?.metadata?.redirect_uris)
+      ? client.metadata.redirect_uris
+      : [];
+    if (!redirectUris.includes(redirectUri)) {
+      const err = new Error('redirect_uri does not match a registered redirect URI');
+      err.code = 'invalid_request';
+      throw err;
+    }
+  }
+
+  function validateAuthorizePkce({ responseType, codeChallenge, codeChallengeMethod }) {
+    if (responseType !== 'code') {
+      const err = new Error('response_type must be code');
+      err.code = 'unsupported_response_type';
+      throw err;
+    }
+    if (codeChallengeMethod !== 'S256') {
+      const err = new Error('code_challenge_method must be S256');
+      err.code = 'invalid_request';
+      throw err;
+    }
+    if (typeof codeChallenge !== 'string' || codeChallenge.length < 43 || codeChallenge.length > 128) {
+      const err = new Error('code_challenge must be 43-128 characters');
+      err.code = 'invalid_request';
+      throw err;
+    }
+  }
+
+  function buildHostedMcpAuthorizationDetailsForConnector(connectorId) {
+    return [
+      {
+        type: 'https://pdpp.org/data-access',
+        source: { kind: 'connector', id: connectorId },
+        purpose_code: 'https://pdpp.org/purpose/personal_ai_assistant',
+        purpose_description: 'Allow this MCP client to read selected personal data through PDPP.',
+        access_mode: 'continuous',
+        retention: {
+          classification: 'client_policy',
+          description: 'The MCP client controls any retention of fetched results.',
+        },
+        streams: [{ name: '*' }],
+      },
+    ];
+  }
+
+  async function renderHostedMcpSourceSelection(query, csrfToken) {
+    const connectorIds = await listRegisteredConnectorIds();
+    const rows = [];
+    for (const connectorId of connectorIds) {
+      const manifest = await getConnectorManifest(connectorId).catch(() => null);
+      if (!manifest) continue;
+      rows.push({
+        id: connectorId,
+        label: manifest.display_name || manifest.name || connectorId,
+        streamCount: Array.isArray(manifest.streams) ? manifest.streams.length : 0,
+      });
+    }
+    rows.sort((a, b) => a.label.localeCompare(b.label));
+
+    const hidden = ['client_id', 'redirect_uri', 'response_type', 'scope', 'state', 'code_challenge', 'code_challenge_method']
+      .map((name) => {
+        const value = query?.[name];
+        if (typeof value !== 'string') return '';
+        return `<input type="hidden" name="${hostedEscape(name)}" value="${hostedEscape(value)}" />`;
+      })
+      .join('\n');
+    const options = rows.length
+      ? rows.map((row, index) => `
+          <label class="pdpp-option">
+            <input type="radio" name="connector_id" value="${hostedEscape(row.id)}" ${index === 0 ? 'checked' : ''} />
+            <span>
+              <strong>${hostedEscape(row.label)}</strong>
+              <small>${hostedEscape(row.id)} · ${row.streamCount} streams</small>
+            </span>
+          </label>
+        `).join('\n')
+      : '<p>No connector manifests are registered on this reference server.</p>';
+    const submit = rows.length ? '<button type="submit">Continue to consent</button>' : '';
+
+    return renderHostedDocument({
+      title: `${providerName} — Choose MCP source`,
+      providerName,
+      body: [
+        renderPageIntro({
+          eyebrow: 'MCP authorization',
+          title: 'Choose what this MCP client can read',
+          lede: 'The client will receive a normal PDPP grant for one source. The MCP endpoint remains read-only and grant-scoped.',
+        }),
+        renderSurface({
+          surface: 'human',
+          children: `
+            <form method="GET" action="/oauth/authorize">
+              <input type="hidden" name="_csrf" value="${hostedEscape(csrfToken)}" />
+              ${hidden}
+              <div class="pdpp-stack">${options}</div>
+              ${submit}
+            </form>
+          `,
+        }),
+      ].join('\n'),
+    });
+  }
+
   function completeAgentConnectAttempt(requestUri, outcome) {
     for (const attempt of agentConnectAttempts.values()) {
       if (attempt.requestUri !== requestUri || attempt.status !== 'pending') continue;
@@ -3048,6 +3189,62 @@ function buildAsApp(opts = {}) {
     pdppError(res, outcome.status, outcome.errorCode, outcome.errorMessage);
   });
 
+  app.get('/oauth/authorize', ownerAuth.requireOwnerSession, async (req, res) => {
+    try {
+      const clientId = requireAuthorizeString(req.query, 'client_id');
+      const redirectUri = requireAuthorizeString(req.query, 'redirect_uri');
+      const responseType = requireAuthorizeString(req.query, 'response_type');
+      const codeChallenge = requireAuthorizeString(req.query, 'code_challenge');
+      const codeChallengeMethod = requireAuthorizeString(req.query, 'code_challenge_method');
+      const state = typeof req.query?.state === 'string' ? req.query.state : null;
+      validateAuthorizePkce({ responseType, codeChallenge, codeChallengeMethod });
+
+      const client = await getRegisteredClient(clientId);
+      if (!client) return oauthError(res, 400, 'invalid_client', 'Unknown client_id');
+      requireRegisteredRedirectUri(client, redirectUri);
+
+      const authorizationDetails = parseAuthorizeAuthorizationDetails(req.query);
+      const selectedConnectorId = typeof req.query?.connector_id === 'string' && req.query.connector_id.trim()
+        ? req.query.connector_id.trim()
+        : null;
+      if (!authorizationDetails && !selectedConnectorId) {
+        const csrfToken = ownerAuth.ensureCsrfToken(req, res);
+        return res.send(await renderHostedMcpSourceSelection(req.query, csrfToken));
+      }
+
+      const details = authorizationDetails || buildHostedMcpAuthorizationDetailsForConnector(selectedConnectorId);
+      const explicitBaseUrl = opts.asPublicUrl || (!opts.ignoreAmbientPublicUrls ? process.env.AS_PUBLIC_URL : null);
+      const output = await consentStore.initiateGrant(
+        {
+          client_id: clientId,
+          authorization_details: details,
+        },
+        {
+          baseUrl: resolvePublicUrl(req, explicitBaseUrl),
+          nativeManifest: resolveNativeManifest(opts),
+        },
+      );
+      const deviceCode = consentStore.parseRequestUri(output.request_uri);
+      await stageOAuthAuthorizationCodeRequest({
+        deviceCode,
+        clientId,
+        redirectUri,
+        state,
+        codeChallenge,
+        codeChallengeMethod,
+        expiresInSeconds: output.expires_in || 300,
+      });
+      return res.redirect(302, output.authorization_url);
+    } catch (err) {
+      oauthError(
+        res,
+        400,
+        err.code || 'invalid_request',
+        err.message || 'Authorization request rejected',
+      );
+    }
+  });
+
   // Device-authorization initiation semantics (client_id presence
   // validation, store call, trace_context-stripped public envelope) live
   // in the canonical `as.device.authorization.init` operation
@@ -3086,6 +3283,23 @@ function buildAsApp(opts = {}) {
   // live in the canonical `as.device.token.exchange` operation
   // (operations/as-device-token-exchange).
   app.post('/oauth/token', { contract: 'exchangeOwnerDeviceToken' }, async (req, res) => {
+    if (req.body?.grant_type === 'authorization_code') {
+      try {
+        const token = await exchangeOAuthAuthorizationCode({
+          code: req.body?.code,
+          clientId: req.body?.client_id,
+          redirectUri: req.body?.redirect_uri,
+          codeVerifier: req.body?.code_verifier,
+        });
+        return res.json({
+          access_token: token.access_token,
+          token_type: token.token_type,
+          grant_id: token.grant_id,
+        });
+      } catch (err) {
+        return oauthError(res, 400, err.code || 'invalid_grant', err.message || 'Authorization code exchange failed');
+      }
+    }
     const outcome = await executeAsDeviceTokenExchange(
       {
         grantType: req.body?.grant_type,
@@ -5245,7 +5459,21 @@ function buildAsApp(opts = {}) {
         setReferenceTraceId(res, outcome.traceContext.trace_id);
       }
       const { grant, token } = outcome;
-      completeAgentConnectAttempt(req.body?.request_uri || req.query?.request_uri, {
+      const approvedRequestUri = req.body?.request_uri || req.query?.request_uri;
+      const deviceCode = consentStore.parseRequestUri(approvedRequestUri);
+      const oauthCode = await issueOAuthAuthorizationCodeForDeviceCode(deviceCode, {
+        grantId: grant.grant_id,
+        token,
+      });
+      if (oauthCode) {
+        const redirectUrl = new URL(oauthCode.redirect_uri);
+        redirectUrl.searchParams.set('code', oauthCode.code);
+        if (oauthCode.state) {
+          redirectUrl.searchParams.set('state', oauthCode.state);
+        }
+        return res.redirect(302, redirectUrl.toString());
+      }
+      completeAgentConnectAttempt(approvedRequestUri, {
         status: 'approved',
         token,
         grant,
@@ -5421,6 +5649,11 @@ function buildAgentDiscoveryMetadata(origin, { noOwnerToken = true } = {}) {
     },
     skill_catalog: `${base}/.well-known/skills/index.json`,
     skill: `${base}/.well-known/skills/pdpp-data-access/SKILL.md`,
+    mcp: {
+      transport: 'streamable_http',
+      endpoint: `${base}/mcp`,
+      no_owner_token: true,
+    },
     llms_txt: `${base}/llms.txt`,
     llms_full_txt: `${base}/llms-full.txt`,
   };
@@ -5451,6 +5684,81 @@ function buildRsApp(opts = {}) {
     }
     next();
   });
+
+  function buildMcpWebRequest(req, resource) {
+    const url = new URL(req.raw?.url || req.url || req.path || '/mcp', resource);
+    const headers = new Headers();
+    for (const [name, value] of Object.entries(req.headers || {})) {
+      if (Array.isArray(value)) {
+        for (const item of value) headers.append(name, String(item));
+      } else if (value !== undefined) {
+        headers.set(name, String(value));
+      }
+    }
+
+    let body;
+    if (!['GET', 'HEAD'].includes(req.method)) {
+      if (Buffer.isBuffer(req.body) || typeof req.body === 'string') {
+        body = req.body;
+      } else if (req.body !== undefined) {
+        body = JSON.stringify(req.body);
+        if (!headers.has('content-type')) {
+          headers.set('content-type', 'application/json');
+        }
+      }
+    }
+
+    return new Request(url.toString(), {
+      method: req.method,
+      headers,
+      body,
+    });
+  }
+
+  async function sendWebResponse(res, response) {
+    res.status(response.status);
+    response.headers.forEach((value, key) => {
+      res.setHeader(key, value);
+    });
+    if (response.status === 204 || response.status === 304) {
+      return res.end();
+    }
+    const body = Buffer.from(await response.arrayBuffer());
+    return res.send(body);
+  }
+
+  async function handleHostedMcp(req, res) {
+    const resource = resolvePublicUrl(req, explicitResource);
+    const accessToken = req.headers.authorization.slice(7);
+    const webRequest = buildMcpWebRequest(req, resource);
+    const response = await handleStreamableHttpRequest(webRequest, {
+      providerUrl: resource,
+      accessToken,
+      fetch: globalThis.fetch,
+      serverName: 'pdpp-reference-mcp',
+      serverVersion: referenceRevision,
+    });
+    return sendWebResponse(res, response);
+  }
+
+  function setHostedMcpProtectedResourceMetadata(req, res, next) {
+    if (isTrustedMetadataRequestOrigin(req, explicitResource, trustedMetadataHosts)) {
+      const resource = `${resolvePublicUrl(req, explicitResource)}/mcp`;
+      res.locals[PROTECTED_RESOURCE_METADATA_URL_LOCAL] = protectedResourceMetadataUrlForResource(resource);
+    }
+    next();
+  }
+
+  function requireTrustedHostedMcpResource(req, res, next) {
+    if (rejectUntrustedMetadataHost(req, res, explicitResource, trustedMetadataHosts)) {
+      return;
+    }
+    next();
+  }
+
+  app.get('/mcp', requireTrustedHostedMcpResource, setHostedMcpProtectedResourceMetadata, requireToken, requireClient, handleHostedMcp);
+  app.post('/mcp', requireTrustedHostedMcpResource, setHostedMcpProtectedResourceMetadata, requireToken, requireClient, handleHostedMcp);
+  app.delete('/mcp', requireTrustedHostedMcpResource, setHostedMcpProtectedResourceMetadata, requireToken, requireClient, handleHostedMcp);
 
   // Shared hosted-UI stylesheet, mounted on the RS app so the browser-friendly
   // RS root landing (see below) can load styles from its own origin without
@@ -5571,6 +5879,42 @@ function buildRsApp(opts = {}) {
         agentDiscovery: buildAgentDiscoveryMetadata(
           opts.agentDiscoveryOrigin ? resolveSiblingPublicUrl(req, opts.agentDiscoveryOrigin) : null,
           { noOwnerToken: nativeMode },
+        ),
+      })
+    );
+  });
+
+  app.get('/.well-known/oauth-protected-resource/mcp', { contract: 'getMcpProtectedResourceMetadata' }, (req, res) => {
+    if (rejectUntrustedMetadataHost(req, res, explicitResource, trustedMetadataHosts)) {
+      return;
+    }
+    const resourceBase = resolvePublicUrl(req, explicitResource);
+    const resource = `${resourceBase}/mcp`;
+    const explicitIssuer = opts.asIssuer || opts.asPublicUrl || (!opts.ignoreAmbientPublicUrls ? (process.env.AS_ISSUER || process.env.AS_PUBLIC_URL) : null);
+    const fallbackIssuer = `${req.protocol}://${req.hostname}:${opts.asPort || AS_PORT}`;
+    const issuerUsesDirectRequestOrigin = shouldUseDirectRequestOrigin(req, explicitIssuer);
+    const issuerSource = issuerUsesDirectRequestOrigin ? fallbackIssuer : explicitIssuer || fallbackIssuer;
+    if (
+      rejectUntrustedMetadataHost(req, res, issuerSource, trustedMetadataHosts, {
+        forceHostDerived: issuerUsesDirectRequestOrigin || !explicitIssuer,
+      })
+    ) {
+      return;
+    }
+    const issuer = resolvePublicUrl(req, issuerSource);
+
+    res.json(
+      buildProtectedResourceMetadata({
+        resource,
+        resourceName: `${providerName} Hosted MCP Resource`,
+        authorizationServers: [issuer],
+        queryBase: `${resourceBase}/v1`,
+        providerConnectVersion: PDPP_PROVIDER_CONNECT_VERSION,
+        selfExportSupported: true,
+        tokenKindsSupported: ['client'],
+        agentDiscovery: buildAgentDiscoveryMetadata(
+          opts.agentDiscoveryOrigin ? resolveSiblingPublicUrl(req, opts.agentDiscoveryOrigin) : resourceBase,
+          { noOwnerToken: true },
         ),
       })
     );

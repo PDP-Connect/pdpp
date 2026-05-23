@@ -343,6 +343,11 @@ export interface ProtectedResourceAgentDiscovery {
   };
   llms_full_txt: string;
   llms_txt: string;
+  mcp?: {
+    endpoint: string;
+    no_owner_token: true;
+    transport: "streamable_http";
+  };
   recommended_flow: "pdpp connect";
   skill: string;
   skill_catalog: string;
@@ -667,7 +672,9 @@ export function buildHybridRetrievalCapability({
 // document free of `null` / `undefined` keys.
 export interface AuthorizationServerMetadataInput {
   agentConnectEndpoint?: string | null;
+  authorizationEndpoint?: string | null;
   authorizationDetailsTypesSupported?: readonly string[] | null;
+  codeChallengeMethodsSupported?: readonly string[] | null;
   deviceAuthorizationEndpoint?: string | null;
   grantTypesSupported?: readonly string[] | null;
   introspectionEndpoint: string;
@@ -677,6 +684,7 @@ export interface AuthorizationServerMetadataInput {
   pushedAuthorizationRequestEndpoint?: string | null;
   registrationEndpoint?: string | null;
   registrationModesSupported?: readonly string[] | null;
+  responseTypesSupported?: readonly string[] | null;
   tokenEndpoint?: string | null;
   tokenEndpointAuthMethodsSupported?: readonly string[] | null;
 }
@@ -689,6 +697,8 @@ export interface AuthorizationServerPublicClient {
 
 export interface AuthorizationServerMetadata {
   agent_connect_endpoint?: string;
+  authorization_endpoint?: string;
+  code_challenge_methods_supported?: readonly string[];
   device_authorization_endpoint?: string;
   grant_types_supported?: readonly string[];
   introspection_endpoint: string;
@@ -699,6 +709,7 @@ export interface AuthorizationServerMetadata {
   pdpp_registration_modes_supported?: readonly string[];
   pushed_authorization_request_endpoint?: string;
   registration_endpoint?: string;
+  response_types_supported?: readonly string[];
   token_endpoint?: string;
   token_endpoint_auth_methods_supported?: readonly string[];
 }
@@ -712,11 +723,14 @@ export function buildAuthorizationServerMetadata({
   preRegisteredPublicClients,
   registrationModesSupported,
   authorizationDetailsTypesSupported,
+  authorizationEndpoint,
+  codeChallengeMethodsSupported,
   tokenEndpoint,
   tokenEndpointAuthMethodsSupported,
   deviceAuthorizationEndpoint,
   agentConnectEndpoint,
   grantTypesSupported,
+  responseTypesSupported,
 }: AuthorizationServerMetadataInput): AuthorizationServerMetadata {
   const metadata: AuthorizationServerMetadata = {
     issuer,
@@ -744,6 +758,15 @@ export function buildAuthorizationServerMetadata({
     metadata.pdpp_authorization_details_types_supported = authorizationDetailsTypesSupported;
   }
 
+  if (authorizationEndpoint) {
+    metadata.authorization_endpoint = authorizationEndpoint;
+  }
+  if (responseTypesSupported?.length) {
+    metadata.response_types_supported = responseTypesSupported;
+  }
+  if (codeChallengeMethodsSupported?.length) {
+    metadata.code_challenge_methods_supported = codeChallengeMethodsSupported;
+  }
   if (tokenEndpoint) {
     metadata.token_endpoint = tokenEndpoint;
   }

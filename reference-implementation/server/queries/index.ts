@@ -150,10 +150,16 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly authOauthClientsDeleteByClientId: MutationQuery;
   readonly authOauthClientsGetByClientId: ReadOneQuery;
   readonly authOauthClientsListByIssuerSubject: SmallEnumerationQuery;
-  // Auth — oauth_clients (registered OAuth clients)
   readonly authOauthClientsUpsert: MutationQuery;
-  readonly authOwnerDeviceAuthGetByApprovalId: ReadOneQuery;
+  // Auth — oauth_authorization_codes (OAuth code + PKCE bridge)
+  readonly authOauthAuthorizationCodesConsumeCode: MutationQuery;
+  readonly authOauthAuthorizationCodesGetByCode: ReadOneQuery;
+  readonly authOauthAuthorizationCodesGetByDeviceCode: ReadOneQuery;
+  readonly authOauthAuthorizationCodesIssueForDeviceCode: MutationQuery;
+  readonly authOauthAuthorizationCodesMarkExpiredByDeviceCode: MutationQuery;
+  readonly authOauthAuthorizationCodesUpsertPending: MutationQuery;
   // Auth — owner_device_auth (owner CLI device-flow authentication)
+  readonly authOwnerDeviceAuthGetByApprovalId: ReadOneQuery;
   readonly authOwnerDeviceAuthGetByDeviceCode: ReadOneQuery;
   readonly authOwnerDeviceAuthGetByUserCode: ReadOneQuery;
   readonly authOwnerDeviceAuthInsert: MutationQuery;

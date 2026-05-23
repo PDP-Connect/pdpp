@@ -29,6 +29,7 @@ export interface AsAuthorizationServerPublicClient {
 }
 
 export interface AsAuthorizationServerMetadataBuilderInput {
+  readonly authorizationEndpoint: string;
   readonly issuer: string;
   readonly introspectionEndpoint: string;
   readonly pushedAuthorizationRequestEndpoint: string;
@@ -42,6 +43,8 @@ export interface AsAuthorizationServerMetadataBuilderInput {
   readonly deviceAuthorizationEndpoint: string;
   readonly agentConnectEndpoint: string;
   readonly grantTypesSupported: readonly string[];
+  readonly responseTypesSupported: readonly string[];
+  readonly codeChallengeMethodsSupported: readonly string[];
 }
 
 export interface AsAuthorizationServerMetadataDependencies {
@@ -60,6 +63,7 @@ export function executeAsAuthorizationServerMetadata(
     : (["pre_registered_public"] as const);
   return deps.buildAuthorizationServerMetadata({
     issuer,
+    authorizationEndpoint: `${issuer}/oauth/authorize`,
     introspectionEndpoint: `${issuer}/introspect`,
     pushedAuthorizationRequestEndpoint: `${issuer}/oauth/par`,
     registrationEndpoint: dynamicClientRegistrationEnabled
@@ -77,6 +81,11 @@ export function executeAsAuthorizationServerMetadata(
     tokenEndpointAuthMethodsSupported: ["none"],
     deviceAuthorizationEndpoint: `${issuer}/oauth/device_authorization`,
     agentConnectEndpoint: `${issuer}/agent-connect`,
-    grantTypesSupported: ["urn:ietf:params:oauth:grant-type:device_code"],
+    grantTypesSupported: [
+      "urn:ietf:params:oauth:grant-type:device_code",
+      "authorization_code",
+    ],
+    responseTypesSupported: ["code"],
+    codeChallengeMethodsSupported: ["S256"],
   });
 }

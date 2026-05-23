@@ -2000,7 +2000,7 @@ test('PDPP reference implementation integration', async (t) => {
     });
   });
 
-  await t.test('dynamic client registration rejects broader OAuth metadata beyond the current public-client profile', async () => {
+  await t.test('dynamic client registration rejects unsupported OAuth metadata beyond the current public-client profile', async () => {
     await withHarness(async ({ asUrl }) => {
       const responseTypes = await fetch(`${asUrl}/oauth/register`, {
         method: 'POST',
@@ -2011,14 +2011,14 @@ test('PDPP reference implementation integration', async (t) => {
         body: JSON.stringify({
           client_name: 'Too Broad',
           token_endpoint_auth_method: 'none',
-          response_types: ['code'],
+          response_types: ['token'],
         }),
       });
 
       assert.equal(responseTypes.status, 400);
       const responseTypesBody = await responseTypes.json();
       assert.equal(responseTypesBody.error, 'invalid_client_metadata');
-      assert.match(responseTypesBody.error_description, /response_types metadata is not supported/i);
+      assert.match(responseTypesBody.error_description, /Unsupported response_types/i);
 
       const confidential = await fetch(`${asUrl}/oauth/register`, {
         method: 'POST',
@@ -2047,14 +2047,14 @@ test('PDPP reference implementation integration', async (t) => {
         body: JSON.stringify({
           client_name: 'Native Longview',
           token_endpoint_auth_method: 'none',
-          application_type: 'native',
+          application_type: 'browser',
         }),
       });
 
       assert.equal(applicationType.status, 400);
       const applicationTypeBody = await applicationType.json();
       assert.equal(applicationTypeBody.error, 'invalid_client_metadata');
-      assert.match(applicationTypeBody.error_description, /application_type metadata is not supported/i);
+      assert.match(applicationTypeBody.error_description, /Unsupported application_type/i);
     });
   });
 
