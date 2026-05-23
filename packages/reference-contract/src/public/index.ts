@@ -680,6 +680,38 @@ const OwnerDeviceTokenRequestSchema = {
   required: ["grant_type", "device_code", "client_id"],
 };
 
+const AuthorizationCodeTokenRequestSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    grant_type: { const: "authorization_code" },
+    code: NonEmptyStringSchema,
+    client_id: NonEmptyStringSchema,
+    redirect_uri: UriSchema,
+    code_verifier: NonEmptyStringSchema,
+  },
+  required: ["grant_type", "code", "client_id", "redirect_uri", "code_verifier"],
+};
+
+const RefreshTokenRequestSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    grant_type: { const: "refresh_token" },
+    refresh_token: NonEmptyStringSchema,
+    client_id: NonEmptyStringSchema,
+  },
+  required: ["grant_type", "refresh_token", "client_id"],
+};
+
+const OAuthTokenRequestSchema = {
+  oneOf: [
+    OwnerDeviceTokenRequestSchema,
+    AuthorizationCodeTokenRequestSchema,
+    RefreshTokenRequestSchema,
+  ],
+};
+
 const AccessTokenResponseSchema = {
   type: "object",
   additionalProperties: false,
@@ -689,6 +721,25 @@ const AccessTokenResponseSchema = {
     expires_in: { type: "integer", minimum: 0 },
   },
   required: ["access_token", "token_type", "expires_in"],
+};
+
+const HostedMcpTokenResponseSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    access_token: NonEmptyStringSchema,
+    token_type: { const: "Bearer" },
+    refresh_token: NonEmptyStringSchema,
+    grant_id: NonEmptyStringSchema,
+  },
+  required: ["access_token", "token_type", "grant_id"],
+};
+
+const OAuthTokenResponseSchema = {
+  oneOf: [
+    AccessTokenResponseSchema,
+    HostedMcpTokenResponseSchema,
+  ],
 };
 
 const IntrospectionRequestSchema = {
@@ -1210,15 +1261,15 @@ export const publicManifests = [
     path: "/oauth/token",
     surface: "public",
     tags: ["oauth"],
-    summary: "Exchange an approved owner device_code for an owner bearer token.",
+    summary: "Exchange an OAuth device code, authorization code, or refresh token for a bearer token.",
     request: {
       body: {
         contentType: "application/x-www-form-urlencoded",
-        schema: OwnerDeviceTokenRequestSchema,
+        schema: OAuthTokenRequestSchema,
       },
     },
     responses: {
-      200: { schema: AccessTokenResponseSchema },
+      200: { schema: OAuthTokenResponseSchema },
       ...OAuthFlowErrors,
       500: { schema: OAuthErrorSchema, description: "Server error while exchanging the device code" },
     },

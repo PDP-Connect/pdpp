@@ -2624,7 +2624,7 @@
         "tags": [
           "oauth"
         ],
-        "summary": "Exchange an approved owner device_code for an owner bearer token.",
+        "summary": "Exchange an OAuth device code, authorization code, or refresh token for a bearer token.",
         "parameters": [],
         "responses": {
           "200": {
@@ -2632,25 +2632,55 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "properties": {
-                    "access_token": {
-                      "type": "string",
-                      "minLength": 1
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "access_token": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "token_type": {
+                          "const": "Bearer"
+                        },
+                        "expires_in": {
+                          "type": "integer",
+                          "minimum": 0
+                        }
+                      },
+                      "required": [
+                        "access_token",
+                        "token_type",
+                        "expires_in"
+                      ]
                     },
-                    "token_type": {
-                      "const": "Bearer"
-                    },
-                    "expires_in": {
-                      "type": "integer",
-                      "minimum": 0
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "access_token": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "token_type": {
+                          "const": "Bearer"
+                        },
+                        "refresh_token": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "grant_id": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "required": [
+                        "access_token",
+                        "token_type",
+                        "grant_id"
+                      ]
                     }
-                  },
-                  "required": [
-                    "access_token",
-                    "token_type",
-                    "expires_in"
                   ]
                 }
               }
@@ -2716,25 +2746,83 @@
           "content": {
             "application/x-www-form-urlencoded": {
               "schema": {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                  "grant_type": {
-                    "const": "urn:ietf:params:oauth:grant-type:device_code"
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "grant_type": {
+                        "const": "urn:ietf:params:oauth:grant-type:device_code"
+                      },
+                      "device_code": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "client_id": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "grant_type",
+                      "device_code",
+                      "client_id"
+                    ]
                   },
-                  "device_code": {
-                    "type": "string",
-                    "minLength": 1
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "grant_type": {
+                        "const": "authorization_code"
+                      },
+                      "code": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "client_id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "redirect_uri": {
+                        "type": "string",
+                        "format": "uri"
+                      },
+                      "code_verifier": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "grant_type",
+                      "code",
+                      "client_id",
+                      "redirect_uri",
+                      "code_verifier"
+                    ]
                   },
-                  "client_id": {
-                    "type": "string",
-                    "minLength": 1
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "grant_type": {
+                        "const": "refresh_token"
+                      },
+                      "refresh_token": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "client_id": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "grant_type",
+                      "refresh_token",
+                      "client_id"
+                    ]
                   }
-                },
-                "required": [
-                  "grant_type",
-                  "device_code",
-                  "client_id"
                 ]
               }
             }

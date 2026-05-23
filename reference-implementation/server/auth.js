@@ -27,6 +27,14 @@ function generateToken() {
   return randomBytes(32).toString('hex');
 }
 
+function generateOAuthRefreshToken() {
+  return `rt_${randomBytes(32).toString('base64url')}`;
+}
+
+function hashOAuthRefreshToken(refreshToken) {
+  return createHash('sha256').update(String(refreshToken)).digest('base64url');
+}
+
 function generateId(prefix = 'id') {
   return `${prefix}_${randomBytes(8).toString('hex')}`;
 }
@@ -60,7 +68,7 @@ const LEGACY_LOCAL_CONNECTOR_MANIFEST_ALIASES = new Map([
 ]);
 const PENDING_CONSENT_REQUEST_URI_PREFIX = 'urn:pdpp:pending-consent:';
 const SUPPORTED_CLIENT_AUTH_METHODS = new Set(['none']);
-const SUPPORTED_DYNAMIC_CLIENT_GRANT_TYPES = new Set(['authorization_code']);
+const SUPPORTED_DYNAMIC_CLIENT_GRANT_TYPES = new Set(['authorization_code', 'refresh_token']);
 const SUPPORTED_DYNAMIC_CLIENT_RESPONSE_TYPES = new Set(['code']);
 const SUPPORTED_DYNAMIC_CLIENT_APPLICATION_TYPES = new Set(['web', 'native']);
 const SUPPORTED_AUTHORIZATION_CODE_CHALLENGE_METHODS = new Set(['S256']);
@@ -393,6 +401,11 @@ function normalizeClientRegistrationMetadata(input = {}) {
 
   const wantsAuthorizationCode =
     metadata.grant_types?.includes('authorization_code') || metadata.response_types?.includes('code');
+  if (metadata.grant_types?.includes('refresh_token') && !metadata.grant_types?.includes('authorization_code')) {
+    const err = new Error('refresh_token grant_type requires authorization_code');
+    err.code = 'invalid_client_metadata';
+    throw err;
+  }
   if (wantsAuthorizationCode && !metadata.redirect_uris?.length) {
     const err = new Error('redirect_uris is required for authorization_code clients');
     err.code = 'invalid_client_metadata';
@@ -2710,6 +2723,41 @@ function buildOAuthAuthorizationCodeError(code, message) {
   return err;
 }
 
+function clientSupportsOAuthRefreshToken(registeredClient) {
+  return registeredClient?.metadata?.grant_types?.includes('refresh_token') === true;
+}
+
+function buildOAuthRefreshTokenError(code, message) {
+  const err = new Error(message);
+  err.code = code;
+  return err;
+}
+
+async function issueOAuthRefreshToken({ clientId, grantId, subjectId, expiresAt = null }) {
+  const refreshToken = generateOAuthRefreshToken();
+  const refreshTokenHash = hashOAuthRefreshToken(refreshToken);
+  const createdAt = nowIso();
+  if (isPostgresStorageBackend()) {
+    await pgExec(
+      `INSERT INTO oauth_refresh_tokens(
+         refresh_token_hash, client_id, grant_id, subject_id, status,
+         created_at, expires_at, last_used_at, revoked_at
+       ) VALUES($1, $2, $3, $4, 'active', $5, $6, NULL, NULL)`,
+      [refreshTokenHash, clientId, grantId, subjectId, createdAt, expiresAt],
+    );
+  } else {
+    exec(referenceQueries.authOauthRefreshTokensInsert, [
+      refreshTokenHash,
+      clientId,
+      grantId,
+      subjectId,
+      createdAt,
+      expiresAt,
+    ]);
+  }
+  return refreshToken;
+}
+
 export async function stageOAuthAuthorizationCodeRequest({
   deviceCode,
   clientId,
@@ -2895,6 +2943,11 @@ export async function exchangeOAuthAuthorizationCode({
     throw buildOAuthAuthorizationCodeError('invalid_grant', 'Authorization code PKCE verification failed');
   }
 
+  const registeredClient = await getRegisteredClient(clientId);
+  if (!registeredClient) {
+    throw buildOAuthAuthorizationCodeError('invalid_client', 'Unknown client_id');
+  }
+
   const consumedAt = nowIso();
   const updated = isPostgresStorageBackend()
     ? await pgExec(
@@ -2912,9 +2965,96 @@ export async function exchangeOAuthAuthorizationCode({
     throw buildOAuthAuthorizationCodeError('invalid_grant', 'Authorization code is invalid or already used');
   }
 
-  return {
+  const response = {
     access_token: row.token_id,
     token_type: 'Bearer',
+    grant_id: row.grant_id,
+  };
+
+  if (clientSupportsOAuthRefreshToken(registeredClient)) {
+    const tokenInfo = await introspect(row.token_id);
+    if (!tokenInfo.active || tokenInfo.client_id !== clientId || tokenInfo.grant_id !== row.grant_id) {
+      throw buildOAuthAuthorizationCodeError('invalid_grant', 'Issued grant token is no longer active');
+    }
+    response.refresh_token = await issueOAuthRefreshToken({
+      clientId,
+      grantId: row.grant_id,
+      subjectId: tokenInfo.subject_id,
+      expiresAt: tokenInfo.exp ? new Date(tokenInfo.exp * 1000).toISOString() : null,
+    });
+  }
+
+  return response;
+}
+
+export async function exchangeOAuthRefreshToken({
+  refreshToken,
+  clientId,
+}) {
+  if (!isNonEmptyString(refreshToken)) {
+    throw buildOAuthRefreshTokenError('invalid_request', 'refresh_token is required');
+  }
+  if (!isNonEmptyString(clientId)) {
+    throw buildOAuthRefreshTokenError('invalid_request', 'client_id is required');
+  }
+
+  const refreshTokenHash = hashOAuthRefreshToken(refreshToken);
+  const row = isPostgresStorageBackend()
+    ? await pgOne(
+        `SELECT refresh_token_hash, client_id, grant_id, subject_id, status,
+                created_at, expires_at, last_used_at, revoked_at
+         FROM oauth_refresh_tokens
+         WHERE refresh_token_hash = $1`,
+        [refreshTokenHash],
+      )
+    : getOne(referenceQueries.authOauthRefreshTokensGetByToken, [refreshTokenHash]);
+
+  if (!row || row.status !== 'active' || row.revoked_at) {
+    throw buildOAuthRefreshTokenError('invalid_grant', 'Refresh token is invalid');
+  }
+  if (row.expires_at && new Date(row.expires_at).getTime() <= Date.now()) {
+    throw buildOAuthRefreshTokenError('invalid_grant', 'Refresh token has expired');
+  }
+  if (row.client_id !== clientId) {
+    throw buildOAuthRefreshTokenError('invalid_grant', 'Refresh token client_id mismatch');
+  }
+
+  const registeredClient = await getRegisteredClient(clientId);
+  if (!registeredClient || !clientSupportsOAuthRefreshToken(registeredClient)) {
+    throw buildOAuthRefreshTokenError('invalid_grant', 'Client is not registered for refresh_token');
+  }
+
+  let accessToken;
+  try {
+    accessToken = await issueToken(row.grant_id, row.subject_id, row.client_id, row.expires_at || null, {
+      source: 'oauth_refresh_token',
+    });
+  } catch (err) {
+    const code = [
+      'grant_revoked',
+      'grant_invalid',
+      'grant_consumed',
+      'not_found',
+    ].includes(err?.code) ? 'invalid_grant' : (err?.code || 'invalid_grant');
+    throw buildOAuthRefreshTokenError(code, err?.message || 'Refresh token grant is no longer valid');
+  }
+
+  const usedAt = nowIso();
+  if (isPostgresStorageBackend()) {
+    await pgExec(
+      `UPDATE oauth_refresh_tokens
+       SET last_used_at = $1
+       WHERE refresh_token_hash = $2 AND status = 'active'`,
+      [usedAt, refreshTokenHash],
+    );
+  } else {
+    exec(referenceQueries.authOauthRefreshTokensMarkUsed, [usedAt, refreshTokenHash]);
+  }
+
+  return {
+    access_token: accessToken,
+    token_type: 'Bearer',
+    refresh_token: refreshToken,
     grant_id: row.grant_id,
   };
 }
@@ -3750,10 +3890,15 @@ export async function revokeGrant(grantId, context = {}) {
     await pgExec("UPDATE grants SET status = 'revoked' WHERE grant_id = $1", [grantId]);
     // Also revoke all tokens for this grant.
     await pgExec("UPDATE tokens SET revoked = TRUE WHERE grant_id = $1", [grantId]);
+    await pgExec(
+      "UPDATE oauth_refresh_tokens SET status = 'revoked', revoked_at = $1 WHERE grant_id = $2 AND status = 'active'",
+      [nowIso(), grantId],
+    );
   } else {
     exec(referenceQueries.authGrantsMarkRevoked, [grantId]);
     // Also revoke all tokens for this grant
     exec(referenceQueries.authTokensRevokeByGrant, [grantId]);
+    exec(referenceQueries.authOauthRefreshTokensRevokeByGrant, [nowIso(), grantId]);
   }
 
   if (row0 && parsedGrant) {

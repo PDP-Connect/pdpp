@@ -518,6 +518,7 @@ test('provider metadata routes expose current honest capability set', async () =
     assert.deepEqual(authorizationServer.body.grant_types_supported, [
       'urn:ietf:params:oauth:grant-type:device_code',
       'authorization_code',
+      'refresh_token',
     ]);
   } finally {
     await closeServer(server);
@@ -532,6 +533,7 @@ test('reference revision header is distinct reference metadata across AS, RS, an
     rsPort: 0,
     dbPath: ':memory:',
     referenceRevision,
+    ownerAuthPassword: '',
   });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;

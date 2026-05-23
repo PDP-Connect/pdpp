@@ -40,3 +40,14 @@
 - [x] 6.4 Commit the tranche.
 - [x] 6.5 Build/deploy to `pdpp.vivid.fish` and verify public metadata plus `/mcp` behavior.
 - [x] 6.6 Re-check the interrupted reference/web image publish closeout and leave deployment in a known state.
+
+## 7. ChatGPT Refresh-Token Compatibility
+
+- [x] 7.1 Update the design/spec to require grant-scoped refresh-token support for hosted MCP public OAuth clients.
+- [x] 7.2 Persist hashed OAuth refresh tokens for SQLite and Postgres and revoke them with their PDPP grant.
+- [x] 7.3 Accept `refresh_token` in dynamic client registration only with `authorization_code`.
+- [x] 7.4 Return refresh tokens from authorization-code exchange only for clients registered for `refresh_token`.
+- [x] 7.5 Add `/oauth/token` refresh-token exchange that issues a new bearer for the same grant and rejects mismatched clients or revoked grants.
+- [x] 7.6 Update authorization-server metadata and tests for `refresh_token`.
+- [x] 7.7 Add hosted MCP operator setup docs for ChatGPT and Claude.
+- [ ] 7.8 Validate, commit, deploy, and smoke-test the public service.

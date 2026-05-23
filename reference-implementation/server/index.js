@@ -36,7 +36,7 @@ import {
   introspect, revokeGrant,
   createConsentExchangeCode, consumeConsentExchangeCode,
   configureNativeManifest,
-  deleteRegisteredClient, exchangeOAuthAuthorizationCode, getRegisteredClient,
+  deleteRegisteredClient, exchangeOAuthAuthorizationCode, exchangeOAuthRefreshToken, getRegisteredClient,
   issueOAuthAuthorizationCodeForDeviceCode, listOwnerIssuedClients, listRegisteredConnectorIds,
   registerDynamicClient, requireGrantContractAgainstManifest, requireResolvedPersistedGrantState, seedPreRegisteredClients,
   buildPendingConsentRequestUri,
@@ -3293,10 +3293,27 @@ function buildAsApp(opts = {}) {
         return res.json({
           access_token: token.access_token,
           token_type: token.token_type,
+          ...(token.refresh_token ? { refresh_token: token.refresh_token } : {}),
           grant_id: token.grant_id,
         });
       } catch (err) {
         return oauthError(res, 400, err.code || 'invalid_grant', err.message || 'Authorization code exchange failed');
+      }
+    }
+    if (req.body?.grant_type === 'refresh_token') {
+      try {
+        const token = await exchangeOAuthRefreshToken({
+          refreshToken: req.body?.refresh_token,
+          clientId: req.body?.client_id,
+        });
+        return res.json({
+          access_token: token.access_token,
+          token_type: token.token_type,
+          refresh_token: token.refresh_token,
+          grant_id: token.grant_id,
+        });
+      } catch (err) {
+        return oauthError(res, 400, err.code || 'invalid_grant', err.message || 'Refresh token exchange failed');
       }
     }
     const outcome = await executeAsDeviceTokenExchange(

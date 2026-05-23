@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
+import { revokeGrant } from '../server/auth.js';
 import { startServer } from '../server/index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -41,14 +42,17 @@ async function registerSpotify(asUrl) {
   return manifest;
 }
 
-async function registerAuthCodeClient(asUrl) {
+async function registerAuthCodeClient(asUrl, opts = {}) {
+  const grantTypes = opts.refreshToken === false
+    ? ['authorization_code']
+    : ['authorization_code', 'refresh_token'];
   const { status, body } = await fetchJson(`${asUrl}/oauth/register`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       client_name: 'Hosted MCP test client',
       redirect_uris: ['https://client.example/callback'],
-      grant_types: ['authorization_code'],
+      grant_types: grantTypes,
       response_types: ['code'],
       application_type: 'web',
       token_endpoint_auth_method: 'none',
@@ -56,7 +60,7 @@ async function registerAuthCodeClient(asUrl) {
   });
   assert.equal(status, 201);
   assert.equal(body.token_endpoint_auth_method, 'none');
-  assert.deepEqual(body.grant_types, ['authorization_code']);
+  assert.deepEqual(body.grant_types, grantTypes);
   assert.deepEqual(body.response_types, ['code']);
   return body;
 }
@@ -150,7 +154,12 @@ async function completeOauthCodeFlow({ asUrl, client, manifest }) {
   assert.equal(status, 200);
   assert.equal(body.token_type, 'Bearer');
   assert.ok(body.access_token);
-  return { accessToken: body.access_token, code };
+  return {
+    accessToken: body.access_token,
+    refreshToken: body.refresh_token || null,
+    grantId: body.grant_id,
+    code,
+  };
 }
 
 async function postMcpJson(rsUrl, token, message) {
@@ -220,7 +229,9 @@ test('hosted MCP OAuth code flow issues a scoped client token usable at /mcp', a
   try {
     const manifest = await registerSpotify(asUrl);
     const client = await registerAuthCodeClient(asUrl);
-    const { accessToken, code } = await completeOauthCodeFlow({ asUrl, client, manifest });
+    const { accessToken, refreshToken, grantId, code } = await completeOauthCodeFlow({ asUrl, client, manifest });
+    assert.ok(refreshToken);
+    assert.equal(refreshToken.startsWith('rt_'), true);
 
     const reused = await fetchJson(`${asUrl}/oauth/token`, {
       method: 'POST',
@@ -235,6 +246,34 @@ test('hosted MCP OAuth code flow issues a scoped client token usable at /mcp', a
     });
     assert.equal(reused.status, 400);
     assert.equal(reused.body.error, 'invalid_grant');
+
+    const refreshed = await fetchJson(`${asUrl}/oauth/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'refresh_token',
+        refresh_token: refreshToken,
+        client_id: client.client_id,
+      }).toString(),
+    });
+    assert.equal(refreshed.status, 200);
+    assert.equal(refreshed.body.token_type, 'Bearer');
+    assert.equal(refreshed.body.refresh_token, refreshToken);
+    assert.equal(refreshed.body.grant_id, grantId);
+    assert.ok(refreshed.body.access_token);
+    assert.notEqual(refreshed.body.access_token, accessToken);
+
+    const wrongClient = await fetchJson(`${asUrl}/oauth/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'refresh_token',
+        refresh_token: refreshToken,
+        client_id: 'cli_wrong',
+      }).toString(),
+    });
+    assert.equal(wrongClient.status, 400);
+    assert.equal(wrongClient.body.error, 'invalid_grant');
 
     const initialize = await postMcpJson(rsUrl, accessToken, {
       jsonrpc: '2.0',
@@ -259,6 +298,14 @@ test('hosted MCP OAuth code flow issues a scoped client token usable at /mcp', a
     const toolNames = tools.body.result.tools.map((tool) => tool.name).sort();
     assert.deepEqual(toolNames, ['fetch', 'fetch_blob', 'list_streams', 'query_records', 'schema', 'search']);
 
+    const refreshedTools = await postMcpJson(rsUrl, refreshed.body.access_token, {
+      jsonrpc: '2.0',
+      id: 22,
+      method: 'tools/list',
+      params: {},
+    });
+    assert.equal(refreshedTools.status, 200);
+
     const schema = await postMcpJson(rsUrl, accessToken, {
       jsonrpc: '2.0',
       id: 3,
@@ -280,6 +327,19 @@ test('hosted MCP OAuth code flow issues a scoped client token usable at /mcp', a
       },
     });
     assert.equal(untrustedHost.status, 421);
+
+    await revokeGrant(grantId, { request_id: 'hosted-mcp-refresh-test' });
+    const afterRevoke = await fetchJson(`${asUrl}/oauth/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'refresh_token',
+        refresh_token: refreshToken,
+        client_id: client.client_id,
+      }).toString(),
+    });
+    assert.equal(afterRevoke.status, 400);
+    assert.equal(afterRevoke.body.error, 'invalid_grant');
   } finally {
     await closeServer(server);
   }
@@ -313,12 +373,28 @@ test('/mcp rejects missing and owner bearers', async () => {
   }
 });
 
-test('dynamic registration accepts only public authorization-code metadata', async () => {
+test('dynamic registration accepts only public authorization-code and refresh-token metadata', async () => {
   const server = await startOpenTestServer();
   const asUrl = `http://localhost:${server.asPort}`;
 
   try {
     await registerAuthCodeClient(asUrl);
+    const noRefresh = await registerAuthCodeClient(asUrl, { refreshToken: false });
+    assert.deepEqual(noRefresh.grant_types, ['authorization_code']);
+
+    const refreshWithoutCode = await fetchJson(`${asUrl}/oauth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        client_name: 'Refresh-only client',
+        redirect_uris: ['https://client.example/callback'],
+        grant_types: ['refresh_token'],
+        response_types: ['code'],
+        token_endpoint_auth_method: 'none',
+      }),
+    });
+    assert.equal(refreshWithoutCode.status, 400);
+    assert.match(refreshWithoutCode.body.error_description, /requires authorization_code/);
 
     const implicit = await fetchJson(`${asUrl}/oauth/register`, {
       method: 'POST',

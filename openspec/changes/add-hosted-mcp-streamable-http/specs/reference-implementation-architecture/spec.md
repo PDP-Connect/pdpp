@@ -4,7 +4,7 @@
 The reference authorization server SHALL support OAuth `authorization_code` with PKCE S256 for public hosted MCP clients. The flow SHALL bridge to existing PDPP pending-consent approval and SHALL issue the same kind of grant-scoped client bearer tokens already enforced by the resource server.
 
 #### Scenario: Public client registers for authorization code
-- **WHEN** dynamic client registration receives public-client metadata with `grant_types: ["authorization_code"]`, `response_types: ["code"]`, redirect URIs, and `token_endpoint_auth_method: "none"`
+- **WHEN** dynamic client registration receives public-client metadata with `grant_types: ["authorization_code", "refresh_token"]`, `response_types: ["code"]`, redirect URIs, and `token_endpoint_auth_method: "none"`
 - **THEN** the reference AS SHALL register the client if all metadata is valid
 
 #### Scenario: Client starts authorization
@@ -17,7 +17,15 @@ The reference authorization server SHALL support OAuth `authorization_code` with
 
 #### Scenario: Client exchanges code
 - **WHEN** the client posts `/oauth/token` with `grant_type=authorization_code`, the authorization code, matching client id, matching redirect URI, and a valid PKCE verifier
-- **THEN** the AS SHALL return the scoped client bearer token and mark the code consumed
+- **THEN** the AS SHALL return the scoped client bearer token, return an opaque grant-scoped refresh token when the registered client requested `refresh_token`, and mark the code consumed
+
+#### Scenario: Client refreshes hosted MCP access
+- **WHEN** the client posts `/oauth/token` with `grant_type=refresh_token`, the opaque refresh token, and the matching public client id
+- **THEN** the AS SHALL issue a new scoped client bearer for the same PDPP grant without widening source, stream, subject, purpose, retention, or storage-binding scope
+
+#### Scenario: Refresh token no longer matches an active grant
+- **WHEN** the client posts `/oauth/token` with an unknown refresh token, a mismatched client id, or a token tied to a revoked or invalid grant
+- **THEN** the AS SHALL reject the exchange and SHALL NOT issue a new bearer
 
 #### Scenario: Code is reused or verifier is wrong
 - **WHEN** a client reuses an authorization code or supplies the wrong PKCE verifier
@@ -28,14 +36,14 @@ The authorization server metadata SHALL truthfully advertise OAuth code-flow sup
 
 #### Scenario: Client discovers authorization server metadata
 - **WHEN** a client fetches `/.well-known/oauth-authorization-server`
-- **THEN** the response SHALL include `authorization_endpoint`, `authorization_code` in `grant_types_supported`, `code` in `response_types_supported`, and `S256` in `code_challenge_methods_supported`
+- **THEN** the response SHALL include `authorization_endpoint`, `authorization_code` and `refresh_token` in `grant_types_supported`, `code` in `response_types_supported`, and `S256` in `code_challenge_methods_supported`
 
 ### Requirement: Hosted MCP OAuth Does Not Leak Bearers
 The hosted MCP OAuth approval path SHALL NOT place access tokens in browser-rendered HTML, redirect URLs, logs intended for users, or consent exchange codes.
 
 #### Scenario: Approval redirects to client
 - **WHEN** owner approval completes for an authorization-code request
-- **THEN** the browser redirect SHALL include only the authorization code and optional state, and SHALL NOT include the access token or grant JSON
+- **THEN** the browser redirect SHALL include only the authorization code and optional state, and SHALL NOT include the access token, refresh token, or grant JSON
 
 #### Scenario: Token endpoint returns bearer
 - **WHEN** the registered client exchanges the authorization code successfully

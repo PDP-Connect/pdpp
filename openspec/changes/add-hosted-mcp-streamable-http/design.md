@@ -11,6 +11,7 @@ OpenAI's current MCP guidance says remote MCP servers can be connected in ChatGP
 - Support broad modern MCP clients: ChatGPT remote MCP, Claude/Codex local MCP, and generic MCP clients.
 - Keep MCP read-only and grant-scoped.
 - Add OAuth authorization-code + PKCE as a transport for obtaining existing PDPP client grants.
+- Add grant-scoped OAuth refresh tokens because current hosted MCP clients can require durable OAuth connections during dynamic client registration.
 - Avoid exposing owner tokens, reference control-plane routes, connector execution, schedules, or collection internals through MCP.
 
 ## Non-Goals
@@ -18,8 +19,8 @@ OpenAI's current MCP guidance says remote MCP servers can be connected in ChatGP
 - No write/modify MCP tools.
 - No connector execution or scheduler control through MCP.
 - No owner-token MCP mode.
+- No owner-wide multi-source MCP grant mode; this tranche remains one approved PDPP source per grant.
 - No MCP prompts, sampling, roots, subscriptions, elicitation, or long-lived server-initiated events.
-- No refresh-token/offline-access support in this tranche.
 - No publication-policy change for `@pdpp/mcp-server`.
 
 ## Decisions
@@ -46,6 +47,12 @@ Add `/oauth/authorize` and `authorization_code` token exchange for public client
 
 The bearer is never placed in a redirect URL or HTML response.
 
+### Refresh Tokens Stay Bound To The PDPP Grant
+
+Dynamic client registration accepts `refresh_token` only alongside `authorization_code`. When a registered public client requests it, successful authorization-code exchange returns a high-entropy opaque refresh token stored server-side only as a hash. Refresh exchange accepts the refresh token only at `/oauth/token`, requires the same public `client_id`, and issues a new client bearer for the same existing PDPP grant. It does not create a new grant, widen access, expose owner credentials, or bypass revocation; revoking the grant revokes its refresh tokens.
+
+This is essential compatibility, not owner/admin access. A future owner-wide or operator/admin MCP surface would need its own grant shape and UI because today's wildcard stream selection expands all streams for one approved source, not all owner connections.
+
 ### Metadata Is Truthful And Public-Origin Safe
 
 Authorization-server metadata advertises code+PKCE only when the route exists. Protected-resource metadata advertises `/mcp` as an adapter endpoint and keeps `pdpp_core_query_base` pointed at `/v1`.
@@ -64,15 +71,16 @@ Composed/proxied deployments must rebase metadata to the trusted forwarded publi
 
 - **Client capability variance:** Some clients need `search`/`fetch`, others can use richer PDPP tools. The solution exposes both without broadening data scope.
 - **Authorization complexity:** OAuth code flow adds storage and validation, but the complexity is essential for hosted MCP clients and remains tied to existing PDPP consent.
-- **No refresh tokens:** ChatGPT may require reauthorization after token expiry. This is acceptable for the first hosted MCP tranche because existing grant tokens are already bounded, and refresh-token semantics require a separate retention/revocation design.
+- **Refresh-token retention:** Refresh tokens add durable credential state. The implementation bounds that state to an existing PDPP grant, stores only token hashes, and revokes refresh tokens when the grant is revoked.
 - **Stateless transport limitations:** Stateless MCP does not support server-initiated notifications or resumability. The current surface is read-only request/response, so this is the simpler and safer default.
 
 ## Acceptance Checks
 
-- `/.well-known/oauth-authorization-server` advertises `authorization_endpoint`, `authorization_code`, `response_types_supported: ["code"]`, and `code_challenge_methods_supported: ["S256"]`.
+- `/.well-known/oauth-authorization-server` advertises `authorization_endpoint`, `authorization_code`, `refresh_token`, `response_types_supported: ["code"]`, and `code_challenge_methods_supported: ["S256"]`.
 - `/.well-known/oauth-protected-resource` advertises hosted MCP under a discovery hint while preserving `/v1` as the core query base.
 - `/mcp` rejects missing, invalid, and owner bearers; accepts scoped client bearers.
 - MCP `tools/list` includes PDPP-native read tools plus ChatGPT-compatible `search` and `fetch`.
-- OAuth dynamic registration accepts public authorization-code clients and still rejects unsupported confidential or unsafe metadata.
-- OAuth authorize/approve/token exchange returns a scoped client bearer only from `/oauth/token`, never in HTML or redirect URLs.
+- OAuth dynamic registration accepts public authorization-code clients that request refresh tokens and still rejects unsupported confidential or unsafe metadata.
+- OAuth authorize/approve/token exchange returns scoped client credentials only from `/oauth/token`, never in HTML or redirect URLs.
+- OAuth refresh-token exchange returns a new bearer for the same grant and rejects mismatched clients or revoked grants.
 - Existing stdio MCP tests still pass.

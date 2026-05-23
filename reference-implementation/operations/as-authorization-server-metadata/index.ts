@@ -84,6 +84,7 @@ export function executeAsAuthorizationServerMetadata(
     grantTypesSupported: [
       "urn:ietf:params:oauth:grant-type:device_code",
       "authorization_code",
+      "refresh_token",
     ],
     responseTypesSupported: ["code"],
     codeChallengeMethodsSupported: ["S256"],

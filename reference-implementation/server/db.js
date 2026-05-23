@@ -564,6 +564,23 @@ CREATE INDEX IF NOT EXISTS idx_oauth_authorization_codes_code
 CREATE INDEX IF NOT EXISTS idx_oauth_authorization_codes_client_status
   ON oauth_authorization_codes(client_id, status, expires_at);
 
+CREATE TABLE IF NOT EXISTS oauth_refresh_tokens (
+  refresh_token_hash   TEXT PRIMARY KEY,
+  client_id            TEXT NOT NULL,
+  grant_id             TEXT NOT NULL,
+  subject_id           TEXT NOT NULL,
+  status               TEXT NOT NULL DEFAULT 'active',
+  created_at           TEXT NOT NULL,
+  expires_at           TEXT,
+  last_used_at         TEXT,
+  revoked_at           TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_oauth_refresh_tokens_grant
+  ON oauth_refresh_tokens(grant_id, status);
+CREATE INDEX IF NOT EXISTS idx_oauth_refresh_tokens_client_status
+  ON oauth_refresh_tokens(client_id, status, expires_at);
+
 CREATE TABLE IF NOT EXISTS records (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   connector_id  TEXT NOT NULL,
