@@ -49,6 +49,7 @@
   "dependencies": {
     "@fastify/formbody": "^8.0.2",
     "@huggingface/transformers": "^4.2.0",
+    "@pdpp/mcp-server": "workspace:*",
     "@pdpp/reference-contract": "workspace:*",
     "@opendatalabs/remote-surface": "workspace:*",
     "better-sqlite3": "^12.9.0",

@@ -375,6 +375,9 @@ importers:
       '@opendatalabs/remote-surface':
         specifier: workspace:*
         version: link:../packages/remote-surface
+      '@pdpp/mcp-server':
+        specifier: workspace:*
+        version: link:../packages/mcp-server
       '@pdpp/reference-contract':
         specifier: workspace:*
         version: link:../packages/reference-contract

@@ -162,7 +162,7 @@ import {
   DEFAULT_LOCAL_DCR_INITIAL_ACCESS_TOKEN,
   DEFAULT_PRE_REGISTERED_PUBLIC_CLIENTS,
 } from './reference-local-defaults.ts';
-import { handleStreamableHttpRequest } from '../../packages/mcp-server/src/server.js';
+import { handleStreamableHttpRequest } from '@pdpp/mcp-server/server';
 import {
   resolveReferenceRevision,
   setReferenceRevisionHeader,
