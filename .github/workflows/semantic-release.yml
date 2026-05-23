@@ -166,6 +166,8 @@ jobs:
           cache-to: type=gha,mode=max,scope=${{ matrix.target }}-release
           context: .
           file: ./Dockerfile
+          build-args: |
+            PDPP_REFERENCE_REVISION=${{ github.sha }}
           labels: ${{ steps.meta.outputs.labels }}
           platforms: linux/amd64,linux/arm64
           push: false
@@ -284,6 +286,8 @@ jobs:
           cache-to: type=gha,mode=max,scope=${{ matrix.target }}-release
           context: .
           file: ./Dockerfile
+          build-args: |
+            PDPP_REFERENCE_REVISION=${{ github.sha }}
           labels: ${{ steps.meta.outputs.labels }}
           platforms: linux/amd64,linux/arm64
           provenance: mode=max
