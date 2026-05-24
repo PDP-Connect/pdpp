@@ -26,7 +26,7 @@ import {
 } from '../../lib/db.ts';
 import { closeDb, initDb } from '../../server/db.js';
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from '../../server/owner-auth.ts';
-import { makeLegacyConnectorInstanceId } from '../../server/stores/connector-instance-store.js';
+import { makeDefaultAccountConnectorInstanceId } from '../../server/stores/connector-instance-store.js';
 
 function buildFtsUserTextQuery(q) {
   const terms = String(q || '')
@@ -66,7 +66,7 @@ export function createSqliteLexicalRetrievalDriver() {
     },
 
     async upsert({ connectorId, stream, recordKey, fields }) {
-      const connectorInstanceId = makeLegacyConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId);
+      const connectorInstanceId = makeDefaultAccountConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId);
       exec(referenceQueries.searchIndexDeleteByRecordKey, [
         connectorInstanceId,
         stream,
@@ -86,7 +86,7 @@ export function createSqliteLexicalRetrievalDriver() {
     },
 
     async deleteRecord({ connectorId, stream, recordKey }) {
-      const connectorInstanceId = makeLegacyConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId);
+      const connectorInstanceId = makeDefaultAccountConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId);
       exec(referenceQueries.searchIndexDeleteByRecordKey, [
         connectorInstanceId,
         stream,
@@ -95,12 +95,12 @@ export function createSqliteLexicalRetrievalDriver() {
     },
 
     async deleteStream({ connectorId, stream }) {
-      const connectorInstanceId = makeLegacyConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId);
+      const connectorInstanceId = makeDefaultAccountConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId);
       exec(referenceQueries.searchIndexDeleteByStream, [connectorInstanceId, stream]);
     },
 
     async search({ connectorId, stream, searchableFields, q }) {
-      const connectorInstanceId = makeLegacyConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId);
+      const connectorInstanceId = makeDefaultAccountConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId);
       const ftsQuery = buildFtsUserTextQuery(q);
       // Per-(stream, field) match against the FTS5 table. Same shape as
       // production `runFtsQueryForConnector` minus the records join — the

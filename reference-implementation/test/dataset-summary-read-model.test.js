@@ -9,6 +9,7 @@ import {
   applyDatasetSummaryBlobDelta,
   applyDatasetSummaryRecordDelta,
   getDatasetSummaryProjection,
+  listStreamProjections,
   markDatasetSummaryProjectionStale,
   reconcileDirtyDatasetSummaryRecordTimeBounds,
   rebuildDatasetSummaryProjection,
@@ -983,3 +984,154 @@ function recordChangeJsonBytes() {
       .get().bytes || 0,
   );
 }
+
+function seedStreamProjectionRow({
+  connectorId,
+  stream,
+  recordCount = 1,
+  recordJsonBytes = 64,
+  earliestIngestedAt = '2026-01-01T00:00:00.000Z',
+  latestIngestedAt = '2026-05-01T00:00:00.000Z',
+  earliestRecordTime = null,
+  latestRecordTime = null,
+  consentTimeField = null,
+  dirty = 0,
+  computedAt = '2026-05-19T12:00:00.000Z',
+}) {
+  getDb()
+    .prepare(
+      `INSERT INTO dataset_summary_stream_projection(
+         connector_id,
+         stream,
+         record_count,
+         record_json_bytes,
+         earliest_ingested_at,
+         latest_ingested_at,
+         earliest_record_time,
+         latest_record_time,
+         consent_time_field,
+         dirty_record_time_bounds,
+         computed_at
+       )
+       VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      connectorId,
+      stream,
+      recordCount,
+      recordJsonBytes,
+      earliestIngestedAt,
+      latestIngestedAt,
+      earliestRecordTime,
+      latestRecordTime,
+      consentTimeField,
+      dirty,
+      computedAt,
+    );
+}
+
+test('listStreamProjections returns every projection row sorted by (connector_id, stream)', () =>
+  withTempDb(() => {
+    seedStreamProjectionRow({ connectorId: 'gmail', stream: 'threads' });
+    seedStreamProjectionRow({ connectorId: 'gmail', stream: 'messages' });
+    seedStreamProjectionRow({ connectorId: 'calendar', stream: 'events' });
+
+    const rows = listStreamProjections();
+
+    assert.equal(rows.length, 3);
+    assert.deepEqual(
+      rows.map((r) => [r.connector_id, r.stream]),
+      [
+        ['calendar', 'events'],
+        ['gmail', 'messages'],
+        ['gmail', 'threads'],
+      ],
+    );
+    assert.equal(rows[0].record_count, 1);
+    assert.equal(rows[0].record_json_bytes, 64);
+    assert.equal(rows[0].computed_at, '2026-05-19T12:00:00.000Z');
+  }));
+
+test('listStreamProjections filters to the supplied connector_id', () =>
+  withTempDb(() => {
+    seedStreamProjectionRow({ connectorId: 'gmail', stream: 'threads' });
+    seedStreamProjectionRow({ connectorId: 'gmail', stream: 'messages' });
+    seedStreamProjectionRow({ connectorId: 'calendar', stream: 'events' });
+
+    const rows = listStreamProjections({ connectorId: 'gmail' });
+
+    assert.equal(rows.length, 2);
+    assert.deepEqual(
+      rows.map((r) => r.stream),
+      ['messages', 'threads'],
+    );
+    assert.equal(
+      rows.every((r) => r.connector_id === 'gmail'),
+      true,
+    );
+  }));
+
+test('listStreamProjections passes NULL record-time bounds through honestly', () =>
+  withTempDb(() => {
+    seedStreamProjectionRow({
+      connectorId: 'gmail',
+      stream: 'no_consent_time_field',
+      earliestRecordTime: null,
+      latestRecordTime: null,
+      consentTimeField: null,
+      dirty: 0,
+    });
+    seedStreamProjectionRow({
+      connectorId: 'gmail',
+      stream: 'reconciled',
+      earliestRecordTime: '2025-12-01T00:00:00.000Z',
+      latestRecordTime: '2026-04-30T00:00:00.000Z',
+      consentTimeField: 'created_at',
+      dirty: 0,
+    });
+
+    const rows = listStreamProjections({ connectorId: 'gmail' });
+
+    const noField = rows.find((r) => r.stream === 'no_consent_time_field');
+    const reconciled = rows.find((r) => r.stream === 'reconciled');
+
+    assert.equal(noField.earliest_record_time, null);
+    assert.equal(noField.latest_record_time, null);
+    assert.equal(noField.consent_time_field, null);
+
+    assert.equal(reconciled.earliest_record_time, '2025-12-01T00:00:00.000Z');
+    assert.equal(reconciled.latest_record_time, '2026-04-30T00:00:00.000Z');
+    assert.equal(reconciled.consent_time_field, 'created_at');
+  }));
+
+test('listStreamProjections exposes dirty_record_time_bounds as a boolean', () =>
+  withTempDb(() => {
+    seedStreamProjectionRow({
+      connectorId: 'gmail',
+      stream: 'fresh',
+      consentTimeField: 'created_at',
+      dirty: 0,
+    });
+    seedStreamProjectionRow({
+      connectorId: 'gmail',
+      stream: 'dirty',
+      consentTimeField: 'created_at',
+      dirty: 1,
+    });
+
+    const rows = listStreamProjections({ connectorId: 'gmail' });
+
+    const fresh = rows.find((r) => r.stream === 'fresh');
+    const dirty = rows.find((r) => r.stream === 'dirty');
+
+    assert.equal(fresh.dirty_record_time_bounds, false);
+    assert.equal(dirty.dirty_record_time_bounds, true);
+    assert.equal(typeof fresh.dirty_record_time_bounds, 'boolean');
+    assert.equal(typeof dirty.dirty_record_time_bounds, 'boolean');
+  }));
+
+test('listStreamProjections returns an empty array when no projection rows exist', () =>
+  withTempDb(() => {
+    assert.deepEqual(listStreamProjections(), []);
+    assert.deepEqual(listStreamProjections({ connectorId: 'gmail' }), []);
+  }));

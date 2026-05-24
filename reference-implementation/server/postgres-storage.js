@@ -217,7 +217,7 @@ export async function bootstrapPostgresSchema() {
         connector_id TEXT NOT NULL REFERENCES connectors(connector_id) ON DELETE RESTRICT,
         display_name TEXT NOT NULL,
         status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'paused', 'revoked')),
-        source_kind TEXT NOT NULL CHECK (source_kind IN ('account', 'local_device', 'manual', 'legacy')),
+        source_kind TEXT NOT NULL CHECK (source_kind IN ('account', 'local_device', 'manual')),
         source_binding_key TEXT NOT NULL,
         source_binding_json JSONB NOT NULL DEFAULT '{}'::jsonb,
         created_at TEXT NOT NULL,
@@ -985,6 +985,7 @@ export async function bootstrapPostgresSchema() {
     await migratePostgresSchedulerInstanceColumns(client);
     await migratePostgresRecordsBlobSearchInstanceColumns(client);
     await migratePostgresLocalDeviceConnectorInstances(client);
+    await migratePostgresLegacyConnectorInstancesToDefaultAccount(client);
   } finally {
     client.release();
   }
@@ -1003,12 +1004,12 @@ async function hasPostgresColumn(client, table, column) {
   return result.rowCount > 0;
 }
 
-function makeLegacyConnectorInstanceId(ownerSubjectId, connectorId) {
-  const hash = hashKey(`${ownerSubjectId}\n${connectorId}`);
-  return `cin_legacy_${hash.slice(0, 24)}`;
+function makeDefaultAccountConnectorInstanceId(ownerSubjectId, connectorId) {
+  const hash = hashKey(`${ownerSubjectId}\n${connectorId}\naccount\ndefault`);
+  return `cin_${hash.slice(0, 24)}`;
 }
 
-async function legacySyncStateConnectorInstanceId(client, connectorId) {
+async function defaultConnectorInstanceIdForBackfill(client, connectorId) {
   const result = await client.query(
     `SELECT connector_instance_id
        FROM connector_instances
@@ -1019,7 +1020,7 @@ async function legacySyncStateConnectorInstanceId(client, connectorId) {
   if (result.rows.length === 1) {
     return result.rows[0].connector_instance_id;
   }
-  return makeLegacyConnectorInstanceId(LEGACY_SYNC_STATE_OWNER_SUBJECT_ID, connectorId);
+  return makeDefaultAccountConnectorInstanceId(LEGACY_SYNC_STATE_OWNER_SUBJECT_ID, connectorId);
 }
 
 async function migratePostgresConnectorSyncStateInstanceColumns(client) {
@@ -1048,7 +1049,7 @@ async function migratePostgresConnectorSyncStateInstanceColumns(client) {
     const instanceIds = new Map();
     const resolveInstanceId = async (connectorId) => {
       if (!instanceIds.has(connectorId)) {
-        instanceIds.set(connectorId, await legacySyncStateConnectorInstanceId(client, connectorId));
+        instanceIds.set(connectorId, await defaultConnectorInstanceIdForBackfill(client, connectorId));
       }
       return instanceIds.get(connectorId);
     };
@@ -1100,7 +1101,7 @@ async function migratePostgresConnectorDetailGapInstanceColumns(client) {
     const instanceIds = new Map();
     const resolveInstanceId = async (connectorId) => {
       if (!instanceIds.has(connectorId)) {
-        instanceIds.set(connectorId, await legacySyncStateConnectorInstanceId(client, connectorId));
+        instanceIds.set(connectorId, await defaultConnectorInstanceIdForBackfill(client, connectorId));
       }
       return instanceIds.get(connectorId);
     };
@@ -1139,7 +1140,7 @@ async function migratePostgresSchedulerInstanceColumns(client) {
     const instanceIds = new Map();
     const resolveInstanceId = async (connectorId) => {
       if (!instanceIds.has(connectorId)) {
-        instanceIds.set(connectorId, await legacySyncStateConnectorInstanceId(client, connectorId));
+        instanceIds.set(connectorId, await defaultConnectorInstanceIdForBackfill(client, connectorId));
       }
       return instanceIds.get(connectorId);
     };
@@ -1235,7 +1236,7 @@ async function migratePostgresRecordsBlobSearchInstanceColumns(client) {
     const instanceIds = new Map();
     const resolveInstanceId = async (connectorId) => {
       if (!instanceIds.has(connectorId)) {
-        instanceIds.set(connectorId, await legacySyncStateConnectorInstanceId(client, connectorId));
+        instanceIds.set(connectorId, await defaultConnectorInstanceIdForBackfill(client, connectorId));
       }
       return instanceIds.get(connectorId);
     };
@@ -1529,6 +1530,230 @@ async function migratePostgresLocalDeviceConnectorInstances(client) {
     try {
       await client.query('ROLLBACK');
     } catch {}
+    throw err;
+  }
+}
+
+const PG_LEGACY_REWRITE_INSTANCE_REFERENCE_TABLES = [
+  'connector_state',
+  'grant_connector_state',
+  'records',
+  'record_changes',
+  'version_counter',
+  'blobs',
+  'blob_bindings',
+  'lexical_search_index',
+  'lexical_search_meta',
+  'semantic_search_rowid',
+  'semantic_search_blob',
+  'semantic_search_meta',
+  'semantic_search_backfill_progress',
+  'connector_detail_gaps',
+  'connector_attention_records',
+  'connector_schedules',
+  'controller_active_runs',
+  'scheduler_run_history',
+  'scheduler_last_run_times',
+  'device_source_instances',
+];
+
+function pgUniqueColumnsForLegacyRewrite(table) {
+  switch (table) {
+    case 'connector_state':
+      return ['stream'];
+    case 'grant_connector_state':
+      return ['grant_id', 'stream'];
+    case 'records':
+      return ['stream', 'record_key'];
+    case 'record_changes':
+      return ['stream', 'version'];
+    case 'version_counter':
+      return ['stream'];
+    case 'blob_bindings':
+      return ['blob_id', 'stream', 'record_key', 'json_path'];
+    case 'lexical_search_index':
+      return ['stream', 'record_key', 'field'];
+    case 'lexical_search_meta':
+      return ['stream'];
+    case 'connector_detail_gaps':
+      return ['grant_id', 'stream', 'parent_stream', 'record_key', 'detail_locator_json'];
+    case 'semantic_search_meta':
+      return ['stream'];
+    case 'semantic_search_backfill_progress':
+      return ['stream'];
+    case 'semantic_search_rowid':
+      return ['scope_key', 'record_key'];
+    case 'semantic_search_blob':
+      return ['scope_key', 'record_key'];
+    case 'connector_schedules':
+      return [];
+    case 'controller_active_runs':
+      return [];
+    case 'scheduler_last_run_times':
+      return [];
+    default:
+      return null;
+  }
+}
+
+function pgIdentifier(identifier) {
+  return `"${String(identifier).replaceAll('"', '""')}"`;
+}
+
+async function migratePostgresLegacyConnectorInstancesToDefaultAccount(client) {
+  await client.query('BEGIN');
+  try {
+    // Relax/replace the source_kind CHECK constraint inside the same
+    // transaction as the rewrite. A failed rewrite must not leave schema
+    // DDL advanced while data remains unmigrated.
+    const checkInfo = await client.query(
+      `SELECT conname
+         FROM pg_constraint
+        WHERE conrelid = 'connector_instances'::regclass
+          AND contype = 'c'
+          AND pg_get_constraintdef(oid) ILIKE '%source_kind%'`,
+    );
+    for (const row of checkInfo.rows) {
+      await client.query(`ALTER TABLE connector_instances DROP CONSTRAINT IF EXISTS ${pgIdentifier(row.conname)}`);
+    }
+    await client.query(
+      `ALTER TABLE connector_instances
+         ADD CONSTRAINT connector_instances_source_kind_check
+         CHECK (source_kind IN ('account', 'local_device', 'manual'))
+         NOT VALID`,
+    );
+
+    const legacyRows = await client.query(
+      `SELECT connector_instance_id, owner_subject_id, connector_id, display_name, status, created_at, updated_at, revoked_at
+         FROM connector_instances
+        WHERE source_kind = 'legacy'
+        ORDER BY connector_instance_id`,
+    );
+
+    // Determine which referencing tables actually have a connector_instance_id column.
+    const existingTables = [];
+    for (const table of PG_LEGACY_REWRITE_INSTANCE_REFERENCE_TABLES) {
+      if (await hasPostgresColumn(client, table, 'connector_instance_id')) {
+        existingTables.push(table);
+      }
+    }
+
+    for (const legacy of legacyRows.rows) {
+      const oldId = legacy.connector_instance_id;
+      const newId = makeDefaultAccountConnectorInstanceId(legacy.owner_subject_id, legacy.connector_id);
+      const now = new Date().toISOString();
+      const dest = await client.query(
+        `SELECT connector_instance_id
+           FROM connector_instances
+          WHERE owner_subject_id = $1
+            AND connector_id = $2
+            AND source_kind = 'account'
+            AND source_binding_key = 'default'
+          LIMIT 1`,
+        [legacy.owner_subject_id, legacy.connector_id],
+      );
+
+      if (dest.rows.length === 0) {
+        if (oldId === newId) {
+          await client.query(
+            `UPDATE connector_instances
+                SET source_kind = 'account',
+                    source_binding_key = 'default',
+                    source_binding_json = $1::jsonb,
+                    updated_at = $2
+              WHERE connector_instance_id = $3`,
+            ['{"kind":"default_account"}', now, oldId],
+          );
+          continue;
+        }
+        const conflict = await client.query(
+          `SELECT 1 FROM connector_instances WHERE connector_instance_id = $1 LIMIT 1`,
+          [newId],
+        );
+        if (conflict.rowCount > 0) {
+          throw new Error(
+            `Cannot migrate legacy connector_instance ${oldId} → ${newId}: destination id already exists for a non-default-account row.`,
+          );
+        }
+        await client.query(
+          `UPDATE connector_instances
+              SET connector_instance_id = $1,
+                  source_kind = 'account',
+                  source_binding_key = 'default',
+                  source_binding_json = $2::jsonb,
+                  updated_at = $3
+            WHERE connector_instance_id = $4`,
+          [newId, '{"kind":"default_account"}', now, oldId],
+        );
+        for (const table of existingTables) {
+          await client.query(
+            `UPDATE ${table} SET connector_instance_id = $1 WHERE connector_instance_id = $2`,
+            [newId, oldId],
+          );
+        }
+        continue;
+      }
+
+      const destId = dest.rows[0].connector_instance_id;
+      for (const table of existingTables) {
+        const uniqueCols = pgUniqueColumnsForLegacyRewrite(table);
+        if (uniqueCols === null) {
+          await client.query(
+            `UPDATE ${table} SET connector_instance_id = $1 WHERE connector_instance_id = $2`,
+            [destId, oldId],
+          );
+          continue;
+        }
+        if (uniqueCols.length === 0) {
+          const both = await client.query(
+            `SELECT
+               EXISTS(SELECT 1 FROM ${table} WHERE connector_instance_id = $1) AS legacy_present,
+               EXISTS(SELECT 1 FROM ${table} WHERE connector_instance_id = $2) AS dest_present`,
+            [oldId, destId],
+          );
+          if (both.rows[0].legacy_present && both.rows[0].dest_present) {
+            throw new Error(
+              `Cannot migrate legacy connector_instance ${oldId} → ${destId}: both ids hold a row in ${table} keyed solely on connector_instance_id; manual reconciliation required.`,
+            );
+          }
+          if (both.rows[0].legacy_present) {
+            await client.query(
+              `UPDATE ${table} SET connector_instance_id = $1 WHERE connector_instance_id = $2`,
+              [destId, oldId],
+            );
+          }
+          continue;
+        }
+        const keys = await client.query(
+          `SELECT ${uniqueCols.join(', ')} FROM ${table} WHERE connector_instance_id = $1`,
+          [oldId],
+        );
+        for (const k of keys.rows) {
+          const params = [destId, ...uniqueCols.map((c) => k[c])];
+          const whereClause = uniqueCols.map((c, i) => `${c} IS NOT DISTINCT FROM $${i + 2}`).join(' AND ');
+          const conflict = await client.query(
+            `SELECT 1 FROM ${table}
+              WHERE connector_instance_id = $1 AND ${whereClause}
+              LIMIT 1`,
+            params,
+          );
+          if (conflict.rowCount > 0) {
+            throw new Error(
+              `Cannot migrate legacy connector_instance ${oldId} → ${destId}: ${table} has a colliding row on (${uniqueCols.join(', ')}) = (${uniqueCols.map((c) => k[c]).join(', ')}); manual reconciliation required.`,
+            );
+          }
+        }
+        await client.query(
+          `UPDATE ${table} SET connector_instance_id = $1 WHERE connector_instance_id = $2`,
+          [destId, oldId],
+        );
+      }
+      await client.query(`DELETE FROM connector_instances WHERE connector_instance_id = $1`, [oldId]);
+    }
+    await client.query(`ALTER TABLE connector_instances VALIDATE CONSTRAINT connector_instances_source_kind_check`);
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
     throw err;
   }
 }

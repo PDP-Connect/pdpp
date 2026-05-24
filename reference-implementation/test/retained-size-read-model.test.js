@@ -231,3 +231,187 @@ test('retained-size record-family grain reads authored projection rows', () =>
     assert.equal(row.record_history_count, 3);
     assert.equal(row.blob_count, 4);
   }));
+
+// Regression tests for the `connector_id` filter on listRetainedSizeStreams.
+//
+// `/_ref/dataset/summary/streams` accepts an optional `?connector_id=...`
+// query parameter and forwards it as `{ connectorId }` to this helper.
+// An earlier draft of that route incorrectly forwarded the value as
+// `{ connectorInstanceId }`, which produced empty or wrong-connector
+// results whenever the connector had more than one instance. These
+// tests pin the helper's `connector_id` semantics so a future drive-by
+// edit (or a future Postgres-only refactor) cannot silently regress.
+test('listRetainedSizeStreams: connectorId filter narrows by connector_id, not by connector_instance_id', () =>
+  withTempDb(async () => {
+    const alpha = {
+      connector_id: 'alpha.connector',
+      connector_instance_id: 'cin_alpha_a',
+    };
+    const beta = {
+      connector_id: 'beta.connector',
+      connector_instance_id: 'cin_beta_b',
+    };
+    await ingestRecord(alpha, {
+      stream: 'messages',
+      key: 'a-msg',
+      emitted_at: '2026-01-01T00:00:00.000Z',
+      data: { id: 'a-msg' },
+    });
+    await ingestRecord(beta, {
+      stream: 'messages',
+      key: 'b-msg',
+      emitted_at: '2026-01-01T00:00:00.000Z',
+      data: { id: 'b-msg' },
+    });
+    await rebuildRetainedSize();
+
+    // Both helpers respect the new connectorId filter — neither test
+    // pre-supposes Postgres backend selection.
+    const alphaRows = await listRetainedSizeStreams({ connectorId: alpha.connector_id });
+    assert.equal(alphaRows.length, 1, 'connectorId filter should narrow to exactly one connector');
+    assert.equal(alphaRows[0].connector_id, alpha.connector_id);
+    assert.equal(alphaRows[0].connector_instance_id, alpha.connector_instance_id);
+    assert.equal(alphaRows[0].stream, 'messages');
+
+    const betaRows = await listRetainedSizeStreams({ connectorId: beta.connector_id });
+    assert.equal(betaRows.length, 1);
+    assert.equal(betaRows[0].connector_id, beta.connector_id);
+
+    // Bug-catch: passing alpha's `connector_id` value through the
+    // `connectorInstanceId` slot must NOT silently match alpha. The two
+    // connectors here have *different* connector_instance_ids than
+    // connector_ids, so a route that confuses the slots would either
+    // return zero rows or match the wrong connector.
+    const wrongSlot = await listRetainedSizeStreams({
+      connectorInstanceId: alpha.connector_id,
+    });
+    assert.deepEqual(
+      wrongSlot,
+      [],
+      'connectorInstanceId filter must NOT match a connector_id value',
+    );
+  }));
+
+test('listRetainedSizeStreams: connectorId and stream filters compose', () =>
+  withTempDb(async () => {
+    const alpha = {
+      connector_id: 'alpha.connector',
+      connector_instance_id: 'cin_alpha_a',
+    };
+    const beta = {
+      connector_id: 'beta.connector',
+      connector_instance_id: 'cin_beta_b',
+    };
+    for (const account of [alpha, beta]) {
+      const msgKey = `${account.connector_id}-msg`;
+      const fileKey = `${account.connector_id}-file`;
+      await ingestRecord(account, {
+        stream: 'messages',
+        key: msgKey,
+        emitted_at: '2026-01-01T00:00:00.000Z',
+        data: { id: msgKey },
+      });
+      await ingestRecord(account, {
+        stream: 'files',
+        key: fileKey,
+        emitted_at: '2026-01-02T00:00:00.000Z',
+        data: { id: fileKey },
+      });
+    }
+    await rebuildRetainedSize();
+
+    const alphaMessages = await listRetainedSizeStreams({
+      connectorId: alpha.connector_id,
+      stream: 'messages',
+    });
+    assert.equal(alphaMessages.length, 1);
+    assert.equal(alphaMessages[0].connector_id, alpha.connector_id);
+    assert.equal(alphaMessages[0].stream, 'messages');
+  }));
+
+// Route-shape regression: this proves the public `connector_id` query
+// parameter flows through `executeRefDatasetSummaryStreams` and the
+// SQLite-host `listStreams` capability as a `connector_id` filter, not
+// as a `connector_instance_id` filter. The host adapter in
+// `server/index.js` calls `listRetainedSizeStreams({ connectorId })`
+// (Postgres) or `listStreamProjections({ connectorId })` (SQLite); both
+// helpers reach the same canonical `connector_id` column. If a future
+// edit re-routes that to the `connectorInstanceId` slot, this test will
+// fail at the boundary the route uses.
+test('ref.dataset.summary.streams: connector_id query forwards as connectorId filter, not connectorInstanceId', async () => {
+  const { executeRefDatasetSummaryStreams } = await import(
+    '../operations/ref-dataset-summary-streams/index.ts'
+  );
+
+  const seenInputs = [];
+  const allRows = [
+    {
+      connector_id: 'gmail',
+      stream: 'messages',
+      record_count: 3,
+      record_json_bytes: 120,
+      earliest_ingested_at: null,
+      latest_ingested_at: null,
+      earliest_record_time: null,
+      latest_record_time: null,
+      consent_time_field: null,
+      dirty_record_time_bounds: false,
+      computed_at: '2026-05-19T12:00:00.000Z',
+    },
+    {
+      connector_id: 'claude_code',
+      stream: 'sessions',
+      record_count: 2,
+      record_json_bytes: 90,
+      earliest_ingested_at: null,
+      latest_ingested_at: null,
+      earliest_record_time: null,
+      latest_record_time: null,
+      consent_time_field: null,
+      dirty_record_time_bounds: false,
+      computed_at: '2026-05-19T12:00:00.000Z',
+    },
+  ];
+
+  const envelope = await executeRefDatasetSummaryStreams(
+    { connector_id: 'gmail' },
+    {
+      listStreams: (input) => {
+        seenInputs.push(input);
+        // Simulate the host's `listRetainedSizeStreams({ connectorId })`
+        // / `listStreamProjections({ connectorId })` semantics: filter
+        // the projection by connector_id when present, otherwise return
+        // every row.
+        return typeof input?.connectorId === 'string' && input.connectorId.length > 0
+          ? allRows.filter((row) => row.connector_id === input.connectorId)
+          : allRows.slice();
+      },
+      getProjectionMetadata: () => ({
+        computed_at: '2026-05-19T12:00:00.000Z',
+        state: 'fresh',
+        stale_since: null,
+        rebuild_status: 'idle',
+        last_error: null,
+      }),
+    },
+  );
+
+  assert.equal(seenInputs.length, 1);
+  assert.equal(
+    seenInputs[0].connectorId,
+    'gmail',
+    'route MUST forward connector_id query as connectorId, not as connectorInstanceId',
+  );
+  // The host capability accepts `connectorId` — if a future edit
+  // renames the dependency slot to `connectorInstanceId`, the host
+  // adapter MUST be updated in lockstep. This assertion documents the
+  // current dependency shape.
+  assert.equal(
+    'connectorInstanceId' in seenInputs[0],
+    false,
+    'operation must NOT pass connectorInstanceId; the dependency contract is { connectorId }',
+  );
+  assert.equal(envelope.filters.connector_id, 'gmail');
+  assert.equal(envelope.streams.length, 1);
+  assert.equal(envelope.streams[0].connector_id, 'gmail');
+});

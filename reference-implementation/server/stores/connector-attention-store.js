@@ -16,7 +16,7 @@
 import { iterateDynamicSqlAcknowledged, execDynamicSqlAcknowledged } from '../../lib/db.ts';
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from '../owner-auth.ts';
 import { getStorageBackendKind, isPostgresStorageBackend, postgresQuery } from '../postgres-storage.js';
-import { makeLegacyConnectorInstanceId } from './connector-instance-store.js';
+import { makeDefaultAccountConnectorInstanceId } from './connector-instance-store.js';
 
 const OPEN_LIFECYCLES = ['open', 'acknowledged', 'in_progress'];
 const VALID_LIFECYCLES = new Set([
@@ -47,7 +47,7 @@ function nonEmptyString(value) {
 }
 
 function defaultConnectorInstanceId(connectorId) {
-  return makeLegacyConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId);
+  return makeDefaultAccountConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId);
 }
 
 function nowIso() {

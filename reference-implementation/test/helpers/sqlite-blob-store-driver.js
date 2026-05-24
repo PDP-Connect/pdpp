@@ -24,7 +24,7 @@ import {
   transaction,
 } from '../../lib/db.ts';
 import { closeDb, initDb } from '../../server/db.js';
-import { makeLegacyConnectorInstanceId } from '../../server/stores/connector-instance-store.js';
+import { makeDefaultAccountConnectorInstanceId } from '../../server/stores/connector-instance-store.js';
 
 function getOneRow(sql, params) {
   for (const row of iterateDynamicSqlAcknowledged(sql, params)) {
@@ -86,7 +86,7 @@ export function createSqliteBlobStoreDriver() {
         exec(referenceQueries.blobsInsertBlob, [
           blobId,
           connectorId,
-          makeLegacyConnectorInstanceId('owner_local', connectorId),
+          makeDefaultAccountConnectorInstanceId('owner_local', connectorId),
           stream,
           recordKey,
           mimeType,
@@ -140,7 +140,7 @@ export function createSqliteBlobStoreDriver() {
       exec(referenceQueries.blobsInsertBinding, [
         blobId,
         connectorId,
-        makeLegacyConnectorInstanceId('owner_local', connectorId),
+        makeDefaultAccountConnectorInstanceId('owner_local', connectorId),
         stream,
         recordKey,
       ]);
@@ -155,7 +155,7 @@ export function createSqliteBlobStoreDriver() {
          FROM blob_bindings
          WHERE connector_instance_id = ? AND stream = ? AND record_key = ?
          LIMIT 1000`,
-        [makeLegacyConnectorInstanceId('owner_local', connectorId), stream, recordKey],
+        [makeDefaultAccountConnectorInstanceId('owner_local', connectorId), stream, recordKey],
       );
       return rows.map((row) => ({
         blobId: row.blob_id,

@@ -209,13 +209,17 @@ function shapeConnectionRow(row) {
   };
 }
 
-export async function listRetainedSizeStreams({ connectorInstanceId, stream } = {}) {
+export async function listRetainedSizeStreams({ connectorInstanceId, connectorId, stream } = {}) {
   if (isPostgresStorageBackend()) {
     const params = [];
     const clauses = [];
     if (connectorInstanceId) {
       params.push(connectorInstanceId);
       clauses.push(`connector_instance_id = $${params.length}`);
+    }
+    if (connectorId) {
+      params.push(connectorId);
+      clauses.push(`connector_id = $${params.length}`);
     }
     if (stream) {
       params.push(stream);
@@ -245,6 +249,10 @@ export async function listRetainedSizeStreams({ connectorInstanceId, stream } = 
   if (connectorInstanceId) {
     where.push('connector_instance_id = ?');
     params.push(connectorInstanceId);
+  }
+  if (connectorId) {
+    where.push('connector_id = ?');
+    params.push(connectorId);
   }
   if (stream) {
     where.push('stream = ?');
