@@ -91,7 +91,7 @@ function RuntimeCapabilitiesSection({ capabilities }: { capabilities: Deployment
       : "—";
   const observedProtocolLabel = (() => {
     if (!pairing) return "—";
-    if (pairing.protocol_version === "legacy_unknown") return "legacy (pre-header)";
+    if (pairing.protocol_version === "legacy_unknown") return "unknown (pre-header)";
     return pairing.protocol_version ?? "—";
   })();
   const connectorVersions = pairing ? Object.entries(pairing.connector_versions) : [];

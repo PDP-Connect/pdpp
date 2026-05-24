@@ -17,9 +17,33 @@ const SUPPORTED_QUERY_KEYS = new Set([
   'expand',
   'expand_limit',
   'changes_since',
+  // Optional public connection identity. Forwarded verbatim to the RS so
+  // the resource server enforces grant scope; the MCP layer never invents
+  // or rewrites a connection_id. See:
+  //   openspec/changes/expose-connection-identity-on-public-read
+  'connection_id',
+  // Deprecated wire alias for `connection_id`. Forwarded unchanged so a
+  // pre-migration client can still address a specific connection while
+  // downstream consumers adopt the canonical field.
+  'connector_instance_id',
 ]);
 
+const CONNECTION_ID_DESCRIPTION =
+  'Optional connection_id from a prior list_streams response. Omit to fan in across every connection your grant authorizes for the named stream; pass it to scope the call to one account/device/profile. Required to recover from a typed `ambiguous_connection` (409) error returned by `fetch` or `fetch_blob` — the error envelope lists the candidate `available_connections` and instructs you to retry with `connection_id`.';
+
+const CONNECTOR_INSTANCE_ID_DESCRIPTION =
+  'Deprecated wire alias for `connection_id`. Forwarded for pre-migration clients; prefer `connection_id`.';
+
 const EMPTY_TOOL_INPUT_SCHEMA = z.object({}).strict();
+
+const ConnectionIdInputShape = {
+  connection_id: z.string().min(1).describe(CONNECTION_ID_DESCRIPTION).optional(),
+  connector_instance_id: z
+    .string()
+    .min(1)
+    .describe(CONNECTOR_INSTANCE_ID_DESCRIPTION)
+    .optional(),
+};
 
 /**
  * Build the static tool definitions. Descriptions are constant — they are never derived
@@ -44,11 +68,16 @@ export function buildTools({ rs, providerUrl }) {
       name: 'list_streams',
       title: 'List PDPP streams',
       description:
-        'List streams the configured scoped grant can read. Calls GET /v1/streams. Read-only.',
+        'List streams the configured scoped grant can read. Calls GET /v1/streams. ' +
+        'Multi-connection deployments return one entry per (stream, connection_id); ' +
+        'each entry carries `connection_id` and an owner-meaningful `display_name`. ' +
+        'Pass an optional `connection_id` to restrict the listing to a single ' +
+        'connection. Read-only.',
       annotations: READ_ONLY_ANNOTATIONS,
-      inputSchema: EMPTY_TOOL_INPUT_SCHEMA,
-      handler: async () => {
-        const response = await rs.getJson('/v1/streams');
+      inputSchema: z.object(ConnectionIdInputShape).strict(),
+      handler: async (args) => {
+        const query = pickQuery(args, SUPPORTED_QUERY_KEYS);
+        const response = await rs.getJson('/v1/streams', { query });
         return toToolResult(response, providerUrl);
       },
     },
@@ -58,7 +87,10 @@ export function buildTools({ rs, providerUrl }) {
       description:
         'Query records in a stream by forwarding supported query parameters to ' +
         'GET /v1/streams/{stream}/records. Supported params: limit, cursor, order, ' +
-        'filter, fields, view, expand, expand_limit, changes_since. Read-only.',
+        'filter, fields, view, expand, expand_limit, changes_since, connection_id ' +
+        '(plus the deprecated connector_instance_id alias). Omitting connection_id ' +
+        'on a multi-connection grant fans in across granted connections; each ' +
+        'record carries connection_id so the caller can attribute it. Read-only.',
       annotations: READ_ONLY_ANNOTATIONS,
       inputSchema: z
         .object({
@@ -72,6 +104,7 @@ export function buildTools({ rs, providerUrl }) {
           expand: z.array(z.string()).optional(),
           expand_limit: z.number().int().positive().max(100).optional(),
           changes_since: z.string().optional(),
+          ...ConnectionIdInputShape,
         })
         .strict(),
       handler: async (args) => {
@@ -88,9 +121,11 @@ export function buildTools({ rs, providerUrl }) {
       title: 'Search PDPP records',
       description:
         'Search records via GET /v1/search using the scoped grant. Returns the RS ' +
-        'search envelope plus ChatGPT-compatible structuredContent.results. If the ' +
-        'deployment does not advertise search, the RS error envelope is preserved in ' +
-        'the tool result. Read-only.',
+        'search envelope plus ChatGPT-compatible structuredContent.results. Accepts ' +
+        'an optional connection_id (with deprecated connector_instance_id alias); ' +
+        'omitted, hits fan in across granted connections and each hit carries ' +
+        'connection_id and display_name. If the deployment does not advertise ' +
+        'search, the RS error envelope is preserved in the tool result. Read-only.',
       annotations: READ_ONLY_ANNOTATIONS,
       inputSchema: z
         .object({
@@ -99,6 +134,7 @@ export function buildTools({ rs, providerUrl }) {
           limit: z.number().int().positive().max(200).optional(),
           cursor: z.string().optional(),
           mode: z.enum(['lexical', 'semantic', 'hybrid']).optional(),
+          ...ConnectionIdInputShape,
         })
         .strict(),
       handler: async (args) => {
@@ -108,6 +144,8 @@ export function buildTools({ rs, providerUrl }) {
           limit: args.limit,
           cursor: args.cursor,
           mode: args.mode,
+          connection_id: args.connection_id,
+          connector_instance_id: args.connector_instance_id,
         };
         const response = await rs.getJson('/v1/search', { query });
         return toSearchToolResult(response, providerUrl);
@@ -119,17 +157,23 @@ export function buildTools({ rs, providerUrl }) {
       description:
         'Fetch a single ChatGPT-compatible document by a result id returned from search. ' +
         'The default id format is stream:record_id and is read through ' +
-        'GET /v1/streams/{stream}/records/{record_id}. Read-only.',
+        'GET /v1/streams/{stream}/records/{record_id}. When the identifier resolves to ' +
+        'more than one connection under your grant and connection_id is omitted, the ' +
+        'RS returns a typed ambiguous_connection (409) error listing ' +
+        '`available_connections`; retry with the chosen connection_id. Read-only.',
       annotations: READ_ONLY_ANNOTATIONS,
       inputSchema: z
         .object({
           id: z.string().min(1).describe('Search result id, usually stream:record_id.'),
+          ...ConnectionIdInputShape,
         })
         .strict(),
       handler: async (args) => {
         const ref = parseRecordResultId(args.id);
+        const query = pickQuery(args, SUPPORTED_QUERY_KEYS);
         const response = await rs.getJson(
-          `/v1/streams/${encodeURIComponent(ref.stream)}/records/${encodeURIComponent(ref.recordId)}`
+          `/v1/streams/${encodeURIComponent(ref.stream)}/records/${encodeURIComponent(ref.recordId)}`,
+          { query }
         );
         return toFetchToolResult(response, providerUrl, args.id);
       },
@@ -140,7 +184,10 @@ export function buildTools({ rs, providerUrl }) {
       description:
         'Fetch a blob referenced by a prior authorized record via GET /v1/blobs/{blob_id} ' +
         'using the configured scoped token. Returns base64 bytes and the RS-reported mime ' +
-        'type. Read-only.',
+        'type. When the blob identifier resolves to more than one connection under your ' +
+        'grant and connection_id is omitted, the RS returns a typed ambiguous_connection ' +
+        '(409) error listing `available_connections`; retry with the chosen connection_id. ' +
+        'Read-only.',
       annotations: READ_ONLY_ANNOTATIONS,
       inputSchema: z
         .object({
@@ -152,13 +199,16 @@ export function buildTools({ rs, providerUrl }) {
             .string()
             .regex(/^bytes=\d+-\d*$/, { message: 'range must look like bytes=0-1023' })
             .optional(),
+          ...ConnectionIdInputShape,
         })
         .strict(),
       handler: async (args) => {
         const blobId = requireSafeName(args.blob_id, 'blob_id');
         const headers = args.range ? { Range: args.range } : undefined;
+        const query = pickQuery(args, SUPPORTED_QUERY_KEYS);
         const response = await rs.getRaw(`/v1/blobs/${encodeURIComponent(blobId)}`, {
           headers,
+          query,
         });
         return toBlobToolResult(response, providerUrl);
       },
