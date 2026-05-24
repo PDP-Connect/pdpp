@@ -47,11 +47,11 @@ export default async function DeploymentPage() {
             Tokens
           </Link>
         }
-        afterDiagnostics={<ConnectAgentCard mode="live" />}
         breadcrumbs={[{ href: "/dashboard", label: "Dashboard" }, { label: "Deployment" }]}
         description="Operator diagnostics for the reference retrieval surfaces. Read-only. Secret environment values are redacted before reaching this page."
         report={report}
       />
+      <ConnectAgentCard mode="live" />
     </DashboardShell>
   );
 }
