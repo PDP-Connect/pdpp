@@ -1092,6 +1092,37 @@ function readNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+function readIsoMillis(value: unknown): number | null {
+  if (typeof value !== "string" || !value) {
+    return null;
+  }
+  const millis = Date.parse(value);
+  return Number.isFinite(millis) ? millis : null;
+}
+
+function schedulerFailureAnchorMillis(schedule: Record<string, unknown> | null): number | null {
+  const candidates = [
+    readIsoMillis(schedule?.last_finished_at),
+    readIsoMillis(schedule?.last_started_at),
+  ].filter((value): value is number => value !== null);
+  if (candidates.length === 0) {
+    return null;
+  }
+  return Math.max(...candidates);
+}
+
+function succeededRunSupersedesSchedulerBackoff(
+  lastRun: ConnectorRunSummary | null,
+  schedule: Record<string, unknown> | null,
+): boolean {
+  if (lastRun?.status !== "succeeded") {
+    return false;
+  }
+  const runMillis = readIsoMillis(lastRun.last_at);
+  const failureAnchor = schedulerFailureAnchorMillis(schedule);
+  return runMillis !== null && (failureAnchor === null || runMillis >= failureAnchor);
+}
+
 /**
  * Stale-heartbeat threshold used by the outbox axis derivation. A
  * heartbeat older than this window with pending work present is treated
@@ -1663,19 +1694,21 @@ export function projectConnectorSummaryConnectionHealth(input: {
 }): ConnectionHealthSnapshot {
   const schedule = asScheduleRecord(input.schedule);
   const schedulerBackoff = asBackoffRecord(schedule);
+  const staleSchedulerBackoff = succeededRunSupersedesSchedulerBackoff(input.lastRun, schedule);
+  const effectiveSchedulerBackoff = staleSchedulerBackoff ? null : schedulerBackoff;
   const pendingDetailGaps = input.pendingDetailGaps ?? [];
   const humanAttentionNeeded = schedule?.human_attention_needed === true;
   const activeRunId = typeof schedule?.active_run_id === "string" && schedule.active_run_id ? schedule.active_run_id : null;
-  const nextDueAt = typeof schedule?.next_due_at === "string" ? schedule.next_due_at : null;
-  const lastErrorCode = typeof schedule?.last_error_code === "string" ? schedule.last_error_code : null;
+  const nextDueAt = !staleSchedulerBackoff && typeof schedule?.next_due_at === "string" ? schedule.next_due_at : null;
+  const lastErrorCode = !staleSchedulerBackoff && typeof schedule?.last_error_code === "string" ? schedule.last_error_code : null;
   const scheduleLastSuccessfulAt =
     typeof schedule?.last_successful_at === "string" ? schedule.last_successful_at : null;
-  const backoffConsecutiveFailures = readNumber(schedulerBackoff?.consecutive_failures) ?? 0;
-  const backoffNextRunAt = typeof schedulerBackoff?.next_run_at === "string" ? schedulerBackoff.next_run_at : nextDueAt;
+  const backoffConsecutiveFailures = readNumber(effectiveSchedulerBackoff?.consecutive_failures) ?? 0;
+  const backoffNextRunAt = typeof effectiveSchedulerBackoff?.next_run_at === "string" ? effectiveSchedulerBackoff.next_run_at : nextDueAt;
   const backoffReasonClass =
-    typeof schedulerBackoff?.reason_class === "string" ? schedulerBackoff.reason_class : lastErrorCode;
+    typeof effectiveSchedulerBackoff?.reason_class === "string" ? effectiveSchedulerBackoff.reason_class : lastErrorCode;
   const schedulerFailureStatus =
-    schedulerBackoff && (schedulerBackoff.backoff_applied === true || backoffConsecutiveFailures > 0) ? "failed" : null;
+    effectiveSchedulerBackoff && (effectiveSchedulerBackoff.backoff_applied === true || backoffConsecutiveFailures > 0) ? "failed" : null;
   const nowIso = input.nowIso ?? new Date().toISOString();
   const attention = selectAttentionEvidence({
     attentionRecords: input.attentionRecords ?? [],
@@ -1686,9 +1719,9 @@ export function projectConnectorSummaryConnectionHealth(input: {
   return computeConnectionHealth({
     activity: { active: activeRunId !== null },
     attention,
-    backoff: schedulerBackoff || nextDueAt
+    backoff: effectiveSchedulerBackoff || nextDueAt
       ? {
-          backoffApplied: schedulerBackoff?.backoff_applied === true,
+          backoffApplied: effectiveSchedulerBackoff?.backoff_applied === true,
           consecutiveFailures: backoffConsecutiveFailures,
           nextRunAt: backoffNextRunAt,
           reasonClass: backoffReasonClass,

@@ -509,6 +509,42 @@ test('connector summary connection health promotes durable scheduler backoff str
   assert.equal(snapshot.reason_code, 'browser_runtime_not_configured');
 });
 
+test('connector summary connection health ignores stale scheduler backoff after a newer successful run', () => {
+  const run = {
+    event_count: 3,
+    failure_reason: null,
+    finished_at: '2026-05-24T23:20:25.909Z',
+    first_at: '2026-05-24T23:20:02.398Z',
+    known_gaps: [],
+    last_at: '2026-05-24T23:20:25.909Z',
+    run_id: 'run_success_after_backoff',
+    started_at: '2026-05-24T23:20:02.398Z',
+    status: 'succeeded',
+  };
+  const snapshot = projectConnectorSummaryConnectionHealth({
+    freshness: { status: 'current', captured_at: '2026-05-24T23:20:25.909Z' },
+    lastRun: run,
+    lastSuccessfulRun: run,
+    schedule: {
+      enabled: true,
+      last_error_code: 'schedule.gave_up',
+      last_finished_at: '2026-05-21T02:04:39.188Z',
+      last_started_at: '2026-05-21T02:03:39.190Z',
+      next_due_at: '2026-05-21T03:04:39.188Z',
+      scheduler_backoff: {
+        backoff_applied: true,
+        consecutive_failures: 7,
+        next_run_at: '2026-05-21T18:04:39.188Z',
+        reason_class: 'terminal:connector_reported_failed',
+        recommended_health_state: 'blocked',
+      },
+    },
+  });
+  assert.equal(snapshot.state, 'healthy');
+  assert.equal(snapshot.reason_code, null);
+  assert.equal(snapshot.next_attempt_at, null);
+});
+
 // ─── Connector outbox axis rollup from per-source heartbeats ──────────────
 
 test('connector outbox rollup: no heartbeats → unknown without unreliable', () => {

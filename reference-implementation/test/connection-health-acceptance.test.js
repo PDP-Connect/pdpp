@@ -160,6 +160,37 @@ test('acceptance 7.1: succeeded run + complete coverage + fresh + no attention p
   assert.equal(snap.next_action, null);
 });
 
+test('acceptance 7.1: newer successful run clears stale scheduler backoff evidence', () => {
+  const run = succeededRun({
+    finished_at: '2026-05-24T23:20:25.909Z',
+    last_at: '2026-05-24T23:20:25.909Z',
+    run_id: 'run_success_after_backoff',
+    started_at: '2026-05-24T23:20:02.398Z',
+  });
+  const snap = projectConnectorSummaryConnectionHealth({
+    freshness: { status: 'current', captured_at: '2026-05-24T23:20:25.909Z' },
+    lastRun: run,
+    lastSuccessfulRun: run,
+    schedule: {
+      enabled: true,
+      last_error_code: 'schedule.gave_up',
+      last_finished_at: '2026-05-21T02:04:39.188Z',
+      last_started_at: '2026-05-21T02:03:39.190Z',
+      next_due_at: '2026-05-21T18:04:39.188Z',
+      scheduler_backoff: {
+        backoff_applied: true,
+        consecutive_failures: BLOCKED_PROMOTION_THRESHOLD,
+        next_run_at: '2026-05-21T18:04:39.188Z',
+        reason_class: 'terminal:connector_reported_failed',
+        recommended_health_state: 'blocked',
+      },
+    },
+  });
+  assertHeadline(snap, 'healthy');
+  assert.equal(snap.reason_code, null);
+  assert.equal(snap.next_attempt_at, null);
+});
+
 test('acceptance 7.1: structured open attention drives needs_attention with structured CTA', () => {
   const snap = projectConnectorSummaryConnectionHealth({
     attentionRecords: [openOtpAttention()],
