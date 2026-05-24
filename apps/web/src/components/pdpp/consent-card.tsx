@@ -32,10 +32,31 @@ import { Button } from "@/components/ui/button.tsx";
 // Server-generated generic copy (v0.1):
 //   optional.consequenceOn/Off
 
+export interface ConsentCardConnection {
+  /** Stable canonical `connection_id` for telemetry / dedupe; not rendered. */
+  id: string;
+  /**
+   * Owner-meaningful label. Never `"legacy"`, `"legacy (pre-header)"`,
+   * `"default_account"`, or any raw storage placeholder; callers SHOULD
+   * fall back to `<Connector> · account N` when the owner has not
+   * renamed the connection. See:
+   *   openspec/changes/expose-connection-identity-on-public-read
+   */
+  displayName: string;
+}
+
 export interface ConsentCardStream {
   detail: string; // manifest display.detail — server-trusted
   key: string;
   label: string; // manifest display.label — server-trusted
+  /**
+   * Per-connection sub-rows when a grant covers more than one connection
+   * of the same connector type. When omitted or single-entry, the row
+   * renders as the existing single-connection shape. When multi-entry,
+   * the card renders one sub-row per connection so the owner can see
+   * which accounts/devices/profiles the grant will cover.
+   */
+  connections?: ConsentCardConnection[];
 }
 
 export interface ConsentCardOptional {
@@ -282,17 +303,45 @@ function Chevron({ opacity, open }: { opacity?: number; open: boolean }) {
   );
 }
 
+function ConnectionScopeList({ connections }: { connections: ConsentCardConnection[] }) {
+  // Multi-connection grants surface one sub-row per connection so the owner
+  // can see exactly which accounts/devices/profiles the grant covers. The
+  // `displayName` is the rendered label; the underlying `connection_id` is
+  // intentionally not surfaced — it's opaque telemetry, not a user concept.
+  return (
+    <ul
+      aria-label="Connections covered by this stream"
+      className="mt-1 flex flex-col gap-0.5 pl-3 text-xs"
+      style={{ color: "var(--muted-foreground)" }}
+    >
+      {connections.map((connection) => (
+        <li className="flex items-center gap-1.5" key={connection.id}>
+          <span
+            aria-hidden="true"
+            className="inline-block h-1 w-1 rounded-full"
+            style={{ backgroundColor: "var(--muted-foreground)", opacity: 0.6 }}
+          />
+          <span>{connection.displayName}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function RequiredStreamRow({
+  connections,
   detail,
   expanded,
   label,
   onToggle,
 }: {
+  connections?: ConsentCardConnection[];
   detail: string;
   expanded: boolean;
   label: string;
   onToggle: () => void;
 }) {
+  const hasMultipleConnections = Array.isArray(connections) && connections.length > 1;
   return (
     <div style={{ borderBottom: "1px solid var(--border)" }}>
       <button
@@ -301,14 +350,22 @@ function RequiredStreamRow({
         onClick={onToggle}
         type="button"
       >
-        <span className="font-medium text-xs" style={{ color: "var(--foreground)" }}>
-          {label}
+        <span className="flex min-w-0 flex-col">
+          <span className="font-medium text-xs" style={{ color: "var(--foreground)" }}>
+            {label}
+          </span>
+          {hasMultipleConnections && (
+            <span className="text-[10px]" style={{ color: "var(--muted-foreground)" }}>
+              {connections.length} connections
+            </span>
+          )}
         </span>
         <Chevron open={expanded} />
       </button>
       {expanded && (
         <div className="pb-2.5 pl-3 text-xs" style={{ color: "var(--muted-foreground)" }}>
           {detail}
+          {hasMultipleConnections && <ConnectionScopeList connections={connections} />}
         </div>
       )}
     </div>
@@ -460,8 +517,9 @@ export function ConsentCard({
         </div>
 
         <div className="px-5 pb-1" style={{ borderTop: "1px solid var(--border)" }}>
-          {streams.map(({ key, label, detail }) => (
+          {streams.map(({ connections, key, label, detail }) => (
             <RequiredStreamRow
+              connections={connections}
               detail={detail}
               expanded={!!expanded[key]}
               key={key}

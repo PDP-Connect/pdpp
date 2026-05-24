@@ -103,6 +103,8 @@ curl -fsS "$RS_URL/v1/search/hybrid?q=acme%20launch&streams[]=messages&limit=20"
 
 Hybrid is the right default when available — it combines lexical and semantic. Pure-semantic search is fragile for code-history queries that depend on exact terms.
 
+Pagination caveat: hybrid search does **not** support `cursor` on this reference. Check the protected-resource metadata's `pdpp_discovery_hints.hybrid_pagination_supported`; when it is `false` or absent, fall back to lexical `GET /v1/search` (which supports `cursor`) for any query that needs more than `limit` results in a single pass.
+
 ## Aggregations
 
 Counts, sums, time histograms — when the stream metadata advertises usable aggregation for the field:

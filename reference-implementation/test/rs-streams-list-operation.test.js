@@ -91,6 +91,96 @@ test('rs.streams.list propagates a null stream_count_limit when grant.streams is
   assert.equal(result.queryData.stream_count_limit, null);
 });
 
+test('rs.streams.list preserves connection identity fields populated by the host adapter', async () => {
+  // Multi-connection deployments emit one summary per (stream, connection_id).
+  // The operation does not invent or transform identity — it just preserves
+  // whatever the host adapter's listSummaries() returns, so callers can
+  // attribute and disambiguate. Owned by
+  //   openspec/changes/expose-connection-identity-on-public-read.
+  const summaries = [
+    {
+      object: 'stream',
+      name: 'orders',
+      record_count: 12,
+      last_updated: '2026-05-01T12:00:00Z',
+      connection_id: 'cin_aaa',
+      display_name: 'peregrine Amazon',
+      connector_instance_id: 'cin_aaa',
+    },
+    {
+      object: 'stream',
+      name: 'orders',
+      record_count: 7,
+      last_updated: '2026-05-22T08:00:00Z',
+      connection_id: 'cin_bbb',
+      display_name: 'vivid fish Amazon',
+      connector_instance_id: 'cin_bbb',
+    },
+  ];
+
+  const result = await executeStreamsList(
+    { actor: { kind: 'owner', subject_id: 'subj_1' } },
+    {
+      listSummaries: () => Promise.resolve(summaries),
+      getSourceDescriptor: () => ({ kind: 'connector', id: 'amazon' }),
+    },
+  );
+
+  assert.deepEqual(result.streams, summaries);
+  const labels = result.streams.map((entry) => entry.display_name);
+  assert.deepEqual(labels, ['peregrine Amazon', 'vivid fish Amazon']);
+  const placeholderPattern = /^legacy$|^default_account$|legacy \(pre-header\)/;
+  for (const entry of result.streams) {
+    assert.equal(
+      placeholderPattern.test(entry.display_name),
+      false,
+      `display_name must not be a storage placeholder, got ${entry.display_name}`,
+    );
+  }
+});
+
+test('rs.streams.list accepts an optional connection_id input without altering passthrough semantics', async () => {
+  // The operation does not enforce the filter — that lives in the host
+  // adapter's `listSummaries` wiring. But the field MUST flow through
+  // without breaking existing callers that omit it.
+  const captured = { passes: 0 };
+  const summaries = [
+    {
+      object: 'stream',
+      name: 'orders',
+      record_count: 3,
+      last_updated: null,
+      connection_id: 'cin_aaa',
+      display_name: 'peregrine Amazon',
+    },
+  ];
+
+  const omitted = await executeStreamsList(
+    { actor: { kind: 'owner', subject_id: 'subj_1' } },
+    {
+      listSummaries: () => {
+        captured.passes += 1;
+        return Promise.resolve(summaries);
+      },
+      getSourceDescriptor: () => ({ kind: 'connector', id: 'amazon' }),
+    },
+  );
+  const filtered = await executeStreamsList(
+    { actor: { kind: 'owner', subject_id: 'subj_1' }, connection_id: 'cin_aaa' },
+    {
+      listSummaries: () => {
+        captured.passes += 1;
+        return Promise.resolve(summaries);
+      },
+      getSourceDescriptor: () => ({ kind: 'connector', id: 'amazon' }),
+    },
+  );
+
+  assert.equal(captured.passes, 2);
+  assert.deepEqual(omitted.streams, summaries);
+  assert.deepEqual(filtered.streams, summaries);
+});
+
 test('rs.streams.list awaits dependency promises', async () => {
   let resolved = false;
   const result = await executeStreamsList(

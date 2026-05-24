@@ -28,6 +28,43 @@ const NonEmptyStringSchema = {
   minLength: 1,
 };
 
+// Canonical public/operator/LLM-facing connection identity. `connection_id`
+// is the canonical field name; `connector_instance_id` is supported as a
+// deprecated wire alias during the migration window defined by
+// `openspec/changes/expose-connection-identity-on-public-read`. Both fields
+// carry the same opaque value when emitted on response envelopes; clients
+// SHOULD prefer `connection_id` and the operator-meaningful `display_name`.
+const ConnectionIdSchema = {
+  type: "string",
+  minLength: 1,
+  description:
+    "Canonical public identifier for a connection (one owner-configured account/device/profile). Prefer this over the deprecated `connector_instance_id` alias.",
+};
+
+const ConnectionDisplayNameSchema = {
+  type: "string",
+  minLength: 1,
+  description:
+    "Owner-meaningful label for the connection. Never the storage-layer placeholder (`legacy`, `default_account`); falls back to `<connector> · account N` when the owner has not renamed the connection.",
+};
+
+const ConnectorInstanceIdAliasSchema = {
+  type: "string",
+  minLength: 1,
+  description:
+    "Deprecated wire alias for `connection_id`. Emitted alongside `connection_id` during the migration window. New clients SHOULD ignore this field and read `connection_id` instead.",
+};
+
+const AvailableConnectionSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    connection_id: ConnectionIdSchema,
+    display_name: ConnectionDisplayNameSchema,
+  },
+  required: ["connection_id", "display_name"],
+};
+
 const CapabilityFlagSchema = {
   type: "object",
   additionalProperties: false,
@@ -95,11 +132,17 @@ const ListRecordsQuerySchema = {
     changes_since: ChangesSinceSchema,
     fields: { type: "string" },
     view: { type: "string" },
-    filter: { type: "object" },
+    filter: {
+      type: "object",
+      description:
+        "Per-field filter map. Exact: `filter[field]=value`. Range: `filter[field][op]=value` where `op` is one of the declared `field_capabilities.range_filter.operators` from `GET /v1/schema`.",
+    },
     expand: { type: "array", items: NonEmptyStringSchema },
     expand_limit: { type: "object" },
     connector_id: { type: "string" },
     subject_id: { type: "string" },
+    connection_id: ConnectionIdSchema,
+    connector_instance_id: ConnectorInstanceIdAliasSchema,
   },
 };
 
@@ -187,6 +230,11 @@ const StreamSelectionSchema = {
     time_range: TimeRangeSchema,
     resources: { type: "array", items: NonEmptyStringSchema },
     client_claims: { type: "object", additionalProperties: true },
+    // Optional per-stream connection constraint. Absent means cross-connection
+    // (fan-in) read semantics; present constrains disclosure to records,
+    // hits, or blobs from the named connection. Owned by
+    //   openspec/changes/expose-connection-identity-on-public-read.
+    connection_id: ConnectionIdSchema,
   },
   required: ["name"],
 };
@@ -794,6 +842,9 @@ const RecordSchema = {
     expanded: { type: "object", additionalProperties: true },
     deleted: { type: "boolean" },
     deleted_at: { type: "string" },
+    connection_id: ConnectionIdSchema,
+    display_name: ConnectionDisplayNameSchema,
+    connector_instance_id: ConnectorInstanceIdAliasSchema,
   },
   required: ["object", "id", "stream"],
 };
@@ -854,6 +905,9 @@ const StreamListResponseSchema = {
           record_count: { type: "integer" },
           last_updated: { type: ["string", "null"] },
           freshness: FreshnessSchema,
+          connection_id: ConnectionIdSchema,
+          display_name: ConnectionDisplayNameSchema,
+          connector_instance_id: ConnectorInstanceIdAliasSchema,
         },
         required: ["object", "name"],
       },
@@ -1049,11 +1103,60 @@ const AuthHeaderSchema = {
   required: ["authorization"],
 };
 
+// Typed `ambiguous_connection` error envelope. Emitted by `getRecord` and
+// `getBlob` when the addressed record or blob identifier resolves to more
+// than one connection under the caller's grant and the client did not pass
+// `connection_id`. The envelope lists the candidate connections inline so
+// the client can retry without an extra round trip. List/search operations
+// never raise this error — they fan in instead.
+const AmbiguousConnectionErrorSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    error: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        type: { type: "string" },
+        code: { const: "ambiguous_connection" },
+        message: { type: "string" },
+        param: { type: "string" },
+        request_id: { type: "string" },
+        available_connections: {
+          type: "array",
+          minItems: 2,
+          items: AvailableConnectionSchema,
+        },
+        retry_with: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            field: { const: "connection_id" },
+            guidance: { type: "string" },
+          },
+          required: ["field", "guidance"],
+        },
+      },
+      required: ["type", "code", "message", "request_id", "available_connections", "retry_with"],
+    },
+  },
+  required: ["error"],
+};
+
 const ProtectedReadErrors = {
   400: { schema: ErrorObjectSchema, description: "Invalid request" },
   401: { schema: ErrorObjectSchema, description: "Missing or invalid access token" },
   403: { schema: ErrorObjectSchema, description: "Grant does not permit this request" },
   404: { schema: ErrorObjectSchema, description: "Stream or record not found" },
+};
+
+const ProtectedReadWithAmbiguityErrors = {
+  ...ProtectedReadErrors,
+  409: {
+    schema: AmbiguousConnectionErrorSchema,
+    description:
+      "Identifier resolves to more than one connection under the caller's grant. Retry with the `connection_id` listed in `error.available_connections`.",
+  },
 };
 
 const ListRecordErrors = {
@@ -1337,7 +1440,8 @@ export const publicManifests = [
     path: "/v1/streams",
     surface: "public",
     tags: ["records"],
-    summary: "List streams available under the current grant or owner scope.",
+    summary:
+      "List streams available under the current grant or owner scope. Returns stream-level totals only; for per-field filter capabilities (exact, range operators, aggregation) call `GET /v1/schema` first and consult `field_capabilities` per stream before issuing `filter[...]` queries on `/v1/streams/{stream}/records`. Multi-connection deployments emit one entry per (stream, connection_id); each entry carries `connection_id` and a `display_name` so callers can attribute and disambiguate.",
     request: {
       headers: AuthHeaderSchema,
       query: {
@@ -1346,6 +1450,8 @@ export const publicManifests = [
         properties: {
           connector_id: { type: "string" },
           subject_id: { type: "string" },
+          connection_id: ConnectionIdSchema,
+          connector_instance_id: ConnectorInstanceIdAliasSchema,
         },
       },
     },
@@ -1360,7 +1466,8 @@ export const publicManifests = [
     path: "/v1/streams/{stream}",
     surface: "public",
     tags: ["records"],
-    summary: "Return stream metadata including declared query capabilities and advisory freshness.",
+    summary:
+      "Return stream metadata including declared query capabilities and advisory freshness. For per-field filter capabilities on this stream (exact, range operators, aggregation), prefer `GET /v1/schema` first and read `field_capabilities` rather than guessing `filter[...]` shapes against the records endpoint. Pass `connection_id` (or the deprecated `connector_instance_id` alias) to restrict to a single connection; omitted, the response aggregates across the connections the grant authorizes.",
     request: {
       headers: AuthHeaderSchema,
       params: StreamNamePathSchema,
@@ -1370,6 +1477,8 @@ export const publicManifests = [
         properties: {
           connector_id: { type: "string" },
           subject_id: { type: "string" },
+          connection_id: ConnectionIdSchema,
+          connector_instance_id: ConnectorInstanceIdAliasSchema,
         },
       },
     },
@@ -1420,7 +1529,8 @@ export const publicManifests = [
     path: "/v1/streams/{stream}/records/{id}",
     surface: "public",
     tags: ["records"],
-    summary: "Fetch a single record by primary key under grant enforcement, with optional declared expansion.",
+    summary:
+      "Fetch a single record by primary key under grant enforcement, with optional declared expansion. When the identifier resolves to more than one connection under the caller's grant and `connection_id` is omitted, returns a typed `ambiguous_connection` (409) error with `available_connections` and retry guidance instead of silently picking one.",
     request: {
       headers: AuthHeaderSchema,
       params: RecordIdPathSchema,
@@ -1432,12 +1542,14 @@ export const publicManifests = [
           expand_limit: { type: "object" },
           connector_id: { type: "string" },
           subject_id: { type: "string" },
+          connection_id: ConnectionIdSchema,
+          connector_instance_id: ConnectorInstanceIdAliasSchema,
         },
       },
     },
     responses: {
       200: { schema: RecordSchema },
-      ...ProtectedReadErrors,
+      ...ProtectedReadWithAmbiguityErrors,
     },
   },
   {
@@ -1455,6 +1567,12 @@ export const publicManifests = [
       // intentionally NOT in the allowlist — owner-mode search is
       // cross-connector with no public connector-scope param. See:
       //   openspec/changes/add-lexical-retrieval-extension/specs/lexical-retrieval/spec.md
+      // `connection_id` (and the deprecated `connector_instance_id` alias)
+      // are additive optional filters under
+      //   openspec/changes/expose-connection-identity-on-public-read.
+      // Omitted, results fan in across all connections the grant authorizes
+      // for each named stream; each hit carries `connection_id` for
+      // attribution.
       query: {
         type: "object",
         additionalProperties: false,
@@ -1469,6 +1587,8 @@ export const publicManifests = [
             type: "object",
             additionalProperties: true,
           },
+          connection_id: ConnectionIdSchema,
+          connector_instance_id: ConnectorInstanceIdAliasSchema,
         },
         required: ["q"],
       },
@@ -1493,6 +1613,9 @@ export const publicManifests = [
                   stream: NonEmptyStringSchema,
                   record_key: NonEmptyStringSchema,
                   connector_id: NonEmptyStringSchema,
+                  connection_id: ConnectionIdSchema,
+                  display_name: ConnectionDisplayNameSchema,
+                  connector_instance_id: ConnectorInstanceIdAliasSchema,
                   record_url: { type: "string" },
                   emitted_at: NonEmptyStringSchema,
                   score: RetrievalScoreSchema,
@@ -1541,6 +1664,8 @@ export const publicManifests = [
       // layer in addition to the runtime check in search-semantic.js. Raw
       // vectors, client-supplied embeddings, model selectors, and ranking
       // knobs are intentionally NOT in the allowlist.
+      // `connection_id` / `connector_instance_id` are additive optional
+      // filters per `expose-connection-identity-on-public-read`.
       query: {
         type: "object",
         additionalProperties: false,
@@ -1555,6 +1680,8 @@ export const publicManifests = [
             type: "object",
             additionalProperties: true,
           },
+          connection_id: ConnectionIdSchema,
+          connector_instance_id: ConnectorInstanceIdAliasSchema,
         },
         required: ["q"],
       },
@@ -1579,6 +1706,9 @@ export const publicManifests = [
                   stream: NonEmptyStringSchema,
                   record_key: NonEmptyStringSchema,
                   connector_id: NonEmptyStringSchema,
+                  connection_id: ConnectionIdSchema,
+                  display_name: ConnectionDisplayNameSchema,
+                  connector_instance_id: ConnectorInstanceIdAliasSchema,
                   record_url: { type: "string" },
                   emitted_at: NonEmptyStringSchema,
                   score: RetrievalScoreSchema,
@@ -1631,13 +1761,15 @@ export const publicManifests = [
     surface: "public",
     tags: ["records", "hybrid-retrieval"],
     summary:
-      "Experimental optional extension: hybrid retrieval blending lexical and semantic recall under one grant-safe result list. See the hybrid-retrieval capability spec.",
+      "Experimental optional extension: hybrid retrieval blending lexical and semantic recall under one grant-safe result list. See the hybrid-retrieval capability spec. Hybrid does NOT support cursor pagination on this reference; check `pdpp_discovery_hints.hybrid_pagination_supported` in the protected-resource metadata and, when it is `false` or absent, fall back to `GET /v1/search` (lexical) which supports `cursor`.",
     request: {
       headers: AuthHeaderSchema,
       // Mirrors the lexical + semantic allowlists. v1 intentionally omits
       // cursor/pagination knobs (see the hybrid-retrieval spec: first-tranche
       // servers either encode snapshot-honest cursors or omit cursor support
       // entirely). The reference rejects cursor to keep pagination honest.
+      // `connection_id` / `connector_instance_id` are additive optional
+      // filters per `expose-connection-identity-on-public-read`.
       query: {
         type: "object",
         additionalProperties: false,
@@ -1651,6 +1783,8 @@ export const publicManifests = [
             type: "object",
             additionalProperties: true,
           },
+          connection_id: ConnectionIdSchema,
+          connector_instance_id: ConnectorInstanceIdAliasSchema,
         },
         required: ["q"],
       },
@@ -1674,6 +1808,9 @@ export const publicManifests = [
                   stream: NonEmptyStringSchema,
                   record_key: NonEmptyStringSchema,
                   connector_id: NonEmptyStringSchema,
+                  connection_id: ConnectionIdSchema,
+                  display_name: ConnectionDisplayNameSchema,
+                  connector_instance_id: ConnectorInstanceIdAliasSchema,
                   record_url: { type: "string" },
                   emitted_at: NonEmptyStringSchema,
                   matched_fields: {
@@ -1761,7 +1898,8 @@ export const publicManifests = [
     path: "/v1/blobs/{blob_id}",
     surface: "public",
     tags: ["records"],
-    summary: "Fetch blob bytes authorized by the caller having discovered the referencing record under grant.",
+    summary:
+      "Fetch blob bytes authorized by the caller having discovered the referencing record under grant. When the blob identifier resolves to more than one connection under the caller's grant and `connection_id` is omitted, returns a typed `ambiguous_connection` (409) error with `available_connections` and retry guidance instead of silently picking one.",
     request: {
       headers: AuthHeaderSchema,
       params: {
@@ -1770,10 +1908,18 @@ export const publicManifests = [
         properties: { blob_id: { type: "string", minLength: 1 } },
         required: ["blob_id"],
       },
+      query: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          connection_id: ConnectionIdSchema,
+          connector_instance_id: ConnectorInstanceIdAliasSchema,
+        },
+      },
     },
     responses: {
       200: { description: "Blob bytes", contentType: "application/octet-stream" },
-      ...ProtectedReadErrors,
+      ...ProtectedReadWithAmbiguityErrors,
     },
   },
 ];

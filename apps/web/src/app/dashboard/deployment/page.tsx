@@ -3,7 +3,8 @@ import { buttonVariants } from "@/components/ui/button.tsx";
 import { ConnectAgentCard } from "../components/connect-agent-card.tsx";
 import { LivePoller } from "../components/live-poller.tsx";
 import { DashboardShell, ServerUnreachable } from "../components/shell.tsx";
-import { DeploymentDiagnosticsView, isDeploymentIndexing } from "../components/views/deployment-diagnostics-view.tsx";
+import { isDeploymentIndexing } from "../components/views/deployment-diagnostics-state.ts";
+import { DeploymentDiagnosticsView } from "../components/views/deployment-diagnostics-view.tsx";
 import { ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import { type DeploymentDiagnostics, getDeploymentDiagnostics } from "../lib/ref-client.ts";
 
@@ -46,11 +47,11 @@ export default async function DeploymentPage() {
             Tokens
           </Link>
         }
-        afterDiagnostics={<ConnectAgentCard mode="live" />}
         breadcrumbs={[{ href: "/dashboard", label: "Dashboard" }, { label: "Deployment" }]}
         description="Operator diagnostics for the reference retrieval surfaces. Read-only. Secret environment values are redacted before reaching this page."
         report={report}
       />
+      <ConnectAgentCard mode="live" />
     </DashboardShell>
   );
 }

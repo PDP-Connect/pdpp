@@ -38,14 +38,6 @@ export function DeploymentDiagnosticsView({
   );
 }
 
-export function isDeploymentIndexing(report: DeploymentDiagnostics): boolean {
-  return Boolean(
-    report.lexical.index.backfill_progress ||
-      report.semantic.index.backfill_progress ||
-      report.semantic.index.state === "building"
-  );
-}
-
 const WARNING_TITLES: Record<DeploymentDiagnostics["warnings"][number]["code"], string> = {
   zero_participation: "Zero semantic participation",
   lexical_building_index: "Lexical index is rebuilding",
@@ -91,7 +83,7 @@ function RuntimeCapabilitiesSection({ capabilities }: { capabilities: Deployment
       : "—";
   const observedProtocolLabel = (() => {
     if (!pairing) return "—";
-    if (pairing.protocol_version === "legacy_unknown") return "legacy (pre-header)";
+    if (pairing.protocol_version === "legacy_unknown") return "unknown (pre-header)";
     return pairing.protocol_version ?? "—";
   })();
   const connectorVersions = pairing ? Object.entries(pairing.connector_versions) : [];
@@ -143,7 +135,7 @@ function SemanticSection({ report }: { report: DeploymentDiagnostics }) {
   const { backend, index } = report.semantic;
   return (
     <Section title="Semantic backend">
-      {renderSemanticBackfillProgress(index)}
+      <SemanticBackfillProgress index={index} />
       <dl className="grid grid-cols-1 gap-x-6 gap-y-2 sm:grid-cols-2">
         <Field label="Configured" value={yesNo(backend.configured)} />
         <Field label="Available" value={yesNo(backend.available)} />
@@ -169,7 +161,7 @@ function SemanticSection({ report }: { report: DeploymentDiagnostics }) {
   );
 }
 
-function renderSemanticBackfillProgress(index: DeploymentDiagnostics["semantic"]["index"]) {
+function SemanticBackfillProgress({ index }: { index: DeploymentDiagnostics["semantic"]["index"] }) {
   if (index.backfill_progress) {
     return (
       <BackfillProgress
