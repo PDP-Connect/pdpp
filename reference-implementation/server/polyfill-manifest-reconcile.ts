@@ -386,7 +386,19 @@ async function reconcileEntry(entryName: string, ctx: EntryContext): Promise<Ent
     persisted = await getConnectorManifestTyped(connectorId);
   } catch (err) {
     ctx.log(`[manifest-reconcile] lookup failed for ${connectorId}: ${errorMessage(err)}`);
-    return { errors: 1 };
+    // A persisted first-party manifest can become invalid after the
+    // reference tightens manifest validation (for example when a query
+    // capability is removed or renamed). Treat that as a repairable
+    // stale-row condition for shipped manifests: overwrite the DB row with
+    // the checked-in manifest instead of letting the stale row poison
+    // scheduler startup. Do not invalidate records here; we cannot safely
+    // fingerprint an invalid persisted manifest, and ordinary capability
+    // metadata repairs should preserve owner data.
+    const registration = await applyShippedManifest(shipped, connectorId, entryName, ctx.log);
+    return {
+      errors: registration.ok ? 0 : 1,
+      updated: registration.ok ? 1 : 0,
+    };
   }
   if (!persisted) {
     // Connector not yet registered. Reconciliation is primarily about

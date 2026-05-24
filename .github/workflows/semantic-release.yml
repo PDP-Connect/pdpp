@@ -124,9 +124,9 @@ jobs:
             title: PDPP reference AS/RS
             description: PDPP reference authorization server and resource server
           - image: web
-            target: web
-            title: PDPP reference web
-            description: PDPP browser-facing reference dashboard and docs
+            target: console
+            title: PDPP reference operator console
+            description: PDPP browser-facing reference operator console
 
     steps:
       - name: Checkout
@@ -237,9 +237,9 @@ jobs:
             title: PDPP reference AS/RS
             description: PDPP reference authorization server and resource server
           - image: web
-            target: web
-            title: PDPP reference web
-            description: PDPP browser-facing reference dashboard and docs
+            target: console
+            title: PDPP reference operator console
+            description: PDPP browser-facing reference operator console
 
     steps:
       - name: Checkout

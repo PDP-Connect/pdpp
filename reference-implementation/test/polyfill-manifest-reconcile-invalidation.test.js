@@ -144,6 +144,15 @@ function recordKeys(connectorId) {
     .map((row) => row.record_key);
 }
 
+function insertRawConnectorManifest(connectorId, manifest) {
+  getDb()
+    .prepare(
+      `INSERT INTO connectors(connector_id, manifest, created_at) VALUES (?, ?, ?)
+       ON CONFLICT(connector_id) DO UPDATE SET manifest = excluded.manifest`
+    )
+    .run(connectorId, JSON.stringify(manifest), new Date().toISOString());
+}
+
 async function ingestSeedFakeArtists(connectorId) {
   // Same fixture identities the real reference seed connector emits.
   const artists = [
@@ -370,6 +379,50 @@ test('reconciliation does not delete records when the persisted manifest already
   assert.equal(summary.invalidatedConnectors, 0, 'no invalidation when fingerprints match');
   assert.equal(summary.invalidatedRecords, 0, 'no records counted as invalidated');
   assert.equal(recordCount(CONNECTOR_ID), 1, 'records survive a no-op reconciliation');
+}));
+
+test('reconciliation repairs an invalid persisted first-party manifest without deleting records', withTmpDb(async ({ dir }) => {
+  await registerConnector(shippedPolyfillManifest());
+  await ingestRecord(CONNECTOR_ID, {
+    stream: 'top_artists',
+    key: 'spotify:artist:real',
+    data: { id: 'spotify:artist:real', name: 'Real Artist', source_updated_at: '2026-04-25T00:00:00Z' },
+    emitted_at: '2026-04-25T00:00:00Z',
+  });
+  const invalidPersisted = shippedPolyfillManifest();
+  invalidPersisted.streams[0].query = {
+    aggregations: {
+      count: true,
+      time_bucket: ['source_updated_at'],
+    },
+  };
+  insertRawConnectorManifest(CONNECTOR_ID, invalidPersisted);
+  assert.equal(recordCount(CONNECTOR_ID), 1, 'baseline: owner record persisted under stale manifest row');
+
+  const manifestsDir = writeManifestsDir(dir, 'polyfill', { 'seed-flip.json': shippedPolyfillManifest() });
+  const referenceFixturesDir = writeManifestsDir(dir, 'reference', {
+    'seed-flip.json': referenceFixtureManifest(),
+  });
+  const lines = [];
+
+  const summary = await reconcilePolyfillManifests({
+    enabled: true,
+    manifestsDir,
+    referenceFixturesDir,
+    log: (line) => lines.push(line),
+  });
+
+  assert.equal(summary.updated, 1, 'invalid stale manifest row is overwritten by the shipped manifest');
+  assert.equal(summary.errors, 0, 'repairable stale manifest is not counted as a reconciliation error');
+  assert.equal(summary.invalidatedConnectors, 0, 'invalid stale manifest repair must not invalidate records');
+  assert.equal(summary.invalidatedRecords, 0);
+  assert.equal(recordCount(CONNECTOR_ID), 1, 'owner record survives stale manifest repair');
+
+  const persisted = await getConnectorManifest(CONNECTOR_ID);
+  assert.equal(persisted.version, '0.1.0');
+  assert.equal(persisted.streams[0].query?.aggregations?.time_bucket, undefined);
+  assert.ok(lines.some((line) => line.includes('lookup failed')), 'repair logs the invalid persisted lookup');
+  assert.ok(lines.some((line) => line.includes('updated')), 'repair logs the shipped manifest update');
 }));
 
 test('a direct registerConnector call with a different manifest does not delete records', withTmpDb(async () => {
