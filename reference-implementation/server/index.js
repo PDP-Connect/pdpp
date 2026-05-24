@@ -1216,7 +1216,7 @@ async function resolveOwnerConnectorNamespace(req, connectorId, options = {}) {
     connectorId,
     connectorInstanceId: explicitConnectorInstanceId,
     connectorInstanceStore: createRequestConnectorInstanceStore(),
-    allowLegacyDefault: options.allowLegacyDefault ?? true,
+    allowDefaultAccount: options.allowDefaultAccount ?? true,
     displayName: options.displayName ?? connectorId,
     now: options.now,
   });
@@ -1523,7 +1523,7 @@ async function resolveOwnerManifestFromScope(ownerScope, opts = {}) {
         connectorId: storageBinding.connector_id,
         connectorInstanceId: storageBinding.connector_instance_id,
         connectorInstanceStore: createRequestConnectorInstanceStore(),
-        allowLegacyDefault: true,
+        allowDefaultAccount: true,
         displayName: storageBinding.connector_id,
       });
       storageBinding = storageTargetForConnectorNamespace(namespace);
@@ -1568,7 +1568,7 @@ async function resolveGrantManifest(tokenInfo, opts = {}) {
         connectorId: storageBinding.connector_id,
         connectorInstanceId: storageBinding.connector_instance_id,
         connectorInstanceStore: createRequestConnectorInstanceStore(),
-        allowLegacyDefault: true,
+        allowDefaultAccount: true,
         displayName: storageBinding.connector_id,
       });
       storageBinding = storageTargetForConnectorNamespace(namespace);
@@ -2201,7 +2201,7 @@ function buildAsApp(opts = {}) {
   async function resolveRefConnectionNamespace(req, connectorInstanceId) {
     return resolveOwnerConnectorNamespace(req, null, {
       ownerSubjectId: getOwnerSubjectId(req),
-      allowLegacyDefault: false,
+      allowDefaultAccount: false,
       connectorInstanceId,
     });
   }

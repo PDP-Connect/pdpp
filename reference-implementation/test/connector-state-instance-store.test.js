@@ -7,7 +7,7 @@ import Database from 'better-sqlite3';
 
 import { closeDb, getDb, initDb } from '../server/db.js';
 import { createSqliteConnectorStateStore } from '../server/stores/connector-state-store.ts';
-import { makeLegacyConnectorInstanceId } from '../server/stores/connector-instance-store.js';
+import { makeDefaultAccountConnectorInstanceId } from '../server/stores/connector-instance-store.js';
 import { getSyncState, putSyncState } from '../server/records.js';
 
 test.afterEach(() => {
@@ -101,7 +101,7 @@ test('sqlite migration preserves existing instance ids when only one sync-state 
     ).get();
     assert.equal(
       grantRow.connector_instance_id,
-      makeLegacyConnectorInstanceId('owner_local', 'gmail'),
+      makeDefaultAccountConnectorInstanceId('owner_local', 'gmail'),
     );
     assert.equal(grantRow.state_json, '{"cursor":"grant"}');
   } finally {
@@ -135,17 +135,17 @@ test('grant sync state is isolated by connector_instance_id for the same grant a
   );
 });
 
-test('legacy connector-only records state uses deterministic default connector instance id', async () => {
+test('default connector-only records state uses deterministic default account connector instance id', async () => {
   initDb();
-  const connectorId = 'legacy_reddit';
+  const connectorId = 'default_reddit';
   const stream = 'posts';
-  const expectedInstanceId = makeLegacyConnectorInstanceId('owner_local', connectorId);
+  const expectedInstanceId = makeDefaultAccountConnectorInstanceId('owner_local', connectorId);
 
-  await putSyncState(connectorId, { [stream]: { cursor: 'legacy' } });
+  await putSyncState(connectorId, { [stream]: { cursor: 'default' } });
   const projection = await getSyncState(connectorId);
 
   assert.equal(projection.connector_instance_id, expectedInstanceId);
-  assert.deepEqual(projection.state[stream], { cursor: 'legacy' });
+  assert.deepEqual(projection.state[stream], { cursor: 'default' });
   assert.equal(
     getDb()
       .prepare('SELECT connector_instance_id FROM connector_state WHERE connector_id = ? AND stream = ?')

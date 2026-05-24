@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { execDynamicSqlAcknowledged, iterateDynamicSqlAcknowledged } from '../../lib/db.ts';
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from '../owner-auth.ts';
 import { getStorageBackendKind, isPostgresStorageBackend, postgresQuery } from '../postgres-storage.js';
-import { makeLegacyConnectorInstanceId } from './connector-instance-store.js';
+import { makeDefaultAccountConnectorInstanceId } from './connector-instance-store.js';
 
 const VALID_STATUSES = new Set(['pending', 'in_progress', 'recovered', 'terminal']);
 const SECRET_KEY_PATTERN = /(authorization|bearer|cookie|token|secret|password|credential|request_body|body|payload|raw|private)/i;
@@ -28,7 +28,7 @@ function hashIdentity(parts) {
 }
 
 function defaultConnectorInstanceId(connectorId) {
-  return makeLegacyConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId);
+  return makeDefaultAccountConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId);
 }
 
 function safeUrlSummary(value) {

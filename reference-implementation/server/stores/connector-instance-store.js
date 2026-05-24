@@ -6,7 +6,9 @@ import { postgresQuery } from '../postgres-storage.js';
 const ACTIVE_RESOLUTION_LIMIT = 2;
 const LIST_LIMIT = 500;
 const VALID_STATUSES = new Set(['active', 'paused', 'revoked']);
-const VALID_SOURCE_KINDS = new Set(['account', 'local_device', 'manual', 'legacy']);
+const VALID_SOURCE_KINDS = new Set(['account', 'local_device', 'manual']);
+const DEFAULT_ACCOUNT_SOURCE_BINDING_KEY = 'default';
+const DEFAULT_ACCOUNT_SOURCE_BINDING = Object.freeze({ kind: 'default_account' });
 
 export class ConnectorInstanceResolutionError extends Error {
   constructor(code, message, details = {}) {
@@ -36,8 +38,8 @@ export function makeConnectorInstanceSourceBindingKey(sourceBinding) {
   return hashKey(stableJson(sourceBinding ?? {}));
 }
 
-export function makeLegacyConnectorInstanceId(ownerSubjectId, connectorId) {
-  return `cin_legacy_${hashKey(`${ownerSubjectId}\n${connectorId}`).slice(0, 24)}`;
+export function makeDefaultAccountConnectorInstanceId(ownerSubjectId, connectorId) {
+  return `cin_${hashKey(`${ownerSubjectId}\n${connectorId}\naccount\n${DEFAULT_ACCOUNT_SOURCE_BINDING_KEY}`).slice(0, 24)}`;
 }
 
 function normalizeRecord(record) {
@@ -105,7 +107,7 @@ function resolveSingleActive(rows, ownerSubjectId, connectorId) {
   return rows[0];
 }
 
-function namespaceFromInstance(instance, { selector, createdLegacyDefault = false } = {}) {
+function namespaceFromInstance(instance, { selector, createdDefaultAccount = false } = {}) {
   return {
     ownerSubjectId: instance.ownerSubjectId,
     connectorId: instance.connectorId,
@@ -116,7 +118,7 @@ function namespaceFromInstance(instance, { selector, createdLegacyDefault = fals
     sourceBindingKey: instance.sourceBindingKey,
     sourceBinding: instance.sourceBinding,
     selector,
-    createdLegacyDefault,
+    createdDefaultAccount,
   };
 }
 
@@ -125,7 +127,7 @@ export async function resolveOwnerConnectorInstanceNamespace({
   connectorId = null,
   connectorInstanceId = null,
   connectorInstanceStore,
-  allowLegacyDefault = false,
+  allowDefaultAccount = false,
   displayName = null,
   now = new Date().toISOString(),
 }) {
@@ -197,24 +199,24 @@ export async function resolveOwnerConnectorInstanceNamespace({
     const instance = await connectorInstanceStore.resolveActiveByConnector(ownerSubjectId, connectorId);
     return namespaceFromInstance(instance, { selector: 'connector_id' });
   } catch (err) {
-    if (!allowLegacyDefault || !(err instanceof ConnectorInstanceResolutionError) || err.code !== 'connector_instance_not_found') {
+    if (!allowDefaultAccount || !(err instanceof ConnectorInstanceResolutionError) || err.code !== 'connector_instance_not_found') {
       throw err;
     }
   }
 
   try {
-    const instance = await connectorInstanceStore.ensureLegacyDefault({
+    const instance = await connectorInstanceStore.ensureDefaultAccountConnection({
       ownerSubjectId,
       connectorId,
       displayName: displayName ?? connectorId,
       now,
     });
-    return namespaceFromInstance(instance, { selector: 'connector_id', createdLegacyDefault: true });
+    return namespaceFromInstance(instance, { selector: 'connector_id', createdDefaultAccount: true });
   } catch (err) {
     // The connector_instances row references connectors(connector_id). If
     // the connector is not registered (e.g. the grant points at a stale
     // connector id or a synthetic native-storage id that never lived in
-    // the catalog), the legacy-default upsert fails its FK check. Surface
+    // the catalog), the default-account upsert fails its FK check. Surface
     // this as a clean connector_instance_not_found so the caller can map
     // it to the right "unknown connector" 404 instead of bubbling SQLite's
     // 500.
@@ -249,16 +251,16 @@ export function createSqliteConnectorInstanceStore() {
       return this.get(normalized.connectorInstanceId);
     },
 
-    ensureLegacyDefault({ ownerSubjectId, connectorId, displayName, now }) {
+    ensureDefaultAccountConnection({ ownerSubjectId, connectorId, displayName, now }) {
       return this.upsert({
-        connectorInstanceId: makeLegacyConnectorInstanceId(ownerSubjectId, connectorId),
+        connectorInstanceId: makeDefaultAccountConnectorInstanceId(ownerSubjectId, connectorId),
         ownerSubjectId,
         connectorId,
         displayName: displayName ?? connectorId,
         status: 'active',
-        sourceKind: 'legacy',
-        sourceBindingKey: 'default',
-        sourceBinding: { kind: 'legacy_default' },
+        sourceKind: 'account',
+        sourceBindingKey: DEFAULT_ACCOUNT_SOURCE_BINDING_KEY,
+        sourceBinding: { ...DEFAULT_ACCOUNT_SOURCE_BINDING },
         createdAt: now,
         updatedAt: now,
       });
@@ -332,16 +334,16 @@ export function createPostgresConnectorInstanceStore() {
       return await this.get(normalized.connectorInstanceId);
     },
 
-    async ensureLegacyDefault({ ownerSubjectId, connectorId, displayName, now }) {
+    async ensureDefaultAccountConnection({ ownerSubjectId, connectorId, displayName, now }) {
       return await this.upsert({
-        connectorInstanceId: makeLegacyConnectorInstanceId(ownerSubjectId, connectorId),
+        connectorInstanceId: makeDefaultAccountConnectorInstanceId(ownerSubjectId, connectorId),
         ownerSubjectId,
         connectorId,
         displayName: displayName ?? connectorId,
         status: 'active',
-        sourceKind: 'legacy',
-        sourceBindingKey: 'default',
-        sourceBinding: { kind: 'legacy_default' },
+        sourceKind: 'account',
+        sourceBindingKey: DEFAULT_ACCOUNT_SOURCE_BINDING_KEY,
+        sourceBinding: { ...DEFAULT_ACCOUNT_SOURCE_BINDING },
         createdAt: now,
         updatedAt: now,
       });

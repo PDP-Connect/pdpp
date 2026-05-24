@@ -44,7 +44,7 @@ import {
 } from './postgres-records.js';
 import { isPostgresStorageBackend } from './postgres-storage.js';
 import { getDefaultConnectorStateStore } from './stores/connector-state-store.ts';
-import { makeLegacyConnectorInstanceId } from './stores/connector-instance-store.js';
+import { makeDefaultAccountConnectorInstanceId } from './stores/connector-instance-store.js';
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from './owner-auth.ts';
 import {
   applyDatasetSummaryRecordDelta,
@@ -84,7 +84,7 @@ function resolveStorageConnectorInstanceId(storageTarget, connectorId) {
     err.code = 'invalid_connector_id';
     throw err;
   }
-  return makeLegacyConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId);
+  return makeDefaultAccountConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId);
 }
 
 function getChangeHistoryLimit() {

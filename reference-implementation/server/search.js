@@ -40,7 +40,7 @@ import {
   passesGrantRecordConstraints,
   passesRequestFilters,
 } from './record-filters.js';
-import { makeLegacyConnectorInstanceId } from './stores/connector-instance-store.js';
+import { makeDefaultAccountConnectorInstanceId } from './stores/connector-instance-store.js';
 import {
   postgresLexicalIndexDelete,
   postgresLexicalIndexDeleteByConnectorStream,
@@ -103,7 +103,7 @@ function resolveLexicalConnectorInstanceId(connectorId, connectorInstanceId = nu
   if (typeof connectorInstanceId === 'string' && connectorInstanceId.trim()) {
     return connectorInstanceId.trim();
   }
-  return makeLegacyConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId);
+  return makeDefaultAccountConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId);
 }
 
 // ─── Stream-level declaration lookup ───────────────────────────────────────

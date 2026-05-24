@@ -6,7 +6,7 @@ import {
   ConnectorInstanceResolutionError,
   createPostgresConnectorInstanceStore,
   createSqliteConnectorInstanceStore,
-  makeLegacyConnectorInstanceId,
+  makeDefaultAccountConnectorInstanceId,
   resolveOwnerConnectorInstanceNamespace,
 } from '../server/stores/connector-instance-store.js';
 import { closePostgresStorage, initPostgresStorage, postgresQuery } from '../server/postgres-storage.js';
@@ -45,16 +45,16 @@ async function runConformance({ makeStore, seedConnector }) {
   await seedConnector('claude-code');
   await seedConnector('reddit');
 
-  const legacy = await driver.call('ensureLegacyDefault', {
+  const defaultAccount = await driver.call('ensureDefaultAccountConnection', {
     ownerSubjectId: 'owner_1',
     connectorId: 'gmail',
     displayName: 'Gmail',
     now: NOW,
   });
-  assert.equal(legacy.connectorInstanceId, makeLegacyConnectorInstanceId('owner_1', 'gmail'));
-  assert.equal(legacy.sourceKind, 'legacy');
-  assert.deepEqual(legacy.sourceBinding, { kind: 'legacy_default' });
-  assert.equal((await driver.call('resolveActiveByConnector', 'owner_1', 'gmail')).connectorInstanceId, legacy.connectorInstanceId);
+  assert.equal(defaultAccount.connectorInstanceId, makeDefaultAccountConnectorInstanceId('owner_1', 'gmail'));
+  assert.equal(defaultAccount.sourceKind, 'account');
+  assert.deepEqual(defaultAccount.sourceBinding, { kind: 'default_account' });
+  assert.equal((await driver.call('resolveActiveByConnector', 'owner_1', 'gmail')).connectorInstanceId, defaultAccount.connectorInstanceId);
   assert.deepEqual(
     await resolveOwnerConnectorInstanceNamespace({
       ownerSubjectId: 'owner_1',
@@ -64,14 +64,14 @@ async function runConformance({ makeStore, seedConnector }) {
     {
       ownerSubjectId: 'owner_1',
       connectorId: 'gmail',
-      connectorInstanceId: legacy.connectorInstanceId,
+      connectorInstanceId: defaultAccount.connectorInstanceId,
       displayName: 'Gmail',
       status: 'active',
-      sourceKind: 'legacy',
+      sourceKind: 'account',
       sourceBindingKey: 'default',
-      sourceBinding: { kind: 'legacy_default' },
+      sourceBinding: { kind: 'default_account' },
       selector: 'connector_id',
-      createdLegacyDefault: false,
+      createdDefaultAccount: false,
     },
   );
 
@@ -217,11 +217,11 @@ async function runConformance({ makeStore, seedConnector }) {
     connectorId: 'reddit',
     displayName: 'Reddit',
     connectorInstanceStore: store,
-    allowLegacyDefault: true,
+    allowDefaultAccount: true,
     now: NOW,
   });
-  assert.equal(created.connectorInstanceId, makeLegacyConnectorInstanceId('owner_3', 'reddit'));
-  assert.equal(created.createdLegacyDefault, true);
+  assert.equal(created.connectorInstanceId, makeDefaultAccountConnectorInstanceId('owner_3', 'reddit'));
+  assert.equal(created.createdDefaultAccount, true);
   assert.equal(created.selector, 'connector_id');
   await assert.rejects(
     () => resolveOwnerConnectorInstanceNamespace({
@@ -232,7 +232,7 @@ async function runConformance({ makeStore, seedConnector }) {
   );
 }
 
-test('SQLite ConnectorInstanceStore supports legacy defaults and ambiguous connector-only resolution', async () => {
+test('SQLite ConnectorInstanceStore supports default account connections and ambiguous connector-only resolution', async () => {
   initDb();
   try {
     await runConformance({

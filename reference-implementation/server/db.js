@@ -171,7 +171,7 @@ CREATE TABLE IF NOT EXISTS connector_instances (
   connector_id          TEXT NOT NULL,
   display_name          TEXT NOT NULL,
   status                TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'paused', 'revoked')),
-  source_kind           TEXT NOT NULL CHECK (source_kind IN ('account', 'local_device', 'manual', 'legacy')),
+  source_kind           TEXT NOT NULL CHECK (source_kind IN ('account', 'local_device', 'manual')),
   source_binding_key    TEXT NOT NULL,
   source_binding_json   TEXT NOT NULL DEFAULT '{}',
   created_at            TEXT NOT NULL,
@@ -1258,12 +1258,12 @@ function legacyLocalDeviceConnectorId(connectorId, sourceInstanceId) {
   return `${localDeviceConnectorId(connectorId)}:${encodeURIComponent(sourceInstanceId)}`;
 }
 
-function makeLegacyConnectorInstanceId(ownerSubjectId, connectorId) {
-  const hash = createHash('sha256').update(`${ownerSubjectId}\n${connectorId}`).digest('hex');
-  return `cin_legacy_${hash.slice(0, 24)}`;
+function makeDefaultAccountConnectorInstanceId(ownerSubjectId, connectorId) {
+  const hash = createHash('sha256').update(`${ownerSubjectId}\n${connectorId}\naccount\ndefault`).digest('hex');
+  return `cin_${hash.slice(0, 24)}`;
 }
 
-function legacySyncStateConnectorInstanceId(raw, connectorId) {
+function defaultConnectorInstanceIdForBackfill(raw, connectorId) {
   const rows = raw.prepare(
     `SELECT connector_instance_id
        FROM connector_instances
@@ -1273,7 +1273,7 @@ function legacySyncStateConnectorInstanceId(raw, connectorId) {
   if (rows.length === 1) {
     return rows[0].connector_instance_id;
   }
-  return makeLegacyConnectorInstanceId(LEGACY_SYNC_STATE_OWNER_SUBJECT_ID, connectorId);
+  return makeDefaultAccountConnectorInstanceId(LEGACY_SYNC_STATE_OWNER_SUBJECT_ID, connectorId);
 }
 
 function migrateConnectorSyncStateInstanceColumns(raw, opts = {}) {
@@ -1310,7 +1310,7 @@ function migrateConnectorSyncStateInstanceColumns(raw, opts = {}) {
       }
       const connectorId = row.connector_id;
       if (!byConnector.has(connectorId)) {
-        byConnector.set(connectorId, legacySyncStateConnectorInstanceId(raw, connectorId));
+        byConnector.set(connectorId, defaultConnectorInstanceIdForBackfill(raw, connectorId));
       }
       return byConnector.get(connectorId);
     };
@@ -1640,7 +1640,7 @@ function migrateRecordStorageInstanceColumns(raw, opts = {}) {
     const instanceIds = new Map();
     const resolveInstanceId = (row) => {
       if (typeof row.connector_instance_id === 'string' && row.connector_instance_id.trim()) return row.connector_instance_id.trim();
-      if (!instanceIds.has(row.connector_id)) instanceIds.set(row.connector_id, legacySyncStateConnectorInstanceId(raw, row.connector_id));
+      if (!instanceIds.has(row.connector_id)) instanceIds.set(row.connector_id, defaultConnectorInstanceIdForBackfill(raw, row.connector_id));
       return instanceIds.get(row.connector_id);
     };
 
@@ -1787,7 +1787,7 @@ function migrateBlobOriginInstanceColumn(raw, opts = {}) {
         : '';
       if (!connectorInstanceId) {
         if (!legacyInstanceIds.has(row.connector_id)) {
-          legacyInstanceIds.set(row.connector_id, legacySyncStateConnectorInstanceId(raw, row.connector_id));
+          legacyInstanceIds.set(row.connector_id, defaultConnectorInstanceIdForBackfill(raw, row.connector_id));
         }
         connectorInstanceId = legacyInstanceIds.get(row.connector_id);
       }
@@ -1825,7 +1825,7 @@ function migrateLexicalSearchInstanceColumns(raw, opts = {}) {
     const instanceIds = new Map();
     const resolveInstanceId = (row) => {
       if (typeof row.connector_instance_id === 'string' && row.connector_instance_id.trim()) return row.connector_instance_id.trim();
-      if (!instanceIds.has(row.connector_id)) instanceIds.set(row.connector_id, legacySyncStateConnectorInstanceId(raw, row.connector_id));
+      if (!instanceIds.has(row.connector_id)) instanceIds.set(row.connector_id, defaultConnectorInstanceIdForBackfill(raw, row.connector_id));
       return instanceIds.get(row.connector_id);
     };
 
@@ -1892,7 +1892,7 @@ function migrateConnectorDetailGapInstanceColumns(raw, opts = {}) {
     const rows = raw.prepare('SELECT gap_id, connector_id FROM connector_detail_gaps ORDER BY gap_id').all();
     const instanceIds = new Map();
     const resolveInstanceId = (connectorId) => {
-      if (!instanceIds.has(connectorId)) instanceIds.set(connectorId, legacySyncStateConnectorInstanceId(raw, connectorId));
+      if (!instanceIds.has(connectorId)) instanceIds.set(connectorId, defaultConnectorInstanceIdForBackfill(raw, connectorId));
       return instanceIds.get(connectorId);
     };
     const update = raw.prepare('UPDATE connector_detail_gaps SET connector_instance_id = ? WHERE gap_id = ?');
@@ -1929,7 +1929,7 @@ function migrateSchedulerInstanceColumns(raw) {
     const instanceIds = new Map();
     const resolveInstanceId = (row) => {
       if (typeof row.connector_instance_id === 'string' && row.connector_instance_id.trim()) return row.connector_instance_id.trim();
-      if (!instanceIds.has(row.connector_id)) instanceIds.set(row.connector_id, legacySyncStateConnectorInstanceId(raw, row.connector_id));
+      if (!instanceIds.has(row.connector_id)) instanceIds.set(row.connector_id, defaultConnectorInstanceIdForBackfill(raw, row.connector_id));
       return instanceIds.get(row.connector_id);
     };
 
@@ -2001,6 +2001,333 @@ DROP INDEX IF EXISTS idx_scheduler_run_history_connector_completed;
 CREATE INDEX IF NOT EXISTS idx_controller_active_runs_run_id ON controller_active_runs(run_id);
 CREATE INDEX IF NOT EXISTS idx_scheduler_run_history_connector_completed ON scheduler_run_history(connector_instance_id, completed_at, id);
 `);
+}
+
+// Reference tables that hold a direct `connector_instance_id` reference.
+// Used by `migrateLegacyConnectorInstancesToDefaultAccount` to rewrite ids
+// atomically when a legacy compatibility row is migrated to a deterministic
+// default-account connection id.
+const LEGACY_REWRITE_INSTANCE_REFERENCE_TABLES = [
+  'connector_state',
+  'grant_connector_state',
+  'records',
+  'record_changes',
+  'version_counter',
+  'blobs',
+  'blob_bindings',
+  'lexical_search_index',
+  'lexical_search_meta',
+  'semantic_search_rowid',
+  'semantic_search_blob',
+  'semantic_search_meta',
+  'semantic_search_backfill_progress',
+  'connector_detail_gaps',
+  'connector_attention_records',
+  'connector_schedules',
+  'controller_active_runs',
+  'scheduler_run_history',
+  'scheduler_last_run_times',
+  'device_source_instances',
+];
+
+function migrateLegacyConnectorInstancesToDefaultAccount(raw, opts = {}) {
+  if (!hasTableColumn(raw, 'connector_instances', 'source_kind')) {
+    return { rewrittenRows: 0, rewrittenInstanceCount: 0 };
+  }
+
+  const legacyRows = raw.prepare(
+    `SELECT connector_instance_id, owner_subject_id, connector_id, display_name, status, created_at, updated_at, revoked_at
+       FROM connector_instances
+      WHERE source_kind = 'legacy'
+      ORDER BY connector_instance_id`
+  ).all();
+  if (legacyRows.length === 0) {
+    return { rewrittenRows: 0, rewrittenInstanceCount: 0 };
+  }
+
+  const existingTables = LEGACY_REWRITE_INSTANCE_REFERENCE_TABLES.filter(
+    (table) => hasTableColumn(raw, table, 'connector_instance_id'),
+  );
+
+  const migration = raw.transaction(() => {
+    const getDestination = raw.prepare(
+      `SELECT connector_instance_id, status, source_kind, source_binding_key
+         FROM connector_instances
+        WHERE owner_subject_id = ? AND connector_id = ? AND source_kind = 'account' AND source_binding_key = 'default'
+        LIMIT 1`
+    );
+    const renameDestination = raw.prepare(
+      `UPDATE connector_instances
+          SET connector_instance_id = ?,
+              source_kind = 'account',
+              source_binding_key = 'default',
+              source_binding_json = ?,
+              updated_at = ?
+        WHERE connector_instance_id = ?`
+    );
+    const updateDestination = raw.prepare(
+      `UPDATE connector_instances
+          SET source_kind = 'account',
+              source_binding_key = 'default',
+              source_binding_json = ?,
+              updated_at = ?
+        WHERE connector_instance_id = ?`
+    );
+    const deleteRow = raw.prepare(
+      `DELETE FROM connector_instances WHERE connector_instance_id = ?`
+    );
+
+    const defaultBindingJson = stableJson({ kind: 'default_account' });
+    let rewrittenRows = 0;
+    let rewrittenInstanceCount = 0;
+
+    for (const legacy of legacyRows) {
+      const oldId = legacy.connector_instance_id;
+      const newId = makeDefaultAccountConnectorInstanceId(legacy.owner_subject_id, legacy.connector_id);
+      const now = new Date().toISOString();
+      const destination = getDestination.get(legacy.owner_subject_id, legacy.connector_id);
+
+      if (destination && destination.connector_instance_id === oldId) {
+        // Identical id collision (shouldn't happen because oldId starts with
+        // cin_legacy_), but treat as in-place relabel.
+        updateDestination.run(defaultBindingJson, now, oldId);
+        rewrittenInstanceCount += 1;
+        continue;
+      }
+
+      if (!destination) {
+        if (oldId === newId) {
+          updateDestination.run(defaultBindingJson, now, oldId);
+          rewrittenInstanceCount += 1;
+          continue;
+        }
+        // Pre-check uniqueness on the destination id slot.
+        const conflict = raw.prepare(
+          `SELECT 1 FROM connector_instances WHERE connector_instance_id = ? LIMIT 1`
+        ).get(newId);
+        if (conflict) {
+          throw new Error(
+            `Cannot migrate legacy connector_instance ${oldId} → ${newId}: destination id already exists for a non-default-account row.`,
+          );
+        }
+        renameDestination.run(newId, defaultBindingJson, now, oldId);
+        for (const table of existingTables) {
+          const result = raw.prepare(
+            `UPDATE ${table} SET connector_instance_id = ? WHERE connector_instance_id = ?`
+          ).run(newId, oldId);
+          rewrittenRows += result.changes;
+        }
+        rewrittenInstanceCount += 1;
+        continue;
+      }
+
+      // A real default-account row already exists for this owner/connector.
+      // Move references from the legacy id to the existing id, then drop
+      // the legacy row. We never silently discard rows: if a UNIQUE
+      // collision would force a row to be dropped, the migration aborts.
+      const destId = destination.connector_instance_id;
+      for (const table of existingTables) {
+        const conflictColumns = uniqueColumnsForTable(table);
+        if (conflictColumns === null) {
+          // No unique columns beyond connector_instance_id: a plain
+          // re-point is safe.
+          const result = raw.prepare(
+            `UPDATE ${table} SET connector_instance_id = ? WHERE connector_instance_id = ?`
+          ).run(destId, oldId);
+          rewrittenRows += result.changes;
+          continue;
+        }
+
+        if (conflictColumns.length === 0) {
+          // connector_instance_id is itself the entire UNIQUE/PK. If both
+          // ids hold a row, the rows are conceptually duplicates of one
+          // resource; fail rather than silently discard.
+          const both = raw.prepare(
+            `SELECT
+               (SELECT 1 FROM ${table} WHERE connector_instance_id = ? LIMIT 1) AS legacy_present,
+               (SELECT 1 FROM ${table} WHERE connector_instance_id = ? LIMIT 1) AS dest_present`
+          ).get(oldId, destId);
+          if (both?.legacy_present && both?.dest_present) {
+            throw new Error(
+              `Cannot migrate legacy connector_instance ${oldId} → ${destId}: both ids hold a row in ${table} keyed solely on connector_instance_id; manual reconciliation required.`,
+            );
+          }
+          if (both?.legacy_present) {
+            const result = raw.prepare(
+              `UPDATE ${table} SET connector_instance_id = ? WHERE connector_instance_id = ?`
+            ).run(destId, oldId);
+            rewrittenRows += result.changes;
+          }
+          continue;
+        }
+
+        const keys = raw.prepare(
+          `SELECT ${conflictColumns.join(', ')} FROM ${table} WHERE connector_instance_id = ?`
+        ).all(oldId);
+        for (const k of keys) {
+          const values = conflictColumns.map((c) => k[c]);
+          const conflictValues = values.flatMap((value) => [value, value]);
+          const conflict = raw.prepare(
+            `SELECT 1 FROM ${table}
+              WHERE connector_instance_id = ?
+                AND ${nullSafeSqliteWhere(conflictColumns)}
+              LIMIT 1`
+          ).get(destId, ...conflictValues);
+          if (conflict) {
+            throw new Error(
+              `Cannot migrate legacy connector_instance ${oldId} → ${destId}: ${table} has a colliding row on (${conflictColumns.join(', ')}) = (${values.join(', ')}); manual reconciliation required.`,
+            );
+          }
+        }
+        const result = raw.prepare(
+          `UPDATE ${table} SET connector_instance_id = ? WHERE connector_instance_id = ?`
+        ).run(destId, oldId);
+        rewrittenRows += result.changes;
+      }
+      deleteRow.run(oldId);
+      rewrittenInstanceCount += 1;
+    }
+
+    return { rewrittenRows, rewrittenInstanceCount };
+  });
+
+  const result = migration();
+  if (typeof opts.onSchemaMigration === 'function') {
+    opts.onSchemaMigration({
+      name: 'legacy_connector_instances_to_default_account',
+      rebuilt: false,
+      backfilledRows: result.rewrittenRows,
+      rewrittenInstanceCount: result.rewrittenInstanceCount,
+    });
+  }
+  return result;
+}
+
+function uniqueColumnsForTable(table) {
+  switch (table) {
+    case 'connector_state':
+      return ['stream'];
+    case 'grant_connector_state':
+      return ['grant_id', 'stream'];
+    case 'records':
+      return ['stream', 'record_key'];
+    case 'record_changes':
+      return ['stream', 'version'];
+    case 'version_counter':
+      return ['stream'];
+    case 'blob_bindings':
+      return ['blob_id', 'stream', 'record_key', 'json_path'];
+    case 'lexical_search_index':
+      return ['stream', 'record_key', 'field'];
+    case 'lexical_search_meta':
+      return ['stream'];
+    case 'connector_detail_gaps':
+      return ['grant_id', 'stream', 'parent_stream', 'record_key', 'detail_locator_json'];
+    case 'semantic_search_meta':
+      return ['stream'];
+    case 'semantic_search_backfill_progress':
+      return ['stream'];
+    case 'semantic_search_rowid':
+      return ['scope_key', 'record_key'];
+    case 'semantic_search_blob':
+      return ['scope_key', 'record_key'];
+    case 'connector_schedules':
+      return [];
+    case 'controller_active_runs':
+      return [];
+    case 'scheduler_last_run_times':
+      return [];
+    default:
+      return null;
+  }
+}
+
+function nullSafeSqliteWhere(columns) {
+  return columns
+    .map((column) => `(${column} = ? OR (${column} IS NULL AND ? IS NULL))`)
+    .join(' AND ');
+}
+
+function migrateConnectorInstancesSourceKindCheck(raw, opts = {}) {
+  const table = raw.prepare(
+    `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'connector_instances'`
+  ).get();
+  if (!table?.sql || !table.sql.includes("'legacy'")) {
+    return { rebuilt: false, backfilledRows: 0 };
+  }
+
+  const remaining = raw.prepare(
+    `SELECT COUNT(*) AS count FROM connector_instances WHERE source_kind = 'legacy'`
+  ).get();
+  if (Number(remaining?.count || 0) > 0) {
+    throw new Error(
+      `Cannot tighten connector_instances.source_kind CHECK: ${remaining.count} legacy connector instance rows remain.`,
+    );
+  }
+
+  const migration = raw.transaction(() => {
+    raw.exec(`
+      ALTER TABLE connector_instances RENAME TO connector_instances_old_source_kind;
+      DROP INDEX IF EXISTS idx_connector_instances_owner_connector_status;
+
+      CREATE TABLE connector_instances (
+        connector_instance_id TEXT PRIMARY KEY,
+        owner_subject_id      TEXT NOT NULL,
+        connector_id          TEXT NOT NULL,
+        display_name          TEXT NOT NULL,
+        status                TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'paused', 'revoked')),
+        source_kind           TEXT NOT NULL CHECK (source_kind IN ('account', 'local_device', 'manual')),
+        source_binding_key    TEXT NOT NULL,
+        source_binding_json   TEXT NOT NULL DEFAULT '{}',
+        created_at            TEXT NOT NULL,
+        updated_at            TEXT NOT NULL,
+        revoked_at            TEXT,
+        UNIQUE(owner_subject_id, connector_id, source_kind, source_binding_key),
+        FOREIGN KEY(connector_id) REFERENCES connectors(connector_id) ON DELETE RESTRICT
+      );
+
+      INSERT INTO connector_instances(
+        connector_instance_id,
+        owner_subject_id,
+        connector_id,
+        display_name,
+        status,
+        source_kind,
+        source_binding_key,
+        source_binding_json,
+        created_at,
+        updated_at,
+        revoked_at
+      )
+      SELECT
+        connector_instance_id,
+        owner_subject_id,
+        connector_id,
+        display_name,
+        status,
+        source_kind,
+        source_binding_key,
+        source_binding_json,
+        created_at,
+        updated_at,
+        revoked_at
+      FROM connector_instances_old_source_kind;
+
+      DROP TABLE connector_instances_old_source_kind;
+      CREATE INDEX IF NOT EXISTS idx_connector_instances_owner_connector_status
+        ON connector_instances(owner_subject_id, connector_id, status);
+    `);
+    return {
+      rebuilt: true,
+      backfilledRows: 0,
+    };
+  });
+
+  const result = migration();
+  if (typeof opts.onSchemaMigration === 'function') {
+    opts.onSchemaMigration({ name: 'connector_instances_source_kind_check', ...result });
+  }
+  return result;
 }
 
 function isSourceKind(value) {
@@ -2244,7 +2571,7 @@ function migrateSemanticSearchInstanceColumns(raw, opts = {}) {
     const instanceIds = new Map();
     const resolveInstanceId = (row) => {
       if (typeof row.connector_instance_id === 'string' && row.connector_instance_id.trim()) return row.connector_instance_id.trim();
-      if (!instanceIds.has(row.connector_id)) instanceIds.set(row.connector_id, legacySyncStateConnectorInstanceId(raw, row.connector_id));
+      if (!instanceIds.has(row.connector_id)) instanceIds.set(row.connector_id, defaultConnectorInstanceIdForBackfill(raw, row.connector_id));
       return instanceIds.get(row.connector_id);
     };
 
@@ -2449,6 +2776,8 @@ CREATE INDEX IF NOT EXISTS idx_record_changes_record ON record_changes(connector
 CREATE INDEX IF NOT EXISTS idx_blob_bindings_record ON blob_bindings(connector_instance_id, stream, record_key);
 `);
   runWithSqliteBusyRetrySync(() => migrateSchedulerInstanceColumns(raw));
+  runWithSqliteBusyRetrySync(() => migrateLegacyConnectorInstancesToDefaultAccount(raw, opts));
+  runWithSqliteBusyRetrySync(() => migrateConnectorInstancesSourceKindCheck(raw, opts));
   raw.exec(
     `CREATE INDEX IF NOT EXISTS idx_spine_events_run_terminal
       ON spine_events(run_id, event_type, event_seq DESC)

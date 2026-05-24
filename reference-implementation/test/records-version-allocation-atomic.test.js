@@ -44,11 +44,11 @@ import assert from 'node:assert/strict';
 import { closeDb, getDb, initDb } from '../server/db.js';
 import { execReturningOne, referenceQueries } from '../lib/db.ts';
 import { deleteRecord, ingestRecord } from '../server/records.js';
-import { makeLegacyConnectorInstanceId } from '../server/stores/connector-instance-store.js';
+import { makeDefaultAccountConnectorInstanceId } from '../server/stores/connector-instance-store.js';
 
 const CONNECTOR_ID = 'https://test.pdpp.org/connectors/version-allocation';
 const CONNECTOR_INSTANCE_ID = 'cin_test_version_allocation';
-const LEGACY_CONNECTOR_INSTANCE_ID = makeLegacyConnectorInstanceId('owner_local', CONNECTOR_ID);
+const DEFAULT_ACCOUNT_CONNECTOR_INSTANCE_ID = makeDefaultAccountConnectorInstanceId('owner_local', CONNECTOR_ID);
 const STREAM = 'items';
 
 function setup() {
@@ -59,7 +59,7 @@ function teardown() {
   closeDb();
 }
 
-function readVersionCounter(connectorInstanceId = LEGACY_CONNECTOR_INSTANCE_ID) {
+function readVersionCounter(connectorInstanceId = DEFAULT_ACCOUNT_CONNECTOR_INSTANCE_ID) {
   const row = getDb()
     .prepare(
       `SELECT max_version FROM version_counter
