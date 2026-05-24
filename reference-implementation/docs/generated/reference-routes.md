@@ -14,7 +14,7 @@ Generated from `packages/reference-contract/src/public/`. Do not edit by hand.
 | **POST** | `/consent/approve` | `approveConsent` | Approve a pending data-access request through the JSON consent surface used by tests and automation. |
 | **POST** | `/consent/exchange` | `exchangeConsentCode` | Redeem a short-lived single-use consent exchange code from the hosted HTML consent flow for the client token. |
 | **POST** | `/oauth/device_authorization` | `startOwnerDeviceAuthorization` | Start the owner device flow used for owner-self-export and dashboard bootstrap. |
-| **POST** | `/oauth/token` | `exchangeOwnerDeviceToken` | Exchange an approved owner device_code for an owner bearer token. |
+| **POST** | `/oauth/token` | `exchangeOwnerDeviceToken` | Exchange an OAuth device code, authorization code, or refresh token for a bearer token. |
 | **POST** | `/introspect` | `introspectToken` | Inspect token activity and, for active client tokens, the bound grant projection. |
 | **POST** | `/grants/{grantId}/revoke` | `revokeGrant` | Revoke a grant and all tokens minted from it. |
 | **GET** | `/v1/connectors` | `listConnectors` | List connector or source boundaries visible under the bearer token, with stream summaries and coarse capability hints. |
@@ -185,14 +185,11 @@ Start the owner device flow used for owner-self-export and dashboard bootstrap.
 
 `POST /oauth/token`
 
-Exchange an approved owner device_code for an owner bearer token.
+Exchange an OAuth device code, authorization code, or refresh token for a bearer token.
 
 ### Request body
 
 `application/x-www-form-urlencoded`
-- `grant_type` (required) — const `urn:ietf:params:oauth:grant-type:device_code`
-- `device_code` (required) — string
-- `client_id` (required) — string
 
 ### Responses
 

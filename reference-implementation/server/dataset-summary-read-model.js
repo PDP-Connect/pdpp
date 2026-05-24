@@ -84,6 +84,66 @@ export function __setDatasetSummaryProjectionFaultHookForTest(hook) {
   projectionFaultHook = typeof hook === 'function' ? hook : null;
 }
 
+/**
+ * Read the per-`(connector_id, stream)` rows that the dataset-summary
+ * projection already maintains. This is a thin read over
+ * `dataset_summary_stream_projection`; it does not scan canonical
+ * `records`, `record_changes`, or `blobs`.
+ *
+ * The returned rows surface NULL and dirty time-bound values honestly so
+ * downstream surfaces can distinguish "we don't know yet" from
+ * "definitely zero". Specifically:
+ *   - `earliest_record_time` / `latest_record_time` pass through as
+ *     `null` when the projection has no value for them (no
+ *     manifest-declared `consent_time_field`, or not yet reconciled).
+ *   - `dirty_record_time_bounds` is coerced to a boolean — `true` means
+ *     the projection believes the record-time bounds are no longer
+ *     trustworthy and need reconciliation.
+ *
+ * When `connectorId` is supplied, the result is filtered to rows whose
+ * `connector_id` equals that value. Otherwise every row is returned,
+ * sorted by `connector_id` then `stream` for deterministic output.
+ */
+export function listStreamProjections({ connectorId } = {}) {
+  const db = getDb();
+  const params = [];
+  let where = '';
+  if (typeof connectorId === 'string' && connectorId.length > 0) {
+    where = ' WHERE connector_id = ?';
+    params.push(connectorId);
+  }
+  const rows = db
+    .prepare(
+      `SELECT connector_id,
+              stream,
+              record_count,
+              record_json_bytes,
+              earliest_ingested_at,
+              latest_ingested_at,
+              earliest_record_time,
+              latest_record_time,
+              consent_time_field,
+              dirty_record_time_bounds,
+              computed_at
+         FROM dataset_summary_stream_projection${where}
+        ORDER BY connector_id ASC, stream ASC`,
+    )
+    .all(...params);
+  return rows.map((row) => ({
+    connector_id: row.connector_id,
+    stream: row.stream,
+    record_count: Number(row.record_count || 0),
+    record_json_bytes: Number(row.record_json_bytes || 0),
+    earliest_ingested_at: row.earliest_ingested_at || null,
+    latest_ingested_at: row.latest_ingested_at || null,
+    earliest_record_time: row.earliest_record_time || null,
+    latest_record_time: row.latest_record_time || null,
+    consent_time_field: row.consent_time_field || null,
+    dirty_record_time_bounds: Number(row.dirty_record_time_bounds || 0) !== 0,
+    computed_at: row.computed_at || null,
+  }));
+}
+
 export function getDatasetSummaryProjection() {
   const db = getDb();
   const row = db
