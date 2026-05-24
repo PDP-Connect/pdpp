@@ -1,29 +1,30 @@
 ## Context
 
-The PDPP public read contract lives in `packages/reference-contract/src/public/index.ts` and is the single source of truth for the JSON Schema route manifests that the reference implementation, the hosted MCP integration, and the generated docs all consume. A recent fresh-eyes audit (RH Item 5, `tmp/workstreams/rh-item5-capability-contract-audit.md`) found the contract is structurally honest but has five small LLM-affordance gaps that each cost a cold-start agent one extra turn. None are protocol semantics; all are discoverability seams at the same layer that `polish-reference-api-discovery-seams` already worked on.
+The PDPP public read contract lives in `packages/reference-contract/src/public/index.ts` and is the single source of truth for the JSON Schema route manifests that the reference implementation, the hosted MCP integration, and the generated docs all consume. A recent fresh-eyes audit (RH Item 5, `tmp/workstreams/rh-item5-capability-contract-audit.md`) found the contract is structurally honest but has a handful of small LLM-affordance gaps that each cost a cold-start agent one extra turn. None are protocol semantics; all are discoverability seams at the same layer that `polish-reference-api-discovery-seams` already worked on.
 
-## Why one bundle and not five
+The original audit listed five seams. Two of those — adding optional connection identity to `listStreams` items and to search results — overlap with the canonical connection identity work owned by `expose-connection-identity-on-public-read` (RH Item 2). The owner directive bars duplicating durable identity decisions across changes, so this change explicitly excludes the identity fixes and depends on Item 2 for them. The remaining three seams (summary honesty, hybrid pagination hint, `filter` description) are token-efficiency/schema-discovery hints that do NOT touch identity.
 
-Two reasons to bundle:
+## Dependency on Item 2 (canonical connection identity)
 
-1. **Single review surface for a single audit.** All five items came out of the same audit, all touch `reference-implementation-architecture` requirements about how the public contract advertises itself to a cold-start caller, and all are additive. Splitting into five OpenSpecs would mostly produce identical proposal/design boilerplate and ask reviewers to context-switch five times for what is one cohesive "LLM-affordance pass."
-2. **Acceptance is the same test surface.** Verification is one run of `pnpm --filter @pdpp/reference-contract run verify` plus contract regen plus the existing provider-metadata tests. The fixes share their acceptance gates.
+Item 2 (`expose-connection-identity-on-public-read`) defines the canonical `connection` noun, the `connection_id` + `display_name` fields on `rs.streams.list` and search results, the fan-in vs ambiguous-connection rules, and the per-connection consent label requirement. This change MUST NOT redefine those fields, propose a `connector_instance_id`-shaped alternative, or assert anything about multi-connection disambiguation that Item 2 does not already cover.
 
-Reason to NOT bundle (considered and rejected): the five items technically touch different sub-areas of the contract (`streams`, `records`, `search.*`, discovery hints, docs). But they remain a coherent slice because they are all additive, all driven by the same "honor-or-reject" alignment principle (the contract should honestly tell an LLM what works and what doesn't, before the LLM has to find out via a 400), and none individually warrants a standalone change folder.
+Implementation order: this change SHOULD apply on top of Item 2's contract changes. When the follow-up implementation tranche lands, the same `listStreams` and search response schemas already carry `connection_id`/`display_name` from Item 2; this change only edits summaries, hints, and parameter descriptions.
 
-If review feedback wants to split, the natural cut is two changes: (a) optional disambiguation fields on responses (items 1, 2), and (b) summary/description honesty (items 3, 4, 5). The current bundle is the smaller-blast-radius default.
+## Why one bundle and not three
+
+The three remaining items came out of the same audit, all touch `reference-implementation-architecture` requirements about how the public contract advertises itself to a cold-start caller, and all are additive description/hint edits. Splitting into three OpenSpecs would mostly produce identical proposal/design boilerplate. Acceptance is the same test surface (`@pdpp/reference-contract verify` + contract regen + the existing provider-metadata tests). The bundle is the smaller-blast-radius default.
 
 ## Alternatives considered
 
-- **Per-fix OpenSpecs (5 changes).** Rejected — five copies of the same `Why` and `Impact`, five validation runs, no review benefit.
-- **No OpenSpec, ship directly as a "small thing."** Rejected — `AGENTS.md` calls out that changes to `@pdpp/reference-contract` (a durable public contract) need OpenSpec even when small. The fixes are additive but they ship through the contract's generated artifacts and reach downstream consumers (hosted MCP descriptions, OpenAPI doc, dashboards).
-- **Bundle the 5 low-risk fixes with the 5 OpenSpec-worthy larger fixes.** Rejected — the audit explicitly partitioned them, and the larger fixes (e.g. `connector_id` as a public search parameter, group-by on aggregates) are real contract changes requiring per-item design work. They will follow as separate proposals.
+- **Per-fix OpenSpecs (3 changes).** Rejected — three copies of the same `Why` and `Impact`, three validation runs, no review benefit.
+- **No OpenSpec, ship directly as a "small thing."** Rejected — `AGENTS.md` calls out that changes to `@pdpp/reference-contract` (a durable public contract) need OpenSpec even when small. The fixes ship through the contract's generated artifacts and reach downstream consumers (hosted MCP descriptions, OpenAPI doc, dashboards).
+- **Keep the original 5-item bundle including the identity fixes.** Rejected — duplicates Item 2's durable identity decision. The owner directive bars this.
+- **Bundle these hints with the OpenSpec-worthy larger contract fixes.** Rejected — the audit explicitly partitioned them, and the larger fixes (e.g. group-by on aggregates) are real contract changes requiring per-item design work.
 
 ## Honor-or-reject alignment
 
-The reference contract should either honor a caller's reasonable assumption or reject it with a self-teaching error. The five fixes pull the contract slightly further in the "honor" direction:
+The reference contract should either honor a caller's reasonable assumption or reject it with a self-teaching error. The three fixes pull the contract slightly further in the "honor" direction:
 
-- `listStreams` and search results currently let a caller *see* a stream but not *know* which connector instance it came from when two instances of the same connector are registered. The fix honors the question without making the caller paginate `/v1/connectors`.
 - `listStreams` and `getStreamMetadata` currently advertise a stream-level total but their summary does not warn that field-level filters live on a different endpoint. The fix tells the LLM where to look before it constructs a wrong call.
 - Hybrid pagination is unavailable at runtime but the contract is silent. The fix advertises the limitation via a discovery hint that is *already shaped for it* (`ProtectedResourceDiscoveryHintsSchema.hybrid_pagination_supported`).
 - `ListRecordsQuerySchema.filter` is shape-only documented. The fix points at `/v1/schema` so a caller does not have to reverse-engineer the operator set per stream.
@@ -34,17 +35,17 @@ None of these change runtime semantics. They reduce 400-rate and round-trip coun
 
 In scope:
 
-- Edits to `packages/reference-contract/src/public/index.ts` (description strings, optional field additions on response schemas).
-- Edits to `reference-implementation/server/records.js` (`listStreams` mapper) and `reference-implementation/server/search.js` (search result mappers) to emit the new optional fields when an instance id is available.
-- Edits to `docs/agent-skills/pdpp-data-access/references/query-cookbook.md` (one short note).
-- Tests covering: (a) `listStreams` emits `connector_instance_id` when two instances are registered, (b) search result items carry `connector_instance_id`, (c) `searchRecordsHybrid` summary references the discovery hint, (d) `hybrid_pagination_supported` is present whenever hybrid is advertised.
+- Edits to `packages/reference-contract/src/public/index.ts`: `listStreams.summary`, `getStreamMetadata.summary`, `searchRecordsHybrid.summary`, and `ListRecordsQuerySchema.filter.description`. No field additions, no removals.
+- Wiring assertion: `ProtectedResourceDiscoveryHintsSchema.hybrid_pagination_supported` (already declared at the contract layer and emitted by `reference-implementation/server/metadata.ts`) SHALL be derived from the same capability advertisement state used to decide whether hybrid is advertised at all, and SHALL be omitted (not `false`-defaulted) when hybrid is not advertised.
+- Edits to `docs/agent-skills/pdpp-data-access/references/query-cookbook.md` (one short note on hybrid cursor unavailability and lexical fallback).
+- Tests covering: (a) `listStreams` / `getStreamMetadata` summaries name `/v1/schema`, (b) `searchRecordsHybrid` summary references `pdpp_discovery_hints.hybrid_pagination_supported`, (c) `hybrid_pagination_supported` is present whenever hybrid is advertised and omitted otherwise, (d) `ListRecordsQuerySchema.filter.description` names `/v1/schema` and `field_capabilities`.
 
 Out of scope:
 
-- The five OpenSpec-worthy larger fixes (public `connector_id` on `/v1/search`, group-by, etc.) — separate proposals.
+- Connection identity on `listStreams` items, search result items, or anywhere else on the read contract. Owned by Item 2.
 - Changes to request schemas (no new parameters accepted).
 - Changes to hosted MCP tool registration on `claude.ai` — that surface re-syncs from the contract on its own cadence.
-- Implementation work itself. This change is OpenSpec-only on this branch per the worker prompt; the implementation lands in a follow-up.
+- Implementation work itself. This change is OpenSpec-only on this branch; the implementation lands in a follow-up.
 
 ## Acceptance checks
 
@@ -58,6 +59,6 @@ Out of scope:
 
 ## Risks
 
-- **Contract consumers double-counting the source.** Two fields (`connector_id` already present on search results; `connector_instance_id` newly added) could read like a redundant pair to a careless caller. Mitigation: keep the contract description explicit that `connector_id` identifies the registered connector and `connector_instance_id` identifies the *instance* of that connector (relevant when an owner has more than one). On `StreamListResponseSchema` we add both for symmetry with search results.
 - **Discovery hint drift.** `hybrid_pagination_supported` must be sourced from the same runtime state that decides whether hybrid is advertised at all, or it can lie. Mitigation: spec requires it to be derived from the same capability advertisement state (precedent: `polish-reference-api-discovery-seams` does the same for other hints).
 - **Generated docs churn.** The contract regen touches generated OpenAPI/MCP doc artifacts. Mitigation: regen and re-verify is part of the acceptance checks.
+- **Implementation order vs Item 2.** If this change lands before Item 2 and the implementation tranche edits `listStreams.summary`, the summary text MUST NOT reference `connection_id` or `display_name` (those are Item 2's). The summary edit lands as a `/v1/schema` direction-and-filter-capability hint; identity additions are Item 2's responsibility.

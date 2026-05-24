@@ -1,40 +1,8 @@
 ## ADDED Requirements
 
-### Requirement: The public stream listing SHALL disambiguate multi-instance connectors
-
-The public read contract exposed by `@pdpp/reference-contract` SHALL allow the `listStreams` response to identify the originating connector and connector instance for each stream entry, so an owner-token caller with more than one instance of the same connector can route follow-up record reads without an extra `/v1/connectors` round trip. The fields SHALL be additive and optional on the JSON Schema; they SHALL NOT be added to the `required` set so existing clients that ignore them remain valid.
-
-#### Scenario: An owner has two instances of the same connector
-
-- **WHEN** an owner-token caller invokes `listStreams` and the resource server has two registered instances of the same connector (for example two `claude_code` workspaces)
-- **THEN** the response items SHALL carry an optional `connector_id` string and an optional `connector_instance_id` string identifying the originating connector and instance for each stream row
-- **AND** the caller SHALL be able to disambiguate streams that share the same `name` across instances without first calling `/v1/connectors`.
-
-#### Scenario: The runtime cannot attribute a stream to an instance
-
-- **WHEN** the runtime cannot determine the connector or instance for a stream row (for example single-source native mode, or a legacy row predating the instance identifier)
-- **THEN** the response SHALL omit the field rather than emit `null` or an empty string
-- **AND** the JSON Schema SHALL NOT require either field, so omission is contract-valid.
-
-### Requirement: Public search results SHALL identify the originating connector instance
-
-The lexical, semantic, and hybrid search response schemas published by `@pdpp/reference-contract` SHALL allow each search result item to carry an optional `connector_instance_id` in addition to the existing `connector_id`, so an owner-token caller can hydrate a record under the correct per-instance owner read scope when the originating connector has more than one registered instance.
-
-#### Scenario: A search hit comes from a known instance
-
-- **WHEN** an owner-token caller invokes `searchRecordsLexical`, `searchRecordsSemantic`, or `searchRecordsHybrid` and a hit originates from a connector that has more than one registered instance
-- **THEN** the corresponding search-result item SHALL carry both `connector_id` and `connector_instance_id` identifying the originating connector and instance
-- **AND** `connector_instance_id` SHALL match the value `listStreams` reports for that same instance.
-
-#### Scenario: A search hit cannot be attributed to an instance
-
-- **WHEN** a search hit comes from a row that pre-dates the instance identifier or from a single-source native provider
-- **THEN** the response item SHALL omit `connector_instance_id` rather than emit `null`
-- **AND** the JSON Schema SHALL NOT add `connector_instance_id` to the `required` set on any of the three search response item schemas.
-
 ### Requirement: Stream-level read operations SHALL direct callers to `/v1/schema` for field-level filters
 
-The operation summary text published by `@pdpp/reference-contract` for `listStreams` and `getStreamMetadata` SHALL explicitly state that these endpoints return stream-level totals only, and SHALL direct the caller to `GET /v1/schema` first when they need field-level filter capabilities. This turns a class of foreseeable 400-failures (a caller attaches `filter[...]` to a stream-level endpoint that does not accept it) into a self-teaching contract hint.
+The operation summary text published by `@pdpp/reference-contract` for `listStreams` and `getStreamMetadata` SHALL explicitly state that these endpoints return stream-level totals only, and SHALL direct the caller to `GET /v1/schema` first when they need field-level filter capabilities. This turns a class of foreseeable 400-failures (a caller attaches `filter[...]` to a stream-level endpoint that does not accept it) into a self-teaching contract hint. Connection identity on these operations' response items is owned by `expose-connection-identity-on-public-read` and is NOT defined here.
 
 #### Scenario: An LLM caller reads the `listStreams` summary
 
