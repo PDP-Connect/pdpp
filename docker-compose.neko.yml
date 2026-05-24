@@ -1,5 +1,7 @@
 services:
   reference:
+    depends_on:
+      - registry-mock
     environment:
       PDPP_ENABLE_STREAM_PLAYGROUND: "1"
       PDPP_STREAM_PLAYGROUND_BACKEND: ${PDPP_STREAM_PLAYGROUND_BACKEND:-neko}
@@ -128,6 +130,18 @@ services:
       - "${TURN_PORT:-3478}:3478/udp"
       - "${TURN_MIN_PORT:-49160}-${TURN_MAX_PORT:-49200}:${TURN_MIN_PORT:-49160}-${TURN_MAX_PORT:-49200}/udp"
 
+  registry-mock:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./packages/polyfill-connectors/manifests:/usr/share/nginx/html/connectors:ro
+    configs:
+      - source: registry_mock_nginx
+        target: /etc/nginx/conf.d/default.conf
+    networks:
+      default:
+        aliases:
+          - registry.pdpp.org
+
   web:
     depends_on:
       neko:
@@ -136,3 +150,17 @@ services:
       PDPP_ENABLE_STREAM_PLAYGROUND: "1"
     volumes:
       - ./tmp:/app/tmp
+
+configs:
+  registry_mock_nginx:
+    content: |
+      server {
+        listen 80;
+        server_name registry.pdpp.org;
+        root /usr/share/nginx/html;
+        location /connectors/ {
+          types { }
+          default_type application/json;
+          try_files $$uri $$uri.json =404;
+        }
+      }
