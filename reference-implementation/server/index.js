@@ -71,6 +71,7 @@ import {
 import {
   applyDatasetSummaryBlobDelta,
   getDatasetSummaryProjection,
+  listStreamProjections,
   reconcileDirtyDatasetSummaryRecordTimeBounds,
   rebuildDatasetSummaryProjection,
 } from './dataset-summary-read-model.js';
@@ -182,6 +183,7 @@ import {
   executeRecordDetail,
 } from '../operations/rs-records-detail/index.ts';
 import { executeRefDatasetSummary } from '../operations/ref-dataset-summary/index.ts';
+import { executeRefDatasetSummaryStreams } from '../operations/ref-dataset-summary-streams/index.ts';
 import { executeRefConnectorsList } from '../operations/ref-connectors-list/index.ts';
 import {
   RefConnectorDetailNotFoundError,
@@ -4014,6 +4016,69 @@ function buildAsApp(opts = {}) {
           : () => getDatasetSummaryProjection(),
       }));
       res.json(summary);
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
+  // Reference-only per-`(connector_id, stream)` dataset-summary inspection.
+  // Reads the rows already maintained by the dataset-summary read model
+  // (`dataset_summary_stream_projection`) and surfaces them honestly —
+  // NULL record-time bounds and the dirty-bound flag pass through rather
+  // than being zero-filled. Envelope assembly lives in the canonical
+  // `ref.dataset.summary.streams` operation; this route is the Fastify
+  // host adapter. Not a PDPP protocol surface.
+  app.get('/_ref/dataset/summary/streams', { contract: 'refDatasetSummaryStreams' }, ownerAuth.requireOwnerSession, async (req, res) => {
+    try {
+      const connectorIdFilter = typeof req.query?.connector_id === 'string' && req.query.connector_id.trim()
+        ? req.query.connector_id.trim()
+        : null;
+      const envelope = await executeRefDatasetSummaryStreams(
+        { connector_id: connectorIdFilter },
+        {
+          listStreams: async ({ connectorId }) => {
+            if (isPostgresStorageBackend()) {
+              // `connector_id` is the public route filter — it MUST be
+              // forwarded as `connectorId`, NOT `connectorInstanceId`.
+              // The retained_size_stream Postgres table carries both
+              // columns; we filter on `connector_id` to match the SQLite
+              // `dataset_summary_stream_projection` filter semantics.
+              const rows = await listRetainedSizeStreams(
+                connectorId ? { connectorId } : {},
+              );
+              return rows.map((row) => ({
+                connector_id: row.connector_id,
+                stream: row.stream,
+                record_count: Number(row.record_count || 0),
+                record_json_bytes: Number(row.current_record_json_bytes || 0),
+                earliest_ingested_at: null,
+                latest_ingested_at: null,
+                earliest_record_time: null,
+                latest_record_time: null,
+                consent_time_field: null,
+                dirty_record_time_bounds: Boolean(row.dirty),
+                computed_at: row.computed_at || null,
+              }));
+            }
+            return listStreamProjections({ connectorId });
+          },
+          getProjectionMetadata: async () => {
+            if (isPostgresStorageBackend()) {
+              const global = await getRetainedSizeGlobal();
+              return {
+                computed_at: global.computed_at || null,
+                state: global.metadata?.state || (global.dirty ? 'stale' : 'fresh'),
+                stale_since: global.metadata?.stale_since || null,
+                rebuild_status: global.metadata?.rebuild_status || 'idle',
+                last_error: global.metadata?.last_error || null,
+                source_high_watermark: global.metadata?.source_high_watermark || null,
+              };
+            }
+            return getDatasetSummaryProjection().metadata;
+          },
+        },
+      );
+      res.json(envelope);
     } catch (err) {
       handleError(res, err);
     }

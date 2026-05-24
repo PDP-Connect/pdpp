@@ -36,6 +36,7 @@ Generated from `packages/reference-contract/src/reference/`. Reference-designate
 | **POST** | `/_ref/runs/{runId}/interaction` | `refRunInteraction` | Owner-only control surface: answer the current pending interaction for an active controller-managed run. Reference-only; not part of the public PDPP API. |
 | **GET** | `/_ref/records/timeline` | `refRecordsTimeline` | Server-backed cross-connector recent-record feed for the Records > Timeline UI. |
 | **GET** | `/_ref/dataset/summary` | `refDatasetSummary` | Projection-backed dataset summary: record counts, retained-history bytes, timespan bounds, top connectors, and freshness metadata. |
+| **GET** | `/_ref/dataset/summary/streams` | `refDatasetSummaryStreams` | Per-(connector_id, stream) rows from the dataset-summary projection. NULL/dirty time bounds pass through honestly. |
 | **POST** | `/_ref/dataset/summary/rebuild` | `refDatasetSummaryRebuild` | Owner-triggered rebuild of the projection-backed dataset summary from durable reference state. |
 | **POST** | `/_ref/dataset/summary/reconcile` | `refDatasetSummaryReconcile` | Owner-triggered reconciliation of dirty dataset-summary record-time bounds from durable reference state. |
 | **GET** | `/_ref/dataset/size` | `refDatasetSize` | Projection-backed retained logical bytes by finite dataset grain. |
@@ -646,6 +647,23 @@ Server-backed cross-connector recent-record feed for the Records > Timeline UI.
 `GET /_ref/dataset/summary`
 
 Projection-backed dataset summary: record counts, retained-history bytes, timespan bounds, top connectors, and freshness metadata.
+
+### Responses
+
+- `200` — JSON body
+- `400` — Invalid request
+- `404` — Not found
+- `409` — Conflict (e.g. run_already_active)
+
+## refDatasetSummaryStreams
+
+`GET /_ref/dataset/summary/streams`
+
+Per-(connector_id, stream) rows from the dataset-summary projection. NULL/dirty time bounds pass through honestly.
+
+### Query parameters
+
+- `connector_id` — string
 
 ### Responses
 
