@@ -7,10 +7,16 @@ FROM node:${NODE_VERSION} AS base
 
 ARG PNPM_VERSION
 
+# PLAYWRIGHT_BROWSERS_PATH is pinned to a stable, image-wide location so the
+# bundled-Patchright browser tree can be installed once in a dedicated cache
+# stage and copied into final images. Without this, Patchright defaults to
+# $HOME/.cache/ms-playwright which is invisible to inter-stage COPY and forces
+# every reference build to reinstall ~300MB of browsers + their apt deps.
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0 \
     NEXT_TELEMETRY_DISABLED=1 \
     PNPM_HOME=/pnpm \
-    PATH=/pnpm:$PATH
+    PATH=/pnpm:$PATH \
+    PLAYWRIGHT_BROWSERS_PATH=/opt/patchright-browsers
 
 WORKDIR /app
 
@@ -22,6 +28,14 @@ RUN apt-get update \
   && corepack prepare "pnpm@${PNPM_VERSION}" --activate
 
 FROM base AS deps
+
+# Skip the patchright postinstall browser download during workspace install.
+# Browsers are installed once in the dedicated `browsers` stage so source
+# changes do not reinvalidate the browser layer; without this env, the
+# polyfill-connectors postinstall would also download browsers into
+# /opt/patchright-browsers during every dependency rebuild and would
+# slow the web/console build stages that do not need browsers.
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
 COPY apps/web/package.json apps/web/package.json
@@ -47,9 +61,37 @@ FROM source AS console-builder
 
 RUN pnpm --filter pdpp-console build
 
-FROM base AS reference
+# Dedicated browsers stage. Patchright + bundled Chromium + (on amd64) Google
+# Chrome stable + their apt deps are baked into a stage whose cache key is
+# only the patchright version and target arch. This is independent of the
+# rest of the lockfile or any source change, so ordinary code edits do not
+# reinvalidate the ~300MB browser install. Bumping the pinned version is the
+# only thing that forces a rebuild of this layer.
+#
+# The version is pinned to the same patchright used by docker/neko/Dockerfile
+# (1.59.4 → Chromium 1217). Bump both files together to keep the driver-side
+# (reference container) and binary-side (n.eko container) revisions in
+# lockstep; otherwise the CDP attach against n.eko sees a Chromium revision
+# the driver was not built for.
+FROM base AS browsers
 
 ARG TARGETARCH
+ARG PATCHRIGHT_VERSION=1.59.4
+
+WORKDIR /tmp/patchright-install
+
+RUN echo '{"name":"patchright-installer","private":true,"version":"0.0.0"}' > package.json \
+  && npm install --no-save --ignore-scripts "patchright@${PATCHRIGHT_VERSION}" \
+  && if [ "$TARGETARCH" = "arm64" ]; then \
+       npx patchright install --with-deps chromium; \
+     else \
+       npx patchright install --with-deps chrome chromium; \
+     fi \
+  && rm -rf /tmp/patchright-install
+
+WORKDIR /app
+
+FROM browsers AS reference
 
 # `.git` is excluded from the Docker build context (.dockerignore), so the
 # runtime cannot derive a real git revision at startup and falls back to
@@ -65,16 +107,6 @@ ENV NODE_ENV=production \
     PDPP_REFERENCE_REVISION=${PDPP_REFERENCE_REVISION}
 
 COPY --from=source /app /app
-
-# Runtime browser assets are installed outside /app, so the deps-stage
-# postinstall cache is not present in final images. Install real Chrome for
-# Patchright's recommended channel where Linux supports it, plus bundled
-# Chromium as an explicit fallback for the isolated launcher.
-RUN if [ "$TARGETARCH" = "arm64" ]; then \
-      pnpm --dir packages/polyfill-connectors exec patchright install --with-deps chromium; \
-    else \
-      pnpm --dir packages/polyfill-connectors exec patchright install --with-deps chrome chromium; \
-    fi
 
 EXPOSE 7662 7663
 
