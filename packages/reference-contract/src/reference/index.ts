@@ -263,13 +263,7 @@ const DatasetSummaryResponseSchema = {
         last_error: { type: ["string", "null"] },
         source_high_watermark: { type: ["string", "null"] },
       },
-      required: [
-        "computed_at",
-        "state",
-        "stale_since",
-        "rebuild_status",
-        "last_error",
-      ],
+      required: ["computed_at", "state", "stale_since", "rebuild_status", "last_error"],
     },
   },
   required: [
@@ -349,13 +343,7 @@ const DatasetSummaryStreamsResponseSchema = {
         last_error: { type: ["string", "null"] },
         source_high_watermark: { type: ["string", "null"] },
       },
-      required: [
-        "computed_at",
-        "state",
-        "stale_since",
-        "rebuild_status",
-        "last_error",
-      ],
+      required: ["computed_at", "state", "stale_since", "rebuild_status", "last_error"],
     },
   },
   required: ["object", "streams", "filters", "projection"],
@@ -418,15 +406,7 @@ const RetainedSizeTopRowSchema = {
     record_key: { type: ["string", "null"] },
     blob_id: { type: ["string", "null"] },
   },
-  required: [
-    ...RetainedSizeRowSchema.required,
-    "scope",
-    "measure",
-    "rank",
-    "grain_key",
-    "record_key",
-    "blob_id",
-  ],
+  required: [...RetainedSizeRowSchema.required, "scope", "measure", "rank", "grain_key", "record_key", "blob_id"],
 };
 
 const RetainedSizeResponseSchema = {
@@ -806,7 +786,8 @@ export const referenceManifests = [
     path: "/_ref/connections",
     surface: "reference",
     tags: ["reference", "connections"],
-    summary: "List owner-facing configured connector connections with labels, lifecycle status, binding metadata, and schedules.",
+    summary:
+      "List owner-facing configured connector connections with labels, lifecycle status, binding metadata, and schedules.",
     request: { query: ConnectionQuerySchema },
     responses: { 200: { schema: ConnectionListResponseSchema }, ...CommonErrors },
   },
@@ -1066,7 +1047,8 @@ export const referenceManifests = [
     path: "/_ref/connections/{connectorInstanceId}/run",
     surface: "reference",
     tags: ["reference", "runs", "connections"],
-    summary: "Start a connector run for one configured connection. Returns 202 with run_id + trace_id, or 409 run_already_active.",
+    summary:
+      "Start a connector run for one configured connection. Returns 202 with run_id + trace_id, or 409 run_already_active.",
     request: { params: ConnectorInstanceIdParamSchema },
     responses: {
       202: { schema: RunStartResponseSchema, description: "Accepted" },
@@ -1314,8 +1296,7 @@ export const referenceManifests = [
     path: "/_ref/dataset/summary/rebuild",
     surface: "reference",
     tags: ["reference", "dataset"],
-    summary:
-      "Owner-triggered rebuild of the projection-backed dataset summary from durable reference state.",
+    summary: "Owner-triggered rebuild of the projection-backed dataset summary from durable reference state.",
     request: {},
     responses: {
       200: {
@@ -1330,8 +1311,7 @@ export const referenceManifests = [
     path: "/_ref/dataset/summary/reconcile",
     surface: "reference",
     tags: ["reference", "dataset"],
-    summary:
-      "Owner-triggered reconciliation of dirty dataset-summary record-time bounds from durable reference state.",
+    summary: "Owner-triggered reconciliation of dirty dataset-summary record-time bounds from durable reference state.",
     request: {},
     responses: {
       200: {
@@ -1356,8 +1336,7 @@ export const referenceManifests = [
     path: "/_ref/dataset/size",
     surface: "reference",
     tags: ["reference", "dataset"],
-    summary:
-      "Projection-backed retained logical bytes by finite dataset grain.",
+    summary: "Projection-backed retained logical bytes by finite dataset grain.",
     request: {
       query: {
         type: "object",
@@ -1380,8 +1359,7 @@ export const referenceManifests = [
     path: "/_ref/dataset/top",
     surface: "reference",
     tags: ["reference", "dataset"],
-    summary:
-      "Bounded retained-size heavy hitters for owner dataset introspection.",
+    summary: "Bounded retained-size heavy hitters for owner dataset introspection.",
     request: {
       query: {
         type: "object",
@@ -1415,8 +1393,7 @@ export const referenceManifests = [
     path: "/_ref/dataset/size/rebuild",
     surface: "reference",
     tags: ["reference", "dataset"],
-    summary:
-      "Owner-triggered rebuild of retained-size projection rows from durable reference state.",
+    summary: "Owner-triggered rebuild of retained-size projection rows from durable reference state.",
     request: {},
     responses: {
       200: {
@@ -1439,8 +1416,7 @@ export const referenceManifests = [
     path: "/_ref/dataset/size/reconcile",
     surface: "reference",
     tags: ["reference", "dataset"],
-    summary:
-      "Owner-triggered reconciliation of dirty retained-size projection rows from durable reference state.",
+    summary: "Owner-triggered reconciliation of dirty retained-size projection rows from durable reference state.",
     request: {},
     responses: {
       200: {

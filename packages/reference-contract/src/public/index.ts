@@ -705,11 +705,7 @@ const RefreshTokenRequestSchema = {
 };
 
 const OAuthTokenRequestSchema = {
-  oneOf: [
-    OwnerDeviceTokenRequestSchema,
-    AuthorizationCodeTokenRequestSchema,
-    RefreshTokenRequestSchema,
-  ],
+  oneOf: [OwnerDeviceTokenRequestSchema, AuthorizationCodeTokenRequestSchema, RefreshTokenRequestSchema],
 };
 
 const AccessTokenResponseSchema = {
@@ -736,10 +732,7 @@ const HostedMcpTokenResponseSchema = {
 };
 
 const OAuthTokenResponseSchema = {
-  oneOf: [
-    AccessTokenResponseSchema,
-    HostedMcpTokenResponseSchema,
-  ],
+  oneOf: [AccessTokenResponseSchema, HostedMcpTokenResponseSchema],
 };
 
 const IntrospectionRequestSchema = {
@@ -1132,8 +1125,7 @@ export const publicManifests = [
     path: "/.well-known/oauth-protected-resource/mcp",
     surface: "public",
     tags: ["metadata", "mcp", "oauth"],
-    summary:
-      "Return RFC 9728 protected-resource metadata for the hosted MCP endpoint.",
+    summary: "Return RFC 9728 protected-resource metadata for the hosted MCP endpoint.",
     responses: {
       200: { schema: ProtectedResourceMetadataSchema },
     },
