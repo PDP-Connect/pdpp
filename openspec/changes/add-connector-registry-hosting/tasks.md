@@ -10,5 +10,5 @@
 
 - [x] Validate the OpenSpec change.
 - [x] Validate the compose overlay.
-- [ ] Rebuild and redeploy the local Docker stack from pushed branch artifacts.
-- [ ] Verify manifest fetch from the reference container.
+- [x] Rebuild and redeploy the local Docker stack from pushed branch artifacts.
+- [x] Verify manifest fetch from the reference container.
