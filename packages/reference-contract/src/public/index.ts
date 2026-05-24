@@ -95,7 +95,11 @@ const ListRecordsQuerySchema = {
     changes_since: ChangesSinceSchema,
     fields: { type: "string" },
     view: { type: "string" },
-    filter: { type: "object" },
+    filter: {
+      type: "object",
+      description:
+        "Per-field filter map. Exact: `filter[field]=value`. Range: `filter[field][op]=value` where `op` is one of the declared `field_capabilities.range_filter.operators` from `GET /v1/schema`.",
+    },
     expand: { type: "array", items: NonEmptyStringSchema },
     expand_limit: { type: "object" },
     connector_id: { type: "string" },
@@ -1337,7 +1341,8 @@ export const publicManifests = [
     path: "/v1/streams",
     surface: "public",
     tags: ["records"],
-    summary: "List streams available under the current grant or owner scope.",
+    summary:
+      "List streams available under the current grant or owner scope. Returns stream-level totals only; for per-field filter capabilities (exact, range operators, aggregation) call `GET /v1/schema` first and consult `field_capabilities` per stream before issuing `filter[...]` queries on `/v1/streams/{stream}/records`.",
     request: {
       headers: AuthHeaderSchema,
       query: {
@@ -1360,7 +1365,8 @@ export const publicManifests = [
     path: "/v1/streams/{stream}",
     surface: "public",
     tags: ["records"],
-    summary: "Return stream metadata including declared query capabilities and advisory freshness.",
+    summary:
+      "Return stream metadata including declared query capabilities and advisory freshness. For per-field filter capabilities on this stream (exact, range operators, aggregation), prefer `GET /v1/schema` first and read `field_capabilities` rather than guessing `filter[...]` shapes against the records endpoint.",
     request: {
       headers: AuthHeaderSchema,
       params: StreamNamePathSchema,
@@ -1631,7 +1637,7 @@ export const publicManifests = [
     surface: "public",
     tags: ["records", "hybrid-retrieval"],
     summary:
-      "Experimental optional extension: hybrid retrieval blending lexical and semantic recall under one grant-safe result list. See the hybrid-retrieval capability spec.",
+      "Experimental optional extension: hybrid retrieval blending lexical and semantic recall under one grant-safe result list. See the hybrid-retrieval capability spec. Hybrid does NOT support cursor pagination on this reference; check `pdpp_discovery_hints.hybrid_pagination_supported` in the protected-resource metadata and, when it is `false` or absent, fall back to `GET /v1/search` (lexical) which supports `cursor`.",
     request: {
       headers: AuthHeaderSchema,
       // Mirrors the lexical + semantic allowlists. v1 intentionally omits
