@@ -40,6 +40,7 @@ import {
   configureSemanticBackend,
   makeStubBackend,
   runSemanticSearch,
+  semanticIndexBackfillForManifest,
   semanticIndexUpsert,
 } from '../server/search-semantic.js';
 import {
@@ -151,6 +152,106 @@ if (!POSTGRES_URL) {
       assert.equal(getStorageBackendKind(), 'postgres');
     } finally {
       await closeStartedServer(server);
+      await closePostgresStorage();
+      closeDb();
+    }
+  });
+
+  test('postgres semantic startup backfill writes Postgres index without touching SQLite vector index', async () => {
+    const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+    const connectorId = `pg_semantic_backfill_${suffix}`;
+    const connectorInstanceId = `cin_pg_semantic_backfill_${suffix}`;
+    const stream = 'messages';
+    const manifest = {
+      connector_id: connectorId,
+      streams: [
+        {
+          name: stream,
+          query: {
+            search: {
+              semantic_fields: ['subject', 'body'],
+            },
+          },
+        },
+      ],
+    };
+
+    initDb(':memory:');
+    await initPostgresStorage({ backend: 'postgres', databaseUrl: POSTGRES_URL });
+    configureSemanticBackend(makeStubBackend({ dimensions: 8 }));
+
+    try {
+      getDb().exec(`
+        CREATE TABLE IF NOT EXISTS semantic_search_vec(
+          connector_id TEXT,
+          scope_key TEXT,
+          record_key TEXT,
+          embedding BLOB
+        )
+      `);
+      await postgresQuery(
+        `INSERT INTO records(connector_id, connector_instance_id, stream, record_key, record_json, emitted_at, version, deleted, primary_key_text)
+         VALUES
+           ($1, $2, $3, 'gmail-1', $4::jsonb, $5, 1, FALSE, 'gmail-1'),
+           ($1, $2, $3, 'gmail-2', $6::jsonb, $5, 1, FALSE, 'gmail-2')`,
+        [
+          connectorId,
+          connectorInstanceId,
+          stream,
+          JSON.stringify({ id: 'gmail-1', subject: 'Gmail backfill alpha', body: 'Postgres semantic startup path' }),
+          '2026-04-01T00:00:00.000Z',
+          JSON.stringify({ id: 'gmail-2', subject: '', body: 'Second indexed body' }),
+        ],
+      );
+
+      await semanticIndexBackfillForManifest({ manifest });
+
+      const pgRows = await postgresQuery(
+        'SELECT scope_key, record_key FROM semantic_search_blob WHERE connector_instance_id = $1 ORDER BY scope_key, record_key',
+        [connectorInstanceId],
+      );
+      assert.deepEqual(
+        pgRows.rows.map((row) => [row.scope_key, row.record_key]),
+        [
+          ['["messages","body"]', 'gmail-1'],
+          ['["messages","body"]', 'gmail-2'],
+          ['["messages","subject"]', 'gmail-1'],
+        ],
+      );
+
+      const pgMeta = await postgresQuery(
+        'SELECT fields_fingerprint, model_id, dimensions, distance_metric FROM semantic_search_meta WHERE connector_instance_id = $1 AND stream = $2',
+        [connectorInstanceId, stream],
+      );
+      assert.equal(pgMeta.rows.length, 1);
+      assert.equal(pgMeta.rows[0].fields_fingerprint, '["body","subject"]');
+      assert.equal(Number(pgMeta.rows[0].dimensions), 8);
+
+      const progressColumns = await postgresQuery(
+        `SELECT column_name
+         FROM information_schema.columns
+         WHERE table_name = 'semantic_search_backfill_progress'
+           AND column_name = 'fields_fingerprint'`,
+        [],
+      );
+      assert.equal(progressColumns.rows.length, 1, 'Postgres progress rows carry the same semantic identity as SQLite');
+
+      assert.equal(
+        getDb().prepare('SELECT COUNT(*) AS n FROM semantic_search_blob').get().n,
+        0,
+        'SQLite blob-flat semantic index remains unused during Postgres backfill',
+      );
+      assert.equal(
+        getDb().prepare('SELECT COUNT(*) AS n FROM semantic_search_vec').get().n,
+        0,
+        'SQLite vec semantic index remains unused during Postgres backfill',
+      );
+    } finally {
+      await postgresQuery('DELETE FROM semantic_search_blob WHERE connector_id = $1', [connectorId]);
+      await postgresQuery('DELETE FROM semantic_search_meta WHERE connector_id = $1', [connectorId]);
+      await postgresQuery('DELETE FROM semantic_search_backfill_progress WHERE connector_id = $1', [connectorId]);
+      await postgresQuery('DELETE FROM records WHERE connector_id = $1', [connectorId]);
+      configureSemanticBackend(null);
       await closePostgresStorage();
       closeDb();
     }

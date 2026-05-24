@@ -115,6 +115,77 @@ export async function postgresSemanticIndexDeleteByConnectorStream({ connectorId
   );
 }
 
+export async function postgresListSemanticConnectorInstanceIds({ connectorId, stream }) {
+  const result = await postgresQuery(
+    `SELECT connector_instance_id
+     FROM (
+       SELECT DISTINCT connector_instance_id
+       FROM records
+       WHERE connector_id = $1 AND stream = $2
+       UNION
+       SELECT DISTINCT connector_instance_id
+       FROM semantic_search_meta
+       WHERE connector_id = $1 AND stream = $2
+       UNION
+       SELECT DISTINCT connector_instance_id
+       FROM semantic_search_backfill_progress
+       WHERE connector_id = $1 AND stream = $2
+     ) ids
+     WHERE connector_instance_id IS NOT NULL
+     ORDER BY connector_instance_id`,
+    [connectorId, stream],
+  );
+  return result.rows.map((row) => row.connector_instance_id).filter(Boolean);
+}
+
+export async function postgresCountSemanticRecords({ connectorInstanceId, stream }) {
+  const result = await postgresQuery(
+    'SELECT COUNT(*) AS n FROM records WHERE connector_instance_id = $1 AND stream = $2 AND deleted = FALSE',
+    [connectorInstanceId, stream],
+  );
+  return Number(result.rows[0]?.n || 0);
+}
+
+export async function postgresCountIndexableSemanticValues({ connectorInstanceId, stream, declaredFields }) {
+  let total = 0;
+  for (const field of declaredFields) {
+    const result = await postgresQuery(
+      `SELECT COUNT(*) AS n
+       FROM records
+       WHERE connector_instance_id = $1
+         AND stream = $2
+         AND deleted = FALSE
+         AND NULLIF(BTRIM(record_json ->> $3), '') IS NOT NULL`,
+      [connectorInstanceId, stream, field],
+    );
+    total += Number(result.rows[0]?.n || 0);
+  }
+  return total;
+}
+
+export async function postgresCountSemanticIndexByScope({ connectorId, connectorInstanceId, scopeKey }) {
+  const result = await postgresQuery(
+    `SELECT COUNT(*) AS n
+     FROM semantic_search_blob
+     WHERE connector_id = $1 AND connector_instance_id = $2 AND scope_key = $3`,
+    [connectorId, connectorInstanceId, scopeKey],
+  );
+  return Number(result.rows[0]?.n || 0);
+}
+
+export async function postgresListExistingSemanticKeys({ connectorId, connectorInstanceId, stream }) {
+  const scopePrefix = `[${JSON.stringify(stream)},`;
+  const result = await postgresQuery(
+    `SELECT scope_key, record_key
+     FROM semantic_search_blob
+     WHERE connector_id = $1
+       AND connector_instance_id = $2
+       AND scope_key LIKE $3`,
+    [connectorId, connectorInstanceId, `${scopePrefix}%`],
+  );
+  return new Set(result.rows.map((row) => JSON.stringify([row.scope_key, `${connectorInstanceId}\u0000${row.record_key}`])));
+}
+
 export async function postgresSemanticIndexUpsertMany({ connectorId, connectorInstanceId = defaultConnectorInstanceId(connectorId), stream, recordKey, entries }) {
   await postgresSemanticIndexDelete({ connectorId, connectorInstanceId, stream, recordKey });
   for (const entry of entries) {
@@ -132,6 +203,99 @@ export async function postgresSemanticIndexUpsertMany({ connectorId, connectorIn
       ],
     );
   }
+}
+
+export async function postgresSemanticRecordsPage({ connectorInstanceId, stream, lastId, limit }) {
+  const result = await postgresQuery(
+    `SELECT id, record_key, record_json
+     FROM records
+     WHERE connector_instance_id = $1
+       AND stream = $2
+       AND deleted = FALSE
+       AND id > $3
+     ORDER BY id ASC
+     LIMIT $4`,
+    [connectorInstanceId, stream, lastId, limit],
+  );
+  return result.rows;
+}
+
+export async function postgresGetSemanticMeta({ connectorInstanceId, stream }) {
+  const result = await postgresQuery(
+    `SELECT fields_fingerprint, model_id, dimensions, distance_metric
+     FROM semantic_search_meta
+     WHERE connector_instance_id = $1 AND stream = $2`,
+    [connectorInstanceId, stream],
+  );
+  return result.rows[0] || null;
+}
+
+export async function postgresUpsertSemanticMeta({ connectorId, connectorInstanceId, stream, fieldsFingerprint, modelId, dimensions, distanceMetric }) {
+  await postgresQuery(
+    `INSERT INTO semantic_search_meta(connector_instance_id, connector_id, stream, fields_fingerprint, model_id, dimensions, distance_metric, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+     ON CONFLICT (connector_instance_id, stream) DO UPDATE
+       SET connector_id = EXCLUDED.connector_id,
+           fields_fingerprint = EXCLUDED.fields_fingerprint,
+           model_id = EXCLUDED.model_id,
+           dimensions = EXCLUDED.dimensions,
+           distance_metric = EXCLUDED.distance_metric,
+           updated_at = EXCLUDED.updated_at`,
+    [connectorInstanceId, connectorId, stream, fieldsFingerprint, modelId, dimensions, distanceMetric, new Date().toISOString()],
+  );
+}
+
+export async function postgresDeleteSemanticMeta({ connectorInstanceId, stream }) {
+  await postgresQuery(
+    'DELETE FROM semantic_search_meta WHERE connector_instance_id = $1 AND stream = $2',
+    [connectorInstanceId, stream],
+  );
+}
+
+export async function postgresGetSemanticProgress({ connectorInstanceId, stream }) {
+  const result = await postgresQuery(
+    `SELECT fields_fingerprint, model_id, dimensions, distance_metric
+     FROM semantic_search_backfill_progress
+     WHERE connector_instance_id = $1 AND stream = $2`,
+    [connectorInstanceId, stream],
+  );
+  return result.rows[0] || null;
+}
+
+export async function postgresUpsertSemanticProgress({ connectorId, connectorInstanceId, stream, fieldsFingerprint, modelId, dimensions, distanceMetric }) {
+  await postgresQuery(
+    `INSERT INTO semantic_search_backfill_progress(connector_instance_id, connector_id, stream, fields_fingerprint, model_id, dimensions, distance_metric, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+     ON CONFLICT (connector_instance_id, stream) DO UPDATE
+       SET connector_id = EXCLUDED.connector_id,
+           fields_fingerprint = EXCLUDED.fields_fingerprint,
+           model_id = EXCLUDED.model_id,
+           dimensions = EXCLUDED.dimensions,
+           distance_metric = EXCLUDED.distance_metric,
+           updated_at = EXCLUDED.updated_at`,
+    [connectorInstanceId, connectorId, stream, fieldsFingerprint, modelId, dimensions, distanceMetric, new Date().toISOString()],
+  );
+}
+
+export async function postgresDeleteSemanticProgress({ connectorInstanceId, stream }) {
+  await postgresQuery(
+    'DELETE FROM semantic_search_backfill_progress WHERE connector_instance_id = $1 AND stream = $2',
+    [connectorInstanceId, stream],
+  );
+}
+
+export async function postgresListSemanticStreamsForConnector({ connectorId }) {
+  const result = await postgresQuery(
+    `SELECT stream
+     FROM (
+       SELECT DISTINCT stream FROM semantic_search_meta WHERE connector_id = $1
+       UNION
+       SELECT DISTINCT stream FROM semantic_search_backfill_progress WHERE connector_id = $1
+     ) streams
+     ORDER BY stream`,
+    [connectorId],
+  );
+  return result.rows.map((row) => row.stream).filter(Boolean);
 }
 
 function cosineDistance(a, b) {

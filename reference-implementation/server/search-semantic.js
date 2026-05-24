@@ -57,6 +57,19 @@ import {
   postgresSemanticIndexUpsertMany,
   postgresSemanticSearch,
   postgresGetSemanticRecord,
+  postgresCountIndexableSemanticValues,
+  postgresCountSemanticIndexByScope,
+  postgresCountSemanticRecords,
+  postgresDeleteSemanticMeta,
+  postgresDeleteSemanticProgress,
+  postgresGetSemanticMeta,
+  postgresGetSemanticProgress,
+  postgresListExistingSemanticKeys,
+  postgresListSemanticConnectorInstanceIds,
+  postgresListSemanticStreamsForConnector,
+  postgresSemanticRecordsPage,
+  postgresUpsertSemanticMeta,
+  postgresUpsertSemanticProgress,
 } from './postgres-search.js';
 import { isPostgresStorageBackend, postgresQuery } from './postgres-storage.js';
 
@@ -1113,8 +1126,9 @@ async function rebuildSemanticIndexForStream({
   existingKeys = null,
   signal = null,
 }) {
-  const index = ensureVectorIndex();
-  if (!index || !backend) return 0;
+  const usePostgres = isPostgresStorageBackend();
+  const index = usePostgres ? null : ensureVectorIndex();
+  if ((!usePostgres && !index) || !backend) return 0;
 
   const PAGE = 500;
   let lastId = 0;
@@ -1127,19 +1141,22 @@ async function rebuildSemanticIndexForStream({
     if (signal?.aborted) {
       throw signal.reason instanceof Error ? signal.reason : new Error('semantic backfill aborted');
     }
-    const page = getMany(
-      referenceQueries.searchSemanticRecordsPageNonDeleted,
-      [connectorInstanceId, stream, lastId],
-      { limit: PAGE },
-    );
-    const rows = page.rows;
+    const rows = usePostgres
+      ? await postgresSemanticRecordsPage({ connectorInstanceId, stream, lastId, limit: PAGE })
+      : getMany(
+        referenceQueries.searchSemanticRecordsPageNonDeleted,
+        [connectorInstanceId, stream, lastId],
+        { limit: PAGE },
+      ).rows;
     if (rows.length === 0) break;
     const entries = [];
     for (const row of rows) {
       lastId = Number(row.id);
       let data;
       try {
-        data = row.record_json ? JSON.parse(row.record_json) : null;
+        data = typeof row.record_json === 'string'
+          ? JSON.parse(row.record_json)
+          : row.record_json;
       } catch {
         continue;
       }
@@ -1160,7 +1177,17 @@ async function rebuildSemanticIndexForStream({
         });
       }
     }
-    if (entries.length > 0 && typeof index.upsertMany === 'function') {
+    if (usePostgres) {
+      const byRecordKey = new Map();
+      for (const entry of entries) {
+        const recordEntries = byRecordKey.get(entry.recordKey) || [];
+        recordEntries.push(entry);
+        byRecordKey.set(entry.recordKey, recordEntries);
+      }
+      for (const [recordKey, recordEntries] of byRecordKey) {
+        await postgresSemanticIndexUpsertMany({ connectorId, connectorInstanceId, stream, recordKey, entries: recordEntries });
+      }
+    } else if (entries.length > 0 && typeof index.upsertMany === 'function') {
       await index.upsertMany(entries);
     } else {
       for (const entry of entries) {
@@ -1177,7 +1204,7 @@ async function rebuildSemanticIndexForStream({
       });
     }
     await yieldImmediate();
-    if (!page.truncated) break;
+    if (rows.length < PAGE) break;
   }
   return indexed;
 }
@@ -1246,8 +1273,9 @@ export async function semanticIndexBackfillForManifest({ manifest, log = () => {
   backfillJobs.set(progressJob.id, progressJob);
   try {
   const connectorId = manifest.connector_id;
-  const index = ensureVectorIndex();
-  if (!index) return;
+  const usePostgres = isPostgresStorageBackend();
+  const index = usePostgres ? null : ensureVectorIndex();
+  if (!usePostgres && !index) return;
 
   const currentModel = backendStorageIdentity(backend);
   const currentDims = backend.dimensions();
@@ -1267,17 +1295,25 @@ export async function semanticIndexBackfillForManifest({ manifest, log = () => {
     const isParticipating = Array.isArray(declaredFields) && declaredFields.length > 0;
 
     if (!isParticipating) {
-      const connectorInstanceIds = listSemanticConnectorInstanceIds({ connectorId, stream });
+      const connectorInstanceIds = usePostgres
+        ? await postgresListSemanticConnectorInstanceIds({ connectorId, stream })
+        : listSemanticConnectorInstanceIds({ connectorId, stream });
       if (connectorInstanceIds.length > 0) {
         log(`[PDPP] Semantic index: stream='${stream}' connector='${connectorId}' ` +
             `no longer declares semantic_fields — dropping stale index + meta/progress`);
         for (const connectorInstanceId of connectorInstanceIds) {
-          await index.deleteByConnectorStream({ connectorId, connectorInstanceId, stream });
-          execDynamicSqlAcknowledged(
-            'DELETE FROM semantic_search_meta WHERE connector_instance_id = ? AND stream = ?',
-            [connectorInstanceId, stream],
-          );
-          deleteBackfillProgress({ connectorId, connectorInstanceId, stream });
+          if (usePostgres) {
+            await postgresSemanticIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
+            await postgresDeleteSemanticMeta({ connectorInstanceId, stream });
+            await postgresDeleteSemanticProgress({ connectorInstanceId, stream });
+          } else {
+            await index.deleteByConnectorStream({ connectorId, connectorInstanceId, stream });
+            execDynamicSqlAcknowledged(
+              'DELETE FROM semantic_search_meta WHERE connector_instance_id = ? AND stream = ?',
+              [connectorInstanceId, stream],
+            );
+            deleteBackfillProgress({ connectorId, connectorInstanceId, stream });
+          }
         }
       }
       continue;
@@ -1298,10 +1334,16 @@ export async function semanticIndexBackfillForManifest({ manifest, log = () => {
       dimensions: currentDims,
       distanceMetric: currentMetric,
     };
-    const connectorInstanceIds = listSemanticConnectorInstanceIds({ connectorId, stream });
+    const connectorInstanceIds = usePostgres
+      ? await postgresListSemanticConnectorInstanceIds({ connectorId, stream })
+      : listSemanticConnectorInstanceIds({ connectorId, stream });
     for (const connectorInstanceId of connectorInstanceIds) {
-    const metaRow = getOne(referenceQueries.searchSemanticMetaGetByStream, [connectorInstanceId, stream]);
-    const progressRow = getOne(referenceQueries.searchSemanticProgressGetByStream, [connectorInstanceId, stream]);
+    const metaRow = usePostgres
+      ? await postgresGetSemanticMeta({ connectorInstanceId, stream })
+      : getOne(referenceQueries.searchSemanticMetaGetByStream, [connectorInstanceId, stream]);
+    const progressRow = usePostgres
+      ? await postgresGetSemanticProgress({ connectorInstanceId, stream })
+      : getOne(referenceQueries.searchSemanticProgressGetByStream, [connectorInstanceId, stream]);
     const progressMatches = semanticIdentityMatches(progressRow, currentIdentity);
 
     const fingerprintChanged = !metaRow || metaRow.fields_fingerprint !== newFingerprint;
@@ -1318,17 +1360,22 @@ export async function semanticIndexBackfillForManifest({ manifest, log = () => {
       // large local stores; use exact expected rows only to distinguish
       // "empty because no indexable text exists" from "empty because the index
       // was never built". Non-zero in-band counts are treated as usable.
-      const recordCountRow = getOne(referenceQueries.searchSemanticRecordsCountNonDeleted, [connectorInstanceId, stream]);
-      const recordCount = Number(recordCountRow?.n || 0);
+      const recordCount = usePostgres
+        ? await postgresCountSemanticRecords({ connectorInstanceId, stream })
+        : Number(getOne(referenceQueries.searchSemanticRecordsCountNonDeleted, [connectorInstanceId, stream])?.n || 0);
 
       // Index count across all declared (stream, field) scope_keys.
       let indexCount = 0;
       for (const field of declaredFields) {
-        indexCount += index.countByConnectorScope(connectorId, encodeScopeKey(stream, field), connectorInstanceId);
+        indexCount += usePostgres
+          ? await postgresCountSemanticIndexByScope({ connectorId, connectorInstanceId, scopeKey: encodeScopeKey(stream, field) })
+          : index.countByConnectorScope(connectorId, encodeScopeKey(stream, field), connectorInstanceId);
       }
       const maxIndexRows = recordCount * declaredFields.length;
       const expectedIndexRows = indexCount === 0 || indexCount > maxIndexRows
-        ? countIndexableSemanticValues({ connectorInstanceId, stream, declaredFields })
+        ? (usePostgres
+          ? await postgresCountIndexableSemanticValues({ connectorInstanceId, stream, declaredFields })
+          : countIndexableSemanticValues({ connectorInstanceId, stream, declaredFields }))
         : null;
       const inSync = indexCount > 0
         ? indexCount <= maxIndexRows
@@ -1339,7 +1386,11 @@ export async function semanticIndexBackfillForManifest({ manifest, log = () => {
         log(`[PDPP] Semantic index drift for ${connectorId} stream='${stream}' ` +
             `(records=${recordCount}, index=${indexCount}, expected=${expectedIndexRows ?? 'not_checked'}, max=${maxIndexRows}) — rebuilding`);
       } else if (progressRow) {
-        deleteBackfillProgress({ connectorId, connectorInstanceId, stream });
+        if (usePostgres) {
+          await postgresDeleteSemanticProgress({ connectorInstanceId, stream });
+        } else {
+          deleteBackfillProgress({ connectorId, connectorInstanceId, stream });
+        }
       }
     } else if (canResume) {
       log(`[PDPP] Semantic index resume for ${connectorId} stream='${stream}' ` +
@@ -1356,16 +1407,33 @@ export async function semanticIndexBackfillForManifest({ manifest, log = () => {
 
     if (!needsRebuild) continue;
 
-    upsertBackfillProgress({ connectorId, connectorInstanceId, stream, ...currentIdentity });
+    if (usePostgres) {
+      await postgresUpsertSemanticProgress({
+        connectorId,
+        connectorInstanceId,
+        stream,
+        fieldsFingerprint: currentIdentity.fieldsFingerprint,
+        modelId: currentIdentity.modelId,
+        dimensions: currentIdentity.dimensions,
+        distanceMetric: currentIdentity.distanceMetric,
+      });
+    } else {
+      upsertBackfillProgress({ connectorId, connectorInstanceId, stream, ...currentIdentity });
+    }
     let existingKeys = null;
-    if (canResume && typeof index.listExistingKeys === 'function') {
+    if (usePostgres && canResume) {
+      existingKeys = await postgresListExistingSemanticKeys({ connectorId, connectorInstanceId, stream });
+    } else if (canResume && typeof index.listExistingKeys === 'function') {
       existingKeys = await index.listExistingKeys({ connectorId, connectorInstanceId, stream });
+    } else if (usePostgres) {
+      await postgresSemanticIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
     } else {
       await index.deleteByConnectorStream({ connectorId, connectorInstanceId, stream });
     }
 
-    const recordCountRow = getOne(referenceQueries.searchSemanticRecordsCountNonDeleted, [connectorInstanceId, stream]);
-    const recordsToScan = Number(recordCountRow?.n || 0);
+    const recordsToScan = usePostgres
+      ? await postgresCountSemanticRecords({ connectorInstanceId, stream })
+      : Number(getOne(referenceQueries.searchSemanticRecordsCountNonDeleted, [connectorInstanceId, stream])?.n || 0);
     progressJob = updateBackfillJob(progressJob, {
       stream,
       phase: 'rebuilding',
@@ -1388,11 +1456,24 @@ export async function semanticIndexBackfillForManifest({ manifest, log = () => {
     log(`[PDPP] Semantic index rebuild completed for ${connectorId} stream='${stream}' ` +
         `(records=${recordsToScan}, indexed=${indexed})`);
 
-    exec(
-      referenceQueries.searchSemanticMetaUpsert,
-      [connectorInstanceId, connectorId, stream, newFingerprint, currentModel, currentDims, currentMetric, new Date().toISOString()],
-    );
-    deleteBackfillProgress({ connectorId, connectorInstanceId, stream });
+    if (usePostgres) {
+      await postgresUpsertSemanticMeta({
+        connectorId,
+        connectorInstanceId,
+        stream,
+        fieldsFingerprint: newFingerprint,
+        modelId: currentModel,
+        dimensions: currentDims,
+        distanceMetric: currentMetric,
+      });
+      await postgresDeleteSemanticProgress({ connectorInstanceId, stream });
+    } else {
+      exec(
+        referenceQueries.searchSemanticMetaUpsert,
+        [connectorInstanceId, connectorId, stream, newFingerprint, currentModel, currentDims, currentMetric, new Date().toISOString()],
+      );
+      deleteBackfillProgress({ connectorId, connectorInstanceId, stream });
+    }
     }
   }
   progressJob = updateBackfillJob(progressJob, {
@@ -1409,33 +1490,47 @@ export async function semanticIndexBackfillForManifest({ manifest, log = () => {
   // and the stream count per connector is bounded by the manifest, well
   // below the @max_rows=1024 declared on each artifact.
   const orphanStreams = new Set();
-  for (const row of allowUnboundedReadAcknowledged(
-    referenceQueries.searchSemanticMetaListStreamsForConnector,
-    [connectorId],
-  )) {
-    orphanStreams.add(row.stream);
-  }
-  // REVIEWED-BOUNDED: progress rows are keyed by (connector_id, stream); the
-  // stream count per connector is bounded by the manifest, well below the
-  // @max_rows=1024 declared on the artifact.
-  for (const row of allowUnboundedReadAcknowledged(
-    referenceQueries.searchSemanticProgressListStreamsForConnector,
-    [connectorId],
-  )) {
-    orphanStreams.add(row.stream);
+  if (usePostgres) {
+    for (const stream of await postgresListSemanticStreamsForConnector({ connectorId })) {
+      orphanStreams.add(stream);
+    }
+  } else {
+    for (const row of allowUnboundedReadAcknowledged(
+      referenceQueries.searchSemanticMetaListStreamsForConnector,
+      [connectorId],
+    )) {
+      orphanStreams.add(row.stream);
+    }
+    // REVIEWED-BOUNDED: progress rows are keyed by (connector_id, stream); the
+    // stream count per connector is bounded by the manifest, well below the
+    // @max_rows=1024 declared on the artifact.
+    for (const row of allowUnboundedReadAcknowledged(
+      referenceQueries.searchSemanticProgressListStreamsForConnector,
+      [connectorId],
+    )) {
+      orphanStreams.add(row.stream);
+    }
   }
   for (const orphanStream of orphanStreams) {
     if (visitedStreams.has(orphanStream)) continue;
     log(`[PDPP] Semantic index: stream='${orphanStream}' connector='${connectorId}' ` +
         `no longer in manifest — dropping stale index + meta/progress`);
-    const connectorInstanceIds = listSemanticConnectorInstanceIds({ connectorId, stream: orphanStream });
+    const connectorInstanceIds = usePostgres
+      ? await postgresListSemanticConnectorInstanceIds({ connectorId, stream: orphanStream })
+      : listSemanticConnectorInstanceIds({ connectorId, stream: orphanStream });
     for (const connectorInstanceId of connectorInstanceIds) {
-      await index.deleteByConnectorStream({ connectorId, connectorInstanceId, stream: orphanStream });
-      execDynamicSqlAcknowledged(
-        'DELETE FROM semantic_search_meta WHERE connector_instance_id = ? AND stream = ?',
-        [connectorInstanceId, orphanStream],
-      );
-      deleteBackfillProgress({ connectorId, connectorInstanceId, stream: orphanStream });
+      if (usePostgres) {
+        await postgresSemanticIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream: orphanStream });
+        await postgresDeleteSemanticMeta({ connectorInstanceId, stream: orphanStream });
+        await postgresDeleteSemanticProgress({ connectorInstanceId, stream: orphanStream });
+      } else {
+        await index.deleteByConnectorStream({ connectorId, connectorInstanceId, stream: orphanStream });
+        execDynamicSqlAcknowledged(
+          'DELETE FROM semantic_search_meta WHERE connector_instance_id = ? AND stream = ?',
+          [connectorInstanceId, orphanStream],
+        );
+        deleteBackfillProgress({ connectorId, connectorInstanceId, stream: orphanStream });
+      }
     }
   }
   } finally {

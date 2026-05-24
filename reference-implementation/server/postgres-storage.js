@@ -881,6 +881,7 @@ export async function bootstrapPostgresSchema() {
         connector_id TEXT NOT NULL,
         connector_instance_id TEXT NOT NULL,
         stream TEXT NOT NULL,
+        fields_fingerprint TEXT NOT NULL,
         model_id TEXT NOT NULL,
         dimensions INTEGER NOT NULL,
         distance_metric TEXT NOT NULL,
@@ -1226,6 +1227,7 @@ async function migratePostgresRecordsBlobSearchInstanceColumns(client) {
   ]) {
     checks.push(await hasPostgresColumn(client, table, 'connector_instance_id'));
   }
+  await client.query("ALTER TABLE semantic_search_backfill_progress ADD COLUMN IF NOT EXISTS fields_fingerprint TEXT");
   if (checks.every(Boolean)) {
     await ensurePostgresRecordsBlobSearchInstanceIndexes(client);
     return;
