@@ -21,7 +21,7 @@
 - [x] 4.1 Import `listStreamProjections` and `executeRefDatasetSummaryStreams` in `reference-implementation/server/index.js`.
 - [x] 4.2 Mount `app.get('/_ref/dataset/summary/streams', ownerAuth.requireOwnerSession, ...)` near the existing `/_ref/dataset/summary` route. The handler:
   - reads the optional `connector_id` query parameter,
-  - wires `listStreamProjections` for SQLite and adapts `listRetainedSizeStreams({ connectorInstanceId })` for Postgres,
+  - wires `listStreamProjections({ connectorId })` for SQLite and `listRetainedSizeStreams({ connectorId })` for Postgres — both filter the same canonical `connector_id` column, never the `connector_instance_id` column,
   - resolves the metadata block from the existing dataset-summary projection (SQLite) or retained-size global (Postgres),
   - returns the operation's envelope.
 
@@ -42,3 +42,17 @@
 
 - [x] 6.1 `pnpm exec openspec validate expose-per-stream-dataset-summary --strict`
 - [x] 6.2 `cd reference-implementation && node --test test/dataset-summary-read-model.test.js test/ref-dataset-summary-streams-operation.test.js test/ref-dataset-summary-operation.test.js`
+
+## 7. Postgres connector_id filter fix
+
+A revision of this change fixed a Postgres-path defect: the route was
+forwarding the `connector_id` query parameter into the
+`connectorInstanceId` filter slot of `listRetainedSizeStreams`, which
+made the filter silently match against the wrong column. The route
+contract (filter by `connector_id`) and the storage helper now agree.
+
+- [x] 7.1 Extend `listRetainedSizeStreams` in `reference-implementation/server/retained-size-read-model.js` to accept `{ connectorId, connectorInstanceId, stream }`. Both backends now expose both columns as filterable; existing callers that pass `connectorInstanceId` are unchanged.
+- [x] 7.2 Update the Postgres branch of `/_ref/dataset/summary/streams` in `reference-implementation/server/index.js` to pass `{ connectorId }` instead of `{ connectorInstanceId: connectorId }`. Inline comment pins the invariant.
+- [x] 7.3 Add helper-level tests in `reference-implementation/test/retained-size-read-model.test.js` proving that `listRetainedSizeStreams({ connectorId })` narrows by `connector_id`, that `listRetainedSizeStreams({ connectorInstanceId })` does NOT match a `connector_id` value, and that `connectorId` and `stream` filters compose. SQLite-backed; the same helper signature is exercised on the Postgres path.
+- [x] 7.4 Add a route-shape regression test asserting that the `connector_id` query parameter flows through `executeRefDatasetSummaryStreams` as `{ connectorId }` on the `listStreams` dependency and never as `connectorInstanceId`.
+- [x] 7.5 Postgres route-level coverage is deferred: the helper signature on which the Postgres path depends is pinned by 7.3 / 7.4. Adding a dedicated Postgres test would require a `PDPP_TEST_POSTGRES_URL`-gated fixture; the narrower helper/operation tests catch the regression at the same call shape the host adapter uses.

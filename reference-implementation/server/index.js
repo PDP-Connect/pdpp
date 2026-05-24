@@ -4038,8 +4038,13 @@ function buildAsApp(opts = {}) {
         {
           listStreams: async ({ connectorId }) => {
             if (isPostgresStorageBackend()) {
+              // `connector_id` is the public route filter — it MUST be
+              // forwarded as `connectorId`, NOT `connectorInstanceId`.
+              // The retained_size_stream Postgres table carries both
+              // columns; we filter on `connector_id` to match the SQLite
+              // `dataset_summary_stream_projection` filter semantics.
               const rows = await listRetainedSizeStreams(
-                connectorId ? { connectorInstanceId: connectorId } : {},
+                connectorId ? { connectorId } : {},
               );
               return rows.map((row) => ({
                 connector_id: row.connector_id,
