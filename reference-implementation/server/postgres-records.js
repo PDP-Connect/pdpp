@@ -11,7 +11,7 @@
 import { createHash } from 'node:crypto';
 
 import { postgresQuery, withPostgresTransaction } from './postgres-storage.js';
-import { makeLegacyConnectorInstanceId } from './stores/connector-instance-store.js';
+import { makeDefaultAccountConnectorInstanceId } from './stores/connector-instance-store.js';
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from './owner-auth.ts';
 
 const DEFAULT_LIMIT = 25;
@@ -45,7 +45,7 @@ function resolveStorageConnectorId(storageTarget) {
 function resolveStorageConnectorInstanceId(storageTarget, connectorId) {
   if (storageTarget?.connector_instance_id) return storageTarget.connector_instance_id;
   if (storageTarget?.connectorInstanceId) return storageTarget.connectorInstanceId;
-  return makeLegacyConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId);
+  return makeDefaultAccountConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId);
 }
 
 function getChangeHistoryLimit() {

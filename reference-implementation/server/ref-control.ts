@@ -624,8 +624,8 @@ async function getConnectorDetailGapProjection(
     // Operator-console projection must surface pending gaps from every
     // configured source instance (e.g. one device per local Codex/Claude
     // install). `listPendingGaps` requires a single
-    // `connectorInstanceId` and silently falls back to the legacy default
-    // when none is given — which drops every real per-device gap from the
+    // `connectorInstanceId` and silently falls back to the default-account
+    // connection when none is given — which drops every real per-device gap from the
     // dashboard. Prefer the connector-wide listing when the store exposes
     // it.
     let gaps: readonly PendingDetailGapSummary[];
@@ -708,14 +708,14 @@ async function listConnectorInstanceRowsForDashboard(
     return active;
   }
 
-  // Preserve the historical first-run catalog by materializing legacy
-  // connection rows, then projecting the dashboard exclusively from
-  // connector_instances.
+  // Materialize a default-account connection for each registered
+  // connector that lacks an owner-configured instance row. The dashboard
+  // then projects exclusively from connector_instances.
   const now = new Date().toISOString();
   const ensured = await Promise.all(
     registeredRows.map(async (row): Promise<ConnectorInstanceRow | null> => {
       const manifest = parseManifest(row.manifest, row.connector_id);
-      return await store.ensureLegacyDefault({
+      return await store.ensureDefaultAccountConnection({
         ownerSubjectId: REFERENCE_OWNER_SUBJECT_ID,
         connectorId: row.connector_id,
         displayName: manifest.display_name || row.connector_id,

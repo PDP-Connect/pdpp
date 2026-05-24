@@ -28,7 +28,7 @@ import { join } from 'node:path';
 import { closeDb, getDb, initDb } from '../server/db.js';
 import { registerConnector } from '../server/auth.js';
 import { createSqliteSchedulerStore } from '../server/stores/scheduler-store.ts';
-import { makeLegacyConnectorInstanceId } from '../server/stores/connector-instance-store.js';
+import { makeDefaultAccountConnectorInstanceId } from '../server/stores/connector-instance-store.js';
 
 const SEMANTIC_CONNECTOR = 'https://test.pdpp.org/connectors/semantic-surface';
 
@@ -279,12 +279,12 @@ test('same connector instances keep separate schedules, active runs, and last-ru
   });
 });
 
-test('scheduler storage migration backfills legacy rows to deterministic legacy instance id', async () => {
+test('scheduler storage migration backfills legacy rows to deterministic default account instance id', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'pdpp-scheduler-store-'));
   const dbPath = join(dir, 'reference.sqlite');
   initDb(dbPath);
   await registerConnector(SEMANTIC_MANIFEST);
-  const legacyInstanceId = makeLegacyConnectorInstanceId('owner_local', SEMANTIC_CONNECTOR);
+  const defaultAccountInstanceId = makeDefaultAccountConnectorInstanceId('owner_local', SEMANTIC_CONNECTOR);
   try {
     const db = getDb();
     db.exec(`
@@ -340,10 +340,10 @@ test('scheduler storage migration backfills legacy rows to deterministic legacy 
 
     initDb(dbPath);
     const store = createSqliteSchedulerStore();
-    assert.equal(store.getSchedule(legacyInstanceId)?.connector_instance_id, legacyInstanceId);
-    assert.equal(store.listActiveRuns()[0]?.connector_instance_id, legacyInstanceId);
-    assert.equal(store.listLastRunTimes()[0]?.connector_instance_id, legacyInstanceId);
-    assert.equal(store.listRunHistory(10)[0]?.connectorInstanceId, legacyInstanceId);
+    assert.equal(store.getSchedule(defaultAccountInstanceId)?.connector_instance_id, defaultAccountInstanceId);
+    assert.equal(store.listActiveRuns()[0]?.connector_instance_id, defaultAccountInstanceId);
+    assert.equal(store.listLastRunTimes()[0]?.connector_instance_id, defaultAccountInstanceId);
+    assert.equal(store.listRunHistory(10)[0]?.connectorInstanceId, defaultAccountInstanceId);
   } finally {
     closeDb();
     await rm(dir, { recursive: true, force: true });

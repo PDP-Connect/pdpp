@@ -9,7 +9,7 @@
  */
 
 import { postgresQuery } from './postgres-storage.js';
-import { makeLegacyConnectorInstanceId } from './stores/connector-instance-store.js';
+import { makeDefaultAccountConnectorInstanceId } from './stores/connector-instance-store.js';
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from './owner-auth.ts';
 
 function lexicalTextEntries(fields) {
@@ -20,7 +20,7 @@ function lexicalTextEntries(fields) {
 }
 
 function defaultConnectorInstanceId(connectorId) {
-  return makeLegacyConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId);
+  return makeDefaultAccountConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId);
 }
 
 export async function postgresLexicalIndexUpsert({ connectorId, connectorInstanceId = defaultConnectorInstanceId(connectorId), stream, recordKey, fields }) {
