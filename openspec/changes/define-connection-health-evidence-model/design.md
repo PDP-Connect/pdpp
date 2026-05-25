@@ -79,13 +79,15 @@ The evidence model is for the reference owner/operator plane. MCP or REST client
 
 The projection should use deterministic precedence:
 
-1. `needs_attention` when a current owner-action condition blocks progress.
-2. `blocked` when a current readiness or runtime condition prevents collection.
-3. `cooling_off` when a retry/backoff policy is active and no newer success supersedes it.
-4. `degraded` when coverage is partial, retryable gaps exist, or dead letters exist.
-5. `idle` when the connection has no due work and no current failure, including local exporters with retained records but no scheduler run.
-6. `healthy` when readiness is true or not required, coverage is complete, freshness policy is satisfied, backlog is clear, and projection evidence is current.
-7. `unknown` when evidence is insufficient or the read model is stale.
+1. `unknown` when the required read model or projection evidence is unreliable.
+2. `needs_attention` when a current owner-action condition blocks progress, including before the first terminal run.
+3. `idle` when the owner intentionally paused the schedule.
+4. `blocked` when a current readiness or runtime condition prevents collection, or when retry policy has crossed the give-up threshold.
+5. `idle` when no terminal run has been observed and no stronger current condition exists.
+6. `cooling_off` when a retry/backoff policy is active and no newer success or expiry supersedes it.
+7. `degraded` when coverage is partial, retryable gaps exist, dead letters exist, or the latest terminal run failed.
+8. `healthy` when readiness is true or not required, coverage is complete, freshness policy is satisfied, backlog is clear, and projection evidence is current.
+9. `unknown` when evidence is insufficient.
 
 The projection must include the dominant condition id and a bounded set of supporting conditions so UIs can explain why.
 

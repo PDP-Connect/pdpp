@@ -228,6 +228,49 @@ export interface ProjectionFreshness {
   unreliable: boolean;
 }
 
+export interface DominantConditionSummary {
+  label: string;
+  title: string;
+  tone: EvidenceTone;
+}
+
+export function formatDominantCondition(
+  snapshot: RefConnectionHealthSnapshot | null | undefined
+): DominantConditionSummary | null {
+  const condition = dominantCondition(snapshot);
+  if (!condition || condition.status !== "false") {
+    return null;
+  }
+  const remediation = condition.remediation?.label ? ` ${condition.remediation.label}.` : "";
+  return {
+    label: condition.message,
+    title: `${humanizeReason(condition.reason)}. ${condition.message}.${remediation}`.trim(),
+    tone: toneForConditionSeverity(condition.severity),
+  };
+}
+
+function dominantCondition(snapshot: RefConnectionHealthSnapshot | null | undefined) {
+  const conditions = snapshot?.conditions ?? [];
+  const dominantId = snapshot?.dominant_condition_id ?? null;
+  if (dominantId) {
+    const found = conditions.find((condition) => condition.id === dominantId);
+    if (found) {
+      return found;
+    }
+  }
+  return conditions.find((condition) => condition.status === "false") ?? null;
+}
+
+function toneForConditionSeverity(severity: string): EvidenceTone {
+  if (severity === "blocked" || severity === "error") {
+    return "danger";
+  }
+  if (severity === "warning") {
+    return "warning";
+  }
+  return "neutral";
+}
+
 /**
  * Whether the projection itself is unreliable. The reference signals
  * this by setting `state === "unknown"` AND populating

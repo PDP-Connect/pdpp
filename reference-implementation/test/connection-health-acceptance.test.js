@@ -213,6 +213,7 @@ test('acceptance 7.1: cooling_off when scheduler backoff is delaying a retry bel
     freshness: STALE_FRESHNESS,
     lastRun: failedRun({ failure_reason: 'rate_limited' }),
     lastSuccessfulRun: null,
+    nowIso: NOW,
     schedule: backoffSchedule({ failures: 3, reasonClass: 'failure:rate_limited' }),
   });
   assertHeadline(snap, 'cooling_off');
@@ -304,6 +305,7 @@ test('acceptance 7.1: every canonical headline state is reachable through projec
         freshness: STALE_FRESHNESS,
         lastRun: failedRun(),
         lastSuccessfulRun: null,
+        nowIso: NOW,
         schedule: backoffSchedule({ failures: 2 }),
       },
     },
@@ -313,6 +315,7 @@ test('acceptance 7.1: every canonical headline state is reachable through projec
         freshness: STALE_FRESHNESS,
         lastRun: failedRun(),
         lastSuccessfulRun: null,
+        nowIso: NOW,
         schedule: backoffSchedule({ failures: BLOCKED_PROMOTION_THRESHOLD }),
       },
     },

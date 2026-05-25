@@ -8,6 +8,7 @@ import { Timestamp } from "@/components/ui/timestamp.tsx";
 import {
   type AxisChip,
   type EvidenceTone,
+  formatDominantCondition,
   formatLastDurableProgress,
   formatProjectionFreshness,
   resolveRecordCountDisplay,
@@ -132,6 +133,7 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
   const recordCount = resolveRecordCountDisplay(overview);
   const axisChips = summarizeAxisChips(connectionHealth?.axes);
   const projectionFreshness = formatProjectionFreshness(connectionHealth);
+  const dominantCondition = formatDominantCondition(connectionHealth);
   const durableProgress = formatLastDurableProgress({
     hasError: Boolean(overview.error),
     lastRun,
@@ -243,6 +245,8 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
           <span className="font-medium">Projection unreliable.</span> {projectionFreshness.detail}
         </div>
       ) : null}
+
+      {dominantCondition ? <DominantConditionNotice condition={dominantCondition} /> : null}
 
       {nextAction ? <NextActionPill detailHref={detailHref} formatted={nextAction} /> : null}
 
@@ -466,6 +470,8 @@ function connectionHealthDisplay(
   tone: "success" | "danger" | "neutral" | "running" | "warning";
 } {
   const reason = health.reason_code ? ` · ${health.reason_code}` : "";
+  const dominantCondition = formatDominantCondition(health);
+  const dominantTitle = dominantCondition?.title ?? null;
   switch (health.state) {
     case "healthy":
       if (!hasDurableProgress) {
@@ -477,16 +483,16 @@ function connectionHealthDisplay(
       }
       return { label: "Healthy", title: "Required coverage is current and complete", tone: "success" };
     case "needs_attention":
-      return { label: "Needs attention", shape: "diamond", title: `Owner action required${reason}`, tone: "warning" };
+      return { label: "Needs attention", shape: "diamond", title: dominantTitle ?? `Owner action required${reason}`, tone: "warning" };
     case "cooling_off":
-      return { label: "Cooling off", shape: "diamond", title: `Waiting before retry${reason}`, tone: "warning" };
+      return { label: "Cooling off", shape: "diamond", title: dominantTitle ?? `Waiting before retry${reason}`, tone: "warning" };
     case "blocked":
-      return { label: "Blocked", shape: "triangle", title: `Cannot make progress${reason}`, tone: "danger" };
+      return { label: "Blocked", shape: "triangle", title: dominantTitle ?? `Cannot make progress${reason}`, tone: "danger" };
     case "degraded":
       return {
         label: health.axes.coverage === "gaps" || health.axes.coverage === "partial" ? "Partial" : "Degraded",
         shape: "diamond",
-        title: `Useful data may exist, but coverage or freshness is incomplete${reason}`,
+        title: dominantTitle ?? `Useful data may exist, but coverage or freshness is incomplete${reason}`,
         tone: "warning",
       };
     case "idle":
@@ -513,6 +519,31 @@ function connectionHealthDisplay(
         tone: "neutral",
       };
   }
+}
+
+function DominantConditionNotice({ condition }: { condition: ReturnType<typeof formatDominantCondition> }) {
+  if (!condition) {
+    return null;
+  }
+  return (
+    <div
+      className={`pdpp-caption mx-3 mb-2 border-l-2 px-3 py-2 ${conditionNoticeClass(condition.tone)}`}
+      data-testid="dominant-condition"
+      title={condition.title}
+    >
+      {condition.label}
+    </div>
+  );
+}
+
+function conditionNoticeClass(tone: EvidenceTone): string {
+  if (tone === "danger") {
+    return "border-l-destructive bg-destructive/5 text-destructive";
+  }
+  if (tone === "warning") {
+    return "border-l-[color:var(--warning)] bg-[color:var(--warning)]/5 text-[color:var(--warning)]";
+  }
+  return "border-l-muted-foreground/40 bg-muted/40 text-muted-foreground";
 }
 
 function connectionHealthTextClass(tone: "success" | "danger" | "neutral" | "running" | "warning"): string {

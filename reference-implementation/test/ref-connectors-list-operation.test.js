@@ -442,6 +442,7 @@ test('connector summary connection health projects durable scheduler backoff as 
     freshness: { status: 'stale', captured_at: '2026-05-19T12:00:00.000Z' },
     lastRun: run,
     lastSuccessfulRun: null,
+    nowIso: '2026-05-19T12:00:00.000Z',
     schedule: {
       enabled: true,
       scheduler_backoff: {
@@ -463,6 +464,7 @@ test('connector summary connection health uses scheduler backoff even when run s
     freshness: { status: 'unknown', captured_at: '2026-05-19T12:00:00.000Z' },
     lastRun: null,
     lastSuccessfulRun: null,
+    nowIso: '2026-05-19T12:00:00.000Z',
     schedule: {
       enabled: true,
       last_error_code: 'rate_limited',

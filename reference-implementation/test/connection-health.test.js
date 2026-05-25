@@ -74,6 +74,8 @@ test('unknown: any unreliable required projection forces unknown and names the s
   );
   assert.equal(snap.state, 'unknown');
   assert.deepEqual([...snap.unknown_reasons], ['dashboard_summary']);
+  assert.equal(findCondition(snap, 'ProjectionReliable')?.status, 'false');
+  assert.equal(snap.dominant_condition_id, 'ProjectionReliable:projection_unreliable');
 });
 
 test('unknown: takes precedence even over open attention', () => {
@@ -124,6 +126,25 @@ test('needs_attention: open required attention beats backoff', () => {
   assert.equal(snap.next_attempt_at, '2026-05-19T01:00:00.000Z');
 });
 
+test('needs_attention: open required attention beats never-run idle', () => {
+  const snap = computeConnectionHealth(
+    input({
+      observedAt: NOW,
+      run: null,
+      attention: {
+        lifecycle: 'open',
+        reasonCode: 'push_approval',
+        actionTarget: 'dashboard',
+        expiresAt: '2026-05-19T13:00:00.000Z',
+      },
+    })
+  );
+  assert.equal(snap.state, 'needs_attention');
+  assert.equal(snap.reason_code, 'push_approval');
+  assert.equal(snap.next_action?.action_target, 'dashboard');
+  assert.equal(findCondition(snap, 'AttentionClear')?.current, true);
+});
+
 test('needs_attention: attention does NOT override projection-unreliable', () => {
   // Already covered above; documents the precedence boundary explicitly.
   const snap = computeConnectionHealth(
@@ -151,6 +172,53 @@ test('blocked: consecutiveFailures at threshold promotes cooling_off to blocked'
   );
   assert.equal(snap.state, 'blocked');
   assert.equal(snap.reason_code, 'auth_expired'); // class prefix stripped
+  const credentials = findCondition(snap, 'CredentialsValid');
+  assert.equal(credentials?.status, 'false');
+  assert.equal(credentials?.reason, 'auth_expired');
+  assert.equal(credentials?.sensitivity, 'secret_redacted');
+  assert.equal(credentials?.remediation?.action, 'refresh_credentials');
+});
+
+test('blocked: current credential rejection is readiness evidence without waiting for backoff', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run({
+        latestStatus: 'failed',
+        lastSuccessAt: null,
+        reasonCode: 'github_auth_failed',
+      }),
+      coverage: { axis: 'partial' },
+      freshness: { axis: 'stale' },
+    })
+  );
+  assert.equal(snap.state, 'blocked');
+  assert.equal(snap.reason_code, 'github_auth_failed');
+  assert.equal(snap.dominant_condition_id, 'CredentialsValid:github_auth_failed');
+  assert.ok(snap.supporting_condition_ids.includes('CredentialsValid:github_auth_failed'));
+
+  const credentials = findCondition(snap, 'CredentialsValid');
+  assert.equal(credentials?.status, 'false');
+  assert.equal(credentials?.origin, 'readiness');
+  assert.equal(credentials?.sensitivity, 'secret_redacted');
+  assert.equal(credentials?.message.includes('github_auth_failed'), false);
+});
+
+test('conditions: credential diagnostics redact token-shaped source details', () => {
+  const secret = 'ghp_abcdefghijklmnopqrstuvwxyz123456';
+  const snap = computeConnectionHealth(
+    input({
+      run: run({
+        latestStatus: 'failed',
+        lastSuccessAt: null,
+        reasonCode: `invalid_token token=${secret}`,
+      }),
+      coverage: { axis: 'partial' },
+    })
+  );
+  const serialized = JSON.stringify(snap);
+  assert.equal(snap.state, 'blocked');
+  assert.equal(findCondition(snap, 'CredentialsValid')?.reason, 'credential_rejected');
+  assert.ok(!serialized.includes(secret), `secret leaked through condition projection: ${serialized}`);
 });
 
 // ─── 5. Cooling off ───────────────────────────────────────────────────────
@@ -167,6 +235,27 @@ test('cooling_off: backoffApplied with sub-threshold streak', () => {
   assert.equal(snap.next_attempt_at, '2026-05-19T01:00:00.000Z');
 });
 
+test('cooling_off: expired retry backoff is not current blocking evidence', () => {
+  const snap = computeConnectionHealth(
+    input({
+      observedAt: NOW,
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'fresh' },
+      backoff: backoff({
+        consecutiveFailures: BLOCKED_PROMOTION_THRESHOLD,
+        nextRunAt: OLD,
+        reasonClass: 'terminal:rate_limited',
+      }),
+    })
+  );
+  assert.equal(snap.state, 'healthy');
+  assert.equal(snap.next_attempt_at, null);
+  const retryPolicy = findCondition(snap, 'RetryPolicyClear');
+  assert.equal(retryPolicy?.status, 'true');
+  assert.equal(retryPolicy?.reason, 'backoff_expired');
+});
+
 // ─── 6. Degraded ──────────────────────────────────────────────────────────
 
 test('degraded: outbox stalled forces degraded even when run succeeded', () => {
@@ -180,6 +269,7 @@ test('degraded: outbox stalled forces degraded even when run succeeded', () => {
   );
   assert.equal(snap.state, 'degraded');
   assert.equal(snap.axes.outbox, 'stalled');
+  assert.equal(findCondition(snap, 'BacklogClear')?.reason, 'outbox_stalled');
 });
 
 test('degraded: succeeded-with-gaps does not project as healthy', () => {
@@ -316,8 +406,72 @@ test('healthy: success + complete coverage + fresh + no attention/backoff', () =
   );
   assert.equal(snap.state, 'healthy');
   assert.equal(snap.reason_code, null);
+  assert.equal(snap.dominant_condition_id, null);
+  assert.equal(findCondition(snap, 'CredentialsValid')?.status, 'true');
+  assert.equal(findCondition(snap, 'SourceCoverageComplete')?.status, 'true');
+  assert.equal(findCondition(snap, 'Fresh')?.status, 'true');
   assert.equal(snap.badges.stale, false);
   assert.equal(snap.badges.syncing, false);
+});
+
+test('conditions: remote-surface failure becomes runtime availability evidence', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'fresh' },
+      remoteSurface: {
+        axis: 'failed',
+        leaseId: 'bsl_1',
+        leaseStatus: 'surface_failed',
+        profileKey: 'github',
+        surfaceHealth: 'unhealthy',
+        surfaceId: 'surf_1',
+        waitReason: 'surface_unhealthy',
+      },
+    })
+  );
+  assert.equal(snap.state, 'degraded');
+  const runtime = findCondition(snap, 'RuntimeAvailable');
+  assert.equal(runtime?.status, 'false');
+  assert.equal(runtime?.origin, 'remote_surface');
+  assert.equal(runtime?.remediation?.action, 'check_runtime');
+  assert.equal(snap.dominant_condition_id, runtime?.id);
+});
+
+test('conditions: missing runtime binding is a blocked readiness condition', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run({
+        latestStatus: 'failed',
+        lastSuccessAt: null,
+        reasonCode: 'browser_runtime_not_configured',
+      }),
+      coverage: { axis: 'partial' },
+      freshness: { axis: 'stale' },
+    })
+  );
+  assert.equal(snap.state, 'blocked');
+  const runtime = findCondition(snap, 'RuntimeAvailable');
+  assert.equal(runtime?.status, 'false');
+  assert.equal(runtime?.severity, 'blocked');
+  assert.equal(runtime?.reason, 'browser_runtime_not_configured');
+  assert.equal(runtime?.remediation?.action, 'check_runtime');
+  assert.equal(snap.dominant_condition_id, runtime?.id);
+});
+
+test('conditions: local exporter availability is separate from backlog state', () => {
+  const snap = computeConnectionHealth(
+    input({
+      run: run(),
+      coverage: { axis: 'complete' },
+      freshness: { axis: 'fresh' },
+      outbox: { axis: 'active' },
+    })
+  );
+  assert.equal(snap.state, 'healthy');
+  assert.equal(findCondition(snap, 'LocalExporterAvailable')?.status, 'true');
+  assert.equal(findCondition(snap, 'BacklogClear')?.status, 'false');
 });
 
 test('healthy: complete coverage and fresh evidence can project healthy without outbox evidence', () => {
@@ -631,3 +785,8 @@ test('next_action: idle and degraded headlines do not synthesize a CTA', () => {
   assert.equal(degradedSnap.state, 'degraded');
   assert.equal(degradedSnap.next_action, null);
 });
+
+function findCondition(snap, type) {
+  assert.ok(Array.isArray(snap.conditions), 'conditions must be present on health snapshot');
+  return snap.conditions.find((condition) => condition.type === type);
+}

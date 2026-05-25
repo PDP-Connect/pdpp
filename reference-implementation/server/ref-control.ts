@@ -1743,6 +1743,7 @@ export function projectConnectorSummaryConnectionHealth(input: {
         lastErrorCode,
     },
     schedule: schedule ? { enabled: schedule.enabled !== false } : null,
+    observedAt: nowIso,
   });
 }
 

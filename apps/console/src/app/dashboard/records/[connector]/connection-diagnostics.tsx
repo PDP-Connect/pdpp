@@ -2,6 +2,7 @@ import Link from "next/link";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
 import { DataList, Section } from "../../components/primitives.tsx";
 import {
+  formatDominantCondition,
   formatProjectionFreshness,
   formatSourceOutboxState,
   summarizeAxisChips,
@@ -82,6 +83,11 @@ function ProjectedStateDiagnostics({ connectionHealth }: { connectionHealth: Ref
   const projection = formatProjectionFreshness(connectionHealth);
   const axisChips = summarizeAxisChips(connectionHealth.axes);
   const outbox = summarizeOutboxForRow(connectionHealth);
+  const dominantCondition = formatDominantCondition(connectionHealth);
+  const conditionById = new Map((connectionHealth.conditions ?? []).map((condition) => [condition.id, condition]));
+  const visibleConditions = (connectionHealth.supporting_condition_ids ?? [])
+    .map((id) => conditionById.get(id))
+    .filter((condition): condition is NonNullable<typeof condition> => Boolean(condition));
 
   return (
     <div className="flex flex-col gap-2">
@@ -94,6 +100,15 @@ function ProjectedStateDiagnostics({ connectionHealth }: { connectionHealth: Ref
           </>
         ) : null}
       </p>
+      {dominantCondition ? (
+        <p
+          className="pdpp-caption text-muted-foreground"
+          data-testid="diagnostics-dominant-condition"
+          title={dominantCondition.title}
+        >
+          Dominant condition: <span className="text-foreground">{dominantCondition.label}</span>
+        </p>
+      ) : null}
       {axisChips.length > 0 ? (
         <ul className="flex flex-wrap items-center gap-1.5" data-testid="diagnostics-axes">
           {axisChips.map((c) => (
@@ -121,6 +136,21 @@ function ProjectedStateDiagnostics({ connectionHealth }: { connectionHealth: Ref
         <p className="pdpp-caption text-muted-foreground" data-testid="diagnostics-outbox">
           {outbox.label}
         </p>
+      ) : null}
+      {visibleConditions.length ? (
+        <ul className="pdpp-caption flex flex-col gap-1 text-muted-foreground" data-testid="diagnostics-conditions">
+          {visibleConditions.map((condition) => (
+            <li key={condition.id} title={condition.reason}>
+              {condition.type}: <span className="text-foreground">{condition.status}</span>
+              {condition.status === "false" ? (
+                <>
+                  {" · "}
+                  {condition.message}
+                </>
+              ) : null}
+            </li>
+          ))}
+        </ul>
       ) : null}
       {connectionHealth.last_success_at ? (
         <p className="pdpp-caption text-muted-foreground">
