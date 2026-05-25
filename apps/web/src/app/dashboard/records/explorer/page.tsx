@@ -10,8 +10,21 @@
  *   - queryRecords for the empty-query fan-out.
  *   - getRecord for the peek panel.
  *
- * No new endpoints. Connection identity is preserved everywhere; nothing
- * here collapses two connections of the same connector type into one row.
+ * No new endpoints.
+ *
+ * Connection identity rules:
+ *   - Empty-query fan-out KNOWS the connection per row. Row key, peek
+ *     param, attribution, and full-record link all carry the concrete
+ *     `connection_id`.
+ *   - Search hits today do NOT carry `connection_id` from the public
+ *     `/v1/search*` contract. We resolve to a concrete connection only
+ *     when (a) the server happens to return one (forward-compatible), or
+ *     (b) exactly one connection of that connector type is visible
+ *     ("deduction, not guessing"). Otherwise the row is connector-scoped
+ *     and the UI says so.
+ *   - Selected-connection chips fall back to a connector-type post-filter
+ *     in search mode for the same reason; the chip label and the spec
+ *     both call this out instead of pretending to filter by connection.
  */
 import { DashboardShell, ServerUnreachable } from "../../components/shell.tsx";
 import {
@@ -44,6 +57,7 @@ import {
 import { summarize } from "../../lib/timeline-summaries.ts";
 import { verifyDashboardSession } from "../../lib/verify-session.ts";
 import { buildPeekReadUrl } from "./peek-read-url.ts";
+import { attributeSearchHit } from "./search-hit-attribution.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -164,6 +178,12 @@ async function loadSearchFeed(
   filterStreams: ReadonlySet<string>,
   timestampMetadata: ReadonlyMap<string, SearchTimestampMetadata>
 ): Promise<FeedLoadResult> {
+  // Selected-connection chips cannot be enforced at the request layer for
+  // search today (public `/v1/search` does not accept `connection_id`), so
+  // we narrow post-hoc by connector type — exactly what the chip-as-
+  // connector-scope label in the view promises. This is intentionally weaker
+  // than per-connection filtering; the UI surface and the OpenSpec delta
+  // both say so out loud.
   const allowedConnectors = new Set(filteredSummaries.map((s) => s.connector_id));
   const hybridAdvertised = await isHybridRetrievalAdvertised();
 
@@ -199,24 +219,17 @@ async function loadSearchFeed(
     return true;
   });
 
-  const byConnectorId = new Map<string, RefConnectorSummary>();
-  for (const s of filteredSummaries) {
-    if (!byConnectorId.has(s.connector_id)) {
-      byConnectorId.set(s.connector_id, s);
-    }
-  }
-
   const entries: ExplorerFeedEntry[] = filtered.map((hit) => {
-    const summary = byConnectorId.get(hit.connector_id);
     const display = pickSearchDisplayTimestamp({
       data: null,
       emittedAt: hit.emitted_at,
       metadata: lookupSearchTimestampMetadata(timestampMetadata, hit.connector_id, hit.stream),
     });
+    const attribution = attributeSearchHit(hit, filteredSummaries);
     return {
       connectorId: hit.connector_id,
-      connectionId: summary?.connection_id ?? null,
-      connectionDisplayName: summary?.display_name || summary?.connector_display_name || summary?.connector_id || null,
+      connectionId: attribution.connectionId,
+      connectionDisplayName: attribution.connectionDisplayName,
       stream: hit.stream,
       recordId: hit.record_key,
       emittedAt: hit.emitted_at,
@@ -234,6 +247,35 @@ async function loadSearchFeed(
   };
 }
 
+function resolvePeekConnection(
+  parsed: { connectorId: string; connectionId: string | null },
+  byConnectionId: ReadonlyMap<string, RefConnectorSummary>
+): RefConnectorSummary | null {
+  // Prefer the concrete `connection_id` carried in the peek param.
+  if (parsed.connectionId) {
+    const direct = byConnectionId.get(parsed.connectionId);
+    if (direct) {
+      return direct;
+    }
+    for (const summary of byConnectionId.values()) {
+      if (summary.connector_instance_id === parsed.connectionId) {
+        return summary;
+      }
+    }
+    return null;
+  }
+  // No concrete connection in the peek param: resolve ONLY when exactly
+  // one visible connection has that connector type. Otherwise the peek
+  // read uses the connector_id default scope rather than guessing.
+  const matches: RefConnectorSummary[] = [];
+  for (const summary of byConnectionId.values()) {
+    if (summary.connector_id === parsed.connectorId) {
+      matches.push(summary);
+    }
+  }
+  return matches.length === 1 ? (matches[0] ?? null) : null;
+}
+
 async function buildPeek(
   raw: string | undefined,
   byConnectionId: ReadonlyMap<string, RefConnectorSummary>
@@ -242,17 +284,7 @@ async function buildPeek(
   if (!parsed) {
     return null;
   }
-  // The peek key uses connector_id (the value present on every search hit).
-  // We resolve to a specific connection only when there is exactly one
-  // matching connection — otherwise the peek read intentionally falls back
-  // to the connector_id default scope rather than guessing.
-  const matches: RefConnectorSummary[] = [];
-  for (const summary of byConnectionId.values()) {
-    if (summary.connector_id === parsed.connectorId) {
-      matches.push(summary);
-    }
-  }
-  const connection = matches.length === 1 ? matches[0] : null;
+  const connection = resolvePeekConnection(parsed, byConnectionId);
   const connectorInstanceId = connection?.connector_instance_id ?? connection?.connection_id ?? null;
 
   const readUrl = buildPeekReadUrl({

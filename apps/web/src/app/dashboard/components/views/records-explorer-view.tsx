@@ -77,13 +77,24 @@ export interface RecordsExplorerData {
 }
 
 const ROW_KEY_SEP = "::";
+// Sentinel for "no concrete connection_id known for this row" (e.g. search
+// hits today, where the public search response does not carry connection
+// identity). Distinct token so legitimate ids never collide with absence.
+const NO_CONNECTION = "~";
 
-export function explorerPeekParam(entry: { connectorId: string; stream: string; recordId: string }): string {
-  return `${entry.connectorId}${ROW_KEY_SEP}${entry.stream}${ROW_KEY_SEP}${entry.recordId}`;
+export function explorerPeekParam(entry: {
+  connectorId: string;
+  connectionId?: string | null;
+  stream: string;
+  recordId: string;
+}): string {
+  const conn = entry.connectionId && entry.connectionId.length > 0 ? entry.connectionId : NO_CONNECTION;
+  return `${entry.connectorId}${ROW_KEY_SEP}${conn}${ROW_KEY_SEP}${entry.stream}${ROW_KEY_SEP}${entry.recordId}`;
 }
 
 export function parseExplorerPeekParam(raw: string | undefined | null): {
   connectorId: string;
+  connectionId: string | null;
   stream: string;
   recordId: string;
 } | null {
@@ -91,14 +102,19 @@ export function parseExplorerPeekParam(raw: string | undefined | null): {
     return null;
   }
   const parts = raw.split(ROW_KEY_SEP);
-  if (parts.length !== 3) {
+  if (parts.length !== 4) {
     return null;
   }
-  const [connectorId, stream, recordId] = parts;
-  if (!(connectorId && stream && recordId)) {
+  const [connectorId, connectionToken, stream, recordId] = parts;
+  if (!(connectorId && connectionToken && stream && recordId)) {
     return null;
   }
-  return { connectorId, stream, recordId };
+  return {
+    connectorId,
+    connectionId: connectionToken === NO_CONNECTION ? null : connectionToken,
+    stream,
+    recordId,
+  };
 }
 
 export function buildExplorerHref(
@@ -188,9 +204,9 @@ function feedDescription(fromSearch: boolean, hybridUsed: boolean): string {
     return "Recent across every visible connection. Submit a query to search.";
   }
   if (hybridUsed) {
-    return "Hybrid retrieval (lexical + semantic), deduplicated by record key.";
+    return "Hybrid retrieval (lexical + semantic), deduplicated by record key. Public search results do not yet carry connection identity, so rows are scoped to the connector unless exactly one connection of that type is configured.";
   }
-  return "Lexical retrieval. Results match record text under the owner token.";
+  return "Lexical retrieval. Results match record text under the owner token. Public search results do not yet carry connection identity, so rows are scoped to the connector unless exactly one connection of that type is configured.";
 }
 
 function ExplorerMain({
@@ -216,10 +232,14 @@ function ExplorerMain({
   peekId: string | null;
   routes: Routes;
 }) {
+  // In search mode we cannot enforce per-connection scope (public search
+  // does not yet accept `connection_id`), so the chip label is honest:
+  // it narrows by connector type for the underlying request.
+  const connectionLabel = query ? "connector (from connection)" : "connection";
   const filterItems: Array<{ label: string; value: string }> = [];
   for (const id of selectedConnectionIds) {
     const conn = connections.find((c) => c.connectionId === id);
-    filterItems.push({ label: "connection", value: conn?.displayName ?? id });
+    filterItems.push({ label: connectionLabel, value: conn?.displayName ?? id });
   }
   for (const s of selectedStreams) {
     filterItems.push({ label: "stream", value: s });
@@ -294,7 +314,7 @@ function ExplorerMain({
                       streams: selectedStreams,
                       peek: key,
                     })}
-                    recordHref={routes.record(entry.connectorId, entry.stream, entry.recordId)}
+                    recordHref={routes.record(entry.connectionId ?? entry.connectorId, entry.stream, entry.recordId)}
                     selected={peekId === key}
                   />
                 </li>
@@ -484,7 +504,7 @@ function ExplorerPeek({
   routes: Routes;
   closeHref: string;
 }): ReactNode {
-  const openHref = routes.record(peek.connectorId, peek.stream, peek.recordId);
+  const openHref = routes.record(peek.connectionId ?? peek.connectorId, peek.stream, peek.recordId);
   return (
     <aside
       aria-label="Record peek"

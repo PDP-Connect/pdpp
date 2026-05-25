@@ -12,12 +12,8 @@
  */
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import type {
-  RefConnectionHealthSnapshot,
-  RefLocalDeviceProgress,
-  RefRetainedBytesBreakdown,
-} from "./ref-client.ts";
 import { getOwnerToken, getRsInternalUrl, ReferenceServerUnreachableError } from "./owner-token.ts";
+import type { RefConnectionHealthSnapshot, RefLocalDeviceProgress, RefRetainedBytesBreakdown } from "./ref-client.ts";
 import { verifyDashboardSession } from "./verify-session.ts";
 
 export interface StreamSummary {
@@ -152,7 +148,16 @@ export async function getRecord(
  * optional; the page must render correctly when they are absent.
  */
 export interface SearchResultHit {
+  // Optional connection identity on search hits. The current deployed RS
+  // does not return these on `/v1/search*` responses, but the public
+  // contract (and the `expose-connection-identity-on-public-read`
+  // proposal) defines them as additive optional response fields, and the
+  // response schema is `additionalProperties: true` — so a forward-
+  // compatible client reads them when present rather than ignoring them.
+  connection_id?: string;
   connector_id: string;
+  connector_instance_id?: string;
+  display_name?: string;
   emitted_at: string;
   matched_fields: string[];
   object: "search_result";
@@ -407,8 +412,8 @@ export interface ConnectorOverview {
   retainedBytes?: RefRetainedBytesBreakdown | null;
   streamCount?: number;
   streams: StreamSummary[];
-  totalRetainedBytes?: number | null;
   totalRecords: number;
+  totalRetainedBytes?: number | null;
 }
 
 /** Thin projection of RunSummary fields the dashboard index needs.
