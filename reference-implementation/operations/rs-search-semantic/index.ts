@@ -71,6 +71,7 @@
 
 export type SearchSemanticErrorCode =
   | "invalid_request"
+  | "invalid_argument"
   | "invalid_cursor"
   | "grant_stream_not_allowed";
 
@@ -377,6 +378,10 @@ export interface SearchSemanticOutput {
 
 // ─── Internal helpers ─────────────────────────────────────────────────────
 
+// `connection_id` is the canonical public connection identifier;
+// `connector_instance_id` is the deprecated wire alias accepted during the
+// migration window defined by
+// `openspec/changes/expose-connection-identity-on-public-read`.
 const ALLOWED_PARAMS: ReadonlySet<string> = new Set([
   "q",
   "limit",
@@ -384,6 +389,8 @@ const ALLOWED_PARAMS: ReadonlySet<string> = new Set([
   "streams",
   "streams[]",
   "filter",
+  "connection_id",
+  "connector_instance_id",
 ]);
 
 /**
@@ -485,6 +492,21 @@ export function parseSearchSemanticParams(
       "invalid_request",
       "filter[...] requires exactly one streams[] value (e.g. ?streams[]=messages&filter[received_at][gte]=...). filter[stream] and filter[connector_id] are not supported.",
       "streams",
+    );
+  }
+  const canonicalConn = query.connection_id;
+  const aliasConn = query.connector_instance_id;
+  if (
+    typeof canonicalConn === "string"
+    && canonicalConn.length > 0
+    && typeof aliasConn === "string"
+    && aliasConn.length > 0
+    && canonicalConn !== aliasConn
+  ) {
+    throw new SearchSemanticRequestError(
+      "invalid_argument",
+      "connection_id and connector_instance_id refer to the same connection. Send only `connection_id` (canonical) or supply matching values.",
+      "connector_instance_id",
     );
   }
   return {

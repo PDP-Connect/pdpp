@@ -606,6 +606,7 @@ const codeToStatus = {
   grant_invalid: 403,
   field_not_granted: 403,
   insufficient_scope: 403,
+  invalid_argument: 400,
   invalid_cursor: 400,
   invalid_request: 400,
   invalid_client: 400,
