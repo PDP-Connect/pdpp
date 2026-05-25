@@ -897,6 +897,7 @@ async function runFtsQueryForConnector({ connectorId, connectorInstanceId, planE
         } else {
           collapsed.set(key, {
             connectorId,
+            connectorInstanceId: resolvedConnectorInstanceId,
             stream: entry.streamName,
             recordKey: row.record_key,
             emittedAt: row.emitted_at,
@@ -922,7 +923,7 @@ async function runFtsQueryForConnector({ connectorId, connectorInstanceId, planE
   // UNINDEXED `stream`/`field`/`connector_id` columns, we use a regular
   // WHERE clause for the scoping and MATCH for the lexical query against
   // `text`.
-  const collapsed = new Map(); // recordKey → { connectorId, stream, recordKey, emittedAt, matchedFields, snippet?, score }
+  const collapsed = new Map(); // recordKey → { connectorId, connectorInstanceId, stream, recordKey, emittedAt, matchedFields, snippet?, score }
 
   for (const entry of planEntries) {
     if (Array.isArray(entry.candidateRecordKeys) && entry.candidateRecordKeys.length === 0) continue;
@@ -982,6 +983,7 @@ async function runFtsQueryForConnector({ connectorId, connectorInstanceId, planE
         } else {
           collapsed.set(key, {
             connectorId,
+            connectorInstanceId: resolvedConnectorInstanceId,
             stream: entry.streamName,
             recordKey: row.record_key,
             emittedAt: row.emitted_at,

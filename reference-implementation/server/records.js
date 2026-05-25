@@ -384,9 +384,19 @@ function projectFields(data, fields) {
   return result;
 }
 
+// Canonical public read query-param allowlist. `connection_id` is the
+// canonical public connection identifier; `connector_instance_id` is the
+// deprecated wire alias accepted during the migration window defined by
+// `openspec/changes/expose-connection-identity-on-public-read`. Both are
+// optional filters today; when storage enumerates multiple connections per
+// owner they will narrow the result set. `subject_id` is forwarded by some
+// MCP / dashboard clients for diagnostic context and is allowlisted alongside
+// `connector_id` for parity with `/v1/streams` and `/v1/schema`.
 const SUPPORTED_RECORD_QUERY_PARAMS = new Set([
   'changes_since',
+  'connection_id',
   'connector_id',
+  'connector_instance_id',
   'cursor',
   'expand',
   'expand_limit',
@@ -394,10 +404,13 @@ const SUPPORTED_RECORD_QUERY_PARAMS = new Set([
   'filter',
   'limit',
   'order',
+  'subject_id',
   'view',
 ]);
 const SUPPORTED_AGGREGATE_QUERY_PARAMS = new Set([
+  'connection_id',
   'connector_id',
+  'connector_instance_id',
   'field',
   'filter',
   'group_by',
@@ -405,6 +418,35 @@ const SUPPORTED_AGGREGATE_QUERY_PARAMS = new Set([
   'metric',
   'subject_id',
 ]);
+
+/**
+ * Validate the `(connection_id, connector_instance_id)` alias contract.
+ *
+ * Both identifiers carry the same opaque value during the migration window.
+ * Accepting one or the other is the canonical / deprecated split; accepting
+ * both with conflicting values would silently let the deprecated alias win
+ * or get ignored. Reject the conflict with a typed `invalid_argument` error
+ * so clients learn before they ship divergent identity assumptions.
+ *
+ * Empty-string values are treated as "absent" so callers may forward
+ * undefined-shaped query params from intermediate adapters without
+ * tripping the conflict check.
+ */
+export function validateConnectionAlias(requestParams) {
+  if (!requestParams || typeof requestParams !== 'object') return;
+  const canonical = requestParams.connection_id;
+  const alias = requestParams.connector_instance_id;
+  const canonicalSet = typeof canonical === 'string' && canonical.length > 0;
+  const aliasSet = typeof alias === 'string' && alias.length > 0;
+  if (canonicalSet && aliasSet && canonical !== alias) {
+    const err = new Error(
+      'connection_id and connector_instance_id refer to the same connection. Send only `connection_id` (canonical) or supply matching values.',
+    );
+    err.code = 'invalid_argument';
+    err.param = 'connector_instance_id';
+    throw err;
+  }
+}
 const SUPPORTED_AGGREGATE_METRICS = new Set(['count', 'sum', 'min', 'max']);
 const MAX_AGGREGATE_GROUP_LIMIT = 100;
 const DEFAULT_AGGREGATE_GROUP_LIMIT = 10;
@@ -602,6 +644,7 @@ function validateTopLevelQueryParams(requestParams) {
   if (unsupported.length) {
     throw invalidQueryError(`Unsupported query parameter: ${unsupported.join(', ')}`);
   }
+  validateConnectionAlias(requestParams);
 }
 
 function validateTopLevelAggregateParams(requestParams) {
@@ -609,6 +652,7 @@ function validateTopLevelAggregateParams(requestParams) {
   if (unsupported.length) {
     throw invalidQueryError(`Unsupported query parameter: ${unsupported.join(', ')}`);
   }
+  validateConnectionAlias(requestParams);
 }
 
 function normalizeAggregateMetric(value) {

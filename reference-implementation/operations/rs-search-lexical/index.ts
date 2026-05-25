@@ -50,6 +50,7 @@
 
 export type SearchLexicalErrorCode =
   | "invalid_request"
+  | "invalid_argument"
   | "invalid_cursor"
   | "grant_stream_not_allowed";
 
@@ -154,6 +155,13 @@ export interface SearchLexicalConnectorPlan {
  */
 export interface SearchLexicalSnapshotResult {
   connectorId: string;
+  /**
+   * Connection identifier (canonical) for the binding this hit came from.
+   * Optional only because pre-identity snapshots may omit it; new snapshots
+   * SHOULD always set it so the operation can emit `connection_id` and the
+   * deprecated `connector_instance_id` alias on each result item.
+   */
+  connectorInstanceId?: string | null;
   stream: string;
   recordKey: string;
   emittedAt: string;
@@ -277,6 +285,13 @@ export interface SearchLexicalResultItem {
   stream: string;
   record_key: string;
   connector_id: string;
+  /**
+   * Canonical connection identifier — present whenever the snapshot result
+   * captured one. `connector_instance_id` mirrors the same value during the
+   * deprecation window so clients can migrate without coordinated cutovers.
+   */
+  connection_id?: string;
+  connector_instance_id?: string;
   record_url: string;
   emitted_at: string;
   matched_fields: string[];
@@ -314,6 +329,12 @@ export interface SearchLexicalOutput {
 
 // ─── Internal helpers ─────────────────────────────────────────────────────
 
+// `connection_id` is the canonical public connection identifier;
+// `connector_instance_id` is the deprecated wire alias accepted during the
+// migration window defined by
+// `openspec/changes/expose-connection-identity-on-public-read`. Both are
+// optional filters. When both are present they MUST carry the same value
+// (alias-conflict validation runs after the allowlist check).
 const ALLOWED_PARAMS: ReadonlySet<string> = new Set([
   "q",
   "limit",
@@ -321,6 +342,8 @@ const ALLOWED_PARAMS: ReadonlySet<string> = new Set([
   "streams",
   "streams[]",
   "filter",
+  "connection_id",
+  "connector_instance_id",
 ]);
 
 const DEFAULT_LIMIT = 25;
@@ -389,6 +412,7 @@ export function parseSearchLexicalParams(
       "streams",
     );
   }
+  validateSearchConnectionAlias(query, SearchLexicalRequestError);
   return {
     q,
     limit,
@@ -397,6 +421,30 @@ export function parseSearchLexicalParams(
     filter: hasFilter ? query.filter : null,
     filteredStream: hasFilter && streams && streams.length > 0 ? streams[0]! : null,
   };
+}
+
+/**
+ * Shared alias-conflict check for search operations. `connection_id` is the
+ * canonical public identifier; `connector_instance_id` is the deprecated wire
+ * alias. Both MAY be sent but MUST carry the same opaque value. Mismatched
+ * values are rejected with a typed `invalid_argument` error so clients learn
+ * before shipping divergent identity assumptions.
+ */
+function validateSearchConnectionAlias(
+  query: Record<string, unknown>,
+  ErrorCtor: typeof SearchLexicalRequestError,
+): void {
+  const canonical = query.connection_id;
+  const alias = query.connector_instance_id;
+  const canonicalSet = typeof canonical === "string" && canonical.length > 0;
+  const aliasSet = typeof alias === "string" && alias.length > 0;
+  if (canonicalSet && aliasSet && canonical !== alias) {
+    throw new ErrorCtor(
+      "invalid_argument",
+      "connection_id and connector_instance_id refer to the same connection. Send only `connection_id` (canonical) or supply matching values.",
+      "connector_instance_id",
+    );
+  }
 }
 
 interface CursorPayload {
@@ -459,6 +507,10 @@ function buildResultItem(
     emitted_at: hit.emittedAt,
     matched_fields: hit.matchedFields,
   };
+  if (typeof hit.connectorInstanceId === "string" && hit.connectorInstanceId.length > 0) {
+    item.connection_id = hit.connectorInstanceId;
+    item.connector_instance_id = hit.connectorInstanceId;
+  }
   if (hit.snippet) {
     item.snippet = hit.snippet;
   }
