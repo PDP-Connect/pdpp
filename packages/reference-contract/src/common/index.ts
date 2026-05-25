@@ -8,29 +8,13 @@
 // narrow. A structural `JsonSchema` captures that without pulling in a
 // dependency and keeps the surface inspectable at the call site.
 
-// Every known JSON-Schema keyword we actually use. Anything not listed is
-// still permitted via the index signature, which is how schemas with
-// vendor extensions (`x-...`) continue to pass through untouched.
-export interface JsonSchema {
-  $id?: string;
-  additionalProperties?: boolean | JsonSchema;
-  allOf?: readonly JsonSchema[];
-  anyOf?: readonly JsonSchema[];
-  const?: unknown;
-  description?: string;
-  enum?: readonly unknown[];
-  format?: string;
-  items?: JsonSchema;
-  maximum?: number;
-  maxLength?: number;
-  minimum?: number;
-  minLength?: number;
-  oneOf?: readonly JsonSchema[];
-  properties?: Record<string, JsonSchema>;
-  required?: readonly string[];
-  type?: string | string[];
-  [extension: string]: unknown;
-}
+// The structural JsonSchema type lives in its own module so canonical.ts
+// can depend on the type alone without pulling in this file's runtime
+// values (which would create a value-level cycle now that this module
+// re-exports from canonical.ts).
+export type { JsonSchema } from "./json-schema.ts";
+
+import type { JsonSchema } from "./json-schema.ts";
 
 // Shared shape of a route manifest. Every entry in `publicManifests` and
 // `referenceManifests` conforms to this. Request / response schemas are
@@ -173,3 +157,10 @@ export const PaginationQuerySchema: JsonSchema = {
     order: OrderSchema,
   },
 };
+
+// Canonical public read contract primitives — envelope, warnings, counts,
+// and shared read-input parameters. Lives in ./canonical.ts to keep the
+// legacy helpers in this file undisturbed during the migration window.
+// See openspec/changes/canonicalize-public-read-contract/.
+// biome-ignore lint/performance/noBarrelFile: ./common is the package's named entry point for shared schema helpers — call sites import members by name; the canonical primitives live in a sibling module to keep this file's legacy helpers untouched during the migration window.
+export * from "./canonical.ts";

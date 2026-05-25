@@ -7,8 +7,8 @@
 
 ## 2. Reference Contract Schemas
 
-- [ ] 2.1 Add canonical envelope schema types for list, single-object, schema, search, warnings, links, and count metadata.
-- [ ] 2.2 Add public read input schemas for `fields`, `expand`, `expand_limit`, `filter`, `sort`, `cursor`, `limit`, `count`, `connection_id`, and deprecated `connector_instance_id` alias.
+- [x] 2.1 Add canonical envelope schema types for list, single-object, schema, search, warnings, links, and count metadata.
+- [x] 2.2 Add public read input schemas for `fields`, `expand`, `expand_limit`, `filter`, `sort`, `cursor`, `limit`, `count`, `connection_id`, and deprecated `connector_instance_id` alias.
 - [ ] 2.3 Add generated contract descriptions that point callers to `/v1/schema` for field/operator/expand/sort/count capabilities.
 - [ ] 2.4 Ensure `connector_instance_id` is documented only as a deprecated compatibility alias.
 - [ ] 2.5 Run reference-contract generation and verification.
