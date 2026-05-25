@@ -1,3 +1,13 @@
+## Classification under `canonicalize-public-read-contract`
+
+This change is a **reference-only read model**, not a public envelope contract.
+
+`/_ref/dataset/summary/streams` is an owner-session-gated `_ref` surface that backs freshness and estimated-count rendering in the dashboard from the existing `dataset_summary_stream_projection` rows. The canonical public read contract carves out a place for graded counts (`Prefer: count=none|estimated|exact` with `meta.count = { kind, value? }`) and freshness metadata; this read model is the source the reference can draw on when it backs `estimated` counts or freshness signals for canonical envelopes.
+
+What stays here: the `_ref` route, the `listStreamProjections` helper, the operation envelope, NULL/dirty passthrough, and Postgres/SQLite parity. None of those promote `record_json_bytes` or per-stream retained-size internals into the public PDPP read contract — the canonical contract explicitly does NOT surface `_ref` operator diagnostics as protocol facts.
+
+No requirements move into or out of this change. It remains a reference-implementation surface that the canonical contract can consume when computing canonical envelopes.
+
 ## Context
 
 `add-dashboard-summary-read-model` introduced `dataset_summary_stream_projection`, a per-`(connector_id, stream)` projection maintained synchronously from record-write deltas and rebuildable from canonical storage. The columns on that table are already exactly what an owner-facing "how big is each stream, when was it last ingested, when does the underlying record-time range say it spans" inspection needs:

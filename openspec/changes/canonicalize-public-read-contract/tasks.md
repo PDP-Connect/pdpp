@@ -3,7 +3,7 @@
 - [x] 1.1 Capture prior-art and repo audit findings in `tmp/workstreams/canonical-read-contract-right-hand-report.md`.
 - [x] 1.2 Add proposal, design, and spec delta for the canonical public read contract.
 - [x] 1.3 Validate `canonicalize-public-read-contract` with `openspec validate canonicalize-public-read-contract --strict`.
-- [ ] 1.4 Classify overlapping active changes in their design/task files: `expose-connection-identity-on-public-read`, `expand-first-party-parent-child-relations`, `expose-per-stream-dataset-summary`, `clarify-public-read-contract-llm-hints`, `polish-assistant-query-api-discovery`, and `add-dashboard-records-explorer`.
+- [x] 1.4 Classify overlapping active changes in their design/task files: `expose-connection-identity-on-public-read`, `expand-first-party-parent-child-relations`, `expose-per-stream-dataset-summary`, `clarify-public-read-contract-llm-hints`, `polish-assistant-query-api-discovery`, and `add-dashboard-records-explorer`. Classification posture lives in each change's `design.md` under "Classification under `canonicalize-public-read-contract`".
 
 ## 2. Reference Contract Schemas
 

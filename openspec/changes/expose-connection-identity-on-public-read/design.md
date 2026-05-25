@@ -1,3 +1,21 @@
+## Classification under `canonicalize-public-read-contract`
+
+This change is the **identity implementation slice** under the canonical public read contract.
+
+The canonical contract owns the durable identity invariant: every record-bearing public read result SHALL be addressable as `(connection_id, stream, record_id)`, with `connector_instance_id` as a deprecated compatibility alias only. That invariant lives in `openspec/changes/canonicalize-public-read-contract/specs/reference-implementation-architecture/spec.md` (see "Public record identity SHALL be connection-scoped"). This change supplies the concrete contract additions, runtime threading, grant scope, consent surface, and MCP-forwarding work that realize the invariant.
+
+What stays here (implementation slice):
+
+- `connection_id` + `display_name` schema additions in `packages/reference-contract`.
+- `rs-streams-list` per-(stream, connection_id) entries, optional `connection_id` filter on records/search/blob operations, fan-in default, exactly-one auto-select, typed `ambiguous_connection` error, grant-scope `connection_id`, owner-mode `display_name` mutation, consent-card per-connection render, MCP-side forwarding.
+
+What is now owned upstream by the canonical contract:
+
+- The normative requirement that public reads use `(connection_id, stream, record_id)` as canonical identity.
+- The deprecation posture for `connector_instance_id` on the public surface.
+
+No requirements are removed or duplicated here; the canonical contract states the rule, this change is the implementation. Deferred items called out in `tasks.md` remain the safe pickup point for the server-side fan-in/auto-select/ambiguous-error work that the canonical contract also expects to land.
+
 ## Context
 
 A 2026-05-24 read-only audit (`tmp/workstreams/rh-item2-mcp-disambiguation-audit.md`) reviewed the MCP disambiguation bug report (Item 2). The audit established:
