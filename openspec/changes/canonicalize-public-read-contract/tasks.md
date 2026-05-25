@@ -56,4 +56,4 @@
 - [x] 8.2 Run relevant typechecks.
 - [x] 8.3 Run `openspec validate canonicalize-public-read-contract --strict`.
 - [x] 8.4 Run `openspec validate --all --strict` if the work touches existing active changes.
-- [ ] 8.5 Rebuild and restart local Docker when dashboard/API behavior changes.
+- [x] 8.5 Rebuild and restart local Docker when dashboard/API behavior changes.
