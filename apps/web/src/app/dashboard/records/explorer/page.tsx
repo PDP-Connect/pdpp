@@ -57,7 +57,7 @@ import {
 import { summarize } from "../../lib/timeline-summaries.ts";
 import { verifyDashboardSession } from "../../lib/verify-session.ts";
 import { buildPeekReadUrl } from "./peek-read-url.ts";
-import { attributeSearchHit } from "./search-hit-attribution.ts";
+import { attributeSearchHit, shouldIncludeSearchHit } from "./search-hit-attribution.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -176,7 +176,8 @@ async function loadSearchFeed(
   query: string,
   filteredSummaries: RefConnectorSummary[],
   filterStreams: ReadonlySet<string>,
-  timestampMetadata: ReadonlyMap<string, SearchTimestampMetadata>
+  timestampMetadata: ReadonlyMap<string, SearchTimestampMetadata>,
+  selectedConnectionIds: ReadonlySet<string>
 ): Promise<FeedLoadResult> {
   // Selected-connection chips cannot be enforced at the request layer for
   // search today (public `/v1/search` does not accept `connection_id`), so
@@ -184,7 +185,22 @@ async function loadSearchFeed(
   // connector-scope label in the view promises. This is intentionally weaker
   // than per-connection filtering; the UI surface and the OpenSpec delta
   // both say so out loud.
+  //
+  // When a forward-compatible RS returns concrete connection identity on a
+  // hit (per `expose-connection-identity-on-public-read`), we tighten this
+  // post-filter: a hit that names a connection MUST match one of the
+  // selected visible connections. Otherwise selecting "Personal Gmail"
+  // would still show rows from "Work Gmail" simply because both share
+  // `connector_id: gmail`.
   const allowedConnectors = new Set(filteredSummaries.map((s) => s.connector_id));
+  const allowedConnectionIds = new Set<string>();
+  for (const s of filteredSummaries) {
+    allowedConnectionIds.add(s.connection_id);
+    if (s.connector_instance_id) {
+      allowedConnectionIds.add(s.connector_instance_id);
+    }
+  }
+  const enforceConnectionFilter = selectedConnectionIds.size > 0;
   const hybridAdvertised = await isHybridRetrievalAdvertised();
 
   let hits: SearchResultHit[] = [];
@@ -210,13 +226,10 @@ async function loadSearchFeed(
   // chip narrows the rendered facet line but the search itself returns
   // hits across them. Connection identity is preserved per-row below.
   const filtered = hits.filter((h) => {
-    if (allowedConnectors.size > 0 && !allowedConnectors.has(h.connector_id)) {
-      return false;
-    }
     if (filterStreams.size > 0 && !filterStreams.has(h.stream)) {
       return false;
     }
-    return true;
+    return shouldIncludeSearchHit(h, { allowedConnectors, allowedConnectionIds, enforceConnectionFilter });
   });
 
   const entries: ExplorerFeedEntry[] = filtered.map((hit) => {
@@ -392,7 +405,7 @@ export default async function RecordsExplorerPage({
   let feedResult: FeedLoadResult;
   try {
     feedResult = query
-      ? await loadSearchFeed(query, filteredSummaries, filterStreamSet, timestampMetadata)
+      ? await loadSearchFeed(query, filteredSummaries, filterStreamSet, timestampMetadata, filterConnectionSet)
       : await loadEmptyQueryFeed(filteredSummaries, timestampMetadata, filterStreamSet);
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {

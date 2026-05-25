@@ -37,6 +37,12 @@ The reference dashboard SHALL expose an owner-only records-explorer surface at `
 - **AND** the selected-connection summary SHALL label that constraint as connector-scoped (e.g. "connector (from connection)") rather than claiming a connection filter the request cannot enforce
 - **AND** the explorer SHALL NOT pick an arbitrary one of the selected connections to attribute hits to
 
+#### Scenario: Selected-connection chips tighten when hits carry concrete identity
+- **WHEN** the owner has selected one or more connection chips AND a query is active
+- **AND** a search hit carries a concrete `connection_id` (or its deprecated `connector_instance_id` alias) in the response (forward-compatible with `expose-connection-identity-on-public-read`)
+- **THEN** the explorer SHALL drop the hit unless that concrete connection identity matches one of the selected visible connections
+- **AND** hits in the same response that do not carry concrete identity SHALL continue to fall through to the connector-scoped post-filter rather than being dropped
+
 #### Scenario: Record reads carry the resolved connection scope
 - **WHEN** the explorer issues a record read for the peek panel
 - **THEN** the read SHALL include the `connector_id` and, when a concrete `connection_id` (or its deprecated `connector_instance_id` alias) is known for the row, the matching `connector_instance_id` scope used to derive the displayed value

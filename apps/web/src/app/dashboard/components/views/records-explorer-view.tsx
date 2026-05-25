@@ -82,6 +82,10 @@ const ROW_KEY_SEP = "::";
 // identity). Distinct token so legitimate ids never collide with absence.
 const NO_CONNECTION = "~";
 
+// Each component is percent-encoded before joining so the `::` separator
+// stays unambiguous regardless of what characters a connector emits in
+// record / stream / connection identifiers. `encodeURIComponent` never
+// produces a `:` byte, so the split is reversible for any input string.
 export function explorerPeekParam(entry: {
   connectorId: string;
   connectionId?: string | null;
@@ -89,7 +93,7 @@ export function explorerPeekParam(entry: {
   recordId: string;
 }): string {
   const conn = entry.connectionId && entry.connectionId.length > 0 ? entry.connectionId : NO_CONNECTION;
-  return `${entry.connectorId}${ROW_KEY_SEP}${conn}${ROW_KEY_SEP}${entry.stream}${ROW_KEY_SEP}${entry.recordId}`;
+  return [entry.connectorId, conn, entry.stream, entry.recordId].map(encodeURIComponent).join(ROW_KEY_SEP);
 }
 
 export function parseExplorerPeekParam(raw: string | undefined | null): {
@@ -105,7 +109,13 @@ export function parseExplorerPeekParam(raw: string | undefined | null): {
   if (parts.length !== 4) {
     return null;
   }
-  const [connectorId, connectionToken, stream, recordId] = parts;
+  let decoded: [string, string, string, string];
+  try {
+    decoded = parts.map((p) => decodeURIComponent(p)) as [string, string, string, string];
+  } catch {
+    return null;
+  }
+  const [connectorId, connectionToken, stream, recordId] = decoded;
   if (!(connectorId && connectionToken && stream && recordId)) {
     return null;
   }

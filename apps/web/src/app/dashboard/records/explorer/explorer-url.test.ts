@@ -74,3 +74,50 @@ test("parseExplorerPeekParam rejects malformed strings", () => {
   assert.equal(parseExplorerPeekParam("a::b::c::"), null);
   assert.equal(parseExplorerPeekParam("::b::c::d"), null);
 });
+
+test("explorerPeekParam round-trips record ids containing the ':: ' separator", () => {
+  // Regression: a raw `::` join collides with any id that legitimately
+  // contains `::`, so a record id like `thread::42` would parse as five
+  // parts and be rejected, or worse, silently split mid-id.
+  const entry = {
+    connectorId: "imap",
+    connectionId: "conn-personal",
+    stream: "threads",
+    recordId: "thread::42",
+  };
+  const raw = explorerPeekParam(entry);
+  assert.deepEqual(parseExplorerPeekParam(raw), entry);
+});
+
+test("explorerPeekParam round-trips ids containing /, #, and spaces", () => {
+  const entry = {
+    connectorId: "github",
+    connectionId: "owner/repo#42",
+    stream: "issues/comments",
+    recordId: "comment id with spaces",
+  };
+  const raw = explorerPeekParam(entry);
+  assert.deepEqual(parseExplorerPeekParam(raw), entry);
+});
+
+test("explorerPeekParam round-trips a stream containing the separator", () => {
+  const entry = {
+    connectorId: "custom",
+    connectionId: "conn-a",
+    stream: "ns::events",
+    recordId: "rec-1",
+  };
+  const raw = explorerPeekParam(entry);
+  assert.deepEqual(parseExplorerPeekParam(raw), entry);
+});
+
+test("explorerPeekParam round-trips a connection id containing the separator", () => {
+  const entry = {
+    connectorId: "gmail",
+    connectionId: "tenant::user",
+    stream: "messages",
+    recordId: "ABC123",
+  };
+  const raw = explorerPeekParam(entry);
+  assert.deepEqual(parseExplorerPeekParam(raw), entry);
+});

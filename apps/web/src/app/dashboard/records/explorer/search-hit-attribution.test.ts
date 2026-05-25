@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { RefConnectorSummary } from "../../lib/ref-client.ts";
-import { attributeSearchHit } from "./search-hit-attribution.ts";
+import { attributeSearchHit, shouldIncludeSearchHit } from "./search-hit-attribution.ts";
 
 function summary(
   over: Partial<RefConnectorSummary> & { connection_id: string; connector_id: string }
@@ -79,6 +79,111 @@ test("attributeSearchHit returns nulls when no matching connection is visible", 
   const result = attributeSearchHit({ connector_id: "github" }, visible);
   assert.equal(result.connectionId, null);
   assert.equal(result.connectionDisplayName, null);
+});
+
+test("shouldIncludeSearchHit drops a hit whose concrete connection identity is not selected", () => {
+  // Regression for the post-revision-1 review: when a forward-compatible
+  // RS returns `connection_id` on a search hit AND the owner has selected
+  // a specific Gmail connection, a hit from the *other* Gmail connection
+  // must NOT slip through just because both share `connector_id: gmail`.
+  const allowedConnectors = new Set(["gmail"]);
+  // `conn-personal` is the only selected/visible connection; `conn-work`
+  // is filtered out at the summaries layer and so is not in this set.
+  const allowedConnectionIds = new Set(["conn-personal"]);
+  const hit = {
+    connector_id: "gmail",
+    connection_id: "conn-work",
+  };
+  assert.equal(
+    shouldIncludeSearchHit(hit, {
+      allowedConnectors,
+      allowedConnectionIds,
+      enforceConnectionFilter: true,
+    }),
+    false
+  );
+});
+
+test("shouldIncludeSearchHit keeps a hit whose concrete connection identity matches the selection", () => {
+  const allowedConnectors = new Set(["gmail"]);
+  const allowedConnectionIds = new Set(["conn-personal"]);
+  const hit = {
+    connector_id: "gmail",
+    connection_id: "conn-personal",
+  };
+  assert.equal(
+    shouldIncludeSearchHit(hit, {
+      allowedConnectors,
+      allowedConnectionIds,
+      enforceConnectionFilter: true,
+    }),
+    true
+  );
+});
+
+test("shouldIncludeSearchHit honors the deprecated connector_instance_id alias when filtering", () => {
+  const allowedConnectors = new Set(["gmail"]);
+  const allowedConnectionIds = new Set(["conn-personal", "ci-personal"]);
+  const hit = {
+    connector_id: "gmail",
+    connector_instance_id: "ci-work",
+  };
+  assert.equal(
+    shouldIncludeSearchHit(hit, {
+      allowedConnectors,
+      allowedConnectionIds,
+      enforceConnectionFilter: true,
+    }),
+    false
+  );
+});
+
+test("shouldIncludeSearchHit falls through to connector-scope when the hit carries no connection identity", () => {
+  // Today's deployed RS does not emit connection_id on search hits. In
+  // that case we cannot tighten beyond connector_id; the helper must let
+  // the hit through and the row renders connector-scoped.
+  const allowedConnectors = new Set(["gmail"]);
+  const allowedConnectionIds = new Set(["conn-personal"]);
+  const hit = { connector_id: "gmail" };
+  assert.equal(
+    shouldIncludeSearchHit(hit, {
+      allowedConnectors,
+      allowedConnectionIds,
+      enforceConnectionFilter: true,
+    }),
+    true
+  );
+});
+
+test("shouldIncludeSearchHit drops hits whose connector type is not in the visible set", () => {
+  const allowedConnectors = new Set(["gmail"]);
+  const allowedConnectionIds = new Set(["conn-personal"]);
+  const hit = { connector_id: "github", connection_id: "conn-personal" };
+  assert.equal(
+    shouldIncludeSearchHit(hit, {
+      allowedConnectors,
+      allowedConnectionIds,
+      enforceConnectionFilter: true,
+    }),
+    false
+  );
+});
+
+test("shouldIncludeSearchHit does not enforce connection-scope when no chips are selected", () => {
+  // `enforceConnectionFilter: false` mirrors the no-chip state in the
+  // page; we must not start dropping rows just because a hit happens to
+  // carry an unrecognized connection_id.
+  const allowedConnectors = new Set(["gmail"]);
+  const allowedConnectionIds = new Set<string>();
+  const hit = { connector_id: "gmail", connection_id: "conn-unknown" };
+  assert.equal(
+    shouldIncludeSearchHit(hit, {
+      allowedConnectors,
+      allowedConnectionIds,
+      enforceConnectionFilter: false,
+    }),
+    true
+  );
 });
 
 test("attributeSearchHit prefers server-provided display_name over summary fallback", () => {

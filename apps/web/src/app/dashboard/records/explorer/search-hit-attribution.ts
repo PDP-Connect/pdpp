@@ -26,16 +26,57 @@ export interface AttributedSearchHit {
   connectionId: string | null;
 }
 
+/**
+ * Post-hoc filter applied to public `/v1/search*` hits in connection-aware
+ * mode. The public contract does not yet accept `connection_id` as a
+ * request parameter, so the dashboard narrows the response itself.
+ *
+ * Two layers:
+ *   1. Connector-scope: drop hits whose `connector_id` is not represented
+ *      in the visible (already filtered) summaries.
+ *   2. Connection-scope (forward-compatible): when the owner has selected
+ *      connection chips AND the hit carries concrete identity
+ *      (`connection_id` or its deprecated `connector_instance_id` alias),
+ *      drop the hit unless that identity is one of the selected visible
+ *      connections. Hits without concrete identity fall through to (1).
+ *
+ * Stream-scope is enforced by the caller against the `stream` filter set.
+ */
+export function shouldIncludeSearchHit(
+  hit: Pick<SearchResultHit, "connector_id" | "connection_id" | "connector_instance_id">,
+  opts: {
+    allowedConnectors: ReadonlySet<string>;
+    allowedConnectionIds: ReadonlySet<string>;
+    enforceConnectionFilter: boolean;
+  }
+): boolean {
+  if (opts.allowedConnectors.size > 0 && !opts.allowedConnectors.has(hit.connector_id)) {
+    return false;
+  }
+  if (opts.enforceConnectionFilter) {
+    const hitConnectionId = pickHitConnectionId(hit);
+    if (hitConnectionId && !opts.allowedConnectionIds.has(hitConnectionId)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function pickHitConnectionId(hit: Pick<SearchResultHit, "connection_id" | "connector_instance_id">): string | null {
+  if (typeof hit.connection_id === "string" && hit.connection_id.length > 0) {
+    return hit.connection_id;
+  }
+  if (typeof hit.connector_instance_id === "string" && hit.connector_instance_id.length > 0) {
+    return hit.connector_instance_id;
+  }
+  return null;
+}
+
 export function attributeSearchHit(
   hit: Pick<SearchResultHit, "connector_id" | "connection_id" | "connector_instance_id" | "display_name">,
   visibleSummaries: readonly RefConnectorSummary[]
 ): AttributedSearchHit {
-  let hitConnectionId: string | null = null;
-  if (typeof hit.connection_id === "string" && hit.connection_id.length > 0) {
-    hitConnectionId = hit.connection_id;
-  } else if (typeof hit.connector_instance_id === "string" && hit.connector_instance_id.length > 0) {
-    hitConnectionId = hit.connector_instance_id;
-  }
+  const hitConnectionId = pickHitConnectionId(hit);
 
   let resolved: RefConnectorSummary | null = null;
 
