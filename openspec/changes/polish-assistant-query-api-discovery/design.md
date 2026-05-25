@@ -1,3 +1,17 @@
+## Classification under `canonicalize-public-read-contract`
+
+This change is **largely superseded** by the canonical public read contract. The concrete `/v1/schema` route, cookbook, and error-polish edits that already landed remain valid implementation evidence.
+
+The canonical contract owns the durable requirements:
+
+- `GET /v1/schema` as the canonical capability document for streams, fields, operators, sortability, expansion, projection, search modes, pagination, counts, and granted connections.
+- Strict validation of unsupported parameters/fields/operators/sort fields/expansion targets, with typed errors rather than silent no-ops.
+- Token-efficient agent guidance (one-shot capability discovery, no per-tool divergent contracts) lives in the canonical contract and its MCP-mirror requirement.
+
+What remains here as implementation evidence: the implemented `/v1/schema` route and tests, the assistant-facing cookbook updates, and the targeted error-message improvements (e.g. lexical/semantic search rejecting `filter[stream]`/`filter[connector_id]` with the supported `streams[]` shape). Those are not contradicted by the canonical contract; they are the current realization of canonical capability discovery and strict validation for the read surface.
+
+No new normative requirements are introduced here. Future capability-discovery and validation requirements belong in `canonicalize-public-read-contract`.
+
 ## Context
 
 The current implementation already exposes most primitives the assistant asked for:

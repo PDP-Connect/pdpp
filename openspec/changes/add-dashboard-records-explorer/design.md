@@ -1,5 +1,20 @@
 # Design — Dashboard records explorer
 
+## Classification under `canonicalize-public-read-contract`
+
+The Explorer is a **consumer / diagnostic surface**, not a backend contract author. It must consume the canonical public read contract — identity, envelopes, warnings, capability discovery — and never invent backend nouns of its own.
+
+The canonical contract explicitly states: "No Explorer-specific backend identifiers, peek keys, or UI tabs as public contract nouns." It also names this change as the consumer that must simplify once search hits carry connection identity directly.
+
+Implications for this change:
+
+- The peek-key shape (`<connector>::<stream>::<id>`) and the chip URL params (`connection=`, `stream=`) are Explorer-internal UI state, not PDPP protocol nouns. They MUST NOT be promoted into the public read contract or `_ref` surface.
+- Connection identity on rows and chips MUST flow from the canonical `connection_id` (with `connector_instance_id` only as a deprecated alias during the migration window), not from Explorer-side inference. Once the canonical contract's identity work lands end-to-end, the Explorer's post-fetch attribution scaffolding should simplify (`tasks.md` item 6.1 in `canonicalize-public-read-contract` tracks this).
+- The Explorer SHOULD consume canonical envelopes (`data` / `links` / `meta` / `has_more`) and surface `meta.warnings` to the operator when present, rather than treating warnings as silent.
+- Backend / API gaps listed below (typed manifest schemas, stream `view` ids, cross-connection recent feed, record-time as first-class read field) remain design-note material; if any are promoted, they belong in `canonicalize-public-read-contract` (or a follow-on canonical change), not in this consumer surface.
+
+No requirements are added or removed here. The Explorer remains a UI slice over canonical primitives.
+
 ## Context
 
 A design bundle (`/tmp/designs/pdpp-explorer/`) proposed a single-canvas, query-driven explorer for the data-owner audience: chip+text filter bar runs the whole app, results reshape into a unified feed across every granted stream, type-aware cards dispatch from schema signals, and a peek pane shows the exact `GET /v1/streams/.../records/<id>` URL the dashboard used to read each record. The prototype is built on inline React+Babel against mocked grant/connection/schema data and assumes the owner has many granted connections.

@@ -1,3 +1,13 @@
+## Classification under `canonicalize-public-read-contract`
+
+This change is the **expansion implementation slice** under the canonical public read contract.
+
+The canonical contract owns the expansion primitive: `expand[]` is one-hop, parent-to-child, grant-safe, depth-capped at one, and bounded by `expand_limit`. Reverse, belongs-to, nested, and arbitrary graph traversal are explicitly non-goals. That rule lives in `openspec/changes/canonicalize-public-read-contract/specs/reference-implementation-architecture/spec.md` ("Public read expansion SHALL be one-hop, inline, and grant-safe").
+
+What stays here: the concrete audit of first-party manifests, the safe parent-to-child `query.expand` enablements, the manifest validator coverage, and the docs/test work that proves the existing engine continues to honor the one-hop, grant-safe rule.
+
+No new expansion semantics are introduced. This change does not stack a second expansion contract on top of the canonical one — it implements declarations against the existing engine within the canonical guardrails.
+
 ## Existing Contract
 
 The reference expansion engine supports one-hop parent-to-child expansion:

@@ -1,3 +1,18 @@
+## Classification under `canonicalize-public-read-contract`
+
+This change is **largely superseded** by the canonical public read contract. The concrete contract description/test/cookbook edits already landed on `main` and remain valid implementation evidence.
+
+The canonical contract owns the durable requirements that subsume the original intent:
+
+- "`GET /v1/schema` is the canonical capability/introspection surface for streams, fields, operators, sortability, expansion, search modes, pagination, count support, and granted connections." — replaces the bespoke "point summaries at `/v1/schema`" intent.
+- "Public read parameters SHALL be strictly validated" with structured `meta.warnings` — replaces the bespoke "hybrid pagination unavailable" hint pattern; under the canonical contract, capability is advertised in `/v1/schema` and unsupported cursor use is rejected (or warned) rather than discovered via 400.
+- "Public read filters SHALL use a small advertised operator vocabulary" — replaces the bespoke `filter` description hint; canonical operators are advertised per field in `/v1/schema`.
+- "MCP tool descriptions and docs may summarize this information, but they do not become a second source of truth." — applies to the summary edits here.
+
+What remains here as implementation evidence: the actual `summary`/`description` edits in `packages/reference-contract/src/public/index.ts`, the cookbook hybrid-pagination fallback note, and the `llm-hints.test.js` guard. Those are not contradicted by the canonical contract; they are concrete realizations of canonical capability discovery for the current pre-canonical wire shape.
+
+No additional requirements are introduced here. New normative requirements for capability discovery, advertised operators, and `/v1/schema` authority belong in `canonicalize-public-read-contract`.
+
 ## Context
 
 The PDPP public read contract lives in `packages/reference-contract/src/public/index.ts` and is the single source of truth for the JSON Schema route manifests that the reference implementation, the hosted MCP integration, and the generated docs all consume. A recent fresh-eyes audit (RH Item 5, `tmp/workstreams/rh-item5-capability-contract-audit.md`) found the contract is structurally honest but has a handful of small LLM-affordance gaps that each cost a cold-start agent one extra turn. None are protocol semantics; all are discoverability seams at the same layer that `polish-reference-api-discovery-seams` already worked on.
