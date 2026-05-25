@@ -362,11 +362,18 @@ export interface SearchSemanticResultItem {
   score?: { kind: "semantic_distance"; value: number; order: "lower_is_better" };
 }
 
+export interface SearchSemanticEnvelopeMeta {
+  warnings?: Array<{ code: string; param?: string; message?: string }>;
+  [extra: string]: unknown;
+}
+
 export interface SearchSemanticEnvelope {
   object: "list";
   has_more: boolean;
   next_cursor?: string;
   data: SearchSemanticResultItem[];
+  /** Optional canonical `meta` slot; only emitted when warnings are non-empty. */
+  meta?: SearchSemanticEnvelopeMeta;
 }
 
 export interface SearchSemanticDisclosureData {
@@ -445,6 +452,39 @@ interface NormalizedRequestParams {
   streams: string[] | null;
   filter: unknown;
   filteredStream: string | null;
+  warnings: SearchSemanticWarning[];
+}
+
+/**
+ * Structured warning shape used in `meta.warnings[]`. The canonical
+ * `deprecated_alias_used` code is emitted whenever the request reached the
+ * operation via the deprecated `connector_instance_id` query alias.
+ */
+export interface SearchSemanticWarning {
+  code: string;
+  param?: string;
+  message?: string;
+}
+
+/**
+ * Canonical warning code for deprecated-alias usage. Mirrors the
+ * lexical-operation export so REST and MCP clients can detect alias
+ * deprecation uniformly across search modes.
+ */
+export const SEARCH_CONNECTION_ALIAS_DEPRECATED_WARNING_CODE = "deprecated_alias_used";
+
+function deriveSearchConnectionAliasWarnings(
+  query: Record<string, unknown>,
+): SearchSemanticWarning[] {
+  const alias = query.connector_instance_id;
+  if (typeof alias !== "string" || alias.length === 0) return [];
+  return [
+    {
+      code: SEARCH_CONNECTION_ALIAS_DEPRECATED_WARNING_CODE,
+      param: "connector_instance_id",
+      message: "`connector_instance_id` is deprecated; send `connection_id` instead.",
+    },
+  ];
 }
 
 function clampLimit(raw: unknown): number {
@@ -530,6 +570,7 @@ export function parseSearchSemanticParams(
     streams,
     filter: hasFilter ? query.filter : null,
     filteredStream: hasFilter && streams && streams.length > 0 ? streams[0]! : null,
+    warnings: deriveSearchConnectionAliasWarnings(query),
   };
 }
 
@@ -802,6 +843,9 @@ export async function executeSearchSemantic(
     has_more: hasMore,
     ...(nextCursor ? { next_cursor: nextCursor } : {}),
     data,
+    ...(params.warnings.length > 0
+      ? { meta: { warnings: params.warnings } }
+      : {}),
   };
 
   const disclosureData: SearchSemanticDisclosureData = {

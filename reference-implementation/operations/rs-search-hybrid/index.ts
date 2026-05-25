@@ -236,10 +236,17 @@ export interface SearchHybridResultItem {
   scores?: Record<string, { kind: string; value: number; order: string }>;
 }
 
+export interface SearchHybridEnvelopeMeta {
+  warnings?: Array<{ code: string; param?: string; message?: string }>;
+  [extra: string]: unknown;
+}
+
 export interface SearchHybridEnvelope {
   object: "list";
   has_more: boolean;
   data: SearchHybridResultItem[];
+  /** Optional canonical `meta` slot; only emitted when warnings are non-empty. */
+  meta?: SearchHybridEnvelopeMeta;
 }
 
 export interface SearchHybridDisclosureData {
@@ -317,6 +324,28 @@ interface NormalizedRequestParams {
   limit: number;
   streams: string[] | null;
   filter: unknown;
+  warnings: Array<{ code: string; param?: string; message?: string }>;
+}
+
+/**
+ * Canonical warning code for deprecated-alias usage. Mirrors the
+ * lexical/semantic operation exports so REST and MCP clients can detect
+ * alias deprecation uniformly across search modes.
+ */
+export const SEARCH_CONNECTION_ALIAS_DEPRECATED_WARNING_CODE = "deprecated_alias_used";
+
+function deriveSearchConnectionAliasWarnings(
+  query: Record<string, unknown>,
+): Array<{ code: string; param?: string; message?: string }> {
+  const alias = query.connector_instance_id;
+  if (typeof alias !== "string" || alias.length === 0) return [];
+  return [
+    {
+      code: SEARCH_CONNECTION_ALIAS_DEPRECATED_WARNING_CODE,
+      param: "connector_instance_id",
+      message: "`connector_instance_id` is deprecated; send `connection_id` instead.",
+    },
+  ];
 }
 
 function clampLimit(raw: unknown): number {
@@ -411,6 +440,7 @@ export function parseSearchHybridParams(
     limit,
     streams,
     filter: hasFilter ? query.filter : null,
+    warnings: deriveSearchConnectionAliasWarnings(query),
   };
 }
 
@@ -578,10 +608,33 @@ export async function executeSearchHybrid(
   const slice = all.slice(0, params.limit);
   const hasMore = all.length > params.limit;
 
+  // Merge warnings: hybrid's own (deprecated alias on the hybrid request)
+  // plus any warnings the underlying lexical / semantic sub-envelopes
+  // surfaced. The sub-envelopes receive the same `connection_id` /
+  // `connector_instance_id` query keys, so when the alias is present, all
+  // three would emit the same `deprecated_alias_used` entry. De-duplicate
+  // identical (code, param) pairs so we emit one canonical row.
+  const aggregatedWarnings: Array<{ code: string; param?: string; message?: string }> = [];
+  const seenWarnings = new Set<string>();
+  const pushWarning = (w: { code: string; param?: string; message?: string }) => {
+    const key = `${w.code}::${w.param ?? ""}`;
+    if (seenWarnings.has(key)) return;
+    seenWarnings.add(key);
+    aggregatedWarnings.push(w);
+  };
+  for (const w of params.warnings) pushWarning(w);
+  const lexMeta = (lexicalOutcome.envelope as { meta?: { warnings?: Array<{ code: string; param?: string; message?: string }> } }).meta;
+  if (lexMeta?.warnings) for (const w of lexMeta.warnings) pushWarning(w);
+  const semMeta = (semanticOutcome.envelope as { meta?: { warnings?: Array<{ code: string; param?: string; message?: string }> } }).meta;
+  if (semMeta?.warnings) for (const w of semMeta.warnings) pushWarning(w);
+
   const envelope: SearchHybridEnvelope = {
     object: "list",
     has_more: hasMore,
     data: slice,
+    ...(aggregatedWarnings.length > 0
+      ? { meta: { warnings: aggregatedWarnings } }
+      : {}),
   };
 
   const disclosureData: SearchHybridDisclosureData = {

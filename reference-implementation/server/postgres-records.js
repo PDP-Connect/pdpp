@@ -13,6 +13,7 @@ import { createHash } from 'node:crypto';
 import { postgresQuery, withPostgresTransaction } from './postgres-storage.js';
 import { makeDefaultAccountConnectorInstanceId } from './stores/connector-instance-store.js';
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from './owner-auth.ts';
+import { resolveRequestConnectionId } from './connection-id-request.js';
 
 const DEFAULT_LIMIT = 25;
 const MAX_LIMIT = 100;
@@ -145,18 +146,20 @@ function decodeCursor(token) {
   }
 }
 
-function responseRecord({ stream, row, fields }) {
-  return {
+function responseRecord({ stream, row, fields, identity = null }) {
+  const record = {
     object: 'record',
     id: row.record_key,
     stream,
     data: projectFields(row.record_json, fields),
     emitted_at: row.emitted_at,
   };
+  decorateRecordWithConnectionIdentity(record, identity);
+  return record;
 }
 
-function deletedResponseRecord({ stream, row }) {
-  return {
+function deletedResponseRecord({ stream, row, identity = null }) {
+  const record = {
     object: 'record',
     id: row.record_key,
     stream,
@@ -164,6 +167,30 @@ function deletedResponseRecord({ stream, row }) {
     deleted_at: row.deleted_at || row.emitted_at,
     emitted_at: row.emitted_at,
   };
+  decorateRecordWithConnectionIdentity(record, identity);
+  return record;
+}
+
+/**
+ * Attach canonical `connection_id` and the deprecated `connector_instance_id`
+ * alias to a response record when the runtime knows the binding without
+ * guessing. Mirrors `decorateRecordWithConnectionIdentity` in records.js so
+ * Postgres-backed responses match SQLite-backed responses.
+ *
+ * Spec: openspec/changes/canonicalize-public-read-contract/specs/
+ *       reference-implementation-architecture/spec.md
+ */
+function decorateRecordWithConnectionIdentity(record, identity) {
+  if (!record || !identity) return;
+  const connectionId = typeof identity.connectionId === 'string' ? identity.connectionId.trim() : '';
+  if (connectionId) {
+    record.connection_id = connectionId;
+    record.connector_instance_id = connectionId;
+  }
+  const displayName = typeof identity.displayName === 'string' ? identity.displayName.trim() : '';
+  if (displayName) {
+    record.display_name = displayName;
+  }
 }
 
 function parseLimit(value) {
@@ -367,6 +394,7 @@ export async function postgresQueryRecords(storageTarget, stream, grant, request
   const { cursorSql, primarySql } = recordOrderExpressions(manifestStream);
   const order = requestParams.order === 'desc' ? 'desc' : 'asc';
   const limit = parseLimit(requestParams.limit);
+  const { warnings: requestWarnings } = resolveRequestConnectionId(requestParams);
 
   if (requestParams.changes_since != null) {
     const decoded = requestParams.changes_since === 'beginning'
@@ -392,14 +420,17 @@ export async function postgresQueryRecords(storageTarget, stream, grant, request
       [connectorInstanceId, stream, decoded.v, sessionMax],
     );
     const sorted = [...rows.rows].sort((a, b) => Number(a.version) - Number(b.version));
-    return {
+    const identity = { connectionId: connectorInstanceId };
+    const changesResponse = {
       object: 'list',
       has_more: false,
       data: sorted.map((row) => row.deleted
-        ? deletedResponseRecord({ stream, row })
-        : responseRecord({ stream, row, fields })),
+        ? deletedResponseRecord({ stream, row, identity })
+        : responseRecord({ stream, row, fields, identity })),
       next_changes_since: encodeCursor({ v: sessionMax }),
     };
+    attachRequestWarningsToResponse(changesResponse, requestWarnings);
+    return changesResponse;
   }
 
   let cursorPosition = null;
@@ -448,10 +479,11 @@ export async function postgresQueryRecords(storageTarget, stream, grant, request
   );
   const hasMore = result.rows.length > limit;
   const pageRows = result.rows.slice(0, limit);
+  const identity = { connectionId: connectorInstanceId };
   const response = {
     object: 'list',
     has_more: hasMore,
-    data: pageRows.map((row) => responseRecord({ stream, row, fields })),
+    data: pageRows.map((row) => responseRecord({ stream, row, fields, identity })),
   };
   if (hasMore && pageRows.length > 0) {
     const last = pageRows[pageRows.length - 1];
@@ -462,7 +494,28 @@ export async function postgresQueryRecords(storageTarget, stream, grant, request
       primary_key_text: last.primary_key_text,
     });
   }
+  attachRequestWarningsToResponse(response, requestWarnings);
   return response;
+}
+
+/**
+ * Attach a `meta.warnings[]` envelope to a public-read response only when
+ * the runtime has non-empty structured warnings to surface. Mirrors
+ * `attachRequestWarningsToResponse` in records.js.
+ */
+function attachRequestWarningsToResponse(response, warnings) {
+  if (!response || typeof response !== 'object') return;
+  if (!Array.isArray(warnings) || warnings.length === 0) return;
+  const existingMeta = response.meta && typeof response.meta === 'object' && !Array.isArray(response.meta)
+    ? response.meta
+    : null;
+  const existingWarnings = existingMeta && Array.isArray(existingMeta.warnings)
+    ? existingMeta.warnings
+    : [];
+  response.meta = {
+    ...(existingMeta || {}),
+    warnings: [...existingWarnings, ...warnings],
+  };
 }
 
 export async function postgresGetRecord(storageTarget, stream, recordId, grant, manifest = null) {
@@ -483,7 +536,7 @@ export async function postgresGetRecord(storageTarget, stream, recordId, grant, 
     err.code = 'not_found';
     throw err;
   }
-  return responseRecord({ stream, row, fields });
+  return responseRecord({ stream, row, fields, identity: { connectionId: connectorInstanceId } });
 }
 
 export async function postgresListAllStreams(storageTarget) {
