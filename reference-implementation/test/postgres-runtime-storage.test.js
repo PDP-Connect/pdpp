@@ -1013,6 +1013,24 @@ if (!POSTGRES_URL) {
         'Postgres path must reject count values outside the canonical vocabulary',
       );
 
+      // changes_since is a version-ordered change feed. List-only ordering
+      // and count parameters must be rejected instead of accepted and ignored.
+      for (const params of [
+        { changes_since: 'beginning', sort: '-created_at' },
+        { changes_since: 'beginning', count: 'exact' },
+        { changes_since: 'beginning', order: 'asc' },
+      ]) {
+        await assert.rejects(
+          () => queryRecords(connectorId, stream, grant, params, manifest),
+          (err) => {
+            assert.equal(err.code, 'invalid_request');
+            assert.match(err.message, /not supported with changes_since/);
+            return true;
+          },
+          'Postgres changes_since must reject list-only sort/count/order params',
+        );
+      }
+
       // Filter narrowing must be reflected in the count: a filter that
       // matches a single visible row must yield count.value === 1.
       const filtered = await queryRecords(connectorId, stream, grant, {

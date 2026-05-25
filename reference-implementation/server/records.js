@@ -725,6 +725,18 @@ function validateCountKind(value) {
   }
 }
 
+function rejectListOnlyParamsForChangesFeed(requestParams) {
+  const unsupported = [];
+  for (const key of ['sort', 'count', 'order']) {
+    if (requestParams[key] != null && requestParams[key] !== '') unsupported.push(key);
+  }
+  if (!unsupported.length) return;
+  throw invalidQueryError(
+    `${unsupported.join(', ')} ${unsupported.length === 1 ? 'is' : 'are'} not supported with changes_since`,
+    'invalid_request',
+  );
+}
+
 /**
  * Validate the canonical `sort` parameter against the manifest stream's
  * declared cursor field, and return the resolved direction the runtime
@@ -1895,6 +1907,10 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
     const err = new Error('Malformed cursor');
     err.code = 'invalid_cursor';
     throw err;
+  }
+
+  if (changesSince !== null || paginationCursor?.session === 'changes') {
+    rejectListOnlyParamsForChangesFeed(requestParams);
   }
 
   if ((changesSince !== null || paginationCursor?.session === 'changes') && expansions.length) {

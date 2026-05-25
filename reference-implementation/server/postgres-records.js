@@ -78,6 +78,18 @@ function validateCountKind(value) {
   }
 }
 
+function rejectListOnlyParamsForChangesFeed(requestParams) {
+  const unsupported = [];
+  for (const key of ['sort', 'count', 'order']) {
+    if (requestParams[key] != null && requestParams[key] !== '') unsupported.push(key);
+  }
+  if (!unsupported.length) return;
+  throw invalidQueryError(
+    `${unsupported.join(', ')} ${unsupported.length === 1 ? 'is' : 'are'} not supported with changes_since`,
+    'invalid_request',
+  );
+}
+
 /**
  * Validate the canonical `sort` parameter against the manifest stream's
  * declared cursor field, and return the resolved direction the runtime
@@ -561,6 +573,7 @@ export async function postgresQueryRecords(storageTarget, stream, grant, request
   const identity = await resolveRecordIdentityForBinding(connectorInstanceId, connectorId);
 
   if (requestParams.changes_since != null) {
+    rejectListOnlyParamsForChangesFeed(requestParams);
     const decoded = requestParams.changes_since === 'beginning'
       ? { v: 0 }
       : decodeCursor(requestParams.changes_since);

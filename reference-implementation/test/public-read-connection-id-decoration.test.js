@@ -437,3 +437,18 @@ test('records list rejects when sort and order disagree', async () => {
     );
   });
 });
+
+test('records changes_since rejects list-only sort, count, and order params', async () => {
+  await withDb(async () => {
+    for (const params of [
+      { changes_since: 'beginning', sort: '-received_at' },
+      { changes_since: 'beginning', count: 'exact' },
+      { changes_since: 'beginning', order: 'asc' },
+    ]) {
+      await assert.rejects(
+        queryRecords(target(), STREAM, grant, params, manifest),
+        (err) => err.code === 'invalid_request' && /not supported with changes_since/.test(err.message),
+      );
+    }
+  });
+});
