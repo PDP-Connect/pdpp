@@ -3,10 +3,15 @@
 import { redirect } from "next/navigation";
 import { requireDashboardAccess } from "../../lib/dashboard-access.ts";
 import {
+  deleteConnectionSchedule,
   deleteConnectorSchedule,
+  pauseConnectionSchedule,
   pauseConnectorSchedule,
+  resumeConnectionSchedule,
   resumeConnectorSchedule,
+  runConnectionNow,
   runConnectorNow,
+  saveConnectionSchedule,
   saveConnectorSchedule,
 } from "../../lib/operator-runs.ts";
 
@@ -33,21 +38,28 @@ function errorMessage(err: unknown): string {
 
 export async function runConnectorNowAction(formData: FormData) {
   const connectorId = asString(formData.get("connector_id"));
-  await requireDashboardAccess(connectorHref(connectorId));
+  const connectionId = asString(formData.get("connection_id"));
+  const routeId = connectionId || connectorId;
+  await requireDashboardAccess(connectorHref(routeId));
   let message: string | undefined;
   let error: string | undefined;
   try {
-    const result = (await runConnectorNow(connectorId)) as { run_id?: string; trace_id?: string };
+    const result = (await (connectionId ? runConnectionNow(connectionId) : runConnectorNow(connectorId))) as {
+      run_id?: string;
+      trace_id?: string;
+    };
     message = result.run_id ? `Run started (${result.run_id})` : "Run started";
   } catch (err) {
     error = errorMessage(err);
   }
-  redirect(connectorHref(connectorId, message, error));
+  redirect(connectorHref(routeId, message, error));
 }
 
 export async function saveConnectorScheduleAction(formData: FormData) {
   const connectorId = asString(formData.get("connector_id"));
-  await requireDashboardAccess(connectorHref(connectorId));
+  const connectionId = asString(formData.get("connection_id"));
+  const routeId = connectionId || connectorId;
+  await requireDashboardAccess(connectorHref(routeId));
   const every = asString(formData.get("every"));
   const jitter = asString(formData.get("jitter"));
   const enabled = formData.get("enabled") === "on";
@@ -55,52 +67,60 @@ export async function saveConnectorScheduleAction(formData: FormData) {
   let message: string | undefined;
   let error: string | undefined;
   try {
-    await saveConnectorSchedule(connectorId, { every, jitter, enabled });
+    await (connectionId
+      ? saveConnectionSchedule(connectionId, { every, jitter, enabled })
+      : saveConnectorSchedule(connectorId, { every, jitter, enabled }));
     message = enabled ? "Schedule saved and enabled" : "Schedule saved as paused";
   } catch (err) {
     error = errorMessage(err);
   }
-  redirect(connectorHref(connectorId, message, error));
+  redirect(connectorHref(routeId, message, error));
 }
 
 export async function pauseConnectorScheduleAction(formData: FormData) {
   const connectorId = asString(formData.get("connector_id"));
-  await requireDashboardAccess(connectorHref(connectorId));
+  const connectionId = asString(formData.get("connection_id"));
+  const routeId = connectionId || connectorId;
+  await requireDashboardAccess(connectorHref(routeId));
   let message: string | undefined;
   let error: string | undefined;
   try {
-    await pauseConnectorSchedule(connectorId);
+    await (connectionId ? pauseConnectionSchedule(connectionId) : pauseConnectorSchedule(connectorId));
     message = "Schedule paused";
   } catch (err) {
     error = errorMessage(err);
   }
-  redirect(connectorHref(connectorId, message, error));
+  redirect(connectorHref(routeId, message, error));
 }
 
 export async function resumeConnectorScheduleAction(formData: FormData) {
   const connectorId = asString(formData.get("connector_id"));
-  await requireDashboardAccess(connectorHref(connectorId));
+  const connectionId = asString(formData.get("connection_id"));
+  const routeId = connectionId || connectorId;
+  await requireDashboardAccess(connectorHref(routeId));
   let message: string | undefined;
   let error: string | undefined;
   try {
-    await resumeConnectorSchedule(connectorId);
+    await (connectionId ? resumeConnectionSchedule(connectionId) : resumeConnectorSchedule(connectorId));
     message = "Schedule resumed";
   } catch (err) {
     error = errorMessage(err);
   }
-  redirect(connectorHref(connectorId, message, error));
+  redirect(connectorHref(routeId, message, error));
 }
 
 export async function deleteConnectorScheduleAction(formData: FormData) {
   const connectorId = asString(formData.get("connector_id"));
-  await requireDashboardAccess(connectorHref(connectorId));
+  const connectionId = asString(formData.get("connection_id"));
+  const routeId = connectionId || connectorId;
+  await requireDashboardAccess(connectorHref(routeId));
   let message: string | undefined;
   let error: string | undefined;
   try {
-    await deleteConnectorSchedule(connectorId);
+    await (connectionId ? deleteConnectionSchedule(connectionId) : deleteConnectorSchedule(connectorId));
     message = "Schedule deleted";
   } catch (err) {
     error = errorMessage(err);
   }
-  redirect(connectorHref(connectorId, message, error));
+  redirect(connectorHref(routeId, message, error));
 }

@@ -107,7 +107,10 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
     setToast({ kind: "none" });
     setOptimisticRunning(true);
     startTransition(async () => {
-      const res: RunNowResult = await runConnectorNowAction(connector.connector_id);
+      const res: RunNowResult = await runConnectorNowAction(
+        connector.connector_id,
+        connectionId ?? connectorInstanceId ?? null
+      );
       if (res.ok === true) {
         // Success: leave optimistic running on; the next poll/refresh
         // will flip to server-authoritative state.
@@ -122,7 +125,7 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
       }
       setToast({ kind: "error", message: res.message });
     });
-  }, [connector.connector_id, router]);
+  }, [connectionId, connector.connector_id, connectorInstanceId, router]);
 
   const routeId = connectionId ?? connectorInstanceId ?? connector.connector_id;
   const detailHref = `/dashboard/records/${encodeURIComponent(routeId)}`;

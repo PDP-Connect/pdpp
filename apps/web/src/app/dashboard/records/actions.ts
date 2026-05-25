@@ -1,7 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { runConnectorNow } from "../lib/operator-runs.ts";
+import { runConnectionNow, runConnectorNow } from "../lib/operator-runs.ts";
 
 export type RunNowResult =
   | { ok: true; run_id: string; trace_id: string }
@@ -14,14 +14,14 @@ const RUN_ID_MATCH_RE = /run[_:]?([A-Za-z0-9]+)/;
 
 /** Server action: start a connector run. Designed to never throw — the UI
  *  uses the discriminated-union return to render a toast/badge. */
-export async function runConnectorNowAction(connectorId: string): Promise<RunNowResult> {
+export async function runConnectorNowAction(connectorId: string, connectionId?: string | null): Promise<RunNowResult> {
   try {
-    const body = (await runConnectorNow(connectorId)) as {
+    const body = (await (connectionId ? runConnectionNow(connectionId) : runConnectorNow(connectorId))) as {
       run_id?: string;
       trace_id?: string;
     };
     revalidatePath("/dashboard/records");
-    revalidatePath(`/dashboard/records/${encodeURIComponent(connectorId)}`);
+    revalidatePath(`/dashboard/records/${encodeURIComponent(connectionId ?? connectorId)}`);
     return {
       ok: true,
       run_id: body.run_id ?? "",

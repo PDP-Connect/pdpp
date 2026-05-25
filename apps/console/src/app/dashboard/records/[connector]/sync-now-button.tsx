@@ -8,12 +8,13 @@ import { type RunNowResult, runConnectorNowAction } from "../actions.ts";
 const RUNNING_POLL_MS = 3000;
 
 interface Props {
+  connectionId: string | null;
   connectorId: string;
   displayName: string;
   initialRunning: boolean;
 }
 
-export function SyncNowButton({ connectorId, displayName, initialRunning }: Props) {
+export function SyncNowButton({ connectionId, connectorId, displayName, initialRunning }: Props) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [optimisticRunning, setOptimisticRunning] = useState(false);
@@ -49,7 +50,7 @@ export function SyncNowButton({ connectorId, displayName, initialRunning }: Prop
     setToast(null);
     setOptimisticRunning(true);
     startTransition(async () => {
-      const res: RunNowResult = await runConnectorNowAction(connectorId);
+      const res: RunNowResult = await runConnectorNowAction(connectorId, connectionId);
       if (res.ok === true) {
         router.refresh();
         return;
@@ -64,7 +65,7 @@ export function SyncNowButton({ connectorId, displayName, initialRunning }: Prop
       setToastTone("error");
       setToast(res.message);
     });
-  }, [connectorId, router]);
+  }, [connectionId, connectorId, router]);
 
   return (
     <div className="flex flex-col items-end gap-1">

@@ -74,8 +74,16 @@ function parseDurationInput(value: string, label: string): number {
   return amount * multiplier;
 }
 
-export async function runConnectorNow(connectorId: string) {
-  const response = await fetchAs(`/_ref/connectors/${encodeURIComponent(connectorId)}/run`, {
+function connectorControlPath(connectorId: string, suffix: string): string {
+  return `/_ref/connectors/${encodeURIComponent(connectorId)}${suffix}`;
+}
+
+function connectionControlPath(connectionId: string, suffix: string): string {
+  return `/_ref/connections/${encodeURIComponent(connectionId)}${suffix}`;
+}
+
+async function runNowAt(path: string) {
+  const response = await fetchAs(path, {
     method: "POST",
   });
   const body = await readBody(response);
@@ -85,8 +93,8 @@ export async function runConnectorNow(connectorId: string) {
   return body;
 }
 
-export async function saveConnectorSchedule(
-  connectorId: string,
+async function saveScheduleAt(
+  path: string,
   input: {
     every: string;
     jitter?: string;
@@ -99,7 +107,7 @@ export async function saveConnectorSchedule(
     ...(input.jitter?.trim() ? { jitter_seconds: parseDurationInput(input.jitter, "schedule jitter") } : {}),
   };
 
-  const response = await fetchAs(`/_ref/connectors/${encodeURIComponent(connectorId)}/schedule`, {
+  const response = await fetchAs(path, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: asJson(body),
@@ -111,26 +119,61 @@ export async function saveConnectorSchedule(
   return responseBody;
 }
 
-export async function pauseConnectorSchedule(connectorId: string) {
-  const response = await fetchAs(`/_ref/connectors/${encodeURIComponent(connectorId)}/schedule/pause`, {
+async function postScheduleMutationAt(path: string, fallback: string) {
+  const response = await fetchAs(path, {
     method: "POST",
   });
   const body = await readBody(response);
   if (!response.ok) {
-    throw new Error(describeError(body, `schedule pause failed (${response.status})`));
+    throw new Error(describeError(body, `${fallback} (${response.status})`));
   }
   return body;
 }
 
-export async function resumeConnectorSchedule(connectorId: string) {
-  const response = await fetchAs(`/_ref/connectors/${encodeURIComponent(connectorId)}/schedule/resume`, {
-    method: "POST",
-  });
-  const body = await readBody(response);
-  if (!response.ok) {
-    throw new Error(describeError(body, `schedule resume failed (${response.status})`));
+export async function runConnectorNow(connectorId: string) {
+  return runNowAt(connectorControlPath(connectorId, "/run"));
+}
+
+export async function runConnectionNow(connectionId: string) {
+  return runNowAt(connectionControlPath(connectionId, "/run"));
+}
+
+export async function saveConnectorSchedule(
+  connectorId: string,
+  input: {
+    every: string;
+    jitter?: string;
+    enabled: boolean;
   }
-  return body;
+) {
+  return saveScheduleAt(connectorControlPath(connectorId, "/schedule"), input);
+}
+
+export async function saveConnectionSchedule(
+  connectionId: string,
+  input: {
+    every: string;
+    jitter?: string;
+    enabled: boolean;
+  }
+) {
+  return saveScheduleAt(connectionControlPath(connectionId, "/schedule"), input);
+}
+
+export async function pauseConnectorSchedule(connectorId: string) {
+  return postScheduleMutationAt(connectorControlPath(connectorId, "/schedule/pause"), `schedule pause failed`);
+}
+
+export async function pauseConnectionSchedule(connectionId: string) {
+  return postScheduleMutationAt(connectionControlPath(connectionId, "/schedule/pause"), `schedule pause failed`);
+}
+
+export async function resumeConnectorSchedule(connectorId: string) {
+  return postScheduleMutationAt(connectorControlPath(connectorId, "/schedule/resume"), `schedule resume failed`);
+}
+
+export async function resumeConnectionSchedule(connectionId: string) {
+  return postScheduleMutationAt(connectionControlPath(connectionId, "/schedule/resume"), `schedule resume failed`);
 }
 
 /**
@@ -263,7 +306,17 @@ export async function mintRunInteractionStream(
 }
 
 export async function deleteConnectorSchedule(connectorId: string) {
-  const response = await fetchAs(`/_ref/connectors/${encodeURIComponent(connectorId)}/schedule`, {
+  const response = await fetchAs(connectorControlPath(connectorId, "/schedule"), {
+    method: "DELETE",
+  });
+  if (!response.ok && response.status !== 204) {
+    const body = await readBody(response);
+    throw new Error(describeError(body, `schedule delete failed (${response.status})`));
+  }
+}
+
+export async function deleteConnectionSchedule(connectionId: string) {
+  const response = await fetchAs(connectionControlPath(connectionId, "/schedule"), {
     method: "DELETE",
   });
   if (!response.ok && response.status !== 204) {

@@ -119,7 +119,7 @@ export default async function ConnectorPage({ params }: { params: Promise<{ conn
     // versa. Failures surface as honest "unavailable" tooltips rather
     // than silently zeroing the section.
     const [scheduleResult, sourcesResult] = await Promise.allSettled([
-      getConnectorSchedule(connectorId),
+      getConnectorSchedule(connectorId, { connectorInstanceId: connectorInstanceId ?? undefined }),
       listDeviceExporterSourceInstances({ connector_instance_id: connectorInstanceId ?? undefined }),
     ]);
     connectionHealth = summary.connection_health ?? null;
@@ -178,7 +178,12 @@ export default async function ConnectorPage({ params }: { params: Promise<{ conn
             >
               All runs →
             </Link>
-            <SyncNowButton connectorId={connectorId} displayName={displayName} initialRunning={running} />
+            <SyncNowButton
+              connectionId={connectorInstanceId}
+              connectorId={connectorId}
+              displayName={displayName}
+              initialRunning={running}
+            />
           </>
         }
         breadcrumbs={[{ label: "Records", href: "/dashboard/records" }, { label: displayName }]}

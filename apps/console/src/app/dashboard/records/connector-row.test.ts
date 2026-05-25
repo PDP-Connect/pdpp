@@ -184,6 +184,8 @@ const LAST_INGEST_LABEL = /last ingest:/;
 const RETAINED_BREAKDOWN = /data-testid="retained-bytes-breakdown"/;
 const RETAINED_CURRENT_LABEL = /current \$\{formatBytes\(currentBytes\)\}/;
 const RETAINED_HISTORY_LABEL = /history \$\{formatBytes\(historyBytes\)\}/;
+const RUN_ACTION_RECEIVES_CONNECTION_ID =
+  /runConnectorNowAction\(\s*connector\.connector_id,\s*connectionId \?\? connectorInstanceId \?\? null\s*\)/;
 
 test("connector-row shows 'Syncing' label when outbox is active during idle state", async () => {
   const src = await readFile(ROW_FILE, "utf8");
@@ -213,4 +215,9 @@ test("connector-row explains retained bytes as current records plus retained his
   assert.match(src, RETAINED_BREAKDOWN);
   assert.match(src, RETAINED_CURRENT_LABEL);
   assert.match(src, RETAINED_HISTORY_LABEL);
+});
+
+test("connector-row sync action targets the concrete connection when present", async () => {
+  const src = await readFile(ROW_FILE, "utf8");
+  assert.match(src, RUN_ACTION_RECEIVES_CONNECTION_ID);
 });

@@ -204,7 +204,7 @@ interface ConnectorDetailGapStoreLike {
 }
 
 interface ScheduleLike {
-  getSchedule(connectorId: string): Promise<unknown>;
+  getSchedule(connectorId: string, options?: { readonly connectorInstanceId?: string }): Promise<unknown>;
 }
 
 interface ControllerLike {
@@ -759,9 +759,13 @@ export function isPublicReferenceConnector(row: ConnectorRow, manifest: Connecto
   return true;
 }
 
-function getScheduleFrom(controller: ControllerLike | null | undefined, connectorId: string): Promise<unknown> {
+function getScheduleFrom(
+  controller: ControllerLike | null | undefined,
+  connectorId: string,
+  options: { readonly connectorInstanceId?: string } = {},
+): Promise<unknown> {
   if (controller && typeof controller.getSchedule === "function") {
-    return (controller as ScheduleLike).getSchedule(connectorId);
+    return (controller as ScheduleLike).getSchedule(connectorId, options);
   }
   return Promise.resolve(null);
 }
@@ -1874,7 +1878,7 @@ export async function listConnectorSummaries(
       );
       const [schedule, lastRun, lastSuccessfulRun, detailGaps, outbox, attention, remoteSurface] =
         await Promise.all([
-          getScheduleFrom(controller, connectorId),
+          getScheduleFrom(controller, connectorId, { connectorInstanceId }),
           getLatestRunSummary(connectorId),
           getLatestRunSummary(connectorId, "succeeded"),
           getConnectorDetailGapProjection(connectorId, connectorInstanceId),

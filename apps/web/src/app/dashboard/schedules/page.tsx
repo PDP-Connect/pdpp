@@ -32,7 +32,13 @@ export default async function SchedulesPage() {
       <SchedulesPoller enabled={hasActiveRun} />
       <SchedulesView
         description="Set automatic refresh cadences for your connectors. High-friction connectors (banks, browser-based) should be kept manual or low-frequency."
-        renderRow={(summary) => <ScheduleRow key={summary.connector_id} runsHref="/dashboard/runs" summary={summary} />}
+        renderRow={(summary) => (
+          <ScheduleRow
+            key={summary.connection_id ?? summary.connector_instance_id ?? summary.connector_id}
+            runsHref="/dashboard/runs"
+            summary={summary}
+          />
+        )}
         scheduledEmptyHint="Use the buttons below to add a schedule to any connector."
         summaries={summaries}
         unscheduledDescription="These connectors have no automatic schedule. Use 'Set schedule' to add one, or sync manually from the Records page."

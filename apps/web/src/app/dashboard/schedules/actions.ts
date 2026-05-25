@@ -2,9 +2,13 @@
 
 import { revalidatePath } from "next/cache";
 import {
+  deleteConnectionSchedule,
   deleteConnectorSchedule,
+  pauseConnectionSchedule,
   pauseConnectorSchedule,
+  resumeConnectionSchedule,
   resumeConnectorSchedule,
+  saveConnectionSchedule,
   saveConnectorSchedule,
 } from "../lib/operator-runs.ts";
 
@@ -12,10 +16,12 @@ type ScheduleActionResult = { ok: true } | { ok: false; message: string };
 
 export async function upsertScheduleAction(
   connectorId: string,
-  input: { every: string; jitter?: string; enabled: boolean }
+  input: { every: string; jitter?: string; enabled: boolean; connectionId?: string | null }
 ): Promise<ScheduleActionResult & { policy_warning?: string | null }> {
   try {
-    const body = (await saveConnectorSchedule(connectorId, input)) as {
+    const body = (await (input.connectionId
+      ? saveConnectionSchedule(input.connectionId, input)
+      : saveConnectorSchedule(connectorId, input))) as {
       policy_warning?: string | null;
     };
     revalidatePath("/dashboard/schedules");
@@ -26,9 +32,9 @@ export async function upsertScheduleAction(
   }
 }
 
-export async function pauseScheduleAction(connectorId: string): Promise<ScheduleActionResult> {
+export async function pauseScheduleAction(connectorId: string, connectionId?: string | null): Promise<ScheduleActionResult> {
   try {
-    await pauseConnectorSchedule(connectorId);
+    await (connectionId ? pauseConnectionSchedule(connectionId) : pauseConnectorSchedule(connectorId));
     revalidatePath("/dashboard/schedules");
     revalidatePath("/dashboard/records");
     return { ok: true };
@@ -37,9 +43,9 @@ export async function pauseScheduleAction(connectorId: string): Promise<Schedule
   }
 }
 
-export async function resumeScheduleAction(connectorId: string): Promise<ScheduleActionResult> {
+export async function resumeScheduleAction(connectorId: string, connectionId?: string | null): Promise<ScheduleActionResult> {
   try {
-    await resumeConnectorSchedule(connectorId);
+    await (connectionId ? resumeConnectionSchedule(connectionId) : resumeConnectorSchedule(connectorId));
     revalidatePath("/dashboard/schedules");
     revalidatePath("/dashboard/records");
     return { ok: true };
@@ -48,9 +54,9 @@ export async function resumeScheduleAction(connectorId: string): Promise<Schedul
   }
 }
 
-export async function deleteScheduleAction(connectorId: string): Promise<ScheduleActionResult> {
+export async function deleteScheduleAction(connectorId: string, connectionId?: string | null): Promise<ScheduleActionResult> {
   try {
-    await deleteConnectorSchedule(connectorId);
+    await (connectionId ? deleteConnectionSchedule(connectionId) : deleteConnectorSchedule(connectorId));
     revalidatePath("/dashboard/schedules");
     revalidatePath("/dashboard/records");
     return { ok: true };

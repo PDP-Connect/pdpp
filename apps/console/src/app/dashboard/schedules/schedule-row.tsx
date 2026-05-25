@@ -101,6 +101,7 @@ export function ScheduleRow({ summary, runsHref }: ScheduleRowProps) {
   const handleSave = useCallback(() => {
     startTransition(async () => {
       const res = await upsertScheduleAction(summary.connector_id, {
+        connectionId: summary.connection_id ?? summary.connector_instance_id ?? null,
         every,
         jitter: jitter || undefined,
         enabled: true,
@@ -115,37 +116,46 @@ export function ScheduleRow({ summary, runsHref }: ScheduleRowProps) {
       setEditState("idle");
       router.refresh();
     });
-  }, [summary.connector_id, every, jitter, router, showToast]);
+  }, [summary.connection_id, summary.connector_id, summary.connector_instance_id, every, jitter, router, showToast]);
 
   const handlePause = useCallback(() => {
     startTransition(async () => {
-      const res = await pauseScheduleAction(summary.connector_id);
+      const res = await pauseScheduleAction(
+        summary.connector_id,
+        summary.connection_id ?? summary.connector_instance_id ?? null
+      );
       if (!res.ok) {
         showToast("error", res.message);
       }
       router.refresh();
     });
-  }, [summary.connector_id, router, showToast]);
+  }, [summary.connection_id, summary.connector_id, summary.connector_instance_id, router, showToast]);
 
   const handleResume = useCallback(() => {
     startTransition(async () => {
-      const res = await resumeScheduleAction(summary.connector_id);
+      const res = await resumeScheduleAction(
+        summary.connector_id,
+        summary.connection_id ?? summary.connector_instance_id ?? null
+      );
       if (!res.ok) {
         showToast("error", res.message);
       }
       router.refresh();
     });
-  }, [summary.connector_id, router, showToast]);
+  }, [summary.connection_id, summary.connector_id, summary.connector_instance_id, router, showToast]);
 
   const handleDelete = useCallback(() => {
     startTransition(async () => {
-      const res = await deleteScheduleAction(summary.connector_id);
+      const res = await deleteScheduleAction(
+        summary.connector_id,
+        summary.connection_id ?? summary.connector_instance_id ?? null
+      );
       if (!res.ok) {
         showToast("error", res.message);
       }
       router.refresh();
     });
-  }, [summary.connector_id, router, showToast]);
+  }, [summary.connection_id, summary.connector_id, summary.connector_instance_id, router, showToast]);
 
   const schedule = summary.schedule;
   const policy = summary.refresh_policy;

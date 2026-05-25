@@ -546,9 +546,15 @@ export async function listSchedules(): Promise<ListResponse<RefSchedule>> {
   return (await refFetch("/_ref/schedules")) as ListResponse<RefSchedule>;
 }
 
-export async function getConnectorSchedule(connectorId: string): Promise<RefSchedule | null> {
+export async function getConnectorSchedule(
+  connectorId: string,
+  options: { connectorInstanceId?: string | null } = {}
+): Promise<RefSchedule | null> {
   try {
-    return (await refFetch(`/_ref/connectors/${encodeURIComponent(connectorId)}/schedule`)) as RefSchedule;
+    const path = options.connectorInstanceId
+      ? `/_ref/connections/${encodeURIComponent(options.connectorInstanceId)}/schedule`
+      : `/_ref/connectors/${encodeURIComponent(connectorId)}/schedule`;
+    return (await refFetch(path)) as RefSchedule;
   } catch (err) {
     if (err instanceof RefNotFoundError) {
       return null;
