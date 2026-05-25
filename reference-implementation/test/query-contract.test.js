@@ -815,7 +815,12 @@ test('stream aggregate computes count, sum, min/max, grouped counts, and declare
 
     const count = await fetchJson(`${base}&metric=count&filter[source_updated_at][gte]=2026-02-01T00:00:00Z`, { headers });
     assert.equal(count.status, 200);
-    assert.deepEqual(count.body, {
+    // Canonical aggregate envelope: `links` and `meta` are added by the
+    // route adapter via `finalizeCanonicalEnvelope`. We assert the payload
+    // semantics here and the envelope shape separately so the assertion
+    // does not couple to changes in the count/warnings vocabulary.
+    const { links, meta, ...countBody } = count.body;
+    assert.deepEqual(countBody, {
       object: 'aggregation',
       stream: 'top_artists',
       metric: 'count',
@@ -824,6 +829,9 @@ test('stream aggregate computes count, sum, min/max, grouped counts, and declare
       filtered_record_count: 2,
       value: 2,
     });
+    assert.equal(typeof links?.self, 'string');
+    assert.equal(meta?.count?.kind, 'none');
+    assert.deepEqual(meta?.warnings, []);
 
     const sum = await fetchJson(`${base}&metric=sum&field=popularity`, { headers });
     assert.equal(sum.status, 200);
