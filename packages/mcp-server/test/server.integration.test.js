@@ -224,6 +224,9 @@ test('search tool forwards q and returns hits', async () => {
   assert.deepEqual(result.structuredContent.results, [
     { id: 'orders:o2', title: 'Order o2', url: 'https://merchant.test/o2' },
   ]);
+  // Prose content is a concise summary, not a JSON dump.
+  assert.match(result.content[0].text, /search: 1 hit/i);
+  assert.match(result.content[0].text, /structuredContent/);
 
   await client.close();
   await server.close();
