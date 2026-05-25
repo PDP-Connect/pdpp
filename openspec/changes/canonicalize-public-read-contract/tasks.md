@@ -11,7 +11,7 @@
 - [x] 2.2 Add public read input schemas for `fields`, `expand`, `expand_limit`, `filter`, `sort`, `cursor`, `limit`, `count`, `connection_id`, and deprecated `connector_instance_id` alias.
 - [ ] 2.3 Add generated contract descriptions that point callers to `/v1/schema` for field/operator/expand/sort/count capabilities.
 - [ ] 2.4 Ensure `connector_instance_id` is documented only as a deprecated compatibility alias.
-- [ ] 2.5 Run reference-contract generation and verification.
+- [x] 2.5 Run reference-contract generation and verification.
 
 ## 3. Public RS Runtime
 
@@ -53,7 +53,7 @@
 ## 8. Validation and Deployment
 
 - [ ] 8.1 Run targeted reference-implementation, reference-contract, MCP, dashboard, and CLI tests.
-- [ ] 8.2 Run relevant typechecks.
-- [ ] 8.3 Run `openspec validate canonicalize-public-read-contract --strict`.
-- [ ] 8.4 Run `openspec validate --all --strict` if the work touches existing active changes.
+- [x] 8.2 Run relevant typechecks.
+- [x] 8.3 Run `openspec validate canonicalize-public-read-contract --strict`.
+- [x] 8.4 Run `openspec validate --all --strict` if the work touches existing active changes.
 - [ ] 8.5 Rebuild and restart local Docker when dashboard/API behavior changes.
