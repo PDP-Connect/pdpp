@@ -45,7 +45,7 @@
 ## 8. Operator-console parity
 
 - [x] 8.1 Mirror explorer page, view, peek-read-url, search-hit-attribution module, and tests under `apps/console`.
-- [x] 8.2 Mirror the routes / shell / rs-client deltas under `apps/console` so the operator-console Docker target (`docker-compose.yml` service `console`) ships the Explorer for the live `pdpp.vivid.fish` deployment.
+- [x] 8.2 Mirror the routes / shell / rs-client deltas under `apps/console` so the root `Dockerfile` `console` target used by the default compose `web` service ships the Explorer for the live `pdpp.vivid.fish` deployment.
 
 ## Acceptance checks
 
