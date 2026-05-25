@@ -834,4 +834,227 @@ if (!POSTGRES_URL) {
       closeDb();
     }
   });
+
+  // Postgres-backed public-read MUST honor the same canonical
+  // `sort` / `count` contract as the SQLite reference path. The owner
+  // flagged a footgun where postgres-records.js silently accepted these
+  // params and no-oped — re-introducing exactly the "silent no-op"
+  // behavior the canonical contract was written to eliminate.
+  //
+  // These tests fail if:
+  //   - `sort=-<cursor>` is ignored and the page returns ascending order.
+  //   - `count=exact` / `count=estimated` is ignored (no `meta.count`).
+  //   - `sort` and `order` disagree but the runtime silently picks one.
+  //   - `count` outside the canonical vocabulary is silently accepted.
+  //   - `sort` on an unadvertised field is silently accepted.
+  //
+  // Spec: openspec/changes/canonicalize-public-read-contract/specs/
+  //       reference-implementation-architecture/spec.md (#"Sort",
+  //       #"Counts").
+  test('postgres records list honors canonical sort and graded count', async () => {
+    const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+    const connectorId = `pg_canonical_${suffix}`;
+    const stream = 'events';
+    const grant = {
+      streams: [{ name: stream, fields: ['id', 'title', 'created_at'] }],
+    };
+    const manifest = {
+      protocol_version: '0.1.0',
+      connector_id: connectorId,
+      version: '1.0.0',
+      display_name: 'Postgres Canonical Contract Test',
+      capabilities: { human_interaction: [] },
+      streams: [
+        {
+          name: stream,
+          primary_key: ['id'],
+          cursor_field: 'created_at',
+          consent_time_field: 'created_at',
+          selection: { fields: true, resources: false },
+          schema: {
+            type: 'object',
+            required: ['id'],
+            properties: {
+              id: { type: 'string' },
+              title: { type: 'string' },
+              created_at: { type: 'string', format: 'date-time' },
+            },
+          },
+        },
+      ],
+    };
+
+    initDb(':memory:');
+    await initPostgresStorage({ backend: 'postgres', databaseUrl: POSTGRES_URL });
+
+    try {
+      await registerConnector(manifest);
+
+      const items = [
+        { id: 'a', title: 'Alpha', created_at: '2026-04-01T00:00:00.000Z' },
+        { id: 'b', title: 'Beta',  created_at: '2026-04-02T00:00:00.000Z' },
+        { id: 'c', title: 'Gamma', created_at: '2026-04-03T00:00:00.000Z' },
+      ];
+      for (const data of items) {
+        await ingestRecord(connectorId, { stream, key: data.id, data });
+      }
+
+      // sort=-created_at MUST return rows in DESC order.
+      const desc = await queryRecords(connectorId, stream, grant, {
+        sort: '-created_at',
+      }, manifest);
+      assert.deepEqual(
+        desc.data.map((row) => row.id),
+        ['c', 'b', 'a'],
+        'sort=-created_at must yield DESC order on the Postgres path',
+      );
+
+      // sort=created_at MUST return rows in ASC order.
+      const asc = await queryRecords(connectorId, stream, grant, {
+        sort: 'created_at',
+      }, manifest);
+      assert.deepEqual(
+        asc.data.map((row) => row.id),
+        ['a', 'b', 'c'],
+        'sort=created_at must yield ASC order on the Postgres path',
+      );
+
+      // sort and order disagreement must be rejected, not silently picked.
+      await assert.rejects(
+        () => queryRecords(connectorId, stream, grant, {
+          sort: '-created_at',
+          order: 'asc',
+        }, manifest),
+        (err) => {
+          assert.equal(err.code, 'invalid_sort');
+          return true;
+        },
+        'Postgres path must reject sort/order disagreement with typed invalid_sort',
+      );
+
+      // sort on an unadvertised field must be rejected.
+      await assert.rejects(
+        () => queryRecords(connectorId, stream, grant, {
+          sort: 'title',
+        }, manifest),
+        (err) => {
+          assert.equal(err.code, 'invalid_sort');
+          return true;
+        },
+        'Postgres path must reject sort on an unadvertised field',
+      );
+
+      // count=exact must populate meta.count.kind='exact' with the value
+      // matching all visible rows in the stream (3), not just the page.
+      const exactPage1 = await queryRecords(connectorId, stream, grant, {
+        count: 'exact',
+        limit: 1,
+        order: 'asc',
+      }, manifest);
+      assert.equal(exactPage1.data.length, 1, 'limit=1 must return one row');
+      assert.equal(exactPage1.has_more, true, 'limit=1 over 3 rows must signal has_more');
+      assert.equal(
+        exactPage1.meta?.count?.kind,
+        'exact',
+        'count=exact must surface meta.count.kind=exact on the Postgres path',
+      );
+      assert.equal(
+        exactPage1.meta?.count?.value,
+        3,
+        'count=exact value must reflect all matching visible rows (3), not the page size',
+      );
+      assert.equal(
+        Array.isArray(exactPage1.meta?.warnings) && exactPage1.meta.warnings.some((w) => w.code === 'count_downgraded'),
+        false,
+        'count=exact on the Postgres path must NOT emit count_downgraded',
+      );
+
+      // count=estimated must silently upgrade to exact on the Postgres
+      // reference path (cheap to compute the exact value via the same
+      // filter clause). No count_downgraded warning — that vocabulary
+      // slot is reserved for true downgrades.
+      const estimated = await queryRecords(connectorId, stream, grant, {
+        count: 'estimated',
+        limit: 5,
+        order: 'asc',
+      }, manifest);
+      assert.equal(
+        estimated.meta?.count?.kind,
+        'exact',
+        'count=estimated must surface meta.count.kind=exact (silent upgrade) on the Postgres path',
+      );
+      assert.equal(
+        estimated.meta?.count?.value,
+        3,
+        'count=estimated value must reflect all matching visible rows (3)',
+      );
+      assert.equal(
+        Array.isArray(estimated.meta?.warnings) && estimated.meta.warnings.some((w) => w.code === 'count_downgraded'),
+        false,
+        'count=estimated upgrading to exact is not a downgrade and must NOT emit count_downgraded',
+      );
+
+      // count=none (and absent count) MUST omit meta.count.
+      const none = await queryRecords(connectorId, stream, grant, {
+        count: 'none',
+        order: 'asc',
+      }, manifest);
+      assert.equal(none.meta?.count, undefined, 'count=none must omit meta.count on the Postgres path');
+
+      // Unknown count value must be rejected, not silently treated as none.
+      await assert.rejects(
+        () => queryRecords(connectorId, stream, grant, {
+          count: 'guessed',
+        }, manifest),
+        (err) => {
+          assert.equal(err.code, 'invalid_request');
+          return true;
+        },
+        'Postgres path must reject count values outside the canonical vocabulary',
+      );
+
+      // changes_since is a version-ordered change feed. List-only ordering
+      // and count parameters must be rejected instead of accepted and ignored.
+      for (const params of [
+        { changes_since: 'beginning', sort: '-created_at' },
+        { changes_since: 'beginning', count: 'exact' },
+        { changes_since: 'beginning', order: 'asc' },
+      ]) {
+        await assert.rejects(
+          () => queryRecords(connectorId, stream, grant, params, manifest),
+          (err) => {
+            assert.equal(err.code, 'invalid_request');
+            assert.match(err.message, /not supported with changes_since/);
+            return true;
+          },
+          'Postgres changes_since must reject list-only sort/count/order params',
+        );
+      }
+
+      // Filter narrowing must be reflected in the count: a filter that
+      // matches a single visible row must yield count.value === 1.
+      const filtered = await queryRecords(connectorId, stream, grant, {
+        count: 'exact',
+        filter: { id: 'b' },
+        order: 'asc',
+      }, manifest);
+      assert.deepEqual(
+        filtered.data.map((row) => row.id),
+        ['b'],
+        'filter={id:b} must narrow the page to one row on the Postgres path',
+      );
+      assert.equal(
+        filtered.meta?.count?.value,
+        1,
+        'count must reflect filter narrowing, not the unfiltered total',
+      );
+    } finally {
+      await postgresQuery('DELETE FROM record_changes WHERE connector_id = $1', [connectorId]);
+      await postgresQuery('DELETE FROM records WHERE connector_id = $1', [connectorId]);
+      await postgresQuery('DELETE FROM version_counter WHERE connector_id = $1', [connectorId]);
+      await postgresQuery('DELETE FROM connectors WHERE connector_id = $1', [connectorId]);
+      await closePostgresStorage();
+      closeDb();
+    }
+  });
 }

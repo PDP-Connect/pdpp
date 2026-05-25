@@ -31,6 +31,32 @@
 export const CONNECTION_ALIAS_DEPRECATED_WARNING_CODE = 'deprecated_alias_used';
 
 /**
+ * Canonical structured-warning codes the runtime is allowed to emit on
+ * `meta.warnings[]`. Mirrors the closed `WarningCodeSchema` enum in the
+ * reference contract so the wire vocabulary is single-sourced.
+ *
+ * - `deprecated_alias_used`: emitted by `resolveRequestConnectionId` when
+ *   the deprecated `connector_instance_id` alias was sent on the wire.
+ * - `count_downgraded`: emitted when the server downgraded a requested
+ *   count grade (e.g. estimated → exact, or estimated → none).
+ * - `source_skipped_not_applicable`, `partial_results`,
+ *   `compatibility_fallback`: reserved for multi-source read fan-in and
+ *   compatibility paths that do not yet emit warnings; the constants
+ *   exist so future tranches share the canonical spelling.
+ *
+ * Spec: openspec/changes/canonicalize-public-read-contract/specs/
+ *       reference-implementation-architecture/spec.md
+ *       (#"Public read warnings SHALL be structured")
+ */
+export const CANONICAL_WARNING_CODES = Object.freeze({
+  DEPRECATED_ALIAS_USED: 'deprecated_alias_used',
+  COUNT_DOWNGRADED: 'count_downgraded',
+  SOURCE_SKIPPED_NOT_APPLICABLE: 'source_skipped_not_applicable',
+  PARTIAL_RESULTS: 'partial_results',
+  COMPATIBILITY_FALLBACK: 'compatibility_fallback',
+});
+
+/**
  * Throw a typed `invalid_argument` error when both identifiers are present
  * with conflicting values. Mirrors `validateSearchConnectionAlias` in the
  * rs.search.* operations so REST and search reject the same conflict shape.
@@ -85,4 +111,34 @@ export function resolveRequestConnectionId(requestParams) {
   if (canonicalSet) connectionId = canonical;
   else if (aliasSet) connectionId = alias;
   return { connectionId, warnings };
+}
+
+/**
+ * Filter a stored connector-instance `display_name` value to the public-read
+ * contract: emit `display_name` only when the runtime has an owner-meaningful
+ * label, never a storage-layer placeholder.
+ *
+ * The connector-instance-store defaults `displayName` to the `connectorId`
+ * during default-account materialization, so an unset / never-edited name
+ * matches the connector identifier verbatim. The wire `display_name` is
+ * "owner-meaningful label for the connection. Never the storage-layer
+ * placeholder (`legacy`, `default_account`)." (reference-contract
+ * `ConnectionDisplayNameSchema`); we treat connectorId / connectorInstanceId
+ * equality and the documented placeholder strings as "no useful label" and
+ * return `null` so callers omit the field entirely.
+ *
+ * Spec: openspec/changes/canonicalize-public-read-contract/specs/
+ *       reference-implementation-architecture/spec.md
+ *       (#"Records, search, and blob items SHALL carry canonical connection identity")
+ */
+const PLACEHOLDER_DISPLAY_NAMES = new Set(['legacy', 'default_account', 'Default account']);
+
+export function projectStorageDisplayName(displayName, { connectorId = null, connectorInstanceId = null } = {}) {
+  if (typeof displayName !== 'string') return null;
+  const trimmed = displayName.trim();
+  if (!trimmed) return null;
+  if (PLACEHOLDER_DISPLAY_NAMES.has(trimmed)) return null;
+  if (connectorId && trimmed === connectorId) return null;
+  if (connectorInstanceId && trimmed === connectorInstanceId) return null;
+  return trimmed;
 }

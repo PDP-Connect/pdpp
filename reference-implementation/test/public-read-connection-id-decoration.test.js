@@ -23,6 +23,8 @@ import {
   queryRecords,
 } from '../server/records.js';
 import { registerConnector } from '../server/auth.js';
+import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
+import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from '../server/owner-auth.ts';
 
 const CONNECTOR_ID = 'https://test.pdpp.org/connectors/connection-id-decoration';
 const INSTANCE_ID = 'cin_test_decoration_main';
@@ -42,6 +44,7 @@ const manifest = {
     {
       name: STREAM,
       primary_key: ['id'],
+      cursor_field: 'received_at',
       consent_time_field: 'received_at',
       schema: {
         type: 'object',
@@ -66,25 +69,31 @@ function target() {
   };
 }
 
-function recordPayload(id, subject) {
+function recordPayload(id, subject, receivedAt) {
   return {
     stream: STREAM,
     key: id,
     data: {
       id,
       subject,
-      received_at: '2026-05-18T12:00:00.000Z',
+      received_at: receivedAt,
     },
-    emitted_at: '2026-05-18T12:00:00.000Z',
+    emitted_at: receivedAt,
   };
 }
+
+// Distinct received_at values let sort-direction tests observe the result
+// order. Other tests in this file ignore ordering and only assert membership /
+// counts / metadata, so the values are safe to differentiate.
+const REC_1_RECEIVED_AT = '2026-05-18T12:00:00.000Z';
+const REC_2_RECEIVED_AT = '2026-05-19T12:00:00.000Z';
 
 async function withDb(testFn) {
   initDb();
   try {
     await registerConnector(manifest);
-    await ingestRecord(target(), recordPayload('rec-1', 'first'));
-    await ingestRecord(target(), recordPayload('rec-2', 'second'));
+    await ingestRecord(target(), recordPayload('rec-1', 'first', REC_1_RECEIVED_AT));
+    await ingestRecord(target(), recordPayload('rec-2', 'second', REC_2_RECEIVED_AT));
     await testFn();
   } finally {
     closeDb();
@@ -245,5 +254,201 @@ test('records list rejects conflicting connection_id / connector_instance_id wit
       ),
       (err) => err.code === 'invalid_argument' && err.param === 'connector_instance_id',
     );
+  });
+});
+
+// ─── display_name decoration ────────────────────────────────────────────────
+
+async function seedConnectorInstance({ displayName, sourceBindingKey = 'work-1' }) {
+  const store = createSqliteConnectorInstanceStore();
+  const now = new Date().toISOString();
+  await store.upsert({
+    connectorInstanceId: INSTANCE_ID,
+    ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
+    connectorId: CONNECTOR_ID,
+    displayName,
+    status: 'active',
+    sourceKind: 'account',
+    sourceBindingKey,
+    sourceBinding: { account: 'work@example.com' },
+    createdAt: now,
+    updatedAt: now,
+  });
+}
+
+test('records list decorates records with display_name when the store has an owner-meaningful label', async () => {
+  await withDb(async () => {
+    await seedConnectorInstance({ displayName: 'Work Mailbox' });
+    const response = await queryRecords(target(), STREAM, grant, {}, manifest);
+    assert.equal(response.data.length, 2);
+    for (const record of response.data) {
+      assert.equal(record.connection_id, INSTANCE_ID);
+      assert.equal(record.display_name, 'Work Mailbox');
+    }
+  });
+});
+
+test('records list omits display_name when the store only has a connector-id placeholder', async () => {
+  await withDb(async () => {
+    // displayName defaulting to connector_id is the documented placeholder.
+    await seedConnectorInstance({ displayName: CONNECTOR_ID });
+    const response = await queryRecords(target(), STREAM, grant, {}, manifest);
+    for (const record of response.data) {
+      assert.equal(record.connection_id, INSTANCE_ID);
+      assert.equal(record.display_name, undefined);
+    }
+  });
+});
+
+test('records detail decorates display_name when the store has an owner-meaningful label', async () => {
+  await withDb(async () => {
+    await seedConnectorInstance({ displayName: 'Work Mailbox' });
+    const record = await getRecord(target(), STREAM, 'rec-1', grant, manifest);
+    assert.equal(record.connection_id, INSTANCE_ID);
+    assert.equal(record.display_name, 'Work Mailbox');
+  });
+});
+
+test('records list omits display_name when no connector-instance row exists for the binding', async () => {
+  // Default withDb path: ingestRecord auto-materializes a default-account
+  // instance whose displayName equals the connector_id (placeholder). Verify
+  // the projection treats that as missing and omits display_name on the wire.
+  await withDb(async () => {
+    const response = await queryRecords(target(), STREAM, grant, {}, manifest);
+    for (const record of response.data) {
+      assert.equal(record.connection_id, INSTANCE_ID);
+      assert.equal(record.display_name, undefined);
+    }
+  });
+});
+
+// ─── Graded counts ──────────────────────────────────────────────────────────
+
+test('records list omits meta.count when count is not requested', async () => {
+  await withDb(async () => {
+    const response = await queryRecords(target(), STREAM, grant, {}, manifest);
+    assert.equal(response.meta, undefined);
+  });
+});
+
+test('records list emits meta.count = { kind: none } when count=none is requested', async () => {
+  await withDb(async () => {
+    const response = await queryRecords(target(), STREAM, grant, { count: 'none' }, manifest);
+    // count=none is the default; runtime omits meta.count to keep the wire
+    // payload small. canonical envelope normalization happens at the route
+    // layer, so the operation result is still envelope-light here.
+    assert.equal(response.meta, undefined);
+  });
+});
+
+test('records list emits meta.count.kind=exact with the visible-row count when count=exact', async () => {
+  await withDb(async () => {
+    const response = await queryRecords(target(), STREAM, grant, { count: 'exact' }, manifest);
+    assert.ok(response.meta);
+    assert.equal(response.meta.count.kind, 'exact');
+    assert.equal(response.meta.count.value, 2);
+  });
+});
+
+test('records list returns exact for count=estimated without a downgrade warning', async () => {
+  // exact is a higher grade than estimated; returning exact for an
+  // estimated request is an upgrade, not a downgrade. The canonical rule
+  // is that `count_downgraded` is emitted only when the server returns a
+  // *lower* grade than requested (e.g. exact → estimated / none). The
+  // reference runtime always computes exact cheaply on the SQLite path, so
+  // the wire payload has `meta.count.kind = exact` and NO warning.
+  await withDb(async () => {
+    const response = await queryRecords(target(), STREAM, grant, { count: 'estimated' }, manifest);
+    assert.ok(response.meta);
+    assert.equal(response.meta.count.kind, 'exact');
+    assert.equal(response.meta.count.value, 2);
+    assert.equal(response.meta.warnings, undefined, 'no warnings expected: upgrade is not a downgrade');
+  });
+});
+
+test('records list rejects unknown count grade with invalid_request', async () => {
+  await withDb(async () => {
+    await assert.rejects(
+      queryRecords(target(), STREAM, grant, { count: 'planned' }, manifest),
+      (err) => err.code === 'invalid_request' && /count must be one of/.test(err.message),
+    );
+  });
+});
+
+// ─── Canonical sort validation ──────────────────────────────────────────────
+
+test('records list accepts sort over the manifest cursor field', async () => {
+  await withDb(async () => {
+    const response = await queryRecords(target(), STREAM, grant, { sort: '-received_at' }, manifest);
+    assert.equal(response.object, 'list');
+    assert.equal(response.data.length, 2);
+  });
+});
+
+test('records list rejects sort fields that are not advertised as sortable', async () => {
+  await withDb(async () => {
+    await assert.rejects(
+      queryRecords(target(), STREAM, grant, { sort: 'subject' }, manifest),
+      (err) => err.code === 'invalid_sort' && err.param === 'sort' && /not advertised as sortable/.test(err.message),
+    );
+  });
+});
+
+test('records list rejects an empty sort entry', async () => {
+  await withDb(async () => {
+    await assert.rejects(
+      queryRecords(target(), STREAM, grant, { sort: '-' }, manifest),
+      (err) => err.code === 'invalid_sort' && err.param === 'sort',
+    );
+  });
+});
+
+// Sort direction MUST control output order. The canonical sign prefix is
+// not a no-op: `sort=-received_at` is DESC; `sort=received_at` is ASC.
+// These tests fail if the runtime silently ignores the sign and falls
+// back to legacy `order` defaults.
+test('records list sort=-received_at returns records in DESC order', async () => {
+  await withDb(async () => {
+    const response = await queryRecords(target(), STREAM, grant, { sort: '-received_at' }, manifest);
+    assert.equal(response.data.length, 2);
+    assert.equal(response.data[0].id, 'rec-2');
+    assert.equal(response.data[0].data.received_at, REC_2_RECEIVED_AT);
+    assert.equal(response.data[1].id, 'rec-1');
+    assert.equal(response.data[1].data.received_at, REC_1_RECEIVED_AT);
+  });
+});
+
+test('records list sort=received_at returns records in ASC order', async () => {
+  await withDb(async () => {
+    const response = await queryRecords(target(), STREAM, grant, { sort: 'received_at' }, manifest);
+    assert.equal(response.data.length, 2);
+    assert.equal(response.data[0].id, 'rec-1');
+    assert.equal(response.data[0].data.received_at, REC_1_RECEIVED_AT);
+    assert.equal(response.data[1].id, 'rec-2');
+    assert.equal(response.data[1].data.received_at, REC_2_RECEIVED_AT);
+  });
+});
+
+test('records list rejects when sort and order disagree', async () => {
+  await withDb(async () => {
+    await assert.rejects(
+      queryRecords(target(), STREAM, grant, { sort: '-received_at', order: 'asc' }, manifest),
+      (err) => err.code === 'invalid_sort' && /disagree/.test(err.message),
+    );
+  });
+});
+
+test('records changes_since rejects list-only sort, count, and order params', async () => {
+  await withDb(async () => {
+    for (const params of [
+      { changes_since: 'beginning', sort: '-received_at' },
+      { changes_since: 'beginning', count: 'exact' },
+      { changes_since: 'beginning', order: 'asc' },
+    ]) {
+      await assert.rejects(
+        queryRecords(target(), STREAM, grant, params, manifest),
+        (err) => err.code === 'invalid_request' && /not supported with changes_since/.test(err.message),
+      );
+    }
   });
 });

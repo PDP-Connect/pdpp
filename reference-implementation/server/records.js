@@ -57,9 +57,50 @@ import {
 } from './retained-size-read-model.js';
 import {
   CONNECTION_ALIAS_DEPRECATED_WARNING_CODE,
+  projectStorageDisplayName,
   resolveRequestConnectionId,
   validateConnectionAlias as validateConnectionAliasShared,
 } from './connection-id-request.js';
+import {
+  createPostgresConnectorInstanceStore,
+  createSqliteConnectorInstanceStore,
+} from './stores/connector-instance-store.js';
+
+/**
+ * Look up the owner-facing display name for a pinned connector-instance
+ * binding. Returns `null` when the runtime cannot pin a non-placeholder
+ * label without guessing; callers MUST omit `display_name` on the response
+ * in that case so the wire never carries the storage-layer placeholder
+ * ("legacy", "default_account", or the connector_id default).
+ *
+ * Spec: openspec/changes/canonicalize-public-read-contract/specs/
+ *       reference-implementation-architecture/spec.md
+ *       (#"Records, search, and blob items SHALL carry canonical connection identity")
+ */
+async function lookupConnectionDisplayName(connectorInstanceId, connectorId) {
+  if (typeof connectorInstanceId !== 'string' || !connectorInstanceId) return null;
+  const store = isPostgresStorageBackend()
+    ? createPostgresConnectorInstanceStore()
+    : createSqliteConnectorInstanceStore();
+  try {
+    const instance = await store.get(connectorInstanceId);
+    if (!instance) return null;
+    return projectStorageDisplayName(instance.displayName, {
+      connectorId: connectorId || instance.connectorId,
+      connectorInstanceId,
+    });
+  } catch {
+    return null;
+  }
+}
+
+export async function resolveRecordIdentityForBinding(connectorInstanceId, connectorId) {
+  if (!connectorInstanceId) return null;
+  const displayName = await lookupConnectionDisplayName(connectorInstanceId, connectorId);
+  const identity = { connectionId: connectorInstanceId };
+  if (displayName) identity.displayName = displayName;
+  return identity;
+}
 
 function nowIso() {
   return new Date().toISOString();
@@ -402,6 +443,7 @@ const SUPPORTED_RECORD_QUERY_PARAMS = new Set([
   'connection_id',
   'connector_id',
   'connector_instance_id',
+  'count',
   'cursor',
   'expand',
   'expand_limit',
@@ -409,9 +451,15 @@ const SUPPORTED_RECORD_QUERY_PARAMS = new Set([
   'filter',
   'limit',
   'order',
+  'sort',
   'subject_id',
   'view',
 ]);
+
+// Canonical graded-count vocabulary. Spec:
+//   openspec/changes/canonicalize-public-read-contract design.md ("Counts")
+//   reference-contract `CountKindSchema`
+const SUPPORTED_COUNT_KINDS = new Set(['none', 'estimated', 'exact']);
 const SUPPORTED_AGGREGATE_QUERY_PARAMS = new Set([
   'connection_id',
   'connector_id',
@@ -607,6 +655,34 @@ function parsePageOrder(rawOrder) {
   throw invalidQueryError('order must be asc or desc');
 }
 
+/**
+ * Resolve the effective list order from the canonical `sort` parameter
+ * and the legacy `order` parameter.
+ *
+ * Canonical `sort` wins: `sort=-emitted_at` is DESC, `sort=emitted_at` is
+ * ASC. Legacy `order` is honored only when `sort` is absent. If both are
+ * sent and disagree, we reject with `invalid_sort` rather than silently
+ * picking one — this is the strict-validation discipline the contract
+ * requires for sort behavior.
+ */
+function resolveListOrder(rawOrder, resolvedSort) {
+  if (resolvedSort) {
+    if (rawOrder != null && rawOrder !== '') {
+      const legacyOrder = parsePageOrder(rawOrder);
+      if (legacyOrder !== resolvedSort.direction) {
+        const err = invalidQueryError(
+          `sort and order disagree: sort resolves to ${resolvedSort.direction}, order=${rawOrder}. Send only canonical \`sort\`.`,
+          'invalid_sort',
+        );
+        err.param = 'sort';
+        throw err;
+      }
+    }
+    return resolvedSort.direction;
+  }
+  return parsePageOrder(rawOrder);
+}
+
 function normalizePaginationCursor(cursor, order) {
   if (!cursor) return null;
   if (cursor.session !== 'records') {
@@ -624,12 +700,105 @@ function normalizePaginationCursor(cursor, order) {
   };
 }
 
-function validateTopLevelQueryParams(requestParams) {
+function validateTopLevelQueryParams(requestParams, manifestStream = null) {
   const unsupported = Object.keys(requestParams).filter((key) => !SUPPORTED_RECORD_QUERY_PARAMS.has(key));
   if (unsupported.length) {
     throw invalidQueryError(`Unsupported query parameter: ${unsupported.join(', ')}`);
   }
   validateConnectionAlias(requestParams);
+  validateCountKind(requestParams.count);
+  return validateCanonicalSort(requestParams.sort, manifestStream);
+}
+
+/**
+ * Validate the requested count grade against the canonical
+ * `none|estimated|exact` vocabulary. Absent / empty values pass through;
+ * the server applies `none` as the default. Spec:
+ *   openspec/changes/canonicalize-public-read-contract/specs/
+ *   reference-implementation-architecture/spec.md (#"Counts are opt-in
+ *   and cost-graded").
+ */
+function validateCountKind(value) {
+  if (value == null || value === '') return;
+  if (typeof value !== 'string' || !SUPPORTED_COUNT_KINDS.has(value)) {
+    throw invalidQueryError(`count must be one of: ${[...SUPPORTED_COUNT_KINDS].join(', ')}`);
+  }
+}
+
+function rejectListOnlyParamsForChangesFeed(requestParams) {
+  const unsupported = [];
+  for (const key of ['sort', 'count', 'order']) {
+    if (requestParams[key] != null && requestParams[key] !== '') unsupported.push(key);
+  }
+  if (!unsupported.length) return;
+  throw invalidQueryError(
+    `${unsupported.join(', ')} ${unsupported.length === 1 ? 'is' : 'are'} not supported with changes_since`,
+    'invalid_request',
+  );
+}
+
+/**
+ * Validate the canonical `sort` parameter against the manifest stream's
+ * declared cursor field, and return the resolved direction the runtime
+ * will apply.
+ *
+ * The wire vocabulary is sign-prefix CSV (`sort=-emitted_at`). Today the
+ * reference runtime supports ordering by the stream's declared cursor
+ * field only, so any other field is rejected with a typed `invalid_sort`
+ * error. The sign prefix MUST control direction: `sort=field` is asc,
+ * `sort=-field` is desc — silently ignoring the sign would amount to
+ * accepting `sort` as a no-op, which the canonical contract forbids.
+ *
+ * Returns `null` when no `sort` is supplied, or
+ *   `{ field: <cursor_field>, direction: 'ASC' | 'DESC' }`
+ * when a single-field sort matches the advertised cursor field. Multi-key
+ * sort (`sort=-emitted_at,name`) is not yet implemented; if a caller
+ * supplies more than one entry that all happen to be the same advertised
+ * field, we still resolve to its direction. Anything else is rejected.
+ *
+ * Conformance: every advertised sort field MUST be enforced by the
+ * runtime. The reference runtime advertises only the cursor field as
+ * sortable via `/v1/schema` (see operations/rs-schema-get); this helper
+ * rejects all other fields rather than silently no-oping.
+ *
+ * Spec: openspec/changes/canonicalize-public-read-contract design.md
+ *       (#"Sort").
+ */
+function validateCanonicalSort(value, manifestStream) {
+  if (value == null || value === '') return null;
+  const raw = Array.isArray(value) ? value.join(',') : String(value);
+  const entries = raw.split(',').map((part) => part.trim()).filter(Boolean);
+  if (entries.length === 0) return null;
+  const cursorField = manifestStream?.cursor_field || null;
+  const sortableFields = cursorField ? new Set([cursorField]) : new Set();
+  let resolved = null;
+  for (const entry of entries) {
+    const direction = entry.startsWith('-') ? 'DESC' : 'ASC';
+    const field = direction === 'DESC' ? entry.slice(1) : entry;
+    if (!field) {
+      const err = invalidQueryError(`Empty sort field`, 'invalid_sort');
+      err.param = 'sort';
+      throw err;
+    }
+    if (sortableFields.size === 0 || !sortableFields.has(field)) {
+      const err = invalidQueryError(
+        `Sort field '${field}' is not advertised as sortable; check /v1/schema for the canonical sort vocabulary.`,
+        'invalid_sort',
+      );
+      err.param = 'sort';
+      throw err;
+    }
+    if (resolved && resolved.direction !== direction) {
+      const err = invalidQueryError(
+        `Conflicting sort directions for field '${field}'`,
+        'invalid_sort',
+      );
+      err.param = 'sort';
+      throw err;
+    }
+    resolved = { field, direction };
+  }
+  return resolved;
 }
 
 function validateTopLevelAggregateParams(requestParams) {
@@ -1305,6 +1474,7 @@ async function hydrateExpandedRelations({
   effectiveParentRows,
   expansions,
   manifest,
+  childIdentity: childIdentityOverride = null,
 }) {
   if (!expansions.length || !effectiveParentRows.length) return;
 
@@ -1327,7 +1497,10 @@ async function hydrateExpandedRelations({
       limit: expansion.limit,
     });
 
-    const childIdentity = { connectionId: connectorInstanceId };
+    // Expansion children belong to the same connector_instance_id as the
+    // parent, so reuse the resolved record identity (including display_name)
+    // rather than constructing a bare `{ connectionId }` shape.
+    const childIdentity = childIdentityOverride || { connectionId: connectorInstanceId };
     for (const parentRow of effectiveParentRows) {
       const relationKey = parentRow.record_key;
       const matches = groupedChildren.get(relationKey) || [];
@@ -1691,10 +1864,17 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
   const mStream = manifest?.streams?.find(s => s.name === stream);
   const consentTimeField = mStream?.consent_time_field;
   const requiredFields = mStream?.schema?.required || [];
-  const order = parsePageOrder(requestParams.order);
-
-  validateTopLevelQueryParams(requestParams);
+  const resolvedSort = validateTopLevelQueryParams(requestParams, mStream);
+  const order = resolveListOrder(requestParams.order, resolvedSort);
   const { warnings: requestWarnings } = resolveRequestConnectionId(requestParams);
+
+  // Resolve the canonical record identity once for this request. When the
+  // runtime can pin (connector_instance_id, display_name) from the store
+  // this populates `display_name`; otherwise we fall back to connection_id
+  // only. Identity is reused across the changes_since branch, the primary
+  // page rows, and one-hop expansion children so the wire shape stays
+  // consistent without a per-record store roundtrip.
+  const recordIdentity = await resolveRecordIdentityForBinding(connectorInstanceId, connectorId);
 
   // Validate request fields against grant
   if (requestParams.fields && streamGrant.fields) {
@@ -1727,6 +1907,10 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
     const err = new Error('Malformed cursor');
     err.code = 'invalid_cursor';
     throw err;
+  }
+
+  if (changesSince !== null || paginationCursor?.session === 'changes') {
+    rejectListOnlyParamsForChangesFeed(requestParams);
   }
 
   if ((changesSince !== null || paginationCursor?.session === 'changes') && expansions.length) {
@@ -1799,7 +1983,7 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
             deleted_at: current.deleted_at,
             emitted_at: current.emitted_at,
           };
-          decorateRecordWithConnectionIdentity(deletedRecord, { connectionId: connectorInstanceId });
+          decorateRecordWithConnectionIdentity(deletedRecord, recordIdentity);
           visibleChanges.push({
             latestVersion: group.latest_version,
             responseRecord: deletedRecord,
@@ -1824,7 +2008,7 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
           data: currentProjection,
           emitted_at: current.emitted_at,
         };
-        decorateRecordWithConnectionIdentity(changeRecord, { connectionId: connectorInstanceId });
+        decorateRecordWithConnectionIdentity(changeRecord, recordIdentity);
         visibleChanges.push({
           latestVersion: group.latest_version,
           responseRecord: changeRecord,
@@ -1878,7 +2062,6 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
     limit,
     order,
   });
-  const recordIdentity = { connectionId: connectorInstanceId };
   const effectivePageRows = pagedRows.map((row) => ({
     ...row,
     responseRecord: buildResponseRecord(stream, row, effective, recordIdentity),
@@ -1891,6 +2074,7 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
     effectiveParentRows: effectivePageRows,
     expansions,
     manifest,
+    childIdentity: recordIdentity,
   });
 
   const data = effectivePageRows.map((row) => row.responseRecord);
@@ -1905,9 +2089,105 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
     response.next_cursor = encodeRecordsPageCursor(effectivePageRows[effectivePageRows.length - 1].sortPosition, order);
   }
 
+  const countOutcome = computeGradedRecordCount({
+    requestParams,
+    connectorInstanceId,
+    stream,
+    effective,
+    compiledFilters,
+    consentTimeField,
+  });
+  if (countOutcome) {
+    response.meta = mergeMetaCount(response.meta, countOutcome.count);
+    if (countOutcome.warning) {
+      attachRequestWarningsToResponse(response, [countOutcome.warning]);
+    }
+  }
+
   attachRequestWarningsToResponse(response, requestWarnings);
 
   return response;
+}
+
+/**
+ * Compute the requested graded count for a records list response.
+ *
+ * The canonical grades are `none`, `estimated`, and `exact`. This first
+ * surface implements `exact` by scanning the same visible-row set the
+ * records list would have scanned for the aggregate path (cheap on the
+ * SQLite reference; future tranches can add planner-style estimates).
+ *
+ * Behavior:
+ *   - `count` absent or `none`: return `null` (callers omit `meta.count`).
+ *   - `count=exact`:     returns `{ count: { kind: 'exact', value } }`.
+ *   - `count=estimated`: returns `{ count: { kind: 'exact', value } }`
+ *     (silent upgrade). `count_downgraded` is reserved for the strict
+ *     case where the server returned a *lower* grade than requested
+ *     (e.g. `count=exact` -> delivered `estimated`/`none`). Returning a
+ *     higher-fidelity value than asked for is not a downgrade, so the
+ *     reference does not invent a warning for it.
+ *
+ * Spec: openspec/changes/canonicalize-public-read-contract design.md
+ *       (#"Counts") and specs/reference-implementation-architecture/
+ *       spec.md (#"Requested count is downgraded").
+ */
+function computeGradedRecordCount({ requestParams, connectorInstanceId, stream, effective, compiledFilters, consentTimeField }) {
+  const requested = typeof requestParams.count === 'string' ? requestParams.count : null;
+  if (!requested || requested === 'none') return null;
+
+  const exactValue = countVisibleRecordsForStream({
+    connectorInstanceId,
+    stream,
+    effective,
+    compiledFilters,
+    consentTimeField,
+  });
+
+  if (requested === 'exact' || requested === 'estimated') {
+    return { count: { kind: 'exact', value: exactValue } };
+  }
+
+  return null;
+}
+
+/**
+ * Scan visible records under the same grant + filter set the list path
+ * uses and return the visible count. Mirrors `aggregateRecords` count
+ * semantics so the two surfaces stay in lock-step.
+ */
+function countVisibleRecordsForStream({ connectorInstanceId, stream, effective, compiledFilters, consentTimeField }) {
+  if (isPostgresStorageBackend()) {
+    // Postgres path falls back to scanning visible rows; postgres-records.js
+    // owns the storage-specific count helper. For now records.js's count
+    // helper only handles the SQLite reference because the Postgres list
+    // path runs entirely through postgres-records.js.
+    return 0;
+  }
+  const rows = iterate(
+    referenceQueries.recordsAggregateIterateStreamRecordsForAggregation,
+    [connectorInstanceId, stream],
+  );
+  let visibleCount = 0;
+  for (const row of rows) {
+    const rawData = JSON.parse(row.record_json);
+    if (effective.resources && !effective.resources.includes(row.record_key)) continue;
+    if (effective.timeRange && consentTimeField && !passesTimeRange(rawData, effective.timeRange, consentTimeField)) continue;
+    if (compiledFilters.length && !passesRequestFilters(rawData, compiledFilters)) continue;
+    visibleCount += 1;
+  }
+  return visibleCount;
+}
+
+/**
+ * Merge a `meta.count` payload into an existing response.meta, preserving
+ * `warnings` and any other meta members. Returns the new meta object.
+ */
+function mergeMetaCount(existingMeta, count) {
+  const base = existingMeta && typeof existingMeta === 'object' && !Array.isArray(existingMeta)
+    ? { ...existingMeta }
+    : {};
+  base.count = count;
+  return base;
 }
 
 /**
@@ -2095,6 +2375,8 @@ export async function getRecord(storageTarget, stream, recordId, grant, manifest
     }
   }
 
+  const recordIdentity = await resolveRecordIdentityForBinding(connectorInstanceId, connectorId);
+
   const responseRow = {
     record_key: row.record_key,
     rawData,
@@ -2104,7 +2386,7 @@ export async function getRecord(storageTarget, stream, recordId, grant, manifest
       record_key: row.record_key,
       rawData,
       emitted_at: row.emitted_at,
-    }, effective, { connectionId: connectorInstanceId }),
+    }, effective, recordIdentity),
   };
 
   const expansions = normalizeExpandRequest({
@@ -2120,6 +2402,7 @@ export async function getRecord(storageTarget, stream, recordId, grant, manifest
     expansions,
     manifest,
     grant,
+    childIdentity: recordIdentity,
   });
 
   return responseRow.responseRecord;

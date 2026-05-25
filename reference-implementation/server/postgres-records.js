@@ -11,12 +11,172 @@
 import { createHash } from 'node:crypto';
 
 import { postgresQuery, withPostgresTransaction } from './postgres-storage.js';
-import { makeDefaultAccountConnectorInstanceId } from './stores/connector-instance-store.js';
+import {
+  createPostgresConnectorInstanceStore,
+  makeDefaultAccountConnectorInstanceId,
+} from './stores/connector-instance-store.js';
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from './owner-auth.ts';
-import { resolveRequestConnectionId } from './connection-id-request.js';
+import {
+  projectStorageDisplayName,
+  resolveRequestConnectionId,
+} from './connection-id-request.js';
+
+/**
+ * Resolve `(connection_id, display_name)` identity for a postgres-backed
+ * record read. Returns `null` when the binding is absent and a
+ * `display_name`-less identity when the store row has only a placeholder
+ * label. Mirrors `resolveRecordIdentityForBinding` in records.js so the
+ * Postgres branch decorates records the same shape SQLite emits.
+ */
+async function resolveRecordIdentityForBinding(connectorInstanceId, connectorId) {
+  if (!connectorInstanceId) return null;
+  const identity = { connectionId: connectorInstanceId };
+  try {
+    const store = createPostgresConnectorInstanceStore();
+    const instance = await store.get(connectorInstanceId);
+    if (instance) {
+      const displayName = projectStorageDisplayName(instance.displayName, {
+        connectorId: connectorId || instance.connectorId,
+        connectorInstanceId,
+      });
+      if (displayName) identity.displayName = displayName;
+    }
+  } catch {
+    // Identity lookup failures degrade to connection_id-only decoration.
+  }
+  return identity;
+}
 
 const DEFAULT_LIMIT = 25;
 const MAX_LIMIT = 100;
+
+// Canonical public-read graded-count vocabulary. Mirrors
+// `SUPPORTED_COUNT_KINDS` in records.js. Kept in sync by duplication so
+// postgres-records.js does not import from records.js (records.js
+// dispatches into postgres-records.js — the dep must run one way only).
+//
+// Spec: openspec/changes/canonicalize-public-read-contract/specs/
+//       reference-implementation-architecture/spec.md
+//       (#"Counts are opt-in and cost-graded").
+const SUPPORTED_COUNT_KINDS_PG = new Set(['none', 'estimated', 'exact']);
+
+function invalidQueryError(message, code = 'invalid_request') {
+  const err = new Error(message);
+  err.code = code;
+  return err;
+}
+
+/**
+ * Validate the requested count grade against the canonical
+ * `none|estimated|exact` vocabulary. Empty / absent passes through;
+ * the server applies `none` as the default. Mirrors the SQLite path.
+ */
+function validateCountKind(value) {
+  if (value == null || value === '') return;
+  if (typeof value !== 'string' || !SUPPORTED_COUNT_KINDS_PG.has(value)) {
+    throw invalidQueryError(`count must be one of: ${[...SUPPORTED_COUNT_KINDS_PG].join(', ')}`);
+  }
+}
+
+function rejectListOnlyParamsForChangesFeed(requestParams) {
+  const unsupported = [];
+  for (const key of ['sort', 'count', 'order']) {
+    if (requestParams[key] != null && requestParams[key] !== '') unsupported.push(key);
+  }
+  if (!unsupported.length) return;
+  throw invalidQueryError(
+    `${unsupported.join(', ')} ${unsupported.length === 1 ? 'is' : 'are'} not supported with changes_since`,
+    'invalid_request',
+  );
+}
+
+/**
+ * Validate the canonical `sort` parameter against the manifest stream's
+ * declared cursor field, and return the resolved direction the runtime
+ * will apply. Mirrors `validateCanonicalSort` in records.js for the
+ * Postgres-backed path — sign-prefix controls direction, the only
+ * advertised sortable field is the stream's cursor field, and anything
+ * else is rejected with a typed `invalid_sort` error.
+ *
+ * Returns `null` when no `sort` is supplied, or
+ *   `{ field, direction: 'ASC' | 'DESC' }`.
+ */
+function validateCanonicalSort(value, manifestStream) {
+  if (value == null || value === '') return null;
+  const raw = Array.isArray(value) ? value.join(',') : String(value);
+  const entries = raw.split(',').map((part) => part.trim()).filter(Boolean);
+  if (entries.length === 0) return null;
+  const cursorField = manifestStream?.cursor_field || null;
+  const sortableFields = cursorField ? new Set([cursorField]) : new Set();
+  let resolved = null;
+  for (const entry of entries) {
+    const direction = entry.startsWith('-') ? 'DESC' : 'ASC';
+    const field = direction === 'DESC' ? entry.slice(1) : entry;
+    if (!field) {
+      const err = invalidQueryError('Empty sort field', 'invalid_sort');
+      err.param = 'sort';
+      throw err;
+    }
+    if (sortableFields.size === 0 || !sortableFields.has(field)) {
+      const err = invalidQueryError(
+        `Sort field '${field}' is not advertised as sortable; check /v1/schema for the canonical sort vocabulary.`,
+        'invalid_sort',
+      );
+      err.param = 'sort';
+      throw err;
+    }
+    if (resolved && resolved.direction !== direction) {
+      const err = invalidQueryError(
+        `Conflicting sort directions for field '${field}'`,
+        'invalid_sort',
+      );
+      err.param = 'sort';
+      throw err;
+    }
+    resolved = { field, direction };
+  }
+  return resolved;
+}
+
+function parsePageOrder(rawOrder) {
+  if (rawOrder == null || rawOrder === '') return 'DESC';
+  if (rawOrder === 'asc') return 'ASC';
+  if (rawOrder === 'desc') return 'DESC';
+  throw invalidQueryError('order must be asc or desc');
+}
+
+/**
+ * Resolve the effective list order from the canonical `sort` parameter
+ * and the legacy `order` parameter. Mirrors `resolveListOrder` in
+ * records.js: canonical `sort` wins; legacy `order` is honored only when
+ * `sort` is absent; if both are sent and disagree, reject with
+ * `invalid_sort` rather than silently picking one.
+ */
+function resolveListOrder(rawOrder, resolvedSort) {
+  if (resolvedSort) {
+    if (rawOrder != null && rawOrder !== '') {
+      const legacyOrder = parsePageOrder(rawOrder);
+      if (legacyOrder !== resolvedSort.direction) {
+        const err = invalidQueryError(
+          `sort and order disagree: sort resolves to ${resolvedSort.direction}, order=${rawOrder}. Send only canonical \`sort\`.`,
+          'invalid_sort',
+        );
+        err.param = 'sort';
+        throw err;
+      }
+    }
+    return resolvedSort.direction;
+  }
+  return parsePageOrder(rawOrder);
+}
+
+function mergeMetaCount(existingMeta, count) {
+  const base = existingMeta && typeof existingMeta === 'object' && !Array.isArray(existingMeta)
+    ? { ...existingMeta }
+    : {};
+  base.count = count;
+  return base;
+}
 const KEY_SEPARATOR = '\u0001';
 
 function nowIso() {
@@ -392,11 +552,28 @@ export async function postgresQueryRecords(storageTarget, stream, grant, request
   const manifestStream = getManifestStream(manifest, stream);
   const fields = fieldsFor(streamGrant, requestParams.fields, requiredFieldsFor(manifestStream));
   const { cursorSql, primarySql } = recordOrderExpressions(manifestStream);
-  const order = requestParams.order === 'desc' ? 'desc' : 'asc';
+
+  // Canonical contract enforcement: `count` and `sort` go through the same
+  // validation discipline as the SQLite reference path, regardless of
+  // which branch (changes_since vs. paginated list) we end up taking.
+  // `sort` (sign-prefix over the advertised cursor field) controls
+  // direction; legacy `order=` is honored only when `sort` is absent. If
+  // both disagree we reject with `invalid_sort` rather than silently
+  // picking one — the public-read contract forbids silent no-ops.
+  //
+  // Spec: openspec/changes/canonicalize-public-read-contract/specs/
+  //       reference-implementation-architecture/spec.md
+  //       (#"Sort", #"Counts").
+  validateCountKind(requestParams.count);
+  const resolvedSort = validateCanonicalSort(requestParams.sort, manifestStream);
+  const orderDirection = resolveListOrder(requestParams.order, resolvedSort);
+  const order = orderDirection === 'ASC' ? 'asc' : 'desc';
   const limit = parseLimit(requestParams.limit);
   const { warnings: requestWarnings } = resolveRequestConnectionId(requestParams);
+  const identity = await resolveRecordIdentityForBinding(connectorInstanceId, connectorId);
 
   if (requestParams.changes_since != null) {
+    rejectListOnlyParamsForChangesFeed(requestParams);
     const decoded = requestParams.changes_since === 'beginning'
       ? { v: 0 }
       : decodeCursor(requestParams.changes_since);
@@ -420,7 +597,6 @@ export async function postgresQueryRecords(storageTarget, stream, grant, request
       [connectorInstanceId, stream, decoded.v, sessionMax],
     );
     const sorted = [...rows.rows].sort((a, b) => Number(a.version) - Number(b.version));
-    const identity = { connectionId: connectorInstanceId };
     const changesResponse = {
       object: 'list',
       has_more: false,
@@ -446,6 +622,13 @@ export async function postgresQueryRecords(storageTarget, stream, grant, request
   const params = [connectorInstanceId, stream];
   let where = 'WHERE connector_instance_id = $1 AND stream = $2 AND deleted = FALSE';
   where += buildFilterClause(requestParams.filter, params);
+  // Snapshot the filter-only WHERE clause / params for the graded-count
+  // query. The count MUST reflect matching visible rows BEFORE pagination
+  // or the cursor — matching the SQLite semantics in
+  // `countVisibleRecordsForStream` — so the cursor narrowing below is
+  // intentionally excluded.
+  const countWhere = where;
+  const countParams = [...params];
 
   if (cursorPosition) {
     if (order === 'asc') {
@@ -479,7 +662,6 @@ export async function postgresQueryRecords(storageTarget, stream, grant, request
   );
   const hasMore = result.rows.length > limit;
   const pageRows = result.rows.slice(0, limit);
-  const identity = { connectionId: connectorInstanceId };
   const response = {
     object: 'list',
     has_more: hasMore,
@@ -494,8 +676,53 @@ export async function postgresQueryRecords(storageTarget, stream, grant, request
       primary_key_text: last.primary_key_text,
     });
   }
+  const countOutcome = await computePostgresGradedRecordCount({
+    requestParams,
+    countWhere,
+    countParams,
+  });
+  if (countOutcome) {
+    response.meta = mergeMetaCount(response.meta, countOutcome.count);
+  }
   attachRequestWarningsToResponse(response, requestWarnings);
   return response;
+}
+
+/**
+ * Compute the requested graded count for a Postgres-backed records list
+ * response. Mirrors `computeGradedRecordCount` in records.js:
+ *
+ *   - absent or `none`: return `null` (callers omit `meta.count`).
+ *   - `exact`:     `{ count: { kind: 'exact', value } }`.
+ *   - `estimated`: `{ count: { kind: 'exact', value } }` (silent upgrade).
+ *
+ * `count_downgraded` is reserved for the strict case where the server
+ * actually returns a *lower* grade than requested. Returning a
+ * higher-fidelity grade than asked for is not a downgrade, so this
+ * helper does not emit a warning either.
+ *
+ * The count uses the filter-only WHERE clause (no cursor narrowing), so
+ * the value reflects matching visible rows BEFORE pagination — matching
+ * the SQLite semantics of `countVisibleRecordsForStream`.
+ *
+ * Spec: openspec/changes/canonicalize-public-read-contract design.md
+ *       (#"Counts") and specs/reference-implementation-architecture/
+ *       spec.md (#"Requested count is downgraded").
+ */
+async function computePostgresGradedRecordCount({ requestParams, countWhere, countParams }) {
+  const requested = typeof requestParams.count === 'string' ? requestParams.count : null;
+  if (!requested || requested === 'none') return null;
+
+  const result = await postgresQuery(
+    `SELECT COUNT(*)::bigint AS value FROM records ${countWhere}`,
+    countParams,
+  );
+  const value = Number(result.rows[0]?.value || 0);
+
+  if (requested === 'exact' || requested === 'estimated') {
+    return { count: { kind: 'exact', value } };
+  }
+  return null;
 }
 
 /**
@@ -536,7 +763,8 @@ export async function postgresGetRecord(storageTarget, stream, recordId, grant, 
     err.code = 'not_found';
     throw err;
   }
-  return responseRecord({ stream, row, fields, identity: { connectionId: connectorInstanceId } });
+  const identity = await resolveRecordIdentityForBinding(connectorInstanceId, connectorId);
+  return responseRecord({ stream, row, fields, identity });
 }
 
 export async function postgresListAllStreams(storageTarget) {

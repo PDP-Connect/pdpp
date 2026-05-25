@@ -2025,6 +2025,108 @@ function decorateRecordBlobRefs(record) {
   return next;
 }
 
+/**
+ * Build the canonical request URL for `links.self`. Echoes the effective
+ * request path plus its query string so callers can replay the exact call
+ * without reconstructing query state. Falls back to `req.path` when no
+ * query string is present.
+ *
+ * Spec: openspec/changes/canonicalize-public-read-contract/specs/
+ *       reference-implementation-architecture/spec.md
+ *       (#"Public read responses SHALL be canonical envelopes")
+ */
+function buildSelfLink(req) {
+  if (!req) return null;
+  const path = typeof req.path === 'string' ? req.path : null;
+  if (!path) return null;
+  // Fastify exposes the raw URL (path + query) on `req.url` and on
+  // `req.raw.url`; prefer those so query order matches what the client sent.
+  const rawUrl = typeof req.url === 'string' && req.url
+    ? req.url
+    : (req.raw && typeof req.raw.url === 'string' ? req.raw.url : null);
+  if (rawUrl && rawUrl.startsWith('/')) return rawUrl;
+  return path;
+}
+
+/**
+ * Build a `links.next` URL by re-applying the operation's opaque cursor
+ * onto the same path. Returns `null` when there is no further page (the
+ * canonical contract treats absent / null `links.next` identically).
+ */
+function buildNextLink(req, payload) {
+  if (!payload || typeof payload !== 'object') return null;
+  if (payload.has_more !== true) return null;
+  const path = typeof req?.path === 'string' ? req.path : null;
+  if (!path) return null;
+
+  // Carry every cursor variant the operation may emit: the canonical opaque
+  // `next_cursor`, and the legacy `next_changes_since` cursor used by the
+  // changes_since branch. The wire next-link is a server-issued URL the
+  // client follows verbatim; we do not commit to a cursor key format here.
+  const nextCursor = typeof payload.next_cursor === 'string' && payload.next_cursor
+    ? payload.next_cursor
+    : null;
+  const nextChangesSince = typeof payload.next_changes_since === 'string' && payload.next_changes_since
+    ? payload.next_changes_since
+    : null;
+  if (!nextCursor && !nextChangesSince) return null;
+
+  // Strip cursor/changes_since from the original request before re-stamping
+  // so a relayed link replaces the previous cursor instead of compounding.
+  const rawUrl = typeof req.url === 'string' && req.url ? req.url : path;
+  const queryStart = rawUrl.indexOf('?');
+  const queryPart = queryStart >= 0 ? rawUrl.slice(queryStart + 1) : '';
+  const sanitized = new URLSearchParams(queryPart);
+  sanitized.delete('cursor');
+  sanitized.delete('changes_since');
+  if (nextCursor) sanitized.set('cursor', nextCursor);
+  if (nextChangesSince) sanitized.set('changes_since', nextChangesSince);
+  const finalQuery = sanitized.toString();
+  return finalQuery ? `${path}?${finalQuery}` : path;
+}
+
+/**
+ * Project a public-read operation envelope onto the canonical contract:
+ * `{ object, data, has_more?, links: { self, next }, meta: { count, warnings } }`.
+ *
+ * Backward-compatible fields the contract allows (`next_cursor`,
+ * `next_changes_since`, `url`) are preserved. Operations that already
+ * emitted a partial `meta` (e.g. `meta.warnings[]` for a deprecated alias
+ * use) keep their warnings; the helper just guarantees the envelope SHAPE
+ * is canonical.
+ *
+ * Single-object envelopes (records detail, schema) omit `has_more`. The
+ * helper detects them by absence of `has_more` on the operation payload.
+ */
+function finalizeCanonicalEnvelope(payload, req) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return payload;
+  const next = { ...payload };
+  const self = buildSelfLink(req);
+  const nextLink = buildNextLink(req, payload);
+  next.links = {
+    ...(payload.links && typeof payload.links === 'object' && !Array.isArray(payload.links) ? payload.links : {}),
+  };
+  if (self) next.links.self = self;
+  // List-shaped envelopes always announce `links.next` (null when there is
+  // no further page). Non-list envelopes omit `next` to keep wire shape
+  // discriminated.
+  if (Object.prototype.hasOwnProperty.call(payload, 'has_more')) {
+    next.links.next = nextLink;
+  }
+  const existingMeta = payload.meta && typeof payload.meta === 'object' && !Array.isArray(payload.meta)
+    ? payload.meta
+    : null;
+  const meta = { ...(existingMeta || {}) };
+  if (!('count' in meta)) {
+    meta.count = { kind: 'none' };
+  }
+  if (!('warnings' in meta)) {
+    meta.warnings = [];
+  }
+  next.meta = meta;
+  return next;
+}
+
 async function persistContentAddressedBlob({ connectorId, connectorInstanceId, stream, recordKey, mimeType, data }) {
   if (isPostgresStorageBackend()) {
     const stored = await postgresPersistContentAddressedBlob({ connectorId, connectorInstanceId, stream, recordKey, mimeType, data });
@@ -6262,7 +6364,7 @@ function buildRsApp(opts = {}) {
         },
       });
 
-      res.json(result.response);
+      res.json(finalizeCanonicalEnvelope(result.response, req));
     } catch (err) {
       if (queryContext) {
         await emitQueryReceived(queryContext, req);
@@ -6368,13 +6470,14 @@ function buildRsApp(opts = {}) {
         },
       });
 
-      res.json({
+      res.json(finalizeCanonicalEnvelope({
         object: 'list',
+        has_more: false,
         data: result.streams.map((summary) => ({
           ...summary,
           freshness: buildConnectorAwareFreshness(streamListFreshnessEvidence, summary.last_updated || null),
         })),
-      });
+      }, req));
     } catch (err) {
       if (queryContext) {
         await emitQueryReceived(queryContext, req);
@@ -6513,7 +6616,7 @@ function buildRsApp(opts = {}) {
         },
       });
 
-      res.json(metadataBody);
+      res.json(finalizeCanonicalEnvelope(metadataBody, req));
     } catch (err) {
       if (queryContext) {
         await emitQueryReceived(queryContext, req);
@@ -6657,7 +6760,7 @@ function buildRsApp(opts = {}) {
         },
       });
 
-      res.json(result.result);
+      res.json(finalizeCanonicalEnvelope(result.result, req));
     } catch (err) {
       if (queryContext) {
         await emitQueryReceived(queryContext, req);
@@ -6790,10 +6893,10 @@ function buildRsApp(opts = {}) {
         data: { source: result.sourceDescriptor, ...result.disclosureData },
       });
 
-      res.json({
+      res.json(finalizeCanonicalEnvelope({
         ...result.result,
         url: req.path,
-      });
+      }, req));
     } catch (err) {
       if (queryContext) {
         await emitQueryReceived(queryContext, req);
@@ -6919,7 +7022,7 @@ function buildRsApp(opts = {}) {
         token_id: req.headers.authorization?.slice(7) || null,
         data: { source: result.sourceDescriptor, ...result.disclosureData },
       });
-      res.json(result.record);
+      res.json(finalizeCanonicalEnvelope(result.record, req));
     } catch (err) {
       if (queryContext) {
         await emitQueryReceived(queryContext, req);
@@ -7007,7 +7110,7 @@ function buildRsApp(opts = {}) {
         data: disclosureData,
       });
 
-      res.json(envelope);
+      res.json(finalizeCanonicalEnvelope(envelope, req));
     } catch (err) {
       if (queryContext) {
         return await rejectQuery(res, req, queryContext, err);
@@ -7097,7 +7200,7 @@ function buildRsApp(opts = {}) {
           data: disclosureData,
         });
 
-        res.json(envelope);
+        res.json(finalizeCanonicalEnvelope(envelope, req));
       } catch (err) {
         if (queryContext) {
           return await rejectQuery(res, req, queryContext, err);
@@ -7189,7 +7292,7 @@ function buildRsApp(opts = {}) {
           data: disclosureData,
         });
 
-        res.json(envelope);
+        res.json(finalizeCanonicalEnvelope(envelope, req));
       } catch (err) {
         if (queryContext) {
           return await rejectQuery(res, req, queryContext, err);
