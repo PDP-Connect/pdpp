@@ -1494,7 +1494,7 @@ export const publicManifests = [
     surface: "public",
     tags: ["records"],
     summary:
-      "List records in a stream under grant enforcement. Supports logical-cursor pagination, exact and declared range filters, and changes_since.",
+      "List records in a stream under grant enforcement. Supports logical-cursor pagination, exact and declared range filters, declared one-hop expansion, and changes_since. Per-field filter operators, sortable fields, expandable relations, projection, search modes, and count support are advertised by `GET /v1/schema` (`field_capabilities`, `expand_capabilities`); consult it before issuing `filter[...]`, `expand[]`, or `fields=` shapes to avoid 400 errors. Pass `connection_id` to restrict to one connection; the deprecated `connector_instance_id` alias is accepted for compatibility but new clients SHOULD use `connection_id`.",
     request: {
       headers: AuthHeaderSchema,
       params: StreamNamePathSchema,
@@ -1530,7 +1530,7 @@ export const publicManifests = [
     surface: "public",
     tags: ["records"],
     summary:
-      "Fetch a single record by primary key under grant enforcement, with optional declared expansion. When the identifier resolves to more than one connection under the caller's grant and `connection_id` is omitted, returns a typed `ambiguous_connection` (409) error with `available_connections` and retry guidance instead of silently picking one.",
+      "Fetch a single record by primary key under grant enforcement, with optional declared one-hop expansion. Expandable relations and the per-relation `expand_limit` ceiling are advertised by `GET /v1/schema` (`expand_capabilities`); requesting an unadvertised relation is rejected rather than silently ignored. When the identifier resolves to more than one connection under the caller's grant and `connection_id` is omitted, returns a typed `ambiguous_connection` (409) error with `available_connections` and retry guidance instead of silently picking one. The deprecated `connector_instance_id` alias is accepted for compatibility but new clients SHOULD use `connection_id`.",
     request: {
       headers: AuthHeaderSchema,
       params: RecordIdPathSchema,
@@ -1559,7 +1559,7 @@ export const publicManifests = [
     surface: "public",
     tags: ["records", "lexical-retrieval"],
     summary:
-      "Optional lexical retrieval extension: search records across authorized streams by text. See the lexical-retrieval capability spec.",
+      "Optional lexical retrieval extension: search records across authorized streams by text. Search modes, per-mode cursor support, and field-level `lexical_search`/`semantic_search` capabilities are advertised by `GET /v1/schema`; `filter[...]` operators applied to a single named stream must come from that stream's `field_capabilities`. Hits carry `connection_id` for attribution; the deprecated `connector_instance_id` alias is emitted alongside for compatibility but new clients SHOULD read `connection_id`.",
     request: {
       headers: AuthHeaderSchema,
       // additionalProperties: false locks the v1 param allowlist at the schema
@@ -1657,7 +1657,7 @@ export const publicManifests = [
     surface: "public",
     tags: ["records", "semantic-retrieval"],
     summary:
-      "Experimental optional extension: semantic retrieval across authorized streams by text. See the semantic-retrieval capability spec. Unstable in v1.",
+      "Experimental optional extension: semantic retrieval across authorized streams by text. See the semantic-retrieval capability spec. Unstable in v1. Per-stream semantic capability and pagination support are advertised by `GET /v1/schema` and the `capabilities.semantic_retrieval` block in protected-resource metadata; consult them before relying on cursors or filters. Hits carry `connection_id` for attribution; the deprecated `connector_instance_id` alias is emitted for compatibility only.",
     request: {
       headers: AuthHeaderSchema,
       // additionalProperties: false locks the v1 param allowlist at the schema
@@ -1899,7 +1899,7 @@ export const publicManifests = [
     surface: "public",
     tags: ["records"],
     summary:
-      "Fetch blob bytes authorized by the caller having discovered the referencing record under grant. When the blob identifier resolves to more than one connection under the caller's grant and `connection_id` is omitted, returns a typed `ambiguous_connection` (409) error with `available_connections` and retry guidance instead of silently picking one.",
+      "Fetch blob bytes authorized by the caller having discovered the referencing record under grant. When the blob identifier resolves to more than one connection under the caller's grant and `connection_id` is omitted, returns a typed `ambiguous_connection` (409) error with `available_connections` and retry guidance instead of silently picking one. The deprecated `connector_instance_id` alias is accepted for compatibility but new clients SHOULD use `connection_id`.",
     request: {
       headers: AuthHeaderSchema,
       params: {

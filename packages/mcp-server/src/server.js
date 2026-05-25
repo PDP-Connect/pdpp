@@ -27,14 +27,18 @@ export function createPdppMcpServer({
 
   const tools = buildTools({ rs, providerUrl });
   for (const tool of tools) {
+    const config = {
+      title: tool.title,
+      description: tool.description,
+      annotations: tool.annotations,
+      inputSchema: tool.inputSchema,
+    };
+    if (tool.outputSchema) {
+      config.outputSchema = tool.outputSchema;
+    }
     server.registerTool(
       tool.name,
-      {
-        title: tool.title,
-        description: tool.description,
-        annotations: tool.annotations,
-        inputSchema: tool.inputSchema,
-      },
+      config,
       async (args) => {
         try {
           return await tool.handler(args ?? {});
