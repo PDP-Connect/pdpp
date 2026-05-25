@@ -152,12 +152,12 @@ export async function getRecord(
  * optional; the page must render correctly when they are absent.
  */
 export interface SearchResultHit {
-  // Optional connection identity on search hits. The current deployed RS
-  // does not return these on `/v1/search*` responses, but the public
-  // contract (and the `expose-connection-identity-on-public-read`
-  // proposal) defines them as additive optional response fields, and the
-  // response schema is `additionalProperties: true` — so a forward-
-  // compatible client reads them when present rather than ignoring them.
+  // Canonical connection identity on search hits. The reference runtime
+  // emits `connection_id` (and the deprecated `connector_instance_id`
+  // alias) on every hit whose snapshot captured the binding (see
+  // `reference-implementation/test/search-connection-identity.test.js`).
+  // Both remain optional in the type because pre-identity snapshots
+  // predating the runtime change still emit hits without the field.
   connection_id?: string;
   connector_id: string;
   connector_instance_id?: string;

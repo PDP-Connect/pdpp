@@ -1,7 +1,7 @@
 import { parseArgs, requirePositional } from '../args.js';
 import { PdppUsageError } from '../errors.js';
 import { fetchJson, ownerSessionHeaders, resolveReferenceUrl } from '../fetch.js';
-import { resolveFormat, writeData } from '../output.js';
+import { resolveFormat, writeData, writeEnvelopeWarnings } from '../output.js';
 
 // Operator-facing summary projection. Mirrors the evidence the dashboard renders
 // in `apps/web/src/app/dashboard/lib/ref-client.ts` (RefConnectorSummary +
@@ -61,6 +61,7 @@ export async function runRefConnectors(argv, io = {}, fetchImpl = globalThis.fet
   const [subcommand, ...rest] = argv;
   const { flags, positionals } = parseArgs(rest);
   const out = io.stdout || process.stdout;
+  const err = io.stderr || process.stderr;
 
   if (subcommand === 'list') {
     const asUrl = resolveReferenceUrl(flags);
@@ -75,10 +76,12 @@ export async function runRefConnectors(argv, io = {}, fetchImpl = globalThis.fet
     const verbose = flags.verbose === true || flags.verbose === 'true';
     if (verbose) {
       writeData(format === 'table' ? (body.data || []) : body, format, out);
+      writeEnvelopeWarnings(body, err);
       return 0;
     }
     const rows = Array.isArray(body?.data) ? body.data.map(projectSummaryRow) : [];
     writeData(format === 'table' ? rows.map(projectSummaryTableRow) : { object: 'list', data: rows }, format, out);
+    writeEnvelopeWarnings(body, err);
     return 0;
   }
 
@@ -96,10 +99,12 @@ export async function runRefConnectors(argv, io = {}, fetchImpl = globalThis.fet
     const verbose = flags.verbose === true || flags.verbose === 'true';
     if (verbose) {
       writeData(body, format, out);
+      writeEnvelopeWarnings(body, err);
       return 0;
     }
     const row = projectSummaryRow(body);
     writeData(format === 'table' ? [projectSummaryTableRow(row)] : row, format, out);
+    writeEnvelopeWarnings(body, err);
     return 0;
   }
 

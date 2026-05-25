@@ -399,3 +399,112 @@ test('runCli ref --help mentions connectors commands', async () => {
   assert.match(captured.stdout, /ref connectors list/);
   assert.match(captured.stdout, /ref connectors show/);
 });
+
+// ---- canonical envelope warnings -------------------------------------------
+
+test('ref connectors list: surfaces canonical meta.warnings to stderr without polluting stdout JSON', async () => {
+  const fetch = mockFetch({
+    'https://ref.test/_ref/connectors': {
+      body: {
+        object: 'list',
+        data: [SUMMARY_FIXTURE],
+        meta: {
+          warnings: [
+            { code: 'deprecated_alias', message: 'connector_instance_id is deprecated; use connection_id' },
+            { code: 'count_downgraded', dropped_parameter: 'count=exact' },
+          ],
+        },
+      },
+    },
+  });
+
+  const captured = capture();
+  const code = await runRefConnectors(
+    ['list', '--as-url', 'https://ref.test', '--format', 'json'],
+    captured.io,
+    fetch
+  );
+
+  assert.equal(code, 0);
+  // stdout stays clean JSON (no warning prose mixed in).
+  const parsed = JSON.parse(captured.stdout);
+  assert.equal(parsed.object, 'list');
+  assert.equal(parsed.data.length, 1);
+  // stderr carries the warnings.
+  assert.match(captured.stderr, /warning: deprecated_alias/);
+  assert.match(captured.stderr, /connector_instance_id is deprecated/);
+  assert.match(captured.stderr, /warning: count_downgraded/);
+  assert.match(captured.stderr, /\(dropped: count=exact\)/);
+});
+
+test('ref connectors show: surfaces canonical meta.warnings on single-record responses', async () => {
+  const fetch = mockFetch({
+    'https://ref.test/_ref/connectors/github': {
+      body: {
+        ...SUMMARY_FIXTURE,
+        meta: { warnings: [{ code: 'skipped_source', message: 'one binding had no snapshot' }] },
+      },
+    },
+  });
+
+  const captured = capture();
+  const code = await runRefConnectors(
+    ['show', 'github', '--as-url', 'https://ref.test', '--format', 'json'],
+    captured.io,
+    fetch
+  );
+
+  assert.equal(code, 0);
+  // stdout is still a parseable record projection.
+  const parsed = JSON.parse(captured.stdout);
+  assert.equal(parsed.connector_id, 'github');
+  // stderr surfaces the warning.
+  assert.match(captured.stderr, /warning: skipped_source — one binding had no snapshot/);
+});
+
+test('ref connectors list: emits no stderr noise when meta.warnings is absent (backward compat)', async () => {
+  const fetch = mockFetch({
+    'https://ref.test/_ref/connectors': { body: { object: 'list', data: [SUMMARY_FIXTURE] } },
+  });
+
+  const captured = capture();
+  await runRefConnectors(
+    ['list', '--as-url', 'https://ref.test', '--format', 'json'],
+    captured.io,
+    fetch
+  );
+
+  // No canonical envelope today ⇒ no warnings line.
+  assert.equal(captured.stderr, '');
+});
+
+test('ref connectors list: ignores malformed warnings entries', async () => {
+  const fetch = mockFetch({
+    'https://ref.test/_ref/connectors': {
+      body: {
+        object: 'list',
+        data: [SUMMARY_FIXTURE],
+        meta: {
+          warnings: [
+            'not-an-object',
+            { message: 'missing code field' },
+            null,
+            { code: 'ok_warning', message: 'this one is well-formed' },
+          ],
+        },
+      },
+    },
+  });
+
+  const captured = capture();
+  await runRefConnectors(
+    ['list', '--as-url', 'https://ref.test', '--format', 'json'],
+    captured.io,
+    fetch
+  );
+
+  // Only the well-formed entry surfaces.
+  assert.match(captured.stderr, /warning: ok_warning/);
+  assert.doesNotMatch(captured.stderr, /not-an-object/);
+  assert.doesNotMatch(captured.stderr, /missing code field/);
+});
