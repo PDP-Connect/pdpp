@@ -31,6 +31,32 @@
 export const CONNECTION_ALIAS_DEPRECATED_WARNING_CODE = 'deprecated_alias_used';
 
 /**
+ * Canonical structured-warning codes the runtime is allowed to emit on
+ * `meta.warnings[]`. Mirrors the closed `WarningCodeSchema` enum in the
+ * reference contract so the wire vocabulary is single-sourced.
+ *
+ * - `deprecated_alias_used`: emitted by `resolveRequestConnectionId` when
+ *   the deprecated `connector_instance_id` alias was sent on the wire.
+ * - `count_downgraded`: emitted when the server downgraded a requested
+ *   count grade (e.g. estimated → exact, or estimated → none).
+ * - `source_skipped_not_applicable`, `partial_results`,
+ *   `compatibility_fallback`: reserved for multi-source read fan-in and
+ *   compatibility paths that do not yet emit warnings; the constants
+ *   exist so future tranches share the canonical spelling.
+ *
+ * Spec: openspec/changes/canonicalize-public-read-contract/specs/
+ *       reference-implementation-architecture/spec.md
+ *       (#"Public read warnings SHALL be structured")
+ */
+export const CANONICAL_WARNING_CODES = Object.freeze({
+  DEPRECATED_ALIAS_USED: 'deprecated_alias_used',
+  COUNT_DOWNGRADED: 'count_downgraded',
+  SOURCE_SKIPPED_NOT_APPLICABLE: 'source_skipped_not_applicable',
+  PARTIAL_RESULTS: 'partial_results',
+  COMPATIBILITY_FALLBACK: 'compatibility_fallback',
+});
+
+/**
  * Throw a typed `invalid_argument` error when both identifiers are present
  * with conflicting values. Mirrors `validateSearchConnectionAlias` in the
  * rs.search.* operations so REST and search reject the same conflict shape.

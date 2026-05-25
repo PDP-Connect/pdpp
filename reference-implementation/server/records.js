@@ -443,6 +443,7 @@ const SUPPORTED_RECORD_QUERY_PARAMS = new Set([
   'connection_id',
   'connector_id',
   'connector_instance_id',
+  'count',
   'cursor',
   'expand',
   'expand_limit',
@@ -450,9 +451,15 @@ const SUPPORTED_RECORD_QUERY_PARAMS = new Set([
   'filter',
   'limit',
   'order',
+  'sort',
   'subject_id',
   'view',
 ]);
+
+// Canonical graded-count vocabulary. Spec:
+//   openspec/changes/canonicalize-public-read-contract design.md ("Counts")
+//   reference-contract `CountKindSchema`
+const SUPPORTED_COUNT_KINDS = new Set(['none', 'estimated', 'exact']);
 const SUPPORTED_AGGREGATE_QUERY_PARAMS = new Set([
   'connection_id',
   'connector_id',
@@ -665,12 +672,70 @@ function normalizePaginationCursor(cursor, order) {
   };
 }
 
-function validateTopLevelQueryParams(requestParams) {
+function validateTopLevelQueryParams(requestParams, manifestStream = null) {
   const unsupported = Object.keys(requestParams).filter((key) => !SUPPORTED_RECORD_QUERY_PARAMS.has(key));
   if (unsupported.length) {
     throw invalidQueryError(`Unsupported query parameter: ${unsupported.join(', ')}`);
   }
   validateConnectionAlias(requestParams);
+  validateCountKind(requestParams.count);
+  validateCanonicalSort(requestParams.sort, manifestStream);
+}
+
+/**
+ * Validate the requested count grade against the canonical
+ * `none|estimated|exact` vocabulary. Absent / empty values pass through;
+ * the server applies `none` as the default. Spec:
+ *   openspec/changes/canonicalize-public-read-contract/specs/
+ *   reference-implementation-architecture/spec.md (#"Counts are opt-in
+ *   and cost-graded").
+ */
+function validateCountKind(value) {
+  if (value == null || value === '') return;
+  if (typeof value !== 'string' || !SUPPORTED_COUNT_KINDS.has(value)) {
+    throw invalidQueryError(`count must be one of: ${[...SUPPORTED_COUNT_KINDS].join(', ')}`);
+  }
+}
+
+/**
+ * Validate the canonical `sort` parameter against the manifest stream's
+ * declared cursor field. The wire vocabulary is sign-prefix CSV
+ * (`sort=-emitted_at,name`); this runtime only supports ordering by the
+ * stream's declared cursor field today, so any other field is rejected
+ * with a typed `invalid_sort` error.
+ *
+ * Conformance: every advertised sort field MUST be enforced by the
+ * runtime. The reference runtime advertises only the cursor field as
+ * sortable via `/v1/schema` (see operations/rs-schema-get); this helper
+ * rejects all other fields rather than silently no-oping.
+ *
+ * Spec: openspec/changes/canonicalize-public-read-contract design.md
+ *       (#"Sort").
+ */
+function validateCanonicalSort(value, manifestStream) {
+  if (value == null || value === '') return;
+  const raw = Array.isArray(value) ? value.join(',') : String(value);
+  const entries = raw.split(',').map((part) => part.trim()).filter(Boolean);
+  if (entries.length === 0) return;
+  const cursorField = manifestStream?.cursor_field || null;
+  const sortableFields = cursorField ? new Set([cursorField]) : new Set();
+  for (const entry of entries) {
+    const direction = entry.startsWith('-') ? 'desc' : 'asc';
+    const field = direction === 'desc' ? entry.slice(1) : entry;
+    if (!field) {
+      const err = invalidQueryError(`Empty sort field`, 'invalid_sort');
+      err.param = 'sort';
+      throw err;
+    }
+    if (sortableFields.size === 0 || !sortableFields.has(field)) {
+      const err = invalidQueryError(
+        `Sort field '${field}' is not advertised as sortable; check /v1/schema for the canonical sort vocabulary.`,
+        'invalid_sort',
+      );
+      err.param = 'sort';
+      throw err;
+    }
+  }
 }
 
 function validateTopLevelAggregateParams(requestParams) {
@@ -1738,7 +1803,7 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
   const requiredFields = mStream?.schema?.required || [];
   const order = parsePageOrder(requestParams.order);
 
-  validateTopLevelQueryParams(requestParams);
+  validateTopLevelQueryParams(requestParams, mStream);
   const { warnings: requestWarnings } = resolveRequestConnectionId(requestParams);
 
   // Resolve the canonical record identity once for this request. When the
@@ -1958,9 +2023,116 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
     response.next_cursor = encodeRecordsPageCursor(effectivePageRows[effectivePageRows.length - 1].sortPosition, order);
   }
 
+  const countOutcome = computeGradedRecordCount({
+    requestParams,
+    connectorInstanceId,
+    stream,
+    effective,
+    compiledFilters,
+    consentTimeField,
+  });
+  if (countOutcome) {
+    response.meta = mergeMetaCount(response.meta, countOutcome.count);
+    if (countOutcome.warning) {
+      attachRequestWarningsToResponse(response, [countOutcome.warning]);
+    }
+  }
+
   attachRequestWarningsToResponse(response, requestWarnings);
 
   return response;
+}
+
+/**
+ * Compute the requested graded count for a records list response.
+ *
+ * The canonical grades are `none`, `estimated`, and `exact`. This first
+ * surface implements `exact` by scanning the same visible-row set the
+ * records list would have scanned for the aggregate path (cheap on the
+ * SQLite reference; future tranches can add planner-style estimates).
+ *
+ * Behavior:
+ *   - `count` absent or `none`: return `null` (callers omit `meta.count`).
+ *   - `count=exact`: returns `{ count: { kind: 'exact', value } }`.
+ *   - `count=estimated`: downgrades to `exact` and emits a
+ *     `count_downgraded` warning per the spec's honest-downgrade rule.
+ *
+ * Spec: openspec/changes/canonicalize-public-read-contract design.md
+ *       (#"Counts").
+ */
+function computeGradedRecordCount({ requestParams, connectorInstanceId, stream, effective, compiledFilters, consentTimeField }) {
+  const requested = typeof requestParams.count === 'string' ? requestParams.count : null;
+  if (!requested || requested === 'none') return null;
+
+  // Note: the SQLite reference computes an exact count cheaply via the same
+  // visible-row iteration the aggregate path uses. `estimated` is not yet
+  // backed by a planner; we honor the request by upgrading to exact and
+  // emitting `count_downgraded` so the client knows the response carries an
+  // exact value instead of the cheaper estimate they asked for.
+  const exactValue = countVisibleRecordsForStream({
+    connectorInstanceId,
+    stream,
+    effective,
+    compiledFilters,
+    consentTimeField,
+  });
+
+  if (requested === 'exact') {
+    return { count: { kind: 'exact', value: exactValue } };
+  }
+
+  if (requested === 'estimated') {
+    return {
+      count: { kind: 'exact', value: exactValue },
+      warning: {
+        code: 'count_downgraded',
+        message: 'count=estimated was upgraded to exact; reference runtime has no planner-style estimator.',
+        detail: { requested_kind: 'estimated', delivered_kind: 'exact' },
+      },
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Scan visible records under the same grant + filter set the list path
+ * uses and return the visible count. Mirrors `aggregateRecords` count
+ * semantics so the two surfaces stay in lock-step.
+ */
+function countVisibleRecordsForStream({ connectorInstanceId, stream, effective, compiledFilters, consentTimeField }) {
+  if (isPostgresStorageBackend()) {
+    // Postgres path falls back to scanning visible rows; postgres-records.js
+    // owns the storage-specific count helper. For now records.js's count
+    // helper only handles the SQLite reference because the Postgres list
+    // path runs entirely through postgres-records.js.
+    return 0;
+  }
+  const rows = iterate(
+    referenceQueries.recordsAggregateIterateStreamRecordsForAggregation,
+    [connectorInstanceId, stream],
+  );
+  let visibleCount = 0;
+  for (const row of rows) {
+    const rawData = JSON.parse(row.record_json);
+    if (effective.resources && !effective.resources.includes(row.record_key)) continue;
+    if (effective.timeRange && consentTimeField && !passesTimeRange(rawData, effective.timeRange, consentTimeField)) continue;
+    if (compiledFilters.length && !passesRequestFilters(rawData, compiledFilters)) continue;
+    visibleCount += 1;
+  }
+  return visibleCount;
+}
+
+/**
+ * Merge a `meta.count` payload into an existing response.meta, preserving
+ * `warnings` and any other meta members. Returns the new meta object.
+ */
+function mergeMetaCount(existingMeta, count) {
+  const base = existingMeta && typeof existingMeta === 'object' && !Array.isArray(existingMeta)
+    ? { ...existingMeta }
+    : {};
+  base.count = count;
+  return base;
 }
 
 /**

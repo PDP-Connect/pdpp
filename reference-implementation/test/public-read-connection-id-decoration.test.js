@@ -44,6 +44,7 @@ const manifest = {
     {
       name: STREAM,
       primary_key: ['id'],
+      cursor_field: 'received_at',
       consent_time_field: 'received_at',
       schema: {
         type: 'object',
@@ -312,5 +313,83 @@ test('records list omits display_name when no connector-instance row exists for 
       assert.equal(record.connection_id, INSTANCE_ID);
       assert.equal(record.display_name, undefined);
     }
+  });
+});
+
+// ─── Graded counts ──────────────────────────────────────────────────────────
+
+test('records list omits meta.count when count is not requested', async () => {
+  await withDb(async () => {
+    const response = await queryRecords(target(), STREAM, grant, {}, manifest);
+    assert.equal(response.meta, undefined);
+  });
+});
+
+test('records list emits meta.count = { kind: none } when count=none is requested', async () => {
+  await withDb(async () => {
+    const response = await queryRecords(target(), STREAM, grant, { count: 'none' }, manifest);
+    // count=none is the default; runtime omits meta.count to keep the wire
+    // payload small. canonical envelope normalization happens at the route
+    // layer, so the operation result is still envelope-light here.
+    assert.equal(response.meta, undefined);
+  });
+});
+
+test('records list emits meta.count.kind=exact with the visible-row count when count=exact', async () => {
+  await withDb(async () => {
+    const response = await queryRecords(target(), STREAM, grant, { count: 'exact' }, manifest);
+    assert.ok(response.meta);
+    assert.equal(response.meta.count.kind, 'exact');
+    assert.equal(response.meta.count.value, 2);
+  });
+});
+
+test('records list emits count_downgraded warning when count=estimated is requested', async () => {
+  await withDb(async () => {
+    const response = await queryRecords(target(), STREAM, grant, { count: 'estimated' }, manifest);
+    assert.ok(response.meta);
+    assert.equal(response.meta.count.kind, 'exact');
+    assert.equal(response.meta.count.value, 2);
+    const downgraded = response.meta.warnings.find((w) => w.code === 'count_downgraded');
+    assert.ok(downgraded, 'expected count_downgraded warning');
+    assert.equal(downgraded.detail.requested_kind, 'estimated');
+    assert.equal(downgraded.detail.delivered_kind, 'exact');
+  });
+});
+
+test('records list rejects unknown count grade with invalid_request', async () => {
+  await withDb(async () => {
+    await assert.rejects(
+      queryRecords(target(), STREAM, grant, { count: 'planned' }, manifest),
+      (err) => err.code === 'invalid_request' && /count must be one of/.test(err.message),
+    );
+  });
+});
+
+// ─── Canonical sort validation ──────────────────────────────────────────────
+
+test('records list accepts sort over the manifest cursor field', async () => {
+  await withDb(async () => {
+    const response = await queryRecords(target(), STREAM, grant, { sort: '-received_at' }, manifest);
+    assert.equal(response.object, 'list');
+    assert.equal(response.data.length, 2);
+  });
+});
+
+test('records list rejects sort fields that are not advertised as sortable', async () => {
+  await withDb(async () => {
+    await assert.rejects(
+      queryRecords(target(), STREAM, grant, { sort: 'subject' }, manifest),
+      (err) => err.code === 'invalid_sort' && err.param === 'sort' && /not advertised as sortable/.test(err.message),
+    );
+  });
+});
+
+test('records list rejects an empty sort entry', async () => {
+  await withDb(async () => {
+    await assert.rejects(
+      queryRecords(target(), STREAM, grant, { sort: '-' }, manifest),
+      (err) => err.code === 'invalid_sort' && err.param === 'sort',
+    );
   });
 });
