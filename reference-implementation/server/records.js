@@ -55,6 +55,11 @@ import {
   markRetainedSizeConnectionDirty,
   markRetainedSizeStreamDirty,
 } from './retained-size-read-model.js';
+import {
+  CONNECTION_ALIAS_DEPRECATED_WARNING_CODE,
+  resolveRequestConnectionId,
+  validateConnectionAlias as validateConnectionAliasShared,
+} from './connection-id-request.js';
 
 function nowIso() {
   return new Date().toISOString();
@@ -420,33 +425,13 @@ const SUPPORTED_AGGREGATE_QUERY_PARAMS = new Set([
 ]);
 
 /**
- * Validate the `(connection_id, connector_instance_id)` alias contract.
- *
- * Both identifiers carry the same opaque value during the migration window.
- * Accepting one or the other is the canonical / deprecated split; accepting
- * both with conflicting values would silently let the deprecated alias win
- * or get ignored. Reject the conflict with a typed `invalid_argument` error
- * so clients learn before they ship divergent identity assumptions.
- *
- * Empty-string values are treated as "absent" so callers may forward
- * undefined-shaped query params from intermediate adapters without
- * tripping the conflict check.
+ * Re-export the canonical alias contract helpers so existing imports from
+ * `./records.js` continue to work. The single source of truth is
+ * `./connection-id-request.js`, which records.js, postgres-records.js, and
+ * future read-path runtime share without duplication.
  */
-export function validateConnectionAlias(requestParams) {
-  if (!requestParams || typeof requestParams !== 'object') return;
-  const canonical = requestParams.connection_id;
-  const alias = requestParams.connector_instance_id;
-  const canonicalSet = typeof canonical === 'string' && canonical.length > 0;
-  const aliasSet = typeof alias === 'string' && alias.length > 0;
-  if (canonicalSet && aliasSet && canonical !== alias) {
-    const err = new Error(
-      'connection_id and connector_instance_id refer to the same connection. Send only `connection_id` (canonical) or supply matching values.',
-    );
-    err.code = 'invalid_argument';
-    err.param = 'connector_instance_id';
-    throw err;
-  }
-}
+export { resolveRequestConnectionId, CONNECTION_ALIAS_DEPRECATED_WARNING_CODE };
+export const validateConnectionAlias = validateConnectionAliasShared;
 const SUPPORTED_AGGREGATE_METRICS = new Set(['count', 'sum', 'min', 'max']);
 const MAX_AGGREGATE_GROUP_LIMIT = 100;
 const DEFAULT_AGGREGATE_GROUP_LIMIT = 10;
@@ -1277,14 +1262,40 @@ function fetchVisibleRecordRowsPaginated({
   return { rows, hasMore, scanned, underread: hasRequestFilters && !hasMore && scanned >= sqlLimit };
 }
 
-function buildResponseRecord(stream, row, effective) {
-  return {
+function buildResponseRecord(stream, row, effective, identity = null) {
+  const record = {
     object: 'record',
     id: row.record_key,
     stream,
     data: projectFields(row.rawData, effective.fields),
     emitted_at: row.emitted_at,
   };
+  decorateRecordWithConnectionIdentity(record, identity);
+  return record;
+}
+
+/**
+ * Attach `connection_id` (canonical) and the deprecated `connector_instance_id`
+ * alias to a response record when the runtime knows the binding without
+ * guessing. `identity` is `null` (e.g. legacy callers) or
+ * `{ connectionId, displayName? }`. Empty/missing values are skipped so we
+ * never fabricate identity for pre-binding rows.
+ *
+ * Spec: openspec/changes/canonicalize-public-read-contract/specs/
+ *       reference-implementation-architecture/spec.md
+ *       (#"Records, search, and blob items SHALL carry canonical connection identity")
+ */
+function decorateRecordWithConnectionIdentity(record, identity) {
+  if (!record || !identity) return;
+  const connectionId = typeof identity.connectionId === 'string' ? identity.connectionId.trim() : '';
+  if (connectionId) {
+    record.connection_id = connectionId;
+    record.connector_instance_id = connectionId;
+  }
+  const displayName = typeof identity.displayName === 'string' ? identity.displayName.trim() : '';
+  if (displayName) {
+    record.display_name = displayName;
+  }
 }
 
 async function hydrateExpandedRelations({
@@ -1316,6 +1327,7 @@ async function hydrateExpandedRelations({
       limit: expansion.limit,
     });
 
+    const childIdentity = { connectionId: connectorInstanceId };
     for (const parentRow of effectiveParentRows) {
       const relationKey = parentRow.record_key;
       const matches = groupedChildren.get(relationKey) || [];
@@ -1324,7 +1336,7 @@ async function hydrateExpandedRelations({
       if (expansion.relationship.cardinality === 'has_one') {
         const first = matches[0];
         parentRow.responseRecord.expanded[expansion.name] = first
-          ? buildResponseRecord(expansion.relationship.stream, first, childEffective)
+          ? buildResponseRecord(expansion.relationship.stream, first, childEffective, childIdentity)
           : null;
         continue;
       }
@@ -1333,7 +1345,7 @@ async function hydrateExpandedRelations({
         object: 'list',
         has_more: matches.length > expansion.limit,
         data: matches.slice(0, expansion.limit).map((childRow) =>
-          buildResponseRecord(expansion.relationship.stream, childRow, childEffective),
+          buildResponseRecord(expansion.relationship.stream, childRow, childEffective, childIdentity),
         ),
       };
     }
@@ -1682,6 +1694,7 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
   const order = parsePageOrder(requestParams.order);
 
   validateTopLevelQueryParams(requestParams);
+  const { warnings: requestWarnings } = resolveRequestConnectionId(requestParams);
 
   // Validate request fields against grant
   if (requestParams.fields && streamGrant.fields) {
@@ -1778,16 +1791,18 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
 
         if (current?.deleted) {
           if (!previousVisible || !passesRequestFilters(previous.data, compiledFilters)) continue;
+          const deletedRecord = {
+            object: 'record',
+            id: group.record_key,
+            stream,
+            deleted: true,
+            deleted_at: current.deleted_at,
+            emitted_at: current.emitted_at,
+          };
+          decorateRecordWithConnectionIdentity(deletedRecord, { connectionId: connectorInstanceId });
           visibleChanges.push({
             latestVersion: group.latest_version,
-            responseRecord: {
-              object: 'record',
-              id: group.record_key,
-              stream,
-              deleted: true,
-              deleted_at: current.deleted_at,
-              emitted_at: current.emitted_at,
-            },
+            responseRecord: deletedRecord,
           });
           if (visibleChanges.length > limit) break;
           continue;
@@ -1802,15 +1817,17 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
           continue;
         }
 
+        const changeRecord = {
+          object: 'record',
+          id: group.record_key,
+          stream,
+          data: currentProjection,
+          emitted_at: current.emitted_at,
+        };
+        decorateRecordWithConnectionIdentity(changeRecord, { connectionId: connectorInstanceId });
         visibleChanges.push({
           latestVersion: group.latest_version,
-          responseRecord: {
-            object: 'record',
-            id: group.record_key,
-            stream,
-            data: currentProjection,
-            emitted_at: current.emitted_at,
-          },
+          responseRecord: changeRecord,
         });
         if (visibleChanges.length > limit) break;
       }
@@ -1838,6 +1855,7 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
     }
 
     response.next_changes_since = encodeChangesSinceCursor(effectiveSessionMaxVersion);
+    attachRequestWarningsToResponse(response, requestWarnings);
     return response;
   }
 
@@ -1860,9 +1878,10 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
     limit,
     order,
   });
+  const recordIdentity = { connectionId: connectorInstanceId };
   const effectivePageRows = pagedRows.map((row) => ({
     ...row,
-    responseRecord: buildResponseRecord(stream, row, effective),
+    responseRecord: buildResponseRecord(stream, row, effective, recordIdentity),
   }));
 
   await hydrateExpandedRelations({
@@ -1886,7 +1905,34 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
     response.next_cursor = encodeRecordsPageCursor(effectivePageRows[effectivePageRows.length - 1].sortPosition, order);
   }
 
+  attachRequestWarningsToResponse(response, requestWarnings);
+
   return response;
+}
+
+/**
+ * Attach a `meta.warnings[]` envelope to a public-read response only when
+ * the runtime has non-empty structured warnings to surface. Keeps the wire
+ * shape backwards-compatible for the common no-warning case while opening
+ * the canonical `meta.warnings` slot for deprecated-alias usage and any
+ * future graded outcomes (skipped sources, count downgrade, etc.).
+ *
+ * Spec: openspec/changes/canonicalize-public-read-contract/specs/
+ *       reference-implementation-architecture/spec.md
+ */
+function attachRequestWarningsToResponse(response, warnings) {
+  if (!response || typeof response !== 'object') return;
+  if (!Array.isArray(warnings) || warnings.length === 0) return;
+  const existingMeta = response.meta && typeof response.meta === 'object' && !Array.isArray(response.meta)
+    ? response.meta
+    : null;
+  const existingWarnings = existingMeta && Array.isArray(existingMeta.warnings)
+    ? existingMeta.warnings
+    : [];
+  response.meta = {
+    ...(existingMeta || {}),
+    warnings: [...existingWarnings, ...warnings],
+  };
 }
 
 /**
@@ -1913,6 +1959,7 @@ export async function aggregateRecords(storageTarget, stream, grant, requestPara
   }
 
   const aggregateRequest = normalizeAggregateRequest(requestParams, streamGrant, manifestStream);
+  const { warnings: requestWarnings } = resolveRequestConnectionId(requestParams);
   const compiledFilters = compileRequestFilters(requestParams.filter, streamGrant, manifestStream);
   const effective = buildEffectiveFilter(streamGrant, {});
   const consentTimeField = manifestStream?.consent_time_field || null;
@@ -1994,6 +2041,8 @@ export async function aggregateRecords(storageTarget, stream, grant, requestPara
     response.value = bestValue;
   }
 
+  attachRequestWarningsToResponse(response, requestWarnings);
+
   return response;
 }
 
@@ -2055,7 +2104,7 @@ export async function getRecord(storageTarget, stream, recordId, grant, manifest
       record_key: row.record_key,
       rawData,
       emitted_at: row.emitted_at,
-    }, effective),
+    }, effective, { connectionId: connectorInstanceId }),
   };
 
   const expansions = normalizeExpandRequest({

@@ -299,11 +299,33 @@ export interface SearchLexicalResultItem {
   score?: { kind: "bm25"; value: number; order: "lower_is_better" };
 }
 
+/**
+ * Structured warning shape used in `meta.warnings[]`. The canonical
+ * `deprecated_alias_used` code is emitted whenever the request reached the
+ * operation via the deprecated `connector_instance_id` query alias.
+ *
+ * Spec: openspec/changes/canonicalize-public-read-contract/specs/
+ *       reference-implementation-architecture/spec.md
+ *       (#"Public read warnings SHALL be structured")
+ */
+export interface SearchLexicalWarning {
+  code: string;
+  param?: string;
+  message?: string;
+}
+
+export interface SearchLexicalEnvelopeMeta {
+  warnings?: SearchLexicalWarning[];
+  [extra: string]: unknown;
+}
+
 export interface SearchLexicalEnvelope {
   object: "list";
   has_more: boolean;
   next_cursor?: string;
   data: SearchLexicalResultItem[];
+  /** Optional canonical `meta` slot; only emitted when warnings are non-empty. */
+  meta?: SearchLexicalEnvelopeMeta;
 }
 
 export interface SearchLexicalDisclosureData {
@@ -356,6 +378,33 @@ interface NormalizedRequestParams {
   streams: string[] | null;
   filter: unknown;
   filteredStream: string | null;
+  /**
+   * Structured warnings derived from the raw request shape (currently only
+   * `deprecated_alias_used`). The operation surfaces them via the envelope's
+   * canonical `meta.warnings[]` slot when non-empty.
+   */
+  warnings: SearchLexicalWarning[];
+}
+
+/**
+ * Canonical warning code for deprecated-alias usage. Shared across the
+ * three search operations so REST and MCP clients can detect alias
+ * deprecation without parsing free-form messages.
+ */
+export const SEARCH_CONNECTION_ALIAS_DEPRECATED_WARNING_CODE = "deprecated_alias_used";
+
+function deriveSearchConnectionAliasWarnings(
+  query: Record<string, unknown>,
+): SearchLexicalWarning[] {
+  const alias = query.connector_instance_id;
+  if (typeof alias !== "string" || alias.length === 0) return [];
+  return [
+    {
+      code: SEARCH_CONNECTION_ALIAS_DEPRECATED_WARNING_CODE,
+      param: "connector_instance_id",
+      message: "`connector_instance_id` is deprecated; send `connection_id` instead.",
+    },
+  ];
 }
 
 function clampLimit(raw: unknown): number {
@@ -420,6 +469,7 @@ export function parseSearchLexicalParams(
     streams,
     filter: hasFilter ? query.filter : null,
     filteredStream: hasFilter && streams && streams.length > 0 ? streams[0]! : null,
+    warnings: deriveSearchConnectionAliasWarnings(query),
   };
 }
 
@@ -671,6 +721,9 @@ export async function executeSearchLexical(
     has_more: hasMore,
     ...(nextCursor ? { next_cursor: nextCursor } : {}),
     data,
+    ...(params.warnings.length > 0
+      ? { meta: { warnings: params.warnings } }
+      : {}),
   };
 
   const disclosureData: SearchLexicalDisclosureData = {
