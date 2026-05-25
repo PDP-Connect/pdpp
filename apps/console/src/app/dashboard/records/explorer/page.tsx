@@ -16,15 +16,17 @@
  *   - Empty-query fan-out KNOWS the connection per row. Row key, peek
  *     param, attribution, and full-record link all carry the concrete
  *     `connection_id`.
- *   - Search hits today do NOT carry `connection_id` from the public
- *     `/v1/search*` contract. We resolve to a concrete connection only
- *     when (a) the server happens to return one (forward-compatible), or
- *     (b) exactly one connection of that connector type is visible
- *     ("deduction, not guessing"). Otherwise the row is connector-scoped
- *     and the UI says so.
- *   - Selected-connection chips fall back to a connector-type post-filter
- *     in search mode for the same reason; the chip label and the spec
- *     both call this out instead of pretending to filter by connection.
+ *   - Search hits carry `connection_id` whenever the snapshot recorded the
+ *     binding (canonical read contract, task 3.2). When present we resolve
+ *     directly. Pre-identity snapshots may still omit the field; we fall
+ *     back to the visible-set deduction only when exactly one connection of
+ *     that connector type is visible ("deduction, not guessing"). Otherwise
+ *     the row is connector-scoped and the UI says so.
+ *   - Selected-connection chips also fall back to a connector-type post-
+ *     filter in search mode because the public surface does not yet narrow
+ *     storage fan-in by `connection_id` (canonical read contract, task 3.3
+ *     follow-up). The chip label and the spec both call this out instead of
+ *     pretending to filter by connection.
  */
 import { DashboardShell, ServerUnreachable } from "../../components/shell.tsx";
 import {
