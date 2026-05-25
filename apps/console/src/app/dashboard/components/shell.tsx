@@ -163,6 +163,7 @@ function RecordsSubnav({ routes }: { routes: Routes }) {
   // shared records-timeline view against the seeded dataset.
   const items = [
     { href: routes.section.records, label: "Connectors" },
+    { href: routes.section.recordsExplorer, label: "Explorer" },
     { href: routes.section.recordsTimeline, label: "Timeline" },
   ];
   return <SidebarSubnav items={items} label="Records" />;

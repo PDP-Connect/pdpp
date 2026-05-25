@@ -39,6 +39,13 @@
 - [x] 7.1 `openspec validate add-dashboard-records-explorer --strict` passes.
 - [x] 7.2 `pnpm -C apps/web run types:check` passes.
 - [x] 7.3 Targeted explorer test passes via `pnpm -C apps/web exec node --test ...`.
+- [x] 7.4 `pnpm -C apps/console run types:check` passes.
+- [x] 7.5 Targeted explorer test passes via `pnpm -C apps/console exec node --test ...`.
+
+## 8. Operator-console parity
+
+- [x] 8.1 Mirror explorer page, view, peek-read-url, search-hit-attribution module, and tests under `apps/console`.
+- [x] 8.2 Mirror the routes / shell / rs-client deltas under `apps/console` so the operator-console Docker target (`docker-compose.yml` service `console`) ships the Explorer for the live `pdpp.vivid.fish` deployment.
 
 ## Acceptance checks
 

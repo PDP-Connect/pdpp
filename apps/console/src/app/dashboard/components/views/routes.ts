@@ -22,6 +22,7 @@ export interface Routes {
   readonly section: {
     overview: string;
     records: string;
+    recordsExplorer: string;
     recordsTimeline: string;
     schedules: string;
     search: string;
@@ -43,6 +44,7 @@ function makeRoutes(basePath: string, opts: { overview?: string } = {}): Routes 
     section: {
       overview: opts.overview ?? basePath,
       records: `${basePath}/records`,
+      recordsExplorer: `${basePath}/records/explorer`,
       recordsTimeline: `${basePath}/records/timeline`,
       schedules: `${basePath}/schedules`,
       search: `${basePath}/search`,

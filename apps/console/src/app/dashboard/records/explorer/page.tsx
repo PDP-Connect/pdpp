@@ -1,0 +1,454 @@
+/**
+ * Records Explorer — query-driven, connection-aware records browser.
+ *
+ * Reads through the existing typed wrappers only:
+ *   - listConnectorSummaries (_ref/connectors) for the connection facets and
+ *     the empty-query recency fan-out.
+ *   - listConnectorManifests for the timestamp-field metadata that
+ *     pickSearchDisplayTimestamp needs.
+ *   - searchRecordsHybrid / searchRecordsLexical for query mode.
+ *   - queryRecords for the empty-query fan-out.
+ *   - getRecord for the peek panel.
+ *
+ * No new endpoints.
+ *
+ * Connection identity rules:
+ *   - Empty-query fan-out KNOWS the connection per row. Row key, peek
+ *     param, attribution, and full-record link all carry the concrete
+ *     `connection_id`.
+ *   - Search hits today do NOT carry `connection_id` from the public
+ *     `/v1/search*` contract. We resolve to a concrete connection only
+ *     when (a) the server happens to return one (forward-compatible), or
+ *     (b) exactly one connection of that connector type is visible
+ *     ("deduction, not guessing"). Otherwise the row is connector-scoped
+ *     and the UI says so.
+ *   - Selected-connection chips fall back to a connector-type post-filter
+ *     in search mode for the same reason; the chip label and the spec
+ *     both call this out instead of pretending to filter by connection.
+ */
+import { DashboardShell, ServerUnreachable } from "../../components/shell.tsx";
+import {
+  buildExplorerHref,
+  type ExplorerConnectionFacet,
+  type ExplorerFeedEntry,
+  type ExplorerPeekData,
+  parseExplorerPeekParam,
+  type RecordsExplorerData,
+  RecordsExplorerView,
+} from "../../components/views/records-explorer-view.tsx";
+import { dashboardRoutes } from "../../components/views/routes.ts";
+import { getOwnerToken, getRsInternalUrl, ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
+import { listConnectorSummaries, type RefConnectorSummary } from "../../lib/ref-client.ts";
+import {
+  getRecord,
+  isHybridRetrievalAdvertised,
+  listConnectorManifests,
+  queryRecords,
+  type SearchResultHit,
+  searchRecordsHybrid,
+  searchRecordsLexical,
+} from "../../lib/rs-client.ts";
+import {
+  lookupSearchTimestampMetadata,
+  pickSearchDisplayTimestamp,
+  type SearchTimestampMetadata,
+  searchTimestampMetadataKey,
+} from "../../lib/search-record-timestamps.ts";
+import { summarize } from "../../lib/timeline-summaries.ts";
+import { verifyDashboardSession } from "../../lib/verify-session.ts";
+import { buildPeekReadUrl } from "./peek-read-url.ts";
+import { attributeSearchHit, shouldIncludeSearchHit } from "./search-hit-attribution.ts";
+
+export const dynamic = "force-dynamic";
+
+// Empty-query fan-out caps. Keeps the recency feed cheap on instances
+// with many connections; the user is expected to submit a query to
+// narrow further. Search-driven mode is unaffected.
+const MAX_FEED_CONNECTIONS = 12;
+const MAX_FEED_STREAMS_PER_CONNECTION = 4;
+const MAX_FEED_RECORDS_PER_STREAM = 8;
+const FEED_TOTAL_CAP = 50;
+const SEARCH_PAGE_LIMIT = 25;
+
+function uniqueStrings(values: Array<string | null | undefined>): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const v of values) {
+    if (typeof v !== "string" || v.length === 0 || seen.has(v)) {
+      continue;
+    }
+    seen.add(v);
+    out.push(v);
+  }
+  return out;
+}
+
+function asStringArray(value: string | string[] | undefined): string[] {
+  if (Array.isArray(value)) {
+    return value.filter((v): v is string => typeof v === "string" && v.length > 0);
+  }
+  if (typeof value === "string" && value.length > 0) {
+    return [value];
+  }
+  return [];
+}
+
+function toConnectionFacet(summary: RefConnectorSummary): ExplorerConnectionFacet {
+  return {
+    connectionId: summary.connection_id,
+    connectorId: summary.connector_id,
+    displayName: summary.display_name || summary.connector_display_name || summary.connector_id,
+    streams: [...(summary.streams ?? [])].sort(),
+  };
+}
+
+function summaryByConnectionId(summaries: RefConnectorSummary[]): Map<string, RefConnectorSummary> {
+  const map = new Map<string, RefConnectorSummary>();
+  for (const s of summaries) {
+    map.set(s.connection_id, s);
+  }
+  return map;
+}
+
+interface FeedLoadResult {
+  entries: ExplorerFeedEntry[];
+  fromSearch: boolean;
+  hybridUsed: boolean;
+  truncated: boolean;
+}
+
+async function loadEmptyQueryFeed(
+  filteredSummaries: RefConnectorSummary[],
+  timestampMetadata: ReadonlyMap<string, SearchTimestampMetadata>,
+  filterStreams: ReadonlySet<string>
+): Promise<FeedLoadResult> {
+  // Bounded fan-out: pick the top-N most-recent connections, then for each
+  // walk a small set of streams in declaration order. The owner is
+  // expected to type a query to dive deeper.
+  const connections = filteredSummaries.slice(0, MAX_FEED_CONNECTIONS);
+
+  const fetches: Promise<ExplorerFeedEntry[]>[] = [];
+  for (const summary of connections) {
+    const streams = (summary.streams ?? [])
+      .filter((s) => filterStreams.size === 0 || filterStreams.has(s))
+      .slice(0, MAX_FEED_STREAMS_PER_CONNECTION);
+    for (const streamName of streams) {
+      fetches.push(
+        queryRecords(summary.connector_id, streamName, {
+          connectorInstanceId: summary.connector_instance_id ?? summary.connection_id,
+          limit: MAX_FEED_RECORDS_PER_STREAM,
+          order: "desc",
+        })
+          .then((page) =>
+            page.data.map((record) => {
+              const data = record.data && typeof record.data === "object" ? record.data : {};
+              const display = pickSearchDisplayTimestamp({
+                data: data as Record<string, unknown>,
+                emittedAt: record.emitted_at,
+                metadata: lookupSearchTimestampMetadata(timestampMetadata, summary.connector_id, streamName),
+              });
+              const entry: ExplorerFeedEntry = {
+                connectorId: summary.connector_id,
+                connectionId: summary.connection_id,
+                connectionDisplayName: summary.display_name || summary.connector_display_name || summary.connector_id,
+                stream: streamName,
+                recordId: record.id,
+                emittedAt: record.emitted_at,
+                displayAt: display.value,
+                summary: summarize(summary.connector_id, streamName, data as Record<string, unknown>),
+              };
+              return entry;
+            })
+          )
+          .catch(() => [] as ExplorerFeedEntry[])
+      );
+    }
+  }
+
+  const buckets = await Promise.all(fetches);
+  const flat = buckets.flat();
+  flat.sort((a, b) => (Date.parse(b.displayAt) || 0) - (Date.parse(a.displayAt) || 0));
+  const truncated = flat.length > FEED_TOTAL_CAP;
+  return { entries: flat.slice(0, FEED_TOTAL_CAP), fromSearch: false, hybridUsed: false, truncated };
+}
+
+async function loadSearchFeed(
+  query: string,
+  filteredSummaries: RefConnectorSummary[],
+  filterStreams: ReadonlySet<string>,
+  timestampMetadata: ReadonlyMap<string, SearchTimestampMetadata>,
+  selectedConnectionIds: ReadonlySet<string>
+): Promise<FeedLoadResult> {
+  // Selected-connection chips cannot be enforced at the request layer for
+  // search today (public `/v1/search` does not accept `connection_id`), so
+  // we narrow post-hoc by connector type — exactly what the chip-as-
+  // connector-scope label in the view promises. This is intentionally weaker
+  // than per-connection filtering; the UI surface and the OpenSpec delta
+  // both say so out loud.
+  //
+  // When a forward-compatible RS returns concrete connection identity on a
+  // hit (per `expose-connection-identity-on-public-read`), we tighten this
+  // post-filter: a hit that names a connection MUST match one of the
+  // selected visible connections. Otherwise selecting "Personal Gmail"
+  // would still show rows from "Work Gmail" simply because both share
+  // `connector_id: gmail`.
+  const allowedConnectors = new Set(filteredSummaries.map((s) => s.connector_id));
+  const allowedConnectionIds = new Set<string>();
+  for (const s of filteredSummaries) {
+    allowedConnectionIds.add(s.connection_id);
+    if (s.connector_instance_id) {
+      allowedConnectionIds.add(s.connector_instance_id);
+    }
+  }
+  const enforceConnectionFilter = selectedConnectionIds.size > 0;
+  const hybridAdvertised = await isHybridRetrievalAdvertised();
+
+  let hits: SearchResultHit[] = [];
+  let hybridUsed = false;
+  if (hybridAdvertised) {
+    try {
+      const page = await searchRecordsHybrid(query, { limit: SEARCH_PAGE_LIMIT });
+      hits = page.data;
+      hybridUsed = true;
+    } catch {
+      // Fall through to lexical.
+    }
+  }
+  if (!hybridUsed) {
+    const page = await searchRecordsLexical(query, { limit: SEARCH_PAGE_LIMIT });
+    hits = page.data;
+  }
+
+  // Public search currently does not accept a connection filter, so we
+  // filter post-hoc to honor chip-state. Filtering by connector here is
+  // the closest honest approximation when the connection has a unique
+  // connector_id; for multiple connections of the same connector_id the
+  // chip narrows the rendered facet line but the search itself returns
+  // hits across them. Connection identity is preserved per-row below.
+  const filtered = hits.filter((h) => {
+    if (filterStreams.size > 0 && !filterStreams.has(h.stream)) {
+      return false;
+    }
+    return shouldIncludeSearchHit(h, { allowedConnectors, allowedConnectionIds, enforceConnectionFilter });
+  });
+
+  const entries: ExplorerFeedEntry[] = filtered.map((hit) => {
+    const display = pickSearchDisplayTimestamp({
+      data: null,
+      emittedAt: hit.emitted_at,
+      metadata: lookupSearchTimestampMetadata(timestampMetadata, hit.connector_id, hit.stream),
+    });
+    const attribution = attributeSearchHit(hit, filteredSummaries);
+    return {
+      connectorId: hit.connector_id,
+      connectionId: attribution.connectionId,
+      connectionDisplayName: attribution.connectionDisplayName,
+      stream: hit.stream,
+      recordId: hit.record_key,
+      emittedAt: hit.emitted_at,
+      displayAt: display.value,
+      summary: hit.snippet?.text ?? `${hit.stream}/${hit.record_key}`,
+      retrievalMode: hit.retrieval_mode ?? (hybridUsed ? "hybrid" : "lexical"),
+    };
+  });
+
+  return {
+    entries,
+    fromSearch: true,
+    hybridUsed,
+    truncated: false,
+  };
+}
+
+function resolvePeekConnection(
+  parsed: { connectorId: string; connectionId: string | null },
+  byConnectionId: ReadonlyMap<string, RefConnectorSummary>
+): RefConnectorSummary | null {
+  // Prefer the concrete `connection_id` carried in the peek param.
+  if (parsed.connectionId) {
+    const direct = byConnectionId.get(parsed.connectionId);
+    if (direct) {
+      return direct;
+    }
+    for (const summary of byConnectionId.values()) {
+      if (summary.connector_instance_id === parsed.connectionId) {
+        return summary;
+      }
+    }
+    return null;
+  }
+  // No concrete connection in the peek param: resolve ONLY when exactly
+  // one visible connection has that connector type. Otherwise the peek
+  // read uses the connector_id default scope rather than guessing.
+  const matches: RefConnectorSummary[] = [];
+  for (const summary of byConnectionId.values()) {
+    if (summary.connector_id === parsed.connectorId) {
+      matches.push(summary);
+    }
+  }
+  return matches.length === 1 ? (matches[0] ?? null) : null;
+}
+
+async function buildPeek(
+  raw: string | undefined,
+  byConnectionId: ReadonlyMap<string, RefConnectorSummary>
+): Promise<ExplorerPeekData | null> {
+  const parsed = parseExplorerPeekParam(raw);
+  if (!parsed) {
+    return null;
+  }
+  const connection = resolvePeekConnection(parsed, byConnectionId);
+  const connectorInstanceId = connection?.connector_instance_id ?? connection?.connection_id ?? null;
+
+  const readUrl = buildPeekReadUrl({
+    rsBaseUrl: getRsInternalUrl(),
+    connectorId: parsed.connectorId,
+    stream: parsed.stream,
+    recordId: parsed.recordId,
+    connectorInstanceId,
+  });
+
+  try {
+    const record = await getRecord(parsed.connectorId, parsed.stream, parsed.recordId, {
+      connectorInstanceId,
+    });
+    return {
+      connectorId: parsed.connectorId,
+      connectionId: connection?.connection_id ?? null,
+      stream: parsed.stream,
+      recordId: parsed.recordId,
+      emittedAt: record.emitted_at,
+      readUrl,
+      bodyJson: JSON.stringify(record.data, null, 2),
+      error: null,
+    };
+  } catch (err) {
+    if (err instanceof ReferenceServerUnreachableError) {
+      throw err;
+    }
+    return {
+      connectorId: parsed.connectorId,
+      connectionId: connection?.connection_id ?? null,
+      stream: parsed.stream,
+      recordId: parsed.recordId,
+      emittedAt: "",
+      readUrl,
+      bodyJson: null,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+async function buildTimestampMetadata(): Promise<Map<string, SearchTimestampMetadata>> {
+  const metadata = new Map<string, SearchTimestampMetadata>();
+  for (const manifest of await listConnectorManifests()) {
+    for (const stream of manifest.streams ?? []) {
+      metadata.set(searchTimestampMetadataKey(manifest.connector_id, stream.name), {
+        consent_time_field: typeof stream.consent_time_field === "string" ? stream.consent_time_field : null,
+        cursor_field: typeof stream.cursor_field === "string" ? stream.cursor_field : null,
+      });
+    }
+  }
+  return metadata;
+}
+
+export default async function RecordsExplorerPage({
+  searchParams,
+}: {
+  searchParams: Promise<{
+    q?: string;
+    connection?: string | string[];
+    stream?: string | string[];
+    peek?: string;
+  }>;
+}) {
+  // Empty-query loads still need the DAL gate; loadSearchFeed and the
+  // _ref calls each verify, but verifying once up front keeps the empty
+  // shell consistent with the search route.
+  await verifyDashboardSession();
+  // Touch the owner token early so we surface "owner token required"
+  // through the same code path the other dashboard pages do, rather
+  // than dying later in the fan-out.
+  await getOwnerToken();
+
+  const params = await searchParams;
+  const query = (params.q ?? "").trim();
+  const selectedConnectionIds = uniqueStrings(asStringArray(params.connection));
+  const selectedStreams = uniqueStrings(asStringArray(params.stream));
+
+  let summaries: RefConnectorSummary[];
+  try {
+    const response = await listConnectorSummaries();
+    summaries = response.data;
+  } catch (err) {
+    if (err instanceof ReferenceServerUnreachableError) {
+      return (
+        <DashboardShell active="records">
+          <ServerUnreachable />
+        </DashboardShell>
+      );
+    }
+    throw err;
+  }
+
+  const connections = summaries.map(toConnectionFacet).sort((a, b) => a.displayName.localeCompare(b.displayName));
+
+  // Apply connection-id filter to the source list used for both the
+  // search post-filter and the empty-query fan-out.
+  const filterConnectionSet = new Set(selectedConnectionIds);
+  const filteredSummaries =
+    filterConnectionSet.size > 0 ? summaries.filter((s) => filterConnectionSet.has(s.connection_id)) : summaries;
+
+  const filterStreamSet = new Set(selectedStreams);
+  const timestampMetadata = await buildTimestampMetadata();
+
+  let feedResult: FeedLoadResult;
+  try {
+    feedResult = query
+      ? await loadSearchFeed(query, filteredSummaries, filterStreamSet, timestampMetadata, filterConnectionSet)
+      : await loadEmptyQueryFeed(filteredSummaries, timestampMetadata, filterStreamSet);
+  } catch (err) {
+    if (err instanceof ReferenceServerUnreachableError) {
+      return (
+        <DashboardShell active="records">
+          <ServerUnreachable />
+        </DashboardShell>
+      );
+    }
+    throw err;
+  }
+
+  let peek: ExplorerPeekData | null = null;
+  try {
+    peek = await buildPeek(params.peek, summaryByConnectionId(summaries));
+  } catch (err) {
+    if (err instanceof ReferenceServerUnreachableError) {
+      return (
+        <DashboardShell active="records">
+          <ServerUnreachable />
+        </DashboardShell>
+      );
+    }
+    throw err;
+  }
+
+  const data: RecordsExplorerData = {
+    query,
+    connections,
+    selectedConnectionIds,
+    selectedStreams,
+    fromSearch: feedResult.fromSearch,
+    hybridUsed: feedResult.hybridUsed,
+    feed: feedResult.entries,
+    truncated: feedResult.truncated,
+    peek,
+  };
+
+  return (
+    <DashboardShell active="records">
+      <RecordsExplorerView data={data} routes={dashboardRoutes} />
+      {/* Anchor for `buildExplorerHref` smoke during typecheck. */}
+      <span aria-hidden className="hidden" data-explorer-href={buildExplorerHref(dashboardRoutes, {})} />
+    </DashboardShell>
+  );
+}

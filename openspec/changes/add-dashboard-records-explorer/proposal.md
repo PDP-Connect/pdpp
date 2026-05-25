@@ -23,5 +23,6 @@ Modified:
 ## Impact
 
 - Affects the live `/dashboard` operator console only. No change to the sandbox shell, the protocol, the public RS contract, or `_ref` surface.
+- Ships in both `apps/web` and `apps/console`. The `console` Docker build target (`docker-compose.yml` service `console`, built from `apps/console/Dockerfile`) is what powers the reference deployment at `pdpp.vivid.fish`, so the Explorer source must live under `apps/console` for the page to reach the live operator console. The duplication mirrors the existing dashboard pattern until the planned shared `packages/operator-ui` extraction (tracked under `split-public-site/operator-console`) lands.
 - Uses existing RS endpoints (`GET /v1/search`, `GET /v1/search/hybrid`, `GET /v1/streams/:stream/records/:id`) and existing `_ref` connection summaries.
 - No new owner-token scope, no new connector-side behavior, no new manifest fields.
