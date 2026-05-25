@@ -23,6 +23,8 @@ import {
   queryRecords,
 } from '../server/records.js';
 import { registerConnector } from '../server/auth.js';
+import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
+import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from '../server/owner-auth.ts';
 
 const CONNECTOR_ID = 'https://test.pdpp.org/connectors/connection-id-decoration';
 const INSTANCE_ID = 'cin_test_decoration_main';
@@ -245,5 +247,70 @@ test('records list rejects conflicting connection_id / connector_instance_id wit
       ),
       (err) => err.code === 'invalid_argument' && err.param === 'connector_instance_id',
     );
+  });
+});
+
+// ─── display_name decoration ────────────────────────────────────────────────
+
+async function seedConnectorInstance({ displayName, sourceBindingKey = 'work-1' }) {
+  const store = createSqliteConnectorInstanceStore();
+  const now = new Date().toISOString();
+  await store.upsert({
+    connectorInstanceId: INSTANCE_ID,
+    ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
+    connectorId: CONNECTOR_ID,
+    displayName,
+    status: 'active',
+    sourceKind: 'account',
+    sourceBindingKey,
+    sourceBinding: { account: 'work@example.com' },
+    createdAt: now,
+    updatedAt: now,
+  });
+}
+
+test('records list decorates records with display_name when the store has an owner-meaningful label', async () => {
+  await withDb(async () => {
+    await seedConnectorInstance({ displayName: 'Work Mailbox' });
+    const response = await queryRecords(target(), STREAM, grant, {}, manifest);
+    assert.equal(response.data.length, 2);
+    for (const record of response.data) {
+      assert.equal(record.connection_id, INSTANCE_ID);
+      assert.equal(record.display_name, 'Work Mailbox');
+    }
+  });
+});
+
+test('records list omits display_name when the store only has a connector-id placeholder', async () => {
+  await withDb(async () => {
+    // displayName defaulting to connector_id is the documented placeholder.
+    await seedConnectorInstance({ displayName: CONNECTOR_ID });
+    const response = await queryRecords(target(), STREAM, grant, {}, manifest);
+    for (const record of response.data) {
+      assert.equal(record.connection_id, INSTANCE_ID);
+      assert.equal(record.display_name, undefined);
+    }
+  });
+});
+
+test('records detail decorates display_name when the store has an owner-meaningful label', async () => {
+  await withDb(async () => {
+    await seedConnectorInstance({ displayName: 'Work Mailbox' });
+    const record = await getRecord(target(), STREAM, 'rec-1', grant, manifest);
+    assert.equal(record.connection_id, INSTANCE_ID);
+    assert.equal(record.display_name, 'Work Mailbox');
+  });
+});
+
+test('records list omits display_name when no connector-instance row exists for the binding', async () => {
+  // Default withDb path: ingestRecord auto-materializes a default-account
+  // instance whose displayName equals the connector_id (placeholder). Verify
+  // the projection treats that as missing and omits display_name on the wire.
+  await withDb(async () => {
+    const response = await queryRecords(target(), STREAM, grant, {}, manifest);
+    for (const record of response.data) {
+      assert.equal(record.connection_id, INSTANCE_ID);
+      assert.equal(record.display_name, undefined);
+    }
   });
 });

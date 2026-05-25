@@ -11,9 +11,41 @@
 import { createHash } from 'node:crypto';
 
 import { postgresQuery, withPostgresTransaction } from './postgres-storage.js';
-import { makeDefaultAccountConnectorInstanceId } from './stores/connector-instance-store.js';
+import {
+  createPostgresConnectorInstanceStore,
+  makeDefaultAccountConnectorInstanceId,
+} from './stores/connector-instance-store.js';
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from './owner-auth.ts';
-import { resolveRequestConnectionId } from './connection-id-request.js';
+import {
+  projectStorageDisplayName,
+  resolveRequestConnectionId,
+} from './connection-id-request.js';
+
+/**
+ * Resolve `(connection_id, display_name)` identity for a postgres-backed
+ * record read. Returns `null` when the binding is absent and a
+ * `display_name`-less identity when the store row has only a placeholder
+ * label. Mirrors `resolveRecordIdentityForBinding` in records.js so the
+ * Postgres branch decorates records the same shape SQLite emits.
+ */
+async function resolveRecordIdentityForBinding(connectorInstanceId, connectorId) {
+  if (!connectorInstanceId) return null;
+  const identity = { connectionId: connectorInstanceId };
+  try {
+    const store = createPostgresConnectorInstanceStore();
+    const instance = await store.get(connectorInstanceId);
+    if (instance) {
+      const displayName = projectStorageDisplayName(instance.displayName, {
+        connectorId: connectorId || instance.connectorId,
+        connectorInstanceId,
+      });
+      if (displayName) identity.displayName = displayName;
+    }
+  } catch {
+    // Identity lookup failures degrade to connection_id-only decoration.
+  }
+  return identity;
+}
 
 const DEFAULT_LIMIT = 25;
 const MAX_LIMIT = 100;
@@ -395,6 +427,7 @@ export async function postgresQueryRecords(storageTarget, stream, grant, request
   const order = requestParams.order === 'desc' ? 'desc' : 'asc';
   const limit = parseLimit(requestParams.limit);
   const { warnings: requestWarnings } = resolveRequestConnectionId(requestParams);
+  const identity = await resolveRecordIdentityForBinding(connectorInstanceId, connectorId);
 
   if (requestParams.changes_since != null) {
     const decoded = requestParams.changes_since === 'beginning'
@@ -420,7 +453,6 @@ export async function postgresQueryRecords(storageTarget, stream, grant, request
       [connectorInstanceId, stream, decoded.v, sessionMax],
     );
     const sorted = [...rows.rows].sort((a, b) => Number(a.version) - Number(b.version));
-    const identity = { connectionId: connectorInstanceId };
     const changesResponse = {
       object: 'list',
       has_more: false,
@@ -479,7 +511,6 @@ export async function postgresQueryRecords(storageTarget, stream, grant, request
   );
   const hasMore = result.rows.length > limit;
   const pageRows = result.rows.slice(0, limit);
-  const identity = { connectionId: connectorInstanceId };
   const response = {
     object: 'list',
     has_more: hasMore,
@@ -536,7 +567,8 @@ export async function postgresGetRecord(storageTarget, stream, recordId, grant, 
     err.code = 'not_found';
     throw err;
   }
-  return responseRecord({ stream, row, fields, identity: { connectionId: connectorInstanceId } });
+  const identity = await resolveRecordIdentityForBinding(connectorInstanceId, connectorId);
+  return responseRecord({ stream, row, fields, identity });
 }
 
 export async function postgresListAllStreams(storageTarget) {

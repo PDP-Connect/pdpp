@@ -86,3 +86,33 @@ export function resolveRequestConnectionId(requestParams) {
   else if (aliasSet) connectionId = alias;
   return { connectionId, warnings };
 }
+
+/**
+ * Filter a stored connector-instance `display_name` value to the public-read
+ * contract: emit `display_name` only when the runtime has an owner-meaningful
+ * label, never a storage-layer placeholder.
+ *
+ * The connector-instance-store defaults `displayName` to the `connectorId`
+ * during default-account materialization, so an unset / never-edited name
+ * matches the connector identifier verbatim. The wire `display_name` is
+ * "owner-meaningful label for the connection. Never the storage-layer
+ * placeholder (`legacy`, `default_account`)." (reference-contract
+ * `ConnectionDisplayNameSchema`); we treat connectorId / connectorInstanceId
+ * equality and the documented placeholder strings as "no useful label" and
+ * return `null` so callers omit the field entirely.
+ *
+ * Spec: openspec/changes/canonicalize-public-read-contract/specs/
+ *       reference-implementation-architecture/spec.md
+ *       (#"Records, search, and blob items SHALL carry canonical connection identity")
+ */
+const PLACEHOLDER_DISPLAY_NAMES = new Set(['legacy', 'default_account', 'Default account']);
+
+export function projectStorageDisplayName(displayName, { connectorId = null, connectorInstanceId = null } = {}) {
+  if (typeof displayName !== 'string') return null;
+  const trimmed = displayName.trim();
+  if (!trimmed) return null;
+  if (PLACEHOLDER_DISPLAY_NAMES.has(trimmed)) return null;
+  if (connectorId && trimmed === connectorId) return null;
+  if (connectorInstanceId && trimmed === connectorInstanceId) return null;
+  return trimmed;
+}

@@ -57,9 +57,50 @@ import {
 } from './retained-size-read-model.js';
 import {
   CONNECTION_ALIAS_DEPRECATED_WARNING_CODE,
+  projectStorageDisplayName,
   resolveRequestConnectionId,
   validateConnectionAlias as validateConnectionAliasShared,
 } from './connection-id-request.js';
+import {
+  createPostgresConnectorInstanceStore,
+  createSqliteConnectorInstanceStore,
+} from './stores/connector-instance-store.js';
+
+/**
+ * Look up the owner-facing display name for a pinned connector-instance
+ * binding. Returns `null` when the runtime cannot pin a non-placeholder
+ * label without guessing; callers MUST omit `display_name` on the response
+ * in that case so the wire never carries the storage-layer placeholder
+ * ("legacy", "default_account", or the connector_id default).
+ *
+ * Spec: openspec/changes/canonicalize-public-read-contract/specs/
+ *       reference-implementation-architecture/spec.md
+ *       (#"Records, search, and blob items SHALL carry canonical connection identity")
+ */
+async function lookupConnectionDisplayName(connectorInstanceId, connectorId) {
+  if (typeof connectorInstanceId !== 'string' || !connectorInstanceId) return null;
+  const store = isPostgresStorageBackend()
+    ? createPostgresConnectorInstanceStore()
+    : createSqliteConnectorInstanceStore();
+  try {
+    const instance = await store.get(connectorInstanceId);
+    if (!instance) return null;
+    return projectStorageDisplayName(instance.displayName, {
+      connectorId: connectorId || instance.connectorId,
+      connectorInstanceId,
+    });
+  } catch {
+    return null;
+  }
+}
+
+export async function resolveRecordIdentityForBinding(connectorInstanceId, connectorId) {
+  if (!connectorInstanceId) return null;
+  const displayName = await lookupConnectionDisplayName(connectorInstanceId, connectorId);
+  const identity = { connectionId: connectorInstanceId };
+  if (displayName) identity.displayName = displayName;
+  return identity;
+}
 
 function nowIso() {
   return new Date().toISOString();
@@ -1305,6 +1346,7 @@ async function hydrateExpandedRelations({
   effectiveParentRows,
   expansions,
   manifest,
+  childIdentity: childIdentityOverride = null,
 }) {
   if (!expansions.length || !effectiveParentRows.length) return;
 
@@ -1327,7 +1369,10 @@ async function hydrateExpandedRelations({
       limit: expansion.limit,
     });
 
-    const childIdentity = { connectionId: connectorInstanceId };
+    // Expansion children belong to the same connector_instance_id as the
+    // parent, so reuse the resolved record identity (including display_name)
+    // rather than constructing a bare `{ connectionId }` shape.
+    const childIdentity = childIdentityOverride || { connectionId: connectorInstanceId };
     for (const parentRow of effectiveParentRows) {
       const relationKey = parentRow.record_key;
       const matches = groupedChildren.get(relationKey) || [];
@@ -1696,6 +1741,14 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
   validateTopLevelQueryParams(requestParams);
   const { warnings: requestWarnings } = resolveRequestConnectionId(requestParams);
 
+  // Resolve the canonical record identity once for this request. When the
+  // runtime can pin (connector_instance_id, display_name) from the store
+  // this populates `display_name`; otherwise we fall back to connection_id
+  // only. Identity is reused across the changes_since branch, the primary
+  // page rows, and one-hop expansion children so the wire shape stays
+  // consistent without a per-record store roundtrip.
+  const recordIdentity = await resolveRecordIdentityForBinding(connectorInstanceId, connectorId);
+
   // Validate request fields against grant
   if (requestParams.fields && streamGrant.fields) {
     const unauthorized = requestParams.fields.filter(f => !streamGrant.fields.includes(f));
@@ -1799,7 +1852,7 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
             deleted_at: current.deleted_at,
             emitted_at: current.emitted_at,
           };
-          decorateRecordWithConnectionIdentity(deletedRecord, { connectionId: connectorInstanceId });
+          decorateRecordWithConnectionIdentity(deletedRecord, recordIdentity);
           visibleChanges.push({
             latestVersion: group.latest_version,
             responseRecord: deletedRecord,
@@ -1824,7 +1877,7 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
           data: currentProjection,
           emitted_at: current.emitted_at,
         };
-        decorateRecordWithConnectionIdentity(changeRecord, { connectionId: connectorInstanceId });
+        decorateRecordWithConnectionIdentity(changeRecord, recordIdentity);
         visibleChanges.push({
           latestVersion: group.latest_version,
           responseRecord: changeRecord,
@@ -1878,7 +1931,6 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
     limit,
     order,
   });
-  const recordIdentity = { connectionId: connectorInstanceId };
   const effectivePageRows = pagedRows.map((row) => ({
     ...row,
     responseRecord: buildResponseRecord(stream, row, effective, recordIdentity),
@@ -1891,6 +1943,7 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
     effectiveParentRows: effectivePageRows,
     expansions,
     manifest,
+    childIdentity: recordIdentity,
   });
 
   const data = effectivePageRows.map((row) => row.responseRecord);
@@ -2095,6 +2148,8 @@ export async function getRecord(storageTarget, stream, recordId, grant, manifest
     }
   }
 
+  const recordIdentity = await resolveRecordIdentityForBinding(connectorInstanceId, connectorId);
+
   const responseRow = {
     record_key: row.record_key,
     rawData,
@@ -2104,7 +2159,7 @@ export async function getRecord(storageTarget, stream, recordId, grant, manifest
       record_key: row.record_key,
       rawData,
       emitted_at: row.emitted_at,
-    }, effective, { connectionId: connectorInstanceId }),
+    }, effective, recordIdentity),
   };
 
   const expansions = normalizeExpandRequest({
@@ -2120,6 +2175,7 @@ export async function getRecord(storageTarget, stream, recordId, grant, manifest
     expansions,
     manifest,
     grant,
+    childIdentity: recordIdentity,
   });
 
   return responseRow.responseRecord;
