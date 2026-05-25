@@ -10,16 +10,18 @@
  *   - 7.3: regression assertions that strict-validation behavior already
  *          shipped (conflicting alias) is uniform across search ops.
  *
- * Scope discipline: this file only asserts behavior already implemented in
- * the runtime. Items still pending in `tasks.md` (canonical `meta`/`links`,
- * strict unknown-parameter rejection on records list, graded counts,
- * expansion validation) are explicitly marked `test.todo` with a one-line
- * rationale so they show up red on the implementation lane and do not
- * silently delete coverage.
+ * Scope discipline: this file only asserts cross-operation behavior already
+ * implemented in the runtime. Focused runtime tests cover records-list
+ * identity, deprecated-alias warnings, unknown-parameter rejection, and
+ * expansion-target rejection. Items still pending in `tasks.md` are kept as
+ * `test.todo` here so the broader implementation lane cannot silently drop
+ * them.
  *
  * Companion files:
  *   - search-connection-identity.test.js — identity emission per backend
  *   - public-read-connection-alias.test.js — request-side alias validation
+ *   - public-read-connection-id-decoration.test.js — records-list/detail
+ *     identity, deprecated-alias warnings, and expansion rejection
  *   - record-read-conformance.test.js     — record list/cursor/projection
  */
 
@@ -375,21 +377,5 @@ test.todo(
 );
 
 test.todo(
-  'public read envelope SHALL carry meta.warnings on deprecated-alias acceptance — pending tasks.md 3.6 (warnings plumbing)',
-);
-
-test.todo(
-  'records list SHALL reject unknown query parameters with typed unknown_parameter — pending tasks.md 3.5 (strict validation)',
-);
-
-test.todo(
-  'records list SHALL emit connection_id on every record item (not just search) — pending tasks.md 3.1 (record decoration)',
-);
-
-test.todo(
   'public read SHALL support Prefer: count=estimated with meta.count.kind — pending tasks.md 3.7 (graded counts)',
-);
-
-test.todo(
-  'public read SHALL reject expansion targets not advertised in /v1/schema — pending tasks.md 3.8 (one-hop expansion)',
 );
