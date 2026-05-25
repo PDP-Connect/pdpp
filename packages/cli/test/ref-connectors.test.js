@@ -75,6 +75,42 @@ const SUMMARY_FIXTURE = {
       outbox: 'idle',
     },
     badges: { stale: false, syncing: true },
+    conditions: [
+      {
+        id: 'AttentionClear:otp_required',
+        type: 'AttentionClear',
+        status: 'false',
+        severity: 'blocked',
+        reason: 'otp_required',
+        message: 'Owner action is required before collection can continue.',
+        origin: 'runtime',
+        observed_at: '2026-05-19T00:30:00Z',
+        expires_at: null,
+        current: true,
+        sensitivity: 'owner',
+        remediation: {
+          action: 'satisfy_attention',
+          label: 'Open the requested interaction and complete the action',
+          retryable: false,
+          target: 'dashboard',
+        },
+      },
+      {
+        id: 'SourceCoverageComplete:partial',
+        type: 'SourceCoverageComplete',
+        status: 'false',
+        severity: 'warning',
+        reason: 'partial',
+        message: 'Required source coverage is incomplete.',
+        origin: 'connector',
+        observed_at: '2026-05-19T00:30:00Z',
+        expires_at: null,
+        current: true,
+        sensitivity: 'owner',
+        remediation: null,
+      },
+    ],
+    dominant_condition_id: 'AttentionClear:otp_required',
     last_success_at: '2026-05-19T00:30:00Z',
     next_action: {
       action_target: 'dashboard',
@@ -88,6 +124,7 @@ const SUMMARY_FIXTURE = {
     next_attempt_at: '2026-05-19T01:00:00Z',
     reason_code: 'attention_open',
     state: 'needs_attention',
+    supporting_condition_ids: ['AttentionClear:otp_required', 'SourceCoverageComplete:partial'],
     unknown_reasons: [],
   },
 };
@@ -121,6 +158,13 @@ test('ref connectors list: projects summary fields in JSON list', async () => {
   assert.equal(row.syncing, true);
   assert.equal(row.stale, false);
   assert.equal(row.reason_code, 'attention_open');
+  assert.equal(row.dominant_condition_id, 'AttentionClear:otp_required');
+  assert.equal(row.dominant_condition_type, 'AttentionClear');
+  assert.equal(row.dominant_condition_reason, 'otp_required');
+  assert.equal(row.dominant_condition_severity, 'blocked');
+  assert.equal(row.dominant_condition_message, 'Owner action is required before collection can continue.');
+  assert.equal(row.dominant_condition_origin, 'runtime');
+  assert.deepEqual(row.supporting_condition_ids, ['AttentionClear:otp_required', 'SourceCoverageComplete:partial']);
   assert.deepEqual(row.unknown_reasons, []);
   assert.equal(row.next_action_source, 'structured');
   assert.equal(row.next_action_reason, 'otp_required');
@@ -162,8 +206,11 @@ test('ref connectors list: table format includes projected columns', async () =>
 
   assert.match(captured.stdout, /connector_id/);
   assert.match(captured.stdout, /state/);
+  assert.match(captured.stdout, /dominant_condition_reason/);
   assert.match(captured.stdout, /github/);
   assert.match(captured.stdout, /needs_attention/);
+  assert.match(captured.stdout, /otp_required/);
+  assert.doesNotMatch(captured.stdout, /Owner action is required before collection can continue/);
 });
 
 test('ref connectors list: handles missing axes / next_action without crashing', async () => {
@@ -200,6 +247,9 @@ test('ref connectors list: handles missing axes / next_action without crashing',
   assert.equal(row.freshness, 'unknown');
   assert.equal(row.attention, 'none');
   assert.equal(row.outbox, 'unknown');
+  assert.equal(row.dominant_condition_id, null);
+  assert.equal(row.dominant_condition_reason, null);
+  assert.deepEqual(row.supporting_condition_ids, []);
   assert.equal(row.next_action_source, 'none');
   assert.equal(row.next_action_target, null);
   assert.deepEqual(row.unknown_reasons, ['no_runs']);
@@ -223,6 +273,7 @@ test('ref connectors show: returns projected row for connector id', async () => 
   const parsed = JSON.parse(captured.stdout);
   assert.equal(parsed.connector_id, 'github');
   assert.equal(parsed.state, 'needs_attention');
+  assert.equal(parsed.dominant_condition_reason, 'otp_required');
   assert.equal(parsed.next_action_source, 'structured');
 });
 

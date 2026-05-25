@@ -148,11 +148,10 @@ export async function resolveOwnerConnectorInstanceNamespace({
   if (connectorInstanceId) {
     const instance = await connectorInstanceStore.get(connectorInstanceId);
     if (!instance) {
-      // The runtime sometimes passes connectorInstanceId === connectorId as
-      // a "default instance for this connector" hint. When a connector_id
-      // and allowLegacyDefault are also available, fall through to the
-      // legacy-default path instead of failing the lookup outright.
-      if (allowLegacyDefault && connectorId && connectorInstanceId === connectorId) {
+      // Older grant/storage bindings can use connector_id as a default
+      // account instance hint. Resolve that through the same default-account
+      // path instead of treating the connector id as a literal instance id.
+      if (allowDefaultAccount && connectorId && connectorInstanceId === connectorId) {
         // intentional fall-through to the connector_id resolution path
       } else {
         throw new ConnectorInstanceResolutionError(

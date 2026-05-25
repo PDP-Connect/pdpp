@@ -6315,7 +6315,7 @@ function buildRsApp(opts = {}) {
         };
         dependencies = {
           getSourceDescriptor: () => queryContext.sourceDescriptor,
-          listSummaries: async () => listAllStreams(ownerScope.storage_binding),
+          listSummaries: async () => listAllStreams(ownerResolved.storageBinding),
         };
       } else {
         const grant = tokenInfo.grant;
@@ -6421,13 +6421,13 @@ function buildRsApp(opts = {}) {
         queryContext.sourceDescriptor = sourceDescriptor;
         const ownerResolved = await resolveOwnerManifestFromScope(ownerScope, opts);
         manifest = ownerResolved.manifest;
-        storageBinding = ownerScope.storage_binding;
+        storageBinding = ownerResolved.storageBinding;
       } else {
         const grantResolved = await resolveGrantManifest(tokenInfo, opts);
         manifest = grantResolved.manifest;
         sourceDescriptor = grantResolved.source;
         queryContext.sourceDescriptor = sourceDescriptor;
-        storageBinding = resolveGrantStorageBinding(tokenInfo);
+        storageBinding = grantResolved.storageBinding;
       }
 
       await emitQueryReceived(queryContext, req);

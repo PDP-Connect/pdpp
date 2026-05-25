@@ -2,11 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  CONNECTION_CONDITION_REASONS,
   computeConnectionHealth,
   deriveOutboxAxisFromHeartbeat,
   deriveOutboxStateFromDiagnostics,
 } from '../runtime/connection-health.ts';
-import { BLOCKED_PROMOTION_THRESHOLD } from '../runtime/connector-health.ts';
+import { BLOCKED_PROMOTION_THRESHOLD } from '../runtime/connection-health-policy.ts';
 
 const STALE_MS = 30 * 60 * 1000;
 const NOW = '2026-05-19T12:00:00.000Z';
@@ -76,6 +77,12 @@ test('unknown: any unreliable required projection forces unknown and names the s
   assert.deepEqual([...snap.unknown_reasons], ['dashboard_summary']);
   assert.equal(findCondition(snap, 'ProjectionReliable')?.status, 'false');
   assert.equal(snap.dominant_condition_id, 'ProjectionReliable:projection_unreliable');
+});
+
+test('shared condition reasons expose canonical reason-code constants', () => {
+  assert.equal(CONNECTION_CONDITION_REASONS.PROJECTION_UNRELIABLE, 'projection_unreliable');
+  assert.equal(CONNECTION_CONDITION_REASONS.CREDENTIAL_REJECTED, 'credential_rejected');
+  assert.equal(CONNECTION_CONDITION_REASONS.REMOTE_SURFACE_FAILED, 'remote_surface_failed');
 });
 
 test('unknown: takes precedence even over open attention', () => {

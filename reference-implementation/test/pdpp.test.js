@@ -10,7 +10,7 @@ import { parsePendingConsentRequestUri } from '../server/auth.js';
 import { getDb } from '../server/db.js';
 import { ingestRecord } from '../server/records.js';
 import { runConnector, loadSyncState } from '../runtime/index.js';
-import { makeLegacyConnectorInstanceId } from '../server/stores/connector-instance-store.js';
+import { makeDefaultAccountConnectorInstanceId } from '../server/stores/connector-instance-store.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, '..');
@@ -4814,7 +4814,7 @@ test('PDPP reference implementation integration', async (t) => {
         streams: [{ name: 'top_artists' }],
       });
 
-      const grantConnectorInstanceId = makeLegacyConnectorInstanceId('u1', spotifyManifest.connector_id);
+      const grantConnectorInstanceId = makeDefaultAccountConnectorInstanceId('u1', spotifyManifest.connector_id);
       const insertGrantState = getDb().prepare(`
         INSERT INTO grant_connector_state(grant_id, connector_id, connector_instance_id, stream, state_json, updated_at)
         VALUES(?, ?, ?, ?, ?, ?)

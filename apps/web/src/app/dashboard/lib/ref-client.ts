@@ -335,6 +335,28 @@ export type RefOutboxAxis = "active" | "idle" | "stalled" | "unknown";
 
 export type RefRemoteSurfaceAxis = "failed" | "idle" | "leased" | "none" | "unknown" | "waiting";
 
+export interface RefConnectionConditionRemediation {
+  action: string;
+  label: string;
+  retryable: boolean;
+  target: string | null;
+}
+
+export interface RefConnectionHealthCondition {
+  id: string;
+  type: string;
+  status: "false" | "true" | "unknown";
+  severity: "blocked" | "error" | "info" | "warning";
+  reason: string;
+  message: string;
+  origin: string;
+  observed_at: string | null;
+  expires_at: string | null;
+  current?: boolean;
+  sensitivity: "owner" | "public" | "secret_redacted";
+  remediation: RefConnectionConditionRemediation | null;
+}
+
 export interface RefConnectionHealthSnapshot {
   axes: {
     attention: RefAttentionAxis;
@@ -347,6 +369,9 @@ export interface RefConnectionHealthSnapshot {
     stale: boolean;
     syncing: boolean;
   };
+  conditions?: readonly RefConnectionHealthCondition[];
+  dominant_condition_id?: string | null;
+  supporting_condition_ids?: readonly string[];
   last_success_at: string | null;
   /** Non-secret owner CTA, or null when no attention is required. */
   next_action: RefNextAction | null;

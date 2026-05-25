@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   formatCoverageAxis,
+  formatDominantCondition,
   formatFreshnessAxis,
   formatLastDurableProgress,
   formatOutboxAxis,
@@ -33,6 +34,8 @@ function snapshot(overrides: Partial<RefConnectionHealthSnapshot> = {}): RefConn
     next_action: null,
     badges: { stale: false, syncing: false },
     axes: { coverage: "complete", freshness: "fresh", attention: "none", outbox: "idle" },
+    conditions: [],
+    dominant_condition_id: null,
     ...overrides,
   };
 }
@@ -164,6 +167,38 @@ test("formatProjectionFreshness returns reliable when no unknown_reasons", () =>
   const out = formatProjectionFreshness(snapshot());
   assert.equal(out.unreliable, false);
   assert.equal(out.reasons.length, 0);
+});
+
+test("formatDominantCondition surfaces only false dominant evidence", () => {
+  const out = formatDominantCondition(
+    snapshot({
+      state: "blocked",
+      dominant_condition_id: "CredentialsValid:auth_expired",
+      conditions: [
+        {
+          id: "CredentialsValid:auth_expired",
+          type: "CredentialsValid",
+          status: "false",
+          severity: "blocked",
+          reason: "auth_expired",
+          message: "The source rejected the configured credentials.",
+          origin: "readiness",
+          observed_at: null,
+          expires_at: null,
+          sensitivity: "secret_redacted",
+          remediation: {
+            action: "refresh_credentials",
+            label: "Reconnect or update the source credentials",
+            retryable: false,
+            target: "credentials",
+          },
+        },
+      ],
+    })
+  );
+  assert.equal(out?.tone, "danger");
+  assert.equal(out?.label.includes("rejected"), true);
+  assert.equal(out?.title.includes("Reconnect"), true);
 });
 
 test("formatProjectionFreshness handles missing snapshot", () => {

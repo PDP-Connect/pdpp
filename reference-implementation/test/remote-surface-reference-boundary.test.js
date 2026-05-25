@@ -10,8 +10,8 @@ test('reference streaming routes adapt package session/protocol APIs while prese
   const sessionsShim = read('reference-implementation/server/streaming/sessions.js');
   const routes = read('reference-implementation/server/streaming/routes.js');
 
-  assert.match(sessionsShim, /from '@pdpp\/remote-surface\/server'/);
-  assert.match(routes, /from '@pdpp\/remote-surface\/protocol'/);
+  assert.match(sessionsShim, /from '@opendatalabs\/remote-surface\/server'/);
+  assert.match(routes, /from '@opendatalabs\/remote-surface\/protocol'/);
   assert.match(routes, /\/_ref\/runs\/:runId\/run-interaction-stream/);
   assert.match(routes, /\/_ref\/run-interaction-streams\/:token\/events/);
   assert.match(routes, /object: 'run_interaction_stream_session'/);
@@ -25,9 +25,9 @@ test('run-target registry and connector handoff remain reference-owned host orch
   const handoff = read('packages/polyfill-connectors/src/browser-handoff.ts');
   const registration = read('packages/polyfill-connectors/src/streaming-target-registration.ts');
 
-  assert.doesNotMatch(registry, /@pdpp\/remote-surface/);
-  assert.doesNotMatch(handoff, /@pdpp\/remote-surface/);
-  assert.doesNotMatch(registration, /@pdpp\/remote-surface/);
+  assert.doesNotMatch(registry, /@opendatalabs\/remote-surface/);
+  assert.doesNotMatch(handoff, /@opendatalabs\/remote-surface/);
+  assert.doesNotMatch(registration, /@opendatalabs\/remote-surface/);
   assert.match(registry, /streaming-target/);
   assert.match(handoff, /resolveStreamingRegistrationFromEnv/);
   assert.match(registration, /PDPP_STREAMING_REGISTRATION_TOKEN/);
@@ -38,7 +38,7 @@ test('dynamic n.eko allocation seams use package leases while Docker lifecycle s
   const remoteSurfacePackage = read('packages/remote-surface/README.md');
   const compose = read('docker-compose.neko.yml');
 
-  assert.match(leaseStore, /from "@pdpp\/remote-surface\/leases"/);
+  assert.match(leaseStore, /from "@opendatalabs\/remote-surface\/leases"/);
   assert.match(remoteSurfacePackage, /Docker\/Compose\/sidecar allocation/);
   assert.match(compose, /neko:/);
   assert.doesNotMatch(remoteSurfacePackage, /docker\.sock/);

@@ -223,6 +223,18 @@ async function runConformance({ makeStore, seedConnector }) {
   assert.equal(created.connectorInstanceId, makeDefaultAccountConnectorInstanceId('owner_3', 'reddit'));
   assert.equal(created.createdDefaultAccount, true);
   assert.equal(created.selector, 'connector_id');
+  const defaultHint = await resolveOwnerConnectorInstanceNamespace({
+    ownerSubjectId: 'owner_4',
+    connectorId: 'reddit',
+    connectorInstanceId: 'reddit',
+    displayName: 'Reddit',
+    connectorInstanceStore: store,
+    allowDefaultAccount: true,
+    now: NOW,
+  });
+  assert.equal(defaultHint.connectorInstanceId, makeDefaultAccountConnectorInstanceId('owner_4', 'reddit'));
+  assert.equal(defaultHint.createdDefaultAccount, true);
+  assert.equal(defaultHint.selector, 'connector_id');
   await assert.rejects(
     () => resolveOwnerConnectorInstanceNamespace({
       ownerSubjectId: 'owner_3',

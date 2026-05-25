@@ -816,7 +816,7 @@ function isDegradingKnownGap(gap: unknown): boolean {
  * one whose severity is `actionable` (owner-fixable, no automated retry)
  * or unclassified. `transient` gaps are runtime-retried so they roll up
  * under `retryable_gap` instead. `informational` and `recoverable`
- * gaps don't degrade health per `connector-health.ts::isDegradingKnownGap`
+ * gaps don't degrade health per the connection-health coverage policy
  * and are ignored here.
  */
 function hasTerminalKnownGap(run: ConnectorRunSummary | null): boolean {
@@ -1047,7 +1047,7 @@ function buildCoverageEvidence(
 /**
  * `transient` severity is the runtime's signal that the gap is
  * actively being re-tried without owner intervention. Per
- * `connector-health.ts::isDegradingKnownGap`, `recoverable` means the
+ * the connection-health coverage policy, `recoverable` means the
  * gap has already been recovered (non-degrading) and `informational`
  * means the gap is out of scope by design (non-degrading); neither
  * counts as a retryable gap for the coverage axis rollup.

@@ -274,7 +274,7 @@ test(
         next_due_at: null,
         scheduler_backoff: {
           backoff_applied: false,
-          // `BLOCKED_PROMOTION_THRESHOLD` from `connector-health.ts` is 7;
+          // `BLOCKED_PROMOTION_THRESHOLD` from `connection-health-policy.ts` is 7;
           // anything at or above the threshold must promote the connection
           // to `blocked` after restart.
           consecutive_failures: 9,

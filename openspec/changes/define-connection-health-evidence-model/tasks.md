@@ -1,7 +1,7 @@
 ## 1. Contract And Prior Art
 
 - [x] 1.1 Finalize common condition types, reason-code naming, severity values, and remediation shape.
-- [ ] 1.2 Add a compact reason-code registry or typed constants for shared reasons.
+- [x] 1.2 Add a compact reason-code registry or typed constants for shared reasons.
 - [x] 1.3 Confirm owner-only diagnostic boundaries for dashboard and reference API.
 
 ## 2. Evidence Normalization
@@ -19,18 +19,18 @@
 ## 4. Shared Projection Consumers
 
 - [x] 4.1 Update the reference connectors API to return the shared projection and condition summary.
-- [ ] 4.2 Update the CLI connector views to consume the shared projection.
+- [x] 4.2 Update the CLI connector views to consume the shared projection.
 - [x] 4.3 Update the dashboard records/connections view to consume the shared projection and render remediation without ad hoc health inference.
 
 ## 5. Migration And Cleanup
 
 - [x] 5.1 Backfill or lazily derive conditions for existing connections without destructive migration.
-- [ ] 5.2 Remove legacy ad hoc health derivation paths after parity tests pass.
-- [ ] 5.3 Grep old health-state names and verify remaining occurrences are compatibility-only or intentional.
+- [x] 5.2 Remove legacy ad hoc health derivation paths after parity tests pass.
+- [x] 5.3 Grep old health-state names and verify remaining occurrences are compatibility-only or intentional.
 
 ## 6. Acceptance Checks
 
 - [x] 6.1 Add regression tests for invalid credentials, successful rerun clearing stale scheduler backoff, manual attention, partial coverage, local exporter backlog, and projection unreliability.
-- [ ] 6.2 Verify dashboard and CLI agree on dominant state and reason for representative fixtures.
+- [x] 6.2 Verify dashboard and CLI agree on dominant state and reason for representative fixtures.
 - [x] 6.3 Run `openspec validate define-connection-health-evidence-model --strict`.
 - [x] 6.4 Run relevant reference server and dashboard tests before reporting implementation complete.

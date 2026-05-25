@@ -81,6 +81,7 @@ test('as.authorization_server.metadata advertises pre_registered_public when DCR
   assert.deepEqual(input.grantTypesSupported, [
     'urn:ietf:params:oauth:grant-type:device_code',
     'authorization_code',
+    'refresh_token',
   ]);
   assert.equal(input.authorizationEndpoint, 'https://example.test/oauth/authorize');
   assert.deepEqual(input.responseTypesSupported, ['code']);

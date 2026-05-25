@@ -28,7 +28,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { createAttention } from '../runtime/attention.ts';
-import { BLOCKED_PROMOTION_THRESHOLD } from '../runtime/connector-health.ts';
+import { BLOCKED_PROMOTION_THRESHOLD } from '../runtime/connection-health-policy.ts';
 import { projectConnectorSummaryConnectionHealth } from '../server/ref-control.ts';
 
 const NOW = '2026-05-19T12:00:00.000Z';

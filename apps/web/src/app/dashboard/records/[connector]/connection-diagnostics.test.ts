@@ -32,6 +32,11 @@ const PROJECTION_MISSING_TESTID = /data-testid="diagnostics-projection-missing"/
 const PROJECTION_UNAVAILABLE_COPY = /Projection evidence unavailable/;
 const PROJECTION_FRESHNESS_HELPER = /formatProjectionFreshness/;
 const PROJECTION_UNRELIABLE_TESTID = /data-testid="diagnostics-projection-unreliable"/;
+const DOMINANT_CONDITION_HELPER = /formatDominantCondition/;
+const DOMINANT_CONDITION_TESTID = /data-testid="diagnostics-dominant-condition"/;
+const CONDITIONS_TESTID = /data-testid="diagnostics-conditions"/;
+const CONDITIONS_USE_SUPPORTING_IDS = /supporting_condition_ids/;
+const CONDITIONS_BY_ID = /conditionById/;
 const SCHEDULE_ERROR_TESTID = /data-testid="diagnostics-schedule-error"/;
 const SCHEDULE_UNAVAILABLE_COPY = /Schedule unavailable/;
 const SOURCES_ERROR_TESTID = /data-testid="diagnostics-sources-error"/;
@@ -70,6 +75,15 @@ test("connection-diagnostics surfaces unknown_reasons via formatProjectionFreshn
   const src = await readFile(DIAG_FILE, "utf8");
   assert.match(src, PROJECTION_FRESHNESS_HELPER);
   assert.match(src, PROJECTION_UNRELIABLE_TESTID);
+});
+
+test("connection-diagnostics surfaces typed conditions from the shared projection", async () => {
+  const src = await readFile(DIAG_FILE, "utf8");
+  assert.match(src, DOMINANT_CONDITION_HELPER);
+  assert.match(src, DOMINANT_CONDITION_TESTID);
+  assert.match(src, CONDITIONS_TESTID);
+  assert.match(src, CONDITIONS_USE_SUPPORTING_IDS);
+  assert.match(src, CONDITIONS_BY_ID);
 });
 
 test("connection-diagnostics has explicit error branches for schedule and source-instance fetches", async () => {
