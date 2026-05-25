@@ -655,6 +655,34 @@ function parsePageOrder(rawOrder) {
   throw invalidQueryError('order must be asc or desc');
 }
 
+/**
+ * Resolve the effective list order from the canonical `sort` parameter
+ * and the legacy `order` parameter.
+ *
+ * Canonical `sort` wins: `sort=-emitted_at` is DESC, `sort=emitted_at` is
+ * ASC. Legacy `order` is honored only when `sort` is absent. If both are
+ * sent and disagree, we reject with `invalid_sort` rather than silently
+ * picking one — this is the strict-validation discipline the contract
+ * requires for sort behavior.
+ */
+function resolveListOrder(rawOrder, resolvedSort) {
+  if (resolvedSort) {
+    if (rawOrder != null && rawOrder !== '') {
+      const legacyOrder = parsePageOrder(rawOrder);
+      if (legacyOrder !== resolvedSort.direction) {
+        const err = invalidQueryError(
+          `sort and order disagree: sort resolves to ${resolvedSort.direction}, order=${rawOrder}. Send only canonical \`sort\`.`,
+          'invalid_sort',
+        );
+        err.param = 'sort';
+        throw err;
+      }
+    }
+    return resolvedSort.direction;
+  }
+  return parsePageOrder(rawOrder);
+}
+
 function normalizePaginationCursor(cursor, order) {
   if (!cursor) return null;
   if (cursor.session !== 'records') {
@@ -679,7 +707,7 @@ function validateTopLevelQueryParams(requestParams, manifestStream = null) {
   }
   validateConnectionAlias(requestParams);
   validateCountKind(requestParams.count);
-  validateCanonicalSort(requestParams.sort, manifestStream);
+  return validateCanonicalSort(requestParams.sort, manifestStream);
 }
 
 /**
@@ -699,10 +727,22 @@ function validateCountKind(value) {
 
 /**
  * Validate the canonical `sort` parameter against the manifest stream's
- * declared cursor field. The wire vocabulary is sign-prefix CSV
- * (`sort=-emitted_at,name`); this runtime only supports ordering by the
- * stream's declared cursor field today, so any other field is rejected
- * with a typed `invalid_sort` error.
+ * declared cursor field, and return the resolved direction the runtime
+ * will apply.
+ *
+ * The wire vocabulary is sign-prefix CSV (`sort=-emitted_at`). Today the
+ * reference runtime supports ordering by the stream's declared cursor
+ * field only, so any other field is rejected with a typed `invalid_sort`
+ * error. The sign prefix MUST control direction: `sort=field` is asc,
+ * `sort=-field` is desc — silently ignoring the sign would amount to
+ * accepting `sort` as a no-op, which the canonical contract forbids.
+ *
+ * Returns `null` when no `sort` is supplied, or
+ *   `{ field: <cursor_field>, direction: 'ASC' | 'DESC' }`
+ * when a single-field sort matches the advertised cursor field. Multi-key
+ * sort (`sort=-emitted_at,name`) is not yet implemented; if a caller
+ * supplies more than one entry that all happen to be the same advertised
+ * field, we still resolve to its direction. Anything else is rejected.
  *
  * Conformance: every advertised sort field MUST be enforced by the
  * runtime. The reference runtime advertises only the cursor field as
@@ -713,15 +753,16 @@ function validateCountKind(value) {
  *       (#"Sort").
  */
 function validateCanonicalSort(value, manifestStream) {
-  if (value == null || value === '') return;
+  if (value == null || value === '') return null;
   const raw = Array.isArray(value) ? value.join(',') : String(value);
   const entries = raw.split(',').map((part) => part.trim()).filter(Boolean);
-  if (entries.length === 0) return;
+  if (entries.length === 0) return null;
   const cursorField = manifestStream?.cursor_field || null;
   const sortableFields = cursorField ? new Set([cursorField]) : new Set();
+  let resolved = null;
   for (const entry of entries) {
-    const direction = entry.startsWith('-') ? 'desc' : 'asc';
-    const field = direction === 'desc' ? entry.slice(1) : entry;
+    const direction = entry.startsWith('-') ? 'DESC' : 'ASC';
+    const field = direction === 'DESC' ? entry.slice(1) : entry;
     if (!field) {
       const err = invalidQueryError(`Empty sort field`, 'invalid_sort');
       err.param = 'sort';
@@ -735,7 +776,17 @@ function validateCanonicalSort(value, manifestStream) {
       err.param = 'sort';
       throw err;
     }
+    if (resolved && resolved.direction !== direction) {
+      const err = invalidQueryError(
+        `Conflicting sort directions for field '${field}'`,
+        'invalid_sort',
+      );
+      err.param = 'sort';
+      throw err;
+    }
+    resolved = { field, direction };
   }
+  return resolved;
 }
 
 function validateTopLevelAggregateParams(requestParams) {
@@ -1801,9 +1852,8 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
   const mStream = manifest?.streams?.find(s => s.name === stream);
   const consentTimeField = mStream?.consent_time_field;
   const requiredFields = mStream?.schema?.required || [];
-  const order = parsePageOrder(requestParams.order);
-
-  validateTopLevelQueryParams(requestParams, mStream);
+  const resolvedSort = validateTopLevelQueryParams(requestParams, mStream);
+  const order = resolveListOrder(requestParams.order, resolvedSort);
   const { warnings: requestWarnings } = resolveRequestConnectionId(requestParams);
 
   // Resolve the canonical record identity once for this request. When the
@@ -2053,22 +2103,22 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
  *
  * Behavior:
  *   - `count` absent or `none`: return `null` (callers omit `meta.count`).
- *   - `count=exact`: returns `{ count: { kind: 'exact', value } }`.
- *   - `count=estimated`: downgrades to `exact` and emits a
- *     `count_downgraded` warning per the spec's honest-downgrade rule.
+ *   - `count=exact`:     returns `{ count: { kind: 'exact', value } }`.
+ *   - `count=estimated`: returns `{ count: { kind: 'exact', value } }`
+ *     (silent upgrade). `count_downgraded` is reserved for the strict
+ *     case where the server returned a *lower* grade than requested
+ *     (e.g. `count=exact` -> delivered `estimated`/`none`). Returning a
+ *     higher-fidelity value than asked for is not a downgrade, so the
+ *     reference does not invent a warning for it.
  *
  * Spec: openspec/changes/canonicalize-public-read-contract design.md
- *       (#"Counts").
+ *       (#"Counts") and specs/reference-implementation-architecture/
+ *       spec.md (#"Requested count is downgraded").
  */
 function computeGradedRecordCount({ requestParams, connectorInstanceId, stream, effective, compiledFilters, consentTimeField }) {
   const requested = typeof requestParams.count === 'string' ? requestParams.count : null;
   if (!requested || requested === 'none') return null;
 
-  // Note: the SQLite reference computes an exact count cheaply via the same
-  // visible-row iteration the aggregate path uses. `estimated` is not yet
-  // backed by a planner; we honor the request by upgrading to exact and
-  // emitting `count_downgraded` so the client knows the response carries an
-  // exact value instead of the cheaper estimate they asked for.
   const exactValue = countVisibleRecordsForStream({
     connectorInstanceId,
     stream,
@@ -2077,19 +2127,8 @@ function computeGradedRecordCount({ requestParams, connectorInstanceId, stream, 
     consentTimeField,
   });
 
-  if (requested === 'exact') {
+  if (requested === 'exact' || requested === 'estimated') {
     return { count: { kind: 'exact', value: exactValue } };
-  }
-
-  if (requested === 'estimated') {
-    return {
-      count: { kind: 'exact', value: exactValue },
-      warning: {
-        code: 'count_downgraded',
-        message: 'count=estimated was upgraded to exact; reference runtime has no planner-style estimator.',
-        detail: { requested_kind: 'estimated', delivered_kind: 'exact' },
-      },
-    };
   }
 
   return null;

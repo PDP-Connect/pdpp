@@ -69,25 +69,31 @@ function target() {
   };
 }
 
-function recordPayload(id, subject) {
+function recordPayload(id, subject, receivedAt) {
   return {
     stream: STREAM,
     key: id,
     data: {
       id,
       subject,
-      received_at: '2026-05-18T12:00:00.000Z',
+      received_at: receivedAt,
     },
-    emitted_at: '2026-05-18T12:00:00.000Z',
+    emitted_at: receivedAt,
   };
 }
+
+// Distinct received_at values let sort-direction tests observe the result
+// order. Other tests in this file ignore ordering and only assert membership /
+// counts / metadata, so the values are safe to differentiate.
+const REC_1_RECEIVED_AT = '2026-05-18T12:00:00.000Z';
+const REC_2_RECEIVED_AT = '2026-05-19T12:00:00.000Z';
 
 async function withDb(testFn) {
   initDb();
   try {
     await registerConnector(manifest);
-    await ingestRecord(target(), recordPayload('rec-1', 'first'));
-    await ingestRecord(target(), recordPayload('rec-2', 'second'));
+    await ingestRecord(target(), recordPayload('rec-1', 'first', REC_1_RECEIVED_AT));
+    await ingestRecord(target(), recordPayload('rec-2', 'second', REC_2_RECEIVED_AT));
     await testFn();
   } finally {
     closeDb();
@@ -344,16 +350,19 @@ test('records list emits meta.count.kind=exact with the visible-row count when c
   });
 });
 
-test('records list emits count_downgraded warning when count=estimated is requested', async () => {
+test('records list returns exact for count=estimated without a downgrade warning', async () => {
+  // exact is a higher grade than estimated; returning exact for an
+  // estimated request is an upgrade, not a downgrade. The canonical rule
+  // is that `count_downgraded` is emitted only when the server returns a
+  // *lower* grade than requested (e.g. exact → estimated / none). The
+  // reference runtime always computes exact cheaply on the SQLite path, so
+  // the wire payload has `meta.count.kind = exact` and NO warning.
   await withDb(async () => {
     const response = await queryRecords(target(), STREAM, grant, { count: 'estimated' }, manifest);
     assert.ok(response.meta);
     assert.equal(response.meta.count.kind, 'exact');
     assert.equal(response.meta.count.value, 2);
-    const downgraded = response.meta.warnings.find((w) => w.code === 'count_downgraded');
-    assert.ok(downgraded, 'expected count_downgraded warning');
-    assert.equal(downgraded.detail.requested_kind, 'estimated');
-    assert.equal(downgraded.detail.delivered_kind, 'exact');
+    assert.equal(response.meta.warnings, undefined, 'no warnings expected: upgrade is not a downgrade');
   });
 });
 
@@ -390,6 +399,41 @@ test('records list rejects an empty sort entry', async () => {
     await assert.rejects(
       queryRecords(target(), STREAM, grant, { sort: '-' }, manifest),
       (err) => err.code === 'invalid_sort' && err.param === 'sort',
+    );
+  });
+});
+
+// Sort direction MUST control output order. The canonical sign prefix is
+// not a no-op: `sort=-received_at` is DESC; `sort=received_at` is ASC.
+// These tests fail if the runtime silently ignores the sign and falls
+// back to legacy `order` defaults.
+test('records list sort=-received_at returns records in DESC order', async () => {
+  await withDb(async () => {
+    const response = await queryRecords(target(), STREAM, grant, { sort: '-received_at' }, manifest);
+    assert.equal(response.data.length, 2);
+    assert.equal(response.data[0].id, 'rec-2');
+    assert.equal(response.data[0].data.received_at, REC_2_RECEIVED_AT);
+    assert.equal(response.data[1].id, 'rec-1');
+    assert.equal(response.data[1].data.received_at, REC_1_RECEIVED_AT);
+  });
+});
+
+test('records list sort=received_at returns records in ASC order', async () => {
+  await withDb(async () => {
+    const response = await queryRecords(target(), STREAM, grant, { sort: 'received_at' }, manifest);
+    assert.equal(response.data.length, 2);
+    assert.equal(response.data[0].id, 'rec-1');
+    assert.equal(response.data[0].data.received_at, REC_1_RECEIVED_AT);
+    assert.equal(response.data[1].id, 'rec-2');
+    assert.equal(response.data[1].data.received_at, REC_2_RECEIVED_AT);
+  });
+});
+
+test('records list rejects when sort and order disagree', async () => {
+  await withDb(async () => {
+    await assert.rejects(
+      queryRecords(target(), STREAM, grant, { sort: '-received_at', order: 'asc' }, manifest),
+      (err) => err.code === 'invalid_sort' && /disagree/.test(err.message),
     );
   });
 });
