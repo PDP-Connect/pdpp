@@ -115,6 +115,15 @@ export interface SearchHybridSourceResult {
   stream: string;
   record_key: string;
   connector_id: string;
+  /**
+   * Canonical connection identifier carried verbatim from the underlying
+   * lexical / semantic source. `connector_instance_id` mirrors the same
+   * value during the deprecation window. Either or both MAY be absent on
+   * pre-identity sources; merged hybrid hits forward whichever the first
+   * source supplied for a given (connector_id, stream, record_key) tuple.
+   */
+  connection_id?: string;
+  connector_instance_id?: string;
   record_url: string;
   emitted_at: string | null;
   matched_fields: string[];
@@ -196,6 +205,14 @@ export interface SearchHybridResultItem {
   stream: string;
   record_key: string;
   connector_id: string;
+  /**
+   * Canonical connection identifier forwarded from whichever source emitted
+   * the first hit for this (connector_id, stream, record_key) tuple.
+   * `connector_instance_id` mirrors the same value during the deprecation
+   * window. Both fields are omitted when no source provided them.
+   */
+  connection_id?: string;
+  connector_instance_id?: string;
   record_url: string;
   emitted_at: string | null;
   matched_fields: string[];
@@ -410,10 +427,21 @@ interface MergeEntry {
     record_url: string;
     emitted_at: string | null;
   };
+  connectionId: string | null;
   matchedFields: string[];
   sources: Set<"lexical" | "semantic">;
   scores: Record<string, { kind: string; value: number; order: string }>;
   snippet: { field: string; text: string } | null;
+}
+
+function pickHitConnectionId(hit: SearchHybridSourceResult): string | null {
+  if (typeof hit.connection_id === "string" && hit.connection_id.length > 0) {
+    return hit.connection_id;
+  }
+  if (typeof hit.connector_instance_id === "string" && hit.connector_instance_id.length > 0) {
+    return hit.connector_instance_id;
+  }
+  return null;
 }
 
 function addHit(
@@ -435,6 +463,9 @@ function addHit(
     // highlighted; semantic snippets are verbatim excerpts. Either is
     // informative; we do not invent a combined one.
     if (!existing.snippet && hit.snippet) existing.snippet = hit.snippet;
+    if (!existing.connectionId) {
+      existing.connectionId = pickHitConnectionId(hit);
+    }
     return;
   }
   merged.set(key, {
@@ -446,6 +477,7 @@ function addHit(
       record_url: hit.record_url,
       emitted_at: hit.emitted_at,
     },
+    connectionId: pickHitConnectionId(hit),
     matchedFields: Array.isArray(hit.matched_fields)
       ? hit.matched_fields.slice()
       : [],
@@ -467,6 +499,10 @@ function shapeResult(entry: MergeEntry): SearchHybridResultItem {
     retrieval_mode: "hybrid",
     retrieval_sources: sources,
   };
+  if (entry.connectionId) {
+    result.connection_id = entry.connectionId;
+    result.connector_instance_id = entry.connectionId;
+  }
   if (Object.keys(entry.scores).length > 0) result.scores = entry.scores;
   if (entry.snippet) result.snippet = entry.snippet;
   return result;

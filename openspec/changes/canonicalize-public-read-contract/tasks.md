@@ -15,9 +15,9 @@
 
 ## 3. Public RS Runtime
 
-- [ ] 3.1 Thread `connection_id` and `display_name` onto every record-bearing records/search/blob response item.
-- [ ] 3.2 Make search hits carry `(connection_id, stream, record_id)` without dashboard-side inference.
-- [ ] 3.3 Implement optional `connection_id` filtering and deprecated `connector_instance_id` alias conflict validation on public read routes.
+- [ ] 3.1 Thread `connection_id` and `display_name` onto every record-bearing records/search/blob response item. (Partial: search hits now carry `connection_id` + deprecated `connector_instance_id` alias whenever the snapshot captured one — see `reference-implementation/test/search-connection-identity.test.js`. Records-list, records-detail, and blob-read item decoration still deferred to the broader storage fan-in tranche; `display_name` deferred until the connector-instance-store lookup helper lands.)
+- [x] 3.2 Make search hits carry `(connection_id, stream, record_id)` without dashboard-side inference. Lexical / semantic / hybrid result items now emit `connection_id` and the deprecated `connector_instance_id` alias when the snapshot recorded the binding. Pre-identity snapshots are tolerated (fields omitted, not faked).
+- [x] 3.3 Implement optional `connection_id` filtering and deprecated `connector_instance_id` alias conflict validation on public read routes. Canonical helper `validateConnectionAlias` is shared by `reference-implementation/server/records.js` (records list + detail + aggregate via `validateTopLevelQueryParams`) and the three search operations (`rs-search-lexical`, `rs-search-semantic`, `rs-search-hybrid`). Conflict tests live in `public-read-connection-alias.test.js`. (Filtering itself — narrowing storage to one `connection_id` when supplied — still requires the storage fan-in tranche to land. Today the alias is accepted, deprecated-equality is enforced, but the filter does not yet narrow storage on the records path.)
 - [ ] 3.4 Normalize public read responses into the canonical envelope, preserving backward-compatible fields only where the contract allows.
 - [ ] 3.5 Implement strict validation for unsupported parameters, fields, filter operators, sort fields, and expansion targets.
 - [ ] 3.6 Implement structured `meta.warnings` for skipped-not-applicable sources, deprecated alias use, count downgrades, and partial/lossy outcomes.
@@ -26,7 +26,7 @@
 
 ## 4. Capability Document
 
-- [ ] 4.1 Update `GET /v1/schema` to be the canonical capability document for streams, fields, operators, sortability, expansion, projection, search modes, pagination, counts, and granted connection identities.
+- [ ] 4.1 Update `GET /v1/schema` to be the canonical capability document for streams, fields, operators, sortability, expansion, projection, search modes, pagination, counts, and granted connection identities. **Deferred (granted_connections only):** the operation layer already accepts arbitrary per-stream `[extra]` fields, but the host-side `buildConnectorSchemaItem` only knows about a single `storageBinding`. Listing all bindings under a grant per stream requires a new `listGrantedConnections(grant, streamName)` helper on the connector-instance-store and a matching reference-contract schema for `granted_connections: [{ connection_id, display_name }]`. None of those exist today; safe to add once the storage fan-in tranche lands.
 - [ ] 4.2 Add conformance checks proving every advertised field/operator/sort/expand capability is either enforced or rejected clearly.
 - [ ] 4.3 Add search-mode pagination and count-support metadata.
 

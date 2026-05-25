@@ -181,6 +181,13 @@ export interface SearchSemanticConnectorPlan {
  */
 export interface SearchSemanticSnapshotResult {
   connectorId: string;
+  /**
+   * Connection identifier (canonical) for the binding this hit came from.
+   * Optional only because pre-identity snapshots may omit it; new snapshots
+   * SHOULD always set it so the operation can emit `connection_id` and the
+   * deprecated `connector_instance_id` alias on each result item.
+   */
+  connectorInstanceId?: string | null;
   stream: string;
   recordKey: string;
   matchedFields: string[];
@@ -336,6 +343,13 @@ export interface SearchSemanticResultItem {
   stream: string;
   record_key: string;
   connector_id: string;
+  /**
+   * Canonical connection identifier — present whenever the snapshot result
+   * captured one. `connector_instance_id` mirrors the same value during the
+   * deprecation window so clients can migrate without coordinated cutovers.
+   */
+  connection_id?: string;
+  connector_instance_id?: string;
   record_url: string;
   emitted_at: string | null;
   matched_fields: string[];
@@ -600,6 +614,10 @@ async function buildResultItem(
     matched_fields: hit.matchedFields,
     retrieval_mode: "semantic",
   };
+  if (typeof hit.connectorInstanceId === "string" && hit.connectorInstanceId.length > 0) {
+    item.connection_id = hit.connectorInstanceId;
+    item.connector_instance_id = hit.connectorInstanceId;
+  }
   if (hydrated.snippet) {
     item.snippet = hydrated.snippet;
   }

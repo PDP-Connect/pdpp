@@ -155,6 +155,13 @@ export interface SearchLexicalConnectorPlan {
  */
 export interface SearchLexicalSnapshotResult {
   connectorId: string;
+  /**
+   * Connection identifier (canonical) for the binding this hit came from.
+   * Optional only because pre-identity snapshots may omit it; new snapshots
+   * SHOULD always set it so the operation can emit `connection_id` and the
+   * deprecated `connector_instance_id` alias on each result item.
+   */
+  connectorInstanceId?: string | null;
   stream: string;
   recordKey: string;
   emittedAt: string;
@@ -278,6 +285,13 @@ export interface SearchLexicalResultItem {
   stream: string;
   record_key: string;
   connector_id: string;
+  /**
+   * Canonical connection identifier — present whenever the snapshot result
+   * captured one. `connector_instance_id` mirrors the same value during the
+   * deprecation window so clients can migrate without coordinated cutovers.
+   */
+  connection_id?: string;
+  connector_instance_id?: string;
   record_url: string;
   emitted_at: string;
   matched_fields: string[];
@@ -493,6 +507,10 @@ function buildResultItem(
     emitted_at: hit.emittedAt,
     matched_fields: hit.matchedFields,
   };
+  if (typeof hit.connectorInstanceId === "string" && hit.connectorInstanceId.length > 0) {
+    item.connection_id = hit.connectorInstanceId;
+    item.connector_instance_id = hit.connectorInstanceId;
+  }
   if (hit.snippet) {
     item.snippet = hit.snippet;
   }
