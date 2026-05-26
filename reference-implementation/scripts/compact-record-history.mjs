@@ -5,18 +5,36 @@
  *
  * Owner/operator-only operational tool that compacts provably-redundant
  * adjacent historical `record_changes` rows under a per-stream
- * fingerprint policy that mirrors the connector's own no-op-emit
- * definition.
+ * fingerprint policy that either mirrors the connector's own
+ * no-op-emit definition or treats the canonical stable-JSON of
+ * `record_json` itself as the fingerprint.
  *
- * Scope is deny-by-default. Only the five `(connector_id, stream)` pairs
- * whose connectors ship a semantic fingerprint cursor (a08d7a0a,
- * 47ec8edd, 228305a6) are eligible:
+ * Scope is deny-by-default. Two policy families are eligible:
  *
- *   - gmail / threads
- *   - slack / workspace   (fingerprint excludes `fetched_at`)
- *   - slack / users
- *   - slack / files
- *   - ynab  / payee_locations
+ *   1. "Connector fingerprint mirror" — five streams whose connectors
+ *      ship a semantic fingerprint cursor (a08d7a0a, 47ec8edd, 228305a6).
+ *      The script's `excludeKeys` mirrors the connector's:
+ *        - gmail / threads
+ *        - slack / workspace   (fingerprint excludes `fetched_at`)
+ *        - slack / users
+ *        - slack / files
+ *        - ynab  / payee_locations
+ *
+ *   2. "Exact stable-JSON identity" — local-device connectors
+ *      (codex, claude_code) whose record bodies are derived from
+ *      on-disk JSONL / sqlite without volatile fields in the record
+ *      payload itself (no `fetched_at` in `record_json`, timestamps
+ *      come from the underlying source event, mtimes are gated at the
+ *      file walker layer rather than included in the record).
+ *      Adjacent versions with byte-identical canonical JSON are
+ *      provably redundant under the connector's own emit semantics —
+ *      a re-emitted row that matches a prior row is, by construction,
+ *      either an idempotent re-write of the same source event or an
+ *      mtime-gate miss. Compacting it removes nothing the connector
+ *      would consider a meaningful version transition.
+ *        - codex      / messages, function_calls, sessions, skills, prompts, rules
+ *        - claude_code / messages, attachments, sessions, skills,
+ *                        memory_notes, slash_commands
  *
  * Authorization is by direct database access — possession of
  * `PDPP_DATABASE_URL` (or `PDPP_TEST_POSTGRES_URL`). There is no HTTP
@@ -113,7 +131,82 @@ export const COMPACTION_POLICIES = [
     connectorSource:
       'packages/polyfill-connectors/connectors/ynab/index.ts:payeeLocationFingerprint (hand-rolled — still uses local stableStringify; matches the canonical fingerprint shape for excludeKeys=[])',
   },
+
+  // ─── Exact stable-JSON identity family ────────────────────────────────
+  //
+  // Codex and Claude Code emit records from local on-disk source events
+  // (JSONL rollouts, sqlite threads, markdown files). Record payloads do
+  // not contain a `fetched_at` timestamp; volatile state (file mtimes,
+  // run timestamps) is kept in STATE cursors, not in the record body.
+  // Adjacent versions whose `record_json` is byte-identical under the
+  // canonical stable-stringify therefore represent re-emits of the same
+  // source event — never a real source transition the user would
+  // consider "the record changed."
+  //
+  // Per-stream notes:
+  //
+  //   codex/messages, codex/function_calls
+  //     Record fields are pulled from rollout JSONL response_items;
+  //     `timestamp` is the original event timestamp from the file
+  //     (immutable), `id` is `${session_id}:${line_count}` (stable
+  //     across re-parses of the same line). Re-emits happen only when
+  //     `mtime` changes; identical adjacent versions mean the same
+  //     line was re-emitted with the same parse output.
+  //   codex/sessions
+  //     Has a connector-side fingerprint cursor (af1700ad) that should
+  //     stop *new* churn. Historical inflation predates the cursor.
+  //     Stable-JSON identity is a strict superset of "no real change":
+  //     when adjacent versions have identical JSON, no field moved.
+  //   codex/skills, codex/prompts, codex/rules
+  //     Records carry `mtime_epoch` (seconds, floor(mtimeMs/1000)).
+  //     Every full-scan emit re-stamps the file unless content changes.
+  //     Adjacent identical JSON = mtime unchanged AND content unchanged.
+  //   claude_code/messages, claude_code/attachments
+  //     Like Codex, fields come from JSONL line events; `timestamp` is
+  //     from the source line (or, for `tool_result_file` attachments,
+  //     from the file mtime — but those re-emit only on mtime change,
+  //     so adjacent identical JSON still means no real change).
+  //   claude_code/sessions
+  //     Aggregated per-session record. `last_event_at` widens to the
+  //     observed max; `message_count` is a running tally. Adjacent
+  //     identical JSON means the aggregate didn't move.
+  //   claude_code/memory_notes, claude_code/skills, claude_code/slash_commands
+  //     Local markdown/JSON files with `mtime_epoch` (seconds) in the
+  //     payload. Adjacent identical JSON = file content didn't change.
+  //
+  // `connector_id` values in the live database for these connectors
+  // are `local-device:codex` and `local-device:claude_code`. The
+  // short forms (`codex`, `claude_code`) are also accepted so the
+  // operator does not need to translate.
+  ...buildLocalDeviceExactJsonPolicies('codex', [
+    'messages',
+    'function_calls',
+    'sessions',
+    'skills',
+    'prompts',
+    'rules',
+  ]),
+  ...buildLocalDeviceExactJsonPolicies('claude_code', [
+    'messages',
+    'attachments',
+    'sessions',
+    'skills',
+    'memory_notes',
+    'slash_commands',
+  ]),
 ];
+
+function buildLocalDeviceExactJsonPolicies(connector, streams) {
+  return streams.map((stream) => ({
+    connectorIds: [connector, `local-device:${connector}`],
+    stream,
+    excludeKeys: [],
+    connectorSource:
+      `packages/polyfill-connectors/connectors/${connector}/ — exact stable-JSON identity ` +
+      `(no fetched_at in record_json; record payload derived from immutable source events ` +
+      `and/or mtime-gated file emits)`,
+  }));
+}
 
 export function findPolicy(connectorId, stream) {
   return (

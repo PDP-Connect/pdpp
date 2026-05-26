@@ -61,13 +61,28 @@ test('recordFingerprint changes when a non-excluded field changes', () => {
   assert.notEqual(recordFingerprint(a), recordFingerprint(b));
 });
 
-test('COMPACTION_POLICIES exposes only the five registered policies (short-name canonical form)', () => {
+test('COMPACTION_POLICIES exposes the registered policies (short-name canonical form)', () => {
   const expected = [
+    // connector-fingerprint family
     ['gmail', 'threads'],
     ['slack', 'workspace'],
     ['slack', 'users'],
     ['slack', 'files'],
     ['ynab', 'payee_locations'],
+    // exact stable-JSON identity family (codex)
+    ['codex', 'messages'],
+    ['codex', 'function_calls'],
+    ['codex', 'sessions'],
+    ['codex', 'skills'],
+    ['codex', 'prompts'],
+    ['codex', 'rules'],
+    // exact stable-JSON identity family (claude_code)
+    ['claude_code', 'messages'],
+    ['claude_code', 'attachments'],
+    ['claude_code', 'sessions'],
+    ['claude_code', 'skills'],
+    ['claude_code', 'memory_notes'],
+    ['claude_code', 'slash_commands'],
   ];
   const actual = COMPACTION_POLICIES.map((p) => [p.connectorIds[0], p.stream]);
   assert.deepEqual(actual, expected);
@@ -76,7 +91,28 @@ test('COMPACTION_POLICIES exposes only the five registered policies (short-name 
 test('findPolicy returns null for unknown streams', () => {
   assert.equal(findPolicy('slack', 'messages'), null);
   assert.equal(findPolicy('gmail', 'messages'), null);
-  assert.equal(findPolicy('codex', 'sessions'), null);
+  assert.equal(findPolicy('codex', 'unknown_stream'), null);
+  assert.equal(findPolicy('claude_code', 'unknown_stream'), null);
+  assert.equal(findPolicy('chatgpt', 'messages'), null);
+});
+
+test('findPolicy resolves codex and claude_code via short name or `local-device:` prefix', () => {
+  for (const [short, prefixed] of [
+    ['codex', 'local-device:codex'],
+    ['claude_code', 'local-device:claude_code'],
+  ]) {
+    const streams = short === 'codex'
+      ? ['messages', 'function_calls', 'sessions', 'skills', 'prompts', 'rules']
+      : ['messages', 'attachments', 'sessions', 'skills', 'memory_notes', 'slash_commands'];
+    for (const stream of streams) {
+      const a = findPolicy(short, stream);
+      const b = findPolicy(prefixed, stream);
+      assert.ok(a, `findPolicy(${short}, ${stream}) returned null`);
+      assert.ok(b, `findPolicy(${prefixed}, ${stream}) returned null`);
+      assert.equal(a, b, `${short} and ${prefixed} must resolve to the same policy entry`);
+      assert.deepEqual(a.excludeKeys, [], `${short}/${stream} must use exact stable-JSON identity (excludeKeys=[])`);
+    }
+  }
 });
 
 test('findPolicy matches both short name and registry URL form for connector_id', () => {
@@ -458,6 +494,26 @@ if (!POSTGRES_URL) {
     assert.match(r.stderr + r.stdout, /Registered policies/);
   });
 
+  test('CLI: unknown stream on a registered connector still refuses', () => {
+    const r = spawnSync(
+      process.execPath,
+      [SCRIPT_PATH, '--connector-instance-id=cin_unknown', '--stream=context_mode', '--connector-id=codex'],
+      { env: { ...process.env, PDPP_TEST_POSTGRES_URL: POSTGRES_URL }, encoding: 'utf8' },
+    );
+    assert.notEqual(r.status, 0, 'must exit non-zero for unknown stream under a registered connector');
+    assert.match(r.stderr + r.stdout, /no compaction policy registered/);
+  });
+
+  test('CLI: unknown connector (chatgpt) refuses even on a stream name that exists elsewhere', () => {
+    const r = spawnSync(
+      process.execPath,
+      [SCRIPT_PATH, '--connector-instance-id=cin_unknown', '--stream=messages', '--connector-id=chatgpt'],
+      { env: { ...process.env, PDPP_TEST_POSTGRES_URL: POSTGRES_URL }, encoding: 'utf8' },
+    );
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr + r.stdout, /no compaction policy registered/);
+  });
+
   test('CLI: --apply without database credentials refuses to run', () => {
     const env = { ...process.env };
     delete env.PDPP_DATABASE_URL;
@@ -479,6 +535,104 @@ if (!POSTGRES_URL) {
     );
     assert.notEqual(r.status, 0);
     assert.match(r.stderr + r.stdout, /--limit-keys must be a positive integer/);
+  });
+
+  test('exact-JSON identity policy compacts codex/messages adjacent duplicates and pins boundaries', async () => {
+    // Seed a codex/messages key with the shape we see in the live DB:
+    // adjacent versions whose record_json is byte-identical (no fetched_at
+    // to exclude). The selector should collapse adjacent same-JSON runs
+    // while pinning the first version, the current version, and the
+    // most-recent prior version with a *different* fingerprint.
+    const pool = new Pool({ connectionString: POSTGRES_URL });
+    const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+    const connectorInstanceId = `cin_compact_codex_${suffix}`;
+    const connectorId = `local-device:codex`;
+    const stream = 'messages';
+    const recordKey = `session_${suffix}:1`;
+    const runId = `test_${suffix}`;
+    const backupTable = `compact_record_history_backup_${runId}`;
+    try {
+      // Sequence: A A A B B (current is v5)
+      //   v1 first → retain
+      //   v2 same fp as v1 surviving anchor → remove
+      //   v3 same fp as v1 surviving anchor → remove
+      //   v4: prev surviving is v1 (A), different fp (B) → retain
+      //        (also: most-recent-prior-with-different-fp from v5 is v4? no —
+      //         v4 has same fp (B) as current v5. The most-recent-prior with
+      //         a *different* fp is v3 (A). v3 was marked removable above —
+      //         but the selector pins it as most-recent-differing-prior, so
+      //         it must be retained instead. So removable = [v2], retained
+      //         = [v1, v3, v4, v5]).
+      //   v5: current → retain
+      const payloadA = {
+        id: recordKey,
+        session_id: `session_${suffix}`,
+        role: 'user',
+        type: 'user',
+        content: 'hello',
+        timestamp: '2026-05-26T10:00:00.000Z',
+      };
+      const payloadB = {
+        ...payloadA,
+        content: 'hello world',
+      };
+      const rows = [
+        { v: 1, p: payloadA },
+        { v: 2, p: payloadA },
+        { v: 3, p: payloadA },
+        { v: 4, p: payloadB },
+        { v: 5, p: payloadB },
+      ];
+      await pool.query(
+        `INSERT INTO version_counter(connector_id, connector_instance_id, stream, max_version)
+         VALUES($1, $2, $3, $4)
+         ON CONFLICT (connector_instance_id, stream) DO UPDATE SET max_version = EXCLUDED.max_version`,
+        [connectorId, connectorInstanceId, stream, 5],
+      );
+      for (const r of rows) {
+        await pool.query(
+          `INSERT INTO record_changes(connector_id, connector_instance_id, stream, record_key, version, record_json, emitted_at, deleted)
+           VALUES($1, $2, $3, $4, $5, $6::jsonb, $7, FALSE)`,
+          [connectorId, connectorInstanceId, stream, recordKey, r.v, JSON.stringify(r.p), '2026-05-26T10:00:00.000Z'],
+        );
+      }
+      await pool.query(
+        `INSERT INTO records(connector_id, connector_instance_id, stream, record_key, record_json, emitted_at, version, deleted, primary_key_text)
+         VALUES($1, $2, $3, $4, $5::jsonb, $6, $7, FALSE, $4)`,
+        [connectorId, connectorInstanceId, stream, recordKey, JSON.stringify(payloadB), '2026-05-26T10:00:05.000Z', 5],
+      );
+
+      const policy = findPolicy('codex', 'messages');
+      assert.ok(policy, 'codex/messages policy must be registered');
+
+      const plan = await planCompaction({ pool, connectorInstanceId, stream, policy, limitKeys: null });
+      assert.equal(plan.scannedKeys, 1);
+      assert.equal(plan.scannedVersions, 5);
+      assert.equal(plan.removableVersions, 1, 'only v2 should be removable (v3 pinned as most-recent-differing-prior wrt B, v4 retained as different fp)');
+      assert.ok(plan.connectorIdsSeen.includes('local-device:codex'));
+
+      const result = await applyCompaction({ pool, plan, runId });
+      assert.equal(result.deleted, 1);
+      assert.equal(result.inserted, 1);
+      assert.equal(result.backupTable, backupTable);
+
+      const remaining = (await pool.query(
+        `SELECT version FROM record_changes WHERE connector_instance_id = $1 AND stream = $2 ORDER BY version`,
+        [connectorInstanceId, stream],
+      )).rows.map((r) => Number(r.version));
+      assert.deepEqual(remaining, [1, 3, 4, 5]);
+
+      const backupRows = await pool.query(`SELECT version FROM "${backupTable}" ORDER BY version`);
+      assert.deepEqual(backupRows.rows.map((r) => Number(r.version)), [2]);
+    } finally {
+      try { await pool.query(`DROP TABLE IF EXISTS "${backupTable}"`); } catch {}
+      await pool.query(`DELETE FROM record_changes WHERE connector_instance_id = $1`, [connectorInstanceId]);
+      await pool.query(`DELETE FROM records WHERE connector_instance_id = $1`, [connectorInstanceId]);
+      await pool.query(`DELETE FROM version_counter WHERE connector_instance_id = $1`, [connectorInstanceId]);
+      try { await pool.query(`DELETE FROM retained_size_stream WHERE connector_instance_id = $1`, [connectorInstanceId]); } catch {}
+      try { await pool.query(`DELETE FROM retained_size_connection WHERE connector_instance_id = $1`, [connectorInstanceId]); } catch {}
+      await pool.end();
+    }
   });
 
   test('apply on an already-clean stream removes zero rows and creates no rows in backup', async () => {

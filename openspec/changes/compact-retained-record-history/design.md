@@ -11,7 +11,9 @@ Two boundaries make this safe to do narrowly:
 
 ### Scope (denylist by default)
 
-The tool SHALL operate only on `(connector_id, stream)` pairs that have a registered policy. The initial registry is:
+The tool SHALL operate only on `(connector_id, stream)` pairs that have a registered policy. The registry is organized into two families:
+
+**Family 1 — Connector fingerprint mirror.** Streams whose connectors ship a semantic fingerprint cursor; the policy's `excludeKeys` mirrors the connector's `excludeKeys` argument to its own fingerprint helper one-for-one.
 
 | connector            | stream            | fingerprint                                                                 |
 | -------------------- | ----------------- | --------------------------------------------------------------------------- |
@@ -21,9 +23,28 @@ The tool SHALL operate only on `(connector_id, stream)` pairs that have a regist
 | `slack`              | `files`           | stable-stringify of full record_json                                        |
 | `ynab`               | `payee_locations` | stable-stringify of full record_json                                        |
 
-Each policy entry SHALL list every `connector_id` value the policy applies to. In practice this is both the short name (`slack`) and the registry URL form (`https://registry.pdpp.org/connectors/slack`) the live deployment actually stores — same connector, two surface identifiers. Adding a policy means accepting both forms so the operator does not have to translate.
-
 These mirror the canonical authoring-layer fingerprint at `packages/polyfill-connectors/src/fingerprint-cursor.ts:recordFingerprint` (shipped in `228305a6`) and the still-hand-rolled `connectors/gmail/parsers.ts:buildThreadFingerprint` and `connectors/ynab/index.ts:payeeLocationFingerprint`. Slack's per-stream excludeKeys come from `connectors/slack/index.ts:FINGERPRINT_EXCLUDE`; the workspace exclusion of `fetched_at` is preserved verbatim — without exclusion, the connector's own gate would never fire (per `a08d7a0a`'s commit message).
+
+**Family 2 — Exact stable-JSON identity.** Local-device connectors (codex, claude_code) whose record bodies are derived from on-disk JSONL/sqlite/markdown without volatile fields in the record payload itself. `excludeKeys` is empty — adjacent versions with byte-identical canonical JSON are provably redundant under the connector's own emit semantics. The connector keeps `fetched_at` in STATE cursors, never in `record_json`; timestamps inside the record body come from the underlying source event (immutable rollout line timestamp, file mtime that the file walker has already gated on, etc.).
+
+| connector             | stream            | fingerprint                                |
+| --------------------- | ----------------- | ------------------------------------------ |
+| `codex`               | `messages`        | stable-stringify of full record_json       |
+| `codex`               | `function_calls`  | stable-stringify of full record_json       |
+| `codex`               | `sessions`        | stable-stringify of full record_json       |
+| `codex`               | `skills`          | stable-stringify of full record_json       |
+| `codex`               | `prompts`         | stable-stringify of full record_json       |
+| `codex`               | `rules`           | stable-stringify of full record_json       |
+| `claude_code`         | `messages`        | stable-stringify of full record_json       |
+| `claude_code`         | `attachments`     | stable-stringify of full record_json       |
+| `claude_code`         | `sessions`        | stable-stringify of full record_json       |
+| `claude_code`         | `skills`          | stable-stringify of full record_json       |
+| `claude_code`         | `memory_notes`    | stable-stringify of full record_json       |
+| `claude_code`         | `slash_commands`  | stable-stringify of full record_json       |
+
+The Family 2 policy is "the connector did not change the record body at all between these two versions." It is strictly more conservative than any fingerprint family member could be — the connector's own re-emit gate fires on a *broader* equivalence class (e.g. `codex/sessions` ignores mtime changes when `updated_at` is stable per `af1700ad`), so a Family-2 collapse is always a subset of what the connector itself would consider a no-op. Adding a Family-2 policy is justified when the record payload contains no `fetched_at`-style volatile field; this was verified against the live `record_changes.record_json` keys for every stream in the table above (no `fetched_at` key occurs in any sampled record).
+
+Each policy entry SHALL list every `connector_id` value the policy applies to. In practice this is both the short name (`slack`, `codex`, `claude_code`) and the deployment-stored form — the registry URL (`https://registry.pdpp.org/connectors/slack`) for the connector-fingerprint family, and the `local-device:` prefix (`local-device:codex`, `local-device:claude_code`) for the local-device family. Adding a policy means accepting every surface form so the operator does not have to translate.
 
 The script ships its own copy of `recordFingerprint` so this operational `.mjs` tool does not depend on a compiled TypeScript artifact or a runtime TS shim. Drift between the two implementations is prevented by `reference-implementation/test/compact-record-history-fingerprint-parity.test.js`, which asserts byte-identical hex output across representative payloads for every registered policy plus adversarial nested-object/null-leaf fixtures. Adding a new policy requires extending that parity fixture set.
 

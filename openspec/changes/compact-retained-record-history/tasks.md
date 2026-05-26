@@ -3,6 +3,7 @@
 - [x] 1.1 Add `reference-implementation/scripts/compact-record-history.mjs` with a `COMPACTION_POLICIES` registry keyed by `(connector_id, stream)`, declaring the per-stream fingerprint definition (full record_json or excluded-keys-list) for the five initial policies.
 - [x] 1.2 Implement `recordFingerprint(recordJson, excludeKeys)` using stable-stringify + SHA-1, mirroring the connector-side `recordFingerprint` / `buildThreadFingerprint` / `payeeLocationFingerprint` definitions so a "redundant" classification here matches the connector's "no-op" classification.
 - [x] 1.3 Document fidelity: each registered policy entry references the connector source file it mirrors.
+- [x] 1.4 Extend `COMPACTION_POLICIES` with a Family-2 "exact stable-JSON identity" set for local-device connectors (codex/claude_code), covering every stream whose `record_json` keys were verified to contain no `fetched_at`-style volatile field. Accept both short name and `local-device:<connector>` form of `connector_id`.
 
 ## 2. Retention Selector
 
@@ -28,7 +29,9 @@
   - 4.1.1 `recordFingerprint` is stable across key order; excluded keys are dropped before hashing.
   - 4.1.2 `selectRemovableVersions` honours every retention rule from §2.2 across a hand-built scenario per stream class (no tombstone, with tombstone, all-same-fingerprint, all-different-fingerprint, single-version edge case).
   - 4.1.3 `parseLimitKeys` rejects non-positive integers.
-  - 4.1.4 `COMPACTION_POLICIES` exposes only the five registered policies.
+  - 4.1.4 `COMPACTION_POLICIES` exposes only the registered policies (five connector-fingerprint family + twelve exact stable-JSON identity family for codex/claude_code local-device streams).
+  - 4.1.5 `findPolicy` resolves codex and claude_code via both short name and `local-device:` prefix form.
+  - 4.1.6 CLI refusal extends to unknown stream on a registered connector (e.g. `codex/context_mode`) and an unknown connector entirely (`chatgpt/messages`).
 - [x] 4.3 Parity test in `reference-implementation/test/compact-record-history-fingerprint-parity.test.js` (gated on `tsx`): the script's `recordFingerprint` produces byte-identical SHA-1 hex output to `packages/polyfill-connectors/src/fingerprint-cursor.ts:recordFingerprint` for representative payloads under every registered policy plus adversarial nested-object and null-leaf fixtures. Locks the local reimplementation against drift from the canonical authoring-layer helper without making the script import TypeScript at runtime.
 - [x] 4.2 Postgres-backed test (gated on `PDPP_TEST_POSTGRES_URL`):
   - 4.2.1 Seed a `(connector_instance_id='cin_compact_<suffix>', stream='workspace')` with the shape from design.md acceptance: six versions whose only differences are `fetched_at` (the live workspace churn shape). Verify dry-run reports `removableVersions=4`.
@@ -36,6 +39,7 @@
   - 4.2.3 No-op safety: seed a stream where every version has a different fingerprint; verify dry-run reports `removableVersions=0` and `--apply` removes zero rows.
   - 4.2.4 Tombstone safety: seed a sequence first, same, tombstone, same, current; verify the tombstone bounds the compaction (the "same" before the tombstone is removable only by reference to the first, never crossing the tombstone).
   - 4.2.5 Unknown-stream safety: invoke with `--stream=messages` against a registered connector; verify the script exits non-zero before touching the database.
+  - 4.2.6 Exact-JSON identity policy for `codex/messages`: seed five versions (A, A, A, B, B; current = v5). Verify the selector pins the most-recent prior version with a different fingerprint (v3) as a retention boundary and only v2 is removable.
 
 ## 5. Validation
 

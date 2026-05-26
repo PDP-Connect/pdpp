@@ -6,7 +6,12 @@ The reference implementation SHALL provide an owner/operator-only operational to
 
 The tool SHALL be authorized by direct database access (`PDPP_DATABASE_URL` or `PDPP_TEST_POSTGRES_URL`). It SHALL NOT be exposed via an HTTP route, a scheduler, or any automatic background job.
 
-The tool SHALL maintain a registry of `(connector_id, stream)` compaction policies in code. The initial registry SHALL cover Gmail `threads`, Slack `workspace` (with `fetched_at` excluded from the fingerprint), Slack `users`, Slack `files`, and YNAB `payee_locations`. Each policy SHALL declare the same fingerprint definition the corresponding connector uses to suppress no-op emits. Registering a new policy SHALL be a code-review gate that references a connector-side fingerprint already in production.
+The tool SHALL maintain a registry of `(connector_id, stream)` compaction policies in code. Each policy SHALL declare the per-stream fingerprint definition (`excludeKeys` list, where an empty list means stable-stringify of the full `record_json`). The registry SHALL cover two policy families:
+
+- **Connector fingerprint mirror.** Gmail `threads`, Slack `workspace` (with `fetched_at` excluded from the fingerprint), Slack `users`, Slack `files`, and YNAB `payee_locations`. Each policy SHALL declare the same fingerprint definition the corresponding connector uses to suppress no-op emits.
+- **Exact stable-JSON identity for local-device connectors.** Codex (`messages`, `function_calls`, `sessions`, `skills`, `prompts`, `rules`) and Claude Code (`messages`, `attachments`, `sessions`, `skills`, `memory_notes`, `slash_commands`). Each policy SHALL declare an empty `excludeKeys` list. The policy is justified per-stream by verifying the `record_json` payload contains no `fetched_at`-style volatile field — adjacent versions with byte-identical canonical JSON are then strictly more conservative than the connector's own no-op-emit semantics could be.
+
+Registering a new policy SHALL be a code-review gate that either references a connector-side fingerprint already in production (family 1) or documents the per-stream proof that the record payload contains no volatile field that would force exact-JSON identity to over-classify (family 2).
 
 The tool SHALL default to dry-run mode. In dry-run mode, for each in-scope `(connector_instance_id, stream)` it SHALL report `scannedKeys`, `scannedVersions`, `removableVersions`, `retainedVersionsAfter`, and `estimatedRemovedBytes`, and SHALL NOT modify any row.
 

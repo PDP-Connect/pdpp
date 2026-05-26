@@ -231,15 +231,216 @@ if (canonicalRecordFingerprint) {
     expectParity(payload, ['not_present'], 'noop exclude');
   });
 
+  test('parity: codex local-device record shapes (messages, function_calls, sessions, mtime-stamped artifacts)', () => {
+    // Codex records are derived from on-disk JSONL/sqlite. Exact-JSON
+    // identity is the policy; verify the script and canonical helper
+    // agree byte-for-byte across the representative shapes.
+    expectParity(
+      {
+        id: 'session_abc:42',
+        session_id: 'session_abc',
+        role: 'assistant',
+        type: 'message',
+        content: 'hello',
+        timestamp: '2026-05-26T10:00:00.000Z',
+      },
+      [],
+      'codex/messages',
+    );
+    expectParity(
+      {
+        id: 'session_abc:43:output',
+        session_id: 'session_abc',
+        call_id: 'call_xyz',
+        name: 'shell',
+        arguments: '{"cmd":"ls"}',
+        output_preview: 'a\nb\n',
+        output_binary_reason: null,
+        timestamp: '2026-05-26T10:00:01.000Z',
+      },
+      [],
+      'codex/function_calls',
+    );
+    expectParity(
+      {
+        id: 'thread_xyz',
+        cwd: '/home/user/proj',
+        originator: 'codex_cli_rs',
+        cli_version: '0.42.0',
+        model_provider: 'openai',
+        git_commit: 'abcdef0',
+        git_branch: 'main',
+        repository_url: null,
+        started_at: '2026-05-20T00:00:00.000Z',
+        last_event_at: '2026-05-26T10:00:01.000Z',
+        message_count: 17,
+        function_call_count: 5,
+        title: 'pinned title',
+        archived: false,
+        tokens_used: 1234,
+        first_user_message: 'hello',
+        sandbox_policy: 'workspace-write',
+        approval_mode: 'auto',
+        rollout_path: '/home/user/.codex/sessions/2026/05/26/rollout-x.jsonl',
+      },
+      [],
+      'codex/sessions',
+    );
+    expectParity(
+      {
+        id: 'skills:my-skill',
+        name: 'my-skill',
+        description: 'does the thing',
+        content: '# my-skill\n…',
+        path: '/home/user/.codex/skills/my-skill/SKILL.md',
+        mtime_epoch: 1716700000,
+      },
+      [],
+      'codex/skills',
+    );
+    expectParity(
+      {
+        id: 'prompts:hello.md',
+        name: 'hello',
+        description: null,
+        content: 'Say hi.',
+        path: '/home/user/.codex/prompts/hello.md',
+        mtime_epoch: 1716700000,
+      },
+      [],
+      'codex/prompts',
+    );
+    expectParity(
+      {
+        id: 'rules:foo:0',
+        ruleset: 'foo',
+        rule_text: 'this is the rule',
+        rule_index: 0,
+        path: '/home/user/.codex/rules/foo.rules',
+        mtime_epoch: 1716700000,
+      },
+      [],
+      'codex/rules',
+    );
+  });
+
+  test('parity: claude_code local-device record shapes (messages, attachments, sessions, mtime-stamped artifacts)', () => {
+    expectParity(
+      {
+        id: 'uuid-1',
+        session_id: 'session-1',
+        parent_uuid: null,
+        role: 'user',
+        type: 'user',
+        content: 'hello',
+        timestamp: '2026-05-26T10:00:00.000Z',
+        is_sidechain: false,
+        user_type: 'human',
+        agent_id: null,
+      },
+      [],
+      'claude_code/messages',
+    );
+    expectParity(
+      {
+        id: 'tool_result_file:proj/session-1/foo.txt',
+        session_id: 'session-1',
+        parent_uuid: null,
+        event_type: 'tool_result_file',
+        hook_name: null,
+        tool_use_id: null,
+        content_preview: 'abc',
+        content_binary_reason: null,
+        content_bytes: 3,
+        timestamp: '2026-05-26T10:00:01.000Z',
+      },
+      [],
+      'claude_code/attachments',
+    );
+    expectParity(
+      {
+        id: 'session-1',
+        project_path: 'proj',
+        cwd: '/home/user/proj',
+        git_branch: 'main',
+        version: '0.42.0',
+        started_at: '2026-05-20T00:00:00.000Z',
+        last_event_at: '2026-05-26T10:00:01.000Z',
+        message_count: 17,
+        user_type: 'human',
+        entrypoint: 'cli',
+      },
+      [],
+      'claude_code/sessions',
+    );
+    expectParity(
+      {
+        id: 'skills:my-skill',
+        name: 'my-skill',
+        description: 'does the thing',
+        source: 'user',
+        path: '/home/user/.claude/skills/my-skill/SKILL.md',
+        content: '# my-skill\n…',
+        frontmatter: { name: 'my-skill', description: 'does the thing' },
+        mtime_epoch: 1716700000,
+      },
+      [],
+      'claude_code/skills',
+    );
+    expectParity(
+      {
+        id: 'memory_notes:proj/foo.md',
+        project_path: 'proj',
+        note_path: 'foo.md',
+        name: 'foo',
+        description: null,
+        path: '/home/user/.claude/projects/proj/memory/foo.md',
+        content: 'note body',
+        frontmatter: {},
+        mtime_epoch: 1716700000,
+      },
+      [],
+      'claude_code/memory_notes',
+    );
+    expectParity(
+      {
+        id: 'commands:foo',
+        name: 'foo',
+        description: null,
+        path: '/home/user/.claude/commands/foo.md',
+        content: 'do foo',
+        frontmatter: {},
+        mtime_epoch: 1716700000,
+      },
+      [],
+      'claude_code/slash_commands',
+    );
+  });
+
   test('every registered policy has a parity-checked fixture above', () => {
     // Static guard: if a new policy is added without a parity fixture,
     // this assertion fails and points at the gap.
     const fixturedPairs = new Set([
+      // connector-fingerprint family
       'gmail/threads',
       'slack/workspace',
       'slack/users',
       'slack/files',
       'ynab/payee_locations',
+      // exact stable-JSON identity family (codex)
+      'codex/messages',
+      'codex/function_calls',
+      'codex/sessions',
+      'codex/skills',
+      'codex/prompts',
+      'codex/rules',
+      // exact stable-JSON identity family (claude_code)
+      'claude_code/messages',
+      'claude_code/attachments',
+      'claude_code/sessions',
+      'claude_code/skills',
+      'claude_code/memory_notes',
+      'claude_code/slash_commands',
     ]);
     for (const p of COMPACTION_POLICIES) {
       const pair = `${p.connectorIds[0]}/${p.stream}`;
