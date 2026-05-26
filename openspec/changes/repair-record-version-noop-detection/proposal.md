@@ -15,7 +15,6 @@ A forward fix without repair leaves the dashboard, retained-size accounting, and
 - Fix `postgres-records.js` no-op detection so byte-identical incoming payloads do not allocate a new version, append a `record_changes` row, or perturb retained-size deltas.
 - Add a reference-only owner-invoked repair tool that backfills current `records` rows whose payload is byte-equivalent (after canonicalization) to a recent history version with more complete derived fields, for connector streams where the connector authors a derived-field-preservation contract. The Codex `sessions` stream is the first such consumer.
 - Require the repair tool to support dry-run preview, narrow scope (connector/stream/key filters), and audit logging; it SHALL NOT mutate sources, schemas, or history rows, and SHALL NOT introduce cross-`(connector_instance_id, stream, record_key)` dedupe.
-- Add emitted/skipped/changed observability on the reference ingest path so future regressions of either kind become visible without re-querying history.
 
 ## Capabilities
 
@@ -25,6 +24,6 @@ Modified:
 
 ## Impact
 
-- Production code: `reference-implementation/server/postgres-records.js`, narrow reference-implementation script under `reference-implementation/scripts/` for repair, ingest path counters and structured-log emission.
-- Tests: targeted no-op false-negative regression test against the Postgres adapter (via the existing record-mutation conformance harness driver); a Codex-sessions repair unit test against fixtures.
+- Production code: `reference-implementation/server/postgres-records.js`; new reference-implementation script under `reference-implementation/scripts/repair/`.
+- Tests: targeted no-op false-negative regression test against the Postgres adapter (gated on `PDPP_TEST_POSTGRES_URL`); a Postgres-fixture repair-policy test covering refill, skip-non-null, no-history, and cross-key isolation.
 - Out of scope: extracting a production `RecordStore`, new content-hash columns, history compaction or pruning, schema-level deduplication, cross-connection dedupe, or changes to public record / `changes_since` response shapes.

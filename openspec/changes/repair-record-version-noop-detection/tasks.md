@@ -11,10 +11,9 @@
 - [ ] 2.1 Confirm the modified "No-op writes do not allocate" requirement reads naturally alongside the existing "Record version allocation SHALL be atomic with the durable mutation" requirement from `harden-record-version-allocation-atomicity`.
 - [ ] 2.2 If `harden-record-version-allocation-atomicity` is still active (not archived), call out the dependency in the proposal so closeout sequences correctly.
 
-## 3. Ingest Observability
+## 3. Follow-on Observability (out of scope)
 
-- [ ] 3.1 Emit a structured `pdpp.ingest` log line per ingest call on both adapters with `outcome ∈ { changed, noop_byte_equivalent, noop_delete_absent }`, `connector_id`, `connector_instance_id`, `stream`, and a stable hash of `record_key`.
-- [ ] 3.2 Add a focused test asserting the log line appears with the expected `outcome` value on a byte-identical re-ingest.
+Structured `pdpp.ingest` telemetry with `outcome ∈ { changed, noop_byte_equivalent, noop_delete_absent }` was considered for this change and intentionally deferred. The bug fix in §1 and the repair tool in §4 close the existing damage. The `record_changes` table is itself adequate retrospective telemetry — versions-per-record over time will surface a regression in any future adapter. A separate change should propose the structured log if the operator console grows live regression detection, since wiring `records.js` and `postgres-records.js` through the request-scoped pino logger touches surfaces outside this fix.
 
 ## 4. Repair Tool
 

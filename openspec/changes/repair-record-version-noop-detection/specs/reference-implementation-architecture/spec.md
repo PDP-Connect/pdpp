@@ -28,25 +28,6 @@ When the reference processes a no-op re-ingest, an absent-record delete, or a re
 
 ## ADDED Requirements
 
-### Requirement: The reference SHALL emit a structured ingest outcome log
-
-The reference implementation SHALL emit a structured log line for every record ingest invocation on both the SQLite and Postgres adapters. The log line SHALL include the `connector_id`, `connector_instance_id`, `stream`, a stable hash of the `record_key`, and an `outcome` field drawn from a fixed vocabulary: `changed`, `noop_byte_equivalent`, or `noop_delete_absent`. Raw `record_key` values SHALL NOT appear in the log line.
-
-#### Scenario: Changed write emits `outcome=changed`
-
-- **WHEN** the reference performs an ingest that allocates a new version and appends a `record_changes` row
-- **THEN** the structured ingest log line SHALL include `outcome=changed`
-
-#### Scenario: Byte-identical re-ingest emits `outcome=noop_byte_equivalent`
-
-- **WHEN** the reference processes a byte-identical re-ingest that does not allocate a version
-- **THEN** the structured ingest log line SHALL include `outcome=noop_byte_equivalent`
-
-#### Scenario: Repeated or absent delete emits `outcome=noop_delete_absent`
-
-- **WHEN** the reference processes a delete for a `(connector_id, stream, record_key)` whose current row is already deleted or absent
-- **THEN** the structured ingest log line SHALL include `outcome=noop_delete_absent`
-
 ### Requirement: The reference SHALL expose an owner-only record-derived-field repair tool
 
 The reference implementation SHALL provide an owner-only operational tool that repairs current `records` rows whose payload is byte-equivalent (per the No-op equivalence definition above) to a prior `record_changes` row with strictly more complete derived fields, under a per-stream repair policy that is registered in code.
