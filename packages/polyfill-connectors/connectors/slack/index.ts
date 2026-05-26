@@ -497,6 +497,13 @@ export interface StreamDeps {
   priorFingerprints: Map<string, Map<string, string>>;
   progress: CollectContext["progress"];
   requested: CollectContext["requested"];
+  // IDs observed in the current run per fingerprinted stream. Populated by
+  // emitWithFingerprint and consumed by pruneStaleFingerprints before STATE
+  // is emitted: any prior ID absent from this set on a *requested* stream is
+  // removed from nextFingerprints so the cursor reflects the latest source
+  // set instead of carrying stale IDs forever. Records without an id are
+  // emitted but neither fingerprinted nor recorded as seen.
+  seenIds: Map<string, Set<string>>;
 }
 
 /**
@@ -565,11 +572,49 @@ export function emitWithFingerprint(
     deps.nextFingerprints.set(stream, next);
   }
   next.set(id, fingerprint);
+  let seen = deps.seenIds.get(stream);
+  if (!seen) {
+    seen = new Set<string>();
+    deps.seenIds.set(stream, seen);
+  }
+  seen.add(id);
   const prior = deps.priorFingerprints.get(stream)?.get(id);
   if (prior === fingerprint) {
     return Promise.resolve();
   }
   return deps.emitRecord(stream, record);
+}
+
+/**
+ * Prune IDs from `nextFingerprints` that were carried over from
+ * `priorFingerprints` but were NOT observed in the current run. Only applied
+ * to streams that were requested AND fingerprinted this run — streams the
+ * caller did not exercise must retain their carry-forward so an unrequested
+ * stream's cursor isn't silently wiped. The seen set is built up by
+ * emitWithFingerprint; an empty seen-set for a requested fingerprinted
+ * stream is a real signal (the source returned zero records) and prunes
+ * everything, which is the correct outcome.
+ */
+export function pruneStaleFingerprints(
+  nextFingerprints: Map<string, Map<string, string>>,
+  seenIds: Map<string, Set<string>>,
+  requested: CollectContext["requested"]
+): void {
+  for (const stream of FINGERPRINTED_STREAMS) {
+    if (!requested.has(stream)) {
+      continue;
+    }
+    const fps = nextFingerprints.get(stream);
+    if (!fps) {
+      continue;
+    }
+    const seen = seenIds.get(stream);
+    for (const id of fps.keys()) {
+      if (!seen?.has(id)) {
+        fps.delete(id);
+      }
+    }
+  }
 }
 
 async function runWorkspaceStream(deps: StreamDeps): Promise<void> {
@@ -1054,6 +1099,7 @@ if (isMainModule(import.meta.url)) {
       for (const [stream, prior] of priorFingerprints) {
         nextFingerprints.set(stream, new Map(prior));
       }
+      const seenIds = new Map<string, Set<string>>();
       const deps: StreamDeps = {
         db,
         emitRecord: ctx.emitRecord,
@@ -1062,10 +1108,17 @@ if (isMainModule(import.meta.url)) {
         priorFingerprints,
         progress,
         requested,
+        seenIds,
       };
       const maxMessageTs = await runRequestedStreams(deps, state);
 
       emitUnavailableStreams(requested, emit);
+
+      // Drop fingerprint entries for IDs that disappeared from the source
+      // since the prior run. Without this, deleted records keep their
+      // fingerprint in the cursor forever and a re-add later would silently
+      // skip emitting until the fingerprint shifted.
+      pruneStaleFingerprints(nextFingerprints, seenIds, requested);
 
       const messagesState = state.messages as MessagesState | undefined;
       const priorMaxTs = messagesState?.last_ts || null;

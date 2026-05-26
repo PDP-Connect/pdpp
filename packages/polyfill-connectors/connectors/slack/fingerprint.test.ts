@@ -23,7 +23,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { StreamScope } from "../../src/connector-runtime.ts";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
-import { emitWithFingerprint, readPriorFingerprintMap, type StreamDeps } from "./index.ts";
+import { emitWithFingerprint, pruneStaleFingerprints, readPriorFingerprintMap, type StreamDeps } from "./index.ts";
 import { recordFingerprint } from "./parsers.ts";
 
 // The gate doesn't touch the db field on this path; cast the partial
@@ -34,6 +34,7 @@ function makeTestDeps(args: {
   nextFingerprints: StreamDeps["nextFingerprints"];
   priorFingerprints: StreamDeps["priorFingerprints"];
   requested: StreamDeps["requested"];
+  seenIds: StreamDeps["seenIds"];
 }): StreamDeps {
   const partial: Omit<StreamDeps, "db"> & { db: unknown } = {
     db: undefined,
@@ -43,11 +44,15 @@ function makeTestDeps(args: {
     priorFingerprints: args.priorFingerprints,
     progress: () => Promise.resolve(),
     requested: args.requested,
+    seenIds: args.seenIds,
   };
   return partial as StreamDeps;
 }
 
-function makeDeps(prior: Map<string, Map<string, string>>): {
+function makeDeps(
+  prior: Map<string, Map<string, string>>,
+  requestedStreams: readonly string[] = ["workspace", "users", "files"]
+): {
   deps: StreamDeps;
   emitted: EmittedRecord[];
 } {
@@ -56,16 +61,14 @@ function makeDeps(prior: Map<string, Map<string, string>>): {
   for (const [stream, p] of prior) {
     nextFingerprints.set(stream, new Map(p));
   }
-  const requested = new Map<string, StreamScope>([
-    ["workspace", { name: "workspace" }],
-    ["users", { name: "users" }],
-    ["files", { name: "files" }],
-  ]);
+  const requested = new Map<string, StreamScope>(requestedStreams.map((name) => [name, { name }]));
+  const seenIds = new Map<string, Set<string>>();
   const deps = makeTestDeps({
     emitRecord: harness.emitRecord,
     nextFingerprints,
     priorFingerprints: prior,
     requested,
+    seenIds,
   });
   return { deps, emitted: harness.emitted };
 }
@@ -153,6 +156,111 @@ test("emitWithFingerprint: skipped records still appear in nextFingerprints — 
     recordedFingerprint,
     "fingerprint carried forward despite the skip — STATE cursor stays intact"
   );
+});
+
+test("pruneStaleFingerprints: prior IDs absent from the current run are removed before the cursor is written", async () => {
+  // First run: seed prior with two users via real emits so the prior
+  // fingerprints match what the gate computes on the second pass.
+  const userA = { id: "U1", name: "alice", real_name: "Alice", updated: 1000 };
+  const userB = { id: "U2", name: "bob", real_name: "Bob", updated: 2000 };
+  const { deps: deps1 } = makeDeps(new Map(), ["users"]);
+  await emitWithFingerprint(deps1, "users", userA);
+  await emitWithFingerprint(deps1, "users", userB);
+  assert.equal(deps1.nextFingerprints.get("users")?.size, 2);
+
+  // Second run: only alice shows up; bob disappeared from the source.
+  const prior = new Map<string, Map<string, string>>([["users", deps1.nextFingerprints.get("users") ?? new Map()]]);
+  const { deps } = makeDeps(prior, ["users"]);
+  await emitWithFingerprint(deps, "users", userA);
+
+  // Pre-prune state: both IDs still in next (alice carried + re-asserted,
+  // bob carried from prior). This is the bug surface — without pruning the
+  // STATE cursor would persist bob forever.
+  assert.equal(deps.nextFingerprints.get("users")?.size, 2, "prior IDs still carried before pruning");
+
+  pruneStaleFingerprints(deps.nextFingerprints, deps.seenIds, deps.requested);
+
+  const usersNext = deps.nextFingerprints.get("users");
+  assert.equal(usersNext?.size, 1, "stale ID dropped after pruning");
+  assert.equal(usersNext?.has("U1"), true, "seen ID retained");
+  assert.equal(usersNext?.has("U2"), false, "absent ID pruned");
+});
+
+test("pruneStaleFingerprints: seen-but-unchanged records are carried forward, NOT pruned", async () => {
+  // Prior holds alice; this run sees alice again with identical payload.
+  // emitWithFingerprint does not emit (unchanged) but still records the ID
+  // as seen, so pruning leaves it alone.
+  const userA = { id: "U1", name: "alice" };
+  const { deps: deps1 } = makeDeps(new Map(), ["users"]);
+  await emitWithFingerprint(deps1, "users", userA);
+  const recordedFingerprint = deps1.nextFingerprints.get("users")?.get("U1");
+  assert.ok(recordedFingerprint, "first run seeded fingerprint");
+
+  const prior = new Map<string, Map<string, string>>([["users", deps1.nextFingerprints.get("users") ?? new Map()]]);
+  const { deps, emitted } = makeDeps(prior, ["users"]);
+  await emitWithFingerprint(deps, "users", userA);
+  assert.equal(emitted.length, 0, "unchanged record skipped");
+
+  pruneStaleFingerprints(deps.nextFingerprints, deps.seenIds, deps.requested);
+
+  assert.equal(
+    deps.nextFingerprints.get("users")?.get("U1"),
+    recordedFingerprint,
+    "carry-forward survives pruning because the ID was marked seen"
+  );
+});
+
+test("pruneStaleFingerprints: changed records emit AND are retained through pruning", async () => {
+  const userA = { id: "U1", name: "alice", updated: 1000 };
+  const { deps: deps1 } = makeDeps(new Map(), ["users"]);
+  await emitWithFingerprint(deps1, "users", userA);
+
+  const prior = new Map<string, Map<string, string>>([["users", deps1.nextFingerprints.get("users") ?? new Map()]]);
+  const { deps, emitted } = makeDeps(prior, ["users"]);
+  // Same id, different shape — must re-emit.
+  await emitWithFingerprint(deps, "users", { ...userA, updated: 2000 });
+  assert.equal(emitted.length, 1, "changed record emitted");
+
+  pruneStaleFingerprints(deps.nextFingerprints, deps.seenIds, deps.requested);
+
+  const usersNext = deps.nextFingerprints.get("users");
+  assert.equal(usersNext?.has("U1"), true, "changed record retained in cursor");
+  assert.notEqual(usersNext?.get("U1"), prior.get("users")?.get("U1"), "fingerprint advanced");
+});
+
+test("pruneStaleFingerprints: streams NOT requested this run keep their full carry-forward", () => {
+  // Prior covers all three fingerprinted streams. This run only requests
+  // `users`, so workspace + files entries must survive untouched even though
+  // their seen-sets are empty.
+  const prior = new Map<string, Map<string, string>>([
+    ["workspace", new Map<string, string>([["T1", "fp-ws"]])],
+    ["users", new Map<string, string>([["U1", "fp-alice"]])],
+    ["files", new Map<string, string>([["F1", "fp-file"]])],
+  ]);
+  const { deps } = makeDeps(prior, ["users"]);
+  // No emits this run — seenIds is empty for users too.
+  pruneStaleFingerprints(deps.nextFingerprints, deps.seenIds, deps.requested);
+
+  assert.equal(deps.nextFingerprints.get("workspace")?.size, 1, "unrequested stream untouched");
+  assert.equal(deps.nextFingerprints.get("files")?.size, 1, "unrequested stream untouched");
+  // Requested users stream had zero observations → its sole prior ID is pruned.
+  assert.equal(deps.nextFingerprints.get("users")?.size, 0, "requested+empty stream fully pruned");
+});
+
+test("pruneStaleFingerprints: records with missing id do not block pruning of other stale IDs", async () => {
+  // A record without id is emitted unconditionally and never appears in the
+  // fingerprint map nor in seenIds. A separate prior ID that this run did
+  // not observe should still be pruned.
+  const prior = new Map<string, Map<string, string>>([["files", new Map<string, string>([["F-old", "fp-old"]])]]);
+  const { deps, emitted } = makeDeps(prior, ["files"]);
+  // Anonymous record (no id) — emits unconditionally, doesn't touch fingerprint state.
+  await emitWithFingerprint(deps, "files", { filename: "no-id.txt" });
+  assert.equal(emitted.length, 1, "id-less record always emits");
+  assert.equal(deps.seenIds.get("files"), undefined, "id-less record never marked as seen");
+
+  pruneStaleFingerprints(deps.nextFingerprints, deps.seenIds, deps.requested);
+
+  assert.equal(deps.nextFingerprints.get("files")?.size, 0, "stale prior ID pruned despite id-less emits");
 });
 
 test("readPriorFingerprintMap: empty / legacy / malformed states all produce an empty map (no throw)", () => {
