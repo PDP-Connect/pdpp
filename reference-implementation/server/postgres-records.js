@@ -12,6 +12,11 @@ import { createHash } from 'node:crypto';
 
 import { postgresQuery, withPostgresTransaction } from './postgres-storage.js';
 import {
+  assertSafeJsonField,
+  buildEffectiveFilter,
+  normalizeExpandRequest,
+} from './record-expand-helpers.js';
+import {
   createPostgresConnectorInstanceStore,
   makeDefaultAccountConnectorInstanceId,
 } from './stores/connector-instance-store.js';
@@ -399,6 +404,201 @@ function recordOrderExpressions(manifestStream) {
   };
 }
 
+function rejectExpandWithChangesSince(requestParams) {
+  if (requestParams?.changes_since == null) return;
+  if (requestParams?.expand == null && requestParams?.expand_limit == null) return;
+  const err = new Error('expand is not supported with changes_since');
+  err.code = 'invalid_expand';
+  throw err;
+}
+
+function jsonStringExpr(field) {
+  // record_json is JSONB on Postgres; `->>` returns the field as text.
+  // Field comes from the manifest and is re-validated against SAFE_JSON_FIELD
+  // before reaching this builder, so quoting it as a SQL literal is safe.
+  assertSafeJsonField(field, 'json_string');
+  return `(record_json->>'${field}')`;
+}
+
+function childResponseRecord({ stream, row, fields }) {
+  const rawData = typeof row.record_json === 'string'
+    ? JSON.parse(row.record_json)
+    : row.record_json;
+  return {
+    object: 'record',
+    id: row.record_key,
+    stream,
+    data: projectFields(rawData, fields),
+    emitted_at: row.emitted_at,
+  };
+}
+
+/**
+ * Postgres equivalent of `records.js#hydrateExpandedRelations`.
+ *
+ * For each requested expansion, runs one window-function batched query
+ * to fetch child rows for the entire parent page in a single round
+ * trip. Children are partitioned by foreign key and ranked by the child
+ * stream's manifest-declared (cursor_field, primary_key) basis so the
+ * per-parent slice and per-parent `has_more` signal match the SQLite
+ * engine. Grant projection (`fields`, `time_range`, `resources`) is
+ * enforced in SQL exactly as the SQLite path enforces it.
+ *
+ * Throws `invalid_expand` if the child manifest is missing or declares
+ * a child stream whose foreign-key/primary-key fields fail the
+ * SAFE_JSON_FIELD regex.
+ *
+ * Spec: openspec/changes/add-postgres-expand-hydration/specs/
+ *       reference-implementation-architecture/spec.md
+ */
+async function hydratePostgresExpandedRelations({
+  connectorInstanceId,
+  expansions,
+  parentRows,
+  manifest,
+}) {
+  if (!expansions.length || !parentRows.length) return;
+
+  for (const expansion of expansions) {
+    const childStream = expansion.relationship.stream;
+    const childManifestStream = manifest?.streams?.find((entry) => entry.name === childStream);
+    if (!childManifestStream) {
+      const err = new Error(`Expand relation '${expansion.name}' targets unknown stream '${childStream}'`);
+      err.code = 'invalid_expand';
+      throw err;
+    }
+
+    const foreignKeyField = expansion.relationship.foreign_key;
+    assertSafeJsonField(foreignKeyField, 'foreign_key');
+
+    const primaryKeyFields = Array.isArray(childManifestStream.primary_key)
+      ? childManifestStream.primary_key
+      : typeof childManifestStream.primary_key === 'string'
+        ? [childManifestStream.primary_key]
+        : ['id'];
+    if (primaryKeyFields.length === 0) {
+      const err = new Error(`Expand relation '${expansion.name}' child '${childStream}' is missing a primary_key`);
+      err.code = 'invalid_expand';
+      throw err;
+    }
+    if (primaryKeyFields.length > 1) {
+      // Mirrors the SQLite path: every first-party stream uses ["id"].
+      const err = new Error(`Expand relation '${expansion.name}' child '${childStream}' uses a multi-part primary_key (not implemented)`);
+      err.code = 'invalid_expand';
+      throw err;
+    }
+    assertSafeJsonField(primaryKeyFields[0], 'primary_key');
+
+    const childRequiredFields = Array.isArray(childManifestStream?.schema?.required)
+      ? childManifestStream.schema.required
+      : [];
+    const childEffective = buildEffectiveFilter(expansion.childGrant, {}, childRequiredFields);
+    const childFields = childEffective.fields;
+    const cursorField = childManifestStream.cursor_field || null;
+    const consentTimeField = childManifestStream.consent_time_field || null;
+
+    const fkExpr = jsonStringExpr(foreignKeyField);
+    const pkExpr = jsonStringExpr(primaryKeyFields[0]);
+
+    // Build ORDER BY: cursor first (nulls last), then primary key.
+    const orderByParts = [];
+    if (cursorField) {
+      const cursorExpr = jsonStringExpr(cursorField);
+      orderByParts.push(`${cursorExpr} ASC NULLS LAST`);
+    }
+    orderByParts.push(`${pkExpr} ASC`);
+    const orderBySql = orderByParts.join(', ');
+
+    const params = [connectorInstanceId, childStream];
+    const whereParts = [
+      'connector_instance_id = $1',
+      'stream = $2',
+      'deleted = FALSE',
+    ];
+
+    if (childEffective.timeRange && consentTimeField) {
+      assertSafeJsonField(consentTimeField, 'consent_time_field');
+      const ctExpr = jsonStringExpr(consentTimeField);
+      whereParts.push(`${ctExpr} IS NOT NULL`);
+      if (childEffective.timeRange.since != null) {
+        params.push(new Date(childEffective.timeRange.since).toISOString());
+        whereParts.push(`${ctExpr} >= $${params.length}`);
+      }
+      if (childEffective.timeRange.until != null) {
+        params.push(new Date(childEffective.timeRange.until).toISOString());
+        whereParts.push(`${ctExpr} < $${params.length}`);
+      }
+    }
+
+    if (childEffective.resources && childEffective.resources.length > 0) {
+      params.push(childEffective.resources);
+      whereParts.push(`record_key = ANY($${params.length}::text[])`);
+    }
+
+    // Parent foreign-key narrowing — one batched IN-list per relation.
+    const parentKeys = parentRows.map((row) => row.record_key);
+    params.push(parentKeys);
+    whereParts.push(`${fkExpr} = ANY($${params.length}::text[])`);
+
+    // Per-partition cap.
+    //   has_one  → rn = 1   (take one per parent).
+    //   has_many → rn <= limit + 1   (+1 gives the caller a `has_more` signal).
+    const rankBound = expansion.relationship.cardinality === 'has_one'
+      ? 1
+      : expansion.limit + 1;
+    params.push(rankBound);
+
+    const sql = `
+      WITH ranked AS (
+        SELECT
+          record_key,
+          record_json,
+          emitted_at,
+          ${fkExpr} AS __fk,
+          ROW_NUMBER() OVER (
+            PARTITION BY ${fkExpr}
+            ORDER BY ${orderBySql}
+          ) AS __rn
+        FROM records
+        WHERE ${whereParts.join(' AND ')}
+      )
+      SELECT record_key, record_json, emitted_at, __fk
+      FROM ranked
+      WHERE __rn <= $${params.length}
+    `;
+
+    const result = await postgresQuery(sql, params);
+
+    const buckets = new Map();
+    for (const row of result.rows) {
+      const fk = row.__fk == null ? '' : String(row.__fk);
+      if (!buckets.has(fk)) buckets.set(fk, []);
+      buckets.get(fk).push(row);
+    }
+
+    for (const parentRow of parentRows) {
+      if (!parentRow.responseRecord.expanded) parentRow.responseRecord.expanded = {};
+      const fk = parentRow.record_key;
+      const matches = buckets.get(fk) || [];
+
+      if (expansion.relationship.cardinality === 'has_one') {
+        const first = matches[0];
+        parentRow.responseRecord.expanded[expansion.name] = first
+          ? childResponseRecord({ stream: childStream, row: first, fields: childFields })
+          : null;
+        continue;
+      }
+
+      const sliced = matches.slice(0, expansion.limit);
+      parentRow.responseRecord.expanded[expansion.name] = {
+        object: 'list',
+        has_more: matches.length > expansion.limit,
+        data: sliced.map((row) => childResponseRecord({ stream: childStream, row, fields: childFields })),
+      };
+    }
+  }
+}
+
 async function allocateNextVersion(client, connectorId, connectorInstanceId, stream) {
   const result = await client.query(
     `INSERT INTO version_counter (connector_id, connector_instance_id, stream, max_version)
@@ -585,6 +785,17 @@ export async function postgresQueryRecords(storageTarget, stream, grant, request
   enforceConnectionNarrowing(requestParams, connectorInstanceId);
   const identity = await resolveRecordIdentityForBinding(connectorInstanceId, connectorId);
 
+  rejectExpandWithChangesSince(requestParams);
+  // Resolve and validate expansions up front so misuse rejects before any
+  // SQL runs. SQLite path does the same in records.js#normalizeExpandRequest.
+  const expansions = normalizeExpandRequest(
+    requestParams,
+    stream,
+    grant,
+    manifestStream,
+    order === 'asc' ? 'ASC' : 'DESC',
+  );
+
   if (requestParams.changes_since != null) {
     rejectListOnlyParamsForChangesFeed(requestParams);
     const decoded = requestParams.changes_since === 'beginning'
@@ -675,10 +886,20 @@ export async function postgresQueryRecords(storageTarget, stream, grant, request
   );
   const hasMore = result.rows.length > limit;
   const pageRows = result.rows.slice(0, limit);
+  const responseRows = pageRows.map((row) => ({
+    record_key: row.record_key,
+    responseRecord: responseRecord({ stream, row, fields, identity }),
+  }));
+  await hydratePostgresExpandedRelations({
+    connectorInstanceId,
+    expansions,
+    parentRows: responseRows,
+    manifest,
+  });
   const response = {
     object: 'list',
     has_more: hasMore,
-    data: pageRows.map((row) => responseRecord({ stream, row, fields, identity })),
+    data: responseRows.map((entry) => entry.responseRecord),
   };
   if (hasMore && pageRows.length > 0) {
     const last = pageRows[pageRows.length - 1];
@@ -766,6 +987,9 @@ export async function postgresGetRecord(storageTarget, stream, recordId, grant, 
   const fields = fieldsFor(streamGrant, null, requiredFieldsFor(manifestStream));
   const { warnings: requestWarnings } = resolveRequestConnectionId(requestParams);
   enforceConnectionNarrowing(requestParams, connectorInstanceId);
+  // Single-record fetch does not support changes_since, so only validate
+  // expansion request shape here.
+  const expansions = normalizeExpandRequest(requestParams, stream, grant, manifestStream, 'ASC');
   const result = await postgresQuery(
     `SELECT record_key, record_json, emitted_at
      FROM records
@@ -780,6 +1004,14 @@ export async function postgresGetRecord(storageTarget, stream, recordId, grant, 
   }
   const identity = await resolveRecordIdentityForBinding(connectorInstanceId, connectorId);
   const response = responseRecord({ stream, row, fields, identity });
+  if (expansions.length) {
+    await hydratePostgresExpandedRelations({
+      connectorInstanceId,
+      expansions,
+      parentRows: [{ record_key: row.record_key, responseRecord: response }],
+      manifest,
+    });
+  }
   attachRequestWarningsToResponse(response, requestWarnings);
   return response;
 }
