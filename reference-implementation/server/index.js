@@ -7324,6 +7324,7 @@ function buildRsApp(opts = {}) {
         req,
         opts,
         tokenInfo,
+        getOwnerSubjectId: () => getOwnerTokenSubjectId(req),
         // Owner-mode helpers — bound to the request so the helper stays
         // generic across tests, native mode, and polyfill mode.
         resolveOwnerVisibleConnectorIds: async () => {
@@ -7421,6 +7422,7 @@ function buildRsApp(opts = {}) {
           req,
           opts,
           tokenInfo,
+          getOwnerSubjectId: () => getOwnerTokenSubjectId(req),
           // Owner-mode helpers mirror the lexical route's wiring.
           resolveOwnerVisibleConnectorIds: async () => {
             const native = resolveNativeManifest(opts);
@@ -7514,6 +7516,7 @@ function buildRsApp(opts = {}) {
           req,
           opts,
           tokenInfo,
+          getOwnerSubjectId: () => getOwnerTokenSubjectId(req),
           resolveOwnerVisibleConnectorIds: async () => {
             const native = resolveNativeManifest(opts);
             if (native?.storage_binding?.connector_id) {

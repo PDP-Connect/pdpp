@@ -240,6 +240,47 @@ export async function resolveFanInBindings({
 }
 
 /**
+ * Enumerate every active owner-visible binding for a list of connectors.
+ *
+ * Used by the search fan-in path so owner-mode search fans across each
+ * connector's bindings (e.g. two Gmail accounts) rather than picking a
+ * single default. Returns `[{ connectorId, connectorInstanceId, displayName? }, ...]`
+ * with placeholder display names suppressed (consistent with
+ * `projectBindingForWire`).
+ */
+export async function listActiveOwnerBindingsForConnectors({
+  ownerSubjectId,
+  connectorIds,
+}) {
+  if (!ownerSubjectId || !Array.isArray(connectorIds) || connectorIds.length === 0) {
+    return [];
+  }
+  const lists = await Promise.all(
+    connectorIds.map((connectorId) =>
+      listActiveBindingsForGrant({ ownerSubjectId, connectorId }),
+    ),
+  );
+  const out = [];
+  for (let i = 0; i < connectorIds.length; i += 1) {
+    const connectorId = connectorIds[i];
+    for (const row of lists[i] || []) {
+      const projected = projectBindingForWire({
+        connectorInstanceId: row.connectorInstanceId,
+        connectorId: row.connectorId || connectorId,
+        displayName: row.displayName,
+      });
+      const entry = {
+        connectorId: row.connectorId || connectorId,
+        connectorInstanceId: row.connectorInstanceId,
+      };
+      if (projected?.display_name) entry.displayName = projected.display_name;
+      out.push(entry);
+    }
+  }
+  return out;
+}
+
+/**
  * Enumerate the granted connections visible to the caller for a given stream
  * under one connector. Returns `[{ connection_id, display_name? }, ...]`
  * ordered by created_at ASC (the listing order from the store).

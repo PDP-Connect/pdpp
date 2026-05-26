@@ -458,7 +458,23 @@ export function parseSearchHybridParams(
 }
 
 function dedupKey(hit: SearchHybridSourceResult): string {
-  return JSON.stringify([hit.connector_id, hit.stream, hit.record_key]);
+  // Include `connection_id` so two bindings under the same connector that
+  // happen to share a source-local `record_key` are not collapsed into one
+  // hybrid hit. Falls back to the legacy `(connector_id, stream, record_key)`
+  // tuple when the underlying source did not record a binding (pre-identity
+  // snapshots) so single-binding hybrid behavior is byte-identical.
+  const connectionId =
+    typeof hit.connection_id === "string" && hit.connection_id.length > 0
+      ? hit.connection_id
+      : typeof hit.connector_instance_id === "string"
+            && hit.connector_instance_id.length > 0
+        ? hit.connector_instance_id
+        : null;
+  return JSON.stringify([
+    connectionId ?? hit.connector_id,
+    hit.stream,
+    hit.record_key,
+  ]);
 }
 
 interface MergeEntry {

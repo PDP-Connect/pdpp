@@ -75,6 +75,18 @@ function buildSubRequest(originalReq, params) {
   if (params.filter && typeof params.filter === 'object') {
     query.filter = params.filter;
   }
+  // Forward `connection_id` / `connector_instance_id` narrowing to the
+  // underlying lexical and semantic runners so cross-binding fan-in narrows
+  // consistently with direct calls to `/v1/search` / `/v1/search/semantic`.
+  const originalQuery = originalReq?.query || {};
+  if (typeof originalQuery.connection_id === 'string'
+      && originalQuery.connection_id.length > 0) {
+    query.connection_id = originalQuery.connection_id;
+  }
+  if (typeof originalQuery.connector_instance_id === 'string'
+      && originalQuery.connector_instance_id.length > 0) {
+    query.connector_instance_id = originalQuery.connector_instance_id;
+  }
   return { ...originalReq, query };
 }
 
@@ -95,6 +107,7 @@ export async function runHybridSearch({
   resolveOwnerManifestFromScope,
   buildOwnerReadGrantForManifest,
   resolveGrantManifest,
+  getOwnerSubjectId,
 }) {
   const isOwner = tokenInfo.pdpp_token_kind === 'owner';
   const actor = isOwner
@@ -120,6 +133,7 @@ export async function runHybridSearch({
         resolveOwnerManifestFromScope,
         buildOwnerReadGrantForManifest,
         resolveGrantManifest,
+        getOwnerSubjectId,
       }),
     runSemantic: (params) =>
       runSemanticSearch({
@@ -131,6 +145,7 @@ export async function runHybridSearch({
         resolveOwnerManifestFromScope,
         buildOwnerReadGrantForManifest,
         resolveGrantManifest,
+        getOwnerSubjectId,
       }),
   };
 

@@ -46,6 +46,7 @@ import {
 } from '../operations/rs-search-semantic/index.ts';
 import { getConnectorManifest } from './auth.js';
 import { getDb } from './db.js';
+import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from './owner-auth.ts';
 import {
   compileRequestFilters,
   passesGrantRecordConstraints,
@@ -72,7 +73,11 @@ import {
   postgresUpsertSemanticProgress,
 } from './postgres-search.js';
 import { isPostgresStorageBackend, postgresQuery } from './postgres-storage.js';
-import { resolveDisplayNamesForBindings } from './connection-identity.js';
+import {
+  listActiveOwnerBindingsForConnectors,
+  resolveDisplayNamesForBindings,
+  resolveFanInBindings,
+} from './connection-identity.js';
 
 // ─── scope_key encoding ────────────────────────────────────────────────────
 
@@ -1682,6 +1687,14 @@ export function buildSemanticSearchPlanForGrant({ manifest, grant, streamsFilter
 
     const streamGrant = grant.streams.find((s) => s.name === mStream.name);
     if (!streamGrant) continue;
+    if (
+      typeof streamGrant.connection_id === 'string'
+      && streamGrant.connection_id.length > 0
+      && connectorInstanceId
+      && streamGrant.connection_id !== connectorInstanceId
+    ) {
+      continue;
+    }
 
     const grantedFields = Array.isArray(streamGrant.fields) && streamGrant.fields.length > 0
       ? new Set(streamGrant.fields)
@@ -1776,6 +1789,7 @@ export async function runSemanticSearch({
   resolveOwnerManifestFromScope,
   buildOwnerReadGrantForManifest,
   resolveGrantManifest,
+  getOwnerSubjectId,
 }) {
   if (!backend || !backend.available()) {
     // Route registration should prevent reaching this helper when no backend
@@ -1797,6 +1811,12 @@ export async function runSemanticSearch({
         grant: tokenInfo.grant ?? { streams: [] },
       };
 
+  const ownerSubjectId = isOwner
+    ? (typeof getOwnerSubjectId === 'function'
+        ? getOwnerSubjectId()
+        : OWNER_AUTH_DEFAULT_SUBJECT_ID)
+    : null;
+
   // Native dependencies wire the operation against the existing embedding
   // pipeline, vector index, snapshot tables, and records-table snippet
   // hydration. The operation owns the public-contract slice; these helpers
@@ -1805,6 +1825,13 @@ export async function runSemanticSearch({
     getAdvertisement: () => advertisement,
     getCurrentBackendIdentity: () => hashBackendIdentity(backend),
     listOwnerVisibleConnectorIds: () => resolveOwnerVisibleConnectorIds(),
+    listOwnerVisibleBindings: async () => {
+      const connectorIds = await resolveOwnerVisibleConnectorIds();
+      return await listActiveOwnerBindingsForConnectors({
+        ownerSubjectId,
+        connectorIds,
+      });
+    },
     resolveOwnerManifestForConnector: async (connectorId) => {
       try {
         const ownerScope = resolveOwnerScopeForConnector(connectorId);
@@ -1817,11 +1844,80 @@ export async function runSemanticSearch({
         return null;
       }
     },
+    resolveOwnerManifestForBinding: async (binding) => {
+      try {
+        const ownerScope = resolveOwnerScopeForConnector(binding.connectorId);
+        const pinnedScope = {
+          ...ownerScope,
+          storage_binding: {
+            ...(ownerScope.storage_binding || {}),
+            connector_id: binding.connectorId,
+            connector_instance_id: binding.connectorInstanceId,
+          },
+        };
+        const resolved = await resolveOwnerManifestFromScope(pinnedScope);
+        const manifest = resolved.manifest ?? null;
+        if (manifest) {
+          return {
+            ...manifest,
+            storage_binding: {
+              ...(manifest.storage_binding || {}),
+              connector_instance_id:
+                resolved.storageBinding?.connector_instance_id
+                ?? binding.connectorInstanceId,
+            },
+          };
+        }
+        return null;
+      } catch {
+        return null;
+      }
+    },
     buildOwnerReadGrantForManifest: (manifest) =>
       buildOwnerReadGrantForManifest(manifest),
     resolveClientManifest: async () => {
       const grantResolved = await resolveGrantManifest(tokenInfo);
       return grantResolved.manifest;
+    },
+    resolveClientBindings: async (clientActor, { connectionId }) => {
+      const grantResolved = await resolveGrantManifest(tokenInfo);
+      const baseManifest = grantResolved.manifest;
+      const connectorId = baseManifest?.storage_binding?.connector_id
+        || baseManifest?.connector_id
+        || null;
+      const ownerSubjectIdForGrant =
+        tokenInfo?.grant?.subject?.id
+        || tokenInfo?.subject_id
+        || OWNER_AUTH_DEFAULT_SUBJECT_ID;
+      const grantStreams = clientActor?.grant?.streams || [];
+      let grantStreamConnectionId = null;
+      const pinned = grantStreams
+        .map((s) => s?.connection_id)
+        .filter((v) => typeof v === 'string' && v.length > 0);
+      if (pinned.length === grantStreams.length && pinned.length > 0) {
+        const unique = new Set(pinned);
+        if (unique.size === 1) grantStreamConnectionId = pinned[0];
+      }
+      const { bindings } = await resolveFanInBindings({
+        ownerSubjectId: ownerSubjectIdForGrant,
+        connectorId,
+        connectorInstanceIdHint:
+          grantResolved.storageBinding?.connector_instance_id || null,
+        requestConnectionId: connectionId,
+        grantStreamConnectionId,
+      });
+      return bindings.map((b) => ({
+        manifest: {
+          ...baseManifest,
+          storage_binding: {
+            ...(baseManifest.storage_binding || {}),
+            connector_id: b.connectorId || connectorId,
+            connector_instance_id: b.connectorInstanceId,
+          },
+        },
+        connectorInstanceId: b.connectorInstanceId,
+        ...(b.displayName ? { displayName: b.displayName } : {}),
+      }));
     },
     buildSearchPlanForGrant: ({
       manifest,
@@ -2081,13 +2177,25 @@ function generateSnapshotId() {
 }
 
 function hashSemanticPlan({ perConnectorPlans, isOwner }) {
+  // Include `connector_instance_id` per plan entry and sort
+  // deterministically so the snapshot's binding set is part of the cursor
+  // identity. A request that adds or removes a binding mid-pagination
+  // yields a different hash, invalidating cursor reuse.
   const summary = perConnectorPlans.map((p) => ({
     c: p.connectorId,
-    e: p.planEntries.map((pe) => ({
-      s: pe.streamName,
-      f: pe.searchableFields.slice().sort(),
-    })),
-  }));
+    e: p.planEntries
+      .map((pe) => ({
+        i: pe.connectorInstanceId || null,
+        s: pe.streamName,
+        f: pe.searchableFields.slice().sort(),
+      }))
+      .sort((a, b) => {
+        const ia = a.i || '';
+        const ib = b.i || '';
+        if (ia !== ib) return ia < ib ? -1 : 1;
+        return a.s < b.s ? -1 : a.s > b.s ? 1 : 0;
+      }),
+  })).sort((a, b) => (a.c || '') < (b.c || '') ? -1 : (a.c || '') > (b.c || '') ? 1 : 0);
   return JSON.stringify({ isOwner, summary });
 }
 

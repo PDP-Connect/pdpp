@@ -73,7 +73,8 @@ export type SearchSemanticErrorCode =
   | "invalid_request"
   | "invalid_argument"
   | "invalid_cursor"
-  | "grant_stream_not_allowed";
+  | "grant_stream_not_allowed"
+  | "connection_not_found";
 
 /**
  * Error thrown when the request itself is invalid in a host-independent way.
@@ -223,6 +224,28 @@ export interface SearchSemanticHydratedResult {
   snippet?: { field: string; text: string } | null;
 }
 
+/**
+ * One owner-visible binding for cross-binding semantic fan-in. Mirrors
+ * `SearchLexicalOwnerBinding` so host wirings can share one resolver
+ * implementation across surfaces.
+ */
+export interface SearchSemanticOwnerBinding {
+  connectorId: string;
+  connectorInstanceId: string;
+  displayName?: string | null;
+}
+
+/**
+ * One client-mode binding the grant resolves to under cross-binding fan-in.
+ * `manifest` is pinned to the binding's `connector_instance_id` so the
+ * downstream plan compiler scopes vector queries to that binding.
+ */
+export interface SearchSemanticClientBinding {
+  manifest: SearchSemanticManifest;
+  connectorInstanceId: string;
+  displayName?: string | null;
+}
+
 export interface SearchSemanticDependencies {
   /**
    * Capability advertisement; controls cross-stream and score-emission gates.
@@ -235,8 +258,20 @@ export interface SearchSemanticDependencies {
   getCurrentBackendIdentity(): string;
   /**
    * Owner fan-out: list every connector id whose manifest the owner can read.
+   *
+   * Legacy single-binding-per-connector path. Hosts that support cross-
+   * binding fan-in SHOULD additionally implement `listOwnerVisibleBindings`
+   * below; when present, the operation uses it and ignores this method.
    */
   listOwnerVisibleConnectorIds(): Promise<string[]> | string[];
+  /**
+   * Owner cross-binding fan-out (optional): list every active owner-visible
+   * binding. When provided, the operation emits one connector plan per
+   * binding so the snapshot's total-order merge fans across bindings.
+   */
+  listOwnerVisibleBindings?: () =>
+    | Promise<SearchSemanticOwnerBinding[]>
+    | SearchSemanticOwnerBinding[];
   /**
    * Owner fan-out helper: return the manifest for one connector, or null to
    * skip it (e.g. broken polyfill manifests).
@@ -244,6 +279,17 @@ export interface SearchSemanticDependencies {
   resolveOwnerManifestForConnector(
     connectorId: string,
   ):
+    | Promise<SearchSemanticManifest | null>
+    | SearchSemanticManifest
+    | null;
+  /**
+   * Owner cross-binding fan-out helper (optional): resolve the manifest for
+   * one specific binding. When omitted, the operation falls back to
+   * `resolveOwnerManifestForConnector(binding.connectorId)`.
+   */
+  resolveOwnerManifestForBinding?: (
+    binding: SearchSemanticOwnerBinding,
+  ) =>
     | Promise<SearchSemanticManifest | null>
     | SearchSemanticManifest
     | null;
@@ -258,10 +304,26 @@ export interface SearchSemanticDependencies {
   /**
    * Client-mode helper: resolve the manifest the supplied client grant
    * applies against. Hosts build this from the bearer token information.
+   *
+   * Legacy single-binding path. Hosts that support cross-binding fan-in
+   * SHOULD additionally implement `resolveClientBindings` below; when
+   * present, the operation uses it and ignores this method.
    */
   resolveClientManifest(
     actor: { kind: "client"; grant: SearchSemanticGrant },
   ): Promise<SearchSemanticManifest> | SearchSemanticManifest;
+  /**
+   * Client cross-binding fan-out (optional). Same semantics as the lexical
+   * counterpart: honors grant-scope per-stream constraints, request-time
+   * `connection_id` narrowing, and exactly-one auto-select; raises
+   * `connection_not_found` / `invalid_argument` on resolution failure.
+   */
+  resolveClientBindings?: (
+    actor: { kind: "client"; grant: SearchSemanticGrant },
+    request: { connectionId: string | null },
+  ) =>
+    | Promise<SearchSemanticClientBinding[]>
+    | SearchSemanticClientBinding[];
   /**
    * Compile one connector's grant + manifest + request filter shape into a
    * plan. Implementations MUST enforce field-grant intersection,
@@ -729,34 +791,94 @@ export async function executeSearchSemantic(
 
   // 3. Per-mode planning fan-out.
   const perConnectorPlans: SearchSemanticConnectorPlan[] = [];
-  // Track owner-fan-out connectors skipped without failing the request
-  // (broken manifest, empty searchable plan). These become
+  // Track owner-fan-out *sources* skipped without failing the request
+  // (broken manifest, empty searchable plan). Each entry optionally carries
+  // `connection_id` when the skipped unit is one binding under a connector
+  // rather than the whole connector. These become
   // `source_skipped_not_applicable` warnings so the envelope is honest.
-  const skippedConnectorIds: string[] = [];
+  const skippedSources: Array<{ source: string; connection_id?: string }> = [];
+  const requestConnectionId =
+    typeof input.query.connection_id === "string" && input.query.connection_id.length > 0
+      ? input.query.connection_id
+      : typeof input.query.connector_instance_id === "string"
+            && input.query.connector_instance_id.length > 0
+        ? input.query.connector_instance_id
+        : null;
   if (input.actor.kind === "owner") {
-    const connectorIds = await dependencies.listOwnerVisibleConnectorIds();
-    for (const connectorId of connectorIds) {
-      const manifest = await dependencies.resolveOwnerManifestForConnector(
-        connectorId,
-      );
-      if (!manifest) {
-        skippedConnectorIds.push(connectorId);
-        continue;
+    if (typeof dependencies.listOwnerVisibleBindings === "function") {
+      const bindings = await dependencies.listOwnerVisibleBindings();
+      const narrowedBindings = requestConnectionId
+        ? bindings.filter((b) => b.connectorInstanceId === requestConnectionId)
+        : bindings;
+      if (requestConnectionId && narrowedBindings.length === 0) {
+        throw new SearchSemanticRequestError(
+          "connection_not_found",
+          `connection_id '${requestConnectionId}' is not addressable for this owner.`,
+          "connection_id",
+        );
       }
-      const grant = dependencies.buildOwnerReadGrantForManifest(manifest);
-      const planEntries = dependencies.buildSearchPlanForGrant({
-        manifest,
-        grant,
-        streamsFilter: params.streams,
-        filter: params.filter,
-        filteredStream: params.filteredStream,
-        connectorId,
-      });
-      if (planEntries.length === 0) {
-        skippedConnectorIds.push(connectorId);
-        continue;
+      for (const binding of narrowedBindings) {
+        const manifest = typeof dependencies.resolveOwnerManifestForBinding
+          === "function"
+          ? await dependencies.resolveOwnerManifestForBinding(binding)
+          : await dependencies.resolveOwnerManifestForConnector(
+              binding.connectorId,
+            );
+        if (!manifest) {
+          skippedSources.push({
+            source: binding.connectorId,
+            connection_id: binding.connectorInstanceId,
+          });
+          continue;
+        }
+        const grant = dependencies.buildOwnerReadGrantForManifest(manifest);
+        const planEntries = dependencies.buildSearchPlanForGrant({
+          manifest,
+          grant,
+          streamsFilter: params.streams,
+          filter: params.filter,
+          filteredStream: params.filteredStream,
+          connectorId: binding.connectorId,
+        });
+        if (planEntries.length === 0) {
+          skippedSources.push({
+            source: binding.connectorId,
+            connection_id: binding.connectorInstanceId,
+          });
+          continue;
+        }
+        perConnectorPlans.push({
+          connectorId: binding.connectorId,
+          manifest,
+          grant,
+          planEntries,
+        });
       }
-      perConnectorPlans.push({ connectorId, manifest, grant, planEntries });
+    } else {
+      const connectorIds = await dependencies.listOwnerVisibleConnectorIds();
+      for (const connectorId of connectorIds) {
+        const manifest = await dependencies.resolveOwnerManifestForConnector(
+          connectorId,
+        );
+        if (!manifest) {
+          skippedSources.push({ source: connectorId });
+          continue;
+        }
+        const grant = dependencies.buildOwnerReadGrantForManifest(manifest);
+        const planEntries = dependencies.buildSearchPlanForGrant({
+          manifest,
+          grant,
+          streamsFilter: params.streams,
+          filter: params.filter,
+          filteredStream: params.filteredStream,
+          connectorId,
+        });
+        if (planEntries.length === 0) {
+          skippedSources.push({ source: connectorId });
+          continue;
+        }
+        perConnectorPlans.push({ connectorId, manifest, grant, planEntries });
+      }
     }
     // Owner-mode `streams[]` is a soft filter: unknown stream names just
     // produce zero hits.
@@ -775,25 +897,55 @@ export async function executeSearchSemantic(
         }
       }
     }
-    const manifest = await dependencies.resolveClientManifest({
-      kind: "client",
-      grant,
-    });
     const connectorId =
       (grant as { source?: { kind?: unknown; id?: unknown } } | null)?.source?.kind === "connector" &&
       typeof (grant as { source?: { id?: unknown } } | null)?.source?.id === "string"
         ? ((grant as { source?: { id?: string } }).source!.id as string)
         : null;
-    const planEntries = dependencies.buildSearchPlanForGrant({
-      manifest,
-      grant,
-      streamsFilter: params.streams,
-      filter: params.filter,
-      filteredStream: params.filteredStream,
-      connectorId,
-    });
-    if (planEntries.length > 0) {
-      perConnectorPlans.push({ connectorId, manifest, grant, planEntries });
+    if (typeof dependencies.resolveClientBindings === "function") {
+      const clientBindings = await dependencies.resolveClientBindings(
+        { kind: "client", grant },
+        { connectionId: requestConnectionId },
+      );
+      for (const cb of clientBindings) {
+        const planEntries = dependencies.buildSearchPlanForGrant({
+          manifest: cb.manifest,
+          grant,
+          streamsFilter: params.streams,
+          filter: params.filter,
+          filteredStream: params.filteredStream,
+          connectorId,
+        });
+        if (planEntries.length === 0) {
+          skippedSources.push({
+            source: connectorId ?? "",
+            connection_id: cb.connectorInstanceId,
+          });
+          continue;
+        }
+        perConnectorPlans.push({
+          connectorId,
+          manifest: cb.manifest,
+          grant,
+          planEntries,
+        });
+      }
+    } else {
+      const manifest = await dependencies.resolveClientManifest({
+        kind: "client",
+        grant,
+      });
+      const planEntries = dependencies.buildSearchPlanForGrant({
+        manifest,
+        grant,
+        streamsFilter: params.streams,
+        filter: params.filter,
+        filteredStream: params.filteredStream,
+        connectorId,
+      });
+      if (planEntries.length > 0) {
+        perConnectorPlans.push({ connectorId, manifest, grant, planEntries });
+      }
     }
   }
 
@@ -869,12 +1021,19 @@ export async function executeSearchSemantic(
     );
   }
 
-  const skippedWarnings: SearchSemanticWarning[] = skippedConnectorIds.map(
-    (connectorId) => ({
-      code: SEARCH_SEMANTIC_SOURCE_SKIPPED_WARNING_CODE,
-      message: `Connector '${connectorId}' is not applicable to this query and was skipped.`,
-      detail: { source: connectorId },
-    }),
+  const skippedWarnings: SearchSemanticWarning[] = skippedSources.map(
+    (skipped) => {
+      const detail: Record<string, unknown> = { source: skipped.source };
+      if (skipped.connection_id) detail.connection_id = skipped.connection_id;
+      const subject = skipped.connection_id
+        ? `Connection '${skipped.connection_id}' under connector '${skipped.source}'`
+        : `Connector '${skipped.source}'`;
+      return {
+        code: SEARCH_SEMANTIC_SOURCE_SKIPPED_WARNING_CODE,
+        message: `${subject} is not applicable to this query and was skipped.`,
+        detail,
+      };
+    },
   );
   const allWarnings: SearchSemanticWarning[] = [
     ...params.warnings,

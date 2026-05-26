@@ -41,7 +41,11 @@ import {
   passesRequestFilters,
 } from './record-filters.js';
 import { makeDefaultAccountConnectorInstanceId } from './stores/connector-instance-store.js';
-import { resolveDisplayNamesForBindings } from './connection-identity.js';
+import {
+  listActiveOwnerBindingsForConnectors,
+  resolveDisplayNamesForBindings,
+  resolveFanInBindings,
+} from './connection-identity.js';
 import {
   postgresLexicalIndexDelete,
   postgresLexicalIndexDeleteByConnectorStream,
@@ -529,6 +533,7 @@ export async function runLexicalSearch({
   resolveOwnerManifestFromScope,
   buildOwnerReadGrantForManifest,
   resolveGrantManifest,
+  getOwnerSubjectId,
 }) {
   const isOwner = tokenInfo.pdpp_token_kind === 'owner';
   const advertisement = resolveLexicalRetrievalAdvertisement(opts);
@@ -547,9 +552,26 @@ export async function runLexicalSearch({
   // (allowlist, advertisement gate, mode planning, cursor format, slice math,
   // envelope, disclosure data); these helpers keep their backend-specific
   // semantics untouched.
+  // Resolve the owner subject id once so cross-binding fan-in helpers can
+  // enumerate every owner-visible connection without piping the value
+  // through each per-connector adapter call. Hosts SHOULD provide
+  // `getOwnerSubjectId` explicitly; we fall back to the default owner
+  // subject for tests that do not wire it.
+  const ownerSubjectId = isOwner
+    ? (typeof getOwnerSubjectId === 'function'
+        ? getOwnerSubjectId()
+        : OWNER_AUTH_DEFAULT_SUBJECT_ID)
+    : null;
   const dependencies = {
     getAdvertisement: () => advertisement,
     listOwnerVisibleConnectorIds: () => resolveOwnerVisibleConnectorIds(),
+    listOwnerVisibleBindings: async () => {
+      const connectorIds = await resolveOwnerVisibleConnectorIds();
+      return await listActiveOwnerBindingsForConnectors({
+        ownerSubjectId,
+        connectorIds,
+      });
+    },
     resolveOwnerManifestForConnector: async (connectorId) => {
       try {
         const ownerScope = resolveOwnerScopeForConnector(connectorId);
@@ -572,6 +594,38 @@ export async function runLexicalSearch({
         return null;
       }
     },
+    resolveOwnerManifestForBinding: async (binding) => {
+      try {
+        const ownerScope = resolveOwnerScopeForConnector(binding.connectorId);
+        // Pin the scope's storage binding to this specific connection so the
+        // manifest resolver does not auto-pick a different one when multiple
+        // bindings exist under the same connector.
+        const pinnedScope = {
+          ...ownerScope,
+          storage_binding: {
+            ...(ownerScope.storage_binding || {}),
+            connector_id: binding.connectorId,
+            connector_instance_id: binding.connectorInstanceId,
+          },
+        };
+        const resolved = await resolveOwnerManifestFromScope(pinnedScope);
+        const manifest = resolved.manifest ?? null;
+        if (manifest) {
+          return {
+            ...manifest,
+            storage_binding: {
+              ...(manifest.storage_binding || {}),
+              connector_instance_id:
+                resolved.storageBinding?.connector_instance_id
+                ?? binding.connectorInstanceId,
+            },
+          };
+        }
+        return null;
+      } catch {
+        return null;
+      }
+    },
     buildOwnerReadGrantForManifest: (manifest) =>
       buildOwnerReadGrantForManifest(manifest),
     resolveClientManifest: async () => {
@@ -586,6 +640,51 @@ export async function runLexicalSearch({
         };
       }
       return grantResolved.manifest;
+    },
+    resolveClientBindings: async (clientActor, { connectionId }) => {
+      const grantResolved = await resolveGrantManifest(tokenInfo);
+      const baseManifest = grantResolved.manifest;
+      const connectorId = baseManifest?.storage_binding?.connector_id
+        || baseManifest?.connector_id
+        || null;
+      const ownerSubjectIdForGrant =
+        tokenInfo?.grant?.subject?.id
+        || tokenInfo?.subject_id
+        || OWNER_AUTH_DEFAULT_SUBJECT_ID;
+      // Find a representative per-stream grant-scope connection_id if all
+      // grant streams pin to the same connection. Mixed-constraint grants
+      // (different per-stream connection_ids) are addressed in the grant
+      // evaluator via per-stream resolution; the search fan-in passes the
+      // single pin when all streams agree (or null otherwise).
+      const grantStreams = clientActor?.grant?.streams || [];
+      let grantStreamConnectionId = null;
+      const pinned = grantStreams
+        .map((s) => s?.connection_id)
+        .filter((v) => typeof v === 'string' && v.length > 0);
+      if (pinned.length === grantStreams.length && pinned.length > 0) {
+        const unique = new Set(pinned);
+        if (unique.size === 1) grantStreamConnectionId = pinned[0];
+      }
+      const { bindings } = await resolveFanInBindings({
+        ownerSubjectId: ownerSubjectIdForGrant,
+        connectorId,
+        connectorInstanceIdHint:
+          grantResolved.storageBinding?.connector_instance_id || null,
+        requestConnectionId: connectionId,
+        grantStreamConnectionId,
+      });
+      return bindings.map((b) => ({
+        manifest: {
+          ...baseManifest,
+          storage_binding: {
+            ...(baseManifest.storage_binding || {}),
+            connector_id: b.connectorId || connectorId,
+            connector_instance_id: b.connectorInstanceId,
+          },
+        },
+        connectorInstanceId: b.connectorInstanceId,
+        ...(b.displayName ? { displayName: b.displayName } : {}),
+      }));
     },
     buildSearchPlanForGrant: ({
       manifest,
@@ -765,6 +864,14 @@ export function buildSearchPlanForGrant({ manifest, grant, streamsFilter, compil
 
     const streamGrant = grant.streams.find((s) => s.name === mStream.name);
     if (!streamGrant) continue;
+    if (
+      typeof streamGrant.connection_id === 'string'
+      && streamGrant.connection_id.length > 0
+      && resolvedConnectorInstanceId
+      && streamGrant.connection_id !== resolvedConnectorInstanceId
+    ) {
+      continue;
+    }
 
     const grantedFields = Array.isArray(streamGrant.fields) && streamGrant.fields.length > 0
       ? new Set(streamGrant.fields)
@@ -1059,11 +1166,31 @@ function generateSnapshotId() {
 }
 
 function hashPlan({ perConnectorPlans, isOwner }) {
-  // Cheap stable hash; only used to sanity-check snapshot reuse.
+  // Stable hash over the binding set so cursors only survive across requests
+  // whose plan covers the same `(connector_id, connector_instance_id,
+  // stream, sorted searchable_fields)` topology. A request that adds or
+  // removes a binding mid-pagination yields a different hash, invalidating
+  // cursor reuse — the natural fall-out is `invalid_cursor` on the next page.
+  //
+  // We sort the plan summary deterministically (connector_id,
+  // connector_instance_id, then stream) so two requests with the same
+  // binding set hash equal regardless of enumeration order across owner
+  // fan-out and client binding resolution.
   const summary = perConnectorPlans.map((p) => ({
     c: p.connectorId,
-    e: p.planEntries.map((pe) => ({ i: pe.connectorInstanceId, s: pe.streamName, f: pe.searchableFields.slice().sort() })),
-  }));
+    e: p.planEntries
+      .map((pe) => ({
+        i: pe.connectorInstanceId || null,
+        s: pe.streamName,
+        f: pe.searchableFields.slice().sort(),
+      }))
+      .sort((a, b) => {
+        const ia = a.i || '';
+        const ib = b.i || '';
+        if (ia !== ib) return ia < ib ? -1 : 1;
+        return a.s < b.s ? -1 : a.s > b.s ? 1 : 0;
+      }),
+  })).sort((a, b) => (a.c || '') < (b.c || '') ? -1 : (a.c || '') > (b.c || '') ? 1 : 0);
   return JSON.stringify({ isOwner, summary });
 }
 

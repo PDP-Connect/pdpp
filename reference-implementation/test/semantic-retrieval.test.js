@@ -1250,7 +1250,7 @@ test('semantic upsert with an empty field deletes only that record, not the whol
   });
 });
 
-test('semantic index metadata isolates instances and connector-only client search rejects ambiguity', async () => {
+test('semantic index metadata isolates instances and client search fans in across active bindings', async () => {
   await withHarness({}, async ({ asUrl, rsUrl }) => {
     const ownerToken = await issueOwnerToken(asUrl);
 
@@ -1313,8 +1313,20 @@ test('semantic index metadata isolates instances and connector-only client searc
       `${rsUrl}/v1/search/semantic?q=${encodeURIComponent(baseRecord.title)}&streams[]=posts`,
       { headers: { Authorization: `Bearer ${approved.token}` } },
     );
-    assert.equal(status, 400);
-    assert.equal(body.error.code, 'ambiguous_connector_instance');
+    // With cross-binding search fan-in, two active connections under one
+    // connector are no longer an error — the runtime returns the union and
+    // each hit carries its `connection_id`. (Pre-fan-in this surfaced the
+    // scheduler's `ambiguous_connector_instance` error to the read path,
+    // which has been replaced by the typed `connection_not_found` /
+    // `ambiguous_connection` read-path errors covered by
+    // `storage-fan-in-read-contract.test.js` and the route-level
+    // `blob-fan-in-ambiguity.test.js`.)
+    assert.equal(status, 200);
+    const hits = body.data || [];
+    // Both bindings should contribute a hit for the shared record_key.
+    assert.equal(hits.length, 2, 'fan-in returns one hit per binding');
+    const cids = hits.map((h) => h.connection_id).sort();
+    assert.deepEqual(cids, ['cin_semantic_personal', 'cin_semantic_work']);
   });
 });
 
