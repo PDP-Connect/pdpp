@@ -2,6 +2,11 @@ import {
   getRetainedSizeGlobal,
   listRetainedSizeStreams,
 } from './retained-size-read-model.js';
+import { getDb } from './db.js';
+import {
+  isPostgresStorageBackend,
+  postgresQuery,
+} from './postgres-storage.js';
 
 const DEFAULT_LIMIT = 100;
 const MAX_LIMIT = 500;
@@ -24,10 +29,11 @@ export function normalizeRecordVersionStatsRisk(value) {
   return value;
 }
 
-export function classifyRecordVersionChurn({ currentRecordCount, recordHistoryCount }) {
+export function classifyRecordVersionChurn({ currentRecordCount, recordHistoryCount, recordKeyCount = null }) {
   const current = Number(currentRecordCount || 0);
   const history = Number(recordHistoryCount || 0);
-  const denominator = Math.max(1, current);
+  const keys = recordKeyCount == null ? null : Number(recordKeyCount || 0);
+  const denominator = Math.max(1, keys == null ? current : keys);
   const versionsPerRecord = history / denominator;
   const riskReasons = [];
 
@@ -54,6 +60,115 @@ export function classifyRecordVersionChurn({ currentRecordCount, recordHistoryCo
   return { riskLevel: 'normal', riskReasons, versionsPerRecord };
 }
 
+function buildGroundTruthWhere({ connectorInstanceId, stream } = {}, dialect = 'sqlite') {
+  const clauses = [];
+  const params = [];
+  const placeholder = () => (dialect === 'postgres' ? `$${params.length + 1}` : '?');
+  if (connectorInstanceId) {
+    clauses.push(`connector_instance_id = ${placeholder()}`);
+    params.push(connectorInstanceId);
+  }
+  if (stream) {
+    clauses.push(`stream = ${placeholder()}`);
+    params.push(stream);
+  }
+  return {
+    params,
+    where: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '',
+  };
+}
+
+function shapeGroundTruthRow(row) {
+  return {
+    connector_id: row.connector_id || null,
+    connector_instance_id: row.connector_instance_id,
+    stream: row.stream,
+    current_record_count: Number(row.current_record_count || 0),
+    record_history_count: Number(row.record_history_count || 0),
+    record_key_count: Number(row.record_key_count || 0),
+    last_current_at: row.last_current_at || null,
+    last_history_at: row.last_history_at || null,
+  };
+}
+
+export async function listRecordVersionGroundTruthStreams({ connectorInstanceId, stream } = {}) {
+  if (isPostgresStorageBackend()) {
+    const historyFilter = buildGroundTruthWhere({ connectorInstanceId, stream }, 'postgres');
+    const currentWhere = historyFilter.where
+      ? `${historyFilter.where} AND deleted = FALSE`
+      : 'WHERE deleted = FALSE';
+    const result = await postgresQuery(
+      `WITH history AS (
+          SELECT connector_instance_id, connector_id, stream,
+                 COUNT(*)::bigint AS record_history_count,
+                 COUNT(DISTINCT record_key)::bigint AS record_key_count,
+                 MAX(emitted_at) AS last_history_at
+            FROM record_changes
+            ${historyFilter.where}
+           GROUP BY connector_instance_id, connector_id, stream
+        ),
+        current_records AS (
+          SELECT connector_instance_id, stream,
+                 COUNT(*)::bigint AS current_record_count,
+                 MAX(emitted_at) AS last_current_at
+            FROM records
+            ${currentWhere}
+           GROUP BY connector_instance_id, stream
+        )
+        SELECT history.connector_instance_id, history.connector_id, history.stream,
+               COALESCE(current_records.current_record_count, 0)::bigint AS current_record_count,
+               history.record_history_count,
+               history.record_key_count,
+               current_records.last_current_at,
+               history.last_history_at
+          FROM history
+          LEFT JOIN current_records
+            ON current_records.connector_instance_id = history.connector_instance_id
+           AND current_records.stream = history.stream`,
+      historyFilter.params,
+    );
+    return result.rows.map(shapeGroundTruthRow);
+  }
+
+  const historyFilter = buildGroundTruthWhere({ connectorInstanceId, stream }, 'sqlite');
+  const currentFilter = buildGroundTruthWhere({ connectorInstanceId, stream }, 'sqlite');
+  const currentWhere = currentFilter.where
+    ? `${currentFilter.where} AND deleted = 0`
+    : 'WHERE deleted = 0';
+  const rows = getDb()
+    .prepare(
+      `WITH history AS (
+          SELECT connector_instance_id, connector_id, stream,
+                 COUNT(*) AS record_history_count,
+                 COUNT(DISTINCT record_key) AS record_key_count,
+                 MAX(emitted_at) AS last_history_at
+            FROM record_changes
+            ${historyFilter.where}
+           GROUP BY connector_instance_id, connector_id, stream
+        ),
+        current_records AS (
+          SELECT connector_instance_id, stream,
+                 COUNT(*) AS current_record_count,
+                 MAX(emitted_at) AS last_current_at
+            FROM records
+            ${currentWhere}
+           GROUP BY connector_instance_id, stream
+        )
+        SELECT history.connector_instance_id, history.connector_id, history.stream,
+               COALESCE(current_records.current_record_count, 0) AS current_record_count,
+               history.record_history_count,
+               history.record_key_count,
+               current_records.last_current_at,
+               history.last_history_at
+          FROM history
+          LEFT JOIN current_records
+            ON current_records.connector_instance_id = history.connector_instance_id
+           AND current_records.stream = history.stream`,
+    )
+    .all(...historyFilter.params, ...currentFilter.params);
+  return rows.map(shapeGroundTruthRow);
+}
+
 async function getDisplayNames(connectorInstanceIds, connectorInstanceStore) {
   if (!connectorInstanceStore || typeof connectorInstanceStore.get !== 'function') {
     return new Map();
@@ -71,6 +186,14 @@ async function getDisplayNames(connectorInstanceIds, connectorInstanceStore) {
   return names;
 }
 
+function rowKey(row) {
+  return `${row.connector_instance_id}\n${row.stream}`;
+}
+
+function raiseRiskAtLeastWatch(riskLevel) {
+  return riskLevel === 'normal' ? 'watch' : riskLevel;
+}
+
 function riskSortValue(riskLevel) {
   if (riskLevel === 'high') return 0;
   if (riskLevel === 'watch') return 1;
@@ -85,6 +208,7 @@ export async function buildRecordVersionStatsEnvelope({
 } = {}, {
   connectorInstanceStore = null,
   listStreams = listRetainedSizeStreams,
+  listGroundTruthStreams = listRecordVersionGroundTruthStreams,
   getProjection = getRetainedSizeGlobal,
 } = {}) {
   const effectiveLimit = clampRecordVersionStatsLimit(limit);
@@ -93,19 +217,54 @@ export async function buildRecordVersionStatsEnvelope({
     connectorInstanceId: connectorInstanceId || undefined,
     stream: stream || undefined,
   });
+  const groundTruthRows = listGroundTruthStreams
+    ? await listGroundTruthStreams({
+      connectorInstanceId: connectorInstanceId || undefined,
+      stream: stream || undefined,
+    })
+    : [];
+  const groundTruthByKey = new Map(groundTruthRows.map((row) => [rowKey(row), row]));
+  const projectionByKey = new Map(streamRows.map((row) => [rowKey(row), row]));
+  const mergedRows = [
+    ...streamRows,
+    ...groundTruthRows.filter((row) => !projectionByKey.has(rowKey(row))).map((row) => ({
+      connector_id: row.connector_id,
+      connector_instance_id: row.connector_instance_id,
+      stream: row.stream,
+      record_count: row.current_record_count,
+      record_history_count: row.record_history_count,
+      dirty: false,
+      computed_at: null,
+      projection_missing: true,
+    })),
+  ];
   const displayNames = await getDisplayNames(
-    Array.from(new Set(streamRows.map((row) => row.connector_instance_id).filter(Boolean))),
+    Array.from(new Set(mergedRows.map((row) => row.connector_instance_id).filter(Boolean))),
     connectorInstanceStore,
   );
 
-  const rows = streamRows
+  const rows = mergedRows
     .map((row) => {
-      const currentRecordCount = Number(row.record_count || 0);
-      const recordHistoryCount = Number(row.record_history_count || 0);
+      const groundTruth = groundTruthByKey.get(rowKey(row));
+      const projectionMissing = Boolean(row.projection_missing) || !projectionByKey.has(rowKey(row));
+      const currentRecordCount = Number(groundTruth?.current_record_count ?? row.record_count ?? 0);
+      const recordHistoryCount = Number(groundTruth?.record_history_count ?? row.record_history_count ?? 0);
+      const recordKeyCount = groundTruth ? Number(groundTruth.record_key_count || 0) : null;
       const classification = classifyRecordVersionChurn({
         currentRecordCount,
         recordHistoryCount,
+        recordKeyCount,
       });
+      const riskReasons = [...classification.riskReasons];
+      let riskLevel = classification.riskLevel;
+      if (projectionMissing) {
+        riskReasons.push('projection_missing');
+        riskLevel = raiseRiskAtLeastWatch(riskLevel);
+      }
+      if (Boolean(row.dirty)) {
+        riskReasons.push('projection_dirty');
+        riskLevel = raiseRiskAtLeastWatch(riskLevel);
+      }
       return {
         connector_id: row.connector_id || null,
         connector_instance_id: row.connector_instance_id,
@@ -113,14 +272,17 @@ export async function buildRecordVersionStatsEnvelope({
         stream: row.stream,
         current_record_count: currentRecordCount,
         record_history_count: recordHistoryCount,
+        record_key_count: recordKeyCount,
         versions_per_record: Number(classification.versionsPerRecord.toFixed(3)),
         // The retained-size projection tracks when aggregate facts were
         // computed, not separate current/history write timestamps.
-        last_current_at: null,
-        last_history_at: null,
+        last_current_at: groundTruth?.last_current_at || null,
+        last_history_at: groundTruth?.last_history_at || null,
         projection_dirty: Boolean(row.dirty),
-        risk_level: classification.riskLevel,
-        risk_reasons: classification.riskReasons,
+        projection_missing: projectionMissing,
+        projection_authority: groundTruth ? 'record_changes_ground_truth' : 'retained_size_projection',
+        risk_level: riskLevel,
+        risk_reasons: riskReasons,
       };
     })
     .filter((row) => (riskFilter ? row.risk_level === riskFilter : true))
@@ -150,7 +312,7 @@ export async function buildRecordVersionStatsEnvelope({
         stream: stream || null,
         risk: riskFilter,
       },
-      source: 'retained_size_projection',
+      source: 'retained_size_projection_with_record_changes_ground_truth',
       risk_thresholds: {
         watch_versions_per_record: 5,
         high_versions_per_record: 50,

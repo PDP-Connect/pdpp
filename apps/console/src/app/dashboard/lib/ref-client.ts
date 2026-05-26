@@ -263,8 +263,11 @@ export interface RefRecordVersionStatsRow {
   display_name: string | null;
   last_current_at: string | null;
   last_history_at: string | null;
+  projection_authority: "record_changes_ground_truth" | "retained_size_projection";
   projection_dirty: boolean;
+  projection_missing: boolean;
   record_history_count: number;
+  record_key_count: number | null;
   risk_level: RefRecordVersionRisk;
   risk_reasons: string[];
   stream: string;
@@ -288,7 +291,7 @@ export interface RefRecordVersionStatsEnvelope {
       watch_versions_per_record: number;
     };
     returned: number;
-    source: "retained_size_projection";
+    source: "retained_size_projection_with_record_changes_ground_truth";
     total_matching: number;
   };
   object: "ref_record_version_stats";

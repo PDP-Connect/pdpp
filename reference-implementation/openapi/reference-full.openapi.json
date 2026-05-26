@@ -18177,7 +18177,7 @@
           "reference",
           "records"
         ],
-        "summary": "Projection-backed record-version churn stats for owner diagnostics.",
+        "summary": "Record-version churn stats with projection and record-change authority for owner diagnostics.",
         "parameters": [
           {
             "in": "query",
@@ -18263,6 +18263,13 @@
                             "type": "integer",
                             "minimum": 0
                           },
+                          "record_key_count": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ],
+                            "minimum": 0
+                          },
                           "versions_per_record": {
                             "type": "number",
                             "minimum": 0
@@ -18281,6 +18288,16 @@
                           },
                           "projection_dirty": {
                             "type": "boolean"
+                          },
+                          "projection_missing": {
+                            "type": "boolean"
+                          },
+                          "projection_authority": {
+                            "type": "string",
+                            "enum": [
+                              "record_changes_ground_truth",
+                              "retained_size_projection"
+                            ]
                           },
                           "risk_level": {
                             "type": "string",
@@ -18304,10 +18321,13 @@
                           "stream",
                           "current_record_count",
                           "record_history_count",
+                          "record_key_count",
                           "versions_per_record",
                           "last_current_at",
                           "last_history_at",
                           "projection_dirty",
+                          "projection_missing",
+                          "projection_authority",
                           "risk_level",
                           "risk_reasons"
                         ]
@@ -18369,7 +18389,7 @@
                           ]
                         },
                         "source": {
-                          "const": "retained_size_projection"
+                          "const": "retained_size_projection_with_record_changes_ground_truth"
                         },
                         "risk_thresholds": {
                           "type": "object",
