@@ -4701,6 +4701,7 @@ function buildAsApp(opts = {}) {
   //       (#"Owner-meaningful display name SHALL be owner-editable")
   app.patch(
     '/_ref/connections/:connectorInstanceId',
+    { contract: 'refSetConnectionDisplayName' },
     ownerAuth.requireOwnerSession,
     async (req, res) => {
       try {
