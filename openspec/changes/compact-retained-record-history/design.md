@@ -23,7 +23,9 @@ The tool SHALL operate only on `(connector_id, stream)` pairs that have a regist
 
 Each policy entry SHALL list every `connector_id` value the policy applies to. In practice this is both the short name (`slack`) and the registry URL form (`https://registry.pdpp.org/connectors/slack`) the live deployment actually stores — same connector, two surface identifiers. Adding a policy means accepting both forms so the operator does not have to translate.
 
-These mirror the connectors' own `emitWithFingerprint(..., excludeKeys)` / `buildThreadFingerprint` / `payeeLocationFingerprint` definitions one-for-one. Slack `workspace`'s `fetched_at` exclusion is preserved verbatim — without exclusion, the connector's own gate would never fire (per `a08d7a0a`'s commit message).
+These mirror the canonical authoring-layer fingerprint at `packages/polyfill-connectors/src/fingerprint-cursor.ts:recordFingerprint` (shipped in `228305a6`) and the still-hand-rolled `connectors/gmail/parsers.ts:buildThreadFingerprint` and `connectors/ynab/index.ts:payeeLocationFingerprint`. Slack's per-stream excludeKeys come from `connectors/slack/index.ts:FINGERPRINT_EXCLUDE`; the workspace exclusion of `fetched_at` is preserved verbatim — without exclusion, the connector's own gate would never fire (per `a08d7a0a`'s commit message).
+
+The script ships its own copy of `recordFingerprint` so this operational `.mjs` tool does not depend on a compiled TypeScript artifact or a runtime TS shim. Drift between the two implementations is prevented by `reference-implementation/test/compact-record-history-fingerprint-parity.test.js`, which asserts byte-identical hex output across representative payloads for every registered policy plus adversarial nested-object/null-leaf fixtures. Adding a new policy requires extending that parity fixture set.
 
 The script SHALL refuse any other `connector_id`/`stream` invocation with a non-zero exit code listing the registered policies.
 

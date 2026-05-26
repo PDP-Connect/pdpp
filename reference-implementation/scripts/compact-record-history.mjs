@@ -10,7 +10,7 @@
  *
  * Scope is deny-by-default. Only the five `(connector_id, stream)` pairs
  * whose connectors ship a semantic fingerprint cursor (a08d7a0a,
- * 47ec8edd) are eligible:
+ * 47ec8edd, 228305a6) are eligible:
  *
  *   - gmail / threads
  *   - slack / workspace   (fingerprint excludes `fetched_at`)
@@ -83,35 +83,35 @@ export const COMPACTION_POLICIES = [
     stream: 'threads',
     excludeKeys: [],
     connectorSource:
-      'packages/polyfill-connectors/connectors/gmail/parsers.ts:buildThreadFingerprint',
+      'packages/polyfill-connectors/connectors/gmail/parsers.ts:buildThreadFingerprint (hand-rolled — still uses local stableStringify; matches the canonical fingerprint shape for excludeKeys=[])',
   },
   {
     connectorIds: ['slack', 'https://registry.pdpp.org/connectors/slack'],
     stream: 'workspace',
     excludeKeys: ['fetched_at'],
     connectorSource:
-      'packages/polyfill-connectors/connectors/slack/parsers.ts:recordFingerprint + index.ts FINGERPRINTED_STREAMS (workspace excludes fetched_at)',
+      'packages/polyfill-connectors/connectors/slack/index.ts:FINGERPRINT_EXCLUDE.workspace (["fetched_at"]) → openFingerprintCursor → src/fingerprint-cursor.ts:recordFingerprint (canonical)',
   },
   {
     connectorIds: ['slack', 'https://registry.pdpp.org/connectors/slack'],
     stream: 'users',
     excludeKeys: [],
     connectorSource:
-      'packages/polyfill-connectors/connectors/slack/parsers.ts:recordFingerprint',
+      'packages/polyfill-connectors/connectors/slack/index.ts:FINGERPRINT_EXCLUDE.users ([]) → openFingerprintCursor → src/fingerprint-cursor.ts:recordFingerprint (canonical)',
   },
   {
     connectorIds: ['slack', 'https://registry.pdpp.org/connectors/slack'],
     stream: 'files',
     excludeKeys: [],
     connectorSource:
-      'packages/polyfill-connectors/connectors/slack/parsers.ts:recordFingerprint',
+      'packages/polyfill-connectors/connectors/slack/index.ts:FINGERPRINT_EXCLUDE.files ([]) → openFingerprintCursor → src/fingerprint-cursor.ts:recordFingerprint (canonical)',
   },
   {
     connectorIds: ['ynab', 'https://registry.pdpp.org/connectors/ynab'],
     stream: 'payee_locations',
     excludeKeys: [],
     connectorSource:
-      'packages/polyfill-connectors/connectors/ynab/index.ts:payeeLocationFingerprint',
+      'packages/polyfill-connectors/connectors/ynab/index.ts:payeeLocationFingerprint (hand-rolled — still uses local stableStringify; matches the canonical fingerprint shape for excludeKeys=[])',
   },
 ];
 
@@ -133,13 +133,29 @@ export function describePolicies() {
 // ─── Fingerprint helper ─────────────────────────────────────────────────
 
 /**
- * Stable per-record fingerprint. Same shape as the connector-side
- * `recordFingerprint` / `buildThreadFingerprint` / `payeeLocationFingerprint`
- * helpers: SHA-1 over a stable-stringified canonical form that sorts
- * object keys and excludes the named keys at the top level.
+ * Stable per-record fingerprint. Byte-for-byte parity with
+ * `packages/polyfill-connectors/src/fingerprint-cursor.ts:recordFingerprint`
+ * — the canonical authoring-layer helper Slack/Gmail/Codex/YNAB cursors
+ * call when deciding whether a freshly-derived record is a no-op emit.
  *
- * Top-level-only exclusion matches the connector helpers — none of them
- * recurse exclude into nested objects.
+ * Parity matters: this script's "removable historical version"
+ * classification must equal the connector's "no-op emit" classification
+ * for the same payload. The parity is asserted by
+ * `reference-implementation/test/compact-record-history-fingerprint-parity.test.js`,
+ * which compares this implementation against the shared helper across
+ * representative fixtures for every registered policy. Drift between
+ * the two implementations fails that test loudly.
+ *
+ * Reimplemented here (instead of imported) because this is a Node `.mjs`
+ * operational tool and the canonical helper is TypeScript inside a
+ * different workspace package — importing it would couple this tool to
+ * either a build artifact or a runtime TS shim. The parity test is the
+ * substitute for the import.
+ *
+ * `excludeKeys` are removed at every level the stringifier visits, so
+ * adding a future policy that excludes a key appearing at nested levels
+ * (e.g. a `fetched_at` shoved into a nested envelope) is consistent
+ * with the canonical helper's semantics.
  */
 export function recordFingerprint(record, excludeKeys = []) {
   const exclude = new Set(excludeKeys);
@@ -149,18 +165,16 @@ export function recordFingerprint(record, excludeKeys = []) {
 
 function stableStringify(value, exclude) {
   if (value === null || typeof value !== 'object') {
-    return JSON.stringify(value);
+    return JSON.stringify(value) ?? 'null';
   }
   if (Array.isArray(value)) {
-    return `[${value.map((v) => stableStringify(v, EMPTY_SET)).join(',')}]`;
+    return `[${value.map((v) => stableStringify(v, exclude)).join(',')}]`;
   }
   const entries = Object.entries(value)
     .filter(([k]) => !exclude.has(k))
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stableStringify(v, EMPTY_SET)}`).join(',')}}`;
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stableStringify(v, exclude)}`).join(',')}}`;
 }
-
-const EMPTY_SET = new Set();
 
 // ─── Retention selector ─────────────────────────────────────────────────
 
