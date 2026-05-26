@@ -574,6 +574,128 @@ test("emitSessionsFromMaps: first run (no prior fingerprints) — emits everythi
   assert.equal(fingerprintSink.get("sess-2")?.message_count, null, "no-aggregate thread fingerprint has null count");
 });
 
+// ─── Invariant 10: forked rollouts — only the FIRST session_meta wins ──────
+//
+// Background: when a Codex thread forks (e.g. subagent spawn), the resulting
+// rollout file starts with TWO session_meta lines:
+//   line 1 — the child (canonical) session id, carrying `forked_from_id`.
+//   line 2 — the fork parent's session_meta replayed for context.
+// Every response_item that follows belongs to the CHILD session. Before this
+// fix the parser overwrote `state.sessionId` on every session_meta, so the
+// child's id was clobbered and all subsequent messages/function_calls were
+// emitted under the parent's id — leaving the child session with null counts
+// in state_5/threads merging. Pin the contract: only the first session_meta
+// installs id+meta; later session_meta lines are inert.
+//
+// Real example from ~/.codex/sessions/...rollout-...019d9268.../jsonl:
+//   id=019d9268-ffa5-72b3-9cba-e2a59443cd41 (child, file-canonical)
+//   forked_from_id / second meta id = 019d922d-c38b-7e11-ae99-9187af386148
+
+function forkedSessionMetaParentLine(parentId: string): RolloutObject {
+  // Codex emits the parent meta a few ms after the child meta. We pin the
+  // type/shape so a future schema tweak doesn't silently change behavior.
+  return {
+    type: "session_meta",
+    timestamp: "2026-04-22T00:00:00.001Z",
+    payload: {
+      id: parentId,
+      timestamp: "2026-04-22T00:00:00.000Z",
+      cwd: "/repo",
+      originator: "codex-tui",
+    },
+  };
+}
+
+test("processRolloutLine: forked rollout — first session_meta pins child id; second session_meta (parent) is ignored", () => {
+  const childId = "019d9268-ffa5-72b3-9cba-e2a59443cd41";
+  const parentId = "019d922d-c38b-7e11-ae99-9187af386148";
+  const { deps, emitted } = makeHarness();
+  const state = makeRolloutParseState();
+  const lines: RolloutObject[] = [
+    sessionMetaLine(childId, { originator: "codex-tui" }),
+    forkedSessionMetaParentLine(parentId),
+    messageLine("first child message"),
+    functionCallLine("c1", "shell", "ls"),
+    functionCallOutputLine("c1", "out"),
+    messageLine("second child message", "assistant"),
+  ];
+  for (const obj of lines) {
+    processRolloutLine({ obj, state, deps, file: "rollout-fork.jsonl" });
+  }
+  flushPendingCalls(state, deps);
+
+  // State stays pinned to the child id even after the parent's session_meta lands.
+  assert.equal(state.sessionId, childId, "sessionId stays on child after parent session_meta");
+  assert.equal(state.sessionMeta?.id, childId, "sessionMeta still describes the child");
+  // Every emitted record carries the child session id, never the parent's.
+  const msgRecs = emitted.filter((r) => r.stream === "messages");
+  const callRecs = emitted.filter((r) => r.stream === "function_calls");
+  assert.equal(msgRecs.length, 2, "both child messages emit");
+  for (const m of msgRecs) {
+    assert.equal(m.data.session_id, childId, "message session_id is the child");
+    assert.ok(String(m.data.id).startsWith(`${childId}:`), "message record id is prefixed with child session id");
+    assert.notEqual(m.data.session_id, parentId, "message must not attribute to fork parent");
+  }
+  assert.equal(callRecs.length, 1, "the paired function_call lands once");
+  assert.equal(callRecs[0]?.data.session_id, childId, "function_call session_id is the child");
+  // Counts on state are the child's lifetime within this rollout file.
+  assert.equal(state.messageCount, 2, "messageCount counts child messages only");
+  assert.equal(state.functionCallCount, 1, "functionCallCount counts child calls only");
+});
+
+test("processRolloutLine: forked rollout aggregate writes back under the child id, not the parent id", () => {
+  // Mirrors what parseRolloutFile would persist into `rolloutAggregates` —
+  // pin the invariant via processRolloutLine + the closing state read.
+  // (parseRolloutFile is `async` and owns the JSONL iterator; the
+  // aggregate write-back uses `state.sessionId` directly, so testing
+  // the per-line dispatcher is sufficient to lock the behavior.)
+  const childId = "019d9268-ffa5-72b3-9cba-e2a59443cd41";
+  const parentId = "019d922d-c38b-7e11-ae99-9187af386148";
+  const { deps } = makeHarness();
+  const state = makeRolloutParseState();
+  for (const obj of [
+    sessionMetaLine(childId),
+    forkedSessionMetaParentLine(parentId),
+    messageLine("hi"),
+    functionCallLine("c1", "shell", "ls"),
+  ]) {
+    processRolloutLine({ obj, state, deps, file: "rollout-fork.jsonl" });
+  }
+  const aggregate: RolloutAggregate = {
+    meta: state.sessionMeta || {},
+    firstTs: state.firstTimestamp,
+    lastTs: state.lastTimestamp,
+    messageCount: state.messageCount,
+    functionCallCount: state.functionCallCount,
+    rolloutPath: "/rollouts/fork.jsonl",
+  };
+  assert.equal(state.sessionId, childId, "aggregate keying uses the child id");
+  assert.equal(aggregate.meta.id, childId, "aggregate.meta.id is the child");
+  assert.notEqual(aggregate.meta.id, parentId, "aggregate.meta.id is never the fork parent");
+  assert.equal(aggregate.messageCount, 1);
+  assert.equal(aggregate.functionCallCount, 1);
+});
+
+test("processRolloutLine: more than two session_meta lines — only the first ever wins", () => {
+  // Defense-in-depth: if a future Codex change deepens the fork chain
+  // (parent-of-parent meta etc.), we still pin to the first id seen.
+  const childId = "child-uuid";
+  const { deps, emitted } = makeHarness();
+  const state = makeRolloutParseState();
+  for (const obj of [
+    sessionMetaLine(childId),
+    sessionMetaLine("parent-1"),
+    sessionMetaLine("parent-2"),
+    sessionMetaLine("parent-3"),
+    messageLine("hi"),
+  ]) {
+    processRolloutLine({ obj, state, deps, file: "r.jsonl" });
+  }
+  assert.equal(state.sessionId, childId);
+  const msg = emitted.find((r) => r.stream === "messages");
+  assert.equal(msg?.data.session_id, childId);
+});
+
 test("readPriorThreadFingerprints: tolerates missing state, missing field, and malformed entries", () => {
   const empty = readPriorThreadFingerprints({ type: "START" });
   assert.equal(empty.size, 0, "no state at all → empty");
