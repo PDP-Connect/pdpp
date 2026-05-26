@@ -62,7 +62,9 @@ export function parseFrontmatter(text) {
 export function isRolloutFile(name) {
     return name.startsWith("rollout-") && name.endsWith(".jsonl");
 }
-export function buildThreadSessionRecord(id, t, agg) {
+export function buildThreadSessionRecord(id, t, agg, priorFingerprint) {
+    const messageCount = agg?.messageCount ?? priorFingerprint?.message_count ?? null;
+    const functionCallCount = agg?.functionCallCount ?? priorFingerprint?.function_call_count ?? null;
     return {
         id,
         cwd: t.cwd || null,
@@ -74,8 +76,8 @@ export function buildThreadSessionRecord(id, t, agg) {
         repository_url: t.git_origin_url || null,
         started_at: epochToIso(t.created_at) || agg?.meta?.timestamp || agg?.firstTs || null,
         last_event_at: epochToIso(t.updated_at) || agg?.lastTs || null,
-        message_count: agg?.messageCount ?? null,
-        function_call_count: agg?.functionCallCount ?? null,
+        message_count: messageCount,
+        function_call_count: functionCallCount,
         title: textPreview(t.title || null, 500),
         archived: t.archived === 1 || t.archived === true,
         tokens_used: t.tokens_used ?? null,

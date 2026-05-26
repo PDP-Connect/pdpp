@@ -497,11 +497,42 @@ export function flushPendingCalls(state, deps) {
         deps.emitRecord("function_calls", { ...call });
     }
 }
-export function emitSessionsFromMaps({ threadsMap, rolloutAggregates, emitRecord }) {
+export function shouldReemitThreadSession(thread, agg, priorFingerprint) {
+    if (!priorFingerprint) {
+        return true;
+    }
+    if (agg) {
+        return true;
+    }
+    const priorUpdatedAt = priorFingerprint.updated_at ?? null;
+    const currentUpdatedAt = thread.updated_at ?? null;
+    if (currentUpdatedAt == null) {
+        return priorUpdatedAt != null;
+    }
+    if (priorUpdatedAt == null) {
+        return true;
+    }
+    return currentUpdatedAt > priorUpdatedAt;
+}
+function makeThreadFingerprint(thread, agg, priorFingerprint) {
+    return {
+        updated_at: thread.updated_at ?? null,
+        message_count: agg?.messageCount ?? priorFingerprint?.message_count ?? null,
+        function_call_count: agg?.functionCallCount ?? priorFingerprint?.function_call_count ?? null,
+    };
+}
+export function emitSessionsFromMaps({ threadsMap, rolloutAggregates, emitRecord, priorFingerprints, fingerprintSink, }) {
     const emittedSessionIds = new Set();
     for (const [id, t] of threadsMap) {
-        emitRecord("sessions", buildThreadSessionRecord(id, t, rolloutAggregates.get(id)));
         emittedSessionIds.add(id);
+        const agg = rolloutAggregates.get(id);
+        const prior = priorFingerprints?.get(id);
+        if (shouldReemitThreadSession(t, agg, prior)) {
+            emitRecord("sessions", buildThreadSessionRecord(id, t, agg, prior));
+        }
+        if (fingerprintSink) {
+            fingerprintSink.set(id, makeThreadFingerprint(t, agg, prior));
+        }
     }
     for (const [id, agg] of rolloutAggregates) {
         if (emittedSessionIds.has(id)) {
@@ -597,9 +628,15 @@ async function scanRollouts(args) {
     await waitForEmitDrain();
     return { parsedFiles };
 }
-function emitSessions({ stateDbPath, rolloutAggregates, emitRecord }) {
+function emitSessions({ stateDbPath, rolloutAggregates, emitRecord, priorFingerprints, fingerprintSink, }) {
     const { map: threadsById } = loadThreadsMap(stateDbPath);
-    emitSessionsFromMaps({ threadsMap: threadsById, rolloutAggregates, emitRecord });
+    emitSessionsFromMaps({
+        threadsMap: threadsById,
+        rolloutAggregates,
+        emitRecord,
+        priorFingerprints,
+        fingerprintSink,
+    });
 }
 async function readStartMessage() {
     const rl = createInterface({ input: process.stdin, terminal: false });
@@ -693,12 +730,20 @@ async function assertRequestedCodexSources(dirs, requested) {
         throw new Error(`requested Codex local source path(s) are missing or unreadable: ${missing.join(", ")}`);
     }
 }
-function emitStateCursors({ requested, newMtimes, nowIso, sessionsSourceMtimeMs }) {
+function emitStateCursors({ requested, newMtimes, nowIso, sessionsSourceMtimeMs, threadFingerprints, }) {
     if (requested.has("sessions")) {
+        const thread_fingerprints = {};
+        for (const [id, fp] of threadFingerprints) {
+            thread_fingerprints[id] = fp;
+        }
         emit({
             type: "STATE",
             stream: "sessions",
-            cursor: { fetched_at: nowIso(), source_mtime_ms: sessionsSourceMtimeMs },
+            cursor: {
+                fetched_at: nowIso(),
+                source_mtime_ms: sessionsSourceMtimeMs,
+                thread_fingerprints,
+            },
         });
     }
     if (requested.has("messages") || requested.has("function_calls")) {
@@ -735,6 +780,52 @@ function readPriorSessionsSourceMtimeMs(startMsg) {
         ? sessions.source_mtime_ms
         : null;
     return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+function nullableFiniteNumber(value) {
+    return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+function coerceFingerprintEntry(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        return null;
+    }
+    const v = value;
+    return {
+        updated_at: nullableFiniteNumber(v.updated_at),
+        message_count: nullableFiniteNumber(v.message_count),
+        function_call_count: nullableFiniteNumber(v.function_call_count),
+    };
+}
+function rawFingerprintMap(startMsg) {
+    if (!startMsg || typeof startMsg !== "object") {
+        return null;
+    }
+    const state = startMsg.state;
+    if (!state || typeof state !== "object") {
+        return null;
+    }
+    const sessions = state.sessions;
+    if (!sessions || typeof sessions !== "object" || Array.isArray(sessions)) {
+        return null;
+    }
+    const raw = sessions.thread_fingerprints;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+        return null;
+    }
+    return raw;
+}
+export function readPriorThreadFingerprints(startMsg) {
+    const out = new Map();
+    const raw = rawFingerprintMap(startMsg);
+    if (!raw) {
+        return out;
+    }
+    for (const [id, value] of Object.entries(raw)) {
+        const entry = coerceFingerprintEntry(value);
+        if (entry) {
+            out.set(id, entry);
+        }
+    }
+    return out;
 }
 function fileMtimeMs(path) {
     try {
@@ -833,6 +924,8 @@ async function main() {
     const scanStartedAtMs = Date.now();
     const sessionsSourceMtimeMs = fileMtimeMs(dirs.stateDbPath);
     let parsedRolloutFiles = 0;
+    const priorThreadFingerprints = readPriorThreadFingerprints(startMsg);
+    const threadFingerprints = new Map(priorThreadFingerprints);
     await emitLocalInventoryStreams({ codexHome: dirs.codexHome, requested, emitRecord });
     if (needRollouts) {
         const rolloutScan = await scanRollouts({
@@ -849,7 +942,13 @@ async function main() {
     }
     if (requested.has("sessions") &&
         (parsedRolloutFiles > 0 || readPriorSessionsSourceMtimeMs(startMsg) !== sessionsSourceMtimeMs)) {
-        emitSessions({ stateDbPath: dirs.stateDbPath, rolloutAggregates, emitRecord });
+        emitSessions({
+            stateDbPath: dirs.stateDbPath,
+            rolloutAggregates,
+            emitRecord,
+            priorFingerprints: priorThreadFingerprints,
+            fingerprintSink: threadFingerprints,
+        });
         await waitForEmitDrain();
     }
     if (requested.has("rules")) {
@@ -861,7 +960,7 @@ async function main() {
     if (requested.has("skills")) {
         await emitSkillsStream(dirs.skillsDir, emitRecord);
     }
-    emitStateCursors({ requested, newMtimes, nowIso, sessionsSourceMtimeMs });
+    emitStateCursors({ requested, newMtimes, nowIso, sessionsSourceMtimeMs, threadFingerprints });
     await waitForEmitDrain();
     emit({ type: "DONE", status: "succeeded", records_emitted: total });
     flushAndExit(0);
