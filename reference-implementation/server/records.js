@@ -66,42 +66,12 @@ import {
   createPostgresConnectorInstanceStore,
   createSqliteConnectorInstanceStore,
 } from './stores/connector-instance-store.js';
+import {
+  lookupConnectionDisplayName,
+  resolveRecordIdentityForBinding,
+} from './connection-identity.js';
 
-/**
- * Look up the owner-facing display name for a pinned connector-instance
- * binding. Returns `null` when the runtime cannot pin a non-placeholder
- * label without guessing; callers MUST omit `display_name` on the response
- * in that case so the wire never carries the storage-layer placeholder
- * ("legacy", "default_account", or the connector_id default).
- *
- * Spec: openspec/changes/canonicalize-public-read-contract/specs/
- *       reference-implementation-architecture/spec.md
- *       (#"Records, search, and blob items SHALL carry canonical connection identity")
- */
-async function lookupConnectionDisplayName(connectorInstanceId, connectorId) {
-  if (typeof connectorInstanceId !== 'string' || !connectorInstanceId) return null;
-  const store = isPostgresStorageBackend()
-    ? createPostgresConnectorInstanceStore()
-    : createSqliteConnectorInstanceStore();
-  try {
-    const instance = await store.get(connectorInstanceId);
-    if (!instance) return null;
-    return projectStorageDisplayName(instance.displayName, {
-      connectorId: connectorId || instance.connectorId,
-      connectorInstanceId,
-    });
-  } catch {
-    return null;
-  }
-}
-
-export async function resolveRecordIdentityForBinding(connectorInstanceId, connectorId) {
-  if (!connectorInstanceId) return null;
-  const displayName = await lookupConnectionDisplayName(connectorInstanceId, connectorId);
-  const identity = { connectionId: connectorInstanceId };
-  if (displayName) identity.displayName = displayName;
-  return identity;
-}
+export { resolveRecordIdentityForBinding };
 
 function nowIso() {
   return new Date().toISOString();

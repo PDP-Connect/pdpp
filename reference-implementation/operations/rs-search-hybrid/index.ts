@@ -124,6 +124,13 @@ export interface SearchHybridSourceResult {
    */
   connection_id?: string;
   connector_instance_id?: string;
+  /**
+   * Owner-facing label for the connection. Forwarded verbatim from whichever
+   * sub-source first emitted a result for this `(connector_id, stream,
+   * record_key)` tuple; absent when neither source captured a non-placeholder
+   * label.
+   */
+  display_name?: string;
   record_url: string;
   emitted_at: string | null;
   matched_fields: string[];
@@ -213,6 +220,12 @@ export interface SearchHybridResultItem {
    */
   connection_id?: string;
   connector_instance_id?: string;
+  /**
+   * Owner-facing label for the connection. Forwarded from whichever source
+   * emitted the first hit for this `(connector_id, stream, record_key)`
+   * tuple. Absent when neither source captured a non-placeholder label.
+   */
+  display_name?: string;
   record_url: string;
   emitted_at: string | null;
   matched_fields: string[];
@@ -458,6 +471,7 @@ interface MergeEntry {
     emitted_at: string | null;
   };
   connectionId: string | null;
+  displayName: string | null;
   matchedFields: string[];
   sources: Set<"lexical" | "semantic">;
   scores: Record<string, { kind: string; value: number; order: string }>;
@@ -470,6 +484,13 @@ function pickHitConnectionId(hit: SearchHybridSourceResult): string | null {
   }
   if (typeof hit.connector_instance_id === "string" && hit.connector_instance_id.length > 0) {
     return hit.connector_instance_id;
+  }
+  return null;
+}
+
+function pickHitDisplayName(hit: SearchHybridSourceResult): string | null {
+  if (typeof hit.display_name === "string" && hit.display_name.length > 0) {
+    return hit.display_name;
   }
   return null;
 }
@@ -496,6 +517,9 @@ function addHit(
     if (!existing.connectionId) {
       existing.connectionId = pickHitConnectionId(hit);
     }
+    if (!existing.displayName) {
+      existing.displayName = pickHitDisplayName(hit);
+    }
     return;
   }
   merged.set(key, {
@@ -508,6 +532,7 @@ function addHit(
       emitted_at: hit.emitted_at,
     },
     connectionId: pickHitConnectionId(hit),
+    displayName: pickHitDisplayName(hit),
     matchedFields: Array.isArray(hit.matched_fields)
       ? hit.matched_fields.slice()
       : [],
@@ -532,6 +557,9 @@ function shapeResult(entry: MergeEntry): SearchHybridResultItem {
   if (entry.connectionId) {
     result.connection_id = entry.connectionId;
     result.connector_instance_id = entry.connectionId;
+  }
+  if (entry.displayName) {
+    result.display_name = entry.displayName;
   }
   if (Object.keys(entry.scores).length > 0) result.scores = entry.scores;
   if (entry.snippet) result.snippet = entry.snippet;

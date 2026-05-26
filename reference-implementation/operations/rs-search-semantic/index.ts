@@ -188,6 +188,11 @@ export interface SearchSemanticSnapshotResult {
    * deprecated `connector_instance_id` alias on each result item.
    */
   connectorInstanceId?: string | null;
+  /**
+   * Owner-facing label for the connection. Emitted as `display_name` on the
+   * result item only when the snapshot captured a non-placeholder label.
+   */
+  displayName?: string | null;
   stream: string;
   recordKey: string;
   matchedFields: string[];
@@ -350,6 +355,11 @@ export interface SearchSemanticResultItem {
    */
   connection_id?: string;
   connector_instance_id?: string;
+  /**
+   * Owner-facing label for the connection. Emitted only when the snapshot
+   * captured a non-placeholder label. Mirrors records-list/detail wire shape.
+   */
+  display_name?: string;
   record_url: string;
   emitted_at: string | null;
   matched_fields: string[];
@@ -464,6 +474,7 @@ export interface SearchSemanticWarning {
   code: string;
   param?: string;
   message?: string;
+  detail?: Record<string, unknown>;
 }
 
 /**
@@ -472,6 +483,13 @@ export interface SearchSemanticWarning {
  * deprecation uniformly across search modes.
  */
 export const SEARCH_CONNECTION_ALIAS_DEPRECATED_WARNING_CODE = "deprecated_alias_used";
+
+/**
+ * Canonical warning code emitted when the owner fan-out had to skip a
+ * connector (broken manifest, empty searchable plan) without failing the
+ * whole request.
+ */
+export const SEARCH_SEMANTIC_SOURCE_SKIPPED_WARNING_CODE = "source_skipped_not_applicable";
 
 function deriveSearchConnectionAliasWarnings(
   query: Record<string, unknown>,
@@ -659,6 +677,9 @@ async function buildResultItem(
     item.connection_id = hit.connectorInstanceId;
     item.connector_instance_id = hit.connectorInstanceId;
   }
+  if (typeof hit.displayName === "string" && hit.displayName.length > 0) {
+    item.display_name = hit.displayName;
+  }
   if (hydrated.snippet) {
     item.snippet = hydrated.snippet;
   }
@@ -708,13 +729,20 @@ export async function executeSearchSemantic(
 
   // 3. Per-mode planning fan-out.
   const perConnectorPlans: SearchSemanticConnectorPlan[] = [];
+  // Track owner-fan-out connectors skipped without failing the request
+  // (broken manifest, empty searchable plan). These become
+  // `source_skipped_not_applicable` warnings so the envelope is honest.
+  const skippedConnectorIds: string[] = [];
   if (input.actor.kind === "owner") {
     const connectorIds = await dependencies.listOwnerVisibleConnectorIds();
     for (const connectorId of connectorIds) {
       const manifest = await dependencies.resolveOwnerManifestForConnector(
         connectorId,
       );
-      if (!manifest) continue;
+      if (!manifest) {
+        skippedConnectorIds.push(connectorId);
+        continue;
+      }
       const grant = dependencies.buildOwnerReadGrantForManifest(manifest);
       const planEntries = dependencies.buildSearchPlanForGrant({
         manifest,
@@ -724,7 +752,10 @@ export async function executeSearchSemantic(
         filteredStream: params.filteredStream,
         connectorId,
       });
-      if (planEntries.length === 0) continue;
+      if (planEntries.length === 0) {
+        skippedConnectorIds.push(connectorId);
+        continue;
+      }
       perConnectorPlans.push({ connectorId, manifest, grant, planEntries });
     }
     // Owner-mode `streams[]` is a soft filter: unknown stream names just
@@ -838,13 +869,24 @@ export async function executeSearchSemantic(
     );
   }
 
+  const skippedWarnings: SearchSemanticWarning[] = skippedConnectorIds.map(
+    (connectorId) => ({
+      code: SEARCH_SEMANTIC_SOURCE_SKIPPED_WARNING_CODE,
+      message: `Connector '${connectorId}' is not applicable to this query and was skipped.`,
+      detail: { source: connectorId },
+    }),
+  );
+  const allWarnings: SearchSemanticWarning[] = [
+    ...params.warnings,
+    ...skippedWarnings,
+  ];
   const envelope: SearchSemanticEnvelope = {
     object: "list",
     has_more: hasMore,
     ...(nextCursor ? { next_cursor: nextCursor } : {}),
     data,
-    ...(params.warnings.length > 0
-      ? { meta: { warnings: params.warnings } }
+    ...(allWarnings.length > 0
+      ? { meta: { warnings: allWarnings } }
       : {}),
   };
 

@@ -445,6 +445,8 @@ export type LexicalRetrievalCapability =
   | {
       supported: true;
       endpoint: string;
+      cursor_supported: true;
+      count_supported: false;
       cross_stream: boolean;
       snippets: boolean;
       default_limit: number;
@@ -472,6 +474,16 @@ export function buildLexicalRetrievalCapability({
   const capability: LexicalRetrievalCapability = {
     supported: true,
     endpoint,
+    // Per canonicalize-public-read-contract task 4.3, pagination and count
+    // support are advertised explicitly on every search capability:
+    //   - lexical supports opaque-cursor pagination over a persisted
+    //     snapshot (cursor_supported: true);
+    //   - lexical does NOT compute counts today (count_supported: false).
+    // Strict request validation already rejects `count=...` on /v1/search;
+    // the negative advertisement makes that decision discoverable to
+    // clients and MCP/CLI consumers without trial-and-error.
+    cursor_supported: true,
+    count_supported: false,
     cross_stream: crossStream,
     snippets,
     default_limit: defaultLimit,
@@ -519,6 +531,12 @@ export interface SemanticRetrievalScoreCapability {
 }
 
 export interface SemanticRetrievalCapability {
+  // Pagination/count metadata per canonicalize-public-read-contract task 4.3.
+  // Semantic search uses opaque-cursor pagination over a persisted snapshot
+  // (cursor_supported: true). The runtime does NOT compute counts on
+  // semantic responses; clients should not request `count=`.
+  cursor_supported: true;
+  count_supported: false;
   cross_stream: boolean;
   default_limit: number;
   dimensions: number;
@@ -576,6 +594,8 @@ export function buildSemanticRetrievalCapability({
     supported: true,
     stability: "experimental",
     endpoint,
+    cursor_supported: true,
+    count_supported: false,
     cross_stream: crossStream,
     query_input: "text",
     snippets,
@@ -627,6 +647,9 @@ export interface HybridRetrievalCapabilityInput {
 export interface HybridRetrievalCapability {
   cross_stream: boolean;
   cursor_supported: boolean;
+  // canonicalize-public-read-contract task 4.3: hybrid composes lexical +
+  // semantic snapshots and does NOT compute counts (count_supported: false).
+  count_supported: false;
   default_limit: number;
   endpoint: string;
   max_limit: number;
@@ -661,6 +684,7 @@ export function buildHybridRetrievalCapability({
     default_limit: defaultLimit,
     max_limit: maxLimit,
     cursor_supported: cursorSupported,
+    count_supported: false,
     sources: ["lexical", "semantic"] as const,
   };
 }

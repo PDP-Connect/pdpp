@@ -162,6 +162,13 @@ export interface SearchLexicalSnapshotResult {
    * deprecated `connector_instance_id` alias on each result item.
    */
   connectorInstanceId?: string | null;
+  /**
+   * Owner-facing label for the connection. The operation emits this as
+   * `display_name` on the result item only when the dependency resolved a
+   * non-placeholder label without guessing. Snapshots that cannot pin a
+   * label SHOULD omit this field rather than fabricate one.
+   */
+  displayName?: string | null;
   stream: string;
   recordKey: string;
   emittedAt: string;
@@ -292,6 +299,13 @@ export interface SearchLexicalResultItem {
    */
   connection_id?: string;
   connector_instance_id?: string;
+  /**
+   * Owner-facing label for the connection. Emitted only when the snapshot
+   * captured a non-placeholder label. Wire shape mirrors records-list and
+   * records-detail so REST/MCP/dashboard/CLI consumers see identity in one
+   * uniform form across read surfaces.
+   */
+  display_name?: string;
   record_url: string;
   emitted_at: string;
   matched_fields: string[];
@@ -312,6 +326,7 @@ export interface SearchLexicalWarning {
   code: string;
   param?: string;
   message?: string;
+  detail?: Record<string, unknown>;
 }
 
 export interface SearchLexicalEnvelopeMeta {
@@ -392,6 +407,15 @@ interface NormalizedRequestParams {
  * deprecation without parsing free-form messages.
  */
 export const SEARCH_CONNECTION_ALIAS_DEPRECATED_WARNING_CODE = "deprecated_alias_used";
+
+/**
+ * Canonical warning code for a connector that the owner fan-out chose to
+ * skip (broken manifest, empty searchable plan) instead of failing the
+ * whole request. The wire shape mirrors
+ * `connection-id-request.js#CANONICAL_WARNING_CODES.SOURCE_SKIPPED_NOT_APPLICABLE`
+ * so REST, MCP, dashboard, and CLI all see the same identifier.
+ */
+export const SEARCH_SOURCE_SKIPPED_WARNING_CODE = "source_skipped_not_applicable";
 
 function deriveSearchConnectionAliasWarnings(
   query: Record<string, unknown>,
@@ -561,6 +585,9 @@ function buildResultItem(
     item.connection_id = hit.connectorInstanceId;
     item.connector_instance_id = hit.connectorInstanceId;
   }
+  if (typeof hit.displayName === "string" && hit.displayName.length > 0) {
+    item.display_name = hit.displayName;
+  }
   if (hit.snippet) {
     item.snippet = hit.snippet;
   }
@@ -609,13 +636,21 @@ export async function executeSearchLexical(
 
   // 3. Per-mode planning fan-out.
   const perConnectorPlans: SearchLexicalConnectorPlan[] = [];
+  // Track owner-fan-out connectors that the runtime had to skip without
+  // failing the whole request (broken manifest, empty searchable plan).
+  // These become structured `source_skipped_not_applicable` warnings on the
+  // canonical envelope so the wire never lies by silently dropping sources.
+  const skippedConnectorIds: string[] = [];
   if (input.actor.kind === "owner") {
     const connectorIds = await dependencies.listOwnerVisibleConnectorIds();
     for (const connectorId of connectorIds) {
       const manifest = await dependencies.resolveOwnerManifestForConnector(
         connectorId,
       );
-      if (!manifest) continue;
+      if (!manifest) {
+        skippedConnectorIds.push(connectorId);
+        continue;
+      }
       const grant = dependencies.buildOwnerReadGrantForManifest(manifest);
       const planEntries = dependencies.buildSearchPlanForGrant({
         manifest,
@@ -625,7 +660,10 @@ export async function executeSearchLexical(
         filteredStream: params.filteredStream,
         connectorId,
       });
-      if (planEntries.length === 0) continue;
+      if (planEntries.length === 0) {
+        skippedConnectorIds.push(connectorId);
+        continue;
+      }
       perConnectorPlans.push({ connectorId, manifest, grant, planEntries });
     }
     // Owner-mode `streams[]` is a soft filter: unknown stream names just
@@ -716,13 +754,24 @@ export async function executeSearchLexical(
     buildResultItem(hit, isOwner, emitScore, dependencies.formatRecordUrl),
   );
 
+  const skippedWarnings: SearchLexicalWarning[] = skippedConnectorIds.map(
+    (connectorId) => ({
+      code: SEARCH_SOURCE_SKIPPED_WARNING_CODE,
+      message: `Connector '${connectorId}' is not applicable to this query and was skipped.`,
+      detail: { source: connectorId },
+    }),
+  );
+  const allWarnings: SearchLexicalWarning[] = [
+    ...params.warnings,
+    ...skippedWarnings,
+  ];
   const envelope: SearchLexicalEnvelope = {
     object: "list",
     has_more: hasMore,
     ...(nextCursor ? { next_cursor: nextCursor } : {}),
     data,
-    ...(params.warnings.length > 0
-      ? { meta: { warnings: params.warnings } }
+    ...(allWarnings.length > 0
+      ? { meta: { warnings: allWarnings } }
       : {}),
   };
 
