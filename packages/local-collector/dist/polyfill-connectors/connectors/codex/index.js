@@ -475,8 +475,10 @@ export function processRolloutLine({ deps, file, obj, state }) {
     state.firstTimestamp = range.firstTs;
     state.lastTimestamp = range.lastTs;
     if (obj.type === "session_meta") {
-        state.sessionMeta = obj.payload || {};
-        state.sessionId = state.sessionMeta.id || null;
+        if (state.sessionId === null) {
+            state.sessionMeta = obj.payload || {};
+            state.sessionId = state.sessionMeta.id || null;
+        }
         return;
     }
     if (!state.sessionId) {

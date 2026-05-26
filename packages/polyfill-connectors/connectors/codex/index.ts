@@ -674,7 +674,13 @@ export function shouldDeferActiveRolloutFile(input: { mtimeMs: number; nowMs: nu
 
 /**
  * Dispatch one JSONL line:
- *   - session_meta → install session id + metadata on state.
+ *   - session_meta → install session id + metadata on state, but only
+ *     from the FIRST session_meta line in the file. Forked rollouts
+ *     emit additional session_meta lines describing the fork parent
+ *     chain; those must NOT overwrite the canonical (child) session id,
+ *     otherwise every response_item that follows would be attributed to
+ *     the parent and the child session's message/function counts would
+ *     stay null.
  *   - response_item → delegate to processResponseItem (iff sessionId seen).
  *   - anything else → silent no-op, line counter still advances.
  *
@@ -694,8 +700,10 @@ export function processRolloutLine({ deps, file, obj, state }: ProcessRolloutLin
   state.lastTimestamp = range.lastTs;
 
   if (obj.type === "session_meta") {
-    state.sessionMeta = obj.payload || {};
-    state.sessionId = state.sessionMeta.id || null;
+    if (state.sessionId === null) {
+      state.sessionMeta = obj.payload || {};
+      state.sessionId = state.sessionMeta.id || null;
+    }
     return;
   }
   if (!state.sessionId) {
