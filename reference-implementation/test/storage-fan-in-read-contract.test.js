@@ -441,3 +441,240 @@ test('validateConnectionAlias accepts canonical, accepts alias, rejects conflict
     (err) => err.code === 'invalid_argument' && err.param === 'connector_instance_id',
   );
 });
+
+// ─── Owner-review revision: P1/P2/P3 regression coverage ───────────────────
+//
+// All tests below pin the fan-in-branch-revision behavior the owner-review
+// memo at `tmp/workstreams/fan-in-branch-owner-review-report.md` flagged.
+// The corresponding fixes live in `server/records.js` (helpers) and
+// `server/index.js` (route adapters).
+
+test('queryRecordsAcrossBindings rejects changes_since under multi-binding fan-in with retry guidance', async () => {
+  await withDualConnectionDb(async () => {
+    const { bindings } = await resolveFanInBindings({
+      ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
+      connectorId: CONNECTOR_ID,
+    });
+    assert.equal(bindings.length, 2);
+    await assert.rejects(
+      () => queryRecordsAcrossBindings(bindings, STREAM, grant, { changes_since: 'beginning' }, baseManifest),
+      (err) => {
+        assert.equal(err.code, 'invalid_argument');
+        assert.equal(err.param, 'changes_since');
+        assert.equal(err.retry_with, 'connection_id');
+        assert.ok(Array.isArray(err.available_connections), 'expected available_connections list');
+        const ids = err.available_connections.map((c) => c.connection_id).sort();
+        assert.deepEqual(ids, [INSTANCE_A, INSTANCE_B]);
+        return true;
+      },
+    );
+  });
+});
+
+test('queryRecordsAcrossBindings honors changes_since on the single-binding fast path', async () => {
+  await withSingleConnectionDb(async () => {
+    const { bindings } = await resolveFanInBindings({
+      ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
+      connectorId: CONNECTOR_ID,
+    });
+    assert.equal(bindings.length, 1);
+    const response = await queryRecordsAcrossBindings(
+      bindings,
+      STREAM,
+      grant,
+      { changes_since: 'beginning' },
+      baseManifest,
+    );
+    assert.equal(response.object, 'list');
+    assert.ok(typeof response.next_changes_since === 'string' && response.next_changes_since.length > 0,
+      'single-binding changes_since must still emit a forward-progress cursor');
+  });
+});
+
+test('queryRecordsAcrossBindings emits partial_results warning when fan-in collapses pagination', async () => {
+  await withDualConnectionDb(async () => {
+    const { bindings } = await resolveFanInBindings({
+      ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
+      connectorId: CONNECTOR_ID,
+    });
+    // limit=1 forces each binding to report has_more=true so the fan-in
+    // wrapper must surface the partial-results warning instead of
+    // silently dropping the cursor.
+    const response = await queryRecordsAcrossBindings(
+      bindings,
+      STREAM,
+      grant,
+      { limit: 1 },
+      baseManifest,
+    );
+    assert.equal(response.has_more, true);
+    assert.equal(response.next_cursor, undefined,
+      'multi-binding fan-in must NOT synthesize next_cursor');
+    const warnings = response.meta?.warnings || [];
+    const partial = warnings.find((w) => w.code === 'partial_results');
+    assert.ok(partial, `expected partial_results warning, got ${JSON.stringify(warnings)}`);
+    assert.equal(partial.param, 'connection_id');
+  });
+});
+
+test('queryRecordsAcrossBindings sums exact counts honestly across bindings', async () => {
+  await withDualConnectionDb(async () => {
+    const { bindings } = await resolveFanInBindings({
+      ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
+      connectorId: CONNECTOR_ID,
+    });
+    const response = await queryRecordsAcrossBindings(
+      bindings,
+      STREAM,
+      grant,
+      { count: 'exact' },
+      baseManifest,
+    );
+    assert.equal(response.data.length, 4);
+    assert.deepEqual(response.meta?.count, { kind: 'exact', value: 4 },
+      'multi-binding count=exact must sum per-binding exact counts, not echo whichever ran last');
+  });
+});
+
+test('queryRecordsAcrossBindings threads resolver warnings (deprecated alias) into multi-binding meta.warnings', async () => {
+  await withDualConnectionDb(async () => {
+    const { bindings, warnings } = await resolveReadRequestBindings({
+      ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
+      storageBinding: { connector_id: CONNECTOR_ID },
+      grant,
+      requestParams: {},
+      streamName: STREAM,
+    });
+    // Simulate the route's deprecated-alias resolver warnings being
+    // threaded into the helper. The two-binding fan-in path strips
+    // connection_id/alias per-binding, so without this thread-through the
+    // warning would be lost.
+    const fakeAliasWarning = {
+      code: 'deprecated_alias_used',
+      param: 'connector_instance_id',
+      message: '`connector_instance_id` is deprecated; send `connection_id` instead.',
+    };
+    const response = await queryRecordsAcrossBindings(
+      bindings,
+      STREAM,
+      grant,
+      {},
+      baseManifest,
+      { extraWarnings: [...warnings, fakeAliasWarning] },
+    );
+    const surfaced = (response.meta?.warnings || []).find((w) => w.code === 'deprecated_alias_used');
+    assert.ok(surfaced,
+      `deprecated_alias_used warning must surface on multi-binding fan-in; got ${JSON.stringify(response.meta?.warnings)}`);
+  });
+});
+
+test('aggregateRecordsAcrossBindings threads resolver warnings into multi-binding meta.warnings', async () => {
+  await withDualConnectionDb(async () => {
+    const { bindings } = await resolveFanInBindings({
+      ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
+      connectorId: CONNECTOR_ID,
+    });
+    const response = await aggregateRecordsAcrossBindings(
+      bindings,
+      STREAM,
+      grant,
+      { metric: 'count' },
+      baseManifest,
+      { extraWarnings: [
+        {
+          code: 'deprecated_alias_used',
+          param: 'connector_instance_id',
+          message: '`connector_instance_id` is deprecated; send `connection_id` instead.',
+        },
+      ] },
+    );
+    const surfaced = (response.meta?.warnings || []).find((w) => w.code === 'deprecated_alias_used');
+    assert.ok(surfaced,
+      `aggregate fan-in must carry deprecated_alias_used; got ${JSON.stringify(response.meta?.warnings)}`);
+  });
+});
+
+test('listStreamsAcrossBindings honors per-stream grant connection_id when resolver is supplied', async () => {
+  // Two-stream grant where each stream pins a different connection_id.
+  // Without per-stream resolution, the route would resolve bindings for
+  // grant.streams[0] only and count stream B against binding A's storage.
+  await withDualConnectionDb(async () => {
+    // Re-seed: add a second stream "tasks" so each connection has its own
+    // records under different streams. We seed records via direct ingest
+    // for both streams.
+    const tasksStream = 'tasks';
+    const taskManifest = {
+      ...baseManifest,
+      streams: [
+        ...baseManifest.streams,
+        {
+          name: tasksStream,
+          primary_key: ['id'],
+          cursor_field: 'received_at',
+          consent_time_field: 'received_at',
+          schema: {
+            type: 'object',
+            required: ['id', 'received_at'],
+            properties: {
+              id: { type: 'string' },
+              received_at: { type: 'string', format: 'date-time' },
+            },
+          },
+          query: { aggregations: { count: true } },
+        },
+      ],
+    };
+    // Records exist on both connections for `messages`; add tasks-specific
+    // records only on connection B so we can detect mis-counted fan-in.
+    await ingestRecord(target(INSTANCE_B), {
+      stream: tasksStream,
+      key: 'task-1',
+      data: { id: 'task-1', received_at: '2026-05-19T00:00:00.000Z' },
+      emitted_at: '2026-05-19T00:00:00.000Z',
+    });
+
+    // Pinned grant: messages → connection A, tasks → connection B.
+    const pinnedGrant = {
+      streams: [
+        { name: STREAM, fields: ['id', 'subject', 'received_at'], connection_id: INSTANCE_A },
+        { name: tasksStream, fields: ['id', 'received_at'], connection_id: INSTANCE_B },
+      ],
+    };
+
+    // Sanity: the default-resolver shape (no per-stream resolver) would
+    // resolve bindings against firstStream=messages → connection A only,
+    // miss the tasks records on connection B, and emit zero entries for
+    // tasks. The per-stream resolver path must show both summaries with
+    // honest counts.
+    const ownerSubjectId = OWNER_AUTH_DEFAULT_SUBJECT_ID;
+    const resolverFor = async (streamGrant) => {
+      const { bindings } = await resolveReadRequestBindings({
+        ownerSubjectId,
+        storageBinding: { connector_id: CONNECTOR_ID },
+        grant: pinnedGrant,
+        requestParams: {},
+        streamName: streamGrant.name,
+      });
+      return bindings;
+    };
+    const firstStreamBindings = await resolverFor({ name: STREAM });
+    const summaries = await listStreamsAcrossBindings(
+      firstStreamBindings,
+      pinnedGrant,
+      taskManifest,
+      { resolveBindingsForStream: resolverFor },
+    );
+    const messagesA = summaries.find((s) => s.name === STREAM && s.connection_id === INSTANCE_A);
+    const tasksB = summaries.find((s) => s.name === tasksStream && s.connection_id === INSTANCE_B);
+    assert.ok(messagesA, `expected messages@A summary; got ${JSON.stringify(summaries)}`);
+    assert.ok(tasksB, `expected tasks@B summary; got ${JSON.stringify(summaries)}`);
+    assert.equal(tasksB.record_count, 1,
+      'tasks records under connection B must be counted from B, not borrowed from A');
+
+    // Cross-validation: there should be NO tasks summary under connection A
+    // because A is not authorized to read tasks.
+    const tasksA = summaries.find((s) => s.name === tasksStream && s.connection_id === INSTANCE_A);
+    assert.equal(tasksA, undefined,
+      'tasks must not surface under A when grant pins tasks → B');
+  });
+});

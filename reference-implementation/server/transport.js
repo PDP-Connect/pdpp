@@ -572,6 +572,7 @@ export function createApp({ logger } = {}) {
   function get(path, ...args) { registerRoute('GET', path, args); return app; }
   function post(path, ...args) { registerRoute('POST', path, args); return app; }
   function put(path, ...args) { registerRoute('PUT', path, args); return app; }
+  function patch(path, ...args) { registerRoute('PATCH', path, args); return app; }
   function del(path, ...args) { registerRoute('DELETE', path, args); return app; }
   function head(path, ...args) { registerRoute('HEAD', path, args); return app; }
   function options(path, ...args) { registerRoute('OPTIONS', path, args); return app; }
@@ -642,7 +643,7 @@ export function createApp({ logger } = {}) {
       }
       return get(pathOrName, ...rest);
     },
-    post, put, delete: del, head, options,
+    post, put, patch, delete: del, head, options,
     use, set,
 
     // Escape hatch — tests and runtime adapters may need the raw Fastify

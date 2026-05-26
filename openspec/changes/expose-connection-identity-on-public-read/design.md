@@ -153,6 +153,52 @@ That coordination is tracked in this change's tasks but is not gated by in-repo 
 - Tasks list explicitly carries the external MCP-gateway coordination item without gating in-repo validation on it.
 - No spec delta requires changes to the scheduler-side `ambiguous_connector_instance` behavior at `runtime/controller.ts:1994`.
 
+## Owner-review revision (2026-05-26)
+
+This branch was reviewed against
+`tmp/workstreams/fan-in-branch-owner-review-report.md`. The revision
+turned six "claimed but not enforced" or "claimed but unsound" surfaces
+into honest behavior:
+
+- **Blob ambiguity (P1)**: The route adapter previously relied on
+  `executeBlobsRead` to surface multiplicity, but the operation
+  short-circuits on the first visible match. The revision moved the
+  binding iteration into the route, so the route can collect every
+  unique `connection_id` that exposes a visible record and emit the
+  typed `ambiguous_connection` (HTTP 409) deterministically.
+- **Grant-scope on blobs (P2)**: The route now resolves the addressable
+  set per blob-binding's stream and honors `grant.streams[].connection_id`
+  per stream. Owner-mode preserves fan-in (no grant constraint).
+- **`changes_since` under fan-in (P1)**: Rejected with a typed
+  `invalid_argument` error carrying `available_connections` and retry
+  guidance. The previous base64 lexical-max merge was unsound and is
+  removed. Single-binding fast path unchanged.
+- **`next_cursor` under fan-in (P2)**: The multi-binding helper now
+  emits a structured `meta.warnings[{code:"partial_results"}]` when
+  `has_more=true` and intentionally omits `next_cursor` (per-binding
+  cursors cannot be unioned without state-tracked join logic, which
+  this tranche does not introduce).
+- **`meta.count` under fan-in (P3)**: Summed exact counts when every
+  binding produces `exact`; otherwise omitted with a structured
+  `count_downgraded` warning. The previous "last binding wins"
+  behavior is removed.
+- **Multi-stream grant with per-stream `connection_id` (P3)**: The
+  streams-list helper accepts a per-stream binding resolver so each
+  grant stream's count comes from its pinned connection, never
+  borrowed from another stream's resolution.
+- **`deprecated_alias_used` warning (P3)**: Threaded through every
+  fan-in helper (`queryRecordsAcrossBindings`, `aggregateRecordsAcrossBindings`,
+  `getRecordAcrossBindings`) and surfaced on streams-list `meta.warnings`
+  and the blob route's `PDPP-Warning` response header.
+
+The revision also caught a latent transport bug from the prior tranche:
+the `PATCH /_ref/connections/:connectorInstanceId` route used a
+non-existent `app.patch` method on the local Fastify transport adapter,
+so the AS app crashed at boot under any test that called
+`startServer(...)`. The revision adds `patch` to `server/transport.js`
+and removes the unregistered `{ contract: 'refSetConnectionDisplayName' }`
+opt (no contract manifest existed for it).
+
 ## Deferred Items (as of branch `complete-storage-fan-in-read-contract`, 2026-05-26)
 
 The contract, MCP server, consent-card, server-side rs-\* fan-in

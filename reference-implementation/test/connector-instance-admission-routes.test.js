@@ -221,7 +221,13 @@ test('owner-auth ingest route stores same record key under explicit connector in
       { headers: { Authorization: `Bearer ${ownerToken}` } },
     );
     assert.equal(personalRecord.status, 200);
-    assert.equal(personalRecord.body.connector_instance_id, undefined);
+    // Public read contract (expose-connection-identity-on-public-read):
+    // records carry canonical `connection_id` and the deprecated alias
+    // `connector_instance_id` mirrored to the same value during the
+    // migration window. The previous baseline asserted these were absent;
+    // that pre-dated the canonicalization tranche.
+    assert.equal(personalRecord.body.connection_id, 'cin_spotify_personal');
+    assert.equal(personalRecord.body.connector_instance_id, 'cin_spotify_personal');
     assert.equal(personalRecord.body.data.name, 'personal artist');
 
     const workRecord = await fetchJson(
@@ -229,7 +235,8 @@ test('owner-auth ingest route stores same record key under explicit connector in
       { headers: { Authorization: `Bearer ${ownerToken}` } },
     );
     assert.equal(workRecord.status, 200);
-    assert.equal(workRecord.body.connector_instance_id, undefined);
+    assert.equal(workRecord.body.connection_id, 'cin_spotify_work');
+    assert.equal(workRecord.body.connector_instance_id, 'cin_spotify_work');
     assert.equal(workRecord.body.data.name, 'work artist');
   } finally {
     await closeServer(server);

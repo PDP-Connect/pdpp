@@ -4667,7 +4667,6 @@ function buildAsApp(opts = {}) {
   //       (#"Owner-meaningful display name SHALL be owner-editable")
   app.patch(
     '/_ref/connections/:connectorInstanceId',
-    { contract: 'refSetConnectionDisplayName' },
     ownerAuth.requireOwnerSession,
     async (req, res) => {
       try {
@@ -6568,15 +6567,40 @@ function buildRsApp(opts = {}) {
             // Honor request-time `connection_id` filter and grant-scope
             // `connection_id` constraint. When neither is set, fan in
             // across every active connection under the grant's connector.
+            //
+            // Each grant stream may pin a different `connection_id`; the
+            // resolver runs per-stream so per-stream record counts honor
+            // the right binding constraint instead of borrowing the first
+            // stream's resolution.
             const firstStream = Array.isArray(grant?.streams) ? grant.streams[0]?.name : null;
-            const { bindings } = await resolveReadRequestBindings({
+            const { bindings, warnings: resolverWarnings } = await resolveReadRequestBindings({
               ownerSubjectId: ownerSubjectIdForBindings(tokenInfo),
               storageBinding: grantResolved.storageBinding,
               grant,
               requestParams: req.query || {},
               streamName: firstStream,
             });
-            return await listStreamsAcrossBindings(bindings, grant, grantResolved.manifest);
+            // Stash resolver warnings on the request scope so the route
+            // body below can thread them into `meta.warnings` (P3 fix).
+            req._pdpp_resolver_warnings = resolverWarnings;
+            const summaries = await listStreamsAcrossBindings(
+              bindings,
+              grant,
+              grantResolved.manifest,
+              {
+                resolveBindingsForStream: async (streamGrant) => {
+                  const { bindings: streamBindings } = await resolveReadRequestBindings({
+                    ownerSubjectId: ownerSubjectIdForBindings(tokenInfo),
+                    storageBinding: grantResolved.storageBinding,
+                    grant,
+                    requestParams: req.query || {},
+                    streamName: streamGrant?.name || null,
+                  });
+                  return streamBindings;
+                },
+              },
+            );
+            return summaries;
           },
         };
       }
@@ -6606,14 +6630,29 @@ function buildRsApp(opts = {}) {
         },
       });
 
-      res.json(finalizeCanonicalEnvelope({
+      const streamsListBody = {
         object: 'list',
         has_more: false,
         data: result.streams.map((summary) => ({
           ...summary,
           freshness: buildConnectorAwareFreshness(streamListFreshnessEvidence, summary.last_updated || null),
         })),
-      }, req));
+      };
+      const resolverWarnings = req._pdpp_resolver_warnings;
+      if (Array.isArray(resolverWarnings) && resolverWarnings.length) {
+        const existingMeta = streamsListBody.meta && typeof streamsListBody.meta === 'object'
+          && !Array.isArray(streamsListBody.meta)
+          ? streamsListBody.meta
+          : null;
+        const existingWarnings = existingMeta && Array.isArray(existingMeta.warnings)
+          ? existingMeta.warnings
+          : [];
+        streamsListBody.meta = {
+          ...(existingMeta || {}),
+          warnings: [...existingWarnings, ...resolverWarnings],
+        };
+      }
+      res.json(finalizeCanonicalEnvelope(streamsListBody, req));
     } catch (err) {
       if (queryContext) {
         await emitQueryReceived(queryContext, req);
@@ -6850,19 +6889,24 @@ function buildRsApp(opts = {}) {
           validateRequestedQueryFieldParams(params, mStream);
         },
         aggregate: async (params) => {
-          const { bindings } = await resolveReadRequestBindings({
+          const { bindings, warnings: resolverWarnings } = await resolveReadRequestBindings({
             ownerSubjectId: ownerSubjectIdForBindings(tokenInfo),
             storageBinding,
             grant,
             requestParams: params,
             streamName: req.params.stream,
           });
+          // P3: thread resolver-level warnings (deprecated alias) into the
+          // multi-binding aggregate envelope. The helper folds them into
+          // `meta.warnings[]` whether the dispatch hits the single-binding
+          // fast path or the multi-binding fan-in path.
           return await aggregateRecordsAcrossBindings(
             bindings,
             req.params.stream,
             grant,
             params,
             manifest,
+            { extraWarnings: resolverWarnings || [] },
           );
         },
       };
@@ -7002,14 +7046,21 @@ function buildRsApp(opts = {}) {
         getManifest: () => manifest,
         getGrant: () => tokenInfo.grant || { streams: [] },
         queryRecords: async (stream, grant, params, m) => {
-          const { bindings } = await resolveReadRequestBindings({
+          const { bindings, warnings: resolverWarnings } = await resolveReadRequestBindings({
             ownerSubjectId: ownerSubjectIdForBindings(tokenInfo),
             storageBinding,
             grant,
             requestParams: params,
             streamName: stream,
           });
-          return await queryRecordsAcrossBindings(bindings, stream, grant, params, m);
+          return await queryRecordsAcrossBindings(
+            bindings,
+            stream,
+            grant,
+            params,
+            m,
+            { extraWarnings: resolverWarnings || [] },
+          );
         },
         decorateRecord: (record) => decorateRecordBlobRefs(record),
         validateRequestFields: (params, manifestStream) =>
@@ -7136,11 +7187,12 @@ function buildRsApp(opts = {}) {
         getManifest: () => manifest,
         getGrant: () => tokenInfo.grant || { streams: [] },
         getRecord: async (stream, recordId, grant, m, options) => {
-          const { bindings } = await resolveReadRequestBindings({
+          const mergedParams = { ...(req.query || {}), ...(options || {}) };
+          const { bindings, warnings: resolverWarnings } = await resolveReadRequestBindings({
             ownerSubjectId: ownerSubjectIdForBindings(tokenInfo),
             storageBinding,
             grant,
-            requestParams: { ...(req.query || {}), ...(options || {}) },
+            requestParams: mergedParams,
             streamName: stream,
           });
           return await getRecordAcrossBindings(
@@ -7149,7 +7201,8 @@ function buildRsApp(opts = {}) {
             recordId,
             grant,
             m,
-            { ...(req.query || {}), ...(options || {}) },
+            mergedParams,
+            { extraWarnings: resolverWarnings || [] },
           );
         },
         decorateRecord: (record) => decorateRecordBlobRefs(record),
@@ -7562,55 +7615,155 @@ function buildRsApp(opts = {}) {
         manifest = grantResolved.manifest;
       }
 
-      // Resolve the set of bindings this caller can address. When the
-      // request supplies `connection_id` (or the deprecated alias) the
-      // resolver narrows; otherwise the resolver fans in.
-      const { bindings, requestConnectionId } = await resolveReadRequestBindings({
-        ownerSubjectId: ownerSubjectIdForBindings(tokenInfo),
-        storageBinding,
-        grant: tokenInfo.grant || { streams: [] },
-        requestParams: req.query || {},
-        streamName: null,
-      });
-      const addressableInstanceIds = new Set(
-        bindings.map((b) => b.connectorInstanceId).filter(Boolean),
+      // Resolve the default set of bindings this caller can address. When
+      // the request supplies `connection_id` (or the deprecated alias) the
+      // resolver narrows; otherwise the resolver fans in. The blob route
+      // does not know the stream yet — that comes from per-binding records
+      // — so we resolve without a stream constraint here and re-check the
+      // per-stream grant-scope `connection_id` constraint per binding below.
+      const { bindings: defaultBindings, requestConnectionId, warnings: resolverWarnings } =
+        await resolveReadRequestBindings({
+          ownerSubjectId: ownerSubjectIdForBindings(tokenInfo),
+          storageBinding,
+          grant: tokenInfo.grant || { streams: [] },
+          requestParams: req.query || {},
+          streamName: null,
+        });
+      const defaultAddressableInstanceIds = new Set(
+        defaultBindings.map((b) => b.connectorInstanceId).filter(Boolean),
       );
 
-      const matchedRecords = [];
-      const dependencies = {
-        loadBlob: (id) => blobStore.loadContentAddressedBlob(id),
-        loadBindings: (id) => blobStore.listBlobBindings(id),
-        getActorConnectorId: () => storageBinding?.connector_id ?? null,
-        getVisibleRecord: async (binding) => {
-          if (
-            addressableInstanceIds.size > 0
-            && binding.connector_instance_id
-            && !addressableInstanceIds.has(binding.connector_instance_id)
-          ) {
-            return null;
-          }
-          const grant = tokenInfo.pdpp_token_kind === 'owner'
-            ? buildOwnerReadGrant(binding.stream)
-            : tokenInfo.grant;
-          const bindingStorageTarget = binding.connector_instance_id
-            ? {
-                connector_id: binding.connector_id,
-                connector_instance_id: binding.connector_instance_id,
-              }
-            : storageBinding;
-          try {
-            const record = await getRecord(bindingStorageTarget, binding.stream, binding.record_key, grant, manifest);
-            if (record?.data?.blob_ref?.blob_id === blobId) {
-              matchedRecords.push({ binding, record });
-            }
-            return record;
-          } catch (err) {
-            if (err?.code === 'not_found') return null;
-            throw err;
-          }
-        },
-      };
+      // Pre-load the blob and its bindings ourselves so we can perform a
+      // route-level scan for ambiguity (P1 fix: the canonical operation
+      // short-circuits on the first visible match and cannot observe
+      // multiplicity) and so we can apply the per-stream grant-scope
+      // `connection_id` constraint per blob binding (P2 fix: blobs cannot
+      // borrow the connector-wide addressable set when the grant pins a
+      // specific connection on the binding's stream).
+      const blobRow = await blobStore.loadContentAddressedBlob(blobId);
+      if (!blobRow) {
+        const notFound = new Error('Blob not found');
+        notFound.code = 'blob_not_found';
+        throw notFound;
+      }
+      const blobBindings = await blobStore.listBlobBindings(blobId);
+      const actorConnectorId = storageBinding?.connector_id ?? null;
+      const grantStreams = Array.isArray(tokenInfo.grant?.streams) ? tokenInfo.grant.streams : [];
+      const ownerMode = tokenInfo.pdpp_token_kind === 'owner';
 
+      // Owner-mode addressable cache: owner can read any active connection
+      // and there is no grant-scope connection_id constraint. Client mode
+      // resolves `(stream → bindings)` lazily and honors per-stream
+      // `grant.streams[].connection_id`.
+      const streamBindingCache = new Map();
+      async function resolveAddressableForStream(streamName) {
+        if (ownerMode) {
+          // Owner mode: no grant scoping; the default fan-in set already
+          // captures every active connection under the actor's connector,
+          // narrowed only by request-time `connection_id` (or alias).
+          return defaultAddressableInstanceIds;
+        }
+        if (streamBindingCache.has(streamName)) return streamBindingCache.get(streamName);
+        try {
+          const { bindings: streamBindings } = await resolveReadRequestBindings({
+            ownerSubjectId: ownerSubjectIdForBindings(tokenInfo),
+            storageBinding,
+            grant: tokenInfo.grant || { streams: [] },
+            requestParams: req.query || {},
+            streamName,
+          });
+          const ids = new Set(streamBindings.map((b) => b.connectorInstanceId).filter(Boolean));
+          streamBindingCache.set(streamName, ids);
+          return ids;
+        } catch (err) {
+          if (err?.code === 'connection_not_found' || err?.code === 'invalid_argument') {
+            // Grant-scope pins a connection that is not currently active,
+            // or the request supplied an addressable id outside the grant
+            // for this stream. Treat the stream as inaccessible for the
+            // blob-visibility check.
+            const empty = new Set();
+            streamBindingCache.set(streamName, empty);
+            return empty;
+          }
+          throw err;
+        }
+      }
+
+      // Iterate every blob binding and collect the unique connector
+      // instances that expose a visible record referencing this blob.
+      const matchedByInstance = new Map();
+      for (const binding of blobBindings) {
+        if (!actorConnectorId || binding.connector_id !== actorConnectorId) continue;
+        const addressable = grantStreams.length || ownerMode
+          ? await resolveAddressableForStream(binding.stream)
+          : defaultAddressableInstanceIds;
+        if (
+          addressable.size > 0
+          && binding.connector_instance_id
+          && !addressable.has(binding.connector_instance_id)
+        ) {
+          continue;
+        }
+        const grant = ownerMode ? buildOwnerReadGrant(binding.stream) : tokenInfo.grant;
+        const bindingStorageTarget = binding.connector_instance_id
+          ? {
+              connector_id: binding.connector_id,
+              connector_instance_id: binding.connector_instance_id,
+            }
+          : storageBinding;
+        let record = null;
+        try {
+          record = await getRecord(bindingStorageTarget, binding.stream, binding.record_key, grant, manifest);
+        } catch (err) {
+          if (err?.code === 'not_found') continue;
+          throw err;
+        }
+        if (record?.data?.blob_ref?.blob_id !== blobId) continue;
+        const instanceId = binding.connector_instance_id || null;
+        if (!instanceId) continue;
+        if (matchedByInstance.has(instanceId)) continue;
+        matchedByInstance.set(instanceId, { binding, record });
+      }
+
+      if (matchedByInstance.size === 0) {
+        const notFound = new Error('Blob not found');
+        notFound.code = 'blob_not_found';
+        throw notFound;
+      }
+
+      // Ambiguity: more than one connection exposed the blob and the
+      // caller did not narrow with `connection_id`. Emit the typed
+      // `ambiguous_connection` envelope with `available_connections`
+      // so the caller can recover.
+      if (matchedByInstance.size > 1 && !requestConnectionId) {
+        const candidates = [];
+        for (const [instanceId, m] of matchedByInstance) {
+          const found = defaultBindings.find((b) => b.connectorInstanceId === instanceId);
+          const wire = projectBindingForWire({
+            connectorInstanceId: instanceId,
+            connectorId: m.binding.connector_id,
+            displayName: found?.displayName ?? null,
+          });
+          if (wire) candidates.push(wire);
+        }
+        throw new AmbiguousConnectionError(
+          `Blob '${blobId}' is exposed by records under more than one connection. Retry with \`connection_id\`.`,
+          candidates,
+        );
+      }
+
+      // Single visible binding: serve the blob bytes. We still pipe the
+      // resolved (single) binding through the canonical `executeBlobsRead`
+      // operation so the route preserves the operation contract (404 / 200
+      // shape, error mapping) even though we already validated visibility
+      // ourselves above.
+      const [selectedMatch] = matchedByInstance.values();
+      const dependencies = {
+        loadBlob: () => blobRow,
+        loadBindings: () => [selectedMatch.binding],
+        getActorConnectorId: () => actorConnectorId,
+        getVisibleRecord: () => selectedMatch.record,
+      };
       let output;
       try {
         output = await executeBlobsRead({ blobId }, dependencies);
@@ -7622,40 +7775,22 @@ function buildRsApp(opts = {}) {
         }
         throw opErr;
       }
-      // Ambiguity guard: if more than one binding's visible record exposed
-      // the requested blob and the request did not narrow with
-      // `connection_id`, the runtime cannot pick a single canonical
-      // `(connection_id, stream, record_id)` address for the byte stream.
-      // Emit the typed `ambiguous_connection` error with
-      // `available_connections` so the caller can recover.
-      if (matchedRecords.length > 1 && !requestConnectionId) {
-        const uniqueInstances = new Map();
-        for (const m of matchedRecords) {
-          if (m.binding?.connector_instance_id && !uniqueInstances.has(m.binding.connector_instance_id)) {
-            uniqueInstances.set(m.binding.connector_instance_id, m.binding);
-          }
-        }
-        if (uniqueInstances.size > 1) {
-          const candidates = [];
-          for (const [instanceId, binding] of uniqueInstances) {
-            const found = bindings.find((b) => b.connectorInstanceId === instanceId);
-            const wire = projectBindingForWire({
-              connectorInstanceId: instanceId,
-              connectorId: binding.connector_id,
-              displayName: found?.displayName ?? null,
-            });
-            if (wire) candidates.push(wire);
-          }
-          throw new AmbiguousConnectionError(
-            `Blob '${blobId}' is exposed by records under more than one connection. Retry with \`connection_id\`.`,
-            candidates,
-          );
-        }
-      }
       const blob = output.blob;
       res.setHeader('Content-Type', blob.mime_type);
       res.setHeader('Content-Length', String(blob.size_bytes));
       res.setHeader('Cache-Control', 'private, no-store');
+      // P3: when the resolver observed deprecated alias use, surface it as
+      // a structured response header so callers see migration signal even
+      // though the blob route emits raw bytes (no JSON envelope to carry
+      // `meta.warnings[]`).
+      if (Array.isArray(resolverWarnings) && resolverWarnings.length) {
+        const deprecated = resolverWarnings.find(
+          (w) => w?.code === 'deprecated_alias_used',
+        );
+        if (deprecated) {
+          res.setHeader('PDPP-Warning', 'deprecated_alias_used: connector_instance_id');
+        }
+      }
       res.send(Buffer.isBuffer(blob.data) ? blob.data : Buffer.from(blob.data || ''));
     } catch (err) {
       handleError(res, err);

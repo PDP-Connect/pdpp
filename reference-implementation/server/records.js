@@ -56,6 +56,7 @@ import {
   markRetainedSizeStreamDirty,
 } from './retained-size-read-model.js';
 import {
+  CANONICAL_WARNING_CODES,
   CONNECTION_ALIAS_DEPRECATED_WARNING_CODE,
   enforceConnectionNarrowing,
   projectStorageDisplayName,
@@ -2546,7 +2547,7 @@ function buildBindingStorageTarget(connectorId, connectorInstanceId) {
   return { connector_id: connectorId, connector_instance_id: connectorInstanceId };
 }
 
-function mergeMetaPreservingShape(target, incoming) {
+function mergeMetaWarnings(target, incoming) {
   if (!incoming) return target;
   const next = { ...(target || {}) };
   if (Array.isArray(incoming.warnings) && incoming.warnings.length) {
@@ -2560,7 +2561,21 @@ function mergeMetaPreservingShape(target, incoming) {
     }
     next.warnings = merged;
   }
-  if (incoming.count) next.count = incoming.count;
+  return next;
+}
+
+function appendUniqueWarning(meta, warning) {
+  const next = { ...(meta || {}) };
+  const existing = Array.isArray(next.warnings) ? next.warnings : [];
+  const key = `${warning.code}|${warning.param || ''}|${warning.message || ''}|${JSON.stringify(warning.detail || null)}`;
+  for (const w of existing) {
+    const k = `${w.code}|${w.param || ''}|${w.message || ''}|${JSON.stringify(w.detail || null)}`;
+    if (k === key) {
+      next.warnings = existing;
+      return next;
+    }
+  }
+  next.warnings = [...existing, warning];
   return next;
 }
 
@@ -2581,22 +2596,77 @@ function ensureBindingsOrThrow(bindings, { connectorId, missingMessage }) {
  * Returns a canonical list envelope whose `data` is the union of records
  * across the addressed bindings. Each record carries `connection_id`,
  * deprecated `connector_instance_id`, and `display_name` when known —
- * already wired by per-binding `queryRecords`. Pagination is per-binding
- * today; multi-binding cursor union is a future tranche (we expose
- * `has_more=true` if any binding still has more so callers can issue a
- * refined `connection_id`-narrowed page).
+ * already wired by per-binding `queryRecords`.
+ *
+ * Cursor / count honesty under fan-in:
+ *
+ * - `changes_since` is NOT supported under multi-binding fan-in. The
+ *   per-binding `next_changes_since` cursors are per-(connector_instance_id,
+ *   stream) version counters, and merging them across bindings would either
+ *   silently skip changes on the binding(s) whose counter lags or wrap
+ *   numeric semantics in a base64 lexical comparison. We reject `changes_since`
+ *   with a typed `invalid_argument` carrying recovery guidance (narrow the
+ *   call with `connection_id`). Spec: P1 fix in
+ *   `tmp/workstreams/fan-in-branch-owner-review-report.md`.
+ *
+ * - Per-binding `next_cursor` cannot be safely unioned today. When any
+ *   binding has more pages, the response emits a structured
+ *   `meta.warnings[{code:"partial_results"}]` so callers know that fan-in
+ *   pagination is partial and they should narrow with `connection_id` to
+ *   page exhaustively. `next_cursor` is intentionally omitted on the
+ *   multi-binding envelope.
+ *
+ * - `meta.count` is summed across bindings only when every binding produced
+ *   an `exact` count over the same shape; if any binding omits or downgrades
+ *   it, the fan-in response drops `meta.count` and emits a
+ *   `count_downgraded` warning. The previous behavior (carrying whichever
+ *   binding's count ran last) is removed.
  */
-export async function queryRecordsAcrossBindings(bindings, stream, grant, requestParams, manifest) {
+export async function queryRecordsAcrossBindings(bindings, stream, grant, requestParams, manifest, opts = {}) {
   ensureBindingsOrThrow(bindings, { connectorId: bindings?.[0]?.connectorId, missingMessage: 'No active connection is available under this grant.' });
 
+  const extraWarnings = Array.isArray(opts.extraWarnings) ? opts.extraWarnings : [];
+
   if (bindings.length === 1) {
-    return await queryRecords(
+    const single = await queryRecords(
       buildBindingStorageTarget(bindings[0].connectorId, bindings[0].connectorInstanceId),
       stream,
       grant,
       requestParams,
       manifest,
     );
+    if (extraWarnings.length) {
+      let meta = single.meta && typeof single.meta === 'object' && !Array.isArray(single.meta)
+        ? { ...single.meta }
+        : null;
+      for (const w of extraWarnings) meta = appendUniqueWarning(meta, w);
+      single.meta = meta;
+    }
+    return single;
+  }
+
+  // P1: reject `changes_since` under multi-binding fan-in. Per-binding
+  // version counters cannot be combined into a single forward-progress
+  // cursor without silently skipping changes on a lagging binding. The
+  // caller must narrow with `connection_id` to get a sound cursor.
+  const changesSinceRaw = requestParams?.changes_since;
+  const changesSinceProvided =
+    typeof changesSinceRaw === 'string' && changesSinceRaw.length > 0;
+  if (changesSinceProvided) {
+    const err = new Error(
+      '`changes_since` is not supported across multiple connections. Retry with `connection_id` to bind the cursor to a single connection.',
+    );
+    err.code = 'invalid_argument';
+    err.param = 'changes_since';
+    err.retry_with = 'connection_id';
+    err.available_connections = bindings
+      .map((b) => projectBindingForWire({
+        connectorInstanceId: b.connectorInstanceId,
+        connectorId: b.connectorId,
+        displayName: b.displayName,
+      }))
+      .filter(Boolean);
+    throw err;
   }
 
   // Drop request-time connection_id when fanning in across multiple bindings;
@@ -2608,24 +2678,68 @@ export async function queryRecordsAcrossBindings(bindings, stream, grant, reques
 
   const unioned = [];
   let hasMoreAny = false;
-  let nextChangesSinceMax = null;
   let meta = null;
+
+  // For meta.count fan-in: sum exact-grade counts only when every binding
+  // produced one; otherwise drop count and warn count_downgraded.
+  const requestedCount = typeof requestParams?.count === 'string' ? requestParams.count : null;
+  let countAllExact = !!requestedCount && requestedCount !== 'none';
+  let countSum = 0;
+
   for (const binding of bindings) {
     const target = buildBindingStorageTarget(binding.connectorId, binding.connectorInstanceId);
     const result = await queryRecords(target, stream, grant, perBindingParams, manifest);
     if (Array.isArray(result?.data)) unioned.push(...result.data);
     if (result?.has_more) hasMoreAny = true;
-    if (result?.next_changes_since && result.next_changes_since > (nextChangesSinceMax || '')) {
-      nextChangesSinceMax = result.next_changes_since;
+    meta = mergeMetaWarnings(meta, result?.meta);
+    if (countAllExact) {
+      const c = result?.meta?.count;
+      if (c && c.kind === 'exact' && Number.isFinite(Number(c.value))) {
+        countSum += Number(c.value);
+      } else {
+        countAllExact = false;
+      }
     }
-    meta = mergeMetaPreservingShape(meta, result?.meta);
   }
+
   const response = {
     object: 'list',
     has_more: hasMoreAny,
     data: unioned,
   };
-  if (nextChangesSinceMax) response.next_changes_since = nextChangesSinceMax;
+
+  // P2: explicit structured warning when fan-in collapses pagination. We do
+  // not emit `next_cursor` here because per-binding cursors cannot be
+  // unioned today.
+  if (hasMoreAny) {
+    meta = appendUniqueWarning(meta, {
+      code: CANONICAL_WARNING_CODES.PARTIAL_RESULTS,
+      param: 'connection_id',
+      message:
+        'has_more=true and next_cursor is not emitted under multi-connection fan-in. Retry with `connection_id` to page a single connection.',
+    });
+  }
+
+  // P3: honest meta.count under fan-in.
+  if (requestedCount && requestedCount !== 'none') {
+    if (countAllExact) {
+      meta = { ...(meta || {}), count: { kind: 'exact', value: countSum } };
+    } else {
+      meta = appendUniqueWarning(meta, {
+        code: CANONICAL_WARNING_CODES.COUNT_DOWNGRADED,
+        param: 'count',
+        message:
+          'Requested count grade could not be produced as a single value across multiple connections. Retry with `connection_id` to receive an exact per-connection count.',
+      });
+    }
+  }
+
+  // P3: resolver-supplied warnings (e.g. deprecated_alias_used) are
+  // stripped from per-binding params for multi-binding fan-in, so they
+  // would never appear on the response unless the route threads them
+  // back in here.
+  for (const w of extraWarnings) meta = appendUniqueWarning(meta, w);
+
   if (meta && Object.keys(meta).length) response.meta = meta;
   return response;
 }
@@ -2637,11 +2751,23 @@ export async function queryRecordsAcrossBindings(bindings, stream, grant, reques
  * to more than one binding. Returns the single record otherwise. Falls back
  * to a normal `not_found` when no binding holds the identifier.
  */
-export async function getRecordAcrossBindings(bindings, stream, recordId, grant, manifest, requestParams = {}) {
+export async function getRecordAcrossBindings(bindings, stream, recordId, grant, manifest, requestParams = {}, opts = {}) {
   ensureBindingsOrThrow(bindings, { connectorId: bindings?.[0]?.connectorId });
 
+  const extraWarnings = Array.isArray(opts.extraWarnings) ? opts.extraWarnings : [];
+
+  function applyExtraWarnings(record) {
+    if (!record || !extraWarnings.length) return record;
+    let meta = record.meta && typeof record.meta === 'object' && !Array.isArray(record.meta)
+      ? { ...record.meta }
+      : null;
+    for (const w of extraWarnings) meta = appendUniqueWarning(meta, w);
+    record.meta = meta;
+    return record;
+  }
+
   if (bindings.length === 1) {
-    return await getRecord(
+    const single = await getRecord(
       buildBindingStorageTarget(bindings[0].connectorId, bindings[0].connectorInstanceId),
       stream,
       recordId,
@@ -2649,6 +2775,7 @@ export async function getRecordAcrossBindings(bindings, stream, recordId, grant,
       manifest,
       requestParams,
     );
+    return applyExtraWarnings(single);
   }
 
   const perBindingParams = { ...requestParams };
@@ -2673,7 +2800,7 @@ export async function getRecordAcrossBindings(bindings, stream, recordId, grant,
     throw err;
   }
   if (matches.length === 1) {
-    return matches[0].record;
+    return applyExtraWarnings(matches[0].record);
   }
   const candidates = matches
     .map(({ binding }) => projectBindingForWire({
@@ -2695,17 +2822,27 @@ export async function getRecordAcrossBindings(bindings, stream, recordId, grant,
  * across bindings is honest because each binding produces an independent
  * grant-bounded count over the same shared stream namespace.
  */
-export async function aggregateRecordsAcrossBindings(bindings, stream, grant, requestParams, manifest) {
+export async function aggregateRecordsAcrossBindings(bindings, stream, grant, requestParams, manifest, opts = {}) {
   ensureBindingsOrThrow(bindings, { connectorId: bindings?.[0]?.connectorId });
 
+  const extraWarnings = Array.isArray(opts.extraWarnings) ? opts.extraWarnings : [];
+
   if (bindings.length === 1) {
-    return await aggregateRecords(
+    const single = await aggregateRecords(
       buildBindingStorageTarget(bindings[0].connectorId, bindings[0].connectorInstanceId),
       stream,
       grant,
       requestParams,
       manifest,
     );
+    if (extraWarnings.length) {
+      let meta = single.meta && typeof single.meta === 'object' && !Array.isArray(single.meta)
+        ? { ...single.meta }
+        : null;
+      for (const w of extraWarnings) meta = appendUniqueWarning(meta, w);
+      single.meta = meta;
+    }
+    return single;
   }
 
   const perBindingParams = { ...requestParams };
@@ -2718,8 +2855,9 @@ export async function aggregateRecordsAcrossBindings(bindings, stream, grant, re
     const target = buildBindingStorageTarget(binding.connectorId, binding.connectorInstanceId);
     const result = await aggregateRecords(target, stream, grant, perBindingParams, manifest);
     total += Number(result?.value || 0);
-    meta = mergeMetaPreservingShape(meta, result?.meta);
+    meta = mergeMetaWarnings(meta, result?.meta);
   }
+  for (const w of extraWarnings) meta = appendUniqueWarning(meta, w);
   const response = {
     object: 'aggregation',
     metric: requestParams.metric || 'count',
@@ -2736,27 +2874,83 @@ export async function aggregateRecordsAcrossBindings(bindings, stream, grant, re
  * deployments can disambiguate. Single-binding deployments preserve the
  * pre-existing shape with `connection_id`/`display_name` populated from
  * the sole active binding.
+ *
+ * When the grant pins per-stream `connection_id`, those streams resolve
+ * against the named binding(s) only; streams without the constraint fan
+ * in across `defaultBindings`. The `resolveBindingsForStream` callback
+ * lets the route adapter apply the same `(request connection_id, grant
+ * per-stream connection_id)` rules per stream. When callers do not pass
+ * a resolver, the helper falls back to using `defaultBindings` for every
+ * stream (preserving the prior single-resolution behavior for callers
+ * that do not need per-stream constraint accuracy).
  */
-export async function listStreamsAcrossBindings(bindings, grant, manifest) {
-  ensureBindingsOrThrow(bindings, { connectorId: bindings?.[0]?.connectorId });
+export async function listStreamsAcrossBindings(defaultBindings, grant, manifest, opts = {}) {
+  ensureBindingsOrThrow(defaultBindings, { connectorId: defaultBindings?.[0]?.connectorId });
+
+  const resolveBindingsForStream = typeof opts.resolveBindingsForStream === 'function'
+    ? opts.resolveBindingsForStream
+    : null;
 
   const summaries = [];
-  for (const binding of bindings) {
-    const target = buildBindingStorageTarget(binding.connectorId, binding.connectorInstanceId);
-    const perBinding = await listStreams(target, grant, manifest);
-    const wireBinding = projectBindingForWire({
-      connectorInstanceId: binding.connectorInstanceId,
-      connectorId: binding.connectorId,
-      displayName: binding.displayName,
-    });
-    for (const summary of perBinding) {
-      const decorated = { ...summary };
-      if (wireBinding?.connection_id) {
-        decorated.connection_id = wireBinding.connection_id;
-        decorated.connector_instance_id = wireBinding.connection_id;
-        if (wireBinding.display_name) decorated.display_name = wireBinding.display_name;
+  const grantStreams = Array.isArray(grant?.streams) ? grant.streams : [];
+
+  // When no per-stream resolver is wired, fall back to the prior shape:
+  // iterate every (binding, stream-in-grant) pair once.
+  if (!resolveBindingsForStream) {
+    for (const binding of defaultBindings) {
+      const target = buildBindingStorageTarget(binding.connectorId, binding.connectorInstanceId);
+      const perBinding = await listStreams(target, grant, manifest);
+      const wireBinding = projectBindingForWire({
+        connectorInstanceId: binding.connectorInstanceId,
+        connectorId: binding.connectorId,
+        displayName: binding.displayName,
+      });
+      for (const summary of perBinding) {
+        const decorated = { ...summary };
+        if (wireBinding?.connection_id) {
+          decorated.connection_id = wireBinding.connection_id;
+          decorated.connector_instance_id = wireBinding.connection_id;
+          if (wireBinding.display_name) decorated.display_name = wireBinding.display_name;
+        }
+        summaries.push(decorated);
       }
-      summaries.push(decorated);
+    }
+    return summaries;
+  }
+
+  // Per-stream resolver path: each stream's bindings honor its own
+  // grant-scope `connection_id` constraint. Streams whose grant entry
+  // pins different connections do not bleed each other's counts.
+  for (const streamGrant of grantStreams) {
+    if (!streamGrant?.name) continue;
+    let bindingsForStream;
+    try {
+      bindingsForStream = await resolveBindingsForStream(streamGrant);
+    } catch (err) {
+      // A per-stream resolution failure (e.g. grant-pinned connection no
+      // longer active) is surfaced honestly rather than swallowed: the
+      // caller's grant references a connection that we cannot serve.
+      throw err;
+    }
+    if (!bindingsForStream || bindingsForStream.length === 0) continue;
+    const singleStreamGrant = { ...grant, streams: [streamGrant] };
+    for (const binding of bindingsForStream) {
+      const target = buildBindingStorageTarget(binding.connectorId, binding.connectorInstanceId);
+      const perBinding = await listStreams(target, singleStreamGrant, manifest);
+      const wireBinding = projectBindingForWire({
+        connectorInstanceId: binding.connectorInstanceId,
+        connectorId: binding.connectorId,
+        displayName: binding.displayName,
+      });
+      for (const summary of perBinding) {
+        const decorated = { ...summary };
+        if (wireBinding?.connection_id) {
+          decorated.connection_id = wireBinding.connection_id;
+          decorated.connector_instance_id = wireBinding.connection_id;
+          if (wireBinding.display_name) decorated.display_name = wireBinding.display_name;
+        }
+        summaries.push(decorated);
+      }
     }
   }
   return summaries;

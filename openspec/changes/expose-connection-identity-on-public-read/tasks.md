@@ -1,16 +1,40 @@
-> Status as of branch `complete-storage-fan-in-read-contract` (2026-05-26):
+> Status as of branch `complete-storage-fan-in-read-contract` (2026-05-26,
+> revised after owner review at
+> `tmp/workstreams/fan-in-branch-owner-review-report.md`):
 > the **contract, MCP, consent, server-side rs-\* threading,
 > multi-connection storage fan-in, identifier-ambiguity emission, grant
 > scope `connection_id` enforcement, and owner-mode `display_name`
-> mutation** are landed end-to-end. The remaining `**DEFERRED**`
-> markers below are scoped to **external coordination** (hosted MCP
-> gateway, out-of-repo) and **broad UI work** (multi-connection
-> consent-card visual regression, per-connection grant-request UI)
-> that requires React testing infra not currently configured in
-> `apps/web`. The contract is connection-honest end-to-end on the
-> reference implementation and the regression suite
+> mutation** are landed end-to-end.
+>
+> The owner-review revision additionally:
+> - made the blob route's typed `ambiguous_connection` (HTTP 409)
+>   reachable and covered by route-level integration tests (P1);
+> - applied grant-scope per-stream `connection_id` to the blob route
+>   so a grant pinned to connection A on stream S cannot expose bytes
+>   reachable only from connection B (P2);
+> - replaced the (unsound) `changes_since` cursor merge under fan-in
+>   with a typed `invalid_argument` rejection carrying
+>   `available_connections` and retry guidance (P1);
+> - replaced the silently-dropped `next_cursor` under fan-in with a
+>   canonical `meta.warnings[{code:"partial_results"}]` entry (P2);
+> - replaced the "last binding wins" `meta.count` under fan-in with
+>   summed exact counts (when every binding produced `exact`) or
+>   omission plus a `count_downgraded` warning (P3);
+> - resolved the multi-stream-grant-with-different-`connection_id` shape
+>   for streams-list by resolving bindings per stream (P3);
+> - threaded resolver-level `deprecated_alias_used` warnings through the
+>   multi-binding fan-in helpers and the streams-list / blob routes (P3).
+>
+> The remaining `**DEFERRED**` markers below are scoped to **external
+> coordination** (hosted MCP gateway, out-of-repo) and **broad UI work**
+> (multi-connection consent-card visual regression, per-connection
+> grant-request UI) that requires React testing infra not currently
+> configured in `apps/web`. The contract is connection-honest end-to-end
+> on the reference implementation and the regression suites
 > `reference-implementation/test/storage-fan-in-read-contract.test.js`
-> (17 tests, all green) locks the runtime behavior.
+> (24 tests, all green) and
+> `reference-implementation/test/blob-fan-in-ambiguity.test.js`
+> (4 tests, all green) lock the runtime behavior.
 
 ## 1. Spec Deltas
 
@@ -71,11 +95,25 @@
 - [x] Records-list fan-in coverage — `storage-fan-in-read-contract.test.js`: `queryRecordsAcrossBindings fans in records across two granted connections` + `… auto-selects exactly-one binding without raising`.
 - [ ] **DEFERRED** — `rs-search-fan-in.test.js`. (Search ops run a ranked snapshot whose binding fan-in requires snapshot-builder topology changes orthogonal to this tranche. The single-binding search path already carries `connection_id` per hit (`search-connection-identity.test.js`); cross-binding union search is a separate, scoped change.)
 - [x] Records-detail identifier-ambiguity coverage — `storage-fan-in-read-contract.test.js`: `getRecordAcrossBindings emits ambiguous_connection when identifier resolves to multiple bindings`, `… auto-selects the only binding holding a unique identifier`, `… narrows successfully with explicit connection_id on ambiguous identifier`, `… returns not_found when identifier is absent from every binding`.
-- [x] Blob ambiguity is enforced at the route adapter (`/v1/blobs/:blob_id`) by tracking how many bindings expose the addressed blob through the visible-record probe and raising `ambiguous_connection` with `available_connections`. Storage-level fixtures for cross-binding blob bindings would require multi-binding blob ingest fixtures owned by the connector-runtime tranche; the route-level guard is fully covered by code review and the existing `rs-blobs-read-operation.test.js` continues to pass.
+- [x] Blob ambiguity is enforced at the route adapter (`/v1/blobs/:blob_id`) by iterating every blob binding, applying the addressable set and grant-scope per-stream `connection_id` constraint per binding, and raising typed `ambiguous_connection` (HTTP 409) with `available_connections` when more than one unique connection's visible record exposes the addressed blob. Route-level coverage: `blob-fan-in-ambiguity.test.js` (1) emits 409 with `available_connections` for two-connection ambiguity, (2) succeeds when the caller narrows with `connection_id`, (3) returns 200 when only one connection holds the blob (fan-in auto-select). Per-stream grant-scope narrowing covered by `blob route per-stream binding resolution narrows by grant connection_id` in the same file.
 - [x] Alias compat coverage — `validateConnectionAlias accepts canonical, accepts alias, rejects conflicts` in `storage-fan-in-read-contract.test.js` plus the pre-existing `public-read-connection-alias.test.js` regressions.
 - [x] Grant-scope unit test proving cross-connection grants preserve fan-in semantics — `resolveFanInBindings honors grant-scope connection_id constraint` and `resolveFanInBindings returns both active bindings when no narrowing is requested` in `storage-fan-in-read-contract.test.js`.
 - [x] Regression test confirming the scheduler-side `ambiguous_connector_instance` at `runtime/controller.ts:1994` is unchanged. (Verified by running the full `pnpm --dir reference-implementation run verify` baseline before and after this branch — no behavioral diff in `connector-instance-store.test.js` / scheduler tests.) Note: `resolveGrantManifest` now tolerates the same error code instead of propagating it to the read path — the scheduler code path is untouched and continues to throw exactly as before.
 - [ ] **DEFERRED** — Extend `consent-card.test.tsx` (no React testing infra wired today).
+
+## 8a. Owner-review revision (P1/P2/P3 fixes)
+
+This section pins the owner-review revision that followed
+`tmp/workstreams/fan-in-branch-owner-review-report.md`.
+
+- [x] **P1** — Blob ambiguity is now reachable. The `/v1/blobs/:blob_id` route adapter no longer relies on `executeBlobsRead`'s short-circuit-on-first-match for visibility; it iterates every blob binding under the actor's connector, applies the addressable + grant-scope-per-stream filter, and emits typed `ambiguous_connection` (HTTP 409) when more than one unique `connection_id` exposes a visible record. Route-level coverage in `test/blob-fan-in-ambiguity.test.js`.
+- [x] **P2** — Blob reads now respect grant-scope per-stream `connection_id`. The route resolves the addressable set per blob-binding's stream (caching per stream), so a grant pinned to connection A for stream S cannot expose blob bytes reachable only from connection B for stream S. Owner-mode preserves the prior fan-in default (no grant scoping). Helper coverage in `test/blob-fan-in-ambiguity.test.js`.
+- [x] **P1** — `changes_since` under multi-binding fan-in is rejected with a typed `invalid_argument` error carrying `available_connections` and recovery guidance. The unsound base64 lexical-max cursor merge has been removed. Single-binding fast-path semantics unchanged. Coverage in `test/storage-fan-in-read-contract.test.js`.
+- [x] **P2** — Multi-binding records-list now emits a structured `meta.warnings[{code:"partial_results", param:"connection_id"}]` when `has_more=true`, and the response does NOT carry a (per-binding, meaningless) `next_cursor`. Single-binding fast-path semantics unchanged. Coverage in `test/storage-fan-in-read-contract.test.js`.
+- [x] **P3** — Multi-binding `meta.count` is honest. When every per-binding result produces an `exact` count, the response carries the summed exact count; otherwise the response omits `meta.count` and emits `meta.warnings[{code:"count_downgraded", param:"count"}]`. The previous "whichever binding ran last" behavior is removed. Coverage in `test/storage-fan-in-read-contract.test.js`.
+- [x] **P3** — Streams-list with multi-stream grants pinning different `connection_id` per stream is now correctly resolved per stream. The route passes a `resolveBindingsForStream` callback that re-resolves bindings against each grant entry's `connection_id`, so stream A's count comes from A's pinned connection and stream B's count comes from B's. Coverage in `test/storage-fan-in-read-contract.test.js`.
+- [x] **P3** — Resolver-level `deprecated_alias_used` warnings now thread through the multi-binding fan-in helpers (`queryRecordsAcrossBindings`, `aggregateRecordsAcrossBindings`, `getRecordAcrossBindings`) and the streams-list route. The blob route surfaces the warning via a `PDPP-Warning` response header since the binary route has no JSON envelope. Coverage in `test/storage-fan-in-read-contract.test.js`.
+- [x] **Latent transport bug** — Surfaced by the revision: the previous tranche introduced a `PATCH /_ref/connections/:connectorInstanceId` route using `app.patch(...)`, but the local Fastify transport adapter at `server/transport.js` exposed only `get / post / put / delete / head / options`. The AS app crashed at boot under any test that called `startServer(...)`. The revision adds the `patch` method to the transport and removes the unregistered `{ contract: 'refSetConnectionDisplayName' }` opt (no contract manifest existed). The pre-existing `test/connector-instance-admission-routes.test.js` is also updated to reflect the public-read contract: records carry `connection_id` and the deprecated alias `connector_instance_id` on the wire (previous baseline asserted both were absent, which pre-dated the canonicalization tranche).
 
 ## 9. Legacy String Removal
 

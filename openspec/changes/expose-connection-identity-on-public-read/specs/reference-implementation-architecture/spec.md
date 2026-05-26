@@ -168,3 +168,76 @@ The public contract noun is `connection_id`. The reference implementation MAY ac
 - **WHEN** the reference reads or writes connection identity in storage (`reference-implementation/server/postgres-*.js`, `connector-instance-store.js`) or in runtime/orchestrator code (`runtime/controller.ts`)
 - **THEN** the storage layer and runtime MAY continue to use the column and identifier name `connector_instance_id`
 - **AND** the rename to `connection_id` SHALL apply at the public contract surface only.
+
+### Requirement: Fan-in reads SHALL be cursor- and count-honest or explicitly unsupported
+
+When `rs.records.list` fans in across more than one connection, the reference implementation SHALL NOT synthesize a cross-connection `next_cursor` or a cross-connection `next_changes_since` cursor whose forward-progress semantics cannot be soundly reconstructed from per-connection state. The implementation SHALL either preserve sound pagination/change-tracking semantics with per-connection version counters or reject the unsupported shape with typed errors and recovery guidance. `meta.count` under fan-in SHALL accurately reflect the data returned in the response: either the union of exact per-connection counts, or omitted with a structured `count_downgraded` warning.
+
+#### Scenario: `changes_since` under multi-connection fan-in
+
+- **WHEN** a grant-authorized client calls `rs.records.list` with `changes_since` against a stream that resolves to more than one connection under the caller's grant
+- **AND** the client did not narrow with `connection_id`
+- **THEN** the reference SHALL reject the request with a typed `invalid_argument` error
+- **AND** the error envelope SHALL include human-readable guidance instructing the caller to retry with `connection_id` so the cursor is bound to a single connection
+- **AND** the error envelope SHALL include `available_connections: [{ connection_id, display_name? }]` so the caller can choose a connection without an extra round trip.
+
+#### Scenario: Pagination under multi-connection fan-in
+
+- **WHEN** a grant-authorized client calls `rs.records.list` (without `changes_since`) against a stream that resolves to more than one connection under the caller's grant
+- **AND** the union response page reports `has_more=true` from any contributing connection
+- **THEN** the response SHALL NOT include a `next_cursor` field
+- **AND** the response `meta.warnings[]` SHALL include a structured entry with code `partial_results` and `param: "connection_id"` instructing the caller to retry with `connection_id` to page a single connection exhaustively.
+
+#### Scenario: Count under multi-connection fan-in
+
+- **WHEN** a grant-authorized client calls `rs.records.list` with `count=exact` (or `count=estimated`) against a stream that resolves to more than one connection under the caller's grant
+- **AND** every contributing connection produced an `exact` per-connection count
+- **THEN** the response `meta.count` SHALL carry `{ kind: 'exact', value: <sum of per-connection counts> }`
+- **AND** the response SHALL NOT report whichever per-connection count ran last.
+
+#### Scenario: Count downgrade under multi-connection fan-in
+
+- **WHEN** a grant-authorized client calls `rs.records.list` with `count=exact` (or `count=estimated`) under fan-in
+- **AND** at least one contributing connection did not produce an `exact` count
+- **THEN** the response SHALL omit `meta.count`
+- **AND** the response `meta.warnings[]` SHALL include a structured entry with code `count_downgraded` and `param: "count"` instructing the caller to retry with `connection_id` to receive an exact per-connection count.
+
+### Requirement: Grant scope per-stream `connection_id` SHALL be enforced on every read path
+
+When a grant pins a per-stream `connection_id`, the reference SHALL apply that constraint on every read path that addresses the stream — including `rs.records.list`, `rs.records.detail`, `rs.streams.list`, `rs.streams.detail`, `rs.streams.aggregate`, and `rs.blobs.read`. A pinned grant SHALL NOT expose records or blob bytes reachable only from a different connection under the same connector, even when those records would otherwise satisfy a fan-in scan.
+
+#### Scenario: Blob read respects per-stream connection constraint
+
+- **WHEN** a grant pins stream `S` to `connection_id = X`
+- **AND** a grant-authorized client calls `rs.blobs.read` for a blob whose `blob_bindings` reference records under connection `Y` for stream `S` (and not under `X`)
+- **THEN** the reference SHALL respond `blob_not_found` (404) for the blob bytes from `Y`
+- **AND** the reference SHALL NOT serve `Y`'s bytes under the pinned grant.
+
+#### Scenario: Streams-list honors per-stream connection constraint independently
+
+- **WHEN** a grant authorizes streams `A` and `B` with `A` pinned to `connection_id = X` and `B` pinned to `connection_id = Y`
+- **AND** a grant-authorized client calls `rs.streams.list`
+- **THEN** the response SHALL include a summary for `A` sourced from connection `X` only
+- **AND** the response SHALL include a summary for `B` sourced from connection `Y` only
+- **AND** the reference SHALL NOT combine per-stream record counts across mismatched (stream, connection_id) pairs.
+
+### Requirement: Resolver-level deprecated-alias warnings SHALL surface on every public read envelope
+
+When a request uses the deprecated `connector_instance_id` alias, the reference SHALL surface a structured `deprecated_alias_used` warning on the response envelope's `meta.warnings[]` (or, for the binary blob route which has no JSON envelope, on a response header) regardless of whether the read dispatched through the single-binding fast path or the multi-binding fan-in path.
+
+#### Scenario: Fan-in records list surfaces deprecated alias
+
+- **WHEN** a grant-authorized client calls `rs.records.list` with `connector_instance_id=<X>` against a stream that resolves to more than one connection under the caller's grant
+- **AND** the resolved binding set is non-empty
+- **THEN** the response `meta.warnings[]` SHALL include a `deprecated_alias_used` entry pointing at the `connector_instance_id` parameter.
+
+#### Scenario: Fan-in aggregate surfaces deprecated alias
+
+- **WHEN** a grant-authorized client calls `rs.streams.aggregate` with `connector_instance_id=<X>` against a stream that resolves to more than one connection under the caller's grant
+- **THEN** the response `meta.warnings[]` SHALL include a `deprecated_alias_used` entry.
+
+#### Scenario: Blob route surfaces deprecated alias via response header
+
+- **WHEN** a grant-authorized client calls `rs.blobs.read` with `connector_instance_id=<X>`
+- **AND** the read completes with `200 OK`
+- **THEN** the response SHALL include a `PDPP-Warning` response header naming the `deprecated_alias_used` code for the `connector_instance_id` parameter.
