@@ -44,6 +44,7 @@ if (!POSTGRES_URL) {
     const connectorId = `pg_expand_${suffix}`;
     const parentStream = 'saved_tracks';
     const childStream = 'recently_played';
+    const metadataStream = 'track_metadata';
 
     const manifest = {
       protocol_version: '0.1.0',
@@ -74,10 +75,17 @@ if (!POSTGRES_URL) {
               foreign_key: 'track_id',
               cardinality: 'has_many',
             },
+            {
+              name: 'metadata',
+              stream: metadataStream,
+              foreign_key: 'track_id',
+              cardinality: 'has_one',
+            },
           ],
           query: {
             expand: [
               { name: 'recently_played', default_limit: 10, max_limit: 50 },
+              { name: 'metadata' },
             ],
           },
         },
@@ -95,6 +103,24 @@ if (!POSTGRES_URL) {
               track_id: { type: 'string' },
               track_name: { type: 'string' },
               played_at: { type: 'string', format: 'date-time' },
+            },
+          },
+        },
+        {
+          name: metadataStream,
+          primary_key: ['id'],
+          cursor_field: 'updated_at',
+          consent_time_field: 'updated_at',
+          selection: { fields: true, resources: false },
+          schema: {
+            type: 'object',
+            required: ['id', 'track_id'],
+            properties: {
+              id: { type: 'string' },
+              track_id: { type: 'string' },
+              isrc: { type: 'string' },
+              note: { type: 'string' },
+              updated_at: { type: 'string', format: 'date-time' },
             },
           },
         },
@@ -163,6 +189,20 @@ if (!POSTGRES_URL) {
     ]) {
       await ingestRecord(connectorId, { stream: childStream, key: play.id, data: play });
     }
+    // Seed one metadata row per track for has_one coverage. track_1 has a
+    // record; track_2 deliberately has no metadata so we can prove the
+    // has_one path returns `null` for missing children.
+    await ingestRecord(connectorId, {
+      stream: metadataStream,
+      key: 'meta_1',
+      data: {
+        id: 'meta_1',
+        track_id: 'track_1',
+        isrc: 'USRC17600001',
+        note: 'note that should be projected away',
+        updated_at: '2026-02-10T00:00:00Z',
+      },
+    });
 
     await t.test('Postgres backend is active for these assertions', () => {
       assert.equal(isPostgresStorageBackend(), true, 'Postgres backend should be active');
@@ -280,6 +320,136 @@ if (!POSTGRES_URL) {
           manifest,
         ),
         (err) => err.code === 'invalid_expand',
+      );
+    });
+
+    await t.test('list endpoint hydrates has_one with grant-projected child or null when no match', async () => {
+      const grantWithMetadata = {
+        streams: [
+          { name: parentStream, fields: ['id', 'name', 'saved_at'] },
+          { name: childStream, fields: ['id', 'track_id', 'played_at'] },
+          { name: metadataStream, fields: ['id', 'track_id', 'isrc', 'updated_at'] },
+        ],
+      };
+      const result = await queryRecords(
+        connectorId,
+        parentStream,
+        grantWithMetadata,
+        { expand: 'metadata', order: 'asc' },
+        manifest,
+      );
+      const track1 = result.data.find((row) => row.id === 'track_1');
+      assert.ok(track1, 'track_1 should be present');
+      assert.ok('metadata' in (track1.expanded || {}), 'has_one expansion key must be present');
+      const meta1 = track1.expanded.metadata;
+      assert.ok(meta1 && meta1.object === 'record', 'has_one must hydrate a single record (not a list envelope)');
+      assert.equal(meta1.id, 'meta_1');
+      assert.equal(meta1.stream, metadataStream);
+      assert.deepEqual(
+        Object.keys(meta1.data || {}).sort(),
+        ['id', 'isrc', 'track_id', 'updated_at'],
+        'has_one child must be projected through the child grant fields',
+      );
+      assert.ok(!('note' in (meta1.data || {})), 'fields outside child grant must not leak');
+
+      const track2 = result.data.find((row) => row.id === 'track_2');
+      assert.ok(track2, 'track_2 should be present');
+      assert.ok('metadata' in (track2.expanded || {}), 'has_one key must be present even when no match');
+      assert.equal(track2.expanded.metadata, null, 'has_one must surface null (not omitted) when there is no matching child');
+    });
+
+    await t.test('invalid_expand when expand_limit is sent for a has_one relation', async () => {
+      const grantWithMetadata = {
+        streams: [
+          { name: parentStream, fields: ['id', 'name', 'saved_at'] },
+          { name: metadataStream, fields: ['id', 'track_id', 'isrc', 'updated_at'] },
+        ],
+      };
+      await assert.rejects(
+        () => queryRecords(
+          connectorId,
+          parentStream,
+          grantWithMetadata,
+          { expand: 'metadata', expand_limit: { metadata: 2 } },
+          manifest,
+        ),
+        (err) => err.code === 'invalid_expand',
+      );
+    });
+
+    await t.test('child grant time_range narrows expansion children in SQL', async () => {
+      // play_1=2026-02-02, play_2=2026-02-03, play_3=2026-02-04, play_4=2026-02-05.
+      // Narrow the child grant to [2026-02-03, 2026-02-05) → play_2 and play_3
+      // only for track_1; track_2 (play_4 at 2026-02-05) is `until`-excluded.
+      const grantWithTimeRange = {
+        streams: [
+          { name: parentStream, fields: ['id', 'name', 'saved_at'] },
+          {
+            name: childStream,
+            fields: ['id', 'track_id', 'played_at'],
+            time_range: {
+              since: '2026-02-03T00:00:00Z',
+              until: '2026-02-05T00:00:00Z',
+            },
+          },
+        ],
+      };
+      const result = await queryRecords(
+        connectorId,
+        parentStream,
+        grantWithTimeRange,
+        { expand: 'recently_played', order: 'asc' },
+        manifest,
+      );
+      const track1 = result.data.find((row) => row.id === 'track_1');
+      assert.ok(track1.expanded?.recently_played, 'track_1 should still have expansion list');
+      assert.deepEqual(
+        track1.expanded.recently_played.data.map((c) => c.id),
+        ['play_2', 'play_3'],
+        'only children inside the grant time_range should appear',
+      );
+      assert.equal(track1.expanded.recently_played.has_more, false);
+
+      const track2 = result.data.find((row) => row.id === 'track_2');
+      assert.equal(
+        track2.expanded.recently_played.data.length,
+        0,
+        'track_2 has only play_4 at the until boundary, which must be excluded by `until` (half-open)',
+      );
+      assert.equal(track2.expanded.recently_played.has_more, false);
+    });
+
+    await t.test('child grant resources narrows expansion children to allowed record keys', async () => {
+      const grantWithResources = {
+        streams: [
+          { name: parentStream, fields: ['id', 'name', 'saved_at'] },
+          {
+            name: childStream,
+            fields: ['id', 'track_id', 'played_at'],
+            resources: ['play_1', 'play_3'],
+          },
+        ],
+      };
+      const result = await queryRecords(
+        connectorId,
+        parentStream,
+        grantWithResources,
+        { expand: 'recently_played', order: 'asc' },
+        manifest,
+      );
+      const track1 = result.data.find((row) => row.id === 'track_1');
+      assert.deepEqual(
+        track1.expanded.recently_played.data.map((c) => c.id),
+        ['play_1', 'play_3'],
+        'only resource-allowed children should appear in the expansion',
+      );
+      assert.equal(track1.expanded.recently_played.has_more, false);
+
+      const track2 = result.data.find((row) => row.id === 'track_2');
+      assert.equal(
+        track2.expanded.recently_played.data.length,
+        0,
+        'track_2\'s only child (play_4) is not in the resources allowlist',
       );
     });
 
