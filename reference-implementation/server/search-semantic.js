@@ -72,6 +72,7 @@ import {
   postgresUpsertSemanticProgress,
 } from './postgres-search.js';
 import { isPostgresStorageBackend, postgresQuery } from './postgres-storage.js';
+import { resolveDisplayNamesForBindings } from './connection-identity.js';
 
 // ─── scope_key encoding ────────────────────────────────────────────────────
 
@@ -1985,6 +1986,20 @@ async function buildSemanticSnapshot({ q, perConnectorPlans, isOwner }) {
     }
   }
   const collapsedArr = Array.from(collapsed.values()).sort(compareHits);
+
+  // Decorate each hit with the owner-facing display_name when the store has
+  // a non-placeholder label for the binding. Lookups are deduped per
+  // connection_id; placeholder labels are omitted, not faked.
+  const displayNames = await resolveDisplayNamesForBindings(
+    collapsedArr.map((hit) => ({
+      connectorInstanceId: hit.connectorInstanceId,
+      connectorId: hit.connectorId,
+    })),
+  );
+  for (const hit of collapsedArr) {
+    const displayName = displayNames.get(hit.connectorInstanceId);
+    if (displayName) hit.displayName = displayName;
+  }
 
   return {
     snapshot_id: generateSnapshotId(),

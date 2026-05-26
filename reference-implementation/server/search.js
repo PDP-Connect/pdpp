@@ -41,6 +41,7 @@ import {
   passesRequestFilters,
 } from './record-filters.js';
 import { makeDefaultAccountConnectorInstanceId } from './stores/connector-instance-store.js';
+import { resolveDisplayNamesForBindings } from './connection-identity.js';
 import {
   postgresLexicalIndexDelete,
   postgresLexicalIndexDeleteByConnectorStream,
@@ -843,6 +844,22 @@ async function buildSnapshot({ q, perConnectorPlans, isOwner }) {
   // Round-robin merge across connectors, preserving each connector's
   // intra-list relevance order.
   const merged = roundRobinMerge(perConnectorHits);
+
+  // Decorate each hit with the owner-facing display_name when the store has
+  // a non-placeholder label for the binding. Lookups are deduped per
+  // connection_id so a snapshot with N hits across K bindings makes at most
+  // K store roundtrips. We omit the field rather than guess when no label
+  // is available.
+  const displayNames = await resolveDisplayNamesForBindings(
+    merged.map((hit) => ({
+      connectorInstanceId: hit.connectorInstanceId,
+      connectorId: hit.connectorId,
+    })),
+  );
+  for (const hit of merged) {
+    const displayName = displayNames.get(hit.connectorInstanceId);
+    if (displayName) hit.displayName = displayName;
+  }
 
   return {
     snapshot_id: generateSnapshotId(),

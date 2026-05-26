@@ -76,7 +76,7 @@ const semanticAd = {
 
 const BACKEND_ID = 'stub-canonical-conformance-v1';
 
-function makeLexicalDeps({ connectorInstanceIds }) {
+function makeLexicalDeps({ connectorInstanceIds, displayNames = {} }) {
   const stored = new Map();
   return {
     getAdvertisement: () => lexicalAd,
@@ -97,15 +97,19 @@ function makeLexicalDeps({ connectorInstanceIds }) {
     buildSnapshot: ({ q }) => ({
       snapshot_id: `snap_${q}`,
       query: q,
-      results: connectorInstanceIds.map((cii, i) => ({
-        connectorId: 'acme_payroll',
-        connectorInstanceId: cii,
-        stream: 'pay_statements',
-        recordKey: `rec_${i + 1}`,
-        emittedAt: '2026-04-01T00:00:00Z',
-        matchedFields: ['employer'],
-        score: -1 - i * 0.1,
-      })),
+      results: connectorInstanceIds.map((cii, i) => {
+        const hit = {
+          connectorId: 'acme_payroll',
+          connectorInstanceId: cii,
+          stream: 'pay_statements',
+          recordKey: `rec_${i + 1}`,
+          emittedAt: '2026-04-01T00:00:00Z',
+          matchedFields: ['employer'],
+          score: -1 - i * 0.1,
+        };
+        if (displayNames[cii]) hit.displayName = displayNames[cii];
+        return hit;
+      }),
     }),
     persistSnapshot: (snap) => stored.set(snap.snapshot_id, snap),
     loadSnapshot: (id) => stored.get(id) ?? null,
@@ -114,7 +118,7 @@ function makeLexicalDeps({ connectorInstanceIds }) {
   };
 }
 
-function makeSemanticDeps({ connectorInstanceIds }) {
+function makeSemanticDeps({ connectorInstanceIds, displayNames = {} }) {
   const stored = new Map();
   return {
     getAdvertisement: () => semanticAd,
@@ -137,14 +141,18 @@ function makeSemanticDeps({ connectorInstanceIds }) {
       snapshot_id: `snap_${q}`,
       query: q,
       backend_hash: BACKEND_ID,
-      results: connectorInstanceIds.map((cii, i) => ({
-        connectorId: 'acme_payroll',
-        connectorInstanceId: cii,
-        stream: 'pay_statements',
-        recordKey: `rec_${i + 1}`,
-        matchedFields: ['employer'],
-        distance: 0.05 + i * 0.01,
-      })),
+      results: connectorInstanceIds.map((cii, i) => {
+        const hit = {
+          connectorId: 'acme_payroll',
+          connectorInstanceId: cii,
+          stream: 'pay_statements',
+          recordKey: `rec_${i + 1}`,
+          matchedFields: ['employer'],
+          distance: 0.05 + i * 0.01,
+        };
+        if (displayNames[cii]) hit.displayName = displayNames[cii];
+        return hit;
+      }),
     }),
     persistSnapshot: (snap) => stored.set(snap.snapshot_id, snap),
     loadSnapshot: (id) => stored.get(id) ?? null,
@@ -282,6 +290,112 @@ test('multi-connection hybrid fixture: identity from both sources survives compo
   // Confirm the two identities truly stayed distinct (regression: an early
   // composition pass copied the first hit's identity onto every result).
   assert.notEqual(byKey.rec_alpha.connection_id, byKey.rec_beta.connection_id);
+});
+
+// ───────────────────────────────────────────────────────────────────────
+// 3.1 — Search hits carry display_name when the snapshot pinned a label
+// ───────────────────────────────────────────────────────────────────────
+
+test('lexical search emits display_name when the snapshot pinned a non-placeholder label', async () => {
+  const deps = makeLexicalDeps({
+    connectorInstanceIds: ['ci_acme_alpha', 'ci_acme_beta'],
+    displayNames: {
+      ci_acme_alpha: 'Acme Personal',
+      ci_acme_beta: 'Acme Business',
+    },
+  });
+  const result = await executeSearchLexical(
+    { actor: ownerActor, query: { q: 'overdraft' } },
+    deps,
+  );
+  const byCii = Object.fromEntries(
+    result.envelope.data.map((h) => [h.connection_id, h]),
+  );
+  assert.equal(byCii.ci_acme_alpha.display_name, 'Acme Personal');
+  assert.equal(byCii.ci_acme_beta.display_name, 'Acme Business');
+});
+
+test('lexical search omits display_name when the snapshot did not pin one (no guessing)', async () => {
+  const deps = makeLexicalDeps({ connectorInstanceIds: ['ci_acme_alpha'] });
+  const result = await executeSearchLexical(
+    { actor: ownerActor, query: { q: 'overdraft' } },
+    deps,
+  );
+  for (const hit of result.envelope.data) {
+    assert.ok(
+      !('display_name' in hit),
+      'display_name SHOULD be omitted when the runtime cannot pin a label without guessing',
+    );
+  }
+});
+
+test('semantic search emits display_name when the snapshot pinned a label', async () => {
+  const deps = makeSemanticDeps({
+    connectorInstanceIds: ['ci_acme_alpha'],
+    displayNames: { ci_acme_alpha: 'Acme Personal' },
+  });
+  const result = await executeSearchSemantic(
+    { actor: ownerActor, query: { q: 'overdraft' } },
+    deps,
+  );
+  assert.equal(result.envelope.data[0].display_name, 'Acme Personal');
+});
+
+test('semantic search omits display_name when the snapshot did not pin one', async () => {
+  const deps = makeSemanticDeps({ connectorInstanceIds: ['ci_acme_alpha'] });
+  const result = await executeSearchSemantic(
+    { actor: ownerActor, query: { q: 'overdraft' } },
+    deps,
+  );
+  for (const hit of result.envelope.data) {
+    assert.ok(!('display_name' in hit));
+  }
+});
+
+test('hybrid search forwards display_name from whichever source provided it', async () => {
+  const lexicalHits = [
+    {
+      object: 'search_result',
+      stream: 'posts',
+      record_key: 'rec_alpha',
+      connector_id: 'acme',
+      connection_id: 'ci_alpha',
+      connector_instance_id: 'ci_alpha',
+      display_name: 'Acme Personal',
+      record_url: '/v1/streams/posts/records/rec_alpha',
+      emitted_at: '2026-04-01T00:00:00Z',
+      matched_fields: ['title'],
+      score: { kind: 'bm25', value: -1.5, order: 'lower_is_better' },
+    },
+  ];
+  const semanticHits = [
+    {
+      object: 'search_result',
+      stream: 'posts',
+      record_key: 'rec_beta',
+      connector_id: 'acme',
+      connection_id: 'ci_beta',
+      connector_instance_id: 'ci_beta',
+      // No display_name supplied — hybrid must omit on the merged item.
+      record_url: '/v1/streams/posts/records/rec_beta',
+      emitted_at: '2026-04-01T00:00:00Z',
+      matched_fields: ['selftext'],
+      retrieval_mode: 'semantic',
+      score: { kind: 'semantic_distance', value: 0.05, order: 'lower_is_better' },
+    },
+  ];
+  const result = await executeSearchHybrid(
+    { actor: ownerActor, query: { q: 'overdraft' } },
+    {
+      runLexical: () => ({ envelope: { data: lexicalHits } }),
+      runSemantic: () => ({ envelope: { data: semanticHits } }),
+    },
+  );
+  const byKey = Object.fromEntries(
+    result.envelope.data.map((h) => [h.record_key, h]),
+  );
+  assert.equal(byKey.rec_alpha.display_name, 'Acme Personal');
+  assert.ok(!('display_name' in byKey.rec_beta));
 });
 
 // ───────────────────────────────────────────────────────────────────────
