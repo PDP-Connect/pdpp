@@ -24,21 +24,22 @@ For SQLite, switching from string equality to a structural equivalence would mea
 
 Repair is a reference-implementation operational concern, not a protocol-level mechanism. The repair tool SHALL:
 
-- Be invoked explicitly by an operator with owner-token authorization. It does not run on a schedule.
+- Be invoked explicitly by an owner/operator out-of-band. Authorization is by direct database access: the script requires `PDPP_DATABASE_URL` (the same credential that grants superuser/owner access to the reference Postgres deployment) and is intended to be run from a trusted operator shell, not the public HTTP surface. There is no HTTP route, no scheduler, and no service principal — possessing the database URL is the authorization. (A future HTTP-fronted operator surface could re-tighten this to owner-token auth; this change does not introduce one.)
 - Take connector / stream / record-key filters and SHALL refuse to operate without at least a `(connector_instance_id, stream)` scope.
 - Support a dry-run mode that emits an exact preview of which rows would change, what fields would be refilled, and from which prior version each refill is sourced.
-- Only repair records where the current row's payload is byte-equivalent (under the no-op definition above) to a prior history version that has strictly more complete derived fields per a connector-supplied policy.
-- For Codex `sessions`, the policy is: if current `message_count` is null and a prior `record_changes` row for the same key carries a non-null `message_count` with otherwise byte-equivalent payload, refill `message_count` (and similarly `function_call_count`). The repair SHALL fall back to the most recent prior non-null value, never reach across record keys, and never cross `connector_instance_id`.
+- Only repair records where the current row's payload is byte-equivalent (under the no-op definition above) to a prior history version *after normalising the registered derived fields out of both payloads*. Concretely: the tool SHALL compare current and prior with every field in the policy's `derivedFields` removed (or coerced to a shared sentinel) on both sides, using jsonb structural equality. If the normalised payloads are not equal, the prior row is not a safe source even if some derived fields would refill — because some non-derived field has also changed and the prior row is not actually the "same record minus derived fields".
+- For Codex `sessions`, the policy is: scan `record_changes` for the same key in descending version order, skip any prior whose normalised payload (derived fields removed) is not jsonb-structurally equal to the current row's normalised payload, and pick the most recent remaining prior that carries at least one non-null derived field where the current row's value is null. Refill only those fields. Never reach across record keys; never cross `connector_instance_id`.
 - Allocate a new version through the existing atomic allocator (treating the repair as a new mutation), so the repair is itself visible in `record_changes` and `changes_since`. The repair SHALL NOT rewrite history rows.
 - Refuse to operate on streams that have not registered a repair policy. New policies require code review.
+- Validate `--limit` if supplied: must be a positive integer or the tool SHALL refuse to run.
 
 This keeps the repair narrow, auditable, and inside the existing append-only contract.
 
 ### Observability
 
-The reference ingest path SHALL emit a structured log line per ingest with one of `outcome=changed`, `outcome=noop_byte_equivalent`, or `outcome=noop_delete_absent`. The log SHALL include `connector_id`, `connector_instance_id`, `stream`, and a hashed `record_key` (raw key may contain personal data). This restores observability for the class of bug this change repairs without persisting a new column.
+Structured-log telemetry (`outcome ∈ { changed, noop_byte_equivalent, noop_delete_absent }`) was considered for this change and is **intentionally out of scope**. Wiring a request-scoped logger through `records.js` and `postgres-records.js` touches surfaces outside the no-op fix and the repair tool, and the existing `record_changes` table is itself adequate retrospective telemetry — versions-per-record over time will surface any future adapter regression in CI and ad-hoc inspection. A separate change should propose structured ingest logs if/when the operator console grows live regression detection.
 
-The dashboard summary read model already tracks retained-size and per-stream record counts. No new read-model surface is required for this change; emitted/skipped telemetry is sufficient to detect future regressions in CI and ad-hoc inspection.
+The dashboard summary read model already tracks retained-size and per-stream record counts. No new read-model surface is required for this change.
 
 ## Alternatives Considered
 
@@ -61,7 +62,6 @@ Stop for owner review if the implementation:
 
 - Targeted test: against the Postgres-backed adapter, two byte-identical successive `postgresIngestRecord` calls allocate at most one version, append at most one `record_changes` row, and return `{ accepted: true, changed: false }` on the second call.
 - Targeted test: SQLite no-op behavior unchanged (existing conformance test stays green).
-- Targeted test: Codex `sessions` repair backfills `message_count` / `function_call_count` for a fixture where the current row is null and a prior change row has the value, without touching unrelated records or rewriting history.
-- Dry-run preview of the live Codex `sessions` repair lists session `019d922d-c38b-7e11-ae99-9187af386148` and reports the source version (175854) it would refill from.
-- New structured ingest log line is emitted on both adapters with the documented `outcome` vocabulary, observable by tailing the reference server in development.
+- Targeted test: Codex `sessions` repair refills `message_count` / `function_call_count` when the prior `record_changes` row is jsonb-structurally equal to the current row after removing those derived fields from both, and skips the same prior row when any other (non-derived) field differs. Cross-key isolation holds; current-non-null skips.
+- Repair tool refuses to run on a stream without a registered policy and refuses a non-positive-integer `--limit`.
 - `openspec validate repair-record-version-noop-detection --strict` and `openspec validate --all --strict` both pass.

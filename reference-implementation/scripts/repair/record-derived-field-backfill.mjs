@@ -3,25 +3,34 @@
 /**
  * record-derived-field-backfill
  *
- * Owner-only operational tool that repairs current `records` rows whose
- * derived fields were clobbered by a connector's prior runs. The repair
- * is scoped per-stream by a registered policy and is strictly additive:
- * it allocates new versions through the atomic allocator and appends a
- * new `record_changes` row per repaired record. It never mutates or
- * deletes any existing history row.
+ * Owner/operator-only operational tool that repairs current `records`
+ * rows whose registered derived fields were clobbered by a connector's
+ * prior runs. The repair is scoped per-stream by a registered policy
+ * and is strictly additive: it allocates new versions through the
+ * atomic allocator and appends a new `record_changes` row per repaired
+ * record. It never mutates or deletes any existing history row.
+ *
+ * Authorization is by direct database access — possession of
+ * `PDPP_DATABASE_URL` (the same credential that grants owner-level
+ * access to the reference Postgres). There is no HTTP route.
+ *
+ * Equivalence guard: a prior `record_changes` row is only used as a
+ * refill source if, after removing every field in the policy's
+ * `derivedFields` from both sides, current and prior are
+ * jsonb-structurally equal. This ensures the repair only runs when
+ * the prior row is genuinely "the same record minus the clobbered
+ * derived fields" and never when some other (non-derived) field has
+ * also changed.
  *
  * Scope (current policies):
- *   - codex:sessions — refill `message_count` and `function_call_count`
- *     from the most recent prior `record_changes` row that carries a
- *     non-null value, when the current row is byte-equivalent (jsonb
- *     structural equality) to that prior row except for those two
- *     fields being null vs non-null.
+ *   - sessions (codex) — refill `message_count` and `function_call_count`.
  *
  * Usage:
  *   node reference-implementation/scripts/repair/record-derived-field-backfill.mjs \
  *     --connector-instance-id=cin_... \
  *     --stream=sessions \
  *     [--record-key=<key>] \
+ *     [--limit=<positive-int>] \
  *     [--apply]
  *
  * Env:
@@ -41,94 +50,156 @@ const { Pool } = pg;
 // ─── Policy registry ────────────────────────────────────────────────────
 
 /**
- * A repair policy describes how to detect a repairable record for a
- * specific stream and how to merge the prior row's value into the
- * current row.
- *
- * Each policy is `{ derivedFields: string[], priorIsBetter(current, prior): boolean }`.
+ * A repair policy declares the set of derived fields that the repair
+ * is permitted to refill for a stream. Adding a new entry here is a
+ * code-review gate.
  *
  *   - `derivedFields` is the set of payload keys the repair may refill.
- *     The policy SHALL refill only these keys; everything else is
- *     copied from the current row.
- *   - `priorIsBetter(current, prior)` decides if a candidate prior row
- *     should be preferred. It runs per (current row, candidate prior)
- *     pair, ordered by descending prior version. Return true to use
- *     the prior values and stop searching.
- *
- * The repair refuses to write unless the merged result is structurally
- * different from the current row.
+ *     The repair SHALL refill only these keys; everything else is
+ *     copied from the current row. The equivalence guard (below)
+ *     normalises these same keys away from both sides before deciding
+ *     a prior `record_changes` row is a safe refill source.
  */
-const REPAIR_POLICIES = {
-  // The Codex `sessions` derived-field repair: the only currently
-  // recognised stream. Adding a new entry here is a code-review gate.
+export const REPAIR_POLICIES = {
+  // Codex sessions: the only currently recognised stream.
   sessions: {
     label: 'codex:sessions',
     derivedFields: ['message_count', 'function_call_count'],
-    priorIsBetter(current, prior) {
-      // Only refill when current is null and prior is non-null. Never
-      // overwrite an existing value.
-      if (current.message_count == null && prior.message_count != null) return true;
-      if (current.function_call_count == null && prior.function_call_count != null) return true;
-      return false;
-    },
   },
 };
 
-const args = parseArgs(process.argv.slice(2));
-const apply = !!args.apply;
-const connectorInstanceId = args['connector-instance-id'];
-const stream = args.stream;
-const recordKey = args['record-key'] || null;
-const limit = args.limit ? Number(args.limit) : null;
-const databaseUrl =
-  process.env.PDPP_DATABASE_URL ||
-  process.env.PDPP_TEST_POSTGRES_URL ||
-  null;
+/**
+ * Return a copy of `payload` with every field in `derivedFields`
+ * removed. Used by the equivalence guard to compare current and prior
+ * rows independent of the (possibly clobbered) derived fields.
+ */
+export function stripDerivedFields(payload, derivedFields) {
+  const out = { ...payload };
+  for (const f of derivedFields) {
+    delete out[f];
+  }
+  return out;
+}
 
-if (!connectorInstanceId || !stream) {
-  console.error(
-    'usage: record-derived-field-backfill --connector-instance-id=<id> --stream=<name> [--record-key=<key>] [--limit=N] [--apply]',
+/**
+ * Decide whether `prior` is a safe refill source for `current`.
+ *
+ *   1. Equivalence guard — current and prior MUST be jsonb-structurally
+ *      equal after removing all `derivedFields` from both sides. If not,
+ *      some non-derived field has changed and the prior row does not
+ *      represent the same record.
+ *   2. There MUST be at least one derived field where `current[f]` is
+ *      null AND `prior[f]` is non-null; otherwise there is nothing to
+ *      refill.
+ *
+ * Returns `null` if `prior` is not usable; otherwise returns the
+ * subset of derived fields that would actually be refilled.
+ */
+export async function evaluatePriorAsRefillSource(pool, current, prior, derivedFields) {
+  const normalisedCurrent = stripDerivedFields(current, derivedFields);
+  const normalisedPrior = stripDerivedFields(prior, derivedFields);
+  if (!(await jsonbStructurallyEqual(pool, normalisedCurrent, normalisedPrior))) {
+    return null;
+  }
+  const refillable = derivedFields.filter(
+    (f) => current[f] == null && prior[f] != null,
   );
-  process.exit(2);
+  return refillable.length > 0 ? refillable : null;
 }
 
-if (!databaseUrl) {
-  console.error('PDPP_DATABASE_URL is required');
-  process.exit(2);
-}
-
-const policy = REPAIR_POLICIES[stream];
-
-if (!policy) {
-  console.error(
-    `no repair policy registered for stream "${stream}". Registered policies: ${Object.keys(REPAIR_POLICIES).join(', ')}`,
+async function jsonbStructurallyEqual(pool, a, b) {
+  const r = await pool.query(
+    `SELECT $1::jsonb IS NOT DISTINCT FROM $2::jsonb AS eq`,
+    [JSON.stringify(a), JSON.stringify(b)],
   );
-  process.exit(2);
+  return r.rows[0]?.eq === true;
 }
 
-const pool = new Pool({ connectionString: databaseUrl });
+// Only execute the CLI when invoked as a script. Importing this module
+// (e.g. from tests) does not parse argv or open a Pool.
+const invokedAsScript =
+  import.meta.url === `file://${process.argv[1]}` ||
+  import.meta.url.endsWith(process.argv[1] || '');
 
-let exitCode = 0;
-try {
-  const result = await runRepair({
-    pool,
-    connectorInstanceId,
-    stream,
-    recordKey,
-    limit,
-    policy,
-    apply,
-  });
-  printSummary(result);
-  exitCode = result.failed ? 1 : 0;
-} finally {
-  await pool.end();
+if (invokedAsScript) {
+  await runCli();
 }
-process.exit(exitCode);
+
+async function runCli() {
+  const args = parseArgs(process.argv.slice(2));
+  const apply = !!args.apply;
+  const connectorInstanceId = args['connector-instance-id'];
+  const stream = args.stream;
+  const recordKey = args['record-key'] || null;
+  const limit = parseLimit(args.limit);
+  const databaseUrl =
+    process.env.PDPP_DATABASE_URL ||
+    process.env.PDPP_TEST_POSTGRES_URL ||
+    null;
+
+  if (!connectorInstanceId || !stream) {
+    console.error(
+      'usage: record-derived-field-backfill --connector-instance-id=<id> --stream=<name> [--record-key=<key>] [--limit=N] [--apply]',
+    );
+    process.exit(2);
+  }
+
+  if (!databaseUrl) {
+    console.error('PDPP_DATABASE_URL is required');
+    process.exit(2);
+  }
+
+  const policy = REPAIR_POLICIES[stream];
+
+  if (!policy) {
+    console.error(
+      `no repair policy registered for stream "${stream}". Registered policies: ${Object.keys(REPAIR_POLICIES).join(', ')}`,
+    );
+    process.exit(2);
+  }
+
+  if (limit === 'invalid') {
+    console.error('--limit must be a positive integer');
+    process.exit(2);
+  }
+
+  const pool = new Pool({ connectionString: databaseUrl });
+
+  let exitCode = 0;
+  try {
+    const result = await runRepair({
+      pool,
+      connectorInstanceId,
+      stream,
+      recordKey,
+      limit,
+      policy,
+      apply,
+    });
+    printSummary(result);
+    exitCode = result.failed ? 1 : 0;
+  } finally {
+    await pool.end();
+  }
+  process.exit(exitCode);
+}
+
+/**
+ * Parse `--limit`. Returns `null` if unset, a positive integer if
+ * valid, or the sentinel string `'invalid'` if the value is present
+ * but not a positive integer. The CLI rejects `'invalid'` early.
+ */
+export function parseLimit(raw) {
+  if (raw == null || raw === '') return null;
+  if (typeof raw === 'boolean') return 'invalid';
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n <= 0) return 'invalid';
+  return n;
+}
 
 // ─── Repair loop ────────────────────────────────────────────────────────
 
-async function runRepair({
+export async function runRepair({
   pool,
   connectorInstanceId,
   stream,
@@ -168,7 +239,10 @@ async function runRepair({
 
   for (const row of currentRows.rows) {
     const current = row.record_json;
-    // Find a prior change row with a better derived-field set.
+    // Scan history newest-first. The first prior row that satisfies
+    // the equivalence guard AND has at least one refillable derived
+    // field is the chosen source; if none qualify, the record is
+    // skipped (no version allocated, no row appended).
     const history = await pool.query(
       `SELECT version, record_json
        FROM record_changes
@@ -182,29 +256,30 @@ async function runRepair({
     );
 
     let chosen = null;
+    let refillFields = null;
     for (const h of history.rows) {
       if (h.version === row.current_version) continue;
-      if (policy.priorIsBetter(current, h.record_json)) {
+      const refillable = await evaluatePriorAsRefillSource(
+        pool,
+        current,
+        h.record_json,
+        policy.derivedFields,
+      );
+      if (refillable) {
         chosen = h;
+        refillFields = refillable;
         break;
       }
     }
     if (!chosen) continue;
 
-    const merged = mergePayload(current, chosen.record_json, policy.derivedFields);
-    if (await isStructurallyEqual(pool, current, merged)) {
-      // Nothing to write.
-      continue;
-    }
-
+    const merged = mergePayload(current, chosen.record_json, refillFields);
     previews.push({
       connectorId: row.connector_id,
       recordKey: row.record_key,
       currentVersion: row.current_version,
       sourceVersion: chosen.version,
-      fieldsRefilled: policy.derivedFields.filter(
-        (f) => current[f] !== merged[f],
-      ),
+      fieldsRefilled: refillFields,
       merged,
     });
   }
@@ -230,7 +305,7 @@ async function runRepair({
   return { previews, applied: apply, failed };
 }
 
-function mergePayload(current, prior, derivedFields) {
+export function mergePayload(current, prior, derivedFields) {
   const merged = { ...current };
   for (const f of derivedFields) {
     if (merged[f] == null && prior[f] != null) {
@@ -238,14 +313,6 @@ function mergePayload(current, prior, derivedFields) {
     }
   }
   return merged;
-}
-
-async function isStructurallyEqual(pool, a, b) {
-  const r = await pool.query(
-    `SELECT $1::jsonb IS NOT DISTINCT FROM $2::jsonb AS eq`,
-    [JSON.stringify(a), JSON.stringify(b)],
-  );
-  return r.rows[0]?.eq === true;
 }
 
 async function applyRepair({

@@ -3,16 +3,21 @@
  *
  * Uses the local Compose Postgres (PDPP_TEST_POSTGRES_URL) to set up
  * fixture rows in a uniquely-named connector_instance, run the repair
- * tool's policy + merge logic against them, and assert behavior:
+ * tool's policy + equivalence-guard logic against them, and assert
+ * behavior:
  *
- *   - current row null, prior change row non-null → refilled
- *   - current row non-null → skipped
- *   - no history at all → skipped
- *   - cross-key isolation → never touches a sibling record
+ *   - current row null, prior change row jsonb-equivalent + non-null → refilled
+ *   - current row non-null → skipped (pre-filter)
+ *   - no non-null history → skipped
+ *   - cross-key isolation → never reaches across record_key
+ *   - equivalence guard → a prior row with non-null derived fields but
+ *     a different non-derived field is REJECTED as a refill source
+ *   - --limit must be a positive integer
+ *   - REPAIR_POLICIES refuses unknown streams
  *
- * The tests do not shell out to the CLI; they import the policy and
- * call the in-process merge / equality helpers. The end-to-end CLI is
- * exercised in the worker report and final acceptance check.
+ * These tests import the real policy + helpers from the script module
+ * (CLI-arg parsing is skipped because the script only runs argv parsing
+ * when invoked as a binary).
  *
  * Spec: openspec/changes/repair-record-version-noop-detection/specs/
  *       reference-implementation-architecture/spec.md
@@ -21,53 +26,104 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import pg from 'pg';
+import {
+  REPAIR_POLICIES,
+  evaluatePriorAsRefillSource,
+  mergePayload,
+  parseLimit,
+  runRepair,
+  stripDerivedFields,
+} from '../scripts/repair/record-derived-field-backfill.mjs';
 
 const { Pool } = pg;
 
 const POSTGRES_URL = process.env.PDPP_TEST_POSTGRES_URL;
 
+// ─── Argument-validation tests (no DB) ──────────────────────────────────
+
+test('parseLimit accepts positive integers', () => {
+  assert.equal(parseLimit('1'), 1);
+  assert.equal(parseLimit('42'), 42);
+  assert.equal(parseLimit(undefined), null);
+  assert.equal(parseLimit(null), null);
+  assert.equal(parseLimit(''), null);
+});
+
+test('parseLimit rejects non-positive-integer values', () => {
+  assert.equal(parseLimit('0'), 'invalid');
+  assert.equal(parseLimit('-3'), 'invalid');
+  assert.equal(parseLimit('1.5'), 'invalid');
+  assert.equal(parseLimit('abc'), 'invalid');
+  assert.equal(parseLimit(true), 'invalid'); // bare --limit flag
+});
+
+test('REPAIR_POLICIES exposes only registered streams', () => {
+  assert.deepEqual(Object.keys(REPAIR_POLICIES), ['sessions']);
+  assert.deepEqual(REPAIR_POLICIES.sessions.derivedFields, [
+    'message_count',
+    'function_call_count',
+  ]);
+});
+
+test('stripDerivedFields removes the listed keys without touching others', () => {
+  const out = stripDerivedFields(
+    { id: 'a', message_count: 5, function_call_count: 3, other: 1 },
+    ['message_count', 'function_call_count'],
+  );
+  assert.deepEqual(out, { id: 'a', other: 1 });
+});
+
+// ─── DB-backed integration tests ────────────────────────────────────────
+
 if (!POSTGRES_URL) {
-  test('record derived-field backfill (skipped: PDPP_TEST_POSTGRES_URL unset)', { skip: true }, () => {});
+  test('record derived-field backfill DB tests (skipped: PDPP_TEST_POSTGRES_URL unset)', {
+    skip: true,
+  }, () => {});
 } else {
-  // Re-declare the policy used by the CLI so tests cover the actual
-  // merge logic without importing a top-level .mjs that performs argv
-  // parsing at module-load time.
-  const SESSIONS_POLICY = {
-    derivedFields: ['message_count', 'function_call_count'],
-    priorIsBetter(current, prior) {
-      if (current.message_count == null && prior.message_count != null) return true;
-      if (current.function_call_count == null && prior.function_call_count != null) return true;
-      return false;
-    },
-  };
+  const SESSIONS_POLICY = REPAIR_POLICIES.sessions;
 
-  function mergePayload(current, prior, derivedFields) {
-    const merged = { ...current };
-    for (const f of derivedFields) {
-      if (merged[f] == null && prior[f] != null) {
-        merged[f] = prior[f];
-      }
-    }
-    return merged;
-  }
-
-  test('sessions policy refills null derived fields from prior non-null history', async () => {
+  async function withFixture(fn) {
     const pool = new Pool({ connectionString: POSTGRES_URL });
     const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
     const connectorInstanceId = `cin_repair_${suffix}`;
     const connectorId = `repair_${suffix}`;
     const stream = 'sessions';
-
     try {
-      // Seed: prior history version with non-null counts, current row null.
+      await fn({ pool, connectorInstanceId, connectorId, stream });
+    } finally {
+      await pool.query(`DELETE FROM record_changes WHERE connector_instance_id = $1`, [
+        connectorInstanceId,
+      ]);
+      await pool.query(`DELETE FROM records WHERE connector_instance_id = $1`, [
+        connectorInstanceId,
+      ]);
+      await pool.query(`DELETE FROM version_counter WHERE connector_instance_id = $1`, [
+        connectorInstanceId,
+      ]);
+      await pool.end();
+    }
+  }
+
+  test('refills null derived fields from prior jsonb-equivalent non-null history (dry-run)', async () => {
+    await withFixture(async ({ pool, connectorInstanceId, connectorId, stream }) => {
       const recordKey = 'thr-a';
       await pool.query(
         `INSERT INTO version_counter(connector_id, connector_instance_id, stream, max_version)
          VALUES($1, $2, $3, 2)`,
         [connectorId, connectorInstanceId, stream],
       );
-      const priorJson = JSON.stringify({ id: recordKey, message_count: 7, function_call_count: 4 });
-      const currentJson = JSON.stringify({ id: recordKey, message_count: null, function_call_count: null });
+      const priorJson = JSON.stringify({
+        id: recordKey,
+        title: 'same',
+        message_count: 7,
+        function_call_count: 4,
+      });
+      const currentJson = JSON.stringify({
+        id: recordKey,
+        title: 'same',
+        message_count: null,
+        function_call_count: null,
+      });
       await pool.query(
         `INSERT INTO record_changes(connector_id, connector_instance_id, stream, record_key, version, record_json, emitted_at, deleted)
          VALUES($1, $2, $3, $4, 1, $5::jsonb, '2026-05-01T00:00:00Z', FALSE),
@@ -80,52 +136,39 @@ if (!POSTGRES_URL) {
         [connectorId, connectorInstanceId, stream, recordKey, currentJson],
       );
 
-      // Probe: scan candidates the way the repair tool does.
-      const rows = await pool.query(
-        `SELECT record_key, record_json FROM records
-         WHERE connector_instance_id = $1 AND stream = $2 AND deleted = FALSE
-           AND (record_json->>'message_count' IS NULL OR record_json->>'function_call_count' IS NULL)`,
-        [connectorInstanceId, stream],
-      );
-      assert.equal(rows.rows.length, 1);
-      const current = rows.rows[0].record_json;
+      const result = await runRepair({
+        pool,
+        connectorInstanceId,
+        stream,
+        recordKey: null,
+        limit: null,
+        policy: SESSIONS_POLICY,
+        apply: false,
+      });
 
-      const history = await pool.query(
-        `SELECT version, record_json FROM record_changes
-         WHERE connector_instance_id = $1 AND stream = $2 AND record_key = $3 AND deleted = FALSE
-         ORDER BY version DESC`,
-        [connectorInstanceId, stream, recordKey],
-      );
-      const chosen = history.rows.find((h) => SESSIONS_POLICY.priorIsBetter(current, h.record_json));
-      assert.ok(chosen, 'should pick a prior row with non-null counts');
-      assert.equal(Number(chosen.version), 1);
-
-      const merged = mergePayload(current, chosen.record_json, SESSIONS_POLICY.derivedFields);
-      assert.equal(merged.message_count, 7);
-      assert.equal(merged.function_call_count, 4);
-    } finally {
-      await pool.query(`DELETE FROM record_changes WHERE connector_instance_id = $1`, [connectorInstanceId]);
-      await pool.query(`DELETE FROM records WHERE connector_instance_id = $1`, [connectorInstanceId]);
-      await pool.query(`DELETE FROM version_counter WHERE connector_instance_id = $1`, [connectorInstanceId]);
-      await pool.end();
-    }
+      assert.equal(result.previews.length, 1);
+      const p = result.previews[0];
+      assert.equal(p.recordKey, recordKey);
+      assert.equal(Number(p.sourceVersion), 1);
+      assert.deepEqual(p.fieldsRefilled.sort(), ['function_call_count', 'message_count']);
+      assert.equal(p.merged.message_count, 7);
+      assert.equal(p.merged.function_call_count, 4);
+    });
   });
 
-  test('sessions policy leaves a row alone when current has non-null counts', async () => {
-    const pool = new Pool({ connectionString: POSTGRES_URL });
-    const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
-    const connectorInstanceId = `cin_repair_${suffix}`;
-    const connectorId = `repair_${suffix}`;
-    const stream = 'sessions';
-
-    try {
+  test('leaves a row alone when current has non-null derived fields', async () => {
+    await withFixture(async ({ pool, connectorInstanceId, connectorId, stream }) => {
       const recordKey = 'thr-b';
       await pool.query(
         `INSERT INTO version_counter(connector_id, connector_instance_id, stream, max_version)
          VALUES($1, $2, $3, 1)`,
         [connectorId, connectorInstanceId, stream],
       );
-      const currentJson = JSON.stringify({ id: recordKey, message_count: 11, function_call_count: 9 });
+      const currentJson = JSON.stringify({
+        id: recordKey,
+        message_count: 11,
+        function_call_count: 9,
+      });
       await pool.query(
         `INSERT INTO record_changes(connector_id, connector_instance_id, stream, record_key, version, record_json, emitted_at, deleted)
          VALUES($1, $2, $3, $4, 1, $5::jsonb, '2026-05-01T00:00:00Z', FALSE)`,
@@ -137,38 +180,33 @@ if (!POSTGRES_URL) {
         [connectorId, connectorInstanceId, stream, recordKey, currentJson],
       );
 
-      // Pre-filter must not match a row whose derived fields are already filled.
-      const rows = await pool.query(
-        `SELECT record_key FROM records
-         WHERE connector_instance_id = $1 AND stream = $2 AND deleted = FALSE
-           AND ((NOT (record_json ? 'message_count') OR record_json->>'message_count' IS NULL)
-                OR (NOT (record_json ? 'function_call_count') OR record_json->>'function_call_count' IS NULL))`,
-        [connectorInstanceId, stream],
-      );
-      assert.equal(rows.rows.length, 0, 'rows with both derived fields filled SHALL NOT be picked up');
-    } finally {
-      await pool.query(`DELETE FROM record_changes WHERE connector_instance_id = $1`, [connectorInstanceId]);
-      await pool.query(`DELETE FROM records WHERE connector_instance_id = $1`, [connectorInstanceId]);
-      await pool.query(`DELETE FROM version_counter WHERE connector_instance_id = $1`, [connectorInstanceId]);
-      await pool.end();
-    }
+      const result = await runRepair({
+        pool,
+        connectorInstanceId,
+        stream,
+        recordKey: null,
+        limit: null,
+        policy: SESSIONS_POLICY,
+        apply: false,
+      });
+
+      assert.equal(result.previews.length, 0, 'rows with non-null derived fields are pre-filtered out');
+    });
   });
 
-  test('sessions policy skips records that have no non-null history', async () => {
-    const pool = new Pool({ connectionString: POSTGRES_URL });
-    const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
-    const connectorInstanceId = `cin_repair_${suffix}`;
-    const connectorId = `repair_${suffix}`;
-    const stream = 'sessions';
-
-    try {
+  test('skips records with no non-null history', async () => {
+    await withFixture(async ({ pool, connectorInstanceId, connectorId, stream }) => {
       const recordKey = 'thr-c';
       await pool.query(
         `INSERT INTO version_counter(connector_id, connector_instance_id, stream, max_version)
          VALUES($1, $2, $3, 2)`,
         [connectorId, connectorInstanceId, stream],
       );
-      const nullJson = JSON.stringify({ id: recordKey, message_count: null, function_call_count: null });
+      const nullJson = JSON.stringify({
+        id: recordKey,
+        message_count: null,
+        function_call_count: null,
+      });
       await pool.query(
         `INSERT INTO record_changes(connector_id, connector_instance_id, stream, record_key, version, record_json, emitted_at, deleted)
          VALUES($1, $2, $3, $4, 1, $5::jsonb, '2026-05-01T00:00:00Z', FALSE),
@@ -181,43 +219,152 @@ if (!POSTGRES_URL) {
         [connectorId, connectorInstanceId, stream, recordKey, nullJson],
       );
 
-      // Scan history; nothing should satisfy priorIsBetter.
-      const history = await pool.query(
-        `SELECT version, record_json FROM record_changes
-         WHERE connector_instance_id = $1 AND stream = $2 AND record_key = $3
-         ORDER BY version DESC`,
-        [connectorInstanceId, stream, recordKey],
-      );
-      const current = { id: recordKey, message_count: null, function_call_count: null };
-      const chosen = history.rows.find((h) => SESSIONS_POLICY.priorIsBetter(current, h.record_json));
-      assert.equal(chosen, undefined, 'no non-null history → no repair candidate');
-    } finally {
-      await pool.query(`DELETE FROM record_changes WHERE connector_instance_id = $1`, [connectorInstanceId]);
-      await pool.query(`DELETE FROM records WHERE connector_instance_id = $1`, [connectorInstanceId]);
-      await pool.query(`DELETE FROM version_counter WHERE connector_instance_id = $1`, [connectorInstanceId]);
-      await pool.end();
-    }
+      const result = await runRepair({
+        pool,
+        connectorInstanceId,
+        stream,
+        recordKey: null,
+        limit: null,
+        policy: SESSIONS_POLICY,
+        apply: false,
+      });
+
+      assert.equal(result.previews.length, 0);
+    });
   });
 
-  test('cross-key isolation: refill on one record does not touch a sibling', async () => {
-    const pool = new Pool({ connectionString: POSTGRES_URL });
-    const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
-    const connectorInstanceId = `cin_repair_${suffix}`;
-    const connectorId = `repair_${suffix}`;
-    const stream = 'sessions';
+  test('equivalence guard rejects a prior row whose non-derived fields differ', async () => {
+    await withFixture(async ({ pool, connectorInstanceId, connectorId, stream }) => {
+      const recordKey = 'thr-guard';
+      await pool.query(
+        `INSERT INTO version_counter(connector_id, connector_instance_id, stream, max_version)
+         VALUES($1, $2, $3, 2)`,
+        [connectorId, connectorInstanceId, stream],
+      );
+      // Prior row carries non-null derived fields AND a different
+      // non-derived field (`title`). The repair MUST refuse it.
+      const priorJson = JSON.stringify({
+        id: recordKey,
+        title: 'old title',
+        message_count: 7,
+        function_call_count: 4,
+      });
+      const currentJson = JSON.stringify({
+        id: recordKey,
+        title: 'new title',
+        message_count: null,
+        function_call_count: null,
+      });
+      await pool.query(
+        `INSERT INTO record_changes(connector_id, connector_instance_id, stream, record_key, version, record_json, emitted_at, deleted)
+         VALUES($1, $2, $3, $4, 1, $5::jsonb, '2026-05-01T00:00:00Z', FALSE),
+                ($1, $2, $3, $4, 2, $6::jsonb, '2026-05-02T00:00:00Z', FALSE)`,
+        [connectorId, connectorInstanceId, stream, recordKey, priorJson, currentJson],
+      );
+      await pool.query(
+        `INSERT INTO records(connector_id, connector_instance_id, stream, record_key, record_json, emitted_at, version, deleted, primary_key_text)
+         VALUES($1, $2, $3, $4, $5::jsonb, '2026-05-02T00:00:00Z', 2, FALSE, $4)`,
+        [connectorId, connectorInstanceId, stream, recordKey, currentJson],
+      );
 
-    try {
-      // Two records: A has nullable current + non-null history; B has
-      // only null history. Pre-filter should yield both; the merge
-      // logic should refill A and skip B.
+      // Direct check against the helper.
+      const guardResult = await evaluatePriorAsRefillSource(
+        pool,
+        JSON.parse(currentJson),
+        JSON.parse(priorJson),
+        SESSIONS_POLICY.derivedFields,
+      );
+      assert.equal(guardResult, null, 'guard SHALL reject prior with differing non-derived field');
+
+      // End-to-end through runRepair: no preview.
+      const result = await runRepair({
+        pool,
+        connectorInstanceId,
+        stream,
+        recordKey: null,
+        limit: null,
+        policy: SESSIONS_POLICY,
+        apply: false,
+      });
+      assert.equal(result.previews.length, 0, 'runRepair SHALL skip when guard fails for every prior');
+    });
+  });
+
+  test('equivalence guard accepts a prior whose only difference is the derived fields', async () => {
+    await withFixture(async ({ pool, connectorInstanceId, connectorId, stream }) => {
+      const recordKey = 'thr-accept';
+      await pool.query(
+        `INSERT INTO version_counter(connector_id, connector_instance_id, stream, max_version)
+         VALUES($1, $2, $3, 2)`,
+        [connectorId, connectorInstanceId, stream],
+      );
+      const priorJson = JSON.stringify({
+        id: recordKey,
+        title: 'shared',
+        nested: { a: 1, b: [1, 2, 3] },
+        message_count: 12,
+        function_call_count: 8,
+      });
+      // Same payload, derived fields null, *different key order on the
+      // wire*. After removing derived fields, both are jsonb-equal.
+      const currentJson = JSON.stringify({
+        function_call_count: null,
+        message_count: null,
+        nested: { b: [1, 2, 3], a: 1 },
+        title: 'shared',
+        id: recordKey,
+      });
+      await pool.query(
+        `INSERT INTO record_changes(connector_id, connector_instance_id, stream, record_key, version, record_json, emitted_at, deleted)
+         VALUES($1, $2, $3, $4, 1, $5::jsonb, '2026-05-01T00:00:00Z', FALSE),
+                ($1, $2, $3, $4, 2, $6::jsonb, '2026-05-02T00:00:00Z', FALSE)`,
+        [connectorId, connectorInstanceId, stream, recordKey, priorJson, currentJson],
+      );
+      await pool.query(
+        `INSERT INTO records(connector_id, connector_instance_id, stream, record_key, record_json, emitted_at, version, deleted, primary_key_text)
+         VALUES($1, $2, $3, $4, $5::jsonb, '2026-05-02T00:00:00Z', 2, FALSE, $4)`,
+        [connectorId, connectorInstanceId, stream, recordKey, currentJson],
+      );
+
+      const result = await runRepair({
+        pool,
+        connectorInstanceId,
+        stream,
+        recordKey: null,
+        limit: null,
+        policy: SESSIONS_POLICY,
+        apply: false,
+      });
+
+      assert.equal(result.previews.length, 1);
+      assert.equal(Number(result.previews[0].sourceVersion), 1);
+      assert.equal(result.previews[0].merged.message_count, 12);
+      assert.equal(result.previews[0].merged.function_call_count, 8);
+    });
+  });
+
+  test('cross-key isolation: repair never reaches across record_key', async () => {
+    await withFixture(async ({ pool, connectorInstanceId, connectorId, stream }) => {
       await pool.query(
         `INSERT INTO version_counter(connector_id, connector_instance_id, stream, max_version)
          VALUES($1, $2, $3, 4)`,
         [connectorId, connectorInstanceId, stream],
       );
-      const aPrior = JSON.stringify({ id: 'a', message_count: 5, function_call_count: 3 });
-      const aCurrent = JSON.stringify({ id: 'a', message_count: null, function_call_count: null });
-      const bCurrent = JSON.stringify({ id: 'b', message_count: null, function_call_count: null });
+      const aPrior = JSON.stringify({
+        id: 'a',
+        message_count: 5,
+        function_call_count: 3,
+      });
+      const aCurrent = JSON.stringify({
+        id: 'a',
+        message_count: null,
+        function_call_count: null,
+      });
+      const bCurrent = JSON.stringify({
+        id: 'b',
+        message_count: null,
+        function_call_count: null,
+      });
       await pool.query(
         `INSERT INTO record_changes(connector_id, connector_instance_id, stream, record_key, version, record_json, emitted_at, deleted)
          VALUES
@@ -234,35 +381,35 @@ if (!POSTGRES_URL) {
         [connectorId, connectorInstanceId, stream, aCurrent, bCurrent],
       );
 
-      // Walk both records, ensuring 'b' never matches against 'a' history.
-      const candidates = await pool.query(
-        `SELECT record_key, record_json FROM records
-         WHERE connector_instance_id = $1 AND stream = $2 AND deleted = FALSE
-         ORDER BY record_key`,
-        [connectorInstanceId, stream],
-      );
-      assert.equal(candidates.rows.length, 2);
+      const result = await runRepair({
+        pool,
+        connectorInstanceId,
+        stream,
+        recordKey: null,
+        limit: null,
+        policy: SESSIONS_POLICY,
+        apply: false,
+      });
 
-      for (const c of candidates.rows) {
-        const history = await pool.query(
-          `SELECT version, record_json FROM record_changes
-           WHERE connector_instance_id = $1 AND stream = $2 AND record_key = $3 AND deleted = FALSE
-           ORDER BY version DESC`,
-          [connectorInstanceId, stream, c.record_key],
-        );
-        const chosen = history.rows.find((h) => SESSIONS_POLICY.priorIsBetter(c.record_json, h.record_json));
-        if (c.record_key === 'a') {
-          assert.ok(chosen, 'a SHALL find its own prior non-null row');
-          assert.equal(Number(chosen.version), 1);
-        } else {
-          assert.equal(chosen, undefined, 'b SHALL NOT find any candidate (no non-null history)');
-        }
-      }
-    } finally {
-      await pool.query(`DELETE FROM record_changes WHERE connector_instance_id = $1`, [connectorInstanceId]);
-      await pool.query(`DELETE FROM records WHERE connector_instance_id = $1`, [connectorInstanceId]);
-      await pool.query(`DELETE FROM version_counter WHERE connector_instance_id = $1`, [connectorInstanceId]);
-      await pool.end();
-    }
+      // Only `a` qualifies: `b` has no prior with non-null derived
+      // fields and cannot reach across to `a`'s history.
+      assert.equal(result.previews.length, 1);
+      assert.equal(result.previews[0].recordKey, 'a');
+      assert.equal(Number(result.previews[0].sourceVersion), 1);
+    });
+  });
+
+  test('mergePayload only writes the refillable fields', () => {
+    const merged = mergePayload(
+      { id: 'x', message_count: null, function_call_count: null, other: 'keep' },
+      { id: 'x', message_count: 7, function_call_count: 4, other: 'overridden' },
+      ['message_count', 'function_call_count'],
+    );
+    assert.deepEqual(merged, {
+      id: 'x',
+      message_count: 7,
+      function_call_count: 4,
+      other: 'keep',
+    });
   });
 }

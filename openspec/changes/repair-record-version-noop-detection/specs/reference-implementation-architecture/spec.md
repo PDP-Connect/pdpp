@@ -28,11 +28,13 @@ When the reference processes a no-op re-ingest, an absent-record delete, or a re
 
 ## ADDED Requirements
 
-### Requirement: The reference SHALL expose an owner-only record-derived-field repair tool
+### Requirement: The reference SHALL expose an owner/operator-only record-derived-field repair tool
 
-The reference implementation SHALL provide an owner-only operational tool that repairs current `records` rows whose payload is byte-equivalent (per the No-op equivalence definition above) to a prior `record_changes` row with strictly more complete derived fields, under a per-stream repair policy that is registered in code.
+The reference implementation SHALL provide an owner/operator-only operational tool that repairs current `records` rows whose payload is byte-equivalent (per the No-op equivalence definition above) — *after removing the policy's registered derived fields from both sides* — to a prior `record_changes` row that carries strictly more complete derived fields, under a per-stream repair policy that is registered in code.
 
-The tool SHALL refuse to run without an explicit `(connector_instance_id, stream)` scope. It SHALL default to a dry-run mode that prints the records that would be repaired, the prior `record_changes.version` each refill would be sourced from, and the field set each refill would write. It SHALL NOT mutate any row without an explicit `--apply` flag. It SHALL NOT mutate or delete any existing `record_changes` row. It SHALL allocate any repair write through the existing atomic allocator so the repair itself is observable in `record_changes` and `changes_since`.
+The tool SHALL be authorized by direct database access (`PDPP_DATABASE_URL`), not by an HTTP route or scheduler. It SHALL refuse to run without an explicit `(connector_instance_id, stream)` scope. It SHALL default to a dry-run mode that prints the records that would be repaired, the prior `record_changes.version` each refill would be sourced from, and the field set each refill would write. It SHALL NOT mutate any row without an explicit `--apply` flag. It SHALL NOT mutate or delete any existing `record_changes` row. It SHALL allocate any repair write through the existing atomic allocator so the repair itself is observable in `record_changes` and `changes_since`. It SHALL validate `--limit` (if supplied) as a positive integer and refuse to run otherwise.
+
+The tool SHALL apply an equivalence guard: before treating a prior `record_changes` row as a refill source, the tool SHALL compare the current row's payload to that prior row's payload with every field in the policy's `derivedFields` removed from both sides, using jsonb structural equality. A prior row whose normalised payload is not equal to the current row's normalised payload SHALL NOT be used as a refill source even if some of its derived fields are non-null.
 
 The tool SHALL NOT operate across distinct `(connector_instance_id, stream, record_key)` boundaries. It SHALL NOT operate on streams without a registered repair policy.
 
@@ -52,3 +54,9 @@ The tool SHALL NOT operate across distinct `(connector_instance_id, stream, reco
 
 - **WHEN** the operator invokes the repair tool against a `(connector_instance_id, stream)` pair whose stream has no registered repair policy
 - **THEN** the tool SHALL refuse to run and SHALL exit non-zero with a message naming the missing policy
+
+#### Scenario: Equivalence guard rejects a prior row whose non-derived fields have changed
+
+- **WHEN** the operator runs the repair tool on a record whose current row has null derived fields, but the candidate prior `record_changes` row differs from the current row in some field outside the policy's `derivedFields`
+- **THEN** the tool SHALL NOT use that prior row as a refill source
+- **AND** if no other candidate prior row satisfies the equivalence guard, the record SHALL be skipped (no version allocated, no `record_changes` row appended)
