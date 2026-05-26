@@ -16,3 +16,14 @@ test("operator run helpers expose connection-scoped control paths", async () => 
   assert.match(src, /export async function resumeConnectionSchedule\(connectionId: string\)/);
   assert.match(src, /export async function deleteConnectionSchedule\(connectionId: string\)/);
 });
+
+test("setConnectionDisplayName targets the owner-only PATCH route with a JSON display_name body", async () => {
+  const src = await readFile(OPERATOR_RUNS_FILE, "utf8");
+  assert.match(src, /export async function setConnectionDisplayName\(connectionId: string, displayName: string\)/);
+  // The PATCH must go to /_ref/connections/:id with no suffix and carry
+  // display_name in the JSON body — the reference server's owner-only
+  // rename route.
+  assert.match(src, /method: "PATCH"/);
+  assert.match(src, /connectionControlPath\(connectionId, ""\)/);
+  assert.match(src, /asJson\(\{ display_name: displayName \}\)/);
+});

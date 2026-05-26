@@ -25,6 +25,7 @@ import {
 } from "../../lib/rs-client.ts";
 import { connectorInstanceIdForConnection, resolveConnectionForRecordsRoute } from "../connection-route.ts";
 import { ConnectionDiagnostics } from "./connection-diagnostics.tsx";
+import { RenameConnectionButton } from "./rename-connection-button.tsx";
 import { SyncNowButton } from "./sync-now-button.tsx";
 
 export const dynamic = "force-dynamic";
@@ -146,7 +147,10 @@ export default async function ConnectorPage({ params }: { params: Promise<{ conn
   }
 
   const totalRecords = streams.reduce((sum, s) => sum + s.record_count, 0);
-  const displayName = manifest.display_name ?? manifest.name ?? connectorId;
+  // Prefer the connection's owner-meaningful `display_name` so an owner
+  // rename via PATCH /_ref/connections/:id surfaces on the detail title.
+  // Falls back to the connector-type label, then the connector id.
+  const displayName = summary.display_name ?? manifest.display_name ?? manifest.name ?? connectorId;
   const running = overview?.isRunning ?? false;
   // Source instances surface the device(s) that fed this connection. For
   // filesystem-class collectors (claude_code, codex), the same connector
@@ -184,6 +188,7 @@ export default async function ConnectorPage({ params }: { params: Promise<{ conn
               displayName={displayName}
               initialRunning={running}
             />
+            <RenameConnectionButton connectionId={connectionId} currentDisplayName={displayName} />
           </>
         }
         breadcrumbs={[{ label: "Records", href: "/dashboard/records" }, { label: displayName }]}

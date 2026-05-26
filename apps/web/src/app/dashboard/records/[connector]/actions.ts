@@ -1,5 +1,6 @@
 "use server";
 
+import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireDashboardAccess } from "../../lib/dashboard-access.ts";
 import {
@@ -13,6 +14,7 @@ import {
   runConnectorNow,
   saveConnectionSchedule,
   saveConnectorSchedule,
+  setConnectionDisplayName,
 } from "../../lib/operator-runs.ts";
 
 function asString(value: FormDataEntryValue | null): string {
@@ -107,6 +109,33 @@ export async function resumeConnectorScheduleAction(formData: FormData) {
     error = errorMessage(err);
   }
   redirect(connectorHref(routeId, message, error));
+}
+
+export type RenameConnectionResult = { ok: true; display_name: string } | { ok: false; message: string };
+
+/**
+ * Owner-only rename of a connection's `display_name`. The reference RS
+ * gates the underlying PATCH with `ownerAuth.requireOwnerSession`; this
+ * action additionally re-checks dashboard access so a client-side caller
+ * cannot bypass the proxy guard.
+ */
+export async function renameConnectionAction(
+  connectionId: string,
+  displayName: string
+): Promise<RenameConnectionResult> {
+  await requireDashboardAccess(`/dashboard/records/${encodeURIComponent(connectionId)}`);
+  const trimmed = typeof displayName === "string" ? displayName.trim() : "";
+  if (!trimmed) {
+    return { ok: false, message: "Name cannot be empty." };
+  }
+  try {
+    const body = (await setConnectionDisplayName(connectionId, trimmed)) as { display_name?: string };
+    revalidatePath("/dashboard/records");
+    revalidatePath(`/dashboard/records/${encodeURIComponent(connectionId)}`);
+    return { ok: true, display_name: body.display_name ?? trimmed };
+  } catch (err) {
+    return { ok: false, message: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 export async function deleteConnectorScheduleAction(formData: FormData) {

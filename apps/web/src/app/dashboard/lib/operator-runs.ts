@@ -324,3 +324,27 @@ export async function deleteConnectionSchedule(connectionId: string) {
     throw new Error(describeError(body, `schedule delete failed (${response.status})`));
   }
 }
+
+/**
+ * Rename a connection's owner-meaningful `display_name`. Targets the
+ * `PATCH /_ref/connections/:connection_id` route gated by
+ * `ownerAuth.requireOwnerSession`. The reference server's store enforces
+ * `WHERE owner_subject_id = ?` so a stolen id cannot cross owners even if
+ * the route guard is later forgotten.
+ *
+ * Spec: openspec/changes/expose-connection-identity-on-public-read/
+ *       specs/reference-implementation-architecture/spec.md
+ *       (#"Owner-meaningful display name SHALL be owner-editable")
+ */
+export async function setConnectionDisplayName(connectionId: string, displayName: string) {
+  const response = await fetchAs(connectionControlPath(connectionId, ""), {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: asJson({ display_name: displayName }),
+  });
+  const body = await readBody(response);
+  if (!response.ok) {
+    throw new Error(describeError(body, `rename connection failed (${response.status})`));
+  }
+  return body;
+}
