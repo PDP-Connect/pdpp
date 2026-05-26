@@ -12,7 +12,7 @@ A single factory function returns a small cursor object with five obvious operat
 
 ```ts
 export interface FingerprintCursor {
-  shouldEmit(id: string, data: RecordData): boolean;
+  shouldEmit(data: RecordData): boolean;
   priorFingerprint(id: string): string | undefined;
   toState(): Record<string, string>;
   pruneStale(): void;
@@ -32,9 +32,10 @@ export function openFingerprintCursor(
 
 `openFingerprintCursor` tolerantly decodes the prior state if `priorFingerprints` is not supplied: it accepts `undefined`, a record with `{ fingerprints: { id: string } }`, a record with the legacy `synced_at` shape, and silently drops malformed entries. This matches the existing Slack `readPriorFingerprintMap` behavior.
 
-`shouldEmit(id, data)`:
+`shouldEmit(data)`:
 
-- Returns `true` if the fingerprint of `data` (with exclusions applied) differs from the prior fingerprint for `id`, or if there is no prior.
+- Reads `data.id` as the source-local record id.
+- Returns `true` if the fingerprint of `data` (with exclusions applied) differs from the prior fingerprint for that id, or if there is no prior.
 - Always records the computed fingerprint into the next map and the id into the seen set, even when returning `false`. This is the load-bearing line for STATE carry-forward.
 - Records without an id (id is `null`/`undefined`/empty) cannot be fingerprinted; callers gate this themselves and emit anonymous records unconditionally.
 
