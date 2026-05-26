@@ -433,20 +433,31 @@ export async function postgresIngestRecord(storageTarget, record) {
   const changeHistoryLimit = getChangeHistoryLimit();
 
   const outcome = await withPostgresTransaction(async (client) => {
+    // No-op equivalence is computed at the `jsonb` level via a server-side
+    // `record_json = $::jsonb` comparison. The naive `JSON.stringify` of
+    // the JS object node-postgres parses out of jsonb does not round-trip
+    // to the bytes the connector emitted: Postgres' `::text` output adds
+    // whitespace and the parsed object's key order matches Postgres'
+    // internal storage. Either gap silently turns identical re-ingests
+    // into version churn, observed in production as Slack `workspace`
+    // accumulating 31k+ versions of the same payload. `jsonb` equality is
+    // structural and ignores both incidental layout differences.
     const currentResult = await client.query(
-      `SELECT record_json, deleted,
-              COALESCE(octet_length(record_json::text), 0)::bigint AS record_json_bytes
+      `SELECT record_json,
+              deleted,
+              COALESCE(octet_length(record_json::text), 0)::bigint AS record_json_bytes,
+              ($4::jsonb IS NOT DISTINCT FROM record_json) AS is_identical
        FROM records
        WHERE connector_instance_id = $1 AND stream = $2 AND record_key = $3
        FOR UPDATE`,
-      [connectorInstanceId, stream, recordKey],
+      [connectorInstanceId, stream, recordKey, recordJson],
     );
     const current = currentResult.rows[0] || null;
 
     if (op === 'delete' && (!current || current.deleted)) {
       return { kind: 'noop' };
     }
-    if (op !== 'delete' && current && !current.deleted && JSON.stringify(current.record_json) === recordJson) {
+    if (op !== 'delete' && current && !current.deleted && current.is_identical) {
       return { kind: 'noop' };
     }
 
