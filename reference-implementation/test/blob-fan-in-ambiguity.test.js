@@ -64,6 +64,7 @@ const baseManifest = {
         },
       },
       query: { aggregations: { count: true } },
+      selection: { fields: { mode: 'explicit' } },
     },
     {
       name: STREAM_B,
@@ -89,6 +90,7 @@ const baseManifest = {
         },
       },
       query: { aggregations: { count: true } },
+      selection: { fields: { mode: 'explicit' } },
     },
   ],
 };
@@ -373,6 +375,155 @@ test('GET /v1/blobs/:blob_id returns 200 when only one connection holds the blob
       { headers: { Authorization: `Bearer ${ownerToken}` } },
     );
     assert.equal(resp.status, 200);
+    const buf = Buffer.from(await resp.arrayBuffer());
+    assert.deepEqual(buf, bytes);
+  });
+});
+
+// ─── End-to-end client-mode grant-scope narrowing on the blob route ───────
+//
+// P3 follow-up from `tmp/workstreams/fan-in-revision-owner-review-report.md`:
+// the prior tranche covered grant-scoped per-stream narrowing at the resolver
+// layer only. This test exercises the full Fastify route under a real client
+// access token: seed a blob whose ONLY visible binding for stream S is via
+// connection B, issue a grant pinning stream S → connection A, and assert
+// the route returns `blob_not_found` (404) instead of leaking B's bytes.
+
+async function approveGrant(asUrl, subjectId, params) {
+  const parResp = await fetch(`${asUrl}/oauth/par`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      client_id: params.client_id,
+      authorization_details: [
+        {
+          type: 'https://pdpp.org/data-access',
+          source: { kind: 'connector', id: params.connector_id },
+          purpose_code: params.purpose_code,
+          purpose_description: params.purpose_description,
+          access_mode: params.access_mode,
+          streams: params.streams,
+        },
+      ],
+    }),
+  });
+  const parBody = await parResp.json();
+  if (!parBody?.request_uri) {
+    throw new Error(`PAR returned no request_uri: ${JSON.stringify(parBody)}`);
+  }
+  const approveResp = await fetch(`${asUrl}/consent/approve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ request_uri: parBody.request_uri, subject_id: subjectId }),
+  });
+  const approved = await approveResp.json();
+  if (!approved?.token) {
+    throw new Error(`consent/approve returned no token: ${JSON.stringify(approved)}`);
+  }
+  return approved;
+}
+
+test('GET /v1/blobs/:blob_id (client mode) 404s when grant pins stream to a connection that does not hold the blob', async () => {
+  await issueOwnerOnlyHarness(async (server) => {
+    // The blob is reachable ONLY via connection B for stream A — connection
+    // A has no record referencing this blob, and the only stored binding for
+    // this blob_id is under (INSTANCE_B, STREAM_A).
+    const blobId = 'blob_sha256_grant_scope_004';
+    const bytes = Buffer.from('only-b-can-see');
+    seedBlob({
+      blobId,
+      connectorInstanceId: INSTANCE_B,
+      stream: STREAM_A,
+      recordKey: 'rec-b-1',
+      mimeType: 'application/octet-stream',
+      data: bytes,
+    });
+    await ingestRecord(target(INSTANCE_B), {
+      stream: STREAM_A,
+      key: 'rec-b-1',
+      data: { id: 'rec-b-1', received_at: '2026-05-19T00:00:00.000Z', blob_ref: { blob_id: blobId } },
+      emitted_at: '2026-05-19T00:00:00.000Z',
+    });
+
+    const asUrl = `http://localhost:${server.asPort}`;
+    const rsUrl = `http://localhost:${server.rsPort}`;
+    // Grant pins stream A → connection A. The blob lives under connection B
+    // for stream A, so the grant-scoped resolver MUST narrow stream A's
+    // addressable set to {INSTANCE_A}, which filters out B's binding and
+    // makes the blob unreachable.
+    const approved = await approveGrant(asUrl, OWNER_AUTH_DEFAULT_SUBJECT_ID, {
+      client_id: 'longview',
+      connector_id: CONNECTOR_ID,
+      purpose_code: 'https://pdpp.org/purpose/analytics',
+      purpose_description: 'blob route grant-scope narrowing test',
+      access_mode: 'continuous',
+      streams: [
+        { name: STREAM_A, fields: ['id', 'received_at'], connection_id: INSTANCE_A },
+      ],
+    });
+
+    const resp = await fetch(
+      `${rsUrl}/v1/blobs/${encodeURIComponent(blobId)}`,
+      { headers: { Authorization: `Bearer ${approved.token}` } },
+    );
+    assert.equal(resp.status, 404,
+      `grant pinned to non-holding connection must 404, got ${resp.status}`);
+    const body = await resp.json();
+    assert.equal(body.error?.code, 'blob_not_found',
+      `expected blob_not_found, got ${JSON.stringify(body)}`);
+    // Defensive: the connection that actually holds the blob must not leak
+    // into the response envelope.
+    const serialized = JSON.stringify(body);
+    assert.equal(serialized.includes(INSTANCE_B), false,
+      'non-granted connection_id leaked into blob 404 envelope');
+  });
+});
+
+// ─── PDPP-Warning: deprecated_alias_used on the 200 success path ───────────
+//
+// P3 follow-up from `tmp/workstreams/fan-in-revision-owner-review-report.md`:
+// the spec at `expose-connection-identity-on-public-read/spec.md:239-243`
+// scopes the `PDPP-Warning: deprecated_alias_used: connector_instance_id`
+// response header to the 200 OK blob path. This regression pins the header
+// emission so a future refactor of `resolveReadRequestBindings` or the route
+// adapter cannot silently drop the migration signal.
+
+test('GET /v1/blobs/:blob_id sets PDPP-Warning header when caller used deprecated connector_instance_id alias', async () => {
+  await issueOwnerOnlyHarness(async (server) => {
+    const blobId = 'blob_sha256_alias_warning_005';
+    const bytes = Buffer.from('alias-warning-bytes');
+    seedBlob({
+      blobId,
+      connectorInstanceId: INSTANCE_A,
+      stream: STREAM_A,
+      recordKey: 'rec-a-1',
+      mimeType: 'application/octet-stream',
+      data: bytes,
+    });
+    await ingestRecord(target(INSTANCE_A), {
+      stream: STREAM_A,
+      key: 'rec-a-1',
+      data: { id: 'rec-a-1', received_at: '2026-05-19T00:00:00.000Z', blob_ref: { blob_id: blobId } },
+      emitted_at: '2026-05-19T00:00:00.000Z',
+    });
+
+    const ownerToken = await getOwnerToken(server);
+    const rsUrl = `http://localhost:${server.rsPort}`;
+    // Deliberately pass the deprecated alias `connector_instance_id` (rather
+    // than `connection_id`) so the resolver emits a `deprecated_alias_used`
+    // warning that the route must surface as a structured response header on
+    // the 200 success envelope.
+    const resp = await fetch(
+      `${rsUrl}/v1/blobs/${encodeURIComponent(blobId)}`
+        + `?connector_id=${encodeURIComponent(CONNECTOR_ID)}`
+        + `&connector_instance_id=${encodeURIComponent(INSTANCE_A)}`,
+      { headers: { Authorization: `Bearer ${ownerToken}` } },
+    );
+    assert.equal(resp.status, 200,
+      `alias-only narrowing must still serve bytes, got ${resp.status}`);
+    const warning = resp.headers.get('pdpp-warning');
+    assert.equal(warning, 'deprecated_alias_used: connector_instance_id',
+      `expected deprecated_alias_used header on 200, got ${JSON.stringify(warning)}`);
     const buf = Buffer.from(await resp.arrayBuffer());
     assert.deepEqual(buf, bytes);
   });
