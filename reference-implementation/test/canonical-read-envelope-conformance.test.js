@@ -481,15 +481,3 @@ test('all three search parsers reject the same alias-conflict shape consistently
     new Set(['connector_instance_id']),
   );
 });
-
-// ───────────────────────────────────────────────────────────────────────
-// Pending canonical-contract requirements (red on the impl lane)
-// ───────────────────────────────────────────────────────────────────────
-
-test.todo(
-  'public read envelope SHALL carry links.self and links.next — pending tasks.md 3.4 (envelope normalization)',
-);
-
-test.todo(
-  'public read SHALL support Prefer: count=estimated with meta.count.kind — pending tasks.md 3.7 (graded counts)',
-);

@@ -326,6 +326,7 @@ export interface SearchLexicalWarning {
   code: string;
   param?: string;
   message?: string;
+  detail?: Record<string, unknown>;
 }
 
 export interface SearchLexicalEnvelopeMeta {
@@ -757,10 +758,8 @@ export async function executeSearchLexical(
     (connectorId) => ({
       code: SEARCH_SOURCE_SKIPPED_WARNING_CODE,
       message: `Connector '${connectorId}' is not applicable to this query and was skipped.`,
-      // `source` is added as an extension key so consumers can filter by the
-      // specific connector_id without parsing the human-facing message.
-      source: connectorId,
-    } as SearchLexicalWarning & { source: string }),
+      detail: { source: connectorId },
+    }),
   );
   const allWarnings: SearchLexicalWarning[] = [
     ...params.warnings,

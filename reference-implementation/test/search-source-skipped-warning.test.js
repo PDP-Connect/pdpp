@@ -175,7 +175,7 @@ test('lexical search emits source_skipped_not_applicable for broken-manifest con
     (w) => w.code === SEARCH_SOURCE_SKIPPED_WARNING_CODE,
   );
   assert.equal(skipped.length, 1);
-  assert.equal(skipped[0].source, 'broken_one');
+  assert.equal(skipped[0].detail?.source, 'broken_one');
 });
 
 test('lexical search emits source_skipped_not_applicable when the searchable plan is empty', async () => {
@@ -191,7 +191,7 @@ test('lexical search emits source_skipped_not_applicable when the searchable pla
     (w) => w.code === SEARCH_SOURCE_SKIPPED_WARNING_CODE,
   );
   assert.equal(skipped.length, 1);
-  assert.equal(skipped[0].source, 'no_fields');
+  assert.equal(skipped[0].detail?.source, 'no_fields');
 });
 
 test('lexical search omits source_skipped_not_applicable when every connector contributes', async () => {
@@ -223,7 +223,7 @@ test('semantic search emits source_skipped_not_applicable for broken-manifest co
     (w) => w.code === SEARCH_SEMANTIC_SOURCE_SKIPPED_WARNING_CODE,
   );
   assert.equal(skipped.length, 1);
-  assert.equal(skipped[0].source, 'broken_one');
+  assert.equal(skipped[0].detail?.source, 'broken_one');
 });
 
 test('semantic search emits source_skipped_not_applicable when the searchable plan is empty', async () => {
@@ -239,5 +239,5 @@ test('semantic search emits source_skipped_not_applicable when the searchable pl
     (w) => w.code === SEARCH_SEMANTIC_SOURCE_SKIPPED_WARNING_CODE,
   );
   assert.equal(skipped.length, 1);
-  assert.equal(skipped[0].source, 'no_fields');
+  assert.equal(skipped[0].detail?.source, 'no_fields');
 });

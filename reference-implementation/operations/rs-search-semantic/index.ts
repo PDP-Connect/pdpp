@@ -474,6 +474,7 @@ export interface SearchSemanticWarning {
   code: string;
   param?: string;
   message?: string;
+  detail?: Record<string, unknown>;
 }
 
 /**
@@ -872,8 +873,8 @@ export async function executeSearchSemantic(
     (connectorId) => ({
       code: SEARCH_SEMANTIC_SOURCE_SKIPPED_WARNING_CODE,
       message: `Connector '${connectorId}' is not applicable to this query and was skipped.`,
-      source: connectorId,
-    } as SearchSemanticWarning & { source: string }),
+      detail: { source: connectorId },
+    }),
   );
   const allWarnings: SearchSemanticWarning[] = [
     ...params.warnings,
