@@ -4,12 +4,30 @@
 
 import type { StreamScope } from "../../src/connector-runtime.ts";
 
+/**
+ * Per-thread fingerprint carried across runs. `updated_at` is the
+ * state_5.sqlite#threads.updated_at epoch the connector last emitted
+ * for this session. `message_count` and `function_call_count` are the
+ * rollout-derived counts at that emit, used as the fallback when a
+ * subsequent run's rollout file is unchanged (so the connector doesn't
+ * overwrite a real count with null).
+ */
+export interface ThreadFingerprint {
+  function_call_count: number | null;
+  message_count: number | null;
+  updated_at: number | null;
+}
+
 export interface StartMessage {
   scope?: { streams?: readonly StreamScope[] };
   state?: {
     messages?: { file_mtimes?: Record<string, number> };
     function_calls?: { file_mtimes?: Record<string, number> };
-    sessions?: { file_mtimes?: Record<string, number> };
+    sessions?: {
+      file_mtimes?: Record<string, number>;
+      source_mtime_ms?: number;
+      thread_fingerprints?: Record<string, ThreadFingerprint>;
+    };
     file_mtimes?: Record<string, number>;
   };
   type: string;
