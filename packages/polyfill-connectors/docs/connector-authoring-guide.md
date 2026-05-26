@@ -327,6 +327,48 @@ Rules:
 - Persist cursor as part of the STATE message. Runtime handles durability.
 - Never persist secrets, session tokens, or PII in STATE.
 
+### Per-record fingerprint cursors (no-op gate)
+
+Use this pattern when your stream re-derives full records each run from a source with no usable change feed: archive rebuilds (Slack/slackdump), full-collection refetches (YNAB `/payee_locations`), IMAP `1:*` re-aggregations (Gmail threads), file-mtime triggers (Codex `state_5.sqlite`). Without an emit-side gate, every run produces a fresh RECORD per (record, run) pair even when the source state has not moved. Live history has seen 31,160 versions accumulate on a single Slack `workspace` record from this class of churn alone.
+
+Reach for `openFingerprintCursor` from `@pdpp/polyfill-connectors/src/fingerprint-cursor.ts` rather than rolling your own. The primitive owns the four pieces every existing hand-rolled implementation paid for independently:
+
+```ts
+import { openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
+
+const cursor = openFingerprintCursor(state.workspace, {
+  excludeFromFingerprint: ["fetched_at"], // run-clock field — see below
+});
+
+for (const row of workspaceRows) {
+  const record = buildWorkspaceRecord(row);
+  if (cursor.shouldEmit(record)) {
+    await emitRecord("workspace", record);
+  }
+}
+
+// Full-scan stream — drop fingerprints for ids the source no longer returns.
+cursor.pruneStale();
+
+emit({
+  type: "STATE",
+  stream: "workspace",
+  cursor: { synced_at: nowIso(), fingerprints: cursor.toState() },
+});
+```
+
+Rules of the road:
+
+- **Source-local ids.** The id you pass to `shouldEmit` must be stable from the source's perspective across runs (`r.TEAM_ID`, `r.id`, the platform's row pk). A locally-derived synthetic id that includes a timestamp will defeat the gate.
+- **Semantic fingerprints, not byte-equivalent ones.** The fingerprint is computed over the emitted record (deterministic key ordering, recursive). Keep your record builder deterministic — sorted participant arrays, sorted label sets, stable field projections — or the gate will silently re-emit for incidental shape jitter.
+- **Run-clock exclusions.** Any field that advances on every run by design (a `fetched_at` written from `emittedAt`, a `synced_at` from `nowIso()`, a derived view-state timestamp) must go in `excludeFromFingerprint`. Without exclusion, the fingerprint will never match across runs.
+- **Full-scan prune at run boundary.** If your stream re-fetches the complete source set each run, call `cursor.pruneStale()` after the loop and before emitting STATE. Without this, deleted records keep their fingerprint forever and a later re-add silently skips. Streams whose run is *not* a full scan (a partial paginated tail) must NOT call `pruneStale`; the carry-forward is the right behavior.
+- **Opt-in, not mandatory.** A connector whose source provides a strong cursor (Reddit `since`, ChatGPT incremental ids, Gmail IMAP `UIDNEXT` past the high-water mark) should not pay for fingerprinting on that stream. The pattern is for re-derive-everything sources, not for everything.
+- **Backstop, not substitute.** The reference runtime byte-equivalence check at the storage layer still catches duplicate writes a connector overlooked. Treat it as a safety net for the cases this gate cannot see (a connector emits the wrong key, or the source returns truly byte-identical data); do not skip the emit-side gate just because the backstop exists. The work the gate prevents is in scrape/parse, not just storage.
+- **Connector-specific derived-field preservation stays at the call site.** The primitive exposes `cursor.priorFingerprint(id)` so a connector with a derived-field carry-forward policy (Codex's count fallback for sessions that did not re-parse rollout) can read the prior value without breaking the encapsulation. The primitive does not encode policy.
+
+Adoption status (2026-05-26): Slack uses `openFingerprintCursor` for `workspace`, `users`, and `files`. Gmail (`threads`), Codex (`sessions` / `rules` / `prompts` / `skills`), and YNAB (`payee_locations`) still carry hand-rolled equivalents and have not migrated yet; new fingerprinted streams in those connectors should reach for the shared primitive rather than extending the local helpers.
+
 ### Year-freezing (and similar immutability tricks)
 
 - **Use when historical data is truly immutable.** Old Amazon orders from 2010 won't change.

@@ -1,0 +1,194 @@
+// Per-record fingerprint cursor for polyfill connectors.
+//
+// Several connectors (Slack, Gmail, Codex, YNAB) emit records from sources
+// that re-derive the full record on every run — slackdump archive rebuilds,
+// IMAP `1:*` re-aggregations, sqlite mtime triggers, full-collection refetches.
+// Without an emit-side gate, those sources produce a fresh RECORD per (record,
+// run) pair even when the source state has not moved, which accumulates into
+// hundreds-to-thousands of versions per record downstream.
+//
+// This module owns the repeated pattern those connectors converged on:
+//
+//   1. compute a stable fingerprint over the emitted record fields,
+//      excluding caller-declared run-clock fields (`fetched_at`, etc.);
+//   2. seed the next-run cursor from the prior cursor so a skipped record
+//      survives into the next STATE write (carry-forward);
+//   3. record every observed id in the seen-set, regardless of whether the
+//      record was emitted, so a later prune knows what the source returned;
+//   4. on full-scan streams, drop prior ids absent from this run so deleted
+//      records do not stay gated as no-ops forever.
+//
+// Identity, run-clock-field selection, and which streams get pruned remain
+// connector-owned. The runtime byte-equivalence check at the storage layer is
+// a backstop for cases this gate cannot see (a connector emits the wrong key,
+// or the source genuinely returns a byte-identical re-ingest); it is not a
+// substitute for this gate.
+
+import { createHash } from "node:crypto";
+import type { RecordData } from "./connector-runtime-protocol.ts";
+
+export interface FingerprintCursorOptions {
+  /** Fields that appear in the emitted record but must NOT participate in
+   *  change detection. Typically run-clock fields like `fetched_at` whose
+   *  value is "when this run happened" rather than "when the source row
+   *  changed". Without exclusion, the fingerprint would never match across
+   *  runs even when the source has not moved. */
+  excludeFromFingerprint?: readonly string[];
+  /** Optional pre-decoded prior fingerprint map. Use this when the caller
+   *  has already pulled the map out of a non-standard cursor shape. If
+   *  omitted, the cursor decodes `priorState` itself with the tolerant
+   *  rules described on `openFingerprintCursor`. */
+  priorFingerprints?: ReadonlyMap<string, string>;
+}
+
+export interface FingerprintCursor {
+  /** Prior cursor value for this id, if any. Use this when a connector
+   *  has a derived-field-preservation policy (e.g. Codex pulls counts
+   *  forward from the prior fingerprint when this run did not re-parse
+   *  the source). The primitive does not encode policy — it just
+   *  exposes the prior value. */
+  priorFingerprint(id: string): string | undefined;
+  /** Drop ids from the next map that were not observed this run.
+   *  Idempotent. Must only be called on streams whose run is a full
+   *  scan, because partial-scan streams have no business pruning ids
+   *  they did not look at this run. If `shouldEmit` was called zero
+   *  times this run, every prior id is dropped — that is the correct
+   *  outcome for a requested full-scan stream that returned zero
+   *  records. */
+  pruneStale(): void;
+  /** Returns `true` iff the record's fingerprint differs from the prior
+   *  cursor value for this id (or no prior exists). Always records the
+   *  computed fingerprint into the next map and the id into the seen
+   *  set — even when returning `false` — so STATE carry-forward is
+   *  intact and the prune step has the right inputs.
+   *
+   *  Records whose `data.id` is null/undefined/empty cannot be
+   *  fingerprinted; this method returns `true` for them and does NOT
+   *  touch the next map or the seen set. The caller decides whether to
+   *  emit. */
+  shouldEmit(data: RecordData): boolean;
+  /** Number of ids currently in the next map. Useful for callers that
+   *  want to skip writing an empty `fingerprints` field. */
+  size(): number;
+  /** Serializable cursor for STATE. The caller decides where to put
+   *  this in the stream's cursor object (typically under a
+   *  `fingerprints` key alongside other cursor fields). */
+  toState(): Record<string, string>;
+}
+
+/** Stable per-record fingerprint over the emitted record's fields. Keys
+ *  are sorted recursively so the hash does not depend on incidental key
+ *  order in the record builder. SHA-1 is fine for change detection: a
+ *  collision between distinct shapes would silently skip one emit per
+ *  record, and the run-clock-field risk dominates anyway.
+ *
+ *  Exposed because the four existing implementations all needed the
+ *  same primitive under slightly different names; future migrations can
+ *  import it directly without reaching for `openFingerprintCursor`. */
+export function recordFingerprint(record: Record<string, unknown>, excludeKeys: readonly string[] = []): string {
+  const exclude = new Set(excludeKeys);
+  return createHash("sha1").update(stableStringify(record, exclude)).digest("hex");
+}
+
+/** Open a cursor seeded from a prior STATE shape.
+ *
+ *  `priorState` is decoded tolerantly. The following shapes all produce
+ *  an empty prior map without throwing:
+ *    - `undefined` / `null`
+ *    - any non-object value
+ *    - arrays
+ *    - an object missing a `fingerprints` field (legacy cursor shape)
+ *    - a `fingerprints` field whose value is not an object
+ *    - entries whose value is not a non-empty string
+ *
+ *  This matches the existing per-connector tolerance for legacy cursors
+ *  and corrupt-on-disk state: a broken cursor never blocks a successful
+ *  run, it just re-emits everything next time.
+ *
+ *  The cursor is seeded by copying the prior map into the next map so a
+ *  record skipped this run still surfaces in the next STATE write. */
+export function openFingerprintCursor(priorState: unknown, options: FingerprintCursorOptions = {}): FingerprintCursor {
+  const excludeKeys = options.excludeFromFingerprint ?? [];
+  const prior = options.priorFingerprints ?? decodePriorFingerprints(priorState);
+  const next = new Map<string, string>(prior);
+  const seen = new Set<string>();
+
+  return {
+    shouldEmit(data: RecordData): boolean {
+      const rawId = data.id;
+      if (rawId == null) {
+        return true;
+      }
+      const id = String(rawId);
+      if (id.length === 0) {
+        return true;
+      }
+      const fingerprint = recordFingerprint(data as Record<string, unknown>, excludeKeys);
+      next.set(id, fingerprint);
+      seen.add(id);
+      return prior.get(id) !== fingerprint;
+    },
+    priorFingerprint(id: string): string | undefined {
+      return prior.get(id);
+    },
+    pruneStale(): void {
+      for (const id of next.keys()) {
+        if (!seen.has(id)) {
+          next.delete(id);
+        }
+      }
+    },
+    toState(): Record<string, string> {
+      const out: Record<string, string> = {};
+      for (const [id, fingerprint] of next) {
+        out[id] = fingerprint;
+      }
+      return out;
+    },
+    size(): number {
+      return next.size;
+    },
+  };
+}
+
+// ─── Internals ──────────────────────────────────────────────────────────
+
+function decodePriorFingerprints(priorState: unknown): Map<string, string> {
+  const out = new Map<string, string>();
+  if (!priorState || typeof priorState !== "object" || Array.isArray(priorState)) {
+    return out;
+  }
+  const raw = (priorState as Record<string, unknown>).fingerprints;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return out;
+  }
+  for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value === "string" && value.length > 0) {
+      out.set(id, value);
+    }
+  }
+  return out;
+}
+
+function compareKeys(a: string, b: string): number {
+  if (a < b) {
+    return -1;
+  }
+  if (a > b) {
+    return 1;
+  }
+  return 0;
+}
+
+function stableStringify(value: unknown, exclude: ReadonlySet<string>): string {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value) ?? "null";
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((v) => stableStringify(v, exclude)).join(",")}]`;
+  }
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([k]) => !exclude.has(k))
+    .sort(([a], [b]) => compareKeys(a, b));
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stableStringify(v, exclude)}`).join(",")}}`;
+}

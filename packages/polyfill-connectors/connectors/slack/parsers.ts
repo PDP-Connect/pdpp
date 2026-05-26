@@ -3,7 +3,6 @@
 // The subprocess runtime, sqlite reads, and clock-dependent helpers live
 // in index.ts.
 
-import { createHash } from "node:crypto";
 import type { RecordData } from "../../src/connector-runtime.ts";
 import type {
   CanvasRow,
@@ -23,52 +22,6 @@ import type {
 export const WORKSPACE_LIST_ARROW = /=>/;
 const SLACK_TIME_FRAC = /\..+$/;
 const SLACK_TIME_Z = /Z$/;
-
-// ─── Per-record fingerprint helper ──────────────────────────────────────
-
-/**
- * Stable per-record fingerprint used by the connector's STATE cursor to
- * skip re-emitting records whose semantic shape hasn't moved. The
- * `excludeKeys` parameter lists fields that are part of the emitted
- * record but should NOT participate in change detection — namely
- * run-clock metadata like `fetched_at` whose value is "when the run
- * happened", not "when the source row changed". Without the exclusion,
- * every run would look like a change.
- *
- * Implementation note: SHA-1 is fine here. Collisions over a per-key
- * change-detection check on ~300 keys would not produce a correctness
- * bug — at worst, a colliding pair of distinct shapes would silently
- * skip one emit. The risk is dominated by the run-clock fields the
- * caller already excludes.
- */
-export function recordFingerprint(record: Record<string, unknown>, excludeKeys: readonly string[] = []): string {
-  const exclude = new Set(excludeKeys);
-  const canonical = stableStringify(record, exclude);
-  return createHash("sha1").update(canonical).digest("hex");
-}
-
-function compareKeys(a: string, b: string): number {
-  if (a < b) {
-    return -1;
-  }
-  if (a > b) {
-    return 1;
-  }
-  return 0;
-}
-
-function stableStringify(value: unknown, exclude: ReadonlySet<string>): string {
-  if (value === null || typeof value !== "object") {
-    return JSON.stringify(value) ?? "null";
-  }
-  if (Array.isArray(value)) {
-    return `[${value.map((v) => stableStringify(v, exclude)).join(",")}]`;
-  }
-  const entries = Object.entries(value as Record<string, unknown>)
-    .filter(([k]) => !exclude.has(k))
-    .sort(([a], [b]) => compareKeys(a, b));
-  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stableStringify(v, exclude)}`).join(",")}}`;
-}
 
 // ─── Blob / time helpers ────────────────────────────────────────────────
 

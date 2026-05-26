@@ -56,6 +56,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { readOptions } from "../../src/connector-options.ts";
 import { type CollectContext, nowIso, type RecordData, runConnector } from "../../src/connector-runtime.ts";
+import { type FingerprintCursor, openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
 import { resourceSet } from "../../src/scope-filters.ts";
 import {
@@ -71,7 +72,6 @@ import {
   buildWorkspaceRecord,
   extractMessageTimeRange,
   parseMessageRow,
-  recordFingerprint,
   selectCommittedMaxTs,
   toSlackTime,
   WORKSPACE_LIST_ARROW,
@@ -480,30 +480,21 @@ export async function emitMessagesPass(
  * Shared deps bag for every per-stream helper. Mirrors gmail/usaa EmitDeps —
  * bundle the few things every stream needs so helper signatures stay 2 args.
  *
- * `priorFingerprints` / `nextFingerprints` carry the per-record semantic
- * fingerprints across runs for the workspace/users/files streams. Without
- * them, slackdump's archive-rebuild churn produces a fresh RECORD per
- * (record, run) pair even when source state hasn't moved. The maps live
- * under `<stream>` keys, so a single bag covers all three streams plus
- * any future opt-ins. Both maps are always present (defaulted to empty
- * by the caller) — runners check them, don't allocate them, so the
- * cursor-write step at the end can read every stream uniformly.
+ * `fingerprintCursors` carry the per-record semantic fingerprints across
+ * runs for the workspace/users/files streams via the shared
+ * `openFingerprintCursor` primitive. Without them, slackdump's
+ * archive-rebuild churn produces a fresh RECORD per (record, run) pair
+ * even when source state hasn't moved. One cursor per fingerprinted
+ * stream; cursors for streams not requested this run carry forward
+ * untouched (their `pruneStale` is never called).
  */
 export interface StreamDeps {
   db: DatabaseSync;
   emitRecord: (stream: string, data: RecordData) => Promise<void>;
   emittedAt: string;
-  nextFingerprints: Map<string, Map<string, string>>;
-  priorFingerprints: Map<string, Map<string, string>>;
+  fingerprintCursors: Map<string, FingerprintCursor>;
   progress: CollectContext["progress"];
   requested: CollectContext["requested"];
-  // IDs observed in the current run per fingerprinted stream. Populated by
-  // emitWithFingerprint and consumed by pruneStaleFingerprints before STATE
-  // is emitted: any prior ID absent from this set on a *requested* stream is
-  // removed from nextFingerprints so the cursor reflects the latest source
-  // set instead of carrying stale IDs forever. Records without an id are
-  // emitted but neither fingerprinted nor recorded as seen.
-  seenIds: Map<string, Set<string>>;
 }
 
 /**
@@ -526,95 +517,44 @@ const FINGERPRINTED_STREAMS = ["workspace", "users", "files"] as const;
 type FingerprintedStream = (typeof FINGERPRINTED_STREAMS)[number];
 
 /**
- * Per-stream emitted-record fields that participate in the change-detection
- * key but should NOT — usually run-clock fields like `fetched_at` whose
- * value is "when this run happened", not "when the source row changed".
- * Excluding them lets the fingerprint stay stable across runs when the
- * underlying source data hasn't moved.
+ * Per-stream emitted-record fields that participate in the emitted shape
+ * but must NOT participate in change detection — typically run-clock
+ * fields like `fetched_at` whose value is "when this run happened",
+ * not "when the source row changed". Without exclusion, the fingerprint
+ * would never match across runs even when the source has not moved.
  *
- *   workspace.fetched_at: written to the emitted record so consumers know
- *     when the connector last saw this record; advances on every run by
- *     design. Without exclusion, the fingerprint would never match.
- *
- * No other emitted fields are run-clock — `users` and `files` only carry
- * source-derived fields, so the fingerprint covers the full record.
+ *   workspace: fetched_at advances on every run by design.
+ *   users / files: no run-clock fields, fingerprint covers the whole record.
  */
-const WORKSPACE_FINGERPRINT_EXCLUDE = ["fetched_at"] as const;
+const FINGERPRINT_EXCLUDE: Record<FingerprintedStream, readonly string[]> = {
+  workspace: ["fetched_at"],
+  users: [],
+  files: [],
+};
 
 /**
- * Wrap deps.emitRecord with a per-stream fingerprint gate. The wrapped
- * emitter always updates `nextFingerprints[stream]` (so unchanged records
- * carry their fingerprint forward into the next STATE cursor), and only
- * calls through to the real emitter when (a) the prior fingerprint is
- * missing — new record — or (b) the new fingerprint differs from the
- * prior one. Records whose fingerprint is identical do NOT emit, which
- * is the load-bearing line for the workspace/users/files churn fix.
+ * Per-stream fingerprint gate. Computes the record's fingerprint against
+ * the prior cursor (with `FINGERPRINT_EXCLUDE[stream]` removed from the
+ * input) and emits only when the fingerprint moved or there is no prior.
+ * Records whose fingerprint matches the prior one do NOT emit — that
+ * suppression is the load-bearing line for the workspace/users/files
+ * churn fix.
  *
- * Exported so integration tests can drive the gate directly with a
- * recording emitRecord — the production callers go through `runWorkspaceStream`
- * / `runUsersStream` / `runFilesStream`, which are sqlite-bound and not
- * factored into a testable seam today.
+ * Records without an id pass through unconditionally (they cannot be
+ * fingerprinted; the cursor leaves its state alone).
  */
-export function emitWithFingerprint(
-  deps: StreamDeps,
-  stream: FingerprintedStream,
-  record: RecordData,
-  excludeKeys: readonly string[] = []
-): Promise<void> {
-  const id = record.id == null ? null : String(record.id);
-  if (id == null) {
+export function emitWithFingerprint(deps: StreamDeps, stream: FingerprintedStream, record: RecordData): Promise<void> {
+  const cursor = deps.fingerprintCursors.get(stream);
+  if (!cursor) {
+    // Programmer error: the collect() bootstrap opens a cursor for every
+    // fingerprinted stream regardless of whether it was requested, so this
+    // branch shouldn't fire. Fall back to a raw emit rather than throw.
     return deps.emitRecord(stream, record);
   }
-  const fingerprint = recordFingerprint(record, excludeKeys);
-  let next = deps.nextFingerprints.get(stream);
-  if (!next) {
-    next = new Map<string, string>();
-    deps.nextFingerprints.set(stream, next);
-  }
-  next.set(id, fingerprint);
-  let seen = deps.seenIds.get(stream);
-  if (!seen) {
-    seen = new Set<string>();
-    deps.seenIds.set(stream, seen);
-  }
-  seen.add(id);
-  const prior = deps.priorFingerprints.get(stream)?.get(id);
-  if (prior === fingerprint) {
+  if (!cursor.shouldEmit(record)) {
     return Promise.resolve();
   }
   return deps.emitRecord(stream, record);
-}
-
-/**
- * Prune IDs from `nextFingerprints` that were carried over from
- * `priorFingerprints` but were NOT observed in the current run. Only applied
- * to streams that were requested AND fingerprinted this run — streams the
- * caller did not exercise must retain their carry-forward so an unrequested
- * stream's cursor isn't silently wiped. The seen set is built up by
- * emitWithFingerprint; an empty seen-set for a requested fingerprinted
- * stream is a real signal (the source returned zero records) and prunes
- * everything, which is the correct outcome.
- */
-export function pruneStaleFingerprints(
-  nextFingerprints: Map<string, Map<string, string>>,
-  seenIds: Map<string, Set<string>>,
-  requested: CollectContext["requested"]
-): void {
-  for (const stream of FINGERPRINTED_STREAMS) {
-    if (!requested.has(stream)) {
-      continue;
-    }
-    const fps = nextFingerprints.get(stream);
-    if (!fps) {
-      continue;
-    }
-    const seen = seenIds.get(stream);
-    for (const id of fps.keys()) {
-      if (!seen?.has(id)) {
-        fps.delete(id);
-      }
-    }
-  }
 }
 
 async function runWorkspaceStream(deps: StreamDeps): Promise<void> {
@@ -623,12 +563,7 @@ async function runWorkspaceStream(deps: StreamDeps): Promise<void> {
     "SELECT ID, TEAM, TEAM_ID, USERNAME, USER_ID, URL, ENTERPRISE_ID, DATA FROM WORKSPACE"
   );
   for (const r of rows) {
-    await emitWithFingerprint(
-      deps,
-      "workspace",
-      buildWorkspaceRecord(r, deps.emittedAt),
-      WORKSPACE_FINGERPRINT_EXCLUDE
-    );
+    await emitWithFingerprint(deps, "workspace", buildWorkspaceRecord(r, deps.emittedAt));
   }
 }
 
@@ -829,7 +764,7 @@ interface StateEmitDeps {
   archivePath: string;
   committedMaxTs: string | null;
   emit: CollectContext["emit"];
-  nextFingerprints: Map<string, Map<string, string>>;
+  fingerprintCursors: Map<string, FingerprintCursor>;
   requested: CollectContext["requested"];
 }
 
@@ -864,11 +799,9 @@ function emitStateCheckpoints(deps: StateEmitDeps): void {
   for (const stream of ["channels", "users", "files", "canvases", "workspace"]) {
     if (deps.requested.has(stream)) {
       const cursor: Record<string, unknown> = { synced_at: nowIso() };
-      if ((FINGERPRINTED_STREAMS as readonly string[]).includes(stream)) {
-        const fps = deps.nextFingerprints.get(stream);
-        if (fps && fps.size > 0) {
-          cursor.fingerprints = mapToRecord(fps);
-        }
+      const fingerprintCursor = deps.fingerprintCursors.get(stream);
+      if (fingerprintCursor && fingerprintCursor.size() > 0) {
+        cursor.fingerprints = fingerprintCursor.toState();
       }
       deps.emit({
         type: "STATE",
@@ -877,51 +810,6 @@ function emitStateCheckpoints(deps: StateEmitDeps): void {
       });
     }
   }
-}
-
-function mapToRecord(m: Map<string, string>): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const [k, v] of m) {
-    out[k] = v;
-  }
-  return out;
-}
-
-/**
- * Parse the prior STATE cursor's `fingerprints` map for one stream.
- * Tolerant of (a) missing stream state (first run), (b) legacy cursors
- * without a `fingerprints` field, (c) malformed entries — bad shapes are
- * silently dropped so a corrupt cursor never blocks a successful run.
- * The returned map is always safe to read; on legacy/missing input it
- * is empty and the next run re-emits every record.
- */
-export function readPriorFingerprintMap(
-  state: Record<string, unknown>,
-  stream: FingerprintedStream
-): Map<string, string> {
-  const out = new Map<string, string>();
-  const streamState = state[stream];
-  if (!streamState || typeof streamState !== "object" || Array.isArray(streamState)) {
-    return out;
-  }
-  const raw = (streamState as Record<string, unknown>).fingerprints;
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    return out;
-  }
-  for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
-    if (typeof value === "string" && value.length > 0) {
-      out.set(id, value);
-    }
-  }
-  return out;
-}
-
-function readAllPriorFingerprints(state: Record<string, unknown>): Map<string, Map<string, string>> {
-  const out = new Map<string, Map<string, string>>();
-  for (const stream of FINGERPRINTED_STREAMS) {
-    out.set(stream, readPriorFingerprintMap(state, stream));
-  }
-  return out;
 }
 
 interface EnsureArchiveDeps {
@@ -1088,37 +976,41 @@ if (isMainModule(import.meta.url)) {
       });
 
       const db = new DatabaseSync(sqlitePath, { readOnly: true });
-      // Per-stream fingerprint cursor: seed the next-run sink with the
-      // prior cursor's map so records we skip this run carry their
-      // fingerprint forward unchanged. Same shape as
-      // af1700ad's codex `threadFingerprints` carry-forward — without it,
-      // a single skipped record would drop from STATE on the next write
-      // and re-emit on the run after.
-      const priorFingerprints = readAllPriorFingerprints(state);
-      const nextFingerprints = new Map<string, Map<string, string>>();
-      for (const [stream, prior] of priorFingerprints) {
-        nextFingerprints.set(stream, new Map(prior));
+      // One per-record fingerprint cursor per fingerprinted stream. The
+      // primitive seeds itself from the prior cursor so a record we skip
+      // this run carries its fingerprint forward into the next STATE
+      // write — without that, a single skipped record would drop from
+      // STATE on the next write and re-emit on the run after.
+      const fingerprintCursors = new Map<string, FingerprintCursor>();
+      for (const stream of FINGERPRINTED_STREAMS) {
+        fingerprintCursors.set(
+          stream,
+          openFingerprintCursor(state[stream], {
+            excludeFromFingerprint: FINGERPRINT_EXCLUDE[stream],
+          })
+        );
       }
-      const seenIds = new Map<string, Set<string>>();
       const deps: StreamDeps = {
         db,
         emitRecord: ctx.emitRecord,
         emittedAt: ctx.emittedAt,
-        nextFingerprints,
-        priorFingerprints,
+        fingerprintCursors,
         progress,
         requested,
-        seenIds,
       };
       const maxMessageTs = await runRequestedStreams(deps, state);
 
       emitUnavailableStreams(requested, emit);
 
       // Drop fingerprint entries for IDs that disappeared from the source
-      // since the prior run. Without this, deleted records keep their
-      // fingerprint in the cursor forever and a re-add later would silently
-      // skip emitting until the fingerprint shifted.
-      pruneStaleFingerprints(nextFingerprints, seenIds, requested);
+      // since the prior run on streams we actually requested. Streams the
+      // caller did not exercise keep their full carry-forward — an
+      // unrequested stream's cursor must not be silently wiped.
+      for (const stream of FINGERPRINTED_STREAMS) {
+        if (requested.has(stream)) {
+          fingerprintCursors.get(stream)?.pruneStale();
+        }
+      }
 
       const messagesState = state.messages as MessagesState | undefined;
       const priorMaxTs = messagesState?.last_ts || null;
@@ -1127,7 +1019,7 @@ if (isMainModule(import.meta.url)) {
         archivePath,
         committedMaxTs,
         emit,
-        nextFingerprints,
+        fingerprintCursors,
         requested,
       });
     },
