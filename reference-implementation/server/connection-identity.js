@@ -11,7 +11,10 @@
  */
 
 import { isPostgresStorageBackend } from './postgres-storage.js';
-import { projectStorageDisplayName } from './connection-id-request.js';
+import {
+  projectStorageDisplayName,
+  resolveRequestConnectionId,
+} from './connection-id-request.js';
 import {
   createPostgresConnectorInstanceStore,
   createSqliteConnectorInstanceStore,
@@ -81,3 +84,191 @@ export async function resolveDisplayNamesForBindings(bindings) {
   );
   return out;
 }
+
+/**
+ * Typed error emitted by record-detail / blob-read when an addressed
+ * identifier resolves to more than one connection under the caller's grant.
+ *
+ * The error envelope carries `available_connections: [{ connection_id,
+ * display_name? }]` so the client can recover without an extra round trip.
+ *
+ * Spec: openspec/changes/expose-connection-identity-on-public-read/
+ *       specs/reference-implementation-architecture/spec.md
+ *       (#"Identifier-ambiguous reads SHALL emit a typed
+ *         ambiguous-connection error")
+ */
+export class AmbiguousConnectionError extends Error {
+  constructor(message, availableConnections) {
+    super(message);
+    this.name = 'AmbiguousConnectionError';
+    this.code = 'ambiguous_connection';
+    this.available_connections = Array.isArray(availableConnections)
+      ? availableConnections.map((c) => ({
+          connection_id: c.connection_id,
+          ...(c.display_name ? { display_name: c.display_name } : {}),
+        }))
+      : [];
+    this.retry_with = 'connection_id';
+  }
+}
+
+function getStore() {
+  return isPostgresStorageBackend()
+    ? createPostgresConnectorInstanceStore()
+    : createSqliteConnectorInstanceStore();
+}
+
+/**
+ * Project a store instance row to the wire `connection` envelope used by
+ * `available_connections` in the typed `ambiguous_connection` error.
+ */
+export function projectBindingForWire(instance) {
+  if (!instance || !instance.connectorInstanceId) return null;
+  const displayName = projectStorageDisplayName(instance.displayName, {
+    connectorId: instance.connectorId || null,
+    connectorInstanceId: instance.connectorInstanceId,
+  });
+  const out = { connection_id: instance.connectorInstanceId };
+  if (displayName) out.display_name = displayName;
+  return out;
+}
+
+/**
+ * List all active connector_instances for a connector under an owner. Awaits
+ * an async-or-sync store result so callers can use one shape regardless of
+ * SQLite vs Postgres backend.
+ */
+export async function listActiveBindingsForGrant({ ownerSubjectId, connectorId }) {
+  if (!ownerSubjectId || !connectorId) return [];
+  const store = getStore();
+  const rows = await Promise.resolve(store.listActiveByConnector(ownerSubjectId, connectorId));
+  return Array.isArray(rows) ? rows : [];
+}
+
+/**
+ * Resolve the set of bindings to read across for a grant-authorized public
+ * read.
+ *
+ * Inputs:
+ *   - `ownerSubjectId`: owner subject backing the grant.
+ *   - `connectorId`: connector_id from the grant's storage binding.
+ *   - `connectorInstanceIdHint`: the previously-pinned single binding
+ *     (today's `grant_storage_binding.connector_instance_id` or the
+ *     namespace resolver's first pick). When the runtime can fan in across
+ *     many connections the hint is ignored unless explicitly requested.
+ *   - `requestConnectionId`: canonical `connection_id` filter parsed from
+ *     the request (or its deprecated `connector_instance_id` alias).
+ *   - `grantStreamConnectionId`: per-stream `connection_id` constraint
+ *     from the grant scope. Absent constraint preserves fan-in.
+ *
+ * Returns `{ bindings: [...], warnings: [...] }`. Bindings are
+ * `{ connectorInstanceId, connectorId, displayName? }` ordered by
+ * created_at ASC. Empty array means no active binding addressable under
+ * the grant — callers should map that to `not_found` or
+ * `connection_not_found` per their surface.
+ */
+export async function resolveFanInBindings({
+  ownerSubjectId,
+  connectorId,
+  connectorInstanceIdHint = null,
+  requestConnectionId = null,
+  grantStreamConnectionId = null,
+}) {
+  const warnings = [];
+  if (!connectorId) return { bindings: [], warnings };
+
+  const active = await listActiveBindingsForGrant({ ownerSubjectId, connectorId });
+
+  // Honor grant-scope per-stream connection_id constraint first; absent
+  // constraint preserves fan-in across all active bindings.
+  let candidates = active;
+  if (grantStreamConnectionId) {
+    candidates = candidates.filter((row) => row.connectorInstanceId === grantStreamConnectionId);
+    if (candidates.length === 0) {
+      const err = new Error(
+        `Grant scope connection_id '${grantStreamConnectionId}' is not currently active for connector '${connectorId}'.`,
+      );
+      err.code = 'connection_not_found';
+      err.param = 'connection_id';
+      throw err;
+    }
+  }
+
+  // Narrow further by request-time `connection_id` (canonical or alias).
+  if (requestConnectionId) {
+    const narrowed = candidates.filter(
+      (row) => row.connectorInstanceId === requestConnectionId,
+    );
+    if (narrowed.length === 0) {
+      const err = new Error(
+        `connection_id '${requestConnectionId}' is not addressable under this grant.`,
+      );
+      err.code = 'connection_not_found';
+      err.param = 'connection_id';
+      throw err;
+    }
+    candidates = narrowed;
+  }
+
+  // Fallback to the previously-pinned single binding when no active rows
+  // are registered yet. Today the reference runtime pins the binding at
+  // ingest time via `ensureDefaultAccountConnection`, so this path mainly
+  // covers boot-time / freshly-issued grants whose default-account row
+  // has not yet materialized; the caller's storage layer continues to
+  // operate against `connectorInstanceIdHint` in that case.
+  if (candidates.length === 0 && connectorInstanceIdHint) {
+    return {
+      bindings: [
+        {
+          connectorInstanceId: connectorInstanceIdHint,
+          connectorId,
+          displayName: null,
+        },
+      ],
+      warnings,
+    };
+  }
+
+  return {
+    bindings: candidates.map((row) => ({
+      connectorInstanceId: row.connectorInstanceId,
+      connectorId: row.connectorId,
+      displayName: row.displayName,
+    })),
+    warnings,
+  };
+}
+
+/**
+ * Convenience: resolve the request-time `connection_id` (canonical or
+ * deprecated alias) and combine with the grant-scope constraint into the
+ * final `bindings` list to read from.
+ *
+ * Throws `invalid_argument` when both `connection_id` and the deprecated
+ * `connector_instance_id` alias are sent with conflicting values; throws
+ * `connection_not_found` when the requested or grant-pinned identity is
+ * not active under the owner's connector.
+ */
+export async function resolveRequestBindings({
+  ownerSubjectId,
+  connectorId,
+  connectorInstanceIdHint = null,
+  requestParams = {},
+  grantStreamConnectionId = null,
+}) {
+  const { connectionId: requestConnectionId, warnings: aliasWarnings } =
+    resolveRequestConnectionId(requestParams);
+  const { bindings, warnings } = await resolveFanInBindings({
+    ownerSubjectId,
+    connectorId,
+    connectorInstanceIdHint,
+    requestConnectionId,
+    grantStreamConnectionId,
+  });
+  return {
+    bindings,
+    requestConnectionId,
+    warnings: [...aliasWarnings, ...warnings],
+  };
+}
+

@@ -67,8 +67,11 @@ import {
   createSqliteConnectorInstanceStore,
 } from './stores/connector-instance-store.js';
 import {
+  AmbiguousConnectionError,
   lookupConnectionDisplayName,
+  projectBindingForWire,
   resolveRecordIdentityForBinding,
+  resolveRequestBindings,
 } from './connection-identity.js';
 import {
   SAFE_JSON_FIELD,
@@ -2518,6 +2521,315 @@ export async function listStreams(storageTarget, grant, manifest = null) {
   }
 
   return result;
+}
+
+// ─── Multi-binding fan-in helpers ──────────────────────────────────────────
+//
+// Closes the deferred runtime work tracked under
+// `openspec/changes/expose-connection-identity-on-public-read/tasks.md`
+// Section 3 / 4 / 6. These helpers wrap the existing per-binding storage
+// primitives (`queryRecords`, `getRecord`, `listStreams`, `aggregateRecords`,
+// `getBlob`-style flows) with the canonical (connection_id, stream)
+// addressing rule from the public read contract:
+//
+//   - omitted `connection_id` SHALL fan in across the granted connections;
+//   - exactly one matching connection SHALL be auto-selected;
+//   - record/blob identifier ambiguity SHALL raise the typed
+//     `ambiguous_connection` error with `available_connections`.
+//
+// The helpers stay deliberately thin: they iterate the existing per-binding
+// SQL paths and union results so the storage layer does not need a new
+// query shape. A future tranche can push fan-in into the SQL itself for
+// pagination performance.
+
+function buildBindingStorageTarget(connectorId, connectorInstanceId) {
+  return { connector_id: connectorId, connector_instance_id: connectorInstanceId };
+}
+
+function mergeMetaPreservingShape(target, incoming) {
+  if (!incoming) return target;
+  const next = { ...(target || {}) };
+  if (Array.isArray(incoming.warnings) && incoming.warnings.length) {
+    const seen = new Set();
+    const merged = [];
+    for (const w of [...(next.warnings || []), ...incoming.warnings]) {
+      const key = `${w.code}|${w.param || ''}|${w.message || ''}|${JSON.stringify(w.detail || null)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(w);
+    }
+    next.warnings = merged;
+  }
+  if (incoming.count) next.count = incoming.count;
+  return next;
+}
+
+function ensureBindingsOrThrow(bindings, { connectorId, missingMessage }) {
+  if (!bindings || bindings.length === 0) {
+    const err = new Error(
+      missingMessage
+        || `No active connection is available for connector '${connectorId}'.`,
+    );
+    err.code = 'connection_not_found';
+    throw err;
+  }
+}
+
+/**
+ * Fan-in records list across multiple bindings under one grant.
+ *
+ * Returns a canonical list envelope whose `data` is the union of records
+ * across the addressed bindings. Each record carries `connection_id`,
+ * deprecated `connector_instance_id`, and `display_name` when known —
+ * already wired by per-binding `queryRecords`. Pagination is per-binding
+ * today; multi-binding cursor union is a future tranche (we expose
+ * `has_more=true` if any binding still has more so callers can issue a
+ * refined `connection_id`-narrowed page).
+ */
+export async function queryRecordsAcrossBindings(bindings, stream, grant, requestParams, manifest) {
+  ensureBindingsOrThrow(bindings, { connectorId: bindings?.[0]?.connectorId, missingMessage: 'No active connection is available under this grant.' });
+
+  if (bindings.length === 1) {
+    return await queryRecords(
+      buildBindingStorageTarget(bindings[0].connectorId, bindings[0].connectorInstanceId),
+      stream,
+      grant,
+      requestParams,
+      manifest,
+    );
+  }
+
+  // Drop request-time connection_id when fanning in across multiple bindings;
+  // queryRecords would reject an unrelated id with connection_not_found, but
+  // here we have already filtered the binding list per the grant + request.
+  const perBindingParams = { ...requestParams };
+  delete perBindingParams.connection_id;
+  delete perBindingParams.connector_instance_id;
+
+  const unioned = [];
+  let hasMoreAny = false;
+  let nextChangesSinceMax = null;
+  let meta = null;
+  for (const binding of bindings) {
+    const target = buildBindingStorageTarget(binding.connectorId, binding.connectorInstanceId);
+    const result = await queryRecords(target, stream, grant, perBindingParams, manifest);
+    if (Array.isArray(result?.data)) unioned.push(...result.data);
+    if (result?.has_more) hasMoreAny = true;
+    if (result?.next_changes_since && result.next_changes_since > (nextChangesSinceMax || '')) {
+      nextChangesSinceMax = result.next_changes_since;
+    }
+    meta = mergeMetaPreservingShape(meta, result?.meta);
+  }
+  const response = {
+    object: 'list',
+    has_more: hasMoreAny,
+    data: unioned,
+  };
+  if (nextChangesSinceMax) response.next_changes_since = nextChangesSinceMax;
+  if (meta && Object.keys(meta).length) response.meta = meta;
+  return response;
+}
+
+/**
+ * Fan-in records detail across multiple bindings under one grant.
+ *
+ * Emits the typed `ambiguous_connection` error when the identifier resolves
+ * to more than one binding. Returns the single record otherwise. Falls back
+ * to a normal `not_found` when no binding holds the identifier.
+ */
+export async function getRecordAcrossBindings(bindings, stream, recordId, grant, manifest, requestParams = {}) {
+  ensureBindingsOrThrow(bindings, { connectorId: bindings?.[0]?.connectorId });
+
+  if (bindings.length === 1) {
+    return await getRecord(
+      buildBindingStorageTarget(bindings[0].connectorId, bindings[0].connectorInstanceId),
+      stream,
+      recordId,
+      grant,
+      manifest,
+      requestParams,
+    );
+  }
+
+  const perBindingParams = { ...requestParams };
+  delete perBindingParams.connection_id;
+  delete perBindingParams.connector_instance_id;
+
+  const matches = [];
+  for (const binding of bindings) {
+    const target = buildBindingStorageTarget(binding.connectorId, binding.connectorInstanceId);
+    try {
+      const record = await getRecord(target, stream, recordId, grant, manifest, perBindingParams);
+      matches.push({ binding, record });
+    } catch (err) {
+      if (err?.code === 'not_found') continue;
+      throw err;
+    }
+  }
+
+  if (matches.length === 0) {
+    const err = new Error('Record not found');
+    err.code = 'not_found';
+    throw err;
+  }
+  if (matches.length === 1) {
+    return matches[0].record;
+  }
+  const candidates = matches
+    .map(({ binding }) => projectBindingForWire({
+      connectorInstanceId: binding.connectorInstanceId,
+      connectorId: binding.connectorId,
+      displayName: binding.displayName,
+    }))
+    .filter(Boolean);
+  throw new AmbiguousConnectionError(
+    `Record '${recordId}' is present under more than one connection. Retry with \`connection_id\`.`,
+    candidates,
+  );
+}
+
+/**
+ * Fan-in records aggregate across multiple bindings.
+ *
+ * The reference only implements `metric=count` today; the union of counts
+ * across bindings is honest because each binding produces an independent
+ * grant-bounded count over the same shared stream namespace.
+ */
+export async function aggregateRecordsAcrossBindings(bindings, stream, grant, requestParams, manifest) {
+  ensureBindingsOrThrow(bindings, { connectorId: bindings?.[0]?.connectorId });
+
+  if (bindings.length === 1) {
+    return await aggregateRecords(
+      buildBindingStorageTarget(bindings[0].connectorId, bindings[0].connectorInstanceId),
+      stream,
+      grant,
+      requestParams,
+      manifest,
+    );
+  }
+
+  const perBindingParams = { ...requestParams };
+  delete perBindingParams.connection_id;
+  delete perBindingParams.connector_instance_id;
+
+  let total = 0;
+  let meta = null;
+  for (const binding of bindings) {
+    const target = buildBindingStorageTarget(binding.connectorId, binding.connectorInstanceId);
+    const result = await aggregateRecords(target, stream, grant, perBindingParams, manifest);
+    total += Number(result?.value || 0);
+    meta = mergeMetaPreservingShape(meta, result?.meta);
+  }
+  const response = {
+    object: 'aggregation',
+    metric: requestParams.metric || 'count',
+    value: total,
+  };
+  if (meta && Object.keys(meta).length) response.meta = meta;
+  return response;
+}
+
+/**
+ * Fan-in stream-list summaries across multiple bindings.
+ *
+ * Emits one entry per (stream, connection_id) so multi-connection
+ * deployments can disambiguate. Single-binding deployments preserve the
+ * pre-existing shape with `connection_id`/`display_name` populated from
+ * the sole active binding.
+ */
+export async function listStreamsAcrossBindings(bindings, grant, manifest) {
+  ensureBindingsOrThrow(bindings, { connectorId: bindings?.[0]?.connectorId });
+
+  const summaries = [];
+  for (const binding of bindings) {
+    const target = buildBindingStorageTarget(binding.connectorId, binding.connectorInstanceId);
+    const perBinding = await listStreams(target, grant, manifest);
+    const wireBinding = projectBindingForWire({
+      connectorInstanceId: binding.connectorInstanceId,
+      connectorId: binding.connectorId,
+      displayName: binding.displayName,
+    });
+    for (const summary of perBinding) {
+      const decorated = { ...summary };
+      if (wireBinding?.connection_id) {
+        decorated.connection_id = wireBinding.connection_id;
+        decorated.connector_instance_id = wireBinding.connection_id;
+        if (wireBinding.display_name) decorated.display_name = wireBinding.display_name;
+      }
+      summaries.push(decorated);
+    }
+  }
+  return summaries;
+}
+
+/**
+ * Fan-in stream-detail summaries across multiple bindings.
+ *
+ * Returns a single stream view aggregating record counts and last_updated
+ * across bindings, plus `available_connections` so callers can disambiguate
+ * if they want to follow up with a `connection_id` filter.
+ */
+export async function getStreamDetailAcrossBindings(bindings, streamName, grant, manifest) {
+  ensureBindingsOrThrow(bindings, { connectorId: bindings?.[0]?.connectorId });
+
+  let recordCount = 0;
+  let lastUpdated = null;
+  const available = [];
+  for (const binding of bindings) {
+    const target = buildBindingStorageTarget(binding.connectorId, binding.connectorInstanceId);
+    const summaries = await listStreams(target, { streams: grant.streams.filter((s) => s.name === streamName) }, manifest);
+    const summary = summaries.find((s) => s.name === streamName);
+    if (summary) {
+      recordCount += Number(summary.record_count || 0);
+      if (!lastUpdated || (summary.last_updated && summary.last_updated > lastUpdated)) {
+        lastUpdated = summary.last_updated || lastUpdated;
+      }
+    }
+    const wire = projectBindingForWire({
+      connectorInstanceId: binding.connectorInstanceId,
+      connectorId: binding.connectorId,
+      displayName: binding.displayName,
+    });
+    if (wire) available.push(wire);
+  }
+  return {
+    object: 'stream',
+    name: streamName,
+    record_count: recordCount,
+    last_updated: lastUpdated,
+    available_connections: available,
+  };
+}
+
+/**
+ * Resolve the request's bindings for a public-read route.
+ *
+ * Returns `{ bindings, requestConnectionId, warnings }`. `bindings` carries
+ * `{ connectorInstanceId, connectorId, displayName? }` entries the caller
+ * should iterate. `warnings` contains the deprecated-alias warning when
+ * the caller used `connector_instance_id` on the wire.
+ *
+ * Honors per-stream `grant.streams[].connection_id` when present; absent
+ * constraint preserves cross-connection (fan-in) semantics.
+ */
+export async function resolveReadRequestBindings({
+  ownerSubjectId,
+  storageBinding,
+  grant,
+  requestParams,
+  streamName,
+}) {
+  const connectorId = storageBinding?.connector_id || null;
+  const connectorInstanceIdHint = storageBinding?.connector_instance_id || null;
+  const streamGrant = grant?.streams?.find?.((s) => s.name === streamName) || null;
+  const grantStreamConnectionId = streamGrant?.connection_id || null;
+  return await resolveRequestBindings({
+    ownerSubjectId,
+    connectorId,
+    connectorInstanceIdHint,
+    requestParams,
+    grantStreamConnectionId,
+  });
 }
 
 /**

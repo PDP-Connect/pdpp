@@ -44,6 +44,10 @@ import {
 } from './auth.js';
 import { createBlobStore } from './stores/blob-store.js';
 import {
+  AmbiguousConnectionError,
+  projectBindingForWire,
+} from './connection-identity.js';
+import {
   createPostgresConnectorInstanceStore,
   createSqliteConnectorInstanceStore,
   makeConnectorInstanceSourceBindingKey,
@@ -67,6 +71,9 @@ import {
   getDatasetRecordsAggregate, getDatasetRecordChangesBytes, getDatasetBlobBytes,
   getDatasetRecordTimeBounds, listDatasetTopConnectorCandidates,
   listDatasetSummaryStreamProjectionSeeds, getDatasetSummaryStreamRecordTimeBounds,
+  queryRecordsAcrossBindings, getRecordAcrossBindings,
+  aggregateRecordsAcrossBindings, listStreamsAcrossBindings,
+  getStreamDetailAcrossBindings, resolveReadRequestBindings,
 } from './records.js';
 import {
   applyDatasetSummaryBlobDelta,
@@ -400,9 +407,17 @@ function scheduleRetrievalStartupBackfill({ manifests, logger, signal = null }) 
     });
 }
 
-function pdppError(res, status, code, message, param = null) {
+function pdppError(res, status, code, message, param = null, extras = null) {
   const body = { error: { type: typeFor(status), code, message } };
   if (param) body.error.param = param;
+  if (extras && typeof extras === 'object') {
+    if (Array.isArray(extras.available_connections)) {
+      body.error.available_connections = extras.available_connections;
+    }
+    if (typeof extras.retry_with === 'string') {
+      body.error.retry_with = extras.retry_with;
+    }
+  }
   const resourceMetadataUrl = status === 401 ? getProtectedResourceMetadataUrl(res) : null;
   if (resourceMetadataUrl) {
     body.error.resource_metadata = resourceMetadataUrl;
@@ -617,6 +632,8 @@ const codeToStatus = {
   invalid_record_identity: 400,
   invalid_expand: 400,
   ambiguous_connector_instance: 400,
+  ambiguous_connection: 409,
+  connection_not_found: 404,
   connector_instance_connector_mismatch: 400,
   connector_instance_inactive: 400,
   connector_instance_selector_required: 400,
@@ -645,7 +662,10 @@ function handleError(res, err) {
   if (err.trace_id) {
     setReferenceTraceId(res, err.trace_id);
   }
-  pdppError(res, status, code, err.message, err.param || null);
+  const extras = {};
+  if (Array.isArray(err.available_connections)) extras.available_connections = err.available_connections;
+  if (typeof err.retry_with === 'string') extras.retry_with = err.retry_with;
+  pdppError(res, status, code, err.message, err.param || null, extras);
 }
 
 function createRequestAbortSignal(req, message) {
@@ -867,7 +887,10 @@ async function rejectQuery(res, req, context, err, param = null) {
   await emitQueryRejected(context, req, err);
   const code = err.code || 'api_error';
   const status = codeToStatus[code] || 500;
-  return pdppError(res, status, code, err.message, param);
+  const extras = {};
+  if (Array.isArray(err.available_connections)) extras.available_connections = err.available_connections;
+  if (typeof err.retry_with === 'string') extras.retry_with = err.retry_with;
+  return pdppError(res, status, code, err.message, param || err.param || null, extras);
 }
 
 function buildStateContext(req, res, { connectorId, grantId = null, traceId = null, scenarioId = null, operation, requestedStreams = null } = {}) {
@@ -1491,6 +1514,12 @@ function resolveGrantStorageBinding(tokenInfo) {
   return null;
 }
 
+function ownerSubjectIdForBindings(tokenInfo) {
+  return tokenInfo?.grant?.subject?.id
+    || tokenInfo?.subject_id
+    || OWNER_AUTH_DEFAULT_SUBJECT_ID;
+}
+
 function buildClientSourceDescriptor(tokenInfo) {
   const grantSource = buildSourceDescriptor(tokenInfo?.grant?.source);
   if (grantSource) return grantSource;
@@ -1532,9 +1561,16 @@ async function resolveOwnerManifestFromScope(ownerScope, opts = {}) {
       });
       storageBinding = storageTargetForConnectorNamespace(namespace);
     } catch (err) {
-      // Fall through to manifest-not-found if the connector is not
-      // registered; route-level not_found mapping then returns a 404.
-      if (err?.code !== 'connector_instance_not_found') {
+      // Tolerate multi-connection ambiguity: the route layer fans in over
+      // every active connection under the connector, so a single-binding
+      // pin is no longer required. The storage binding stays scoped to
+      // `connector_id` and the route resolves the binding set per
+      // request via `resolveReadRequestBindings`.
+      if (err?.code === 'ambiguous_connector_instance') {
+        storageBinding = { connector_id: storageBinding.connector_id };
+      } else if (err?.code !== 'connector_instance_not_found') {
+        // Fall through to manifest-not-found if the connector is not
+        // registered; route-level not_found mapping then returns a 404.
         throw err;
       }
     }
@@ -1577,10 +1613,16 @@ async function resolveGrantManifest(tokenInfo, opts = {}) {
       });
       storageBinding = storageTargetForConnectorNamespace(namespace);
     } catch (err) {
-      // If the connector is not registered, fall through to the
-      // manifest-not-found path below so the route returns a clean 404
-      // ("Unknown connector: …") instead of bubbling a 500.
-      if (err?.code !== 'connector_instance_not_found') {
+      // Tolerate multi-connection ambiguity: the route layer fans in over
+      // every active connection under the connector. The storage binding
+      // stays scoped to `connector_id` only; the route uses the
+      // fan-in resolver to pick / iterate concrete bindings.
+      if (err?.code === 'ambiguous_connector_instance') {
+        storageBinding = { connector_id: storageBinding.connector_id };
+      } else if (err?.code !== 'connector_instance_not_found') {
+        // If the connector is not registered, fall through to the
+        // manifest-not-found path below so the route returns a clean 404
+        // ("Unknown connector: …") instead of bubbling a 500.
         throw err;
       }
     }
@@ -4615,6 +4657,52 @@ function buildAsApp(opts = {}) {
     }
   });
 
+  // PATCH /_ref/connections/:connectorInstanceId — owner-authenticated
+  // mutation of the owner-meaningful `display_name` carried on the
+  // public read contract. Operator-only surface; grant-authorized tokens
+  // SHALL NOT reach this route (gated by `ownerAuth.requireOwnerSession`).
+  //
+  // Spec: openspec/changes/expose-connection-identity-on-public-read/
+  //       specs/reference-implementation-architecture/spec.md
+  //       (#"Owner-meaningful display name SHALL be owner-editable")
+  app.patch(
+    '/_ref/connections/:connectorInstanceId',
+    { contract: 'refSetConnectionDisplayName' },
+    ownerAuth.requireOwnerSession,
+    async (req, res) => {
+      try {
+        const connectorInstanceId = decodeURIComponent(req.params.connectorInstanceId);
+        const body = req.body || {};
+        const displayName = body.display_name;
+        if (typeof displayName !== 'string' || !displayName.trim()) {
+          return pdppError(res, 400, 'invalid_request', 'display_name must be a non-empty string', 'display_name');
+        }
+        const ownerSubjectId = getOwnerSubjectId(req);
+        // Confirm the instance belongs to this owner before mutating; the
+        // store also enforces this in its WHERE clause so a stolen id
+        // cannot cross owners even if this preflight is skipped.
+        await resolveRefConnectionNamespace(req, connectorInstanceId);
+        const store = createRequestConnectorInstanceStore();
+        const updated = await store.setDisplayName(connectorInstanceId, {
+          ownerSubjectId,
+          displayName: displayName.trim(),
+          updatedAt: new Date().toISOString(),
+        });
+        const schedule = controller
+          ? await controller.getSchedule(updated.connectorId, { connectorInstanceId: updated.connectorInstanceId })
+          : null;
+        res.json(
+          projectRefConnection(
+            updated,
+            new Map(schedule ? [[updated.connectorInstanceId, schedule]] : []),
+          ),
+        );
+      } catch (err) {
+        handleError(res, err);
+      }
+    },
+  );
+
   // /_ref/deployment — reference operator diagnostics. Not a PDPP protocol
   // surface; the dashboard's /dashboard/deployment page reads this. The
   // canonical `ref.deployment` operation owns the public envelope and a
@@ -6467,10 +6555,29 @@ function buildRsApp(opts = {}) {
             grant_id: tokenInfo.grant_id || null,
             stream_count_limit: streamCountLimit,
           },
+          connection_id:
+            typeof req.query?.connection_id === 'string' && req.query.connection_id
+              ? req.query.connection_id
+              : typeof req.query?.connector_instance_id === 'string' && req.query.connector_instance_id
+                ? req.query.connector_instance_id
+                : null,
         };
         dependencies = {
           getSourceDescriptor: () => queryContext.sourceDescriptor,
-          listSummaries: async () => listStreams(grantResolved.storageBinding, grant, grantResolved.manifest),
+          listSummaries: async () => {
+            // Honor request-time `connection_id` filter and grant-scope
+            // `connection_id` constraint. When neither is set, fan in
+            // across every active connection under the grant's connector.
+            const firstStream = Array.isArray(grant?.streams) ? grant.streams[0]?.name : null;
+            const { bindings } = await resolveReadRequestBindings({
+              ownerSubjectId: ownerSubjectIdForBindings(tokenInfo),
+              storageBinding: grantResolved.storageBinding,
+              grant,
+              requestParams: req.query || {},
+              streamName: firstStream,
+            });
+            return await listStreamsAcrossBindings(bindings, grant, grantResolved.manifest);
+          },
         };
       }
 
@@ -6742,13 +6849,22 @@ function buildRsApp(opts = {}) {
           const mStream = manifest?.streams?.find((stream) => stream.name === req.params.stream);
           validateRequestedQueryFieldParams(params, mStream);
         },
-        aggregate: (params) => aggregateRecords(
-          storageBinding,
-          req.params.stream,
-          grant,
-          params,
-          manifest,
-        ),
+        aggregate: async (params) => {
+          const { bindings } = await resolveReadRequestBindings({
+            ownerSubjectId: ownerSubjectIdForBindings(tokenInfo),
+            storageBinding,
+            grant,
+            requestParams: params,
+            streamName: req.params.stream,
+          });
+          return await aggregateRecordsAcrossBindings(
+            bindings,
+            req.params.stream,
+            grant,
+            params,
+            manifest,
+          );
+        },
       };
 
       let result;
@@ -6885,8 +7001,16 @@ function buildRsApp(opts = {}) {
         getSourceDescriptor: () => sourceDescriptor,
         getManifest: () => manifest,
         getGrant: () => tokenInfo.grant || { streams: [] },
-        queryRecords: (stream, grant, params, m) =>
-          queryRecords(storageBinding, stream, grant, params, m),
+        queryRecords: async (stream, grant, params, m) => {
+          const { bindings } = await resolveReadRequestBindings({
+            ownerSubjectId: ownerSubjectIdForBindings(tokenInfo),
+            storageBinding,
+            grant,
+            requestParams: params,
+            streamName: stream,
+          });
+          return await queryRecordsAcrossBindings(bindings, stream, grant, params, m);
+        },
         decorateRecord: (record) => decorateRecordBlobRefs(record),
         validateRequestFields: (params, manifestStream) =>
           validateRequestedQueryFieldParams(params, manifestStream),
@@ -7011,8 +7135,23 @@ function buildRsApp(opts = {}) {
         getSourceDescriptor: () => sourceDescriptor,
         getManifest: () => manifest,
         getGrant: () => tokenInfo.grant || { streams: [] },
-        getRecord: (stream, recordId, grant, m, options) =>
-          getRecord(storageBinding, stream, recordId, grant, m, options),
+        getRecord: async (stream, recordId, grant, m, options) => {
+          const { bindings } = await resolveReadRequestBindings({
+            ownerSubjectId: ownerSubjectIdForBindings(tokenInfo),
+            storageBinding,
+            grant,
+            requestParams: { ...(req.query || {}), ...(options || {}) },
+            streamName: stream,
+          });
+          return await getRecordAcrossBindings(
+            bindings,
+            stream,
+            recordId,
+            grant,
+            m,
+            { ...(req.query || {}), ...(options || {}) },
+          );
+        },
         decorateRecord: (record) => decorateRecordBlobRefs(record),
       };
 
@@ -7423,15 +7562,30 @@ function buildRsApp(opts = {}) {
         manifest = grantResolved.manifest;
       }
 
+      // Resolve the set of bindings this caller can address. When the
+      // request supplies `connection_id` (or the deprecated alias) the
+      // resolver narrows; otherwise the resolver fans in.
+      const { bindings, requestConnectionId } = await resolveReadRequestBindings({
+        ownerSubjectId: ownerSubjectIdForBindings(tokenInfo),
+        storageBinding,
+        grant: tokenInfo.grant || { streams: [] },
+        requestParams: req.query || {},
+        streamName: null,
+      });
+      const addressableInstanceIds = new Set(
+        bindings.map((b) => b.connectorInstanceId).filter(Boolean),
+      );
+
+      const matchedRecords = [];
       const dependencies = {
         loadBlob: (id) => blobStore.loadContentAddressedBlob(id),
         loadBindings: (id) => blobStore.listBlobBindings(id),
         getActorConnectorId: () => storageBinding?.connector_id ?? null,
         getVisibleRecord: async (binding) => {
           if (
-            storageBinding?.connector_instance_id
+            addressableInstanceIds.size > 0
             && binding.connector_instance_id
-            && binding.connector_instance_id !== storageBinding.connector_instance_id
+            && !addressableInstanceIds.has(binding.connector_instance_id)
           ) {
             return null;
           }
@@ -7444,7 +7598,16 @@ function buildRsApp(opts = {}) {
                 connector_instance_id: binding.connector_instance_id,
               }
             : storageBinding;
-          return await getRecord(bindingStorageTarget, binding.stream, binding.record_key, grant, manifest);
+          try {
+            const record = await getRecord(bindingStorageTarget, binding.stream, binding.record_key, grant, manifest);
+            if (record?.data?.blob_ref?.blob_id === blobId) {
+              matchedRecords.push({ binding, record });
+            }
+            return record;
+          } catch (err) {
+            if (err?.code === 'not_found') return null;
+            throw err;
+          }
         },
       };
 
@@ -7458,6 +7621,36 @@ function buildRsApp(opts = {}) {
           throw mapped;
         }
         throw opErr;
+      }
+      // Ambiguity guard: if more than one binding's visible record exposed
+      // the requested blob and the request did not narrow with
+      // `connection_id`, the runtime cannot pick a single canonical
+      // `(connection_id, stream, record_id)` address for the byte stream.
+      // Emit the typed `ambiguous_connection` error with
+      // `available_connections` so the caller can recover.
+      if (matchedRecords.length > 1 && !requestConnectionId) {
+        const uniqueInstances = new Map();
+        for (const m of matchedRecords) {
+          if (m.binding?.connector_instance_id && !uniqueInstances.has(m.binding.connector_instance_id)) {
+            uniqueInstances.set(m.binding.connector_instance_id, m.binding);
+          }
+        }
+        if (uniqueInstances.size > 1) {
+          const candidates = [];
+          for (const [instanceId, binding] of uniqueInstances) {
+            const found = bindings.find((b) => b.connectorInstanceId === instanceId);
+            const wire = projectBindingForWire({
+              connectorInstanceId: instanceId,
+              connectorId: binding.connector_id,
+              displayName: found?.displayName ?? null,
+            });
+            if (wire) candidates.push(wire);
+          }
+          throw new AmbiguousConnectionError(
+            `Blob '${blobId}' is exposed by records under more than one connection. Retry with \`connection_id\`.`,
+            candidates,
+          );
+        }
       }
       const blob = output.blob;
       res.setHeader('Content-Type', blob.mime_type);

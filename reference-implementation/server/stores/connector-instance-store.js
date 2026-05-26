@@ -4,6 +4,7 @@ import { exec, getMany, getOne, referenceQueries } from '../../lib/db.ts';
 import { postgresQuery } from '../postgres-storage.js';
 
 const ACTIVE_RESOLUTION_LIMIT = 2;
+const ACTIVE_FANIN_LIMIT = 64;
 const LIST_LIMIT = 500;
 const VALID_STATUSES = new Set(['active', 'paused', 'revoked']);
 const VALID_SOURCE_KINDS = new Set(['account', 'local_device', 'manual']);
@@ -293,6 +294,14 @@ export function createSqliteConnectorInstanceStore() {
       return resolveSingleActive(rows, ownerSubjectId, connectorId);
     },
 
+    listActiveByConnector(ownerSubjectId, connectorId, { limit = ACTIVE_FANIN_LIMIT } = {}) {
+      return getMany(
+        referenceQueries.connectorInstancesListActiveByOwnerConnector,
+        [ownerSubjectId, connectorId],
+        { limit },
+      ).rows.map(mapInstance);
+    },
+
     updateStatus(connectorInstanceId, { status, updatedAt, revokedAt = null }) {
       if (!VALID_STATUSES.has(status)) {
         throw new Error(`Invalid connector instance status '${status}'.`);
@@ -300,7 +309,57 @@ export function createSqliteConnectorInstanceStore() {
       exec(referenceQueries.connectorInstancesUpdateStatus, [status, updatedAt, revokedAt, connectorInstanceId]);
       return this.get(connectorInstanceId);
     },
+
+    setDisplayName(connectorInstanceId, { ownerSubjectId, displayName, updatedAt }) {
+      assertOwnerSetDisplayNameArgs({ connectorInstanceId, ownerSubjectId, displayName });
+      const result = exec(
+        referenceQueries.connectorInstancesUpdateDisplayName,
+        [displayName, updatedAt ?? new Date().toISOString(), connectorInstanceId, ownerSubjectId],
+      );
+      if (!result || result.changes === 0) {
+        throw new ConnectorInstanceResolutionError(
+          'connector_instance_not_found',
+          `Connector instance '${connectorInstanceId}' does not exist for owner '${ownerSubjectId}'.`,
+          { ownerSubjectId, connectorInstanceId },
+        );
+      }
+      return this.get(connectorInstanceId);
+    },
   };
+}
+
+function assertOwnerSetDisplayNameArgs({ connectorInstanceId, ownerSubjectId, displayName }) {
+  if (typeof connectorInstanceId !== 'string' || !connectorInstanceId) {
+    throw new ConnectorInstanceResolutionError(
+      'connector_instance_selector_required',
+      'connectorInstanceId is required to set a display name.',
+    );
+  }
+  if (typeof ownerSubjectId !== 'string' || !ownerSubjectId) {
+    throw new ConnectorInstanceResolutionError(
+      'owner_subject_required',
+      'ownerSubjectId is required to set a display name.',
+    );
+  }
+  if (typeof displayName !== 'string') {
+    const err = new Error('display_name must be a string.');
+    err.code = 'invalid_request';
+    err.param = 'display_name';
+    throw err;
+  }
+  const trimmed = displayName.trim();
+  if (!trimmed) {
+    const err = new Error('display_name must be a non-empty string.');
+    err.code = 'invalid_request';
+    err.param = 'display_name';
+    throw err;
+  }
+  if (trimmed.length > 200) {
+    const err = new Error('display_name must be at most 200 characters.');
+    err.code = 'invalid_request';
+    err.param = 'display_name';
+    throw err;
+  }
 }
 
 export function createPostgresConnectorInstanceStore() {
@@ -391,6 +450,18 @@ export function createPostgresConnectorInstanceStore() {
       return resolveSingleActive(result.rows.map(mapInstance), ownerSubjectId, connectorId);
     },
 
+    async listActiveByConnector(ownerSubjectId, connectorId, { limit = ACTIVE_FANIN_LIMIT } = {}) {
+      const result = await postgresQuery(
+        `SELECT connector_instance_id, owner_subject_id, connector_id, display_name, status, source_kind, source_binding_key, source_binding_json, created_at, updated_at, revoked_at
+         FROM connector_instances
+         WHERE owner_subject_id = $1 AND connector_id = $2 AND status = 'active'
+         ORDER BY created_at ASC, connector_instance_id ASC
+         LIMIT $3`,
+        [ownerSubjectId, connectorId, limit],
+      );
+      return result.rows.map(mapInstance);
+    },
+
     async updateStatus(connectorInstanceId, { status, updatedAt, revokedAt = null }) {
       if (!VALID_STATUSES.has(status)) {
         throw new Error(`Invalid connector instance status '${status}'.`);
@@ -399,6 +470,24 @@ export function createPostgresConnectorInstanceStore() {
         `UPDATE connector_instances SET status = $1, updated_at = $2, revoked_at = $3 WHERE connector_instance_id = $4`,
         [status, updatedAt, revokedAt, connectorInstanceId],
       );
+      return await this.get(connectorInstanceId);
+    },
+
+    async setDisplayName(connectorInstanceId, { ownerSubjectId, displayName, updatedAt }) {
+      assertOwnerSetDisplayNameArgs({ connectorInstanceId, ownerSubjectId, displayName });
+      const result = await postgresQuery(
+        `UPDATE connector_instances
+         SET display_name = $1, updated_at = $2
+         WHERE connector_instance_id = $3 AND owner_subject_id = $4`,
+        [displayName, updatedAt ?? new Date().toISOString(), connectorInstanceId, ownerSubjectId],
+      );
+      if (!result || result.rowCount === 0) {
+        throw new ConnectorInstanceResolutionError(
+          'connector_instance_not_found',
+          `Connector instance '${connectorInstanceId}' does not exist for owner '${ownerSubjectId}'.`,
+          { ownerSubjectId, connectorInstanceId },
+        );
+      }
       return await this.get(connectorInstanceId);
     },
   };
