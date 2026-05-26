@@ -2,6 +2,7 @@
 // they can be unit-tested in isolation (see parsers.test.ts). The IMAP
 // client, its side effects, and clock-dependent helpers live in index.ts.
 
+import { createHash } from "node:crypto";
 import type { MessageAddressObject, MessageEnvelopeObject, MessageStructureObject } from "imapflow";
 import type { AttachmentRecord, BodySource, ClassifiedBody, ThreadAggregate } from "./types.ts";
 
@@ -558,18 +559,64 @@ export function updateThreadAggregate(
 }
 
 export function buildThreadRecord(agg: ThreadAggregate): Record<string, unknown> {
+  // Sort the participant + label arrays so the emitted record's shape is
+  // deterministic across runs. IMAP doesn't guarantee identical message
+  // iteration order across `1:*` fetches; without sorting, Set insertion
+  // order would oscillate and the per-thread fingerprint would mark
+  // every thread as changed on every run.
   return {
     id: agg.id,
     subject: agg.subject,
-    participant_emails: [...agg.participant_set],
+    participant_emails: [...agg.participant_set].sort(),
     message_count: agg.message_count,
     first_message_date: agg.first_message_date,
     last_message_date: agg.last_message_date,
-    labels: [...agg.labels_set],
+    labels: [...agg.labels_set].sort(),
     unread_count: agg.unread_count,
     flagged_count: agg.flagged_count,
     has_attachments: agg.has_attachments,
   };
+}
+
+/**
+ * Stable per-thread fingerprint: a hash of every field of the emitted
+ * thread record. The connector's `1:*` aggregation re-derives the
+ * record on every run; without this gate, even a thread whose
+ * semantic shape hasn't moved emits a fresh RECORD and grows
+ * version history. The fingerprint includes every field on the
+ * record — none excluded — because every field is source-derived
+ * (subject, participants, counts, dates, labels). No run-clock
+ * fields participate.
+ *
+ * SHA-1 is sufficient here: collision risk is bounded by the
+ * per-key change-detection check (a worst-case false-positive
+ * silently skips one emit), and the input is small (<10kB per
+ * thread record).
+ */
+export function buildThreadFingerprint(agg: ThreadAggregate): string {
+  const record = buildThreadRecord(agg);
+  return createHash("sha1").update(stableStringify(record)).digest("hex");
+}
+
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value) ?? "null";
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((v) => stableStringify(v)).join(",")}]`;
+  }
+  const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => compareFingerprintKeys(a, b));
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stableStringify(v)}`).join(",")}}`;
+}
+
+function compareFingerprintKeys(a: string, b: string): number {
+  if (a < b) {
+    return -1;
+  }
+  if (a > b) {
+    return 1;
+  }
+  return 0;
 }
 
 // ─── Body selection + record builders ───────────────────────────────────

@@ -120,6 +120,20 @@ export interface ThreadAggregate {
   unread_count: number;
 }
 
+/**
+ * Per-thread fingerprint persisted in the `threads` STATE cursor across
+ * runs. Used solely by the connector to skip emitting a thread RECORD
+ * whose semantic shape hasn't moved since the last run. Opaque to the
+ * runtime — only the connector interprets it.
+ */
+export interface ThreadFingerprint {
+  fingerprint: string;
+}
+
+export interface PriorThreadsState {
+  thread_fingerprints?: Record<string, unknown>;
+}
+
 export type BodySource = "text_plain" | "html_stripped" | "text_html" | "empty";
 
 export interface ClassifiedBody {

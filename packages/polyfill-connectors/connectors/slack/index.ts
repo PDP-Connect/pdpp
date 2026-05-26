@@ -71,6 +71,7 @@ import {
   buildWorkspaceRecord,
   extractMessageTimeRange,
   parseMessageRow,
+  recordFingerprint,
   selectCommittedMaxTs,
   toSlackTime,
   WORKSPACE_LIST_ARROW,
@@ -478,13 +479,97 @@ export async function emitMessagesPass(
 /**
  * Shared deps bag for every per-stream helper. Mirrors gmail/usaa EmitDeps —
  * bundle the few things every stream needs so helper signatures stay 2 args.
+ *
+ * `priorFingerprints` / `nextFingerprints` carry the per-record semantic
+ * fingerprints across runs for the workspace/users/files streams. Without
+ * them, slackdump's archive-rebuild churn produces a fresh RECORD per
+ * (record, run) pair even when source state hasn't moved. The maps live
+ * under `<stream>` keys, so a single bag covers all three streams plus
+ * any future opt-ins. Both maps are always present (defaulted to empty
+ * by the caller) — runners check them, don't allocate them, so the
+ * cursor-write step at the end can read every stream uniformly.
  */
-interface StreamDeps {
+export interface StreamDeps {
   db: DatabaseSync;
   emitRecord: (stream: string, data: RecordData) => Promise<void>;
   emittedAt: string;
+  nextFingerprints: Map<string, Map<string, string>>;
+  priorFingerprints: Map<string, Map<string, string>>;
   progress: CollectContext["progress"];
   requested: CollectContext["requested"];
+}
+
+/**
+ * Streams that use the per-record fingerprint cursor. Workspace + users +
+ * files were re-emitting on every slackdump pass even when source state
+ * hadn't moved — see record-version-churn-data-quality-report.md
+ * (31k+ versions/key on workspace, 250 versions/key on users, bimodal on
+ * files). Channels, channel_memberships, canvases, messages, reactions
+ * and message_attachments are intentionally NOT on this list:
+ *   - channels: low cardinality, low version count today; out of scope
+ *     for this batch.
+ *   - channel_memberships: includes per-run `fetched_at`; will need a
+ *     similar fix but the churn report didn't flag it as load-bearing.
+ *     Deferred to keep the blast radius small.
+ *   - canvases: tied to channel index; low cardinality.
+ *   - messages/reactions/message_attachments: already incremental via
+ *     last_ts cursor.
+ */
+const FINGERPRINTED_STREAMS = ["workspace", "users", "files"] as const;
+type FingerprintedStream = (typeof FINGERPRINTED_STREAMS)[number];
+
+/**
+ * Per-stream emitted-record fields that participate in the change-detection
+ * key but should NOT — usually run-clock fields like `fetched_at` whose
+ * value is "when this run happened", not "when the source row changed".
+ * Excluding them lets the fingerprint stay stable across runs when the
+ * underlying source data hasn't moved.
+ *
+ *   workspace.fetched_at: written to the emitted record so consumers know
+ *     when the connector last saw this record; advances on every run by
+ *     design. Without exclusion, the fingerprint would never match.
+ *
+ * No other emitted fields are run-clock — `users` and `files` only carry
+ * source-derived fields, so the fingerprint covers the full record.
+ */
+const WORKSPACE_FINGERPRINT_EXCLUDE = ["fetched_at"] as const;
+
+/**
+ * Wrap deps.emitRecord with a per-stream fingerprint gate. The wrapped
+ * emitter always updates `nextFingerprints[stream]` (so unchanged records
+ * carry their fingerprint forward into the next STATE cursor), and only
+ * calls through to the real emitter when (a) the prior fingerprint is
+ * missing — new record — or (b) the new fingerprint differs from the
+ * prior one. Records whose fingerprint is identical do NOT emit, which
+ * is the load-bearing line for the workspace/users/files churn fix.
+ *
+ * Exported so integration tests can drive the gate directly with a
+ * recording emitRecord — the production callers go through `runWorkspaceStream`
+ * / `runUsersStream` / `runFilesStream`, which are sqlite-bound and not
+ * factored into a testable seam today.
+ */
+export function emitWithFingerprint(
+  deps: StreamDeps,
+  stream: FingerprintedStream,
+  record: RecordData,
+  excludeKeys: readonly string[] = []
+): Promise<void> {
+  const id = record.id == null ? null : String(record.id);
+  if (id == null) {
+    return deps.emitRecord(stream, record);
+  }
+  const fingerprint = recordFingerprint(record, excludeKeys);
+  let next = deps.nextFingerprints.get(stream);
+  if (!next) {
+    next = new Map<string, string>();
+    deps.nextFingerprints.set(stream, next);
+  }
+  next.set(id, fingerprint);
+  const prior = deps.priorFingerprints.get(stream)?.get(id);
+  if (prior === fingerprint) {
+    return Promise.resolve();
+  }
+  return deps.emitRecord(stream, record);
 }
 
 async function runWorkspaceStream(deps: StreamDeps): Promise<void> {
@@ -493,7 +578,12 @@ async function runWorkspaceStream(deps: StreamDeps): Promise<void> {
     "SELECT ID, TEAM, TEAM_ID, USERNAME, USER_ID, URL, ENTERPRISE_ID, DATA FROM WORKSPACE"
   );
   for (const r of rows) {
-    await deps.emitRecord("workspace", buildWorkspaceRecord(r, deps.emittedAt));
+    await emitWithFingerprint(
+      deps,
+      "workspace",
+      buildWorkspaceRecord(r, deps.emittedAt),
+      WORKSPACE_FINGERPRINT_EXCLUDE
+    );
   }
 }
 
@@ -536,7 +626,7 @@ async function runUsersStream(deps: StreamDeps): Promise<void> {
   `
   );
   for (const r of rows) {
-    await deps.emitRecord("users", buildUserRecord(r));
+    await emitWithFingerprint(deps, "users", buildUserRecord(r));
   }
 }
 
@@ -611,7 +701,7 @@ async function runFilesStream(deps: StreamDeps): Promise<void> {
   `
   );
   for (const r of rows) {
-    await deps.emitRecord("files", buildFileRecord(r));
+    await emitWithFingerprint(deps, "files", buildFileRecord(r));
   }
 }
 
@@ -694,6 +784,7 @@ interface StateEmitDeps {
   archivePath: string;
   committedMaxTs: string | null;
   emit: CollectContext["emit"];
+  nextFingerprints: Map<string, Map<string, string>>;
   requested: CollectContext["requested"];
 }
 
@@ -706,7 +797,12 @@ interface StateEmitDeps {
  *   moves onto the messages cursor so `-resume` continues to work; it's
  *   workspace-global but messages is the canonical stream for slackdump
  *   state on the PDPP side.
- * - other mutable_state streams (channels, users, files, canvases):
+ * - workspace / users / files: persist the per-record fingerprint map
+ *   alongside the freshness marker so the next run can skip emitting
+ *   records whose semantic shape hasn't moved (see emitWithFingerprint).
+ *   A legacy cursor (no `fingerprints` key) is tolerated on the read
+ *   side; the first post-deploy run rebuilds the map.
+ * - other mutable_state streams (channels, canvases):
  *   low cardinality, we full-sync each run; the cursor is just a freshness
  *   marker for visibility.
  */
@@ -722,13 +818,65 @@ function emitStateCheckpoints(deps: StateEmitDeps): void {
   });
   for (const stream of ["channels", "users", "files", "canvases", "workspace"]) {
     if (deps.requested.has(stream)) {
+      const cursor: Record<string, unknown> = { synced_at: nowIso() };
+      if ((FINGERPRINTED_STREAMS as readonly string[]).includes(stream)) {
+        const fps = deps.nextFingerprints.get(stream);
+        if (fps && fps.size > 0) {
+          cursor.fingerprints = mapToRecord(fps);
+        }
+      }
       deps.emit({
         type: "STATE",
         stream,
-        cursor: { synced_at: nowIso() },
+        cursor,
       });
     }
   }
+}
+
+function mapToRecord(m: Map<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of m) {
+    out[k] = v;
+  }
+  return out;
+}
+
+/**
+ * Parse the prior STATE cursor's `fingerprints` map for one stream.
+ * Tolerant of (a) missing stream state (first run), (b) legacy cursors
+ * without a `fingerprints` field, (c) malformed entries — bad shapes are
+ * silently dropped so a corrupt cursor never blocks a successful run.
+ * The returned map is always safe to read; on legacy/missing input it
+ * is empty and the next run re-emits every record.
+ */
+export function readPriorFingerprintMap(
+  state: Record<string, unknown>,
+  stream: FingerprintedStream
+): Map<string, string> {
+  const out = new Map<string, string>();
+  const streamState = state[stream];
+  if (!streamState || typeof streamState !== "object" || Array.isArray(streamState)) {
+    return out;
+  }
+  const raw = (streamState as Record<string, unknown>).fingerprints;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return out;
+  }
+  for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value === "string" && value.length > 0) {
+      out.set(id, value);
+    }
+  }
+  return out;
+}
+
+function readAllPriorFingerprints(state: Record<string, unknown>): Map<string, Map<string, string>> {
+  const out = new Map<string, Map<string, string>>();
+  for (const stream of FINGERPRINTED_STREAMS) {
+    out.set(stream, readPriorFingerprintMap(state, stream));
+  }
+  return out;
 }
 
 interface EnsureArchiveDeps {
@@ -895,10 +1043,23 @@ if (isMainModule(import.meta.url)) {
       });
 
       const db = new DatabaseSync(sqlitePath, { readOnly: true });
+      // Per-stream fingerprint cursor: seed the next-run sink with the
+      // prior cursor's map so records we skip this run carry their
+      // fingerprint forward unchanged. Same shape as
+      // af1700ad's codex `threadFingerprints` carry-forward — without it,
+      // a single skipped record would drop from STATE on the next write
+      // and re-emit on the run after.
+      const priorFingerprints = readAllPriorFingerprints(state);
+      const nextFingerprints = new Map<string, Map<string, string>>();
+      for (const [stream, prior] of priorFingerprints) {
+        nextFingerprints.set(stream, new Map(prior));
+      }
       const deps: StreamDeps = {
         db,
         emitRecord: ctx.emitRecord,
         emittedAt: ctx.emittedAt,
+        nextFingerprints,
+        priorFingerprints,
         progress,
         requested,
       };
@@ -913,6 +1074,7 @@ if (isMainModule(import.meta.url)) {
         archivePath,
         committedMaxTs,
         emit,
+        nextFingerprints,
         requested,
       });
     },

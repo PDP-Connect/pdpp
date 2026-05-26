@@ -30,7 +30,6 @@ import {
   ImapFlow,
   type ListResponse,
   type MailboxObject,
-  // biome-ignore lint/correctness/noUnresolvedImports: imapflow is declared in package.json; Biome's resolver doesn't see it here
 } from "imapflow";
 import { isMainModule } from "../../src/is-main-module.ts";
 import { stringifyForJsonl } from "../../src/safe-emit.ts";
@@ -42,6 +41,7 @@ import {
   buildDeltaMessageRecord,
   buildMessageBodyRecord,
   buildMessageRecord,
+  buildThreadFingerprint,
   buildThreadRecord,
   canonicalLabelName,
   decodeBodyPart,
@@ -70,6 +70,7 @@ import type {
   InteractionResponse,
   PriorAttachmentsState,
   PriorMessagesState,
+  PriorThreadsState,
   ProgressMessage,
   StartMessage,
   StreamRequest,
@@ -1226,7 +1227,26 @@ async function runDeltaPass(
 
 // ─── Threads pass ───────────────────────────────────────────────────────
 
-async function runThreadsPass(client: ImapFlow, emitRecord: EmitRecordFn): Promise<void> {
+/**
+ * Per-thread fingerprint sink/source. `priorFingerprints` is read from the
+ * prior `threads` STATE cursor; `nextFingerprints` is seeded with the
+ * prior map and updated as the pass runs. The sink is what gets written
+ * back into the next STATE cursor — pre-seeding with `priorFingerprints`
+ * means a thread we deliberately skip emitting carries its fingerprint
+ * forward unchanged, mirroring af1700ad's codex pattern. Without the
+ * carry-forward, skipped threads would drop from the cursor and
+ * re-emit on the run after.
+ */
+interface ThreadFingerprintCursor {
+  nextFingerprints: Map<string, string>;
+  priorFingerprints: Map<string, string>;
+}
+
+async function runThreadsPass(
+  client: ImapFlow,
+  emitRecord: EmitRecordFn,
+  cursor: ThreadFingerprintCursor
+): Promise<void> {
   await emit({
     type: "PROGRESS",
     stream: "threads",
@@ -1244,11 +1264,13 @@ async function runThreadsPass(client: ImapFlow, emitRecord: EmitRecordFn): Promi
     labels: true,
     bodyStructure: true,
   };
+  const seenThreadIds = new Set<string>();
   for await (const msg of client.fetch("1:*", threadQuery, { uid: true })) {
     const tid = String(msg.threadId ?? "");
     if (!tid) {
       continue;
     }
+    seenThreadIds.add(tid);
     const env = msg.envelope ?? {};
     const rcv = internalDateToIso(msg.internalDate);
     const msgHasAttachments =
@@ -1265,8 +1287,59 @@ async function runThreadsPass(client: ImapFlow, emitRecord: EmitRecordFn): Promi
     threadAgg.set(tid, next);
   }
   for (const agg of threadAgg.values()) {
+    const fingerprint = buildThreadFingerprint(agg);
+    cursor.nextFingerprints.set(agg.id, fingerprint);
+    const prior = cursor.priorFingerprints.get(agg.id);
+    if (prior === fingerprint) {
+      continue;
+    }
     await emitRecord("threads", buildThreadRecord(agg));
   }
+  // Threads that disappeared this run (rare, but possible if a thread's
+  // last message was deleted) must drop from the next cursor too — otherwise
+  // a future undelete would have a stale fingerprint waiting. Walk the
+  // prior map and prune any id we didn't see this run.
+  for (const id of cursor.nextFingerprints.keys()) {
+    if (!seenThreadIds.has(id)) {
+      cursor.nextFingerprints.delete(id);
+    }
+  }
+}
+
+/**
+ * Parse the prior `threads` STATE cursor's `thread_fingerprints` map.
+ * Tolerant of:
+ *   - missing/legacy cursors (no fingerprints field)
+ *   - malformed entries (non-string values silently dropped)
+ *   - state from a different schema (best-effort coercion)
+ * The returned map is always safe to read; on legacy input it is empty
+ * and the next run re-emits every thread once (the normal one-time
+ * cost of the cursor's introduction).
+ */
+export function readPriorThreadFingerprints(state: Record<string, unknown>): Map<string, string> {
+  const out = new Map<string, string>();
+  const streamState = state.threads;
+  if (!streamState || typeof streamState !== "object" || Array.isArray(streamState)) {
+    return out;
+  }
+  const raw = (streamState as PriorThreadsState).thread_fingerprints;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return out;
+  }
+  for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value === "string" && value.length > 0) {
+      out.set(id, value);
+    }
+  }
+  return out;
+}
+
+function threadFingerprintMapToRecord(m: Map<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of m) {
+    out[k] = v;
+  }
+  return out;
 }
 
 // ─── All Mail orchestration (inside the mailbox lock) ───────────────────
@@ -1327,7 +1400,28 @@ async function runAllMailPasses(
   // (this fetch happened at the end before the reorder), so no throughput
   // change.
   if (deps.requested.has("threads")) {
-    await runThreadsPass(client, deps.emitRecord);
+    // Per-thread fingerprint cursor: seed `nextFingerprints` with the
+    // prior map so threads we deliberately don't re-emit carry their
+    // fingerprint forward unchanged. Mirrors af1700ad's Codex pattern.
+    const priorThreadFingerprints = readPriorThreadFingerprints(state);
+    const nextThreadFingerprints = new Map<string, string>(priorThreadFingerprints);
+    await runThreadsPass(client, deps.emitRecord, {
+      priorFingerprints: priorThreadFingerprints,
+      nextFingerprints: nextThreadFingerprints,
+    });
+    // The threads STATE cursor carries the next-run fingerprint map.
+    // Emitted here (inside the mailbox lock) so it's persisted right
+    // after the threads pass and before the messages pass; if the
+    // messages pass crashes, the threads cursor still holds and we
+    // don't re-emit every thread on retry.
+    await emit({
+      type: "STATE",
+      stream: "threads",
+      cursor: {
+        fetched_at: nowIso(),
+        thread_fingerprints: threadFingerprintMapToRecord(nextThreadFingerprints),
+      },
+    });
   }
 
   const metas = await collectMetadata(client, fetchRange);

@@ -28,6 +28,7 @@
  * and most-recent month).
  */
 
+import { createHash } from "node:crypto";
 import { nowIso, type RecordData, runConnector } from "../../src/connector-runtime.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
 import { validateRecord } from "./schemas.ts";
@@ -591,8 +592,81 @@ async function collectPayees(ctx: BudgetCtx): Promise<void> {
   await emit({ type: "STATE", stream: "payees", cursor: newState.payees });
 }
 
+/**
+ * Per-record fingerprint for payee_locations. YNAB exposes
+ * `server_knowledge` deltas on payees/transactions/etc., but NOT on
+ * `/payee_locations` — the full collection re-returns every run. Without
+ * a connector-side gate, every run appends a new version per location
+ * (77 keys × 270 versions in the live churn report). The fingerprint
+ * covers every field in the emitted record; none excluded — lat/long are
+ * user-provided in the YNAB UI and never re-geocoded silently, so they
+ * are valid change signals.
+ */
+function payeeLocationFingerprint(record: RecordData): string {
+  return createHash("sha1").update(stableStringify(record)).digest("hex");
+}
+
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value) ?? "null";
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((v) => stableStringify(v)).join(",")}]`;
+  }
+  const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => compareFingerprintKeys(a, b));
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stableStringify(v)}`).join(",")}}`;
+}
+
+function compareFingerprintKeys(a: string, b: string): number {
+  if (a < b) {
+    return -1;
+  }
+  if (a > b) {
+    return 1;
+  }
+  return 0;
+}
+
+interface PriorPayeeLocationsBudgetState {
+  fingerprints?: Record<string, unknown>;
+}
+
+/**
+ * Parse the prior `payee_locations` STATE cursor for one budget into a
+ * Map. Tolerant of:
+ *   - missing/legacy state (no `payee_locations` key, or no per-budget entry)
+ *   - missing fingerprints field (legacy cursor shape)
+ *   - non-string entries (drop silently)
+ * The returned Map is always safe to read; on legacy input it's empty
+ * and the next run re-emits every location once.
+ */
+export function readPriorPayeeLocationFingerprints(
+  state: Record<string, unknown>,
+  budgetId: string
+): Map<string, string> {
+  const out = new Map<string, string>();
+  const streamState = state.payee_locations;
+  if (!streamState || typeof streamState !== "object" || Array.isArray(streamState)) {
+    return out;
+  }
+  const budgetEntry = (streamState as Record<string, unknown>)[budgetId];
+  if (!budgetEntry || typeof budgetEntry !== "object" || Array.isArray(budgetEntry)) {
+    return out;
+  }
+  const raw = (budgetEntry as PriorPayeeLocationsBudgetState).fingerprints;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return out;
+  }
+  for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value === "string" && value.length > 0) {
+      out.set(id, value);
+    }
+  }
+  return out;
+}
+
 async function collectPayeeLocations(ctx: BudgetCtx): Promise<void> {
-  const { budgetId, token, trackAndEmit, progress } = ctx;
+  const { budgetId, token, state, newState, emit, trackAndEmit, progress } = ctx;
   await progress(`Fetching payee locations for budget ${budgetId}`, {
     stream: "payee_locations",
   });
@@ -602,9 +676,49 @@ async function collectPayeeLocations(ctx: BudgetCtx): Promise<void> {
     count: res.data.payee_locations.length,
     total: res.data.payee_locations.length,
   });
+  // Seed `nextFingerprints` with the prior map so unchanged records carry
+  // their fingerprint forward unchanged — same shape as af1700ad. Without
+  // the carry-forward, a skipped record would drop from the cursor and
+  // re-emit on the run after.
+  const priorFingerprints = readPriorPayeeLocationFingerprints(state, budgetId);
+  const nextFingerprints = new Map<string, string>(priorFingerprints);
+  const seenIds = new Set<string>();
   for (const loc of res.data.payee_locations) {
-    await trackAndEmit("payee_locations", payeeLocationRecord(loc, budgetId));
+    const record = payeeLocationRecord(loc, budgetId);
+    const id = String(record.id);
+    seenIds.add(id);
+    const fingerprint = payeeLocationFingerprint(record);
+    nextFingerprints.set(id, fingerprint);
+    if (priorFingerprints.get(id) === fingerprint) {
+      continue;
+    }
+    await trackAndEmit("payee_locations", record);
   }
+  // Prune fingerprints for locations that disappeared this run — without
+  // pruning, a future re-creation would carry a stale fingerprint and
+  // silently no-op on what should be a fresh emit.
+  for (const id of [...nextFingerprints.keys()]) {
+    if (!seenIds.has(id)) {
+      nextFingerprints.delete(id);
+    }
+  }
+  const payeeLocsState =
+    (newState.payee_locations as Record<string, { fingerprints?: Record<string, string> }> | undefined) ?? {};
+  payeeLocsState[budgetId] = { fingerprints: fingerprintMapToRecord(nextFingerprints) };
+  newState.payee_locations = payeeLocsState;
+  await emit({
+    type: "STATE",
+    stream: "payee_locations",
+    cursor: newState.payee_locations,
+  });
+}
+
+function fingerprintMapToRecord(m: Map<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of m) {
+    out[k] = v;
+  }
+  return out;
 }
 
 async function collectTransactions(ctx: BudgetCtx): Promise<void> {
