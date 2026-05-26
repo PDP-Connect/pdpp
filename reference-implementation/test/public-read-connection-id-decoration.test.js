@@ -145,6 +145,25 @@ test('records list does not emit meta.warnings when only canonical connection_id
   });
 });
 
+test('records list rejects connection_id outside the grant storage binding', async () => {
+  await withDb(async () => {
+    await assert.rejects(
+      () => queryRecords(
+        target(),
+        STREAM,
+        grant,
+        { connection_id: 'cin_other_connection' },
+        manifest,
+      ),
+      (err) => {
+        assert.equal(err.code, 'connection_not_found');
+        assert.equal(err.param, 'connection_id');
+        return true;
+      },
+    );
+  });
+});
+
 // ─── Records list (changes_since branch) ───────────────────────────────────
 
 test('records list changes_since branch decorates each emitted record with connection_id', async () => {
@@ -179,6 +198,41 @@ test('records detail decorates the returned record with connection_id + deprecat
   });
 });
 
+test('records detail emits meta.warnings when the deprecated alias was sent', async () => {
+  await withDb(async () => {
+    const record = await getRecord(
+      target(),
+      STREAM,
+      'rec-1',
+      grant,
+      manifest,
+      { connector_instance_id: INSTANCE_ID },
+    );
+    assert.ok(record.meta);
+    assert.equal(record.meta.warnings[0].code, 'deprecated_alias_used');
+  });
+});
+
+test('records detail rejects connection_id outside the grant storage binding', async () => {
+  await withDb(async () => {
+    await assert.rejects(
+      () => getRecord(
+        target(),
+        STREAM,
+        'rec-1',
+        grant,
+        manifest,
+        { connection_id: 'cin_other_connection' },
+      ),
+      (err) => {
+        assert.equal(err.code, 'connection_not_found');
+        assert.equal(err.param, 'connection_id');
+        return true;
+      },
+    );
+  });
+});
+
 // ─── Records aggregate ──────────────────────────────────────────────────────
 
 test('records aggregate emits meta.warnings when the deprecated alias was sent', async () => {
@@ -207,6 +261,25 @@ test('records aggregate omits meta.warnings when no alias is sent', async () => 
       manifest,
     );
     assert.equal(response.meta, undefined);
+  });
+});
+
+test('records aggregate rejects connection_id outside the grant storage binding', async () => {
+  await withDb(async () => {
+    await assert.rejects(
+      () => aggregateRecords(
+        target(),
+        STREAM,
+        grant,
+        { metric: 'count', connection_id: 'cin_other_connection' },
+        manifest,
+      ),
+      (err) => {
+        assert.equal(err.code, 'connection_not_found');
+        assert.equal(err.param, 'connection_id');
+        return true;
+      },
+    );
   });
 });
 
