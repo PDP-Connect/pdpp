@@ -1,9 +1,11 @@
 import { redirect } from "next/navigation";
 import { shouldAttemptSemanticUplift } from "pdpp-reference-implementation/deployment-diagnostics";
 import { DashboardShell, ServerUnreachable } from "../components/shell.tsx";
+import { WarningsBanner } from "../components/warnings-banner.tsx";
 import { dashboardRoutes } from "../components/views/routes.ts";
 import { type SearchData, SearchView } from "../components/views/search-view.tsx";
 import { ReferenceServerUnreachableError } from "../lib/owner-token.ts";
+import type { CanonicalReadWarning } from "../lib/read-envelope.ts";
 import {
   type GrantSummary,
   getDeploymentDiagnostics,
@@ -68,6 +70,7 @@ interface RecordPage {
   nextCursor: string | null;
   prevStack: string[];
   retrievalNotice: RetrievalNotice | null;
+  warnings: CanonicalReadWarning[];
 }
 
 interface SearchResult {
@@ -230,6 +233,10 @@ async function searchRecords(query: string, cursor: string | null, prevStack: st
         prevStack,
         retrievalNotice: buildRetrievalNotice(semanticIndexState),
         debug,
+        warnings: dedupeWarnings([
+          ...(hybridResult.page.warnings ?? []),
+          ...(lexicalPage.warnings ?? []),
+        ]),
       };
     }
     // Hybrid call failed — fall through to the lexical+semantic blend.
@@ -306,7 +313,30 @@ async function searchRecords(query: string, cursor: string | null, prevStack: st
     prevStack,
     retrievalNotice: buildRetrievalNotice(semanticIndexState),
     debug,
+    warnings: dedupeWarnings([
+      ...(lexicalPage.warnings ?? []),
+      ...(semanticPage?.warnings ?? []),
+    ]),
   };
+}
+
+/**
+ * Collapse multi-source search warnings by `code`+`dropped_parameter` so a
+ * `source_skipped_not_applicable` emitted by both lexical and semantic does
+ * not render twice. Keeps the first message we saw for each unique code.
+ */
+function dedupeWarnings(warnings: CanonicalReadWarning[]): CanonicalReadWarning[] {
+  const seen = new Set<string>();
+  const out: CanonicalReadWarning[] = [];
+  for (const w of warnings) {
+    const key = `${w.code}::${w.dropped_parameter ?? ""}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    out.push(w);
+  }
+  return out;
 }
 
 interface RetrievalDebug {
@@ -447,8 +477,11 @@ export default async function SearchPage({
       }
     : null;
 
+  const searchWarnings = result?.records.warnings ?? [];
+
   return (
     <DashboardShell active="search">
+      <WarningsBanner warnings={searchWarnings} />
       <SearchView
         currentCursor={cursor}
         data={data}

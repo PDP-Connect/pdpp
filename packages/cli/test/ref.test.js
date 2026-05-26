@@ -371,3 +371,96 @@ test('help output mentions reference diagnostics section', async () => {
   assert.match(captured.stdout, /Reference diagnostics/);
   assert.match(captured.stdout, /ref run timeline/);
 });
+
+// ---- canonical envelope warnings (task 6.3) --------------------------------
+//
+// pdpp ref run|grant|trace commands MUST surface canonical `meta.warnings`
+// on stderr without polluting stdout JSON, matching `pdpp ref connectors`.
+
+test('ref run timeline: surfaces meta.warnings on stderr without polluting JSON stdout', async () => {
+  const fetch = mockFetch({
+    'https://ref.test/_ref/runs/run-abc/timeline': {
+      body: {
+        data: [{ event: 'started' }],
+        meta: {
+          warnings: [
+            { code: 'deprecated_alias', message: 'connector_instance_id is deprecated; use connection_id' },
+          ],
+        },
+      },
+    },
+  });
+
+  const captured = capture();
+  const code = await runRefRun(
+    ['timeline', 'run-abc', '--as-url', 'https://ref.test', '--format', 'json'],
+    captured.io,
+    fetch
+  );
+
+  assert.equal(code, 0);
+  const parsed = JSON.parse(captured.stdout);
+  assert.equal(parsed.data.length, 1);
+  assert.match(captured.stderr, /warning: deprecated_alias/);
+  assert.match(captured.stderr, /connector_instance_id is deprecated/);
+});
+
+test('ref grant timeline: surfaces meta.warnings on stderr', async () => {
+  const fetch = mockFetch({
+    'https://ref.test/_ref/grants/grant-1/timeline': {
+      body: {
+        data: [{ event: 'issued' }],
+        meta: { warnings: [{ code: 'partial_results', message: 'one source unavailable' }] },
+      },
+    },
+  });
+
+  const captured = capture();
+  const code = await runRefGrant(
+    ['timeline', 'grant-1', '--as-url', 'https://ref.test', '--format', 'json'],
+    captured.io,
+    fetch
+  );
+
+  assert.equal(code, 0);
+  assert.match(captured.stderr, /warning: partial_results — one source unavailable/);
+});
+
+test('ref trace show: surfaces meta.warnings on stderr', async () => {
+  const fetch = mockFetch({
+    'https://ref.test/_ref/traces/trace-xyz': {
+      body: {
+        data: [{ event: 'request_received' }],
+        meta: { warnings: [{ code: 'count_downgraded', dropped_parameter: 'count=exact' }] },
+      },
+    },
+  });
+
+  const captured = capture();
+  const code = await runRefTrace(
+    ['show', 'trace-xyz', '--as-url', 'https://ref.test', '--format', 'json'],
+    captured.io,
+    fetch
+  );
+
+  assert.equal(code, 0);
+  assert.match(captured.stderr, /warning: count_downgraded/);
+  assert.match(captured.stderr, /\(dropped: count=exact\)/);
+});
+
+test('ref run timeline: emits no stderr noise when meta.warnings is absent', async () => {
+  const fetch = mockFetch({
+    'https://ref.test/_ref/runs/run-abc/timeline': {
+      body: { data: [{ event: 'started' }] },
+    },
+  });
+
+  const captured = capture();
+  await runRefRun(
+    ['timeline', 'run-abc', '--as-url', 'https://ref.test', '--format', 'json'],
+    captured.io,
+    fetch
+  );
+
+  assert.equal(captured.stderr, '');
+});

@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
 import { PageHeader, Section } from "../../../../components/primitives.tsx";
 import { DashboardShell, ServerUnreachable } from "../../../../components/shell.tsx";
+import { WarningsBanner } from "../../../../components/warnings-banner.tsx";
 import { ReferenceServerUnreachableError } from "../../../../lib/owner-token.ts";
 import { getRecord, type StreamRecord } from "../../../../lib/rs-client.ts";
 import { connectorInstanceIdForConnection, resolveConnectionForRecordsRoute } from "../../../connection-route.ts";
@@ -74,6 +75,8 @@ export default async function RecordDetailPage({
         }
         title={<code className="break-all font-mono">{recordId}</code>}
       />
+
+      <WarningsBanner warnings={record.warnings} />
 
       <Section title="Record">
         <pre className="pdpp-caption overflow-x-auto whitespace-pre-wrap break-words rounded-md border border-border/80 bg-muted/30 p-4 font-mono">
