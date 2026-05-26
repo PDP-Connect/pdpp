@@ -65,6 +65,21 @@ const AvailableConnectionSchema = {
   required: ["connection_id", "display_name"],
 };
 
+// Per-stream entry on `GET /v1/schema` advertising one connection the caller
+// may use as a `connection_id` filter on subsequent reads. `display_name` is
+// omitted (not faked) when the owner has never renamed the connection — the
+// runtime treats storage placeholders (`legacy`, `default_account`, the
+// connector id) as absent labels rather than wire content.
+const GrantedConnectionSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    connection_id: ConnectionIdSchema,
+    display_name: ConnectionDisplayNameSchema,
+  },
+  required: ["connection_id"],
+};
+
 const CapabilityFlagSchema = {
   type: "object",
   additionalProperties: false,
@@ -1052,6 +1067,12 @@ const StreamMetadataResponseSchema = {
       },
     },
     freshness: FreshnessSchema,
+    granted_connections: {
+      type: "array",
+      description:
+        "Connections the caller's grant authorizes for this stream under the addressed connector. Clients MAY pass any `connection_id` here on a subsequent read to scope without trial-and-error. Omitted for provider-native sources where connection identity does not apply.",
+      items: GrantedConnectionSchema,
+    },
   },
   required: ["object", "name", "field_capabilities", "expand_capabilities"],
 };

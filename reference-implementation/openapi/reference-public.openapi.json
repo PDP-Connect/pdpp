@@ -4000,6 +4000,29 @@
                                   "required": [
                                     "status"
                                   ]
+                                },
+                                "granted_connections": {
+                                  "type": "array",
+                                  "description": "Connections the caller's grant authorizes for this stream under the addressed connector. Clients MAY pass any `connection_id` here on a subsequent read to scope without trial-and-error. Omitted for provider-native sources where connection identity does not apply.",
+                                  "items": {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "connection_id": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "description": "Canonical public identifier for a connection (one owner-configured account/device/profile). Prefer this over the deprecated `connector_instance_id` alias."
+                                      },
+                                      "display_name": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "description": "Owner-meaningful label for the connection. Never the storage-layer placeholder (`legacy`, `default_account`); falls back to `<connector> · account N` when the owner has not renamed the connection."
+                                      }
+                                    },
+                                    "required": [
+                                      "connection_id"
+                                    ]
+                                  }
                                 }
                               },
                               "required": [
@@ -4941,6 +4964,29 @@
                       "required": [
                         "status"
                       ]
+                    },
+                    "granted_connections": {
+                      "type": "array",
+                      "description": "Connections the caller's grant authorizes for this stream under the addressed connector. Clients MAY pass any `connection_id` here on a subsequent read to scope without trial-and-error. Omitted for provider-native sources where connection identity does not apply.",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "connection_id": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Canonical public identifier for a connection (one owner-configured account/device/profile). Prefer this over the deprecated `connector_instance_id` alias."
+                          },
+                          "display_name": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Owner-meaningful label for the connection. Never the storage-layer placeholder (`legacy`, `default_account`); falls back to `<connector> · account N` when the owner has not renamed the connection."
+                          }
+                        },
+                        "required": [
+                          "connection_id"
+                        ]
+                      }
                     }
                   },
                   "required": [

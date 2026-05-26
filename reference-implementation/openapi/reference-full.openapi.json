@@ -4012,6 +4012,29 @@
                                   "required": [
                                     "status"
                                   ]
+                                },
+                                "granted_connections": {
+                                  "type": "array",
+                                  "description": "Connections the caller's grant authorizes for this stream under the addressed connector. Clients MAY pass any `connection_id` here on a subsequent read to scope without trial-and-error. Omitted for provider-native sources where connection identity does not apply.",
+                                  "items": {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "connection_id": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "description": "Canonical public identifier for a connection (one owner-configured account/device/profile). Prefer this over the deprecated `connector_instance_id` alias."
+                                      },
+                                      "display_name": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "description": "Owner-meaningful label for the connection. Never the storage-layer placeholder (`legacy`, `default_account`); falls back to `<connector> · account N` when the owner has not renamed the connection."
+                                      }
+                                    },
+                                    "required": [
+                                      "connection_id"
+                                    ]
+                                  }
                                 }
                               },
                               "required": [
@@ -4953,6 +4976,29 @@
                       "required": [
                         "status"
                       ]
+                    },
+                    "granted_connections": {
+                      "type": "array",
+                      "description": "Connections the caller's grant authorizes for this stream under the addressed connector. Clients MAY pass any `connection_id` here on a subsequent read to scope without trial-and-error. Omitted for provider-native sources where connection identity does not apply.",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "connection_id": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Canonical public identifier for a connection (one owner-configured account/device/profile). Prefer this over the deprecated `connector_instance_id` alias."
+                          },
+                          "display_name": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Owner-meaningful label for the connection. Never the storage-layer placeholder (`legacy`, `default_account`); falls back to `<connector> · account N` when the owner has not renamed the connection."
+                          }
+                        },
+                        "required": [
+                          "connection_id"
+                        ]
+                      }
                     }
                   },
                   "required": [
@@ -10009,6 +10055,256 @@
                     "error"
                   ]
                 }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "operationId": "refSetConnectionDisplayName",
+        "tags": [
+          "reference",
+          "connections"
+        ],
+        "summary": "Owner-authenticated mutation of the owner-meaningful `display_name` carried on the public read contract. Operator-only surface; grant-authorized tokens SHALL NOT reach this route.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connectorInstanceId",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "properties": {
+                    "object": {
+                      "const": "ref_connection"
+                    },
+                    "connector_instance_id": {
+                      "type": "string"
+                    },
+                    "connector_id": {
+                      "type": "string"
+                    },
+                    "display_name": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "status": {
+                      "type": "string"
+                    },
+                    "source_kind": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "source_binding": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "additionalProperties": true
+                    },
+                    "created_at": {
+                      "type": "string"
+                    },
+                    "updated_at": {
+                      "type": "string"
+                    },
+                    "revoked_at": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "schedule": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "additionalProperties": true
+                    }
+                  },
+                  "required": [
+                    "object",
+                    "connector_instance_id",
+                    "connector_id",
+                    "display_name",
+                    "status",
+                    "source_kind",
+                    "source_binding",
+                    "created_at",
+                    "updated_at",
+                    "revoked_at",
+                    "schedule"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict (e.g. run_already_active)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "display_name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  }
+                },
+                "required": [
+                  "display_name"
+                ]
               }
             }
           }

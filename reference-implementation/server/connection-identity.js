@@ -240,6 +240,45 @@ export async function resolveFanInBindings({
 }
 
 /**
+ * Enumerate the granted connections visible to the caller for a given stream
+ * under one connector. Returns `[{ connection_id, display_name? }, ...]`
+ * ordered by created_at ASC (the listing order from the store).
+ *
+ * Inputs:
+ *   - `ownerSubjectId`: owner subject backing the grant.
+ *   - `connectorId`: connector_id from the storage binding.
+ *   - `grantStreamConnectionId`: per-stream `grant.streams[].connection_id`
+ *     constraint. When set, the result is narrowed to that one binding
+ *     (returns empty when the constraint is no longer active).
+ *
+ * Used by `GET /v1/schema` to advertise the discoverable set of connections
+ * per stream so grant-authorized clients can call subsequent reads with an
+ * explicit `connection_id` without trial-and-error.
+ *
+ * Spec: openspec/changes/canonicalize-public-read-contract/specs/
+ *       reference-implementation-architecture/spec.md
+ *       (#"`/v1/schema` SHALL be the canonical public read capability document")
+ */
+export async function listGrantedConnectionsForStream({
+  ownerSubjectId,
+  connectorId,
+  grantStreamConnectionId = null,
+}) {
+  if (!ownerSubjectId || !connectorId) return [];
+  const active = await listActiveBindingsForGrant({ ownerSubjectId, connectorId });
+  const filtered = grantStreamConnectionId
+    ? active.filter((row) => row.connectorInstanceId === grantStreamConnectionId)
+    : active;
+  return filtered
+    .map((row) => projectBindingForWire({
+      connectorInstanceId: row.connectorInstanceId,
+      connectorId: row.connectorId,
+      displayName: row.displayName,
+    }))
+    .filter(Boolean);
+}
+
+/**
  * Convenience: resolve the request-time `connection_id` (canonical or
  * deprecated alias) and combine with the grant-scope constraint into the
  * final `bindings` list to read from.

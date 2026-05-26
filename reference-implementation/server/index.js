@@ -45,6 +45,7 @@ import {
 import { createBlobStore } from './stores/blob-store.js';
 import {
   AmbiguousConnectionError,
+  listGrantedConnectionsForStream,
   projectBindingForWire,
 } from './connection-identity.js';
 import {
@@ -1868,11 +1869,17 @@ function buildFieldCapabilities(manifestStream, streamGrant = null) {
   );
 }
 
-function buildStreamMetadataEntry({ manifestStream, streamGrant = null, grantStreams = [], freshness = null }) {
+function buildStreamMetadataEntry({
+  manifestStream,
+  streamGrant = null,
+  grantStreams = [],
+  freshness = null,
+  grantedConnections = null,
+}) {
   const expandStreamGrant = streamGrant
     ? { ...streamGrant, grantStreams }
     : null;
-  return {
+  const entry = {
     object: 'stream_metadata',
     name: manifestStream.name,
     semantics: manifestStream.semantics,
@@ -1888,6 +1895,10 @@ function buildStreamMetadataEntry({ manifestStream, streamGrant = null, grantStr
     expand_capabilities: buildExpandCapabilities(manifestStream, expandStreamGrant),
     freshness: freshness ?? buildFreshness(null),
   };
+  if (Array.isArray(grantedConnections)) {
+    entry.granted_connections = grantedConnections;
+  }
+  return entry;
 }
 
 function buildExpandCapabilities(manifestStream, streamGrant = null) {
@@ -1965,7 +1976,7 @@ function buildStreamDiscoverySummary({ connectorId = null, stream, summary = nul
   };
 }
 
-async function buildConnectorSchemaItem({ source, storageBinding, manifest, grant = null }) {
+async function buildConnectorSchemaItem({ source, storageBinding, manifest, grant = null, ownerSubjectId = null }) {
   const connectorId = source?.kind === 'connector' ? source.id : null;
   const streamSummaries = grant
     ? await listStreams(storageBinding, grant, manifest)
@@ -1982,13 +1993,36 @@ async function buildConnectorSchemaItem({ source, storageBinding, manifest, gran
   const grantStreams = grant?.streams || [];
   const freshnessEvidence = await getConnectorFreshnessEvidence({ source, manifest });
 
+  // Look up granted connections once per connector. For polyfill connectors
+  // we batch a single owner+connector store query and reuse the result for
+  // every stream entry, narrowing per-stream by `grant.streams[].connection_id`
+  // when the grant pins a single connection. For provider_native sources we
+  // omit the field — those grants do not address a connection_id.
+  let activeBindings = null;
+  if (connectorId && ownerSubjectId) {
+    activeBindings = await listGrantedConnectionsForStream({
+      ownerSubjectId,
+      connectorId,
+      grantStreamConnectionId: null,
+    });
+  }
+
   const streams = visibleStreams.map((manifestStream) => {
     const lastUpdated = summaryByName.get(manifestStream.name)?.last_updated || null;
+    const streamGrant = grantStreamByName ? grantStreamByName.get(manifestStream.name) || null : null;
+    let grantedConnections = null;
+    if (activeBindings) {
+      const pin = streamGrant?.connection_id || null;
+      grantedConnections = pin
+        ? activeBindings.filter((entry) => entry.connection_id === pin)
+        : activeBindings;
+    }
     return buildStreamMetadataEntry({
       manifestStream,
-      streamGrant: grantStreamByName ? grantStreamByName.get(manifestStream.name) || null : null,
+      streamGrant,
       grantStreams,
       freshness: buildConnectorAwareFreshness(freshnessEvidence, lastUpdated),
+      grantedConnections,
     });
   });
 
@@ -6388,6 +6422,7 @@ function buildRsApp(opts = {}) {
         operationInput = {
           actor: { kind: 'owner', subject_id: tokenInfo.subject_id || null },
         };
+        const ownerSubjectId = ownerSubjectIdForBindings(tokenInfo);
         const nativeManifest = resolveNativeManifest(opts);
         const nativeStorageBinding = resolveNativeStorageBinding(opts);
         if (nativeManifest && nativeStorageBinding) {
@@ -6403,6 +6438,7 @@ function buildRsApp(opts = {}) {
                 source,
                 storageBinding: nativeStorageBinding,
                 manifest: nativeManifest,
+                ownerSubjectId,
               });
               return [item];
             },
@@ -6421,6 +6457,7 @@ function buildRsApp(opts = {}) {
                   source: buildSourceDescriptor({ kind: 'connector', id: connectorId }),
                   storageBinding: { connector_id: connectorId },
                   manifest,
+                  ownerSubjectId,
                 });
               }));
             },
@@ -6440,6 +6477,7 @@ function buildRsApp(opts = {}) {
         const grantResolved = await resolveGrantManifest(tokenInfo, opts);
         const source = grantResolved.source;
         queryContext.sourceDescriptor = source;
+        const ownerSubjectId = ownerSubjectIdForBindings(tokenInfo);
         dependencies = {
           getSourceDescriptor: () => source,
           listConnectorItems: async () => {
@@ -6448,6 +6486,7 @@ function buildRsApp(opts = {}) {
               storageBinding: grantResolved.storageBinding,
               manifest: grantResolved.manifest,
               grant: tokenInfo.grant,
+              ownerSubjectId,
             });
             return [item];
           },

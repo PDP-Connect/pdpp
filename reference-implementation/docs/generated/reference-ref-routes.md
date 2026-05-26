@@ -11,6 +11,7 @@ Generated from `packages/reference-contract/src/reference/`. Reference-designate
 | **GET** | `/_ref/connector-instances` | `refListConnectorInstances` | Compatibility alias for listing configured connector instances behind owner-facing connections. |
 | **GET** | `/_ref/connections/{connectorInstanceId}` | `refGetConnection` | Get one owner-facing configured connector connection by connector instance id. |
 | **GET** | `/_ref/connector-instances/{connectorInstanceId}` | `refGetConnectorInstance` | Compatibility alias for reading one configured connector instance behind an owner-facing connection. |
+| **PATCH** | `/_ref/connections/{connectorInstanceId}` | `refSetConnectionDisplayName` | Owner-authenticated mutation of the owner-meaningful `display_name` carried on the public read contract. Operator-only surface; grant-authorized tokens SHALL NOT reach this route. |
 | **GET** | `/_ref/approvals` | `refListApprovals` | List pending approvals across provider-connect consents and owner-device flows. |
 | **POST** | `/_ref/device-exporters/enrollment-codes` | `refCreateDeviceExporterEnrollmentCode` | Create a short-lived local device exporter enrollment code for an owner-approved connector binding. |
 | **POST** | `/_ref/device-exporters/enroll` | `refExchangeDeviceExporterEnrollmentCode` | Exchange a one-time enrollment code for a device-scoped local exporter credential. |
@@ -160,6 +161,28 @@ Compatibility alias for reading one configured connector instance behind an owne
 ### Path parameters
 
 - `connectorInstanceId` — string
+
+### Responses
+
+- `200` — JSON body
+- `400` — Invalid request
+- `404` — Not found
+- `409` — Conflict (e.g. run_already_active)
+
+## refSetConnectionDisplayName
+
+`PATCH /_ref/connections/{connectorInstanceId}`
+
+Owner-authenticated mutation of the owner-meaningful `display_name` carried on the public read contract. Operator-only surface; grant-authorized tokens SHALL NOT reach this route.
+
+### Path parameters
+
+- `connectorInstanceId` — string
+
+### Request body
+
+`application/json`
+- `display_name` (required) — string
 
 ### Responses
 

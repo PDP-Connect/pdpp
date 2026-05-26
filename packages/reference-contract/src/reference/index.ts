@@ -910,6 +910,29 @@ export const referenceManifests = [
     responses: { 200: { schema: RefConnectionSchema }, ...CommonErrors },
   },
   {
+    id: "refSetConnectionDisplayName",
+    method: "PATCH",
+    path: "/_ref/connections/{connectorInstanceId}",
+    surface: "reference",
+    tags: ["reference", "connections"],
+    summary:
+      "Owner-authenticated mutation of the owner-meaningful `display_name` carried on the public read contract. Operator-only surface; grant-authorized tokens SHALL NOT reach this route.",
+    request: {
+      params: ConnectorInstanceIdParamSchema,
+      body: {
+        schema: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            display_name: { type: "string", minLength: 1, maxLength: 200 },
+          },
+          required: ["display_name"],
+        },
+      },
+    },
+    responses: { 200: { schema: RefConnectionSchema }, ...CommonErrors },
+  },
+  {
     id: "refListApprovals",
     method: "GET",
     path: "/_ref/approvals",

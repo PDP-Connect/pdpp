@@ -103,6 +103,7 @@ const SUPPORTED_AUTHORIZATION_DETAIL_FIELDS = new Set([
 ]);
 const SUPPORTED_STREAM_SELECTION_FIELDS = new Set([
   'client_claims',
+  'connection_id',
   'fields',
   'name',
   'necessity',
@@ -448,6 +449,9 @@ function normalizeStreamSelection(stream = {}) {
     time_range: stream.time_range || undefined,
     resources: Array.isArray(stream.resources) ? stream.resources : undefined,
     client_claims: stream.client_claims || undefined,
+    connection_id: typeof stream.connection_id === 'string' && stream.connection_id
+      ? stream.connection_id
+      : undefined,
   };
 }
 
@@ -816,6 +820,9 @@ function resolveGrantSelection(selection = {}, manifest = {}) {
     }
     if (streamRequest.time_range) resolved.time_range = streamRequest.time_range;
     if (streamRequest.resources) resolved.resources = streamRequest.resources;
+    if (typeof streamRequest.connection_id === 'string' && streamRequest.connection_id) {
+      resolved.connection_id = streamRequest.connection_id;
+    }
     return resolved;
   });
 }
