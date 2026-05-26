@@ -40,9 +40,18 @@ import {
   type LineEmitDeps,
   makeRolloutParseState,
   processRolloutLine,
+  readPriorThreadFingerprints,
   shouldDeferActiveRolloutFile,
+  shouldReemitThreadSession,
 } from "./index.ts";
-import type { RolloutAggregate, RolloutObject, RolloutPayload, ThreadRow } from "./types.ts";
+import type {
+  RolloutAggregate,
+  RolloutObject,
+  RolloutPayload,
+  StartMessage,
+  ThreadFingerprint,
+  ThreadRow,
+} from "./types.ts";
 
 interface RecordingHarness {
   deps: LineEmitDeps;
@@ -391,4 +400,215 @@ test("emitSessionsFromMaps: thread-only and rollout-only sessions both emit; dis
 
   const ids = emitted.filter((r) => r.stream === "sessions").map((r) => r.data.id);
   assert.deepEqual(ids.sort(), ["sess-rollout", "sess-thread"], "both sources contribute one record each");
+});
+
+// ─── Invariant 9: lossy-overwrite repair + churn reduction via fingerprints ──
+//
+// Background: the Codex local-device connector was emitting ~7.7 GB of
+// `function_calls` / `messages` / `sessions` history JSON in Postgres,
+// dominated by `sessions` versioning. Two bugs combined:
+//
+//   (a) `emitSessions` looped every thread row from state_5.sqlite on every
+//       run where state_5.sqlite's mtime had changed (very frequent — Codex
+//       updates threads constantly). With ~1,298 threads, every run wrote a
+//       new history version per thread even when nothing about that thread
+//       had changed.
+//   (b) When state_5 mtime moved but the session's rollout file did not, the
+//       run had no `RolloutAggregate` for that session — so the emitted
+//       `sessions` record got `message_count: null` and `function_call_count:
+//       null`, clobbering the previously-correct counts (observed on
+//       `019d922d-c38b-7e11-ae99-9187af386148`).
+//
+// Fix: a per-thread fingerprint (carried on the `sessions` STATE cursor)
+// gates both behaviors. These tests pin the contract.
+
+test("shouldReemitThreadSession: new session (no prior fingerprint) — emit", () => {
+  assert.equal(shouldReemitThreadSession(makeThreadRow("sess-new"), undefined, undefined), true);
+});
+
+test("shouldReemitThreadSession: this run parsed the rollout — emit (aggregate may have moved counts)", () => {
+  const prior: ThreadFingerprint = { updated_at: 1_700_000_010, message_count: 3, function_call_count: 1 };
+  assert.equal(shouldReemitThreadSession(makeThreadRow("sess-x"), makeAggregate(), prior), true);
+});
+
+test("shouldReemitThreadSession: thread.updated_at moved forward — emit", () => {
+  const prior: ThreadFingerprint = { updated_at: 1_700_000_005, message_count: 3, function_call_count: 1 };
+  // makeThreadRow default updated_at is 1_700_000_010 — strictly greater than prior.
+  assert.equal(shouldReemitThreadSession(makeThreadRow("sess-x"), undefined, prior), true);
+});
+
+test("shouldReemitThreadSession: thread.updated_at unchanged AND no aggregate — SKIP (the churn fix)", () => {
+  const prior: ThreadFingerprint = { updated_at: 1_700_000_010, message_count: 3, function_call_count: 1 };
+  assert.equal(
+    shouldReemitThreadSession(makeThreadRow("sess-x"), undefined, prior),
+    false,
+    "no rollout parsed + same updated_at = nothing changed, don't re-emit"
+  );
+});
+
+test("shouldReemitThreadSession: updated_at moved backward (shouldn't happen, but tolerate) — SKIP", () => {
+  const prior: ThreadFingerprint = { updated_at: 1_700_000_999, message_count: 3, function_call_count: 1 };
+  assert.equal(shouldReemitThreadSession(makeThreadRow("sess-x"), undefined, prior), false);
+});
+
+test("emitSessionsFromMaps: unchanged thread with no aggregate — SKIPS emit but carries fingerprint forward", () => {
+  // Stable-thread scenario: state_5.sqlite mtime changed (some OTHER thread
+  // moved), but this thread's updated_at didn't budge and its rollout file
+  // wasn't parsed this run. Pre-fix behavior: re-emit anyway with null
+  // counts (lossy + churn). Post-fix: skip emit, preserve fingerprint.
+  const { deps, emitted } = makeHarness();
+  const threadsMap = new Map<string, ThreadRow>([["sess-stable", makeThreadRow("sess-stable")]]);
+  const aggs = new Map<string, RolloutAggregate>();
+  const priorFingerprints = new Map<string, ThreadFingerprint>([
+    ["sess-stable", { updated_at: 1_700_000_010, message_count: 42, function_call_count: 7 }],
+  ]);
+  const fingerprintSink = new Map<string, ThreadFingerprint>(priorFingerprints);
+
+  emitSessionsFromMaps({
+    threadsMap,
+    rolloutAggregates: aggs,
+    emitRecord: deps.emitRecord,
+    priorFingerprints,
+    fingerprintSink,
+  });
+
+  const sessions = emitted.filter((r) => r.stream === "sessions");
+  assert.equal(sessions.length, 0, "no churn — unchanged thread skipped");
+  assert.deepEqual(
+    fingerprintSink.get("sess-stable"),
+    { updated_at: 1_700_000_010, message_count: 42, function_call_count: 7 },
+    "fingerprint preserved verbatim for next-run gating"
+  );
+});
+
+test("emitSessionsFromMaps: thread WITH prior counts but no fresh aggregate — preserves counts (no lossy null overwrite)", () => {
+  // The original bug: state_5 mtime moved, this thread's updated_at also
+  // moved (so we DO emit), but no rollout was parsed → agg = undefined →
+  // pre-fix wrote `message_count: null`, clobbering a real prior value.
+  // Post-fix: fall back to prior fingerprint counts.
+  const { deps, emitted } = makeHarness();
+  const threadsMap = new Map<string, ThreadRow>([
+    ["sess-touched", makeThreadRow("sess-touched", { updated_at: 1_700_000_999 /* moved forward */ })],
+  ]);
+  const aggs = new Map<string, RolloutAggregate>();
+  const priorFingerprints = new Map<string, ThreadFingerprint>([
+    ["sess-touched", { updated_at: 1_700_000_010, message_count: 42, function_call_count: 7 }],
+  ]);
+  const fingerprintSink = new Map<string, ThreadFingerprint>(priorFingerprints);
+
+  emitSessionsFromMaps({
+    threadsMap,
+    rolloutAggregates: aggs,
+    emitRecord: deps.emitRecord,
+    priorFingerprints,
+    fingerprintSink,
+  });
+
+  const sessions = emitted.filter((r) => r.stream === "sessions");
+  assert.equal(sessions.length, 1, "thread changed → emit");
+  assert.equal(sessions[0]?.data.message_count, 42, "prior count preserved, not null");
+  assert.equal(sessions[0]?.data.function_call_count, 7, "prior count preserved, not null");
+  // Fingerprint advances updated_at but keeps the counts (still no fresh aggregate).
+  assert.deepEqual(fingerprintSink.get("sess-touched"), {
+    updated_at: 1_700_000_999,
+    message_count: 42,
+    function_call_count: 7,
+  });
+});
+
+test("emitSessionsFromMaps: fresh aggregate beats prior fingerprint counts (real updates win)", () => {
+  // The aggregate IS the source of truth when present — prior fingerprint
+  // is fallback only.
+  const { deps, emitted } = makeHarness();
+  const threadsMap = new Map<string, ThreadRow>([["sess-active", makeThreadRow("sess-active")]]);
+  const aggs = new Map<string, RolloutAggregate>([
+    ["sess-active", makeAggregate({ messageCount: 99, functionCallCount: 11 })],
+  ]);
+  const priorFingerprints = new Map<string, ThreadFingerprint>([
+    ["sess-active", { updated_at: 1_700_000_010, message_count: 42, function_call_count: 7 }],
+  ]);
+  const fingerprintSink = new Map<string, ThreadFingerprint>(priorFingerprints);
+
+  emitSessionsFromMaps({
+    threadsMap,
+    rolloutAggregates: aggs,
+    emitRecord: deps.emitRecord,
+    priorFingerprints,
+    fingerprintSink,
+  });
+
+  const sessions = emitted.filter((r) => r.stream === "sessions");
+  assert.equal(sessions.length, 1);
+  assert.equal(sessions[0]?.data.message_count, 99, "aggregate wins over fingerprint");
+  assert.equal(sessions[0]?.data.function_call_count, 11);
+  assert.deepEqual(fingerprintSink.get("sess-active"), {
+    updated_at: 1_700_000_010,
+    message_count: 99,
+    function_call_count: 11,
+  });
+});
+
+test("emitSessionsFromMaps: first run (no prior fingerprints) — emits everything, populates sink", () => {
+  // Back-compat: existing callers that didn't pass priorFingerprints
+  // continue to behave as before — every thread emits. Sink populates so
+  // the next run can gate properly.
+  const { deps, emitted } = makeHarness();
+  const threadsMap = new Map<string, ThreadRow>([
+    ["sess-1", makeThreadRow("sess-1")],
+    ["sess-2", makeThreadRow("sess-2")],
+  ]);
+  const aggs = new Map<string, RolloutAggregate>([["sess-1", makeAggregate()]]);
+  const fingerprintSink = new Map<string, ThreadFingerprint>();
+
+  emitSessionsFromMaps({
+    threadsMap,
+    rolloutAggregates: aggs,
+    emitRecord: deps.emitRecord,
+    fingerprintSink,
+  });
+
+  const sessions = emitted.filter((r) => r.stream === "sessions");
+  assert.equal(sessions.length, 2, "no prior = emit everything");
+  assert.equal(fingerprintSink.size, 2, "fingerprints captured for next-run gating");
+  assert.equal(fingerprintSink.get("sess-1")?.message_count, 5, "aggregate count captured");
+  assert.equal(fingerprintSink.get("sess-2")?.message_count, null, "no-aggregate thread fingerprint has null count");
+});
+
+test("readPriorThreadFingerprints: tolerates missing state, missing field, and malformed entries", () => {
+  const empty = readPriorThreadFingerprints({ type: "START" });
+  assert.equal(empty.size, 0, "no state at all → empty");
+
+  const noField = readPriorThreadFingerprints({
+    type: "START",
+    state: { sessions: { source_mtime_ms: 123 } },
+  } as StartMessage);
+  assert.equal(noField.size, 0, "no thread_fingerprints field → empty");
+
+  const messy = readPriorThreadFingerprints({
+    type: "START",
+    state: {
+      sessions: {
+        thread_fingerprints: {
+          good: { updated_at: 1, message_count: 2, function_call_count: 3 },
+          bad1: "not-an-object",
+          bad2: null,
+          bad3: { updated_at: "nope", message_count: "no", function_call_count: "way" },
+          partial: { updated_at: 100 },
+        },
+      },
+    },
+  });
+  assert.equal(messy.get("good")?.message_count, 2, "well-formed entry survives");
+  assert.equal(messy.has("bad1"), false, "non-object value dropped");
+  assert.equal(messy.has("bad2"), false, "null value dropped");
+  assert.deepEqual(
+    messy.get("bad3"),
+    { updated_at: null, message_count: null, function_call_count: null },
+    "wrong-typed numeric fields fall back to null (entry not dropped, just neutered)"
+  );
+  assert.deepEqual(
+    messy.get("partial"),
+    { updated_at: 100, message_count: null, function_call_count: null },
+    "missing fields fall back to null"
+  );
 });
