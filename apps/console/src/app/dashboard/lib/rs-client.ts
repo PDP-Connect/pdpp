@@ -18,6 +18,7 @@ import type {
   RefRetainedBytesBreakdown,
 } from "./ref-client.ts";
 import { getOwnerToken, getRsInternalUrl, ReferenceServerUnreachableError } from "./owner-token.ts";
+import { type CanonicalReadWarning, extractReadWarnings } from "./read-envelope.ts";
 import { verifyDashboardSession } from "./verify-session.ts";
 
 export interface StreamSummary {
@@ -28,11 +29,20 @@ export interface StreamSummary {
 }
 
 export interface StreamRecord {
+  connection_id?: string;
   data: Record<string, unknown>;
+  display_name?: string;
   emitted_at: string;
   id: string;
   object: "record";
   stream: string;
+  /**
+   * Canonical `meta.warnings`, surfaced when this record was fetched via a
+   * single-record envelope that carries non-fatal lossiness (e.g. deprecated
+   * alias use). Empty when the response had no warnings or pre-canonical
+   * runtimes returned no `meta` block.
+   */
+  warnings: CanonicalReadWarning[];
 }
 
 export interface RecordsPage {
@@ -40,6 +50,12 @@ export interface RecordsPage {
   has_more: boolean;
   next_cursor?: string;
   object: "list";
+  /**
+   * Canonical `meta.warnings`, surfaced when the runtime emits them on this
+   * list page (e.g. deprecated alias use). Empty when missing or malformed.
+   * Consumers MUST render warnings out-of-band without dropping the data.
+   */
+  warnings: CanonicalReadWarning[];
 }
 
 export interface ConnectorManifest {
@@ -112,13 +128,27 @@ export async function queryRecords(
   stream: string,
   opts: { connectorInstanceId?: string | null; limit?: number; cursor?: string; order?: "asc" | "desc" } = {}
 ): Promise<RecordsPage> {
-  return (await authedFetch(`/v1/streams/${encodeURIComponent(stream)}/records`, {
+  const body = (await authedFetch(`/v1/streams/${encodeURIComponent(stream)}/records`, {
     connector_id: connectorId,
     connector_instance_id: opts.connectorInstanceId,
     limit: opts.limit ?? 50,
     cursor: opts.cursor,
     order: opts.order,
   })) as RecordsPage;
+  const data = Array.isArray(body.data) ? body.data : [];
+  // Single-record envelopes still wear the legacy `{ object: 'record', id, stream, data, emitted_at }`
+  // shape today (canonical task 3.4 is intentionally deferred). The list path
+  // already carries per-record identity decoration when the snapshot has it;
+  // we just defensively normalize `warnings: []` per record so callers can
+  // pass a record through `extractReadWarnings`-shaped surfaces uniformly.
+  return {
+    ...body,
+    data: data.map((record) => ({
+      ...record,
+      warnings: Array.isArray(record.warnings) ? record.warnings : [],
+    })),
+    warnings: extractReadWarnings(body),
+  };
 }
 
 /**
@@ -136,10 +166,17 @@ export async function getRecord(
   recordId: string,
   opts: ConnectionReadOptions = {}
 ): Promise<StreamRecord> {
-  return (await authedFetch(`/v1/streams/${encodeURIComponent(stream)}/records/${encodeURIComponent(recordId)}`, {
-    connector_id: connectorId,
-    connector_instance_id: opts.connectorInstanceId,
-  })) as StreamRecord;
+  const body = (await authedFetch(
+    `/v1/streams/${encodeURIComponent(stream)}/records/${encodeURIComponent(recordId)}`,
+    {
+      connector_id: connectorId,
+      connector_instance_id: opts.connectorInstanceId,
+    }
+  )) as StreamRecord;
+  return {
+    ...body,
+    warnings: extractReadWarnings(body),
+  };
 }
 
 /**
@@ -181,6 +218,12 @@ export interface SearchResultPage {
   next_cursor?: string;
   object: "list";
   url?: string;
+  /**
+   * Canonical `meta.warnings`, surfaced when the runtime emits them on the
+   * search response (e.g. `source_skipped_not_applicable` when a stream
+   * lacks the requested retrieval mode). Empty when missing or malformed.
+   */
+  warnings: CanonicalReadWarning[];
 }
 
 /**
@@ -225,7 +268,8 @@ export async function searchRecordsLexical(
     const body = await res.text();
     throw new Error(`RS /v1/search failed (${res.status}): ${body}`);
   }
-  return (await res.json()) as SearchResultPage;
+  const body = (await res.json()) as SearchResultPage;
+  return { ...body, warnings: extractReadWarnings(body) };
 }
 
 /**
@@ -283,7 +327,8 @@ export async function searchRecordsSemantic(
     const body = await res.text();
     throw new Error(`RS /v1/search/semantic failed (${res.status}): ${body}`);
   }
-  return (await res.json()) as SearchResultPage;
+  const body = (await res.json()) as SearchResultPage;
+  return { ...body, warnings: extractReadWarnings(body) };
 }
 
 /**
@@ -368,7 +413,8 @@ export async function searchRecordsHybrid(
     const body = await res.text();
     throw new Error(`RS /v1/search/hybrid failed (${res.status}): ${body}`);
   }
-  return (await res.json()) as SearchResultPage;
+  const body = (await res.json()) as SearchResultPage;
+  return { ...body, warnings: extractReadWarnings(body) };
 }
 
 export async function listConnectorManifests(): Promise<ConnectorManifest[]> {

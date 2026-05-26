@@ -5,6 +5,7 @@ import { buttonVariants } from "@/components/ui/button.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
 import { PageHeader, Pager } from "../../../components/primitives.tsx";
 import { DashboardShell, ServerUnreachable } from "../../../components/shell.tsx";
+import { WarningsBanner } from "../../../components/warnings-banner.tsx";
 import { ReferenceServerUnreachableError } from "../../../lib/owner-token.ts";
 import {
   computeDefaultColumns,
@@ -112,6 +113,8 @@ export default async function StreamPage({
         count={`page ${trail.length + 1} · ${page.data.length} records`}
         title={<code className="font-mono">{streamName}</code>}
       />
+
+      <WarningsBanner warnings={page.warnings} />
 
       {page.data.length === 0 ? (
         <p className="pdpp-caption text-muted-foreground italic">No records.</p>
