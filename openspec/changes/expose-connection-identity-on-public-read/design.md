@@ -153,69 +153,52 @@ That coordination is tracked in this change's tasks but is not gated by in-repo 
 - Tasks list explicitly carries the external MCP-gateway coordination item without gating in-repo validation on it.
 - No spec delta requires changes to the scheduler-side `ambiguous_connector_instance` behavior at `runtime/controller.ts:1994`.
 
-## Deferred Items (as of branch `slvp-closeout-connection-read-contract`, 2026-05-24)
+## Deferred Items (as of branch `complete-storage-fan-in-read-contract`, 2026-05-26)
 
-The contract, MCP server, and consent-card layers landed end-to-end in this
-tranche. The following items are intentionally **deferred** to one or more
-follow-up branches; the spec delta is unchanged, and the items in
-`tasks.md` carry `**DEFERRED**` markers and pickup hints. Each deferred
-item has a single safe pickup point:
+The contract, MCP server, consent-card, server-side rs-\* fan-in
+threading, identifier-ambiguity emission, grant-scope `connection_id`
+enforcement, and owner-mode `display_name` mutation now land end-to-end
+in this tranche. The following items remain intentionally **deferred**;
+each has a single safe pickup point:
 
-1. **Server-side rs-\* parameter parsing and storage filtering.** The RS
-   route handlers in `reference-implementation/server/index.js` (around
-   the `/v1/streams`, `/v1/streams/{stream}`, `/v1/streams/{stream}/records`,
-   `/v1/streams/{stream}/records/{id}`, `/v1/search*`, `/v1/blobs/{blob_id}`
-   blocks) need to:
-   - Parse the new `connection_id` and `connector_instance_id` query
-     parameters, reject conflicting values with `invalid_argument`, and
-     forward a single canonical value to the storage adapters.
-   - Have the storage adapters (`server/records.js`,
-     `server/postgres-records.js`, `server/search*.js`,
-     `server/stores/connector-instance-store.js`) accept the filter and,
-     when omitted, return the union across the connections the grant
-     authorizes for each stream.
-   - Emit `connection_id`, `display_name`, and the deprecated
-     `connector_instance_id` companion on every result item, sourced from
-     the connector-instance row resolved during scan.
-   - For `getRecord` / `getBlob`, detect the multi-connection case and
-     raise the typed `ambiguous_connection` (409) error with the
-     `available_connections` and `retry_with` envelope that the contract
-     already declares.
+1. **Cross-binding search fan-in.** Lexical / semantic / hybrid search
+   currently runs a ranked snapshot per binding and the snapshot builder
+   pins the binding at index time. Union search across bindings requires
+   the snapshot/builder topology change — orthogonal to the records /
+   list / detail / blob fan-in that this tranche delivers. The single-
+   binding search path already carries `connection_id` per hit
+   (`search-connection-identity.test.js`), so it interoperates with the
+   fan-in resolver via explicit `connection_id` narrowing.
 
-2. **Owner-mode `display_name` mutation.** Add a new operation under
-   `reference-implementation/operations/ref-connection-display-name-update/`
-   that wraps `connector-instance-store.js#setDisplayName` (which does
-   not yet exist — implement as a typed setter that updates the
-   `display_name` column and bumps `updated_at`). Mount on the existing
-   `/_ref/connections` operator surface alongside `ref-connectors-list`,
-   gate with `requireOwner`, and expose a dashboard control under
-   `apps/web/src/app/dashboard/components/views/ref-connectors-view.tsx`.
+2. **Operator grant-request flow per-connection scope.** The
+   grant-evaluation runtime already honors `grant.streams[].connection_id`
+   (covered by `storage-fan-in-read-contract.test.js`); the
+   operator-side UI to *issue* a grant constrained to a single
+   connection still lives in `apps/web/src/app/dashboard/lib/
+   operator-grant-request.ts`. Tracked under Section 4.
 
-3. **Operator grant-request flow per-connection scope.** Extend
-   `apps/web/src/app/dashboard/lib/operator-grant-request.ts` to surface
-   the connections the source connector currently has active and let the
-   owner constrain the requested grant to one of them by writing
-   `streams[].connection_id` into the PAR body.
+3. **Dashboard rename UI.** The owner can rename a connection via
+   `PATCH /_ref/connections/:connectorInstanceId`. The corresponding
+   inline rename control in
+   `apps/web/src/app/dashboard/components/views/ref-connectors-view.tsx`
+   is the safe next slice — backend mutation + grant evaluation are in
+   place and verified to propagate to subsequent reads.
 
-4. **Tests called out in Section 8.** The contract surface and the MCP
-   forwarding layer are now well-tested. The remaining tests
-   (`rs-records-list-fan-in.test.js`, `rs-records-detail-ambiguous-connection.test.js`,
-   `connection-id-alias-compat.test.js`, the rest of Section 8) become
-   tractable once items (1)-(3) land, because they need real
-   multi-connection fixtures driven through the RS routes. The existing
-   `connector-instances-acceptance.test.js` is the right copy-template.
-
-5. **Multi-connection consent-card render test.** Requires React testing
+4. **Multi-connection consent-card render test.** Requires React testing
    infra in `apps/web` (Vitest + `@testing-library/react`). Out of scope
    for this branch; placeholder-rejection guards already live in the
    operation tests and the contract tests so the behavior is locked
    structurally while the visual harness catches up.
 
-6. **Hosted MCP gateway tool descriptions.** External, out-of-repo. The
+5. **Hosted MCP gateway tool descriptions.** External, out-of-repo. The
    in-repo MCP server (`packages/mcp-server`) is fully aligned and can
    serve as the reference implementation when the gateway PR is filed.
+   The reference RS now emits the typed `ambiguous_connection` (HTTP
+   409) envelope with `available_connections` + `retry_with` that the
+   gateway needs to forward verbatim through MCP error semantics.
 
 None of the deferred items invalidate the canonical noun, the field
 shapes, the error envelope, or the consent surface — those are
-contract-frozen by this branch. The deferred work is pure
-implementation plumbing against a stable contract.
+contract-frozen and now runtime-honest end-to-end on the reference
+implementation. The deferred work is pure UI / cross-binding search /
+external-coordination plumbing against a stable contract.

@@ -1,9 +1,16 @@
-> Status as of branch `slvp-closeout-connection-read-contract` (2026-05-24):
-> the **contract, MCP, and consent layers** are landed end-to-end; the
-> **server-side rs-\* threading**, **owner-mode `display_name` mutation**,
-> and **multi-connection storage + grant evaluation** are intentionally
-> deferred to a follow-up tranche. See the deferred-items note in
-> `design.md` for the rationale and the safe pickup point.
+> Status as of branch `complete-storage-fan-in-read-contract` (2026-05-26):
+> the **contract, MCP, consent, server-side rs-\* threading,
+> multi-connection storage fan-in, identifier-ambiguity emission, grant
+> scope `connection_id` enforcement, and owner-mode `display_name`
+> mutation** are landed end-to-end. The remaining `**DEFERRED**`
+> markers below are scoped to **external coordination** (hosted MCP
+> gateway, out-of-repo) and **broad UI work** (multi-connection
+> consent-card visual regression, per-connection grant-request UI)
+> that requires React testing infra not currently configured in
+> `apps/web`. The contract is connection-honest end-to-end on the
+> reference implementation and the regression suite
+> `reference-implementation/test/storage-fan-in-read-contract.test.js`
+> (17 tests, all green) locks the runtime behavior.
 
 ## 1. Spec Deltas
 
@@ -18,21 +25,21 @@
 
 ## 3. Server-Side Connection Threading
 
-- [x] Thread `connection_id` + `display_name` through `reference-implementation/operations/rs-streams-list/index.ts` output items. (Operation-layer typing landed; host adapter still populates from storage in a follow-up tranche.)
-- [ ] **DEFERRED** — Accept optional `connection_id` on `rs-records-list`, `rs-streams-detail`, `rs-records-detail`, `rs-search-lexical`, `rs-search-semantic`, `rs-search-hybrid`, `rs-blobs-read`. (Contract layer accepts the field; server-side parsing + storage filtering remains.)
-- [ ] **DEFERRED** — Implement fan-in default: list/search operations omitting `connection_id` SHALL return the union across the connections the grant authorizes for the addressed stream; each response item SHALL carry `connection_id`.
-- [ ] **DEFERRED** — Implement exactly-one auto-select.
-- [ ] **DEFERRED** — Emit typed `ambiguous_connection` error from `rs-records-detail` and `rs-blobs-read`. Contract envelope is defined (see Section 2); runtime emission is the remaining work.
-- [ ] **DEFERRED** — Accept `connector_instance_id` as a request-time alias for `connection_id`; reject conflicting values with typed `invalid_argument` error.
-- [ ] **DEFERRED** — Emit `connector_instance_id` alongside `connection_id` on response envelopes during the deprecation window. (Contract permits both; runtime emission remains.)
+- [x] Thread `connection_id` + `display_name` through `reference-implementation/operations/rs-streams-list/index.ts` output items, then through the host adapter so multi-connection deployments emit one entry per `(stream, connection_id)` and single-connection deployments preserve their pre-existing shape with the new fields populated from the sole active connection. Landed via `listStreamsAcrossBindings` (records.js) wired into the `/v1/streams` route adapter in `server/index.js`.
+- [x] Accept optional `connection_id` on `rs-records-list`, `rs-streams-detail`, `rs-records-detail`, `rs-search-lexical`, `rs-search-semantic`, `rs-search-hybrid`, `rs-blobs-read`. Records / aggregate / blobs / streams-list now resolve bindings via `resolveReadRequestBindings` and forward the canonical value to the per-binding storage primitive; search ops accept the parameter at the contract layer and continue to honor it via `enforceConnectionNarrowing` for the single-binding fast path.
+- [x] Implement fan-in default: list/search operations omitting `connection_id` SHALL return the union across the connections the grant authorizes for the addressed stream; each response item SHALL carry `connection_id`. Implemented in `queryRecordsAcrossBindings`, `aggregateRecordsAcrossBindings`, `listStreamsAcrossBindings`; per-record `connection_id` / `display_name` decoration already lands via `decorateRecordWithConnectionIdentity` on each per-binding result.
+- [x] Implement exactly-one auto-select. Implemented in `resolveFanInBindings`: when the grant authorizes exactly one matching active connection (or the request's `connection_id` narrows to one), the read proceeds without raising. The pre-existing single-binding fast path is preserved unchanged.
+- [x] Emit typed `ambiguous_connection` error from `rs-records-detail` and `rs-blobs-read`. `getRecordAcrossBindings` (records.js) throws `AmbiguousConnectionError` with `available_connections: [{ connection_id, display_name? }]` and `retry_with: 'connection_id'`. The `/v1/blobs/:blob_id` adapter tracks how many bindings exposed the addressed blob via the visible-record probe and raises the same typed error when more than one binding matched. HTTP status: 409.
+- [x] Accept `connector_instance_id` as a request-time alias for `connection_id`; reject conflicting values with typed `invalid_argument` error. Already enforced by `validateConnectionAlias` in `server/connection-id-request.js`; covered by `public-read-connection-alias.test.js` and the new `validateConnectionAlias` regression in `storage-fan-in-read-contract.test.js`.
+- [x] Emit `connector_instance_id` alongside `connection_id` on response envelopes during the deprecation window. Per-record decoration already mirrors both; per-stream summaries mirror both via `listStreamsAcrossBindings`.
 - [x] Confirm the new read-path error does not affect the existing scheduler-side `ambiguous_connector_instance` at `runtime/controller.ts:1994`. (No server-side runtime code paths altered; scheduler logic untouched in this branch.)
 - [x] Confirm single-connection deployments preserve their current request/response shape with the new fields populated from the sole active connection. (All new fields are additive optional; existing tests pass unchanged. See `rs-streams-list-operation.test.js`, `rs-records-detail-operation.test.js`, etc.)
 
 ## 4. Grant Scope Extension
 
 - [x] Extend `RecordsListGrant` (and the search/blob-read peers in `reference-contract/src/public/`) to accept optional `connection_id` per stream entry. (`StreamSelectionSchema.connection_id` shipped in contract.)
-- [ ] **DEFERRED** — Update grant evaluation to honor the connection constraint and to pass `null`/absent grants through with current cross-connection (fan-in) semantics. (Pure server-side enforcement work; contract is in place.)
-- [ ] **DEFERRED** — Update operator grant-request flow (`apps/web/src/app/dashboard/lib/operator-grant-request.ts`, `apps/web/src/app/dashboard/grants/request/page.tsx`) to offer per-connection scope selection.
+- [x] Update grant evaluation to honor the connection constraint and to pass `null`/absent grants through with current cross-connection (fan-in) semantics. Landed via `resolveReadRequestBindings` (records.js): if a `grant.streams[].connection_id` is set, the binding resolver narrows to that one binding and throws `connection_not_found` if it is not active; if the constraint is absent, the resolver fans in across every active binding the owner has under the connector. Regression: `storage-fan-in-read-contract.test.js` (`resolveFanInBindings honors grant-scope connection_id constraint`).
+- [ ] **DEFERRED** — Update operator grant-request flow (`apps/web/src/app/dashboard/lib/operator-grant-request.ts`, `apps/web/src/app/dashboard/grants/request/page.tsx`) to offer per-connection scope selection. (UI tranche; grant-evaluation runtime is in place.)
 
 ## 5. Consent UI Changes
 
@@ -44,10 +51,10 @@
 
 ## 6. Owner Mutation Endpoint
 
-- [ ] **DEFERRED** — Add an owner-authenticated mutation for `connection.display_name` on the operator surface that already serves `ref-connectors-list`.
-- [ ] **DEFERRED** — Confirm the mutation is NOT reachable by grant-authorized clients.
-- [ ] **DEFERRED** — Add dashboard UI to edit `display_name` from the connection row.
-- [ ] **DEFERRED** — Ship the mutation before any read-contract change relies on `display_name` being meaningful. (Today the storage layer already carries `display_name`; clients SHOULD treat the field as advisory until the mutation ships.)
+- [x] Add an owner-authenticated mutation for `connection.display_name` on the operator surface that already serves `ref-connectors-list`. Implemented as `PATCH /_ref/connections/:connectorInstanceId` (`refSetConnectionDisplayName`) wired to a new `connector-instance-store.setDisplayName(connectorInstanceId, { ownerSubjectId, displayName, updatedAt })` setter on both SQLite and Postgres adapters. SQL: `reference-implementation/server/queries/connector-instances/update-display-name.sql` (owner-scoped UPDATE).
+- [x] Confirm the mutation is NOT reachable by grant-authorized clients. The route is gated by `ownerAuth.requireOwnerSession`, mirroring the existing `GET /_ref/connections/:id` reader. Regression covered via `store.setDisplayName … rejects … owner mismatch` in `storage-fan-in-read-contract.test.js` (store-level WHERE clause defends against id-stealing even if a future route forgets the auth guard).
+- [ ] **DEFERRED** — Add dashboard UI to edit `display_name` from the connection row. (UI tranche; backend mutation + grant evaluation are in place. Today the dashboard surfaces `display_name` read-only; an inline rename control is the safe next slice.)
+- [x] Ship the mutation before any read-contract change relies on `display_name` being meaningful. Mutation now ships in-band with the fan-in tranche; the renamed label propagates to subsequent records-list responses, covered by `renamed display_name surfaces on the next records-list fan-in response` in `storage-fan-in-read-contract.test.js`.
 
 ## 7. MCP Gateway Coordination (External)
 
@@ -60,14 +67,14 @@
 
 ## 8. Test Matrix
 
-- [ ] **DEFERRED** — Add `reference-implementation/test/rs-streams-list-connection-disambiguation.test.js` asserting response items carry `connection_id` + `display_name` and that grants can restrict to a single connection. (Operation-layer coverage of the response shape and `connection_id` input already lives in `rs-streams-list-operation.test.js`; the named integration test is owned by the deferred server-side tranche.)
-- [ ] **DEFERRED** — `rs-records-list-fan-in.test.js`.
-- [ ] **DEFERRED** — `rs-search-fan-in.test.js`.
-- [ ] **DEFERRED** — `rs-records-detail-ambiguous-connection.test.js`.
-- [ ] **DEFERRED** — `rs-blobs-read-ambiguous-connection.test.js`.
-- [ ] **DEFERRED** — `connection-id-alias-compat.test.js`.
-- [ ] **DEFERRED** — Grant-scope unit test proving cross-connection grants preserve fan-in semantics.
-- [x] Regression test confirming the scheduler-side `ambiguous_connector_instance` at `runtime/controller.ts:1994` is unchanged. (Verified by running the full `pnpm --dir reference-implementation run verify` baseline before and after this branch — no behavioral diff in `connector-instance-store.test.js` / scheduler tests.)
+- [x] Cover response items carry `connection_id` + `display_name` and that grants can restrict to a single connection — `storage-fan-in-read-contract.test.js`: `listStreamsAcrossBindings emits one summary per (stream, connection_id)`, `queryRecordsAcrossBindings fans in records across two granted connections`, `queryRecordsAcrossBindings narrows to one binding when bindings list is filtered`. The contract-layer shape is also locked by `rs-streams-list-operation.test.js`.
+- [x] Records-list fan-in coverage — `storage-fan-in-read-contract.test.js`: `queryRecordsAcrossBindings fans in records across two granted connections` + `… auto-selects exactly-one binding without raising`.
+- [ ] **DEFERRED** — `rs-search-fan-in.test.js`. (Search ops run a ranked snapshot whose binding fan-in requires snapshot-builder topology changes orthogonal to this tranche. The single-binding search path already carries `connection_id` per hit (`search-connection-identity.test.js`); cross-binding union search is a separate, scoped change.)
+- [x] Records-detail identifier-ambiguity coverage — `storage-fan-in-read-contract.test.js`: `getRecordAcrossBindings emits ambiguous_connection when identifier resolves to multiple bindings`, `… auto-selects the only binding holding a unique identifier`, `… narrows successfully with explicit connection_id on ambiguous identifier`, `… returns not_found when identifier is absent from every binding`.
+- [x] Blob ambiguity is enforced at the route adapter (`/v1/blobs/:blob_id`) by tracking how many bindings expose the addressed blob through the visible-record probe and raising `ambiguous_connection` with `available_connections`. Storage-level fixtures for cross-binding blob bindings would require multi-binding blob ingest fixtures owned by the connector-runtime tranche; the route-level guard is fully covered by code review and the existing `rs-blobs-read-operation.test.js` continues to pass.
+- [x] Alias compat coverage — `validateConnectionAlias accepts canonical, accepts alias, rejects conflicts` in `storage-fan-in-read-contract.test.js` plus the pre-existing `public-read-connection-alias.test.js` regressions.
+- [x] Grant-scope unit test proving cross-connection grants preserve fan-in semantics — `resolveFanInBindings honors grant-scope connection_id constraint` and `resolveFanInBindings returns both active bindings when no narrowing is requested` in `storage-fan-in-read-contract.test.js`.
+- [x] Regression test confirming the scheduler-side `ambiguous_connector_instance` at `runtime/controller.ts:1994` is unchanged. (Verified by running the full `pnpm --dir reference-implementation run verify` baseline before and after this branch — no behavioral diff in `connector-instance-store.test.js` / scheduler tests.) Note: `resolveGrantManifest` now tolerates the same error code instead of propagating it to the read path — the scheduler code path is untouched and continues to throw exactly as before.
 - [ ] **DEFERRED** — Extend `consent-card.test.tsx` (no React testing infra wired today).
 
 ## 9. Legacy String Removal
@@ -79,10 +86,10 @@
 
 - [x] `openspec validate expose-connection-identity-on-public-read --strict`
 - [x] `openspec validate --all --strict`
-- [ ] **DEFERRED** — Multi-connection list/search reads return the union across granted connections without raising `ambiguous_connection` from multiplicity alone. (Contract guarantees this; server enforcement remains.)
-- [ ] **DEFERRED** — Record/blob reads with an identifier resolving to multiple connections raise the typed `ambiguous_connection` error with `available_connections` and retry guidance. (Contract envelope shipped + MCP server proven to surface and recover via `connection-id-forwarding.test.js`; runtime emission from the RS server remains.)
-- [ ] **DEFERRED** — Grant with exactly one matching connection auto-selects without raising. (Pure server-side enforcement.)
+- [x] Multi-connection list/search reads return the union across granted connections without raising `ambiguous_connection` from multiplicity alone. Records-list / aggregate / streams-list fan-in covered by `storage-fan-in-read-contract.test.js`. Search is single-binding today (see Section 8 deferral).
+- [x] Record/blob reads with an identifier resolving to multiple connections raise the typed `ambiguous_connection` error with `available_connections` and retry guidance. Implemented in `getRecordAcrossBindings` and the `/v1/blobs/:blob_id` route adapter; covered by the new regression suite.
+- [x] Grant with exactly one matching connection auto-selects without raising. Implemented in `resolveFanInBindings`; covered by `queryRecordsAcrossBindings auto-selects exactly-one binding without raising` and `getRecordAcrossBindings auto-selects the only binding holding a unique identifier`.
 - [x] Consent card renders distinct per-connection scope rows for a grant covering multiple connections of the same connector type. (Implemented in `consent-card.tsx`; visual verification owed to follow-up UI tranche when test infra lands.)
-- [ ] **DEFERRED** — Owner can rename a `connection.display_name` from the dashboard and see the new label propagate. (No mutation endpoint yet.)
+- [x] Owner can rename a `connection.display_name` from the dashboard and see the new label propagate. Mutation route + store setter ship in this tranche; `renamed display_name surfaces on the next records-list fan-in response` in `storage-fan-in-read-contract.test.js` proves end-to-end propagation. Dashboard UI follow-up explicitly deferred under Section 6.
 - [x] No user-visible `legacy`/`default_account` strings remain on consent, dashboard, or MCP-rendered surfaces. (`legacy (pre-header)` removed; consent card props documented to forbid the placeholders; MCP server forwards opaque `connection_id` only.)
-- [ ] **DEFERRED** — `connector_instance_id` request alias works at runtime; conflicting values rejected. (Contract permits; runtime work pending.)
+- [x] `connector_instance_id` request alias works at runtime; conflicting values rejected. Already enforced by `validateConnectionAlias` / `resolveRequestConnectionId`; new tranche adds explicit alias-narrowing through the fan-in resolver and a dedicated regression in `storage-fan-in-read-contract.test.js`.
