@@ -50,6 +50,7 @@ import {
   postgresQuery,
   resolveStorageBackend,
 } from '../server/postgres-storage.js';
+import { makeDefaultAccountConnectorInstanceId } from '../server/stores/connector-instance-store.js';
 import {
   shouldAutoReconcilePolyfillManifests,
   startServer,
@@ -854,6 +855,7 @@ if (!POSTGRES_URL) {
   test('postgres records list honors canonical sort and graded count', async () => {
     const suffix = `${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
     const connectorId = `pg_canonical_${suffix}`;
+    const connectorInstanceId = makeDefaultAccountConnectorInstanceId('owner_local', connectorId);
     const stream = 'events';
     const grant = {
       streams: [{ name: stream, fields: ['id', 'title', 'created_at'] }],
@@ -898,6 +900,59 @@ if (!POSTGRES_URL) {
       for (const data of items) {
         await ingestRecord(connectorId, { stream, key: data.id, data });
       }
+
+      const canonicalConnection = await queryRecords(connectorId, stream, grant, {
+        connection_id: connectorInstanceId,
+        order: 'asc',
+      }, manifest);
+      assert.deepEqual(
+        canonicalConnection.data.map((row) => row.id),
+        ['a', 'b', 'c'],
+        'Postgres records list must accept the canonical connection_id for the bound storage',
+      );
+      assert.equal(
+        canonicalConnection.meta?.warnings,
+        undefined,
+        'canonical connection_id must not emit a deprecated-alias warning',
+      );
+
+      const deprecatedAlias = await queryRecords(connectorId, stream, grant, {
+        connector_instance_id: connectorInstanceId,
+        order: 'asc',
+      }, manifest);
+      assert.equal(
+        deprecatedAlias.meta?.warnings?.[0]?.code,
+        'deprecated_alias_used',
+        'Postgres records list must warn when the deprecated alias is used',
+      );
+
+      await assert.rejects(
+        () => queryRecords(connectorId, stream, grant, {
+          connection_id: 'cin_other_connection',
+        }, manifest),
+        (err) => {
+          assert.equal(err.code, 'connection_not_found');
+          assert.equal(err.param, 'connection_id');
+          return true;
+        },
+        'Postgres records list must reject a connection_id outside the grant storage binding',
+      );
+
+      const recordWithAlias = await getRecord(connectorId, stream, 'a', grant, manifest, {
+        connector_instance_id: connectorInstanceId,
+      });
+      assert.equal(recordWithAlias.meta?.warnings?.[0]?.code, 'deprecated_alias_used');
+      await assert.rejects(
+        () => getRecord(connectorId, stream, 'a', grant, manifest, {
+          connection_id: 'cin_other_connection',
+        }),
+        (err) => {
+          assert.equal(err.code, 'connection_not_found');
+          assert.equal(err.param, 'connection_id');
+          return true;
+        },
+        'Postgres records detail must reject a connection_id outside the grant storage binding',
+      );
 
       // sort=-created_at MUST return rows in DESC order.
       const desc = await queryRecords(connectorId, stream, grant, {

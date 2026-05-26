@@ -142,3 +142,40 @@ export function projectStorageDisplayName(displayName, { connectorId = null, con
   if (connectorInstanceId && trimmed === connectorInstanceId) return null;
   return trimmed;
 }
+
+/**
+ * Enforce `connection_id` narrowing against the grant's resolved storage
+ * binding. The reference runtime today pins one storage binding per grant,
+ * so a request that supplies a `connection_id` (canonical) or the deprecated
+ * `connector_instance_id` alias MUST address that binding; anything else
+ * would be a silent zero-result no-op. Throws a typed `connection_not_found`
+ * error when the requested identity does not address the bound storage.
+ *
+ * The deprecated alias is honored for compatibility — equality with the
+ * canonical binding identifier is the contract; the canonical
+ * `deprecated_alias_used` warning is still emitted by
+ * `resolveRequestConnectionId`.
+ *
+ * Spec: openspec/changes/canonicalize-public-read-contract/specs/
+ *       reference-implementation-architecture/spec.md
+ *       (#"Public read parameters SHALL be strictly validated")
+ *       (#"Public record identity SHALL be connection-scoped")
+ */
+export function enforceConnectionNarrowing(requestParams, boundConnectorInstanceId) {
+  const { connectionId } = resolveRequestConnectionId(requestParams);
+  if (connectionId == null) return;
+  if (typeof boundConnectorInstanceId !== 'string' || !boundConnectorInstanceId) {
+    const err = new Error('connection_id is not addressable under this grant.');
+    err.code = 'connection_not_found';
+    err.param = 'connection_id';
+    throw err;
+  }
+  if (connectionId !== boundConnectorInstanceId) {
+    const err = new Error(
+      `connection_id '${connectionId}' is not addressable under this grant.`,
+    );
+    err.code = 'connection_not_found';
+    err.param = 'connection_id';
+    throw err;
+  }
+}

@@ -17,6 +17,7 @@ import {
 } from './stores/connector-instance-store.js';
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from './owner-auth.ts';
 import {
+  enforceConnectionNarrowing,
   projectStorageDisplayName,
   resolveRequestConnectionId,
 } from './connection-id-request.js';
@@ -570,6 +571,7 @@ export async function postgresQueryRecords(storageTarget, stream, grant, request
   const order = orderDirection === 'ASC' ? 'asc' : 'desc';
   const limit = parseLimit(requestParams.limit);
   const { warnings: requestWarnings } = resolveRequestConnectionId(requestParams);
+  enforceConnectionNarrowing(requestParams, connectorInstanceId);
   const identity = await resolveRecordIdentityForBinding(connectorInstanceId, connectorId);
 
   if (requestParams.changes_since != null) {
@@ -745,12 +747,14 @@ function attachRequestWarningsToResponse(response, warnings) {
   };
 }
 
-export async function postgresGetRecord(storageTarget, stream, recordId, grant, manifest = null) {
+export async function postgresGetRecord(storageTarget, stream, recordId, grant, manifest = null, requestParams = {}) {
   const connectorId = resolveStorageConnectorId(storageTarget);
   const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
   const streamGrant = getStreamGrant(grant, stream);
   const manifestStream = getManifestStream(manifest, stream);
   const fields = fieldsFor(streamGrant, null, requiredFieldsFor(manifestStream));
+  const { warnings: requestWarnings } = resolveRequestConnectionId(requestParams);
+  enforceConnectionNarrowing(requestParams, connectorInstanceId);
   const result = await postgresQuery(
     `SELECT record_key, record_json, emitted_at
      FROM records
@@ -764,7 +768,9 @@ export async function postgresGetRecord(storageTarget, stream, recordId, grant, 
     throw err;
   }
   const identity = await resolveRecordIdentityForBinding(connectorInstanceId, connectorId);
-  return responseRecord({ stream, row, fields, identity });
+  const response = responseRecord({ stream, row, fields, identity });
+  attachRequestWarningsToResponse(response, requestWarnings);
+  return response;
 }
 
 export async function postgresListAllStreams(storageTarget) {

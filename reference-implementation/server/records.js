@@ -57,6 +57,7 @@ import {
 } from './retained-size-read-model.js';
 import {
   CONNECTION_ALIAS_DEPRECATED_WARNING_CODE,
+  enforceConnectionNarrowing,
   projectStorageDisplayName,
   resolveRequestConnectionId,
   validateConnectionAlias as validateConnectionAliasShared,
@@ -1867,6 +1868,11 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
   const resolvedSort = validateTopLevelQueryParams(requestParams, mStream);
   const order = resolveListOrder(requestParams.order, resolvedSort);
   const { warnings: requestWarnings } = resolveRequestConnectionId(requestParams);
+  // Public-read contract: a `connection_id` (or deprecated alias) that does
+  // not address this grant's bound storage MUST be a typed error, never a
+  // silent zero-result narrowing. Today the reference runtime pins one
+  // binding per grant, so any other value is unaddressable.
+  enforceConnectionNarrowing(requestParams, connectorInstanceId);
 
   // Resolve the canonical record identity once for this request. When the
   // runtime can pin (connector_instance_id, display_name) from the store
@@ -2240,6 +2246,7 @@ export async function aggregateRecords(storageTarget, stream, grant, requestPara
 
   const aggregateRequest = normalizeAggregateRequest(requestParams, streamGrant, manifestStream);
   const { warnings: requestWarnings } = resolveRequestConnectionId(requestParams);
+  enforceConnectionNarrowing(requestParams, connectorInstanceId);
   const compiledFilters = compileRequestFilters(requestParams.filter, streamGrant, manifestStream);
   const effective = buildEffectiveFilter(streamGrant, {});
   const consentTimeField = manifestStream?.consent_time_field || null;
@@ -2345,6 +2352,9 @@ export async function getRecord(storageTarget, stream, recordId, grant, manifest
     throw err;
   }
 
+  const { warnings: requestWarnings } = resolveRequestConnectionId(requestParams);
+  enforceConnectionNarrowing(requestParams, connectorInstanceId);
+
   const row = getOne(
     referenceQueries.recordsGetLiveRecordByKey,
     [connectorInstanceId, stream, recordId],
@@ -2405,6 +2415,7 @@ export async function getRecord(storageTarget, stream, recordId, grant, manifest
     childIdentity: recordIdentity,
   });
 
+  attachRequestWarningsToResponse(responseRow.responseRecord, requestWarnings);
   return responseRow.responseRecord;
 }
 
