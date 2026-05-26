@@ -41,6 +41,7 @@ Generated from `packages/reference-contract/src/reference/`. Reference-designate
 | **POST** | `/_ref/dataset/summary/reconcile` | `refDatasetSummaryReconcile` | Owner-triggered reconciliation of dirty dataset-summary record-time bounds from durable reference state. |
 | **GET** | `/_ref/dataset/size` | `refDatasetSize` | Projection-backed retained logical bytes by finite dataset grain. |
 | **GET** | `/_ref/dataset/top` | `refDatasetTop` | Bounded retained-size heavy hitters for owner dataset introspection. |
+| **GET** | `/_ref/records/version-stats` | `refRecordsVersionStats` | Projection-backed record-version churn stats for owner diagnostics. |
 | **POST** | `/_ref/dataset/size/rebuild` | `refDatasetSizeRebuild` | Owner-triggered rebuild of retained-size projection rows from durable reference state. |
 | **POST** | `/_ref/dataset/size/reconcile` | `refDatasetSizeReconcile` | Owner-triggered reconciliation of dirty retained-size projection rows from durable reference state. |
 
@@ -728,6 +729,26 @@ Bounded retained-size heavy hitters for owner dataset introspection.
 - `scope` — enum `connection | stream | record | blob`
 - `measure` — enum `total_retained_bytes | current_record_json_bytes | record_history_json_bytes | blob_bytes | record_count | record_history_count | blob_count`
 - `limit` — integer · min: 1 · max: 25
+
+### Responses
+
+- `200` — JSON body
+- `400` — Invalid request
+- `404` — Not found
+- `409` — Conflict (e.g. run_already_active)
+
+## refRecordsVersionStats
+
+`GET /_ref/records/version-stats`
+
+Projection-backed record-version churn stats for owner diagnostics.
+
+### Query parameters
+
+- `connector_instance_id` — string
+- `stream` — string
+- `risk` — enum `normal | watch | high`
+- `limit` — integer · min: 1 · max: 500
 
 ### Responses
 

@@ -6,8 +6,10 @@ import { liveDashboardDataSource } from "../lib/data-source.ts";
 import { ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import {
   listDeviceExporterSourceInstances,
+  listRecordVersionStats,
   type RefConnectorRunSummary,
   type RefConnectorSummary,
+  type RefRecordVersionStatsRow,
 } from "../lib/ref-client.ts";
 import type { ConnectorOverview } from "../lib/rs-client.ts";
 import { RecordsPagePoller } from "./records-page-poller.tsx";
@@ -62,6 +64,7 @@ function toConnectorOverview(summary: RefConnectorSummary): ConnectorOverview {
 
 export default async function RecordsIndexPage() {
   let overviews: ConnectorOverview[];
+  let versionChurnRows: RefRecordVersionStatsRow[] = [];
   // Aggregate `records_pending` across all enrolled local device source
   // instances. The records list otherwise only shows retained-on-server
   // totals, which implies completeness when a local collector still has
@@ -72,6 +75,12 @@ export default async function RecordsIndexPage() {
   try {
     const response = await liveDashboardDataSource.listConnectorSummaries();
     overviews = response.data.map(toConnectorOverview);
+    try {
+      const churn = await listRecordVersionStats({ limit: 8 });
+      versionChurnRows = churn.data.filter((row) => row.risk_level !== "normal");
+    } catch {
+      versionChurnRows = [];
+    }
     try {
       const sources = await listDeviceExporterSourceInstances();
       pendingOnDevices = sources.data.reduce(
@@ -106,6 +115,7 @@ export default async function RecordsIndexPage() {
         pendingOnDevices={pendingOnDevices}
         pollerSlot={<RecordsPagePoller enabled={runningCount > 0} />}
         routes={dashboardRoutes}
+        versionChurnRows={versionChurnRows}
       />
     </DashboardShell>
   );

@@ -254,6 +254,51 @@ export interface RefRetainedBytesBreakdown {
   total_bytes: number;
 }
 
+export type RefRecordVersionRisk = "high" | "normal" | "watch";
+
+export interface RefRecordVersionStatsRow {
+  connector_id: string | null;
+  connector_instance_id: string;
+  current_record_count: number;
+  display_name: string | null;
+  last_current_at: string | null;
+  last_history_at: string | null;
+  projection_dirty: boolean;
+  record_history_count: number;
+  risk_level: RefRecordVersionRisk;
+  risk_reasons: string[];
+  stream: string;
+  versions_per_record: number;
+}
+
+export interface RefRecordVersionStatsEnvelope {
+  data: RefRecordVersionStatsRow[];
+  meta: {
+    filters: {
+      connector_instance_id: string | null;
+      risk: RefRecordVersionRisk | null;
+      stream: string | null;
+    };
+    has_more: boolean;
+    limit: number;
+    risk_thresholds: {
+      high_history_count: number;
+      high_history_versions_per_record: number;
+      high_versions_per_record: number;
+      watch_versions_per_record: number;
+    };
+    returned: number;
+    source: "retained_size_projection";
+    total_matching: number;
+  };
+  object: "ref_record_version_stats";
+  projection: {
+    computed_at: string | null;
+    dirty: boolean;
+    metadata: Record<string, unknown> | null;
+  };
+}
+
 export interface RefConnectorSummary {
   connection_health: RefConnectionHealthSnapshot;
   connection_id: string;
@@ -540,6 +585,20 @@ export async function listWebPushSubscriptions(): Promise<ListResponse<WebPushSu
 
 export async function listConnectorSummaries(): Promise<ListResponse<RefConnectorSummary>> {
   return (await refFetch("/_ref/connectors")) as ListResponse<RefConnectorSummary>;
+}
+
+export async function listRecordVersionStats(opts: {
+  connectorInstanceId?: string;
+  limit?: number;
+  risk?: RefRecordVersionRisk;
+  stream?: string;
+} = {}): Promise<RefRecordVersionStatsEnvelope> {
+  return (await refFetch("/_ref/records/version-stats", {
+    connector_instance_id: opts.connectorInstanceId,
+    limit: opts.limit,
+    risk: opts.risk,
+    stream: opts.stream,
+  })) as RefRecordVersionStatsEnvelope;
 }
 
 export async function listSchedules(): Promise<ListResponse<RefSchedule>> {

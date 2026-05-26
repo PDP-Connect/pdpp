@@ -16,6 +16,7 @@ import type { ReactNode } from "react";
 import { buttonVariants } from "@/components/ui/button.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
 import { shouldShowInPrimaryConnections } from "../../lib/records-list-classification.ts";
+import type { RefRecordVersionStatsRow } from "../../lib/ref-client.ts";
 import type { ConnectorOverview, ConnectorRunRef } from "../../lib/rs-client.ts";
 import { ConnectorRow } from "../../records/connector-row.tsx";
 import { DataList, PageHeader, Section } from "../primitives.tsx";
@@ -50,6 +51,7 @@ export function RecordsListView({
   interactive,
   pendingOnDevices,
   pollerSlot,
+  versionChurnRows,
   now: nowOverride,
 }: {
   overviews: ConnectorOverview[];
@@ -67,6 +69,8 @@ export function RecordsListView({
   pendingOnDevices?: number;
   /** Optional client-side poller; live dashboard injects RecordsPagePoller. */
   pollerSlot?: ReactNode;
+  /** Highest-risk stream-level version churn diagnostics from /_ref/records/version-stats. */
+  versionChurnRows?: RefRecordVersionStatsRow[];
   /**
    * Reference "now" in epoch ms for the freshness/staleness labels. The live
    * dashboard wants wall-clock time; the sandbox wants its frozen demo clock
@@ -126,6 +130,8 @@ export function RecordsListView({
         }
         title="Records"
       />
+
+      {versionChurnRows && versionChurnRows.length > 0 ? <VersionChurnNotice rows={versionChurnRows} /> : null}
 
       <section aria-label="Connection health summary" className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
         <HealthStat label="Connections" tone="neutral" value={withData.length.toLocaleString()} />
@@ -190,6 +196,31 @@ export function RecordsListView({
         </Section>
       ) : null}
     </>
+  );
+}
+
+function VersionChurnNotice({ rows }: { rows: RefRecordVersionStatsRow[] }) {
+  const strongest = rows[0];
+  if (!strongest) {
+    return null;
+  }
+  const high = rows.filter((row) => row.risk_level === "high").length;
+  const watch = rows.filter((row) => row.risk_level === "watch").length;
+  const label = [
+    high > 0 ? `${high} high-risk` : null,
+    watch > 0 ? `${watch} watch` : null,
+  ].filter(Boolean).join(", ");
+  return (
+    <section
+      aria-label="Record version churn diagnostics"
+      className="mb-6 border-[color:var(--warning)] border-l-2 bg-[color:var(--warning)]/5 px-4 py-3 text-[color:var(--warning)]"
+    >
+      <p className="pdpp-body font-medium">Version churn needs review: {label} stream{rows.length === 1 ? "" : "s"}.</p>
+      <p className="pdpp-caption mt-1">
+        Highest signal: {strongest.display_name ?? strongest.connector_id ?? strongest.connector_instance_id} /{" "}
+        {strongest.stream} has {strongest.versions_per_record.toLocaleString()} retained versions per current record.
+      </p>
+    </section>
   );
 }
 

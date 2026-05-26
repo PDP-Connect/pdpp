@@ -84,6 +84,7 @@ import {
   rebuildRetainedSize,
   reconcileDirtyRetainedSize,
 } from './retained-size-read-model.js';
+import { buildRecordVersionStatsEnvelope } from './record-version-stats.js';
 import { getLexicalIndexBackfillProgress, lexicalIndexBackfillForManifest, runLexicalSearch } from './search.js';
 import { runHybridSearch } from './search-hybrid.js';
 import { reconcilePolyfillManifests } from './polyfill-manifest-reconcile.ts';
@@ -4350,6 +4351,34 @@ function buildAsApp(opts = {}) {
           metadata: rows[0]?.metadata || global.metadata,
         },
       });
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
+  app.get('/_ref/records/version-stats', { contract: 'refRecordsVersionStats' }, ownerAuth.requireOwnerSession, async (req, res) => {
+    try {
+      const connectorInstanceId =
+        typeof req.query.connector_instance_id === 'string' && req.query.connector_instance_id.trim()
+          ? req.query.connector_instance_id.trim()
+          : null;
+      const stream =
+        typeof req.query.stream === 'string' && req.query.stream.trim()
+          ? req.query.stream.trim()
+          : null;
+      const risk =
+        typeof req.query.risk === 'string' && req.query.risk.trim()
+          ? req.query.risk.trim()
+          : null;
+      const envelope = await buildRecordVersionStatsEnvelope({
+        connectorInstanceId,
+        stream,
+        risk,
+        limit: req.query.limit,
+      }, {
+        connectorInstanceStore: createRequestConnectorInstanceStore(),
+      });
+      res.json(envelope);
     } catch (err) {
       handleError(res, err);
     }

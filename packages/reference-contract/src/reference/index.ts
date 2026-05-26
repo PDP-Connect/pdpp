@@ -434,6 +434,88 @@ const RetainedSizeTopResponseSchema = {
   required: ["object", "scope", "measure", "rows", "projection"],
 };
 
+const RecordVersionStatsRowSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    connector_id: { type: ["string", "null"] },
+    connector_instance_id: { type: "string" },
+    display_name: { type: ["string", "null"] },
+    stream: { type: "string" },
+    current_record_count: { type: "integer", minimum: 0 },
+    record_history_count: { type: "integer", minimum: 0 },
+    versions_per_record: { type: "number", minimum: 0 },
+    last_current_at: { type: ["string", "null"] },
+    last_history_at: { type: ["string", "null"] },
+    projection_dirty: { type: "boolean" },
+    risk_level: { type: "string", enum: ["normal", "watch", "high"] },
+    risk_reasons: { type: "array", items: { type: "string" } },
+  },
+  required: [
+    "connector_id",
+    "connector_instance_id",
+    "display_name",
+    "stream",
+    "current_record_count",
+    "record_history_count",
+    "versions_per_record",
+    "last_current_at",
+    "last_history_at",
+    "projection_dirty",
+    "risk_level",
+    "risk_reasons",
+  ],
+};
+
+const RecordVersionStatsResponseSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    object: { const: "ref_record_version_stats" },
+    data: { type: "array", items: RecordVersionStatsRowSchema },
+    meta: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        returned: { type: "integer", minimum: 0 },
+        total_matching: { type: "integer", minimum: 0 },
+        has_more: { type: "boolean" },
+        limit: { type: "integer", minimum: 1, maximum: 500 },
+        filters: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            connector_instance_id: { type: ["string", "null"] },
+            stream: { type: ["string", "null"] },
+            risk: { type: ["string", "null"], enum: ["normal", "watch", "high", null] },
+          },
+          required: ["connector_instance_id", "stream", "risk"],
+        },
+        source: { const: "retained_size_projection" },
+        risk_thresholds: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            watch_versions_per_record: { type: "number" },
+            high_versions_per_record: { type: "number" },
+            high_history_count: { type: "integer" },
+            high_history_versions_per_record: { type: "number" },
+          },
+          required: [
+            "watch_versions_per_record",
+            "high_versions_per_record",
+            "high_history_count",
+            "high_history_versions_per_record",
+          ],
+        },
+      },
+      required: ["returned", "total_matching", "has_more", "limit", "filters", "source", "risk_thresholds"],
+    },
+    projection: RetainedSizeProjectionSchema,
+  },
+  required: ["object", "data", "meta", "projection"],
+};
+
 const TimelineEntrySchema = {
   type: "object",
   additionalProperties: true,
@@ -1384,6 +1466,30 @@ export const referenceManifests = [
     },
     responses: {
       200: { schema: RetainedSizeTopResponseSchema },
+      ...CommonErrors,
+    },
+  },
+  {
+    id: "refRecordsVersionStats",
+    method: "GET",
+    path: "/_ref/records/version-stats",
+    surface: "reference",
+    tags: ["reference", "records"],
+    summary: "Projection-backed record-version churn stats for owner diagnostics.",
+    request: {
+      query: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          connector_instance_id: { type: "string" },
+          stream: { type: "string" },
+          risk: { type: "string", enum: ["normal", "watch", "high"] },
+          limit: { type: "integer", minimum: 1, maximum: 500 },
+        },
+      },
+    },
+    responses: {
+      200: { schema: RecordVersionStatsResponseSchema },
       ...CommonErrors,
     },
   },

@@ -36,6 +36,7 @@ const REF_READ_ROUTES = [
   '/_ref/dataset/summary/streams',
   '/_ref/dataset/size',
   '/_ref/dataset/top',
+  '/_ref/records/version-stats',
   '/_ref/connectors',
   '/_ref/connectors/connector_does_not_exist',
   '/_ref/approvals',
@@ -183,7 +184,7 @@ test('_ref reads: password-enabled accepts an owner-session cookie', async () =>
 });
 
 test('_ref reads: password-disabled local-dev mode remains open', async () => {
-  await withServer({}, async ({ asUrl }) => {
+  await withServer({ ownerAuthPassword: '' }, async ({ asUrl }) => {
     for (const route of REF_READ_ROUTES) {
       const resp = await fetch(`${asUrl}${route}`, {
         headers: { Accept: 'application/json' },
