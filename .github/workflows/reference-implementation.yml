@@ -1,0 +1,74 @@
+name: reference-implementation
+
+# Path-scoped CI for the reference AS/RS, runtime, CLI, and contract boundary.
+# This catches regressions before release/docker-image workflows and keeps the
+# load-bearing reference implementation under the same review discipline as the
+# connector and package workspaces.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/reference-implementation.yml"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "packages/reference-contract/**"
+      - "reference-implementation/**"
+  pull_request:
+    paths:
+      - ".github/workflows/reference-implementation.yml"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "packages/reference-contract/**"
+      - "reference-implementation/**"
+  workflow_dispatch: {}
+
+concurrency:
+  group: reference-implementation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: typecheck + focused contract tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        env:
+          PATCHRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck reference implementation
+        run: pnpm --dir reference-implementation run typecheck
+
+      - name: Test reference implementation contract surfaces
+        working-directory: reference-implementation
+        run: |
+          node --test --test-force-exit \
+            test/as-client-event-subscriptions-operation.test.js \
+            test/rs-client-event-deliver-operation.test.js \
+            test/rs-client-event-derive-operation.test.js \
+            test/rs-protected-resource-metadata-operation.test.js \
+            test/client-event-subscriptions-e2e.test.js \
+            test/client-event-subscription-store-postgres.test.js \
+            test/schema-capability-truth.test.js \
+            test/schema-granted-connections.test.js \
+            test/storage-fan-in-read-contract.test.js \
+            test/query-contract.test.js \
+            test/operations-boundary.test.js
