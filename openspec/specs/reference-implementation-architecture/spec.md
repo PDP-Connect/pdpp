@@ -1622,3 +1622,260 @@ The reference SHALL persist subscription, queue, and attempt state with equivale
 - **WHEN** the lifecycle (`create → verify → list → rotate secret → enqueue test event → claim queue → log attempt → grant revoke`) runs against a Postgres-backed reference
 - **THEN** every step SHALL succeed against the live Postgres backend
 - **AND** the queue claim path SHALL return the subscription's callback URL, secret, and current status joined to each queued row, exactly as the SQLite path does
+
+### Requirement: `rs.connectors.list` SHALL be operation-owned
+
+The reference implementation SHALL serve bearer-scoped connector-discovery list behavior through a canonical `rs.connectors.list` operation implementation that is independent of HTTP framework, sandbox UI, concrete database driver, and process environment.
+
+#### Scenario: Native connector list route
+
+- **WHEN** the native reference server handles `GET /v1/connectors`
+- **THEN** it SHALL execute the canonical `rs.connectors.list` operation for connector-list semantics
+- **AND** route-specific code SHALL be limited to authentication, request/header adaptation, manifest/grant resolution, query/disclosure instrumentation, response writing, and capability dependency wiring
+
+#### Scenario: Operation dependency boundary
+
+- **WHEN** the `rs.connectors.list` operation is implemented
+- **THEN** it SHALL depend on capability-shaped source-descriptor and connector-item-list dependencies
+- **AND** it SHALL NOT import Fastify, Next, SQLite, Postgres, a raw SQL handle, a generic repository, sandbox modules, the Fastify host module (`server/index.js`), the records module (`server/records.js`), or `process` / `process.env`
+
+#### Scenario: Existing connector-list semantics are preserved
+
+- **WHEN** the native `GET /v1/connectors` route is migrated to the operation
+- **THEN** the public response envelope SHALL remain `{object: 'list', data: [...connector items]}` with byte-equivalent items
+- **AND** the `query.received` data block SHALL retain `query_shape: 'connector_list'`
+- **AND** the `disclosure.served` data block SHALL retain `query_shape: 'connector_list'` together with `connector_count` and `stream_count` totals computed from the operation result
+- **AND** request id, trace id, and source-descriptor selection SHALL remain equivalent to the previous native route behavior
+
+### Requirement: `rs.streams.aggregate` SHALL be operation-owned
+
+The reference implementation SHALL serve stream-aggregate behavior through a canonical `rs.streams.aggregate` operation implementation that is independent of HTTP framework, sandbox UI, concrete database driver, and process environment.
+
+#### Scenario: Native stream aggregate route
+
+- **WHEN** the native reference server handles `GET /v1/streams/:stream/aggregate`
+- **THEN** it SHALL execute the canonical `rs.streams.aggregate` operation for aggregate semantics
+- **AND** route-specific code SHALL be limited to authentication, request/header adaptation, manifest/grant/storage-binding resolution, query/disclosure instrumentation, response writing, and capability dependency wiring
+
+#### Scenario: Operation dependency boundary
+
+- **WHEN** the `rs.streams.aggregate` operation is implemented
+- **THEN** it SHALL depend on capability-shaped source-descriptor, request-validator, and aggregate-execution dependencies
+- **AND** it SHALL NOT import Fastify, Next, SQLite, Postgres, a raw SQL handle, a generic repository, sandbox modules, the Fastify host module (`server/index.js`), the records module (`server/records.js`), or `process` / `process.env`
+
+#### Scenario: Existing aggregate semantics are preserved
+
+- **WHEN** the native `GET /v1/streams/:stream/aggregate` route is migrated to the operation
+- **THEN** the public response SHALL remain byte-equivalent to the result of the previous native `aggregateRecords` call
+- **AND** the `query.received` data block SHALL retain `query_shape: 'stream_aggregate'` together with the previously emitted `metric`, `field`, `group_by`, and `limit` fields parsed from the request query
+- **AND** the `disclosure.served` data block SHALL retain `query_shape: 'stream_aggregate'` together with `metric`, `field`, `group_by`, `filtered_record_count`, and `group_count` derived from the aggregate result
+- **AND** the owner-branch manifest-stream-not-found check SHALL continue to map to a `not_found` error
+- **AND** the request validator (`validateRequestedQueryFieldParams`) SHALL continue to run before the aggregate executes
+- **AND** request id, trace id, and source-descriptor selection SHALL remain equivalent to the previous native route behavior
+
+### Requirement: `rs.records.list` SHALL be operation-owned
+
+The reference implementation SHALL serve record-list behavior through a canonical `rs.records.list` operation implementation that is independent of HTTP framework, sandbox UI, concrete database driver, and process environment.
+
+#### Scenario: Native record list route
+
+- **WHEN** the native reference server handles `GET /v1/streams/:stream/records`
+- **THEN** it SHALL execute the canonical `rs.records.list` operation for record-list semantics
+- **AND** route-specific code SHALL be limited to authentication, request/header adaptation, query/disclosure instrumentation, response writing, and capability dependency wiring
+
+#### Scenario: Operation dependency boundary
+
+- **WHEN** the `rs.records.list` operation is implemented
+- **THEN** it SHALL depend on capability-shaped manifest, grant, source-descriptor, record-query, and record-decoration dependencies
+- **AND** it SHALL NOT import Fastify, Next, SQLite, Postgres, a raw SQL handle, a generic repository, sandbox modules, or `process` / `process.env`
+
+#### Scenario: Existing record-read semantics are preserved
+
+- **WHEN** the native `GET /v1/streams/:stream/records` route is migrated to the operation
+- **THEN** existing cursor, `changes_since`, projection, range filter, view, `expand[]`, blob-ref decoration, request id, trace id, query-received, and disclosure-served behavior SHALL remain equivalent to the previous native route behavior
+- **AND** the migration SHALL NOT change the public JSON shape of the route response
+
+### Requirement: `rs.records.get` SHALL be operation-owned
+
+The reference implementation SHALL serve single-record-read behavior through a canonical `rs.records.get` operation implementation that is independent of HTTP framework, sandbox UI, concrete database driver, and process environment.
+
+#### Scenario: Native record detail route
+
+- **WHEN** the native reference server handles `GET /v1/streams/:stream/records/:id`
+- **THEN** it SHALL execute the canonical `rs.records.get` operation for single-record semantics
+- **AND** route-specific code SHALL be limited to authentication, request/header adaptation, query/disclosure instrumentation, response writing, and capability dependency wiring
+
+#### Scenario: Operation dependency boundary
+
+- **WHEN** the `rs.records.get` operation is implemented
+- **THEN** it SHALL depend on capability-shaped manifest, grant, source-descriptor, record-fetch, and record-decoration dependencies
+- **AND** it SHALL NOT import Fastify, Next, SQLite, Postgres, a raw SQL handle, a generic repository, sandbox modules, or `process` / `process.env`
+
+#### Scenario: Existing single-record-read semantics are preserved
+
+- **WHEN** the native `GET /v1/streams/:stream/records/:id` route is migrated to the operation
+- **THEN** existing `expand[]`, `expand_limit`, blob-ref decoration, request id, trace id, query-received, and disclosure-served behavior SHALL remain equivalent to the previous native route behavior
+- **AND** the migration SHALL NOT change the public JSON shape of the route response
+
+### Requirement: `rs.schema.get` SHALL be operation-owned
+
+The reference implementation SHALL serve schema-discovery behavior through a canonical `rs.schema.get` operation implementation that is independent of HTTP framework, sandbox UI, concrete database driver, and process environment.
+
+#### Scenario: Native schema route
+
+- **WHEN** the native reference server handles `GET /v1/schema`
+- **THEN** it SHALL execute the canonical `rs.schema.get` operation for schema-discovery semantics
+- **AND** route-specific code SHALL be limited to authentication, request/header adaptation, response writing, environment dependency wiring, and reference instrumentation
+
+#### Scenario: Operation dependency boundary
+
+- **WHEN** the `rs.schema.get` operation is implemented
+- **THEN** it SHALL depend on capability-shaped manifest/schema/freshness dependencies
+- **AND** it SHALL NOT import Fastify, Next, SQLite, Postgres, a raw SQL handle, a generic repository, or `process.env`
+
+#### Scenario: Existing native disclosure behavior is preserved
+
+- **WHEN** the native `GET /v1/schema` route is migrated to the operation
+- **THEN** existing request id, trace id, query-received, and disclosure-served behavior SHALL remain equivalent to the previous native route behavior
+- **AND** the migration SHALL include regression evidence for bearer projection, connector count, stream count, and source descriptor behavior
+
+### Requirement: `rs.search.hybrid` SHALL be operation-owned
+
+The reference implementation SHALL serve public hybrid search behavior through a canonical `rs.search.hybrid` operation implementation that is independent of HTTP framework, sandbox UI, concrete database driver, the native lexical helper module, the native semantic helper module, the native hybrid helper module, and process environment.
+
+#### Scenario: Native hybrid search route
+
+- **WHEN** the native reference server handles `GET /v1/search/hybrid`
+- **THEN** it SHALL execute the canonical `rs.search.hybrid` operation for public hybrid-search semantics
+- **AND** route-specific code SHALL be limited to authentication, request/header adaptation, query/disclosure instrumentation, response writing, advertisement-driven route registration (the route is registered only when both lexical and semantic retrieval are advertised on this server), and capability dependency wiring
+
+#### Scenario: Operation dependency boundary
+
+- **WHEN** the `rs.search.hybrid` operation is implemented
+- **THEN** it SHALL depend on `runLexical` and `runSemantic` capability dependencies that return per-source result envelopes already filtered through the caller's grant
+- **AND** it SHALL NOT import Fastify, Next, SQLite, Postgres, a raw SQL handle, a generic repository, sandbox modules, the native `server/search.js` lexical helper module, the native `server/search-semantic.js` helper module, the native `server/search-hybrid.js` helper module, or `process` / `process.env`
+
+#### Scenario: Existing public hybrid search semantics are preserved on the native route
+
+- **WHEN** the native `GET /v1/search/hybrid` route is migrated to the operation
+- **THEN** the public JSON response shape, error codes, per-hit `retrieval_mode: "hybrid"`, per-hit `retrieval_sources` provenance (subset of `["lexical", "semantic"]`, lexical-first order), per-source `scores` map shape (each entry is the underlying surface's score object verbatim — no normalization across surfaces, no flat `score` field on individual hybrid hits), dedup semantics (`(connector_id, stream, record_key)`), grant filtering behavior (delegated to the underlying lexical and semantic runners), stream/filter query semantics, and `disclosure.served` event shape (`query_shape: "search_hybrid"`, `record_count`, `has_more`, `mode`, `lexical_count`, `semantic_count`) SHALL remain equivalent to the previous native route behavior
+- **AND** the migration SHALL NOT broaden, narrow, or otherwise change the v1 query-parameter allowlist (`q`, `limit`, `streams`, `streams[]`, `filter`)
+- **AND** the migration SHALL NOT change the explicit `cursor` rejection (any `cursor` parameter on the wire ⇒ `invalid_request` with `param: "cursor"` — v1 hybrid does NOT support cursor pagination)
+- **AND** the migration SHALL NOT change the explicit forbidden-parameter list (`vector`, `embedding`, `embed`, `model`, `model_id`, `model_family`, `rank`, `boost`, `weights`, `blend`, `connector_id`, `fields`, `expand`, `expand[]`, `expand_limit`, `expand_limit[]`, `order`, `sort`, `mode`)
+- **AND** the migration SHALL NOT introduce hybrid cursor pagination — the response envelope SHALL NOT carry `next_cursor`
+- **AND** the migration SHALL NOT introduce a new grant-logic path — grant enforcement (advertisement, grant projection, stream-grant intersection, field-grant intersection, record-level grant constraints) SHALL remain inside the underlying lexical and semantic runners; errors from either runner (e.g. `grant_stream_not_allowed`) SHALL propagate unchanged through the operation
+- **AND** the migration SHALL NOT normalize lexical and semantic score values together; per-hit hybrid hits SHALL expose per-source scores under a `scores` map keyed by source name and SHALL NOT carry a flat `score` field
+
+#### Scenario: Hybrid retrieval composes the underlying lexical and semantic surfaces under the same grant
+
+- **WHEN** the operation receives a request
+- **THEN** it SHALL invoke the lexical and semantic runner dependencies under the caller's grant, passing the parsed sub-request parameters (`q`, `limit`, `streams`, `filter`) verbatim to each
+- **AND** it SHALL merge the two per-source result lists in round-robin order (lexical-first), preserving per-source rank order
+- **AND** it SHALL deduplicate by `(connector_id, stream, record_key)`, with the dedup map preserving insertion order so overlapping hits get the best available rank from whichever source surfaced them first
+- **AND** on overlap it SHALL union `matched_fields` across sources (lexical-first discovery order, no duplicates), forward the underlying score objects under `scores[source]` verbatim, and keep the first non-empty snippet encountered
+- **AND** it SHALL apply the caller-requested `limit` AFTER dedup+merge so hybrid never returns fewer hits than requested purely because of cross-source overlap
+- **AND** it SHALL emit `has_more: true` when the merged-and-deduped list exceeded the limit, and `has_more: false` otherwise; v1 hybrid `has_more` is informational only since the response envelope does not carry `next_cursor`
+
+### Requirement: `rs.search.lexical` SHALL be operation-owned
+
+The reference implementation SHALL serve public lexical search behavior through a canonical `rs.search.lexical` operation implementation that is independent of HTTP framework, sandbox UI, concrete database driver, lexical-index implementation, and process environment.
+
+#### Scenario: Native lexical search route
+
+- **WHEN** the native reference server handles `GET /v1/search`
+- **THEN** it SHALL execute the canonical `rs.search.lexical` operation for public lexical-search semantics
+- **AND** route-specific code SHALL be limited to authentication, request/header adaptation, query/disclosure instrumentation, response writing, and capability dependency wiring
+
+#### Scenario: Operation dependency boundary
+
+- **WHEN** the `rs.search.lexical` operation is implemented
+- **THEN** it SHALL depend on capability-shaped advertisement, manifest, grant, plan-compilation, snapshot-build, snapshot-storage, and record-url-formatting dependencies
+- **AND** it SHALL NOT import Fastify, Next, SQLite, Postgres, a raw SQL handle, a generic repository, sandbox modules, the native `server/search.js` helper module, or `process` / `process.env`
+
+#### Scenario: Existing public lexical search semantics are preserved on the native route
+
+- **WHEN** the native `GET /v1/search` route is migrated to the operation
+- **THEN** the public JSON response shape, error codes, cursor format, scoring metadata, grant filtering behavior, stream/filter query semantics, and `disclosure.served` event shape SHALL remain equivalent to the previous native route behavior
+- **AND** the migration SHALL NOT broaden, narrow, or otherwise change the v1 query-parameter allowlist (`q`, `limit`, `cursor`, `streams`, `streams[]`, `filter`)
+- **AND** the migration SHALL NOT change the score-advertisement gate, the cross-stream advertisement gate, or the `filter[...]` requires-exactly-one-`streams[]` rule
+
+### Requirement: `rs.search.semantic` SHALL be operation-owned
+
+The reference implementation SHALL serve public semantic search behavior through a canonical `rs.search.semantic` operation implementation that is independent of HTTP framework, sandbox UI, concrete database driver, embedding-backend implementation, vector-index implementation, the native `server/search-semantic.js` helper module, and process environment.
+
+#### Scenario: Native semantic search route
+
+- **WHEN** the native reference server handles `GET /v1/search/semantic`
+- **THEN** it SHALL execute the canonical `rs.search.semantic` operation for public semantic-search semantics
+- **AND** route-specific code SHALL be limited to authentication, request/header adaptation, query/disclosure instrumentation, response writing, and capability dependency wiring
+
+#### Scenario: Operation dependency boundary
+
+- **WHEN** the `rs.search.semantic` operation is implemented
+- **THEN** it SHALL depend on capability-shaped advertisement, current-backend-identity, manifest, grant, plan-compilation, snapshot-build, snapshot-storage, result-hydration, and record-url-formatting dependencies
+- **AND** it SHALL NOT import Fastify, Next, SQLite, Postgres, a raw SQL handle, a generic repository, sandbox modules, the native `server/search.js` helper module, the native `server/search-semantic.js` helper module, or `process` / `process.env`
+
+#### Scenario: Existing public semantic search semantics are preserved on the native route
+
+- **WHEN** the native `GET /v1/search/semantic` route is migrated to the operation
+- **THEN** the public JSON response shape, error codes, cursor format (including the `sem1.` prefix and stale-cursor backend-identity rejection), per-hit score shape on emitted results (exactly `{ kind: "semantic_distance", value, order: "lower_is_better" }` and nothing more), per-hit `retrieval_mode: "semantic"`, grant filtering behavior, stream/filter query semantics, and `disclosure.served` event shape (`query_shape: "search_semantic"`) SHALL remain equivalent to the previous native route behavior
+- **AND** the migration SHALL NOT broaden, narrow, or otherwise change the v1 query-parameter allowlist (`q`, `limit`, `cursor`, `streams`, `streams[]`, `filter`)
+- **AND** the migration SHALL NOT change the explicit forbidden-parameter list (`vector`, `embedding`, `embed`, `model`, `model_id`, `model_family`, `rank`, `boost`, `weights`, `blend`, `connector_id`, `fields`, `expand`, `expand[]`, `expand_limit`, `expand_limit[]`, `order`, `sort`, `mode`)
+- **AND** the migration SHALL NOT change the score-advertisement gate, the cross-stream advertisement gate, the `filter[...]` requires-exactly-one-`streams[]` rule, or the snippet grant-safety property (snippet text is a verbatim contiguous substring of the matched field's stored value)
+- **AND** per-hit score objects on `/v1/search/semantic` results SHALL NOT include capability-level metadata fields (`value_semantics`, `comparable_with`, `model`, `dimensions`, `distance_metric`, `profile_id`, `dtype`, `backend_identity`); those remain advertised at `capabilities.semantic_retrieval.score` on `/.well-known/oauth-protected-resource`, not on individual result hits
+
+#### Scenario: Backend identity disclosure stays on the capability surface
+
+- **WHEN** a client reads `/.well-known/oauth-protected-resource`
+- **THEN** `capabilities.semantic_retrieval.score` SHALL continue to advertise `value_semantics`, `comparable_with` (backend identity, model, dimensions, distance_metric, and where applicable profile_id/dtype), and the score gate fields (`supported`, `kind`, `order`)
+- **AND** the per-hit `score` object on `/v1/search/semantic` results SHALL remain limited to `kind`, `value`, and `order`; backend identity is disclosed once at the capability surface, not repeated on every hit
+
+#### Scenario: No-silent-fallback invariant continues to hold
+
+- **WHEN** the operation module and the native `server/search-semantic.js` helper are read as source
+- **THEN** neither SHALL statically import the native lexical helper module `server/search.js`
+- **AND** the operation module SHALL NOT statically import `server/search-semantic.js` either, so the operation cannot become a back door around the no-fallback invariant
+
+### Requirement: `rs.streams.detail` SHALL be operation-owned
+
+The reference implementation SHALL serve stream metadata/detail behavior through a canonical `rs.streams.detail` operation implementation that is independent of HTTP framework, sandbox UI, concrete database driver, and process environment.
+
+#### Scenario: Native stream detail route
+
+- **WHEN** the native reference server handles `GET /v1/streams/:stream`
+- **THEN** it SHALL execute the canonical `rs.streams.detail` operation for stream metadata semantics
+- **AND** route-specific code SHALL be limited to authentication, path/query adaptation, response writing, and reference instrumentation
+
+#### Scenario: Operation dependency boundary
+
+- **WHEN** the `rs.streams.detail` operation is implemented
+- **THEN** it SHALL depend on capability-shaped manifest, stream-summary, grant-visibility, and metadata dependencies
+- **AND** it SHALL NOT import Fastify, Next, SQLite, Postgres, a raw SQL handle, a generic repository, or `process.env`
+
+#### Scenario: Existing disclosure behavior is preserved
+
+- **WHEN** the native `GET /v1/streams/:stream` route is migrated to the operation
+- **THEN** existing request id, trace id, query-received, query-rejected, and disclosure-served behavior SHALL remain equivalent to the previous native route behavior
+- **AND** any intentional difference SHALL be documented in the change design before implementation is accepted
+
+### Requirement: `rs.streams.list` SHALL be operation-owned
+
+The reference implementation SHALL serve stream-list behavior through a canonical `rs.streams.list` operation implementation that is independent of HTTP framework, sandbox UI, concrete database driver, and process environment.
+
+#### Scenario: Native stream list route
+
+- **WHEN** the native reference server handles `GET /v1/streams`
+- **THEN** it SHALL execute the canonical `rs.streams.list` operation for stream-list semantics
+- **AND** route-specific code SHALL be limited to authentication, request/header adaptation, response writing, and reference instrumentation
+
+#### Scenario: Operation dependency boundary
+
+- **WHEN** the `rs.streams.list` operation is implemented
+- **THEN** it SHALL depend on capability-shaped stream/manifest/grant dependencies
+- **AND** it SHALL NOT import Fastify, Next, SQLite, Postgres, a raw SQL handle, a generic repository, or `process.env`
+
+#### Scenario: Existing disclosure behavior is preserved
+
+- **WHEN** the native `GET /v1/streams` route is migrated to the operation
+- **THEN** existing request id, trace id, query-received, and disclosure-served behavior SHALL remain equivalent to the previous native route behavior
+- **AND** the migration SHALL include regression evidence for that preservation or an explicit owner-reviewed explanation if a specific event is intentionally unchanged outside the operation
