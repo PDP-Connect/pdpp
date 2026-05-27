@@ -2527,13 +2527,11 @@ export async function deleteAllRecordsForConnector(connectorId) {
 // Strategy: discover (connector_instance_id, stream) pairs from the
 // authoritative postgres `records ∪ record_changes ∪ blob_bindings` set for
 // this connector_id, count the live (deleted = FALSE) records to mirror the
-// SQLite path's return-shape contract, then issue per-pair durable deletes
-// (records, record_changes, version_counter, blob_bindings) inline. Each
-// DELETE is one statement so the pg pool's prepared-statement path accepts
-// the parameterized form. Index cleanup runs through the existing
-// lexical/semantic helpers, which already branch on
-// `isPostgresStorageBackend()` internally and drop the postgres index tables
-// for the (instance, stream) pair.
+// SQLite path's return-shape contract, then compose the per-stream
+// `postgresDeleteAllRecords` helper once per pair (records, record_changes,
+// version_counter, lexical/semantic search tables) and drop `blob_bindings`
+// separately, mirroring the SQLite per-connector path's extra fourth delete
+// vs. the per-stream owner-reset path.
 async function postgresDeleteAllRecordsForConnector(connectorId) {
   // Union of (instance, stream) pairs across `records`, `record_changes`,
   // and `blob_bindings` so a stream that has only history rows or only
@@ -2562,22 +2560,14 @@ async function postgresDeleteAllRecordsForConnector(connectorId) {
   for (const row of namespaceRows) {
     const connectorInstanceId = row.connector_instance_id;
     const stream = row.stream;
-    // Each DELETE runs as its own statement so the pg pool's extended-protocol
-    // path accepts the parameterized form. The set mirrors the per-stream
-    // SQLite path's four deletes (records, record_changes, version_counter,
-    // blob_bindings).
-    await postgresQuery(
-      `DELETE FROM record_changes WHERE connector_instance_id = $1 AND stream = $2`,
-      [connectorInstanceId, stream],
-    );
-    await postgresQuery(
-      `DELETE FROM records WHERE connector_instance_id = $1 AND stream = $2`,
-      [connectorInstanceId, stream],
-    );
-    await postgresQuery(
-      `DELETE FROM version_counter WHERE connector_instance_id = $1 AND stream = $2`,
-      [connectorInstanceId, stream],
-    );
+    const storageTarget = { connector_id: connectorId, connector_instance_id: connectorInstanceId };
+    // Per-stream tail: records, record_changes, version_counter, and the
+    // lexical/semantic search tables for the (instance, stream) pair. The
+    // shared helper runs atomically inside withPostgresTransaction.
+    await postgresDeleteAllRecords(storageTarget, stream);
+    // blob_bindings is the connector-wide extra that the per-stream owner
+    // reset does not touch (mirrors the SQLite per-connector path's fourth
+    // delete vs. the SQLite per-stream path's three).
     await postgresQuery(
       `DELETE FROM blob_bindings WHERE connector_instance_id = $1 AND stream = $2`,
       [connectorInstanceId, stream],
@@ -2586,7 +2576,10 @@ async function postgresDeleteAllRecordsForConnector(connectorId) {
     // The lexical/semantic index helpers already branch on
     // isPostgresStorageBackend() internally and clear the postgres
     // lexical_search_* / semantic_search_* tables for the (instance, stream)
-    // pair, matching the SQLite path's index teardown.
+    // pair, matching the SQLite path's index teardown. This second call is
+    // a no-op against the rows postgresDeleteAllRecords already cleared, but
+    // it keeps the connector-wide path's shape identical to the SQLite arm
+    // and lets the search helpers own any future backend-specific cleanup.
     await lexicalIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
     await semanticIndexDeleteByConnectorStream({ connectorId, connectorInstanceId, stream });
   }

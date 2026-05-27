@@ -1048,25 +1048,68 @@ export async function postgresListStreams(storageTarget, grant, manifest = null)
 export async function postgresDeleteAllRecords(storageTarget, stream) {
   const connectorId = resolveStorageConnectorId(storageTarget);
   const connectorInstanceId = resolveStorageConnectorInstanceId(storageTarget, connectorId);
+  return withPostgresTransaction(async (client) => {
+    const countResult = await client.query(
+      `SELECT COUNT(*)::int AS count FROM records
+       WHERE connector_instance_id = $1 AND stream = $2 AND deleted = FALSE`,
+      [connectorInstanceId, stream],
+    );
+    const deletedRecordCount = Number(countResult.rows[0]?.count || 0);
+    await deletePostgresRecordTailForPair(client, connectorInstanceId, stream);
+    return deletedRecordCount;
+  });
+}
+
+/**
+ * Delete the durable record-tail rows for a single
+ * `(connector_instance_id, stream)` pair: record_changes, records,
+ * version_counter, and the lexical/semantic search tables scoped to that
+ * stream. Mirrors the SQLite per-stream delete shape, which clears the
+ * core record tables and lets the outer caller decide whether to also drop
+ * blob_bindings (per-stream owner reset does not; per-connector
+ * invalidation does).
+ *
+ * The pg pool's prepared-statement protocol rejects multi-statement
+ * parameterized queries, so each DELETE is its own statement. The caller
+ * shares one transactional client so the set is atomic.
+ *
+ * Stays inside the Postgres records boundary so raw SQL does not scatter
+ * through higher layers (see design.md alternatives considered).
+ */
+export async function deletePostgresRecordTailForPair(client, connectorInstanceId, stream) {
   const semanticScopePrefix = `[${JSON.stringify(stream)},`;
-  const countResult = await postgresQuery(
-    `SELECT COUNT(*)::int AS count FROM records
-     WHERE connector_instance_id = $1 AND stream = $2 AND deleted = FALSE`,
+  await client.query(
+    'DELETE FROM record_changes WHERE connector_instance_id = $1 AND stream = $2',
     [connectorInstanceId, stream],
   );
-  const deletedRecordCount = Number(countResult.rows[0]?.count || 0);
-  await postgresQuery(
-    `DELETE FROM record_changes WHERE connector_instance_id = $1 AND stream = $2;
-     DELETE FROM records WHERE connector_instance_id = $1 AND stream = $2;
-     DELETE FROM version_counter WHERE connector_instance_id = $1 AND stream = $2;
-     DELETE FROM lexical_search_index WHERE connector_instance_id = $1 AND stream = $2;
-     DELETE FROM lexical_search_meta WHERE connector_instance_id = $1 AND stream = $2;
-     DELETE FROM semantic_search_blob WHERE connector_instance_id = $1 AND scope_key LIKE $3;
-     DELETE FROM semantic_search_meta WHERE connector_instance_id = $1 AND stream = $2;
-     DELETE FROM semantic_search_backfill_progress WHERE connector_instance_id = $1 AND stream = $2;`,
-    [connectorInstanceId, stream, `${semanticScopePrefix}%`],
+  await client.query(
+    'DELETE FROM records WHERE connector_instance_id = $1 AND stream = $2',
+    [connectorInstanceId, stream],
   );
-  return deletedRecordCount;
+  await client.query(
+    'DELETE FROM version_counter WHERE connector_instance_id = $1 AND stream = $2',
+    [connectorInstanceId, stream],
+  );
+  await client.query(
+    'DELETE FROM lexical_search_index WHERE connector_instance_id = $1 AND stream = $2',
+    [connectorInstanceId, stream],
+  );
+  await client.query(
+    'DELETE FROM lexical_search_meta WHERE connector_instance_id = $1 AND stream = $2',
+    [connectorInstanceId, stream],
+  );
+  await client.query(
+    'DELETE FROM semantic_search_blob WHERE connector_instance_id = $1 AND scope_key LIKE $2',
+    [connectorInstanceId, `${semanticScopePrefix}%`],
+  );
+  await client.query(
+    'DELETE FROM semantic_search_meta WHERE connector_instance_id = $1 AND stream = $2',
+    [connectorInstanceId, stream],
+  );
+  await client.query(
+    'DELETE FROM semantic_search_backfill_progress WHERE connector_instance_id = $1 AND stream = $2',
+    [connectorInstanceId, stream],
+  );
 }
 
 export async function postgresPersistContentAddressedBlob({ connectorId, connectorInstanceId, stream, recordKey, mimeType, data }) {
