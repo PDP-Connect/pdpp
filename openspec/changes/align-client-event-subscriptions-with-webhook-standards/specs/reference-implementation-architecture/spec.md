@@ -23,13 +23,13 @@ Subscription create, read, list, update, delete, and test-event operations SHALL
 #### Scenario: A client reads the protected-resource metadata
 - **WHEN** a client reads `/.well-known/oauth-protected-resource` on the resource server
 - **THEN** the response SHALL include `capabilities.client_event_subscriptions` with `supported: true`, `stability: "reference_extension"`, and an `endpoint` of `/v1/event-subscriptions`
-- **AND** the advertisement SHALL declare the envelope as `format: "cloudevents+json"`, `specversion: "1.0"`, and `pdppversion: "1"`
+- **AND** the advertisement SHALL declare the envelope as `format: "cloudevents+json"`, `specversion: "1.0"`, `pdppversion: "1"`, `content_type: "application/cloudevents+json; charset=utf-8"`, and `subscription_id_location: "data.subscription_id"`
 - **AND** the advertisement SHALL declare the signing profile as `standard-webhooks` with `algorithm: "HMAC-SHA256"`, `id_header: "webhook-id"`, `timestamp_header: "webhook-timestamp"`, `signature_header: "webhook-signature"`, `signed_payload: "{webhook-id}.{webhook-timestamp}.{body}"`, `signature_encoding: "v1,<base64>"`, and `secret_prefix: "whsec_"`
 - **AND** the advertisement SHALL include the set of supported event types (`pdpp.subscription.verify`, `pdpp.subscription.test`, `pdpp.records.changed`, `pdpp.grant.revoked`), the delivery semantics (at-least-once, after-commit, max-attempts), the verification handshake shape, and the hint cursor location
 
 ### Requirement: Events are projection-safe hints derived from grant scope
 
-The reference SHALL derive client events from `record_changes` and grant scope using a pure derivation step. The derived envelope SHALL conform to CloudEvents 1.0 (`specversion: "1.0"`) and SHALL carry the PDPP profile version in the `pdppversion` CloudEvents extension attribute. The envelope SHALL NOT contain record bodies, field values, or resource identifiers outside the bound grant. It SHALL include the stream name only when that stream is in the subscription's scope snapshot, and a `changes_since` cursor that can be passed to the existing records-list endpoint to retrieve the notified change. The envelope's `source` SHALL be the canonical dereferenceable path of the subscription on the resource server (`/v1/event-subscriptions/<subscription_id>`).
+The reference SHALL derive client events from `record_changes` and grant scope using a pure derivation step. The derived envelope SHALL conform to CloudEvents 1.0 (`specversion: "1.0"`) JSON structured mode and SHALL carry the PDPP profile version in the `pdppversion` CloudEvents extension attribute. Top-level keys in the emitted envelope SHALL be CloudEvents context attributes only (standard or extension); CloudEvents attribute names SHALL be lowercase alphanumeric, so PDPP fields that would carry an underscore SHALL live inside `data` rather than at the top level. The occurrence time SHALL be emitted as the standard CloudEvents `time` attribute. The subscription identifier SHALL be emitted as `data.subscription_id` (the standard `source` URL also encodes the subscription path). The envelope SHALL NOT contain record bodies, field values, or resource identifiers outside the bound grant. It SHALL include the stream name only when that stream is in the subscription's scope snapshot, and a `changes_since` cursor that can be passed to the existing records-list endpoint to retrieve the notified change. The envelope's `source` SHALL be the canonical dereferenceable path of the subscription on the resource server (`/v1/event-subscriptions/<subscription_id>`).
 
 #### Scenario: A record changes in a stream the grant covers
 - **WHEN** `ingestRecord` commits a change for a stream that lies inside an active subscription's scope snapshot
@@ -46,6 +46,9 @@ The reference SHALL derive client events from `record_changes` and grant scope u
 - **WHEN** the derivation step builds an envelope for any event type
 - **THEN** the envelope SHALL NOT include record bodies, projected field values, or resource identifiers that are not already declared in the bound grant
 - **AND** the envelope SHALL NOT use any value other than `"1.0"` for `specversion`
+- **AND** every top-level key in the emitted envelope SHALL be a CloudEvents context attribute conforming to the lowercase-alphanumeric naming rule (no underscores)
+- **AND** the occurrence time SHALL be emitted as the standard CloudEvents `time` attribute
+- **AND** the subscription identifier SHALL be emitted as `data.subscription_id`
 
 ### Requirement: Event delivery is signed, after-commit, idempotent, and retried
 
@@ -59,6 +62,8 @@ The reference SHALL enqueue events only after the underlying durable mutation ha
 - **WHEN** the delivery worker posts an event to a subscription callback
 - **THEN** the request SHALL include `webhook-id` (the stable event id), `webhook-timestamp` (the unix-seconds value used in the signed string), and `webhook-signature` (a `v1,<base64>` token computed as `HMAC-SHA256(secret_key, "{webhook-id}.{webhook-timestamp}.{raw body}")`)
 - **AND** the request SHALL NOT include any `PDPP-Event-*` headers or any `PDPP-Subscription-Id` header
+- **AND** the request `content-type` SHALL be `application/cloudevents+json; charset=utf-8` (CloudEvents JSON structured mode)
+- **AND** the signed `{raw body}` SHALL be the exact bytes of the structured-mode envelope that the receiver reads from the request body
 - **AND** the reference SHALL persist an attempt log row recording status code, latency, and a bounded response snippet
 
 #### Scenario: A delivery attempt fails transiently

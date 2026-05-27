@@ -117,6 +117,20 @@ test('create persists subscription and enqueues verify event exactly once', asyn
   assert.ok(typeof payload.data.challenge === 'string' && payload.data.challenge.length > 0);
   // Canonical source path: /v1/event-subscriptions/<id>
   assert.equal(payload.source, `/v1/event-subscriptions/${out.subscriptionId}`);
+  // CloudEvents §required-attributes: occurrence time travels as standard `time`.
+  assert.equal(typeof payload.time, 'string');
+  assert.ok(!Number.isNaN(Date.parse(payload.time)), '`time` is an RFC 3339 timestamp');
+  assert.equal(payload.occurred_at, undefined, 'legacy occurred_at must not appear at top level');
+  // CloudEvents §context-attribute-naming: attribute names are lowercase alphanumeric.
+  // PDPP fields that would contain an underscore live inside `data`.
+  assert.equal(payload.subscription_id, undefined, 'subscription_id must not appear at top level');
+  assert.equal(payload.data.subscription_id, out.subscriptionId, 'subscription_id travels as data.subscription_id');
+  for (const key of Object.keys(payload)) {
+    assert.ok(
+      /^[a-z0-9]+$/.test(key),
+      `top-level CloudEvents attribute ${JSON.stringify(key)} must be lowercase alphanumeric (no underscores)`,
+    );
+  }
 });
 
 test('create narrows scope when filters subset of grant', async () => {

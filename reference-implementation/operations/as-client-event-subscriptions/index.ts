@@ -246,11 +246,33 @@ export const SUBSCRIPTION_RESOURCE_PATH = "/v1/event-subscriptions";
 export const CLOUDEVENTS_SPECVERSION = "1.0";
 export const PDPP_EVENTS_PROFILE_VERSION = "1";
 
+/**
+ * Structured-mode CloudEvents 1.0 content type. Receivers use this to
+ * distinguish a structured envelope from an arbitrary JSON body and to drive
+ * SDK auto-parsing. See CloudEvents HTTP Protocol Binding §3.2.
+ */
+export const CLOUDEVENTS_STRUCTURED_CONTENT_TYPE =
+  "application/cloudevents+json; charset=utf-8";
+
 function eventSource(subscriptionId: string): string {
   return `${SUBSCRIPTION_RESOURCE_PATH}/${subscriptionId}`;
 }
 
-/** Serialize a derived event as a CloudEvents 1.0 JSON envelope. */
+/**
+ * Serialize a derived event as a CloudEvents 1.0 JSON structured-mode envelope.
+ *
+ * Top-level keys are only CloudEvents context attributes (standard or
+ * extension). CloudEvents attribute names must be lowercase alphanumeric, so
+ * underscores are not permitted at the top level. PDPP fields that don't map
+ * to a CloudEvents attribute live inside `data`:
+ *
+ *   - `subscription_id` → carried in `data.subscription_id`. The same id is
+ *     also recoverable from the standard `source` URL
+ *     (`/v1/event-subscriptions/<id>`), which is the CloudEvents-blessed
+ *     way to identify the producing context.
+ *   - `occurredAt` → emitted as the standard CloudEvents `time` attribute
+ *     (RFC 3339, identical wire format to the rev1 `occurred_at` value).
+ */
 export function buildEventPayload(eventId: string, event: DerivedEvent): string {
   return JSON.stringify({
     specversion: CLOUDEVENTS_SPECVERSION,
@@ -258,9 +280,11 @@ export function buildEventPayload(eventId: string, event: DerivedEvent): string 
     id: eventId,
     type: event.type,
     source: eventSource(event.subscriptionId),
-    subscription_id: event.subscriptionId,
-    occurred_at: event.occurredAt,
-    data: event.data,
+    time: event.occurredAt,
+    data: {
+      subscription_id: event.subscriptionId,
+      ...event.data,
+    },
   });
 }
 

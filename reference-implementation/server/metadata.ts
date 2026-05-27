@@ -717,8 +717,16 @@ export interface ClientEventSubscriptionsCapability {
   // CloudEvents 1.0 structured-mode JSON body. PDPP profile version is
   // carried in the `pdppversion` CloudEvents extension attribute so the
   // envelope stays interoperable with the CloudEvents 1.x ecosystem.
+  //
+  // CloudEvents context-attribute names must be lowercase alphanumeric
+  // (CloudEvents §extension-context-attributes), so PDPP fields that would
+  // contain an underscore live inside `data` rather than at the top level.
+  // `subscription_id` is the canonical example: it travels as
+  // `data.subscription_id` and is also recoverable from the standard `source`
+  // URL. `occurredAt` is emitted as the standard `time` attribute.
   envelope: {
     format: "cloudevents+json";
+    content_type: "application/cloudevents+json; charset=utf-8";
     specversion: "1.0";
     pdppversion: "1";
     fields: readonly [
@@ -727,10 +735,10 @@ export interface ClientEventSubscriptionsCapability {
       "id",
       "type",
       "source",
-      "subscription_id",
-      "occurred_at",
+      "time",
       "data",
     ];
+    subscription_id_location: "data.subscription_id";
     no_record_bodies: true;
   };
   event_types: readonly [
@@ -798,6 +806,7 @@ export function buildClientEventSubscriptionsCapability({
     transport: "https_webhook",
     envelope: {
       format: "cloudevents+json",
+      content_type: "application/cloudevents+json; charset=utf-8",
       specversion: "1.0",
       pdppversion: "1",
       fields: [
@@ -806,10 +815,10 @@ export function buildClientEventSubscriptionsCapability({
         "id",
         "type",
         "source",
-        "subscription_id",
-        "occurred_at",
+        "time",
         "data",
       ] as const,
+      subscription_id_location: "data.subscription_id",
       no_record_bodies: true,
     },
     event_types: [

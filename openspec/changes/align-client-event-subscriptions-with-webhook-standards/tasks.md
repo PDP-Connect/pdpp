@@ -28,3 +28,16 @@
 - [x] 5.2 `pnpm exec openspec validate --all --strict` → 139 passed, 0 failed.
 - [x] 5.3 Targeted `node:test` suites pass: `rs-client-event-deliver-operation.test.js`, `as-client-event-subscriptions-operation.test.js`, `rs-client-event-derive-operation.test.js`, `client-event-subscriptions-e2e.test.js` (31 tests, 0 failures).
 - [x] 5.4 `pnpm exec tsc --noEmit` in `reference-implementation/` → no errors found.
+
+## 6. Owner review rev1 fixes (CloudEvents conformance follow-up)
+
+Owner rev1 review caught three conformance defects the first pass left in place: top-level `subscription_id` and `occurred_at` violate CloudEvents §context-attribute-naming (underscores), and the delivery `content-type` still said `application/json` rather than the structured-mode media type.
+
+- [x] 6.1 Rewrite `buildEventPayload` in `operations/as-client-event-subscriptions/index.ts` to emit standard `time` (replaces `occurred_at`) and move `subscription_id` into `data.subscription_id`. No top-level keys with underscores.
+- [x] 6.2 Set the delivery worker's HTTP `content-type` to `application/cloudevents+json; charset=utf-8` (CloudEvents JSON structured mode). Export a `DELIVERY_CONTENT_TYPE` constant from `operations/rs-client-event-deliver/index.ts` so the wire shape has one source of truth.
+- [x] 6.3 Update `buildClientEventSubscriptionsCapability` (both the type and the runtime value) to publish `envelope.content_type`, `envelope.fields` containing `time` instead of `occurred_at`, and `envelope.subscription_id_location: "data.subscription_id"`.
+- [x] 6.4 Update `design.md`, `proposal.md`, and the spec scenarios to describe: CloudEvents JSON structured mode; `time` standard attribute; `data.subscription_id`; the structured-mode content type; and the lowercase-alphanumeric naming guard for context attributes.
+- [x] 6.5 Update `as-client-event-subscriptions-operation.test.js` to assert the new envelope shape (`time`, `data.subscription_id`) and to assert no top-level key contains an underscore (regression guard for the rev1 defect).
+- [x] 6.6 Update `rs-client-event-deliver-operation.test.js` to assert `content-type: application/cloudevents+json; charset=utf-8` on outbound requests, and that the Standard Webhooks signature still verifies against the exact raw structured-mode body.
+- [x] 6.7 Update `client-event-subscriptions-e2e.test.js` to read `time` and `data.subscription_id`, assert structured-mode content type on the request the receiver sees, assert no top-level underscore keys in any received envelope, and assert the discovery advertisement publishes `envelope.content_type` and `envelope.subscription_id_location`.
+- [x] 6.8 Re-run validation: openspec --strict (single + all), targeted client-event subscription tests, `reference-implementation` typecheck.

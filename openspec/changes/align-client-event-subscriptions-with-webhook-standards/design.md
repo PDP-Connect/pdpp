@@ -20,7 +20,7 @@ The rev1 archive (`2026-05-27-add-client-event-subscriptions`) shipped today. Th
 - Carrying both header schemes for a compatibility window. See "No dual-emit" below.
 - Promoting `client_event_subscriptions` from `reference_extension` to a Core PDPP capability. That requires its own change.
 
-## Envelope decision: CloudEvents 1.0 with `pdppversion` extension
+## Envelope decision: CloudEvents 1.0 JSON structured mode
 
 ```json
 {
@@ -29,9 +29,9 @@ The rev1 archive (`2026-05-27-add-client-event-subscriptions`) shipped today. Th
   "id": "evt_…",
   "type": "pdpp.records.changed",
   "source": "/v1/event-subscriptions/sub_…",
-  "subscription_id": "sub_…",
-  "occurred_at": "2026-05-27T15:00:00Z",
+  "time": "2026-05-27T15:00:00Z",
   "data": {
+    "subscription_id": "sub_…",
     "stream": "messages",
     "changes_since": "<opaque cursor>",
     "change_count_hint": 1
@@ -39,9 +39,16 @@ The rev1 archive (`2026-05-27-add-client-event-subscriptions`) shipped today. Th
 }
 ```
 
-`pdppversion` is a CloudEvents extension attribute (lowercase, alphanumeric, ≤ 20 chars — `pdppversion` satisfies §extension-context-attributes-naming-conventions). The value `"1"` represents the PDPP event-subscription profile version that owns the meaning of `type`, `subscription_id`, `occurred_at`, and `data.*` shape. The PDPP profile evolves independently of CloudEvents `specversion`.
+Delivered as CloudEvents 1.0 JSON **structured mode** (HTTP Protocol Binding §3.2): the HTTP `content-type` is `application/cloudevents+json; charset=utf-8`, and the entire envelope is the JSON body. Receivers using any CloudEvents SDK can parse the body with the `application/cloudevents+json` media-type dispatch.
 
-`subscription_id` and `occurred_at` are not CloudEvents standard attributes — they were chosen because the rev1 envelope already had them, no receivers depend on their CloudEvents-attribute status, and rewording them as `subject` (`subscription_id`) and `time` (`occurred_at`) is a separate question whose answer should follow whether we eventually move to the binary HTTP binding. Recording the question; not solving it here.
+`pdppversion` is a CloudEvents extension attribute (lowercase, alphanumeric, ≤ 20 chars — `pdppversion` satisfies §extension-context-attributes-naming-conventions). The value `"1"` represents the PDPP event-subscription profile version that owns the meaning of `type`, `data.subscription_id`, and `data.*` shape. The PDPP profile evolves independently of CloudEvents `specversion`.
+
+Owner rev1 review correction: an earlier draft of this change kept `subscription_id` and `occurred_at` as top-level keys, deferring the question of whether they should be reworded. CloudEvents §context-attribute-naming forbids underscores in attribute names, so `subscription_id` and `occurred_at` are not valid context attributes — keeping them at the top level would mean the envelope is **not** CloudEvents 1.0 conformant despite claiming `specversion: "1.0"`. The conformance defect is exactly the kind of literal break the rev1 alignment exists to close.
+
+The corrected envelope:
+
+- **`time`** replaces `occurred_at`. `time` is the CloudEvents standard attribute for occurrence time (CloudEvents §required-attributes-time, RFC 3339). The wire value is identical to what `occurred_at` carried (ISO 8601 / RFC 3339), so the only change is the attribute name.
+- **`data.subscription_id`** replaces top-level `subscription_id`. The owner review explicitly preferred PDPP fields inside `data` over inventing a top-level extension attribute (`pdppsubid`, which would be valid but obscure) absent a CloudEvents routing reason to promote it. Routing-by-subscription is already preserved through the standard `source` URL (`/v1/event-subscriptions/<sub>`), which CloudEvents consumers reach for to identify the producing context. Producers and consumers that want the id as a string still find it in `data.subscription_id`.
 
 ## Signing decision: Standard Webhooks v1
 
@@ -80,9 +87,10 @@ If a real out-of-tree client surfaces after this change lands, we add the compat
 - `openspec validate align-client-event-subscriptions-with-webhook-standards --strict`
 - `openspec validate --all --strict`
 - Operation tests (`reference-implementation/test/rs-client-event-deliver-operation.test.js`) cover: signature construction matches the Standard Webhooks `{id}.{ts}.{body}` canonical form; the delivery worker emits `webhook-id`, `webhook-timestamp`, `webhook-signature` and emits no `PDPP-Event-*` headers; rotated headers carrying multiple `v1,` tokens still verify.
-- Subscription-create tests (`reference-implementation/test/as-client-event-subscriptions-operation.test.js`) cover: the issued secret carries the `whsec_` prefix; the persisted envelope carries `specversion: "1.0"` and `pdppversion: "1"`.
-- End-to-end test (`reference-implementation/test/client-event-subscriptions-e2e.test.js`) verifies deliveries with both the in-tree helper and an independent recompute of the Standard Webhooks signature.
-- Discovery test verifies the capability advertisement publishes the Standard Webhooks profile names and CloudEvents 1.0 envelope.
+- Subscription-create tests (`reference-implementation/test/as-client-event-subscriptions-operation.test.js`) cover: the issued secret carries the `whsec_` prefix; the persisted envelope carries `specversion: "1.0"`, `pdppversion: "1"`, the standard `time` attribute, `data.subscription_id`, and **no top-level keys with underscores** (CloudEvents context-attribute naming guard).
+- Delivery-operation tests (`reference-implementation/test/rs-client-event-deliver-operation.test.js`) cover: HTTP `content-type` is `application/cloudevents+json; charset=utf-8`; the Standard Webhooks signature is computed against the exact raw structured-mode body the worker sends, and the receiver-side verifier accepts it.
+- End-to-end test (`reference-implementation/test/client-event-subscriptions-e2e.test.js`) verifies deliveries with both the in-tree helper and an independent recompute of the Standard Webhooks signature, asserts the structured-mode `content-type`, and asserts no top-level CloudEvents attribute carries an underscore.
+- Discovery test verifies the capability advertisement publishes the Standard Webhooks profile names, the CloudEvents 1.0 structured-mode `content_type`, the `time` attribute in `envelope.fields`, and `subscription_id_location: "data.subscription_id"`.
 
 ## Residual Risks
 

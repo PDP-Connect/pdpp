@@ -161,6 +161,26 @@ function verifySignature(secret, headers, body) {
   return signEvent(secret, id, ts, body).split(',')[1] === sig.split(',')[1];
 }
 
+/**
+ * Guard: every received CloudEvents envelope must use only context attributes
+ * that conform to CloudEvents §context-attribute-naming (lowercase alphanumeric,
+ * no underscores). PDPP fields that don't satisfy that rule live in `data`.
+ * `data` itself is a standard attribute and its keys are free-form.
+ */
+function assertCloudEventsTopLevelShape(payload, label) {
+  for (const key of Object.keys(payload)) {
+    assert.ok(
+      /^[a-z0-9]+$/.test(key),
+      `${label}: top-level CloudEvents attribute ${JSON.stringify(key)} must be lowercase alphanumeric (no underscores)`,
+    );
+  }
+  assert.equal(payload.specversion, '1.0', `${label}: specversion`);
+  assert.equal(payload.pdppversion, '1', `${label}: pdppversion`);
+  assert.equal(typeof payload.time, 'string', `${label}: standard \`time\` attribute`);
+  assert.equal(payload.occurred_at, undefined, `${label}: legacy occurred_at must be absent`);
+  assert.equal(payload.subscription_id, undefined, `${label}: subscription_id must live in data, not top-level`);
+}
+
 test('client event subscriptions deliver signed hints end-to-end', async () => {
   const server = await startServer({
     quiet: true,
@@ -207,12 +227,18 @@ test('client event subscriptions deliver signed hints end-to-end', async () => {
     assert.equal(verifyEvent.headers['webhook-id'], verifyEvent.payload.id);
     assert.match(verifyEvent.headers['webhook-signature'], /^v1,[A-Za-z0-9+/=]+$/);
     assert.equal(verifyEvent.headers['pdpp-event-signature'], undefined);
-    assert.equal(verifyEvent.payload.specversion, '1.0');
-    assert.equal(verifyEvent.payload.pdppversion, '1');
+    // CloudEvents JSON structured mode: content-type identifies the cloudevents+json media type.
+    assert.equal(
+      verifyEvent.headers['content-type'],
+      'application/cloudevents+json; charset=utf-8',
+      'delivery content-type must be CloudEvents structured-mode media type',
+    );
+    assertCloudEventsTopLevelShape(verifyEvent.payload, 'verify event');
+    assert.equal(verifyEvent.payload.data.subscription_id, subscription_id);
     assert.equal(
       verifySignature(secret, verifyEvent.headers, verifyEvent.body),
       true,
-      'verify event signature must validate',
+      'verify event signature must validate against the raw structured-mode body',
     );
 
     // Allow a moment for the verification state transition.
@@ -238,6 +264,8 @@ test('client event subscriptions deliver signed hints end-to-end', async () => {
       (e) => e.payload?.type === 'pdpp.subscription.test',
     );
     assert.equal(verifySignature(secret, testHit.headers, testHit.body), true);
+    assertCloudEventsTopLevelShape(testHit.payload, 'test event');
+    assert.equal(testHit.payload.data.subscription_id, subscription_id);
 
     // Real record ingest to drive a records.changed hint.
     const ingestResp = await fetch(
@@ -268,6 +296,8 @@ test('client event subscriptions deliver signed hints end-to-end', async () => {
       throw new Error('records.changed hint never arrived');
     })();
     assert.equal(verifySignature(secret, recordsHit.headers, recordsHit.body), true);
+    assertCloudEventsTopLevelShape(recordsHit.payload, 'records.changed event');
+    assert.equal(recordsHit.payload.data.subscription_id, subscription_id);
     assert.equal(recordsHit.payload.data.stream, 'top_artists');
     assert.ok(recordsHit.payload.data.changes_since);
     // Projection-safety: no record body.
@@ -345,6 +375,8 @@ test('grant revoke disables subscription and notifies client', async () => {
       (e) => e.payload?.type === 'pdpp.grant.revoked',
     );
     assert.equal(verifySignature(secret, revokedHit.headers, revokedHit.body), true);
+    assertCloudEventsTopLevelShape(revokedHit.payload, 'grant.revoked event');
+    assert.equal(revokedHit.payload.data.subscription_id, subscription_id);
 
     // Re-read using the client token would now fail (grant revoked); we
     // skip that path here, the lifecycle property already proven.
@@ -377,6 +409,13 @@ test('discovery: RS protected-resource metadata advertises client_event_subscrip
     assert.equal(cap.envelope.specversion, '1.0');
     assert.equal(cap.envelope.pdppversion, '1');
     assert.equal(cap.envelope.format, 'cloudevents+json');
+    // CloudEvents JSON structured mode media type and subscription_id location.
+    assert.equal(cap.envelope.content_type, 'application/cloudevents+json; charset=utf-8');
+    assert.equal(cap.envelope.subscription_id_location, 'data.subscription_id');
+    // `fields` documents the standard `time` attribute, not the rev1 `occurred_at`.
+    assert.ok(cap.envelope.fields.includes('time'), 'envelope.fields advertises standard `time` attribute');
+    assert.ok(!cap.envelope.fields.includes('occurred_at'), 'envelope.fields must not advertise legacy occurred_at');
+    assert.ok(!cap.envelope.fields.includes('subscription_id'), 'envelope.fields must not advertise top-level subscription_id');
     assert.ok(Array.isArray(cap.event_types));
     assert.ok(cap.event_types.includes('pdpp.records.changed'));
     assert.ok(cap.event_types.includes('pdpp.subscription.verify'));

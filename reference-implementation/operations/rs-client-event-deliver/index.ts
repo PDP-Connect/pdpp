@@ -17,6 +17,15 @@
 
 import { createHmac, timingSafeEqual } from "node:crypto";
 
+/**
+ * Structured-mode CloudEvents 1.0 content type. The body posted to receivers
+ * is a CloudEvents JSON envelope (see `buildEventPayload` in the as-layer),
+ * so the wire `content-type` SHALL identify the CloudEvents JSON format
+ * rather than a generic `application/json`. CloudEvents HTTP Protocol
+ * Binding §3.2.
+ */
+export const DELIVERY_CONTENT_TYPE = "application/cloudevents+json; charset=utf-8";
+
 export const DEFAULT_BACKOFF_SECONDS: ReadonlyArray<number> = [
   30,
   120,
@@ -172,7 +181,7 @@ export async function executeDelivery(
     url: event.callbackUrl,
     method: "POST",
     headers: {
-      "content-type": "application/json",
+      "content-type": DELIVERY_CONTENT_TYPE,
       "webhook-id": event.eventId,
       "webhook-timestamp": String(timestamp),
       "webhook-signature": signature,
