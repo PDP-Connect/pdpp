@@ -3,8 +3,8 @@
  *
  * Owns the per-attempt delivery semantics:
  *
- * - HMAC-SHA256 signature over `<unix-timestamp>.<raw body>`;
- * - PDPP-Event-* header set;
+ * - Standard Webhooks HMAC-SHA256 signature over `{webhook-id}.{webhook-timestamp}.{raw body}`;
+ * - `webhook-id` / `webhook-timestamp` / `webhook-signature` header set;
  * - outcome classification (success / transient / permanent failure);
  * - retry scheduling (exponential backoff with jitter);
  * - dead-letter transition after the configured max attempts;
@@ -85,15 +85,62 @@ export type DeliveryOutcome =
       bodyText: string | null;
     };
 
-export function signEvent(secret: string, timestamp: number, body: string): string {
-  return `sha256=${createHmac("sha256", secret).update(`${timestamp}.${body}`).digest("hex")}`;
+/**
+ * Standard Webhooks signing primitives.
+ *
+ * Wire format follows https://www.standardwebhooks.com :
+ *
+ *   webhook-id        = stable event id
+ *   webhook-timestamp = unix seconds
+ *   webhook-signature = "v1,<base64(hmac_sha256(key, `${id}.${ts}.${body}`))>"
+ *
+ * `whsec_`-prefixed secrets carry a base64 payload; the bytes after the
+ * prefix decode to the raw HMAC key. Secrets without the prefix are hashed
+ * as UTF-8 bytes (compatibility shim for legacy/testing — production
+ * subscriptions always issue `whsec_` secrets).
+ *
+ * `webhook-signature` is space-separated when rotating: `"v1,sig v1,sig2"`.
+ * Verifiers must accept any matching `v1,` token.
+ */
+export function decodeWebhookSecret(secret: string): Buffer {
+  if (secret.startsWith("whsec_")) {
+    return Buffer.from(secret.slice("whsec_".length), "base64");
+  }
+  return Buffer.from(secret, "utf8");
 }
 
-export function verifySignatureHeader(secret: string, timestamp: number, body: string, header: string): boolean {
-  const expected = signEvent(secret, timestamp, body);
-  const a = Buffer.from(expected);
-  const b = Buffer.from(header);
-  return a.length === b.length && timingSafeEqual(a, b);
+function rawSignature(secret: string, eventId: string, timestamp: number, body: string): string {
+  const key = decodeWebhookSecret(secret);
+  return createHmac("sha256", key).update(`${eventId}.${timestamp}.${body}`).digest("base64");
+}
+
+/** Build the `webhook-signature` header value for a single event. */
+export function signEvent(secret: string, eventId: string, timestamp: number, body: string): string {
+  return `v1,${rawSignature(secret, eventId, timestamp, body)}`;
+}
+
+/** Verify a `webhook-signature` header containing one or more space-separated `v1,<sig>` tokens. */
+export function verifySignatureHeader(
+  secret: string,
+  eventId: string,
+  timestamp: number,
+  body: string,
+  header: string,
+): boolean {
+  const expected = rawSignature(secret, eventId, timestamp, body);
+  const expectedBuf = Buffer.from(expected);
+  for (const token of header.split(/\s+/).filter(Boolean)) {
+    const idx = token.indexOf(",");
+    if (idx < 0) continue;
+    const version = token.slice(0, idx);
+    if (version !== "v1") continue;
+    const candidate = token.slice(idx + 1);
+    const candidateBuf = Buffer.from(candidate);
+    if (candidateBuf.length === expectedBuf.length && timingSafeEqual(candidateBuf, expectedBuf)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function snippet(text: string | null): string | null {
@@ -120,16 +167,15 @@ export async function executeDelivery(
 ): Promise<DeliveryOutcome> {
   const backoff = deps.backoffSeconds ?? DEFAULT_BACKOFF_SECONDS;
   const timestamp = deps.nowSeconds();
-  const signature = signEvent(event.secret, timestamp, event.payloadJson);
+  const signature = signEvent(event.secret, event.eventId, timestamp, event.payloadJson);
   const response = await deps.request({
     url: event.callbackUrl,
     method: "POST",
     headers: {
-      "Content-Type": "application/json",
-      "PDPP-Event-Timestamp": String(timestamp),
-      "PDPP-Event-Id": event.eventId,
-      "PDPP-Subscription-Id": event.subscriptionId,
-      "PDPP-Event-Signature": signature,
+      "content-type": "application/json",
+      "webhook-id": event.eventId,
+      "webhook-timestamp": String(timestamp),
+      "webhook-signature": signature,
     },
     body: event.payloadJson,
   });

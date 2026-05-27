@@ -59,6 +59,7 @@ import { postgresPersistContentAddressedBlob } from './postgres-records.js';
 import { createConsentStore } from './stores/consent-store.js';
 import { createOwnerDeviceAuthStore } from './stores/owner-device-auth-store.js';
 import {
+  buildEventPayload,
   executeApplyGrantRevoke,
   executeCreateSubscription,
   executeDeleteSubscription,
@@ -8586,22 +8587,11 @@ export async function startServer(opts = {}) {
       const now = new Date().toISOString();
       for (const ev of events) {
         const eventId = `evt_${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
-        const payload = JSON.stringify({
-          specversion: '1.0-pdpp',
-          id: eventId,
-          type: ev.type,
-          // Canonical dereferenceable source path on the resource server.
-          // Matches the route mounted in buildRsApp at /v1/event-subscriptions.
-          source: `/v1/event-subscriptions/${ev.subscriptionId}`,
-          subscription_id: ev.subscriptionId,
-          occurred_at: ev.occurredAt,
-          data: ev.data,
-        });
         await store.enqueueEvent({
           subscriptionId: ev.subscriptionId,
           eventId,
           eventType: ev.type,
-          payloadJson: payload,
+          payloadJson: buildEventPayload(eventId, ev),
           enqueuedAt: now,
           nextAttemptAt: now,
         });

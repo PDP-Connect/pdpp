@@ -167,8 +167,13 @@ function newSubscriptionId(): string {
 function newEventId(): string {
   return `evt_${randomBytes(12).toString("hex")}`;
 }
+/**
+ * Per-subscription signing secret. Uses Standard Webhooks `whsec_` prefix
+ * and a base64-encoded 32-byte random key as the HMAC payload, so receivers
+ * can use any off-the-shelf Standard Webhooks library to verify deliveries.
+ */
 function newSecret(): string {
-  return `pess_${randomBytes(24).toString("base64url")}`;
+  return `whsec_${randomBytes(32).toString("base64")}`;
 }
 function newChallenge(): string {
   return randomBytes(16).toString("hex");
@@ -233,8 +238,30 @@ export async function executeCreateSubscription(
  */
 export const SUBSCRIPTION_RESOURCE_PATH = "/v1/event-subscriptions";
 
+/**
+ * CloudEvents 1.0 `specversion`. The PDPP profile version travels in the
+ * `pdppversion` extension attribute (CloudEvents §extension-context-attributes)
+ * so the envelope stays conformant.
+ */
+export const CLOUDEVENTS_SPECVERSION = "1.0";
+export const PDPP_EVENTS_PROFILE_VERSION = "1";
+
 function eventSource(subscriptionId: string): string {
   return `${SUBSCRIPTION_RESOURCE_PATH}/${subscriptionId}`;
+}
+
+/** Serialize a derived event as a CloudEvents 1.0 JSON envelope. */
+export function buildEventPayload(eventId: string, event: DerivedEvent): string {
+  return JSON.stringify({
+    specversion: CLOUDEVENTS_SPECVERSION,
+    pdppversion: PDPP_EVENTS_PROFILE_VERSION,
+    id: eventId,
+    type: event.type,
+    source: eventSource(event.subscriptionId),
+    subscription_id: event.subscriptionId,
+    occurred_at: event.occurredAt,
+    data: event.data,
+  });
 }
 
 async function enqueue(
@@ -243,20 +270,11 @@ async function enqueue(
   nowIso: string,
 ): Promise<void> {
   const eventId = newEventId();
-  const payload = {
-    specversion: "1.0-pdpp",
-    id: eventId,
-    type: event.type,
-    source: eventSource(event.subscriptionId),
-    subscription_id: event.subscriptionId,
-    occurred_at: event.occurredAt,
-    data: event.data,
-  };
   await deps.store.enqueueEvent({
     subscriptionId: event.subscriptionId,
     eventId,
     eventType: event.type,
-    payloadJson: JSON.stringify(payload),
+    payloadJson: buildEventPayload(eventId, event),
     enqueuedAt: nowIso,
     nextAttemptAt: nowIso,
   });
@@ -393,20 +411,11 @@ export async function executeEnqueueTestEvent(
   const now = deps.nowIso();
   const event = buildTestEvent(row.subscription_id, now);
   const eventId = newEventId();
-  const payload = {
-    specversion: "1.0-pdpp",
-    id: eventId,
-    type: event.type,
-    source: eventSource(event.subscriptionId),
-    subscription_id: event.subscriptionId,
-    occurred_at: event.occurredAt,
-    data: event.data,
-  };
   await deps.store.enqueueEvent({
     subscriptionId: row.subscription_id,
     eventId,
     eventType: event.type,
-    payloadJson: JSON.stringify(payload),
+    payloadJson: buildEventPayload(eventId, event),
     enqueuedAt: now,
     nextAttemptAt: now,
   });
@@ -436,20 +445,11 @@ export async function executeApplyGrantRevoke(
     if (wasActive) {
       const event = buildGrantRevokedEvent(row.subscription_id, now);
       const eventId = newEventId();
-      const payload = {
-        specversion: "1.0-pdpp",
-        id: eventId,
-        type: event.type,
-        source: eventSource(event.subscriptionId),
-        subscription_id: event.subscriptionId,
-        occurred_at: event.occurredAt,
-        data: event.data,
-      };
       await deps.store.enqueueEvent({
         subscriptionId: row.subscription_id,
         eventId,
         eventType: event.type,
-        payloadJson: JSON.stringify(payload),
+        payloadJson: buildEventPayload(eventId, event),
         enqueuedAt: now,
         nextAttemptAt: now,
       });

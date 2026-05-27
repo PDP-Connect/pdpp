@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
-import { createHmac } from 'node:crypto';
+import { createHmac, randomBytes } from 'node:crypto';
 import test from 'node:test';
 
 import {
+  decodeWebhookSecret,
   executeDelivery,
   signEvent,
   verifySignatureHeader,
@@ -10,7 +11,7 @@ import {
 import { defaultHttpTransport } from '../server/client-event-delivery-worker.ts';
 
 const NOW_MS = Date.parse('2026-05-27T00:00:00.000Z');
-const SECRET = 'pess_test_secret_value';
+const SECRET = `whsec_${randomBytes(32).toString('base64')}`;
 
 function fixedDeps(overrides = {}) {
   return {
@@ -21,16 +22,26 @@ function fixedDeps(overrides = {}) {
   };
 }
 
-test('signEvent / verifySignatureHeader round-trip', () => {
+test('Standard Webhooks signing matches the canonical {id}.{ts}.{body} construction', () => {
   const body = '{"hello":"world"}';
   const timestamp = Math.floor(NOW_MS / 1000);
-  const signature = signEvent(SECRET, timestamp, body);
-  assert.ok(signature.startsWith('sha256='));
-  // explicit recompute matches
-  const expected = `sha256=${createHmac('sha256', SECRET).update(`${timestamp}.${body}`).digest('hex')}`;
+  const eventId = 'evt_round_trip';
+  const signature = signEvent(SECRET, eventId, timestamp, body);
+  assert.match(signature, /^v1,[A-Za-z0-9+/=]+$/);
+  const expected = `v1,${createHmac('sha256', decodeWebhookSecret(SECRET))
+    .update(`${eventId}.${timestamp}.${body}`)
+    .digest('base64')}`;
   assert.equal(signature, expected);
-  assert.equal(verifySignatureHeader(SECRET, timestamp, body, signature), true);
-  assert.equal(verifySignatureHeader(SECRET, timestamp, body, 'sha256=deadbeef'), false);
+  assert.equal(verifySignatureHeader(SECRET, eventId, timestamp, body, signature), true);
+  // Rotation: header carrying multiple `v1,` tokens still verifies if any match.
+  assert.equal(
+    verifySignatureHeader(SECRET, eventId, timestamp, body, `v1,DEADBEEF ${signature}`),
+    true,
+  );
+  // Tampered signature is rejected.
+  assert.equal(verifySignatureHeader(SECRET, eventId, timestamp, body, 'v1,DEADBEEF'), false);
+  // Mismatched id changes the signed string and must not verify.
+  assert.equal(verifySignatureHeader(SECRET, 'evt_other', timestamp, body, signature), false);
 });
 
 test('delivery records.changed treats 2xx as delivered', async () => {
@@ -48,9 +59,11 @@ test('delivery records.changed treats 2xx as delivered', async () => {
     {
       ...fixedDeps(),
       request: async (req) => {
-        assert.equal(req.headers['PDPP-Event-Id'], 'evt_x');
-        assert.equal(req.headers['PDPP-Subscription-Id'], 'sub_x');
-        assert.ok(req.headers['PDPP-Event-Signature'].startsWith('sha256='));
+        assert.equal(req.headers['webhook-id'], 'evt_x');
+        assert.equal(req.headers['webhook-timestamp'], String(Math.floor(NOW_MS / 1000)));
+        assert.match(req.headers['webhook-signature'], /^v1,[A-Za-z0-9+/=]+$/);
+        assert.equal(req.headers['PDPP-Event-Id'], undefined);
+        assert.equal(req.headers['PDPP-Event-Signature'], undefined);
         return { statusCode: 200, bodyText: 'ok', errorMessage: null, latencyMs: 12 };
       },
     },

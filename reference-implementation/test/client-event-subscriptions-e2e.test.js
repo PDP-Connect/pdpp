@@ -11,13 +11,16 @@
  */
 
 import assert from 'node:assert/strict';
-import { createHmac } from 'node:crypto';
 import { createServer } from 'node:http';
 import { dirname, join } from 'node:path';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import {
+  signEvent,
+  verifySignatureHeader,
+} from '../operations/rs-client-event-deliver/index.ts';
 import { startServer } from '../server/index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -102,7 +105,7 @@ function startReceiver({ challenge = null, respondWith = 'ok' } = {}) {
           body,
         };
         events.push(record);
-        if (req.headers['pdpp-event-signature'] && body.length) {
+        if (req.headers['webhook-signature'] && body.length) {
           let payload = null;
           try { payload = JSON.parse(body); } catch {}
           record.payload = payload;
@@ -147,10 +150,15 @@ async function waitForReceiverEvent(receiver, predicate, timeoutMs = 5000) {
 }
 
 function verifySignature(secret, headers, body) {
-  const ts = headers['pdpp-event-timestamp'];
-  const sig = headers['pdpp-event-signature'];
-  const expected = `sha256=${createHmac('sha256', secret).update(`${ts}.${body}`).digest('hex')}`;
-  return sig === expected;
+  const ts = Number(headers['webhook-timestamp']);
+  const id = headers['webhook-id'];
+  const sig = headers['webhook-signature'];
+  if (!id || !sig || !Number.isFinite(ts)) return false;
+  // Standard Webhooks libraries verify by recomputing the canonical signature
+  // and comparing against any v1 token in the header. Use both the helper and
+  // an independent recompute to guard against future drift.
+  if (!verifySignatureHeader(secret, id, ts, body, sig)) return false;
+  return signEvent(secret, id, ts, body).split(',')[1] === sig.split(',')[1];
 }
 
 test('client event subscriptions deliver signed hints end-to-end', async () => {
@@ -189,13 +197,18 @@ test('client event subscriptions deliver signed hints end-to-end', async () => {
     });
     assert.equal(createResp.status, 201);
     const { subscription_id, secret } = createResp.body;
-    assert.ok(secret.startsWith('pess_'));
+    assert.ok(secret.startsWith('whsec_'), `secret must use Standard Webhooks prefix; got ${secret}`);
 
     // Verification handshake should complete via the immediate-tick on create.
     const verifyEvent = await waitForReceiverEvent(
       receiver,
       (e) => e.payload?.type === 'pdpp.subscription.verify',
     );
+    assert.equal(verifyEvent.headers['webhook-id'], verifyEvent.payload.id);
+    assert.match(verifyEvent.headers['webhook-signature'], /^v1,[A-Za-z0-9+/=]+$/);
+    assert.equal(verifyEvent.headers['pdpp-event-signature'], undefined);
+    assert.equal(verifyEvent.payload.specversion, '1.0');
+    assert.equal(verifyEvent.payload.pdppversion, '1');
     assert.equal(
       verifySignature(secret, verifyEvent.headers, verifyEvent.body),
       true,
@@ -353,9 +366,17 @@ test('discovery: RS protected-resource metadata advertises client_event_subscrip
     assert.equal(cap.stability, 'reference_extension');
     assert.equal(cap.endpoint, '/v1/event-subscriptions');
     assert.equal(cap.transport, 'https_webhook');
+    assert.equal(cap.signing.profile, 'standard-webhooks');
     assert.equal(cap.signing.algorithm, 'HMAC-SHA256');
-    assert.equal(cap.signing.header, 'PDPP-Event-Signature');
-    assert.equal(cap.signing.signed_payload, '<timestamp>.<body>');
+    assert.equal(cap.signing.id_header, 'webhook-id');
+    assert.equal(cap.signing.timestamp_header, 'webhook-timestamp');
+    assert.equal(cap.signing.signature_header, 'webhook-signature');
+    assert.equal(cap.signing.signed_payload, '{webhook-id}.{webhook-timestamp}.{body}');
+    assert.equal(cap.signing.signature_encoding, 'v1,<base64>');
+    assert.equal(cap.signing.secret_prefix, 'whsec_');
+    assert.equal(cap.envelope.specversion, '1.0');
+    assert.equal(cap.envelope.pdppversion, '1');
+    assert.equal(cap.envelope.format, 'cloudevents+json');
     assert.ok(Array.isArray(cap.event_types));
     assert.ok(cap.event_types.includes('pdpp.records.changed'));
     assert.ok(cap.event_types.includes('pdpp.subscription.verify'));

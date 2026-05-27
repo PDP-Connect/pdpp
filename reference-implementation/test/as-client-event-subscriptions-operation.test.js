@@ -103,7 +103,7 @@ test('create persists subscription and enqueues verify event exactly once', asyn
     { actor: actor(), callbackUrl: 'https://example.com/hook' },
     deps(store),
   );
-  assert.ok(out.secret.startsWith('pess_'));
+  assert.ok(out.secret.startsWith('whsec_'));
   assert.ok(out.subscriptionId.startsWith('sub_'));
   const dump = store.__dump();
   assert.equal(dump.subs.length, 1);
@@ -112,6 +112,8 @@ test('create persists subscription and enqueues verify event exactly once', asyn
   assert.equal(dump.queue[0].eventType, 'pdpp.subscription.verify');
   const payload = JSON.parse(dump.queue[0].payloadJson);
   assert.equal(payload.type, 'pdpp.subscription.verify');
+  assert.equal(payload.specversion, '1.0', 'CloudEvents 1.0 specversion');
+  assert.equal(payload.pdppversion, '1', 'PDPP profile version travels as extension attribute');
   assert.ok(typeof payload.data.challenge === 'string' && payload.data.challenge.length > 0);
   // Canonical source path: /v1/event-subscriptions/<id>
   assert.equal(payload.source, `/v1/event-subscriptions/${out.subscriptionId}`);

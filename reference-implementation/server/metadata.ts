@@ -714,11 +714,23 @@ export interface ClientEventSubscriptionsCapability {
   // standardization is future work.
   scope: "reference_implementation";
   transport: "https_webhook";
-  // CloudEvents-flavored body shape carried in the request body; the
-  // wire constants are owned by the operation/derivation layer.
+  // CloudEvents 1.0 structured-mode JSON body. PDPP profile version is
+  // carried in the `pdppversion` CloudEvents extension attribute so the
+  // envelope stays interoperable with the CloudEvents 1.x ecosystem.
   envelope: {
-    specversion: "1.0-pdpp";
-    fields: readonly ["id", "type", "source", "subscription_id", "occurred_at", "data"];
+    format: "cloudevents+json";
+    specversion: "1.0";
+    pdppversion: "1";
+    fields: readonly [
+      "specversion",
+      "pdppversion",
+      "id",
+      "type",
+      "source",
+      "subscription_id",
+      "occurred_at",
+      "data",
+    ];
     no_record_bodies: true;
   };
   event_types: readonly [
@@ -727,16 +739,19 @@ export interface ClientEventSubscriptionsCapability {
     "pdpp.records.changed",
     "pdpp.grant.revoked",
   ];
+  // Standard Webhooks (https://www.standardwebhooks.com) compatible
+  // signing. Off-the-shelf Standard Webhooks libraries can verify
+  // deliveries against the secret returned at subscription create.
   signing: {
+    profile: "standard-webhooks";
     algorithm: "HMAC-SHA256";
-    header: "PDPP-Event-Signature";
-    timestamp_header: "PDPP-Event-Timestamp";
-    event_id_header: "PDPP-Event-Id";
-    subscription_id_header: "PDPP-Subscription-Id";
-    // signed value: `<unix-seconds>.<raw-body>` hashed under the
-    // per-subscription secret. Encoded as `sha256=<hex>` in the header.
-    signed_payload: "<timestamp>.<body>";
-    signature_encoding: "sha256=<hex>";
+    id_header: "webhook-id";
+    timestamp_header: "webhook-timestamp";
+    signature_header: "webhook-signature";
+    signed_payload: "{webhook-id}.{webhook-timestamp}.{body}";
+    signature_encoding: "v1,<base64>";
+    secret_prefix: "whsec_";
+    secret_payload_encoding: "base64";
   };
   delivery: {
     at_least_once: true;
@@ -782,8 +797,19 @@ export function buildClientEventSubscriptionsCapability({
     scope: "reference_implementation",
     transport: "https_webhook",
     envelope: {
-      specversion: "1.0-pdpp",
-      fields: ["id", "type", "source", "subscription_id", "occurred_at", "data"] as const,
+      format: "cloudevents+json",
+      specversion: "1.0",
+      pdppversion: "1",
+      fields: [
+        "specversion",
+        "pdppversion",
+        "id",
+        "type",
+        "source",
+        "subscription_id",
+        "occurred_at",
+        "data",
+      ] as const,
       no_record_bodies: true,
     },
     event_types: [
@@ -793,13 +819,15 @@ export function buildClientEventSubscriptionsCapability({
       "pdpp.grant.revoked",
     ] as const,
     signing: {
+      profile: "standard-webhooks",
       algorithm: "HMAC-SHA256",
-      header: "PDPP-Event-Signature",
-      timestamp_header: "PDPP-Event-Timestamp",
-      event_id_header: "PDPP-Event-Id",
-      subscription_id_header: "PDPP-Subscription-Id",
-      signed_payload: "<timestamp>.<body>",
-      signature_encoding: "sha256=<hex>",
+      id_header: "webhook-id",
+      timestamp_header: "webhook-timestamp",
+      signature_header: "webhook-signature",
+      signed_payload: "{webhook-id}.{webhook-timestamp}.{body}",
+      signature_encoding: "v1,<base64>",
+      secret_prefix: "whsec_",
+      secret_payload_encoding: "base64",
     },
     delivery: {
       at_least_once: true,
