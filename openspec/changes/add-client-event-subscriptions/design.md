@@ -111,10 +111,32 @@ All three tables are owner-local; they do not appear in client-visible reads out
 
 - **Generic `/v1/events`**: rejected for this tranche. The point is to prove the construction in the reference. Once the shape stabilizes, a Core change can promote a generic event surface.
 - **Hide behind `/_ref/...`**: rejected. The route is a real client-facing surface; `_ref` is reserved for operator/admin paths that PDPP clients do not consume. Hiding the route here would require clients to read out-of-band docs and would not match the runtime authorization shape (client bearer, grant-scoped).
-- **Include record bodies in events**: rejected. Bodies require the same projection enforcement as `rs.records.list`, defeating the "minimal hint" property and forcing duplicate grant logic in delivery.
+- **Hint-only vs payload-carrying events**: hint-only is the SLVP ideal and the only mode this tranche ships. Stripe webhooks ship full snapshots (or "thin" events that an SDK re-hydrates); Plaid, Google push channels, and MCP `notifications/resources/updated` ship pure hints and force receivers through the system's existing read API. PDPP's read API is the single point where stream membership, view, field projection, time-range, resources, `changes_since`, tombstone, and cursor-expiry semantics are enforced (`spec-core.md` §8). A payload-carrying mode would either (a) duplicate that enforcer inside the delivery worker, or (b) inline a paginated `changes_since` read at delivery time, which breaks the session-horizon anchoring guarantee that paginated `changes_since` relies on. Both options import incidental complexity into the push path. The hint envelope already carries a `data.changes_since` cursor positioned immediately before the notified change, so receivers replay the exact change via the canonical read path. A future opt-in payload mode would need its own OpenSpec change covering signing of large bodies, projection-equivalence with `rs.records.list`, encryption-at-rest implications, and pagination semantics for multi-record payloads; it is explicitly out of scope here.
+- **Include record bodies in events**: rejected (see hint-only vs payload-carrying above). Bodies require the same projection enforcement as `rs.records.list`, defeating the "minimal hint" property and forcing duplicate grant logic in delivery.
 - **Synchronous in-request delivery from `ingestRecord`**: rejected. Couples write latency to receiver liveness, violates the "after durable commit" requirement, and makes retry impossible.
 - **Reuse owner web push (`web_push_subscriptions`)**: rejected. That is owner-only, browser push, and has different security properties (VAPID). Client subscriptions must be grant-scoped and HMAC-signed.
 - **SQLite-only with Postgres deferred**: rejected on revision. The RI ships against both backends in the Docker target; storage parity is part of the closeout, not a follow-up.
+
+## Event taxonomy boundary
+
+This tranche ships exactly four event types, split across two axes:
+
+| Axis | Type | Purpose |
+| --- | --- | --- |
+| Content | `pdpp.records.changed` | A record that the bound grant's projection covers has been committed. Carries `stream`, optional `connection_id`, and a `changes_since` cursor positioned before the change. |
+| Catalog (grant lifecycle) | `pdpp.grant.revoked` | The bound grant transitioned out of an active state. Best-effort one-shot; the subscription then transitions to `disabled_revoked`. |
+| Channel handshake | `pdpp.subscription.verify` | One-shot proof-of-possession of the callback URL. |
+| Channel diagnostic | `pdpp.subscription.test` | Client-initiated round-trip probe for end-to-end verification. |
+
+Deliberately **not** in scope for this tranche, with the rationale recorded so a future change can promote them:
+
+- `pdpp.subscription.disabled` (failure-rate auto-disable, operator-initiated disable): a disabled channel is by definition unable to deliver its own disablement signal. The honest contract is that disablement is observable via `GET /v1/event-subscriptions/:id` (status) and via 401/410 on the bound grant's reads. A future change may add a best-effort *single* attempt with no retry, framed as advisory not authoritative.
+- `pdpp.grant.expiring` / `pdpp.grant.expired`: deferred until grant expiration is wired in the AS. Today the only grant-lifecycle transition that produces an event is revocation.
+- `pdpp.scope.changed`: deferred. PDPP grants are immutable in v0.1; a grant's scope cannot narrow or widen mid-life. If a future change introduces grant amendments, the catalog axis needs a second event type.
+- `pdpp.records.deleted` / explicit tombstone events: rejected. Tombstones already flow through `rs.records.list` under `changes_since`; an additional event type would double-encode the same signal.
+- Reference-operator events (connector run started/finished/failed, schedule changed, owner notification fan-out): not in scope. These are owner-facing operator concerns and live on the owner notification channel (`web_push_subscriptions` and the operator dashboard read model). Promoting them into the client subscription channel would conflate operator state with grant-scoped client signaling and reintroduce the boundary confusion that `docs/voice-and-framing.md §3` warns against.
+
+The event-derivation seam (`derivClientEventsFromRecordChange`) intentionally stays narrow so that adding any of the deferred types is additive and does not perturb the four shipped types.
 
 ## Acceptance Checks
 
@@ -132,3 +154,5 @@ All three tables are owner-local; they do not appear in client-visible reads out
 - Subscription `secret` is shown once; lost secrets require a `PATCH .../rotate-secret` which invalidates outstanding signatures.
 - Dead-letter retention is unbounded in this slice. A later change can add a TTL or operator dashboard. Owner can inspect `client_event_attempts` directly.
 - Verification handshake assumes the callback URL stays stable. Changing the callback URL via PATCH re-enters `pending_verification`.
+- Auto-disable on exhausted retries is silent over the channel by design (see Event taxonomy boundary). Clients that need to detect disablement must poll `GET /v1/event-subscriptions/:id` or rely on read-path errors against the bound grant. Adding a best-effort `pdpp.subscription.disabled` event is deferred to a future change.
+- Payload-carrying events are deferred. Receivers must currently make a second `rs.records.list` call to materialize the changed record. The latency cost is acknowledged and accepted in exchange for one canonical projection enforcer.
