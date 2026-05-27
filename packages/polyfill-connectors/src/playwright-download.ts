@@ -26,24 +26,39 @@ async function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
+function firstNonEmpty(buffer: Buffer, fallback: Buffer | null): Buffer | null {
+  return buffer.length > 0 ? buffer : fallback;
+}
+
 export async function readPlaywrightDownloadBuffer(download: PlaywrightDownloadLike): Promise<Buffer> {
+  let emptyFallback: Buffer | null = null;
+
   if (typeof download.createReadStream === "function") {
     const stream = await download.createReadStream();
     if (stream) {
-      return await streamToBuffer(stream);
+      const buffer = await streamToBuffer(stream);
+      if (buffer.length > 0) {
+        return buffer;
+      }
+      emptyFallback = buffer;
     }
   }
 
   const path = typeof download.path === "function" ? await download.path().catch((): string | null => null) : null;
   if (path) {
-    return await readFile(path);
+    const buffer = await readFile(path);
+    if (buffer.length > 0) {
+      return buffer;
+    }
+    emptyFallback = firstNonEmpty(buffer, emptyFallback);
   }
 
   const tempDir = await mkdtemp(join(tmpdir(), "pdpp-playwright-download-"));
   try {
     const target = join(tempDir, download.suggestedFilename?.() || "download.bin");
     await download.saveAs(target);
-    return await readFile(target);
+    const buffer = await readFile(target);
+    return firstNonEmpty(buffer, emptyFallback) ?? buffer;
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

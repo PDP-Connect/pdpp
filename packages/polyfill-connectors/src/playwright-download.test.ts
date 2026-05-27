@@ -85,3 +85,25 @@ test("readPlaywrightDownloadBuffer: falls back to path() when stream is unavaila
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("readPlaywrightDownloadBuffer: falls back when stream yields an empty artifact", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pdpp-playwright-download-empty-stream-test-"));
+  try {
+    const { writeFile } = await import("node:fs/promises");
+    const mock: PlaywrightDownloadLike = {
+      createReadStream() {
+        return Promise.resolve(Readable.from([Buffer.alloc(0)]));
+      },
+      suggestedFilename() {
+        return "download.pdf";
+      },
+      async saveAs(path: string): Promise<void> {
+        await writeFile(path, Buffer.from("fallback-pdf"));
+      },
+    };
+
+    assert.equal((await readPlaywrightDownloadBuffer(mock)).toString("utf8"), "fallback-pdf");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

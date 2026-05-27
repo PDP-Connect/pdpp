@@ -135,6 +135,9 @@ async function consumeDownload(
 ): Promise<{ buffer: Buffer; suggestedFilename: string } | null> {
   const dl = await dlPromise;
   const buffer = await readPlaywrightDownloadBuffer(dl);
+  if (buffer.length === 0) {
+    return null;
+  }
   return { buffer, suggestedFilename: dl.suggestedFilename() };
 }
 
@@ -153,7 +156,7 @@ async function downloadViaDirectLink(row: Locator, downloadQueue: DownloadQueue)
   try {
     const result = await consumeDownload(dlPromise);
     if (!result) {
-      return { ok: false, reason: "download_no_path" };
+      return { ok: false, reason: "download_empty" };
     }
     return { ok: true, buffer: result.buffer, suggestedFilename: result.suggestedFilename };
   } catch (err) {
@@ -223,7 +226,7 @@ async function clickDownloadAndConsume(
       /* ignore */
     });
     if (!result) {
-      return { ok: false, reason: "download_no_path" };
+      return { ok: false, reason: "download_empty" };
     }
     return { ok: true, buffer: result.buffer, suggestedFilename: result.suggestedFilename };
   } catch (err) {
