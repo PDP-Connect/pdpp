@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { headers } from "next/headers";
 import Link from "next/link";
 import { ConnectAgentCard } from "@/app/dashboard/components/connect-agent-card.tsx";
 import { buttonVariants } from "@/components/ui/button.tsx";
@@ -14,6 +15,15 @@ export const metadata: Metadata = {
   description:
     "A public explainer for the forkable PDPP reference implementation: purpose, architecture, trust boundaries, and local/self-hosted operation.",
 };
+
+async function getRequestOrigin(): Promise<string> {
+  const headerList = await headers();
+  const host = headerList.get("x-forwarded-host") ?? headerList.get("host") ?? "localhost:3002";
+  const protocol =
+    headerList.get("x-forwarded-proto")?.split(",")[0]?.trim() ||
+    (host.startsWith("localhost") || host.startsWith("127.0.0.1") ? "http" : "https");
+  return `${protocol}://${host}`;
+}
 
 const architectureLayers = [
   {
@@ -100,7 +110,9 @@ const referenceLinks = [
   },
 ] as const;
 
-export default function ReferencePage() {
+export default async function ReferencePage() {
+  const providerUrl = await getRequestOrigin();
+
   return (
     <main className="relative overflow-hidden">
       <div
@@ -151,7 +163,7 @@ export default function ReferencePage() {
         </section>
 
         <div className="mt-10">
-          <ConnectAgentCard mode="live" />
+          <ConnectAgentCard mode="live" providerUrl={providerUrl} />
         </div>
 
         <section className="mt-14 grid gap-8 lg:grid-cols-[15rem_minmax(0,1fr)]">

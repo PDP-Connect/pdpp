@@ -24,6 +24,10 @@ export function pdppCliNoInstallCommand(cliCommand: string): string | null {
   return `npx -y ${pdppCliPackageInfo.packageSpecifier} ${args}`;
 }
 
+export function pdppCliConnectCommandFor(providerUrl: string): string {
+  return createPdppCliCommand(providerUrl);
+}
+
 /**
  * Render the public `@pdpp/local-collector@beta` enrollment command for a freshly
  * minted enrollment code. Operators paste this on the host that has Claude

@@ -30,7 +30,7 @@ export default async function SandboxDeploymentPage() {
       <DeploymentDiagnosticsView
         afterDiagnostics={
           <>
-            <ConnectAgentCard mode="sandbox" />
+            <ConnectAgentCard mode="sandbox" providerUrl={issuer} />
             <SandboxDeploymentExtensions auth={auth} capabilities={capabilities} protectedResource={rs} />
           </>
         }

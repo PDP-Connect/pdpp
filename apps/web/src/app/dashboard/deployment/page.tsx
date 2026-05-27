@@ -5,7 +5,7 @@ import { LivePoller } from "../components/live-poller.tsx";
 import { DashboardShell, ServerUnreachable } from "../components/shell.tsx";
 import { isDeploymentIndexing } from "../components/views/deployment-diagnostics-state.ts";
 import { DeploymentDiagnosticsView } from "../components/views/deployment-diagnostics-view.tsx";
-import { ReferenceServerUnreachableError } from "../lib/owner-token.ts";
+import { getReferencePublicOrigin, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import { type DeploymentDiagnostics, getDeploymentDiagnostics } from "../lib/ref-client.ts";
 
 export const dynamic = "force-dynamic";
@@ -20,6 +20,7 @@ export const dynamic = "force-dynamic";
 export default async function DeploymentPage() {
   let report: DeploymentDiagnostics | null = null;
   let unreachable = false;
+  const providerUrl = await getReferencePublicOrigin();
   try {
     report = await getDeploymentDiagnostics();
   } catch (err) {
@@ -51,7 +52,7 @@ export default async function DeploymentPage() {
         description="Operator diagnostics for the reference retrieval surfaces. Read-only. Secret environment values are redacted before reaching this page."
         report={report}
       />
-      <ConnectAgentCard mode="live" />
+      <ConnectAgentCard mode="live" providerUrl={providerUrl} />
     </DashboardShell>
   );
 }
