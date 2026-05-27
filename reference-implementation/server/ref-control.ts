@@ -1711,8 +1711,11 @@ export function projectConnectorSummaryConnectionHealth(input: {
   const backoffNextRunAt = typeof effectiveSchedulerBackoff?.next_run_at === "string" ? effectiveSchedulerBackoff.next_run_at : nextDueAt;
   const backoffReasonClass =
     typeof effectiveSchedulerBackoff?.reason_class === "string" ? effectiveSchedulerBackoff.reason_class : lastErrorCode;
+  const hasRetryBackoffEvidence =
+    effectiveSchedulerBackoff !== null &&
+    (effectiveSchedulerBackoff.backoff_applied === true || backoffConsecutiveFailures > 0);
   const schedulerFailureStatus =
-    effectiveSchedulerBackoff && (effectiveSchedulerBackoff.backoff_applied === true || backoffConsecutiveFailures > 0) ? "failed" : null;
+    hasRetryBackoffEvidence ? "failed" : null;
   const nowIso = input.nowIso ?? new Date().toISOString();
   const attention = selectAttentionEvidence({
     attentionRecords: input.attentionRecords ?? [],
@@ -1723,7 +1726,7 @@ export function projectConnectorSummaryConnectionHealth(input: {
   return computeConnectionHealth({
     activity: { active: activeRunId !== null },
     attention,
-    backoff: effectiveSchedulerBackoff || nextDueAt
+    backoff: hasRetryBackoffEvidence
       ? {
           backoffApplied: effectiveSchedulerBackoff?.backoff_applied === true,
           consecutiveFailures: backoffConsecutiveFailures,

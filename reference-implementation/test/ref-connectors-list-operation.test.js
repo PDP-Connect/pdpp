@@ -459,6 +459,35 @@ test('connector summary connection health projects durable scheduler backoff as 
   assert.equal(snapshot.reason_code, 'rate_limited');
 });
 
+test('connector summary connection health does not treat normal next_due_at as retry backoff', () => {
+  const run = {
+    event_count: 1,
+    failure_reason: null,
+    finished_at: '2026-05-19T12:00:00.000Z',
+    first_at: '2026-05-19T11:59:00.000Z',
+    known_gaps: [],
+    last_at: '2026-05-19T12:00:00.000Z',
+    run_id: 'run_success',
+    started_at: '2026-05-19T11:59:00.000Z',
+    status: 'succeeded',
+  };
+  const snapshot = projectConnectorSummaryConnectionHealth({
+    freshness: { status: 'current', captured_at: '2026-05-19T12:00:00.000Z' },
+    lastRun: run,
+    lastSuccessfulRun: run,
+    nowIso: '2026-05-19T12:05:00.000Z',
+    schedule: {
+      enabled: true,
+      next_due_at: '2026-05-19T13:00:00.000Z',
+      scheduler_backoff: null,
+    },
+  });
+  assert.equal(snapshot.state, 'healthy');
+  assert.equal(snapshot.reason_code, null);
+  assert.equal(snapshot.next_attempt_at, null);
+  assert.equal(snapshot.conditions.find((condition) => condition.type === 'RetryPolicyClear')?.reason, 'no_active_backoff');
+});
+
 test('connector summary connection health uses scheduler backoff even when run spine summary is absent', () => {
   const snapshot = projectConnectorSummaryConnectionHealth({
     freshness: { status: 'unknown', captured_at: '2026-05-19T12:00:00.000Z' },
