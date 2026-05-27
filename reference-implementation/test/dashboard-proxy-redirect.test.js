@@ -7,21 +7,18 @@
 // unauthenticated browsers to `/owner/login?return_to=...` before any
 // server component renders.
 //
-// What this test pins, with PDPP_OWNER_PASSWORD set on the web process:
+// What this test pins for production `next start`:
 //   1. GET /dashboard          (no cookie) -> 307 to /owner/login?return_to=%2Fdashboard
 //   2. GET /dashboard/records/spotify (no cookie) -> 307 to ...?return_to=%2Fdashboard%2Frecords%2Fspotify
 //   3. The redirect carries X-Robots-Tag: noindex, nofollow
-// And, with PDPP_OWNER_PASSWORD UNSET on the web process:
-//   4. GET /dashboard (no cookie) -> NOT a redirect; the request flows
-//      through to the dashboard surface (preserves the open local-dev
-//      behavior pinned by `gate-ref-reads-when-owner-auth-enabled`).
+// Production `next start` defaults the operator console to redirecting
+// unauthenticated dashboard navigations even when the password is only held
+// by the AS. Local-dev opt-out policy is covered by apps/web's pure proxy
+// policy tests; this integration test pins the production BFF behavior.
 //
 // The test uses the same composed-origin spawn pattern as
-// `composed-origin.test.js` because the proxy reads PDPP_OWNER_PASSWORD
-// at module load time on the web process. Driving both the "enabled"
-// and "disabled" branches requires two separate `next start` processes
-// — they share the cached `.next` build, so the marginal cost is the
-// per-process startup, not a rebuild.
+// `composed-origin.test.js` because the proxy is owned by the web process
+// while the authoritative dashboard DAL gate is owned by the AS.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -187,10 +184,10 @@ async function waitForHttpStatus(url, { expectedStatus = 200, timeoutMs = 20000 
   );
 }
 
-// Mirrors composed-origin.test.js's startWebServer, but lets each caller
-// decide whether PDPP_OWNER_PASSWORD is present in the web process's env.
-// That env var is what the proxy reads at module load time to decide
-// whether the cookie-presence redirect is active.
+// Mirrors composed-origin.test.js's startWebServer while keeping the web
+// process env explicit. Production `next start` redirects logged-out
+// dashboard navigations by default; the password is still passed here so the
+// AS and web process match the self-hosted operator-console shape.
 async function startWebServer({ webOrigin, asUrl, rsUrl, ownerPassword }) {
   const webUrl = new URL(webOrigin);
   const port = Number.parseInt(webUrl.port, 10);
@@ -198,8 +195,7 @@ async function startWebServer({ webOrigin, asUrl, rsUrl, ownerPassword }) {
 
   // Build a clean env: copy the parent env, then explicitly delete
   // PDPP_OWNER_PASSWORD before optionally re-setting it. This keeps the
-  // "disabled" subtest honest even if the test runner inherits the var
-  // from a developer shell.
+  // test honest even if the runner inherits secrets from a developer shell.
   const childEnv = {
     ...process.env,
     NEXT_TELEMETRY_DISABLED: '1',
@@ -314,56 +310,6 @@ test('proxy redirects unauthenticated /dashboard hits to /owner/login when owner
     await t.test('redirect carries X-Robots-Tag: noindex, nofollow', async () => {
       const resp = await fetch(`${webOrigin}/dashboard`, { redirect: 'manual' });
       assert.equal(resp.status, 307);
-      assert.equal(resp.headers.get('x-robots-tag'), 'noindex, nofollow');
-    });
-  } finally {
-    await stopChildProcess(webServer.child);
-    await closeServer(server);
-  }
-});
-
-test('proxy does NOT redirect /dashboard when PDPP_OWNER_PASSWORD is unset (open local-dev passthrough)', async (t) => {
-  await ensureWebBuild();
-  const webPort = await allocatePort();
-  const webOrigin = `http://127.0.0.1:${webPort}`;
-
-  // AS/RS are still spawned — the dashboard surface needs them — but
-  // the AS is also booted WITHOUT an owner password so it is in the same
-  // open-local-dev mode the web proxy is testing for.
-  const server = await startServer({
-    quiet: true,
-    asPort: 0,
-    rsPort: 0,
-    dbPath: ':memory:',
-    referenceMode: 'composed',
-    referenceOrigin: webOrigin,
-  });
-  const asUrl = `http://127.0.0.1:${server.asPort}`;
-  const rsUrl = `http://127.0.0.1:${server.rsPort}`;
-  const webServer = await startWebServer({
-    webOrigin,
-    asUrl,
-    rsUrl,
-    ownerPassword: undefined,
-  });
-
-  try {
-    await t.test('GET /dashboard passes through (no 307 to /owner/login)', async () => {
-      const resp = await fetch(`${webOrigin}/dashboard`, { redirect: 'manual' });
-      // The proxy must not synthesize a redirect when owner-auth is off.
-      // The downstream response could be a 200 (rendered dashboard) or a
-      // server-error page if the dashboard surface itself fails — what we
-      // pin here is the ABSENCE of the 307 -> /owner/login redirect.
-      if (resp.status === 307 || resp.status === 302) {
-        const location = resp.headers.get('location') ?? '';
-        assert.ok(
-          !location.startsWith('/owner/login'),
-          `proxy unexpectedly redirected to owner login when owner-auth is disabled: ${resp.status} -> ${location}`,
-        );
-      }
-      // Dashboard responses must always carry the noindex header,
-      // regardless of branch — this is the documented invariant in the
-      // proxy comment ("never indexable, regardless of which layout renders").
       assert.equal(resp.headers.get('x-robots-tag'), 'noindex, nofollow');
     });
   } finally {

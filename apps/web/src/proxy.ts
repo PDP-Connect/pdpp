@@ -3,6 +3,7 @@ import { type NextRequest, NextResponse } from "next/server";
 import { OWNER_AUTH_COOKIE_NAME } from "pdpp-reference-implementation/owner-session";
 import { resolveReferenceTopology } from "pdpp-reference-implementation/reference-topology";
 import { normalizeDashboardReturnTo } from "@/app/dashboard/lib/return-to.ts";
+import { isDashboardAuthRedirectEnabled } from "./proxy-policy.ts";
 import { redirectSandboxAliasPath, rewriteSandboxCanonicalPath } from "./proxy-paths.ts";
 
 const { rewrite: rewriteLLM } = rewritePath("/docs{/*path}", "/llms.mdx/docs{/*path}");
@@ -16,12 +17,11 @@ const AS_PROXY_TARGET = referenceTopology.asInternalUrl;
 // for the redirect UX; the DAL (dashboard/lib/verify-session.ts) is the
 // authoritative gate that runs before any data leaves the AS.
 //
-// We only redirect when owner-auth is plausibly enabled in this process. When
-// `PDPP_OWNER_PASSWORD` is unset, the local-dev open path stays open and the
-// AS remains authoritative for downstream `_ref` / `/v1` requests. This
-// matches the behavior pinned by `gate-ref-reads-when-owner-auth-enabled`.
-const OWNER_AUTH_PROBABLY_ENABLED =
-  typeof process.env.PDPP_OWNER_PASSWORD === "string" && process.env.PDPP_OWNER_PASSWORD.length > 0;
+// Production operator consoles redirect logged-out dashboard navigations by
+// default. Local development stays open unless owner-auth is explicitly
+// configured, and tests/operators can opt out with
+// PDPP_DASHBOARD_AUTH_REDIRECT=0.
+const DASHBOARD_AUTH_REDIRECT_ENABLED = isDashboardAuthRedirectEnabled();
 
 function resolveReferenceProxyTarget(pathname: string): string | null {
   // Public protocol paths use route handlers, not middleware rewrites, so
@@ -73,7 +73,7 @@ export default function proxy(request: NextRequest) {
     // render race that previously surfaced raw 401s on logged-out
     // /dashboard hits. The DAL (dashboard/lib/verify-session.ts) is
     // the authoritative gate; this is purely UX.
-    if (OWNER_AUTH_PROBABLY_ENABLED) {
+    if (DASHBOARD_AUTH_REDIRECT_ENABLED) {
       const sessionCookie = request.cookies.get(OWNER_AUTH_COOKIE_NAME);
       if (!sessionCookie?.value) {
         const returnTo = normalizeDashboardReturnTo(`${request.nextUrl.pathname}${request.nextUrl.search}`);

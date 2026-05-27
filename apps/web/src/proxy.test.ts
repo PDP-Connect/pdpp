@@ -26,6 +26,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { isDashboardAuthRedirectEnabled } from "./proxy-policy.ts";
 import { redirectSandboxAliasPath, rewriteSandboxCanonicalPath } from "./proxy-paths.ts";
 
 test("rewriteSandboxCanonicalPath maps /sandbox/_ref/** onto /sandbox/ref/**", () => {
@@ -99,4 +100,26 @@ test("redirectSandboxAliasPath does not over-match sibling paths", () => {
   assert.equal(redirectSandboxAliasPath("/sandbox/reference"), null);
   assert.equal(redirectSandboxAliasPath("/sandbox/well-known-extra"), null);
   assert.equal(redirectSandboxAliasPath("/sandbox/v1/schema"), null);
+});
+
+test("dashboard auth redirect policy defaults on for production operator consoles", () => {
+  assert.equal(isDashboardAuthRedirectEnabled({ NODE_ENV: "production" }), true);
+  assert.equal(
+    isDashboardAuthRedirectEnabled({
+      NODE_ENV: "production",
+      PDPP_DASHBOARD_AUTH_REDIRECT: "0",
+    }),
+    false
+  );
+});
+
+test("dashboard auth redirect policy preserves open local-dev unless owner auth is configured", () => {
+  assert.equal(isDashboardAuthRedirectEnabled({ NODE_ENV: "development" }), false);
+  assert.equal(
+    isDashboardAuthRedirectEnabled({
+      NODE_ENV: "development",
+      PDPP_OWNER_PASSWORD: "owner-password",
+    }),
+    true
+  );
 });
