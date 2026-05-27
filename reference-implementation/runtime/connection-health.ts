@@ -30,9 +30,10 @@
  *   4. give-up streak crossed                      -> blocked
  *   5. backoff currently delaying retry            -> cooling_off
  *   6. outbox stalled / coverage/run incomplete    -> degraded
- *   7. never-run with no stronger evidence         -> idle
- *   8. clean evidence, fresh enough                -> healthy
- *   9. fallback                                    -> unknown
+ *   7. current evidence without collection verdict -> unknown
+ *   8. never-run with no stronger evidence         -> idle
+ *   9. clean evidence, fresh enough                -> healthy
+ *   10. fallback                                  -> unknown
  *
  * The function is **pure**: no I/O, no clock reads. The caller is
  * responsible for collecting durable evidence and passing it in.
@@ -663,10 +664,28 @@ export function computeConnectionHealth(input: ComputeConnectionHealthInput): Co
     });
   }
 
-  // 6b. Never run (no terminal evidence yet) -> idle only when no
-  //     stronger current evidence already degraded or blocked the row.
-  //     This keeps "Idle" from hiding runtime failures or known source
-  //     coverage gaps.
+  // 6b. If current local/device evidence exists but no terminal collection
+  //     verdict exists, the health verdict is unknown, not idle. Activity
+  //     is orthogonal; "Idle" must not masquerade as a health verdict for
+  //     a connection that is actively maintained but not fully proven.
+  if (
+    conditionSet.get("CollectionSucceeded")?.status === "unknown" &&
+    hasCurrentEvidenceWithoutCollectionVerdict(conditionSet)
+  ) {
+    return finish({
+      state: "unknown",
+      reasonCode: null,
+      lastSuccessAt: null,
+      nextAttemptAt,
+      axes,
+      badges,
+      remoteSurface,
+      unknownReasons: ["collection"],
+    });
+  }
+
+  // 6c. Never run (no terminal evidence yet) -> idle only when no
+  //     stronger current evidence exists.
   if (conditionSet.get("CollectionSucceeded")?.status === "unknown") {
     return finish({
       state: "idle",
@@ -707,6 +726,16 @@ export function computeConnectionHealth(input: ComputeConnectionHealthInput): Co
     remoteSurface,
     unknownReasons: ["unclassified"],
   });
+}
+
+function hasCurrentEvidenceWithoutCollectionVerdict(
+  conditions: ReadonlyMap<ConnectionConditionType, ConnectionHealthCondition>,
+): boolean {
+  return (
+    conditionIsTrue(conditions, "Fresh") ||
+    conditionIsTrue(conditions, "LocalExporterAvailable") ||
+    conditionIsTrue(conditions, "BacklogClear")
+  );
 }
 
 // ─── Axis projection ──────────────────────────────────────────────────────

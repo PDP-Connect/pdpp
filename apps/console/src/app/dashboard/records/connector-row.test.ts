@@ -178,8 +178,6 @@ test("connector-row freshness line refuses to render content when evidence colle
 const SYNCING_LABEL = /"Syncing"/;
 const OUTBOX_ACTIVE_GUARD = /health\.axes\.outbox === "active"/;
 const SYNCING_RUNNING_TONE = /label: "Syncing"[\s\S]*tone: "running"/;
-const CURRENT_LABEL = /label: "Current"/;
-const FRESH_DURABLE_PROGRESS_GUARD = /hasDurableProgress && health\.axes\.freshness === "fresh"/;
 const FRESHNESS_DEVICE_BOTH = /data-testid="freshness-device-both"/;
 const LAST_CHECKED_LABEL = /last checked:/;
 const LAST_INGEST_LABEL = /last ingest:/;
@@ -194,12 +192,6 @@ test("connector-row shows 'Syncing' label when outbox is active during idle stat
   assert.match(src, SYNCING_LABEL);
   assert.match(src, OUTBOX_ACTIVE_GUARD);
   assert.match(src, SYNCING_RUNNING_TONE);
-});
-
-test("connector-row shows 'Current' instead of 'Idle' for fresh durable local progress", async () => {
-  const src = await readFile(ROW_FILE, "utf8");
-  assert.match(src, CURRENT_LABEL);
-  assert.match(src, FRESH_DURABLE_PROGRESS_GUARD);
 });
 
 test("connector-row freshness line shows both last-checked and last-ingest when both are present", async () => {

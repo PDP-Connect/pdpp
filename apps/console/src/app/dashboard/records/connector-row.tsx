@@ -507,13 +507,6 @@ function connectionHealthDisplay(
       if (health.axes.outbox === "active") {
         return { label: "Syncing", title: "Device outbox is actively draining", tone: "running" };
       }
-      if (hasDurableProgress && health.axes.freshness === "fresh") {
-        return {
-          label: "Current",
-          title: "Fresh retained data is available and no collection work is active",
-          tone: "neutral",
-        };
-      }
       return {
         label: hasDurableProgress ? "Idle" : "Never run",
         title: hasDurableProgress ? "No active work" : "No durable progress yet",

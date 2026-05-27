@@ -169,6 +169,20 @@ test('acceptance 7.1: never-run does not hide durable coverage gaps', () => {
   assert.equal(snap.reason_code, 'rate_limited');
 });
 
+test('acceptance 7.1: fresh local-device evidence without a terminal collection verdict projects unknown, not idle', () => {
+  const snap = projectConnectorSummaryConnectionHealth({
+    freshness: FRESH,
+    lastRun: null,
+    lastSuccessfulRun: null,
+    outbox: { axis: 'idle' },
+    schedule: null,
+  });
+  assertHeadline(snap, 'unknown');
+  assert.deepEqual([...snap.unknown_reasons], ['collection']);
+  assert.equal(snap.axes.freshness, 'fresh');
+  assert.equal(snap.axes.outbox, 'idle');
+});
+
 test('acceptance 7.1: owner-paused schedule projects idle even with failed last run', () => {
   const snap = projectConnectorSummaryConnectionHealth({
     freshness: STALE_FRESHNESS,
