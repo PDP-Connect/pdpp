@@ -2964,6 +2964,15 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(recordsBody.data.length, 1);
       assert.equal(recordsBody.data[0].id, 'ps_2026_04_15');
 
+      const connectionScopedClientResp = await fetch(
+        `${rsUrl}/v1/streams/pay_statements/records?connection_id=not_a_native_concept`,
+        { headers: { Authorization: `Bearer ${approved.token}` } },
+      );
+      assert.equal(connectionScopedClientResp.status, 400);
+      const connectionScopedClientBody = await connectionScopedClientResp.json();
+      assert.equal(connectionScopedClientBody.error.code, 'invalid_argument');
+      assert.match(connectionScopedClientBody.error.message, /provider_native/);
+
       const recordResp = await fetch(`${rsUrl}/v1/streams/pay_statements/records/ps_2026_04_15`, {
         headers: { Authorization: `Bearer ${approved.token}` },
       });
@@ -4167,6 +4176,15 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(recordsBody.data.length, 1);
       assert.equal(recordsBody.data[0].id, 'ps_2026_04_15');
       assert.equal(recordsBody.data[0].data.employer, 'Northstar HR');
+
+      const connectionScopedOwnerResp = await fetch(
+        `${rsUrl}/v1/streams/pay_statements/records?connection_id=not_a_native_concept`,
+        { headers: { Authorization: `Bearer ${ownerToken}` } },
+      );
+      assert.equal(connectionScopedOwnerResp.status, 400);
+      const connectionScopedOwnerBody = await connectionScopedOwnerResp.json();
+      assert.equal(connectionScopedOwnerBody.error.code, 'invalid_argument');
+      assert.match(connectionScopedOwnerBody.error.message, /provider_native/);
 
       const { body: streamsTrace } = await fetchJson(`${asUrl}/_ref/traces/${encodeURIComponent(streamsTraceId)}`);
       const { body: streamMetadataTrace } = await fetchJson(`${asUrl}/_ref/traces/${encodeURIComponent(streamMetadataTraceId)}`);

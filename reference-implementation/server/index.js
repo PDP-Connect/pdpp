@@ -6813,6 +6813,7 @@ function buildRsApp(opts = {}) {
               grant,
               requestParams: req.query || {},
               streamName: firstStream,
+              nativeProviderStorage: grantResolved.source?.kind === 'provider_native',
             });
             // Stash resolver warnings on the request scope so the route
             // body below can thread them into `meta.warnings` (P3 fix).
@@ -6829,6 +6830,7 @@ function buildRsApp(opts = {}) {
                     grant,
                     requestParams: req.query || {},
                     streamName: streamGrant?.name || null,
+                    nativeProviderStorage: grantResolved.source?.kind === 'provider_native',
                   });
                   return streamBindings;
                 },
@@ -7129,6 +7131,7 @@ function buildRsApp(opts = {}) {
             grant,
             requestParams: params,
             streamName: req.params.stream,
+            nativeProviderStorage: sourceDescriptor?.kind === 'provider_native',
           });
           // P3: thread resolver-level warnings (deprecated alias) into the
           // multi-binding aggregate envelope. The helper folds them into
@@ -7286,6 +7289,7 @@ function buildRsApp(opts = {}) {
             grant,
             requestParams: params,
             streamName: stream,
+            nativeProviderStorage: sourceDescriptor?.kind === 'provider_native',
           });
           return await queryRecordsAcrossBindings(
             bindings,
@@ -7428,6 +7432,7 @@ function buildRsApp(opts = {}) {
             grant,
             requestParams: mergedParams,
             streamName: stream,
+            nativeProviderStorage: sourceDescriptor?.kind === 'provider_native',
           });
           return await getRecordAcrossBindings(
             bindings,
@@ -7841,13 +7846,16 @@ function buildRsApp(opts = {}) {
       const { tokenInfo } = req;
       let storageBinding;
       let manifest;
+      let nativeProviderStorage = false;
       if (tokenInfo.pdpp_token_kind === 'owner') {
         const ownerScope = resolveOwnerReadScope(req, opts);
+        nativeProviderStorage = ownerScope.source?.kind === 'provider_native';
         const ownerResolved = await resolveOwnerManifestFromScope(ownerScope, opts);
         storageBinding = ownerResolved.storageBinding;
         manifest = ownerResolved.manifest;
       } else {
         const grantResolved = await resolveGrantManifest(tokenInfo, opts);
+        nativeProviderStorage = grantResolved.source?.kind === 'provider_native';
         storageBinding = grantResolved.storageBinding;
         manifest = grantResolved.manifest;
       }
@@ -7865,6 +7873,7 @@ function buildRsApp(opts = {}) {
           grant: tokenInfo.grant || { streams: [] },
           requestParams: req.query || {},
           streamName: null,
+          nativeProviderStorage,
         });
       const defaultAddressableInstanceIds = new Set(
         defaultBindings.map((b) => b.connectorInstanceId).filter(Boolean),
@@ -7908,6 +7917,7 @@ function buildRsApp(opts = {}) {
             grant: tokenInfo.grant || { streams: [] },
             requestParams: req.query || {},
             streamName,
+            nativeProviderStorage,
           });
           const ids = new Set(streamBindings.map((b) => b.connectorInstanceId).filter(Boolean));
           streamBindingCache.set(streamName, ids);

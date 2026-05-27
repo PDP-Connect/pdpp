@@ -3045,8 +3045,32 @@ export async function resolveReadRequestBindings({
   grant,
   requestParams,
   streamName,
+  nativeProviderStorage = false,
 }) {
   const connectorId = storageBinding?.connector_id || null;
+  if (nativeProviderStorage && connectorId) {
+    const { connectionId } = resolveRequestConnectionId(requestParams);
+    if (connectionId) {
+      const err = new Error('connection_id is not applicable to provider_native sources.');
+      err.code = 'invalid_argument';
+      err.param =
+        typeof requestParams?.connection_id === 'string' && requestParams.connection_id
+          ? 'connection_id'
+          : 'connector_instance_id';
+      throw err;
+    }
+    return {
+      bindings: [{
+        connectorId,
+        connectorInstanceId: storageBinding?.connector_instance_id
+          || makeDefaultAccountConnectorInstanceId(OWNER_AUTH_DEFAULT_SUBJECT_ID, connectorId),
+        displayName: null,
+      }],
+      requestConnectionId: null,
+      warnings: [],
+    };
+  }
+
   const connectorInstanceIdHint = storageBinding?.connector_instance_id || null;
   const streamGrant = grant?.streams?.find?.((s) => s.name === streamName) || null;
   const grantStreamConnectionId = streamGrant?.connection_id || null;
