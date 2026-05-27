@@ -233,8 +233,6 @@ import {
 } from '../operations/ref-clients-list/index.ts';
 import { executeRefDeployment } from '../operations/ref-deployment/index.ts';
 import { executeConnectorsList } from '../operations/rs-connectors-list/index.ts';
-import { executeRsDiscoveryIndex } from '../operations/rs-discovery-index/index.ts';
-import { executeRsProtectedResourceMetadata } from '../operations/rs-protected-resource-metadata/index.ts';
 import { executeRsConnectorStateGet } from '../operations/rs-connector-state-get/index.ts';
 import {
   RsConnectorStatePutValidationError,
@@ -273,8 +271,6 @@ import {
   SourceWebhookError,
   executeSourceWebhook,
 } from '../operations/ref-source-webhook-ingest/index.ts';
-import { executeAsDiscoveryIndex } from '../operations/as-discovery-index/index.ts';
-import { executeAsAuthorizationServerMetadata } from '../operations/as-authorization-server-metadata/index.ts';
 import { executeAsDcrRegister, summarizeDcrRegisterRequest } from '../operations/as-dcr-register/index.ts';
 import { executeAsDcrDelete } from '../operations/as-dcr-delete/index.ts';
 import { executeAsDeviceAuthInit } from '../operations/as-device-authorization-init/index.ts';
@@ -287,6 +283,13 @@ import { executeAsParCreate } from '../operations/as-par-create/index.ts';
 import { executeAsConsentDecision } from '../operations/as-consent-decision/index.ts';
 import { executeAsConsentExchange } from '../operations/as-consent-exchange/index.ts';
 import { executeAsGrantRevoke } from '../operations/as-grant-revoke/index.ts';
+import {
+  mountAsAuthorizationServerMetadata,
+  mountAsRoot,
+  mountRsMcpProtectedResourceMetadata,
+  mountRsProtectedResourceMetadata,
+  mountRsRoot,
+} from './routes/root-and-discovery.ts';
 
 const AS_PORT = parseInt(process.env.AS_PORT || '7662');
 const RS_PORT = parseInt(process.env.RS_PORT || '7663');
@@ -2352,35 +2355,13 @@ function buildAsApp(opts = {}) {
     res.send(HOSTED_UI_CSS);
   });
 
-  // Cold-start discovery index: a tiny unauthenticated pointer at `/` so an
-  // integrator probing the AS root learns where the AS well-known endpoint
-  // lives without trial-and-error. The body intentionally restates the
-  // running reference revision (also exposed via the response header) so an
-  // LLM agent has a single document to read.
-  // Discovery-index envelope semantics live in the canonical
-  // `as.discovery.index` operation (operations/as-discovery-index). This
-  // route is an Express host adapter: it owns request-id/header wiring and
-  // response writing; the operation owns the envelope shape.
-  app.get('/', { contract: 'getAsDiscoveryIndex' }, (req, res) => {
-    // Browsers see an operator/admin landing that names this AS, names the
-    // configured console origin, and links to the well-known discovery
-    // endpoint. JSON-shaped clients still receive the existing envelope
-    // byte-for-byte. See openspec/changes/split-public-site-and-operator-console.
-    if (
-      servedRootLandingIfBrowser(req, res, {
-        role: 'authorization_server',
-        providerName,
-        referenceRevision,
-      })
-    ) {
-      return;
-    }
-    res.json(
-      executeAsDiscoveryIndex({
-        providerName,
-        referenceRevision,
-      }),
-    );
+  // AS root (`GET /`) is mounted via `server/routes/root-and-discovery.ts`
+  // per OpenSpec change `split-reference-server-by-route-family`. Behaviour-
+  // preserving extraction: same mount point, same handler, same envelope.
+  mountAsRoot(app, {
+    providerName,
+    referenceRevision,
+    servedRootLandingIfBrowser,
   });
 
   // Reference-only owner-auth placeholder. This is NOT a public PDPP
@@ -3248,29 +3229,22 @@ function buildAsApp(opts = {}) {
     }
   });
 
-  // RFC 8414 authorization-server metadata. The metadata-document envelope
-  // lives in the canonical `as.authorization_server.metadata` operation
-  // (operations/as-authorization-server-metadata). The host adapter resolves
-  // the public issuer URL from explicit opts or ambient env, and supplies
-  // the metadata-builder dependency.
-  app.get('/.well-known/oauth-authorization-server', { contract: 'getAuthorizationServerMetadata' }, (req, res) => {
-    const explicitIssuer = opts.asIssuer || opts.asPublicUrl || (!opts.ignoreAmbientPublicUrls ? (process.env.AS_ISSUER || process.env.AS_PUBLIC_URL) : null);
-    if (rejectUntrustedMetadataHost(req, res, explicitIssuer, opts.trustedMetadataHosts)) {
-      return;
-    }
-    const issuer = resolvePublicUrl(req, explicitIssuer);
-    res.json(
-      executeAsAuthorizationServerMetadata(
-        {
-          issuer,
-          dynamicClientRegistrationEnabled,
-          preRegisteredPublicClients: publicClientMetadataForAuthorizationServer(
-            resolvePreRegisteredPublicClients(opts),
-          ),
-        },
-        { buildAuthorizationServerMetadata },
-      ),
-    );
+  // AS `/.well-known/oauth-authorization-server` is mounted via
+  // `server/routes/root-and-discovery.ts` per OpenSpec change
+  // `split-reference-server-by-route-family`. Behaviour-preserving
+  // extraction: same mount point, same handler, same envelope.
+  mountAsAuthorizationServerMetadata(app, {
+    buildAuthorizationServerMetadata,
+    dynamicClientRegistrationEnabled,
+    publicClientMetadataForAuthorizationServer,
+    rejectUntrustedMetadataHost,
+    resolveExplicitIssuer: () =>
+      opts.asIssuer ||
+      opts.asPublicUrl ||
+      (!opts.ignoreAmbientPublicUrls ? (process.env.AS_ISSUER || process.env.AS_PUBLIC_URL) : null),
+    resolvePreRegisteredPublicClients: () => resolvePreRegisteredPublicClients(opts),
+    resolvePublicUrl,
+    trustedMetadataHosts: opts.trustedMetadataHosts,
   });
 
   // DCR register semantics (input sanitization, extra metadata derivation,
@@ -6284,169 +6258,79 @@ function buildRsApp(opts = {}) {
     res.send(HOSTED_UI_CSS);
   });
 
-  // Cold-start discovery index: a tiny unauthenticated pointer at `/` so a
-  // probe at the RS root learns where the well-known endpoint, capability
-  // schema, and core query base live before guessing at REST/LLM-API
-  // conventions. See openspec/changes/polish-reference-api-discovery-seams.
-  app.get('/', { contract: 'getRsDiscoveryIndex' }, (req, res) => {
-    // Browser-friendly landing for the RS root (mirrors the AS handler).
-    // JSON discovery is preserved byte-for-byte for JSON-shaped clients.
-    // See openspec/changes/split-public-site-and-operator-console.
-    if (
-      servedRootLandingIfBrowser(req, res, {
-        role: 'resource_server',
-        providerName,
-        referenceRevision,
-      })
-    ) {
-      return;
-    }
-    const { envelope } = executeRsDiscoveryIndex({
-      providerName,
-      referenceRevision,
-    });
-    res.json(envelope);
+  // RS root (`GET /`) is mounted via `server/routes/root-and-discovery.ts`
+  // per OpenSpec change `split-reference-server-by-route-family`. Behaviour-
+  // preserving extraction: same mount point, same handler, same envelope.
+  mountRsRoot(app, {
+    providerName,
+    referenceRevision,
+    servedRootLandingIfBrowser,
   });
 
-  // Primary reference surface: RFC 9728 protected-resource metadata.
-  app.get('/.well-known/oauth-protected-resource', { contract: 'getProtectedResourceMetadata' }, (req, res) => {
-    if (rejectUntrustedMetadataHost(req, res, explicitResource, trustedMetadataHosts)) {
-      return;
-    }
-    const resource = resolvePublicUrl(req, explicitResource);
-    const explicitIssuer = opts.asIssuer || opts.asPublicUrl || (!opts.ignoreAmbientPublicUrls ? (process.env.AS_ISSUER || process.env.AS_PUBLIC_URL) : null);
-    const fallbackIssuer = `${req.protocol}://${req.hostname}:${opts.asPort || AS_PORT}`;
-    const issuerUsesDirectRequestOrigin = shouldUseDirectRequestOrigin(req, explicitIssuer);
-    const issuerSource = issuerUsesDirectRequestOrigin ? fallbackIssuer : explicitIssuer || fallbackIssuer;
-    if (
-      rejectUntrustedMetadataHost(req, res, issuerSource, trustedMetadataHosts, {
-        forceHostDerived: issuerUsesDirectRequestOrigin || !explicitIssuer,
-      })
-    ) {
-      return;
-    }
-    const issuer = resolvePublicUrl(req, issuerSource);
-
-    // Composition (which capabilities to publish, which discovery hints to
-    // include) is owned by the canonical `rs.protected-resource-metadata`
-    // operation. The host adapter resolves URLs and live capability shapes
-    // (e.g. `buildSemanticRetrievalCapability` against the live embedding
-    // backend) and passes them through dependency callbacks. Truthfulness
-    // rules — semantic only when backend is available; hybrid only when both
-    // lexical AND semantic are supported — are encoded inside the operation.
-    // See:
-    //   openspec/changes/add-lexical-retrieval-extension/specs/lexical-retrieval/spec.md
-    //   openspec/changes/add-semantic-retrieval-experimental-extension/specs/semantic-retrieval/spec.md
-    //   openspec/changes/define-hybrid-retrieval/specs/hybrid-retrieval/spec.md
-    //   openspec/changes/polish-reference-api-discovery-seams
-    const { composition } = executeRsProtectedResourceMetadata(
-      {},
-      {
-        resolveLexicalCapability: () => {
-          if (opts.lexicalRetrievalCapability) {
-            return opts.lexicalRetrievalCapability;
-          }
-          if (opts.lexicalRetrievalSupported !== false) {
-            return buildLexicalRetrievalCapability();
-          }
-          return null;
-        },
-        resolveSemanticCapability: () => {
-          if (opts.semanticRetrievalCapability) {
-            return opts.semanticRetrievalCapability;
-          }
-          if (opts.semanticRetrievalSupported === false) return null;
-          const semBackend = getSemanticBackend();
-          if (!semBackend || !semBackend.available()) return null;
-          return (
-            buildSemanticRetrievalCapability({
-              model: semBackend.model(),
-              dimensions: semBackend.dimensions(),
-              distanceMetric: semBackend.distanceMetric(),
-              indexState: computeSemanticIndexState(),
-              profileId: semBackend.profileId ? semBackend.profileId() : null,
-              dtype: semBackend.dtype ? semBackend.dtype() : null,
-              languageBias: semBackend.languageBias ? semBackend.languageBias() : null,
-            }) || null
-          );
-        },
-        resolveHybridCapabilityOverride: () =>
-          opts.hybridRetrievalCapability || null,
-        buildDefaultHybridCapability: ({ lexicalAvailable, semanticAvailable }) =>
-          buildHybridRetrievalCapability({ lexicalAvailable, semanticAvailable }),
-        isHybridSuppressed: () => opts.hybridRetrievalSupported === false,
-        isNativeSingleSourceMode: () => !!resolveNativeManifest(opts),
-        // The reference implementation always mounts the
-        // `/v1/event-subscriptions` routes (see buildRsApp above), so
-        // we advertise the client_event_subscriptions extension
-        // capability by default. Hosts that need to suppress it can
-        // pass `clientEventSubscriptionsSupported: false`. See
-        // openspec/changes/add-client-event-subscriptions/.
-        resolveClientEventSubscriptionsCapability: () => {
-          if (opts.clientEventSubscriptionsCapability) {
-            return opts.clientEventSubscriptionsCapability;
-          }
-          if (opts.clientEventSubscriptionsSupported === false) return null;
-          return buildClientEventSubscriptionsCapability();
-        },
-      },
-    );
-    const { capabilities, discoveryHints } = composition;
-
-    res.json(
-      buildProtectedResourceMetadata({
-        resource,
-        resourceName: `${providerName} Resource Server`,
-        authorizationServers: [issuer],
-        queryBase: `${resource}/v1`,
-        providerConnectVersion: PDPP_PROVIDER_CONNECT_VERSION,
-        selfExportSupported: true,
-        tokenKindsSupported: ['owner', 'client'],
-        capabilities,
-        discoveryHints,
-        agentDiscovery: buildAgentDiscoveryMetadata(
-          opts.agentDiscoveryOrigin ? resolveSiblingPublicUrl(req, opts.agentDiscoveryOrigin) : null,
-          { noOwnerToken: nativeMode },
-        ),
-      })
-    );
-  });
-
-  app.get('/.well-known/oauth-protected-resource/mcp', { contract: 'getMcpProtectedResourceMetadata' }, (req, res) => {
-    if (rejectUntrustedMetadataHost(req, res, explicitResource, trustedMetadataHosts)) {
-      return;
-    }
-    const resourceBase = resolvePublicUrl(req, explicitResource);
-    const resource = `${resourceBase}/mcp`;
-    const explicitIssuer = opts.asIssuer || opts.asPublicUrl || (!opts.ignoreAmbientPublicUrls ? (process.env.AS_ISSUER || process.env.AS_PUBLIC_URL) : null);
-    const fallbackIssuer = `${req.protocol}://${req.hostname}:${opts.asPort || AS_PORT}`;
-    const issuerUsesDirectRequestOrigin = shouldUseDirectRequestOrigin(req, explicitIssuer);
-    const issuerSource = issuerUsesDirectRequestOrigin ? fallbackIssuer : explicitIssuer || fallbackIssuer;
-    if (
-      rejectUntrustedMetadataHost(req, res, issuerSource, trustedMetadataHosts, {
-        forceHostDerived: issuerUsesDirectRequestOrigin || !explicitIssuer,
-      })
-    ) {
-      return;
-    }
-    const issuer = resolvePublicUrl(req, issuerSource);
-
-    res.json(
-      buildProtectedResourceMetadata({
-        resource,
-        resourceName: `${providerName} Hosted MCP Resource`,
-        authorizationServers: [issuer],
-        queryBase: `${resourceBase}/v1`,
-        providerConnectVersion: PDPP_PROVIDER_CONNECT_VERSION,
-        selfExportSupported: true,
-        tokenKindsSupported: ['client'],
-        agentDiscovery: buildAgentDiscoveryMetadata(
-          opts.agentDiscoveryOrigin ? resolveSiblingPublicUrl(req, opts.agentDiscoveryOrigin) : resourceBase,
-          { noOwnerToken: true },
-        ),
-      })
-    );
-  });
+  // RS `/.well-known/oauth-protected-resource` and `/oauth-protected-resource/mcp`
+  // are mounted via `server/routes/root-and-discovery.ts` per OpenSpec change
+  // `split-reference-server-by-route-family`. Behaviour-preserving extraction:
+  // same mount points, same handlers, same envelopes.
+  const protectedResourceMetadataContext = {
+    agentDiscoveryOrigin: opts.agentDiscoveryOrigin || null,
+    asPort: opts.asPort || AS_PORT,
+    buildAgentDiscoveryMetadata,
+    buildDefaultHybridCapability: ({ lexicalAvailable, semanticAvailable }) =>
+      buildHybridRetrievalCapability({ lexicalAvailable, semanticAvailable }),
+    buildProtectedResourceMetadata,
+    explicitResource,
+    isHybridSuppressed: () => opts.hybridRetrievalSupported === false,
+    nativeMode,
+    pdppProviderConnectVersion: PDPP_PROVIDER_CONNECT_VERSION,
+    providerName,
+    rejectUntrustedMetadataHost,
+    resolveClientEventSubscriptionsCapability: () => {
+      if (opts.clientEventSubscriptionsCapability) {
+        return opts.clientEventSubscriptionsCapability;
+      }
+      if (opts.clientEventSubscriptionsSupported === false) return null;
+      return buildClientEventSubscriptionsCapability();
+    },
+    resolveExplicitIssuer: () =>
+      opts.asIssuer ||
+      opts.asPublicUrl ||
+      (!opts.ignoreAmbientPublicUrls ? (process.env.AS_ISSUER || process.env.AS_PUBLIC_URL) : null),
+    resolveHybridCapabilityOverride: () => opts.hybridRetrievalCapability || null,
+    resolveLexicalCapability: () => {
+      if (opts.lexicalRetrievalCapability) {
+        return opts.lexicalRetrievalCapability;
+      }
+      if (opts.lexicalRetrievalSupported !== false) {
+        return buildLexicalRetrievalCapability();
+      }
+      return null;
+    },
+    resolvePublicUrl,
+    resolveSemanticCapability: () => {
+      if (opts.semanticRetrievalCapability) {
+        return opts.semanticRetrievalCapability;
+      }
+      if (opts.semanticRetrievalSupported === false) return null;
+      const semBackend = getSemanticBackend();
+      if (!semBackend || !semBackend.available()) return null;
+      return (
+        buildSemanticRetrievalCapability({
+          model: semBackend.model(),
+          dimensions: semBackend.dimensions(),
+          distanceMetric: semBackend.distanceMetric(),
+          indexState: computeSemanticIndexState(),
+          profileId: semBackend.profileId ? semBackend.profileId() : null,
+          dtype: semBackend.dtype ? semBackend.dtype() : null,
+          languageBias: semBackend.languageBias ? semBackend.languageBias() : null,
+        }) || null
+      );
+    },
+    resolveSiblingPublicUrl,
+    shouldUseDirectRequestOrigin,
+    trustedMetadataHosts,
+  };
+  mountRsProtectedResourceMetadata(app, protectedResourceMetadataContext);
+  mountRsMcpProtectedResourceMetadata(app, protectedResourceMetadataContext);
 
   // GET /v1/connectors — bearer-scoped connector/source discovery
   // Connector-list semantics live in the canonical `rs.connectors.list`

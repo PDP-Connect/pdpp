@@ -1,12 +1,12 @@
 ## 1. Root and discovery family
 
-- [ ] 1.1 Create `reference-implementation/server/routes/root-and-discovery.ts` exporting `mountAsRootAndDiscovery(app, ctx)` and `mountRsRootAndDiscovery(app, ctx)`.
-- [ ] 1.2 Move the AS `GET /` content-negotiated handler from `server/index.js` into `mountAsRootAndDiscovery`, preserving the `servedRootLandingIfBrowser` branch and the `executeAsDiscoveryIndex` envelope.
-- [ ] 1.3 Move the AS `GET /.well-known/oauth-authorization-server` handler into `mountAsRootAndDiscovery`.
-- [ ] 1.4 Move the RS `GET /` content-negotiated handler from `server/index.js` into `mountRsRootAndDiscovery`, preserving the browser-landing branch and `executeRsDiscoveryIndex` envelope.
-- [ ] 1.5 Move the RS `GET /.well-known/oauth-protected-resource` and `GET /.well-known/oauth-protected-resource/mcp` handlers into `mountRsRootAndDiscovery`, preserving the trusted-metadata-host guard and the `getProtectedResourceMetadata`/`getMcpProtectedResourceMetadata` operation contracts.
-- [ ] 1.6 Update `buildAsApp` and `buildRsApp` in `server/index.js` to call the new mount functions at the same point in route registration; delete the moved blocks.
-- [ ] 1.7 Acceptance: targeted tests under `reference-implementation/test/` that exercise the moved routes pass; `pnpm --dir reference-implementation run verify` passes.
+- [x] 1.1 Create `reference-implementation/server/routes/root-and-discovery.ts` exporting `mountAsRootAndDiscovery(app, ctx)` and `mountRsRootAndDiscovery(app, ctx)`. (Landed as five per-route mount fns: `mountAsRoot`, `mountAsAuthorizationServerMetadata`, `mountRsRoot`, `mountRsProtectedResourceMetadata`, `mountRsMcpProtectedResourceMetadata`.)
+- [x] 1.2 Move the AS `GET /` content-negotiated handler from `server/index.js` into `mountAsRoot`, preserving the `servedRootLandingIfBrowser` branch and the `executeAsDiscoveryIndex` envelope.
+- [x] 1.3 Move the AS `GET /.well-known/oauth-authorization-server` handler into `mountAsAuthorizationServerMetadata`.
+- [x] 1.4 Move the RS `GET /` content-negotiated handler from `server/index.js` into `mountRsRoot`, preserving the browser-landing branch and `executeRsDiscoveryIndex` envelope.
+- [x] 1.5 Move the RS `GET /.well-known/oauth-protected-resource` and `GET /.well-known/oauth-protected-resource/mcp` handlers into `mountRsProtectedResourceMetadata`/`mountRsMcpProtectedResourceMetadata`, preserving the trusted-metadata-host guard and the `getProtectedResourceMetadata`/`getMcpProtectedResourceMetadata` operation contracts.
+- [x] 1.6 Update `buildAsApp` and `buildRsApp` in `server/index.js` to call the new mount functions at the same point in route registration; delete the moved blocks.
+- [x] 1.7 Acceptance: targeted tests under `reference-implementation/test/` that exercise the moved routes pass; typecheck passes (full `verify` blocked on pre-existing unrelated biome errors on `.ts` files outside this tranche).
 
 ## 2. `_ref` operations family
 
