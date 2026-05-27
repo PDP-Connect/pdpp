@@ -442,7 +442,7 @@ export class NekoSurfaceAllocatorService {
     streamBaseUrl: string;
   }): Promise<{ health: BrowserSurfaceHealth; reason: string }> {
     if (!isInspectRunning(input.inspect)) {
-      return { health: "starting", reason: "container_not_running" };
+      return { health: "stopping", reason: "container_not_running" };
     }
     if (!hasNetwork(input.inspect, this.#options.network)) {
       return { health: "unhealthy", reason: "missing_expected_network" };

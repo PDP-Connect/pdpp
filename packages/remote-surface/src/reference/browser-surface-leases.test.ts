@@ -898,6 +898,50 @@ test("reconcileSurfacesWithAllocator downgrades a surface whose allocator status
   assert.equal(acquireResult.lease.wait_reason, "capacity_full");
 });
 
+test("reconcileSurfacesWithAllocator does not let stopped surfaces consume dynamic cap", async () => {
+  const { leases } = manager({
+    initialSurfaces: [
+      {
+        surface_id: "surface_stopped",
+        backend: "neko",
+        profile_key: "chatgpt",
+        connector_id: "chatgpt",
+        cdp_url: "http://neko:9222",
+        stream_base_url: "http://neko:8080",
+        health: "ready",
+        created_at: "2026-05-12T11:00:00.000Z",
+        last_used_at: "2026-05-12T11:00:00.000Z",
+      },
+    ],
+  });
+  const allocator = new FakeBrowserSurfaceAllocator();
+  allocator.setSurface({
+    surface_id: "surface_stopped",
+    backend: "neko",
+    profile_key: "chatgpt",
+    connector_id: "chatgpt",
+    cdp_url: "http://neko:9222",
+    stream_base_url: "http://neko:8080",
+    health: "stopping",
+    created_at: "2026-05-12T11:00:00.000Z",
+    last_used_at: "2026-05-12T11:00:00.000Z",
+  });
+
+  const result = await leases.reconcileSurfacesWithAllocator(allocator);
+
+  assert.equal(result.downgraded.length, 1);
+  assert.equal(result.evicted.length, 0);
+  assert.equal(leases.getSurface("surface_stopped")?.health, "stopping");
+
+  const acquireResult = leases.acquire({
+    connectorId: "chatgpt",
+    runId: "run_after_stopped_downgrade",
+    profileKey: "chatgpt",
+  });
+  assert.equal(acquireResult.lease.status, "starting_surface");
+  assert.notEqual(acquireResult.lease.surface_id, "surface_stopped");
+});
+
 test("reconcileSurfacesWithAllocator does nothing in static mode", async () => {
   const { leases } = manager({
     config: {

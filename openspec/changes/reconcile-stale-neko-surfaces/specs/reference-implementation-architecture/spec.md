@@ -17,6 +17,7 @@ After reference restart, the lease manager SHALL prove every in-memory dynamic n
 - **THEN** the lease manager SHALL downgrade the in-memory health to match the allocator's report
 - **AND** the persisted surface row SHALL be updated to reflect the downgrade
 - **AND** the next acquire SHALL NOT treat that surface as a ready idle candidate
+- **AND** a surface downgraded to `"stopping"` SHALL NOT consume dynamic surface capacity
 
 #### Scenario: Allocator reports a persisted surface as unhealthy
 
