@@ -1225,6 +1225,7 @@ export function createSandboxRsProtectedResourceMetadataDependencies(
     buildDefaultHybridCapability: (): RsProtectedResourceMetadataHybridCapability | null => null,
     isHybridSuppressed: () => false,
     isNativeSingleSourceMode: () => false,
+    resolveClientEventSubscriptionsCapability: () => null,
   };
 }
 
