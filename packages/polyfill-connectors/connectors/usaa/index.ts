@@ -41,7 +41,7 @@ import {
 } from "../../src/connector-runtime.ts";
 import { attachDownloadQueue, type DownloadQueue } from "../../src/download-queue.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
-import { readPlaywrightDownloadBuffer } from "../../src/playwright-download.ts";
+import { readPlaywrightDownloadBufferDetailed } from "../../src/playwright-download.ts";
 import {
   buildAccountRecord,
   buildCandidateStarts,
@@ -64,6 +64,7 @@ import type {
   DiagnosticCandidate,
   DiagnosticInfo,
   DocRow,
+  DownloadDiagnostics,
   DriveExportOptions,
   HydrationResult,
   HydrationResultSuccess,
@@ -306,6 +307,37 @@ function summarizeArtifactDiagnostics(diag: DiagnosticInfo): string | null {
   return parts.join(" ");
 }
 
+function summarizeDownloadDiagnostics(diag: DiagnosticInfo): string | null {
+  const dl = diag.download;
+  if (!dl) {
+    return null;
+  }
+  const parts: string[] = [];
+  const url = redactDiagnosticUrl(dl.url ?? null);
+  if (url) {
+    parts.push(`url=${url}`);
+  }
+  if (dl.suggestedFilename) {
+    parts.push(`name=${dl.suggestedFilename.slice(0, 80)}`);
+  }
+  if (typeof dl.bytes === "number") {
+    parts.push(`bytes=${dl.bytes}`);
+  }
+  if (dl.source) {
+    parts.push(`source=${dl.source}`);
+  }
+  if (dl.saveAsError) {
+    parts.push(`saveAsError=${dl.saveAsError.slice(0, ID_TEXT_SNIP)}`);
+  }
+  if (dl.streamError) {
+    parts.push(`streamError=${dl.streamError.slice(0, ID_TEXT_SNIP)}`);
+  }
+  if (dl.downloadFailure) {
+    parts.push(`downloadFailure=${dl.downloadFailure.slice(0, ID_TEXT_SNIP)}`);
+  }
+  return parts.length ? `download ${parts.join(",")}` : null;
+}
+
 function formatDiagnosticInfo(diag: DiagnosticInfo): string {
   const parts = [diag.phase];
   const url = redactDiagnosticUrl(diag.diag?.url);
@@ -313,6 +345,10 @@ function formatDiagnosticInfo(diag: DiagnosticInfo): string {
   const artifact = summarizeArtifactDiagnostics(diag);
   if (artifact) {
     parts.push(artifact);
+  }
+  const download = summarizeDownloadDiagnostics(diag);
+  if (download) {
+    parts.push(download);
   }
   if (diag.error) {
     parts.push(`error=${diag.error.slice(0, ID_TEXT_SNIP)}`);
@@ -613,14 +649,53 @@ async function captureExportCheckpoint(page: Page, options: DriveExportOptions, 
 
 type ExportSubmitOutcome =
   | { buffer: Buffer; kind: "artifact"; suggestedFilename: string | null }
-  | { kind: "artifact_failed"; artifact: BodyResponseDiagnostics; error: string }
+  | {
+      kind: "artifact_failed";
+      artifact: BodyResponseDiagnostics;
+      download: DownloadDiagnostics | null;
+      error: string;
+    }
   | { kind: "dialog_error"; message: string }
   | { kind: "empty"; message: string };
+
+/**
+ * Error subclass used by `waitForCsvArtifact` so failure callers can read
+ * the download-side evidence (Playwright Download URL, suggestedFilename,
+ * remote `failure()`, byte count, fallback source) without re-deriving it.
+ */
+class CsvArtifactError extends Error {
+  readonly download: DownloadDiagnostics | null;
+  constructor(message: string, download: DownloadDiagnostics | null) {
+    super(message);
+    this.name = "CsvArtifactError";
+    this.download = download;
+  }
+}
 
 type DriveExportResult = { kind: "artifact"; path: string } | { kind: "empty" } | { kind: "failed" };
 
 export function isNoDataExportMessage(text: string): boolean {
   return EXPORT_NO_DATA_RE.test(text);
+}
+
+/**
+ * Skip Adobe Analytics / SiteCatalyst beacon hosts when filtering candidate
+ * response bodies. USAA tracks the "export" click as a pageName analytics
+ * event, so the keyword `export` ends up in the URL query string of every
+ * beacon hit — which was matching `CSV_DOWNLOAD_HINT_RE` and crowding the
+ * real CSV endpoint out of the diagnostics candidate list when an export
+ * actually failed. Beacons return `image/gif` and never carry the CSV body,
+ * so excluding them costs us nothing.
+ */
+const ANALYTICS_HOST_RE = /^https?:\/\/(da|smetrics|tags|tms)\.usaa\.com\//iu;
+const ANALYTICS_CONTENT_TYPE_RE = /image\/gif/iu;
+
+function isAnalyticsBeacon(headers: Record<string, string>, url: string): boolean {
+  if (ANALYTICS_HOST_RE.test(url)) {
+    return true;
+  }
+  const contentType = headers["content-type"]?.toLowerCase() ?? "";
+  return ANALYTICS_CONTENT_TYPE_RE.test(contentType);
 }
 
 function attachCsvResponseQueue(page: Page): BodyResponseQueue {
@@ -637,10 +712,32 @@ function attachCsvResponseQueue(page: Page): BodyResponseQueue {
       return CSV_HEAD_RE.test(head) && head.includes(",");
     },
     shouldInspect(headers, url) {
+      if (isAnalyticsBeacon(headers, url)) {
+        return false;
+      }
       const hint = `${headers["content-disposition"] ?? ""} ${headers["content-type"] ?? ""} ${url}`;
       return CSV_DOWNLOAD_HINT_RE.test(hint);
     },
   });
+}
+
+async function snapshotDownloadFailure(
+  download: Pick<import("playwright").Download, "url" | "suggestedFilename" | "failure">
+): Promise<DownloadDiagnostics> {
+  const failure = await download.failure().catch((): null => null);
+  let url: string | null;
+  try {
+    url = download.url();
+  } catch {
+    url = null;
+  }
+  let suggestedFilename: string | null;
+  try {
+    suggestedFilename = download.suggestedFilename();
+  } catch {
+    suggestedFilename = null;
+  }
+  return { url, suggestedFilename, downloadFailure: failure };
 }
 
 async function waitForCsvArtifact(
@@ -656,23 +753,44 @@ async function waitForCsvArtifact(
   if (result.kind === "response") {
     return { buffer: result.response.body, suggestedFilename: result.response.suggestedFilename };
   }
+  const download = result.download;
   try {
-    const buffer = await readPlaywrightDownloadBuffer(result.download);
+    const { buffer, outcome } = await readPlaywrightDownloadBufferDetailed(download);
     if (buffer.length > 0) {
-      return { buffer, suggestedFilename: result.download.suggestedFilename() };
+      return { buffer, suggestedFilename: download.suggestedFilename() };
     }
-  } catch (err) {
+    // saveAs + createReadStream both produced zero bytes. Capture the
+    // download-side evidence (URL, suggested filename, remote failure)
+    // before falling through to the response-queue grace window.
+    const baseDiag = await snapshotDownloadFailure(download);
+    const downloadDiag: DownloadDiagnostics = {
+      ...baseDiag,
+      bytes: outcome.bytes,
+      source: outcome.source,
+      saveAsError: outcome.saveAsError ?? null,
+      streamError: outcome.streamError ?? null,
+    };
     const response = await waitForOptionalBodyResponse(responsePromise, RESPONSE_FALLBACK_GRACE_MS);
     if (response) {
       return { buffer: response.body, suggestedFilename: response.suggestedFilename };
     }
-    throw err;
+    throw new CsvArtifactError("download_empty", downloadDiag);
+  } catch (err) {
+    if (err instanceof CsvArtifactError) {
+      throw err;
+    }
+    const baseDiag = await snapshotDownloadFailure(download).catch((): DownloadDiagnostics => ({}));
+    const downloadDiag: DownloadDiagnostics = {
+      ...baseDiag,
+      bytes: 0,
+      saveAsError: err instanceof Error ? err.message : String(err),
+    };
+    const response = await waitForOptionalBodyResponse(responsePromise, RESPONSE_FALLBACK_GRACE_MS);
+    if (response) {
+      return { buffer: response.body, suggestedFilename: response.suggestedFilename };
+    }
+    throw new CsvArtifactError(err instanceof Error ? err.message : String(err), downloadDiag);
   }
-  const response = await waitForOptionalBodyResponse(responsePromise, RESPONSE_FALLBACK_GRACE_MS);
-  if (response) {
-    return { buffer: response.body, suggestedFilename: response.suggestedFilename };
-  }
-  throw new Error("download_empty");
 }
 
 /** Submit the export dialog, race the downloadable artifact against an inline error. */
@@ -709,6 +827,7 @@ async function submitExportAndAwait(page: Page): Promise<ExportSubmitOutcome> {
   } catch (err) {
     return {
       artifact: responseQueue.diagnostics(),
+      download: err instanceof CsvArtifactError ? err.download : null,
       error: err instanceof Error ? err.message : String(err),
       kind: "artifact_failed",
     };
@@ -762,7 +881,13 @@ async function driveExport(page: Page, accountUrl: string, options: DriveExportO
     await captureExportCheckpoint(page, options, "artifact-failed");
     if (onDiagnostics) {
       const diag = await capturePageDiagnostics(page);
-      onDiagnostics({ artifact: outcome.artifact, diag, error: outcome.error, phase: "export_artifact_wait_failed" });
+      onDiagnostics({
+        artifact: outcome.artifact,
+        diag,
+        download: outcome.download,
+        error: outcome.error,
+        phase: "export_artifact_wait_failed",
+      });
     }
     return { kind: "failed" };
   }

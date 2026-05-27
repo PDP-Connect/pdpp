@@ -8,15 +8,18 @@ import test from "node:test";
 import {
   type PlaywrightDownloadLike,
   readPlaywrightDownloadBuffer,
+  readPlaywrightDownloadBufferDetailed,
   savePlaywrightDownload,
+  savePlaywrightDownloadDetailed,
 } from "./playwright-download.ts";
 
 test("savePlaywrightDownload: delegates artifact waiting to saveAs without reading path()", async () => {
   const calls: string[] = [];
   const mock: PlaywrightDownloadLike = {
-    saveAs(_target: string): Promise<void> {
+    async saveAs(target: string): Promise<void> {
       calls.push("saveAs");
-      return Promise.resolve();
+      const { writeFile } = await import("node:fs/promises");
+      await writeFile(target, Buffer.from("ok"));
     },
   };
 
@@ -103,4 +106,73 @@ test("savePlaywrightDownload: reports saveAs, stream, and download failure when 
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("savePlaywrightDownloadDetailed: zero-byte saveAs triggers createReadStream fallback", async () => {
+  // Remote CDP (n.eko) can complete saveAs without throwing but write zero
+  // bytes. Without the fallback, the connector reports `download_empty` with
+  // no recovery and no evidence about why the artifact transfer failed.
+  const dir = await mkdtemp(join(tmpdir(), "pdpp-playwright-download-zero-saveas-test-"));
+  try {
+    const target = join(dir, "out.bin");
+    const mock: PlaywrightDownloadLike = {
+      async saveAs(path: string): Promise<void> {
+        const { writeFile } = await import("node:fs/promises");
+        await writeFile(path, Buffer.from(""));
+      },
+      createReadStream(): Promise<Readable> {
+        return Promise.resolve(Readable.from(Buffer.from("recovered-via-stream")));
+      },
+    };
+    const outcome = await savePlaywrightDownloadDetailed(mock, target);
+    assert.equal(outcome.source, "createReadStream");
+    assert.equal(outcome.saveAsError, "saveAs_returned_zero_bytes");
+    assert.equal(outcome.bytes, "recovered-via-stream".length);
+    assert.equal(await readFile(target, "utf8"), "recovered-via-stream");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("readPlaywrightDownloadBufferDetailed: returns outcome metadata for the happy path", async () => {
+  const mock: PlaywrightDownloadLike = {
+    async saveAs(path: string): Promise<void> {
+      const { writeFile } = await import("node:fs/promises");
+      await writeFile(path, Buffer.from("hello"));
+    },
+    suggestedFilename(): string {
+      return "export.csv";
+    },
+  };
+  const { buffer, outcome } = await readPlaywrightDownloadBufferDetailed(mock);
+  assert.equal(buffer.toString("utf8"), "hello");
+  assert.equal(outcome.source, "saveAs");
+  assert.equal(outcome.bytes, 5);
+  assert.equal(outcome.saveAsError, undefined);
+});
+
+test("readPlaywrightDownloadBufferDetailed: surfaces zero-byte fallback evidence when both paths fail", async () => {
+  const mock: PlaywrightDownloadLike = {
+    async saveAs(path: string): Promise<void> {
+      const { writeFile } = await import("node:fs/promises");
+      await writeFile(path, Buffer.from(""));
+    },
+    createReadStream(): Promise<Readable> {
+      return Promise.resolve(Readable.from(Buffer.from("")));
+    },
+    failure(): Promise<string | null> {
+      return Promise.resolve("server canceled the transfer");
+    },
+    suggestedFilename(): string {
+      return "export.csv";
+    },
+  };
+  const { buffer, outcome } = await readPlaywrightDownloadBufferDetailed(mock);
+  // Both transports completed without throwing, but produced zero bytes.
+  // Caller is expected to treat outcome.bytes === 0 as a failure and pull
+  // the failure reason from outcome.saveAsError + download.failure().
+  assert.equal(buffer.length, 0);
+  assert.equal(outcome.source, "createReadStream");
+  assert.equal(outcome.saveAsError, "saveAs_returned_zero_bytes");
+  assert.equal(outcome.bytes, 0);
 });

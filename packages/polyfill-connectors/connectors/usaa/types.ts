@@ -116,9 +116,27 @@ export interface PageDiagnostics {
   url: string;
 }
 
+/**
+ * What `download.saveAs()` + the createReadStream fallback actually
+ * produced when the export artifact arrived. Lets `download_empty`-style
+ * failures carry forensic detail (URL, suggested filename, byte count,
+ * remote-failure reason) into the timeline instead of disappearing into
+ * the analytics-noise candidate list.
+ */
+export interface DownloadDiagnostics {
+  bytes?: number | null;
+  downloadFailure?: string | null;
+  saveAsError?: string | null;
+  source?: "saveAs" | "createReadStream" | null;
+  streamError?: string | null;
+  suggestedFilename?: string | null;
+  url?: string | null;
+}
+
 export interface DiagnosticInfo {
   artifact?: BodyResponseDiagnostics | null;
   diag: PageDiagnostics | null;
+  download?: DownloadDiagnostics | null;
   error?: string;
   phase: string;
 }

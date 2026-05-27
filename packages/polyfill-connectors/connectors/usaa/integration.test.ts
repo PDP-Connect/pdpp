@@ -364,6 +364,48 @@ test("emitExportFailure: artifact diagnostics are summarized when page diagnosti
   assert.match(skip.message, /body_response_timeout/);
 });
 
+test("emitExportFailure: download diagnostics surface URL, byte count, and remote failure when present", async () => {
+  // Live-run regression: when `download_empty` fires under remote n.eko,
+  // the candidates list is dominated by Adobe analytics beacons and the
+  // real export URL is invisible. This test confirms the download-side
+  // evidence (URL, suggestedFilename, source path, downloadFailure)
+  // reaches the SKIP_RESULT message text so the next run can be triaged
+  // offline without a second human OTP cycle.
+  const { deps, messages } = makeHarness();
+  const diag: DiagnosticInfo = {
+    artifact: {
+      cdpError: null,
+      cdpReady: true,
+      candidates: [],
+    },
+    diag: null,
+    download: {
+      url: "https://www.usaa.com/inet/ent_logon/bnk/dmd/chk/transactionDownload",
+      suggestedFilename: "transaction_history.csv",
+      bytes: 0,
+      source: "createReadStream",
+      saveAsError: "saveAs_returned_zero_bytes",
+      streamError: null,
+      downloadFailure: "Download canceled by remote",
+    },
+    error: "download_empty",
+    phase: "export_artifact_wait_failed",
+  };
+  await emitExportFailure(deps, makeAccount(), diag);
+  const skip = messages.find((m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT");
+  assert.ok(skip);
+  assert.match(skip.message, /export_artifact_wait_failed/);
+  assert.match(
+    skip.message,
+    /download .*url=https:\/\/www\.usaa\.com\/inet\/ent_logon\/bnk\/dmd\/chk\/transactionDownload/
+  );
+  assert.match(skip.message, /name=transaction_history\.csv/);
+  assert.match(skip.message, /bytes=0/);
+  assert.match(skip.message, /source=createReadStream/);
+  assert.match(skip.message, /saveAsError=saveAs_returned_zero_bytes/);
+  assert.match(skip.message, /downloadFailure=Download canceled by remote/);
+});
+
 test("emitExportFailure: credit-card account uses credit_card_export_unverified reason", async () => {
   const { deps, messages } = makeHarness();
   const cc = makeAccount({
