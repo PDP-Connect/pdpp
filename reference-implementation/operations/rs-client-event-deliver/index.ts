@@ -1,0 +1,177 @@
+/**
+ * Canonical `rs.client-event.deliver` operation.
+ *
+ * Owns the per-attempt delivery semantics:
+ *
+ * - HMAC-SHA256 signature over `<unix-timestamp>.<raw body>`;
+ * - PDPP-Event-* header set;
+ * - outcome classification (success / transient / permanent failure);
+ * - retry scheduling (exponential backoff with jitter);
+ * - dead-letter transition after the configured max attempts;
+ * - bounded response snippet for the attempt log.
+ *
+ * Boundary rules:
+ * - This module SHALL NOT import Fastify, SQLite, Postgres, route/auth, or
+ *   `process` / `process.env`. The HTTP transport is injected.
+ */
+
+import { createHmac, timingSafeEqual } from "node:crypto";
+
+export const DEFAULT_BACKOFF_SECONDS: ReadonlyArray<number> = [
+  30,
+  120,
+  600,
+  3600,
+  21600,
+  86400,
+];
+
+export const MAX_RESPONSE_SNIPPET_BYTES = 512;
+
+export interface DeliverableEvent {
+  readonly queueId: number;
+  readonly subscriptionId: string;
+  readonly eventId: string;
+  readonly eventType: string;
+  readonly payloadJson: string;
+  readonly attemptCount: number;
+  readonly callbackUrl: string;
+  /** Raw secret available to the delivery worker (typically loaded from a sealed store). */
+  readonly secret: string;
+  readonly verificationChallenge?: string | null;
+}
+
+export interface HttpTransportRequest {
+  readonly url: string;
+  readonly method: "POST";
+  readonly headers: Record<string, string>;
+  readonly body: string;
+}
+
+export interface HttpTransportResponse {
+  readonly statusCode: number | null;
+  readonly bodyText: string | null;
+  readonly errorMessage: string | null;
+  readonly latencyMs: number;
+}
+
+export interface DeliveryDependencies {
+  readonly nowSeconds: () => number;
+  readonly nowIso: () => string;
+  readonly request: (req: HttpTransportRequest) => Promise<HttpTransportResponse>;
+  readonly backoffSeconds?: ReadonlyArray<number>;
+  /** Override for tests. */
+  readonly randomJitterFactor?: () => number;
+}
+
+export type DeliveryOutcome =
+  | { kind: "delivered"; statusCode: number; latencyMs: number; bodyText: string | null }
+  | { kind: "verified"; statusCode: number; latencyMs: number; bodyText: string | null }
+  | {
+      kind: "retry";
+      attemptCount: number;
+      nextAttemptIso: string;
+      statusCode: number | null;
+      latencyMs: number;
+      error: string;
+      bodyText: string | null;
+    }
+  | {
+      kind: "final_failure";
+      attemptCount: number;
+      statusCode: number | null;
+      latencyMs: number;
+      error: string;
+      bodyText: string | null;
+    };
+
+export function signEvent(secret: string, timestamp: number, body: string): string {
+  return `sha256=${createHmac("sha256", secret).update(`${timestamp}.${body}`).digest("hex")}`;
+}
+
+export function verifySignatureHeader(secret: string, timestamp: number, body: string, header: string): boolean {
+  const expected = signEvent(secret, timestamp, body);
+  const a = Buffer.from(expected);
+  const b = Buffer.from(header);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function snippet(text: string | null): string | null {
+  if (text == null) return null;
+  const buf = Buffer.from(text, "utf8");
+  if (buf.length <= MAX_RESPONSE_SNIPPET_BYTES) return text;
+  return buf.slice(0, MAX_RESPONSE_SNIPPET_BYTES).toString("utf8");
+}
+
+function classifyChallenge(event: DeliverableEvent, bodyText: string | null): boolean {
+  if (event.eventType !== "pdpp.subscription.verify") return false;
+  if (!event.verificationChallenge || !bodyText) return false;
+  try {
+    const parsed = JSON.parse(bodyText) as { challenge?: unknown };
+    return typeof parsed.challenge === "string" && parsed.challenge === event.verificationChallenge;
+  } catch {
+    return false;
+  }
+}
+
+export async function executeDelivery(
+  event: DeliverableEvent,
+  deps: DeliveryDependencies,
+): Promise<DeliveryOutcome> {
+  const backoff = deps.backoffSeconds ?? DEFAULT_BACKOFF_SECONDS;
+  const timestamp = deps.nowSeconds();
+  const signature = signEvent(event.secret, timestamp, event.payloadJson);
+  const response = await deps.request({
+    url: event.callbackUrl,
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "PDPP-Event-Timestamp": String(timestamp),
+      "PDPP-Event-Id": event.eventId,
+      "PDPP-Subscription-Id": event.subscriptionId,
+      "PDPP-Event-Signature": signature,
+    },
+    body: event.payloadJson,
+  });
+
+  const nextAttemptIndex = event.attemptCount + 1;
+  const isHttp2xx = response.statusCode != null && response.statusCode >= 200 && response.statusCode < 300;
+  const bodyText = snippet(response.bodyText);
+
+  if (isHttp2xx) {
+    if (event.eventType === "pdpp.subscription.verify") {
+      if (classifyChallenge(event, response.bodyText)) {
+        return { kind: "verified", statusCode: response.statusCode as number, latencyMs: response.latencyMs, bodyText };
+      }
+      // 2xx but wrong challenge — schedule a retry until exhausted.
+    } else {
+      return { kind: "delivered", statusCode: response.statusCode as number, latencyMs: response.latencyMs, bodyText };
+    }
+  }
+
+  const error =
+    response.errorMessage ?? (response.statusCode ? `HTTP ${response.statusCode}` : "no response");
+  if (nextAttemptIndex >= backoff.length) {
+    return {
+      kind: "final_failure",
+      attemptCount: nextAttemptIndex,
+      statusCode: response.statusCode,
+      latencyMs: response.latencyMs,
+      error,
+      bodyText,
+    };
+  }
+  const base = backoff[nextAttemptIndex] ?? backoff[backoff.length - 1] ?? 60;
+  const jitter = deps.randomJitterFactor ? deps.randomJitterFactor() : 0.8 + Math.random() * 0.4;
+  const delaySeconds = Math.round(base * jitter);
+  const nextAttempt = new Date(Date.now() + delaySeconds * 1000).toISOString();
+  return {
+    kind: "retry",
+    attemptCount: nextAttemptIndex,
+    nextAttemptIso: nextAttempt,
+    statusCode: response.statusCode,
+    latencyMs: response.latencyMs,
+    error,
+    bodyText,
+  };
+}

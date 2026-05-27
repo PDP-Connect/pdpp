@@ -355,6 +355,21 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly searchSnapshotsInsert: MutationQuery;
   // Source webhooks — replay/idempotency guard.
   readonly sourceWebhooksClaimEvent: MutationQuery;
+  // Client event subscriptions (outbound, reference-only).
+  readonly clientEventSubscriptionsInsertSubscription: MutationQuery;
+  readonly clientEventSubscriptionsGetSubscriptionById: ReadOneQuery;
+  readonly clientEventSubscriptionsListSubscriptionsByClient: SmallEnumerationQuery;
+  readonly clientEventSubscriptionsListActiveSubscriptions: SmallEnumerationQuery;
+  readonly clientEventSubscriptionsListSubscriptionsByGrant: SmallEnumerationQuery;
+  readonly clientEventSubscriptionsUpdateStatus: MutationQuery;
+  readonly clientEventSubscriptionsUpdateSecret: MutationQuery;
+  readonly clientEventSubscriptionsDeleteSubscription: MutationQuery;
+  readonly clientEventSubscriptionsInsertQueue: MutationQuery;
+  readonly clientEventSubscriptionsClaimDueQueue: SmallEnumerationQuery;
+  readonly clientEventSubscriptionsUpdateQueueAttempt: MutationQuery;
+  readonly clientEventSubscriptionsDropQueuedForSubscription: MutationQuery;
+  readonly clientEventSubscriptionsInsertAttempt: MutationQuery;
+  readonly clientEventSubscriptionsListAttemptsForQueue: SmallEnumerationQuery;
   // Spine — controller-side terminal-event existence probe.
   readonly spineCheckRunTerminal: ReadOneQuery;
   readonly spineGetRunTerminalEvent: ReadOneQuery;
@@ -713,6 +728,21 @@ export function loadReferenceQueries(queryDir = QUERIES_DIR): ReferenceQueryRegi
     "controllerUpsertSchedulerLastRunTime",
     // Source webhooks — replay/idempotency guard.
     "sourceWebhooksClaimEvent",
+    // Client event subscriptions (outbound, reference-only).
+    "clientEventSubscriptionsInsertSubscription",
+    "clientEventSubscriptionsGetSubscriptionById",
+    "clientEventSubscriptionsListSubscriptionsByClient",
+    "clientEventSubscriptionsListActiveSubscriptions",
+    "clientEventSubscriptionsListSubscriptionsByGrant",
+    "clientEventSubscriptionsUpdateStatus",
+    "clientEventSubscriptionsUpdateSecret",
+    "clientEventSubscriptionsDeleteSubscription",
+    "clientEventSubscriptionsInsertQueue",
+    "clientEventSubscriptionsClaimDueQueue",
+    "clientEventSubscriptionsUpdateQueueAttempt",
+    "clientEventSubscriptionsDropQueuedForSubscription",
+    "clientEventSubscriptionsInsertAttempt",
+    "clientEventSubscriptionsListAttemptsForQueue",
     // Spine — controller-side terminal-event existence probe.
     "spineCheckRunTerminal",
     "spineInsertEvent",

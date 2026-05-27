@@ -57,6 +57,24 @@ import {
 import { postgresPersistContentAddressedBlob } from './postgres-records.js';
 import { createConsentStore } from './stores/consent-store.js';
 import { createOwnerDeviceAuthStore } from './stores/owner-device-auth-store.js';
+import {
+  executeApplyGrantRevoke,
+  executeCreateSubscription,
+  executeDeleteSubscription,
+  executeEnqueueTestEvent,
+  executeGetSubscription,
+  executeListSubscriptions,
+  executeUpdateSubscription,
+} from '../operations/as-client-event-subscriptions/index.ts';
+import {
+  deriveClientEventsFromRecordChange,
+} from '../operations/rs-client-event-derive/index.ts';
+import {
+  getDefaultClientEventSubscriptionStore,
+  listActiveSubscriptions,
+} from './stores/client-event-subscription-store.ts';
+import { getDefaultDeliveryWorker } from './client-event-delivery-worker.ts';
+import { setClientEventEnqueueHook } from './records.js';
 import { getDefaultSourceWebhookEventStore } from './stores/source-webhook-event-store.ts';
 import { DeviceBatchConflictError, createDeviceExporterStore } from './stores/device-exporter-store.js';
 import { getDefaultConnectorDetailGapStore } from './stores/connector-detail-gap-store.js';
@@ -5947,11 +5965,163 @@ function buildAsApp(opts = {}) {
       if (output.traceId) {
         setReferenceTraceId(res, output.traceId);
       }
+      // Apply client-event-subscription grant-revoke side effects after the
+      // grant row has transitioned. Failures here MUST NOT leak through to
+      // the revoke envelope or retroactively undo the revocation.
+      try {
+        executeApplyGrantRevoke(req.params.grantId, {
+          store: getDefaultClientEventSubscriptionStore(),
+          nowIso: () => new Date().toISOString(),
+        });
+        // Fire-and-forget tick so the grant.revoked envelope can ship without
+        // waiting for the periodic worker.
+        getDefaultDeliveryWorker().tick().catch(() => { /* surfaced via attempt log */ });
+      } catch (hookErr) {
+        opts.logger?.warn?.({ err: String(hookErr?.message ?? hookErr) }, 'client-event-subscriptions: revoke hook failed');
+      }
       res.json(output.envelope);
     } catch (err) {
       handleError(res, err);
     }
   });
+
+  // ────────────────────────────────────────────────────────────────────────
+  // /_ref/client-event-subscriptions (reference-only outbound notifications)
+  // ────────────────────────────────────────────────────────────────────────
+  // This surface is reference-only and grant-scoped. Routes require an
+  // active client bearer; the persisted subscription stores the bearer's
+  // (client_id, grant_id, subject_id) so subsequent operations refuse
+  // bearers whose grant does not match. Endpoints are NOT advertised in
+  // public PDPP metadata.
+  function buildBearerActorFromTokenInfo(req) {
+    const ti = req.tokenInfo || {};
+    const grant = ti.grant || {};
+    const scope = {
+      source: grant.source,
+      streams: Array.isArray(grant.streams)
+        ? grant.streams.map((s) => ({
+            name: s.name,
+            ...(s.connection_id ? { connection_id: s.connection_id } : {}),
+            ...(s.resources ? { resources: s.resources } : {}),
+            ...(s.time_range ? { time_range: s.time_range } : {}),
+          }))
+        : [],
+    };
+    return {
+      clientId: ti.client_id || null,
+      grantId: ti.grant_id || null,
+      subjectId: ti.subject_id || null,
+      grantScope: scope,
+    };
+  }
+  const clientEventSubsDeps = () => ({
+    store: getDefaultClientEventSubscriptionStore(),
+    nowIso: () => new Date().toISOString(),
+  });
+  function handleClientEventSubError(res, err) {
+    if (err && err.name === 'ClientEventSubscriptionError') {
+      return pdppError(res, err.status || 400, err.code, err.message);
+    }
+    return handleError(res, err);
+  }
+
+  app.post('/_ref/client-event-subscriptions', requireToken, requireClient, async (req, res) => {
+    try {
+      const actor = buildBearerActorFromTokenInfo(req);
+      if (!actor.clientId || !actor.grantId) {
+        return pdppError(res, 403, 'grant_invalid', 'client subscription requires an active client grant');
+      }
+      const filters =
+        req.body && typeof req.body === 'object' && req.body.filters && typeof req.body.filters === 'object'
+          ? req.body.filters
+          : undefined;
+      const out = executeCreateSubscription(
+        {
+          actor,
+          callbackUrl: typeof req.body?.callback_url === 'string' ? req.body.callback_url : '',
+          filters,
+        },
+        clientEventSubsDeps(),
+      );
+      // Best-effort: fire the verification tick once so the handshake is
+      // visible to tests without waiting for the timer.
+      try {
+        await getDefaultDeliveryWorker().tick();
+      } catch { /* ignored */ }
+      res.status(201).json({
+        subscription_id: out.subscriptionId,
+        secret: out.secret,
+        status: out.status,
+        callback_url: out.callbackUrl,
+        created_at: out.createdAt,
+      });
+    } catch (err) {
+      handleClientEventSubError(res, err);
+    }
+  });
+
+  app.get('/_ref/client-event-subscriptions', requireToken, requireClient, async (req, res) => {
+    try {
+      const actor = buildBearerActorFromTokenInfo(req);
+      const out = executeListSubscriptions(actor, clientEventSubsDeps());
+      res.json(out);
+    } catch (err) {
+      handleClientEventSubError(res, err);
+    }
+  });
+
+  app.get('/_ref/client-event-subscriptions/:id', requireToken, requireClient, async (req, res) => {
+    try {
+      const actor = buildBearerActorFromTokenInfo(req);
+      const out = executeGetSubscription(actor, req.params.id, clientEventSubsDeps());
+      res.json(out);
+    } catch (err) {
+      handleClientEventSubError(res, err);
+    }
+  });
+
+  app.patch('/_ref/client-event-subscriptions/:id', requireToken, requireClient, async (req, res) => {
+    try {
+      const actor = buildBearerActorFromTokenInfo(req);
+      const body = req.body || {};
+      const out = executeUpdateSubscription(
+        actor,
+        req.params.id,
+        {
+          ...(typeof body.enabled === 'boolean' ? { enabled: body.enabled } : {}),
+          ...(body.rotate_secret === true ? { rotateSecret: true } : {}),
+        },
+        clientEventSubsDeps(),
+      );
+      res.json(out);
+    } catch (err) {
+      handleClientEventSubError(res, err);
+    }
+  });
+
+  app.delete('/_ref/client-event-subscriptions/:id', requireToken, requireClient, async (req, res) => {
+    try {
+      const actor = buildBearerActorFromTokenInfo(req);
+      executeDeleteSubscription(actor, req.params.id, clientEventSubsDeps());
+      res.status(204).end();
+    } catch (err) {
+      handleClientEventSubError(res, err);
+    }
+  });
+
+  app.post('/_ref/client-event-subscriptions/:id/test-event', requireToken, requireClient, async (req, res) => {
+    try {
+      const actor = buildBearerActorFromTokenInfo(req);
+      const out = executeEnqueueTestEvent(actor, req.params.id, clientEventSubsDeps());
+      try {
+        await getDefaultDeliveryWorker().tick();
+      } catch { /* ignored */ }
+      res.status(202).json({ event_id: out.eventId });
+    } catch (err) {
+      handleClientEventSubError(res, err);
+    }
+  });
+
   return app;
 }
 
@@ -8466,6 +8636,67 @@ export async function startServer(opts = {}) {
   });
   await controller.reconcileBrowserSurfaceLeasesAfterBoot();
   let schedulerManager = null;
+
+  // Client event subscriptions: install the post-commit hook from
+  // records.js and start the delivery worker. The hook synchronously
+  // enqueues envelopes after a record_changes row has committed; the
+  // worker handles signing, HTTP delivery, and retry.
+  setClientEventEnqueueHook((change) => {
+    try {
+      const subs = listActiveSubscriptions();
+      if (subs.length === 0) return;
+      const store = getDefaultClientEventSubscriptionStore();
+      const events = deriveClientEventsFromRecordChange(
+        {
+          connectorId: change.connectorId,
+          connectorInstanceId: change.connectorInstanceId,
+          connectionId: change.connectionId ?? null,
+          stream: change.stream,
+          version: Number(change.version) || 0,
+          emittedAt: change.emittedAt,
+        },
+        subs
+          .filter((row) => row.status === 'active')
+          .map((row) => ({
+            subscriptionId: row.subscription_id,
+            grantId: row.grant_id,
+            clientId: row.client_id,
+            scope: JSON.parse(row.scope_json),
+            status: 'active',
+          })),
+      );
+      const now = new Date().toISOString();
+      for (const ev of events) {
+        const eventId = `evt_${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
+        const payload = JSON.stringify({
+          specversion: '1.0-pdpp',
+          id: eventId,
+          type: ev.type,
+          source: `/_ref/client-event-subscriptions/${ev.subscriptionId}`,
+          subscription_id: ev.subscriptionId,
+          occurred_at: ev.occurredAt,
+          data: ev.data,
+        });
+        store.enqueueEvent({
+          subscriptionId: ev.subscriptionId,
+          eventId,
+          eventType: ev.type,
+          payloadJson: payload,
+          enqueuedAt: now,
+          nextAttemptAt: now,
+        });
+      }
+      if (events.length > 0) {
+        getDefaultDeliveryWorker().tick().catch(() => { /* surfaced via attempt log */ });
+      }
+    } catch (hookErr) {
+      logger.warn?.({ err: String(hookErr?.message ?? hookErr) }, 'client-event-subscriptions: enqueue hook failed');
+    }
+  });
+  if (opts.startClientEventDeliveryWorker !== false) {
+    getDefaultDeliveryWorker().start();
+  }
+
   const asApp = buildAsApp({
     nativeManifest: nativeConfig?.nativeManifest || null,
     controller,

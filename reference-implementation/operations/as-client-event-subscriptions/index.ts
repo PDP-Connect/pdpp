@@ -1,0 +1,456 @@
+/**
+ * Canonical `as.client-event-subscriptions.*` operations.
+ *
+ * Pure operation layer for the outbound client event subscription surface.
+ * Host adapter (Express) owns HTTP routing, bearer auth, request id
+ * propagation, and response writing. The operation owns:
+ *
+ *  - input validation (callback URL shape, optional filters);
+ *  - grant-scoped authorization (subscription must belong to the bearer's
+ *    `(client_id, grant_id)`);
+ *  - persistence via the injected store;
+ *  - enqueueing a single `subscription.verify` event on create;
+ *  - enqueueing a deterministic `subscription.test` event when requested;
+ *  - revocation enqueue when the bound grant transitions to revoked.
+ *
+ * The operation does not sign or POST anything; the delivery worker owns
+ * that. It does not depend on Fastify, SQLite, Postgres, or `process.env`.
+ */
+
+import { createHash, randomBytes } from "node:crypto";
+import {
+  buildGrantRevokedEvent,
+  buildTestEvent,
+  buildVerifyEvent,
+  type DerivedEvent,
+  type SubscriptionScope,
+} from "../rs-client-event-derive/index.ts";
+
+export class ClientEventSubscriptionError extends Error {
+  readonly code: string;
+  readonly status: number;
+  constructor(code: string, message: string, status = 400) {
+    super(message);
+    this.name = "ClientEventSubscriptionError";
+    this.code = code;
+    this.status = status;
+  }
+}
+
+export interface BearerActor {
+  readonly clientId: string;
+  readonly grantId: string;
+  readonly subjectId: string;
+  /** Grant scope snapshot derived from the bearer's grant. */
+  readonly grantScope: SubscriptionScope;
+}
+
+export interface SubscriptionRow {
+  readonly subscription_id: string;
+  readonly grant_id: string;
+  readonly client_id: string;
+  readonly subject_id: string;
+  readonly callback_url: string;
+  readonly secret_hash: string;
+  readonly secret_text: string;
+  readonly scope_json: string;
+  readonly status: SubscriptionStatus;
+  readonly verification_challenge: string | null;
+  readonly created_at: string;
+  readonly updated_at: string;
+  readonly disabled_at: string | null;
+  readonly disabled_reason: string | null;
+}
+
+export type SubscriptionStatus =
+  | "pending_verification"
+  | "active"
+  | "disabled"
+  | "disabled_failure"
+  | "disabled_revoked"
+  | "deleted";
+
+export interface QueuedEventForEnqueue {
+  readonly subscriptionId: string;
+  readonly eventId: string;
+  readonly eventType: string;
+  readonly payloadJson: string;
+  readonly enqueuedAt: string;
+  readonly nextAttemptAt: string;
+}
+
+export interface ClientEventSubscriptionStore {
+  insertSubscription(row: SubscriptionRow): void;
+  getSubscriptionById(id: string): SubscriptionRow | null;
+  listSubscriptionsByClient(clientId: string): SubscriptionRow[];
+  updateStatus(
+    id: string,
+    status: SubscriptionStatus,
+    updatedAt: string,
+    disabledAt: string | null,
+    disabledReason: string | null,
+  ): void;
+  updateSecret(id: string, secretHash: string, secretText: string, updatedAt: string): void;
+  deleteSubscription(id: string): void;
+  enqueueEvent(event: QueuedEventForEnqueue): void;
+  dropQueuedForSubscription(id: string): void;
+  listSubscriptionsByGrant(grantId: string): SubscriptionRow[];
+}
+
+export interface CreateSubscriptionInput {
+  readonly actor: BearerActor;
+  readonly callbackUrl: string;
+  readonly filters?: { streams?: ReadonlyArray<string> };
+}
+
+export interface CreateSubscriptionOutput {
+  readonly subscriptionId: string;
+  readonly secret: string;
+  readonly status: SubscriptionStatus;
+  readonly callbackUrl: string;
+  readonly createdAt: string;
+}
+
+const ALLOWED_LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
+
+function validateCallbackUrl(raw: string): URL {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new ClientEventSubscriptionError("invalid_request", "callback_url must be an absolute URL");
+  }
+  if (parsed.protocol === "https:") return parsed;
+  if (parsed.protocol === "http:" && ALLOWED_LOCAL_HOSTS.has(parsed.hostname.toLowerCase())) return parsed;
+  throw new ClientEventSubscriptionError(
+    "invalid_request",
+    "callback_url must use https:// (http://localhost permitted for development)",
+  );
+}
+
+function narrowScope(actor: BearerActor, filters: { streams?: ReadonlyArray<string> } | undefined): SubscriptionScope {
+  const grantScope = actor.grantScope;
+  if (!filters?.streams || filters.streams.length === 0) return grantScope;
+  const grantNames = new Set(grantScope.streams.map((s) => s.name));
+  const unauthorized = filters.streams.filter((n) => !grantNames.has(n));
+  if (unauthorized.length) {
+    throw new ClientEventSubscriptionError(
+      "invalid_request",
+      `filter streams not in grant: ${unauthorized.join(", ")}`,
+    );
+  }
+  return { ...grantScope, filters: { streams: [...filters.streams] } };
+}
+
+function newSubscriptionId(): string {
+  return `sub_${randomBytes(12).toString("hex")}`;
+}
+function newEventId(): string {
+  return `evt_${randomBytes(12).toString("hex")}`;
+}
+function newSecret(): string {
+  return `pess_${randomBytes(24).toString("base64url")}`;
+}
+function newChallenge(): string {
+  return randomBytes(16).toString("hex");
+}
+export function hashSecret(secret: string): string {
+  return createHash("sha256").update(secret).digest("hex");
+}
+
+export interface ClientEventSubscriptionDependencies {
+  readonly store: ClientEventSubscriptionStore;
+  readonly nowIso: () => string;
+}
+
+export function executeCreateSubscription(
+  input: CreateSubscriptionInput,
+  deps: ClientEventSubscriptionDependencies,
+): CreateSubscriptionOutput {
+  const callback = validateCallbackUrl(input.callbackUrl);
+  const scope = narrowScope(input.actor, input.filters);
+  const subscriptionId = newSubscriptionId();
+  const secret = newSecret();
+  const secretHash = hashSecret(secret);
+  const challenge = newChallenge();
+  const now = deps.nowIso();
+  const row: SubscriptionRow = {
+    subscription_id: subscriptionId,
+    grant_id: input.actor.grantId,
+    client_id: input.actor.clientId,
+    subject_id: input.actor.subjectId,
+    callback_url: callback.toString(),
+    secret_hash: secretHash,
+    secret_text: secret,
+    scope_json: JSON.stringify(scope),
+    status: "pending_verification",
+    verification_challenge: challenge,
+    created_at: now,
+    updated_at: now,
+    disabled_at: null,
+    disabled_reason: null,
+  };
+  deps.store.insertSubscription(row);
+  const verifyEvent = buildVerifyEvent(subscriptionId, challenge, now);
+  enqueue(deps, verifyEvent, now);
+  return {
+    subscriptionId,
+    secret,
+    status: "pending_verification",
+    callbackUrl: row.callback_url,
+    createdAt: now,
+  };
+}
+
+function enqueue(
+  deps: ClientEventSubscriptionDependencies,
+  event: DerivedEvent,
+  nowIso: string,
+): void {
+  const eventId = newEventId();
+  const payload = {
+    specversion: "1.0-pdpp",
+    id: eventId,
+    type: event.type,
+    source: `/_ref/client-event-subscriptions/${event.subscriptionId}`,
+    subscription_id: event.subscriptionId,
+    occurred_at: event.occurredAt,
+    data: event.data,
+  };
+  deps.store.enqueueEvent({
+    subscriptionId: event.subscriptionId,
+    eventId,
+    eventType: event.type,
+    payloadJson: JSON.stringify(payload),
+    enqueuedAt: nowIso,
+    nextAttemptAt: nowIso,
+  });
+}
+
+export interface ProjectedSubscription {
+  readonly subscription_id: string;
+  readonly grant_id: string;
+  readonly client_id: string;
+  readonly callback_url: string;
+  readonly status: SubscriptionStatus;
+  readonly scope: SubscriptionScope;
+  readonly created_at: string;
+  readonly updated_at: string;
+  readonly disabled_reason: string | null;
+}
+
+function projectRow(row: SubscriptionRow): ProjectedSubscription {
+  return {
+    subscription_id: row.subscription_id,
+    grant_id: row.grant_id,
+    client_id: row.client_id,
+    callback_url: row.callback_url,
+    status: row.status,
+    scope: JSON.parse(row.scope_json) as SubscriptionScope,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    disabled_reason: row.disabled_reason,
+  };
+}
+
+function loadOwnedSubscription(
+  deps: ClientEventSubscriptionDependencies,
+  actor: BearerActor,
+  subscriptionId: string,
+): SubscriptionRow {
+  const row = deps.store.getSubscriptionById(subscriptionId);
+  if (!row || row.client_id !== actor.clientId || row.grant_id !== actor.grantId) {
+    throw new ClientEventSubscriptionError("not_found", "subscription not found", 404);
+  }
+  if (row.status === "deleted") {
+    throw new ClientEventSubscriptionError("not_found", "subscription not found", 404);
+  }
+  return row;
+}
+
+export function executeGetSubscription(
+  actor: BearerActor,
+  subscriptionId: string,
+  deps: ClientEventSubscriptionDependencies,
+): ProjectedSubscription {
+  return projectRow(loadOwnedSubscription(deps, actor, subscriptionId));
+}
+
+export function executeListSubscriptions(
+  actor: BearerActor,
+  deps: ClientEventSubscriptionDependencies,
+): { readonly data: ReadonlyArray<ProjectedSubscription> } {
+  const rows = deps.store
+    .listSubscriptionsByClient(actor.clientId)
+    .filter((row) => row.grant_id === actor.grantId && row.status !== "deleted");
+  return { data: rows.map(projectRow) };
+}
+
+export interface UpdateSubscriptionInput {
+  readonly enabled?: boolean;
+  readonly rotateSecret?: boolean;
+}
+
+export interface UpdateSubscriptionOutput {
+  readonly subscription: ProjectedSubscription;
+  readonly secret?: string;
+}
+
+export function executeUpdateSubscription(
+  actor: BearerActor,
+  subscriptionId: string,
+  input: UpdateSubscriptionInput,
+  deps: ClientEventSubscriptionDependencies,
+): UpdateSubscriptionOutput {
+  const row = loadOwnedSubscription(deps, actor, subscriptionId);
+  const now = deps.nowIso();
+  let newSecretValue: string | undefined;
+  if (input.rotateSecret) {
+    newSecretValue = newSecret();
+    deps.store.updateSecret(row.subscription_id, hashSecret(newSecretValue), newSecretValue, now);
+  }
+  if (typeof input.enabled === "boolean") {
+    if (input.enabled) {
+      if (row.status === "disabled" || row.status === "disabled_failure") {
+        deps.store.updateStatus(row.subscription_id, "active", now, null, null);
+      } else if (row.status === "disabled_revoked") {
+        throw new ClientEventSubscriptionError(
+          "grant_revoked",
+          "subscription is bound to a revoked grant and cannot be re-enabled",
+          409,
+        );
+      }
+    } else if (row.status === "active" || row.status === "pending_verification") {
+      deps.store.updateStatus(row.subscription_id, "disabled", now, now, "client_disabled");
+    }
+  }
+  const updated = deps.store.getSubscriptionById(row.subscription_id);
+  if (!updated) throw new ClientEventSubscriptionError("not_found", "subscription not found", 404);
+  return {
+    subscription: projectRow(updated),
+    ...(newSecretValue ? { secret: newSecretValue } : {}),
+  };
+}
+
+export function executeDeleteSubscription(
+  actor: BearerActor,
+  subscriptionId: string,
+  deps: ClientEventSubscriptionDependencies,
+): void {
+  const row = loadOwnedSubscription(deps, actor, subscriptionId);
+  const now = deps.nowIso();
+  deps.store.updateStatus(row.subscription_id, "deleted", now, now, "deleted");
+  deps.store.dropQueuedForSubscription(row.subscription_id);
+}
+
+export function executeEnqueueTestEvent(
+  actor: BearerActor,
+  subscriptionId: string,
+  deps: ClientEventSubscriptionDependencies,
+): { readonly eventId: string } {
+  const row = loadOwnedSubscription(deps, actor, subscriptionId);
+  if (row.status !== "active" && row.status !== "pending_verification") {
+    throw new ClientEventSubscriptionError(
+      "invalid_state",
+      `cannot enqueue test event for subscription in status ${row.status}`,
+      409,
+    );
+  }
+  const now = deps.nowIso();
+  const event = buildTestEvent(row.subscription_id, now);
+  const eventId = newEventId();
+  const payload = {
+    specversion: "1.0-pdpp",
+    id: eventId,
+    type: event.type,
+    source: `/_ref/client-event-subscriptions/${event.subscriptionId}`,
+    subscription_id: event.subscriptionId,
+    occurred_at: event.occurredAt,
+    data: event.data,
+  };
+  deps.store.enqueueEvent({
+    subscriptionId: row.subscription_id,
+    eventId,
+    eventType: event.type,
+    payloadJson: JSON.stringify(payload),
+    enqueuedAt: now,
+    nextAttemptAt: now,
+  });
+  return { eventId };
+}
+
+/**
+ * Hook invoked from the grant-revoke flow. Marks all active or pending
+ * subscriptions for the grant as disabled_revoked, drops their pending
+ * queue rows, and emits at most one grant.revoked envelope per previously
+ * active subscription.
+ */
+export function executeApplyGrantRevoke(
+  grantId: string,
+  deps: ClientEventSubscriptionDependencies,
+): { readonly affected: number; readonly notified: number } {
+  const rows = deps.store.listSubscriptionsByGrant(grantId);
+  const now = deps.nowIso();
+  let notified = 0;
+  let affected = 0;
+  for (const row of rows) {
+    if (row.status === "deleted" || row.status === "disabled_revoked") continue;
+    affected += 1;
+    const wasActive = row.status === "active";
+    deps.store.dropQueuedForSubscription(row.subscription_id);
+    deps.store.updateStatus(row.subscription_id, "disabled_revoked", now, now, "grant_revoked");
+    if (wasActive) {
+      const event = buildGrantRevokedEvent(row.subscription_id, now);
+      const eventId = newEventId();
+      const payload = {
+        specversion: "1.0-pdpp",
+        id: eventId,
+        type: event.type,
+        source: `/_ref/client-event-subscriptions/${event.subscriptionId}`,
+        subscription_id: event.subscriptionId,
+        occurred_at: event.occurredAt,
+        data: event.data,
+      };
+      deps.store.enqueueEvent({
+        subscriptionId: row.subscription_id,
+        eventId,
+        eventType: event.type,
+        payloadJson: JSON.stringify(payload),
+        enqueuedAt: now,
+        nextAttemptAt: now,
+      });
+      notified += 1;
+    }
+  }
+  return { affected, notified };
+}
+
+/** Verification handshake helpers. Called by the delivery worker. */
+export function executeVerificationOutcome(
+  subscriptionId: string,
+  outcome: "verified" | "failed",
+  deps: ClientEventSubscriptionDependencies,
+): SubscriptionRow {
+  const row = deps.store.getSubscriptionById(subscriptionId);
+  if (!row) throw new ClientEventSubscriptionError("not_found", "subscription not found", 404);
+  const now = deps.nowIso();
+  if (outcome === "verified" && row.status === "pending_verification") {
+    deps.store.updateStatus(row.subscription_id, "active", now, null, null);
+  } else if (outcome === "failed") {
+    deps.store.updateStatus(row.subscription_id, "pending_verification", now, null, null);
+  }
+  return deps.store.getSubscriptionById(subscriptionId) as SubscriptionRow;
+}
+
+export function executeRecordDeliveryFailure(
+  subscriptionId: string,
+  deps: ClientEventSubscriptionDependencies,
+): void {
+  const row = deps.store.getSubscriptionById(subscriptionId);
+  if (!row) return;
+  if (row.status === "active" || row.status === "pending_verification") {
+    const now = deps.nowIso();
+    deps.store.updateStatus(row.subscription_id, "disabled_failure", now, now, "delivery_failed");
+    deps.store.dropQueuedForSubscription(row.subscription_id);
+  }
+}

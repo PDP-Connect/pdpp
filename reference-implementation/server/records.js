@@ -2,6 +2,28 @@
  * PDPP Resource Server — record storage and grant-enforced query
  */
 import { getDb } from './db.js';
+
+// Optional post-commit hook for outbound client event subscriptions. The
+// hook is invoked after a `record_changes` row has been durably committed
+// for an `ingestRecord` call. It is intentionally untyped here so the
+// records module stays decoupled from the subscriptions store; the host
+// adapter installs the real implementation in `startServer`.
+let __clientEventEnqueueHook = null;
+export function setClientEventEnqueueHook(fn) {
+  __clientEventEnqueueHook = typeof fn === 'function' ? fn : null;
+}
+function __invokeClientEventEnqueueHook(change) {
+  if (!__clientEventEnqueueHook) return;
+  try {
+    const result = __clientEventEnqueueHook(change);
+    if (result && typeof result.catch === 'function') {
+      result.catch(() => { /* surfaced via attempt log */ });
+    }
+  } catch {
+    /* hook errors must not retroactively roll back ingest */
+  }
+}
+
 import {
   allowUnboundedReadAcknowledged,
   exec,
@@ -354,7 +376,7 @@ export async function ingestRecord(storageTarget, record) {
       recordHistoryCountDelta: 1 - prunedRowsForDelta,
     });
 
-    return { kind: 'changed', op };
+    return { kind: 'changed', op, version: nextVersion };
   });
 
   if (outcome.kind === 'noop') {
@@ -371,6 +393,17 @@ export async function ingestRecord(storageTarget, record) {
     await lexicalIndexUpsert({ connectorId, connectorInstanceId, stream, recordKey, data });
     await semanticIndexUpsert({ connectorId, connectorInstanceId, stream, recordKey, data });
   }
+
+  // After-commit notification for client event subscriptions. Failures
+  // here MUST NOT retroactively roll back the durable record mutation.
+  __invokeClientEventEnqueueHook({
+    connectorId,
+    connectorInstanceId,
+    connectionId: connectorInstanceId,
+    stream,
+    version: outcome.version ?? null,
+    emittedAt: effectiveEmittedAt,
+  });
 
   return { accepted: true, changed: true };
 }

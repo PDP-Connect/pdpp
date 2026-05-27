@@ -388,6 +388,75 @@ CREATE TABLE IF NOT EXISTS source_webhook_events (
   PRIMARY KEY(source_id, event_id)
 );
 
+-- Outbound client event subscriptions (reference-only). Each subscription is
+-- bound to a single client + grant. The persisted scope_json is a snapshot
+-- of the grant stream selection at create time so derivation can refuse
+-- events outside the original grant projection. secret_hash stores a
+-- one-way digest of the per-subscription HMAC secret; the raw secret is
+-- returned exactly once at create time.
+CREATE TABLE IF NOT EXISTS client_event_subscriptions (
+  subscription_id        TEXT PRIMARY KEY,
+  grant_id               TEXT NOT NULL,
+  client_id              TEXT NOT NULL,
+  subject_id             TEXT NOT NULL,
+  callback_url           TEXT NOT NULL,
+  secret_hash            TEXT NOT NULL,
+  secret_text            TEXT NOT NULL,
+  scope_json             TEXT NOT NULL,
+  status                 TEXT NOT NULL,
+  verification_challenge TEXT,
+  created_at             TEXT NOT NULL,
+  updated_at             TEXT NOT NULL,
+  disabled_at            TEXT,
+  disabled_reason        TEXT,
+  CHECK (status IN (
+    'pending_verification',
+    'active',
+    'disabled',
+    'disabled_failure',
+    'disabled_revoked',
+    'deleted'
+  ))
+);
+
+CREATE INDEX IF NOT EXISTS idx_client_event_subscriptions_client
+  ON client_event_subscriptions(client_id, status);
+CREATE INDEX IF NOT EXISTS idx_client_event_subscriptions_grant
+  ON client_event_subscriptions(grant_id);
+
+CREATE TABLE IF NOT EXISTS client_event_queue (
+  queue_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  subscription_id TEXT NOT NULL,
+  event_id        TEXT NOT NULL UNIQUE,
+  event_type      TEXT NOT NULL,
+  payload_json    TEXT NOT NULL,
+  enqueued_at     TEXT NOT NULL,
+  next_attempt_at TEXT NOT NULL,
+  attempt_count   INTEGER NOT NULL DEFAULT 0,
+  status          TEXT NOT NULL,
+  last_error      TEXT,
+  CHECK (status IN ('pending', 'delivered', 'final_failure', 'dropped'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_client_event_queue_due
+  ON client_event_queue(status, next_attempt_at);
+CREATE INDEX IF NOT EXISTS idx_client_event_queue_subscription
+  ON client_event_queue(subscription_id, status);
+
+CREATE TABLE IF NOT EXISTS client_event_attempts (
+  attempt_id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  queue_id         INTEGER NOT NULL,
+  attempted_at     TEXT NOT NULL,
+  status_code      INTEGER,
+  ok               INTEGER NOT NULL DEFAULT 0,
+  latency_ms       INTEGER,
+  error            TEXT,
+  response_snippet TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_client_event_attempts_queue
+  ON client_event_attempts(queue_id, attempt_id);
+
 CREATE TABLE IF NOT EXISTS connector_schedules (
   connector_instance_id TEXT PRIMARY KEY,
   connector_id      TEXT NOT NULL,

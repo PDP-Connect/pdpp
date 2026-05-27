@@ -1,9 +1,9 @@
 # Client Event Subscriptions And Freshness
 
-Status: captured
+Status: promoted-partial
 Owner: protocol / reference query API
 Created: 2026-04-26
-Updated: 2026-04-26
+Updated: 2026-05-27
 Related: changes_since, freshness metadata, webhook/push delivery profile research, client grants
 
 ## Question
@@ -42,3 +42,4 @@ Promote to OpenSpec before adding any client-facing subscription endpoint, webho
 ## Decision Log
 
 - 2026-04-26: Captured from owner request. Needs deep prior-art research before spec language.
+- 2026-05-27: Promoted the outbound client-subscription tranche to `openspec/changes/add-client-event-subscriptions`. Reference-only, grant-scoped, projection-safe hint events. Cross-implementation contract, freshness inspection, and client-triggered refresh remain captured for future tranches.
