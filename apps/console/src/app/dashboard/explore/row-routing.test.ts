@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { dashboardRoutes } from "../../components/views/routes.ts";
+import { dashboardRoutes } from "../components/views/routes.ts";
 
 // The view renders <Link href={routes.record(entry.connectionId ?? entry.connectorId, …)}>.
 // `resolveConnectionForRecordsRoute` accepts either a connection_id (preferred)

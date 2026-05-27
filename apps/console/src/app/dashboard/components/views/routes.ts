@@ -21,8 +21,14 @@ export interface Routes {
   run(id: string): string;
   readonly section: {
     overview: string;
+    /**
+     * Top-level Explore canvas. Promoted out of the Records subtree by
+     * `promote-explore-to-top-level-ia`. The legacy `/dashboard/records/explorer`
+     * URL redirects here and the Records subnav points its `Explorer`
+     * entry at this same destination.
+     */
+    explore: string;
     records: string;
-    recordsExplorer: string;
     recordsTimeline: string;
     schedules: string;
     search: string;
@@ -43,8 +49,8 @@ function makeRoutes(basePath: string, opts: { overview?: string } = {}): Routes 
     basePath,
     section: {
       overview: opts.overview ?? basePath,
+      explore: `${basePath}/explore`,
       records: `${basePath}/records`,
-      recordsExplorer: `${basePath}/records/explorer`,
       recordsTimeline: `${basePath}/records/timeline`,
       schedules: `${basePath}/schedules`,
       search: `${basePath}/search`,

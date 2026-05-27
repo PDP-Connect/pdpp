@@ -18,8 +18,8 @@
  * `connectionId: null` / `connectionDisplayName: null` so the UI can
  * label the row as connector-scoped.
  */
-import type { RefConnectorSummary } from "../../lib/ref-client.ts";
-import type { SearchResultHit } from "../../lib/rs-client.ts";
+import type { RefConnectorSummary } from "../lib/ref-client.ts";
+import type { SearchResultHit } from "../lib/rs-client.ts";
 
 export interface AttributedSearchHit {
   connectionDisplayName: string | null;

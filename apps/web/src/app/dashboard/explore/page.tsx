@@ -16,19 +16,17 @@
  *   - Empty-query fan-out KNOWS the connection per row. Row key, peek
  *     param, attribution, and full-record link all carry the concrete
  *     `connection_id`.
- *   - Search hits carry `connection_id` whenever the snapshot recorded the
- *     binding (canonical read contract, task 3.2). When present we resolve
- *     directly. Pre-identity snapshots may still omit the field; we fall
- *     back to the visible-set deduction only when exactly one connection of
- *     that connector type is visible ("deduction, not guessing"). Otherwise
- *     the row is connector-scoped and the UI says so.
- *   - Selected-connection chips also fall back to a connector-type post-
- *     filter in search mode because the public surface does not yet narrow
- *     storage fan-in by `connection_id` (canonical read contract, task 3.3
- *     follow-up). The chip label and the spec both call this out instead of
- *     pretending to filter by connection.
+ *   - Search hits today do NOT carry `connection_id` from the public
+ *     `/v1/search*` contract. We resolve to a concrete connection only
+ *     when (a) the server happens to return one (forward-compatible), or
+ *     (b) exactly one connection of that connector type is visible
+ *     ("deduction, not guessing"). Otherwise the row is connector-scoped
+ *     and the UI says so.
+ *   - Selected-connection chips fall back to a connector-type post-filter
+ *     in search mode for the same reason; the chip label and the spec
+ *     both call this out instead of pretending to filter by connection.
  */
-import { DashboardShell, ServerUnreachable } from "../../components/shell.tsx";
+import { DashboardShell, ServerUnreachable } from "../components/shell.tsx";
 import {
   buildExplorerHref,
   type ExplorerConnectionFacet,
@@ -38,10 +36,10 @@ import {
   parseExplorerPeekParam,
   type RecordsExplorerData,
   RecordsExplorerView,
-} from "../../components/views/records-explorer-view.tsx";
-import { dashboardRoutes } from "../../components/views/routes.ts";
-import { getOwnerToken, getRsInternalUrl, ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
-import { listConnectorSummaries, type RefConnectorSummary } from "../../lib/ref-client.ts";
+} from "../components/views/records-explorer-view.tsx";
+import { dashboardRoutes } from "../components/views/routes.ts";
+import { getOwnerToken, getRsInternalUrl, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
+import { listConnectorSummaries, type RefConnectorSummary } from "../lib/ref-client.ts";
 import {
   getRecord,
   isHybridRetrievalAdvertised,
@@ -50,15 +48,15 @@ import {
   type SearchResultHit,
   searchRecordsHybrid,
   searchRecordsLexical,
-} from "../../lib/rs-client.ts";
+} from "../lib/rs-client.ts";
 import {
   lookupSearchTimestampMetadata,
   pickSearchDisplayTimestamp,
   type SearchTimestampMetadata,
   searchTimestampMetadataKey,
-} from "../../lib/search-record-timestamps.ts";
-import { summarize } from "../../lib/timeline-summaries.ts";
-import { verifyDashboardSession } from "../../lib/verify-session.ts";
+} from "../lib/search-record-timestamps.ts";
+import { summarize } from "../lib/timeline-summaries.ts";
+import { verifyDashboardSession } from "../lib/verify-session.ts";
 import { buildPeekReadUrl } from "./peek-read-url.ts";
 import { attributeSearchHit, shouldIncludeSearchHit } from "./search-hit-attribution.ts";
 
@@ -428,7 +426,7 @@ export default async function RecordsExplorerPage({
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
-        <DashboardShell active="records">
+        <DashboardShell active="explore">
           <ServerUnreachable />
         </DashboardShell>
       );
@@ -455,7 +453,7 @@ export default async function RecordsExplorerPage({
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
-        <DashboardShell active="records">
+        <DashboardShell active="explore">
           <ServerUnreachable />
         </DashboardShell>
       );
@@ -469,7 +467,7 @@ export default async function RecordsExplorerPage({
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
-        <DashboardShell active="records">
+        <DashboardShell active="explore">
           <ServerUnreachable />
         </DashboardShell>
       );
@@ -499,7 +497,7 @@ export default async function RecordsExplorerPage({
   };
 
   return (
-    <DashboardShell active="records">
+    <DashboardShell active="explore">
       <RecordsExplorerView data={data} routes={dashboardRoutes} />
       {/* Anchor for `buildExplorerHref` smoke during typecheck. */}
       <span aria-hidden className="hidden" data-explorer-href={buildExplorerHref(dashboardRoutes, {})} />

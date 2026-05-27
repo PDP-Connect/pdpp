@@ -17,6 +17,7 @@ interface NavItem {
 export type DashboardSection =
   | "overview"
   | "search"
+  | "explore"
   | "traces"
   | "grants"
   | "runs"
@@ -44,6 +45,7 @@ function buildNav(routes: Routes, mode: ShellMode): NavItem[] {
   const nav: NavItem[] = [
     { href: routes.section.overview, label: "Overview", match: (a) => a === "overview" },
     { href: routes.section.search, label: "Search", match: (a) => a === "search" },
+    { href: routes.section.explore, label: "Explore", match: (a) => a === "explore" },
     { href: routes.section.traces, label: "Traces", match: (a) => a === "traces" },
     { href: routes.section.grants, label: "Grants", match: (a) => a === "grants" },
     { href: routes.section.runs, label: "Runs", match: (a) => a === "runs" },
@@ -161,9 +163,13 @@ function GrantsSubnav() {
 function RecordsSubnav({ routes }: { routes: Routes }) {
   // Both modes expose Timeline: the mock-owner sandbox renders the same
   // shared records-timeline view against the seeded dataset.
+  // Records subnav keeps an `Explorer` entry during the IA transition, but
+  // it points at the top-level Explore route — same destination as the
+  // top-level nav. The Connections rename and the Timeline absorption are
+  // separate OpenSpec tranches.
   const items = [
     { href: routes.section.records, label: "Connectors" },
-    { href: routes.section.recordsExplorer, label: "Explorer" },
+    { href: routes.section.explore, label: "Explorer" },
     { href: routes.section.recordsTimeline, label: "Timeline" },
   ];
   return <SidebarSubnav items={items} label="Records" />;

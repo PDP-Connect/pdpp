@@ -162,7 +162,7 @@ export function buildExplorerHref(
     params.set("peek", opts.peek);
   }
   const qs = params.toString();
-  return qs ? `${routes.section.recordsExplorer}?${qs}` : routes.section.recordsExplorer;
+  return qs ? `${routes.section.explore}?${qs}` : routes.section.explore;
 }
 
 export function RecordsExplorerView({ data, routes }: { data: RecordsExplorerData; routes: Routes }) {
@@ -198,10 +198,10 @@ export function RecordsExplorerView({ data, routes }: { data: RecordsExplorerDat
   return (
     <>
       <PageHeader
-        breadcrumbs={[{ label: "Records", href: routes.section.records }, { label: "Explorer" }]}
+        breadcrumbs={[{ label: "Explore" }]}
         count={feedCountLabel(feed.length, fromSearch, truncated)}
         description="Query across every owner-visible connection. Connection identity is preserved — two accounts of the same connector type stay distinct."
-        title="Explorer"
+        title="Explore"
       />
 
       {peek ? (
@@ -284,7 +284,7 @@ function ExplorerMain({
 
   return (
     <>
-      <form action={routes.section.recordsExplorer} method="get">
+      <form action={routes.section.explore} method="get">
         <Toolbar>
           <label className="flex min-w-0 flex-1 flex-col gap-1" htmlFor="records-explorer-q">
             <span className="pdpp-eyebrow">Query</span>

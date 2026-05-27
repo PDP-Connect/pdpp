@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { RefConnectorSummary } from "../../lib/ref-client.ts";
+import type { RefConnectorSummary } from "../lib/ref-client.ts";
 import { attributeSearchHit, shouldIncludeSearchHit } from "./search-hit-attribution.ts";
 
 function summary(

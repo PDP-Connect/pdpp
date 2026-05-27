@@ -4,8 +4,8 @@ import {
   buildExplorerHref,
   explorerPeekParam,
   parseExplorerPeekParam,
-} from "../../components/views/records-explorer-view.tsx";
-import { dashboardRoutes } from "../../components/views/routes.ts";
+} from "../components/views/records-explorer-view.tsx";
+import { dashboardRoutes } from "../components/views/routes.ts";
 
 const NO_CONNECTION_TOKEN = "~";
 
@@ -16,7 +16,7 @@ test("buildExplorerHref preserves repeated connection params (no collapse)", () 
     streams: ["messages"],
   });
   const url = new URL(href, "https://example.test");
-  assert.equal(url.pathname, "/dashboard/records/explorer");
+  assert.equal(url.pathname, "/dashboard/explore");
   assert.equal(url.searchParams.get("q"), "payroll");
   assert.deepEqual(url.searchParams.getAll("connection"), ["gmail-personal", "gmail-work"]);
   assert.deepEqual(url.searchParams.getAll("stream"), ["messages"]);
@@ -24,7 +24,7 @@ test("buildExplorerHref preserves repeated connection params (no collapse)", () 
 
 test("buildExplorerHref returns the bare path when nothing is set", () => {
   const href = buildExplorerHref(dashboardRoutes, {});
-  assert.equal(href, "/dashboard/records/explorer");
+  assert.equal(href, "/dashboard/explore");
 });
 
 test("explorerPeekParam round-trips a concrete connection_id when known", () => {

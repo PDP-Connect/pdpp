@@ -35,6 +35,15 @@ const nextConfig = {
       // Console root → dashboard. The standards/docs site lives in apps/site.
       // Dashboard IA migration: connector browsing lives under /dashboard/records/
       // and the standalone /dashboard/timeline route is now /dashboard/records/timeline.
+      // Records-explorer was promoted to the top-level `/dashboard/explore`
+      // by `promote-explore-to-top-level-ia`. Keep the redirect non-permanent
+      // until the Connections rename retires the entire `/dashboard/records`
+      // subtree, at which point a single permanent block can cover it.
+      {
+        source: '/dashboard/records/explorer',
+        destination: '/dashboard/explore',
+        permanent: false,
+      },
       {
         source: '/dashboard/data',
         destination: '/dashboard/records',
@@ -59,7 +68,7 @@ const nextConfig = {
       // Excludes reserved top-level sections so they don't get caught.
       {
         source:
-          '/dashboard/:connector((?!traces|grants|runs|records|data|search|timeline|schedules|deployment|stream-playground|components|lib)[^/]+)/:rest*',
+          '/dashboard/:connector((?!traces|grants|runs|records|data|search|explore|timeline|schedules|deployment|device-exporters|stream-playground|components|lib)[^/]+)/:rest*',
         destination: '/dashboard/records/:connector/:rest*',
         permanent: false,
       },
