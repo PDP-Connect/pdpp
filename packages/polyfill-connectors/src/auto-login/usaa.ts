@@ -17,7 +17,6 @@ import type { InteractionRequest, InteractionResponse } from "../connector-runti
 const DASHBOARD_URL = "https://www.usaa.com/my/usaa";
 const LOGIN_URL = "https://www.usaa.com/my/logon";
 const LOGGED_IN_TEXT = /Log Off|Good (Morning|Afternoon|Evening)/i;
-const LOG_OFF_TEXT = /Log Off/i;
 const SESSION_COOKIE = /^(LtpaToken2|AST|MemberGlobalSession)$/;
 const TEXT_CODE_PROMPT = /Text security code/i;
 const LOGIN_NAVIGATION_INTERVENTION_ERROR = /page\.goto: net::ERR_(HTTP2_PROTOCOL_ERROR|CONNECTION_RESET|FAILED)\b/i;
@@ -40,6 +39,10 @@ function errorMessage(err: unknown): string {
 
 function firstLine(message: string): string {
   return message.split("\n")[0]?.trim() || message.trim();
+}
+
+function trimForDiagnostic(value: string, maxLength: number): string {
+  return value.replace(/\s+/g, " ").trim().slice(0, maxLength);
 }
 
 function isLoggedInCookie(cookie: { name: string; value?: string }): boolean {
@@ -213,10 +216,27 @@ export async function ensureUsaaSession({ context, page, sendInteraction }: Ensu
     await page.waitForTimeout(6000);
   }
 
-  // Verify we're logged in now
-  const finalText = (await page.locator("body").innerText()).slice(0, 500);
-  if (!LOG_OFF_TEXT.test(finalText)) {
-    throw new Error("USAA login completed but final state shows no Log Off — may need fresh bootstrap");
+  if (await verifyLoggedIn(context, page)) {
+    return true;
   }
-  return true;
+
+  const finalText = await page
+    .locator("body")
+    .innerText()
+    .catch((): string => "");
+  const inputs = await page
+    .evaluate((): InputProbe[] => {
+      const els = document.querySelectorAll("input");
+      return Array.from(els).map(
+        (i): InputProbe => ({
+          name: i.name,
+          type: i.type,
+          placeholder: i.placeholder,
+        })
+      );
+    })
+    .catch((): InputProbe[] => []);
+  throw new Error(
+    `USAA login completed but no verified authenticated dashboard session was detected. url=${page.url()} inputs=${JSON.stringify(inputs)} body-preview=${trimForDiagnostic(finalText, 300)}`
+  );
 }
