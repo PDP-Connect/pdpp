@@ -150,10 +150,6 @@ function activeFilterChips(params: ResolvedParams): { label: string; value: stri
   return chips;
 }
 
-interface SearchParamsShape {
-  searchParams?: Promise<PageParams> | PageParams;
-}
-
 function renderPeek({
   disableError,
   peek,
@@ -189,9 +185,8 @@ function renderPeek({
   return <PeekPane disableError={disableError} subscription={peek} />;
 }
 
-export default async function EventSubscriptionsPage({ searchParams }: SearchParamsShape) {
-  const rawParams: PageParams = searchParams ? await searchParams : {};
-  const params = resolveParams(rawParams);
+export default async function EventSubscriptionsPage({ searchParams }: { searchParams: Promise<PageParams> }) {
+  const params = resolveParams(await searchParams);
 
   try {
     const list = await listClientEventSubscriptions({
