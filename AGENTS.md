@@ -69,6 +69,8 @@ A valid change is the minimum bar. An invalid change is not ready for review.
 
 When a change is fully implemented and accepted, the Requirement deltas in `changes/<name>/specs/<cap>/spec.md` get folded into `specs/<cap>/spec.md` and the change folder moves to `openspec/changes/archive/`. Don't archive work yourself unless the user asks.
 
+If the only remaining open task on an otherwise implemented and accepted change is an owner-only live verification (for example a production smoke, physical-device check, or live-credential pilot), the owner may convert that task into a `Residual Risks` entry in `proposal.md` or `design.md` and archive the change. Preserve the verification commitment, but do not keep the change active indefinitely on a step only the owner can perform.
+
 ## Small things
 
 - Terse proposals beat padded ones. Look at `openspec/changes/reference-implementation-program/proposal.md` for tone.
