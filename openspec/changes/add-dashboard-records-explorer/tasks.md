@@ -47,6 +47,14 @@
 - [x] 8.1 Mirror explorer page, view, peek-read-url, search-hit-attribution module, and tests under `apps/console`.
 - [x] 8.2 Mirror the routes / shell / rs-client deltas under `apps/console` so the root `Dockerfile` `console` target used by the default compose `web` service ships the Explorer for the live `pdpp.vivid.fish` deployment.
 
+## 9. Honest partial fan-in and capability surfacing
+
+- [x] 9.1 Capture per-stream failures in the empty-query bounded fan-out as structured warnings instead of swallowing them with `.catch(() => [])`; surviving rows continue to render.
+- [x] 9.2 Capture hybrid-retrieval fallback failures as structured warnings instead of swallowing them; lexical fallback still runs so the owner gets results.
+- [x] 9.3 Propagate peek-read failures into the page-level warnings array in addition to the inline peek panel message.
+- [x] 9.4 Render warnings in a `Callout` above the records feed with each warning's stable code and human message.
+- [x] 9.5 Mirror all of the above under `apps/console`.
+
 ## Acceptance checks
 
 - Visiting `/dashboard/records/explorer` without query params renders the shell, the records subnav with `Explorer` present, and a recent-records feed.

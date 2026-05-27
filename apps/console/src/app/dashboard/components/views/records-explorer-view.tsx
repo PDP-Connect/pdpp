@@ -14,7 +14,7 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { Input } from "@/components/ui/input.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
-import { DataList, FilterSummary, PageHeader, Section, SplitLayout, Toolbar } from "../primitives.tsx";
+import { Callout, DataList, FilterSummary, PageHeader, Section, SplitLayout, Toolbar } from "../primitives.tsx";
 import type { Routes } from "./routes.ts";
 
 export interface ExplorerConnectionFacet {
@@ -58,6 +58,12 @@ export interface ExplorerPeekData {
   stream: string;
 }
 
+export interface ExplorerWarning {
+  /** Stable code for tests + future structured `meta.warnings` mapping. */
+  code: "partial_fan_in" | "hybrid_unavailable" | "peek_unreachable" | "search_meta_warning";
+  message: string;
+}
+
 export interface RecordsExplorerData {
   /** Always present, sorted by display name. */
   connections: ExplorerConnectionFacet[];
@@ -74,6 +80,12 @@ export interface RecordsExplorerData {
   selectedStreams: string[];
   /** True when the feed was truncated to the explorer's fan-out cap. */
   truncated: boolean;
+  /**
+   * Honest surfacing of partial fan-in failures, capability downgrades, and
+   * (when the canonical read contract carries them) `meta.warnings` from the
+   * underlying search/list responses. Never silently swallowed.
+   */
+  warnings: ExplorerWarning[];
 }
 
 const ROW_KEY_SEP = "::";
@@ -154,8 +166,18 @@ export function buildExplorerHref(
 }
 
 export function RecordsExplorerView({ data, routes }: { data: RecordsExplorerData; routes: Routes }) {
-  const { query, connections, selectedConnectionIds, selectedStreams, feed, peek, fromSearch, hybridUsed, truncated } =
-    data;
+  const {
+    query,
+    connections,
+    selectedConnectionIds,
+    selectedStreams,
+    feed,
+    peek,
+    fromSearch,
+    hybridUsed,
+    truncated,
+    warnings,
+  } = data;
 
   const main = (
     <ExplorerMain
@@ -169,6 +191,7 @@ export function RecordsExplorerView({ data, routes }: { data: RecordsExplorerDat
       selectedConnectionIds={selectedConnectionIds}
       selectedStreams={selectedStreams}
       truncated={truncated}
+      warnings={warnings}
     />
   );
 
@@ -230,6 +253,7 @@ function ExplorerMain({
   truncated,
   peekId,
   routes,
+  warnings,
 }: {
   query: string;
   connections: ExplorerConnectionFacet[];
@@ -241,6 +265,7 @@ function ExplorerMain({
   truncated: boolean;
   peekId: string | null;
   routes: Routes;
+  warnings: ExplorerWarning[];
 }) {
   // In search mode we cannot enforce per-connection scope (public search
   // does not yet accept `connection_id`), so the chip label is honest:
@@ -304,6 +329,8 @@ function ExplorerMain({
         selectedConnectionIds={selectedConnectionIds}
         selectedStreams={selectedStreams}
       />
+
+      <ExplorerWarnings warnings={warnings} />
 
       <Section description={feedDescription(fromSearch, hybridUsed)} title="Records">
         {feed.length === 0 ? (
@@ -449,6 +476,29 @@ function StreamFacets({
         );
       })}
     </div>
+  );
+}
+
+function ExplorerWarnings({ warnings }: { warnings: ExplorerWarning[] }) {
+  if (warnings.length === 0) {
+    return null;
+  }
+  return (
+    <Callout
+      className="mb-4"
+      description="Some sources did not return a complete result for this view. The records below are partial."
+      title="Partial results"
+    >
+      <ul className="pdpp-caption mt-1 list-disc space-y-1 pl-5 text-muted-foreground">
+        {warnings.map((w) => (
+          <li key={`${w.code}:${w.message}`}>
+            <span className="font-mono text-foreground">{w.code}</span>
+            <span> — </span>
+            <span>{w.message}</span>
+          </li>
+        ))}
+      </ul>
+    </Callout>
   );
 }
 

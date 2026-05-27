@@ -67,3 +67,15 @@ The reference dashboard SHALL expose an owner-only records-explorer surface at `
 - **WHEN** the explorer renders under an owner token
 - **THEN** it SHALL NOT surface a client-grant chip, field-projection toggle, or any UI element that implies the records are being read under a third-party grant
 - **AND** any such affordances SHALL be reserved for a future data-owner-facing surface that holds a real client-scoped grant
+
+#### Scenario: Partial fan-in failures are surfaced, not silently swallowed
+- **WHEN** the empty-query recency feed's bounded per-stream fan-out has one or more stream reads fail
+- **THEN** the surviving rows SHALL still render
+- **AND** the page SHALL surface each failure as a structured warning naming the connection display name and stream
+- **AND** the warning surface SHALL state that the rendered rows are partial
+
+#### Scenario: Capability downgrades are surfaced honestly
+- **WHEN** the resource server advertises `capabilities.hybrid_retrieval.supported: true` but a hybrid search call fails
+- **THEN** the explorer SHALL fall back to lexical retrieval so the owner still gets results
+- **AND** the page SHALL surface a structured warning naming the downgrade and the underlying error
+- **AND** the warning SHALL NOT be silently swallowed

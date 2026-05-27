@@ -32,6 +32,7 @@ import {
   type ExplorerConnectionFacet,
   type ExplorerFeedEntry,
   type ExplorerPeekData,
+  type ExplorerWarning,
   parseExplorerPeekParam,
   type RecordsExplorerData,
   RecordsExplorerView,
@@ -115,6 +116,14 @@ interface FeedLoadResult {
   fromSearch: boolean;
   hybridUsed: boolean;
   truncated: boolean;
+  warnings: ExplorerWarning[];
+}
+
+function describeError(err: unknown): string {
+  if (err instanceof Error) {
+    return err.message;
+  }
+  return String(err);
 }
 
 async function loadEmptyQueryFeed(
@@ -127,7 +136,9 @@ async function loadEmptyQueryFeed(
   // expected to type a query to dive deeper.
   const connections = filteredSummaries.slice(0, MAX_FEED_CONNECTIONS);
 
-  const fetches: Promise<ExplorerFeedEntry[]>[] = [];
+  type StreamFetchResult = { ok: true; entries: ExplorerFeedEntry[] } | { ok: false; failure: ExplorerWarning };
+
+  const fetches: Promise<StreamFetchResult>[] = [];
   for (const summary of connections) {
     const streams = (summary.streams ?? [])
       .filter((s) => filterStreams.size === 0 || filterStreams.has(s))
@@ -139,37 +150,62 @@ async function loadEmptyQueryFeed(
           limit: MAX_FEED_RECORDS_PER_STREAM,
           order: "desc",
         })
-          .then((page) =>
-            page.data.map((record) => {
-              const data = record.data && typeof record.data === "object" ? record.data : {};
-              const display = pickSearchDisplayTimestamp({
-                data: data as Record<string, unknown>,
-                emittedAt: record.emitted_at,
-                metadata: lookupSearchTimestampMetadata(timestampMetadata, summary.connector_id, streamName),
-              });
-              const entry: ExplorerFeedEntry = {
-                connectorId: summary.connector_id,
-                connectionId: summary.connection_id,
-                connectionDisplayName: summary.display_name || summary.connector_display_name || summary.connector_id,
-                stream: streamName,
-                recordId: record.id,
-                emittedAt: record.emitted_at,
-                displayAt: display.value,
-                summary: summarize(summary.connector_id, streamName, data as Record<string, unknown>),
-              };
-              return entry;
+          .then(
+            (page): StreamFetchResult => ({
+              ok: true,
+              entries: page.data.map((record) => {
+                const data = record.data && typeof record.data === "object" ? record.data : {};
+                const display = pickSearchDisplayTimestamp({
+                  data: data as Record<string, unknown>,
+                  emittedAt: record.emitted_at,
+                  metadata: lookupSearchTimestampMetadata(timestampMetadata, summary.connector_id, streamName),
+                });
+                const entry: ExplorerFeedEntry = {
+                  connectorId: summary.connector_id,
+                  connectionId: summary.connection_id,
+                  connectionDisplayName: summary.display_name || summary.connector_display_name || summary.connector_id,
+                  stream: streamName,
+                  recordId: record.id,
+                  emittedAt: record.emitted_at,
+                  displayAt: display.value,
+                  summary: summarize(summary.connector_id, streamName, data as Record<string, unknown>),
+                };
+                return entry;
+              }),
             })
           )
-          .catch(() => [] as ExplorerFeedEntry[])
+          .catch(
+            (err): StreamFetchResult => ({
+              ok: false,
+              failure: {
+                code: "partial_fan_in",
+                message: `${summary.display_name || summary.connector_display_name || summary.connector_id} · ${streamName}: ${describeError(err)}`,
+              },
+            })
+          )
       );
     }
   }
 
-  const buckets = await Promise.all(fetches);
-  const flat = buckets.flat();
+  const results = await Promise.all(fetches);
+  const flat: ExplorerFeedEntry[] = [];
+  const warnings: ExplorerWarning[] = [];
+  for (const r of results) {
+    if (r.ok) {
+      flat.push(...r.entries);
+    } else {
+      warnings.push(r.failure);
+    }
+  }
   flat.sort((a, b) => (Date.parse(b.displayAt) || 0) - (Date.parse(a.displayAt) || 0));
   const truncated = flat.length > FEED_TOTAL_CAP;
-  return { entries: flat.slice(0, FEED_TOTAL_CAP), fromSearch: false, hybridUsed: false, truncated };
+  return {
+    entries: flat.slice(0, FEED_TOTAL_CAP),
+    fromSearch: false,
+    hybridUsed: false,
+    truncated,
+    warnings,
+  };
 }
 
 async function loadSearchFeed(
@@ -203,6 +239,7 @@ async function loadSearchFeed(
   const enforceConnectionFilter = selectedConnectionIds.size > 0;
   const hybridAdvertised = await isHybridRetrievalAdvertised();
 
+  const warnings: ExplorerWarning[] = [];
   let hits: SearchResultHit[] = [];
   let hybridUsed = false;
   if (hybridAdvertised) {
@@ -210,8 +247,13 @@ async function loadSearchFeed(
       const page = await searchRecordsHybrid(query, { limit: SEARCH_PAGE_LIMIT });
       hits = page.data;
       hybridUsed = true;
-    } catch {
-      // Fall through to lexical.
+    } catch (err) {
+      // Hybrid was advertised but failed; surface it instead of silently
+      // downgrading. Lexical still runs below so the owner gets results.
+      warnings.push({
+        code: "hybrid_unavailable",
+        message: `Hybrid retrieval was advertised but failed; fell back to lexical. ${describeError(err)}`,
+      });
     }
   }
   if (!hybridUsed) {
@@ -257,6 +299,7 @@ async function loadSearchFeed(
     fromSearch: true,
     hybridUsed,
     truncated: false,
+    warnings,
   };
 }
 
@@ -432,6 +475,14 @@ export default async function RecordsExplorerPage({
     throw err;
   }
 
+  const warnings: ExplorerWarning[] = [...feedResult.warnings];
+  if (peek?.error) {
+    warnings.push({
+      code: "peek_unreachable",
+      message: `Peek read failed for ${peek.connectorId}/${peek.stream}/${peek.recordId}: ${peek.error}`,
+    });
+  }
+
   const data: RecordsExplorerData = {
     query,
     connections,
@@ -442,6 +493,7 @@ export default async function RecordsExplorerPage({
     feed: feedResult.entries,
     truncated: feedResult.truncated,
     peek,
+    warnings,
   };
 
   return (
