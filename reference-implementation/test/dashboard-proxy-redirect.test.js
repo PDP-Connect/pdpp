@@ -7,11 +7,11 @@
 // unauthenticated browsers to `/owner/login?return_to=...` before any
 // server component renders.
 //
-// What this test pins for production `next start`:
+// What this test pins for the production standalone server:
 //   1. GET /dashboard          (no cookie) -> 307 to /owner/login?return_to=%2Fdashboard
 //   2. GET /dashboard/records/spotify (no cookie) -> 307 to ...?return_to=%2Fdashboard%2Frecords%2Fspotify
 //   3. The redirect carries X-Robots-Tag: noindex, nofollow
-// Production `next start` defaults the operator console to redirecting
+// The production standalone server defaults the operator console to redirecting
 // unauthenticated dashboard navigations even when the password is only held
 // by the AS. Local-dev opt-out policy is covered by apps/web's pure proxy
 // policy tests; this integration test pins the production BFF behavior.
@@ -36,6 +36,7 @@ const REPO_ROOT = join(REFERENCE_IMPL_DIR, '..');
 const WEB_DIR = join(REPO_ROOT, 'apps/web');
 const WEB_BUILD_ID_PATH = join(WEB_DIR, '.next/BUILD_ID');
 const WEB_PRERENDER_MANIFEST_PATH = join(WEB_DIR, '.next/prerender-manifest.json');
+const WEB_STANDALONE_SERVER_PATH = join(WEB_DIR, '.next/standalone/apps/web/server.js');
 const OWNER_PASSWORD = 'pdpp-owner-dev-password';
 
 let webBuildPromise = null;
@@ -143,6 +144,7 @@ async function waitForExistingWebBuild(timeoutMs = 30000) {
 async function assertCompleteWebBuild() {
   await access(WEB_BUILD_ID_PATH);
   await access(WEB_PRERENDER_MANIFEST_PATH);
+  await access(WEB_STANDALONE_SERVER_PATH);
 }
 
 async function allocatePort() {
@@ -185,7 +187,7 @@ async function waitForHttpStatus(url, { expectedStatus = 200, timeoutMs = 20000 
 }
 
 // Mirrors composed-origin.test.js's startWebServer while keeping the web
-// process env explicit. Production `next start` redirects logged-out
+// process env explicit. The production standalone server redirects logged-out
 // dashboard navigations by default; the password is still passed here so the
 // AS and web process match the self-hosted operator-console shape.
 async function startWebServer({ webOrigin, asUrl, rsUrl, ownerPassword }) {
@@ -203,6 +205,8 @@ async function startWebServer({ webOrigin, asUrl, rsUrl, ownerPassword }) {
     PDPP_REFERENCE_ORIGIN: webOrigin,
     PDPP_AS_URL: asUrl,
     PDPP_RS_URL: rsUrl,
+    PORT: String(port),
+    HOSTNAME: host,
   };
   delete childEnv.PDPP_OWNER_PASSWORD;
   if (typeof ownerPassword === 'string' && ownerPassword.length > 0) {
@@ -210,10 +214,10 @@ async function startWebServer({ webOrigin, asUrl, rsUrl, ownerPassword }) {
   }
 
   const child = spawn(
-    'pnpm',
-    ['exec', 'next', 'start', '--port', String(port), '--hostname', host],
+    process.execPath,
+    [WEB_STANDALONE_SERVER_PATH],
     {
-      cwd: WEB_DIR,
+      cwd: dirname(WEB_STANDALONE_SERVER_PATH),
       env: childEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
     },
