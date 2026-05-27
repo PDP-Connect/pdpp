@@ -9,7 +9,8 @@ const ENV_EXAMPLE_FILE = `${REPO_ROOT}.env.docker.example`;
 const CHATGPT_CONNECTOR_ID = 'https://registry.pdpp.org/connectors/chatgpt';
 const CHASE_CONNECTOR_ID = 'https://registry.pdpp.org/connectors/chase';
 const USAA_CONNECTOR_ID = 'https://registry.pdpp.org/connectors/usaa';
-const MANAGED_CONNECTOR_IDS = [CHATGPT_CONNECTOR_ID, CHASE_CONNECTOR_ID, USAA_CONNECTOR_ID];
+const AMAZON_CONNECTOR_ID = 'https://registry.pdpp.org/connectors/amazon';
+const MANAGED_CONNECTOR_IDS = [CHATGPT_CONNECTOR_ID, CHASE_CONNECTOR_ID, USAA_CONNECTOR_ID, AMAZON_CONNECTOR_ID];
 
 test('n.eko compose overlay uses service DNS instead of reference network namespace', async () => {
   const [overlay, envExample] = await Promise.all([
@@ -56,4 +57,18 @@ test('USAA remains an owner-present managed n.eko connector, not background-safe
   assert.equal(usaaManifest.capabilities.refresh_policy.recommended_mode, 'manual');
   assert.equal(usaaManifest.capabilities.refresh_policy.background_safe, false);
   assert.match(envExample, new RegExp(`PDPP_NEKO_MANAGED_CONNECTORS=.*${USAA_CONNECTOR_ID}`));
+});
+
+test('Amazon remains an owner-present managed n.eko connector, not background-safe', async () => {
+  const amazonManifest = JSON.parse(
+    await readFile(`${REPO_ROOT}packages/polyfill-connectors/manifests/amazon.json`, 'utf8'),
+  );
+  const envExample = await readFile(ENV_EXAMPLE_FILE, 'utf8');
+
+  assert.equal(amazonManifest.connector_id, AMAZON_CONNECTOR_ID);
+  assert.equal(amazonManifest.runtime_requirements.bindings.browser.required, true);
+  assert.deepEqual(amazonManifest.capabilities.human_interaction, ['manual_action', 'otp']);
+  assert.equal(amazonManifest.capabilities.refresh_policy.recommended_mode, 'manual');
+  assert.equal(amazonManifest.capabilities.refresh_policy.background_safe, false);
+  assert.match(envExample, new RegExp(`PDPP_NEKO_MANAGED_CONNECTORS=.*${AMAZON_CONNECTOR_ID}`));
 });
