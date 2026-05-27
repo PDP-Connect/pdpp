@@ -316,7 +316,50 @@ test("emitExportFailure: exhausted ladder with diagnostic emits SKIP_RESULT carr
   assert.equal(skip.stream, "transactions", "export failure is charged to the transactions stream");
   assert.equal(skip.reason, "export_no_download", "non-credit-card account uses export_no_download");
   assert.match(skip.message, /no_export_affordance/, "message carries the last diagnostic phase");
+  assert.match(skip.message, /page=https:\/\/www\.usaa\.com\/my\/checking/, "message carries a redacted page location");
   assert.equal(skip.diagnostics, diag, "last diagnostic threads through as structured context");
+});
+
+test("emitExportFailure: artifact diagnostics are summarized when page diagnostics are unavailable", async () => {
+  const { deps, messages } = makeHarness();
+  const diag: DiagnosticInfo = {
+    artifact: {
+      cdpError: null,
+      cdpReady: true,
+      candidates: [
+        {
+          bodyBytes: 128,
+          contentDisposition: "",
+          contentType: "text/plain",
+          method: "POST",
+          reason: "not_expected_body",
+          source: "cdp",
+          status: 200,
+          url: "https://www.usaa.com/export",
+        },
+        {
+          bodyError: "Protocol error",
+          contentDisposition: "",
+          contentType: "text/csv",
+          method: "POST",
+          reason: "body_error",
+          source: "playwright",
+          status: 200,
+          url: "https://www.usaa.com/export",
+        },
+      ],
+    },
+    diag: null,
+    error: "body_response_timeout after 45000ms",
+    phase: "export_artifact_wait_failed",
+  };
+  await emitExportFailure(deps, makeAccount(), diag);
+  const skip = messages.find((m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT");
+  assert.ok(skip);
+  assert.match(skip.message, /export_artifact_wait_failed/);
+  assert.match(skip.message, /page=unavailable/);
+  assert.match(skip.message, /artifact cdpReady=true candidates=2 matched=0 bodyErrors=1/);
+  assert.match(skip.message, /body_response_timeout/);
 });
 
 test("emitExportFailure: credit-card account uses credit_card_export_unverified reason", async () => {

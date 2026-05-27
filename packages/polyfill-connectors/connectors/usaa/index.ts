@@ -240,7 +240,7 @@ export async function emitExportFailure(
 ): Promise<void> {
   const isCreditCard = CREDIT_CARD_TYPE_RE.test(a.account_type);
   const baseMessage = lastDiag
-    ? `${a.name ?? "?"}: ${lastDiag.phase} at ${lastDiag.diag?.url ?? "unknown url"}`
+    ? `${a.name ?? "?"}: ${formatDiagnosticInfo(lastDiag)}`
     : `${a.name ?? "?"}: export dialog didn't produce a download across all ranges — account may have no transactions or selectors shifted`;
   const ccSuffix = isCreditCard
     ? ' (credit-card export flow not verified live 2026-04-19 — see design-notes/usaa.md "Fallback path: DOM scrape")'
@@ -252,6 +252,43 @@ export async function emitExportFailure(
     message: `${baseMessage}${ccSuffix}`,
     diagnostics: lastDiag,
   });
+}
+
+function redactDiagnosticUrl(rawUrl: string | null | undefined): string | null {
+  if (!rawUrl) {
+    return null;
+  }
+  try {
+    const url = new URL(rawUrl);
+    return `${url.origin}${url.pathname}`;
+  } catch {
+    return rawUrl.replace(/\d{4,}/g, "[digits]").slice(0, 120);
+  }
+}
+
+function summarizeArtifactDiagnostics(diag: DiagnosticInfo): string | null {
+  const artifact = diag.artifact;
+  if (!artifact) {
+    return null;
+  }
+  const matched = artifact.candidates.filter((candidate) => candidate.reason === "matched").length;
+  const bodyErrors = artifact.candidates.filter((candidate) => candidate.reason === "body_error").length;
+  const inspected = artifact.candidates.length;
+  return `artifact cdpReady=${artifact.cdpReady ? "true" : "false"} candidates=${inspected} matched=${matched} bodyErrors=${bodyErrors}`;
+}
+
+function formatDiagnosticInfo(diag: DiagnosticInfo): string {
+  const parts = [diag.phase];
+  const url = redactDiagnosticUrl(diag.diag?.url);
+  parts.push(`page=${url ?? "unavailable"}`);
+  const artifact = summarizeArtifactDiagnostics(diag);
+  if (artifact) {
+    parts.push(artifact);
+  }
+  if (diag.error) {
+    parts.push(`error=${diag.error.slice(0, ID_TEXT_SNIP)}`);
+  }
+  return parts.join("; ");
 }
 
 /**
@@ -857,6 +894,13 @@ async function tryExportLadder(
       return { csvPath: null, exportEmpty: true, usedSince: sinceDate, lastDiag: diagBox.current };
     }
     const diagNow = diagBox.current;
+    if (diagNow) {
+      await deps.emit({
+        type: "PROGRESS",
+        stream: "transactions",
+        message: `${a.name ?? "?"}: ${formatDiagnosticInfo(diagNow)}`,
+      });
+    }
     if (isFatalDiagPhase(diagNow)) {
       await deps.emit({
         type: "PROGRESS",
