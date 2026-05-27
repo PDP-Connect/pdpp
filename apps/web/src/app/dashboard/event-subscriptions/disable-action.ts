@@ -26,17 +26,23 @@ function asString(value: FormDataEntryValue | null): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
-function clampReason(raw: string): string | null {
+function reasonOverflowMessage(): string {
+  return `Reason exceeds ${MAX_REASON_BYTES} bytes UTF-8. Shorten and retry.`;
+}
+
+function validateReason(raw: string): { ok: true; value: string | null } | { ok: false; message: string } {
   if (!raw) {
-    return null;
+    return { ok: true, value: null };
   }
-  // Match the server-side cap so the operator sees the same error the
-  // operation layer would have raised; truncation is intentional rather
-  // than silent so the operator can shorten and retry.
+  // The operation layer rejects reasons over 256 bytes UTF-8. Mirror that
+  // here so the operator sees the same gate and the `_ref` call is not
+  // wasted. Never truncate — silent truncation corrupts operator intent
+  // (an `email-loop_suspected_…` reason that becomes `email-l…` is worse
+  // than no reason at all).
   if (Buffer.byteLength(raw, "utf8") > MAX_REASON_BYTES) {
-    return raw.slice(0, MAX_REASON_BYTES);
+    return { ok: false, message: reasonOverflowMessage() };
   }
-  return raw;
+  return { ok: true, value: raw };
 }
 
 function buildPeekHref(subscriptionId: string, error?: string): string {
@@ -62,11 +68,23 @@ export async function disableSubscriptionAction(formData: FormData): Promise<voi
 
   await requireDashboardAccess(buildPeekHref(subscriptionId));
 
-  const reason = clampReason(asString(formData.get("reason")));
+  // Confirmation is enforced server-side rather than via a client-only
+  // confirm() dialog (which a scripted client or curl could bypass). The
+  // form must POST `confirm_disable=yes`; anything else round-trips back
+  // to the peek pane with a clear message and no `_ref` call.
+  const confirm = asString(formData.get("confirm_disable"));
+  if (confirm !== "yes") {
+    redirect(buildPeekHref(subscriptionId, "Confirmation required: tick the box before submitting."));
+  }
+
+  const reasonResult = validateReason(asString(formData.get("reason")));
+  if (!reasonResult.ok) {
+    redirect(buildPeekHref(subscriptionId, reasonResult.message));
+  }
 
   let error: string | undefined;
   try {
-    await disableClientEventSubscription(subscriptionId, reason);
+    await disableClientEventSubscription(subscriptionId, reasonResult.value);
   } catch (err) {
     error = errorMessage(err);
   }

@@ -40,6 +40,27 @@ const USE_SERVER_DIRECTIVE_RE = /"use server"/;
 const REQUIRE_DASHBOARD_ACCESS_CALL_RE = /requireDashboardAccess\(/;
 const DISABLE_CLIENT_CALL_RE = /disableClientEventSubscription\(/;
 
+// Stale-string sentinels. These are real defects we corrected; the
+// regression-tests keep the page from drifting back.
+const STALE_CLIENT_EVENTS_ENDPOINT_RE = /\/as\/client-events\/subscriptions/;
+const STALE_CLIENT_SUBSCRIPTION_STATUS_RE = /client_subscription_status/;
+const STALE_REASON_CHARS_LABEL_RE = /max 256 chars/i;
+
+// Filter-status select must surface exactly one empty-value option (the
+// "any" fallback). A duplicate is a real bug we saw upstream of this
+// revision; locking it in keeps a future refactor from re-introducing it.
+const ANY_STATUS_OPTION_GLOBAL_RE = /<option\s+value=""[^>]*>/g;
+
+// Server-rendered confirmation. The form must POST a `confirm_disable`
+// field and the action must reject submits where it is not exactly "yes".
+const CONFIRM_INPUT_RE = /name="confirm_disable"/;
+const CONFIRM_REQUIRED_GATE_RE = /confirm_disable[\s\S]{0,200}!==\s*"yes"/;
+
+// Reason cap is byte-based and never truncates silently.
+const REASON_BYTE_CAP_LABEL_RE = /max 256 bytes/i;
+const REASON_BYTE_LENGTH_CALL_RE = /Buffer\.byteLength\(.+,\s*"utf8"\)/;
+const SILENT_TRUNCATE_RE = /raw\.slice\(0,\s*MAX_REASON_BYTES\)/;
+
 function stripComments(src: string): string {
   return src.replace(BLOCK_COMMENT_RE, "").replace(LINE_COMMENT_RE, "");
 }
@@ -70,4 +91,35 @@ test("disable server action re-verifies the owner session", async () => {
   assert.match(src, USE_SERVER_DIRECTIVE_RE);
   assert.match(src, REQUIRE_DASHBOARD_ACCESS_CALL_RE);
   assert.match(src, DISABLE_CLIENT_CALL_RE);
+});
+
+test("operator dashboard page references the correct client-facing routes", async () => {
+  const src = await readFile(PAGE_FILE, "utf8");
+  assert.doesNotMatch(src, STALE_CLIENT_EVENTS_ENDPOINT_RE);
+  assert.doesNotMatch(src, STALE_CLIENT_SUBSCRIPTION_STATUS_RE);
+  assert.doesNotMatch(src, STALE_REASON_CHARS_LABEL_RE);
+});
+
+test("status filter renders exactly one empty-value option", async () => {
+  const src = await readFile(PAGE_FILE, "utf8");
+  const matches = src.match(ANY_STATUS_OPTION_GLOBAL_RE) ?? [];
+  assert.equal(
+    matches.length,
+    1,
+    `expected exactly one <option value=""> in page.tsx but found ${matches.length}: ${JSON.stringify(matches)}`
+  );
+});
+
+test("disable form is server-rendered with an explicit confirmation input", async () => {
+  const src = await readFile(PAGE_FILE, "utf8");
+  assert.match(src, CONFIRM_INPUT_RE);
+  assert.match(src, REASON_BYTE_CAP_LABEL_RE);
+});
+
+test("disable server action enforces confirmation and byte-bounded reason without truncation", async () => {
+  const src = await readFile(ACTION_FILE, "utf8");
+  assert.match(src, CONFIRM_REQUIRED_GATE_RE);
+  // Byte-based cap with Buffer.byteLength, not UTF-16 `slice` truncation.
+  assert.match(src, REASON_BYTE_LENGTH_CALL_RE);
+  assert.doesNotMatch(src, SILENT_TRUNCATE_RE);
 });

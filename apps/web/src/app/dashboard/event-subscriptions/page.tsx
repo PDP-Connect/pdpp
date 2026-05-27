@@ -210,7 +210,7 @@ export default async function EventSubscriptionsPage({ searchParams }: SearchPar
           main={
             list.data.length === 0 ? (
               <EmptyState
-                hint="A subscription appears once a client posts to /as/client-events/subscriptions against an owner-issued grant."
+                hint="A subscription appears once a client posts to /v1/event-subscriptions against an owner-issued grant."
                 title="No subscriptions match these filters"
               />
             ) : (
@@ -386,7 +386,10 @@ function PeekPane({
       {isDisabledTerminal ? (
         <p className="pdpp-caption mt-4 text-muted-foreground">
           This subscription is already in a terminal disabled state. The bound client can re-enable it by sending{" "}
-          <code className="font-mono">PATCH client_subscription_status=active</code> from its own credentials.
+          <code className="font-mono">
+            PATCH /v1/event-subscriptions/{subscription.subscription_id} {"{ enabled: true }"}
+          </code>{" "}
+          from its own credentials.
         </p>
       ) : (
         <DisableForm disableError={disableError} subscriptionId={subscription.subscription_id} />
@@ -407,18 +410,28 @@ function DefRow({ label, children }: { label: string; children: ReactNode }) {
 }
 
 function DisableForm({ subscriptionId, disableError }: { subscriptionId: string; disableError: string }) {
+  // The Disable affordance is intentionally a server-rendered two-input
+  // form: a `confirm_disable` checkbox the operator must tick and the
+  // submit button. The server action rejects submits that are missing
+  // the checkbox, so the confirmation is enforced server-side rather than
+  // through a client-only `confirm()` dialog (per spec scenario "An
+  // operator opens the peek pane and disables a subscription").
   return (
     <form action={disableSubscriptionAction} className="mt-4 flex flex-col gap-2">
       <input name="subscription_id" type="hidden" value={subscriptionId} />
       <label className="pdpp-caption flex flex-col gap-1 text-muted-foreground" htmlFor={`reason-${subscriptionId}`}>
-        <span>reason (optional, max 256 chars)</span>
-        <Input
-          defaultValue=""
-          id={`reason-${subscriptionId}`}
-          maxLength={256}
-          name="reason"
-          placeholder="loop_suspected"
-        />
+        <span>reason (optional, max 256 bytes UTF-8)</span>
+        <Input defaultValue="" id={`reason-${subscriptionId}`} name="reason" placeholder="loop_suspected" />
+      </label>
+      <label
+        className="pdpp-caption mt-1 flex items-center gap-2 text-muted-foreground"
+        htmlFor={`confirm-${subscriptionId}`}
+      >
+        <input id={`confirm-${subscriptionId}`} name="confirm_disable" required type="checkbox" value="yes" />
+        <span>
+          I understand this stops deliveries for the subscription. The bound grant stays active and the client may
+          re-enable.
+        </span>
       </label>
       {disableError ? (
         <p className="pdpp-caption text-destructive" role="alert">
@@ -428,10 +441,6 @@ function DisableForm({ subscriptionId, disableError }: { subscriptionId: string;
       <Button size="sm" type="submit" variant="destructive">
         Disable subscription
       </Button>
-      <p className="pdpp-caption text-muted-foreground">
-        Drops queued events for this subscription. The bound grant stays active; the client retains rotate and
-        re-enable.
-      </p>
     </form>
   );
 }
