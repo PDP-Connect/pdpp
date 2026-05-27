@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Readable } from "node:stream";
 import test from "node:test";
 
 import {
@@ -59,6 +60,46 @@ test("readPlaywrightDownloadBuffer: reads via saveAs without depending on downlo
     };
 
     assert.equal((await readPlaywrightDownloadBuffer(mock)).toString("utf8"), "from-save-as");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("savePlaywrightDownload: falls back to createReadStream when saveAs cannot copy the artifact", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pdpp-playwright-download-stream-test-"));
+  try {
+    const target = join(dir, "out.bin");
+    const mock: PlaywrightDownloadLike = {
+      createReadStream(): Promise<Readable> {
+        return Promise.resolve(Readable.from(Buffer.from("from-stream")));
+      },
+      saveAs(): Promise<void> {
+        return Promise.reject(new Error("ENOENT: missing playwright artifact"));
+      },
+    };
+    await savePlaywrightDownload(mock, target);
+    assert.equal(await readFile(target, "utf8"), "from-stream");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("savePlaywrightDownload: reports saveAs, stream, and download failure when both artifact paths fail", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pdpp-playwright-download-failure-test-"));
+  try {
+    const target = join(dir, "out.bin");
+    const mock: PlaywrightDownloadLike = {
+      createReadStream(): Promise<Readable> {
+        return Promise.reject(new Error("stream gone"));
+      },
+      failure(): Promise<string | null> {
+        return Promise.resolve("canceled");
+      },
+      saveAs(): Promise<void> {
+        return Promise.reject(new Error("saveAs gone"));
+      },
+    };
+    await assert.rejects(savePlaywrightDownload(mock, target), /saveAs gone.*stream gone.*download.failure=canceled/s);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
