@@ -19,7 +19,10 @@ const LOGIN_URL = "https://www.usaa.com/my/logon";
 const LOGGED_IN_TEXT = /Log Off|Good (Morning|Afternoon|Evening)/i;
 const SESSION_COOKIE = /^(LtpaToken2|AST|MemberGlobalSession)$/;
 const TEXT_CODE_PROMPT = /Text security code/i;
+const OTP_INPUT_SELECTOR = 'input[autocomplete="one-time-code"], input[name*="code" i], input[placeholder*="code" i]';
+const OTP_RETRY_TEXT = /retry|invalid|incorrect|expired|try again/i;
 const LOGIN_NAVIGATION_INTERVENTION_ERROR = /page\.goto: net::ERR_(HTTP2_PROTOCOL_ERROR|CONNECTION_RESET|FAILED)\b/i;
+const MAX_OTP_ATTEMPTS = 3;
 
 interface EnsureUsaaSessionArgs {
   context: BrowserContext;
@@ -52,9 +55,13 @@ function isLoggedInCookie(cookie: { name: string; value?: string }): boolean {
   return SESSION_COOKIE.test(cookie.name);
 }
 
-async function verifyLoggedIn(context: BrowserContext, page: Page): Promise<boolean> {
+async function hasLoggedInCookie(context: BrowserContext): Promise<boolean> {
   const cookies = await context.cookies("https://www.usaa.com/");
-  if (!cookies.some(isLoggedInCookie)) {
+  return cookies.some(isLoggedInCookie);
+}
+
+async function verifyLoggedIn(context: BrowserContext, page: Page): Promise<boolean> {
+  if (!(await hasLoggedInCookie(context))) {
     return false;
   }
 
@@ -98,6 +105,60 @@ async function requestManualLoginAfterNavigationFailure({
     throw new Error(`USAA login navigation needs manual browser action; interaction status=${response.status}`);
   }
   return verifyLoggedIn(context, page);
+}
+
+async function requestOtp(sendInteraction: EnsureUsaaSessionArgs["sendInteraction"], attempt: number): Promise<string> {
+  const resp = await sendInteraction({
+    kind: "otp",
+    message:
+      attempt === 1
+        ? "USAA sent a 6-digit security code to your phone. Reply with the code to continue."
+        : "USAA did not accept the previous security code. Reply with the newest 6-digit USAA code to continue.",
+    schema: {
+      type: "object",
+      properties: { code: { type: "string", pattern: "^\\d{6}$" } },
+      required: ["code"],
+    },
+    timeout_seconds: 600,
+  });
+  if (resp.status !== "success" || !resp.data?.code) {
+    throw new Error("USAA OTP not provided");
+  }
+  return resp.data.code;
+}
+
+async function isStillOnOtpChallenge(page: Page): Promise<boolean> {
+  const retryText = await page
+    .locator("body")
+    .innerText()
+    .catch((): string => "");
+  const otpStillVisible = await page
+    .locator(OTP_INPUT_SELECTOR)
+    .first()
+    .isVisible()
+    .catch((): boolean => false);
+  return otpStillVisible || OTP_RETRY_TEXT.test(retryText);
+}
+
+async function completeOtpChallenge({ context, page, sendInteraction }: EnsureUsaaSessionArgs): Promise<boolean> {
+  await page.waitForSelector(OTP_INPUT_SELECTOR, { timeout: 20_000 });
+
+  for (let attempt = 1; attempt <= MAX_OTP_ATTEMPTS; attempt++) {
+    const code = await requestOtp(sendInteraction, attempt);
+    const otpInput = page.locator(OTP_INPUT_SELECTOR).first();
+    await otpInput.fill(code);
+    await page.click('button[type="submit"], #next-button').catch((): undefined => undefined);
+    await page.waitForLoadState("domcontentloaded", { timeout: 10_000 }).catch((): undefined => undefined);
+    await page.waitForTimeout(3000);
+
+    if ((await hasLoggedInCookie(context)) && (await verifyLoggedIn(context, page))) {
+      return true;
+    }
+    if (!(await isStillOnOtpChallenge(page))) {
+      return false;
+    }
+  }
+  return false;
 }
 
 export async function ensureUsaaSession({ context, page, sendInteraction }: EnsureUsaaSessionArgs): Promise<boolean> {
@@ -189,31 +250,9 @@ export async function ensureUsaaSession({ context, page, sendInteraction }: Ensu
       .catch(async (): Promise<void> => {
         await page.locator("#miam-choice-container\\ 0-id").click();
       });
-    await page.waitForSelector(
-      'input[autocomplete="one-time-code"], input[name*="code" i], input[placeholder*="code" i]',
-      { timeout: 20_000 }
-    );
-
-    const resp = await sendInteraction({
-      kind: "otp",
-      message: "USAA sent a 6-digit security code to your phone. Reply with the code to continue.",
-      schema: {
-        type: "object",
-        properties: { code: { type: "string", pattern: "^\\d{6}$" } },
-        required: ["code"],
-      },
-      timeout_seconds: 600,
-    });
-    if (resp.status !== "success" || !resp.data?.code) {
-      throw new Error("USAA OTP not provided");
+    if (await completeOtpChallenge({ context, page, sendInteraction })) {
+      return true;
     }
-
-    const otpInput = page
-      .locator('input[autocomplete="one-time-code"], input[name*="code" i], input[placeholder*="code" i]')
-      .first();
-    await otpInput.fill(resp.data.code);
-    await page.click('button[type="submit"], #next-button').catch((): undefined => undefined);
-    await page.waitForTimeout(6000);
   }
 
   if (await verifyLoggedIn(context, page)) {
