@@ -367,7 +367,7 @@ Rules of the road:
 - **Backstop, not substitute.** The reference runtime byte-equivalence check at the storage layer still catches duplicate writes a connector overlooked. Treat it as a safety net for the cases this gate cannot see (a connector emits the wrong key, or the source returns truly byte-identical data); do not skip the emit-side gate just because the backstop exists. The work the gate prevents is in scrape/parse, not just storage.
 - **Connector-specific derived-field preservation stays at the call site.** The primitive exposes `cursor.priorFingerprint(id)` so a connector with a derived-field carry-forward policy (for example, Codex session counts recovered from prior parsed evidence) can read the prior value without breaking the encapsulation. The primitive does not encode policy.
 
-Adoption status (2026-05-26): Slack uses `openFingerprintCursor` for `workspace`, `users`, and `files`. Gmail (`threads`), Codex (`sessions` / `rules` / `prompts` / `skills`), and YNAB (`payee_locations`) still carry hand-rolled equivalents and have not migrated yet; new fingerprinted streams in those connectors should reach for the shared primitive rather than extending the local helpers.
+Adoption status (2026-05-27): Slack uses `openFingerprintCursor` for `workspace`, `users`, and `files`; Gmail uses it for `threads`; YNAB uses it for `payee_locations`. Codex (`sessions` / `rules` / `prompts` / `skills`) still carries hand-rolled equivalents; new fingerprinted streams should reach for the shared primitive rather than extending local helpers.
 
 ### Year-freezing (and similar immutability tricks)
 

@@ -101,7 +101,7 @@ export const COMPACTION_POLICIES = [
     stream: 'threads',
     excludeKeys: [],
     connectorSource:
-      'packages/polyfill-connectors/connectors/gmail/parsers.ts:buildThreadFingerprint (hand-rolled — still uses local stableStringify; matches the canonical fingerprint shape for excludeKeys=[])',
+      'packages/polyfill-connectors/connectors/gmail/parsers.ts:buildThreadFingerprint → src/fingerprint-cursor.ts:recordFingerprint (canonical)',
   },
   {
     connectorIds: ['slack', 'https://registry.pdpp.org/connectors/slack'],
@@ -129,7 +129,7 @@ export const COMPACTION_POLICIES = [
     stream: 'payee_locations',
     excludeKeys: [],
     connectorSource:
-      'packages/polyfill-connectors/connectors/ynab/index.ts:payeeLocationFingerprint (hand-rolled — still uses local stableStringify; matches the canonical fingerprint shape for excludeKeys=[])',
+      'packages/polyfill-connectors/connectors/ynab/index.ts:openPayeeLocationCursor → openFingerprintCursor → src/fingerprint-cursor.ts:recordFingerprint (canonical)',
   },
 
   // ─── Exact stable-JSON identity family ────────────────────────────────
