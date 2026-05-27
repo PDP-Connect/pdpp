@@ -26,7 +26,7 @@ import { ensureUsaaSession } from "../../src/auto-login/usaa.ts";
 import {
   attachBodyResponseQueue,
   type BodyResponseQueue,
-  type CapturedBodyResponse,
+  waitForOptionalBodyResponse,
 } from "../../src/browser-artifact-response.ts";
 import {
   type BrowserCollectContext,
@@ -105,7 +105,8 @@ const CC_SETTLE_DELAY_MS = 6000;
 const EXPORT_DIALOG_DELAY_MS = 2500;
 const EXPORT_STATE_DELAY_MS = 1500;
 const EXPORT_CLICK_TIMEOUT_MS = 5000;
-const DOWNLOAD_TIMEOUT_MS = 180_000;
+const DOWNLOAD_TIMEOUT_MS = 45_000;
+const RESPONSE_FALLBACK_GRACE_MS = 3000;
 const KEY_TYPE_DELAY_MS = 30;
 const BACKFILL_17MO = PARSERS_BACKFILL_17MO;
 const INCREMENTAL_OVERLAP_MS = PARSERS_INCREMENTAL_OVERLAP_MS;
@@ -575,13 +576,13 @@ async function waitForCsvArtifact(
       return { buffer, suggestedFilename: result.download.suggestedFilename() };
     }
   } catch (err) {
-    const response = await responsePromise.catch((): CapturedBodyResponse | null => null);
+    const response = await waitForOptionalBodyResponse(responsePromise, RESPONSE_FALLBACK_GRACE_MS);
     if (response) {
       return { buffer: response.body, suggestedFilename: response.suggestedFilename };
     }
     throw err;
   }
-  const response = await responsePromise.catch((): CapturedBodyResponse | null => null);
+  const response = await waitForOptionalBodyResponse(responsePromise, RESPONSE_FALLBACK_GRACE_MS);
   if (response) {
     return { buffer: response.body, suggestedFilename: response.suggestedFilename };
   }

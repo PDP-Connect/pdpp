@@ -28,8 +28,8 @@ import type { Locator, Page } from "playwright";
 import {
   attachBodyResponseQueue,
   type BodyResponseQueue,
-  type CapturedBodyResponse,
   isLikelyPdfResponseBody,
+  waitForOptionalBodyResponse,
 } from "../../src/browser-artifact-response.ts";
 import { attachDownloadQueue, type DownloadQueue } from "../../src/download-queue.ts";
 import { readPlaywrightDownloadBuffer } from "../../src/playwright-download.ts";
@@ -68,7 +68,8 @@ const WS_CLEANUP_RE = /\s+/g;
 const CHECK_NUMBER_RE = /CHECK\s*#?\s*0*(\d+)/i;
 
 // ─── Timing constants ────────────────────────────────────────────────────
-const DOWNLOAD_TIMEOUT_MS = 180_000;
+const DOWNLOAD_TIMEOUT_MS = 45_000;
+const RESPONSE_FALLBACK_GRACE_MS = 3000;
 const DOCUMENTS_NAV_TIMEOUT_MS = 30_000;
 const DOCUMENTS_RELOAD_SETTLE_MS = 5000;
 const CLICK_TIMEOUT_MS = 5000;
@@ -175,7 +176,7 @@ async function consumeDownloadOrResponse({
         return { buffer, suggestedFilename: result.download.suggestedFilename() };
       }
     } catch (err) {
-      const response = await responsePromise.catch((): CapturedBodyResponse | null => null);
+      const response = await waitForOptionalBodyResponse(responsePromise, RESPONSE_FALLBACK_GRACE_MS);
       if (response) {
         return {
           buffer: response.body,
@@ -185,7 +186,7 @@ async function consumeDownloadOrResponse({
       }
       throw err;
     }
-    const response = await responsePromise.catch((): CapturedBodyResponse | null => null);
+    const response = await waitForOptionalBodyResponse(responsePromise, RESPONSE_FALLBACK_GRACE_MS);
     if (response) {
       return {
         buffer: response.body,

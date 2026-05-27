@@ -49,6 +49,25 @@ export interface BodyResponseQueueOptions {
   truncateMessageLength?: number;
 }
 
+export async function waitForOptionalBodyResponse(
+  responsePromise: Promise<CapturedBodyResponse>,
+  timeoutMs: number
+): Promise<CapturedBodyResponse | null> {
+  let timer: NodeJS.Timeout | null = null;
+  try {
+    return await Promise.race([
+      responsePromise.catch((): null => null),
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+}
+
 export function suggestedFilenameFromHeaders(headers: Record<string, string>): string | null {
   const disposition = headers["content-disposition"];
   if (!disposition) {
