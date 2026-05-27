@@ -40,17 +40,18 @@ The reference SHALL deliver no record-driven events to a callback URL until the 
 
 #### Scenario: The callback fails the handshake
 - **WHEN** the verification callback returns a non-2xx response or omits the challenge
-- **THEN** the reference SHALL keep the subscription in `pending_verification`
-- **AND** SHALL NOT enqueue or deliver further events for the subscription until the client explicitly retries verification
+- **THEN** the reference SHALL keep retrying the verification event under the configured delivery policy while the subscription remains `pending_verification`
+- **AND** SHALL transition the subscription to `disabled_failure` when verification attempts are exhausted
+- **AND** SHALL NOT enqueue or deliver record-driven events for the subscription until verification succeeds
 
 ### Requirement: Events are projection-safe hints derived from grant scope
 
-The reference SHALL derive client events from `record_changes` and grant scope using a pure derivation step. The derived envelope SHALL NOT contain record bodies, field values, or resource identifiers outside the bound grant. It SHALL include the stream name only when that stream is in the subscription's scope snapshot, and a `changes_since` cursor pointing at or after the change's `record_changes.version`. The envelope's `source` SHALL be the canonical dereferenceable path of the subscription on the resource server (`/v1/event-subscriptions/<subscription_id>`).
+The reference SHALL derive client events from `record_changes` and grant scope using a pure derivation step. The derived envelope SHALL NOT contain record bodies, field values, or resource identifiers outside the bound grant. It SHALL include the stream name only when that stream is in the subscription's scope snapshot, and a `changes_since` cursor that can be passed to the existing records-list endpoint to retrieve the notified change. The envelope's `source` SHALL be the canonical dereferenceable path of the subscription on the resource server (`/v1/event-subscriptions/<subscription_id>`).
 
 #### Scenario: A record changes in a stream the grant covers
 - **WHEN** `ingestRecord` commits a change for a stream that lies inside an active subscription's scope snapshot
 - **THEN** the reference SHALL enqueue a `pdpp.records.changed` envelope referencing that stream
-- **AND** the envelope's `data.changes_since` SHALL be a cursor the client can pass to `rs.records.list` to retrieve the change
+- **AND** the envelope's `data.changes_since` SHALL be an opaque cursor the client can pass to `rs.records.list` to retrieve the change
 - **AND** the envelope's `source` SHALL be `/v1/event-subscriptions/<subscription_id>`
 
 #### Scenario: A record changes in a stream the grant does not cover

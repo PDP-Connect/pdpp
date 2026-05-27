@@ -7,6 +7,7 @@ import {
   signEvent,
   verifySignatureHeader,
 } from '../operations/rs-client-event-deliver/index.ts';
+import { defaultHttpTransport } from '../server/client-event-delivery-worker.ts';
 
 const NOW_MS = Date.parse('2026-05-27T00:00:00.000Z');
 const SECRET = 'pess_test_secret_value';
@@ -146,4 +147,26 @@ test('delivery network error → retry with error captured', async () => {
   );
   assert.equal(result.kind, 'retry');
   assert.equal(result.error, 'ECONNREFUSED');
+});
+
+test('default transport attaches a bounded response-window abort signal', async () => {
+  const originalFetch = globalThis.fetch;
+  let sawSignal = false;
+  try {
+    globalThis.fetch = async (_url, init = {}) => {
+      sawSignal = init.signal instanceof AbortSignal && !init.signal.aborted;
+      throw new Error('test transport stop');
+    };
+    const result = await defaultHttpTransport({
+      url: 'https://callback.example/hook',
+      method: 'POST',
+      headers: {},
+      body: '{}',
+    });
+    assert.equal(result.statusCode, null);
+    assert.equal(result.errorMessage, 'test transport stop');
+    assert.equal(sawSignal, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

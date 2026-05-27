@@ -75,15 +75,21 @@ function inGrantScope(scope: SubscriptionScope, stream: string, connectionId: st
   return true;
 }
 
+function encodeChangesSinceCursor(version: number): string {
+  // SQLite currently emits `{ kind, version }`; Postgres emits `{ v }`.
+  // Include both names so event hints are readable by either existing backend
+  // while remaining opaque to clients.
+  return Buffer.from(JSON.stringify({ kind: "changes_since", version, v: version })).toString("base64");
+}
+
 /**
- * Compute the opaque `changes_since` cursor a client can pass to
- * `rs.records.list` to enumerate the change. The cursor format matches the
- * existing `record_changes.version` semantics: a string carrying the version
- * after the changed row, so passing it back as `changes_since` excludes
- * already-seen versions.
+ * Compute the opaque `changes_since` cursor a client can pass back to
+ * `rs.records.list` to enumerate the notified change. The records API returns
+ * changes with versions greater than the cursor version, so the hint points to
+ * the high-water mark immediately before this change.
  */
-export function changeCursorAfter(change: Pick<RecordChangeDescriptor, "version">): string {
-  return String(change.version);
+export function changeCursorBefore(change: Pick<RecordChangeDescriptor, "version">): string {
+  return encodeChangesSinceCursor(Math.max(0, change.version - 1));
 }
 
 export function deriveClientEventsFromRecordChange(
@@ -103,7 +109,7 @@ export function deriveClientEventsFromRecordChange(
         ...(sub.scope.streams.find((s) => s.name === change.stream)?.connection_id
           ? { connection_id: change.connectionId ?? null }
           : {}),
-        changes_since: changeCursorAfter(change),
+        changes_since: changeCursorBefore(change),
         change_count_hint: 1,
       },
     });

@@ -5,7 +5,7 @@ import {
   buildGrantRevokedEvent,
   buildTestEvent,
   buildVerifyEvent,
-  changeCursorAfter,
+  changeCursorBefore,
   deriveClientEventsFromRecordChange,
 } from '../operations/rs-client-event-derive/index.ts';
 
@@ -41,7 +41,10 @@ test('derive emits records.changed when stream is in scope', () => {
   assert.equal(events.length, 1);
   assert.equal(events[0].type, 'pdpp.records.changed');
   assert.equal(events[0].data.stream, 'messages');
-  assert.equal(events[0].data.changes_since, '42');
+  assert.deepEqual(
+    JSON.parse(Buffer.from(events[0].data.changes_since, 'base64').toString('utf8')),
+    { kind: 'changes_since', version: 41, v: 41 },
+  );
 });
 
 test('derive omits envelope for streams outside grant scope', () => {
@@ -125,8 +128,15 @@ test('derive output carries no record body or field values', () => {
   assert.equal('fields' in data, false);
 });
 
-test('cursor mirrors the changed version', () => {
-  assert.equal(changeCursorAfter({ version: 7 }), '7');
+test('cursor points immediately before the changed version', () => {
+  assert.deepEqual(
+    JSON.parse(Buffer.from(changeCursorBefore({ version: 7 }), 'base64').toString('utf8')),
+    { kind: 'changes_since', version: 6, v: 6 },
+  );
+  assert.deepEqual(
+    JSON.parse(Buffer.from(changeCursorBefore({ version: 0 }), 'base64').toString('utf8')),
+    { kind: 'changes_since', version: 0, v: 0 },
+  );
 });
 
 test('builders produce well-shaped envelopes', () => {

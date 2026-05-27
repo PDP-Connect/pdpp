@@ -38,10 +38,12 @@ export interface HttpTransport {
   }>;
 }
 
+const RESPONSE_WINDOW_MS = 10_000;
+
 export const defaultHttpTransport: HttpTransport = async ({ url, method, headers, body }) => {
   const start = Date.now();
   try {
-    const resp = await fetch(url, { method, headers, body });
+    const resp = await fetch(url, { method, headers, body, signal: AbortSignal.timeout(RESPONSE_WINDOW_MS) });
     const text = await resp.text();
     return {
       statusCode: resp.status,

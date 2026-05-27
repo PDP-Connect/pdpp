@@ -31,7 +31,7 @@ On `POST /v1/event-subscriptions` the reference issues an opaque `subscription_i
 
 - The reference POSTs a `subscription.verify` event whose body contains a server-issued `challenge` string.
 - The callback must return HTTP 2xx with `{ "challenge": "<same string>" }` within the verification window.
-- On success the subscription transitions to `active`. On failure it stays `pending_verification` and may be retried by the client.
+- On success the subscription transitions to `active`. On transient failure it remains `pending_verification` while the delivery policy retries; after attempts are exhausted it transitions to `disabled_failure` and can be explicitly re-enabled by the client.
 
 This follows the WebSub / MS Graph handshake pattern. It is cheap, has no separate URL-confirmation step, and prevents accidental delivery to URLs the client mistyped.
 
@@ -50,15 +50,15 @@ Events are CloudEvents-flavored but reference-defined:
   "data": {
     "stream": "<stream-name>",            // records.changed only; null for non-stream events
     "connection_id": "<conn>",            // included only when grant binds it
-    "changes_since": "<opaque cursor>",   // monotonic high-water hint the client can pass to /v1/streams/:s/records
-    "change_count_hint": 1                // coalesced batch size, may be > 1
+    "changes_since": "<opaque cursor>",   // high-water hint the client can pass to /v1/streams/:s/records
+    "change_count_hint": 1                // advisory batch size; 1 in this implementation
   }
 }
 ```
 
 The `source` field is the canonical RS path of the subscription, which the client can dereference at `GET /v1/event-subscriptions/:id` to inspect current state.
 
-No record bodies. No field values. No resource ids unless they are already part of the grant scope (e.g. a single explicitly granted resource id). The client treats the event as a hint and calls the existing `rs.records.list` / `rs.records.detail` reads to fetch projected data.
+No record bodies. No field values. No resource ids unless they are already part of the grant scope (e.g. a single explicitly granted resource id). The client treats the event as a hint and calls the existing `rs.records.list` / `rs.records.detail` reads to fetch projected data. The `changes_since` hint is an opaque records-list cursor compatible with the existing SQLite and Postgres read paths for the high-water mark immediately before the notified change, so replaying it includes that change.
 
 ### Signing
 
@@ -77,7 +77,7 @@ Receivers must verify the signature, then check the timestamp is within an accep
 - After-commit enqueue. The records pipeline calls `enqueueClientEvent` only after `ingestRecord` returns `outcome.kind === 'changed'`. The change is therefore already in `record_changes` and queryable when the event ships.
 - Retries: exponential backoff with jitter at 30s, 2m, 10m, 1h, 6h, 24h (six attempts). After the final failure the attempt log records `final_failure` and the subscription transitions to `disabled_failure`. The client may re-enable via PATCH.
 - HTTPS only. The create endpoint rejects non-HTTPS callbacks except for `http://localhost` / `http://127.0.0.1` / `http://[::1]` to support local dev receivers (tests rely on this).
-- Coalescing: while a queued event for the same `(subscription_id, stream)` is still pending, additional changes update `change_count_hint` and `changes_since` rather than enqueueing duplicates. This preserves "hint, not record" semantics and prevents callback amplification.
+- Coalescing: not advertised in this implementation. Each committed visible change can enqueue its own hint. Receivers dedupe by event `id` and use `changes_since` to enumerate records; a future implementation may add coalescing only after the capability advertisement, store semantics, and tests are updated together.
 - Dead-letter: the attempt log records all 6 attempts with status code, latency, request id, and response snippet (≤512 bytes). After `final_failure` the row is retained for owner inspection; the live event queue moves on.
 
 ### Discovery
@@ -120,14 +120,14 @@ All three tables are owner-local; they do not appear in client-visible reads out
 
 - `openspec validate add-client-event-subscriptions --strict`
 - `openspec validate --all --strict`
-- Operation tests cover: create authorization, projection-safety (event must not name a stream outside the grant), verification handshake (success / wrong-challenge / non-2xx), signature verification, idempotent re-delivery, retry/backoff schedule, coalescing, dead-letter transition, grant-revoked auto-disable.
+- Operation tests cover: create authorization, projection-safety (event must not name a stream outside the grant), verification handshake (success / wrong-challenge / non-2xx), signature verification, idempotent re-delivery, retry/backoff schedule, dead-letter transition, grant-revoked auto-disable.
 - Route tests cover: client-bearer enforcement, owner cannot list a client's subscriptions, post-commit enqueue ordering against `record_changes.version`, end-to-end signed delivery to a local HTTP receiver via the canonical `/v1/event-subscriptions` route, discovery advertisement at `/.well-known/oauth-protected-resource`.
 - Postgres parity: dedicated test (`client-event-subscription-store-postgres.test.js`) drives subscription create → verify → list → secret rotation → test-event enqueue → claim queue with subscription join → attempt log → grant-revoke side-effects against a real Postgres server when `PDPP_TEST_POSTGRES_URL` is set.
 - Real-client proof: a Node HTTP receiver in a test creates a subscription via the canonical route, completes the verification handshake, triggers `subscription.test` plus a real record ingest, receives both signed callbacks, verifies HMAC, and reads the changed record via `/v1/streams/:s/records` after seeing the hint cursor.
 
 ## Residual Risks
 
-- Coalescing means clients cannot count exact change events. They use `changes_since` to enumerate. The `change_count_hint` is a hint, not a guarantee.
+- `change_count_hint` is advisory. Clients use `changes_since` to enumerate changed records and must not infer exact record counts from event delivery volume.
 - The reference advertises this as a reference-implementation extension. Other PDPP implementations are free to expose a different surface until a Core change promotes one.
 - Subscription `secret` is shown once; lost secrets require a `PATCH .../rotate-secret` which invalidates outstanding signatures.
 - Dead-letter retention is unbounded in this slice. A later change can add a TTL or operator dashboard. Owner can inspect `client_event_attempts` directly.

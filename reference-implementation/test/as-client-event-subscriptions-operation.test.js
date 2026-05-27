@@ -85,6 +85,10 @@ test('create rejects non-https callback (except localhost)', async () => {
     executeCreateSubscription({ actor: actor(), callbackUrl: 'http://example.com/hook' }, deps(store)),
     ClientEventSubscriptionError,
   );
+  await assert.rejects(
+    executeCreateSubscription({ actor: actor(), callbackUrl: `https://example.com/${'a'.repeat(2048)}` }, deps(store)),
+    ClientEventSubscriptionError,
+  );
   // Localhost permitted for dev.
   const out = await executeCreateSubscription(
     { actor: actor(), callbackUrl: 'http://localhost:9999/hook' },

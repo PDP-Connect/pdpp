@@ -127,8 +127,12 @@ export interface CreateSubscriptionOutput {
 }
 
 const ALLOWED_LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
+const CALLBACK_URL_MAX_BYTES = 2048;
 
 function validateCallbackUrl(raw: string): URL {
+  if (Buffer.byteLength(raw, "utf8") > CALLBACK_URL_MAX_BYTES) {
+    throw new ClientEventSubscriptionError("invalid_request", "callback_url exceeds 2048 bytes");
+  }
   let parsed: URL;
   try {
     parsed = new URL(raw);

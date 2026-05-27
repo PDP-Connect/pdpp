@@ -741,7 +741,7 @@ export interface ClientEventSubscriptionsCapability {
   delivery: {
     at_least_once: true;
     after_commit: true;
-    coalescing: true;
+    coalescing: false;
     retry_schedule_seconds: readonly [30, 120, 600, 3600, 21600, 86400];
     max_attempts: 6;
     dead_letter_state: "disabled_failure";
@@ -804,7 +804,7 @@ export function buildClientEventSubscriptionsCapability({
     delivery: {
       at_least_once: true,
       after_commit: true,
-      coalescing: true,
+      coalescing: false,
       retry_schedule_seconds: [30, 120, 600, 3600, 21600, 86400] as const,
       max_attempts: 6,
       dead_letter_state: "disabled_failure",

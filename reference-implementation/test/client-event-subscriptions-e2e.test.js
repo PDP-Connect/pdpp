@@ -262,10 +262,11 @@ test('client event subscriptions deliver signed hints end-to-end', async () => {
     assert.equal('record_json' in recordsHit.payload.data, false);
 
     // Use the hint cursor to fetch the actual change via the existing read.
-    // The cursor exposed in the hint is opaque to clients; here we exercise
-    // the read path with the cursor exactly as it would be passed back.
+    // The cursor exposed in the hint is opaque to clients; this exercises the
+    // exact value the receiver got in the callback.
+    const changesSince = recordsHit.payload.data.changes_since;
     const readResp = await fetchJson(
-      `${rsUrl}/v1/streams/top_artists/records`,
+      `${rsUrl}/v1/streams/top_artists/records?changes_since=${encodeURIComponent(changesSince)}`,
       { headers: { Authorization: `Bearer ${clientToken}` } },
     );
     assert.equal(readResp.status, 200);
@@ -362,10 +363,13 @@ test('discovery: RS protected-resource metadata advertises client_event_subscrip
     assert.ok(cap.event_types.includes('pdpp.grant.revoked'));
     assert.equal(cap.delivery.at_least_once, true);
     assert.equal(cap.delivery.after_commit, true);
+    assert.equal(cap.delivery.coalescing, false);
     assert.equal(cap.delivery.max_attempts, 6);
+    assert.equal(cap.delivery.response_window_seconds, 10);
     assert.equal(cap.verification.handshake, 'post_with_challenge_echo');
     assert.equal(cap.hint_cursor.cursor_field, 'data.changes_since');
     assert.equal(cap.callback_url.https_required, true);
+    assert.equal(cap.limits.callback_url_max_bytes, 2048);
     assert.equal(cap.envelope.no_record_bodies, true);
   } finally {
     await closeServer(server);
