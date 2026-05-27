@@ -127,7 +127,7 @@ export interface DownloadDiagnostics {
   bytes?: number | null;
   downloadFailure?: string | null;
   saveAsError?: string | null;
-  source?: "saveAs" | "createReadStream" | null;
+  source?: "dataUrl" | "saveAs" | "createReadStream" | null;
   streamError?: string | null;
   suggestedFilename?: string | null;
   url?: string | null;

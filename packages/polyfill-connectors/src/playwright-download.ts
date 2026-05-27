@@ -11,14 +11,14 @@
  */
 
 import { createWriteStream } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pipeline } from "node:stream/promises";
 import type { Download } from "playwright";
 
 export type PlaywrightDownloadLike = Pick<Download, "saveAs"> &
-  Partial<Pick<Download, "createReadStream" | "failure" | "suggestedFilename">>;
+  Partial<Pick<Download, "createReadStream" | "failure" | "suggestedFilename" | "url">>;
 
 /**
  * Diagnostic info captured while persisting a Playwright Download. Surfaced
@@ -31,7 +31,7 @@ export interface PlaywrightDownloadOutcome {
   bytes: number;
   downloadFailure?: string | null;
   saveAsError?: string;
-  source: "saveAs" | "createReadStream";
+  source: "dataUrl" | "saveAs" | "createReadStream";
   streamError?: string;
 }
 
@@ -83,6 +83,11 @@ export async function savePlaywrightDownloadDetailed(
   targetPath: string
 ): Promise<PlaywrightDownloadOutcome> {
   await mkdir(dirname(targetPath), { recursive: true });
+  const dataUrlBuffer = readDownloadDataUrl(download);
+  if (dataUrlBuffer) {
+    await writeFile(targetPath, dataUrlBuffer);
+    return { bytes: dataUrlBuffer.length, source: "dataUrl" };
+  }
   let saveAsError: string | undefined;
   try {
     await download.saveAs(targetPath);
@@ -124,4 +129,33 @@ async function statSize(path: string): Promise<number> {
 
 function downloadErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+function readDownloadDataUrl(download: PlaywrightDownloadLike): Buffer | null {
+  if (!download.url) {
+    return null;
+  }
+  let url: string;
+  try {
+    url = download.url();
+  } catch {
+    return null;
+  }
+  if (!url.startsWith("data:")) {
+    return null;
+  }
+  const commaIndex = url.indexOf(",");
+  if (commaIndex < 0) {
+    return null;
+  }
+  const metadata = url.slice("data:".length, commaIndex).toLowerCase();
+  const payload = url.slice(commaIndex + 1);
+  try {
+    if (metadata.split(";").includes("base64")) {
+      return Buffer.from(payload, "base64");
+    }
+    return Buffer.from(decodeURIComponent(payload), "utf8");
+  } catch {
+    return null;
+  }
 }

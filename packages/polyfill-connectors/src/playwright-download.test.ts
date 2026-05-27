@@ -87,6 +87,46 @@ test("savePlaywrightDownload: falls back to createReadStream when saveAs cannot 
   }
 });
 
+test("savePlaywrightDownloadDetailed: recovers data URL downloads before remote artifact transfer", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pdpp-playwright-download-data-url-test-"));
+  try {
+    const target = join(dir, "out.csv");
+    const mock: PlaywrightDownloadLike = {
+      saveAs(): Promise<void> {
+        throw new Error("saveAs should not be called for data URLs");
+      },
+      url(): string {
+        return "data:text/csv;charset=utf-8,Date,Description%0A2026-05-27,%22USAA%20Credit%20Card%22";
+      },
+    };
+    const outcome = await savePlaywrightDownloadDetailed(mock, target);
+    assert.equal(outcome.source, "dataUrl");
+    assert.equal(await readFile(target, "utf8"), 'Date,Description\n2026-05-27,"USAA Credit Card"');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("savePlaywrightDownloadDetailed: recovers base64 data URL downloads", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pdpp-playwright-download-data-url-base64-test-"));
+  try {
+    const target = join(dir, "out.csv");
+    const mock: PlaywrightDownloadLike = {
+      saveAs(): Promise<void> {
+        throw new Error("saveAs should not be called for data URLs");
+      },
+      url(): string {
+        return `data:text/csv;base64,${Buffer.from("Date,Amount\n2026-05-27,1.23").toString("base64")}`;
+      },
+    };
+    const outcome = await savePlaywrightDownloadDetailed(mock, target);
+    assert.equal(outcome.source, "dataUrl");
+    assert.equal(await readFile(target, "utf8"), "Date,Amount\n2026-05-27,1.23");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("savePlaywrightDownload: reports saveAs, stream, and download failure when both artifact paths fail", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pdpp-playwright-download-failure-test-"));
   try {
