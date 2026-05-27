@@ -306,6 +306,47 @@ export declare class BrowserSurfaceLeaseManager {
     reconcileAfterRestart(request?: ReconcileBrowserSurfaceLeasesAfterRestartRequest): ReconcileBrowserSurfaceLeasesAfterRestartResult;
     reconcileSurfaceSessionsAfterRestart(request?: ReconcileSurfaceLeasesAfterRestartRequest): ReconcileBrowserSurfaceLeasesAfterRestartResult;
     pumpQueuedLeases(): BrowserSurfaceLease[];
+    /**
+     * Mark an in-memory surface as no longer leaseable. This is the construction
+     * boundary used when a readiness probe (or any caller with direct evidence
+     * that a surface's CDP target is dead) discovers an in-memory surface entry
+     * whose backing allocator container is gone, exited, or otherwise unable to
+     * serve. Without this, a previously-leased surface stays in the in-memory
+     * map with `health: "ready"` after release, and the next acquire reuses
+     * the dead surface in a tight loop.
+     *
+     * The method evicts the surface from the in-memory map so #findReadyIdleSurface
+     * cannot return it. If `releaseLease` is true and the surface still references
+     * an active lease, that lease is marked surface_failed.
+     */
+    invalidateSurface(surfaceId: string, options?: {
+        reason?: BrowserSurfaceWaitReason;
+        releaseLease?: boolean;
+    }): {
+        surface?: BrowserSurface;
+        lease?: BrowserSurfaceLease;
+    };
+    /**
+     * Reconcile in-memory surfaces against the allocator's live view. Called at
+     * boot after the lease store has been rehydrated. Without this step the
+     * lease manager will happily lease a surface whose underlying container was
+     * destroyed across a reference restart, and the controller will only learn
+     * the surface is dead after the readiness probe runs.
+     *
+     * - `allocator.getSurfaceStatus(surfaceId)` returning `null` means the
+     *   allocator does not know about the surface anymore. Evict it.
+     * - The allocator returning a surface whose `health !== "ready"` means it is
+     *   still booting / unhealthy. Downgrade the in-memory entry so it cannot be
+     *   leased until the next allocator round-trip via ensureStartingSurfaceReady
+     *   confirms readiness.
+     *
+     * Returns the surfaces that were evicted or downgraded so the caller can
+     * persist the changes.
+     */
+    reconcileSurfacesWithAllocator(allocator: BrowserSurfaceAllocator): Promise<{
+        evicted: BrowserSurface[];
+        downgraded: BrowserSurface[];
+    }>;
     cleanupIdleSurfaces(allocator: BrowserSurfaceAllocator): Promise<CleanupIdleBrowserSurfacesResult>;
     planCapacityPressureReclaim(leaseId: string): BrowserSurface | undefined;
     completeCapacityPressureReclaim(surfaceId: string): CompleteBrowserSurfaceCapacityReclaimResult;

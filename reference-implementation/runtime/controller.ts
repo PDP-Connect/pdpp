@@ -1767,6 +1767,12 @@ export function createController(opts: ControllerOptions = {}): Controller {
         `[controller] failed to emit run.browser_surface_probe_failed for ${runId}: ${message}`,
       );
     }
+    // Probe failure means the in-memory surface entry is lying about
+    // readiness. Evict it before releasing the lease so the next acquire
+    // does not immediately re-lease the same dead surface and burn another
+    // human OTP cycle. When a dynamic allocator is configured, also stop
+    // the underlying container so the next acquire creates a fresh one.
+    await invalidateBrowserSurfaceAfterProbeFailure(lease, result.code);
     await releaseBrowserSurfaceLease(
       lease,
       connectorId,
@@ -1775,6 +1781,48 @@ export function createController(opts: ControllerOptions = {}): Controller {
       `readiness probe failed: ${result.code}`,
     );
     return result;
+  }
+
+  async function invalidateBrowserSurfaceAfterProbeFailure(
+    lease: BrowserSurfaceLease,
+    probeCode: string,
+  ): Promise<void> {
+    if (!browserSurfaceLeaseManager || !lease.surface_id) {
+      return;
+    }
+    const surfaceId = lease.surface_id;
+    // Drop the in-memory surface so #findReadyIdleSurface cannot reuse it.
+    // Lease release happens separately so the lease projection stays correct;
+    // we explicitly do not mark this lease surface_failed here.
+    const invalidated = browserSurfaceLeaseManager.invalidateSurface(surfaceId, {
+      releaseLease: false,
+    });
+    if (invalidated.surface && browserSurfaceLeaseStore) {
+      try {
+        await browserSurfaceLeaseStore.withLeaseTransaction(async (store) => {
+          await store.upsertSurface({
+            ...invalidated.surface!,
+            health: "unhealthy",
+          });
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        log.warn?.(`[controller] persistence after surface invalidation failed: ${message}`);
+      }
+    }
+    if (browserSurfaceAllocator) {
+      try {
+        await browserSurfaceAllocator.stopSurface({
+          surfaceId,
+          reason: "surface_failed",
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        log.warn?.(
+          `[controller] allocator stopSurface(${surfaceId}) after probe ${probeCode} failed: ${message}`,
+        );
+      }
+    }
   }
 
   async function cancelBrowserSurfaceRun(runId: string): Promise<BrowserSurfaceProjection | null> {
@@ -1843,6 +1891,30 @@ export function createController(opts: ControllerOptions = {}): Controller {
     await startupControllerRunReconciliation;
     if (!browserSurfaceLeaseManager) {
       return;
+    }
+    // Before lease reconciliation, ask the allocator which dynamic surfaces
+    // actually exist. A persistent surface row with health=ready from a prior
+    // boot whose container has been removed must not survive into the new
+    // boot's in-memory state, or the next acquire will lease a dead surface
+    // and burn an owner OTP cycle.
+    if (browserSurfaceAllocator) {
+      try {
+        const allocatorReconcile =
+          await browserSurfaceLeaseManager.reconcileSurfacesWithAllocator(browserSurfaceAllocator);
+        if (browserSurfaceLeaseStore && (allocatorReconcile.evicted.length > 0 || allocatorReconcile.downgraded.length > 0)) {
+          await browserSurfaceLeaseStore.withLeaseTransaction(async (store) => {
+            for (const surface of allocatorReconcile.evicted) {
+              await store.upsertSurface({ ...surface, health: "unhealthy" });
+            }
+            for (const surface of allocatorReconcile.downgraded) {
+              await store.upsertSurface(surface);
+            }
+          });
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        log.warn?.(`[controller] allocator-aware surface reconciliation failed: ${message}`);
+      }
     }
     const activeRunIds = new Set((await listPersistedActiveRuns()).map((row) => row.run_id));
     const reconciled = browserSurfaceLeaseManager.reconcileAfterRestart({ activeRunIds, promoteQueued: false });

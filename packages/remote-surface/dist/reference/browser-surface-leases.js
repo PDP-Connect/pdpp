@@ -517,6 +517,105 @@ export class BrowserSurfaceLeaseManager {
         }
         return promoted;
     }
+    /**
+     * Mark an in-memory surface as no longer leaseable. This is the construction
+     * boundary used when a readiness probe (or any caller with direct evidence
+     * that a surface's CDP target is dead) discovers an in-memory surface entry
+     * whose backing allocator container is gone, exited, or otherwise unable to
+     * serve. Without this, a previously-leased surface stays in the in-memory
+     * map with `health: "ready"` after release, and the next acquire reuses
+     * the dead surface in a tight loop.
+     *
+     * The method evicts the surface from the in-memory map so #findReadyIdleSurface
+     * cannot return it. If `releaseLease` is true and the surface still references
+     * an active lease, that lease is marked surface_failed.
+     */
+    invalidateSurface(surfaceId, options = {}) {
+        const surface = this.#surfaces.get(surfaceId);
+        if (!surface) {
+            return {};
+        }
+        const reason = options.reason ?? "surface_unhealthy";
+        let failedLease;
+        if (options.releaseLease !== false && surface.active_lease_id) {
+            const lease = this.#leases.get(surface.active_lease_id);
+            if (lease && !isTerminalBrowserSurfaceLeaseStatus(lease.status)) {
+                failedLease = this.#terminalLease(lease, "surface_failed", reason);
+                this.#leases.set(failedLease.lease_id, failedLease);
+            }
+        }
+        this.#surfaces.delete(surfaceId);
+        return { surface, ...(failedLease ? { lease: failedLease } : {}) };
+    }
+    /**
+     * Reconcile in-memory surfaces against the allocator's live view. Called at
+     * boot after the lease store has been rehydrated. Without this step the
+     * lease manager will happily lease a surface whose underlying container was
+     * destroyed across a reference restart, and the controller will only learn
+     * the surface is dead after the readiness probe runs.
+     *
+     * - `allocator.getSurfaceStatus(surfaceId)` returning `null` means the
+     *   allocator does not know about the surface anymore. Evict it.
+     * - The allocator returning a surface whose `health !== "ready"` means it is
+     *   still booting / unhealthy. Downgrade the in-memory entry so it cannot be
+     *   leased until the next allocator round-trip via ensureStartingSurfaceReady
+     *   confirms readiness.
+     *
+     * Returns the surfaces that were evicted or downgraded so the caller can
+     * persist the changes.
+     */
+    async reconcileSurfacesWithAllocator(allocator) {
+        if (this.#config.surfaceMode !== "dynamic") {
+            return { evicted: [], downgraded: [] };
+        }
+        const evicted = [];
+        const downgraded = [];
+        for (const surface of [...this.#surfaces.values()]) {
+            if (surface.backend !== "neko") {
+                continue;
+            }
+            let live;
+            try {
+                live = await allocator.getSurfaceStatus(surface.surface_id);
+            }
+            catch {
+                // Treat allocator errors as "we cannot prove this surface is live".
+                live = null;
+            }
+            if (!live) {
+                const removed = this.invalidateSurface(surface.surface_id, {
+                    reason: "surface_unhealthy",
+                    releaseLease: true,
+                });
+                if (removed.surface) {
+                    evicted.push(removed.surface);
+                }
+                continue;
+            }
+            if (live.health === "unhealthy") {
+                const removed = this.invalidateSurface(surface.surface_id, {
+                    reason: "surface_unhealthy",
+                    releaseLease: true,
+                });
+                if (removed.surface) {
+                    evicted.push(removed.surface);
+                }
+                continue;
+            }
+            if (live.health !== "ready") {
+                // Downgrade ready → starting; the next acquire/promotion will probe.
+                const next = { ...this.#mergeAllocatorSurface(surface, live), health: live.health };
+                this.#surfaces.set(surface.surface_id, next);
+                downgraded.push(next);
+            }
+            else if (surface.health !== "ready") {
+                // Allocator agrees the surface is ready; sync metadata.
+                const next = this.#mergeAllocatorSurface(surface, live);
+                this.#surfaces.set(surface.surface_id, next);
+            }
+        }
+        return { evicted, downgraded };
+    }
     async cleanupIdleSurfaces(allocator) {
         if (this.#config.surfaceMode !== "dynamic") {
             return { stopped: [], promoted: [] };

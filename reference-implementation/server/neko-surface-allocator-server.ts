@@ -265,9 +265,21 @@ export class NekoSurfaceAllocatorService {
     if (existing !== null) {
       this.#assertContainerMatchesRequest(existing, request);
       if (!isInspectRunning(existing)) {
-        await this.#startContainer(existing.Id);
+        // An exited container is not safe to "start again" — its previous run
+        // may have lost its network attachment, left the profile in a half-
+        // initialized state, or hit a crash loop. Replacing it is cheaper
+        // than re-binding clients to a dead CDP socket and is the only way
+        // an allocator-aware boot reconcile can make progress when prior
+        // surfaces were OOM/network-evicted across restarts.
+        if (this.#isReplaceableExitedContainer(existing)) {
+          await this.#removeContainer(existing.Id);
+        } else {
+          await this.#startContainer(existing.Id);
+          return this.#surfaceFromInspect(await this.#inspectContainer(existing.Id), { request });
+        }
+      } else {
+        return this.#surfaceFromInspect(await this.#inspectContainer(existing.Id), { request });
       }
-      return this.#surfaceFromInspect(await this.#inspectContainer(existing.Id), { request });
     }
 
     const port = await this.#allocateHostPort();
@@ -318,8 +330,27 @@ export class NekoSurfaceAllocatorService {
     }
     await this.#docker.requestJson(`/containers/${encodeURIComponent(inspect.Id)}/stop`, {
       method: "POST",
-      okStatuses: [204, 304],
+      okStatuses: [204, 304, 404],
     });
+    // `surface_failed` carries explicit evidence from the controller that the
+    // container's CDP socket was dead. The next acquire MUST get a brand new
+    // container, not the same exited carcass. Remove it now; profile storage
+    // lives on the host bind mount and survives. Other stop reasons (idle TTL,
+    // capacity pressure, operator) leave the container in place so it can be
+    // restarted cheaply.
+    if (request.reason === "surface_failed") {
+      try {
+        await this.#removeContainer(inspect.Id);
+      } catch (cause) {
+        if (!isDockerNotFoundError(cause)) {
+          throw cause;
+        }
+      }
+      return this.#surfaceFromInspect(inspect, {
+        allowLabelHostPort: true,
+        readiness: { health: "stopping", reason: "container_removed" },
+      });
+    }
     try {
       return this.#surfaceFromInspect(await this.#inspectContainer(inspect.Id), {
         allowLabelHostPort: true,
@@ -470,6 +501,24 @@ export class NekoSurfaceAllocatorService {
       method: "POST",
       okStatuses: [204, 304],
     });
+  }
+
+  async #removeContainer(containerId: string): Promise<void> {
+    await this.#docker.requestJson(`/containers/${encodeURIComponent(containerId)}`, {
+      method: "DELETE",
+      query: { force: "true", v: "false" },
+      okStatuses: [204, 404, 409],
+    });
+  }
+
+  #isReplaceableExitedContainer(inspect: DockerContainerInspect): boolean {
+    // Any non-running owned container is treated as a replaceable carcass.
+    // We intentionally do not try to discriminate "clean shutdown" from
+    // "crashed" because the only safe operation against a stale container
+    // whose CDP/network state we cannot verify is to remove and recreate.
+    // Profile storage lives on the host bind mount and survives container
+    // removal, so this is non-destructive for owner-visible state.
+    return inspect.State?.Running !== true && inspect.State?.Status !== "running";
   }
 
   async #prepareProfileDirectory(profilePath: string): Promise<void> {

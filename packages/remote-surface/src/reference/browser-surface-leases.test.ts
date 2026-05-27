@@ -760,3 +760,174 @@ test("dynamic boot drops leases for persisted static surfaces filtered from init
   assert.equal(leases.getSurface("neko-static"), undefined);
   assert.equal(leases.getLease("lease_static"), undefined);
 });
+
+test("invalidateSurface evicts an in-memory surface so the next acquire cannot reuse it", () => {
+  const { leases } = manager({
+    initialSurfaces: [
+      {
+        surface_id: "surface_stale",
+        backend: "neko",
+        profile_key: "chatgpt",
+        connector_id: "chatgpt",
+        cdp_url: "http://neko:9222",
+        stream_base_url: "http://neko:8080",
+        health: "ready",
+        created_at: "2026-05-12T11:00:00.000Z",
+        last_used_at: "2026-05-12T11:00:00.000Z",
+      },
+    ],
+  });
+
+  const removed = leases.invalidateSurface("surface_stale");
+
+  assert.equal(removed.surface?.surface_id, "surface_stale");
+  assert.equal(leases.getSurface("surface_stale"), undefined);
+
+  // Next acquire must NOT reuse the dead surface; it should create a new one
+  // (dynamic mode) and start it.
+  const result = leases.acquire({ connectorId: "chatgpt", runId: "run_after_invalidate", profileKey: "chatgpt" });
+  assert.equal(result.lease.status, "starting_surface");
+  assert.notEqual(result.lease.surface_id, "surface_stale");
+});
+
+test("invalidateSurface optionally fails an active lease so callers do not double-release", () => {
+  const { leases } = manager({
+    initialSurfaces: [
+      {
+        surface_id: "surface_active",
+        backend: "neko",
+        profile_key: "chatgpt",
+        connector_id: "chatgpt",
+        cdp_url: "http://neko:9222",
+        stream_base_url: "http://neko:8080",
+        health: "ready",
+        created_at: "2026-05-12T11:00:00.000Z",
+        last_used_at: "2026-05-12T11:00:00.000Z",
+      },
+    ],
+  });
+  const acquired = leases.acquire({ connectorId: "chatgpt", runId: "run_active", profileKey: "chatgpt" });
+  assert.equal(acquired.lease.status, "leased");
+
+  const result = leases.invalidateSurface("surface_active", { releaseLease: true });
+
+  assert.equal(result.lease?.status, "surface_failed");
+  assert.equal(result.lease?.wait_reason, "surface_unhealthy");
+  assert.equal(leases.getSurface("surface_active"), undefined);
+});
+
+test("reconcileSurfacesWithAllocator evicts a surface the allocator no longer knows about", async () => {
+  const { leases } = manager({
+    initialSurfaces: [
+      {
+        surface_id: "surface_lost",
+        backend: "neko",
+        profile_key: "chatgpt",
+        connector_id: "chatgpt",
+        cdp_url: "http://neko:9222",
+        stream_base_url: "http://neko:8080",
+        health: "ready",
+        created_at: "2026-05-12T11:00:00.000Z",
+        last_used_at: "2026-05-12T11:00:00.000Z",
+      },
+    ],
+  });
+  const allocator = new FakeBrowserSurfaceAllocator();
+  // Allocator does NOT know about surface_lost (simulates container removed
+  // while reference was down).
+
+  const result = await leases.reconcileSurfacesWithAllocator(allocator);
+
+  assert.equal(result.evicted.length, 1);
+  assert.equal(result.evicted[0]?.surface_id, "surface_lost");
+  assert.equal(leases.getSurface("surface_lost"), undefined);
+
+  // The next acquire creates a brand new surface via the allocator path.
+  const acquireResult = leases.acquire({
+    connectorId: "chatgpt",
+    runId: "run_after_reconcile",
+    profileKey: "chatgpt",
+  });
+  assert.equal(acquireResult.lease.status, "starting_surface");
+  assert.notEqual(acquireResult.lease.surface_id, "surface_lost");
+});
+
+test("reconcileSurfacesWithAllocator downgrades a surface whose allocator status is not ready", async () => {
+  const { leases } = manager({
+    initialSurfaces: [
+      {
+        surface_id: "surface_warming",
+        backend: "neko",
+        profile_key: "chatgpt",
+        connector_id: "chatgpt",
+        cdp_url: "http://neko:9222",
+        stream_base_url: "http://neko:8080",
+        health: "ready",
+        created_at: "2026-05-12T11:00:00.000Z",
+        last_used_at: "2026-05-12T11:00:00.000Z",
+      },
+    ],
+  });
+  const allocator = new FakeBrowserSurfaceAllocator();
+  allocator.setSurface({
+    surface_id: "surface_warming",
+    backend: "neko",
+    profile_key: "chatgpt",
+    connector_id: "chatgpt",
+    cdp_url: "http://neko:9222",
+    stream_base_url: "http://neko:8080",
+    health: "starting",
+    created_at: "2026-05-12T11:00:00.000Z",
+    last_used_at: "2026-05-12T11:00:00.000Z",
+  });
+
+  const result = await leases.reconcileSurfacesWithAllocator(allocator);
+
+  assert.equal(result.downgraded.length, 1);
+  assert.equal(result.evicted.length, 0);
+  assert.equal(leases.getSurface("surface_warming")?.health, "starting");
+
+  // A "starting" surface should NOT be picked by #findReadyIdleSurface.
+  const acquireResult = leases.acquire({
+    connectorId: "chatgpt",
+    runId: "run_after_downgrade",
+    profileKey: "chatgpt",
+  });
+  // Cap is 1, surface_warming counts against cap, so the new lease waits.
+  assert.equal(acquireResult.lease.status, "waiting_for_browser_surface");
+  assert.equal(acquireResult.lease.wait_reason, "capacity_full");
+});
+
+test("reconcileSurfacesWithAllocator does nothing in static mode", async () => {
+  const { leases } = manager({
+    config: {
+      surfaceMode: "static",
+      surfaceCap: 1,
+      staticProfileKey: "chatgpt",
+      staticCdpHttpUrl: "http://neko:9222",
+      staticStreamBaseUrl: "http://neko:8080",
+    },
+    initialSurfaces: [
+      {
+        surface_id: "neko-static",
+        backend: "neko",
+        profile_key: "chatgpt",
+        connector_id: "chatgpt",
+        cdp_url: "http://neko:9222",
+        stream_base_url: "http://neko:8080",
+        health: "ready",
+        created_at: "2026-05-12T11:00:00.000Z",
+        last_used_at: "2026-05-12T11:00:00.000Z",
+      },
+    ],
+  });
+  const allocator = new FakeBrowserSurfaceAllocator();
+  // Allocator knows nothing.
+
+  const result = await leases.reconcileSurfacesWithAllocator(allocator);
+
+  assert.equal(result.evicted.length, 0);
+  assert.equal(result.downgraded.length, 0);
+  // Static surface preserved.
+  assert.equal(leases.getSurface("neko-static")?.health, "ready");
+});

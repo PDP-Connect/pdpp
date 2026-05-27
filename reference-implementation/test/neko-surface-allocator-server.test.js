@@ -398,6 +398,76 @@ test("HTTP handler matches NekoSurfaceAllocatorClient contract", async () => {
   }
 });
 
+test("ensureSurface removes a stale exited container and creates a fresh one (no silent restart of a dead carcass)", async () => {
+  // Regression: USAA run_1779900509276 leased a surface whose underlying
+  // container had exited (255) hours earlier and was detached from the
+  // Docker network. The previous ensureSurface() path called /start on the
+  // exited container and treated it as healthy. Replace the carcass instead.
+  const docker = new FakeDocker();
+  const service = new NekoSurfaceAllocatorService({ ...BASE_OPTIONS, docker, fetchImpl: readyFetch() });
+  // Seed the FakeDocker with an existing exited managed container for the
+  // requested surface id.
+  await service.ensureSurface({ surfaceId: "surface_1", connectorId: "chatgpt", profileKey: "profile_1" });
+  const firstContainerId = [...docker.containers.keys()][0];
+  // Simulate the container exiting after the previous run (the bug scenario).
+  docker.containers.get(firstContainerId).running = false;
+  docker.calls.length = 0;
+
+  const surface = await service.ensureSurface({
+    surfaceId: "surface_1",
+    connectorId: "chatgpt",
+    profileKey: "profile_1",
+  });
+
+  assert.equal(surface.health, "ready");
+  // The exited container should have been removed (DELETE call seen).
+  const deleteCall = docker.calls.find(
+    (call) => call.init.method === "DELETE" && call.path === `/containers/${firstContainerId}`,
+  );
+  assert.ok(deleteCall, "exited container must be removed before a fresh container is created");
+  // A new container should have been created.
+  assert.ok(docker.calls.some((call) => call.path === "/containers/create"));
+  assert.notEqual(surface.container_id, firstContainerId);
+});
+
+test("stopSurface(surface_failed) removes the container so the next ensureSurface gets a clean slate", async () => {
+  // Regression: with reason=idle_ttl/operator the container is left exited;
+  // with reason=surface_failed the controller has direct CDP evidence that
+  // the container is unrecoverable. The next acquire must NOT restart the
+  // carcass, so the allocator removes it.
+  const docker = new FakeDocker();
+  const service = new NekoSurfaceAllocatorService({ ...BASE_OPTIONS, docker, fetchImpl: readyFetch() });
+  await service.ensureSurface({ surfaceId: "surface_1", connectorId: "chatgpt", profileKey: "profile_1" });
+  const containerId = [...docker.containers.keys()][0];
+  docker.calls.length = 0;
+
+  const stopped = await service.stopSurface({ surfaceId: "surface_1", reason: "surface_failed" });
+
+  assert.equal(stopped?.health, "stopping");
+  assert.equal(stopped?.allocator_metadata.readiness, "container_removed");
+  // DELETE was called.
+  const deleteCall = docker.calls.find(
+    (call) => call.init.method === "DELETE" && call.path === `/containers/${containerId}`,
+  );
+  assert.ok(deleteCall, "stopSurface(surface_failed) must DELETE the container");
+  // And the container is gone from docker state.
+  assert.equal(docker.containers.has(containerId), false);
+});
+
+test("stopSurface(idle_ttl) preserves the container so it can be restarted cheaply (no DELETE)", async () => {
+  const docker = new FakeDocker();
+  const service = new NekoSurfaceAllocatorService({ ...BASE_OPTIONS, docker, fetchImpl: readyFetch() });
+  await service.ensureSurface({ surfaceId: "surface_1", connectorId: "chatgpt", profileKey: "profile_1" });
+  const containerId = [...docker.containers.keys()][0];
+  docker.calls.length = 0;
+
+  await service.stopSurface({ surfaceId: "surface_1", reason: "idle_ttl" });
+
+  const deleteCall = docker.calls.find((call) => call.init.method === "DELETE");
+  assert.equal(deleteCall, undefined, "idle_ttl must NOT delete the container");
+  assert.equal(docker.containers.has(containerId), true);
+});
+
 class FakeDocker {
   calls = [];
   containers = new Map();
@@ -451,6 +521,11 @@ class FakeDocker {
       } else {
         container.running = false;
       }
+      return null;
+    }
+    const removeMatch = path.match(/^\/containers\/([^/]+)$/);
+    if (removeMatch && init.method === "DELETE") {
+      this.containers.delete(removeMatch[1]);
       return null;
     }
     const inspectMatch = path.match(/^\/containers\/([^/]+)\/json$/);

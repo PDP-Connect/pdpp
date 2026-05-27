@@ -271,6 +271,126 @@ test("probe that throws is mapped to browser_surface_cdp_unreachable rather than
   assert.match(probeEvent.data.browser_surface_probe.detail, /kernel said no/);
 });
 
+test("readiness probe failure evicts the stale in-memory surface so the next acquire cannot relay-fail", async (t) => {
+  // Construction guarantee: when a probe says the leased surface is dead, the
+  // lease manager must not keep that surface in memory with `health: ready`
+  // and hand it to the next acquire. Otherwise we burn another OTP cycle
+  // against the same dead CDP socket. This regression is the exact failure
+  // mode observed in run_1779900509276 against USAA.
+  const probe = {
+    probe: async () => ({
+      ok: false,
+      code: "browser_surface_cdp_unreachable",
+      detail: "GET http://stale:9223/json/version failed: fetch failed",
+    }),
+  };
+  const leaseManager = createManagerWithReadySurface();
+  const { controller, runConnectorCalls } = setup(t, { probe, leaseManager });
+
+  // First run trips the probe.
+  const first = await controller.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_first",
+  });
+  await controller.drainActiveRuns(1000);
+
+  assert.equal(first.status, "surface_failed");
+  assert.equal(runConnectorCalls.length, 0);
+  // The stale in-memory surface must be evicted, NOT left around with
+  // health=ready.
+  assert.equal(leaseManager.getSurface("surface_static"), undefined);
+});
+
+test("readiness probe failure calls allocator.stopSurface(reason: surface_failed) so the dynamic container is reset", async (t) => {
+  // Construction guarantee: when a dynamic allocator is configured and the
+  // readiness probe says the leased dynamic surface is dead, the controller
+  // must tell the allocator to stop/remove the underlying container. Without
+  // this, the next acquire's ensureSurface() finds an exited container and
+  // either fails to start it or hands back another dead CDP URL.
+  const probe = {
+    probe: async () => ({
+      ok: false,
+      code: "browser_surface_cdp_unreachable",
+      detail: "GET http://dynamic-stale:9223/json/version failed: fetch failed",
+    }),
+  };
+  const leaseManager = createManagerWithReadySurface();
+  const stopRequests = [];
+  const allocator = {
+    ensureSurface: async () => ({
+      surface_id: "surface_static",
+      backend: "neko",
+      profile_key: "managed-profile",
+      connector_id: "managed",
+      cdp_url: "http://127.0.0.1:9222",
+      stream_base_url: "http://127.0.0.1:8080",
+      health: "ready",
+      created_at: "2026-05-12T11:00:00.000Z",
+      last_used_at: "2026-05-12T11:00:00.000Z",
+    }),
+    getSurfaceStatus: async () => null,
+    stopSurface: async (request) => {
+      stopRequests.push(request);
+      return null;
+    },
+    listSurfaces: async () => [],
+  };
+  const { controller, runConnectorCalls } = setup(t, { probe, leaseManager });
+  // Setup the controller with the allocator wired up. We have to do this by
+  // re-instantiating since setup() doesn't expose allocator. Instead, force
+  // controller wiring via the existing createController interface.
+  // Use the createController seam: tests in this file go through setup(); we
+  // build a new controller specifically threaded with the allocator.
+  closeDb();
+  initDb(tempDbPath());
+  __resetControllerInteractionStateForTests();
+  t.after(() => {
+    __resetControllerInteractionStateForTests();
+    closeDb();
+  });
+
+  const otherCalls = [];
+  const c2 = createController({
+    browserSurfaceLeaseManager: leaseManager,
+    browserSurfaceReadinessProbe: probe,
+    browserSurfaceAllocator: allocator,
+    connectorPathResolver: () => "/tmp/connector.js",
+    logger: { error: () => {}, warn: () => {} },
+    schedulerStore: createSchedulerStore(),
+    streamingTargetNonceHooks: {
+      registerNonce: () => {},
+      clearNonce: () => {},
+    },
+    runConnectorImpl: (opts) => {
+      otherCalls.push(opts);
+      return Promise.resolve({
+        status: "completed",
+        records_emitted: 0,
+        state: null,
+        checkpoint_summary: null,
+      });
+    },
+  });
+
+  const result = await c2.runNow("managed", {
+    manifest: MANIFEST,
+    ownerToken: "owner-token",
+    runId: "run_with_allocator",
+  });
+  await c2.drainActiveRuns(1000);
+
+  assert.equal(result.status, "surface_failed");
+  assert.equal(otherCalls.length, 0, "connector must NOT spawn after probe failure");
+  assert.equal(stopRequests.length, 1, "allocator.stopSurface must be called once after probe failure");
+  assert.equal(stopRequests[0]?.surfaceId, "neko-static");
+  assert.equal(
+    stopRequests[0]?.reason,
+    "surface_failed",
+    "stop reason must be 'surface_failed' so the allocator removes the dead container",
+  );
+});
+
 test("probe disabled (null) preserves legacy behavior: connector spawned, no probe events", async (t) => {
   const { controller, runConnectorCalls } = setup(t, { probe: null });
 
