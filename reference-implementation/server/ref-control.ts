@@ -31,6 +31,7 @@ import {
   type NextAction,
   type OutboxAxis,
 } from "../runtime/connection-health.ts";
+import { readBrowserSurfaceProfileKey } from "../runtime/browser-surface-profile-key.ts";
 import { getConnectorManifest } from "./auth.js";
 import { deriveReferenceFreshness, type ReferenceFreshness } from "./freshness.ts";
 import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.js";
@@ -1531,7 +1532,7 @@ function pickMostUrgentLease(
  */
 export async function getConnectorBrowserSurfaceProjection(
   connectorId: string,
-  options: { readonly store?: BrowserSurfaceLeaseStoreReader } = {},
+  options: { readonly profileKey?: string | null; readonly store?: BrowserSurfaceLeaseStoreReader } = {},
 ): Promise<ConnectorBrowserSurfaceProjection> {
   const store =
     options.store ??
@@ -1558,8 +1559,12 @@ export async function getConnectorBrowserSurfaceProjection(
     };
   }
 
-  const connectorLeases = leases.filter((lease) => lease.connector_id === connectorId);
-  const connectorSurfaces = surfaces.filter((surface) => surface.connector_id === connectorId);
+  const connectorLeases = leases.filter(
+    (lease) => lease.connector_id === connectorId && (!options.profileKey || lease.profile_key === options.profileKey),
+  );
+  const connectorSurfaces = surfaces.filter(
+    (surface) => surface.connector_id === connectorId && (!options.profileKey || surface.profile_key === options.profileKey),
+  );
 
   if (connectorLeases.length === 0 && connectorSurfaces.length === 0) {
     // Host browser / API connector — no managed remote surface. Routine
@@ -1887,7 +1892,9 @@ export async function listConnectorSummaries(
           getConnectorDetailGapProjection(connectorId, connectorInstanceId),
           getConnectorOutboxAxis(connectorId, { connectorInstanceId }),
           getConnectorAttentionProjection(connectorId, { connectorInstanceId }),
-          getConnectorBrowserSurfaceProjection(connectorId),
+          getConnectorBrowserSurfaceProjection(connectorId, {
+            profileKey: readBrowserSurfaceProfileKey(connectorId, connectorInstanceId, manifest),
+          }),
         ]);
       const refreshPolicy = extractRefreshPolicy(manifest);
       const localDeviceProgress =

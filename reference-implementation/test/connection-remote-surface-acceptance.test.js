@@ -442,3 +442,35 @@ test(
     assert.equal(gmail.evidence?.waitReason, 'surface_starting');
   }),
 );
+
+test(
+  '7.6 acceptance: remote-surface evidence can be scoped per connection profile so legacy same-connector failures do not contaminate the active connection',
+  withTempDb(async () => {
+    const store = createSqliteBrowserSurfaceLeaseStore();
+    await store.upsertSurface(
+      surfaceFixture({
+        surface_id: 'surface_usaa_legacy_unhealthy',
+        connector_id: 'usaa',
+        profile_key: 'usaa',
+        health: 'unhealthy',
+      }),
+    );
+    await store.upsertSurface(
+      surfaceFixture({
+        surface_id: 'surface_usaa_active_ready',
+        connector_id: 'usaa',
+        profile_key: 'usaa:cin_active',
+        health: 'ready',
+      }),
+    );
+
+    const legacyRollup = await getConnectorBrowserSurfaceProjection('usaa');
+    const activeConnection = await getConnectorBrowserSurfaceProjection('usaa', { profileKey: 'usaa:cin_active' });
+
+    assert.equal(legacyRollup.evidence?.axis, 'failed');
+    assert.equal(legacyRollup.evidence?.surfaceId, 'surface_usaa_legacy_unhealthy');
+    assert.equal(activeConnection.evidence?.axis, 'idle');
+    assert.equal(activeConnection.evidence?.surfaceHealth, 'ready');
+    assert.equal(activeConnection.evidence?.surfaceId, 'surface_usaa_active_ready');
+  }),
+);

@@ -49,6 +49,7 @@ import {
   type BrowserSurfaceReadinessProbeResult,
 } from "./browser-surface-readiness.ts";
 import { type BrowserSurfaceLeaseStore } from "../server/stores/browser-surface-lease-store.ts";
+import { readBrowserSurfaceProfileKey } from "./browser-surface-profile-key.ts";
 import { runConnector } from "./index.js";
 import type { RunRecord } from "./scheduler.ts";
 import {
@@ -576,22 +577,6 @@ function readManifestRefreshPolicy(manifest: ConnectorManifest | null | undefine
   }
   const policy = (capabilities as { refresh_policy?: unknown }).refresh_policy;
   return policy && typeof policy === "object" && !Array.isArray(policy) ? (policy as RefreshPolicy) : null;
-}
-
-function readBrowserSurfaceProfileKey(
-  connectorId: string,
-  connectorInstanceId: string,
-  manifest: ConnectorManifest | null | undefined,
-): string {
-  const caps = manifest && typeof manifest === "object" ? (manifest as { capabilities?: unknown }).capabilities : null;
-  const browserSurface =
-    caps && typeof caps === "object" ? (caps as { browser_surface?: unknown }).browser_surface : null;
-  const profileKey =
-    browserSurface && typeof browserSurface === "object"
-      ? (browserSurface as { profile_key?: unknown }).profile_key
-      : null;
-  const baseProfileKey = typeof profileKey === "string" && profileKey.trim() ? profileKey.trim() : connectorId;
-  return connectorInstanceId === connectorId ? baseProfileKey : `${baseProfileKey}:${connectorInstanceId}`;
 }
 
 function loadReferenceFixtureFingerprints(): Map<string, ManifestFingerprint> {
