@@ -30,6 +30,14 @@ import pino from 'pino';
 import qs from 'qs';
 
 import { publicManifests, referenceManifests } from '@pdpp/reference-contract';
+import {
+  applyRequestValidation,
+  applyResponseValidation,
+  buildResponseContractErrorBody,
+  ensureRequestId,
+  isRequestValidationEnforced,
+  isResponseCanary,
+} from './contract-validation.js';
 
 // Header name the reference sets on responses to expose the protocol trace
 // ID (handler-set via setReferenceTraceId in server/index.js).
@@ -488,6 +496,75 @@ function wrapHandler(middleware, handler) {
 }
 
 /**
+ * Variant of `wrapHandler` for routes enrolled in the response-validation
+ * canary allowlist. Intercepts the response's JSON-emission methods just
+ * before bytes are sent so the payload can be validated against the
+ * declared contract WITHOUT serializing through Fastify's response-schema
+ * pipeline (which would coerce or strip fields).
+ *
+ * Behavior:
+ *   - Only intercepts `res.json(payload)`. Other emission paths (`send`
+ *     with a string/Buffer, redirects, 204, hijacked streams, SSE) pass
+ *     through unchanged so non-allowlisted response shapes are not
+ *     mutated.
+ *   - On validation failure, replaces the outgoing payload with a PDPP
+ *     `internal_contract_error` envelope at HTTP 500 and logs the
+ *     validator errors under the request id.
+ *   - On validation success (or when the manifest has no schema for the
+ *     selected status), emits the handler's original payload unchanged.
+ */
+function wrapHandlerWithResponseCanary(middleware, handler, manifest) {
+  return async function fastifyCanaryRouteHandler(request, reply) {
+    const { req, res } = expressShim(request, reply);
+    if (middleware.length) {
+      const responded = await runMiddlewareChain(middleware, req, res);
+      if (responded || res.headersSent) return reply;
+    }
+
+    // Patch `res.json` so canary operations validate just before sending.
+    // Canary operations are stable JSON metadata/discovery routes whose
+    // handlers always go through `res.json(envelope)`. Non-JSON paths
+    // (`res.send(string)`, `res.send(Buffer)`, `res.redirect`,
+    // `res.sendStatus`, `res.hijack` for streams/SSE) skip this
+    // interception entirely.
+    const originalJson = res.json.bind(res);
+    res.json = (payload) => {
+      const status = res.statusCode || 200;
+      const result = applyResponseValidation({
+        operationId: manifest.id,
+        status,
+        payload,
+      });
+      if (result.ok) {
+        return originalJson(payload);
+      }
+      const requestId = ensureRequestId(res);
+      const body = buildResponseContractErrorBody({
+        operationId: manifest.id,
+        requestId,
+      });
+      request.log?.error?.(
+        {
+          req_id: request.id,
+          operation_id: manifest.id,
+          status,
+          validator_errors: result.errors,
+        },
+        'response payload violated declared route contract',
+      );
+      res.status(500);
+      return originalJson(body);
+    };
+
+    const result = handler(req, res, () => {});
+    if (result && typeof result.then === 'function') {
+      await result;
+    }
+    return reply;
+  };
+}
+
+/**
  * Express-shaped `app` object backed by Fastify. Not a drop-in for every
  * Express API — only what PDPP uses. See the header comment for the
  * exact surface.
@@ -534,25 +611,64 @@ export function createApp({ logger } = {}) {
     if (!fns.length) throw new Error(`No handler for ${method} ${path}`);
     const handler = fns[fns.length - 1];
     const middleware = fns.slice(0, -1);
-    const combinedMiddleware = [...globalMiddleware, ...middleware];
+
+    // Resolve the contract manifest first so an unknown operation id
+    // fails fast at registration time (before the route is added to
+    // Fastify). This keeps drift between server/index.js and
+    // @pdpp/reference-contract observable at startup rather than at
+    // the first request to the route.
+    let manifest = null;
+    if (contractOpId) {
+      manifest = CONTRACT_MANIFESTS.get(contractOpId);
+      if (!manifest) {
+        throw new Error(
+          `Unknown reference-contract operation id for ${method} ${path}: ${contractOpId}`,
+        );
+      }
+    }
+
+    // Build the route middleware chain. When the route's operation id
+    // is on the request-validation allowlist, transport-level
+    // validation runs AFTER user-supplied middleware (auth, owner-
+    // session, device-credential checks) and BEFORE the route handler.
+    // This preserves auth ordering: unauthenticated callers see the
+    // auth error envelope rather than a contract-shape error. Routes
+    // NOT on the allowlist see no transport-level validation, which
+    // preserves the rich handler-owned diagnostics on shape rejection.
+    const routeMiddleware = [...middleware];
+    if (manifest && isRequestValidationEnforced(manifest.id)) {
+      const manifestRef = manifest;
+      routeMiddleware.push((req, res, next) => {
+        const responded = applyRequestValidation({
+          manifest: manifestRef,
+          req,
+          res,
+        });
+        if (responded) return;
+        next();
+      });
+    }
+    const combinedMiddleware = [...globalMiddleware, ...routeMiddleware];
+
+    const wrappedHandler =
+      manifest && isResponseCanary(manifest.id)
+        ? wrapHandlerWithResponseCanary(combinedMiddleware, handler, manifest)
+        : wrapHandler(combinedMiddleware, handler);
 
     const routeOptions = {
       method,
       url: normalizePath(path),
-      handler: wrapHandler(combinedMiddleware, handler),
+      handler: wrappedHandler,
     };
 
-    // Attach the contract-package JSON-Schema directly to the Fastify route
-    // definition when the caller has named an operation. This satisfies the
-    // W6 acceptance criterion that "the contract be registered directly on
-    // Fastify routes." Validation itself stays owned by the existing
-    // `contractValidation()` middleware so PDPP error envelopes are
-    // preserved; we disable Fastify's default validator for this route only.
-    if (contractOpId) {
-      const manifest = CONTRACT_MANIFESTS.get(contractOpId);
-      if (!manifest) {
-        throw new Error(`Unknown contract operation id: ${contractOpId}`);
-      }
+    // Attach the contract-package JSON-Schema directly to the Fastify
+    // route definition. The schema is informative metadata for tests,
+    // OpenAPI emission, and introspection; runtime request validation
+    // happens (when enabled for this op id) in the middleware chain
+    // above through `@pdpp/reference-contract`. Fastify's own validator
+    // is disabled so it cannot transform or strip payloads. Response
+    // schemas are deliberately omitted — see `buildRouteSchema`.
+    if (manifest) {
       const schema = buildRouteSchema(manifest);
       if (schema) {
         routeOptions.schema = schema;
