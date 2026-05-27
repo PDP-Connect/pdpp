@@ -223,6 +223,9 @@ const VIOLATION_LIST_MAX = 20;
 const GAP_STRING_MAX = 200;
 const GAP_LIST_MAX = 20;
 const KNOWN_GAPS_MAX = 50;
+const GAP_DIAGNOSTICS_BYTES_MAX = 8 * 1024;
+const GAP_DIAGNOSTICS_DEPTH_MAX = 6;
+const GAP_DIAGNOSTICS_LIST_MAX = 32;
 const GAP_SEVERITIES = new Set(['actionable', 'informational', 'recoverable', 'transient']);
 const INFORMATIONAL_GAP_REASONS = new Set(['not_available_in_mode', 'out_of_scope', 'user_disabled']);
 const TRANSIENT_GAP_REASONS = new Set([
@@ -320,6 +323,77 @@ function boundGapStringList(values) {
   const bounded = values.map((value) => boundGapString(value)).filter(Boolean);
   if (!bounded.length) return null;
   return bounded.slice(0, GAP_LIST_MAX);
+}
+
+/**
+ * Walk a connector-authored diagnostics object, applying secret-redaction
+ * to every string leaf and bounding nested array length / object depth.
+ * Returns the bounded projection, or a sentinel object if the input is
+ * not a plain object, exceeds the depth/list cap, or exceeds the total
+ * JSON byte cap.
+ *
+ * Used to propagate `SKIP_RESULT.diagnostics` to the run.stream_skipped
+ * spine event without leaking secrets or unbounded payloads. See
+ * openspec/changes/propagate-skip-result-diagnostics.
+ */
+function boundGapDiagnostics(value) {
+  if (value == null || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  const projected = projectDiagnosticsNode(value, 0);
+  if (projected == null) {
+    return { truncated: true, reason: 'depth_overflow' };
+  }
+  let serialized;
+  try {
+    serialized = JSON.stringify(projected);
+  } catch {
+    return { truncated: true, reason: 'serialization_failed' };
+  }
+  if (serialized.length > GAP_DIAGNOSTICS_BYTES_MAX) {
+    return { truncated: true, reason: 'size_overflow' };
+  }
+  return projected;
+}
+
+function projectDiagnosticsNode(value, depth) {
+  if (value == null) return null;
+  if (typeof value === 'string') {
+    return boundGapString(value);
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return value;
+  }
+  if (depth >= GAP_DIAGNOSTICS_DEPTH_MAX) {
+    return Array.isArray(value)
+      ? { truncated: true, reason: 'depth_overflow' }
+      : { truncated: true, reason: 'depth_overflow' };
+  }
+  if (Array.isArray(value)) {
+    const items = [];
+    const limit = Math.min(value.length, GAP_DIAGNOSTICS_LIST_MAX);
+    for (let i = 0; i < limit; i += 1) {
+      const projected = projectDiagnosticsNode(value[i], depth + 1);
+      if (projected !== undefined) {
+        items.push(projected);
+      }
+    }
+    if (value.length > GAP_DIAGNOSTICS_LIST_MAX) {
+      items.push({ truncated: true, reason: 'list_overflow', omitted: value.length - GAP_DIAGNOSTICS_LIST_MAX });
+    }
+    return items;
+  }
+  if (typeof value === 'object') {
+    const out = {};
+    for (const [key, child] of Object.entries(value)) {
+      const projected = projectDiagnosticsNode(child, depth + 1);
+      if (projected !== undefined) {
+        out[key] = projected;
+      }
+    }
+    return out;
+  }
+  return undefined;
 }
 
 function inferRecoveryAction(reason, message, interactionKind = null) {
@@ -441,6 +515,7 @@ function buildKnownGap({
   explicitSelection = false,
   severity = null,
   unsupportedInDefaultScope = false,
+  diagnostics = null,
 }) {
   const safeReason = boundGapString(reason) || 'unknown';
   const safeMessage = boundGapString(message);
@@ -452,6 +527,7 @@ function buildKnownGap({
     severity,
     unsupportedInDefaultScope,
   });
+  const boundedDiagnostics = boundGapDiagnostics(diagnostics);
   return {
     kind,
     stream: boundGapString(stream),
@@ -464,6 +540,7 @@ function buildKnownGap({
       message: safeMessage,
       interactionKind,
     }),
+    ...(boundedDiagnostics ? { diagnostics: boundedDiagnostics } : {}),
   };
 }
 
@@ -791,6 +868,9 @@ function validateSkipResultMessage(msg, scopeByStream) {
   validateOptionalScopedStream(msg.stream, 'SKIP_RESULT', scopeByStream);
   requireOptionalNonEmptyString(msg.reason, 'SKIP_RESULT.reason');
   requireOptionalNonEmptyString(msg.message, 'SKIP_RESULT.message');
+  if (msg.diagnostics != null && Array.isArray(msg.diagnostics)) {
+    throw new Error('Connector emitted invalid SKIP_RESULT.diagnostics: expected object, not array');
+  }
   if (msg.recovery_hint != null) {
     const validRecoveryHint =
       (typeof msg.recovery_hint === 'string' && RECOVERY_ACTIONS.has(msg.recovery_hint))
@@ -2336,6 +2416,7 @@ export async function runConnector(opts) {
             scope: normalizeGapScope(msg),
             explicitSelection: Boolean(msg.stream && explicitlyRequestedStreams?.has(msg.stream)),
             unsupportedInDefaultScope: streamUnsupportedInDefaultScope(skippedManifestStream),
+            diagnostics: msg.diagnostics ?? null,
           });
           appendKnownGap(gap);
           await emitSpineEventTracked({
@@ -2355,6 +2436,7 @@ export async function runConnector(opts) {
               reason: msg.reason || null,
               message: boundGapString(msg.message) || null,
               known_gap: gap,
+              ...(gap.diagnostics ? { diagnostics: gap.diagnostics } : {}),
             },
           });
           onProgress(msg);

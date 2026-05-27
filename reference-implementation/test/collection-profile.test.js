@@ -2202,6 +2202,237 @@ rl.on('line', (line) => {
     }
   });
 
+  // openspec/changes/propagate-skip-result-diagnostics: SKIP_RESULT.diagnostics
+  // is connector-authored evidence about *why* the skip happened (USAA export
+  // page state, response-queue candidates, etc.). The runtime SHALL propagate
+  // a bounded, redacted projection to the run.stream_skipped spine event and
+  // to the known_gap so the owner can diagnose the failure offline.
+  await t.test('runtime forwards bounded SKIP_RESULT.diagnostics into the spine event and known gap', async () => {
+    const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+    const { asPort, rsPort } = server;
+    const { ownerToken, connectorId } = await setupConnector(server, asPort);
+    const asUrl = `http://localhost:${asPort}`;
+
+    const diagnostics = {
+      phase: 'export_artifact_wait_failed',
+      diag: {
+        url: 'https://www.usaa.com/my/checking?accountId=ACCT-CHK-0001',
+        title: 'USAA Checking',
+        dialogs_open: 1,
+      },
+      artifact: {
+        cdpReady: true,
+        cdpError: null,
+        candidates: [
+          { source: 'cdp', status: 200, reason: 'not_expected_body', contentType: 'text/html', bodyBytes: 1247 },
+        ],
+      },
+      error: 'download_empty',
+    };
+
+    const { connectorPath, cleanup } = createTestConnector([
+      { type: 'SKIP_RESULT', stream: 'items', reason: 'export_no_download', message: 'export failed', diagnostics },
+      { type: 'DONE', status: 'succeeded', records_emitted: 0 },
+    ]);
+
+    try {
+      const result = await runConnector({
+        connectorPath,
+        connectorId,
+        ownerToken,
+        manifest: MINIMAL_MANIFEST,
+        state: null,
+        collectionMode: 'full_refresh',
+        persistState: true,
+        rsUrl: `http://localhost:${rsPort}`,
+        onInteraction: async () => ({}),
+      });
+
+      assert.equal(result.status, 'succeeded');
+
+      const { body: runTimeline } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(result.run_id)}/timeline`);
+      const skippedEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.stream_skipped');
+      assert.ok(skippedEvent, 'expected run.stream_skipped event');
+      assert.ok(skippedEvent.data.diagnostics, 'spine event should carry SKIP_RESULT.diagnostics');
+      assert.equal(skippedEvent.data.diagnostics.phase, 'export_artifact_wait_failed');
+      assert.equal(skippedEvent.data.diagnostics.diag.url, 'https://www.usaa.com/my/checking?accountId=ACCT-CHK-0001');
+      assert.equal(skippedEvent.data.diagnostics.artifact.cdpReady, true);
+      assert.equal(skippedEvent.data.diagnostics.artifact.candidates[0].source, 'cdp');
+      assert.equal(skippedEvent.data.diagnostics.error, 'download_empty');
+
+      assert.ok(skippedEvent.data.known_gap.diagnostics, 'known_gap should carry diagnostics');
+      assert.equal(skippedEvent.data.known_gap.diagnostics.phase, 'export_artifact_wait_failed');
+
+      const completedEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.completed');
+      assert.ok(completedEvent.data.known_gaps[0].diagnostics, 'terminal known_gap should carry diagnostics');
+    } finally {
+      cleanup();
+      await closeServer(server);
+    }
+  });
+
+  await t.test('runtime redacts secret-shaped strings inside SKIP_RESULT.diagnostics', async () => {
+    const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+    const { asPort, rsPort } = server;
+    const { ownerToken, connectorId } = await setupConnector(server, asPort);
+    const asUrl = `http://localhost:${asPort}`;
+
+    const diagnostics = {
+      // password=… is a redaction trigger in boundGapString; 123456 is OTP-like.
+      auth: 'password=supersecret token=abc123',
+      otp_seen: 'observed 123456 in dialog',
+      nested: { cookie: 'cookie=sess_abc123' },
+    };
+
+    const { connectorPath, cleanup } = createTestConnector([
+      { type: 'SKIP_RESULT', stream: 'items', reason: 'export_no_download', message: 'redacted-path', diagnostics },
+      { type: 'DONE', status: 'succeeded', records_emitted: 0 },
+    ]);
+
+    try {
+      const result = await runConnector({
+        connectorPath,
+        connectorId,
+        ownerToken,
+        manifest: MINIMAL_MANIFEST,
+        state: null,
+        collectionMode: 'full_refresh',
+        persistState: true,
+        rsUrl: `http://localhost:${rsPort}`,
+        onInteraction: async () => ({}),
+      });
+
+      const { body: runTimeline } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(result.run_id)}/timeline`);
+      const skippedEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.stream_skipped');
+      const serialized = JSON.stringify(skippedEvent.data.diagnostics);
+      assert.doesNotMatch(serialized, /supersecret/, 'password value must be redacted');
+      assert.doesNotMatch(serialized, /sess_abc123/, 'nested cookie value must be redacted');
+      assert.doesNotMatch(serialized, /\b123456\b/, '6-digit OTP must be redacted');
+      assert.match(serialized, /\[REDACTED\]/);
+    } finally {
+      cleanup();
+      await closeServer(server);
+    }
+  });
+
+  await t.test('runtime replaces oversized SKIP_RESULT.diagnostics with a size_overflow sentinel', async () => {
+    const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+    const { asPort, rsPort } = server;
+    const { ownerToken, connectorId } = await setupConnector(server, asPort);
+    const asUrl = `http://localhost:${asPort}`;
+
+    // 64 candidates × ~600 bytes JSON each ≈ 38 KiB > 8 KiB cap.
+    const candidates = [];
+    for (let i = 0; i < 64; i += 1) {
+      candidates.push({
+        source: 'cdp',
+        status: 200,
+        reason: 'not_expected_body',
+        contentType: 'text/html',
+        bodyBytes: 1024,
+        url: `https://www.usaa.com/export/candidate/${i}?padding=${'X'.repeat(400)}`,
+      });
+    }
+    const diagnostics = { phase: 'export_artifact_wait_failed', artifact: { candidates } };
+
+    const { connectorPath, cleanup } = createTestConnector([
+      { type: 'SKIP_RESULT', stream: 'items', reason: 'export_no_download', message: 'huge', diagnostics },
+      { type: 'DONE', status: 'succeeded', records_emitted: 0 },
+    ]);
+
+    try {
+      const result = await runConnector({
+        connectorPath,
+        connectorId,
+        ownerToken,
+        manifest: MINIMAL_MANIFEST,
+        state: null,
+        collectionMode: 'full_refresh',
+        persistState: true,
+        rsUrl: `http://localhost:${rsPort}`,
+        onInteraction: async () => ({}),
+      });
+
+      const { body: runTimeline } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(result.run_id)}/timeline`);
+      const skippedEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.stream_skipped');
+      assert.deepEqual(skippedEvent.data.diagnostics, { truncated: true, reason: 'size_overflow' });
+      assert.deepEqual(skippedEvent.data.known_gap.diagnostics, { truncated: true, reason: 'size_overflow' });
+      assert.equal(skippedEvent.data.reason, 'export_no_download', 'rest of SKIP_RESULT still propagates');
+    } finally {
+      cleanup();
+      await closeServer(server);
+    }
+  });
+
+  await t.test('runtime drops non-object SKIP_RESULT.diagnostics without rejecting the message', async () => {
+    const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+    const { asPort, rsPort } = server;
+    const { ownerToken, connectorId } = await setupConnector(server, asPort);
+    const asUrl = `http://localhost:${asPort}`;
+
+    // diagnostics is a scalar string — the runtime should drop it from the
+    // persisted payload, not reject the SKIP_RESULT envelope.
+    const { connectorPath, cleanup } = createTestConnector([
+      { type: 'SKIP_RESULT', stream: 'items', reason: 'export_no_download', message: 'scalar diag', diagnostics: 'oops' },
+      { type: 'DONE', status: 'succeeded', records_emitted: 0 },
+    ]);
+
+    try {
+      const result = await runConnector({
+        connectorPath,
+        connectorId,
+        ownerToken,
+        manifest: MINIMAL_MANIFEST,
+        state: null,
+        collectionMode: 'full_refresh',
+        persistState: true,
+        rsUrl: `http://localhost:${rsPort}`,
+        onInteraction: async () => ({}),
+      });
+
+      assert.equal(result.status, 'succeeded');
+      const { body: runTimeline } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(result.run_id)}/timeline`);
+      const skippedEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.stream_skipped');
+      assert.ok(skippedEvent, 'SKIP_RESULT with scalar diagnostics still propagates');
+      assert.equal(skippedEvent.data.diagnostics, undefined, 'scalar diagnostics is dropped from spine payload');
+      assert.equal(skippedEvent.data.known_gap.diagnostics, undefined, 'scalar diagnostics is dropped from known gap');
+    } finally {
+      cleanup();
+      await closeServer(server);
+    }
+  });
+
+  await t.test('runtime rejects SKIP_RESULT.diagnostics that is an array as a protocol violation', async () => {
+    const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+    const { asPort, rsPort } = server;
+    const { ownerToken, connectorId } = await setupConnector(server, asPort);
+
+    const { connectorPath, cleanup } = createTestConnector([
+      { type: 'SKIP_RESULT', stream: 'items', reason: 'export_no_download', message: 'array diag', diagnostics: [1, 2, 3] },
+      { type: 'DONE', status: 'succeeded', records_emitted: 0 },
+    ]);
+
+    try {
+      await assert.rejects(
+        runConnector({
+          connectorPath,
+          connectorId,
+          ownerToken,
+          manifest: MINIMAL_MANIFEST,
+          state: null,
+          collectionMode: 'full_refresh',
+          persistState: true,
+          rsUrl: `http://localhost:${rsPort}`,
+          onInteraction: async () => ({}),
+        }),
+        /invalid SKIP_RESULT\.diagnostics/i,
+      );
+    } finally {
+      cleanup();
+      await closeServer(server);
+    }
+  });
+
   await t.test('runtime reports known gaps for partial flush then failed terminal state', async () => {
     const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
     const { asPort, rsPort } = server;
