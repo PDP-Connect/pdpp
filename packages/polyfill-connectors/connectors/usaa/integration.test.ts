@@ -359,6 +359,8 @@ test("emitExportFailure: artifact diagnostics are summarized when page diagnosti
   assert.match(skip.message, /export_artifact_wait_failed/);
   assert.match(skip.message, /page=unavailable/);
   assert.match(skip.message, /artifact cdpReady=true candidates=2 matched=0 bodyErrors=1/);
+  assert.match(skip.message, /firstCandidate=cdp,200,not_expected_body,128B,text\/plain/);
+  assert.match(skip.message, /url=https:\/\/www.usaa.com\/export/);
   assert.match(skip.message, /body_response_timeout/);
 });
 

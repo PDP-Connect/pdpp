@@ -134,6 +134,7 @@ const NON_STATEMENT_TITLE_RE = /(TERMS\b|AGREEMENT\b|NOTICE\b|DISCLOSURE\b|CONDI
 
 /** Per-run dependency bag for the emit-path helpers. */
 export interface EmitDeps {
+  capture?: BrowserCollectContext["capture"];
   emit: EmitFn;
   emitRecord: EmitRecordFn;
 }
@@ -274,7 +275,35 @@ function summarizeArtifactDiagnostics(diag: DiagnosticInfo): string | null {
   const matched = artifact.candidates.filter((candidate) => candidate.reason === "matched").length;
   const bodyErrors = artifact.candidates.filter((candidate) => candidate.reason === "body_error").length;
   const inspected = artifact.candidates.length;
-  return `artifact cdpReady=${artifact.cdpReady ? "true" : "false"} candidates=${inspected} matched=${matched} bodyErrors=${bodyErrors}`;
+  const parts = [
+    `artifact cdpReady=${artifact.cdpReady ? "true" : "false"} candidates=${inspected} matched=${matched} bodyErrors=${bodyErrors}`,
+  ];
+  if (artifact.cdpError) {
+    parts.push(`cdpError=${artifact.cdpError.slice(0, ID_TEXT_SNIP)}`);
+  }
+  const firstCandidate = artifact.candidates[0];
+  if (firstCandidate) {
+    const firstParts = [
+      firstCandidate.source,
+      String(firstCandidate.status),
+      firstCandidate.reason,
+      `${firstCandidate.bodyBytes ?? 0}B`,
+      firstCandidate.contentType || "no-content-type",
+    ];
+    const disposition = firstCandidate.contentDisposition.slice(0, 80);
+    if (disposition) {
+      firstParts.push(`disposition=${disposition}`);
+    }
+    const url = redactDiagnosticUrl(firstCandidate.url);
+    if (url) {
+      firstParts.push(`url=${url}`);
+    }
+    if (firstCandidate.bodyError) {
+      firstParts.push(`bodyError=${firstCandidate.bodyError.slice(0, ID_TEXT_SNIP)}`);
+    }
+    parts.push(`firstCandidate=${firstParts.join(",")}`);
+  }
+  return parts.join(" ");
 }
 
 function formatDiagnosticInfo(diag: DiagnosticInfo): string {
@@ -575,6 +604,13 @@ async function fillExportDateRange(page: Page, sinceDate: string, untilDate: str
   await politeDelay(EXPORT_STATE_DELAY_MS);
 }
 
+async function captureExportCheckpoint(page: Page, options: DriveExportOptions, suffix: string): Promise<void> {
+  if (!(options.capture && options.captureLabel)) {
+    return;
+  }
+  await options.capture.captureDom(page, `${options.captureLabel}-${suffix}`).catch((): undefined => undefined);
+}
+
 type ExportSubmitOutcome =
   | { buffer: Buffer; kind: "artifact"; suggestedFilename: string | null }
   | { kind: "artifact_failed"; artifact: BodyResponseDiagnostics; error: string }
@@ -682,13 +718,11 @@ async function submitExportAndAwait(page: Page): Promise<ExportSubmitOutcome> {
   }
 }
 
-async function driveExport(
-  page: Page,
-  accountUrl: string,
-  { sinceDate, untilDate, onDiagnostics }: DriveExportOptions
-): Promise<DriveExportResult> {
+async function driveExport(page: Page, accountUrl: string, options: DriveExportOptions): Promise<DriveExportResult> {
+  const { sinceDate, untilDate, onDiagnostics } = options;
   const located = await locateExportPage(page, accountUrl);
   if (!located) {
+    await captureExportCheckpoint(page, options, "no-export-affordance");
     if (onDiagnostics) {
       const diag = await capturePageDiagnostics(page);
       onDiagnostics({ phase: "no_export_affordance", diag });
@@ -698,15 +732,18 @@ async function driveExport(
 
   const dialogOpen = await openExportDialog(page, located, onDiagnostics);
   if (!dialogOpen) {
+    await captureExportCheckpoint(page, options, "dialog-not-open");
     return { kind: "failed" };
   }
 
   await fillExportDateRange(page, sinceDate, untilDate);
+  await captureExportCheckpoint(page, options, "before-submit");
 
   const tempDir = mkdtempSync(join(tmpdir(), "usaa-export-"));
   const outcome = await submitExportAndAwait(page);
   if (outcome.kind === "empty" || outcome.kind === "dialog_error") {
     rmSync(tempDir, { recursive: true, force: true });
+    await captureExportCheckpoint(page, options, outcome.kind === "empty" ? "source-empty" : "dialog-error");
     let dialogDiag: PageDiagnostics | null = null;
     if (outcome.kind === "dialog_error" && onDiagnostics) {
       dialogDiag = await capturePageDiagnostics(page);
@@ -722,6 +759,7 @@ async function driveExport(
   }
   if (outcome.kind === "artifact_failed") {
     rmSync(tempDir, { recursive: true, force: true });
+    await captureExportCheckpoint(page, options, "artifact-failed");
     if (onDiagnostics) {
       const diag = await capturePageDiagnostics(page);
       onDiagnostics({ artifact: outcome.artifact, diag, error: outcome.error, phase: "export_artifact_wait_failed" });
@@ -799,6 +837,11 @@ type AttemptOutcome =
   | { kind: "session_dead" }
   | { kind: "success"; csvPath: string };
 
+function exportCaptureLabel(a: DashboardAccount, sinceDate: string, untilDate: string): string {
+  const account = `${a.name ?? a.account_type}-${a.last_four ?? "unknown"}`;
+  return `transaction-export-${account}-${sinceDate}-to-${untilDate}`;
+}
+
 /** Run one iteration of the backfill ladder: drive export + translate errors. */
 async function runSingleLadderAttempt({
   deps,
@@ -821,6 +864,8 @@ async function runSingleLadderAttempt({
       sinceDate,
       untilDate: todayIso,
       accountType: a.account_type,
+      capture: deps.capture ?? null,
+      captureLabel: exportCaptureLabel(a, sinceDate, todayIso),
       onDiagnostics,
     });
     if (exportResult.kind === "artifact") {
@@ -1412,7 +1457,7 @@ if (isMainModule(import.meta.url)) {
     },
     async collect(ctx: BrowserCollectContext): Promise<void> {
       const { state, requested, context, page, emit, emitRecord, progress, capture, sendInteraction, emittedAt } = ctx;
-      const deps: EmitDeps = { emit, emitRecord };
+      const deps: EmitDeps = { capture, emit, emitRecord };
 
       // ACCOUNTS — extract from dashboard; emit optionally based on requested.
       await progress("Extracting accounts from dashboard");

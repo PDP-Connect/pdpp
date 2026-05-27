@@ -5,6 +5,7 @@
 import type { Locator } from "playwright";
 import type { BodyResponseDiagnostics } from "../../src/browser-artifact-response.ts";
 import type { RecordData } from "../../src/connector-runtime.ts";
+import type { CaptureSession } from "../../src/fixture-capture.ts";
 
 // ─── Statements index row ────────────────────────────────────────────────
 
@@ -181,6 +182,8 @@ export interface TransactionsPriorState {
 
 export interface DriveExportOptions {
   accountType?: string;
+  capture?: CaptureSession | null;
+  captureLabel?: string;
   onDiagnostics?: (info: DiagnosticInfo) => void;
   sinceDate: string;
   untilDate: string;
