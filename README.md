@@ -75,7 +75,7 @@ Run the same live reference stack from public Docker images:
 cp .env.docker.example .env.docker
 # edit .env.docker and set PDPP_OWNER_PASSWORD for a protected dashboard
 docker compose --env-file .env.docker pull
-docker compose --env-file .env.docker up -d
+pnpm docker:reference:quick
 ```
 
 Owner sessions are finite signed cookies. The default placeholder session lasts
@@ -112,7 +112,7 @@ as `1.2`, and `latest`. For durable self-hosting, prefer an exact version,
 instead of pulling public images, run:
 
 ```bash
-docker compose --env-file .env.docker up --build
+pnpm docker:reference:up
 ```
 
 #### Postgres service (profile-gated)

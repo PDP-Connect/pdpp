@@ -395,7 +395,7 @@ cp .env.docker.example .env.docker
 # (also gates every `_ref` read + mutation so deployed reference instances
 #  never expose grants/runs/timelines/connectors/diagnostics unauthenticated)
 docker compose --env-file .env.docker pull
-docker compose --env-file .env.docker up -d
+pnpm docker:reference:quick
 ```
 
 Open `http://localhost:${PDPP_WEB_PORT:-3002}` for the browser-facing reference origin. The
@@ -405,17 +405,19 @@ Compose stack runs:
 - `web` — the Next app on container `:3000`, mapped to host `${PDPP_WEB_PORT:-3002}` by default,
   proxying the AS/RS in composed mode
 
-To test the owner-present n.eko interaction-streaming backend, add the n.eko
-Compose overlay:
+To test the owner-present n.eko interaction-streaming backend, use the
+reference-stack wrapper. It always includes the n.eko Compose overlay and the
+`neko-dynamic` profile, then verifies that the running `reference` container
+received the managed browser-surface configuration:
 
 ```bash
 pnpm docker:neko
 ```
 
-or directly:
+or, for the same stack without rebuilding images:
 
 ```bash
-docker compose --env-file .env.docker -f docker-compose.yml -f docker-compose.neko.yml up --build
+pnpm docker:reference:quick
 ```
 
 Then open `http://localhost:${PDPP_WEB_PORT:-3002}/dashboard/stream-playground?backend=neko`.
@@ -523,13 +525,13 @@ volumes in place:
 
 ```bash
 docker compose --env-file .env.docker pull
-docker compose --env-file .env.docker up -d
+pnpm docker:reference:quick
 ```
 
 To build from the current local checkout instead of pulling public images:
 
 ```bash
-docker compose --env-file .env.docker up --build
+pnpm docker:reference:up
 ```
 
 The `.git` directory is excluded from the Docker build context, so the
