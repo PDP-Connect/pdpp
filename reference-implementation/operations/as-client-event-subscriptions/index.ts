@@ -79,22 +79,37 @@ export interface QueuedEventForEnqueue {
   readonly nextAttemptAt: string;
 }
 
+/**
+ * Persistence interface for client event subscriptions.
+ *
+ * Every method returns a Promise so the operation layer can run uniformly
+ * against either the SQLite-backed store (`server/stores/client-event-
+ * subscription-store.ts`, sync under the hood, resolved Promises) or the
+ * Postgres-backed store (`postgres-client-event-subscription-store.ts`,
+ * real async via `postgresQuery`). The operation layer awaits everything
+ * so it works with both.
+ */
 export interface ClientEventSubscriptionStore {
-  insertSubscription(row: SubscriptionRow): void;
-  getSubscriptionById(id: string): SubscriptionRow | null;
-  listSubscriptionsByClient(clientId: string): SubscriptionRow[];
+  insertSubscription(row: SubscriptionRow): Promise<void> | void;
+  getSubscriptionById(id: string): Promise<SubscriptionRow | null> | SubscriptionRow | null;
+  listSubscriptionsByClient(clientId: string): Promise<SubscriptionRow[]> | SubscriptionRow[];
   updateStatus(
     id: string,
     status: SubscriptionStatus,
     updatedAt: string,
     disabledAt: string | null,
     disabledReason: string | null,
-  ): void;
-  updateSecret(id: string, secretHash: string, secretText: string, updatedAt: string): void;
-  deleteSubscription(id: string): void;
-  enqueueEvent(event: QueuedEventForEnqueue): void;
-  dropQueuedForSubscription(id: string): void;
-  listSubscriptionsByGrant(grantId: string): SubscriptionRow[];
+  ): Promise<void> | void;
+  updateSecret(
+    id: string,
+    secretHash: string,
+    secretText: string,
+    updatedAt: string,
+  ): Promise<void> | void;
+  deleteSubscription(id: string): Promise<void> | void;
+  enqueueEvent(event: QueuedEventForEnqueue): Promise<void> | void;
+  dropQueuedForSubscription(id: string): Promise<void> | void;
+  listSubscriptionsByGrant(grantId: string): Promise<SubscriptionRow[]> | SubscriptionRow[];
 }
 
 export interface CreateSubscriptionInput {
@@ -163,10 +178,10 @@ export interface ClientEventSubscriptionDependencies {
   readonly nowIso: () => string;
 }
 
-export function executeCreateSubscription(
+export async function executeCreateSubscription(
   input: CreateSubscriptionInput,
   deps: ClientEventSubscriptionDependencies,
-): CreateSubscriptionOutput {
+): Promise<CreateSubscriptionOutput> {
   const callback = validateCallbackUrl(input.callbackUrl);
   const scope = narrowScope(input.actor, input.filters);
   const subscriptionId = newSubscriptionId();
@@ -190,9 +205,9 @@ export function executeCreateSubscription(
     disabled_at: null,
     disabled_reason: null,
   };
-  deps.store.insertSubscription(row);
+  await deps.store.insertSubscription(row);
   const verifyEvent = buildVerifyEvent(subscriptionId, challenge, now);
-  enqueue(deps, verifyEvent, now);
+  await enqueue(deps, verifyEvent, now);
   return {
     subscriptionId,
     secret,
@@ -202,22 +217,38 @@ export function executeCreateSubscription(
   };
 }
 
-function enqueue(
+/**
+ * Canonical, dereferenceable URL used as the CloudEvents `source` for every
+ * envelope we emit. Clients can fetch this path on the resource server to
+ * see the subscription's current state. The constant lives next to the
+ * envelope writer so the wire shape and the route both update together.
+ *
+ * Mount point: `buildRsApp` in `server/index.js`. Advertised in the resource
+ * server's protected-resource metadata as a `client_event_subscriptions`
+ * RI extension capability.
+ */
+export const SUBSCRIPTION_RESOURCE_PATH = "/v1/event-subscriptions";
+
+function eventSource(subscriptionId: string): string {
+  return `${SUBSCRIPTION_RESOURCE_PATH}/${subscriptionId}`;
+}
+
+async function enqueue(
   deps: ClientEventSubscriptionDependencies,
   event: DerivedEvent,
   nowIso: string,
-): void {
+): Promise<void> {
   const eventId = newEventId();
   const payload = {
     specversion: "1.0-pdpp",
     id: eventId,
     type: event.type,
-    source: `/_ref/client-event-subscriptions/${event.subscriptionId}`,
+    source: eventSource(event.subscriptionId),
     subscription_id: event.subscriptionId,
     occurred_at: event.occurredAt,
     data: event.data,
   };
-  deps.store.enqueueEvent({
+  await deps.store.enqueueEvent({
     subscriptionId: event.subscriptionId,
     eventId,
     eventType: event.type,
@@ -253,12 +284,12 @@ function projectRow(row: SubscriptionRow): ProjectedSubscription {
   };
 }
 
-function loadOwnedSubscription(
+async function loadOwnedSubscription(
   deps: ClientEventSubscriptionDependencies,
   actor: BearerActor,
   subscriptionId: string,
-): SubscriptionRow {
-  const row = deps.store.getSubscriptionById(subscriptionId);
+): Promise<SubscriptionRow> {
+  const row = await deps.store.getSubscriptionById(subscriptionId);
   if (!row || row.client_id !== actor.clientId || row.grant_id !== actor.grantId) {
     throw new ClientEventSubscriptionError("not_found", "subscription not found", 404);
   }
@@ -268,20 +299,19 @@ function loadOwnedSubscription(
   return row;
 }
 
-export function executeGetSubscription(
+export async function executeGetSubscription(
   actor: BearerActor,
   subscriptionId: string,
   deps: ClientEventSubscriptionDependencies,
-): ProjectedSubscription {
-  return projectRow(loadOwnedSubscription(deps, actor, subscriptionId));
+): Promise<ProjectedSubscription> {
+  return projectRow(await loadOwnedSubscription(deps, actor, subscriptionId));
 }
 
-export function executeListSubscriptions(
+export async function executeListSubscriptions(
   actor: BearerActor,
   deps: ClientEventSubscriptionDependencies,
-): { readonly data: ReadonlyArray<ProjectedSubscription> } {
-  const rows = deps.store
-    .listSubscriptionsByClient(actor.clientId)
+): Promise<{ readonly data: ReadonlyArray<ProjectedSubscription> }> {
+  const rows = (await deps.store.listSubscriptionsByClient(actor.clientId))
     .filter((row) => row.grant_id === actor.grantId && row.status !== "deleted");
   return { data: rows.map(projectRow) };
 }
@@ -296,23 +326,23 @@ export interface UpdateSubscriptionOutput {
   readonly secret?: string;
 }
 
-export function executeUpdateSubscription(
+export async function executeUpdateSubscription(
   actor: BearerActor,
   subscriptionId: string,
   input: UpdateSubscriptionInput,
   deps: ClientEventSubscriptionDependencies,
-): UpdateSubscriptionOutput {
-  const row = loadOwnedSubscription(deps, actor, subscriptionId);
+): Promise<UpdateSubscriptionOutput> {
+  const row = await loadOwnedSubscription(deps, actor, subscriptionId);
   const now = deps.nowIso();
   let newSecretValue: string | undefined;
   if (input.rotateSecret) {
     newSecretValue = newSecret();
-    deps.store.updateSecret(row.subscription_id, hashSecret(newSecretValue), newSecretValue, now);
+    await deps.store.updateSecret(row.subscription_id, hashSecret(newSecretValue), newSecretValue, now);
   }
   if (typeof input.enabled === "boolean") {
     if (input.enabled) {
       if (row.status === "disabled" || row.status === "disabled_failure") {
-        deps.store.updateStatus(row.subscription_id, "active", now, null, null);
+        await deps.store.updateStatus(row.subscription_id, "active", now, null, null);
       } else if (row.status === "disabled_revoked") {
         throw new ClientEventSubscriptionError(
           "grant_revoked",
@@ -321,10 +351,10 @@ export function executeUpdateSubscription(
         );
       }
     } else if (row.status === "active" || row.status === "pending_verification") {
-      deps.store.updateStatus(row.subscription_id, "disabled", now, now, "client_disabled");
+      await deps.store.updateStatus(row.subscription_id, "disabled", now, now, "client_disabled");
     }
   }
-  const updated = deps.store.getSubscriptionById(row.subscription_id);
+  const updated = await deps.store.getSubscriptionById(row.subscription_id);
   if (!updated) throw new ClientEventSubscriptionError("not_found", "subscription not found", 404);
   return {
     subscription: projectRow(updated),
@@ -332,23 +362,23 @@ export function executeUpdateSubscription(
   };
 }
 
-export function executeDeleteSubscription(
+export async function executeDeleteSubscription(
   actor: BearerActor,
   subscriptionId: string,
   deps: ClientEventSubscriptionDependencies,
-): void {
-  const row = loadOwnedSubscription(deps, actor, subscriptionId);
+): Promise<void> {
+  const row = await loadOwnedSubscription(deps, actor, subscriptionId);
   const now = deps.nowIso();
-  deps.store.updateStatus(row.subscription_id, "deleted", now, now, "deleted");
-  deps.store.dropQueuedForSubscription(row.subscription_id);
+  await deps.store.updateStatus(row.subscription_id, "deleted", now, now, "deleted");
+  await deps.store.dropQueuedForSubscription(row.subscription_id);
 }
 
-export function executeEnqueueTestEvent(
+export async function executeEnqueueTestEvent(
   actor: BearerActor,
   subscriptionId: string,
   deps: ClientEventSubscriptionDependencies,
-): { readonly eventId: string } {
-  const row = loadOwnedSubscription(deps, actor, subscriptionId);
+): Promise<{ readonly eventId: string }> {
+  const row = await loadOwnedSubscription(deps, actor, subscriptionId);
   if (row.status !== "active" && row.status !== "pending_verification") {
     throw new ClientEventSubscriptionError(
       "invalid_state",
@@ -363,12 +393,12 @@ export function executeEnqueueTestEvent(
     specversion: "1.0-pdpp",
     id: eventId,
     type: event.type,
-    source: `/_ref/client-event-subscriptions/${event.subscriptionId}`,
+    source: eventSource(event.subscriptionId),
     subscription_id: event.subscriptionId,
     occurred_at: event.occurredAt,
     data: event.data,
   };
-  deps.store.enqueueEvent({
+  await deps.store.enqueueEvent({
     subscriptionId: row.subscription_id,
     eventId,
     eventType: event.type,
@@ -385,11 +415,11 @@ export function executeEnqueueTestEvent(
  * queue rows, and emits at most one grant.revoked envelope per previously
  * active subscription.
  */
-export function executeApplyGrantRevoke(
+export async function executeApplyGrantRevoke(
   grantId: string,
   deps: ClientEventSubscriptionDependencies,
-): { readonly affected: number; readonly notified: number } {
-  const rows = deps.store.listSubscriptionsByGrant(grantId);
+): Promise<{ readonly affected: number; readonly notified: number }> {
+  const rows = await deps.store.listSubscriptionsByGrant(grantId);
   const now = deps.nowIso();
   let notified = 0;
   let affected = 0;
@@ -397,8 +427,8 @@ export function executeApplyGrantRevoke(
     if (row.status === "deleted" || row.status === "disabled_revoked") continue;
     affected += 1;
     const wasActive = row.status === "active";
-    deps.store.dropQueuedForSubscription(row.subscription_id);
-    deps.store.updateStatus(row.subscription_id, "disabled_revoked", now, now, "grant_revoked");
+    await deps.store.dropQueuedForSubscription(row.subscription_id);
+    await deps.store.updateStatus(row.subscription_id, "disabled_revoked", now, now, "grant_revoked");
     if (wasActive) {
       const event = buildGrantRevokedEvent(row.subscription_id, now);
       const eventId = newEventId();
@@ -406,12 +436,12 @@ export function executeApplyGrantRevoke(
         specversion: "1.0-pdpp",
         id: eventId,
         type: event.type,
-        source: `/_ref/client-event-subscriptions/${event.subscriptionId}`,
+        source: eventSource(event.subscriptionId),
         subscription_id: event.subscriptionId,
         occurred_at: event.occurredAt,
         data: event.data,
       };
-      deps.store.enqueueEvent({
+      await deps.store.enqueueEvent({
         subscriptionId: row.subscription_id,
         eventId,
         eventType: event.type,
@@ -426,31 +456,31 @@ export function executeApplyGrantRevoke(
 }
 
 /** Verification handshake helpers. Called by the delivery worker. */
-export function executeVerificationOutcome(
+export async function executeVerificationOutcome(
   subscriptionId: string,
   outcome: "verified" | "failed",
   deps: ClientEventSubscriptionDependencies,
-): SubscriptionRow {
-  const row = deps.store.getSubscriptionById(subscriptionId);
+): Promise<SubscriptionRow> {
+  const row = await deps.store.getSubscriptionById(subscriptionId);
   if (!row) throw new ClientEventSubscriptionError("not_found", "subscription not found", 404);
   const now = deps.nowIso();
   if (outcome === "verified" && row.status === "pending_verification") {
-    deps.store.updateStatus(row.subscription_id, "active", now, null, null);
+    await deps.store.updateStatus(row.subscription_id, "active", now, null, null);
   } else if (outcome === "failed") {
-    deps.store.updateStatus(row.subscription_id, "pending_verification", now, null, null);
+    await deps.store.updateStatus(row.subscription_id, "pending_verification", now, null, null);
   }
-  return deps.store.getSubscriptionById(subscriptionId) as SubscriptionRow;
+  return (await deps.store.getSubscriptionById(subscriptionId)) as SubscriptionRow;
 }
 
-export function executeRecordDeliveryFailure(
+export async function executeRecordDeliveryFailure(
   subscriptionId: string,
   deps: ClientEventSubscriptionDependencies,
-): void {
-  const row = deps.store.getSubscriptionById(subscriptionId);
+): Promise<void> {
+  const row = await deps.store.getSubscriptionById(subscriptionId);
   if (!row) return;
   if (row.status === "active" || row.status === "pending_verification") {
     const now = deps.nowIso();
-    deps.store.updateStatus(row.subscription_id, "disabled_failure", now, now, "delivery_failed");
-    deps.store.dropQueuedForSubscription(row.subscription_id);
+    await deps.store.updateStatus(row.subscription_id, "disabled_failure", now, now, "delivery_failed");
+    await deps.store.dropQueuedForSubscription(row.subscription_id);
   }
 }

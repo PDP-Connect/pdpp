@@ -104,16 +104,16 @@ export function createDeliveryWorker(opts: DeliveryWorkerOptions = {}): Delivery
     const attemptedAt = new Date(nowMs()).toISOString();
 
     if (outcome.kind === "delivered" || outcome.kind === "verified") {
-      insertAttempt(row.queue_id, attemptedAt, outcome.statusCode, true, outcome.latencyMs, null, outcome.bodyText);
-      updateQueueAttempt(row.queue_id, row.attempt_count + 1, attemptedAt, "delivered", null);
+      await insertAttempt(row.queue_id, attemptedAt, outcome.statusCode, true, outcome.latencyMs, null, outcome.bodyText);
+      await updateQueueAttempt(row.queue_id, row.attempt_count + 1, attemptedAt, "delivered", null);
       if (outcome.kind === "verified") {
-        executeVerificationOutcome(row.subscription_id, "verified", {
+        await executeVerificationOutcome(row.subscription_id, "verified", {
           store,
           nowIso: () => attemptedAt,
         });
       }
     } else if (outcome.kind === "retry") {
-      insertAttempt(
+      await insertAttempt(
         row.queue_id,
         attemptedAt,
         outcome.statusCode,
@@ -122,9 +122,9 @@ export function createDeliveryWorker(opts: DeliveryWorkerOptions = {}): Delivery
         outcome.error,
         outcome.bodyText,
       );
-      updateQueueAttempt(row.queue_id, outcome.attemptCount, outcome.nextAttemptIso, "pending", outcome.error);
+      await updateQueueAttempt(row.queue_id, outcome.attemptCount, outcome.nextAttemptIso, "pending", outcome.error);
     } else {
-      insertAttempt(
+      await insertAttempt(
         row.queue_id,
         attemptedAt,
         outcome.statusCode,
@@ -133,8 +133,8 @@ export function createDeliveryWorker(opts: DeliveryWorkerOptions = {}): Delivery
         outcome.error,
         outcome.bodyText,
       );
-      updateQueueAttempt(row.queue_id, outcome.attemptCount, attemptedAt, "final_failure", outcome.error);
-      executeRecordDeliveryFailure(row.subscription_id, {
+      await updateQueueAttempt(row.queue_id, outcome.attemptCount, attemptedAt, "final_failure", outcome.error);
+      await executeRecordDeliveryFailure(row.subscription_id, {
         store,
         nowIso: () => attemptedAt,
       });
@@ -146,18 +146,18 @@ export function createDeliveryWorker(opts: DeliveryWorkerOptions = {}): Delivery
     if (inFlight) return { attempted: 0, outcomes: [] };
     inFlight = true;
     try {
-      const due = claimDueQueue(new Date(nowMs()).toISOString());
+      const due = await claimDueQueue(new Date(nowMs()).toISOString());
       const outcomes: DeliveryOutcome[] = [];
       for (const row of due) {
         // Skip rows whose subscription is no longer eligible. The verify event
         // is allowed through while the subscription is still
         // `pending_verification`.
         if (row.subscription_status === "deleted") {
-          updateQueueAttempt(row.queue_id, row.attempt_count, new Date(nowMs()).toISOString(), "dropped", "subscription_inactive");
+          await updateQueueAttempt(row.queue_id, row.attempt_count, new Date(nowMs()).toISOString(), "dropped", "subscription_inactive");
           continue;
         }
         if (row.subscription_status === "disabled_revoked" && row.event_type !== "pdpp.grant.revoked") {
-          updateQueueAttempt(row.queue_id, row.attempt_count, new Date(nowMs()).toISOString(), "dropped", "subscription_revoked");
+          await updateQueueAttempt(row.queue_id, row.attempt_count, new Date(nowMs()).toISOString(), "dropped", "subscription_revoked");
           continue;
         }
         if (
@@ -170,7 +170,7 @@ export function createDeliveryWorker(opts: DeliveryWorkerOptions = {}): Delivery
           (row.subscription_status === "disabled" || row.subscription_status === "disabled_failure") &&
           row.event_type !== "pdpp.subscription.verify"
         ) {
-          updateQueueAttempt(row.queue_id, row.attempt_count, new Date(nowMs()).toISOString(), "dropped", "subscription_disabled");
+          await updateQueueAttempt(row.queue_id, row.attempt_count, new Date(nowMs()).toISOString(), "dropped", "subscription_disabled");
           continue;
         }
         outcomes.push(await processOne(row));

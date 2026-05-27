@@ -182,7 +182,7 @@ test('client event subscriptions deliver signed hints end-to-end', async () => {
     const clientToken = await approveClientGrant(asUrl, connectorId, 'top_artists');
 
     // Create subscription
-    const createResp = await fetchJson(`${asUrl}/_ref/client-event-subscriptions`, {
+    const createResp = await fetchJson(`${rsUrl}/v1/event-subscriptions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${clientToken}` },
       body: JSON.stringify({ callback_url: receiver.url }),
@@ -206,14 +206,14 @@ test('client event subscriptions deliver signed hints end-to-end', async () => {
     await new Promise((r) => setTimeout(r, 25));
 
     // Confirm subscription transitioned to active.
-    const subBefore = await fetchJson(`${asUrl}/_ref/client-event-subscriptions/${subscription_id}`, {
+    const subBefore = await fetchJson(`${rsUrl}/v1/event-subscriptions/${subscription_id}`, {
       headers: { Authorization: `Bearer ${clientToken}` },
     });
     assert.equal(subBefore.body.status, 'active');
 
     // Trigger a deterministic test event.
     const testResp = await fetchJson(
-      `${asUrl}/_ref/client-event-subscriptions/${subscription_id}/test-event`,
+      `${rsUrl}/v1/event-subscriptions/${subscription_id}/test-event`,
       {
         method: 'POST',
         headers: { Authorization: `Bearer ${clientToken}` },
@@ -286,6 +286,7 @@ test('grant revoke disables subscription and notifies client', async () => {
     dbPath: ':memory:',
   });
   const asUrl = `http://localhost:${server.asPort}`;
+  const rsUrl = `http://localhost:${server.rsPort}`;
   const receiver = await startReceiver();
 
   try {
@@ -301,7 +302,7 @@ test('grant revoke disables subscription and notifies client', async () => {
     const ownerToken = await issueOwnerToken(asUrl);
     const clientToken = await approveClientGrant(asUrl, connectorId, 'top_artists');
 
-    const create = await fetchJson(`${asUrl}/_ref/client-event-subscriptions`, {
+    const create = await fetchJson(`${rsUrl}/v1/event-subscriptions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${clientToken}` },
       body: JSON.stringify({ callback_url: receiver.url }),
@@ -313,7 +314,7 @@ test('grant revoke disables subscription and notifies client', async () => {
     await new Promise((r) => setTimeout(r, 25));
 
     // Extract grant_id via the GET projection.
-    const sub = (await fetchJson(`${asUrl}/_ref/client-event-subscriptions/${subscription_id}`, {
+    const sub = (await fetchJson(`${rsUrl}/v1/event-subscriptions/${subscription_id}`, {
       headers: { Authorization: `Bearer ${clientToken}` },
     })).body;
     const grantId = sub.grant_id;
@@ -339,9 +340,42 @@ test('grant revoke disables subscription and notifies client', async () => {
   }
 });
 
+test('discovery: RS protected-resource metadata advertises client_event_subscriptions', async () => {
+  const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+  const rsUrl = `http://localhost:${server.rsPort}`;
+  try {
+    const resp = await fetchJson(`${rsUrl}/.well-known/oauth-protected-resource`);
+    assert.equal(resp.status, 200);
+    const cap = resp.body?.capabilities?.client_event_subscriptions;
+    assert.ok(cap, 'client_event_subscriptions capability must be advertised');
+    assert.equal(cap.supported, true);
+    assert.equal(cap.stability, 'reference_extension');
+    assert.equal(cap.endpoint, '/v1/event-subscriptions');
+    assert.equal(cap.transport, 'https_webhook');
+    assert.equal(cap.signing.algorithm, 'HMAC-SHA256');
+    assert.equal(cap.signing.header, 'PDPP-Event-Signature');
+    assert.equal(cap.signing.signed_payload, '<timestamp>.<body>');
+    assert.ok(Array.isArray(cap.event_types));
+    assert.ok(cap.event_types.includes('pdpp.records.changed'));
+    assert.ok(cap.event_types.includes('pdpp.subscription.verify'));
+    assert.ok(cap.event_types.includes('pdpp.subscription.test'));
+    assert.ok(cap.event_types.includes('pdpp.grant.revoked'));
+    assert.equal(cap.delivery.at_least_once, true);
+    assert.equal(cap.delivery.after_commit, true);
+    assert.equal(cap.delivery.max_attempts, 6);
+    assert.equal(cap.verification.handshake, 'post_with_challenge_echo');
+    assert.equal(cap.hint_cursor.cursor_field, 'data.changes_since');
+    assert.equal(cap.callback_url.https_required, true);
+    assert.equal(cap.envelope.no_record_bodies, true);
+  } finally {
+    await closeServer(server);
+  }
+});
+
 test('owner bearer cannot list a client subscription', async () => {
   const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
   const asUrl = `http://localhost:${server.asPort}`;
+  const rsUrl = `http://localhost:${server.rsPort}`;
   const receiver = await startReceiver();
   try {
     const spotifyManifest = JSON.parse(
@@ -354,12 +388,12 @@ test('owner bearer cannot list a client subscription', async () => {
     });
     const ownerToken = await issueOwnerToken(asUrl);
     const clientToken = await approveClientGrant(asUrl, spotifyManifest.connector_id, 'top_artists');
-    await fetchJson(`${asUrl}/_ref/client-event-subscriptions`, {
+    await fetchJson(`${rsUrl}/v1/event-subscriptions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${clientToken}` },
       body: JSON.stringify({ callback_url: receiver.url }),
     });
-    const ownerListResp = await fetch(`${asUrl}/_ref/client-event-subscriptions`, {
+    const ownerListResp = await fetch(`${rsUrl}/v1/event-subscriptions`, {
       headers: { Authorization: `Bearer ${ownerToken}` },
     });
     assert.equal(ownerListResp.status, 403);

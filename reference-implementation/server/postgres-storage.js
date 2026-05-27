@@ -977,6 +977,67 @@ export async function bootstrapPostgresSchema() {
       );
       CREATE INDEX IF NOT EXISTS idx_pg_retained_size_top_rows_lookup
         ON retained_size_top_rows(scope, measure, total_retained_bytes DESC, rank ASC);
+
+      -- Outbound client event subscriptions (RI extension, grant-scoped).
+      -- Mirrors the SQLite schema in db.js; the Postgres-backed store applies
+      -- the same operation semantics over pg.
+      CREATE TABLE IF NOT EXISTS client_event_subscriptions (
+        subscription_id        TEXT PRIMARY KEY,
+        grant_id               TEXT NOT NULL,
+        client_id              TEXT NOT NULL,
+        subject_id             TEXT NOT NULL,
+        callback_url           TEXT NOT NULL,
+        secret_hash            TEXT NOT NULL,
+        secret_text            TEXT NOT NULL,
+        scope_json             JSONB NOT NULL,
+        status                 TEXT NOT NULL CHECK (status IN (
+          'pending_verification',
+          'active',
+          'disabled',
+          'disabled_failure',
+          'disabled_revoked',
+          'deleted'
+        )),
+        verification_challenge TEXT,
+        created_at             TEXT NOT NULL,
+        updated_at             TEXT NOT NULL,
+        disabled_at            TEXT,
+        disabled_reason        TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_pg_client_event_subscriptions_client
+        ON client_event_subscriptions(client_id, status);
+      CREATE INDEX IF NOT EXISTS idx_pg_client_event_subscriptions_grant
+        ON client_event_subscriptions(grant_id);
+
+      CREATE TABLE IF NOT EXISTS client_event_queue (
+        queue_id        BIGSERIAL PRIMARY KEY,
+        subscription_id TEXT NOT NULL,
+        event_id        TEXT NOT NULL UNIQUE,
+        event_type      TEXT NOT NULL,
+        payload_json    JSONB NOT NULL,
+        enqueued_at     TEXT NOT NULL,
+        next_attempt_at TEXT NOT NULL,
+        attempt_count   INTEGER NOT NULL DEFAULT 0,
+        status          TEXT NOT NULL CHECK (status IN ('pending', 'delivered', 'final_failure', 'dropped')),
+        last_error      TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_pg_client_event_queue_due
+        ON client_event_queue(status, next_attempt_at);
+      CREATE INDEX IF NOT EXISTS idx_pg_client_event_queue_subscription
+        ON client_event_queue(subscription_id, status);
+
+      CREATE TABLE IF NOT EXISTS client_event_attempts (
+        attempt_id       BIGSERIAL PRIMARY KEY,
+        queue_id         BIGINT NOT NULL,
+        attempted_at     TEXT NOT NULL,
+        status_code      INTEGER,
+        ok               INTEGER NOT NULL DEFAULT 0,
+        latency_ms       INTEGER,
+        error            TEXT,
+        response_snippet TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_pg_client_event_attempts_queue
+        ON client_event_attempts(queue_id, attempt_id);
     `);
     await migratePostgresSpineSourceColumns(client);
     await migratePostgresDeviceExporterColumns(client);

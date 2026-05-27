@@ -29,6 +29,7 @@ function withDefaults(overrides = {}) {
     buildDefaultHybridCapability: () => null,
     isHybridSuppressed: () => false,
     isNativeSingleSourceMode: () => false,
+    resolveClientEventSubscriptionsCapability: () => null,
     ...overrides,
   };
 }

@@ -689,6 +689,146 @@ export function buildHybridRetrievalCapability({
   };
 }
 
+// Builds the `client_event_subscriptions` capability advertisement
+// carried inside the resource-server metadata document. This is a
+// reference-implementation extension, NOT a Core PDPP capability —
+// other PDPP implementations are free to expose a different surface
+// until a Core change promotes one. The advertisement documents the
+// route, signing scheme, delivery semantics, supported event types,
+// and any client-visible limits so callers do not need out-of-band
+// docs to use the feature.
+//
+// Spec:
+//   openspec/changes/add-client-event-subscriptions/specs/
+//   reference-implementation-architecture/spec.md
+export interface ClientEventSubscriptionsCapabilityInput {
+  endpoint?: string;
+  supported?: boolean;
+}
+
+export interface ClientEventSubscriptionsCapability {
+  supported: true;
+  stability: "reference_extension";
+  endpoint: string;
+  // Subscriptions are reference-only. Cross-implementation
+  // standardization is future work.
+  scope: "reference_implementation";
+  transport: "https_webhook";
+  // CloudEvents-flavored body shape carried in the request body; the
+  // wire constants are owned by the operation/derivation layer.
+  envelope: {
+    specversion: "1.0-pdpp";
+    fields: readonly ["id", "type", "source", "subscription_id", "occurred_at", "data"];
+    no_record_bodies: true;
+  };
+  event_types: readonly [
+    "pdpp.subscription.verify",
+    "pdpp.subscription.test",
+    "pdpp.records.changed",
+    "pdpp.grant.revoked",
+  ];
+  signing: {
+    algorithm: "HMAC-SHA256";
+    header: "PDPP-Event-Signature";
+    timestamp_header: "PDPP-Event-Timestamp";
+    event_id_header: "PDPP-Event-Id";
+    subscription_id_header: "PDPP-Subscription-Id";
+    // signed value: `<unix-seconds>.<raw-body>` hashed under the
+    // per-subscription secret. Encoded as `sha256=<hex>` in the header.
+    signed_payload: "<timestamp>.<body>";
+    signature_encoding: "sha256=<hex>";
+  };
+  delivery: {
+    at_least_once: true;
+    after_commit: true;
+    coalescing: true;
+    retry_schedule_seconds: readonly [30, 120, 600, 3600, 21600, 86400];
+    max_attempts: 6;
+    dead_letter_state: "disabled_failure";
+    response_window_seconds: 10;
+  };
+  verification: {
+    handshake: "post_with_challenge_echo";
+    challenge_event_type: "pdpp.subscription.verify";
+  };
+  hint_cursor: {
+    cursor_field: "data.changes_since";
+    read_endpoint_template: "/v1/streams/{stream}/records?changes_since={cursor}";
+  };
+  // Reject non-HTTPS callbacks except for development loopback.
+  callback_url: {
+    https_required: true;
+    localhost_exception: true;
+  };
+  limits: {
+    callback_url_max_bytes: 2048;
+    response_snippet_capture_bytes: 512;
+  };
+}
+
+export function buildClientEventSubscriptionsCapability({
+  supported = true,
+  endpoint = "/v1/event-subscriptions",
+}: ClientEventSubscriptionsCapabilityInput = {}):
+  | ClientEventSubscriptionsCapability
+  | { supported: false } {
+  if (!supported) {
+    return { supported: false };
+  }
+  return {
+    supported: true,
+    stability: "reference_extension",
+    endpoint,
+    scope: "reference_implementation",
+    transport: "https_webhook",
+    envelope: {
+      specversion: "1.0-pdpp",
+      fields: ["id", "type", "source", "subscription_id", "occurred_at", "data"] as const,
+      no_record_bodies: true,
+    },
+    event_types: [
+      "pdpp.subscription.verify",
+      "pdpp.subscription.test",
+      "pdpp.records.changed",
+      "pdpp.grant.revoked",
+    ] as const,
+    signing: {
+      algorithm: "HMAC-SHA256",
+      header: "PDPP-Event-Signature",
+      timestamp_header: "PDPP-Event-Timestamp",
+      event_id_header: "PDPP-Event-Id",
+      subscription_id_header: "PDPP-Subscription-Id",
+      signed_payload: "<timestamp>.<body>",
+      signature_encoding: "sha256=<hex>",
+    },
+    delivery: {
+      at_least_once: true,
+      after_commit: true,
+      coalescing: true,
+      retry_schedule_seconds: [30, 120, 600, 3600, 21600, 86400] as const,
+      max_attempts: 6,
+      dead_letter_state: "disabled_failure",
+      response_window_seconds: 10,
+    },
+    verification: {
+      handshake: "post_with_challenge_echo",
+      challenge_event_type: "pdpp.subscription.verify",
+    },
+    hint_cursor: {
+      cursor_field: "data.changes_since",
+      read_endpoint_template: "/v1/streams/{stream}/records?changes_since={cursor}",
+    },
+    callback_url: {
+      https_required: true,
+      localhost_exception: true,
+    },
+    limits: {
+      callback_url_max_bytes: 2048,
+      response_snippet_capture_bytes: 512,
+    },
+  };
+}
+
 // Authorization-server metadata is the OAuth 2.0 / PDPP discovery
 // document. Optional fields are emitted only when supplied (or
 // non-empty for arrays); this matches the schema's

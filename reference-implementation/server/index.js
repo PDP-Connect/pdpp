@@ -17,6 +17,7 @@ import {
 } from './postgres-storage.js';
 import {
   buildAuthorizationServerMetadata,
+  buildClientEventSubscriptionsCapability,
   buildHybridRetrievalCapability,
   buildLexicalRetrievalCapability,
   buildProtectedResourceMetadata,
@@ -5969,7 +5970,7 @@ function buildAsApp(opts = {}) {
       // grant row has transitioned. Failures here MUST NOT leak through to
       // the revoke envelope or retroactively undo the revocation.
       try {
-        executeApplyGrantRevoke(req.params.grantId, {
+        await executeApplyGrantRevoke(req.params.grantId, {
           store: getDefaultClientEventSubscriptionStore(),
           nowIso: () => new Date().toISOString(),
         });
@@ -5985,142 +5986,11 @@ function buildAsApp(opts = {}) {
     }
   });
 
-  // ────────────────────────────────────────────────────────────────────────
-  // /_ref/client-event-subscriptions (reference-only outbound notifications)
-  // ────────────────────────────────────────────────────────────────────────
-  // This surface is reference-only and grant-scoped. Routes require an
-  // active client bearer; the persisted subscription stores the bearer's
-  // (client_id, grant_id, subject_id) so subsequent operations refuse
-  // bearers whose grant does not match. Endpoints are NOT advertised in
-  // public PDPP metadata.
-  function buildBearerActorFromTokenInfo(req) {
-    const ti = req.tokenInfo || {};
-    const grant = ti.grant || {};
-    const scope = {
-      source: grant.source,
-      streams: Array.isArray(grant.streams)
-        ? grant.streams.map((s) => ({
-            name: s.name,
-            ...(s.connection_id ? { connection_id: s.connection_id } : {}),
-            ...(s.resources ? { resources: s.resources } : {}),
-            ...(s.time_range ? { time_range: s.time_range } : {}),
-          }))
-        : [],
-    };
-    return {
-      clientId: ti.client_id || null,
-      grantId: ti.grant_id || null,
-      subjectId: ti.subject_id || null,
-      grantScope: scope,
-    };
-  }
-  const clientEventSubsDeps = () => ({
-    store: getDefaultClientEventSubscriptionStore(),
-    nowIso: () => new Date().toISOString(),
-  });
-  function handleClientEventSubError(res, err) {
-    if (err && err.name === 'ClientEventSubscriptionError') {
-      return pdppError(res, err.status || 400, err.code, err.message);
-    }
-    return handleError(res, err);
-  }
-
-  app.post('/_ref/client-event-subscriptions', requireToken, requireClient, async (req, res) => {
-    try {
-      const actor = buildBearerActorFromTokenInfo(req);
-      if (!actor.clientId || !actor.grantId) {
-        return pdppError(res, 403, 'grant_invalid', 'client subscription requires an active client grant');
-      }
-      const filters =
-        req.body && typeof req.body === 'object' && req.body.filters && typeof req.body.filters === 'object'
-          ? req.body.filters
-          : undefined;
-      const out = executeCreateSubscription(
-        {
-          actor,
-          callbackUrl: typeof req.body?.callback_url === 'string' ? req.body.callback_url : '',
-          filters,
-        },
-        clientEventSubsDeps(),
-      );
-      // Best-effort: fire the verification tick once so the handshake is
-      // visible to tests without waiting for the timer.
-      try {
-        await getDefaultDeliveryWorker().tick();
-      } catch { /* ignored */ }
-      res.status(201).json({
-        subscription_id: out.subscriptionId,
-        secret: out.secret,
-        status: out.status,
-        callback_url: out.callbackUrl,
-        created_at: out.createdAt,
-      });
-    } catch (err) {
-      handleClientEventSubError(res, err);
-    }
-  });
-
-  app.get('/_ref/client-event-subscriptions', requireToken, requireClient, async (req, res) => {
-    try {
-      const actor = buildBearerActorFromTokenInfo(req);
-      const out = executeListSubscriptions(actor, clientEventSubsDeps());
-      res.json(out);
-    } catch (err) {
-      handleClientEventSubError(res, err);
-    }
-  });
-
-  app.get('/_ref/client-event-subscriptions/:id', requireToken, requireClient, async (req, res) => {
-    try {
-      const actor = buildBearerActorFromTokenInfo(req);
-      const out = executeGetSubscription(actor, req.params.id, clientEventSubsDeps());
-      res.json(out);
-    } catch (err) {
-      handleClientEventSubError(res, err);
-    }
-  });
-
-  app.patch('/_ref/client-event-subscriptions/:id', requireToken, requireClient, async (req, res) => {
-    try {
-      const actor = buildBearerActorFromTokenInfo(req);
-      const body = req.body || {};
-      const out = executeUpdateSubscription(
-        actor,
-        req.params.id,
-        {
-          ...(typeof body.enabled === 'boolean' ? { enabled: body.enabled } : {}),
-          ...(body.rotate_secret === true ? { rotateSecret: true } : {}),
-        },
-        clientEventSubsDeps(),
-      );
-      res.json(out);
-    } catch (err) {
-      handleClientEventSubError(res, err);
-    }
-  });
-
-  app.delete('/_ref/client-event-subscriptions/:id', requireToken, requireClient, async (req, res) => {
-    try {
-      const actor = buildBearerActorFromTokenInfo(req);
-      executeDeleteSubscription(actor, req.params.id, clientEventSubsDeps());
-      res.status(204).end();
-    } catch (err) {
-      handleClientEventSubError(res, err);
-    }
-  });
-
-  app.post('/_ref/client-event-subscriptions/:id/test-event', requireToken, requireClient, async (req, res) => {
-    try {
-      const actor = buildBearerActorFromTokenInfo(req);
-      const out = executeEnqueueTestEvent(actor, req.params.id, clientEventSubsDeps());
-      try {
-        await getDefaultDeliveryWorker().tick();
-      } catch { /* ignored */ }
-      res.status(202).json({ event_id: out.eventId });
-    } catch (err) {
-      handleClientEventSubError(res, err);
-    }
-  });
+  // Client event subscriptions are mounted on the RESOURCE SERVER under
+  // `/v1/event-subscriptions` (see buildRsApp). They are the same kind of
+  // client-facing surface as `/v1/streams/:s/records` — grant-scoped client
+  // bearer reads — and they are advertised in protected-resource metadata as
+  // an RI extension. The AS host no longer mounts a `_ref` alias for them.
 
   return app;
 }
@@ -6264,6 +6134,147 @@ function buildRsApp(opts = {}) {
   app.post('/mcp', requireTrustedHostedMcpResource, setHostedMcpProtectedResourceMetadata, requireToken, requireClient, handleHostedMcp);
   app.delete('/mcp', requireTrustedHostedMcpResource, setHostedMcpProtectedResourceMetadata, requireToken, requireClient, handleHostedMcp);
 
+  // ────────────────────────────────────────────────────────────────────────
+  // /v1/event-subscriptions — outbound client event subscriptions (RI extension)
+  // ────────────────────────────────────────────────────────────────────────
+  // Same auth shape as the other /v1 client reads: client bearer required;
+  // the persisted subscription stores the bearer's (client_id, grant_id,
+  // subject_id) so subsequent operations refuse bearers whose grant does
+  // not match. Advertised in `/.well-known/oauth-protected-resource` as a
+  // `client_event_subscriptions` capability — reference implementation
+  // extension, NOT Core PDPP.
+  //
+  // See:
+  //   openspec/changes/add-client-event-subscriptions/
+  function buildBearerActorFromTokenInfo(req) {
+    const ti = req.tokenInfo || {};
+    const grant = ti.grant || {};
+    const scope = {
+      source: grant.source,
+      streams: Array.isArray(grant.streams)
+        ? grant.streams.map((s) => ({
+            name: s.name,
+            ...(s.connection_id ? { connection_id: s.connection_id } : {}),
+            ...(s.resources ? { resources: s.resources } : {}),
+            ...(s.time_range ? { time_range: s.time_range } : {}),
+          }))
+        : [],
+    };
+    return {
+      clientId: ti.client_id || null,
+      grantId: ti.grant_id || null,
+      subjectId: ti.subject_id || null,
+      grantScope: scope,
+    };
+  }
+  const clientEventSubsDeps = () => ({
+    store: getDefaultClientEventSubscriptionStore(),
+    nowIso: () => new Date().toISOString(),
+  });
+  function handleClientEventSubError(res, err) {
+    if (err && err.name === 'ClientEventSubscriptionError') {
+      return pdppError(res, err.status || 400, err.code, err.message);
+    }
+    return handleError(res, err);
+  }
+
+  app.post('/v1/event-subscriptions', requireToken, requireClient, async (req, res) => {
+    try {
+      const actor = buildBearerActorFromTokenInfo(req);
+      if (!actor.clientId || !actor.grantId) {
+        return pdppError(res, 403, 'grant_invalid', 'client subscription requires an active client grant');
+      }
+      const filters =
+        req.body && typeof req.body === 'object' && req.body.filters && typeof req.body.filters === 'object'
+          ? req.body.filters
+          : undefined;
+      const out = await executeCreateSubscription(
+        {
+          actor,
+          callbackUrl: typeof req.body?.callback_url === 'string' ? req.body.callback_url : '',
+          filters,
+        },
+        clientEventSubsDeps(),
+      );
+      // Best-effort: fire the verification tick once so the handshake is
+      // visible to tests without waiting for the timer.
+      try {
+        await getDefaultDeliveryWorker().tick();
+      } catch { /* ignored */ }
+      res.status(201).json({
+        subscription_id: out.subscriptionId,
+        secret: out.secret,
+        status: out.status,
+        callback_url: out.callbackUrl,
+        created_at: out.createdAt,
+      });
+    } catch (err) {
+      handleClientEventSubError(res, err);
+    }
+  });
+
+  app.get('/v1/event-subscriptions', requireToken, requireClient, async (req, res) => {
+    try {
+      const actor = buildBearerActorFromTokenInfo(req);
+      const out = await executeListSubscriptions(actor, clientEventSubsDeps());
+      res.json(out);
+    } catch (err) {
+      handleClientEventSubError(res, err);
+    }
+  });
+
+  app.get('/v1/event-subscriptions/:id', requireToken, requireClient, async (req, res) => {
+    try {
+      const actor = buildBearerActorFromTokenInfo(req);
+      const out = await executeGetSubscription(actor, req.params.id, clientEventSubsDeps());
+      res.json(out);
+    } catch (err) {
+      handleClientEventSubError(res, err);
+    }
+  });
+
+  app.patch('/v1/event-subscriptions/:id', requireToken, requireClient, async (req, res) => {
+    try {
+      const actor = buildBearerActorFromTokenInfo(req);
+      const body = req.body || {};
+      const out = await executeUpdateSubscription(
+        actor,
+        req.params.id,
+        {
+          ...(typeof body.enabled === 'boolean' ? { enabled: body.enabled } : {}),
+          ...(body.rotate_secret === true ? { rotateSecret: true } : {}),
+        },
+        clientEventSubsDeps(),
+      );
+      res.json(out);
+    } catch (err) {
+      handleClientEventSubError(res, err);
+    }
+  });
+
+  app.delete('/v1/event-subscriptions/:id', requireToken, requireClient, async (req, res) => {
+    try {
+      const actor = buildBearerActorFromTokenInfo(req);
+      await executeDeleteSubscription(actor, req.params.id, clientEventSubsDeps());
+      res.status(204).end();
+    } catch (err) {
+      handleClientEventSubError(res, err);
+    }
+  });
+
+  app.post('/v1/event-subscriptions/:id/test-event', requireToken, requireClient, async (req, res) => {
+    try {
+      const actor = buildBearerActorFromTokenInfo(req);
+      const out = await executeEnqueueTestEvent(actor, req.params.id, clientEventSubsDeps());
+      try {
+        await getDefaultDeliveryWorker().tick();
+      } catch { /* ignored */ }
+      res.status(202).json({ event_id: out.eventId });
+    } catch (err) {
+      handleClientEventSubError(res, err);
+    }
+  });
+
   // Shared hosted-UI stylesheet, mounted on the RS app so the browser-friendly
   // RS root landing (see below) can load styles from its own origin without
   // depending on the AS port being reachable.
@@ -6365,6 +6376,19 @@ function buildRsApp(opts = {}) {
           buildHybridRetrievalCapability({ lexicalAvailable, semanticAvailable }),
         isHybridSuppressed: () => opts.hybridRetrievalSupported === false,
         isNativeSingleSourceMode: () => !!resolveNativeManifest(opts),
+        // The reference implementation always mounts the
+        // `/v1/event-subscriptions` routes (see buildRsApp above), so
+        // we advertise the client_event_subscriptions extension
+        // capability by default. Hosts that need to suppress it can
+        // pass `clientEventSubscriptionsSupported: false`. See
+        // openspec/changes/add-client-event-subscriptions/.
+        resolveClientEventSubscriptionsCapability: () => {
+          if (opts.clientEventSubscriptionsCapability) {
+            return opts.clientEventSubscriptionsCapability;
+          }
+          if (opts.clientEventSubscriptionsSupported === false) return null;
+          return buildClientEventSubscriptionsCapability();
+        },
       },
     );
     const { capabilities, discoveryHints } = composition;
@@ -8641,9 +8665,9 @@ export async function startServer(opts = {}) {
   // records.js and start the delivery worker. The hook synchronously
   // enqueues envelopes after a record_changes row has committed; the
   // worker handles signing, HTTP delivery, and retry.
-  setClientEventEnqueueHook((change) => {
+  setClientEventEnqueueHook(async (change) => {
     try {
-      const subs = listActiveSubscriptions();
+      const subs = await listActiveSubscriptions();
       if (subs.length === 0) return;
       const store = getDefaultClientEventSubscriptionStore();
       const events = deriveClientEventsFromRecordChange(
@@ -8672,12 +8696,14 @@ export async function startServer(opts = {}) {
           specversion: '1.0-pdpp',
           id: eventId,
           type: ev.type,
-          source: `/_ref/client-event-subscriptions/${ev.subscriptionId}`,
+          // Canonical dereferenceable source path on the resource server.
+          // Matches the route mounted in buildRsApp at /v1/event-subscriptions.
+          source: `/v1/event-subscriptions/${ev.subscriptionId}`,
           subscription_id: ev.subscriptionId,
           occurred_at: ev.occurredAt,
           data: ev.data,
         });
-        store.enqueueEvent({
+        await store.enqueueEvent({
           subscriptionId: ev.subscriptionId,
           eventId,
           eventType: ev.type,
