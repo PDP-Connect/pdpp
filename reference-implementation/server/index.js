@@ -1680,8 +1680,22 @@ function buildGrantInvalidError() {
   return err;
 }
 
-async function resolveGrantScopedStateGrant(connectorId, grantId) {
-  const row = getOne(referenceQueries.grantsGetScopedStateById, [grantId]);
+export async function resolveGrantScopedStateGrant(connectorId, grantId) {
+  // Grants live in the active storage backend. In postgres mode the SQLite
+  // `grants` table is empty (or stale), so we must read from postgres or
+  // every postgres-issued grant resolves as `not_found`. JSONB columns are
+  // cast to ::text so requirePersistedGrantState's JSON.parse sees the same
+  // string shape it sees from the SQLite reader.
+  const row = isPostgresStorageBackend()
+    ? (await postgresQuery(
+        `SELECT grant_json::text AS grant_json,
+                storage_binding_json::text AS storage_binding_json,
+                trace_id, scenario_id
+         FROM grants
+         WHERE grant_id = $1`,
+        [grantId],
+      )).rows[0] || null
+    : getOne(referenceQueries.grantsGetScopedStateById, [grantId]);
   if (!row) {
     const err = new Error(`Unknown grant: ${grantId}`);
     err.code = 'not_found';
