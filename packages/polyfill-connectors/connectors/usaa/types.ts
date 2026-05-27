@@ -4,7 +4,6 @@
 
 import type { Locator } from "playwright";
 import type { RecordData } from "../../src/connector-runtime.ts";
-import type { DownloadQueue } from "../../src/download-queue.ts";
 
 // ─── Statements index row ────────────────────────────────────────────────
 
@@ -180,7 +179,6 @@ export interface TransactionsPriorState {
 
 export interface DriveExportOptions {
   accountType?: string;
-  downloadQueue: DownloadQueue;
   onDiagnostics?: (info: DiagnosticInfo) => void;
   sinceDate: string;
   untilDate: string;

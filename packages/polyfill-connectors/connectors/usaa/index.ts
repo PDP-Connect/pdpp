@@ -18,11 +18,16 @@
  */
 
 import { mkdtempSync, rmSync } from "node:fs";
-import { readdir, readFile, unlink } from "node:fs/promises";
+import { readdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BrowserContext, Locator, Page } from "playwright";
 import { ensureUsaaSession } from "../../src/auto-login/usaa.ts";
+import {
+  attachBodyResponseQueue,
+  type BodyResponseQueue,
+  type CapturedBodyResponse,
+} from "../../src/browser-artifact-response.ts";
 import {
   type BrowserCollectContext,
   type EmittedMessage,
@@ -35,7 +40,7 @@ import {
 } from "../../src/connector-runtime.ts";
 import { attachDownloadQueue, type DownloadQueue } from "../../src/download-queue.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
-import { savePlaywrightDownload } from "../../src/playwright-download.ts";
+import { readPlaywrightDownloadBuffer } from "../../src/playwright-download.ts";
 import {
   buildAccountRecord,
   buildCandidateStarts,
@@ -81,7 +86,10 @@ const LOGON_REDIRECT_RE = /\/my\/logon|\/access-management\/oauth2\/member\/auth
 const TRANSACTION_ACCOUNT_TYPE_RE = /checking|savings|credit-card/;
 const CREDIT_CARD_TYPE_RE = /credit-card/;
 const TEMP_DIR_PREFIX_RE = /\/[^/]+$/;
+const UNSAFE_FILENAME_RE = /[\\/]/g;
 const EXPORT_BUTTON_TEXT_RE = /^\s*Export\s*$/i;
+const CSV_DOWNLOAD_HINT_RE = /filename|attachment|octet-stream|csv|export/iu;
+const CSV_HEAD_RE = /date|description|amount|transaction/iu;
 
 // ─── Timing + limits ────────────────────────────────────────────────────
 
@@ -526,42 +534,101 @@ async function fillExportDateRange(page: Page, sinceDate: string, untilDate: str
   await politeDelay(EXPORT_STATE_DELAY_MS);
 }
 
-type ExportSubmitOutcome =
-  | { kind: "download"; d: Awaited<ReturnType<DownloadQueue["waitForNextDownload"]>> }
-  | { kind: "error" };
+type ExportSubmitOutcome = { buffer: Buffer; kind: "artifact"; suggestedFilename: string | null } | { kind: "error" };
 
-/** Submit the export dialog, race the download against an inline error. */
-async function submitExportAndAwait(page: Page, downloadQueue: DownloadQueue): Promise<ExportSubmitOutcome | null> {
-  const downloadPromise = downloadQueue.waitForNextDownload({
-    timeoutMs: DOWNLOAD_TIMEOUT_MS,
+function attachCsvResponseQueue(page: Page): BodyResponseQueue {
+  return attachBodyResponseQueue(page, {
+    isExpectedBody(body, headers) {
+      if (body.length === 0) {
+        return false;
+      }
+      const contentType = headers["content-type"]?.toLowerCase() ?? "";
+      if (contentType.includes("text/html") || contentType.includes("application/json")) {
+        return false;
+      }
+      const head = body.subarray(0, 2048).toString("utf8");
+      return CSV_HEAD_RE.test(head) && head.includes(",");
+    },
+    shouldInspect(headers, url) {
+      const hint = `${headers["content-disposition"] ?? ""} ${headers["content-type"] ?? ""} ${url}`;
+      return CSV_DOWNLOAD_HINT_RE.test(hint);
+    },
   });
+}
+
+async function waitForCsvArtifact(
+  downloadQueue: DownloadQueue,
+  responseQueue: BodyResponseQueue
+): Promise<{ buffer: Buffer; suggestedFilename: string | null }> {
+  const responsePromise = responseQueue.waitForNextResponse({ timeoutMs: DOWNLOAD_TIMEOUT_MS });
+  const downloadPromise = downloadQueue.waitForNextDownload({ timeoutMs: DOWNLOAD_TIMEOUT_MS });
+  const result = await Promise.any([
+    responsePromise.then((response) => ({ kind: "response" as const, response })),
+    downloadPromise.then((download) => ({ download, kind: "download" as const })),
+  ]);
+  if (result.kind === "response") {
+    return { buffer: result.response.body, suggestedFilename: result.response.suggestedFilename };
+  }
+  try {
+    const buffer = await readPlaywrightDownloadBuffer(result.download);
+    if (buffer.length > 0) {
+      return { buffer, suggestedFilename: result.download.suggestedFilename() };
+    }
+  } catch (err) {
+    const response = await responsePromise.catch((): CapturedBodyResponse | null => null);
+    if (response) {
+      return { buffer: response.body, suggestedFilename: response.suggestedFilename };
+    }
+    throw err;
+  }
+  const response = await responsePromise.catch((): CapturedBodyResponse | null => null);
+  if (response) {
+    return { buffer: response.body, suggestedFilename: response.suggestedFilename };
+  }
+  throw new Error("download_empty");
+}
+
+/** Submit the export dialog, race the downloadable artifact against an inline error. */
+async function submitExportAndAwait(page: Page): Promise<ExportSubmitOutcome | null> {
+  const downloadQueue = attachDownloadQueue(page);
+  const responseQueue = attachCsvResponseQueue(page);
+  await responseQueue.ready;
 
   const submit = page.locator('[role="dialog"] button[type="submit"]').first();
-  await submit.click().catch((): undefined => undefined);
-
-  const errorPromise = page
-    .locator(
-      '[role="dialog"] [class*="errorMessage"]:not(:empty), [role="dialog"] :text-matches("no transactions|nothing to export", "i")'
-    )
-    .first()
-    .waitFor({ state: "visible", timeout: DOWNLOAD_TIMEOUT_MS })
-    .then((): { kind: "error" } => ({ kind: "error" }))
-    .catch((): Promise<never> => new Promise((): void => undefined));
-
   try {
+    await submit.click().catch((): undefined => undefined);
+
+    const errorPromise = page
+      .locator(
+        '[role="dialog"] [class*="errorMessage"]:not(:empty), [role="dialog"] :text-matches("no transactions|nothing to export", "i")'
+      )
+      .first()
+      .waitFor({ state: "visible", timeout: DOWNLOAD_TIMEOUT_MS })
+      .then((): { kind: "error" } => ({ kind: "error" }))
+      .catch((): Promise<never> => new Promise((): void => undefined));
+
     return await Promise.race<ExportSubmitOutcome>([
-      downloadPromise.then((d) => ({ kind: "download", d }) as const),
+      waitForCsvArtifact(downloadQueue, responseQueue).then(
+        (artifact): ExportSubmitOutcome => ({
+          buffer: artifact.buffer,
+          kind: "artifact",
+          suggestedFilename: artifact.suggestedFilename,
+        })
+      ),
       errorPromise,
     ]);
   } catch {
     return null;
+  } finally {
+    downloadQueue.detach();
+    responseQueue.detach();
   }
 }
 
 async function driveExport(
   page: Page,
   accountUrl: string,
-  { sinceDate, untilDate, onDiagnostics, downloadQueue }: DriveExportOptions
+  { sinceDate, untilDate, onDiagnostics }: DriveExportOptions
 ): Promise<string | null> {
   const located = await locateExportPage(page, accountUrl);
   if (!located) {
@@ -580,7 +647,7 @@ async function driveExport(
   await fillExportDateRange(page, sinceDate, untilDate);
 
   const tempDir = mkdtempSync(join(tmpdir(), "usaa-export-"));
-  const outcome = await submitExportAndAwait(page, downloadQueue);
+  const outcome = await submitExportAndAwait(page);
   if (!outcome) {
     rmSync(tempDir, { recursive: true, force: true });
     return null;
@@ -593,12 +660,9 @@ async function driveExport(
       .catch((): undefined => undefined);
     return null;
   }
-  const download = outcome.d;
-  const suggested = download.suggestedFilename() || "usaa-export.csv";
+  const suggested = (outcome.suggestedFilename || "usaa-export.csv").replace(UNSAFE_FILENAME_RE, "_");
   const targetPath = join(tempDir, suggested);
-  // Use the shared helper so saveAs waits for Chromium's artifact-finalize
-  // before copying — same race fixed for Chase in run_1778852923848.
-  await savePlaywrightDownload(download, targetPath);
+  await writeFile(targetPath, outcome.buffer);
   return targetPath;
 }
 
@@ -607,7 +671,6 @@ async function driveExport(
 // ─── Stream orchestration helpers ────────────────────────────────────────
 
 interface StatementsSubDeps extends EmitDeps {
-  downloadQueue: DownloadQueue;
   page: Page;
 }
 
@@ -653,7 +716,6 @@ interface LadderAttemptArgs {
   a: DashboardAccount;
   context: BrowserContext;
   deps: EmitDeps;
-  downloadQueue: DownloadQueue;
   onDiagnostics: (info: DiagnosticInfo) => void;
   onSessionDead: () => void;
   page: Page;
@@ -670,7 +732,6 @@ async function runSingleLadderAttempt({
   context,
   page,
   sendInteraction,
-  downloadQueue,
   a,
   sinceDate,
   todayIso,
@@ -688,7 +749,6 @@ async function runSingleLadderAttempt({
       untilDate: todayIso,
       accountType: a.account_type,
       onDiagnostics,
-      downloadQueue,
     });
     return csvPath ? { kind: "success", csvPath } : { kind: "retry" };
   } catch (err) {
@@ -720,7 +780,6 @@ async function tryExportLadder(
   context: BrowserContext,
   page: Page,
   sendInteraction: BrowserCollectContext["sendInteraction"],
-  downloadQueue: DownloadQueue,
   a: DashboardAccount,
   candidateStarts: readonly string[],
   todayIso: string,
@@ -738,7 +797,6 @@ async function tryExportLadder(
       context,
       page,
       sendInteraction,
-      downloadQueue,
       a,
       sinceDate,
       todayIso,
@@ -808,7 +866,6 @@ async function processAccountTransactions(
   context: BrowserContext,
   page: Page,
   sendInteraction: BrowserCollectContext["sendInteraction"],
-  downloadQueue: DownloadQueue,
   a: DashboardAccount,
   priorLastDate: string | null,
   sinceDateCfg: string | undefined,
@@ -826,7 +883,6 @@ async function processAccountTransactions(
     context,
     page,
     sendInteraction,
-    downloadQueue,
     a,
     candidateStarts,
     todayIso,
@@ -850,7 +906,6 @@ async function runTransactionsStream(
   context: BrowserContext,
   page: Page,
   sendInteraction: BrowserCollectContext["sendInteraction"],
-  downloadQueue: DownloadQueue,
   accounts: readonly DashboardAccount[],
   state: Record<string, unknown>,
   requested: BrowserCollectContext["requested"],
@@ -878,7 +933,6 @@ async function runTransactionsStream(
       context,
       page,
       sendInteraction,
-      downloadQueue,
       a,
       priorLastDate,
       sinceDateCfg,
@@ -938,7 +992,6 @@ async function hydratePdfsForIndex(deps: StatementsSubDeps, indexRows: readonly 
     const hydrated = await hydrateStatementPdfs({
       page: deps.page,
       statements: indexRows as IndexRow[],
-      downloadQueue: deps.downloadQueue,
       onProgress: ({ index, total, title }) => {
         attempts = index + 1;
         // Fire-and-forget: hydrateStatementPdfs signature is sync callback.
@@ -1267,68 +1320,46 @@ if (isMainModule(import.meta.url)) {
       const { state, requested, context, page, emit, emitRecord, progress, capture, sendInteraction, emittedAt } = ctx;
       const deps: EmitDeps = { emit, emitRecord };
 
-      // Page-level download listener — context.on('download') doesn't fire over
-      // CDP; page.on does. Attach BEFORE any clicks that might download.
-      const downloadQueue = attachDownloadQueue(page);
+      // ACCOUNTS — extract from dashboard; emit optionally based on requested.
+      await progress("Extracting accounts from dashboard");
+      if (capture) {
+        await capture.captureDom(page, "dashboard-accounts");
+      }
+      const accounts = await extractAccounts(page);
+      await progress(`Found ${accounts.length} account(s)`);
 
-      try {
-        // ACCOUNTS — extract from dashboard; emit optionally based on requested.
-        await progress("Extracting accounts from dashboard");
-        if (capture) {
-          await capture.captureDom(page, "dashboard-accounts");
-        }
-        const accounts = await extractAccounts(page);
-        await progress(`Found ${accounts.length} account(s)`);
+      if (requested.has("accounts")) {
+        await emitAccountsStream(deps, accounts, emittedAt);
+      }
 
-        if (requested.has("accounts")) {
-          await emitAccountsStream(deps, accounts, emittedAt);
-        }
+      // Signal raised by the transactions loop when a page redirects to
+      // /my/logon mid-run — meaning USAA's session has lapsed.
+      const streamState: TransactionsStreamState = { sessionDeadMidRun: false };
 
-        // Signal raised by the transactions loop when a page redirects to
-        // /my/logon mid-run — meaning USAA's session has lapsed.
-        const streamState: TransactionsStreamState = { sessionDeadMidRun: false };
+      // TRANSACTIONS — drive Export per account where applicable.
+      if (requested.has("transactions")) {
+        await runTransactionsStream(deps, context, page, sendInteraction, accounts, state, requested, streamState);
+      }
 
-        // TRANSACTIONS — drive Export per account where applicable.
-        if (requested.has("transactions")) {
-          await runTransactionsStream(
-            deps,
-            context,
-            page,
-            sendInteraction,
-            downloadQueue,
-            accounts,
-            state,
-            requested,
-            streamState
-          );
-        }
+      // STATEMENTS — scrape /my/documents + hydrate PDFs + (optionally) parse txns.
+      if ((requested.has("statements") || requested.has("transactions")) && !streamState.sessionDeadMidRun) {
+        await runStatementsStream({ ...deps, page }, accounts, requested);
+      }
 
-        // STATEMENTS — scrape /my/documents + hydrate PDFs + (optionally) parse txns.
-        if ((requested.has("statements") || requested.has("transactions")) && !streamState.sessionDeadMidRun) {
-          await runStatementsStream({ ...deps, page, downloadQueue }, accounts, requested);
-        }
+      // INBOX_MESSAGES — scrape /my/inbox.
+      if (requested.has("inbox_messages") && !streamState.sessionDeadMidRun) {
+        await runInboxStream(deps, page);
+      }
 
-        // INBOX_MESSAGES — scrape /my/inbox.
-        if (requested.has("inbox_messages") && !streamState.sessionDeadMidRun) {
-          await runInboxStream(deps, page);
-        }
+      // CREDIT_CARD_BILLING — one record per credit-card account.
+      if (requested.has("credit_card_billing") && !streamState.sessionDeadMidRun) {
+        await runCreditCardBillingStream(deps, page, accounts);
+      }
 
-        // CREDIT_CARD_BILLING — one record per credit-card account.
-        if (requested.has("credit_card_billing") && !streamState.sessionDeadMidRun) {
-          await runCreditCardBillingStream(deps, page, accounts);
-        }
+      await emitDeferredStreams(emit, requested);
 
-        await emitDeferredStreams(emit, requested);
-
-        if (streamState.sessionDeadMidRun) {
-          throw new Error("usaa session expired mid-run; re-run with fresh auth to complete");
-        }
-      } finally {
-        try {
-          downloadQueue.detach();
-        } catch {
-          /* ignore */
-        }
+      if (streamState.sessionDeadMidRun) {
+        throw new Error("usaa session expired mid-run; re-run with fresh auth to complete");
       }
     },
   });
