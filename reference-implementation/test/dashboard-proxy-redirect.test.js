@@ -38,6 +38,7 @@ const REFERENCE_IMPL_DIR = join(__dirname, '..');
 const REPO_ROOT = join(REFERENCE_IMPL_DIR, '..');
 const WEB_DIR = join(REPO_ROOT, 'apps/web');
 const WEB_BUILD_ID_PATH = join(WEB_DIR, '.next/BUILD_ID');
+const WEB_PRERENDER_MANIFEST_PATH = join(WEB_DIR, '.next/prerender-manifest.json');
 const OWNER_PASSWORD = 'pdpp-owner-dev-password';
 
 let webBuildPromise = null;
@@ -103,7 +104,7 @@ async function ensureWebBuild() {
   if (!webBuildPromise) {
     webBuildPromise = (async () => {
       try {
-        await access(WEB_BUILD_ID_PATH);
+        await assertCompleteWebBuild();
         return;
       } catch {}
 
@@ -134,12 +135,17 @@ async function waitForExistingWebBuild(timeoutMs = 30000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
-      await access(WEB_BUILD_ID_PATH);
+      await assertCompleteWebBuild();
       return;
     } catch {}
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   throw new Error('Timed out waiting for another next build process to finish');
+}
+
+async function assertCompleteWebBuild() {
+  await access(WEB_BUILD_ID_PATH);
+  await access(WEB_PRERENDER_MANIFEST_PATH);
 }
 
 async function allocatePort() {
