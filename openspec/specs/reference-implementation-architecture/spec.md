@@ -1879,3 +1879,152 @@ The reference implementation SHALL serve stream-list behavior through a canonica
 - **WHEN** the native `GET /v1/streams` route is migrated to the operation
 - **THEN** existing request id, trace id, query-received, and disclosure-served behavior SHALL remain equivalent to the previous native route behavior
 - **AND** the migration SHALL include regression evidence for that preservation or an explicit owner-reviewed explanation if a specific event is intentionally unchanged outside the operation
+
+### Requirement: Reference Connector And Approval Read Operations
+
+The reference implementation SHALL expose operator connector catalog reads and pending-approval reads through canonical operation modules before host route adapters shape HTTP responses.
+
+#### Scenario: Connector list operation preserves route behavior
+
+**WHEN** the `/_ref/connectors` route serves an owner-authenticated request
+**THEN** it SHALL delegate connector catalog response shaping to a boundary-checked operation module
+**AND** SHALL preserve the existing response contract.
+
+#### Scenario: Connector detail operation preserves route behavior
+
+**WHEN** the `/_ref/connectors/:connectorId` route serves an owner-authenticated request
+**THEN** it SHALL delegate connector detail response shaping to a boundary-checked operation module
+**AND** SHALL preserve the existing success and not-found response contracts.
+
+#### Scenario: Approval list operation preserves route behavior
+
+**WHEN** the `/_ref/approvals` route serves an owner-authenticated request
+**THEN** it SHALL delegate pending-approval response shaping to a boundary-checked operation module
+**AND** SHALL NOT expose redeemable device codes, user codes, request URIs, bearer tokens, or other approval secrets.
+
+### Requirement: `ref.dataset.summary` SHALL be operation-owned
+
+The reference implementation SHALL serve the reference-only `/_ref/dataset/summary` operator-console surface through a canonical `ref.dataset.summary` operation implementation that is independent of HTTP framework, sandbox UI, concrete database driver, sandbox modules, and process environment.
+
+The operation is reference/operator surface, not PDPP protocol. It SHALL NOT be promoted into PDPP-stable wire semantics by this requirement, and the field-level constraint that `record_json_bytes` is adapter-native operator data (per `define-reference-operation-environments` contract correction (4)) SHALL be preserved by the operation.
+
+#### Scenario: Native dataset-summary route
+
+- **WHEN** the native reference server handles `GET /_ref/dataset/summary`
+- **THEN** it SHALL execute the canonical `ref.dataset.summary` operation for envelope assembly
+- **AND** route-specific code SHALL be limited to owner authentication, response writing, and capability dependency wiring
+
+#### Scenario: Operation dependency boundary
+
+- **WHEN** the `ref.dataset.summary` operation is implemented
+- **THEN** it SHALL depend on capability-shaped count, retained-bytes, record-time-bound, ingest-time-bound, and top-connector-candidate dependencies
+- **AND** it SHALL NOT import Fastify, Express, Next, SQLite, Postgres, a raw SQL handle, sandbox modules, `reference-implementation/server/records.js`, `reference-implementation/server/index.js`, or `process` / `process.env`
+
+#### Scenario: Existing dataset-summary semantics are preserved
+
+- **WHEN** the native `GET /_ref/dataset/summary` route is migrated to the operation
+- **THEN** the response envelope SHALL preserve `object: 'dataset_summary'`, `connector_count`, `stream_count`, `record_count`, `record_json_bytes`, `record_changes_json_bytes`, `blob_bytes`, `total_retained_bytes`, `earliest_record_time`, `latest_record_time`, `earliest_ingested_at`, `latest_ingested_at`, and `top_connectors` (each `dataset_connector_summary`) bit-for-bit equivalent to the previous native route response
+- **AND** the migration SHALL NOT change the public JSON envelope of the route response
+
+#### Scenario: Operation owns top-connector sort and limit
+
+- **WHEN** the operation receives top-connector candidates from its dependency
+- **THEN** it SHALL sort the candidates by `record_count` descending with a tiebreak on `connector_id` ascending
+- **AND** it SHALL emit at most three entries
+- **AND** it SHALL wrap each entry as `{object: 'dataset_connector_summary', connector_id, record_count}`
+
+#### Scenario: Operation owns empty-corpus collapse
+
+- **WHEN** the dependency-supplied `record_count` is `0`
+- **THEN** the operation SHALL emit `earliest_record_time`, `latest_record_time`, `earliest_ingested_at`, and `latest_ingested_at` as `null`
+- **AND** it SHALL NOT call the time-bound dependencies for those fields
+
+### Requirement: Reference Schedule Read Operations
+
+The reference implementation SHALL expose owner-only schedule reads through canonical operation modules before host route adapters shape HTTP responses.
+
+#### Scenario: Schedule list operation preserves route behavior
+
+**WHEN** the `/_ref/schedules` route serves an owner-authenticated request
+**THEN** it SHALL delegate schedule list response shaping to a boundary-checked operation module
+**AND** SHALL preserve the existing `{object: "list", data}` response contract.
+
+#### Scenario: Connector schedule operation preserves success projection
+
+**WHEN** the `/_ref/connectors/:connectorId/schedule` route serves an owner-authenticated request and a schedule exists for the connector
+**THEN** it SHALL delegate schedule projection to a boundary-checked operation module
+**AND** SHALL return the existing `schedule` response body unchanged.
+
+#### Scenario: Connector schedule operation preserves not-found envelope
+
+**WHEN** the `/_ref/connectors/:connectorId/schedule` route serves an owner-authenticated request and no schedule exists for the connector
+**THEN** the operation module SHALL surface a typed not-found condition
+**AND** the host adapter SHALL respond with the existing PDPP 404 `not_found` error envelope.
+
+#### Scenario: Schedule operations do not import host or storage internals
+
+**WHEN** the operation-boundary gate inspects `operations/ref-schedules-list/` and `operations/ref-connector-schedule-get/`
+**THEN** neither module SHALL import Fastify, Next, SQLite, Postgres, the runtime controller, the scheduler store, the server auth module, or `process` / `process.env`.
+
+### Requirement: Reference Spine Operator Read Operations
+
+The reference implementation SHALL expose owner-only operator-console reads of the disclosure spine — correlation lists, per-correlation event timelines, and the spine artifact-jump search — through canonical operation modules before host route adapters shape HTTP responses.
+
+#### Scenario: Spine correlation list operation preserves route behavior
+
+**WHEN** the `/_ref/traces`, `/_ref/grants`, or `/_ref/runs` route serves an owner-authenticated request
+**THEN** it SHALL delegate correlation summary envelope assembly to a boundary-checked `ref.spine.correlations.list` operation module
+**AND** SHALL preserve the per-kind `trace_summary` / `grant_summary` / `run_summary` discriminator in each `data` entry
+**AND** SHALL preserve the `{object: 'list', data, has_more}` envelope with `next_cursor` emitted only when present.
+
+#### Scenario: Spine events page operation preserves route behavior
+
+**WHEN** the `/_ref/traces/:traceId`, `/_ref/grants/:grantId/timeline`, or `/_ref/runs/:runId/timeline` route serves an owner-authenticated request
+**THEN** it SHALL delegate timeline envelope assembly to a boundary-checked `ref.spine.events.page` operation module
+**AND** SHALL preserve the kind-specific `object` discriminator (`trace` / `grant_timeline` / `run_timeline`), the identifying `*_id` key, the derived `trace_id`, the `event_count`, and the `truncated` / `next_cursor` / `limit` pagination fields
+**AND** SHALL NOT echo the live bearer literal `token_id`, the `pending_consent` or `owner_device_auth` `object_id` literal, or the `device_code` / `user_code` / `request_uri` keys inside event `data` — these MUST be stripped or replaced with redaction sentinels by the operation.
+
+#### Scenario: Spine search operation preserves route behavior
+
+**WHEN** the `/_ref/search` route serves an owner-authenticated request
+**THEN** it SHALL delegate spine artifact-jump response shaping to a boundary-checked `ref.spine.search` operation module
+**AND** SHALL preserve the `{object: 'search_result', exact, traces, grants, runs}` envelope with the per-bucket summary discriminators applied to each entry.
+
+### Requirement: Remaining reference routes SHALL be operation-owned
+
+The reference implementation SHALL serve the remaining inline AS, RS, and `_ref`
+route semantics through canonical operation modules or explicit
+capability-shaped operation helpers that are independent of the HTTP framework,
+sandbox UI, concrete database driver, and process environment.
+
+#### Scenario: Final route adapter boundary
+
+- **WHEN** a covered route is mounted in `reference-implementation/server/index.js`
+- **THEN** route-specific code SHALL be limited to HTTP wiring, authentication or
+  owner-session checks, request/header adaptation, request id and trace id setup,
+  instrumentation dispatch, response writing, and concrete capability wiring
+- **AND** protocol/business/storage-shaped semantics SHALL live in the canonical
+  operation for that route family
+
+#### Scenario: Operation dependency boundary
+
+- **WHEN** a new operation module is implemented for this change
+- **THEN** it SHALL depend on explicit capability-shaped dependencies
+- **AND** it SHALL NOT import Fastify, Next, sandbox modules,
+  `reference-implementation/server/index.js`, raw SQL handles, concrete database
+  drivers, generic repository abstractions, or `process` / `process.env`
+
+#### Scenario: Public behavior preservation
+
+- **WHEN** a route family is migrated to operations under this change
+- **THEN** existing public response envelopes, auth gates, error codes, status
+  codes, trace/request id behavior, and audit/disclosure event semantics SHALL
+  remain equivalent to the previous native route behavior
+
+#### Scenario: Storage-sensitive migrations
+
+- **WHEN** blob, record mutation, ingest, consent, token, or device-code behavior
+  is migrated to operations under this change
+- **THEN** the migration SHALL preserve existing atomicity, visibility,
+  redaction, and secrecy guarantees
+- **AND** those guarantees SHALL be pinned by focused tests before merge
