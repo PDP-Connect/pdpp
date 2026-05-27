@@ -215,7 +215,10 @@ export interface MountRsProtectedResourceMetadataContext {
   resolveHybridCapabilityOverride(): RsProtectedResourceMetadataHybridCapability | null;
   resolveLexicalCapability(): RsProtectedResourceMetadataLexicalCapability | null;
   resolvePublicUrl(req: unknown, explicit: unknown): string;
-  resolveSemanticCapability(): RsProtectedResourceMetadataSemanticCapability | null;
+  resolveSemanticCapability():
+    | RsProtectedResourceMetadataSemanticCapability
+    | null
+    | Promise<RsProtectedResourceMetadataSemanticCapability | null>;
   resolveSiblingPublicUrl(req: unknown, origin: string): string;
   shouldUseDirectRequestOrigin(req: unknown, explicit: unknown): boolean;
   trustedMetadataHosts: unknown;
@@ -223,7 +226,7 @@ export interface MountRsProtectedResourceMetadataContext {
 
 export function mountRsProtectedResourceMetadata(app: AppLike, ctx: MountRsProtectedResourceMetadataContext): void {
   // Primary reference surface: RFC 9728 protected-resource metadata.
-  app.get("/.well-known/oauth-protected-resource", { contract: "getProtectedResourceMetadata" }, (req, res) => {
+  app.get("/.well-known/oauth-protected-resource", { contract: "getProtectedResourceMetadata" }, async (req, res) => {
     if (ctx.rejectUntrustedMetadataHost(req, res, ctx.explicitResource, ctx.trustedMetadataHosts)) {
       return;
     }
@@ -253,7 +256,7 @@ export function mountRsProtectedResourceMetadata(app: AppLike, ctx: MountRsProte
     //   openspec/changes/add-semantic-retrieval-experimental-extension/specs/semantic-retrieval/spec.md
     //   openspec/changes/define-hybrid-retrieval/specs/hybrid-retrieval/spec.md
     //   openspec/changes/polish-reference-api-discovery-seams
-    const { composition } = executeRsProtectedResourceMetadata(
+    const { composition } = await executeRsProtectedResourceMetadata(
       {},
       {
         resolveLexicalCapability: ctx.resolveLexicalCapability,

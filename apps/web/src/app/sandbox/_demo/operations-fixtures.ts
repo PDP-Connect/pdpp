@@ -1251,8 +1251,8 @@ export function buildSandboxProtectedResourceMetadataDocument(
   return metadata;
 }
 
-export function buildSandboxProtectedResourceMetadata(issuer: string): SandboxProtectedResourceMetadata {
-  const { composition } = executeRsProtectedResourceMetadata(
+export async function buildSandboxProtectedResourceMetadata(issuer: string): Promise<SandboxProtectedResourceMetadata> {
+  const { composition } = await executeRsProtectedResourceMetadata(
     {},
     createSandboxRsProtectedResourceMetadataDependencies(issuer)
   );

@@ -92,7 +92,10 @@ export interface RsProtectedResourceMetadataDependencies {
    * `semanticRetrievalSupported`, the embedding backend's
    * `available()` flag, and any caller override.
    */
-  resolveSemanticCapability(): RsProtectedResourceMetadataSemanticCapability | null;
+  resolveSemanticCapability():
+    | RsProtectedResourceMetadataSemanticCapability
+    | null
+    | Promise<RsProtectedResourceMetadataSemanticCapability | null>;
   /**
    * Returns the hybrid capability the host has overridden, or `null`
    * to fall through to the operation's default composition rule
@@ -172,17 +175,20 @@ function isSemanticSupported(
  * Returns the composed `(capabilities, discoveryHints)` pair. Hosts add
  * resource/issuer URLs, the agent-discovery block, version metadata,
  * and run the wire-shape builder.
+ *
+ * Async because `resolveSemanticCapability` may consult the active
+ * storage backend to derive the honest `index_state`.
  */
-export function executeRsProtectedResourceMetadata(
+export async function executeRsProtectedResourceMetadata(
   _input: RsProtectedResourceMetadataInput,
   dependencies: RsProtectedResourceMetadataDependencies,
-): RsProtectedResourceMetadataOutput {
+): Promise<RsProtectedResourceMetadataOutput> {
   const capabilities: RsProtectedResourceMetadataCapabilities = {};
 
   const lexical = dependencies.resolveLexicalCapability();
   if (lexical) capabilities.lexical_retrieval = lexical;
 
-  const semantic = dependencies.resolveSemanticCapability();
+  const semantic = await dependencies.resolveSemanticCapability();
   if (semantic) capabilities.semantic_retrieval = semantic;
 
   const lexicalSupported = isLexicalSupported(lexical);

@@ -53,6 +53,7 @@ import {
   passesRequestFilters,
 } from './record-filters.js';
 import {
+  postgresAnySemanticProgressRow,
   postgresSemanticIndexDelete,
   postgresSemanticIndexDeleteByConnectorStream,
   postgresSemanticIndexUpsertMany,
@@ -65,6 +66,7 @@ import {
   postgresDeleteSemanticProgress,
   postgresGetSemanticMeta,
   postgresGetSemanticProgress,
+  postgresListAllSemanticMetaIdentities,
   postgresListExistingSemanticKeys,
   postgresListSemanticConnectorInstanceIds,
   postgresListSemanticStreamsForConnector,
@@ -1551,18 +1553,36 @@ export async function semanticIndexBackfillForManifest({ manifest, log = () => {
  * persisted (model_id, dimensions, distance_metric) against the currently
  * configured backend. Any mismatch ⇒ stale.
  *
+ * Reads from the active storage backend so Postgres-mode deployments do
+ * not observe orphaned SQLite progress/meta rows left from an earlier
+ * configuration.
+ *
  * Returns 'built' | 'building' | 'stale'.
+ *
+ * The `deps` argument is a test seam; production callers pass nothing and
+ * get the live storage-backend wiring.
  */
-export function computeIndexState() {
+export async function computeIndexState(deps = {}) {
   if (!backend) return 'stale';
   if (isSemanticIndexBackfillActive()) return 'building';
-  const progressRow = getOne(referenceQueries.searchSemanticProgressExistsAny, []);
+  const usePostgres = deps.isPostgresStorageBackend
+    ? deps.isPostgresStorageBackend()
+    : isPostgresStorageBackend();
+  const readProgressExistsAny = usePostgres
+    ? (deps.postgresAnySemanticProgressRow || postgresAnySemanticProgressRow)
+    // REVIEWED-BOUNDED: small_enumeration_table — single-row existence probe.
+    : () => getOne(referenceQueries.searchSemanticProgressExistsAny, []);
+  const readMetaIdentities = usePostgres
+    ? (deps.postgresListAllSemanticMetaIdentities || postgresListAllSemanticMetaIdentities)
+    // REVIEWED-BOUNDED: semantic_search_meta is keyed by (connector_id,
+    // stream); total row count is bounded by the live manifest's stream
+    // count summed across connectors and stays well under
+    // @max_rows=1024 in practice.
+    : () => allowUnboundedReadAcknowledged(referenceQueries.searchSemanticMetaListAllIdentities, []);
+
+  const progressRow = await readProgressExistsAny();
   if (progressRow) return 'stale';
-  // REVIEWED-BOUNDED: semantic_search_meta is keyed by (connector_id,
-  // stream); total row count is bounded by the live manifest's stream
-  // count summed across connectors and stays well under
-  // @max_rows=1024 in practice.
-  const rows = allowUnboundedReadAcknowledged(referenceQueries.searchSemanticMetaListAllIdentities, []);
+  const rows = await readMetaIdentities();
   // No meta rows means nothing has been backfilled yet. If any participating
   // manifest exists, backfill hasn't run → stale. If no manifests declare
   // semantic_fields at all, there's nothing to index and "built" is honest.

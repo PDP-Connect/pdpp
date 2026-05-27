@@ -23,7 +23,7 @@ export default async function SandboxDeploymentPage() {
   const capabilities = getDemoCapabilities();
   const issuer = `${await getRequestOrigin()}/sandbox`;
   const auth = buildSandboxAuthorizationServerMetadata(issuer);
-  const rs = buildSandboxProtectedResourceMetadata(issuer);
+  const rs = await buildSandboxProtectedResourceMetadata(issuer);
 
   return (
     <DashboardShell active="deployment" mode="mock-owner">
@@ -48,7 +48,7 @@ function SandboxDeploymentExtensions({
 }: {
   auth: ReturnType<typeof buildSandboxAuthorizationServerMetadata>;
   capabilities: ReturnType<typeof getDemoCapabilities>;
-  protectedResource: ReturnType<typeof buildSandboxProtectedResourceMetadata>;
+  protectedResource: Awaited<ReturnType<typeof buildSandboxProtectedResourceMetadata>>;
 }) {
   return (
     <>

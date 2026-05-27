@@ -284,6 +284,22 @@ export async function postgresDeleteSemanticProgress({ connectorInstanceId, stre
   );
 }
 
+export async function postgresAnySemanticProgressRow() {
+  const result = await postgresQuery(
+    'SELECT 1 AS n FROM semantic_search_backfill_progress LIMIT 1',
+    [],
+  );
+  return result.rows[0] || null;
+}
+
+export async function postgresListAllSemanticMetaIdentities() {
+  const result = await postgresQuery(
+    'SELECT model_id, dimensions, distance_metric FROM semantic_search_meta',
+    [],
+  );
+  return result.rows;
+}
+
 export async function postgresListSemanticStreamsForConnector({ connectorId }) {
   const result = await postgresQuery(
     `SELECT stream

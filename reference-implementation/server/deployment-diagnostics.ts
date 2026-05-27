@@ -595,7 +595,7 @@ export interface CollectDeploymentDiagnosticsOptions {
 }
 
 export interface DeploymentDiagnosticsRuntimeDeps {
-  readonly computeIndexState: () => SemanticIndexState;
+  readonly computeIndexState: () => SemanticIndexState | Promise<SemanticIndexState>;
   readonly getBackend: () => DiagnosticsBackend | null;
   readonly getBackfillProgress?: () => SemanticBackfillProgress | null;
   readonly getConfiguredNativeManifest: () => DiagnosticsManifest | null;
@@ -635,7 +635,7 @@ export async function collectDeploymentDiagnostics(
   }
 
   // Index state is only meaningful when a backend is configured.
-  const indexState: SemanticIndexState | null = backend === null ? null : deps.computeIndexState();
+  const indexState: SemanticIndexState | null = backend === null ? null : await deps.computeIndexState();
 
   const runtimeCapabilities = deps.getRuntimeCapabilityPosture
     ? await Promise.resolve(deps.getRuntimeCapabilityPosture())

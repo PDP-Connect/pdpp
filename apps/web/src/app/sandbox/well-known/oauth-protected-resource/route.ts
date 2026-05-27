@@ -7,9 +7,9 @@ import { jsonResponse, sandboxIssuerFromRequest } from "../../v1/_helpers.ts";
 
 export const dynamic = "force-dynamic";
 
-export function GET(request: Request) {
+export async function GET(request: Request) {
   const issuer = sandboxIssuerFromRequest(request);
-  const { composition } = executeRsProtectedResourceMetadata(
+  const { composition } = await executeRsProtectedResourceMetadata(
     {},
     createSandboxRsProtectedResourceMetadataDependencies(issuer)
   );

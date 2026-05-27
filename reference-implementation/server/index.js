@@ -6307,7 +6307,7 @@ function buildRsApp(opts = {}) {
       return null;
     },
     resolvePublicUrl,
-    resolveSemanticCapability: () => {
+    resolveSemanticCapability: async () => {
       if (opts.semanticRetrievalCapability) {
         return opts.semanticRetrievalCapability;
       }
@@ -6319,7 +6319,7 @@ function buildRsApp(opts = {}) {
           model: semBackend.model(),
           dimensions: semBackend.dimensions(),
           distanceMetric: semBackend.distanceMetric(),
-          indexState: computeSemanticIndexState(),
+          indexState: await computeSemanticIndexState(),
           profileId: semBackend.profileId ? semBackend.profileId() : null,
           dtype: semBackend.dtype ? semBackend.dtype() : null,
           languageBias: semBackend.languageBias ? semBackend.languageBias() : null,

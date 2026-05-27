@@ -34,47 +34,47 @@ function withDefaults(overrides = {}) {
   };
 }
 
-test('publishes lexical capability when dependency returns one', () => {
+test('publishes lexical capability when dependency returns one', async () => {
   const lexical = { supported: true, endpoint: '/v1/search' };
-  const { composition } = executeRsProtectedResourceMetadata(
+  const { composition } = await executeRsProtectedResourceMetadata(
     {},
     withDefaults({ resolveLexicalCapability: () => lexical }),
   );
   assert.equal(composition.capabilities.lexical_retrieval, lexical);
 });
 
-test('omits lexical capability when dependency returns null', () => {
-  const { composition } = executeRsProtectedResourceMetadata(
+test('omits lexical capability when dependency returns null', async () => {
+  const { composition } = await executeRsProtectedResourceMetadata(
     {},
     withDefaults(),
   );
   assert.equal(composition.capabilities.lexical_retrieval, undefined);
 });
 
-test('publishes semantic capability when dependency returns one', () => {
+test('publishes semantic capability when dependency returns one', async () => {
   const semantic = { supported: true, model: 'm', dimensions: 64 };
-  const { composition } = executeRsProtectedResourceMetadata(
+  const { composition } = await executeRsProtectedResourceMetadata(
     {},
     withDefaults({ resolveSemanticCapability: () => semantic }),
   );
   assert.equal(composition.capabilities.semantic_retrieval, semantic);
 });
 
-test('publishes hybrid capability override when present', () => {
+test('publishes hybrid capability override when present', async () => {
   const hybrid = { supported: true, cursor_supported: false };
-  const { composition } = executeRsProtectedResourceMetadata(
+  const { composition } = await executeRsProtectedResourceMetadata(
     {},
     withDefaults({ resolveHybridCapabilityOverride: () => hybrid }),
   );
   assert.equal(composition.capabilities.hybrid_retrieval, hybrid);
 });
 
-test('builds default hybrid only when both lexical and semantic are supported', () => {
+test('builds default hybrid only when both lexical and semantic are supported', async () => {
   const lexical = { supported: true, endpoint: '/v1/search' };
   const semantic = { supported: true };
   const built = { supported: true, cursor_supported: false };
   let buildArgs = null;
-  const { composition } = executeRsProtectedResourceMetadata(
+  const { composition } = await executeRsProtectedResourceMetadata(
     {},
     withDefaults({
       resolveLexicalCapability: () => lexical,
@@ -89,10 +89,10 @@ test('builds default hybrid only when both lexical and semantic are supported', 
   assert.equal(composition.capabilities.hybrid_retrieval, built);
 });
 
-test('does not build default hybrid when lexical is unsupported', () => {
+test('does not build default hybrid when lexical is unsupported', async () => {
   const semantic = { supported: true };
   let buildCalled = false;
-  const { composition } = executeRsProtectedResourceMetadata(
+  const { composition } = await executeRsProtectedResourceMetadata(
     {},
     withDefaults({
       resolveSemanticCapability: () => semantic,
@@ -106,10 +106,10 @@ test('does not build default hybrid when lexical is unsupported', () => {
   assert.equal(composition.capabilities.hybrid_retrieval, undefined);
 });
 
-test('does not publish hybrid when builder returns supported:false', () => {
+test('does not publish hybrid when builder returns supported:false', async () => {
   const lexical = { supported: true };
   const semantic = { supported: true };
-  const { composition } = executeRsProtectedResourceMetadata(
+  const { composition } = await executeRsProtectedResourceMetadata(
     {},
     withDefaults({
       resolveLexicalCapability: () => lexical,
@@ -120,11 +120,11 @@ test('does not publish hybrid when builder returns supported:false', () => {
   assert.equal(composition.capabilities.hybrid_retrieval, undefined);
 });
 
-test('isHybridSuppressed skips hybrid composition entirely', () => {
+test('isHybridSuppressed skips hybrid composition entirely', async () => {
   const lexical = { supported: true };
   const semantic = { supported: true };
   let buildCalled = false;
-  const { composition } = executeRsProtectedResourceMetadata(
+  const { composition } = await executeRsProtectedResourceMetadata(
     {},
     withDefaults({
       resolveLexicalCapability: () => lexical,
@@ -141,8 +141,8 @@ test('isHybridSuppressed skips hybrid composition entirely', () => {
   assert.equal(buildCalled, false);
 });
 
-test('discovery hints include the fixed pointer block', () => {
-  const { composition } = executeRsProtectedResourceMetadata(
+test('discovery hints include the fixed pointer block', async () => {
+  const { composition } = await executeRsProtectedResourceMetadata(
     {},
     withDefaults({ isNativeSingleSourceMode: () => true }),
   );
@@ -160,9 +160,9 @@ test('discovery hints include the fixed pointer block', () => {
   assert.equal(composition.discoveryHints.blob_indirection, 'data.blob_ref.fetch_url');
 });
 
-test('search discovery hint published only when lexical is supported', () => {
+test('search discovery hint published only when lexical is supported', async () => {
   const lexical = { supported: true, endpoint: '/v1/search' };
-  const { composition } = executeRsProtectedResourceMetadata(
+  const { composition } = await executeRsProtectedResourceMetadata(
     {},
     withDefaults({ resolveLexicalCapability: () => lexical }),
   );
@@ -173,28 +173,28 @@ test('search discovery hint published only when lexical is supported', () => {
   });
 });
 
-test('search discovery hint endpoint defaults to /v1/search when capability omits it', () => {
+test('search discovery hint endpoint defaults to /v1/search when capability omits it', async () => {
   const lexical = { supported: true };
-  const { composition } = executeRsProtectedResourceMetadata(
+  const { composition } = await executeRsProtectedResourceMetadata(
     {},
     withDefaults({ resolveLexicalCapability: () => lexical }),
   );
   assert.equal(composition.discoveryHints.search?.endpoint, '/v1/search');
 });
 
-test('search discovery hint omitted when lexical is supported:false', () => {
+test('search discovery hint omitted when lexical is supported:false', async () => {
   const lexical = { supported: false };
-  const { composition } = executeRsProtectedResourceMetadata(
+  const { composition } = await executeRsProtectedResourceMetadata(
     {},
     withDefaults({ resolveLexicalCapability: () => lexical }),
   );
   assert.equal(composition.discoveryHints.search, undefined);
 });
 
-test('hybrid_pagination_supported reflects cursor_supported when hybrid is published', () => {
+test('hybrid_pagination_supported reflects cursor_supported when hybrid is published', async () => {
   const lexical = { supported: true };
   const semantic = { supported: true };
-  const { composition } = executeRsProtectedResourceMetadata(
+  const { composition } = await executeRsProtectedResourceMetadata(
     {},
     withDefaults({
       resolveLexicalCapability: () => lexical,
@@ -208,17 +208,17 @@ test('hybrid_pagination_supported reflects cursor_supported when hybrid is publi
   assert.equal(composition.discoveryHints.hybrid_pagination_supported, true);
 });
 
-test('owner_polyfill_requires_source_kind_connector only published in non-native mode', () => {
-  const polyfill = executeRsProtectedResourceMetadata(
+test('owner_polyfill_requires_source_kind_connector only published in non-native mode', async () => {
+  const polyfill = (await executeRsProtectedResourceMetadata(
     {},
     withDefaults({ isNativeSingleSourceMode: () => false }),
-  ).composition;
+  )).composition;
   assert.equal(polyfill.discoveryHints.owner_polyfill_requires_source_kind_connector, true);
 
-  const native = executeRsProtectedResourceMetadata(
+  const native = (await executeRsProtectedResourceMetadata(
     {},
     withDefaults({ isNativeSingleSourceMode: () => true }),
-  ).composition;
+  )).composition;
   assert.equal(
     native.discoveryHints.owner_polyfill_requires_source_kind_connector,
     undefined,
