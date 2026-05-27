@@ -24,7 +24,8 @@ export type DashboardSection =
   | "records"
   | "schedules"
   | "deployment"
-  | "device-exporters";
+  | "device-exporters"
+  | "event-subscriptions";
 
 /**
  * Shell binding mode.
@@ -58,6 +59,11 @@ function buildNav(routes: Routes, mode: ShellMode): NavItem[] {
       href: routes.section.deviceExporters,
       label: "Device exporters",
       match: (a) => a === "device-exporters",
+    });
+    nav.push({
+      href: routes.section.eventSubscriptions,
+      label: "Event subscriptions",
+      match: (a) => a === "event-subscriptions",
     });
   }
   return nav;

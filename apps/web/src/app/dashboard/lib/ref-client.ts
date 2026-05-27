@@ -274,10 +274,10 @@ export interface RefConnectorSummary {
   /** Top-level mirror of `connection_health.next_action`. */
   next_action: RefNextAction | null;
   refresh_policy?: RefreshPolicy | null;
-  schedule: RefSchedule | null;
-  streams: string[];
-  stream_count?: number;
   retained_bytes?: RefRetainedBytesBreakdown | null;
+  schedule: RefSchedule | null;
+  stream_count?: number;
+  streams: string[];
   total_records: number;
   total_retained_bytes?: number | null;
 }
@@ -299,10 +299,6 @@ export interface RefNextAction {
   action_target: string | null;
   attention_id: string | null;
   expires_at: string | null;
-  owner_action: "act_elsewhere" | "operate_attachment" | "provide_value" | null;
-  reason_code: string | null;
-  response_contract: "response_required" | "none" | null;
-  source: "none" | "schedule_fallback" | "structured";
   /**
    * Durable notification delivery state for the attention prompt
    * driving this CTA. `null` for schedule-fallback CTAs (the durable
@@ -313,6 +309,10 @@ export interface RefNextAction {
    * — notification failure is not permission to relaunch the run.
    */
   notification_state?: "acknowledged" | "failed" | "pending" | "sent" | "suppressed" | null;
+  owner_action: "act_elsewhere" | "operate_attachment" | "provide_value" | null;
+  reason_code: string | null;
+  response_contract: "response_required" | "none" | null;
+  source: "none" | "schedule_fallback" | "structured";
 }
 
 export type RefAttentionAxis = "acknowledged" | "in_progress" | "none" | "open";
@@ -343,18 +343,18 @@ export interface RefConnectionConditionRemediation {
 }
 
 export interface RefConnectionHealthCondition {
-  id: string;
-  type: string;
-  status: "false" | "true" | "unknown";
-  severity: "blocked" | "error" | "info" | "warning";
-  reason: string;
-  message: string;
-  origin: string;
-  observed_at: string | null;
-  expires_at: string | null;
   current?: boolean;
-  sensitivity: "owner" | "public" | "secret_redacted";
+  expires_at: string | null;
+  id: string;
+  message: string;
+  observed_at: string | null;
+  origin: string;
+  reason: string;
   remediation: RefConnectionConditionRemediation | null;
+  sensitivity: "owner" | "public" | "secret_redacted";
+  severity: "blocked" | "error" | "info" | "warning";
+  status: "false" | "true" | "unknown";
+  type: string;
 }
 
 export interface RefConnectionHealthSnapshot {
@@ -371,13 +371,13 @@ export interface RefConnectionHealthSnapshot {
   };
   conditions?: readonly RefConnectionHealthCondition[];
   dominant_condition_id?: string | null;
-  supporting_condition_ids?: readonly string[];
   last_success_at: string | null;
   /** Non-secret owner CTA, or null when no attention is required. */
   next_action: RefNextAction | null;
   next_attempt_at: string | null;
   reason_code: string | null;
   state: "blocked" | "cooling_off" | "degraded" | "healthy" | "idle" | "needs_attention" | "unknown";
+  supporting_condition_ids?: readonly string[];
   unknown_reasons: readonly string[];
 }
 
@@ -898,4 +898,97 @@ export interface OwnerIssuedClient {
  */
 export async function listOwnerIssuedClients(): Promise<ListResponse<OwnerIssuedClient>> {
   return (await refFetch("/_ref/clients", { owner: "true" })) as ListResponse<OwnerIssuedClient>;
+}
+
+// ---------------------------------------------------------------------------
+// Client event subscriptions — operator oversight surface
+//
+// Spec: openspec/changes/add-client-event-subscription-management/specs/
+//       reference-implementation-architecture/spec.md
+// ---------------------------------------------------------------------------
+
+export type ClientEventSubscriptionStatus =
+  | "pending_verification"
+  | "active"
+  | "disabled"
+  | "disabled_failure"
+  | "disabled_revoked"
+  | "deleted";
+
+export interface ClientEventSubscriptionSummary {
+  callback_host: string;
+  client_id: string;
+  created_at: string;
+  disabled_at: string | null;
+  disabled_reason: string | null;
+  final_failure_count: number;
+  grant_id: string;
+  last_attempt_ok: boolean | null;
+  last_attempt_status_code: number | null;
+  last_attempted_at: string | null;
+  pending_queue_count: number;
+  status: ClientEventSubscriptionStatus;
+  subscription_id: string;
+  updated_at: string;
+}
+
+export interface ClientEventSubscriptionAttempt {
+  attempt_id: number;
+  attempted_at: string;
+  error: string | null;
+  event_id: string;
+  event_type: string;
+  latency_ms: number | null;
+  ok: boolean;
+  queue_id: number;
+  response_snippet: string | null;
+  status_code: number | null;
+}
+
+export interface ClientEventSubscriptionDetail extends ClientEventSubscriptionSummary {
+  callback_url: string;
+  recent_attempts: ClientEventSubscriptionAttempt[];
+  scope: { source?: unknown; streams?: Array<{ name: string }> } | null;
+  subject_id: string;
+}
+
+export interface ListClientEventSubscriptionsQuery {
+  client_id?: string;
+  grant_id?: string;
+  status?: ClientEventSubscriptionStatus | string;
+}
+
+export async function listClientEventSubscriptions(
+  opts: ListClientEventSubscriptionsQuery = {}
+): Promise<ListResponse<ClientEventSubscriptionSummary>> {
+  return (await refFetch(
+    "/_ref/event-subscriptions",
+    opts as Record<string, string | number | undefined>
+  )) as ListResponse<ClientEventSubscriptionSummary>;
+}
+
+export async function getClientEventSubscription(
+  subscriptionId: string
+): Promise<ClientEventSubscriptionDetail | null> {
+  try {
+    return (await refFetch(
+      `/_ref/event-subscriptions/${encodeURIComponent(subscriptionId)}`
+    )) as ClientEventSubscriptionDetail;
+  } catch (err) {
+    if (err instanceof RefNotFoundError) {
+      return null;
+    }
+    throw err;
+  }
+}
+
+export async function disableClientEventSubscription(
+  subscriptionId: string,
+  reason?: string | null
+): Promise<ClientEventSubscriptionDetail> {
+  return (await refFetch(`/_ref/event-subscriptions/${encodeURIComponent(subscriptionId)}/disable`, undefined, {
+    body: JSON.stringify(reason ? { reason } : {}),
+    headers: { "content-type": "application/json" },
+    method: "POST",
+  })) as ClientEventSubscriptionDetail;
 }
