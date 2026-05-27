@@ -175,9 +175,6 @@ test("connector-row freshness line refuses to render content when evidence colle
 
 // ─── local-device operator-ideal assertions ──────────────────────────────
 
-const SYNCING_LABEL = /"Syncing"/;
-const OUTBOX_ACTIVE_GUARD = /health\.axes\.outbox === "active"/;
-const SYNCING_RUNNING_TONE = /label: "Syncing"[\s\S]*tone: "running"/;
 const FRESHNESS_DEVICE_BOTH = /data-testid="freshness-device-both"/;
 const LAST_CHECKED_LABEL = /last checked:/;
 const LAST_INGEST_LABEL = /last ingest:/;
@@ -186,12 +183,22 @@ const RETAINED_CURRENT_LABEL = /current \$\{formatBytes\(currentBytes\)\}/;
 const RETAINED_HISTORY_LABEL = /history \$\{formatBytes\(historyBytes\)\}/;
 const RUN_ACTION_RECEIVES_CONNECTION_ID =
   /runConnectorNowAction\(\s*connector\.connector_id,\s*connectionId \?\? connectorInstanceId \?\? null\s*\)/;
+const USES_SHARED_STATUS_HELPER = /deriveConnectionStatusDisplay\(\{/;
+const PASSES_LOCAL_DEVICE_PROGRESS = /localDeviceProgress=\{overview\.localDeviceProgress \?\? null\}/;
 
-test("connector-row shows 'Syncing' label when outbox is active during idle state", async () => {
+test("connector-row delegates pill rendering to the shared deriveConnectionStatusDisplay helper", async () => {
+  // The row must NOT recomplect the spine's evidence model in JSX —
+  // health verdict vs activity vs readiness must come from the shared
+  // helper so the same vocabulary holds across surfaces and tests.
   const src = await readFile(ROW_FILE, "utf8");
-  assert.match(src, SYNCING_LABEL);
-  assert.match(src, OUTBOX_ACTIVE_GUARD);
-  assert.match(src, SYNCING_RUNNING_TONE);
+  assert.match(src, USES_SHARED_STATUS_HELPER);
+});
+
+test("connector-row threads local-device progress into the connection pill", async () => {
+  // The pill needs localDeviceProgress to distinguish a passive idle
+  // collector from one that is currently receiving push-mode ingest.
+  const src = await readFile(ROW_FILE, "utf8");
+  assert.match(src, PASSES_LOCAL_DEVICE_PROGRESS);
 });
 
 test("connector-row freshness line shows both last-checked and last-ingest when both are present", async () => {
@@ -201,13 +208,12 @@ test("connector-row freshness line shows both last-checked and last-ingest when 
   assert.match(src, LAST_INGEST_LABEL);
 });
 
-test("connector-row outbox-active branch returns a label only, not a RunningBadge", async () => {
+test("connector-row no longer carries an inline connectionHealthDisplay vocabulary table", async () => {
+  // Pill vocabulary moved to lib/connection-evidence.ts so it can be
+  // tested directly. Reintroducing an inline copy would silently
+  // contradict the shared helper used by CLI/API projections.
   const src = await readFile(ROW_FILE, "utf8");
-  const displayFnStart = src.indexOf("function connectionHealthDisplay");
-  const nextFnStart = src.indexOf("\nfunction ", displayFnStart + 1);
-  const displayFn = nextFnStart > 0 ? src.slice(displayFnStart, nextFnStart) : src.slice(displayFnStart);
-  assert.equal(displayFn.includes("RunningBadge"), false,
-    "connectionHealthDisplay must not reference RunningBadge");
+  assert.equal(src.includes("function connectionHealthDisplay"), false);
 });
 
 test("connector-row explains retained bytes as current records plus retained history", async () => {

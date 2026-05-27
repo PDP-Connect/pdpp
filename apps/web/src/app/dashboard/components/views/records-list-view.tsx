@@ -272,7 +272,7 @@ function activityLabel(failed: number, running: number): string {
   if (running > 0) {
     return "Running";
   }
-  return "Idle";
+  return "No active runs";
 }
 
 function activityTone(failed: number, running: number): HealthStatTone {

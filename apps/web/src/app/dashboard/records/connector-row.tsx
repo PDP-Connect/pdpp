@@ -7,6 +7,8 @@ import { Button } from "@/components/ui/button.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
 import {
   type AxisChip,
+  type ConnectionStatusDisplay,
+  deriveConnectionStatusDisplay,
   type EvidenceTone,
   formatDominantCondition,
   formatLastDurableProgress,
@@ -206,7 +208,7 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
             connectionHealth={connectionHealth}
             hasRecords={totalRecords > 0}
             lastRun={lastRun}
-            lastSuccessfulRun={lastSuccessfulRun}
+            localDeviceProgress={overview.localDeviceProgress ?? null}
             running={running}
             runStart={running ? effectiveStartIso : lastRun?.first_at}
             runsHref={runsHref}
@@ -277,7 +279,7 @@ function RunStatus({
   running,
   runStart,
   lastRun,
-  lastSuccessfulRun,
+  localDeviceProgress,
   runsHref,
 }: {
   connectionHealth?: ConnectorOverview["connectionHealth"];
@@ -285,7 +287,7 @@ function RunStatus({
   running: boolean;
   runStart: string | undefined;
   lastRun: ConnectorRunRef | null;
-  lastSuccessfulRun: ConnectorRunRef | null;
+  localDeviceProgress: ConnectorOverview["localDeviceProgress"];
   runsHref: string;
 }) {
   // Durable progress = any evidence that this connection has produced data
@@ -299,6 +301,7 @@ function RunStatus({
         hasDurableProgress={hasDurableProgress}
         health={connectionHealth}
         lastRun={lastRun}
+        localDeviceProgress={localDeviceProgress ?? null}
         running={running}
         runStart={runStart}
         runsHref={runsHref}
@@ -386,7 +389,7 @@ function RunStatus({
         <Link
           className="pdpp-caption inline-flex items-center gap-1 text-[color:var(--warning)] hover:underline"
           href={`${runsHref}/${encodeURIComponent(lastRun.run_id)}`}
-          title="Idle, but the latest run reported known source gaps"
+          title="Latest run succeeded but reported known source gaps"
         >
           <StatusDot shape="diamond" tone="warning" />
           Partial
@@ -396,18 +399,18 @@ function RunStatus({
     return (
       <span
         className="pdpp-caption inline-flex items-center gap-1 text-muted-foreground"
-        title="idle, last run succeeded"
+        title="Latest run succeeded; connection-health evidence is unavailable"
       >
         <StatusDot tone="success" />
-        Idle
+        Last sync succeeded
       </span>
     );
   }
-  // Unknown or skipped — still idle from the user's perspective.
+  // Unknown or skipped — report the run status without inventing a health verdict.
   return (
     <span
       className="pdpp-caption inline-flex items-center gap-1 text-muted-foreground"
-      title={`idle, last run ${lastRun.status}`}
+      title={`Latest run status: ${lastRun.status}`}
     >
       <StatusDot tone="neutral" />
       {lastRun.status.replace(/_/g, " ")}
@@ -419,6 +422,7 @@ function ConnectionHealthStatus({
   hasDurableProgress,
   health,
   lastRun,
+  localDeviceProgress,
   running,
   runStart,
   runsHref,
@@ -426,11 +430,17 @@ function ConnectionHealthStatus({
   hasDurableProgress: boolean;
   health: NonNullable<ConnectorOverview["connectionHealth"]>;
   lastRun: ConnectorRunRef | null;
+  localDeviceProgress: import("../lib/ref-client.ts").RefLocalDeviceProgress | null;
   running: boolean;
   runStart: string | undefined;
   runsHref: string;
 }) {
-  const { label, shape, tone, title } = connectionHealthDisplay(health, hasDurableProgress);
+  const display: ConnectionStatusDisplay = deriveConnectionStatusDisplay({
+    hasDurableProgress,
+    health,
+    localDeviceProgress,
+  });
+  const { label, shape, tone, title } = display;
   const content = (
     <span className={`pdpp-caption inline-flex items-center gap-1 ${connectionHealthTextClass(tone)}`} title={title}>
       <StatusDot shape={shape} tone={tone} />
@@ -448,10 +458,8 @@ function ConnectionHealthStatus({
     content
   );
 
-  // RunningBadge requires a scheduler run context. For local-device
-  // connections whose outbox is active but whose health state now shows
-  // "Syncing", the running dot is already embedded in the pill label via
-  // the "running" tone in StatusDot — no separate badge needed.
+  // RunningBadge surfaces a scheduler-run elapsed-time counter; the headline
+  // pill stays focused on the derived connection verdict.
   if (running || health.badges.syncing) {
     return (
       <span className="inline-flex items-center gap-2">
@@ -465,67 +473,6 @@ function ConnectionHealthStatus({
   }
 
   return healthPill;
-}
-
-function connectionHealthDisplay(
-  health: NonNullable<ConnectorOverview["connectionHealth"]>,
-  hasDurableProgress: boolean
-): {
-  label: string;
-  shape?: "circle" | "diamond" | "triangle";
-  title: string;
-  tone: "success" | "danger" | "neutral" | "running" | "warning";
-} {
-  const reason = health.reason_code ? ` · ${health.reason_code}` : "";
-  const dominantCondition = formatDominantCondition(health);
-  const dominantTitle = dominantCondition?.title ?? null;
-  switch (health.state) {
-    case "healthy":
-      if (!hasDurableProgress) {
-        return {
-          label: "No data yet",
-          title: "Last check completed, but this connection has no retained records yet",
-          tone: "neutral",
-        };
-      }
-      return { label: "Healthy", title: "Required coverage is current and complete", tone: "success" };
-    case "needs_attention":
-      return { label: "Needs attention", shape: "diamond", title: dominantTitle ?? `Owner action required${reason}`, tone: "warning" };
-    case "cooling_off":
-      return { label: "Cooling off", shape: "diamond", title: dominantTitle ?? `Waiting before retry${reason}`, tone: "warning" };
-    case "blocked":
-      return { label: "Blocked", shape: "triangle", title: dominantTitle ?? `Cannot make progress${reason}`, tone: "danger" };
-    case "degraded":
-      return {
-        label: health.axes.coverage === "gaps" || health.axes.coverage === "partial" ? "Partial" : "Degraded",
-        shape: "diamond",
-        title: dominantTitle ?? `Useful data may exist, but coverage or freshness is incomplete${reason}`,
-        tone: "warning",
-      };
-    case "idle":
-      // When the outbox axis reports active work in progress, labeling the
-      // row "Idle" directly contradicts the evidence. Use "Syncing" instead
-      // so the operator knows the device collector is draining its outbox.
-      // "Never run" is only honest when there is no durable progress evidence
-      // at all (no runs, no records, no heartbeat).
-      if (health.axes.outbox === "active") {
-        return { label: "Syncing", title: "Device outbox is actively draining", tone: "running" };
-      }
-      return {
-        label: hasDurableProgress ? "Idle" : "Never run",
-        title: hasDurableProgress ? "No active work" : "No durable progress yet",
-        tone: "neutral",
-      };
-    case "unknown":
-      return {
-        label: "Unknown",
-        title:
-          health.unknown_reasons.length > 0
-            ? `Projection evidence missing: ${health.unknown_reasons.join(", ")}`
-            : "Projection evidence is incomplete",
-        tone: "neutral",
-      };
-  }
 }
 
 function DominantConditionNotice({ condition }: { condition: ReturnType<typeof formatDominantCondition> }) {
@@ -836,10 +783,7 @@ function NextActionPill({
         </span>
       ) : null}
       {formatted.notificationHint ? (
-        <span
-          className="pdpp-caption text-muted-foreground"
-          data-testid="next-action-notification-hint"
-        >
+        <span className="pdpp-caption text-muted-foreground" data-testid="next-action-notification-hint">
           {formatted.notificationHint}
         </span>
       ) : null}

@@ -504,3 +504,153 @@ export function resolveRecordCountDisplay(overview: ConnectorOverview): RecordCo
     title: `${overview.totalRecords.toLocaleString()} records ingested`,
   };
 }
+
+/**
+ * Owner-facing pill for the records row.
+ *
+ * The reference server projects a single connection-health `state` over a
+ * deliberately decomplected evidence model: readiness, freshness,
+ * coverage, attention, scheduler backoff, outbox state, and projection
+ * reliability are separate axes/conditions, and the projection chooses
+ * one dominant verdict. The dashboard SHOULD NOT recomplect them into a
+ * UX that contradicts the model. In particular:
+ *
+ * - "Healthy" is a health verdict. The spine emits it only when coverage
+ *   is complete, freshness is fresh, backlog is clear, and projection
+ *   evidence is current.
+ * - The spine's `idle` is NOT a health verdict: it means "no terminal
+ *   collection verdict yet, and nothing stronger is wrong." Surfacing it
+ *   as "Idle" alongside "Healthy" reads as a comparable health state
+ *   and misleads operators. We translate it to "Awaiting first sync"
+ *   (no durable progress) or "Ready" (durable progress exists) so the
+ *   operator reads it as a readiness statement, not a data-health or
+ *   activity statement.
+ * - Push-mode local collectors land in spine `idle` when there is no
+ *   terminal scheduler run, even when device ingest exists. The headline
+ *   stays readiness-oriented ("Ready") and the row's progress line shows
+ *   last checked / last ingest timing. Only an actively-draining outbox
+ *   becomes "Syncing".
+ * - Failures, blocked, cooling_off, degraded, and needs_attention pass
+ *   through with strong vocabulary so the operator can see why.
+ *
+ * The shape of the return is intentionally narrow: label, tooltip,
+ * tone, and shape — everything the row needs to render the pill. Tests
+ * exercise this function directly without a JSX harness.
+ */
+export interface ConnectionStatusDisplay {
+  label: string;
+  shape?: "circle" | "diamond" | "triangle";
+  title: string;
+  tone: "danger" | "neutral" | "running" | "success" | "warning";
+}
+
+export function deriveConnectionStatusDisplay(input: {
+  hasDurableProgress: boolean;
+  health: RefConnectionHealthSnapshot;
+  localDeviceProgress?: RefLocalDeviceProgress | null;
+}): ConnectionStatusDisplay {
+  const { hasDurableProgress, health, localDeviceProgress } = input;
+  const reason = health.reason_code ? ` · ${health.reason_code}` : "";
+  const dominant = dominantConditionTitle(health);
+  switch (health.state) {
+    case "healthy":
+      if (!hasDurableProgress) {
+        return {
+          label: "Ready",
+          title: "Readiness checks pass, but this connection has no retained records yet.",
+          tone: "neutral",
+        };
+      }
+      return { label: "Healthy", title: "Required coverage is current and complete.", tone: "success" };
+    case "needs_attention":
+      return {
+        label: "Needs attention",
+        shape: "diamond",
+        title: dominant ?? `Owner action required${reason}.`,
+        tone: "warning",
+      };
+    case "cooling_off":
+      return {
+        label: "Cooling off",
+        shape: "diamond",
+        title: dominant ?? `Waiting before the next retry${reason}.`,
+        tone: "warning",
+      };
+    case "blocked":
+      return {
+        label: "Blocked",
+        shape: "triangle",
+        title: dominant ?? `Cannot make progress${reason}.`,
+        tone: "danger",
+      };
+    case "degraded": {
+      const partial = health.axes.coverage === "gaps" || health.axes.coverage === "partial";
+      return {
+        label: partial ? "Partial" : "Degraded",
+        shape: "diamond",
+        title: dominant ?? `Useful data may exist, but coverage or freshness is incomplete${reason}.`,
+        tone: "warning",
+      };
+    }
+    case "idle":
+      return idleDisplay({ hasDurableProgress, health, localDeviceProgress });
+    case "unknown":
+      return {
+        label: "Unknown",
+        title:
+          health.unknown_reasons.length > 0
+            ? `Projection evidence missing: ${health.unknown_reasons.join(", ")}.`
+            : "Projection evidence is incomplete.",
+        tone: "neutral",
+      };
+  }
+}
+
+function idleDisplay(input: {
+  hasDurableProgress: boolean;
+  health: RefConnectionHealthSnapshot;
+  localDeviceProgress?: RefLocalDeviceProgress | null;
+}): ConnectionStatusDisplay {
+  const { hasDurableProgress, health, localDeviceProgress } = input;
+  // The spine projects `idle` for two distinct shapes:
+  //   1. an intentionally paused schedule (`ScheduleEligible=false`), and
+  //   2. "no terminal collection verdict yet, nothing wrong" — the
+  //      common case for push-mode local collectors that have not run
+  //      under the scheduler, and for fresh connections before their
+  //      first run finishes.
+  // The pill should describe readiness, not activity or health, in this
+  // branch — labeling it "Idle" alongside "Healthy" misleads operators
+  // into reading it as a comparable health verdict.
+  if (health.axes.outbox === "active") {
+    return {
+      label: "Syncing",
+      title: "The local-device outbox is draining. This connection is actively receiving work from the device.",
+      tone: "running",
+    };
+  }
+  if (hasDurableProgress) {
+    if (localDeviceProgress?.last_heartbeat_status === "healthy" || localDeviceProgress?.last_heartbeat_at) {
+      return {
+        label: "Ready",
+        title: "The local collector has checked in. Last ingest and device activity are shown on the progress line.",
+        tone: "neutral",
+      };
+    }
+    return {
+      label: "Ready",
+      title:
+        "Records exist for this connection, and no active collection issue is known. The progress line shows the latest durable evidence.",
+      tone: "neutral",
+    };
+  }
+  return {
+    label: "Awaiting first sync",
+    title: "No durable progress yet for this connection. Trigger a sync to populate it.",
+    tone: "neutral",
+  };
+}
+
+function dominantConditionTitle(snapshot: RefConnectionHealthSnapshot): string | null {
+  const summary = formatDominantCondition(snapshot);
+  return summary?.title ?? null;
+}

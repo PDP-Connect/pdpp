@@ -9,6 +9,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  deriveConnectionStatusDisplay,
   formatCoverageAxis,
   formatDominantCondition,
   formatFreshnessAxis,
@@ -82,7 +83,10 @@ test("axis chips degrade safely when runtime axes are missing or novel", () => {
     out.map((c) => c.label),
     ["Coverage · unknown", "Freshness · unknown", "Outbox · unknown"]
   );
-  assert.equal(out.every((c) => c.tone === "neutral"), true);
+  assert.equal(
+    out.every((c) => c.tone === "neutral"),
+    true
+  );
 });
 
 test("freshness axis maps known states honestly", () => {
@@ -430,4 +434,214 @@ test("resolveRecordCountDisplay handles 0 records as honest 0 when there is no e
   const out = resolveRecordCountDisplay(baseOverview({ totalRecords: 0 }));
   assert.equal(out.label, "0");
   assert.equal(out.reliable, true);
+});
+
+// ─── deriveConnectionStatusDisplay: vocabulary separation ────────────────
+//
+// The records row pill must read as a health/readiness/activity verdict,
+// never recomplecting the spine's evidence model. These tests pin the
+// vocabulary so the operator sees the three required cases correctly:
+//
+//   1. A healthy scheduled connection with recent durable progress reads
+//      as a strong health verdict (success tone), distinct from activity.
+//   2. A local collector with ingest evidence and an idle outbox does
+//      not read as "Idle" alongside the same word used for paused /
+//      never-run connections. It reads as "Ready"; the progress line
+//      owns the timing/activity details.
+//   3. Blocked, degraded, and needs_attention connections still surface a
+//      strong verdict that drives operators to the dominant condition's
+//      remediation, not to a vague "Idle".
+
+test("deriveConnectionStatusDisplay: healthy scheduled connection reads as a health verdict", () => {
+  const out = deriveConnectionStatusDisplay({
+    hasDurableProgress: true,
+    health: snapshot({
+      state: "healthy",
+      axes: { coverage: "complete", freshness: "fresh", attention: "none", outbox: "idle" },
+    }),
+    localDeviceProgress: null,
+  });
+  assert.equal(out.label, "Healthy");
+  assert.equal(out.tone, "success");
+  assert.equal(out.title.toLowerCase().includes("coverage"), true);
+});
+
+test("deriveConnectionStatusDisplay: healthy projection without durable progress reads as Ready, not Healthy", () => {
+  // The spine emits `healthy` when readiness checks pass even before the
+  // first record lands. The pill must distinguish that from a connection
+  // with retained records: "Ready" reads as a readiness statement.
+  const out = deriveConnectionStatusDisplay({
+    hasDurableProgress: false,
+    health: snapshot({ state: "healthy" }),
+    localDeviceProgress: null,
+  });
+  assert.equal(out.label, "Ready");
+  assert.equal(out.tone, "neutral");
+  assert.equal(out.title.toLowerCase().includes("no retained records"), true);
+});
+
+test("deriveConnectionStatusDisplay: local collector with ingest evidence and idle outbox reads as Ready, not Idle", () => {
+  // The dominant failure mode this change addresses: a local-device
+  // collector that has successfully pushed records (so the spine sees a
+  // recent `last_ingest_at`) but has no scheduler terminal verdict. The
+  // spine projects `idle` to mean "no verdict yet" — the row must not
+  // collapse that to a vague "Idle" pill that reads as a health label.
+  const out = deriveConnectionStatusDisplay({
+    hasDurableProgress: true,
+    health: snapshot({
+      state: "idle",
+      axes: { coverage: "unknown", freshness: "unknown", attention: "none", outbox: "idle" },
+    }),
+    localDeviceProgress: {
+      last_heartbeat_at: "2026-05-22T16:30:00Z",
+      last_heartbeat_status: "healthy",
+      last_ingest_at: "2026-05-22T16:35:00Z",
+      records_pending: 0,
+      source_count: 1,
+    },
+  });
+  assert.equal(out.label, "Ready");
+  assert.equal(out.tone, "neutral");
+  assert.equal(out.title.toLowerCase().includes("last ingest"), true);
+  assert.equal(out.label.toLowerCase() === "idle", false);
+});
+
+test("deriveConnectionStatusDisplay: idle projection with no durable progress reads as Awaiting first sync", () => {
+  // The spine's `idle` for a fresh connection should not read as a
+  // health verdict — there is no verdict yet. "Awaiting first sync"
+  // describes readiness/activity honestly.
+  const out = deriveConnectionStatusDisplay({
+    hasDurableProgress: false,
+    health: snapshot({ state: "idle" }),
+    localDeviceProgress: null,
+  });
+  assert.equal(out.label, "Awaiting first sync");
+  assert.equal(out.tone, "neutral");
+});
+
+test("deriveConnectionStatusDisplay: idle projection with durable progress reads as Ready", () => {
+  // A connection with durable progress that the spine still marks `idle`
+  // (no current terminal verdict, nothing actively wrong) should read as
+  // "Ready" — a readiness statement, not a health verdict.
+  const out = deriveConnectionStatusDisplay({
+    hasDurableProgress: true,
+    health: snapshot({ state: "idle" }),
+    localDeviceProgress: null,
+  });
+  assert.equal(out.label, "Ready");
+  assert.equal(out.tone, "neutral");
+});
+
+test("deriveConnectionStatusDisplay: outbox=active overrides idle as Syncing regardless of device progress", () => {
+  // Push-mode collectors with an actively-draining outbox should read as
+  // "Syncing" even when no device-progress snapshot has been recorded
+  // yet. The outbox axis alone carries that signal.
+  const out = deriveConnectionStatusDisplay({
+    hasDurableProgress: true,
+    health: snapshot({
+      state: "idle",
+      axes: { coverage: "complete", freshness: "fresh", attention: "none", outbox: "active" },
+    }),
+    localDeviceProgress: null,
+  });
+  assert.equal(out.label, "Syncing");
+  assert.equal(out.tone, "running");
+});
+
+test("deriveConnectionStatusDisplay: blocked connection surfaces dominant condition title, never Idle", () => {
+  const out = deriveConnectionStatusDisplay({
+    hasDurableProgress: false,
+    health: snapshot({
+      state: "blocked",
+      reason_code: "credential_rejected",
+      dominant_condition_id: "CredentialsValid:credential_rejected",
+      conditions: [
+        {
+          id: "CredentialsValid:credential_rejected",
+          type: "CredentialsValid",
+          status: "false",
+          severity: "blocked",
+          reason: "credential_rejected",
+          message: "The source rejected the configured credentials.",
+          origin: "readiness",
+          observed_at: null,
+          expires_at: null,
+          sensitivity: "secret_redacted",
+          remediation: {
+            action: "refresh_credentials",
+            label: "Reconnect or update the source credentials",
+            retryable: false,
+            target: "credentials",
+          },
+        },
+      ],
+    }),
+    localDeviceProgress: null,
+  });
+  assert.equal(out.label, "Blocked");
+  assert.equal(out.tone, "danger");
+  assert.equal(out.shape, "triangle");
+  assert.equal(out.title.includes("rejected"), true);
+  assert.equal(out.title.includes("Reconnect"), true);
+});
+
+test("deriveConnectionStatusDisplay: degraded with partial coverage reads as Partial", () => {
+  const out = deriveConnectionStatusDisplay({
+    hasDurableProgress: true,
+    health: snapshot({
+      state: "degraded",
+      axes: { coverage: "partial", freshness: "fresh", attention: "none", outbox: "idle" },
+    }),
+    localDeviceProgress: null,
+  });
+  assert.equal(out.label, "Partial");
+  assert.equal(out.tone, "warning");
+  assert.equal(out.shape, "diamond");
+});
+
+test("deriveConnectionStatusDisplay: needs_attention surfaces dominant condition rather than generic copy", () => {
+  const out = deriveConnectionStatusDisplay({
+    hasDurableProgress: true,
+    health: snapshot({
+      state: "needs_attention",
+      dominant_condition_id: "AttentionClear:otp_required",
+      conditions: [
+        {
+          id: "AttentionClear:otp_required",
+          type: "AttentionClear",
+          status: "false",
+          severity: "warning",
+          reason: "otp_required",
+          message: "A one-time passcode is required to continue.",
+          origin: "operator",
+          observed_at: null,
+          expires_at: null,
+          sensitivity: "owner",
+          remediation: {
+            action: "provide_value",
+            label: "Provide the OTP",
+            retryable: true,
+            target: "dashboard",
+          },
+        },
+      ],
+    }),
+    localDeviceProgress: null,
+  });
+  assert.equal(out.label, "Needs attention");
+  assert.equal(out.tone, "warning");
+  assert.equal(out.title.toLowerCase().includes("one-time passcode"), true);
+});
+
+test("deriveConnectionStatusDisplay: unknown projection lists unknown reasons in the tooltip", () => {
+  const out = deriveConnectionStatusDisplay({
+    hasDurableProgress: true,
+    health: snapshot({
+      state: "unknown",
+      unknown_reasons: ["schedule_unavailable", "freshness_unknown"],
+    }),
+    localDeviceProgress: null,
+  });
+  assert.equal(out.label, "Unknown");
+  assert.equal(out.title.includes("schedule_unavailable"), true);
 });

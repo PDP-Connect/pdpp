@@ -175,13 +175,12 @@ test("connector-row freshness line refuses to render content when evidence colle
 
 // ─── local-device operator-ideal assertions ──────────────────────────────
 //
-// Goal 1: outbox=active on an idle row should show "Syncing", not "Idle".
-// Goal 2: freshness line shows both "last checked" and "last ingest" when
-//   localDeviceProgress has both timestamps.
+// The pill vocabulary lives in `lib/connection-evidence.ts` so it can be
+// tested directly without a JSX harness. These structural assertions
+// verify that the row consumes the shared helper and threads the
+// evidence it needs (local-device progress, in particular) without
+// reintroducing an inline vocabulary table.
 
-const SYNCING_LABEL = /"Syncing"/;
-const OUTBOX_ACTIVE_GUARD = /health\.axes\.outbox === "active"/;
-const SYNCING_RUNNING_TONE = /label: "Syncing"[\s\S]*tone: "running"/;
 const FRESHNESS_DEVICE_BOTH = /data-testid="freshness-device-both"/;
 const LAST_CHECKED_LABEL = /last checked:/;
 const LAST_INGEST_LABEL = /last ingest:/;
@@ -190,12 +189,17 @@ const RETAINED_CURRENT_LABEL = /current \$\{formatBytes\(currentBytes\)\}/;
 const RETAINED_HISTORY_LABEL = /history \$\{formatBytes\(historyBytes\)\}/;
 const RUN_ACTION_RECEIVES_CONNECTION_ID =
   /runConnectorNowAction\(\s*connector\.connector_id,\s*connectionId \?\? connectorInstanceId \?\? null\s*\)/;
+const USES_SHARED_STATUS_HELPER = /deriveConnectionStatusDisplay\(\{/;
+const PASSES_LOCAL_DEVICE_PROGRESS = /localDeviceProgress=\{overview\.localDeviceProgress \?\? null\}/;
 
-test("connector-row shows 'Syncing' label when outbox is active during idle state", async () => {
+test("connector-row delegates pill rendering to the shared deriveConnectionStatusDisplay helper", async () => {
   const src = await readFile(ROW_FILE, "utf8");
-  assert.match(src, SYNCING_LABEL);
-  assert.match(src, OUTBOX_ACTIVE_GUARD);
-  assert.match(src, SYNCING_RUNNING_TONE);
+  assert.match(src, USES_SHARED_STATUS_HELPER);
+});
+
+test("connector-row threads local-device progress into the connection pill", async () => {
+  const src = await readFile(ROW_FILE, "utf8");
+  assert.match(src, PASSES_LOCAL_DEVICE_PROGRESS);
 });
 
 test("connector-row freshness line shows both last-checked and last-ingest when both are present", async () => {
@@ -205,18 +209,9 @@ test("connector-row freshness line shows both last-checked and last-ingest when 
   assert.match(src, LAST_INGEST_LABEL);
 });
 
-test("connector-row outbox-active branch returns a label only, not a RunningBadge", async () => {
-  // connectionHealthDisplay is a pure label factory — it must never
-  // instantiate UI components. RunningBadge lives in ConnectionHealthStatus
-  // and only fires when `running || health.badges.syncing`. The "Syncing"
-  // label on an outbox-active idle row is conveyed by the text alone.
+test("connector-row no longer carries an inline connectionHealthDisplay vocabulary table", async () => {
   const src = await readFile(ROW_FILE, "utf8");
-  const displayFnStart = src.indexOf("function connectionHealthDisplay");
-  // Find the closing brace of the function (next top-level "function" after it)
-  const nextFnStart = src.indexOf("\nfunction ", displayFnStart + 1);
-  const displayFn = nextFnStart > 0 ? src.slice(displayFnStart, nextFnStart) : src.slice(displayFnStart);
-  assert.equal(displayFn.includes("RunningBadge"), false,
-    "connectionHealthDisplay must not reference RunningBadge");
+  assert.equal(src.includes("function connectionHealthDisplay"), false);
 });
 
 test("connector-row explains retained bytes as current records plus retained history", async () => {
