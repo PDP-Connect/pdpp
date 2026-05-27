@@ -31,6 +31,7 @@ import {
   type ListResponse,
   type MailboxObject,
 } from "imapflow";
+import { type FingerprintCursor, openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
 import { stringifyForJsonl } from "../../src/safe-emit.ts";
 import { requireCredentialsOrAsk, resourceSet } from "../../src/scope-filters.ts";
@@ -41,7 +42,6 @@ import {
   buildDeltaMessageRecord,
   buildMessageBodyRecord,
   buildMessageRecord,
-  buildThreadFingerprint,
   buildThreadRecord,
   canonicalLabelName,
   decodeBodyPart,
@@ -1227,26 +1227,7 @@ async function runDeltaPass(
 
 // ─── Threads pass ───────────────────────────────────────────────────────
 
-/**
- * Per-thread fingerprint sink/source. `priorFingerprints` is read from the
- * prior `threads` STATE cursor; `nextFingerprints` is seeded with the
- * prior map and updated as the pass runs. The sink is what gets written
- * back into the next STATE cursor — pre-seeding with `priorFingerprints`
- * means a thread we deliberately skip emitting carries its fingerprint
- * forward unchanged, mirroring af1700ad's codex pattern. Without the
- * carry-forward, skipped threads would drop from the cursor and
- * re-emit on the run after.
- */
-interface ThreadFingerprintCursor {
-  nextFingerprints: Map<string, string>;
-  priorFingerprints: Map<string, string>;
-}
-
-async function runThreadsPass(
-  client: ImapFlow,
-  emitRecord: EmitRecordFn,
-  cursor: ThreadFingerprintCursor
-): Promise<void> {
+async function runThreadsPass(client: ImapFlow, emitRecord: EmitRecordFn, cursor: FingerprintCursor): Promise<void> {
   await emit({
     type: "PROGRESS",
     stream: "threads",
@@ -1264,13 +1245,11 @@ async function runThreadsPass(
     labels: true,
     bodyStructure: true,
   };
-  const seenThreadIds = new Set<string>();
   for await (const msg of client.fetch("1:*", threadQuery, { uid: true })) {
     const tid = String(msg.threadId ?? "");
     if (!tid) {
       continue;
     }
-    seenThreadIds.add(tid);
     const env = msg.envelope ?? {};
     const rcv = internalDateToIso(msg.internalDate);
     const msgHasAttachments =
@@ -1286,23 +1265,31 @@ async function runThreadsPass(
     });
     threadAgg.set(tid, next);
   }
-  for (const agg of threadAgg.values()) {
-    const fingerprint = buildThreadFingerprint(agg);
-    cursor.nextFingerprints.set(agg.id, fingerprint);
-    const prior = cursor.priorFingerprints.get(agg.id);
-    if (prior === fingerprint) {
+  await emitChangedThreads(threadAgg.values(), cursor, emitRecord);
+}
+
+/**
+ * Gate every aggregated thread through the shared fingerprint cursor and
+ * emit only the records whose semantic shape moved since the prior run.
+ * Pruning stale ids is the caller's responsibility — `runThreadsPass`
+ * always drives a full `1:*` scan, so the orchestrator calls
+ * `cursor.pruneStale()` after this returns. Threads with empty ids are
+ * silently dropped: the upstream IMAP loop already filters them.
+ *
+ * Exported so the two-pass churn invariant can be exercised without
+ * standing up an IMAP fixture.
+ */
+export async function emitChangedThreads(
+  aggregates: Iterable<ThreadAggregate>,
+  cursor: FingerprintCursor,
+  emitRecord: EmitRecordFn
+): Promise<void> {
+  for (const agg of aggregates) {
+    const record = buildThreadRecord(agg);
+    if (!cursor.shouldEmit(record)) {
       continue;
     }
-    await emitRecord("threads", buildThreadRecord(agg));
-  }
-  // Threads that disappeared this run (rare, but possible if a thread's
-  // last message was deleted) must drop from the next cursor too — otherwise
-  // a future undelete would have a stale fingerprint waiting. Walk the
-  // prior map and prune any id we didn't see this run.
-  for (const id of cursor.nextFingerprints.keys()) {
-    if (!seenThreadIds.has(id)) {
-      cursor.nextFingerprints.delete(id);
-    }
+    await emitRecord("threads", record);
   }
 }
 
@@ -1330,14 +1317,6 @@ export function readPriorThreadFingerprints(state: Record<string, unknown>): Map
     if (typeof value === "string" && value.length > 0) {
       out.set(id, value);
     }
-  }
-  return out;
-}
-
-function threadFingerprintMapToRecord(m: Map<string, string>): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const [k, v] of m) {
-    out[k] = v;
   }
   return out;
 }
@@ -1400,15 +1379,20 @@ async function runAllMailPasses(
   // (this fetch happened at the end before the reorder), so no throughput
   // change.
   if (deps.requested.has("threads")) {
-    // Per-thread fingerprint cursor: seed `nextFingerprints` with the
-    // prior map so threads we deliberately don't re-emit carry their
-    // fingerprint forward unchanged. Mirrors af1700ad's Codex pattern.
-    const priorThreadFingerprints = readPriorThreadFingerprints(state);
-    const nextThreadFingerprints = new Map<string, string>(priorThreadFingerprints);
-    await runThreadsPass(client, deps.emitRecord, {
-      priorFingerprints: priorThreadFingerprints,
-      nextFingerprints: nextThreadFingerprints,
+    // Per-thread fingerprint cursor via the shared helper. The prior STATE
+    // shape (`state.threads.thread_fingerprints`) predates the helper's
+    // default `fingerprints` key, so the prior map is decoded by the
+    // gmail-local reader and handed in via `priorFingerprints`. The
+    // cursor still seeds its next map from the prior so threads we skip
+    // emitting carry their fingerprint forward unchanged.
+    const threadCursor = openFingerprintCursor(state, {
+      priorFingerprints: readPriorThreadFingerprints(state),
     });
+    await runThreadsPass(client, deps.emitRecord, threadCursor);
+    // Full `1:*` scan: drop ids absent from this run so a future
+    // re-creation of the same thread_id triggers a fresh emit instead of
+    // matching a stale fingerprint.
+    threadCursor.pruneStale();
     // The threads STATE cursor carries the next-run fingerprint map.
     // Emitted here (inside the mailbox lock) so it's persisted right
     // after the threads pass and before the messages pass; if the
@@ -1419,7 +1403,7 @@ async function runAllMailPasses(
       stream: "threads",
       cursor: {
         fetched_at: nowIso(),
-        thread_fingerprints: threadFingerprintMapToRecord(nextThreadFingerprints),
+        thread_fingerprints: threadCursor.toState(),
       },
     });
   }

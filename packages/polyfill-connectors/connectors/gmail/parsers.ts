@@ -2,8 +2,8 @@
 // they can be unit-tested in isolation (see parsers.test.ts). The IMAP
 // client, its side effects, and clock-dependent helpers live in index.ts.
 
-import { createHash } from "node:crypto";
 import type { MessageAddressObject, MessageEnvelopeObject, MessageStructureObject } from "imapflow";
+import { recordFingerprint } from "../../src/fingerprint-cursor.ts";
 import type { AttachmentRecord, BodySource, ClassifiedBody, ThreadAggregate } from "./types.ts";
 
 // ─── Module-scoped regexes (Biome useTopLevelRegex) ─────────────────────
@@ -588,35 +588,14 @@ export function buildThreadRecord(agg: ThreadAggregate): Record<string, unknown>
  * (subject, participants, counts, dates, labels). No run-clock
  * fields participate.
  *
- * SHA-1 is sufficient here: collision risk is bounded by the
- * per-key change-detection check (a worst-case false-positive
- * silently skips one emit), and the input is small (<10kB per
- * thread record).
+ * Thin wrapper over the shared `recordFingerprint` helper so the gmail
+ * connector and the shared `openFingerprintCursor` agree byte-for-byte
+ * on what an unchanged thread hashes to. Without that agreement the
+ * STATE cursor written by an old build and read by a new one would
+ * force a one-time re-emit of every thread.
  */
 export function buildThreadFingerprint(agg: ThreadAggregate): string {
-  const record = buildThreadRecord(agg);
-  return createHash("sha1").update(stableStringify(record)).digest("hex");
-}
-
-function stableStringify(value: unknown): string {
-  if (value === null || typeof value !== "object") {
-    return JSON.stringify(value) ?? "null";
-  }
-  if (Array.isArray(value)) {
-    return `[${value.map((v) => stableStringify(v)).join(",")}]`;
-  }
-  const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => compareFingerprintKeys(a, b));
-  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stableStringify(v)}`).join(",")}}`;
-}
-
-function compareFingerprintKeys(a: string, b: string): number {
-  if (a < b) {
-    return -1;
-  }
-  if (a > b) {
-    return 1;
-  }
-  return 0;
+  return recordFingerprint(buildThreadRecord(agg));
 }
 
 // ─── Body selection + record builders ───────────────────────────────────
