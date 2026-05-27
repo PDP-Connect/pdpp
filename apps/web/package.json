@@ -7,7 +7,7 @@
   "scripts": {
     "openspec:git-metadata": "node ./scripts/generate-openspec-git-metadata.mjs",
     "//dev-node-options": "NODE_OPTIONS adds Node.js diagnostic reports on fatal V8 errors and uncaught exceptions. Reports land in tmp/node-reports/ at the repo root (gitignored), excluding env/network sections so reports do not persist secrets.",
-    "dev": "sh -c 'mkdir -p ../../tmp/node-reports && pnpm openspec:git-metadata && WEB_PORT_ARGS=${PDPP_WEB_PORT:+--port $PDPP_WEB_PORT} && NODE_OPTIONS=\"--report-on-fatalerror --report-uncaught-exception --report-exclude-env --report-exclude-network --report-directory=$(cd ../../tmp/node-reports && pwd)\" next dev --webpack --hostname 0.0.0.0 $WEB_PORT_ARGS'",
+    "dev": "sh -c 'mkdir -p ../../tmp/node-reports && pnpm openspec:git-metadata && WEB_PORT_ARGS=${PDPP_WEB_PORT:+--port $PDPP_WEB_PORT} && NODE_OPTIONS=\"--report-on-fatalerror --report-uncaught-exception --report-exclude-env --report-exclude-network --report-directory=$(cd ../../tmp/node-reports && pwd)\" PDPP_DASHBOARD_AUTH_REDIRECT=${PDPP_DASHBOARD_AUTH_REDIRECT:-0} next dev --webpack --hostname 0.0.0.0 $WEB_PORT_ARGS'",
     "build": "pnpm openspec:git-metadata && next build --webpack",
     "start": "next start",
     "types:check": "fumadocs-mdx && next typegen && tsc --noEmit",

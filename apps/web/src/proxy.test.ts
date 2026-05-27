@@ -102,23 +102,20 @@ test("redirectSandboxAliasPath does not over-match sibling paths", () => {
   assert.equal(redirectSandboxAliasPath("/sandbox/v1/schema"), null);
 });
 
-test("dashboard auth redirect policy defaults on for production operator consoles", () => {
-  assert.equal(isDashboardAuthRedirectEnabled({ NODE_ENV: "production" }), true);
+test("dashboard auth redirect policy defaults on unless explicitly disabled", () => {
+  assert.equal(isDashboardAuthRedirectEnabled({}), true);
   assert.equal(
     isDashboardAuthRedirectEnabled({
-      NODE_ENV: "production",
       PDPP_DASHBOARD_AUTH_REDIRECT: "0",
     }),
     false
   );
 });
 
-test("dashboard auth redirect policy preserves open local-dev unless owner auth is configured", () => {
-  assert.equal(isDashboardAuthRedirectEnabled({ NODE_ENV: "development" }), false);
+test("dashboard auth redirect policy treats explicit nonzero values as enabled", () => {
   assert.equal(
     isDashboardAuthRedirectEnabled({
-      NODE_ENV: "development",
-      PDPP_OWNER_PASSWORD: "owner-password",
+      PDPP_DASHBOARD_AUTH_REDIRECT: "1",
     }),
     true
   );

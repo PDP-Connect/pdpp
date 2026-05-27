@@ -17,10 +17,11 @@ const AS_PROXY_TARGET = referenceTopology.asInternalUrl;
 // for the redirect UX; the DAL (dashboard/lib/verify-session.ts) is the
 // authoritative gate that runs before any data leaves the AS.
 //
-// Production operator consoles redirect logged-out dashboard navigations by
-// default. Local development stays open unless owner-auth is explicitly
-// configured, and tests/operators can opt out with
-// PDPP_DASHBOARD_AUTH_REDIRECT=0.
+// Operator consoles redirect logged-out dashboard navigations by default.
+// The proxy cannot assume deployment-specific owner-auth secrets are visible
+// in every production proxy runtime, so the safe default is on. Local
+// development sets PDPP_DASHBOARD_AUTH_REDIRECT=0 from the dev script unless
+// an operator overrides it.
 const DASHBOARD_AUTH_REDIRECT_ENABLED = isDashboardAuthRedirectEnabled();
 
 function resolveReferenceProxyTarget(pathname: string): string | null {
