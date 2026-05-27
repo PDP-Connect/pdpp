@@ -11,6 +11,7 @@ on:
   pull_request:
     paths:
       - "apps/web/**"
+      - "apps/console/**"
       - ".github/workflows/react-doctor.yml"
   workflow_dispatch: {}
 
