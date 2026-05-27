@@ -135,6 +135,40 @@ test('acceptance 7.1: never-run connection projects idle', () => {
   assert.equal(snap.last_success_at, null);
 });
 
+test('acceptance 7.1: never-run does not hide a failed managed runtime surface', () => {
+  const snap = projectConnectorSummaryConnectionHealth({
+    freshness: UNKNOWN_FRESHNESS,
+    lastRun: null,
+    lastSuccessfulRun: null,
+    remoteSurface: {
+      axis: 'failed',
+      leaseId: null,
+      leaseStatus: null,
+      profileKey: 'chatgpt:cin_active',
+      surfaceHealth: 'unhealthy',
+      surfaceId: 'surface_unhealthy',
+      waitReason: 'surface_unhealthy',
+    },
+    schedule: null,
+  });
+  assertHeadline(snap, 'degraded');
+  assert.equal(snap.axes.remote_surface, 'failed');
+  assert.equal(snap.reason_code, 'remote_surface:surface_unhealthy');
+});
+
+test('acceptance 7.1: never-run does not hide durable coverage gaps', () => {
+  const snap = projectConnectorSummaryConnectionHealth({
+    freshness: FRESH,
+    lastRun: null,
+    lastSuccessfulRun: null,
+    pendingDetailGaps: [{ reason: 'rate_limited', status: 'pending', stream: 'messages' }],
+    schedule: null,
+  });
+  assertHeadline(snap, 'degraded');
+  assert.equal(snap.axes.coverage, 'retryable_gap');
+  assert.equal(snap.reason_code, 'rate_limited');
+});
+
 test('acceptance 7.1: owner-paused schedule projects idle even with failed last run', () => {
   const snap = projectConnectorSummaryConnectionHealth({
     freshness: STALE_FRESHNESS,

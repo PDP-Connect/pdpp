@@ -26,12 +26,13 @@
  *
  *   1. projection unreliable                       -> unknown
  *   2. required attention open                     -> needs_attention
- *   3. owner-paused or never-run                   -> idle
+ *   3. owner-paused                               -> idle
  *   4. give-up streak crossed                      -> blocked
  *   5. backoff currently delaying retry            -> cooling_off
  *   6. outbox stalled / coverage/run incomplete    -> degraded
- *   7. clean evidence, fresh enough                -> healthy
- *   8. fallback                                    -> unknown
+ *   7. never-run with no stronger evidence         -> idle
+ *   8. clean evidence, fresh enough                -> healthy
+ *   9. fallback                                    -> unknown
  *
  * The function is **pure**: no I/O, no clock reads. The caller is
  * responsible for collecting durable evidence and passing it in.
@@ -635,20 +636,6 @@ export function computeConnectionHealth(input: ComputeConnectionHealthInput): Co
     });
   }
 
-  // 4b. Never run (no terminal evidence yet) -> idle, unless current
-  //     actionable/readiness evidence already established a stronger state.
-  if (conditionSet.get("CollectionSucceeded")?.status === "unknown") {
-    return finish({
-      state: "idle",
-      reasonCode: null,
-      lastSuccessAt: null,
-      nextAttemptAt,
-      axes,
-      badges,
-      remoteSurface,
-    });
-  }
-
   // 5. Backoff currently delaying retry -> cooling_off.
   if (retryPolicy?.status === "false") {
     return finish({
@@ -669,6 +656,22 @@ export function computeConnectionHealth(input: ComputeConnectionHealthInput): Co
       state: "degraded",
       reasonCode: degradedReasonCode(input),
       lastSuccessAt,
+      nextAttemptAt,
+      axes,
+      badges,
+      remoteSurface,
+    });
+  }
+
+  // 6b. Never run (no terminal evidence yet) -> idle only when no
+  //     stronger current evidence already degraded or blocked the row.
+  //     This keeps "Idle" from hiding runtime failures or known source
+  //     coverage gaps.
+  if (conditionSet.get("CollectionSucceeded")?.status === "unknown") {
+    return finish({
+      state: "idle",
+      reasonCode: null,
+      lastSuccessAt: null,
       nextAttemptAt,
       axes,
       badges,
