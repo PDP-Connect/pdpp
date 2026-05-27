@@ -53,6 +53,7 @@ import {
   emitStatementRecords,
   type HydrationSummary,
   hydrationSuccess,
+  isNoDataExportMessage,
   shouldParseStatementTitle,
 } from "./index.ts";
 import { validateRecord } from "./schemas.ts";
@@ -331,6 +332,12 @@ test("emitExportFailure: credit-card account uses credit_card_export_unverified 
   assert.ok(skip);
   assert.equal(skip.reason, "credit_card_export_unverified", "credit-card export flow is not yet live-verified");
   assert.match(skip.message, /credit-card export flow not verified/, "message carries the design-notes pointer");
+});
+
+test("isNoDataExportMessage: distinguishes source-empty export dialogs from generic failures", () => {
+  assert.equal(isNoDataExportMessage("There are no transactions for the selected date range."), true);
+  assert.equal(isNoDataExportMessage("Nothing to export for this account."), true);
+  assert.equal(isNoDataExportMessage("We couldn't process your request right now."), false);
 });
 
 // ─── Invariant 8: pure filters ───────────────────────────────────────────

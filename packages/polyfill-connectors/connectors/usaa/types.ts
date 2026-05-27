@@ -3,6 +3,7 @@
 // Playwright-flavored runtime entry.
 
 import type { Locator } from "playwright";
+import type { BodyResponseDiagnostics } from "../../src/browser-artifact-response.ts";
 import type { RecordData } from "../../src/connector-runtime.ts";
 
 // ─── Statements index row ────────────────────────────────────────────────
@@ -115,6 +116,7 @@ export interface PageDiagnostics {
 }
 
 export interface DiagnosticInfo {
+  artifact?: BodyResponseDiagnostics | null;
   diag: PageDiagnostics | null;
   error?: string;
   phase: string;

@@ -25,6 +25,7 @@ import type { BrowserContext, Locator, Page } from "playwright";
 import { ensureUsaaSession } from "../../src/auto-login/usaa.ts";
 import {
   attachBodyResponseQueue,
+  type BodyResponseDiagnostics,
   type BodyResponseQueue,
   waitForOptionalBodyResponse,
 } from "../../src/browser-artifact-response.ts";
@@ -90,6 +91,9 @@ const UNSAFE_FILENAME_RE = /[\\/]/g;
 const EXPORT_BUTTON_TEXT_RE = /^\s*Export\s*$/i;
 const CSV_DOWNLOAD_HINT_RE = /filename|attachment|octet-stream|csv|export/iu;
 const CSV_HEAD_RE = /date|description|amount|transaction/iu;
+const EXPORT_DIALOG_MESSAGE_SELECTOR =
+  '[role="dialog"] [class*="errorMessage"]:not(:empty), [role="dialog"] :text-matches("no transactions|nothing to export", "i")';
+const EXPORT_NO_DATA_RE = /no transactions|nothing to export/iu;
 
 // ─── Timing + limits ────────────────────────────────────────────────────
 
@@ -227,8 +231,7 @@ export async function emitDeferredStreams(emit: EmitFn, requested: RequestedScop
 /**
  * Emit the "backfill ladder exhausted" SKIP_RESULT for transactions.
  * Called when `tryExportLadder` returns no CSV across every candidate
- * start — either the dialog shape shifted or the account has no
- * transactions in any supported window.
+ * start without an explicit "nothing to export" source response.
  */
 export async function emitExportFailure(
   deps: EmitDeps,
@@ -535,7 +538,17 @@ async function fillExportDateRange(page: Page, sinceDate: string, untilDate: str
   await politeDelay(EXPORT_STATE_DELAY_MS);
 }
 
-type ExportSubmitOutcome = { buffer: Buffer; kind: "artifact"; suggestedFilename: string | null } | { kind: "error" };
+type ExportSubmitOutcome =
+  | { buffer: Buffer; kind: "artifact"; suggestedFilename: string | null }
+  | { kind: "artifact_failed"; artifact: BodyResponseDiagnostics; error: string }
+  | { kind: "dialog_error"; message: string }
+  | { kind: "empty"; message: string };
+
+type DriveExportResult = { kind: "artifact"; path: string } | { kind: "empty" } | { kind: "failed" };
+
+export function isNoDataExportMessage(text: string): boolean {
+  return EXPORT_NO_DATA_RE.test(text);
+}
 
 function attachCsvResponseQueue(page: Page): BodyResponseQueue {
   return attachBodyResponseQueue(page, {
@@ -590,7 +603,7 @@ async function waitForCsvArtifact(
 }
 
 /** Submit the export dialog, race the downloadable artifact against an inline error. */
-async function submitExportAndAwait(page: Page): Promise<ExportSubmitOutcome | null> {
+async function submitExportAndAwait(page: Page): Promise<ExportSubmitOutcome> {
   const downloadQueue = attachDownloadQueue(page);
   const responseQueue = attachCsvResponseQueue(page);
   await responseQueue.ready;
@@ -599,13 +612,15 @@ async function submitExportAndAwait(page: Page): Promise<ExportSubmitOutcome | n
   try {
     await submit.click().catch((): undefined => undefined);
 
+    const dialogMessage = page.locator(EXPORT_DIALOG_MESSAGE_SELECTOR).first();
     const errorPromise = page
-      .locator(
-        '[role="dialog"] [class*="errorMessage"]:not(:empty), [role="dialog"] :text-matches("no transactions|nothing to export", "i")'
-      )
+      .locator(EXPORT_DIALOG_MESSAGE_SELECTOR)
       .first()
       .waitFor({ state: "visible", timeout: DOWNLOAD_TIMEOUT_MS })
-      .then((): { kind: "error" } => ({ kind: "error" }))
+      .then(async (): Promise<ExportSubmitOutcome> => {
+        const message = ((await dialogMessage.textContent().catch((): string | null => null)) ?? "").trim();
+        return isNoDataExportMessage(message) ? { kind: "empty", message } : { kind: "dialog_error", message };
+      })
       .catch((): Promise<never> => new Promise((): void => undefined));
 
     return await Promise.race<ExportSubmitOutcome>([
@@ -618,8 +633,12 @@ async function submitExportAndAwait(page: Page): Promise<ExportSubmitOutcome | n
       ),
       errorPromise,
     ]);
-  } catch {
-    return null;
+  } catch (err) {
+    return {
+      artifact: responseQueue.diagnostics(),
+      error: err instanceof Error ? err.message : String(err),
+      kind: "artifact_failed",
+    };
   } finally {
     downloadQueue.detach();
     responseQueue.detach();
@@ -630,41 +649,52 @@ async function driveExport(
   page: Page,
   accountUrl: string,
   { sinceDate, untilDate, onDiagnostics }: DriveExportOptions
-): Promise<string | null> {
+): Promise<DriveExportResult> {
   const located = await locateExportPage(page, accountUrl);
   if (!located) {
     if (onDiagnostics) {
       const diag = await capturePageDiagnostics(page);
       onDiagnostics({ phase: "no_export_affordance", diag });
     }
-    return null;
+    return { kind: "failed" };
   }
 
   const dialogOpen = await openExportDialog(page, located, onDiagnostics);
   if (!dialogOpen) {
-    return null;
+    return { kind: "failed" };
   }
 
   await fillExportDateRange(page, sinceDate, untilDate);
 
   const tempDir = mkdtempSync(join(tmpdir(), "usaa-export-"));
   const outcome = await submitExportAndAwait(page);
-  if (!outcome) {
+  if (outcome.kind === "empty" || outcome.kind === "dialog_error") {
     rmSync(tempDir, { recursive: true, force: true });
-    return null;
-  }
-  if (outcome.kind === "error") {
-    rmSync(tempDir, { recursive: true, force: true });
+    let dialogDiag: PageDiagnostics | null = null;
+    if (outcome.kind === "dialog_error" && onDiagnostics) {
+      dialogDiag = await capturePageDiagnostics(page);
+    }
     await page
       .locator('[role="dialog"] #export-cancel-button')
       .click()
       .catch((): undefined => undefined);
-    return null;
+    if (outcome.kind === "dialog_error" && onDiagnostics) {
+      onDiagnostics({ diag: dialogDiag, error: outcome.message, phase: "export_dialog_error" });
+    }
+    return outcome.kind === "empty" ? { kind: "empty" } : { kind: "failed" };
+  }
+  if (outcome.kind === "artifact_failed") {
+    rmSync(tempDir, { recursive: true, force: true });
+    if (onDiagnostics) {
+      const diag = await capturePageDiagnostics(page);
+      onDiagnostics({ artifact: outcome.artifact, diag, error: outcome.error, phase: "export_artifact_wait_failed" });
+    }
+    return { kind: "failed" };
   }
   const suggested = (outcome.suggestedFilename || "usaa-export.csv").replace(UNSAFE_FILENAME_RE, "_");
   const targetPath = join(tempDir, suggested);
   await writeFile(targetPath, outcome.buffer);
-  return targetPath;
+  return { kind: "artifact", path: targetPath };
 }
 
 // parseCsv + rowsToTransactions live in ./parsers.ts.
@@ -708,6 +738,7 @@ async function reauthAfterSessionLapse(
 
 interface ExportLadderResult {
   csvPath: string | null;
+  exportEmpty: boolean;
   lastDiag: DiagnosticInfo | null;
   usedSince: string | null;
 }
@@ -725,7 +756,11 @@ interface LadderAttemptArgs {
   todayIso: string;
 }
 
-type AttemptOutcome = { kind: "success"; csvPath: string } | { kind: "retry" } | { kind: "session_dead" };
+type AttemptOutcome =
+  | { kind: "empty" }
+  | { kind: "retry" }
+  | { kind: "session_dead" }
+  | { kind: "success"; csvPath: string };
 
 /** Run one iteration of the backfill ladder: drive export + translate errors. */
 async function runSingleLadderAttempt({
@@ -745,13 +780,16 @@ async function runSingleLadderAttempt({
     message: `Export ${a.name ?? "?"} (${a.last_four || "n/a"}) from ${sinceDate} to ${todayIso}`,
   });
   try {
-    const csvPath = await driveExport(page, `https://www.usaa.com${a.account_url}`, {
+    const exportResult = await driveExport(page, `https://www.usaa.com${a.account_url}`, {
       sinceDate,
       untilDate: todayIso,
       accountType: a.account_type,
       onDiagnostics,
     });
-    return csvPath ? { kind: "success", csvPath } : { kind: "retry" };
+    if (exportResult.kind === "artifact") {
+      return { kind: "success", csvPath: exportResult.path };
+    }
+    return exportResult.kind === "empty" ? { kind: "empty" } : { kind: "retry" };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg === "session_dead_redirect_to_logon") {
@@ -805,10 +843,18 @@ async function tryExportLadder(
       onSessionDead,
     });
     if (outcome.kind === "session_dead") {
-      return { csvPath: null, usedSince: null, lastDiag: diagBox.current };
+      return { csvPath: null, exportEmpty: false, usedSince: null, lastDiag: diagBox.current };
     }
     if (outcome.kind === "success") {
-      return { csvPath: outcome.csvPath, usedSince: sinceDate, lastDiag: diagBox.current };
+      return { csvPath: outcome.csvPath, exportEmpty: false, usedSince: sinceDate, lastDiag: diagBox.current };
+    }
+    if (outcome.kind === "empty") {
+      await deps.emit({
+        type: "PROGRESS",
+        stream: "transactions",
+        message: `${a.name ?? "?"}: no transactions to export for ${sinceDate} to ${todayIso}`,
+      });
+      return { csvPath: null, exportEmpty: true, usedSince: sinceDate, lastDiag: diagBox.current };
     }
     const diagNow = diagBox.current;
     if (isFatalDiagPhase(diagNow)) {
@@ -825,7 +871,7 @@ async function tryExportLadder(
       message: `retrying ${a.name ?? "?"} with shorter range`,
     });
   }
-  return { csvPath: null, usedSince: null, lastDiag: diagBox.current };
+  return { csvPath: null, exportEmpty: false, usedSince: null, lastDiag: diagBox.current };
 }
 
 /** Parse the downloaded CSV, emit each transaction, return the latest date seen. */
@@ -879,7 +925,7 @@ async function processAccountTransactions(
   const todayIso = new Date().toISOString().slice(0, 10);
   const candidateStarts = buildCandidateStarts(desiredSince);
 
-  const { csvPath, usedSince, lastDiag } = await tryExportLadder(
+  const { csvPath, exportEmpty, usedSince, lastDiag } = await tryExportLadder(
     deps,
     context,
     page,
@@ -895,6 +941,9 @@ async function processAccountTransactions(
     return null;
   }
   if (!csvPath) {
+    if (exportEmpty) {
+      return { last_date: priorLastDate || usedSince || null };
+    }
     await emitExportFailure(deps, a, lastDiag);
     return null;
   }
