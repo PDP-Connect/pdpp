@@ -13,6 +13,7 @@ on:
       - "package.json"
       - "pnpm-lock.yaml"
       - "pnpm-workspace.yaml"
+      - "apps/web/**"
       - "packages/reference-contract/**"
       - "reference-implementation/**"
   pull_request:
@@ -21,6 +22,7 @@ on:
       - "package.json"
       - "pnpm-lock.yaml"
       - "pnpm-workspace.yaml"
+      - "apps/web/**"
       - "packages/reference-contract/**"
       - "reference-implementation/**"
   workflow_dispatch: {}
