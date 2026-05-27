@@ -70,11 +70,15 @@ test('_ref/event-subscriptions* routes require an owner session', async () => {
 });
 
 test('_ref/event-subscriptions* routes return JSON shape when owner auth is disabled (no session needed)', async () => {
-  // When ownerAuthPassword is unset the requireOwnerSession middleware is a
-  // no-op (this mirrors the dev-bootstrap configuration); the routes should
-  // succeed without a session and return the expected envelope shape. This
-  // confirms the host-adapter wiring at least reaches the operation layer.
-  await withServer({}, async ({ asUrl }) => {
+  // When ownerAuthPassword is the empty string the requireOwnerSession
+  // middleware is a no-op (this mirrors the dev-bootstrap configuration); the
+  // routes should succeed without a session and return the expected envelope
+  // shape. This confirms the host-adapter wiring at least reaches the
+  // operation layer. We pass `''` explicitly so the test does not inherit
+  // PDPP_OWNER_PASSWORD from the ambient environment — see other tests in
+  // this folder (ref-read-owner-gate, provider-metadata, hosted-mcp-oauth)
+  // for the same idiom.
+  await withServer({ ownerAuthPassword: '' }, async ({ asUrl }) => {
     const list = await fetch(`${asUrl}/_ref/event-subscriptions`, {
       headers: { Accept: 'application/json' },
     });
