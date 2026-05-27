@@ -6,10 +6,11 @@
 
 ## 2. Transport Boundary
 
-- [ ] 2.1 Add a `reference-implementation/server/contract-validation` adapter that maps validation failures into existing PDPP error envelopes.
-- [ ] 2.2 Wire request validation for every route mounted with a `{ contract }` operation id after route auth/owner middleware and before handlers.
-- [ ] 2.3 Fail startup or tests when an annotated route references an unknown contract operation id.
-- [ ] 2.4 Remove stale `contractValidation()` comments or claims that imply validation exists elsewhere.
+- [ ] 2.1 Add a `reference-implementation/server/contract-validation` adapter that maps validation failures into existing PDPP / OAuth error envelopes.
+- [ ] 2.2 Maintain an explicit request-validation operation-id allowlist in the adapter alongside the response canary allowlist.
+- [ ] 2.3 Wire request validation in `transport.js` for allowlisted operations only, after route auth/owner middleware and before handlers.
+- [ ] 2.4 Fail at route registration when an annotated route references an unknown reference-contract operation id.
+- [ ] 2.5 Remove stale `contractValidation()` comments or claims that imply validation exists elsewhere.
 
 ## 3. Response Canary
 
@@ -19,11 +20,13 @@
 
 ## 4. Acceptance Tests
 
-- [ ] 4.1 Test malformed contract-route input rejects before handler mutation.
+- [ ] 4.1 Test malformed input on an allowlisted contract route is rejected before handler mutation, with an envelope shape matching the manifest's declared 400 response.
 - [ ] 4.2 Test protected malformed requests still fail authentication before request validation.
-- [ ] 4.3 Test invalid canary responses fail closed with a server-side contract error.
-- [ ] 4.4 Test unsupported response shapes are not transformed or stripped.
-- [ ] 4.5 Test operation modules remain free of Fastify, Express, storage, and reference-contract runtime imports.
+- [ ] 4.3 Test that non-allowlisted contract routes still surface handler-owned diagnostics (OAuth `invalid_client_metadata`, PDPP `invalid_status`, reference trace ids, `client.register_rejected` spine events) for malformed input.
+- [ ] 4.4 Test invalid canary responses fail closed with a server-side contract error.
+- [ ] 4.5 Test unsupported response shapes are not transformed or stripped.
+- [ ] 4.6 Test operation modules remain free of Fastify, Express, storage, and reference-contract runtime imports.
+- [ ] 4.7 Test that route registration throws when `{ contract }` names an unknown operation id.
 
 ## 5. Validation
 
