@@ -244,6 +244,15 @@ test("chase manifest: current_activity nullable fields are required-present", ()
   }
 });
 
+test("chase manifest: successful manual runs have a bounded freshness window", () => {
+  const manifest = JSON.parse(readFileSync(CHASE_MANIFEST_PATH, "utf8")) as {
+    capabilities?: { refresh_policy?: { maximum_staleness_seconds?: number; recommended_mode?: string } };
+  };
+  const policy = manifest.capabilities?.refresh_policy;
+  assert.equal(policy?.recommended_mode, "manual");
+  assert.equal(policy?.maximum_staleness_seconds, 86_400);
+});
+
 test("savePlaywrightDownload: persists via saveAs without depending on Playwright temp artifact path", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pdpp-chase-download-test-"));
   try {
