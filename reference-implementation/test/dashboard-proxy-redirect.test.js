@@ -129,7 +129,7 @@ async function ensureWebBuild() {
   await webBuildPromise;
 }
 
-async function waitForExistingWebBuild(timeoutMs = 30000) {
+async function waitForExistingWebBuild(timeoutMs = 120000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
