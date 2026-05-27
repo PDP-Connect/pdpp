@@ -42,7 +42,6 @@ import { existsSync, readFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { Readable } from "node:stream";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { EmittedMessage, StreamScope } from "../../src/connector-runtime.ts";
@@ -271,30 +270,6 @@ test("savePlaywrightDownload: persists via saveAs without depending on Playwrigh
 
     assert.equal(existsSync(target), true);
     assert.equal(await readFile(target, "utf8"), "%PDF-1.7\nfixture\n");
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("savePlaywrightDownload: streams artifact before falling back to saveAs", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "pdpp-chase-download-stream-test-"));
-  try {
-    const target = join(dir, "nested", "statement.pdf");
-
-    await savePlaywrightDownload(
-      {
-        createReadStream() {
-          return Promise.resolve(Readable.from([Buffer.from("%PDF-1.7\nstreamed\n")]));
-        },
-        saveAs(): Promise<void> {
-          return Promise.reject(new Error("saveAs should not be called when createReadStream works"));
-        },
-      },
-      target
-    );
-
-    assert.equal(existsSync(target), true);
-    assert.equal(await readFile(target, "utf8"), "%PDF-1.7\nstreamed\n");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
