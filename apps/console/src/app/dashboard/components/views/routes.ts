@@ -37,6 +37,7 @@ export interface Routes {
     traces: string;
     deployment: string;
     deviceExporters: string;
+    eventSubscriptions: string;
   };
   stream(connectorId: string, stream: string): string;
   streamHealth(connectorId: string, stream: string): string;
@@ -59,6 +60,7 @@ function makeRoutes(basePath: string, opts: { overview?: string } = {}): Routes 
       traces: `${basePath}/traces`,
       deployment: `${basePath}/deployment`,
       deviceExporters: `${basePath}/device-exporters`,
+      eventSubscriptions: `${basePath}/event-subscriptions`,
     },
     grant: (id) => `${basePath}/grants/${enc(id)}`,
     run: (id) => `${basePath}/runs/${enc(id)}`,
