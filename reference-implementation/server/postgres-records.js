@@ -1076,7 +1076,7 @@ export async function postgresDeleteAllRecords(storageTarget, stream) {
  * Stays inside the Postgres records boundary so raw SQL does not scatter
  * through higher layers (see design.md alternatives considered).
  */
-export async function deletePostgresRecordTailForPair(client, connectorInstanceId, stream) {
+async function deletePostgresRecordTailForPair(client, connectorInstanceId, stream) {
   const semanticScopePrefix = `[${JSON.stringify(stream)},`;
   await client.query(
     'DELETE FROM record_changes WHERE connector_instance_id = $1 AND stream = $2',
