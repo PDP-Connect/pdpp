@@ -162,6 +162,80 @@ test('record version stats envelope surfaces ground-truth rows missing from the 
   assert.deepEqual(envelope.data[0].risk_reasons, ['versions_per_record_ge_5', 'projection_missing']);
 });
 
+test('record version stats envelope degrades a normal-range projection-missing row to watch', async () => {
+  const envelope = await buildRecordVersionStatsEnvelope({}, {
+    connectorInstanceStore: null,
+    getProjection: async () => ({ computed_at: NOW, dirty: false, metadata: { state: 'fresh' } }),
+    listStreams: async () => [],
+    listGroundTruthStreams: async () => [{
+      connector_id: CONNECTOR_ID,
+      connector_instance_id: CONNECTOR_INSTANCE_ID,
+      stream: 'reactions',
+      current_record_count: 100,
+      record_history_count: 100,
+      record_key_count: 100,
+      last_current_at: NOW,
+      last_history_at: NOW,
+    }],
+  });
+
+  assert.equal(envelope.data.length, 1);
+  assert.equal(envelope.data[0].stream, 'reactions');
+  assert.equal(envelope.data[0].projection_missing, true);
+  assert.equal(envelope.data[0].projection_authority, 'record_changes_ground_truth');
+  assert.notEqual(envelope.data[0].risk_level, 'normal');
+  assert.equal(envelope.data[0].risk_level, 'watch');
+  assert.ok(envelope.data[0].risk_reasons.includes('projection_missing'));
+});
+
+test('record version stats envelope degrades a normal-range projection-dirty row to watch', async () => {
+  const envelope = await buildRecordVersionStatsEnvelope({}, {
+    connectorInstanceStore: null,
+    getProjection: async () => ({ computed_at: NOW, dirty: true, metadata: { state: 'rebuilding' } }),
+    listStreams: async () => [{
+      connector_id: CONNECTOR_ID,
+      connector_instance_id: CONNECTOR_INSTANCE_ID,
+      stream: 'sessions',
+      record_count: 100,
+      record_history_count: 100,
+      dirty: true,
+      computed_at: NOW,
+    }],
+    listGroundTruthStreams: async () => [],
+  });
+
+  assert.equal(envelope.data.length, 1);
+  assert.equal(envelope.data[0].stream, 'sessions');
+  assert.equal(envelope.data[0].projection_dirty, true);
+  assert.equal(envelope.data[0].projection_missing, false);
+  assert.equal(envelope.data[0].projection_authority, 'retained_size_projection');
+  assert.notEqual(envelope.data[0].risk_level, 'normal');
+  assert.equal(envelope.data[0].risk_level, 'watch');
+  assert.ok(envelope.data[0].risk_reasons.includes('projection_dirty'));
+});
+
+test('record version stats envelope keeps high risk when projection is also dirty', async () => {
+  const envelope = await buildRecordVersionStatsEnvelope({}, {
+    connectorInstanceStore: null,
+    getProjection: async () => ({ computed_at: NOW, dirty: true, metadata: { state: 'rebuilding' } }),
+    listStreams: async () => [{
+      connector_id: CONNECTOR_ID,
+      connector_instance_id: CONNECTOR_INSTANCE_ID,
+      stream: 'sessions',
+      record_count: 2,
+      record_history_count: 20_000,
+      dirty: true,
+      computed_at: NOW,
+    }],
+    listGroundTruthStreams: async () => [],
+  });
+
+  assert.equal(envelope.data.length, 1);
+  assert.equal(envelope.data[0].risk_level, 'high');
+  assert.equal(envelope.data[0].projection_dirty, true);
+  assert.ok(envelope.data[0].risk_reasons.includes('projection_dirty'));
+});
+
 test('record version stats envelope prefers ground-truth counts over stale projection counts', async () => {
   const envelope = await buildRecordVersionStatsEnvelope({}, {
     connectorInstanceStore: null,
