@@ -49,8 +49,12 @@ This means the *production* deployment shape already separates the two processes
 packages:
   - "apps/*"
   - "packages/*"
-  - "demo/app"
   - "reference-implementation"
+onlyBuiltDependencies:
+  - "better-sqlite3"
+  - "esbuild"
+  - "onnxruntime-node"
+  - "protobufjs"
 ```
 
 `apps/`:
