@@ -11,12 +11,19 @@ After reference restart, the lease manager SHALL prove every in-memory dynamic n
 - **AND** the persisted surface row SHALL be updated to reflect the eviction
 - **AND** any active lease referencing the evicted surface SHALL transition to `surface_failed` with `wait_reason = "surface_unhealthy"`
 
-#### Scenario: Allocator reports a persisted surface as not ready
+#### Scenario: Allocator reports a persisted surface as starting or stopping
 
-- **WHEN** the reference boots and a persisted dynamic n.eko surface row marked `health: "ready"` is reported by the allocator with health `"starting"`, `"stopping"`, or `"unhealthy"`
+- **WHEN** the reference boots and a persisted dynamic n.eko surface row marked `health: "ready"` is reported by the allocator with health `"starting"` or `"stopping"`
 - **THEN** the lease manager SHALL downgrade the in-memory health to match the allocator's report
 - **AND** the persisted surface row SHALL be updated to reflect the downgrade
 - **AND** the next acquire SHALL NOT treat that surface as a ready idle candidate
+
+#### Scenario: Allocator reports a persisted surface as unhealthy
+
+- **WHEN** the reference boots and a persisted dynamic n.eko surface row marked `health: "ready"` is reported by the allocator with health `"unhealthy"`
+- **THEN** the lease manager SHALL evict that surface row from the in-memory map before accepting any acquire request
+- **AND** the persisted surface row SHALL be updated to reflect the eviction
+- **AND** any active lease referencing the evicted surface SHALL transition to `surface_failed` with `wait_reason = "surface_unhealthy"`
 
 #### Scenario: Static n.eko mode boots
 
