@@ -161,14 +161,18 @@ async function allocatePort() {
   return port;
 }
 
-async function waitForHttpOk(url, { timeoutMs = 20000 } = {}) {
+async function waitForHttpStatus(url, { expectedStatus = 200, timeoutMs = 20000 } = {}) {
   const deadline = Date.now() + timeoutMs;
   let lastError = null;
+  let lastStatus = null;
+  let lastBody = '';
 
   while (Date.now() < deadline) {
     try {
       const resp = await fetch(url, { redirect: 'manual' });
-      if (resp.status < 500) return resp;
+      lastStatus = resp.status;
+      if (resp.status === expectedStatus) return resp;
+      lastBody = await resp.text().catch(() => '');
       lastError = new Error(`HTTP ${resp.status}`);
     } catch (error) {
       lastError = error;
@@ -176,7 +180,11 @@ async function waitForHttpOk(url, { timeoutMs = 20000 } = {}) {
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
 
-  throw new Error(`Timed out waiting for ${url}: ${lastError?.message || 'unknown error'}`);
+  throw new Error(
+    `Timed out waiting for ${url} to return HTTP ${expectedStatus}: ${lastError?.message || 'unknown error'}` +
+    `\nlastStatus=${lastStatus ?? 'none'}` +
+    `\nlastBody=${lastBody.slice(0, 500)}`,
+  );
 }
 
 // Mirrors composed-origin.test.js's startWebServer, but lets each caller
@@ -230,7 +238,7 @@ async function startWebServer({ webOrigin, asUrl, rsUrl, ownerPassword }) {
   // `/owner/login` is always reachable through the proxy regardless of
   // the owner-auth flag — same readiness probe used by composed-origin.test.js.
   try {
-    await waitForHttpOk(`${webOrigin}/owner/login`);
+    await waitForHttpStatus(`${webOrigin}/owner/login`, { expectedStatus: 200 });
     return { child, getOutput: () => output };
   } catch (error) {
     child.kill('SIGTERM');

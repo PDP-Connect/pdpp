@@ -163,9 +163,11 @@ async function startPublicOriginTrap() {
   };
 }
 
-async function waitForHttpOk(url, { headers, timeoutMs = 20000 } = {}) {
+async function waitForHttpStatus(url, { expectedStatus = 200, headers, timeoutMs = 20000 } = {}) {
   const deadline = Date.now() + timeoutMs;
   let lastError = null;
+  let lastStatus = null;
+  let lastBody = '';
 
   while (Date.now() < deadline) {
     try {
@@ -173,7 +175,9 @@ async function waitForHttpOk(url, { headers, timeoutMs = 20000 } = {}) {
         redirect: 'manual',
         headers,
       });
-      if (resp.status < 500) return resp;
+      lastStatus = resp.status;
+      if (resp.status === expectedStatus) return resp;
+      lastBody = await resp.text().catch(() => '');
       lastError = new Error(`HTTP ${resp.status}`);
     } catch (error) {
       lastError = error;
@@ -181,7 +185,11 @@ async function waitForHttpOk(url, { headers, timeoutMs = 20000 } = {}) {
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
 
-  throw new Error(`Timed out waiting for ${url}: ${lastError?.message || 'unknown error'}`);
+  throw new Error(
+    `Timed out waiting for ${url} to return HTTP ${expectedStatus}: ${lastError?.message || 'unknown error'}` +
+    `\nlastStatus=${lastStatus ?? 'none'}` +
+    `\nlastBody=${lastBody.slice(0, 500)}`,
+  );
 }
 
 async function startWebServer({ webOrigin, asUrl, rsUrl }) {
@@ -219,7 +227,7 @@ async function startWebServer({ webOrigin, asUrl, rsUrl }) {
   });
 
   try {
-    await waitForHttpOk(`${webOrigin}/owner/login`);
+    await waitForHttpStatus(`${webOrigin}/owner/login`, { expectedStatus: 200 });
     return { child, getOutput: () => output };
   } catch (error) {
     child.kill('SIGTERM');
