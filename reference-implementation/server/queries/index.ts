@@ -370,6 +370,10 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly clientEventSubscriptionsDropQueuedForSubscription: MutationQuery;
   readonly clientEventSubscriptionsInsertAttempt: MutationQuery;
   readonly clientEventSubscriptionsListAttemptsForQueue: SmallEnumerationQuery;
+  // Client event subscriptions — operator oversight reads (reference-only).
+  readonly clientEventSubscriptionsListAllSubscriptions: SmallEnumerationQuery;
+  readonly clientEventSubscriptionsGetSubscriptionSummary: ReadOneQuery;
+  readonly clientEventSubscriptionsListAttemptsForSubscription: SmallEnumerationQuery;
   // Spine — controller-side terminal-event existence probe.
   readonly spineCheckRunTerminal: ReadOneQuery;
   readonly spineGetRunTerminalEvent: ReadOneQuery;
@@ -743,6 +747,10 @@ export function loadReferenceQueries(queryDir = QUERIES_DIR): ReferenceQueryRegi
     "clientEventSubscriptionsDropQueuedForSubscription",
     "clientEventSubscriptionsInsertAttempt",
     "clientEventSubscriptionsListAttemptsForQueue",
+    // Client event subscriptions — operator oversight reads.
+    "clientEventSubscriptionsListAllSubscriptions",
+    "clientEventSubscriptionsGetSubscriptionSummary",
+    "clientEventSubscriptionsListAttemptsForSubscription",
     // Spine — controller-side terminal-event existence probe.
     "spineCheckRunTerminal",
     "spineInsertEvent",

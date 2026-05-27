@@ -73,8 +73,21 @@ import {
 } from '../operations/rs-client-event-derive/index.ts';
 import {
   getDefaultClientEventSubscriptionStore,
+  getSubscriptionSummary,
   listActiveSubscriptions,
+  listAllSubscriptions,
+  listAttemptsForSubscription,
 } from './stores/client-event-subscription-store.ts';
+import { executeRefClientEventSubscriptionsList } from '../operations/ref-client-event-subscriptions-list/index.ts';
+import {
+  executeRefClientEventSubscriptionsGet,
+  RefClientEventSubscriptionsNotFoundError,
+} from '../operations/ref-client-event-subscriptions-get/index.ts';
+import {
+  executeRefClientEventSubscriptionsDisable,
+  RefClientEventSubscriptionsDisableInvalidRequestError,
+  RefClientEventSubscriptionsDisableNotFoundError,
+} from '../operations/ref-client-event-subscriptions-disable/index.ts';
 import { getDefaultDeliveryWorker } from './client-event-delivery-worker.ts';
 import { setClientEventEnqueueHook } from './records.js';
 import { getDefaultSourceWebhookEventStore } from './stores/source-webhook-event-store.ts';
@@ -3777,6 +3790,75 @@ function buildAsApp(opts = {}) {
       );
       res.json(envelope);
     } catch (err) {
+      handleError(res, err);
+    }
+  });
+
+  // ────────────────────────────────────────────────────────────────────────
+  // /_ref/event-subscriptions — operator oversight of client event subscriptions
+  // ────────────────────────────────────────────────────────────────────────
+  // Read-mostly oversight surface for the subscriptions clients have
+  // created at `/v1/event-subscriptions`. Owner-session gated like every
+  // other `/_ref/*` route. The disable endpoint is the operator safety
+  // valve; there is intentionally no operator create / re-enable / rotate
+  // / replay path. See:
+  //   openspec/changes/add-client-event-subscription-management/
+  app.get('/_ref/event-subscriptions', ownerAuth.requireOwnerSession, async (req, res) => {
+    try {
+      const envelope = await executeRefClientEventSubscriptionsList(
+        {
+          clientId: typeof req.query.client_id === 'string' ? req.query.client_id : null,
+          grantId: typeof req.query.grant_id === 'string' ? req.query.grant_id : null,
+          status: typeof req.query.status === 'string' ? req.query.status : null,
+        },
+        {
+          listAllSubscriptions,
+          getSubscriptionSummary,
+        },
+      );
+      res.json(envelope);
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
+  app.get('/_ref/event-subscriptions/:id', ownerAuth.requireOwnerSession, async (req, res) => {
+    try {
+      const detail = await executeRefClientEventSubscriptionsGet(req.params.id, {
+        getSubscriptionSummary,
+        listAttemptsForSubscription,
+      });
+      res.json(detail);
+    } catch (err) {
+      if (err instanceof RefClientEventSubscriptionsNotFoundError) {
+        return pdppError(res, 404, err.code, err.message);
+      }
+      handleError(res, err);
+    }
+  });
+
+  app.post('/_ref/event-subscriptions/:id/disable', ownerAuth.requireOwnerSession, async (req, res) => {
+    try {
+      const reason =
+        req.body && typeof req.body === 'object' && typeof req.body.reason === 'string'
+          ? req.body.reason
+          : null;
+      const out = await executeRefClientEventSubscriptionsDisable(
+        { subscriptionId: req.params.id, reason },
+        { store: getDefaultClientEventSubscriptionStore(), nowIso: () => new Date().toISOString() },
+      );
+      const detail = await executeRefClientEventSubscriptionsGet(out.subscriptionId, {
+        getSubscriptionSummary,
+        listAttemptsForSubscription,
+      });
+      res.json(detail);
+    } catch (err) {
+      if (err instanceof RefClientEventSubscriptionsDisableNotFoundError) {
+        return pdppError(res, 404, err.code, err.message);
+      }
+      if (err instanceof RefClientEventSubscriptionsDisableInvalidRequestError) {
+        return pdppError(res, 400, err.code, err.message);
+      }
       handleError(res, err);
     }
   });

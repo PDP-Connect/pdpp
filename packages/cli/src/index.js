@@ -10,6 +10,7 @@ import { runRefGrant } from './ref/commands/grant.js';
 import { runRefTrace } from './ref/commands/trace.js';
 import { runRefLogin } from './ref/commands/login.js';
 import { runRefConnectors } from './ref/commands/connectors.js';
+import { runRefEventSubscriptions } from './ref/commands/event-subscriptions.js';
 import { PdppCliError, PdppUsageError } from './ref/errors.js';
 
 const HELP = `PDPP CLI
@@ -35,6 +36,9 @@ Reference diagnostics (reference server only):
   ${PDPP_CLI_BIN_NAME} ref trace show <trace-id> --as-url <url>
   ${PDPP_CLI_BIN_NAME} ref connectors list --as-url <url>
   ${PDPP_CLI_BIN_NAME} ref connectors show <connector-id> --as-url <url>
+  ${PDPP_CLI_BIN_NAME} ref event-subscriptions list --as-url <url> [--client-id <id>] [--grant-id <id>] [--status <status>]
+  ${PDPP_CLI_BIN_NAME} ref event-subscriptions show <subscription-id> --as-url <url>
+  ${PDPP_CLI_BIN_NAME} ref event-subscriptions disable <subscription-id> --as-url <url> [--reason <text>] [--yes]
 
 Notes:
   Do not ask users for owner bearer tokens for routine delegated access.
@@ -117,6 +121,9 @@ export async function runCli(argv, io = { stdout: process.stdout, stderr: proces
       io.stdout.write(`  ${PDPP_CLI_BIN_NAME} ref trace show <trace-id> --as-url <url> [--owner-session <cookie>] [--format json|table]\n`);
       io.stdout.write(`  ${PDPP_CLI_BIN_NAME} ref connectors list --as-url <url> [--owner-session <cookie>] [--format json|table] [--verbose]\n`);
       io.stdout.write(`  ${PDPP_CLI_BIN_NAME} ref connectors show <connector-id> --as-url <url> [--owner-session <cookie>] [--format json|table] [--verbose]\n`);
+      io.stdout.write(`  ${PDPP_CLI_BIN_NAME} ref event-subscriptions list --as-url <url> [--client-id <id>] [--grant-id <id>] [--status <status>] [--owner-session <cookie>] [--format json|table]\n`);
+      io.stdout.write(`  ${PDPP_CLI_BIN_NAME} ref event-subscriptions show <subscription-id> --as-url <url> [--owner-session <cookie>] [--format json|table]\n`);
+      io.stdout.write(`  ${PDPP_CLI_BIN_NAME} ref event-subscriptions disable <subscription-id> --as-url <url> [--reason <text>] [--yes] [--owner-session <cookie>]\n`);
       io.stdout.write(`\nNotes:\n`);
       io.stdout.write(`  "ref login" prompts the reference server's owner-login route and caches the\n`);
       io.stdout.write(`  resulting session in .pdpp/owner-sessions/ (mode 0600). The cookie value is\n`);
@@ -131,6 +138,7 @@ export async function runCli(argv, io = { stdout: process.stdout, stderr: proces
       grant: runRefGrant,
       trace: runRefTrace,
       connectors: runRefConnectors,
+      'event-subscriptions': runRefEventSubscriptions,
     };
     const handler = refDispatch[refCommand];
     if (!handler) {

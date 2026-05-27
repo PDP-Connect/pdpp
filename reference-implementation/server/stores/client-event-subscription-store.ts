@@ -455,6 +455,210 @@ export async function insertAttempt(
   ]);
 }
 
+// ---------------------------------------------------------------------------
+// Operator oversight helpers (reference-only)
+// ---------------------------------------------------------------------------
+//
+// Used by the `ref.client-event-subscriptions.*` operations that back the
+// `/_ref/event-subscriptions*` routes. Same backend-aware shape as the
+// other helpers above; the operator surface does not get its own resolver.
+//
+// Spec: openspec/changes/add-client-event-subscription-management/specs/
+//       reference-implementation-architecture/spec.md
+
+export interface ListAllSubscriptionsFilters {
+  readonly clientId?: string | null;
+  readonly grantId?: string | null;
+  readonly status?: SubscriptionStatus | null;
+}
+
+export interface SubscriptionSummaryRow {
+  readonly subscription_id: string;
+  readonly grant_id: string;
+  readonly client_id: string;
+  readonly subject_id: string;
+  readonly callback_url: string;
+  readonly scope_json: string;
+  readonly status: SubscriptionStatus;
+  readonly created_at: string;
+  readonly updated_at: string;
+  readonly disabled_at: string | null;
+  readonly disabled_reason: string | null;
+  readonly pending_queue_count: number;
+  readonly final_failure_count: number;
+  readonly last_attempted_at: string | null;
+  readonly last_attempt_ok: number | null;
+  readonly last_attempt_status_code: number | null;
+}
+
+export interface SubscriptionAttemptRow {
+  readonly attempt_id: number;
+  readonly queue_id: number;
+  readonly event_id: string;
+  readonly event_type: string;
+  readonly attempted_at: string;
+  readonly status_code: number | null;
+  readonly ok: number;
+  readonly latency_ms: number | null;
+  readonly error: string | null;
+  readonly response_snippet: string | null;
+}
+
+export async function listAllSubscriptions(
+  filters: ListAllSubscriptionsFilters = {},
+): Promise<SubscriptionRow[]> {
+  const clientId = filters.clientId ?? null;
+  const grantId = filters.grantId ?? null;
+  const status = filters.status ?? null;
+  if (isPostgresStorageBackend()) {
+    const result = await postgresQuery(
+      `SELECT subscription_id, grant_id, client_id, subject_id, callback_url,
+              secret_hash, secret_text, scope_json, status, verification_challenge,
+              created_at, updated_at, disabled_at, disabled_reason
+         FROM client_event_subscriptions
+        WHERE status != 'deleted'
+          AND ($1::text IS NULL OR client_id = $1)
+          AND ($2::text IS NULL OR grant_id = $2)
+          AND ($3::text IS NULL OR status = $3)
+        ORDER BY created_at DESC, subscription_id ASC`,
+      [clientId, grantId, status],
+    );
+    return result.rows.map(pgSubscriptionRow);
+  }
+  return [
+    ...allowUnboundedReadAcknowledged<SubscriptionRow>(
+      referenceQueries.clientEventSubscriptionsListAllSubscriptions,
+      [clientId, clientId, grantId, grantId, status, status],
+    ),
+  ];
+}
+
+function pgSummaryRow(raw: Record<string, unknown>): SubscriptionSummaryRow {
+  return {
+    subscription_id: String(raw.subscription_id),
+    grant_id: String(raw.grant_id),
+    client_id: String(raw.client_id),
+    subject_id: String(raw.subject_id),
+    callback_url: String(raw.callback_url),
+    scope_json: pgScopeJsonToText(raw.scope_json),
+    status: raw.status as SubscriptionStatus,
+    created_at: String(raw.created_at),
+    updated_at: String(raw.updated_at),
+    disabled_at:
+      raw.disabled_at === null || raw.disabled_at === undefined ? null : String(raw.disabled_at),
+    disabled_reason:
+      raw.disabled_reason === null || raw.disabled_reason === undefined
+        ? null
+        : String(raw.disabled_reason),
+    pending_queue_count: Number(raw.pending_queue_count ?? 0),
+    final_failure_count: Number(raw.final_failure_count ?? 0),
+    last_attempted_at:
+      raw.last_attempted_at === null || raw.last_attempted_at === undefined
+        ? null
+        : String(raw.last_attempted_at),
+    last_attempt_ok:
+      raw.last_attempt_ok === null || raw.last_attempt_ok === undefined
+        ? null
+        : Number(raw.last_attempt_ok),
+    last_attempt_status_code:
+      raw.last_attempt_status_code === null || raw.last_attempt_status_code === undefined
+        ? null
+        : Number(raw.last_attempt_status_code),
+  };
+}
+
+export async function getSubscriptionSummary(
+  subscriptionId: string,
+): Promise<SubscriptionSummaryRow | null> {
+  if (isPostgresStorageBackend()) {
+    const result = await postgresQuery(
+      `SELECT s.subscription_id,
+              s.grant_id,
+              s.client_id,
+              s.subject_id,
+              s.callback_url,
+              s.scope_json,
+              s.status,
+              s.created_at,
+              s.updated_at,
+              s.disabled_at,
+              s.disabled_reason,
+              (SELECT COUNT(*) FROM client_event_queue q
+                 WHERE q.subscription_id = s.subscription_id
+                   AND q.status = 'pending') AS pending_queue_count,
+              (SELECT COUNT(*) FROM client_event_queue q
+                 WHERE q.subscription_id = s.subscription_id
+                   AND q.status = 'final_failure') AS final_failure_count,
+              (SELECT a.attempted_at FROM client_event_attempts a
+                 JOIN client_event_queue q ON q.queue_id = a.queue_id
+                 WHERE q.subscription_id = s.subscription_id
+                 ORDER BY a.attempt_id DESC LIMIT 1) AS last_attempted_at,
+              (SELECT a.ok FROM client_event_attempts a
+                 JOIN client_event_queue q ON q.queue_id = a.queue_id
+                 WHERE q.subscription_id = s.subscription_id
+                 ORDER BY a.attempt_id DESC LIMIT 1) AS last_attempt_ok,
+              (SELECT a.status_code FROM client_event_attempts a
+                 JOIN client_event_queue q ON q.queue_id = a.queue_id
+                 WHERE q.subscription_id = s.subscription_id
+                 ORDER BY a.attempt_id DESC LIMIT 1) AS last_attempt_status_code
+         FROM client_event_subscriptions s
+        WHERE s.subscription_id = $1
+          AND s.status != 'deleted'`,
+      [subscriptionId],
+    );
+    if (result.rowCount === 0) return null;
+    return pgSummaryRow(result.rows[0]);
+  }
+  return getOne<SubscriptionSummaryRow>(
+    referenceQueries.clientEventSubscriptionsGetSubscriptionSummary,
+    [subscriptionId],
+  );
+}
+
+export async function listAttemptsForSubscription(
+  subscriptionId: string,
+  limit: number,
+): Promise<SubscriptionAttemptRow[]> {
+  if (isPostgresStorageBackend()) {
+    const result = await postgresQuery(
+      `SELECT a.attempt_id,
+              a.queue_id,
+              q.event_id,
+              q.event_type,
+              a.attempted_at,
+              a.status_code,
+              a.ok,
+              a.latency_ms,
+              a.error,
+              a.response_snippet
+         FROM client_event_attempts a
+         JOIN client_event_queue q ON q.queue_id = a.queue_id
+        WHERE q.subscription_id = $1
+        ORDER BY a.attempt_id DESC
+        LIMIT $2`,
+      [subscriptionId, limit],
+    );
+    return result.rows.map((raw: Record<string, unknown>) => ({
+      attempt_id: Number(raw.attempt_id),
+      queue_id: Number(raw.queue_id),
+      event_id: String(raw.event_id),
+      event_type: String(raw.event_type),
+      attempted_at: String(raw.attempted_at),
+      status_code: raw.status_code == null ? null : Number(raw.status_code),
+      ok: Number(raw.ok ?? 0),
+      latency_ms: raw.latency_ms == null ? null : Number(raw.latency_ms),
+      error: raw.error == null ? null : String(raw.error),
+      response_snippet: raw.response_snippet == null ? null : String(raw.response_snippet),
+    }));
+  }
+  return [
+    ...allowUnboundedReadAcknowledged<SubscriptionAttemptRow>(
+      referenceQueries.clientEventSubscriptionsListAttemptsForSubscription,
+      [subscriptionId, limit],
+    ),
+  ];
+}
+
 export async function listAttemptsForQueue(queueId: number): Promise<AttemptRow[]> {
   if (isPostgresStorageBackend()) {
     const result = await postgresQuery(
