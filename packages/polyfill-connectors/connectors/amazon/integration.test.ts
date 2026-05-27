@@ -25,11 +25,14 @@
  */
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
 import { type EmitDeps, emitOrderAndItems } from "./index.ts";
 import { validateRecord } from "./schemas.ts";
 import type { DetailItem, ListPageOrder, OrderDetail } from "./types.ts";
+
+const AMAZON_MANIFEST_PATH = new URL("../../manifests/amazon.json", import.meta.url);
 
 interface RecordingDeps {
   deps: EmitDeps;
@@ -216,4 +219,13 @@ test("emitOrderAndItems: emittedAt propagates into the order record's fetched_at
   const orderRecord = emitted.find((r) => r.stream === "orders");
   assert.ok(orderRecord);
   assert.equal(orderRecord.data.fetched_at, frozen);
+});
+
+test("amazon manifest: successful manual runs have a bounded freshness window", () => {
+  const manifest = JSON.parse(readFileSync(AMAZON_MANIFEST_PATH, "utf8")) as {
+    capabilities?: { refresh_policy?: { maximum_staleness_seconds?: number; recommended_mode?: string } };
+  };
+  const policy = manifest.capabilities?.refresh_policy;
+  assert.equal(policy?.recommended_mode, "manual");
+  assert.equal(policy?.maximum_staleness_seconds, 86_400);
 });
