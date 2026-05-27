@@ -34,7 +34,7 @@ env:
 
 jobs:
   verify:
-    name: typecheck + focused contract tests
+    name: typecheck + full test suite
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -60,18 +60,7 @@ jobs:
       - name: Typecheck reference implementation
         run: pnpm --dir reference-implementation run typecheck
 
-      - name: Test reference implementation contract surfaces
-        working-directory: reference-implementation
-        run: |
-          node --test --test-force-exit \
-            test/as-client-event-subscriptions-operation.test.js \
-            test/rs-client-event-deliver-operation.test.js \
-            test/rs-client-event-derive-operation.test.js \
-            test/rs-protected-resource-metadata-operation.test.js \
-            test/client-event-subscriptions-e2e.test.js \
-            test/client-event-subscription-store-postgres.test.js \
-            test/schema-capability-truth.test.js \
-            test/schema-granted-connections.test.js \
-            test/storage-fan-in-read-contract.test.js \
-            test/query-contract.test.js \
-            test/operations-boundary.test.js
+      - name: Test reference implementation
+        env:
+          PDPP_TEST_CONCURRENCY: "2"
+        run: pnpm --dir reference-implementation run test
