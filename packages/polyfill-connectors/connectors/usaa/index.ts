@@ -165,14 +165,17 @@ export function hydrationSuccess(h: HydrationResult | undefined): HydrationResul
 export function buildIndexRows(docs: readonly DocRow[], accounts: readonly DashboardAccount[]): IndexRow[] {
   return docs
     .filter((d) => d.date_delivered)
-    .map((d) => ({
-      rowIndex: d.rowIndex,
-      id: hashId(`${d.account_reference}|${d.date_delivered}|${d.title}`),
-      account_id: resolveAccountIdForRef(d.account_reference, accounts),
-      title: d.title,
-      date_delivered: isoDate(d.date_delivered),
-      account_reference: d.account_reference,
-    }));
+    .map((d) => {
+      const accountReference = d.account_reference.trim() || null;
+      return {
+        rowIndex: d.rowIndex,
+        id: hashId(`${accountReference ?? ""}|${d.date_delivered}|${d.title}`),
+        account_id: resolveAccountIdForRef(accountReference ?? "", accounts),
+        title: d.title,
+        date_delivered: isoDate(d.date_delivered),
+        account_reference: accountReference,
+      };
+    });
 }
 
 /** Emit one `accounts` record per dashboard account, followed by a

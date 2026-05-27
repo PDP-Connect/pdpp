@@ -20,6 +20,7 @@
     "refresh_policy": {
       "recommended_mode": "manual",
       "minimum_interval_seconds": 7200,
+      "maximum_staleness_seconds": 86400,
       "interaction_posture": "manual_action_likely",
       "rate_limit_sensitivity": "medium",
       "bot_detection_sensitivity": "high",

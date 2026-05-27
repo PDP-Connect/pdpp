@@ -21,11 +21,12 @@
  * link (`<a>`) which USAA sometimes surfaces as a direct-PDF link.
  */
 
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Locator, Page } from "playwright";
 import type { DownloadQueue } from "../../src/download-queue.ts";
+import { readPlaywrightDownloadBuffer } from "../../src/playwright-download.ts";
 import {
   currencyToCentsFromStatement as _currencyFromStatement,
   detectStatementClosing,
@@ -133,11 +134,7 @@ async function consumeDownload(
   dlPromise: ReturnType<DownloadQueue["waitForNextDownload"]>
 ): Promise<{ buffer: Buffer; suggestedFilename: string } | null> {
   const dl = await dlPromise;
-  const path = await dl.path();
-  if (!path) {
-    return null;
-  }
-  const buffer = await readFile(path);
+  const buffer = await readPlaywrightDownloadBuffer(dl);
   return { buffer, suggestedFilename: dl.suggestedFilename() };
 }
 
@@ -469,7 +466,6 @@ export function fileUrlForPath(p: string): string {
 async function extractPdfText(buffer: Buffer): Promise<string> {
   // Lazy-load pdf-parse so the connector doesn't pay startup cost on runs
   // that don't hit the PDF path.
-  // biome-ignore lint/correctness/noUnresolvedImports: pdf-parse is declared in package.json; Biome's resolver can't follow its CJS/ESM conditional exports
   const { PDFParse } = await import("pdf-parse");
   const parser = new PDFParse({ data: buffer });
   let textResult: { text?: string };

@@ -39,6 +39,7 @@
  */
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import type { EmittedMessage, StreamScope } from "../../src/connector-runtime.ts";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
@@ -70,6 +71,7 @@ interface RecordingHarness {
   messages: EmittedMessage[];
 }
 
+const USAA_MANIFEST_PATH = new URL("../../manifests/usaa.json", import.meta.url);
 const FROZEN_EMITTED_AT = "2026-04-22T12:00:00.000Z";
 
 /** Build an EmitDeps that records every emit() + emitRecord() call
@@ -246,6 +248,13 @@ test("buildIndexRows: rows without a date_delivered are dropped (no undated keys
   assert.deepEqual(kept, [0, 2]);
 });
 
+test("buildIndexRows: blank account reference normalizes to null", () => {
+  const rows = buildIndexRows([makeDocRow({ account_reference: "   " })], [makeAccount()]);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]?.account_reference, null);
+  assert.equal(rows[0]?.account_id, null);
+});
+
 // ─── Invariant 5: dedup — repeated hydration map key yields one emit per row ─
 
 test("emitStatementRecords: duplicate rowIndex in indexRows emits once per row entry (no hidden dedupe)", async () => {
@@ -341,4 +350,13 @@ test("hydrationSuccess: narrows ok branch, returns null for err branch + undefin
   assert.equal(hydrationSuccess(ok), ok, "ok branch passes through");
   assert.equal(hydrationSuccess({ err: "download_timed_out" }), null, "err branch narrows to null");
   assert.equal(hydrationSuccess(undefined), null, "missing entry narrows to null");
+});
+
+test("usaa manifest: successful manual runs have a bounded freshness window", () => {
+  const manifest = JSON.parse(readFileSync(USAA_MANIFEST_PATH, "utf8")) as {
+    capabilities?: { refresh_policy?: { maximum_staleness_seconds?: number; recommended_mode?: string } };
+  };
+  const policy = manifest.capabilities?.refresh_policy;
+  assert.equal(policy?.recommended_mode, "manual");
+  assert.equal(policy?.maximum_staleness_seconds, 86_400);
 });

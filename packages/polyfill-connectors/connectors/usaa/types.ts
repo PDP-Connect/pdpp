@@ -132,7 +132,7 @@ export interface DocRow {
 
 export interface IndexRow extends StatementRow {
   account_id: string | null;
-  account_reference: string;
+  account_reference: string | null;
   date_delivered: string | null;
   id: string;
   rowIndex: number;

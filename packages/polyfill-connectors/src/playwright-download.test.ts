@@ -2,9 +2,14 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Readable } from "node:stream";
 import test from "node:test";
 
-import { type PlaywrightDownloadLike, savePlaywrightDownload } from "./playwright-download.ts";
+import {
+  type PlaywrightDownloadLike,
+  readPlaywrightDownloadBuffer,
+  savePlaywrightDownload,
+} from "./playwright-download.ts";
 
 test("savePlaywrightDownload: delegates artifact waiting to saveAs without reading path()", async () => {
   const calls: string[] = [];
@@ -39,6 +44,43 @@ test("savePlaywrightDownload: creates the destination directory before saveAs wr
     };
     await savePlaywrightDownload(mock, target);
     assert.equal(await readFile(target, "utf8"), "ok");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("readPlaywrightDownloadBuffer: streams bytes without depending on download.path()", async () => {
+  const mock: PlaywrightDownloadLike = {
+    createReadStream() {
+      return Promise.resolve(Readable.from([Buffer.from("streamed-pdf")]));
+    },
+    path() {
+      throw new Error("download.path() should not be called when streaming works");
+    },
+    saveAs() {
+      throw new Error("saveAs should not be called when streaming works");
+    },
+  };
+
+  assert.equal((await readPlaywrightDownloadBuffer(mock)).toString("utf8"), "streamed-pdf");
+});
+
+test("readPlaywrightDownloadBuffer: falls back to path() when stream is unavailable", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pdpp-playwright-download-path-test-"));
+  try {
+    const source = join(dir, "download.bin");
+    const { writeFile } = await import("node:fs/promises");
+    await writeFile(source, Buffer.from("from-path"));
+    const mock: PlaywrightDownloadLike = {
+      path() {
+        return Promise.resolve(source);
+      },
+      saveAs() {
+        throw new Error("saveAs should not be called when path() works");
+      },
+    };
+
+    assert.equal((await readPlaywrightDownloadBuffer(mock)).toString("utf8"), "from-path");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
