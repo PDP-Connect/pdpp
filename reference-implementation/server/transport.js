@@ -568,13 +568,44 @@ function wrapHandlerWithResponseCanary(middleware, handler, manifest) {
  * Express-shaped `app` object backed by Fastify. Not a drop-in for every
  * Express API — only what PDPP uses. See the header comment for the
  * exact surface.
+ *
+ * Options:
+ *   logger
+ *     Pre-built Pino logger; otherwise built from `buildLogger()`.
+ *
+ *   __requestValidationAllowlistForTest
+ *     Test-only injection. When present (must be a Set or array of
+ *     operation ids), this app instance treats those op ids as
+ *     request-validation-enforced INSTEAD OF reading the shared
+ *     `REQUEST_VALIDATION_ALLOWLIST` from `contract-validation.js`.
+ *     Production callers MUST NOT pass this; the live reference server
+ *     constructs createApp() without it, so the shared (currently
+ *     empty) allowlist remains the single production source of truth.
+ *     The leading double-underscore + `ForTest` suffix is the explicit
+ *     opt-in signal so a reviewer can grep for production misuse. See
+ *     `reference-implementation/test/route-contract-validation.test.js`
+ *     for the only intended caller.
  */
-export function createApp({ logger } = {}) {
+export function createApp({ logger, __requestValidationAllowlistForTest } = {}) {
   const loggerInstance = logger ?? buildLogger();
   const fastify = buildFastify({ loggerInstance });
   const settings = new Map();
   const globalMiddleware = [];
   let formbodyRegistered = false;
+
+  // Resolve the per-app request-validation enforcement predicate. In
+  // production this is the module-level set from contract-validation.js
+  // (`isRequestValidationEnforced`). In tests, callers may inject an
+  // override that turns enforcement on for a synthetic route bound to a
+  // real manifest, so the transport's "request rejected before handler"
+  // path is exercised without ever shipping that enforcement live.
+  let enforceRequestValidation;
+  if (__requestValidationAllowlistForTest) {
+    const overrideSet = new Set(__requestValidationAllowlistForTest);
+    enforceRequestValidation = (operationId) => overrideSet.has(operationId);
+  } else {
+    enforceRequestValidation = isRequestValidationEnforced;
+  }
 
   // Track every registered route so tests and introspection tools can query
   // which routes came with a contract-package binding. Fastify's
@@ -636,7 +667,7 @@ export function createApp({ logger } = {}) {
     // NOT on the allowlist see no transport-level validation, which
     // preserves the rich handler-owned diagnostics on shape rejection.
     const routeMiddleware = [...middleware];
-    if (manifest && isRequestValidationEnforced(manifest.id)) {
+    if (manifest && enforceRequestValidation(manifest.id)) {
       const manifestRef = manifest;
       routeMiddleware.push((req, res, next) => {
         const responded = applyRequestValidation({
