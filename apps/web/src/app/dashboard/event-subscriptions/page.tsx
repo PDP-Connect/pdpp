@@ -67,7 +67,23 @@ const STATUS_FILTER_OPTIONS: { label: string; value: ClientEventSubscriptionStat
   { label: "disabled · revoked", value: "disabled_revoked" },
 ];
 
-const DISABLED_TERMINAL_STATUSES = new Set<ClientEventSubscriptionStatus>([
+// Statuses for which the operator-disable form is hidden because the
+// subscription is already not delivering. The set is a UI condition, not
+// a lifecycle concept — three of these four statuses are recoverable by
+// the bound client, and `DisabledNoticeCopy` below splits the copy per
+// status to reflect the real state machine:
+//
+//   - `disabled`         — client may re-enable via PATCH { enabled: true }
+//   - `disabled_failure` — same client re-enable path; cause was delivery
+//                          failure rather than a client/operator disable
+//   - `disabled_revoked` — grant was revoked; the client's re-enable PATCH
+//                          is rejected with 409 grant_revoked; the only
+//                          recovery is a new grant
+//   - `deleted`          — soft-deleted; not recoverable
+//
+// Source of truth for those transitions lives in
+// `reference-implementation/operations/as-client-event-subscriptions/`.
+const HIDE_DISABLE_FORM_STATUSES = new Set<ClientEventSubscriptionStatus>([
   "disabled",
   "disabled_failure",
   "disabled_revoked",
@@ -338,7 +354,7 @@ function PeekPane({
   subscription: ClientEventSubscriptionDetail;
   disableError: string;
 }) {
-  const isDisabledTerminal = DISABLED_TERMINAL_STATUSES.has(subscription.status);
+  const hideDisableForm = HIDE_DISABLE_FORM_STATUSES.has(subscription.status);
   return (
     <Section
       description={
@@ -383,20 +399,66 @@ function PeekPane({
         <DefRow label="scope">{describeScope(subscription.scope)}</DefRow>
       </dl>
 
-      {isDisabledTerminal ? (
-        <p className="pdpp-caption mt-4 text-muted-foreground">
-          This subscription is already in a terminal disabled state. The bound client can re-enable it by sending{" "}
-          <code className="font-mono">
-            PATCH /v1/event-subscriptions/{subscription.subscription_id} {"{ enabled: true }"}
-          </code>{" "}
-          from its own credentials.
-        </p>
+      {hideDisableForm ? (
+        <DisabledNoticeCopy status={subscription.status} subscriptionId={subscription.subscription_id} />
       ) : (
         <DisableForm disableError={disableError} subscriptionId={subscription.subscription_id} />
       )}
 
       <RecentAttempts attempts={subscription.recent_attempts} />
     </Section>
+  );
+}
+
+// Per-status copy for the "Disable form is hidden because the row is
+// already not delivering" notice. Three of the four statuses are
+// recoverable by the bound client; one (`disabled_revoked`) is not, and
+// `deleted` is not recoverable at all. See the operations layer in
+// `reference-implementation/operations/as-client-event-subscriptions/`
+// for the real transitions.
+function DisabledNoticeCopy({
+  status,
+  subscriptionId,
+}: {
+  status: ClientEventSubscriptionStatus;
+  subscriptionId: string;
+}) {
+  const clientReenablePatch = (
+    <code className="font-mono">
+      PATCH /v1/event-subscriptions/{subscriptionId} {"{ enabled: true }"}
+    </code>
+  );
+  if (status === "disabled") {
+    return (
+      <p className="pdpp-caption mt-4 text-muted-foreground">
+        This subscription is already disabled. The bound client can re-enable it by sending {clientReenablePatch} from
+        its own credentials.
+      </p>
+    );
+  }
+  if (status === "disabled_failure") {
+    return (
+      <p className="pdpp-caption mt-4 text-muted-foreground">
+        This subscription was disabled by the delivery worker after repeated failures. The bound client can re-enable it
+        once the callback is healthy by sending {clientReenablePatch} from its own credentials.
+      </p>
+    );
+  }
+  if (status === "disabled_revoked") {
+    return (
+      <p className="pdpp-caption mt-4 text-muted-foreground">
+        The bound grant has been revoked, so this subscription is not recoverable in place. The client's re-enable PATCH
+        is rejected with <code className="font-mono">409 grant_revoked</code>; the client would need to obtain a new
+        grant and create a new subscription.
+      </p>
+    );
+  }
+  // status === "deleted"
+  return (
+    <p className="pdpp-caption mt-4 text-muted-foreground">
+      This subscription has been deleted and cannot be re-enabled. The client would need to create a new subscription
+      against an active grant.
+    </p>
   );
 }
 

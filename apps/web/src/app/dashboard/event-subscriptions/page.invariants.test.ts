@@ -45,6 +45,22 @@ const DISABLE_CLIENT_CALL_RE = /disableClientEventSubscription\(/;
 const STALE_CLIENT_EVENTS_ENDPOINT_RE = /\/as\/client-events\/subscriptions/;
 const STALE_CLIENT_SUBSCRIPTION_STATUS_RE = /client_subscription_status/;
 const STALE_REASON_CHARS_LABEL_RE = /max 256 chars/i;
+// "Terminal" vocabulary is wrong for operator-disabled subscriptions
+// because three of the four hide-the-form statuses are client-recoverable
+// via PATCH { enabled: true }. The page must not call any disabled
+// subscription "terminal" and must not bring back the old identifiers.
+const STALE_TERMINAL_DISABLED_COPY_RE = /terminal disabled/i;
+const STALE_TERMINAL_IDENTIFIER_RE = /\bDISABLED_TERMINAL_STATUSES\b/;
+const STALE_TERMINAL_BOOL_RE = /\bisDisabledTerminal\b/;
+
+// Each hide-the-form status branch in `DisabledNoticeCopy` must remain
+// distinct so the copy keeps matching the real state-machine behavior
+// surfaced by `operations/as-client-event-subscriptions/index.ts`.
+const STATUS_BRANCH_DISABLED_RE = /status === "disabled"/;
+const STATUS_BRANCH_DISABLED_FAILURE_RE = /status === "disabled_failure"/;
+const STATUS_BRANCH_DISABLED_REVOKED_RE = /status === "disabled_revoked"/;
+const GRANT_REVOKED_409_RE = /409 grant_revoked/;
+const DELETED_COPY_RE = /has been deleted/;
 
 // Filter-status select must surface exactly one empty-value option (the
 // "any" fallback). A duplicate is a real bug we saw upstream of this
@@ -98,6 +114,32 @@ test("operator dashboard page references the correct client-facing routes", asyn
   assert.doesNotMatch(src, STALE_CLIENT_EVENTS_ENDPOINT_RE);
   assert.doesNotMatch(src, STALE_CLIENT_SUBSCRIPTION_STATUS_RE);
   assert.doesNotMatch(src, STALE_REASON_CHARS_LABEL_RE);
+});
+
+test("operator dashboard page does not call disabled subscriptions 'terminal'", async () => {
+  const src = await readFile(PAGE_FILE, "utf8");
+  // Disabled subscriptions are not terminal — three of the four
+  // hide-the-form statuses are client-recoverable. The page must not
+  // teach the wrong state model via either copy or identifiers.
+  assert.doesNotMatch(src, STALE_TERMINAL_DISABLED_COPY_RE);
+  assert.doesNotMatch(src, STALE_TERMINAL_IDENTIFIER_RE);
+  assert.doesNotMatch(src, STALE_TERMINAL_BOOL_RE);
+});
+
+test("operator dashboard page splits disabled-state copy by real state machine", async () => {
+  const src = await readFile(PAGE_FILE, "utf8");
+  // The renderer must branch on each of the four hide-the-form statuses
+  // (disabled, disabled_failure, disabled_revoked, deleted). A future
+  // refactor that collapses them back into a single "terminal" message
+  // would re-introduce the false-lifecycle bug.
+  assert.match(src, STATUS_BRANCH_DISABLED_RE);
+  assert.match(src, STATUS_BRANCH_DISABLED_FAILURE_RE);
+  assert.match(src, STATUS_BRANCH_DISABLED_REVOKED_RE);
+  // `disabled_revoked` must not promise a client re-enable PATCH —
+  // the operations layer rejects that with 409 grant_revoked.
+  assert.match(src, GRANT_REVOKED_409_RE);
+  // `deleted` is also handled (the final fall-through branch).
+  assert.match(src, DELETED_COPY_RE);
 });
 
 test("status filter renders exactly one empty-value option", async () => {
