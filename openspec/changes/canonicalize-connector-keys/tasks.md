@@ -1,18 +1,18 @@
 ## 1. Identity Inventory
 
-- [ ] 1.1 Inventory every active use of URL-shaped connector ids, stale aliases, `legacy`, `legacy_default`, `connector_instance_id` public aliases, and delimiter-parsed connector selection values.
-- [ ] 1.2 Classify each occurrence as active runtime contract, migration-only, test fixture, root protocol doc, reference doc, or generated artifact.
-- [ ] 1.3 Produce a canonical key mapping table for first-party connectors and local aliases, including unmapped/custom behavior.
+- [x] 1.1 Inventory every active use of URL-shaped connector ids, stale aliases, `legacy`, `legacy_default`, `connector_instance_id` public aliases, and delimiter-parsed connector selection values. (Tranche 1: inventory captured in worker report `tmp/workstreams/ri-canonical-connector-keys-full-report.md` covering polyfill + reference manifests, runtime storage paths, MCP/AS surfaces, legacy alias sites, OpenAPI mentions, and SQL queries.)
+- [x] 1.2 Classify each occurrence as active runtime contract, migration-only, test fixture, root protocol doc, reference doc, or generated artifact. (Tranche 1: classification recorded in the same worker report; manifest URLs + legacy alias map are active runtime, SQL queries are storage layer, OpenAPI mentions are generated contract artifacts, `legacy-local-connector-manifest-alias.test.js` is migration-only test fixture.)
+- [x] 1.3 Produce a canonical key mapping table for first-party connectors and local aliases, including unmapped/custom behavior. (Tranche 1: codified in `reference-implementation/server/connector-key.js` as `FIRST_PARTY_CONNECTOR_KEYS` + `NATIVE_CONNECTOR_KEYS` + `LEGACY_LOCAL_ALIASES`, pinned by `test/connector-key.test.js`; unknown URLs/strings fail closed to `null` per design §3.)
 
 ## 2. OpenSpec And Contract Alignment
 
-- [ ] 2.1 Validate this OpenSpec change with `openspec validate canonicalize-connector-keys --strict`.
+- [x] 2.1 Validate this OpenSpec change with `openspec validate canonicalize-connector-keys --strict`. (Tranche 1: validated clean on `workstream/ri-canonical-connector-keys-full` at commits 6fefb100 + 91c1afe2.)
 - [ ] 2.2 Cross-check `expose-connection-identity-on-public-read`, `agent-consent-bundling`, and MCP adapter specs for contradictory `connector_id`/`connector_key` wording.
 - [ ] 2.3 Decide whether any root `spec-core.md` or `spec-collection-profile.md` language must change in this tranche or whether it requires a separate protocol-spec change.
 
 ## 3. Migration
 
-- [ ] 3.1 Add canonical connector-key helpers and first-party URL/alias mapping tests.
+- [x] 3.1 Add canonical connector-key helpers and first-party URL/alias mapping tests. (Tranche 1: `reference-implementation/server/connector-key.js` exports `canonicalConnectorKey`, `canonicalConnectorKeyFromManifest`, `connectorKeyFromRegistryUrl`, `isRegistryUrlConnectorId`, `isLegacyLocalAlias`; covered by `test/connector-key.test.js` (15 cases) including allowlist parity guards against drift in `packages/polyfill-connectors/manifests/` and `reference-implementation/manifests/`.)
 - [ ] 3.2 Add dry-run migration that reports every table/field to be rewritten and fails on ambiguous/unmapped identifiers.
 - [ ] 3.3 Add write migration that rewrites connector manifests, storage bindings, source bindings, grants, grant packages, records/history, blobs, indexes, schedules, state, runs, diagnostics, coverage/gaps, and event subscriptions.
 - [ ] 3.4 Validate migration against a backup fixture with URL-shaped ids and aliases, proving row counts, grants, data, and record hydration are preserved.
@@ -23,7 +23,7 @@
 - [ ] 4.2 Update manifest registration and lookup to key by `connector_key`.
 - [ ] 4.3 Update runtime/storage/read/search/blob/event-subscription code to require canonical connector keys in active paths.
 - [x] 4.4 Update hosted MCP package and consent selection parsing to use opaque or structured selection values, not delimiter-split connector ids. (Tranche 1: picker now emits `base64url(JSON.stringify({connector_id, connection_id}))` selection values; AS POST handler decodes via `parseHostedMcpSelections` from `server/hosted-mcp-selection.js`. Encoder/parser unit-tested and HTTP-layer regression-tested. Payload field name will flip from `connector_id` to `connector_key` once the broader canonical-key migration lands.)
-- [ ] 4.5 Update owner dashboard, Explore, Records/Connections, event subscriptions, deployment tokens, and grant package surfaces to display connector names and connection names without registry URLs or legacy labels.
+- [ ] 4.5 Update owner dashboard, Explore, Records/Connections, event subscriptions, deployment tokens, and grant package surfaces to display connector names and connection names without registry URLs or legacy labels. (Tranche 2 partial: hosted MCP package picker meta sub-line now renders the canonical `connector_key` instead of the URL via `canonicalConnectorKey(connectorId)`, with regression assertion in `test/hosted-mcp-oauth.test.js` that picker HTML MUST NOT contain `https://registry.pdpp.org`. Dashboard, Explore, Records/Connections, event subscriptions, and deployment tokens surfaces still pending.)
 - [ ] 4.6 Update local-collector setup/config paths to advertise and accept canonical connector keys only.
 
 ## 5. MCP And Client Surface
