@@ -22,6 +22,7 @@ import { emitRemoteTelemetry } from './remote-telemetry-registry.js';
 const PROFILE_NAME = 'stream-playground';
 const DEFAULT_PLAYGROUND_BACKEND = 'cdp';
 const DEFAULT_NEKO_BASE_URL = 'http://127.0.0.1:8080/neko';
+const DEFAULT_DOCKER_NEKO_BASE_URL = 'http://neko:8080/neko';
 // One device-id constant, used both when registering the wsUrl with the
 // run-target registry and when minting future runIds. Synthetic — does not
 // collide with real device-exporter ids (those have a uuid-style prefix).
@@ -517,7 +518,12 @@ export function createPlayground({ runTargetRegistry, controller, logger = null,
   }
 
   function resolveNekoBaseUrl() {
-    return String(env.PDPP_NEKO_BASE_URL || env.NEKO_ORIGIN || DEFAULT_NEKO_BASE_URL).trim();
+    return String(
+      env.PDPP_STREAM_PLAYGROUND_NEKO_BASE_URL ||
+        env.PDPP_NEKO_BASE_URL ||
+        env.NEKO_ORIGIN ||
+        (env.PDPP_STREAM_PLAYGROUND_DOCKER === '1' ? DEFAULT_DOCKER_NEKO_BASE_URL : DEFAULT_NEKO_BASE_URL),
+    ).trim();
   }
 
   // Monotonic counter to ensure each call to makeIds() produces a unique
