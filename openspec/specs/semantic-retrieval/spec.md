@@ -235,6 +235,8 @@ A stream that participates in semantic retrieval SHALL declare its semantic-sear
 
 Implementations that expose this extension SHALL publish the advertisement as a `capabilities.semantic_retrieval` object inside the existing resource-server metadata document (the same document already used by the resource server to publish OAuth-shaped metadata and, when present, the `capabilities.lexical_retrieval` advertisement). The advertisement SHALL describe only global facts about the extension. The advertisement SHALL include, when `supported: true`, the keys `supported`, `stability`, `endpoint`, `cross_stream`, `query_input`, `snippets`, `lexical_blending`, `model`, `dimensions`, `distance_metric`, `default_limit`, `max_limit`, and `index_state`. The advertisement SHALL NOT enumerate per-stream `semantic_fields`. It SHALL NOT grow into a generalized capability-statement document.
 
+The advertised `index_state` SHALL be computed against the active storage backend that holds the operational semantic index. An implementation that supports multiple storage backends SHALL NOT report `index_state` based on inactive-backend metadata or progress rows.
+
 #### Scenario: A server that exposes the extension publishes the advertisement with experimental stability
 - **WHEN** an implementation exposes the extension on a resource server
 - **THEN** that resource server's metadata document SHALL include a `capabilities.semantic_retrieval` object
@@ -257,6 +259,14 @@ Implementations that expose this extension SHALL publish the advertisement as a 
 - **THEN** `index_state` SHALL be exactly one of `"built"`, `"building"`, or `"stale"`
 - **AND** the implementation SHALL report `"stale"` when the configured `model` has changed or when `semantic_fields` have changed in a way that invalidates existing index coverage, until a rebuild restores coverage
 - **AND** the implementation SHALL NOT report `"built"` while the advertised `model` disagrees with the content of the operational index
+
+#### Scenario: `index_state` is computed against the active storage backend
+- **WHEN** an implementation supports more than one semantic-index storage backend (for example a local embedded store and an external database)
+- **AND** the implementation has selected one of those backends as the active operational backend for the current process
+- **THEN** the advertised `index_state` SHALL be derived solely from the active backend's semantic meta and backfill-progress state
+- **AND** the implementation SHALL NOT report `"stale"` solely because inactive-backend storage contains orphaned progress or meta rows left from an earlier configuration
+- **AND** the implementation SHALL still report `"stale"` when the active backend's meta identity disagrees with the live embedding backend identity (`model`, `dimensions`, `distance_metric`)
+- **AND** the implementation SHALL still report `"building"` while an in-process backfill is active, regardless of which storage backend is active
 
 #### Scenario: The semantic surface SHALL NOT silently substitute a non-semantic fallback
 - **WHEN** `index_state` is `"building"` or `"stale"`, or when the server is otherwise unable to produce semantic results honoring the declared `model`
