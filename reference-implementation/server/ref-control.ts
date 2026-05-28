@@ -1523,6 +1523,22 @@ function pickMostUrgentLease(
   })[0]!;
 }
 
+function surfaceRecencyMs(surface: BrowserSurface): number {
+  const lastUsed = Date.parse(surface.last_used_at);
+  if (Number.isFinite(lastUsed)) return lastUsed;
+  const created = Date.parse(surface.created_at);
+  return Number.isFinite(created) ? created : 0;
+}
+
+function pickMostRecentSurface(surfaces: readonly BrowserSurface[]): BrowserSurface | null {
+  if (surfaces.length === 0) return null;
+  return [...surfaces].sort((a, b) => {
+    const at = surfaceRecencyMs(b) - surfaceRecencyMs(a);
+    if (at !== 0) return at;
+    return b.surface_id.localeCompare(a.surface_id);
+  })[0]!;
+}
+
 /**
  * Project the most-urgent remote-surface evidence for a single connector
  * id from the durable browser-surface lease store. Returns `null`
@@ -1572,30 +1588,29 @@ export async function getConnectorBrowserSurfaceProjection(
     return { evidence: null, unreliable: false };
   }
 
-  const unhealthySurface = connectorSurfaces.find((surface) => surface.health === "unhealthy");
   const picked = pickMostUrgentLease(connectorLeases);
 
-  // 1. Unhealthy surface = live capacity failure (design.md).
-  if (unhealthySurface) {
-    return {
-      evidence: {
-        axis: "failed",
-        leaseId: unhealthySurface.active_lease_id ?? null,
-        leaseStatus: null,
-        profileKey: unhealthySurface.profile_key,
-        surfaceHealth: unhealthySurface.health,
-        surfaceId: unhealthySurface.surface_id,
-        waitReason: "surface_unhealthy",
-      },
-      unreliable: false,
-    };
-  }
-
-  // 2-3. Active lease evidence.
+  // 1-2. Active lease evidence is the freshest signal. A stale
+  // unhealthy surface from an earlier failed launch must not poison a
+  // connection that subsequently leased a ready surface successfully.
   if (picked) {
     const surface = picked.surface_id
       ? connectorSurfaces.find((s) => s.surface_id === picked.surface_id)
       : undefined;
+    if (surface?.health === "unhealthy") {
+      return {
+        evidence: {
+          axis: "failed",
+          leaseId: picked.lease_id,
+          leaseStatus: picked.status,
+          profileKey: surface.profile_key,
+          surfaceHealth: surface.health,
+          surfaceId: surface.surface_id,
+          waitReason: "surface_unhealthy",
+        },
+        unreliable: false,
+      };
+    }
     if (picked.status === "leased") {
       return {
         evidence: {
@@ -1626,9 +1641,25 @@ export async function getConnectorBrowserSurfaceProjection(
     }
   }
 
-  // 4. Managed surface present, no active lease.
-  if (connectorSurfaces.length > 0) {
-    const surface = connectorSurfaces[0]!;
+  // 3. Managed surface present, no active lease. Treat the most recent
+  // surface as current evidence; old unhealthy rows are diagnostic
+  // history, not the present runtime state.
+  const surface = pickMostRecentSurface(connectorSurfaces);
+  if (surface) {
+    if (surface.health === "unhealthy") {
+      return {
+        evidence: {
+          axis: "failed",
+          leaseId: surface.active_lease_id ?? null,
+          leaseStatus: null,
+          profileKey: surface.profile_key,
+          surfaceHealth: surface.health,
+          surfaceId: surface.surface_id,
+          waitReason: "surface_unhealthy",
+        },
+        unreliable: false,
+      };
+    }
     return {
       evidence: {
         axis: "idle",
