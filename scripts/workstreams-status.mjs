@@ -164,6 +164,7 @@ const openSpecChanges = listFiles(join(repoRoot, "openspec", "changes"))
   .sort();
 
 const openSpecBuckets = classifyOpenSpecChanges(openSpecChanges);
+const wrapperLanes = loadWrapperLanes(join(repoRoot, "tmp", "workstreams", "claude-wrapper"));
 
 const risks = [];
 
@@ -189,6 +190,13 @@ for (const queue of mergeQueueFiles) {
 }
 for (const blocker of blockerFiles) {
   risks.push(`BLOCKER pending ${blocker.rel} (${blocker.ageHours}h old)`);
+}
+for (const lane of wrapperLanes) {
+  if (lane.status === "failed") {
+    risks.push(`WRAPPER-LANE failed lane=${lane.lane} run=${lane.startedAt} report_state=${lane.reportState}`);
+  } else if (lane.status === "running") {
+    risks.push(`WRAPPER-LANE still-running lane=${lane.lane} started=${lane.startedAt}`);
+  }
 }
 
 console.log("# PDPP Workstreams Status");
@@ -276,6 +284,17 @@ printSection(
   cardFiles.map((entry) => `- ${entry.rel} age=${entry.ageHours}h first-line=${JSON.stringify(readFirstHeading(entry))}`)
 );
 
+printSection(
+  "Claude Wrapper Lanes",
+  wrapperLanes.length === 0
+    ? []
+    : wrapperLanes.map((lane) => {
+        const recovered = lane.recovered ? " recovered=true" : "";
+        const branch = lane.branch ? ` branch=${lane.branch}` : "";
+        return `- [${lane.status}] lane=${lane.lane}${branch} run=${lane.startedAt} report=${lane.reportState}${recovered}`;
+      })
+);
+
 if (risks.length > 0 && !noFail) {
   process.exitCode = 1;
 }
@@ -333,4 +352,50 @@ function classifyOpenSpecChanges(names) {
 function formatOpenSpecLine(entry) {
   const ratio = `[${String(entry.done).padStart(2, " ")}/${String(entry.total).padStart(2, " ")}]`;
   return `- ${ratio} ${entry.name}`;
+}
+
+// Scan tmp/workstreams/claude-wrapper/<lane>/<ts>/status.json.
+// Returns one entry per lane: the most recent run for each lane name.
+function loadWrapperLanes(wrapperDir) {
+  if (!existsSync(wrapperDir)) return [];
+  const byLane = new Map();
+  for (const laneEntry of readdirSync(wrapperDir, { withFileTypes: true })) {
+    if (!laneEntry.isDirectory()) continue;
+    const laneName = laneEntry.name;
+    const laneDir = join(wrapperDir, laneName);
+    const runs = readdirSync(laneDir, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name)
+      .sort();
+    if (runs.length === 0) continue;
+    const latestRun = runs[runs.length - 1];
+    const statusFile = join(laneDir, latestRun, "status.json");
+    if (!existsSync(statusFile)) continue;
+    try {
+      const data = JSON.parse(readFileSync(statusFile, "utf8"));
+      byLane.set(laneName, {
+        lane: data.lane ?? laneName,
+        branch: data.branch ?? "",
+        status: data.status ?? "unknown",
+        reportState: data.report_state ?? "unknown",
+        recovered: data.recovered ?? false,
+        startedAt: data.started_at ?? latestRun,
+        endedAt: data.ended_at ?? "",
+        exitCode: data.exit_code ?? -1,
+      });
+    } catch {
+      // Corrupt status.json — surface as a failed lane.
+      byLane.set(laneName, {
+        lane: laneName,
+        branch: "",
+        status: "failed",
+        reportState: "absent",
+        recovered: false,
+        startedAt: latestRun,
+        endedAt: "",
+        exitCode: -1,
+      });
+    }
+  }
+  return [...byLane.values()].sort((a, b) => a.lane.localeCompare(b.lane));
 }
