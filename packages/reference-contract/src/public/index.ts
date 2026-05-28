@@ -161,13 +161,36 @@ const ListRecordsQuerySchema = {
   },
 };
 
+// Calendar `date_trunc` granularity set for `group_by_time`. Calendar-aware
+// (weeks start Monday); see
+//   openspec/changes/add-aggregate-time-buckets-and-distinct
+const AGGREGATE_GRANULARITIES = ["minute", "hour", "day", "week", "month", "quarter", "year"];
+
 const AggregateQuerySchema = {
   type: "object",
   additionalProperties: false,
   properties: {
-    metric: { type: "string", enum: ["count", "sum", "min", "max"] },
+    metric: { type: "string", enum: ["count", "sum", "min", "max", "count_distinct"] },
     field: { type: "string" },
+    // Exactly one grouping dimension in v1: `group_by` XOR `group_by_time`.
+    // The resource server rejects supplying both with `invalid_request`.
     group_by: { type: "string" },
+    group_by_time: {
+      type: "string",
+      description:
+        "Group counts into calendar time buckets over a declared date/date-time field. Mutually exclusive with `group_by`. Requires `granularity`.",
+    },
+    granularity: {
+      type: "string",
+      enum: AGGREGATE_GRANULARITIES,
+      description:
+        "Calendar `date_trunc` unit for `group_by_time`. Required when `group_by_time` is present and forbidden otherwise.",
+    },
+    time_zone: {
+      type: "string",
+      description:
+        "IANA time zone used to compute `group_by_time` bucket boundaries. Defaults to `UTC`; the response echoes the effective zone.",
+    },
     limit: { type: "integer", minimum: 1, maximum: 100 },
     filter: { type: "object" },
     connector_id: { type: "string" },
@@ -882,9 +905,19 @@ const AggregationResponseSchema = {
   properties: {
     object: { const: "aggregation" },
     stream: { type: "string" },
-    metric: { type: "string", enum: ["count", "sum", "min", "max"] },
+    metric: { type: "string", enum: ["count", "sum", "min", "max", "count_distinct"] },
     field: { type: ["string", "null"] },
     group_by: { type: ["string", "null"] },
+    // Additive time-bucket fields. `null` for non-time aggregations so
+    // existing payloads stay compatible. See:
+    //   openspec/changes/add-aggregate-time-buckets-and-distinct
+    group_by_time: { type: ["string", "null"] },
+    granularity: { type: ["string", "null"], enum: [...AGGREGATE_GRANULARITIES, null] },
+    time_zone: { type: ["string", "null"] },
+    // `true` only when an accelerated path estimates the metric (e.g. a future
+    // HyperLogLog `count_distinct`). The reference floor is exact and reports
+    // `false`.
+    approximate: { type: "boolean" },
     value: { type: ["number", "integer", "string", "null"] },
     filtered_record_count: { type: "integer", minimum: 0 },
     limit: { type: "integer", minimum: 1, maximum: 100 },
@@ -998,6 +1031,12 @@ const StreamMetadataResponseSchema = {
             min: { type: "array", items: { type: "string" } },
             max: { type: "array", items: { type: "string" } },
             group_by: { type: "array", items: { type: "string" } },
+            // Declared date/date-time fields the stream supports for
+            // `group_by_time` calendar bucketing, and declared scalar fields
+            // it supports for `count_distinct`. See:
+            //   openspec/changes/add-aggregate-time-buckets-and-distinct
+            group_by_time: { type: "array", items: { type: "string" } },
+            count_distinct: { type: "array", items: { type: "string" } },
           },
         },
       },
@@ -1032,8 +1071,10 @@ const StreamMetadataResponseSchema = {
               min: CapabilityFlagSchema,
               max: CapabilityFlagSchema,
               group_by: CapabilityFlagSchema,
+              group_by_time: CapabilityFlagSchema,
+              count_distinct: CapabilityFlagSchema,
             },
-            required: ["sum", "min", "max", "group_by"],
+            required: ["sum", "min", "max", "group_by", "group_by_time", "count_distinct"],
           },
         },
         required: [
@@ -1533,7 +1574,7 @@ export const publicManifests = [
     surface: "public",
     tags: ["records"],
     summary:
-      "Compute a single-stream grant-safe aggregation. Supports count, numeric sum, numeric/date min/max, grouped counts, and existing exact/range filters over declared fields.",
+      "Compute a single-stream grant-safe aggregation. Supports count, numeric sum, numeric/date min/max, exact count_distinct, scalar grouped counts (`group_by`), calendar time-bucket counts (`group_by_time`+`granularity`, optional `time_zone` defaulting to UTC), and existing exact/range filters over declared fields. Exactly one grouping dimension per call: `group_by` XOR `group_by_time`.",
     request: {
       headers: AuthHeaderSchema,
       params: StreamNamePathSchema,

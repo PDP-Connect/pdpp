@@ -3733,6 +3733,18 @@
                                           "items": {
                                             "type": "string"
                                           }
+                                        },
+                                        "group_by_time": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "string"
+                                          }
+                                        },
+                                        "count_distinct": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "string"
+                                          }
                                         }
                                       }
                                     }
@@ -3913,13 +3925,53 @@
                                               "declared",
                                               "usable"
                                             ]
+                                          },
+                                          "group_by_time": {
+                                            "type": "object",
+                                            "additionalProperties": false,
+                                            "properties": {
+                                              "declared": {
+                                                "type": "boolean"
+                                              },
+                                              "usable": {
+                                                "type": "boolean"
+                                              },
+                                              "reason": {
+                                                "type": "string"
+                                              }
+                                            },
+                                            "required": [
+                                              "declared",
+                                              "usable"
+                                            ]
+                                          },
+                                          "count_distinct": {
+                                            "type": "object",
+                                            "additionalProperties": false,
+                                            "properties": {
+                                              "declared": {
+                                                "type": "boolean"
+                                              },
+                                              "usable": {
+                                                "type": "boolean"
+                                              },
+                                              "reason": {
+                                                "type": "string"
+                                              }
+                                            },
+                                            "required": [
+                                              "declared",
+                                              "usable"
+                                            ]
                                           }
                                         },
                                         "required": [
                                           "sum",
                                           "min",
                                           "max",
-                                          "group_by"
+                                          "group_by",
+                                          "group_by_time",
+                                          "count_distinct"
                                         ]
                                       }
                                     },
@@ -4697,6 +4749,18 @@
                               "items": {
                                 "type": "string"
                               }
+                            },
+                            "group_by_time": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "count_distinct": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
                             }
                           }
                         }
@@ -4877,13 +4941,53 @@
                                   "declared",
                                   "usable"
                                 ]
+                              },
+                              "group_by_time": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {
+                                  "declared": {
+                                    "type": "boolean"
+                                  },
+                                  "usable": {
+                                    "type": "boolean"
+                                  },
+                                  "reason": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "declared",
+                                  "usable"
+                                ]
+                              },
+                              "count_distinct": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {
+                                  "declared": {
+                                    "type": "boolean"
+                                  },
+                                  "usable": {
+                                    "type": "boolean"
+                                  },
+                                  "reason": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "declared",
+                                  "usable"
+                                ]
                               }
                             },
                             "required": [
                               "sum",
                               "min",
                               "max",
-                              "group_by"
+                              "group_by",
+                              "group_by_time",
+                              "count_distinct"
                             ]
                           }
                         },
@@ -5677,7 +5781,7 @@
         "tags": [
           "records"
         ],
-        "summary": "Compute a single-stream grant-safe aggregation. Supports count, numeric sum, numeric/date min/max, grouped counts, and existing exact/range filters over declared fields.",
+        "summary": "Compute a single-stream grant-safe aggregation. Supports count, numeric sum, numeric/date min/max, exact count_distinct, scalar grouped counts (`group_by`), calendar time-bucket counts (`group_by_time`+`granularity`, optional `time_zone` defaulting to UTC), and existing exact/range filters over declared fields. Exactly one grouping dimension per call: `group_by` XOR `group_by_time`.",
         "parameters": [
           {
             "in": "path",
@@ -5698,7 +5802,8 @@
                 "count",
                 "sum",
                 "min",
-                "max"
+                "max",
+                "count_distinct"
               ]
             }
           },
@@ -5716,6 +5821,42 @@
             "required": false,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "group_by_time",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Group counts into calendar time buckets over a declared date/date-time field. Mutually exclusive with `group_by`. Requires `granularity`."
+            }
+          },
+          {
+            "in": "query",
+            "name": "granularity",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "minute",
+                "hour",
+                "day",
+                "week",
+                "month",
+                "quarter",
+                "year"
+              ],
+              "description": "Calendar `date_trunc` unit for `group_by_time`. Required when `group_by_time` is present and forbidden otherwise."
+            }
+          },
+          {
+            "in": "query",
+            "name": "time_zone",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "IANA time zone used to compute `group_by_time` bucket boundaries. Defaults to `UTC`; the response echoes the effective zone."
             }
           },
           {
@@ -5774,7 +5915,8 @@
                         "count",
                         "sum",
                         "min",
-                        "max"
+                        "max",
+                        "count_distinct"
                       ]
                     },
                     "field": {
@@ -5788,6 +5930,37 @@
                         "string",
                         "null"
                       ]
+                    },
+                    "group_by_time": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "granularity": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "enum": [
+                        "minute",
+                        "hour",
+                        "day",
+                        "week",
+                        "month",
+                        "quarter",
+                        "year",
+                        null
+                      ]
+                    },
+                    "time_zone": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "approximate": {
+                      "type": "boolean"
                     },
                     "value": {
                       "type": [
