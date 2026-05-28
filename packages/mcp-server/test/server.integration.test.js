@@ -126,6 +126,7 @@ test('lists the expected tools and annotates read-only tools as read-only', asyn
   const tools = await client.listTools();
   const names = tools.tools.map((tool) => tool.name).sort();
   assert.deepEqual(names, [
+    'aggregate',
     'create_event_subscription',
     'delete_event_subscription',
     'discover_event_subscription_capabilities',
@@ -142,6 +143,7 @@ test('lists the expected tools and annotates read-only tools as read-only', asyn
   ]);
 
   const READ_ONLY = new Set([
+    'aggregate',
     'schema',
     'list_streams',
     'query_records',

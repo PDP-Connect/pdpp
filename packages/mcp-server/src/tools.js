@@ -39,6 +39,24 @@ const SUPPORTED_QUERY_KEYS = new Set([
   'connector_instance_id',
 ]);
 
+// Mirror of the REST aggregate query-param vocabulary
+// (`/v1/streams/{stream}/aggregate`). Forwarded verbatim to the RS so the
+// resource server owns metric/grouping validation; the MCP layer never
+// silently drops a member. See:
+//   openspec/changes/add-aggregate-time-buckets-and-distinct
+const SUPPORTED_AGGREGATE_QUERY_KEYS = new Set([
+  'metric',
+  'field',
+  'group_by',
+  'group_by_time',
+  'granularity',
+  'time_zone',
+  'limit',
+  'filter',
+  'connection_id',
+  'connector_instance_id',
+]);
+
 const CONNECTION_ID_DESCRIPTION =
   'Optional connection_id from a prior list_streams response. Omit to fan in across every connection your grant authorizes for the named stream; pass it to scope the call to one account/device/profile. Required to recover from a typed `ambiguous_connection` (409) error returned by `fetch` or `fetch_blob` — the error envelope lists the candidate `available_connections` and instructs you to retry with `connection_id`. Granted connection identities are advertised by `GET /v1/schema`.';
 
@@ -264,6 +282,65 @@ export function buildTools({ rs, providerUrl }) {
           query,
         });
         return toToolResult(response, providerUrl, `records from stream "${stream}"`);
+      },
+    },
+    {
+      name: 'aggregate',
+      title: 'Aggregate PDPP records',
+      description:
+        'Compute a single-stream grant-safe aggregation via `GET /v1/streams/{stream}/aggregate`. Metrics: `count`, `sum`, `min`, `max`, `count_distinct` (`field` required for all but `count`). Group with exactly one dimension per call — `group_by=<scalar_field>` XOR `group_by_time=<date_field>`; combining them is rejected. `group_by_time` requires `granularity` (`minute|hour|day|week|month|quarter|year`, calendar-aware, weeks start Monday) and accepts an optional IANA `time_zone` (defaults to UTC, echoed in the response). Groupable, time-bucketable, and distinct-able fields are advertised by `GET /v1/schema` (`field_capabilities.*.aggregation`); undeclared or undeclared-for-the-operation fields are rejected by the RS rather than silently ignored. Scalar `group_by` buckets order by count descending then key ascending; `group_by_time` buckets order by bucket start ascending with a single `null` bucket (sorted last) for null/unparseable times. `count_distinct` excludes null and is exact (`approximate: false`). Forwards args verbatim — MCP does not silently drop a parameter the RS would reject. ' +
+        CANONICAL_SCHEMA_HINT +
+        ' Read-only.',
+      annotations: READ_ONLY_ANNOTATIONS,
+      inputSchema: z
+        .object({
+          stream: z.string().min(1).describe('Stream name as returned by `list_streams`.'),
+          metric: z
+            .enum(['count', 'sum', 'min', 'max', 'count_distinct'])
+            .describe('Aggregation metric. `field` is required for sum, min, max, and count_distinct.'),
+          field: z
+            .string()
+            .min(1)
+            .optional()
+            .describe('Target field for sum/min/max/count_distinct. Must be declared for the metric in `GET /v1/schema`.'),
+          group_by: z
+            .string()
+            .min(1)
+            .optional()
+            .describe('Scalar field to group counts by. Mutually exclusive with `group_by_time`.'),
+          group_by_time: z
+            .string()
+            .min(1)
+            .optional()
+            .describe('Declared date/date-time field to bucket counts by. Requires `granularity`. Mutually exclusive with `group_by`.'),
+          granularity: z
+            .enum(['minute', 'hour', 'day', 'week', 'month', 'quarter', 'year'])
+            .optional()
+            .describe('Calendar bucket unit for `group_by_time`. Required with `group_by_time`, forbidden otherwise.'),
+          time_zone: z
+            .string()
+            .min(1)
+            .optional()
+            .describe('IANA time zone for `group_by_time` bucket boundaries. Defaults to UTC; the response echoes the effective zone.'),
+          limit: z
+            .number()
+            .int()
+            .positive()
+            .max(100)
+            .optional()
+            .describe('Maximum number of group buckets (1-100). Only valid with `group_by` or `group_by_time`.'),
+          filter: z.string().optional().describe(FILTER_DESCRIPTION),
+          ...ConnectionIdInputShape,
+        })
+        .strict(),
+      outputSchema: z.object(READ_OUTPUT_SCHEMA_SHAPE),
+      handler: async (args) => {
+        const stream = requireSafeName(args?.stream, 'stream');
+        const query = pickQuery(args, SUPPORTED_AGGREGATE_QUERY_KEYS);
+        const response = await rs.getJson(`/v1/streams/${encodeURIComponent(stream)}/aggregate`, {
+          query,
+        });
+        return toToolResult(response, providerUrl, `aggregation for stream "${stream}"`);
       },
     },
     {
