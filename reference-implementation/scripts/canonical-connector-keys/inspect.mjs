@@ -369,17 +369,15 @@ function buildClassifiedDistinct(value, count) {
 }
 
 function aggregateExtractions(extractions) {
-  // extractions: [{ path, value }]  →  Map<`${path} ${value}`, count>
+  // extractions: [{ path, value }]  →  Map<JSON.stringify([path,value]), count>
   const counts = new Map();
   for (const { path, value } of extractions) {
-    const key = `${path} ${value}`;
+    const key = JSON.stringify([path, value]);
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
   const distinct = [];
   for (const [key, count] of counts) {
-    const sep = key.indexOf(' ');
-    const path = key.slice(0, sep);
-    const value = key.slice(sep + 1);
+    const [path, value] = JSON.parse(key);
     const entry = buildClassifiedDistinct(value, count);
     distinct.push({ path, ...entry });
   }
