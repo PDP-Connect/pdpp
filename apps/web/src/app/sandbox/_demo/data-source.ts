@@ -556,7 +556,12 @@ export const sandboxDashboardDataSource: DashboardDataSource = {
     };
   },
 
-  async getRecord(_connectorId: string, stream: string, recordId: string, _opts?: { connectorInstanceId?: string | null }): Promise<StreamRecord> {
+  async getRecord(
+    _connectorId: string,
+    stream: string,
+    recordId: string,
+    _opts?: { connectorInstanceId?: string | null }
+  ): Promise<StreamRecord> {
     const record = DEMO_RECORDS.find((r) => r.stream === stream && r.record_id === recordId);
     if (!record) {
       // Match the live RS error shape so the existing 404 detection works.

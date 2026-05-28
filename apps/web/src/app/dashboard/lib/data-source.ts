@@ -67,7 +67,12 @@ export interface DashboardDataSource {
   getDatasetSummary(): Promise<DatasetSummary>;
   getDeploymentDiagnostics(): Promise<DeploymentDiagnostics>;
   getGrantTimeline(grantId: string): Promise<TimelineEnvelope | null>;
-  getRecord(connectorId: string, stream: string, recordId: string, opts?: { connectorInstanceId?: string | null }): Promise<StreamRecord>;
+  getRecord(
+    connectorId: string,
+    stream: string,
+    recordId: string,
+    opts?: { connectorInstanceId?: string | null }
+  ): Promise<StreamRecord>;
   getRunTimeline(runId: string): Promise<TimelineEnvelope | null>;
   getTraceTimeline(traceId: string): Promise<TimelineEnvelope | null>;
   isHybridRetrievalAdvertised(): Promise<boolean>;

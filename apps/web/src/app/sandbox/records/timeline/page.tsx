@@ -19,8 +19,12 @@ export default async function SandboxRecordsTimelinePage({
 }) {
   const { since, until } = await searchParams;
   const params = new URLSearchParams();
-  if (since) params.set("since", since);
-  if (until) params.set("until", until);
+  if (since) {
+    params.set("since", since);
+  }
+  if (until) {
+    params.set("until", until);
+  }
   const qs = params.size > 0 ? `?${params.toString()}` : "";
   redirect(`/sandbox/explore${qs}`);
 }

@@ -9,15 +9,6 @@
  * No protocol semantics live here — this module only drives the read methods
  * already declared on DashboardDataSource.
  */
-import type { DashboardDataSource } from "@/app/dashboard/lib/data-source.ts";
-import type { RefConnectorSummary } from "@/app/dashboard/lib/ref-client.ts";
-import {
-  lookupSearchTimestampMetadata,
-  pickSearchDisplayTimestamp,
-  type SearchTimestampMetadata,
-  searchTimestampMetadataKey,
-} from "@/app/dashboard/lib/search-record-timestamps.ts";
-import { summarize } from "@/app/dashboard/lib/timeline-summaries.ts";
 import {
   type ExplorerConnectionFacet,
   type ExplorerFeedEntry,
@@ -27,6 +18,15 @@ import {
   parseExplorerPeekParam,
   type RecordsExplorerData,
 } from "@/app/dashboard/components/views/records-explorer-view.tsx";
+import type { DashboardDataSource } from "@/app/dashboard/lib/data-source.ts";
+import type { RefConnectorSummary } from "@/app/dashboard/lib/ref-client.ts";
+import {
+  lookupSearchTimestampMetadata,
+  pickSearchDisplayTimestamp,
+  type SearchTimestampMetadata,
+  searchTimestampMetadataKey,
+} from "@/app/dashboard/lib/search-record-timestamps.ts";
+import { summarize } from "@/app/dashboard/lib/timeline-summaries.ts";
 import { buildPeekReadUrl } from "./peek-read-url.ts";
 import { attributeSearchHit, shouldIncludeSearchHit } from "./search-hit-attribution.ts";
 
@@ -550,14 +550,14 @@ async function buildPeek(
   }
 }
 
-export type ExplorerSearchParams = {
-  q?: string;
+export interface ExplorerSearchParams {
   connection?: string | string[];
-  stream?: string | string[];
   peek?: string;
+  q?: string;
   since?: string;
+  stream?: string | string[];
   until?: string;
-};
+}
 
 /**
  * Assemble RecordsExplorerData from search params and a data source.
