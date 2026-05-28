@@ -131,6 +131,50 @@ const BLOB_OUTPUT_SCHEMA_SHAPE = {
   size: z.number().int().nonnegative(),
 };
 
+// Event-subscription envelope is more permissive than READ_OUTPUT_SCHEMA_SHAPE
+// because (a) DELETE returns 204 with no body (data: null) and (b) the projected
+// subscription row is a plain object, not a list envelope. The MCP wrapper
+// validates the wrapper, not the RS body.
+const EVENT_SUB_OUTPUT_SCHEMA_SHAPE = {
+  data: z.unknown().describe('RS response body. `null` for 204 (delete).'),
+  provider_url: z.string(),
+  request_id: z.string().nullable(),
+  http_status: z.number().int(),
+};
+
+const SUBSCRIPTION_TOOL_FOOTER =
+  ' Receivers must be HTTPS endpoints reachable from the configured PDPP instance (http://localhost is permitted only in development). Events are signed per Standard Webhooks (`webhook-id`, `webhook-timestamp`, `webhook-signature: v1,<base64>`) using the per-subscription secret returned at create. Envelope is CloudEvents 1.0 JSON structured mode (`application/cloudevents+json`); record bodies are never pushed — clients pull changes via `query_records` with `changes_since=<data.changes_since>`. Authoritative wire shape lives at `capabilities.client_event_subscriptions` on `/.well-known/oauth-protected-resource`.';
+
+const SUBSCRIPTION_ID_DESCRIPTION =
+  'Subscription identifier returned by `create_event_subscription` or `list_event_subscriptions` (prefix `sub_`).';
+
+const CALLBACK_URL_DESCRIPTION =
+  'HTTPS receiver URL. `http://localhost` is accepted by the RS for development; everything else must be https. Max 2048 bytes.';
+
+const FILTERS_DESCRIPTION =
+  'Optional narrowing of the subscription scope. Streams listed in `filters.streams` must all be inside the bearer\'s grant; the RS rejects unauthorized stream names with a typed `invalid_request` error.';
+
+const SUBSCRIPTION_WRITE_ANNOTATIONS = {
+  readOnlyHint: false,
+  destructiveHint: false,
+  idempotentHint: false,
+  openWorldHint: false,
+};
+
+const SUBSCRIPTION_READ_ANNOTATIONS = {
+  readOnlyHint: true,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: false,
+};
+
+const SUBSCRIPTION_DELETE_ANNOTATIONS = {
+  readOnlyHint: false,
+  destructiveHint: true,
+  idempotentHint: true,
+  openWorldHint: false,
+};
+
 /**
  * Build the static tool definitions. Descriptions are constant — they are never derived
  * from manifest, stream, or record data. RS payloads are returned as data; nothing is
@@ -265,6 +309,133 @@ export function buildTools({ rs, providerUrl }) {
           { query }
         );
         return toFetchToolResult(response, providerUrl, args.id);
+      },
+    },
+    {
+      name: 'create_event_subscription',
+      title: 'Create event subscription',
+      description:
+        'Create an outbound event subscription via `POST /v1/event-subscriptions` using the configured scoped client bearer. Persists a `(grant_id, client_id, subject_id)`-bound subscription on the RS and returns the per-subscription `whsec_`-prefixed delivery secret exactly once (rotate via `update_event_subscription`).' +
+        SUBSCRIPTION_TOOL_FOOTER,
+      annotations: SUBSCRIPTION_WRITE_ANNOTATIONS,
+      inputSchema: z
+        .object({
+          callback_url: z.string().min(1).describe(CALLBACK_URL_DESCRIPTION),
+          filters: z
+            .object({
+              streams: z.array(z.string()).optional(),
+            })
+            .strict()
+            .optional()
+            .describe(FILTERS_DESCRIPTION),
+        })
+        .strict(),
+      outputSchema: z.object(EVENT_SUB_OUTPUT_SCHEMA_SHAPE),
+      handler: async (args) => {
+        const body = { callback_url: args.callback_url };
+        if (args.filters) body.filters = args.filters;
+        const response = await rs.postJson('/v1/event-subscriptions', { body });
+        return toEventSubToolResult(response, providerUrl, 'create_event_subscription');
+      },
+    },
+    {
+      name: 'list_event_subscriptions',
+      title: 'List event subscriptions',
+      description:
+        'List event subscriptions owned by the configured scoped client bearer via `GET /v1/event-subscriptions`. Each entry SHALL include `subscription_id`, `status`, `callback_url`, and the snapshotted grant scope. Returns subscriptions belonging to the bearer\'s `(client_id, grant_id)` only; the RS hides the per-subscription secret. Read-only.' +
+        SUBSCRIPTION_TOOL_FOOTER,
+      annotations: SUBSCRIPTION_READ_ANNOTATIONS,
+      inputSchema: EMPTY_TOOL_INPUT_SCHEMA,
+      outputSchema: z.object(EVENT_SUB_OUTPUT_SCHEMA_SHAPE),
+      handler: async () => {
+        const response = await rs.getJson('/v1/event-subscriptions');
+        return toEventSubToolResult(response, providerUrl, 'list_event_subscriptions');
+      },
+    },
+    {
+      name: 'get_event_subscription',
+      title: 'Get event subscription',
+      description:
+        'Fetch a single subscription owned by the configured scoped client bearer via `GET /v1/event-subscriptions/:id`. Returns 404 (typed `not_found`) if the subscription belongs to a different client/grant or is deleted. Read-only.' +
+        SUBSCRIPTION_TOOL_FOOTER,
+      annotations: SUBSCRIPTION_READ_ANNOTATIONS,
+      inputSchema: z
+        .object({
+          subscription_id: z.string().min(1).describe(SUBSCRIPTION_ID_DESCRIPTION),
+        })
+        .strict(),
+      outputSchema: z.object(EVENT_SUB_OUTPUT_SCHEMA_SHAPE),
+      handler: async (args) => {
+        const id = requireSafeName(args.subscription_id, 'subscription_id');
+        const response = await rs.getJson(`/v1/event-subscriptions/${encodeURIComponent(id)}`);
+        return toEventSubToolResult(response, providerUrl, `get_event_subscription:${id}`);
+      },
+    },
+    {
+      name: 'update_event_subscription',
+      title: 'Update event subscription',
+      description:
+        'Update a subscription via `PATCH /v1/event-subscriptions/:id`. Pass `enabled: false` to disable (transitions `active`/`pending_verification` → `disabled`), `enabled: true` to re-enable from a `disabled`/`disabled_failure` state, or `rotate_secret: true` to mint a fresh `whsec_`-prefixed signing secret (returned in the response exactly once). A grant-revoked subscription cannot be re-enabled and will return a typed `grant_revoked` (409) error. Each call is a state mutation — calling it twice is NOT a no-op when `rotate_secret: true`.' +
+        SUBSCRIPTION_TOOL_FOOTER,
+      annotations: SUBSCRIPTION_WRITE_ANNOTATIONS,
+      inputSchema: z
+        .object({
+          subscription_id: z.string().min(1).describe(SUBSCRIPTION_ID_DESCRIPTION),
+          enabled: z.boolean().optional(),
+          rotate_secret: z.boolean().optional(),
+        })
+        .strict(),
+      outputSchema: z.object(EVENT_SUB_OUTPUT_SCHEMA_SHAPE),
+      handler: async (args) => {
+        const id = requireSafeName(args.subscription_id, 'subscription_id');
+        const body = {};
+        if (typeof args.enabled === 'boolean') body.enabled = args.enabled;
+        if (args.rotate_secret === true) body.rotate_secret = true;
+        const response = await rs.patchJson(`/v1/event-subscriptions/${encodeURIComponent(id)}`, {
+          body,
+        });
+        return toEventSubToolResult(response, providerUrl, `update_event_subscription:${id}`);
+      },
+    },
+    {
+      name: 'delete_event_subscription',
+      title: 'Delete event subscription',
+      description:
+        'Delete a subscription via `DELETE /v1/event-subscriptions/:id`. Marks the subscription `deleted` and drops queued deliveries. Subsequent reads return 404. Destructive: there is no undelete.' +
+        SUBSCRIPTION_TOOL_FOOTER,
+      annotations: SUBSCRIPTION_DELETE_ANNOTATIONS,
+      inputSchema: z
+        .object({
+          subscription_id: z.string().min(1).describe(SUBSCRIPTION_ID_DESCRIPTION),
+        })
+        .strict(),
+      outputSchema: z.object(EVENT_SUB_OUTPUT_SCHEMA_SHAPE),
+      handler: async (args) => {
+        const id = requireSafeName(args.subscription_id, 'subscription_id');
+        const response = await rs.deleteJson(`/v1/event-subscriptions/${encodeURIComponent(id)}`);
+        return toEventSubToolResult(response, providerUrl, `delete_event_subscription:${id}`);
+      },
+    },
+    {
+      name: 'send_test_event',
+      title: 'Send subscription test event',
+      description:
+        'Enqueue a `pdpp.subscription.test` event for the named subscription via `POST /v1/event-subscriptions/:id/test-event`. Returns the freshly minted `event_id`. The RS responds 202 once the event is enqueued — actual delivery happens out-of-band via the delivery worker against the subscription\'s callback URL. The subscription must be `active` or `pending_verification`; other states return a typed `invalid_state` (409). Each call mints a new event id and is NOT a no-op.' +
+        SUBSCRIPTION_TOOL_FOOTER,
+      annotations: SUBSCRIPTION_WRITE_ANNOTATIONS,
+      inputSchema: z
+        .object({
+          subscription_id: z.string().min(1).describe(SUBSCRIPTION_ID_DESCRIPTION),
+        })
+        .strict(),
+      outputSchema: z.object(EVENT_SUB_OUTPUT_SCHEMA_SHAPE),
+      handler: async (args) => {
+        const id = requireSafeName(args.subscription_id, 'subscription_id');
+        const response = await rs.postJson(
+          `/v1/event-subscriptions/${encodeURIComponent(id)}/test-event`,
+          { body: {} }
+        );
+        return toEventSubToolResult(response, providerUrl, `send_test_event:${id}`);
       },
     },
     {
@@ -602,6 +773,46 @@ function stringValue(value) {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
+function toEventSubToolResult(response, providerUrl, label) {
+  if (!response.ok) {
+    return errorToolResult(response, providerUrl);
+  }
+  return {
+    content: [
+      {
+        type: 'text',
+        text: summarizeEventSubBody(response, label),
+      },
+    ],
+    structuredContent: {
+      data: response.body,
+      provider_url: providerUrl,
+      request_id: response.requestId,
+      http_status: response.status,
+    },
+  };
+}
+
+function summarizeEventSubBody(response, label) {
+  if (response.status === 204) {
+    return `${label}: 204 No Content. Subscription removed; subsequent reads will return 404.`;
+  }
+  const body = response.body;
+  if (body && typeof body === 'object') {
+    if (typeof body.subscription_id === 'string') {
+      const secret = typeof body.secret === 'string' ? ' Secret returned once — capture from structuredContent.data.secret.' : '';
+      return `${label}: subscription_id=${body.subscription_id} status=${body.status ?? 'unknown'}.${secret} See structuredContent.data for the full body.`;
+    }
+    if (typeof body.event_id === 'string') {
+      return `${label}: enqueued event_id=${body.event_id}. Delivery occurs out-of-band; check your callback receiver.`;
+    }
+    if (Array.isArray(body.data)) {
+      return `${label}: ${body.data.length} subscription(s). See structuredContent.data for the canonical envelope.`;
+    }
+  }
+  return `${label}: HTTP ${response.status}. See structuredContent.data for the response body.`;
+}
+
 function toBlobToolResult(response, providerUrl) {
   if (response.ok) {
     const base64 = Buffer.isBuffer(response.body) ? response.body.toString('base64') : '';
@@ -654,5 +865,6 @@ export const __internal = {
   toBlobToolResult,
   toSearchToolResult,
   toFetchToolResult,
+  toEventSubToolResult,
   resolveStreamName,
 };

@@ -1,13 +1,14 @@
 # @pdpp/mcp-server
 
 Local stdio and hosted Streamable HTTP [Model Context Protocol](https://modelcontextprotocol.io/)
-adapter for read-only, grant-scoped access to a [PDPP](https://pdpp.vivid.fish)
-resource server.
+adapter for grant-scoped access to a [PDPP](https://pdpp.vivid.fish) resource server.
 
 The adapter is a thin client of the PDPP resource server (RS). It does not run connectors,
 issue grants, or replicate any RS authorization logic. Every data-bearing tool call is a
 forwarded request to an existing `/v1/*` endpoint, authenticated with the scoped client
-access token already cached by `pdpp connect`.
+access token already cached by `pdpp connect`. Side-effectful tools (the event-subscription
+management surface) are honestly annotated with `readOnlyHint: false` so MCP harnesses can
+prompt the user before invoking them.
 
 ## What this is not
 
@@ -58,7 +59,9 @@ The adapter writes only MCP protocol messages to stdout. Diagnostics go to stder
 
 ## Tools
 
-All tools are read-only and forward to existing RS endpoints under the scoped token.
+All tools forward to existing RS endpoints under the scoped client token.
+
+### Read tools (read-only, idempotent)
 
 | Tool | RS endpoint |
 | --- | --- |
@@ -68,6 +71,8 @@ All tools are read-only and forward to existing RS endpoints under the scoped to
 | `search` | `GET /v1/search` |
 | `fetch` | `GET /v1/streams/{stream}/records/{record_id}` |
 | `fetch_blob` | `GET /v1/blobs/{blob_id}` |
+| `list_event_subscriptions` | `GET /v1/event-subscriptions` |
+| `get_event_subscription` | `GET /v1/event-subscriptions/{id}` |
 
 Plus one resource template: `pdpp://stream/{name}` → `GET /v1/streams/{name}`.
 
@@ -75,6 +80,43 @@ Plus one resource template: `pdpp://stream/{name}` → `GET /v1/streams/{name}`.
 ChatGPT-compatible `structuredContent.results[]` entries with `id`, `title`, and `url`.
 `fetch` accepts result ids in `stream:record_id` form and returns `id`, `title`, `text`,
 `url`, and `metadata`.
+
+### Side-effectful tools (event-subscription management)
+
+These tools manage outbound event subscriptions on the configured PDPP instance via the
+existing `/v1/event-subscriptions[...]` REST surface. They use the same scoped client bearer
+the read tools use — no new credential path. Each tool is annotated honestly so an MCP
+harness can prompt before invoking:
+
+| Tool | RS endpoint | `destructiveHint` | `idempotentHint` |
+| --- | --- | --- | --- |
+| `create_event_subscription` | `POST /v1/event-subscriptions` | false | false |
+| `update_event_subscription` | `PATCH /v1/event-subscriptions/{id}` | false | false |
+| `send_test_event` | `POST /v1/event-subscriptions/{id}/test-event` | false | false |
+| `delete_event_subscription` | `DELETE /v1/event-subscriptions/{id}` | **true** | true |
+
+Receiver constraints:
+
+- The callback URL must be an HTTPS endpoint reachable from the configured PDPP instance
+  (`http://localhost` is accepted only for development; max 2048 bytes).
+- Deliveries are signed per [Standard Webhooks](https://www.standardwebhooks.com): headers
+  `webhook-id`, `webhook-timestamp`, `webhook-signature: v1,<base64>`. The per-subscription
+  secret is returned exactly once on create (and again on `rotate_secret`).
+- Envelope is [CloudEvents 1.0](https://cloudevents.io/) JSON structured mode
+  (`application/cloudevents+json; charset=utf-8`). Record bodies are **never** pushed —
+  clients pull changes by passing `data.changes_since` to `query_records`.
+- Authoritative wire shape (event types, signing profile, retry schedule, verification
+  handshake) is advertised at `capabilities.client_event_subscriptions` on the RS
+  protected-resource metadata: `GET /.well-known/oauth-protected-resource`.
+
+The MCP adapter does not host a callback receiver. Your application is responsible for
+running a reachable HTTPS endpoint that handles `pdpp.subscription.verify` (echo the
+challenge), `pdpp.subscription.test`, `pdpp.records.changed`, and `pdpp.grant.revoked`
+envelopes.
+
+Owner credentials are still refused. The event-subscription tools do not widen the
+adapter's credential surface; they reuse the existing scoped client bearer, and every
+authorization check happens server-side on the RS as before.
 
 ## Hosted Streamable HTTP helper
 

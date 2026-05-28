@@ -46,6 +46,38 @@ export class RsClient {
     return parseRsResponse(response, { expectJson: false });
   }
 
+  async postJson(path, { body, query, headers } = {}) {
+    return this.sendJson('POST', path, { body, query, headers });
+  }
+
+  async patchJson(path, { body, query, headers } = {}) {
+    return this.sendJson('PATCH', path, { body, query, headers });
+  }
+
+  async deleteJson(path, { query, headers } = {}) {
+    return this.sendJson('DELETE', path, { body: undefined, query, headers });
+  }
+
+  async sendJson(method, path, { body, query, headers } = {}) {
+    const url = this.buildUrl(path, query);
+    const hasBody = body !== undefined && body !== null;
+    const init = {
+      method,
+      headers: {
+        Accept: 'application/json',
+        Authorization: `Bearer ${this.accessToken}`,
+        'User-Agent': this.userAgent,
+        ...(hasBody ? { 'Content-Type': 'application/json' } : {}),
+        ...(headers ?? {}),
+      },
+    };
+    if (hasBody) {
+      init.body = typeof body === 'string' ? body : JSON.stringify(body);
+    }
+    const response = await this.fetch(url, init);
+    return parseRsResponse(response, { expectJson: true });
+  }
+
   buildUrl(path, query) {
     const url = new URL(path.startsWith('/') ? path : `/${path}`, `${this.providerUrl}/`);
     if (query && typeof query === 'object') {
@@ -82,6 +114,9 @@ async function parseRsResponse(response, { expectJson }) {
 
   if (status >= 200 && status < 300) {
     if (expectJson) {
+      if (status === 204) {
+        return { ok: true, status, body: null, requestId, contentType };
+      }
       const body = contentType.includes('application/json') ? await response.json() : await response.text();
       return { ok: true, status, body, requestId, contentType };
     }
