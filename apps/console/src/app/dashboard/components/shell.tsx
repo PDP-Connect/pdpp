@@ -161,6 +161,7 @@ function GrantsSubnav() {
   // here — tokens are an operator/developer concern, not a grants concern.
   const items = [
     { href: "/dashboard/grants#pending-approvals", label: "Pending approvals" },
+    { href: "/dashboard/grants/packages", label: "Packages" },
     { href: "/dashboard/grants/request", label: "Grant request" },
   ];
   return <SidebarSubnav items={items} label="Grants workspace" />;

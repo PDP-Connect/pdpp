@@ -114,6 +114,13 @@ running a reachable HTTPS endpoint that handles `pdpp.subscription.verify` (echo
 challenge), `pdpp.subscription.test`, `pdpp.records.changed`, and `pdpp.grant.revoked`
 envelopes.
 
+For operators verifying delivery against a fresh deployment, the repository ships a
+local test receiver at `scripts/event-subscription-test-receiver.mjs` that completes
+the verification handshake and prints incoming envelopes. The companion operator
+guide at [`docs/operator/event-subscriptions.md`](../../docs/operator/event-subscriptions.md)
+covers the receiver, the operator console surface at `/dashboard/event-subscriptions`,
+and the operator disable affordance.
+
 Owner credentials are still refused. The event-subscription tools do not widen the
 adapter's credential surface; they reuse the existing scoped client bearer, and every
 authorization check happens server-side on the RS as before.

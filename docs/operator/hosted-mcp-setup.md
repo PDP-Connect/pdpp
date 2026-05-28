@@ -73,3 +73,17 @@ current MCP setup command or settings UI and use the same URL above.
 - `401` from `/mcp`: reconnect the MCP client or re-run OAuth approval.
 - `403` from `/mcp`: the bearer is valid but not a PDPP client bearer for this
   MCP resource.
+
+## Event subscriptions
+
+The MCP adapter exposes tools for subscribing to record changes:
+`create_event_subscription`, `list_event_subscriptions`,
+`get_event_subscription`, `update_event_subscription`, `send_test_event`,
+`delete_event_subscription`. The client retains lifecycle authority. The
+operator console surfaces every subscription on the deployment at
+`/dashboard/event-subscriptions` with a read-only list, a peek pane, and
+one safety-valve disable.
+
+See [`docs/operator/event-subscriptions.md`](event-subscriptions.md) for the
+operator console walkthrough and the local test receiver that completes the
+Standard Webhooks handshake without a real client.

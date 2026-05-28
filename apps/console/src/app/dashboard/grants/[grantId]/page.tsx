@@ -1,10 +1,11 @@
+import Link from "next/link";
 import { notFound } from "next/navigation";
 import { PageHeader } from "../../components/primitives.tsx";
 import { DashboardShell, ServerUnreachable } from "../../components/shell.tsx";
 import { dashboardRoutes } from "../../components/views/routes.ts";
 import { TimelineDetailView } from "../../components/views/timeline-detail-view.tsx";
 import { getAsInternalUrl, ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
-import { getGrantTimeline } from "../../lib/ref-client.ts";
+import { getGrantTimeline, lookupGrantPackageIdForGrant } from "../../lib/ref-client.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -30,8 +31,12 @@ export default async function GrantDetailPage({
   const cursor = getCursor(await searchParams);
 
   let envelope: Awaited<ReturnType<typeof getGrantTimeline>>;
+  let packageId: string | null = null;
   try {
-    envelope = await getGrantTimeline(grantId, { cursor });
+    [envelope, packageId] = await Promise.all([
+      getGrantTimeline(grantId, { cursor }),
+      lookupGrantPackageIdForGrant(grantId),
+    ]);
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
@@ -50,9 +55,26 @@ export default async function GrantDetailPage({
 
   const revoked = envelope.events.some((e) => e.event_type === "grant.revoked" || e.status === "revoked");
 
+  const subscriptionsHref = `/dashboard/event-subscriptions?grant_id=${encodeURIComponent(grantId)}`;
+  const packageHref = packageId
+    ? `/dashboard/grants/packages/${encodeURIComponent(packageId)}`
+    : null;
+
   return (
     <DashboardShell active="grants">
       <TimelineDetailView
+        beforeTimeline={
+          <div className="pdpp-caption mb-6 flex flex-wrap gap-x-4 gap-y-1 text-muted-foreground">
+            {packageHref ? (
+              <Link className="underline-offset-2 hover:underline" href={packageHref}>
+                Parent grant package {packageId} →
+              </Link>
+            ) : null}
+            <Link className="underline-offset-2 hover:underline" href={subscriptionsHref}>
+              Event subscriptions for this grant →
+            </Link>
+          </div>
+        }
         breadcrumbs={[{ label: "Grants", href: "/dashboard/grants" }, { label: "Grant" }]}
         cliCommand={`pdpp ref grant timeline ${grantId}`}
         count={`${envelope.events.length} events${revoked ? " · revoked" : ""}`}

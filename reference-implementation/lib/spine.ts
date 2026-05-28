@@ -207,6 +207,13 @@ export interface SpineSummary {
   failure: SpineFailureSummary | null;
   first_at: string;
   grant_id: string | null;
+  /**
+   * Parent grant-package id when the grant's binding token carries
+   * `package_id`. Populated by `listSpineCorrelations` for kind=`grant`
+   * via a per-row tokens lookup. Surfaced on `_ref/grants` as an
+   * optional field; pre-package-aware consumers ignore it.
+   */
+  grant_package_id?: string | null;
   id?: string;
   kinds: string[];
   last_at: string;
@@ -1164,6 +1171,21 @@ export async function listSpineCorrelations(
   const page = summaries.slice(0, limit);
   const tail = page.at(-1);
   const nextCursor = hasMore && tail ? `${tail.last_at}::${tail.id ?? ""}` : null;
+
+  if (key === "grant" && page.length > 0) {
+    for (const s of page) {
+      const gid = s.grant_id ?? s.id ?? null;
+      if (!gid) continue;
+      const row = getOne<{ readonly package_id: string | null }>(
+        referenceQueries.authGrantPackageMembersGetPackageIdByGrant,
+        [gid],
+      );
+      if (row?.package_id) {
+        s.grant_package_id = row.package_id;
+      }
+    }
+  }
+
   return { summaries: page, hasMore, nextCursor };
 }
 
