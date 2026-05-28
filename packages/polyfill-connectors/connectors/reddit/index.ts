@@ -260,8 +260,8 @@ if (isMainModule(import.meta.url)) {
     auth: { kind: "env", required: ["REDDIT_USERNAME", "REDDIT_PASSWORD"] },
     browser: { profileName: "reddit" },
     timeRangeField: "created_utc",
-    async ensureSession({ context, page, sendInteraction }) {
-      await ensureRedditSession({ context, page, sendInteraction });
+    async ensureSession({ capture, context, page, sendInteraction }) {
+      await ensureRedditSession({ capture, context, page, sendInteraction });
     },
     async collect(ctx: BrowserCollectContext): Promise<void> {
       const { capture, credentials, emit, emitRecord, emittedAt, page, progress, requested, state } = ctx;

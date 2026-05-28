@@ -246,6 +246,11 @@ html > body[data-scroll-locked] {
   --pdpp-stream-toast-offset: 4rem;
 }
 
+.pdpp-stream-toast-zone[data-slot="interaction"] {
+  --pdpp-stream-toast-offset: 4rem;
+  max-inline-size: min(34rem, 100vw);
+}
+
 .pdpp-stream-toast-bubble {
   pointer-events: auto;
   border-radius: 0.375rem;

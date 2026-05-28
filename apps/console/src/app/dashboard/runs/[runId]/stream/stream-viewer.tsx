@@ -12,14 +12,17 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
+  type FormEvent,
   type RefObject,
   useCallback,
   useEffect,
   useRef,
   useState,
+  useTransition,
 } from "react";
 import { PdppLogo } from "@/components/pdpp-logo.tsx";
 import { Button } from "@/components/ui/button.tsx";
+import { Input } from "@/components/ui/input.tsx";
 import {
   Dialog,
   DialogBackdrop,
@@ -29,6 +32,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog.tsx";
 import { dashboardRoutes } from "../../../components/views/routes.ts";
+import { submitRunInteractionAction } from "../actions.ts";
 import { type MintedStreamSession, mintStreamSessionAction } from "./actions.ts";
 import {
   type NekoClientConfig,
@@ -242,6 +246,7 @@ const CONNECTING: ConnectionStatus = { display: "connecting", cause: null, troub
 const LIVE: ConnectionStatus = { display: "live", cause: null, troubleMessage: null };
 
 const SUPPORTED_KINDS = new Set(["manual_action", "otp"]);
+const INITIAL_INTERACTION_ACTION_STATE = { error: null, status: null } as const;
 
 // Poll the run timeline so the resolved success state appears the instant
 // the controller observes the upstream interaction is satisfied. The SSE
@@ -1352,6 +1357,8 @@ export function StreamSurface({
         connectorName={connectorName}
         initialSession={mintedSession}
         interactionId={interactionId}
+        interactionKind={interactionKind}
+        interactionMessage={interactionMessage}
         onClose={() => {
           setOpen(false);
           // Clear the minted session so the next "Open browser" click mints
@@ -1451,6 +1458,8 @@ interface StreamOverlayProps {
    */
   initialSession: MintedStreamSession | null;
   interactionId: string;
+  interactionKind: string;
+  interactionMessage: string;
   onClose: () => void;
   onStatus: (status: ConnectionStatus) => void;
   open: boolean;
@@ -1462,6 +1471,8 @@ function StreamOverlay({
   connectorName,
   initialSession,
   interactionId,
+  interactionKind,
+  interactionMessage,
   onClose,
   onStatus,
   open,
@@ -1495,6 +1506,8 @@ function StreamOverlay({
               connectorName={connectorName}
               initialSession={initialSession}
               interactionId={interactionId}
+              interactionKind={interactionKind}
+              interactionMessage={interactionMessage}
               onClose={onClose}
               onStatus={onStatus}
               runId={runId}
@@ -1517,6 +1530,8 @@ interface StreamStageProps {
    */
   initialSession: MintedStreamSession;
   interactionId: string;
+  interactionKind: string;
+  interactionMessage: string;
   onClose: () => void;
   onStatus: (status: ConnectionStatus) => void;
   runId: string;
@@ -1538,6 +1553,8 @@ function StreamStage({
   connectorName,
   initialSession,
   interactionId,
+  interactionKind,
+  interactionMessage,
   onClose,
   onStatus,
   runId,
@@ -2936,6 +2953,12 @@ function StreamStage({
         }
         onPaste={nekoSession && clipboardPolicy.showMobilePasteButton ? handleMobilePaste : undefined}
         status={status}
+      />
+      <StreamInteractionDock
+        interactionId={interactionId}
+        interactionKind={interactionKind}
+        message={interactionMessage}
+        runId={runId}
       />
       {status.display === "trouble" ? <TroubleToast message={status.troubleMessage} /> : null}
       {popup ? <PopupToast message={popup.message} /> : null}
@@ -4688,6 +4711,101 @@ function StatusDot({ status }: { status: ConnectionStatus }) {
         {label}
       </span>
     </span>
+  );
+}
+
+// ─── Interaction response dock ───────────────────────────────────────────────
+
+function StreamInteractionDock({
+  interactionId,
+  interactionKind,
+  message,
+  runId,
+}: {
+  interactionId: string;
+  interactionKind: string;
+  message: string;
+  runId: string;
+}) {
+  const router = useRouter();
+  const [code, setCode] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [isPending, startTransition] = useTransition();
+
+  if (!(interactionKind === "otp" || interactionKind === "manual_action")) {
+    return null;
+  }
+
+  function submitInteraction(data?: Record<string, string>) {
+    const formData = new FormData();
+    formData.set("run_id", runId);
+    formData.set("interaction_id", interactionId);
+    formData.set("status", "success");
+    for (const [key, value] of Object.entries(data ?? {})) {
+      formData.set(key, value);
+    }
+
+    setError(null);
+    startTransition(async () => {
+      const next = await submitRunInteractionAction(INITIAL_INTERACTION_ACTION_STATE, formData);
+      if (next.error) {
+        setError(next.error);
+        return;
+      }
+      router.refresh();
+    });
+  }
+
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (interactionKind === "otp") {
+      const trimmed = code.trim();
+      if (!trimmed) {
+        setError('Enter the code, or use "I entered it in the browser" after completing 2FA there.');
+        return;
+      }
+      submitInteraction({ code: trimmed });
+      return;
+    }
+    submitInteraction();
+  }
+
+  return (
+    <div className="pdpp-stream-toast-zone" data-slot="interaction" data-pdpp-stream-ui>
+      <form
+        aria-label="Complete this connector step"
+        autoComplete="off"
+        className="pdpp-stream-toast-bubble flex w-full flex-col gap-2 text-left"
+        onSubmit={handleSubmit}
+      >
+        <p className="pdpp-caption font-medium text-foreground">{message}</p>
+        {interactionKind === "otp" ? (
+          <Input
+            autoComplete="one-time-code"
+            inputMode="numeric"
+            onChange={(event) => setCode(event.currentTarget.value)}
+            pattern="\\d{6}"
+            placeholder="6-digit code"
+            value={code}
+          />
+        ) : null}
+        {error ? (
+          <p className="pdpp-caption text-destructive" role="alert">
+            {error}
+          </p>
+        ) : null}
+        <div className="flex flex-wrap gap-2">
+          <Button disabled={isPending} size="sm" type="submit">
+            {isPending ? "Continuing..." : interactionKind === "otp" ? "Submit code" : "I'm done"}
+          </Button>
+          {interactionKind === "otp" ? (
+            <Button disabled={isPending} onClick={() => submitInteraction()} size="sm" type="button" variant="outline">
+              I entered it in the browser
+            </Button>
+          ) : null}
+        </div>
+      </form>
+    </div>
   );
 }
 
