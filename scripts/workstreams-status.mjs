@@ -197,6 +197,8 @@ for (const lane of wrapperLanes) {
   } else if (lane.status === "running") {
     risks.push(`WRAPPER-LANE still-running lane=${lane.lane} started=${lane.startedAt}`);
   }
+  // "aborted" = process was killed before completing; surfaces in the Wrapper Lanes table but
+  // is historical evidence, not a live risk requiring owner action.
 }
 
 console.log("# PDPP Workstreams Status");
