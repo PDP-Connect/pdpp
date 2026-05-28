@@ -2713,3 +2713,195 @@ The `executeRefSpineCorrelationsList` operation (kind=`grant`) SHALL include `gr
 - **AND** at least one returned grant id is present in `grant_package_members`
 - **THEN** the envelope SHALL surface `grant_package_id` for that row
 - **AND** the envelope SHALL omit `grant_package_id` for rows whose grant id is not a package member.
+
+### Requirement: Reference dashboard Explore route SHALL host the time-range lens
+
+The reference dashboard SHALL accept `since` and `until` query parameters on `/dashboard/explore` and render the cross-stream time-anchored feed for that window using existing manifest metadata and per-connection record reads, without introducing any new RS or `_ref` endpoint.
+
+#### Scenario: Explore renders the time-anchored feed when a time window is specified
+
+- **WHEN** an authenticated operator visits `/dashboard/explore` with a `since` and/or `until` query parameter and no `q`
+- **THEN** the dashboard SHALL load the time-anchored cross-stream feed by querying each visible connection instance's time-anchored streams with that connection's `connector_instance_id`
+- **AND** the rendered feed SHALL interleave records from every stream that declares a `consent_time_field`, sorted by that field's value descending
+- **AND** each rendered row SHALL preserve the concrete connection identity used for the read
+- **AND** the lens label on the Explore canvas SHALL identify the active lens as the time-range view
+- **AND** the page SHALL NOT call any RS or `_ref` endpoint that was not already used by the previous Timeline page or by Explore's existing recency and search lenses
+
+#### Scenario: Explore preserves chip state inside the time-range lens
+
+- **WHEN** an operator has one or more connection or stream chips selected and applies a `since`/`until` window
+- **THEN** the time-anchored fan-out SHALL only query selected connection instances and selected streams (when chips are present)
+- **AND** the chip URLs SHALL preserve the active `since` and `until` parameters so toggling a chip does not silently drop the window
+
+#### Scenario: Query and time-range do not compose silently
+
+- **WHEN** an operator submits a non-empty `q` while `since` or `until` is present
+- **THEN** the dashboard SHALL render the existing record search feed (lexical or hybrid) without applying the time window to the search request
+- **AND** the lens label SHALL state explicitly that the time window is not applied to search, so the operator is not misled into believing the result is filtered by both lenses
+- **AND** the URL SHALL retain `since`, `until`, and `q` so the operator can clear `q` to fall back to the time-range lens without re-entering dates
+
+### Requirement: Reference dashboard SHALL redirect the legacy Timeline route to Explore
+
+The reference dashboard SHALL redirect `/dashboard/records/timeline` to `/dashboard/explore` with the `since` and `until` query parameters preserved, and SHALL NOT keep the Timeline subpage as a separately-reachable view.
+
+#### Scenario: Legacy Timeline deep links land on Explore
+
+- **WHEN** an operator or external link navigates to `/dashboard/records/timeline` with any combination of `since` and `until`
+- **THEN** the dashboard SHALL redirect to `/dashboard/explore` with the same query string
+- **AND** the redirect SHALL NOT be permanent so a later IA tranche can retire the records-subtree URL prefix cleanly
+- **AND** the rendered Explore page at the redirect destination SHALL behave identically to the previous `/dashboard/records/timeline` for the same `since` / `until` parameters
+
+#### Scenario: The Records subnav no longer surfaces a separate Timeline entry
+
+- **WHEN** an operator is viewing any `/dashboard/records/**` page and the Records subnav is shown
+- **THEN** the subnav SHALL NOT contain a `Timeline` link
+- **AND** the time-range lens SHALL be reachable only via the top-level `Explore` entry, by typing the `since`/`until` URL directly, or by following the redirect from a stale Timeline link
+
+### Requirement: Reference dashboard Records subnav SHALL use Connections vocabulary
+
+The reference dashboard SHALL relabel the Records subnav header to `Connections` so the operator-visible vocabulary aligns with the canonical noun, without altering the underlying `/dashboard/records/*` URL prefix.
+
+#### Scenario: The Records subnav header reads Connections
+
+- **WHEN** an operator views any `/dashboard/records/**` page
+- **THEN** the subnav's header text SHALL be `Connections`, not `Records`
+- **AND** the subnav SHALL continue to contain a `Connectors` entry that links to `/dashboard/records` and an `Explorer` entry that links to `/dashboard/explore`
+
+#### Scenario: The Records URL subtree is not renamed in this tranche
+
+- **WHEN** an operator visits the records-index page or any per-connection drilldown
+- **THEN** the URL SHALL remain rooted at `/dashboard/records` in this tranche
+- **AND** the rename of the Records subtree to `/dashboard/connections` (and the corresponding nav relabel) SHALL be scoped to a subsequent OpenSpec change, not this one
+### Requirement: Reference dashboard exposes a records explorer surface
+The reference dashboard SHALL expose an owner-only records-explorer surface at `/dashboard/records/explorer` that browses owner-visible records through existing public PDPP and existing `_ref` read endpoints, without introducing new RS or `_ref` endpoints.
+
+#### Scenario: The explorer reads through the existing RS contract
+- **WHEN** the records explorer renders results
+- **THEN** it SHALL read only through endpoints already exercised by the dashboard: the public `GET /v1/search`, `GET /v1/search/hybrid`, `GET /v1/streams`, `GET /v1/streams/:stream/records`, `GET /v1/streams/:stream/records/:id`, and the existing `_ref/connectors` connection-summary surface
+- **AND** it SHALL NOT introduce or require new RS routes, new `_ref` routes, or new owner-token scopes
+
+#### Scenario: The explorer preserves connection identity when known
+- **WHEN** the explorer renders facet chips for the visible connections
+- **THEN** each chip SHALL key on a concrete `connection_id` and SHALL NOT collapse multiple connections of the same connector type into one chip
+
+#### Scenario: The explorer preserves connection identity on the empty-query feed
+- **WHEN** the explorer renders the empty-query recency feed (which derives every row from a known per-connection fan-out)
+- **THEN** the row key, the peek URL parameter, the row's full-record link, and the peek-panel record read SHALL all carry the concrete `connection_id` that produced the row
+- **AND** two rows from two distinct connections of the same connector type SHALL produce two distinct row keys, peek URLs, and full-record links
+
+#### Scenario: The explorer does not falsely attribute a search hit to a connection
+- **WHEN** the explorer renders a search hit and more than one visible connection of the hit's connector type is configured
+- **AND** the public search response does not carry a concrete `connection_id` for that hit (which is the current `/v1/search*` contract; the field is additive-optional and a forward-compatible client reads it when present)
+- **THEN** the row SHALL NOT attribute the hit to any single connection
+- **AND** the row SHALL be rendered as connector-scoped, with no concrete connection display name
+- **AND** the row's full-record link SHALL fall back to the connector-scope route rather than guessing a connection
+- **AND** the feed's surrounding caption SHALL state that public search results do not yet carry connection identity, so search rows are connector-scoped when multiple connections of that type exist
+
+#### Scenario: The explorer deduces a single visible connection when unambiguous
+- **WHEN** the explorer renders a search hit and exactly one visible connection of the hit's connector type is configured
+- **THEN** the row MAY attribute the hit to that connection (this is deduction from visibility, not a first-match guess)
+- **AND** the row's full-record link SHALL include the concrete `connection_id`
+
+#### Scenario: Selected-connection chips are honest about their search-mode scope
+- **WHEN** the owner has selected one or more connection chips AND a query is active
+- **AND** the public search response cannot enforce a `connection_id` request filter (the current `/v1/search*` contract)
+- **THEN** the resulting feed MAY narrow by the connector types of the selected connections
+- **AND** the selected-connection summary SHALL label that constraint as connector-scoped (e.g. "connector (from connection)") rather than claiming a connection filter the request cannot enforce
+- **AND** the explorer SHALL NOT pick an arbitrary one of the selected connections to attribute hits to
+
+#### Scenario: Selected-connection chips tighten when hits carry concrete identity
+- **WHEN** the owner has selected one or more connection chips AND a query is active
+- **AND** a search hit carries a concrete `connection_id` (or its deprecated `connector_instance_id` alias) in the response (forward-compatible with `expose-connection-identity-on-public-read`)
+- **THEN** the explorer SHALL drop the hit unless that concrete connection identity matches one of the selected visible connections
+- **AND** hits in the same response that do not carry concrete identity SHALL continue to fall through to the connector-scoped post-filter rather than being dropped
+
+#### Scenario: Record reads carry the resolved connection scope
+- **WHEN** the explorer issues a record read for the peek panel
+- **THEN** the read SHALL include the `connector_id` and, when a concrete `connection_id` (or its deprecated `connector_instance_id` alias) is known for the row, the matching `connector_instance_id` scope used to derive the displayed value
+- **AND** the displayed URL SHALL match the URL the typed RS client actually issues
+
+#### Scenario: The explorer is honest about the read URL
+- **WHEN** the explorer's peek panel renders a selected record
+- **THEN** it SHALL display the exact `GET /v1/streams/<stream>/records/<id>` URL — including any `connector_id` and `connector_instance_id` query parameters — that the dashboard used to read that record
+- **AND** the displayed URL SHALL match the URL the typed RS client actually issues
+
+#### Scenario: The explorer degrades gracefully when no query is set
+- **WHEN** the explorer renders without a query
+- **THEN** it SHALL render a recency-sorted feed sourced from a bounded fan-out over owner-visible connections rather than from a new RS endpoint
+- **AND** the fan-out SHALL be bounded by a fixed cap on (connections, streams per connection, records per stream) so the empty-query load remains cheap
+
+#### Scenario: The explorer does not replace the cross-artifact search page
+- **WHEN** an owner needs to jump to a trace, grant, or run by id
+- **THEN** that flow SHALL remain at `/dashboard/search` and SHALL NOT be moved into the explorer
+- **AND** the explorer SHALL be reachable from the existing Records subnav alongside `Connectors` and `Timeline`
+
+#### Scenario: The explorer does not invent grant or projection chrome the owner token does not have
+- **WHEN** the explorer renders under an owner token
+- **THEN** it SHALL NOT surface a client-grant chip, field-projection toggle, or any UI element that implies the records are being read under a third-party grant
+- **AND** any such affordances SHALL be reserved for a future data-owner-facing surface that holds a real client-scoped grant
+
+#### Scenario: Partial fan-in failures are surfaced, not silently swallowed
+- **WHEN** the empty-query recency feed's bounded per-stream fan-out has one or more stream reads fail
+- **THEN** the surviving rows SHALL still render
+- **AND** the page SHALL surface each failure as a structured warning naming the connection display name and stream
+- **AND** the warning surface SHALL state that the rendered rows are partial
+
+#### Scenario: Capability downgrades are surfaced honestly
+- **WHEN** the resource server advertises `capabilities.hybrid_retrieval.supported: true` but a hybrid search call fails
+- **THEN** the explorer SHALL fall back to lexical retrieval so the owner still gets results
+- **AND** the page SHALL surface a structured warning naming the downgrade and the underlying error
+- **AND** the warning SHALL NOT be silently swallowed
+
+### Requirement: Reference dashboard exposes Explore as a top-level operator-console route
+
+The reference dashboard SHALL expose the records explorer as a top-level operator-console route at `/dashboard/explore`, rendering the same query-driven records canvas previously mounted at `/dashboard/records/explorer` with no change to the underlying RS or `_ref` reads.
+
+#### Scenario: The top-level Explore route renders the records explorer
+
+- **WHEN** an authenticated operator visits `/dashboard/explore`
+- **THEN** the dashboard SHALL render the records explorer view
+- **AND** the page SHALL read only through endpoints already used by `/dashboard/records/explorer` (the public `GET /v1/search`, `GET /v1/search/hybrid`, `GET /v1/streams`, `GET /v1/streams/:stream/records`, `GET /v1/streams/:stream/records/:id`, and the existing `_ref/connectors` connection-summary surface)
+- **AND** the page SHALL NOT introduce or require new RS routes, new `_ref` routes, or new owner-token scopes
+
+#### Scenario: The Explore route is reachable from top-level navigation
+
+- **WHEN** an authenticated operator views any `/dashboard/**` page
+- **THEN** the top-level navigation SHALL contain an `Explore` entry whose `href` resolves to `/dashboard/explore`
+- **AND** the `Explore` entry SHALL be co-equal with the other top-level navigation entries (such as `Search`, `Traces`, `Grants`, and `Runs`), not nested under a `Records` subnav
+
+#### Scenario: The old explorer path redirects to the top-level route while query parameters are preserved
+
+- **WHEN** an operator or external link navigates to `/dashboard/records/explorer` with any combination of query parameters
+- **THEN** the dashboard SHALL redirect to `/dashboard/explore` with the same query string
+- **AND** the redirect SHALL NOT be permanent so the legacy path can be retired cleanly in a later IA tranche
+- **AND** the rendered records explorer at the redirect destination SHALL behave identically to the previous `/dashboard/records/explorer` for the same query parameters
+
+#### Scenario: The Records subnav continues to surface an Explorer entry during the transition
+
+- **WHEN** an operator is viewing any `/dashboard/records/**` page and the Records subnav is shown
+- **THEN** the subnav SHALL still expose an `Explorer` link
+- **AND** that subnav link's `href` SHALL resolve to `/dashboard/explore`, the same destination as the top-level navigation entry
+
+#### Scenario: Explore preserves the existing explorer's connection-identity and honesty guarantees
+
+- **WHEN** the top-level Explore route renders results
+- **THEN** it SHALL satisfy every connection-identity, partial-fan-in, capability-downgrade, peek-URL, and grant-projection scenario already established for the records explorer in this capability
+- **AND** the surface SHALL NOT introduce any UI affordance that implies a backend behavior the RS or `_ref` contract does not support
+
+#### Scenario: Explore does not absorb spine artifact jumps in this tranche
+
+- **WHEN** an operator needs to jump to a trace, grant, or run by id
+- **THEN** that flow SHALL remain at `/dashboard/search`
+- **AND** the top-level Explore route SHALL be records-only in this tranche, with spine artifact search reserved for `/dashboard/search` until a subsequent change relocates it
+
+#### Scenario: Explore does not absorb the timeline view in this tranche
+
+- **WHEN** an operator needs to browse records by an explicit time-range window
+- **THEN** that flow SHALL remain at `/dashboard/records/timeline`
+- **AND** the top-level Explore route SHALL retain only the existing query + recency lenses in this tranche, with the time-range lens reserved for a subsequent change that absorbs the timeline view into Explore
+
+#### Scenario: The Records subtree rename is deferred to a separate change
+
+- **WHEN** an operator visits the records-index page or any per-connection drilldown
+- **THEN** the URL SHALL remain rooted at `/dashboard/records` in this tranche
+- **AND** the rename of the Records subtree to `/dashboard/connections` (and the corresponding nav relabel) SHALL be scoped to a subsequent OpenSpec change, not this one
