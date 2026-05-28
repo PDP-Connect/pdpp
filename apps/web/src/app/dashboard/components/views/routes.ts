@@ -29,13 +29,6 @@ export interface Routes {
      */
     explore: string;
     records: string;
-    /**
-     * @deprecated The Timeline subpage was absorbed into Explore by
-     * `absorb-timeline-into-explore-ia`. Both `/dashboard/records/timeline`
-     * and `/sandbox/records/timeline` redirect to their respective `/explore`
-     * routes. Remove this field when no callers remain.
-     */
-    recordsTimeline: string;
     schedules: string;
     search: string;
     grants: string;
@@ -58,7 +51,6 @@ function makeRoutes(basePath: string, opts: { overview?: string } = {}): Routes 
       overview: opts.overview ?? basePath,
       explore: `${basePath}/explore`,
       records: `${basePath}/records`,
-      recordsTimeline: `${basePath}/records/timeline`,
       schedules: `${basePath}/schedules`,
       search: `${basePath}/search`,
       grants: `${basePath}/grants`,
