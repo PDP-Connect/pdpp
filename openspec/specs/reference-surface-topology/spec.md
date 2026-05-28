@@ -82,3 +82,95 @@ OpenSpec and design-note viewer surfaces SHALL be labeled as project planning, i
 - **THEN** the surface SHALL not resolve the conflict by implication
 - **AND** maintainers SHALL update or retire the stale artifact through the governance process
 
+### Requirement: Human-facing surfaces SHALL expose a copyable agent connection command
+The reference website SHALL give users and agents a minimal executable command
+for connecting to the live reference provider, and dashboard, deployment docs,
+hosted skill, and LLM-facing text surfaces SHALL use the same command.
+
+#### Scenario: A user wants to give an AI agent access
+- **WHEN** the user visits the live dashboard or reference deployment surface
+- **THEN** the surface SHALL show a "Connect an AI agent" affordance with a copyable npm command
+- **AND** the copy SHALL explain that the owner will approve scoped access in the browser
+- **AND** it SHALL NOT instruct the user to share an owner bearer token
+
+#### Scenario: An agent reads hosted instructions
+- **WHEN** an agent reads the hosted PDPP skill, `llms.txt`, or `llms-full.txt`
+- **THEN** the first routine access path SHALL be the public CLI install/connect command
+- **AND** raw HTTP fallback SHALL be framed as an advanced/debug path after CLI failure, not the happy path
+
+#### Scenario: The same deployment has live and sandbox surfaces
+- **WHEN** a surface advertises an agent connection command
+- **THEN** the command SHALL identify whether it targets live owner data or sandbox/mock data
+- **AND** sandbox copy SHALL preserve the existing requirement that simulated data is clearly labeled
+
+### Requirement: Deployment-diagnostics SHALL surface collector protocol-version and runner-version drift
+
+The reference deployment-diagnostics dashboard surface SHALL render the bound collector's protocol version, runner version, and bundled connector versions alongside the existing runtime-capabilities bindings list, so an operator can see whether a paired collector is compatible with the running reference server.
+
+#### Scenario: Compatible collector is paired
+
+- **WHEN** a collector whose protocol version is in the server's accepted set is paired
+- **THEN** the dashboard SHALL render `collector_protocol_version`, `runner_version`, and `connector_versions` on the runtime-capabilities row
+- **AND** the dashboard SHALL NOT raise a `collector_protocol_outdated` warning
+
+#### Scenario: Outdated collector is paired
+
+- **WHEN** a collector whose protocol version is not in the server's accepted set is paired
+- **THEN** the dashboard SHALL raise a `collector_protocol_outdated` warning distinct from `browser_connectors_need_collector`
+- **AND** the warning SHALL link to the operator action (`npm i -g @pdpp/local-collector@beta` while the package is beta-tagged, then the promoted stable package after release) without exposing device tokens or local paths
+
+### Requirement: Public operator copy SHALL advertise the npm-installable collector path as the supported public flow
+
+The public dashboard, `pdpp connect` copy, and operator-facing docs SHALL advertise `npx -y @pdpp/local-collector@beta ...` (or a global install of the same beta-tagged package until stable promotion) as the supported public path for filesystem-class connector collection on a fresh host. Monorepo-clone instructions SHALL remain available only as a development path, not as the primary public flow.
+
+#### Scenario: Operator reads `pdpp connect` or dashboard onboarding copy
+
+- **WHEN** an operator reads the public onboarding copy for Claude Code / Codex collection
+- **THEN** the copy SHALL show `npx -y @pdpp/local-collector@beta ...` (or `npm i -g @pdpp/local-collector@beta`) as the primary instruction while the package is beta-tagged
+- **AND** the copy SHALL NOT lead with `git clone` of the monorepo for filesystem-class connectors
+
+#### Scenario: A browser-bound connector is documented
+
+- **WHEN** the dashboard surfaces a connector whose runtime bindings include `browser`
+- **THEN** the surface SHALL clearly indicate that the public `@pdpp/local-collector` does not yet ship browser-class collection
+- **AND** the surface SHALL NOT imply that `npx -y @pdpp/local-collector@beta` covers browser-bound connectors
+
+### Requirement: Reference web surfaces SHALL support light and dark themes
+
+The PDPP reference web app SHALL support an explicit dark theme alongside its existing light theme, the dashboard SHALL be usable for sustained operator sessions in either theme, and the theme choice SHALL apply to dashboard, docs, and reference public surfaces inside the same browser session.
+
+#### Scenario: An operator opens the dashboard with the OS in dark mode and no prior preference
+
+- **WHEN** the operator first loads `/dashboard` and `localStorage` contains no
+  PDPP theme preference and the operating system reports
+  `prefers-color-scheme: dark`
+- **THEN** the dashboard SHALL render in dark mode on first paint
+- **AND** there SHALL be no visible light-to-dark flash during hydration
+
+#### Scenario: An operator picks an explicit theme
+
+- **WHEN** the operator activates the theme toggle and selects light or dark
+- **THEN** the choice SHALL persist across reloads in the same browser
+- **AND** the choice SHALL apply to dashboard, docs, and reference public
+  surfaces in the same session
+
+#### Scenario: An operator returns to system tracking
+
+- **WHEN** the operator selects "system" from the theme toggle
+- **THEN** the explicit preference SHALL be cleared
+- **AND** the rendered theme SHALL follow the operating system's
+  `prefers-color-scheme` value, including subsequent OS changes during the
+  session
+
+### Requirement: Status colors SHALL remain identifiable in both themes
+
+Dashboard status indicators SHALL remain distinguishable in both light and dark themes. Status indicators (online/offline, success/destructive/warning, verified/unverified) SHALL NOT be conveyed by hue alone where a non-color affordance is reasonably available.
+
+#### Scenario: An operator scans endpoint health in dark mode
+
+- **WHEN** the dashboard endpoint footer renders in dark mode
+- **THEN** online and offline endpoints SHALL be distinguishable by indicator
+  shape/position and label, not only by color
+- **AND** the chosen success and destructive token SHALL meet WCAG AA
+  contrast against the dark background for the indicator and label
+
