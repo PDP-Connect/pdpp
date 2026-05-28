@@ -135,6 +135,12 @@ export interface GrantSummary {
   failure: FailureInfo | null;
   first_at: string;
   grant_id: string;
+  /**
+   * Parent grant-package id when this row's binding token is a hosted-
+   * MCP package token. Optional; absent for non-package grants. Pivot
+   * link target for the operator console.
+   */
+  grant_package_id?: string | null;
   kinds: string[];
   last_at: string;
   object: "grant_summary";
@@ -1052,4 +1058,103 @@ export async function disableClientEventSubscription(
     headers: { "content-type": "application/json" },
     method: "POST",
   })) as ClientEventSubscriptionDetail;
+}
+
+/**
+ * Owner-facing grant-package summary used by the dashboard list view.
+ * Mirrors the `_ref/grant-packages` envelope. Never carries secret
+ * material — the underlying storage does not expose token bytes through
+ * this surface.
+ */
+export interface GrantPackageSummary {
+  object: "grant_package_summary";
+  package_id: string;
+  subject_id: string;
+  client_id: string;
+  status: string;
+  member_count: number;
+  created_at: string;
+  approved_at: string | null;
+  revoked_at: string | null;
+}
+
+export interface GrantPackageChild {
+  object: "grant_package_child";
+  grant_id: string;
+  grant_status: string;
+  member_status: string;
+  added_at: string;
+  revoked_at: string | null;
+  source: { kind?: string; id?: string; connector_id?: string; connection_id?: string | null } | null;
+}
+
+export interface GrantPackageDetail {
+  object: "grant_package";
+  package_id: string;
+  subject_id: string;
+  client_id: string;
+  status: string;
+  member_count: number;
+  created_at: string;
+  approved_at: string | null;
+  revoked_at: string | null;
+  trace_id: string | null;
+  scenario_id: string | null;
+  children: GrantPackageChild[];
+}
+
+export interface GrantPackageRevokeResult {
+  object: "grant_package_revoke_result";
+  package_id: string;
+  status: string;
+  revoked_at: string;
+  revoked_child_count: number;
+}
+
+export async function listGrantPackages(): Promise<ListResponse<GrantPackageSummary>> {
+  return (await refFetch("/_ref/grant-packages")) as ListResponse<GrantPackageSummary>;
+}
+
+/**
+ * Find a grant's parent package id, if any. Issues a narrow `_ref/grants?q=…`
+ * read and inspects the resulting row. Returns null when no matching row
+ * exists or the row is not package-bound.
+ *
+ * Used by the grant detail page to render the package pivot affordance
+ * without minting a dedicated lookup endpoint.
+ */
+export async function lookupGrantPackageIdForGrant(grantId: string): Promise<string | null> {
+  if (!grantId) return null;
+  try {
+    const page = await listGrants({ q: grantId, limit: 5 });
+    for (const row of page.data) {
+      if (row.grant_id === grantId && typeof row.grant_package_id === "string" && row.grant_package_id.length > 0) {
+        return row.grant_package_id;
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export async function getGrantPackage(packageId: string): Promise<GrantPackageDetail | null> {
+  try {
+    return (await refFetch(
+      `/_ref/grant-packages/${encodeURIComponent(packageId)}`
+    )) as GrantPackageDetail;
+  } catch (err) {
+    if (err instanceof RefNotFoundError) {
+      return null;
+    }
+    throw err;
+  }
+}
+
+export async function revokeGrantPackage(packageId: string): Promise<GrantPackageRevokeResult> {
+  return (await refFetch(`/_ref/grant-packages/${encodeURIComponent(packageId)}/revoke`, undefined, {
+    body: "{}",
+    headers: { "content-type": "application/json" },
+    method: "POST",
+  })) as GrantPackageRevokeResult;
 }

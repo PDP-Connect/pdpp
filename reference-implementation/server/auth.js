@@ -3240,6 +3240,132 @@ export async function getGrantPackageAccess(packageId) {
   };
 }
 
+/**
+ * Owner-facing list of every grant package the deployment has issued,
+ * ordered by created_at DESC. Each row exposes the package metadata plus
+ * the count of `grant_package_members` so the operator UI can render the
+ * blast radius before the operator clicks into the detail page.
+ *
+ * Reference-only operator surface. Not part of the PDPP protocol; do
+ * not expose to clients.
+ */
+export async function listGrantPackagesForOwner() {
+  let rows;
+  if (isPostgresStorageBackend()) {
+    rows = (await postgresQuery(
+      `SELECT gp.package_id, gp.subject_id, gp.client_id, gp.status,
+              gp.trace_id, gp.scenario_id, gp.created_at, gp.approved_at, gp.revoked_at,
+              (SELECT COUNT(*) FROM grant_package_members gpm
+                 WHERE gpm.package_id = gp.package_id) AS member_count
+         FROM grant_packages gp
+         ORDER BY gp.created_at DESC, gp.package_id DESC`,
+      [],
+    )).rows;
+  } else {
+    rows = [
+      ...allowUnboundedReadAcknowledged(referenceQueries.authGrantPackagesListAll, []),
+    ];
+  }
+  return rows
+    .map((row) => {
+      const pkg = normalizePackageRow(row);
+      if (!pkg) return null;
+      const memberCount =
+        row.member_count === null || row.member_count === undefined
+          ? 0
+          : Number(row.member_count);
+      return {
+        ...pkg,
+        member_count: Number.isFinite(memberCount) ? memberCount : 0,
+      };
+    })
+    .filter((row) => row !== null);
+}
+
+/**
+ * Owner-facing detail view of a grant package, regardless of status.
+ * Returns the package row + every member row (active and revoked) so
+ * the operator can see the full child-grant cascade after revocation.
+ * Unlike `getGrantPackageAccess` (consumed by the MCP fan-out, which
+ * needs only active members of an active package), this helper is
+ * non-discriminatory.
+ *
+ * Returns `null` when the package id does not exist.
+ */
+export async function getGrantPackageForOwner(packageId) {
+  if (!isNonEmptyString(packageId)) return null;
+  const packageRow = isPostgresStorageBackend()
+    ? await pgOne(
+        `SELECT package_id, subject_id, client_id, status, package_json::text AS package_json,
+                trace_id, scenario_id, created_at, approved_at, revoked_at
+           FROM grant_packages
+           WHERE package_id = $1`,
+        [packageId],
+      )
+    : getOne(referenceQueries.authGrantPackagesGetById, [packageId]);
+  const grantPackage = normalizePackageRow(packageRow);
+  if (!grantPackage) return null;
+
+  // For operator visibility we ALWAYS return every member row, even ones
+  // marked revoked, so the operator can see the cascade history on a
+  // revoked package detail page. The MCP fan-out path uses
+  // `getGrantPackageAccess`, which intentionally hides revoked rows.
+  const memberRows = isPostgresStorageBackend()
+    ? (await postgresQuery(
+        `SELECT gm.package_id, gm.grant_id, gm.source_json::text AS source_json,
+                gm.status AS member_status, gm.added_at, gm.revoked_at AS member_revoked_at,
+                g.status AS grant_status
+           FROM grant_package_members gm
+           JOIN grants g ON gm.grant_id = g.grant_id
+           WHERE gm.package_id = $1
+           ORDER BY gm.added_at, gm.grant_id`,
+        [packageId],
+      )).rows
+    : allowUnboundedReadAcknowledged(referenceQueries.authGrantPackageMembersListAllByPackage, [packageId]);
+
+  const children = memberRows.map((row) => ({
+    grant_id: row.grant_id,
+    grant_status: row.grant_status,
+    member_status: row.member_status,
+    added_at: row.added_at,
+    revoked_at: row.member_revoked_at || null,
+    source: parsePackageJson(row.source_json) || null,
+  }));
+
+  return {
+    ...grantPackage,
+    member_count: children.length,
+    children,
+  };
+}
+
+/**
+ * Resolve a child grant to its parent package id, if any. The binding
+ * fact lives on `grant_package_members`, the table that joins child
+ * grants to the package they were approved under. The MCP refresh token
+ * issued alongside the package carries `tokens.package_id` but has a
+ * NULL `grant_id`, so it does not participate in this lookup; only the
+ * per-source child grants appear in `grant_package_members`.
+ *
+ * Returns `null` for grants that are not bound to a package.
+ */
+export async function getGrantPackageIdForGrant(grantId) {
+  if (!isNonEmptyString(grantId)) return null;
+  if (isPostgresStorageBackend()) {
+    const row = await pgOne(
+      `SELECT package_id
+         FROM grant_package_members
+         WHERE grant_id = $1
+         ORDER BY added_at
+         LIMIT 1`,
+      [grantId],
+    );
+    return row?.package_id ?? null;
+  }
+  const row = getOne(referenceQueries.authGrantPackageMembersGetPackageIdByGrant, [grantId]);
+  return row?.package_id ?? null;
+}
+
 export async function revokeGrantPackage(packageId, context = {}) {
   const now = nowIso();
   if (isPostgresStorageBackend()) {

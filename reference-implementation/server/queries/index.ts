@@ -186,6 +186,10 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly authTokensInsertOwner: MutationQuery;
   readonly authTokensRevokeByClientId: MutationQuery;
   readonly authTokensRevokeByGrant: MutationQuery;
+  // Auth — grant_packages (operator-visible read surface)
+  readonly authGrantPackagesListAll: SmallEnumerationQuery;
+  readonly authGrantPackageMembersListAllByPackage: SmallEnumerationQuery;
+  readonly authGrantPackageMembersGetPackageIdByGrant: ReadOneQuery;
   readonly blobsGetRowById: ReadOneQuery;
   readonly blobsGetStoredById: ReadOneQuery;
   readonly blobsInsertBinding: MutationQuery;
@@ -661,6 +665,10 @@ export function loadReferenceQueries(queryDir = QUERIES_DIR): ReferenceQueryRegi
     "authTokensGetIntrospection",
     "authTokensRevokeByGrant",
     "authTokensRevokeByClientId",
+    // Auth — grant_packages
+    "authGrantPackagesListAll",
+    "authGrantPackageMembersListAllByPackage",
+    "authGrantPackageMembersGetPackageIdByGrant",
     // Grants — runtime hydration of persisted grant rows.
     "grantsGetScopedStateById",
     // Blobs — content-addressed blob persistence + binding maintenance.

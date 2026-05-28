@@ -56,6 +56,12 @@ export interface RefSpineCorrelationSummary {
   readonly kinds: readonly string[];
   readonly request_id: string | null;
   readonly grant_id: string | null;
+  /**
+   * Parent grant-package id when the grant's binding token carries
+   * `package_id`. Optional — populated by the host's spine read for
+   * kind=`grant` and absent otherwise.
+   */
+  readonly grant_package_id?: string | null;
   readonly run_id: string | null;
   readonly client_id: string | null;
   readonly connector_id: string | null;
@@ -121,6 +127,12 @@ export interface RefSpineTraceSummary {
 export interface RefSpineGrantSummary {
   readonly object: "grant_summary";
   readonly grant_id: string | undefined;
+  /**
+   * Parent grant-package id when this grant's binding token carries
+   * `package_id`. Optional and omitted when absent so existing consumers
+   * (clients that ignore unknown fields by contract) continue to work.
+   */
+  readonly grant_package_id?: string;
   readonly first_at: string;
   readonly last_at: string;
   readonly event_count: number;
@@ -207,6 +219,7 @@ export function summaryToGrant(s: RefSpineCorrelationSummary): RefSpineGrantSumm
     client_id: s.client_id,
     source: sourceFromSummary(s),
     failure: s.failure,
+    ...(s.grant_package_id ? { grant_package_id: s.grant_package_id } : {}),
   };
 }
 

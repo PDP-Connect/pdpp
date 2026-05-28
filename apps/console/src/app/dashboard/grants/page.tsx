@@ -201,27 +201,40 @@ function PendingApprovalRow({ approval }: { approval: PendingApproval }) {
 }
 
 function GrantRow({ grant, href, peeked }: { grant: GrantSummary; href: string; peeked: boolean }) {
+  const packageHref = grant.grant_package_id
+    ? `/dashboard/grants/packages/${encodeURIComponent(grant.grant_package_id)}`
+    : null;
   return (
-    <Link
-      aria-current={peeked ? "true" : undefined}
+    <div
       className={`block px-3 py-2.5 transition-colors ${peeked ? "bg-muted" : "hover:bg-muted/40"}`}
-      href={href}
-      scroll={false}
+      aria-current={peeked ? "true" : undefined}
     >
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <code className="pdpp-caption break-all font-medium font-mono text-foreground">{grant.grant_id}</code>
-        <div className="flex items-center gap-2">
-          <StatusBadge status={grant.status} />
-          <span className="pdpp-caption text-muted-foreground">
-            <Timestamp value={grant.last_at} />
-          </span>
+      <Link className="block" href={href} scroll={false}>
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <code className="pdpp-caption break-all font-medium font-mono text-foreground">{grant.grant_id}</code>
+          <div className="flex items-center gap-2">
+            <StatusBadge status={grant.status} />
+            <span className="pdpp-caption text-muted-foreground">
+              <Timestamp value={grant.last_at} />
+            </span>
+          </div>
         </div>
-      </div>
-      <div className="pdpp-caption mt-1 text-muted-foreground">
-        {grant.event_count} events
-        {grant.client_id ? ` · client ${grant.client_id}` : ""}
-        {grant.source ? ` · source ${grant.source.kind}:${grant.source.id}` : ""}
-      </div>
-    </Link>
+        <div className="pdpp-caption mt-1 text-muted-foreground">
+          {grant.event_count} events
+          {grant.client_id ? ` · client ${grant.client_id}` : ""}
+          {grant.source ? ` · source ${grant.source.kind}:${grant.source.id}` : ""}
+        </div>
+      </Link>
+      {packageHref ? (
+        <div className="pdpp-caption mt-1">
+          <Link
+            className="rounded border border-border px-2 py-0.5 text-muted-foreground hover:bg-muted/60"
+            href={packageHref}
+          >
+            package {grant.grant_package_id} →
+          </Link>
+        </div>
+      ) : null}
+    </div>
   );
 }

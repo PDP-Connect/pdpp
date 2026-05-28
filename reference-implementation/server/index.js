@@ -37,7 +37,8 @@ import {
   introspect, revokeGrant, revokeGrantPackage,
   createConsentExchangeCode, consumeConsentExchangeCode,
   configureNativeManifest,
-  createHostedMcpGrantPackage, getGrantPackageAccess,
+  createHostedMcpGrantPackage, getGrantPackageAccess, getGrantPackageForOwner,
+  listGrantPackagesForOwner, getGrantPackageIdForGrant,
   deleteRegisteredClient, exchangeOAuthAuthorizationCode, exchangeOAuthRefreshToken, getRegisteredClient,
   issueOAuthAuthorizationCodeForDeviceCode, issueOAuthAuthorizationCodeForPackageDeviceCode,
   listOwnerIssuedClients, listRegisteredConnectorIds,
@@ -4031,6 +4032,99 @@ function buildAsApp(opts = {}) {
         spineCorrelationsListDeps,
       );
       res.json(envelope);
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
+  // ────────────────────────────────────────────────────────────────────────
+  // /_ref/grant-packages — operator visibility for hosted-MCP grant packages
+  // ────────────────────────────────────────────────────────────────────────
+  // Read-mostly operator surface that exposes the grant-package primitive
+  // (`add-hosted-mcp-grant-packages`) on the dashboard. Listing returns
+  // every package in `created_at DESC` order with member counts; detail
+  // returns the full child cascade; revoke is a thin wrapper around the
+  // existing `revokeGrantPackage` storage helper. The package never
+  // exposes raw token material; the projection is the same `package_id /
+  // subject_id / client_id / status / children` shape consumed by the
+  // hosted-MCP OAuth flow at authorization time.
+  // Spec: openspec/changes/add-grant-package-operator-visibility/
+  app.get('/_ref/grant-packages', ownerAuth.requireOwnerSession, async (_req, res) => {
+    try {
+      const packages = await listGrantPackagesForOwner();
+      res.json({
+        object: 'list',
+        data: packages.map((pkg) => ({
+          object: 'grant_package_summary',
+          package_id: pkg.package_id,
+          subject_id: pkg.subject_id,
+          client_id: pkg.client_id,
+          status: pkg.status,
+          member_count: pkg.member_count,
+          created_at: pkg.created_at,
+          approved_at: pkg.approved_at,
+          revoked_at: pkg.revoked_at,
+        })),
+        has_more: false,
+      });
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
+  app.get('/_ref/grant-packages/:id', ownerAuth.requireOwnerSession, async (req, res) => {
+    try {
+      const pkg = await getGrantPackageForOwner(req.params.id);
+      if (!pkg) {
+        return pdppError(res, 404, 'not_found', `grant package not found: ${req.params.id}`);
+      }
+      res.json({
+        object: 'grant_package',
+        package_id: pkg.package_id,
+        subject_id: pkg.subject_id,
+        client_id: pkg.client_id,
+        status: pkg.status,
+        member_count: pkg.member_count,
+        created_at: pkg.created_at,
+        approved_at: pkg.approved_at,
+        revoked_at: pkg.revoked_at,
+        trace_id: pkg.trace_id,
+        scenario_id: pkg.scenario_id,
+        children: pkg.children.map((child) => ({
+          object: 'grant_package_child',
+          grant_id: child.grant_id,
+          grant_status: child.grant_status,
+          member_status: child.member_status,
+          added_at: child.added_at,
+          revoked_at: child.revoked_at,
+          source: child.source,
+        })),
+      });
+    } catch (err) {
+      handleError(res, err);
+    }
+  });
+
+  app.post('/_ref/grant-packages/:id/revoke', ownerAuth.requireOwnerSession, async (req, res) => {
+    try {
+      const pkg = await getGrantPackageForOwner(req.params.id);
+      if (!pkg) {
+        return pdppError(res, 404, 'not_found', `grant package not found: ${req.params.id}`);
+      }
+      if (pkg.status !== 'active') {
+        return pdppError(res, 409, 'already_revoked', `grant package ${req.params.id} is already ${pkg.status}`);
+      }
+      await revokeGrantPackage(req.params.id, {
+        request_id: typeof req.headers['x-request-id'] === 'string' ? req.headers['x-request-id'] : undefined,
+      });
+      const after = await getGrantPackageForOwner(req.params.id);
+      res.json({
+        object: 'grant_package_revoke_result',
+        package_id: req.params.id,
+        status: after?.status ?? 'revoked',
+        revoked_at: after?.revoked_at ?? new Date().toISOString(),
+        revoked_child_count: after ? after.children.length : 0,
+      });
     } catch (err) {
       handleError(res, err);
     }

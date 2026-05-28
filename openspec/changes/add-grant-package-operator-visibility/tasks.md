@@ -8,62 +8,72 @@
 
 ## 2. Reference server `_ref` endpoints
 
-- [ ] 2.1 Add `listGrantPackagesForOwner({cursor, limit})` to
+- [x] 2.1 Add `listGrantPackagesForOwner({cursor, limit})` to
   `reference-implementation/server/auth.js`, paginating by created_at DESC.
-- [ ] 2.2 Mount `GET /_ref/grant-packages` (owner-session gated) returning
+- [x] 2.2 Mount `GET /_ref/grant-packages` (owner-session gated) returning
   an envelope `{ data: GrantPackageSummary[], next_cursor, truncated }`.
-- [ ] 2.3 Mount `GET /_ref/grant-packages/:id` returning `{ data:
+- [x] 2.3 Mount `GET /_ref/grant-packages/:id` returning `{ data:
   GrantPackageDetail }` where the detail composes `getGrantPackageAccess`
   with the per-child source projection used by the hosted-MCP OAuth
   flow on issue. Honor 404 with the typed `not_found` envelope.
-- [ ] 2.4 Mount `POST /_ref/grant-packages/:id/revoke` calling
+- [x] 2.4 Mount `POST /_ref/grant-packages/:id/revoke` calling
   `revokeGrantPackage`. Reject with `409 already_revoked` if the package
   is not active.
-- [ ] 2.5 Extend `executeRefSpineCorrelationsList` (kind=`grant`) so each
+- [x] 2.5 Extend `executeRefSpineCorrelationsList` (kind=`grant`) so each
   spine row carries `grant_package_id` when the binding token is a
   package token. The field is omitted when the grant is not bound to a
   package; existing consumers that ignore unknown fields continue to
-  work.
+  work. (Lookup reads `grant_package_members.grant_id` — the package's
+  MCP refresh token has a NULL `grant_id`, so the binding fact lives on
+  the membership table, not on tokens.)
 
 ## 3. Console: list + detail pages
 
-- [ ] 3.1 Add typed helpers `listGrantPackages`, `getGrantPackage`,
+- [x] 3.1 Add typed helpers `listGrantPackages`, `getGrantPackage`,
   `revokeGrantPackage` to `apps/console/src/app/dashboard/lib/ref-client.ts`.
-- [ ] 3.2 Add `/dashboard/grants/packages/page.tsx` mirroring the
+  (Also `lookupGrantPackageIdForGrant` for the grant-detail pivot.)
+- [x] 3.2 Add `/dashboard/grants/packages/page.tsx` mirroring the
   `ListWithPeekView` shape of `/dashboard/grants`.
-- [ ] 3.3 Add `/dashboard/grants/packages/[packageId]/page.tsx` with
+- [x] 3.3 Add `/dashboard/grants/packages/[packageId]/page.tsx` with
   a revoke server action.
-- [ ] 3.4 Add `revoke-action.ts` next to the detail page that
+- [x] 3.4 Add `revoke-action.ts` next to the detail page that
   re-verifies the owner session and enforces a server-rendered
   `confirm_revoke=yes` field before calling `revokeGrantPackage`.
-- [ ] 3.5 Surface `grant_package_id` on `/dashboard/grants` rows as a
+- [x] 3.5 Surface `grant_package_id` on `/dashboard/grants` rows as a
   small pivot link to the package detail page.
-- [ ] 3.6 Surface the package linkage on
+- [x] 3.6 Surface the package linkage on
   `/dashboard/grants/[grantId]/page.tsx` as a pivot link.
-- [ ] 3.7 Add the `Packages` entry to the Grants subnav in
+- [x] 3.7 Add the `Packages` entry to the Grants subnav in
   `apps/console/src/app/dashboard/components/shell.tsx`.
 
 ## 4. Tests
 
-- [ ] 4.1 Reference-implementation tests for `/_ref/grant-packages`,
+- [x] 4.1 Reference-implementation tests for `/_ref/grant-packages`,
   `/_ref/grant-packages/:id`, and `/_ref/grant-packages/:id/revoke`
   including the typed `not_found` and `already_revoked` cases.
-- [ ] 4.2 Spine correlations list test asserting
+  (`reference-implementation/test/ref-grant-packages.test.js`.)
+- [x] 4.2 Spine correlations list test asserting
   `grant_package_id` is returned for child-grant rows whose token is a
   package token and omitted otherwise.
-- [ ] 4.3 Console invariants tests for the new list and detail pages:
+  (Covered by the last case in `ref-grant-packages.test.js`, which
+  drives `_ref/grants` end-to-end through the reference server.)
+- [x] 4.3 Console invariants tests for the new list and detail pages:
   no secret material, confirm-required revoke form, package-id round-
   trip through URL, child-grant link targets.
-- [ ] 4.4 Update `apps/console/src/app/dashboard/grants/[grantId]/page.invariants.test.ts`
+  (`apps/console/src/app/dashboard/grants/packages/page.invariants.test.ts`
+  and `…/grants/packages/[packageId]/page.invariants.test.ts`.)
+- [x] 4.4 Update `apps/console/src/app/dashboard/grants/[grantId]/page.invariants.test.ts`
   to lock the new package pivot link when the grant is package-bound.
 
 ## 5. Validation
 
 - [ ] 5.1 `pnpm -C reference-implementation run verify` passes.
-- [ ] 5.2 `pnpm -C apps/console run types:check` passes.
-- [ ] 5.3 Targeted node --test passes for the new console tests.
-- [ ] 5.4 `openspec validate add-grant-package-operator-visibility --strict` passes.
-- [ ] 5.5 `openspec validate --all --strict` passes.
+  (Not yet rerun in this lane; focused targeted tests pass — see
+  `repair-report.md`. Full `verify` is reserved for owner-merge.)
+- [x] 5.2 `pnpm -C apps/console run types:check` passes.
+- [x] 5.3 Targeted node --test passes for the new console tests.
+- [x] 5.4 `openspec validate add-grant-package-operator-visibility --strict` passes.
+- [x] 5.5 `openspec validate --all --strict` passes.
 
 ## Acceptance checks
 
@@ -78,3 +88,18 @@
 - A child grant viewed at `/dashboard/grants/[id]` shows the package
   pivot link when the binding token is a package token, and does not
   show it for grants issued outside a package ceremony.
+
+## Residual risks
+
+- Full `pnpm -C reference-implementation run verify` was not rerun on
+  this branch; targeted reference tests + `hosted-mcp-oauth.test.js` +
+  spine regressions all pass. Owner should run full `verify` before
+  merging to main.
+- The protocol-level cascade leaves `grants.status` on each child row
+  unchanged when a package is revoked. Enforcement runs through the
+  revoked package-bound MCP token + revoked `grant_package_members`
+  row; the operator-visible cascade on the package detail page lives on
+  `member_status` and the member `revoked_at`. This matches existing
+  `hosted-mcp-oauth.test.js` behavior and is intentional, but operators
+  should not interpret a child grant's `active` status badge as
+  "package-bound bearer still works".

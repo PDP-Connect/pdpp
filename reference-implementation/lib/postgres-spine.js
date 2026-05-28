@@ -309,6 +309,33 @@ export async function postgresListSpineEventsPage(kind, id, opts = {}) {
   };
 }
 
+/**
+ * Look up the parent grant-package id for each grant id. The binding
+ * fact lives on `grant_package_members`; the package's MCP refresh
+ * token carries `tokens.package_id` but has a NULL `grant_id`, so a
+ * tokens-side lookup misses every child grant. Returns a `Map<grantId,
+ * packageId>` containing only grants that are package-bound. Used by
+ * `listSpineCorrelations` to decorate grant rows on the operator
+ * surface; called once per page so the join cost stays bounded.
+ */
+export async function postgresGrantPackageIdsForGrants(grantIds) {
+  if (!Array.isArray(grantIds) || grantIds.length === 0) return new Map();
+  const placeholders = grantIds.map((_, i) => `$${i + 1}`).join(', ');
+  const result = await postgresQuery(
+    `SELECT grant_id, package_id
+       FROM grant_package_members
+       WHERE grant_id IN (${placeholders})`,
+    grantIds,
+  );
+  const out = new Map();
+  for (const row of result.rows) {
+    if (row.grant_id && row.package_id && !out.has(row.grant_id)) {
+      out.set(row.grant_id, row.package_id);
+    }
+  }
+  return out;
+}
+
 export async function postgresListSpineCorrelations(kind, filters = {}) {
   const column = COLUMN_BY_KIND[kind];
   if (!column) return { summaries: [], hasMore: false, nextCursor: null };
@@ -390,6 +417,21 @@ export async function postgresListSpineCorrelations(kind, filters = {}) {
   if (filters.status) {
     const wanted = String(filters.status);
     summaries = summaries.filter((s) => s && s.status === wanted);
+  }
+
+  if (kind === 'grant' && summaries.length > 0) {
+    const ids = summaries
+      .map((s) => s?.grant_id || s?.id)
+      .filter((v) => typeof v === 'string' && v.length > 0);
+    const packageByGrant = await postgresGrantPackageIdsForGrants(ids);
+    if (packageByGrant.size > 0) {
+      summaries = summaries.map((s) => {
+        if (!s) return s;
+        const gid = s.grant_id || s.id;
+        const packageId = gid ? packageByGrant.get(gid) : null;
+        return packageId ? { ...s, grant_package_id: packageId } : s;
+      });
+    }
   }
 
   const hasMore = result.rows.length > limit;
