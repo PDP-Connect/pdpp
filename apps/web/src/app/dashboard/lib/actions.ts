@@ -4,7 +4,7 @@ export interface DashboardCommand {
   id: string;
   keywords: string[];
   kind: "jump" | "action";
-  section: "Navigate" | "Quick action" | "Search";
+  section: "Navigate" | "Quick action";
   title: string;
 }
 
@@ -154,17 +154,4 @@ export function matchDashboardCommands(query: string): DashboardCommand[] {
     return listDashboardCommands();
   }
   return listDashboardCommands().filter((command) => searchableText(command).includes(needle));
-}
-
-export function buildSearchCommand(query: string): DashboardCommand {
-  return {
-    id: "search-all-records",
-    title: `Search record content for "${query}"`,
-    description:
-      "Run text search across retained record data. Use connector and stream filters when you want structured browsing instead.",
-    href: `/dashboard/search?q=${encodeURIComponent(query)}&jump=0`,
-    keywords: [query, "search"],
-    kind: "jump",
-    section: "Search",
-  };
 }
