@@ -4919,3 +4919,244 @@ In both cases, the parent process SHALL NOT emit an `uncaughtException`, and the
 - **WHEN** the connector emits DONE and the runtime later observes a stdin write rejection during cleanup
 - **THEN** the resolved outcome's `terminal_reason` SHALL reflect the DONE status (`connector_reported_failed`, `connector_reported_cancelled`, or null on success), not `connector_stdin_closed`
 
+### Requirement: Postgres proof service SHALL be profile-gated and runtime-independent
+
+The repository MAY ship a Compose Postgres service to support env-gated conformance proofs (notably `reference-implementation/test/connector-state-scheduler-conformance-postgres.test.js`). Any such service SHALL be gated behind a Compose profile, SHALL NOT be started by a default `docker compose up`, and SHALL NOT be wired into the runtime storage path of any production reference service.
+
+#### Scenario: Default Compose stack does not include the proof service
+
+- **WHEN** an operator runs `docker compose --env-file .env.docker up`
+- **THEN** the Postgres proof service SHALL NOT start
+- **AND** the rendered `docker compose --env-file .env.docker config` output SHALL NOT include the proof service
+
+#### Scenario: Proof service started explicitly
+
+- **WHEN** an operator runs `docker compose --profile postgres --env-file .env.docker up -d postgres`
+- **THEN** the Postgres proof service SHALL start with a persistent named volume and a `pg_isready` healthcheck
+- **AND** the host port SHALL be configurable via an env var defaulting to a nonstandard local port to avoid colliding with operator-installed Postgres on `5432`
+- **AND** the service SHALL bind to a loopback host (`127.0.0.1`) by default so that default-credential proof runs are not reachable from LAN or WAN
+
+#### Scenario: LAN exposure requires deliberate opt-in
+
+- **WHEN** an operator wants to reach the proof service from another host on the network
+- **THEN** they SHALL change the documented bind-host env var to a non-loopback address
+- **AND** the documentation SHALL state that this opt-in is only safe when the default credentials are also replaced
+- **AND** the default Compose mapping SHALL NOT bind the proof service to all interfaces
+
+#### Scenario: Reference services remain SQLite-backed
+
+- **WHEN** the Postgres proof service is started or stopped
+- **THEN** the `reference` service SHALL NOT depend on it via `depends_on` or runtime env wiring
+- **AND** the reference runtime SHALL continue to use its SQLite-backed storage path
+- **AND** no `PDPP_STORAGE_BACKEND` or `PDPP_DATABASE_URL` runtime contract SHALL be introduced by this change
+
+#### Scenario: Proof service is documented as proof-only
+
+- **WHEN** the Postgres proof service is documented in `.env.docker.example` or the README
+- **THEN** the documentation SHALL state that the service exists for env-gated conformance/proof use only
+- **AND** the documentation SHALL NOT claim operator-facing Postgres storage support
+- **AND** the documentation SHALL show the exact `PDPP_TEST_POSTGRES_URL` value that targets the proof service
+
+### Requirement: Postgres storage proofs SHALL stay capability-scoped
+
+The reference implementation SHALL introduce Postgres storage support in no
+more than two implementation slices: first capability-scoped low-risk storage
+proofs, then records/search runtime storage. The low-risk storage proof slice
+SHALL cover only storage capability families with executable conformance
+harnesses and SHALL NOT migrate records, blobs, disclosure spine, lexical
+retrieval, semantic retrieval, hybrid retrieval, or default runtime storage.
+
+#### Scenario: Low-risk storage proof
+
+- **WHEN** a Postgres adapter is added for connector state, scheduler, consent,
+  or owner-device-auth storage
+- **THEN** the adapter SHALL pass the same conformance harness used by the
+  SQLite baseline or a memory adapter
+- **AND** the conformance harness SHALL remain falsifiable through a deliberately
+  broken driver or equivalent negative proof
+
+#### Scenario: Runtime default remains SQLite
+
+- **WHEN** the low-risk Postgres storage proof is present in the repository
+- **THEN** SQLite SHALL remain the default reference runtime backend
+- **AND** Postgres execution SHALL require explicit environment configuration
+- **AND** default tests SHALL NOT require a running Postgres service
+
+#### Scenario: Records and search are deferred to the second slice
+
+- **WHEN** implementing this low-risk storage proof slice
+- **THEN** records, blobs, disclosure spine, lexical retrieval, semantic
+  retrieval, hybrid retrieval, cursor semantics, version allocation, and
+  record-change semantics SHALL remain out of scope
+- **AND** any attempt to migrate those surfaces SHALL require the second and
+  final Postgres slice with its own records/search evidence
+
+#### Scenario: Operations remain storage-driver agnostic
+
+- **WHEN** an operation consumes a storage-backed capability covered by this
+  slice
+- **THEN** the operation SHALL depend on the explicit capability contract rather
+  than importing SQLite, Postgres, `pg`, concrete store modules, process
+  environment, or test-only drivers
+
+### Requirement: Reference operation modules SHALL be gated by a discovery-based boundary test
+
+The reference implementation SHALL gate every canonical reference operation module under `reference-implementation/operations/<name>/index.ts` against forbidden host, storage, and process-environment dependencies through a discovery-based test, so that adding a new operation module without an explicit per-operation test does not silently bypass the gate.
+
+#### Scenario: A new operation module is added
+
+- **WHEN** a developer adds `reference-implementation/operations/<new-name>/index.ts`
+- **THEN** the discovery-based boundary test SHALL include that module
+- **AND** the test SHALL fail if the module statically imports Fastify, Express, Next, SQLite, Postgres, a raw SQL handle, a generic repository, sandbox UI/page code, `_demo/` builders, or the Node `process` module, or if the module references `process.env` in executable source outside of comments
+
+#### Scenario: An operation module imports a forbidden concrete
+
+- **WHEN** any operation module under `reference-implementation/operations/<name>/index.ts` introduces a static import that resolves a specifier of `fastify`, `express`, `next/`, `better-sqlite3`, `pg`, `./db`, `../db`, `../lib/db`, `../server/db`, `../server/records`, `../server/auth`, `../server/index`, `apps/web`, `_demo/`, `node:process`, or `process`
+- **AND** the import takes any standard ES static-import shape — bare side-effect (`import "<x>";`), default (`import x from "<x>";`), namespace (`import * as x from "<x>";`), named (`import { x } from "<x>";`), type-only (`import type { X } from "<x>";`), or re-export (`export { x } from "<x>";`, `export * from "<x>";`)
+- **THEN** the discovery-based boundary test SHALL fail with a message that names the module and the forbidden import
+
+#### Scenario: An operation module accesses the process environment
+
+- **WHEN** any operation module under `reference-implementation/operations/<name>/index.ts` references the process environment in executable source — either by spelling `process.env` directly outside of comments, or by statically importing the Node `process` module under the bare specifier (`process`) or the `node:` specifier (`node:process`) in any standard ES static-import shape
+- **THEN** the discovery-based boundary test SHALL fail
+- **AND** the test SHALL strip block and line comments before checking the literal `process.env` shape so module headers that document the rule do not trip the guard
+- **AND** the failure message SHALL name the module and either the literal `process.env` rule or the forbidden Node `process` specifier
+- **AND** dynamic imports of the Node `process` module (e.g., `await import("node:process")`) are intentionally out of scope for this static gate; this is a documented trade-off, not a guarantee
+
+#### Scenario: The operations directory layout changes
+
+- **WHEN** the discovery-based boundary test runs
+- **THEN** it SHALL discover at least one operation module
+- **AND** it SHALL fail loudly if zero operation modules are discovered, so a refactor that moves or renames the directory cannot silently neuter the gate
+
+### Requirement: The reference implementation ships an operator self-host onboarding lane
+
+The reference implementation SHALL ship an operator-facing self-host onboarding runbook that names at least one substrate beyond a generic Docker host and that scopes substrate-specific constraints honestly. The runbook SHALL NOT adopt hosted-service framing.
+
+#### Scenario: A self-hoster reads the quick-start
+
+- **WHEN** an operator opens `docs/operator/selfhost-quickstart.md`
+- **THEN** they SHALL find at least two named lanes — one generic Docker host lane and one substrate-specific lane (RunPod CPU Pod for the SLVP) — each stating the minimum environment variables that must change from defaults, the dashboard verification step, and the wiring to `docs/operator/hosted-mcp-setup.md` for MCP grant package issuance
+- **AND** the runbook SHALL state, for the substrate-specific lane, what that substrate does and does not provide (single-container vs. multi-container compose, HTTP proxy vs. native TLS, UDP support, port exposure model) without implying capabilities the substrate lacks
+
+#### Scenario: The runbook scopes out hosted-service language
+
+- **WHEN** the runbook describes the reference deployment
+- **THEN** it SHALL address the reader as the operator of their own instance and SHALL NOT use "sign up", "our service", "we sync", or otherwise imply that PDPP-the-protocol or its stewards operate a hosted backend for end users
+
+### Requirement: The deployment dashboard surfaces first-boot readiness
+
+The reference implementation operator dashboard SHALL surface a structured deployment readiness view that presents existing diagnostic state as first-boot self-check rows. The view SHALL be presentation-only: it MAY consume `/_ref/deployment`, the in-browser origin, and the deployment's published OAuth metadata, but SHALL NOT introduce new owner control-plane mutations.
+
+#### Scenario: An operator visits the dashboard on first boot
+
+- **WHEN** an operator visits `/dashboard/deployment` after starting a fresh reference deployment
+- **THEN** they SHALL see a readiness view that includes at minimum the following checks, each rendered with a status of `ok`, `warn`, `error`, `info`, or `unknown` and a one-line remediation hint:
+  - owner-password gate (whether `PDPP_OWNER_PASSWORD` is configured)
+  - reference-origin alignment (whether `PDPP_REFERENCE_ORIGIN` matches the URL the operator is currently viewing)
+  - storage backend health
+  - embedding cache state
+  - hosted MCP refresh-token advertisement at the deployment's authorization-server metadata endpoint
+
+#### Scenario: The owner password is unset on a reachable dashboard
+
+- **WHEN** the operator opens `/dashboard/deployment` against a deployment whose `PDPP_OWNER_PASSWORD` is empty
+- **THEN** the owner-password row SHALL render with `status = error` and a hint that explicitly states that `/owner`, `/device`, `/consent`, and `/dashboard` are reachable without authentication until the variable is set and the deployment is restarted
+
+#### Scenario: The dashboard is reached via a proxy URL different from the configured origin
+
+- **WHEN** the operator opens `/dashboard/deployment` at an origin (for example `https://<podid>-3002.proxy.runpod.net`) that does not match the server-reported `PDPP_REFERENCE_ORIGIN`
+- **THEN** the reference-origin row SHALL render with `status = warn` and a hint that names the observed origin and recommends setting `PDPP_REFERENCE_ORIGIN` to that origin to avoid OAuth callback and MCP routing failures
+
+#### Scenario: The reference image is too old to advertise `refresh_token`
+
+- **WHEN** the deployment's `/.well-known/oauth-authorization-server` does not advertise `refresh_token` in `grant_types_supported`
+- **THEN** the readiness view SHALL render the MCP refresh-token row with `status = error` and a hint that the image must be updated to a revision that advertises `refresh_token`
+
+#### Scenario: The readiness view introduces no new control plane
+
+- **WHEN** the readiness view is rendered
+- **THEN** the implementation SHALL NOT expose a new `/_ref/*` mutation endpoint, a new owner action, or a credential-entry affordance through this view; surfacing existing state is the sole responsibility of the view
+
+### Requirement: Remote surface package SHALL be almost push-button OSS-publishable
+
+`@pdpp/remote-surface` SHALL have an architecture and package shape that is almost push-button OSS-publishable as a standalone package that external consumers can install from a packed artifact, typecheck, import, and evaluate without a PDPP monorepo checkout or unpublished workspace dependencies. The package MAY remain unpublished and `private: true` until release preparation.
+
+#### Scenario: A consumer installs the package outside the monorepo
+
+- **WHEN** an external consumer installs the packed `@pdpp/remote-surface` artifact in a clean project
+- **THEN** installation SHALL succeed without requiring `workspace:*` dependency resolution, relative monorepo paths, private package names, or unpublished sibling packages
+- **AND** all runtime dependencies required by the public package SHALL be declared as publishable dependencies, peer dependencies, optional dependencies, or bundled implementation details
+
+#### Scenario: A consumer imports public entrypoints
+
+- **WHEN** a clean consumer imports every documented public entrypoint
+- **THEN** the imports SHALL resolve to compiled package artifacts
+- **AND** TypeScript declarations SHALL exist for every exported public API
+- **AND** the consumer SHALL NOT need to compile raw package source from the repository
+
+#### Scenario: The package tarball is inspected
+
+- **WHEN** maintainers inspect the package tarball before publication
+- **THEN** it SHALL include only intentional public artifacts such as package metadata, README, license, compiled runtime files, declaration files, and required runtime assets
+- **AND** it SHALL NOT include package-local tests, private/raw source intended only for the monorepo build, fixtures, build caches, internal audit notes, or unrelated repository files unless explicitly justified as public package content
+
+#### Scenario: Maintainers defer the release switch
+
+- **WHEN** maintainers complete the package-shape implementation for this change
+- **THEN** the package SHALL NOT be required to publish to a registry
+- **AND** the package SHALL NOT be required to switch from `private: true` to `private: false` until release preparation
+
+### Requirement: Remote surface public APIs SHALL be host-neutral
+
+`@pdpp/remote-surface` SHALL expose public API names, types, documentation, and examples that describe generic remote-surface host concepts rather than PDPP reference-runtime internals.
+
+#### Scenario: Public artifacts are scanned for PDPP reference leakage
+
+- **WHEN** maintainers scan public package artifacts, generated declarations, README examples, and exported type names
+- **THEN** `_ref`, `run_id`, and `interaction_id` SHALL NOT appear as public remote-surface concepts
+- **AND** any remaining occurrence SHALL be limited to an explicitly labeled PDPP reference adapter, migration note, or compatibility test that is not presented as the default external consumer contract
+
+#### Scenario: A non-PDPP host integrates the package
+
+- **WHEN** a host that does not implement the PDPP reference runtime integrates `@pdpp/remote-surface`
+- **THEN** the package SHALL let that host provide its own routing, authorization, persistence, lifecycle, and identifier model through host-neutral interfaces
+- **AND** the host SHALL NOT need to expose or emulate PDPP `_ref` endpoints, PDPP run identifiers, or PDPP interaction identifiers to use the primary package API
+
+### Requirement: Remote surface store and lease contracts SHALL be host-owned
+
+Server store and lease APIs exposed by `@pdpp/remote-surface` SHALL describe host-owned persistence and surface lifecycle contracts instead of binding external consumers to PDPP reference runtime storage or operator-control semantics.
+
+#### Scenario: A host implements persistence
+
+- **WHEN** an external host implements the remote-surface server store contract
+- **THEN** the contract SHALL describe the data the package requires using generic surface, session, lease, action, and lifecycle terms
+- **AND** it SHALL NOT require the host to persist PDPP event-spine rows, `_ref` timeline records, reference run rows, or reference interaction rows as part of the primary package contract
+
+#### Scenario: A host implements lease lifecycle
+
+- **WHEN** an external host implements remote-surface lease acquisition, renewal, release, cancellation, expiry, or recovery
+- **THEN** the lease API SHALL be expressible without PDPP runtime-specific identifiers or endpoint names
+- **AND** lease state transitions SHALL be documented well enough for a host to implement them without importing app/runtime code
+
+### Requirement: Remote surface publication checks SHALL prove release readiness
+
+The repository SHALL maintain automated checks that prove `@pdpp/remote-surface` is architecturally ready for standalone publication before maintainers publish it.
+
+#### Scenario: Publication validation runs in CI
+
+- **WHEN** package publication validation runs
+- **THEN** it SHALL verify tarball hygiene, public exports, declaration coverage, dependency publishability, package-local tests, host-neutral public artifact scans, and clean-consumer install/import/typecheck from the packed artifact
+- **AND** a failure in any of those checks SHALL block publication readiness
+
+#### Scenario: Maintainers run a publication dry run
+
+- **WHEN** a maintainer prepares to publish `@pdpp/remote-surface`
+- **THEN** the documented dry-run path SHALL produce an inspectable package artifact or file list without publishing
+- **AND** the dry run SHALL expose enough evidence to confirm that private source, tests, workspace-only dependencies, and PDPP reference-only concepts are not leaking into the public package
+
+#### Scenario: Maintainers prepare launch documentation
+
+- **WHEN** maintainers perform release preparation for `@pdpp/remote-surface`
+- **THEN** polished README examples, cookbook documentation, final registry metadata, the `private: false` switch, and actual publication SHALL be handled as release-prep work rather than as prerequisites for this package-shape change
+
