@@ -102,7 +102,6 @@ import {
 } from '../operations/ref-client-event-subscriptions-disable/index.ts';
 import { getDefaultDeliveryWorker } from './client-event-delivery-worker.ts';
 import { setClientEventEnqueueHook } from './records.js';
-import { getDefaultSourceWebhookEventStore } from './stores/source-webhook-event-store.ts';
 import { DeviceBatchConflictError, createDeviceExporterStore } from './stores/device-exporter-store.js';
 import { getDefaultConnectorDetailGapStore } from './stores/connector-detail-gap-store.js';
 import {
@@ -176,6 +175,7 @@ import { projectRunAutomationPolicy } from '../runtime/run-automation-policy.ts'
 import { redactStderrTail } from '../runtime/stderr-redact.js';
 import { createScheduler } from '../runtime/scheduler.ts';
 import { getDefaultSchedulerStore } from './stores/scheduler-store.ts';
+import { getDefaultSourceWebhookEventStore } from './stores/source-webhook-event-store.ts';
 import { BrowserSurfaceLeaseManager } from '@opendatalabs/remote-surface/leases';
 import { parseNekoBrowserSurfaceRuntimeConfig } from '../runtime/browser-surface-leases.ts';
 import { NekoSurfaceAllocatorClient } from '../runtime/neko-surface-allocator.ts';
@@ -290,10 +290,6 @@ import {
   executeRecordsIngest,
   parseLines as parseIngestLines,
 } from '../operations/rs-records-ingest/index.ts';
-import {
-  SourceWebhookError,
-  executeSourceWebhook,
-} from '../operations/ref-source-webhook-ingest/index.ts';
 import { executeAsDcrRegister, summarizeDcrRegisterRequest } from '../operations/as-dcr-register/index.ts';
 import { executeAsDcrDelete } from '../operations/as-dcr-delete/index.ts';
 import { executeAsDeviceAuthInit } from '../operations/as-device-authorization-init/index.ts';
@@ -330,6 +326,7 @@ import {
   mountRefWebPushListSubscriptions,
   mountRefWebPushTest,
 } from './routes/web-push.ts';
+import { mountRefSourceWebhooks } from './routes/source-webhooks.ts';
 
 const AS_PORT = parseInt(process.env.AS_PORT || '7662');
 const RS_PORT = parseInt(process.env.RS_PORT || '7663');
@@ -8551,73 +8548,22 @@ function buildRsApp(opts = {}) {
       }
     });
 
-    // POST /_ref/source-webhooks/:sourceId (reference-only runtime ingress)
-    // This is not a PDPP protocol endpoint. It accepts source-specific signed
-    // callbacks and maps them into existing ingest/scheduler semantics.
-    app.post('/_ref/source-webhooks/:sourceId', async (req, res) => {
-      const secrets = parseSourceWebhookSecrets();
-      const body = typeof req.body === 'string'
-        ? req.body
-        : Buffer.isBuffer(req.body)
-          ? req.body.toString('utf8')
-          : JSON.stringify(req.body ?? {});
-      try {
-        const result = await executeSourceWebhook(
-          {
-            sourceId: req.params.sourceId,
-            body,
-            timestamp: req.headers['pdpp-webhook-timestamp'],
-            eventId: req.headers['pdpp-webhook-event-id'],
-            signature: req.headers['pdpp-webhook-signature'],
-          },
-          {
-            nowMs: () => Date.now(),
-            resolveSecret: (sourceId) => secrets.get(sourceId)?.secret,
-            resolveConnectorId: (sourceId) => secrets.get(sourceId)?.connectorId,
-            claimEvent: (event) => getDefaultSourceWebhookEventStore().claimEvent(event),
-            ingestRecords: async ({ connectorId, streamName, body: ingestBody }) => {
-              const output = await executeRecordsIngest(
-                { connectorId, streamName, body: ingestBody },
-                {
-                  hasManifestStream: async (cid, name) => {
-                    const manifest = await resolveRegisteredConnectorManifest(cid);
-                    return Boolean((manifest.streams || []).find((stream) => stream.name === name));
-                  },
-                  ingestRecord: (cid, _connectorInstanceId, record) => ingestRecord(cid, record),
-                },
-              );
-              return output.envelope;
-            },
-            signalScheduler: async ({ connectorId, receivedAt }) => {
-              await getDefaultSchedulerStore().upsertLastRunTime(connectorId, Date.parse(receivedAt), receivedAt);
-          },
-          projectAutomationPolicy: async ({ connectorId, triggerKind }) => {
-            const manifest = await resolveRegisteredConnectorManifest(connectorId);
-            return projectRunAutomationPolicy({
-              triggerKind,
-              refreshPolicy: getManifestRefreshPolicy(manifest),
-            });
-          },
-          requestRun: async ({ connectorId, triggerKind }) => {
-            if (!opts.controller) {
-              return null;
-            }
-            const manifest = await resolveRegisteredConnectorManifest(connectorId);
-            return opts.controller.runNow(connectorId, {
-              manifest,
-              priorityClass: 'scheduled_refresh',
-              triggerKind,
-            });
-          },
-        },
-      );
-        res.status(result.duplicate ? 202 : 200).json(result);
-      } catch (err) {
-        if (err instanceof SourceWebhookError) {
-          return pdppError(res, err.status, err.code, err.message);
-        }
-        return handleError(res, err);
-      }
+    // Reference-only signed source-webhook ingress is mounted via
+    // `server/routes/source-webhooks.ts` per OpenSpec change
+    // `split-reference-server-by-route-family` (§5.3). Behaviour-preserving
+    // extraction: same path, same HMAC posture, same envelopes, same status
+    // codes (202 on duplicate, 200 otherwise), same error mapping.
+    mountRefSourceWebhooks(app, {
+      controller: opts.controller,
+      getManifestRefreshPolicy,
+      getSchedulerStore: getDefaultSchedulerStore,
+      getSourceWebhookEventStore: getDefaultSourceWebhookEventStore,
+      handleError,
+      ingestRecord: (connectorId, record) => ingestRecord(connectorId, record),
+      parseSourceWebhookSecrets,
+      pdppError,
+      projectRunAutomationPolicy,
+      resolveRegisteredConnectorManifest,
     });
 
     // POST /v1/ingest/:stream (Collection Profile, owner-authenticated)
