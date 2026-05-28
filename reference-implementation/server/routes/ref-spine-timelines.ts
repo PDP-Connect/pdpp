@@ -21,6 +21,7 @@ import {
   type RefSpineEventsKind,
   type RefSpineEventsPageInputPagination,
 } from "../../operations/ref-spine-events-page/index.ts";
+import type { MiddlewareHandler, PdppErrorFn } from "./_route-contract.ts";
 
 // Express-shaped surface, structurally typed to avoid pulling in the
 // transport's `.js` ambient types. Matches the pattern established in
@@ -36,20 +37,10 @@ interface RouteResponse {
 }
 
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => unknown | Promise<unknown>;
-type MiddlewareHandler = (...args: unknown[]) => unknown;
 
 interface AppLike {
   get(path: string, ...handlers: (MiddlewareHandler | RouteHandler)[]): AppLike;
 }
-
-type PdppErrorFn = (
-  res: unknown,
-  status: number,
-  code: string,
-  message: string | undefined,
-  param?: string | null,
-  extras?: Readonly<Record<string, unknown>> | null
-) => unknown;
 
 interface TimelinePageOptions {
   readonly cursor: string | null;

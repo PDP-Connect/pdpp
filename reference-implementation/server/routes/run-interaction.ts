@@ -16,6 +16,8 @@
 //     PDPP_ENABLE_STREAM_PLAYGROUND=1. Owner-session required when
 //     owner-auth is enabled.
 
+import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
+
 // Express-shaped surface, structurally typed to avoid pulling in transport
 // ambient types. Config objects (e.g. `{ contract: 'opId' }`) may appear
 // in the args list alongside middlewares and the final handler, matching
@@ -33,20 +35,10 @@ interface RouteResponse {
 }
 
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => unknown | Promise<unknown>;
-type MiddlewareHandler = (...args: unknown[]) => unknown;
-type RouteArg = Readonly<{ contract?: string }> | MiddlewareHandler | RouteHandler;
 
 interface AppLike {
-  post(path: string, ...args: RouteArg[]): AppLike;
+  post(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
 }
-
-type PdppErrorFn = (
-  res: unknown,
-  status: number,
-  code: string,
-  message: string | undefined,
-  param?: string | null
-) => unknown;
 
 export interface RunInteractionController {
   respondToInteraction(

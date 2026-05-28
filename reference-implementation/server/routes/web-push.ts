@@ -11,6 +11,8 @@
 // endpoint is the operator's "ping my browser" smoke check; it requires
 // VAPID to be configured.
 
+import type { MiddlewareHandler, PdppErrorFn } from "./_route-contract.ts";
+
 interface WebPushConfig {
   readonly enabled: boolean;
   readonly publicKey?: string;
@@ -61,22 +63,12 @@ interface RouteResponse {
 }
 
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => unknown | Promise<unknown>;
-type MiddlewareHandler = (...args: unknown[]) => unknown;
 
 interface AppLike {
   delete(path: string, ...handlers: (MiddlewareHandler | RouteHandler)[]): AppLike;
   get(path: string, ...handlers: (MiddlewareHandler | RouteHandler)[]): AppLike;
   post(path: string, ...handlers: (MiddlewareHandler | RouteHandler)[]): AppLike;
 }
-
-type PdppErrorFn = (
-  res: unknown,
-  status: number,
-  code: string,
-  message: string | undefined,
-  param?: string | null,
-  extras?: Readonly<Record<string, unknown>> | null
-) => unknown;
 
 export interface MountRefWebPushContext {
   fanoutTestWebPush: FanoutTestWebPush;

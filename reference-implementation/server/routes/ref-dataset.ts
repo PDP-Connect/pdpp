@@ -26,6 +26,7 @@ import {
   executeRefDatasetSummaryStreams,
   type RefDatasetSummaryStreamRow,
 } from "../../operations/ref-dataset-summary-streams/index.ts";
+import type { MiddlewareHandler, RouteArg } from "./_route-contract.ts";
 
 // Express-shaped surface, structurally typed to avoid pulling in the
 // transport's `.js` ambient types. Matches the pattern established in
@@ -41,15 +42,10 @@ interface RouteResponse {
 }
 
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => unknown | Promise<unknown>;
-type MiddlewareHandler = (...args: unknown[]) => unknown;
-// Config objects (e.g. `{ contract: 'opId' }`) may appear in the args list
-// alongside middlewares and the final handler, matching transport.js's
-// registration convention.
-type RouteArg = Readonly<{ contract?: string }> | MiddlewareHandler | RouteHandler;
 
 interface AppLike {
-  get(path: string, ...args: RouteArg[]): AppLike;
-  post(path: string, ...args: RouteArg[]): AppLike;
+  get(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
+  post(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
 }
 
 // Minimal substrate row shapes. Full Postgres/SQLite column sets have

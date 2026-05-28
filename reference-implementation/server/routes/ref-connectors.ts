@@ -28,6 +28,7 @@ import {
   RefConnectorDetailNotFoundError,
 } from "../../operations/ref-connectors-detail/index.ts";
 import { executeRefConnectorsList } from "../../operations/ref-connectors-list/index.ts";
+import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
 
 // Express-shaped surface, structurally typed to avoid pulling in the
 // transport's `.js` ambient types. Matches the pattern established in
@@ -46,28 +47,14 @@ interface RouteResponse {
 }
 
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => unknown | Promise<unknown>;
-type MiddlewareHandler = (...args: unknown[]) => unknown;
-// Config objects (e.g. `{ contract: 'opId' }`) may appear in the args
-// list alongside middlewares and the final handler, matching transport.js's
-// registration convention.
-type RouteArg = Readonly<{ contract?: string }> | MiddlewareHandler | RouteHandler;
 
 interface AppLike {
-  delete(path: string, ...args: RouteArg[]): AppLike;
-  get(path: string, ...args: RouteArg[]): AppLike;
-  patch(path: string, ...args: RouteArg[]): AppLike;
-  post(path: string, ...args: RouteArg[]): AppLike;
-  put(path: string, ...args: RouteArg[]): AppLike;
+  delete(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
+  get(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
+  patch(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
+  post(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
+  put(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
 }
-
-type PdppErrorFn = (
-  res: unknown,
-  status: number,
-  code: string,
-  message: string | undefined,
-  param?: string | null,
-  extras?: Readonly<Record<string, unknown>> | null
-) => unknown;
 
 // Minimal connector-instance shape this adapter projects. The substrate
 // store carries additional fields; these are the ones the projection

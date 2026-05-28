@@ -17,6 +17,7 @@ import {
   type RefSpineCorrelationKind,
   type RefSpineCorrelationPage,
 } from "../../operations/ref-spine-correlations-list/index.ts";
+import type { MiddlewareHandler } from "./_route-contract.ts";
 
 // Express-shaped surface, structurally typed to avoid pulling in the
 // transport's `.js` ambient types. Matches the pattern established in
@@ -31,7 +32,6 @@ interface RouteResponse {
 }
 
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => unknown;
-type MiddlewareHandler = (...args: unknown[]) => unknown;
 
 interface AppLike {
   get(path: string, ...handlers: (MiddlewareHandler | RouteHandler)[]): AppLike;
