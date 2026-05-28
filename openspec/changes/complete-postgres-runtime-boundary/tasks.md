@@ -83,10 +83,20 @@ recovery path).
 
 ## 4. Validation
 
-- [ ] 4.1 Run focused dataset-summary read-model tests for SQLite and Postgres.
-- [ ] 4.2 Run Postgres-gated reference runtime tests against a real Postgres
+- [x] 4.1 Run focused dataset-summary read-model tests for SQLite and Postgres.
+  → Verified by
+    `tmp/workstreams/ri-semantic-index-boundary-closeout-report.md`.
+- [x] 4.2 Run Postgres-gated reference runtime tests against a real Postgres
   service.
-- [ ] 4.3 Run relevant dashboard typechecks/build checks.
-- [ ] 4.4 Run `openspec validate complete-postgres-runtime-boundary --strict`.
-- [ ] 4.5 Run `git diff --check` and a final grep/read consistency pass for old
+  → Verified by
+    `tmp/workstreams/ri-semantic-index-boundary-closeout-report.md`.
+- [x] 4.3 Run relevant dashboard typechecks/build checks.
+  → Verified by
+    `tmp/workstreams/ri-semantic-index-boundary-closeout-report.md`.
+- [x] 4.4 Run `openspec validate complete-postgres-runtime-boundary --strict`.
+  → Verified by
+    `tmp/workstreams/ri-semantic-index-boundary-closeout-report.md`.
+- [x] 4.5 Run `git diff --check` and a final grep/read consistency pass for old
   SQLite/Postgres boundary assumptions in touched files.
+  → Verified by
+    `tmp/workstreams/ri-semantic-index-boundary-closeout-report.md`.
