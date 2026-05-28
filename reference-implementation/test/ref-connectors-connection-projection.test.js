@@ -33,6 +33,9 @@ function seedConnector() {
     connector_id: CONNECTOR_ID,
     version: '1.0.0',
     display_name: 'Connection First Records',
+    capabilities: {
+      public_listing: { listed: true, status: 'test' },
+    },
     streams: [
       { name: 'messages', primary_key: ['id'] },
       { name: 'files', primary_key: ['id'] },

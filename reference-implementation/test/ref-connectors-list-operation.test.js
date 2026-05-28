@@ -213,6 +213,54 @@ test('reference connector catalog hides stub and stream-test connector registrat
   }
 });
 
+test('reference connector catalog hides pg_runtime_, pg_canonical_, pg_expand_ test connectors', () => {
+  for (const connectorId of [
+    'pg_runtime_v1',
+    'pg_runtime_postgres',
+    'pg_canonical_gmail',
+    'pg_canonical_messages',
+    'pg_expand_threads',
+    'pg_expand_test_connector',
+  ]) {
+    assert.equal(
+      isPublicReferenceConnector({ connector_id: connectorId, manifest: '{}' }, { connector_id: connectorId }),
+      false,
+      `${connectorId} must not appear in the owner-facing reference connector catalog`,
+    );
+  }
+});
+
+test('reference connector catalog hides connectors without explicit public_listing by default', () => {
+  // Catalog visibility is opt-in: a manifest with no capabilities.public_listing
+  // at all must not appear, even without a local_device binding or stub prefix.
+  assert.equal(
+    isPublicReferenceConnector(
+      { connector_id: 'https://registry.pdpp.dev/connectors/some-fixture', manifest: '{}' },
+      {
+        connector_id: 'https://registry.pdpp.dev/connectors/some-fixture',
+        // No capabilities field at all
+      },
+    ),
+    false,
+    'connector with no public_listing declaration must be hidden by default',
+  );
+
+  assert.equal(
+    isPublicReferenceConnector(
+      { connector_id: 'https://registry.pdpp.dev/connectors/caps-no-listing', manifest: '{}' },
+      {
+        connector_id: 'https://registry.pdpp.dev/connectors/caps-no-listing',
+        capabilities: {
+          refresh_policy: { background_safe: false },
+          // public_listing absent from capabilities
+        },
+      },
+    ),
+    false,
+    'connector with capabilities but no public_listing must be hidden by default',
+  );
+});
+
 test('connector summary connection health projects never-run as idle with unknown axes', () => {
   const snapshot = projectConnectorSummaryConnectionHealth({
     freshness: { status: 'unknown' },

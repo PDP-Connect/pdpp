@@ -98,7 +98,14 @@ interface ConnectorRow {
   readonly manifest: string;
 }
 
-const NON_PUBLIC_CONNECTOR_ID_PARTS = ["manual_action_stub", "manual-action-stub", "stream-test-stub"];
+const NON_PUBLIC_CONNECTOR_ID_PARTS = [
+  "manual_action_stub",
+  "manual-action-stub",
+  "stream-test-stub",
+  "pg_runtime_",
+  "pg_canonical_",
+  "pg_expand_",
+];
 const REFERENCE_OWNER_SUBJECT_ID = "owner_local";
 
 type Freshness = ReferenceFreshness;
@@ -739,7 +746,9 @@ export function isPublicReferenceConnector(row: ConnectorRow, manifest: Connecto
     return false;
   }
 
-  return true;
+  // Catalog visibility is explicit opt-in only. A connector without
+  // capabilities.public_listing.listed === true is hidden by default.
+  return false;
 }
 
 function getScheduleFrom(
