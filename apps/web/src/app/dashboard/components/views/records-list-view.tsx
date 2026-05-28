@@ -23,21 +23,51 @@ import { EmptyState } from "../shell.tsx";
 import type { Routes } from "./routes.ts";
 
 const STALE_MS = 7 * 24 * 60 * 60 * 1000;
-const RECENT_MS = 24 * 60 * 60 * 1000;
 
-function connectorSortKey(o: ConnectorOverview): [number, number, string] {
+/**
+ * Sort connections so the most actionable appear first.
+ *
+ * Priority order (ascending tier = higher urgency):
+ *   0  needs_attention — owner action required now
+ *   1  blocked         — stuck, cannot make progress
+ *   2  run-history failure (no health projection available)
+ *   3  degraded        — partial or incomplete coverage
+ *   4  active run in progress
+ *   5  cooling_off     - in scheduler backoff
+ *   6  no last successful run (awaiting first sync)
+ *   7  has successful run (older first - to surface potentially-stale connections)
+ *
+ * Using the health projection as the authoritative source ensures that a
+ * blocked connection without a recent failed run (e.g. credential expiry during
+ * a long backoff window) still surfaces before healthy connections.
+ */
+export function connectorSortKey(o: ConnectorOverview): [number, number, string] {
   const key = o.connectionId ?? o.connectorInstanceId ?? o.connector.connector_id;
-  if (o.lastRun?.status === "failed") {
+  const state = o.connectionHealth?.state;
+  if (state === "needs_attention") {
     return [0, 0, key];
   }
-  if (o.isRunning) {
+  if (state === "blocked") {
     return [1, 0, key];
+  }
+  // Fall back to run-history failure when no health projection is available.
+  if (!state && o.lastRun?.status === "failed") {
+    return [2, 0, key];
+  }
+  if (state === "degraded") {
+    return [3, 0, key];
+  }
+  if (o.isRunning || o.connectionHealth?.badges.syncing) {
+    return [4, 0, key];
+  }
+  if (state === "cooling_off") {
+    return [5, 0, key];
   }
   const lastTs = o.lastSuccessfulRun ? Date.parse(o.lastSuccessfulRun.last_at) : 0;
   if (!lastTs) {
-    return [2, 0, key];
+    return [6, 0, key];
   }
-  return [3, lastTs, key];
+  return [7, lastTs, key];
 }
 
 function overviewRouteId(o: ConnectorOverview): string {
@@ -93,17 +123,30 @@ export function RecordsListView({
   const totalStreams = withData.reduce((sum, o) => sum + (o.streamCount ?? o.streams.length), 0);
 
   const now = nowOverride ?? Date.now();
-  const runningCount = withData.filter((o) => o.isRunning).length;
-  const failedCount = withData.filter((o) => o.lastRun?.status === "failed").length;
-  const syncedRecently = withData.filter((o) => {
-    const ts = o.lastSuccessfulRun ? Date.parse(o.lastSuccessfulRun.last_at) : 0;
-    return ts && now - ts < RECENT_MS;
+  // Active runs: use health projection syncing badge where available so
+  // push-mode local collectors (which bypass scheduler runs) are counted.
+  const runningCount = withData.filter((o) => o.isRunning || o.connectionHealth?.badges.syncing).length;
+  // Needs attention: health-projection-authoritative blocked/needs_attention,
+  // with a fallback to run-history failure when no projection is present.
+  const needsAttentionCount = withData.filter((o) => {
+    const state = o.connectionHealth?.state;
+    if (state === "blocked" || state === "needs_attention") {
+      return true;
+    }
+    if (!state && o.lastRun?.status === "failed") {
+      return true;
+    }
+    return false;
   }).length;
+  // Stale: prefer the health projection's freshness axis (policy-aware) over
+  // a hard 7-day cutoff, but fall back when no projection is present.
   const staleCount = withData.filter((o) => {
+    if (o.connectionHealth?.axes) {
+      return o.connectionHealth.axes.freshness === "stale";
+    }
     const ts = o.lastSuccessfulRun ? Date.parse(o.lastSuccessfulRun.last_at) : 0;
     return ts > 0 && now - ts > STALE_MS;
   }).length;
-  const noRunHistory = withData.filter((o) => !o.lastRun && o.totalRecords > 0).length;
 
   return (
     <>
@@ -130,20 +173,16 @@ export function RecordsListView({
       <section aria-label="Connection health summary" className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
         <HealthStat label="Connections" tone="neutral" value={withData.length.toLocaleString()} />
         <HealthStat
-          label="Synced last 24h"
-          tone={syncedRecently > 0 ? "success" : "neutral"}
-          value={syncedRecently.toLocaleString()}
+          label="Needs attention"
+          tone={needsAttentionCount > 0 ? "danger" : "neutral"}
+          value={needsAttentionCount.toLocaleString()}
         />
         <HealthStat
-          label={freshnessLabel(staleCount, noRunHistory)}
-          tone={staleCount > 0 || noRunHistory > 0 ? "warning" : "neutral"}
-          value={(staleCount || noRunHistory || 0).toLocaleString()}
+          label="Running"
+          tone={runningCount > 0 ? "active" : "neutral"}
+          value={runningCount.toLocaleString()}
         />
-        <HealthStat
-          label={activityLabel(failedCount, runningCount)}
-          tone={activityTone(failedCount, runningCount)}
-          value={(failedCount || runningCount || 0).toLocaleString()}
-        />
+        <HealthStat label="Stale" tone={staleCount > 0 ? "warning" : "neutral"} value={staleCount.toLocaleString()} />
       </section>
 
       <Section title={`Connections (${withData.length})`}>
@@ -254,36 +293,6 @@ const HEALTH_STAT_TONE_CLASSES: Record<HealthStatTone, string> = {
   active: "text-blue-600",
   neutral: "text-foreground",
 };
-
-function freshnessLabel(stale: number, noRunHistory: number): string {
-  if (stale > 0) {
-    return "Stale >7d";
-  }
-  if (noRunHistory > 0) {
-    return "No scheduler run";
-  }
-  return "All fresh";
-}
-
-function activityLabel(failed: number, running: number): string {
-  if (failed > 0) {
-    return "Failing";
-  }
-  if (running > 0) {
-    return "Running";
-  }
-  return "No active runs";
-}
-
-function activityTone(failed: number, running: number): HealthStatTone {
-  if (failed > 0) {
-    return "danger";
-  }
-  if (running > 0) {
-    return "active";
-  }
-  return "neutral";
-}
 
 function HealthStat({ label, value, tone }: { label: string; value: string; tone: HealthStatTone }) {
   const toneClass = HEALTH_STAT_TONE_CLASSES[tone];
