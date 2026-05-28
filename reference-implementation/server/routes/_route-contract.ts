@@ -1,4 +1,4 @@
-// Shared route-adapter ↔ host contract types for the `server/routes/*.ts`
+// Shared route-adapter <-> host contract types for the `server/routes/*.ts`
 // family adapters.
 //
 // PDPP exposes an Express-shaped wrapper from `server/transport.js`. Each
@@ -11,7 +11,7 @@
 // The per-adapter `RouteRequest` / `RouteResponse` / `AppLike` shapes stay in
 // each adapter on purpose: they document exactly which request fields and HTTP
 // verbs that family touches, and they intentionally differ. The types here are
-// the parts of the contract that do NOT vary between adapters — a middleware
+// the parts of the contract that do NOT vary between adapters - a middleware
 // handler is always `(...args: unknown[]) => unknown`, the registration arg
 // union is always `{ contract? } | middleware | handler`, and the host's PDPP
 // error writer always has the same signature. Sharing only the invariant parts
