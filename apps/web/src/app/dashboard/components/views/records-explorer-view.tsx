@@ -43,8 +43,8 @@ export interface ExplorerFeedEntry {
   emittedAt: string;
   /**
    * Coarse presentation kind (message / money / event / titled / generic),
-   * derived from the connector::stream pair and — when the lens holds the
-   * record body — its field names. Presentation metadata only; see
+   * derived from the connector::stream pair and - when the lens holds the
+   * record body - its field names. Presentation metadata only; see
    * `record-kind.ts`. Defaults to `generic` when omitted.
    */
   kind?: RecordKind;
@@ -906,7 +906,7 @@ function ActivityStrip({
   );
 }
 
-// Kind tag tones. Subtle washes only — the tag is a skim aid, not a status.
+// Kind tag tones. Subtle washes only - the tag is a skim aid, not a status.
 // `generic` renders no tag (nothing to disambiguate), keeping the common case
 // quiet and reserving visual weight for the type-distinct rows.
 const KIND_TAG_LABELS: Record<RecordKind, string> = {

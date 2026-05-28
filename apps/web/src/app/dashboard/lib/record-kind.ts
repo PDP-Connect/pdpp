@@ -10,7 +10,7 @@
  * Instead we derive a coarse `kind` from signals the feed already has on
  * every row: the `connector::stream` pair and, when the record body is in
  * hand (recency and time-range lenses), its field names. This is the same
- * class of heuristic the one-line `summarize()` table already uses — a
+ * class of heuristic the one-line `summarize()` table already uses - a
  * hand-picked "what is this record" read, not a protocol claim. It degrades
  * to `generic` whenever the signals are absent (e.g. search hits, which
  * carry only a snippet), so the row never over-promises a shape it cannot
@@ -83,7 +83,7 @@ function classifyByStreamName(stream: string): RecordKind | null {
 }
 
 /**
- * Strong field signal — overrides the stream-name guess. A genuine
+ * Strong field signal - overrides the stream-name guess. A genuine
  * amount-shaped field means money regardless of how the stream is named (an
  * `orders` or opaque `records` stream that carries `amount_cents` is money).
  */
@@ -95,7 +95,7 @@ function classifyByStrongField(data: Record<string, unknown>): RecordKind | null
 }
 
 /**
- * Weak field signal — only promotes a stream the name could not classify
+ * Weak field signal - only promotes a stream the name could not classify
  * (`generic`). A title or message field refines an unknown stream but must
  * not override a confident event/message/money stream-name match (a clinical
  * `visit` stays an event even though it carries a `provider_name` title).

@@ -18,7 +18,7 @@ full version require?
 
 `add-dashboard-records-explorer/design.md` deferred type-aware cards with the
 rationale: "Today's `ConnectorManifest.streams` is `Array<{ name, [k: string]:
-unknown }>` — manifests carry stream names but not the typed-field schema the
+unknown }>` - manifests carry stream names but not the typed-field schema the
 dispatch needs. Building cards on top of inferred field names would lock the
 dashboard into connector-specific heuristics."
 
@@ -28,8 +28,8 @@ narrow: demo and real connectors that label money fields `amount_cents` /
 `gross_pay_cents` and the counterparty `merchant` (rather than `amount` /
 `description` / `payee_name`) fell all the way through to `firstString`, which
 picked the record's ISO timestamp. The sandbox Explorer therefore rendered
-`fabrikam_bank_demo transactions 2026-04-22T13:42:00Z` — a bare timestamp as
-the "summary" — which is the most visible reason `/explore` did not look like
+`fabrikam_bank_demo transactions 2026-04-22T13:42:00Z` - a bare timestamp as
+the "summary" - which is the most visible reason `/explore` did not look like
 the design.
 
 This lane closed the visual gap without a backend change:
@@ -51,7 +51,7 @@ This lane closed the visual gap without a backend change:
 
 `kind` is presentation metadata only. It is never written back, never sent to
 the resource server, and never treated as a manifest field. It is the same
-class of hand-picked heuristic the one-line summarizer already used — a "what
+class of hand-picked heuristic the one-line summarizer already used - a "what
 is this record" read, not a protocol claim.
 
 ## Stakes
@@ -67,8 +67,8 @@ The interim is honest but heuristic. It cannot:
 
 The full version the design assumed requires typed manifest stream schemas:
 `stream.schema.fields[]` with a declared `type` (`currency`, `timestamp`,
-`person`, `blob`, …) and — for the owner-facing grant-projection demo, which is
-out of scope for the operator console — a per-field `granted` flag. Notably the
+`person`, `blob`, ...) and - for the owner-facing grant-projection demo, which is
+out of scope for the operator console - a per-field `granted` flag. Notably the
 **sandbox demo manifests already carry** `type` and `semantic_class` per field;
 the live `ConnectorManifest.streams` type and real connector manifests do not.
 That asymmetry is the concrete contract gap.
@@ -77,7 +77,7 @@ A typed field schema is a durable manifest/read-contract change. It would let
 the reference replace the `record-kind.ts` heuristic with a declared
 `field.type`, support real type-aware cards, and align the live surface with the
 shape the sandbox already encodes. It touches the manifest schema, the `_ref`
-manifest surface, and the canonical public read contract — so it must go through
+manifest surface, and the canonical public read contract - so it must go through
 OpenSpec, not UI code.
 
 ## Current Leaning

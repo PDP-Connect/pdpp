@@ -21,7 +21,8 @@ test("a pay-statement record formats its cents amount", () => {
     gross_pay_cents: 612_500,
     net_pay_cents: 438_120,
   });
-  assert.ok(line.includes("$6125.00") || line.includes("Northwind Studios"), line);
+  assert.ok(line.includes("$6125.00"), line);
+  assert.ok(line.includes("Northwind Studios"), line);
   assert.ok(!line.startsWith("2026-"), line);
 });
 
