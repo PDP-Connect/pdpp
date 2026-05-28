@@ -93,6 +93,8 @@ async function withHarness(fn, options = {}) {
       min: ['popularity', 'followers', 'source_updated_at'],
       max: ['popularity', 'followers', 'source_updated_at'],
       group_by: ['name'],
+      group_by_time: ['source_updated_at'],
+      count_distinct: ['name'],
     },
   };
   options.mutateManifest?.(spotifyManifest);
@@ -781,6 +783,20 @@ test('stream metadata publishes query.aggregations for declared aggregate fields
     assert.equal(body.query.aggregations.count, true);
     assert.deepEqual(body.query.aggregations.sum, ['popularity', 'followers']);
     assert.deepEqual(body.query.aggregations.group_by, ['name']);
+    assert.deepEqual(body.query.aggregations.group_by_time, ['source_updated_at']);
+    assert.deepEqual(body.query.aggregations.count_distinct, ['name']);
+    assert.deepEqual(body.field_capabilities.source_updated_at.aggregation.group_by_time, {
+      declared: true,
+      usable: true,
+    });
+    assert.deepEqual(body.field_capabilities.name.aggregation.count_distinct, {
+      declared: true,
+      usable: true,
+    });
+    assert.deepEqual(body.field_capabilities.popularity.aggregation.group_by_time, {
+      declared: false,
+      usable: false,
+    });
     assert.deepEqual(body.field_capabilities.popularity.aggregation.sum, {
       declared: true,
       usable: true,
@@ -826,6 +842,11 @@ test('stream aggregate computes count, sum, min/max, grouped counts, and declare
       metric: 'count',
       field: null,
       group_by: null,
+      // Additive time-bucket/distinct fields (null/false for a scalar count).
+      group_by_time: null,
+      granularity: null,
+      time_zone: null,
+      approximate: false,
       filtered_record_count: 2,
       value: 2,
     });
