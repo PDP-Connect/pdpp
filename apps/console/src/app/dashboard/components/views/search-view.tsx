@@ -1,76 +1,44 @@
 /**
- * Shared dashboard search view. Renders the unified search surface:
- * artifact buckets (traces / grants / runs) and the lexical record
- * results, with optional first-page semantic uplift rows.
+ * Shared dashboard Jump view. Renders the spine artifact lookup surface:
+ * artifact buckets for traces, grants, and runs returned by
+ * `GET /_ref/search`. Record content search lives on Explore, not here
+ * (see `narrow-search-to-spine-jump`).
  *
- * The page resolves the data source query (lexical + artifact spine
- * search), hydrates record snippets, and passes a flat `SearchData`
- * struct here. The view does not call any data source itself.
- *
- * The live `/dashboard/search` page additionally surfaces semantic
- * retrieval notices and a debug pane; those are page-side props.
+ * The page resolves the data source query (artifact spine search only)
+ * and passes a flat `SearchData` struct here. The view does not call any
+ * data source itself.
  */
 
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { Timestamp } from "@/components/ui/timestamp.tsx";
 import type { GrantSummary, RunSummary, TraceSummary } from "../../lib/ref-client.ts";
 import type { Routes } from "./routes.ts";
-
-export interface SearchRecordHit {
-  connectorId: string;
-  displayAt: string;
-  emittedAt: string;
-  hybridSources?: ("lexical" | "semantic")[];
-  recordId: string;
-  semanticOnly?: boolean;
-  snippet: string;
-  stream: string;
-  timestampLabel: string;
-}
 
 export interface SearchData {
   exact: { kind: "trace" | "grant" | "run"; id: string } | null;
   grants: GrantSummary[];
-  hasMore: boolean;
-  hits: SearchRecordHit[];
-  nextCursor: string | null;
-  prevStack: string[];
   runs: RunSummary[];
   traces: TraceSummary[];
-}
-
-export interface RetrievalNoticeView {
-  href: string;
-  message: string;
-  title: string;
 }
 
 export function SearchView({
   query,
   data,
   routes,
-  currentCursor,
-  retrievalNotice,
-  debugSlot,
   emptyHint,
 }: {
   query: string;
   data: SearchData | null;
   routes: Routes;
-  currentCursor?: string | null;
-  retrievalNotice?: RetrievalNoticeView | null;
-  debugSlot?: ReactNode;
   emptyHint?: ReactNode;
 }) {
   return (
     <>
       <header className="mb-4 flex items-baseline justify-between gap-4">
-        <h1 className="font-semibold text-lg">Search</h1>
+        <h1 className="font-semibold text-lg">Jump</h1>
         {data ? (
           <span className="text-muted-foreground text-xs">
-            {data.traces.length + data.grants.length + data.runs.length} artifacts · {data.hits.length}
-            {data.hasMore ? "+" : ""} records
+            {data.traces.length + data.grants.length + data.runs.length} artifacts
           </span>
         ) : null}
       </header>
@@ -81,23 +49,20 @@ export function SearchView({
           className="w-full rounded border border-border bg-background px-3 py-2 sm:max-w-md"
           defaultValue={query}
           name="q"
-          placeholder="trace id, grant id, run id, or text…"
+          placeholder="trace id, grant id, or run id…"
           type="search"
         />
         <button
           className="self-start rounded border border-border px-3 py-2 hover:bg-muted/50 sm:self-auto"
           type="submit"
         >
-          search
+          jump
         </button>
       </form>
 
-      {debugSlot}
-
       {query ? null : (
         <p className="text-muted-foreground text-xs">
-          {emptyHint ??
-            "Paste a request/trace/grant/run id for a direct jump, or enter text to search records across every owner-visible stream that declares searchable fields."}
+          {emptyHint ?? "Paste a trace, grant, or run id."}
         </p>
       )}
 
@@ -145,29 +110,6 @@ export function SearchView({
             )}
             title="runs"
           />
-
-          {retrievalNotice ? <RetrievalNoticeCallout notice={retrievalNotice} /> : null}
-
-          <section className="mb-6">
-            <h2 className="mb-2 text-muted-foreground text-xs uppercase tracking-wide">
-              records ({data.hits.length}
-              {data.hasMore ? "+" : ""})
-            </h2>
-            {data.hits.length === 0 ? (
-              <p className="text-muted-foreground text-xs">No record-content hits.</p>
-            ) : (
-              <ul className="divide-y divide-border border-y">
-                {data.hits.map((h) => (
-                  <li key={`${h.connectorId}::${h.stream}::${h.recordId}`}>
-                    <RecordRow hit={h} query={query} routes={routes} />
-                  </li>
-                ))}
-              </ul>
-            )}
-            {currentCursor === undefined ? null : (
-              <PaginationBar currentCursor={currentCursor} data={data} query={query} routes={routes} />
-            )}
-          </section>
         </>
       ) : null}
     </>
@@ -206,155 +148,5 @@ function ArtifactSection<T>({
         ))}
       </ul>
     </section>
-  );
-}
-
-function RetrievalNoticeCallout({ notice }: { notice: RetrievalNoticeView }) {
-  return (
-    <div className="mb-4 rounded border border-amber-400/50 bg-amber-50/70 px-3 py-2 text-xs dark:bg-amber-950/30">
-      <div className="font-medium">{notice.title}</div>
-      <p className="mt-1 text-muted-foreground">
-        {notice.message}{" "}
-        <Link className="underline underline-offset-2 hover:text-foreground" href={notice.href}>
-          View deployment diagnostics
-        </Link>
-        .
-      </p>
-    </div>
-  );
-}
-
-function PaginationBar({
-  query,
-  currentCursor,
-  data,
-  routes,
-}: {
-  query: string;
-  currentCursor: string | null;
-  data: SearchData;
-  routes: Routes;
-}) {
-  if (data.prevStack.length === 0 && !data.hasMore) {
-    return null;
-  }
-
-  let prevHref: string | null = null;
-  if (data.prevStack.length > 0) {
-    const newStack = data.prevStack.slice(0, -1);
-    const newCursor = data.prevStack.at(-1) ?? "first";
-    prevHref = searchHref(routes, query, newCursor === "first" ? null : newCursor, newStack);
-  }
-
-  let nextHref: string | null = null;
-  if (data.hasMore && data.nextCursor) {
-    nextHref = searchHref(routes, query, data.nextCursor, [...data.prevStack, currentCursor ?? "first"]);
-  }
-
-  return (
-    <nav aria-label="Search pagination" className="mt-3 flex items-center justify-between text-xs">
-      {prevHref ? (
-        <Link className="rounded border border-border px-3 py-1 hover:bg-muted/50" href={prevHref}>
-          ← Previous
-        </Link>
-      ) : (
-        <span className="px-3 py-1 text-muted-foreground opacity-50">← Previous</span>
-      )}
-      {nextHref ? (
-        <Link className="rounded border border-border px-3 py-1 hover:bg-muted/50" href={nextHref}>
-          Next →
-        </Link>
-      ) : (
-        <span className="px-3 py-1 text-muted-foreground opacity-50">Next →</span>
-      )}
-    </nav>
-  );
-}
-
-function searchHref(routes: Routes, query: string, cursor: string | null, prevStack: string[]) {
-  const params = new URLSearchParams({ q: query });
-  if (cursor) {
-    params.set("cursor", cursor);
-  }
-  if (prevStack.length > 0) {
-    params.set("prev", encodePrevStack(prevStack));
-  }
-  return `${routes.section.search}?${params.toString()}`;
-}
-
-function encodePrevStack(stack: string[]) {
-  return stack.join(",");
-}
-
-const DEMO_SUFFIX_RE = /_demo$/;
-
-function RecordRow({ hit, query, routes }: { hit: SearchRecordHit; query: string; routes: Routes }) {
-  const href = routes.record(hit.connectorId, hit.stream, hit.recordId);
-  const timestampTitle =
-    hit.displayAt === hit.emittedAt
-      ? "emitted timestamp"
-      : `${hit.timestampLabel} timestamp; emitted ${hit.emittedAt}`;
-  return (
-    <Link
-      className="grid gap-1 px-2 py-2 text-xs hover:bg-muted/50 sm:grid-cols-[10rem_9rem_1fr] sm:items-baseline sm:gap-4"
-      href={href}
-    >
-      <span title={timestampTitle}>
-        <Timestamp className="whitespace-nowrap text-muted-foreground" value={hit.displayAt} />
-      </span>
-      <span className="flex items-baseline gap-2 whitespace-nowrap">
-        <span className="truncate font-medium">{hit.connectorId.replace(DEMO_SUFFIX_RE, "")}</span>
-        <span className="truncate text-muted-foreground">{hit.stream}</span>
-      </span>
-      <span className="break-words">
-        <Highlight query={query} text={hit.snippet} />
-        <RetrievalBadge hit={hit} />
-      </span>
-    </Link>
-  );
-}
-
-function RetrievalBadge({ hit }: { hit: SearchRecordHit }) {
-  if (hit.hybridSources && hit.hybridSources.length > 0) {
-    return (
-      <span
-        className="ml-2 inline-flex items-baseline gap-1 rounded border border-border px-1.5 py-0.5 align-baseline text-[10px] text-muted-foreground uppercase tracking-wide"
-        title={`Found by hybrid retrieval (experimental). Sources: ${hit.hybridSources.join(", ")}.`}
-      >
-        {hit.hybridSources.join(" + ")} · hybrid
-      </span>
-    );
-  }
-
-  if (hit.semanticOnly) {
-    return (
-      <span
-        className="ml-2 inline-flex items-baseline gap-1 rounded border border-border px-1.5 py-0.5 align-baseline text-[10px] text-muted-foreground uppercase tracking-wide"
-        title="This record did not match the text lexically. Found by semantic retrieval, which is an experimental feature and may change."
-      >
-        semantic · experimental
-      </span>
-    );
-  }
-
-  return null;
-}
-
-function Highlight({ text, query }: { text: string; query: string }) {
-  if (!query) {
-    return <>{text}</>;
-  }
-  const idx = text.toLowerCase().indexOf(query.toLowerCase());
-  if (idx === -1) {
-    return <>{text}</>;
-  }
-  return (
-    <>
-      {text.slice(0, idx)}
-      <mark className="bg-yellow-200 text-black dark:bg-yellow-700 dark:text-white">
-        {text.slice(idx, idx + query.length)}
-      </mark>
-      {text.slice(idx + query.length)}
-    </>
   );
 }

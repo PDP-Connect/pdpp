@@ -49,7 +49,7 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
 function buildShortcuts({ basePath, overviewHref }: { basePath: string; overviewHref: string }) {
   const shortcuts = [
     { label: "Overview", href: overviewHref },
-    { label: "Search", href: `${basePath}/search` },
+    { label: "Jump", href: `${basePath}/search` },
     { label: "Explore", href: `${basePath}/explore` },
     { label: "Traces", href: `${basePath}/traces` },
     { label: "Grants", href: `${basePath}/grants` },

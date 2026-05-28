@@ -30,28 +30,20 @@ export default async function SandboxSearchPage({
     const spine = await ds.refSearch(query);
 
     if (spine.exact && jump !== "0") {
-      const target = exactMatchTarget(spine.exact);
-      redirect(target);
+      redirect(exactMatchTarget(spine.exact));
     }
 
-    const lexical = await ds.searchRecordsLexical(query, { limit: 25 });
+    // Free-text submit: hand off to Explore, mirroring the live dashboard
+    // surface. `jump=0` opts out and renders the spine-only buckets.
+    if (jump !== "0") {
+      redirect(`${sandboxRoutes.section.explore}?q=${encodeURIComponent(query)}`);
+    }
+
     data = {
       exact: spine.exact,
       grants: spine.grants,
       runs: spine.runs,
       traces: spine.traces,
-      hits: lexical.data.map((h) => ({
-        connectorId: h.connector_id,
-        stream: h.stream,
-        recordId: h.record_key,
-        displayAt: h.emitted_at,
-        emittedAt: h.emitted_at,
-        snippet: h.snippet?.text ?? `${h.stream}/${h.record_key}`,
-        timestampLabel: "emitted",
-      })),
-      hasMore: lexical.has_more,
-      nextCursor: lexical.next_cursor ?? null,
-      prevStack: [],
     };
   }
 
@@ -59,7 +51,7 @@ export default async function SandboxSearchPage({
     <DashboardShell active="search" mode="mock-owner">
       <SearchView
         data={data}
-        emptyHint="Try a query like 'payroll', 'visit', or 'merchant'. Paste a grant/run/trace id to jump directly."
+        emptyHint="Paste a trace, grant, or run id. To search record text, use Explore."
         query={query}
         routes={sandboxRoutes}
       />

@@ -65,10 +65,10 @@ const NAVIGATION_COMMANDS: DashboardCommand[] = [
   },
   {
     id: "nav-search",
-    title: "Search",
-    description: "Search traces, grants, runs, connectors, streams, and records.",
+    title: "Jump",
+    description: "Jump to a trace, grant, or run by id.",
     href: "/dashboard/search",
-    keywords: ["search", "jump", "find"],
+    keywords: ["jump", "trace", "grant", "run", "id"],
     kind: "jump",
     section: "Navigate",
   },
