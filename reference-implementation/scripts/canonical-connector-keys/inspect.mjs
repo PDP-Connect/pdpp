@@ -43,13 +43,16 @@ const CONNECTOR_SOURCE_KINDS = new Set(['connector', 'provider_native']);
 const SCRATCH_RE = /^cleanup_\d{8}_/;
 const BACKUP_RE = /^backup_\d{8}_/;
 const COMPACT_BACKUP_RE = /^compact_.+_backup_/;
+const ONE_OFF_MIGRATION_BACKUP_RE = /^(fix|mig)_\d{8}_\d{4,6}_/;
 
 /**
  * Classify a table name into one of three surface tiers based solely on
  * its naming pattern. No database access required.
  *
  *   scratch — ephemeral test scaffolding (`cleanup_YYYYMMDD_*`)
- *   backup  — forensic rollback artifacts (`backup_YYYYMMDD_*`, `compact_*_backup_*`)
+ *   backup  — forensic rollback artifacts (`backup_YYYYMMDD_*`,
+ *             `compact_*_backup_*`, `fix_YYYYMMDD_HHMM_*`,
+ *             `mig_YYYYMMDD_HHMMSS_*`)
  *   active  — everything else (live migration targets)
  *
  * Unmapped rows in `active` tables block the migration. Backup/scratch
@@ -62,6 +65,7 @@ export function classifyTableSurface(tableName) {
   if (SCRATCH_RE.test(tableName)) return 'scratch';
   if (BACKUP_RE.test(tableName)) return 'backup';
   if (COMPACT_BACKUP_RE.test(tableName)) return 'backup';
+  if (ONE_OFF_MIGRATION_BACKUP_RE.test(tableName)) return 'backup';
   return 'active';
 }
 

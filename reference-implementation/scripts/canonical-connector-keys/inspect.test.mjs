@@ -148,6 +148,11 @@ test('classifyTableSurface: compact_*_backup_ pattern → backup', () => {
   assert.equal(classifyTableSurface('compact_record_changes_backup_1779832748470_726455'), 'backup');
 });
 
+test('classifyTableSurface: one-off migration/fix snapshots → backup', () => {
+  assert.equal(classifyTableSurface('mig_20260522_145243_cin_legacy_4e661_records'), 'backup');
+  assert.equal(classifyTableSurface('fix_20260522_1501_record_changes_connector_id'), 'backup');
+});
+
 test('classifyTableSurface: everything else → active', () => {
   for (const name of ['connectors', 'connector_instances', 'grants', 'records', 'record_changes', 'retained_size_connection', 'retained_size_stream', 'pending_consents']) {
     assert.equal(classifyTableSurface(name), 'active');
