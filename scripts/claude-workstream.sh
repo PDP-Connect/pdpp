@@ -211,6 +211,7 @@ main_exit=0
     --print \
     --model "$model" \
     --no-session-persistence \
+    --setting-sources project,local \
     --strict-mcp-config \
     --mcp-config "$mcp_config" \
     --dangerously-skip-permissions \
@@ -254,6 +255,7 @@ state what is missing. End with the verbatim \`git status --short\` output."
         --print \
         --model "$model" \
         --no-session-persistence \
+        --setting-sources project,local \
         --strict-mcp-config \
         --mcp-config "$mcp_config" \
         --dangerously-skip-permissions \
