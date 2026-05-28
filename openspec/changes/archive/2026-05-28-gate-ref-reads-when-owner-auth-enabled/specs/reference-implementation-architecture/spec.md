@@ -1,3 +1,8 @@
+## RENAMED Requirements
+
+- FROM: `### Requirement: Reference control-plane mutations require owner session when enabled`
+- TO: `### Requirement: Reference control-plane reads and mutations require owner session when enabled`
+
 ## MODIFIED Requirements
 
 ### Requirement: Reference-only surfaces are explicit

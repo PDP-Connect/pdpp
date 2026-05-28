@@ -45,21 +45,14 @@ The CLI and executable tests SHALL consume the real public or reference-designat
 - **THEN** those tests SHALL prefer black-box interaction with the running reference surfaces unless a narrower white-box test is intentionally justified for implementation internals
 
 ### Requirement: Reference-only surfaces are explicit
-
-The reference implementation SHALL explicitly mark debugging, replay, trace,
-dashboard summary, retained-size, record-version observability, and
-operator-control surfaces as reference-only when those surfaces are useful to
-the reference implementation but are not part of core PDPP.
+Debugging, replay, trace, and operator-control surfaces that are useful for the reference implementation but are not part of core PDPP SHALL be explicitly marked as reference-only.
 
 #### Scenario: A trace or timeline endpoint is exposed
-
-- **WHEN** the implementation exposes trace, timeline, version-churn, or similar introspection surfaces
-- **THEN** those surfaces SHALL be clearly described as reference-only
-  artifacts rather than as core PDPP protocol requirements.
+- **WHEN** the implementation exposes trace, timeline, or similar introspection surfaces
+- **THEN** those surfaces SHALL be clearly described as reference-only artifacts rather than as core PDPP protocol requirements
 
 #### Scenario: The current `_ref` read surface is treated as stable substrate
-
-- **WHEN** the implementation exposes the current reference-designated event-spine readers
+- **WHEN** the implementation exposes the current reference-designated readers
 - **THEN** the durable `_ref` read surface SHALL stay limited to:
   - `GET /_ref/traces/:traceId`
   - `GET /_ref/grants/:grantId/timeline`
@@ -69,15 +62,20 @@ the reference implementation but are not part of core PDPP.
   - `GET /_ref/runs` (list, filter, paginate)
   - `GET /_ref/search?q=...` (id-aware read-only jump helper)
   - `GET /_ref/dataset/summary` (dashboard overview dataset summary)
+  - `GET /_ref/connectors` (connector summary list)
+  - `GET /_ref/connectors/:connectorId` (connector detail)
+  - `GET /_ref/approvals` (pending approval list)
+  - `GET /_ref/records/timeline` (record activity timeline)
+  - `GET /_ref/schedules` (connector schedule list)
+  - `GET /_ref/connectors/:connectorId/schedule` (connector schedule detail)
+  - `GET /_ref/deployment` (operator deployment diagnostics)
 
 #### Scenario: The dashboard summarizes dataset credibility
-
 - **WHEN** the reference dashboard renders a dataset summary or credibility overview
 - **THEN** it MAY consume `GET /_ref/dataset/summary`
 - **AND** that route SHALL remain documented as a reference-only read surface rather than as a public PDPP API
 
 #### Scenario: A later control-plane phase widens `_ref` mutation narrowly
-
 - **WHEN** a later control-plane phase needs a truthful operator mutation surface for a live bounded collection run
 - **THEN** the reference MAY add an owner-only `_ref` mutation endpoint limited to:
   - `POST /_ref/runs/:runId/interaction`
@@ -85,34 +83,12 @@ the reference implementation but are not part of core PDPP.
 - **AND** the reference SHALL NOT widen `_ref` into broader mutation/control endpoints in the same tranche without a further explicit OpenSpec change
 
 #### Scenario: Run timelines expose checkpoint staging separately from checkpoint commit
-
 - **WHEN** the reference runtime receives `STATE` during a bounded collection run
 - **THEN** the `_ref` run timeline SHALL distinguish checkpoint staging from checkpoint commit so the checkpointed-streaming model is visible in reference artifacts rather than implied only by runtime internals
 
 #### Scenario: Runtime validation failures remain inspectable in the reference substrate
-
 - **WHEN** a bounded collection run fails because the runtime rejects connector output or an interaction handler response before `DONE`
-- **THEN** the durable `_ref` run timeline SHALL still record `run.failed` with an explicit machine-readable reason instead of leaving that failure visible only as a thrown local error.
-
-### Requirement: Reference control-plane mutations require owner session when enabled
-The reference implementation SHALL require the placeholder owner session on reference-only `_ref` mutation routes when owner auth is enabled. When owner auth is disabled, the reference implementation SHALL preserve the current open local-dev behavior for those routes.
-
-#### Scenario: Owner auth is enabled and a mutation has no session
-- **WHEN** a caller submits a `_ref` mutation request without a valid owner-session cookie while `PDPP_OWNER_PASSWORD` is configured
-- **THEN** the reference SHALL reject the request with `401 owner_session_required`
-- **AND** the route handler SHALL NOT perform the requested mutation
-
-#### Scenario: Owner auth is enabled and a mutation has a session
-- **WHEN** a caller submits a `_ref` mutation request with a valid owner-session cookie while `PDPP_OWNER_PASSWORD` is configured
-- **THEN** the reference SHALL process the mutation according to the route's existing behavior
-
-#### Scenario: Owner auth is disabled
-- **WHEN** a caller submits a `_ref` mutation request while placeholder owner auth is disabled
-- **THEN** the reference SHALL preserve the open local-dev behavior for that mutation route
-
-#### Scenario: Reference read routes remain inspection surfaces
-- **WHEN** a caller requests an existing `_ref` read route
-- **THEN** this change SHALL NOT require owner-session authentication for that read route
+- **THEN** the durable `_ref` run timeline SHALL still record `run.failed` with an explicit machine-readable reason instead of leaving that failure visible only as a thrown local error
 
 ### Requirement: Run interaction control is owner-only and ephemeral
 The reference implementation SHALL treat dashboard-submitted responses to live run interactions as owner-only, reference-only control-plane actions for the current active run. Submitted values SHALL satisfy the current pending interaction only and SHALL NOT become durable credential storage.
@@ -3948,6 +3924,10 @@ The reference implementation SHALL allocate the next per-`(connector_id, stream)
 
 This requirement strengthens, but does not weaken, the existing durable record ingest and direct delete atomicity requirements. Lexical, semantic, and disclosure-spine maintenance SHALL remain outside the durable record mutation transaction.
 
+The reference implementation SHALL evaluate no-op equivalence against the adapter's stored form in a way that does not depend on incidental layout differences (whitespace, key order) the adapter itself introduces. The SQLite adapter SHALL compare the stored TEXT `record_json` against the inbound serialized payload as a string. The Postgres adapter SHALL compare the stored `jsonb` `record_json` against the inbound payload structurally at the `jsonb` level. Both adapters SHALL satisfy the property that a byte-identical inbound payload following a successful prior ingest of the same payload is treated as a no-op.
+
+When the reference processes a no-op re-ingest, an absent-record delete, or a repeated delete, it SHALL NOT invoke the atomic allocator, SHALL NOT advance `version_counter`, and SHALL NOT append a `record_changes` row.
+
 #### Scenario: Atomic allocation on first write
 
 - **WHEN** the reference performs the first changed write for a `(connector_id, stream)` pair
@@ -3960,9 +3940,22 @@ This requirement strengthens, but does not weaken, the existing durable record i
 - **THEN** the atomic allocator SHALL advance `version_counter.max_version` by exactly one and return the advanced value in the same statement
 - **AND** successive changed writes for the same `(connector_id, stream)` SHALL receive distinct, monotonically increasing versions
 
-#### Scenario: No-op writes do not allocate
+#### Scenario: SQLite byte-identical re-ingest
 
-- **WHEN** the reference processes a no-op re-ingest, an absent-record delete, or a repeated delete
+- **WHEN** the SQLite-backed reference receives two successive ingests for the same `(connector_id, stream, record_key)` whose inbound `JSON.stringify(data)` outputs are byte-identical
+- **THEN** only the first call SHALL allocate a version and append a `record_changes` row
+- **AND** the second call SHALL return `{ accepted: true, changed: false }` without advancing `version_counter`
+
+#### Scenario: Postgres byte-identical re-ingest
+
+- **WHEN** the Postgres-backed reference receives two successive ingests for the same `(connector_id, stream, record_key)` whose inbound `JSON.stringify(data)` outputs are byte-identical
+- **THEN** only the first call SHALL allocate a version and append a `record_changes` row
+- **AND** the second call SHALL return `{ accepted: true, changed: false }` without advancing `version_counter`
+- **AND** the result SHALL NOT depend on whether Postgres' `jsonb` storage canonicalizes whitespace or key order differently from the inbound serialized form
+
+#### Scenario: Repeated delete
+
+- **WHEN** the reference processes a delete for a `(connector_id, stream, record_key)` whose current row is already deleted or absent
 - **THEN** it SHALL NOT invoke the atomic allocator
 - **AND** `version_counter` SHALL NOT advance
 - **AND** `record_changes` SHALL NOT gain a row
@@ -4381,4 +4374,78 @@ Accepted source webhook run-trigger callbacks SHALL be treated as scheduler inpu
 - **WHEN** an authenticated source callback requests a connector/source refresh
 - **THEN** the reference SHALL record a scheduler input signal for that connector/source
 - **AND** the webhook handler SHALL NOT start the connector run inline
+
+### Requirement: Reference control-plane reads and mutations require owner session when enabled
+The reference implementation SHALL require the placeholder owner session on reference-only `_ref` read and mutation routes when owner auth is enabled. When owner auth is disabled, the reference implementation SHALL preserve the current open local-dev behavior for those routes.
+
+#### Scenario: Owner auth is enabled and a read has no session
+- **WHEN** a caller submits a `_ref` read request without a valid owner-session cookie or accepted owner credential while `PDPP_OWNER_PASSWORD` is configured
+- **THEN** the reference SHALL reject the request with `401 owner_session_required`
+- **AND** the route handler SHALL NOT disclose the requested reference state
+
+#### Scenario: Owner auth is enabled and a read has a session
+- **WHEN** a caller submits a `_ref` read request with a valid owner-session cookie or accepted owner credential while `PDPP_OWNER_PASSWORD` is configured
+- **THEN** the reference SHALL return the route's existing response according to its current behavior
+
+#### Scenario: Owner auth is enabled and a mutation has no session
+- **WHEN** a caller submits a `_ref` mutation request without a valid owner-session cookie or accepted owner credential while `PDPP_OWNER_PASSWORD` is configured
+- **THEN** the reference SHALL reject the request with `401 owner_session_required`
+- **AND** the route handler SHALL NOT perform the requested mutation
+
+#### Scenario: Owner auth is enabled and a mutation has a session
+- **WHEN** a caller submits a `_ref` mutation request with a valid owner-session cookie or accepted owner credential while `PDPP_OWNER_PASSWORD` is configured
+- **THEN** the reference SHALL process the mutation according to the route's existing behavior
+
+#### Scenario: Owner auth is disabled
+- **WHEN** a caller submits a `_ref` read or mutation request while placeholder owner auth is disabled
+- **THEN** the reference SHALL preserve the open local-dev behavior for that route
+
+### Requirement: Disclosure Spine Timeline Pagination
+
+The reference implementation SHALL paginate disclosure-spine timelines with a stable logical event ordering. Cursor tokens SHALL NOT depend on SQLite `rowid` or another backend-private physical row identity.
+
+#### Scenario: Tied timestamps remain stable
+
+**WHEN** multiple disclosure-spine events in the same timeline have identical `occurred_at` timestamps
+**THEN** paginated reads SHALL return each event exactly once in stable append order
+**AND** a cursor returned by one page SHALL resume after the last event served by that page.
+
+#### Scenario: Cursor remains backend-portable
+
+**WHEN** the reference implementation encodes a disclosure-spine timeline cursor
+**THEN** the cursor SHALL be opaque to clients
+**AND** the decoded cursor state SHALL refer only to stable logical ordering fields, not SQLite physical row identity.
+
+### Requirement: The reference SHALL expose an owner/operator-only record-derived-field repair tool
+
+The reference implementation SHALL provide an owner/operator-only operational tool that repairs current `records` rows whose payload is byte-equivalent (per the No-op equivalence definition above) — *after removing the policy's registered derived fields from both sides* — to a prior `record_changes` row that carries strictly more complete derived fields, under a per-stream repair policy that is registered in code.
+
+The tool SHALL be authorized by direct database access (`PDPP_DATABASE_URL`), not by an HTTP route or scheduler. It SHALL refuse to run without an explicit `(connector_instance_id, stream)` scope. It SHALL default to a dry-run mode that prints the records that would be repaired, the prior `record_changes.version` each refill would be sourced from, and the field set each refill would write. It SHALL NOT mutate any row without an explicit `--apply` flag. It SHALL NOT mutate or delete any existing `record_changes` row. It SHALL allocate any repair write through the existing atomic allocator so the repair itself is observable in `record_changes` and `changes_since`. It SHALL validate `--limit` (if supplied) as a positive integer and refuse to run otherwise.
+
+The tool SHALL apply an equivalence guard: before treating a prior `record_changes` row as a refill source, the tool SHALL compare the current row's payload to that prior row's payload with every field in the policy's `derivedFields` removed from both sides, using jsonb structural equality. A prior row whose normalised payload is not equal to the current row's normalised payload SHALL NOT be used as a refill source even if some of its derived fields are non-null.
+
+The tool SHALL NOT operate across distinct `(connector_instance_id, stream, record_key)` boundaries. It SHALL NOT operate on streams without a registered repair policy.
+
+#### Scenario: Dry-run preview lists repairable rows
+
+- **WHEN** the operator invokes the repair tool in dry-run mode for a `(connector_instance_id, stream)` scope where some current rows have byte-equivalent prior history with more complete derived fields
+- **THEN** the tool SHALL print one preview line per repairable record with the source `record_changes.version` and the field set that would be refilled
+- **AND** the tool SHALL NOT change any row, allocate any version, or append any `record_changes` row
+
+#### Scenario: Apply repairs as new versions
+
+- **WHEN** the operator invokes the repair tool with `--apply` against a scope that contains repairable rows
+- **THEN** for each repaired record the tool SHALL allocate a new version through the atomic allocator and append exactly one `record_changes` row reflecting the merged derived fields
+- **AND** the prior `record_changes` history rows SHALL remain byte-identical
+
+#### Scenario: Repair refuses streams without a policy
+
+- **WHEN** the operator invokes the repair tool against a `(connector_instance_id, stream)` pair whose stream has no registered repair policy
+- **THEN** the tool SHALL refuse to run and SHALL exit non-zero with a message naming the missing policy
+
+#### Scenario: Equivalence guard rejects a prior row whose non-derived fields have changed
+
+- **WHEN** the operator runs the repair tool on a record whose current row has null derived fields, but the candidate prior `record_changes` row differs from the current row in some field outside the policy's `derivedFields`
+- **THEN** the tool SHALL NOT use that prior row as a refill source
+- **AND** if no other candidate prior row satisfies the equivalence guard, the record SHALL be skipped (no version allocated, no `record_changes` row appended)
 
