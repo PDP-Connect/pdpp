@@ -163,6 +163,8 @@ const openSpecChanges = listFiles(join(repoRoot, "openspec", "changes"))
   .filter((name) => !name.startsWith("archive/"))
   .sort();
 
+const openSpecBuckets = classifyOpenSpecChanges(openSpecChanges);
+
 const risks = [];
 
 for (const worktree of worktrees) {
@@ -243,10 +245,31 @@ printSection(
   blockerFiles.map((entry) => `- ${entry.rel} age=${entry.ageHours}h first-line=${JSON.stringify(readFirstHeading(entry))}`)
 );
 
+// Group OpenSpec changes by task-completion status so the in-flight bucket
+// surfaces above the complete-but-not-archived backlog. Archive is owner-only
+// per AGENTS.md, so completed changes accumulate until an owner sweep — without
+// grouping, the in-flight set drowns in noise.
 printSection(
-  "OpenSpec Changes",
-  openSpecChanges.map((name) => `- ${name}`)
+  `OpenSpec Changes — In-flight (${openSpecBuckets.inFlight.length})`,
+  openSpecBuckets.inFlight.map(formatOpenSpecLine)
 );
+
+printSection(
+  `OpenSpec Changes — Zero-progress (${openSpecBuckets.zeroProgress.length})`,
+  openSpecBuckets.zeroProgress.map(formatOpenSpecLine)
+);
+
+printSection(
+  `OpenSpec Changes — Complete, awaiting owner archive (${openSpecBuckets.complete.length})`,
+  openSpecBuckets.complete.map(formatOpenSpecLine)
+);
+
+if (openSpecBuckets.untracked.length > 0) {
+  printSection(
+    `OpenSpec Changes — Without task tracking (${openSpecBuckets.untracked.length})`,
+    openSpecBuckets.untracked.map((entry) => `- ${entry.name}`)
+  );
+}
 
 printSection(
   "Workstream Cards",
@@ -270,4 +293,44 @@ function sameOrChild(child, parent) {
   if (!(child && parent)) return false;
   const rel = relative(parent, child);
   return rel === "" || (!rel.startsWith("..") && !resolve(parent, rel).startsWith(".."));
+}
+
+function classifyOpenSpecChanges(names) {
+  const buckets = { inFlight: [], zeroProgress: [], complete: [], untracked: [] };
+  for (const name of names) {
+    const tasksFile = join(repoRoot, "openspec", "changes", name, "tasks.md");
+    if (!existsSync(tasksFile)) {
+      buckets.untracked.push({ name, done: 0, total: 0 });
+      continue;
+    }
+    const body = readFileSync(tasksFile, "utf8");
+    let done = 0;
+    let total = 0;
+    for (const line of body.split("\n")) {
+      if (/^\s*- \[x\]/i.test(line)) {
+        done += 1;
+        total += 1;
+      } else if (/^\s*- \[ \]/.test(line)) {
+        total += 1;
+      }
+    }
+    const entry = { name, done, total };
+    if (total === 0) {
+      buckets.untracked.push(entry);
+    } else if (done === 0) {
+      buckets.zeroProgress.push(entry);
+    } else if (done === total) {
+      buckets.complete.push(entry);
+    } else {
+      buckets.inFlight.push(entry);
+    }
+  }
+  // Sort in-flight by least-progressed first so stuck changes surface at the top.
+  buckets.inFlight.sort((a, b) => a.done / a.total - b.done / b.total || a.name.localeCompare(b.name));
+  return buckets;
+}
+
+function formatOpenSpecLine(entry) {
+  const ratio = `[${String(entry.done).padStart(2, " ")}/${String(entry.total).padStart(2, " ")}]`;
+  return `- ${ratio} ${entry.name}`;
 }
