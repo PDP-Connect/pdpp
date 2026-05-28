@@ -896,11 +896,7 @@ async function fireNtfy(args: {
         ? `${webBaseUrl}/dashboard/runs/${encodedRunId}/stream?interaction_id=${encodedInteractionId}`
         : `${webBaseUrl}/dashboard/runs/${encodedRunId}`;
     const tags =
-      interaction.kind === "manual_action"
-        ? ["construction"]
-        : interaction.kind === "credentials" || interaction.kind === "otp"
-          ? ["key"]
-          : ["construction"];
+      interaction.kind === "credentials" || interaction.kind === "otp" ? ["key"] : ["construction"];
     await notify({
       title: `PDPP ${connectorDisplayName}: ${interaction.kind} needed`,
       message,
@@ -1617,7 +1613,10 @@ export function createController(opts: ControllerOptions = {}): Controller {
             deferredResult.lease
           );
           await persistBrowserSurfaceLeaseMutation(deferredResult.lease, deferredResult.surface);
-        } catch {}
+        } catch {
+          // Deferred-lease emit/persist is best-effort; the outer warn below
+          // already captures the original promotion failure.
+        }
       }
       if (deferredResult?.promoted) {
         await persistAndPromoteBrowserSurfaceLeases([deferredResult.promoted], `${reason} promotion failure`);

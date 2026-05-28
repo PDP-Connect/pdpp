@@ -29,7 +29,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { closeDb, getDb, initDb } from "../server/db.js";
-import { BrowserSurfaceLeaseManager, DEFAULT_NEKO_PRIORITY_RANKS } from "../runtime/browser-surface-leases.ts";
+import { BrowserSurfaceLeaseManager, DEFAULT_NEKO_PRIORITY_RANKS } from "@opendatalabs/remote-surface/leases";
 import { __resetControllerInteractionStateForTests, createController } from "../runtime/controller.ts";
 
 const MANIFEST = {

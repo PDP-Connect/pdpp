@@ -69,7 +69,7 @@ export interface DeliveryWorkerOptions {
 export interface DeliveryWorker {
   start(): void;
   stop(): void;
-  tick(): Promise<{ readonly attempted: number; readonly outcomes: ReadonlyArray<DeliveryOutcome> }>;
+  tick(): Promise<{ readonly attempted: number; readonly outcomes: readonly DeliveryOutcome[] }>;
 }
 
 export function createDeliveryWorker(opts: DeliveryWorkerOptions = {}): DeliveryWorker {

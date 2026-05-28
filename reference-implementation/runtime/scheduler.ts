@@ -879,7 +879,7 @@ async function checkFirstPartyLocalSourceReadiness(
       process.env.CODEX_SESSIONS_DIR || join(codexHome, "sessions"),
       process.env.CODEX_STATE_DB || join(codexHome, "state_5.sqlite"),
     ];
-    const missing = [];
+    const missing: string[] = [];
     for (const path of requiredPaths) {
       if (!(await canAccessPath(path))) {
         missing.push(path);
@@ -1623,7 +1623,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
       return;
     }
     function dispatchIfDue(schedule: ConnectorSchedule): void {
-      let dispatch;
+      let dispatch: ReturnType<typeof evaluateBackoffDispatch>;
       try {
         dispatch = evaluateBackoffDispatch(schedule, Date.now());
       } catch (err: unknown) {

@@ -12,9 +12,9 @@ import {
   withPostgresTransaction,
 } from "../postgres-storage.js";
 
-type Queryable = {
+interface Queryable {
   query(sql: string, params?: unknown[]): Promise<{ rows: BrowserSurfaceRow[] | BrowserSurfaceLeaseRow[] }>;
-};
+}
 
 interface BrowserSurfaceRow {
   account_key: string | null;
@@ -365,7 +365,9 @@ class SqliteBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
     } catch (err) {
       try {
         db.exec("ROLLBACK");
-      } catch {}
+      } catch {
+        // Rollback failure is non-actionable; the original error is rethrown below.
+      }
       throw err;
     }
   }

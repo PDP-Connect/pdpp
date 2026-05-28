@@ -1253,7 +1253,6 @@ function localExporterAvailableCondition(axes: ConnectionAxes): ConnectionHealth
           target: "local_device",
         },
       });
-    case "unknown":
     default:
       return condition({
         type: "LocalExporterAvailable",
@@ -1377,7 +1376,6 @@ function backlogClearCondition(axes: ConnectionAxes): ConnectionHealthCondition 
           target: "local_device",
         },
       });
-    case "unknown":
     default:
       return condition({
         type: "BacklogClear",

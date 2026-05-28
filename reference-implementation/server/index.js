@@ -168,10 +168,8 @@ import { projectRunAutomationPolicy } from '../runtime/run-automation-policy.ts'
 import { redactStderrTail } from '../runtime/stderr-redact.js';
 import { createScheduler } from '../runtime/scheduler.ts';
 import { getDefaultSchedulerStore } from './stores/scheduler-store.ts';
-import {
-  BrowserSurfaceLeaseManager,
-  parseNekoBrowserSurfaceRuntimeConfig,
-} from '../runtime/browser-surface-leases.ts';
+import { BrowserSurfaceLeaseManager } from '@opendatalabs/remote-surface/leases';
+import { parseNekoBrowserSurfaceRuntimeConfig } from '../runtime/browser-surface-leases.ts';
 import { NekoSurfaceAllocatorClient } from '../runtime/neko-surface-allocator.ts';
 import { createDefaultBrowserSurfaceReadinessProbe } from '../runtime/browser-surface-readiness.ts';
 import { getDefaultBrowserSurfaceLeaseStore } from './stores/browser-surface-lease-store.ts';
