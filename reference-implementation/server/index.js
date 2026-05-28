@@ -312,6 +312,13 @@ import {
   mountRefRuns,
   mountRefTraces,
 } from './routes/ref-spine-correlations.ts';
+import {
+  mountRefWebPushConfig,
+  mountRefWebPushCreateSubscription,
+  mountRefWebPushDeleteSubscription,
+  mountRefWebPushListSubscriptions,
+  mountRefWebPushTest,
+} from './routes/web-push.ts';
 
 const AS_PORT = parseInt(process.env.AS_PORT || '7662');
 const RS_PORT = parseInt(process.env.RS_PORT || '7663');
@@ -4059,75 +4066,24 @@ function buildAsApp(opts = {}) {
     }
   });
 
-  app.get('/_ref/web-push/config', ownerAuth.requireOwnerSession, async (req, res) => {
-    res.json({
-      object: 'web_push_config',
-      enabled: webPushConfig.enabled,
-      public_key: webPushConfig.enabled ? webPushConfig.publicKey : null,
-      unavailable_reason: webPushConfig.enabled ? null : webPushConfig.unavailableReason,
-    });
-  });
-
-  app.get('/_ref/web-push/subscriptions', ownerAuth.requireOwnerSession, async (req, res) => {
-    const ownerSubjectId = getOwnerSubjectId(req);
-    res.json({
-      object: 'list',
-      data: await webPushStore.list(ownerSubjectId),
-      has_more: false,
-    });
-  });
-
-  app.post('/_ref/web-push/subscriptions', ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      if (!webPushConfig.enabled) {
-        return pdppError(res, 503, 'web_push_unavailable', webPushConfig.unavailableReason);
-      }
-      const ownerSubjectId = getOwnerSubjectId(req);
-      const record = await webPushStore.upsert(ownerSubjectId, req.body?.subscription || req.body, {
-        user_agent: req.get('user-agent') || null,
-        platform: req.body?.platform || null,
-        device_label: req.body?.device_label || null,
-      });
-      res.status(201).json({ object: 'web_push_subscription', subscription: record });
-    } catch (err) {
-      if (err?.status === 400) {
-        return pdppError(res, 400, err.code || 'invalid_request', err.message);
-      }
-      handleError(res, err);
-    }
-  });
-
-  app.delete('/_ref/web-push/subscriptions', ownerAuth.requireOwnerSession, async (req, res) => {
-    const endpoint = typeof req.body?.endpoint === 'string' ? req.body.endpoint : null;
-    if (!endpoint) {
-      return pdppError(res, 400, 'invalid_request', 'endpoint is required');
-    }
-    const ownerSubjectId = getOwnerSubjectId(req);
-    const revoked = await webPushStore.revoke(ownerSubjectId, endpoint);
-    res.json({ object: 'web_push_subscription_deleted', deleted: Boolean(revoked) });
-  });
-
-  app.post('/_ref/web-push/test', ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      if (!webPushConfig.enabled) {
-        return pdppError(res, 503, 'web_push_unavailable', webPushConfig.unavailableReason);
-      }
-      const ownerSubjectId = getOwnerSubjectId(req);
-      const result = await fanoutTestWebPush({
-        config: webPushConfig,
-        store: webPushStore,
-        ownerSubjectId,
-      });
-      res.json({
-        object: 'web_push_test_notification',
-        attempted: result.attempted,
-        sent: result.sent,
-        unavailable: Boolean(result.unavailable),
-      });
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
+  // Operator-only Web Push surfaces are mounted via
+  // `server/routes/web-push.ts` per OpenSpec change
+  // `split-reference-server-by-route-family` (§5.2). Behaviour-preserving
+  // extraction: same mount points, same handler chain, same envelopes.
+  const refWebPushContext = {
+    fanoutTestWebPush,
+    getOwnerSubjectId,
+    handleError,
+    pdppError,
+    requireOwnerSession: ownerAuth.requireOwnerSession,
+    webPushConfig,
+    webPushStore,
+  };
+  mountRefWebPushConfig(app, refWebPushContext);
+  mountRefWebPushListSubscriptions(app, refWebPushContext);
+  mountRefWebPushCreateSubscription(app, refWebPushContext);
+  mountRefWebPushDeleteSubscription(app, refWebPushContext);
+  mountRefWebPushTest(app, refWebPushContext);
 
   // Reference-only — not the public lexical retrieval surface.
   // /_ref/search is a spine-only artifact/id-jump helper for the operator

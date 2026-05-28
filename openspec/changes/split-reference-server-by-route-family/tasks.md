@@ -70,7 +70,7 @@ unchanged.
 ## 5. Smaller families (each its own commit, after §1–§4)
 
 - [ ] 5.1 `server/routes/run-interaction.ts` — `POST /_ref/runs/:runId/interaction` plus dev playground.
-- [ ] 5.2 `server/routes/web-push.ts` — `_ref/web-push/*` (5 routes).
+- [x] 5.2 `server/routes/web-push.ts` — `_ref/web-push/*` (5 routes). Landed: five per-route mount fns (`mountRefWebPushConfig`, `mountRefWebPushListSubscriptions`, `mountRefWebPushCreateSubscription`, `mountRefWebPushDeleteSubscription`, `mountRefWebPushTest`). Behaviour-preserving; covered by `test/web-push-notifications.test.js` (36/37 pass, 1 pre-existing skip).
 - [ ] 5.3 `server/routes/source-webhooks.ts` — `POST /_ref/source-webhooks/:sourceId`.
 - [ ] 5.4 `server/routes/remote-surface.ts` — any non-streaming neko/browser-surface routes still in `index.js`.
 
