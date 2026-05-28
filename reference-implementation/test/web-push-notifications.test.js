@@ -584,8 +584,9 @@ test('manual-run controller progress handler fans out assistance Web Push withou
   );
   // It must filter by the documented predicate.
   assert.match(src, /shouldFanoutAssistanceProgressMessage\(msg\)/);
-  // And it must call fireAssistanceWebPush — not fireWebPush — for ASSISTANCE.
-  assert.match(src, /void fireAssistanceWebPush\(\{/);
+  // And it must invoke fireAssistanceWebPush — not fireWebPush — for ASSISTANCE
+  // via the detachControllerTask helper that replaced bare `void` swallows.
+  assert.match(src, /detachControllerTask\(\s*fireAssistanceWebPush\(\{/);
   // The fanout helper must thread runId/ownerSubjectId from controller scope.
   assert.match(
     src,
@@ -596,8 +597,11 @@ test('manual-run controller progress handler fans out assistance Web Push withou
 
 test('controller keeps ntfy and Web Push as independent best-effort notification channels', async () => {
   const src = await readFile(new URL('../runtime/controller.ts', import.meta.url), 'utf8');
-  assert.match(src, /void fireNtfy\(/);
-  assert.match(src, /void fireWebPush\(/);
+  // Each channel is invoked through detachControllerTask so failures do not
+  // affect interaction resolution (the prior `void fireXxx(...)` form was
+  // replaced when controller-fanout cleanups landed).
+  assert.match(src, /detachControllerTask\(\s*fireNtfy\(/);
+  assert.match(src, /detachControllerTask\(\s*fireWebPush\(/);
   assert.match(src, /ntfy fire for run .* failed/);
   assert.match(src, /web push fire for run .* failed/);
 });
