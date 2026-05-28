@@ -315,12 +315,13 @@ export function buildTools({ rs, providerUrl }) {
       name: 'create_event_subscription',
       title: 'Create event subscription',
       description:
-        'Create an outbound event subscription via `POST /v1/event-subscriptions` using the configured scoped client bearer. Persists a `(grant_id, client_id, subject_id)`-bound subscription on the RS and returns the per-subscription `whsec_`-prefixed delivery secret exactly once (rotate via `update_event_subscription`).' +
+        'Create an outbound event subscription via `POST /v1/event-subscriptions` using the configured scoped client bearer. Persists a `(grant_id, client_id, subject_id)`-bound subscription on the RS and returns the per-subscription `whsec_`-prefixed delivery secret exactly once (rotate via `update_event_subscription`). Under a hosted MCP package token covering multiple sources, pass `connection_id` so the new subscription binds to exactly one child grant; the adapter rejects ambiguous calls with a typed `ambiguous_connection` (409).' +
         SUBSCRIPTION_TOOL_FOOTER,
       annotations: SUBSCRIPTION_WRITE_ANNOTATIONS,
       inputSchema: z
         .object({
           callback_url: z.string().min(1).describe(CALLBACK_URL_DESCRIPTION),
+          connection_id: z.string().min(1).optional().describe(CONNECTION_ID_DESCRIPTION),
           filters: z
             .object({
               streams: z.array(z.string()).optional(),
@@ -334,6 +335,7 @@ export function buildTools({ rs, providerUrl }) {
       handler: async (args) => {
         const body = { callback_url: args.callback_url };
         if (args.filters) body.filters = args.filters;
+        if (args.connection_id) body.connection_id = args.connection_id;
         const response = await rs.postJson('/v1/event-subscriptions', { body });
         return toEventSubToolResult(response, providerUrl, 'create_event_subscription');
       },

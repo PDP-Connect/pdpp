@@ -34,11 +34,13 @@ import { createTraceContext, emitSpineEvent, generateSpineId, listSpineCorrelati
 import { exec, getOne, InvalidCursorError, referenceQueries, transaction } from '../lib/db.ts';
 import {
   registerConnector, getConnectorManifest, getConfiguredNativeManifest, getManifestForStorageBinding,
-  introspect, revokeGrant,
+  introspect, revokeGrant, revokeGrantPackage,
   createConsentExchangeCode, consumeConsentExchangeCode,
   configureNativeManifest,
+  createHostedMcpGrantPackage, getGrantPackageAccess,
   deleteRegisteredClient, exchangeOAuthAuthorizationCode, exchangeOAuthRefreshToken, getRegisteredClient,
-  issueOAuthAuthorizationCodeForDeviceCode, listOwnerIssuedClients, listRegisteredConnectorIds,
+  issueOAuthAuthorizationCodeForDeviceCode, issueOAuthAuthorizationCodeForPackageDeviceCode,
+  listOwnerIssuedClients, listRegisteredConnectorIds,
   registerDynamicClient, requireGrantContractAgainstManifest, requireResolvedPersistedGrantState, seedPreRegisteredClients,
   buildPendingConsentRequestUri,
   stageOAuthAuthorizationCodeRequest,
@@ -46,6 +48,7 @@ import {
 import { createBlobStore } from './stores/blob-store.js';
 import {
   AmbiguousConnectionError,
+  listActiveBindingsForGrant,
   listGrantedConnectionsForStream,
   projectBindingForWire,
 } from './connection-identity.js';
@@ -205,6 +208,7 @@ import {
   DEFAULT_PRE_REGISTERED_PUBLIC_CLIENTS,
 } from './reference-local-defaults.ts';
 import { handleStreamableHttpRequest } from '@pdpp/mcp-server/server';
+import { createPackageRsClient } from './package-rs-client.js';
 import {
   resolveReferenceRevision,
   setReferenceRevisionHeader,
@@ -1184,6 +1188,19 @@ function requireOwner(req, res, next) {
 function requireClient(req, res, next) {
   if (req.tokenInfo.pdpp_token_kind !== 'client') {
     return pdppError(res, 403, 'permission_error', 'Client token required');
+  }
+  next();
+}
+
+// Accept either a per-grant client token (the normal RS token) or a
+// hosted-MCP grant-package token. The package token is only meaningful at
+// `/mcp`; every other resource-server route stays gated by `requireClient`
+// so package tokens cannot reach REST surfaces. Owner tokens are always
+// rejected — there is no owner-mode MCP.
+function requireClientOrMcpPackage(req, res, next) {
+  const kind = req.tokenInfo?.pdpp_token_kind;
+  if (kind !== 'client' && kind !== 'mcp_package') {
+    return pdppError(res, 403, 'permission_error', 'Client or MCP package token required');
   }
   next();
 }
@@ -3057,19 +3074,106 @@ function buildAsApp(opts = {}) {
     ];
   }
 
-  async function renderHostedMcpSourceSelection(query, csrfToken) {
+  // Hosted MCP picker policy — what the owner is approving when they check
+  // a row in the multi-source picker. Continuous, all streams, client-policy
+  // retention. Encoded once so the picker's "what you're approving" copy,
+  // the authorization_details[] sent to the AS, and the per-child grants
+  // match by construction.
+  const HOSTED_MCP_PICKER_PURPOSE_CODE = 'https://pdpp.org/purpose/personal_ai_assistant';
+  const HOSTED_MCP_PICKER_PURPOSE_DESCRIPTION = 'Allow this MCP client to read selected personal data through PDPP.';
+  const HOSTED_MCP_PICKER_ACCESS_MODE = 'continuous';
+  const HOSTED_MCP_PICKER_RETENTION = Object.freeze({
+    classification: 'client_policy',
+    description: 'The MCP client controls any retention of fetched results.',
+  });
+
+  function buildHostedMcpAuthorizationDetailForConnector(connectorId) {
+    return {
+      type: 'https://pdpp.org/data-access',
+      source: { kind: 'connector', id: connectorId },
+      purpose_code: HOSTED_MCP_PICKER_PURPOSE_CODE,
+      purpose_description: HOSTED_MCP_PICKER_PURPOSE_DESCRIPTION,
+      access_mode: HOSTED_MCP_PICKER_ACCESS_MODE,
+      retention: HOSTED_MCP_PICKER_RETENTION,
+      streams: [{ name: '*' }],
+    };
+  }
+
+  // Parse `connector:<id>` / `connection:<connector_id>:<connection_id>`
+  // form values from the multi-select picker. Returns one normalized entry
+  // per selected source — no AS-side enrichment, so the issued package
+  // matches what the owner saw in the picker.
+  function parseHostedMcpSelections(rawValues) {
+    const values = Array.isArray(rawValues) ? rawValues : (typeof rawValues === 'string' ? [rawValues] : []);
+    const seen = new Set();
+    const out = [];
+    for (const raw of values) {
+      if (typeof raw !== 'string' || !raw.trim()) continue;
+      const trimmed = raw.trim();
+      if (seen.has(trimmed)) continue;
+      seen.add(trimmed);
+      if (trimmed.startsWith('connection:')) {
+        const rest = trimmed.slice('connection:'.length);
+        const sep = rest.indexOf(':');
+        if (sep <= 0 || sep === rest.length - 1) continue;
+        const connectorId = rest.slice(0, sep);
+        const connectionId = rest.slice(sep + 1);
+        if (!connectorId || !connectionId) continue;
+        out.push({ connectorId, connectionId });
+      } else if (trimmed.startsWith('connector:')) {
+        const connectorId = trimmed.slice('connector:'.length);
+        if (!connectorId) continue;
+        out.push({ connectorId, connectionId: null });
+      }
+    }
+    return out;
+  }
+
+  async function listHostedMcpPickerRows(ownerSubjectId = 'owner_local') {
     const connectorIds = await listRegisteredConnectorIds();
     const rows = [];
     for (const connectorId of connectorIds) {
       const manifest = await getConnectorManifest(connectorId).catch(() => null);
       if (!manifest) continue;
-      rows.push({
-        id: connectorId,
-        label: manifest.display_name || manifest.name || connectorId,
-        streamCount: Array.isArray(manifest.streams) ? manifest.streams.length : 0,
-      });
+      const connectorLabel = manifest.display_name || manifest.name || connectorId;
+      const streamCount = Array.isArray(manifest.streams) ? manifest.streams.length : 0;
+      const connections = await listActiveBindingsForGrant({ ownerSubjectId, connectorId }).catch(() => []);
+      if (connections.length === 0) {
+        // Connector with no configured connection — show the connector
+        // itself; child grant will not pin a connection_id.
+        rows.push({
+          formValue: `connector:${connectorId}`,
+          connectorId,
+          connectionId: null,
+          label: connectorLabel,
+          meta: streamCount
+            ? `${connectorId} · ${streamCount} streams · no configured connection`
+            : `${connectorId} · no configured connection`,
+        });
+        continue;
+      }
+      for (const conn of connections) {
+        const projected = projectBindingForWire(conn);
+        const displayName = projected?.display_name;
+        const connectionId = projected?.connection_id || conn.connectorInstanceId;
+        rows.push({
+          formValue: `connection:${connectorId}:${connectionId}`,
+          connectorId,
+          connectionId,
+          label: displayName ? `${connectorLabel} — ${displayName}` : connectorLabel,
+          meta: streamCount
+            ? `${connectorId} · ${streamCount} streams · ${connectionId}`
+            : `${connectorId} · ${connectionId}`,
+        });
+      }
     }
     rows.sort((a, b) => a.label.localeCompare(b.label));
+    return rows;
+  }
+
+  async function renderHostedMcpSourceSelection(req, query, csrfToken) {
+    const ownerSubjectId = req?.ownerAuth?.subjectId || 'owner_local';
+    const rows = await listHostedMcpPickerRows(ownerSubjectId);
 
     const hidden = ['client_id', 'redirect_uri', 'response_type', 'scope', 'state', 'code_challenge', 'code_challenge_method']
       .map((name) => {
@@ -3078,34 +3182,45 @@ function buildAsApp(opts = {}) {
         return `<input type="hidden" name="${hostedEscape(name)}" value="${hostedEscape(value)}" />`;
       })
       .join('\n');
+
     const options = rows.length
-      ? rows.map((row, index) => `
+      ? rows.map((row) => `
           <label class="hosted-ui-option">
-            <input type="radio" name="connector_id" value="${hostedEscape(row.id)}" ${index === 0 ? 'checked' : ''} />
+            <input type="checkbox" name="selection" value="${hostedEscape(row.formValue)}" />
             <span class="hosted-ui-option-body">
               <span class="hosted-ui-option-title">${hostedEscape(row.label)}</span>
-              <span class="hosted-ui-option-meta">${hostedEscape(row.id)} · ${row.streamCount} streams</span>
+              <span class="hosted-ui-option-meta">${hostedEscape(row.meta)}</span>
             </span>
           </label>
         `).join('\n')
       : '<p class="pdpp-body">No connector manifests are registered on this reference server.</p>';
+
     const submit = rows.length
-      ? '<button type="submit" class="hosted-ui-button" data-variant="primary">Continue to consent</button>'
+      ? '<button type="submit" class="hosted-ui-button" data-variant="primary">Approve selected sources</button>'
+      : '';
+
+    // Cumulative-risk disclosure: this picker is reference-experimental
+    // multi-source consent. Surface what the owner is approving so the
+    // path of least resistance is not "approve everything in silence."
+    // See openspec/changes/design-fast-broad-agent-consent/.
+    const riskCopy = rows.length
+      ? `<p class="pdpp-body"><strong>Reference-experimental multi-source consent.</strong> Each checked source issues one independent, source-bounded PDPP grant. The MCP client receives a package token that the resource server enforces through those child grants. Continuous access, all streams, client-policy retention.</p>`
       : '';
 
     return renderHostedDocument({
-      title: `${providerName} — Choose MCP source`,
+      title: `${providerName} — Choose MCP sources`,
       providerName,
       body: [
         renderPageIntro({
           eyebrow: 'MCP authorization',
           title: 'Choose what this MCP client can read',
-          lede: 'Choose the data source to authorize for this MCP connection. The MCP endpoint remains read-only and grant-scoped.',
+          lede: 'Select one or more sources to authorize for this MCP connection. The MCP endpoint remains read-only and grant-scoped.',
         }),
         renderSurface({
           surface: 'human',
           children: `
-            <form method="GET" action="/oauth/authorize">
+            ${riskCopy}
+            <form method="POST" action="/oauth/authorize/mcp-package">
               <input type="hidden" name="_csrf" value="${hostedEscape(csrfToken)}" />
               ${hidden}
               <div class="hosted-ui-option-group">${options}</div>
@@ -3413,7 +3528,7 @@ function buildAsApp(opts = {}) {
         : null;
       if (!authorizationDetails && !selectedConnectorId) {
         const csrfToken = ownerAuth.ensureCsrfToken(req, res);
-        return res.send(await renderHostedMcpSourceSelection(req.query, csrfToken));
+        return res.send(await renderHostedMcpSourceSelection(req, req.query, csrfToken));
       }
 
       const details = authorizationDetails || buildHostedMcpAuthorizationDetailsForConnector(selectedConnectorId);
@@ -3448,6 +3563,129 @@ function buildAsApp(opts = {}) {
       );
     }
   });
+
+  // Hosted MCP multi-source consent POST. The picker submits checked
+  // `selection=` values (`connector:<id>` or `connection:<connector_id>:<connection_id>`)
+  // plus the PKCE-mirrored authorize params. The handler:
+  //   1. Validates the PKCE/authorize params (same shape as GET /oauth/authorize).
+  //   2. Resolves each selection to one source-bounded authorization_details[] entry.
+  //   3. Calls createHostedMcpGrantPackage: one independent child grant per source
+  //      plus a single package-bound access token.
+  //   4. Stages a package-bound OAuth authorization code and redirects the
+  //      client back to its redirect_uri with `code=...`.
+  // Spec: openspec/changes/add-hosted-mcp-grant-packages/specs/agent-consent-bundling/spec.md
+  app.post(
+    '/oauth/authorize/mcp-package',
+    ownerAuth.requireOwnerSession,
+    ownerAuth.requireCsrf,
+    async (req, res) => {
+      try {
+        const body = req.body || {};
+        const clientId = requireAuthorizeString(body, 'client_id');
+        const redirectUri = requireAuthorizeString(body, 'redirect_uri');
+        const responseType = requireAuthorizeString(body, 'response_type');
+        const codeChallenge = requireAuthorizeString(body, 'code_challenge');
+        const codeChallengeMethod = requireAuthorizeString(body, 'code_challenge_method');
+        const state = typeof body.state === 'string' ? body.state : null;
+        validateAuthorizePkce({ responseType, codeChallenge, codeChallengeMethod });
+
+        const client = await getRegisteredClient(clientId);
+        if (!client) return oauthError(res, 400, 'invalid_client', 'Unknown client_id');
+        requireRegisteredRedirectUri(client, redirectUri);
+
+        const selections = parseHostedMcpSelections(body.selection);
+        if (selections.length === 0) {
+          return oauthError(res, 400, 'invalid_request', 'At least one source must be selected');
+        }
+
+        const ownerSubjectId = req?.ownerAuth?.subjectId || 'owner_local';
+        const authorizationDetails = [];
+        const storageBindings = [];
+        const connectionIds = [];
+        const sourceMetadata = [];
+        const seenChildKeys = new Set();
+
+        for (const selection of selections) {
+          const { connectorId, connectionId } = selection;
+          const manifest = await getConnectorManifest(connectorId).catch(() => null);
+          if (!manifest) {
+            return oauthError(res, 400, 'invalid_request', `Unknown connector: ${connectorId}`);
+          }
+          let resolvedConnectionId = connectionId;
+          if (resolvedConnectionId) {
+            // Verify the requested connection is currently active for this
+            // owner+connector. Reject silently-pinning a stale connection.
+            const active = await listActiveBindingsForGrant({ ownerSubjectId, connectorId }).catch(() => []);
+            const match = active.find((row) => row.connectorInstanceId === resolvedConnectionId);
+            if (!match) {
+              return oauthError(res, 400, 'invalid_request', `Connection ${resolvedConnectionId} is not active for ${connectorId}`);
+            }
+          }
+          const childKey = `${connectorId}|${resolvedConnectionId || ''}`;
+          if (seenChildKeys.has(childKey)) continue;
+          seenChildKeys.add(childKey);
+
+          authorizationDetails.push(buildHostedMcpAuthorizationDetailForConnector(connectorId));
+          storageBindings.push({ connector_id: connectorId });
+          connectionIds.push(resolvedConnectionId || null);
+          sourceMetadata.push({
+            display_name: resolvedConnectionId || null,
+            connector_display_name: manifest.display_name || manifest.name || connectorId,
+          });
+        }
+
+        const explicitBaseUrl = opts.asPublicUrl || (!opts.ignoreAmbientPublicUrls ? process.env.AS_PUBLIC_URL : null);
+        const publicBaseUrl = resolvePublicUrl(req, explicitBaseUrl);
+
+        const packageResult = await createHostedMcpGrantPackage({
+          clientId,
+          authorizationDetails,
+          storageBindings,
+          connectionIds,
+          sourceMetadata,
+          subjectId: ownerSubjectId,
+          opts: {},
+        });
+
+        // Stage a fresh OAuth device-code shell so the package's access
+        // token can be redeemed at /oauth/token. Mirrors the PAR path's
+        // request-uri staging without coupling to pending_consents.
+        const deviceCode = `mcpdev_${randomBytes(16).toString('hex')}`;
+        const stagingExpiresIn = 300;
+        await stageOAuthAuthorizationCodeRequest({
+          deviceCode,
+          clientId,
+          redirectUri,
+          state,
+          codeChallenge,
+          codeChallengeMethod,
+          expiresInSeconds: stagingExpiresIn,
+        });
+
+        const issued = await issueOAuthAuthorizationCodeForPackageDeviceCode(deviceCode, {
+          packageId: packageResult.package_id,
+          token: packageResult.token,
+        });
+        if (!issued) {
+          return oauthError(res, 500, 'server_error', 'Failed to issue authorization code for package');
+        }
+
+        const redirectUrl = new URL(issued.redirect_uri);
+        redirectUrl.searchParams.set('code', issued.code);
+        if (issued.state) {
+          redirectUrl.searchParams.set('state', issued.state);
+        }
+        return res.redirect(302, redirectUrl.toString());
+      } catch (err) {
+        oauthError(
+          res,
+          400,
+          err.code || 'invalid_request',
+          err.message || 'Hosted MCP package authorization rejected',
+        );
+      }
+    },
+  );
 
   // Device-authorization initiation semantics (client_id presence
   // validation, store call, trace_context-stripped public envelope) live
@@ -3499,7 +3737,9 @@ function buildAsApp(opts = {}) {
           access_token: token.access_token,
           token_type: token.token_type,
           ...(token.refresh_token ? { refresh_token: token.refresh_token } : {}),
-          grant_id: token.grant_id,
+          ...(token.grant_package_id
+            ? { grant_package_id: token.grant_package_id }
+            : { grant_id: token.grant_id }),
         });
       } catch (err) {
         return oauthError(res, 400, err.code || 'invalid_grant', err.message || 'Authorization code exchange failed');
@@ -3515,7 +3755,9 @@ function buildAsApp(opts = {}) {
           access_token: token.access_token,
           token_type: token.token_type,
           refresh_token: token.refresh_token,
-          grant_id: token.grant_id,
+          ...(token.grant_package_id
+            ? { grant_package_id: token.grant_package_id }
+            : { grant_id: token.grant_id }),
         });
       } catch (err) {
         return oauthError(res, 400, err.code || 'invalid_grant', err.message || 'Refresh token exchange failed');
@@ -6174,15 +6416,46 @@ function buildRsApp(opts = {}) {
 
   async function handleHostedMcp(req, res) {
     const resource = resolvePublicUrl(req, explicitResource);
-    const accessToken = req.headers.authorization.slice(7);
+    const inboundToken = req.headers.authorization.slice(7);
+
+    // Package-token resolution. When the inbound bearer is an mcp_package
+    // token, the resource server's REST surface will reject it
+    // (requireClient gates everything outside /mcp). For package tokens we
+    // inject a `PackageRsClient` that fans out reads across the package's
+    // active child grants and routes single-source operations under exactly
+    // one child grant's bearer. Single-source tokens keep the existing
+    // single-bearer RsClient path.
+    let mcpServerOptions;
+    if (req.tokenInfo?.pdpp_token_kind === 'mcp_package') {
+      const access = await getGrantPackageAccess(req.tokenInfo.grant_package_id);
+      if (!access || access.members.length === 0) {
+        return pdppError(res, 403, 'package_revoked', 'Grant package is revoked or has no active members');
+      }
+      const rsClient = createPackageRsClient({
+        providerUrl: resource,
+        members: access.members,
+        fetch: globalThis.fetch,
+      });
+      mcpServerOptions = {
+        providerUrl: resource,
+        rsClient,
+        fetch: globalThis.fetch,
+        serverName: 'pdpp-reference-mcp',
+        serverVersion: referenceRevision,
+      };
+      res.setHeader('x-pdpp-grant-package-id', req.tokenInfo.grant_package_id);
+      res.setHeader('x-pdpp-grant-package-member-count', String(access.members.length));
+    } else {
+      mcpServerOptions = {
+        providerUrl: resource,
+        accessToken: inboundToken,
+        fetch: globalThis.fetch,
+        serverName: 'pdpp-reference-mcp',
+        serverVersion: referenceRevision,
+      };
+    }
     const webRequest = buildMcpWebRequest(req, resource);
-    const response = await handleStreamableHttpRequest(webRequest, {
-      providerUrl: resource,
-      accessToken,
-      fetch: globalThis.fetch,
-      serverName: 'pdpp-reference-mcp',
-      serverVersion: referenceRevision,
-    });
+    const response = await handleStreamableHttpRequest(webRequest, mcpServerOptions);
     return sendWebResponse(res, response);
   }
 
@@ -6201,9 +6474,9 @@ function buildRsApp(opts = {}) {
     next();
   }
 
-  app.get('/mcp', requireTrustedHostedMcpResource, setHostedMcpProtectedResourceMetadata, requireToken, requireClient, handleHostedMcp);
-  app.post('/mcp', requireTrustedHostedMcpResource, setHostedMcpProtectedResourceMetadata, requireToken, requireClient, handleHostedMcp);
-  app.delete('/mcp', requireTrustedHostedMcpResource, setHostedMcpProtectedResourceMetadata, requireToken, requireClient, handleHostedMcp);
+  app.get('/mcp', requireTrustedHostedMcpResource, setHostedMcpProtectedResourceMetadata, requireToken, requireClientOrMcpPackage, handleHostedMcp);
+  app.post('/mcp', requireTrustedHostedMcpResource, setHostedMcpProtectedResourceMetadata, requireToken, requireClientOrMcpPackage, handleHostedMcp);
+  app.delete('/mcp', requireTrustedHostedMcpResource, setHostedMcpProtectedResourceMetadata, requireToken, requireClientOrMcpPackage, handleHostedMcp);
 
   // ────────────────────────────────────────────────────────────────────────
   // /v1/event-subscriptions — outbound client event subscriptions (RI extension)

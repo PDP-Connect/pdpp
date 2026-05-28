@@ -12,6 +12,7 @@ ON CONFLICT(device_code) DO UPDATE SET
   status = 'pending',
   code = NULL,
   grant_id = NULL,
+  package_id = NULL,
   token_id = NULL,
   created_at = excluded.created_at,
   expires_at = excluded.expires_at,

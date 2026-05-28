@@ -331,7 +331,7 @@ export function mountRsMcpProtectedResourceMetadata(
         queryBase: `${resourceBase}/v1`,
         providerConnectVersion: ctx.pdppProviderConnectVersion,
         selfExportSupported: true,
-        tokenKindsSupported: ["client"],
+        tokenKindsSupported: ["client", "mcp_package"],
         agentDiscovery: ctx.buildAgentDiscoveryMetadata(
           ctx.agentDiscoveryOrigin ? ctx.resolveSiblingPublicUrl(req, ctx.agentDiscoveryOrigin) : resourceBase,
           { noOwnerToken: true }

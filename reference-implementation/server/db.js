@@ -202,6 +202,7 @@ CREATE TABLE IF NOT EXISTS grants (
 CREATE TABLE IF NOT EXISTS tokens (
   token_id      TEXT PRIMARY KEY,
   grant_id      TEXT,
+  package_id    TEXT,
   subject_id    TEXT NOT NULL,
   client_id     TEXT,
   token_kind    TEXT NOT NULL,
@@ -621,6 +622,7 @@ CREATE TABLE IF NOT EXISTS oauth_authorization_codes (
   code_challenge_method TEXT NOT NULL,
   status                TEXT NOT NULL DEFAULT 'pending',
   grant_id              TEXT,
+  package_id            TEXT,
   token_id              TEXT,
   created_at            TEXT NOT NULL,
   expires_at            TEXT NOT NULL,
@@ -636,7 +638,8 @@ CREATE INDEX IF NOT EXISTS idx_oauth_authorization_codes_client_status
 CREATE TABLE IF NOT EXISTS oauth_refresh_tokens (
   refresh_token_hash   TEXT PRIMARY KEY,
   client_id            TEXT NOT NULL,
-  grant_id             TEXT NOT NULL,
+  grant_id             TEXT,
+  package_id           TEXT,
   subject_id           TEXT NOT NULL,
   status               TEXT NOT NULL DEFAULT 'active',
   created_at           TEXT NOT NULL,
@@ -649,6 +652,38 @@ CREATE INDEX IF NOT EXISTS idx_oauth_refresh_tokens_grant
   ON oauth_refresh_tokens(grant_id, status);
 CREATE INDEX IF NOT EXISTS idx_oauth_refresh_tokens_client_status
   ON oauth_refresh_tokens(client_id, status, expires_at);
+
+CREATE TABLE IF NOT EXISTS grant_packages (
+  package_id    TEXT PRIMARY KEY,
+  subject_id    TEXT NOT NULL,
+  client_id     TEXT NOT NULL,
+  status        TEXT NOT NULL DEFAULT 'active',
+  package_json  TEXT NOT NULL,
+  trace_id      TEXT,
+  scenario_id   TEXT,
+  created_at    TEXT NOT NULL,
+  approved_at   TEXT NOT NULL,
+  revoked_at    TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_grant_packages_client_status
+  ON grant_packages(client_id, status, created_at);
+
+CREATE TABLE IF NOT EXISTS grant_package_members (
+  package_id    TEXT NOT NULL,
+  grant_id      TEXT NOT NULL,
+  token_id      TEXT NOT NULL,
+  source_json   TEXT NOT NULL,
+  status        TEXT NOT NULL DEFAULT 'active',
+  added_at      TEXT NOT NULL,
+  revoked_at    TEXT,
+  PRIMARY KEY(package_id, grant_id),
+  FOREIGN KEY(package_id) REFERENCES grant_packages(package_id) ON DELETE CASCADE,
+  FOREIGN KEY(grant_id) REFERENCES grants(grant_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_grant_package_members_grant
+  ON grant_package_members(grant_id, status);
 
 CREATE TABLE IF NOT EXISTS records (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,

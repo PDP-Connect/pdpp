@@ -298,6 +298,7 @@ export async function bootstrapPostgresSchema() {
       CREATE TABLE IF NOT EXISTS tokens (
         token_id TEXT PRIMARY KEY,
         grant_id TEXT,
+        package_id TEXT,
         subject_id TEXT NOT NULL,
         client_id TEXT,
         token_kind TEXT NOT NULL,
@@ -309,6 +310,34 @@ export async function bootstrapPostgresSchema() {
         ON tokens(grant_id);
       CREATE INDEX IF NOT EXISTS idx_pg_tokens_client_id
         ON tokens(client_id);
+
+      CREATE TABLE IF NOT EXISTS grant_packages (
+        package_id TEXT PRIMARY KEY,
+        subject_id TEXT NOT NULL,
+        client_id TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active',
+        package_json JSONB NOT NULL,
+        trace_id TEXT,
+        scenario_id TEXT,
+        created_at TEXT NOT NULL,
+        approved_at TEXT NOT NULL,
+        revoked_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_pg_grant_packages_client_status
+        ON grant_packages(client_id, status, created_at);
+
+      CREATE TABLE IF NOT EXISTS grant_package_members (
+        package_id TEXT NOT NULL REFERENCES grant_packages(package_id) ON DELETE CASCADE,
+        grant_id TEXT NOT NULL REFERENCES grants(grant_id) ON DELETE CASCADE,
+        token_id TEXT NOT NULL,
+        source_json JSONB NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active',
+        added_at TEXT NOT NULL,
+        revoked_at TEXT,
+        PRIMARY KEY(package_id, grant_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_pg_grant_package_members_grant
+        ON grant_package_members(grant_id, status);
 
       CREATE TABLE IF NOT EXISTS pending_consents (
         device_code TEXT PRIMARY KEY,
@@ -330,6 +359,21 @@ export async function bootstrapPostgresSchema() {
       );
       CREATE INDEX IF NOT EXISTS idx_pg_pending_consents_status_expires
         ON pending_consents(status, expires_at);
+
+      ALTER TABLE tokens
+        ADD COLUMN IF NOT EXISTS package_id TEXT;
+      ALTER TABLE oauth_authorization_codes
+        ADD COLUMN IF NOT EXISTS package_id TEXT;
+      ALTER TABLE oauth_refresh_tokens
+        ADD COLUMN IF NOT EXISTS package_id TEXT;
+      ALTER TABLE oauth_refresh_tokens
+        ALTER COLUMN grant_id DROP NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_pg_tokens_package_id
+        ON tokens(package_id);
+      CREATE INDEX IF NOT EXISTS idx_pg_oauth_refresh_tokens_package
+        ON oauth_refresh_tokens(package_id, status);
+      CREATE INDEX IF NOT EXISTS idx_pg_oauth_authorization_codes_package
+        ON oauth_authorization_codes(package_id, status);
 
       CREATE TABLE IF NOT EXISTS owner_device_auth (
         device_code TEXT PRIMARY KEY,

@@ -875,6 +875,18 @@ function describeGrantSource(grant) {
   return describeSourceBinding(grant?.source);
 }
 
+// Hosted MCP grant packages persist a `connection_id` on each member's
+// `source_json`, so package consumers (e.g., the MCP fan-out search) can
+// disambiguate child grants whose `{kind,id}` source binding alone collides
+// — e.g., two Codex connections under the same connector. The grant
+// storage_binding itself stays `{connector_id}` only, per main's invariant
+// (see `requireStructuredStorageBinding`).
+function enrichSourceWithConnectionId(source, connectionId) {
+  if (!source || typeof source !== 'object') return source;
+  if (source.connection_id || !isNonEmptyString(connectionId)) return source;
+  return { ...source, connection_id: connectionId };
+}
+
 function normalizeStorageBinding(storageBinding) {
   if (!storageBinding?.connector_id) return null;
   return { connector_id: storageBinding.connector_id };
@@ -2765,6 +2777,548 @@ async function issueOAuthRefreshToken({ clientId, grantId, subjectId, expiresAt 
   return refreshToken;
 }
 
+async function issueOAuthRefreshTokenForPackage({ clientId, packageId, subjectId, expiresAt = null }) {
+  const refreshToken = generateOAuthRefreshToken();
+  const refreshTokenHash = hashOAuthRefreshToken(refreshToken);
+  const createdAt = nowIso();
+  if (isPostgresStorageBackend()) {
+    await pgExec(
+      `INSERT INTO oauth_refresh_tokens(
+         refresh_token_hash, client_id, grant_id, package_id, subject_id, status,
+         created_at, expires_at, last_used_at, revoked_at
+       ) VALUES($1, $2, NULL, $3, $4, 'active', $5, $6, NULL, NULL)`,
+      [refreshTokenHash, clientId, packageId, subjectId, createdAt, expiresAt],
+    );
+  } else {
+    exec(referenceQueries.authOauthRefreshTokensInsertPackage, [
+      refreshTokenHash,
+      clientId,
+      packageId,
+      subjectId,
+      createdAt,
+      expiresAt,
+    ]);
+  }
+  return refreshToken;
+}
+
+async function issuePackageToken(packageId, subjectId, clientId, expiresAt = null, meta = {}) {
+  const tokenId = generateToken();
+  if (isPostgresStorageBackend()) {
+    await pgExec(
+      `INSERT INTO tokens(token_id, grant_id, package_id, subject_id, client_id, token_kind, expires_at)
+       VALUES($1, NULL, $2, $3, $4, 'mcp_package', $5)`,
+      [tokenId, packageId, subjectId, clientId, expiresAt],
+    );
+  } else {
+    exec(referenceQueries.authTokensInsertMcpPackage, [tokenId, packageId, subjectId, clientId, expiresAt]);
+  }
+
+  await emitSpineEvent({
+    event_type: 'token.issued',
+    trace_id: meta.traceContext?.trace_id || undefined,
+    scenario_id: meta.traceContext?.scenario_id || undefined,
+    request_id: meta.traceContext?.request_id || undefined,
+    actor_type: 'authorization_server',
+    actor_id: 'pdpp_as',
+    subject_type: 'subject',
+    subject_id: subjectId,
+    object_type: 'token',
+    object_id: tokenId,
+    status: 'succeeded',
+    client_id: clientId,
+    token_id: tokenId,
+    data: {
+      token_kind: 'mcp_package',
+      grant_package_id: packageId,
+      issuance_path: meta.source || 'hosted_mcp_package',
+    },
+  });
+
+  return tokenId;
+}
+
+function parsePackageJson(raw) {
+  if (typeof raw !== 'string' || !raw.trim()) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function normalizePackageRow(row) {
+  if (!row) return null;
+  return {
+    package_id: row.package_id,
+    subject_id: row.subject_id,
+    client_id: row.client_id,
+    status: row.status,
+    package: parsePackageJson(row.package_json),
+    trace_id: row.trace_id || null,
+    scenario_id: row.scenario_id || null,
+    created_at: row.created_at,
+    approved_at: row.approved_at,
+    revoked_at: row.revoked_at || null,
+  };
+}
+
+function describePackageMemberSource(grant, connectionId = null, metadata = null) {
+  const source = describeGrantSource(grant);
+  if (!source) return null;
+  return {
+    ...source,
+    ...(isNonEmptyString(connectionId) ? { connection_id: connectionId } : {}),
+    ...(metadata?.display_name ? { display_name: metadata.display_name } : {}),
+    ...(metadata?.connector_display_name ? { connector_display_name: metadata.connector_display_name } : {}),
+  };
+}
+
+/**
+ * Persist one source-bounded child grant + access token for a hosted MCP
+ * grant package. Mirrors the durable steps in `approveGrant` for one
+ * `authorization_details[]` entry, without the consent-row / pending-consent
+ * coupling. Returns `{ grant, token, expiresAt }`.
+ *
+ * The package envelope is a transport convenience — it does NOT change the
+ * Core invariant that each issued grant is source-bounded.
+ */
+async function persistChildGrantForPackage({
+  request,
+  registeredClient,
+  subjectId,
+  sourceBinding,
+  storageBinding,
+  manifest,
+  resolvedStreams,
+  traceContext,
+}) {
+  const selection = request.selection;
+  const client = request.client || {};
+
+  // Hosted MCP packages never carry ai_training; reject if a client tries.
+  if (selection.purpose_code === 'https://pdpp.org/purpose/ai_training') {
+    const err = new Error('Hosted MCP package consent does not cover ai_training');
+    err.code = 'invalid_request';
+    err.param = 'purpose_code';
+    throw err;
+  }
+
+  const grantId = generateId('grt');
+  const issuedAt = nowIso();
+  const expiresAt = selection.access_mode === 'single_use'
+    ? new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
+    : null;
+
+  const persistedSource = describeSourceBinding(sourceBinding);
+  const persistedStorageBinding = normalizeStorageBinding(storageBinding);
+
+  const grant = {
+    version: '0.1.0',
+    grant_id: grantId,
+    issued_at: issuedAt,
+    subject: { id: subjectId },
+    client: {
+      client_id: registeredClient.client_id,
+      ...(client.client_display ? { client_display: client.client_display } : {}),
+    },
+    source: persistedSource,
+    manifest_version: manifest.version,
+    purpose_code: selection.purpose_code,
+    purpose_description: selection.purpose_description,
+    access_mode: selection.access_mode,
+    streams: resolvedStreams,
+    retention: selection.retention,
+    expires_at: expiresAt,
+  };
+
+  if (isPostgresStorageBackend()) {
+    await pgExec(
+      `INSERT INTO grants(
+         grant_id, subject_id, client_id, storage_binding_json, grant_json,
+         access_mode, issued_at, expires_at, trace_id, scenario_id
+       ) VALUES($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8, $9, $10)`,
+      [
+        grantId,
+        subjectId,
+        registeredClient.client_id,
+        serializeStorageBinding(persistedStorageBinding),
+        JSON.stringify(grant),
+        selection.access_mode,
+        issuedAt,
+        expiresAt,
+        traceContext.trace_id,
+        traceContext.scenario_id,
+      ],
+    );
+  } else {
+    exec(referenceQueries.authGrantsInsert, [
+      grantId,
+      subjectId,
+      registeredClient.client_id,
+      serializeStorageBinding(persistedStorageBinding),
+      JSON.stringify(grant),
+      selection.access_mode,
+      issuedAt,
+      expiresAt,
+      traceContext.trace_id,
+      traceContext.scenario_id,
+    ]);
+  }
+
+  await emitSpineEvent({
+    event_type: 'grant.issued',
+    trace_id: traceContext.trace_id,
+    scenario_id: traceContext.scenario_id,
+    request_id: traceContext.request_id,
+    actor_type: 'authorization_server',
+    actor_id: 'pdpp_as',
+    subject_type: 'subject',
+    subject_id: subjectId,
+    object_type: 'grant',
+    object_id: grantId,
+    status: 'succeeded',
+    grant_id: grantId,
+    client_id: registeredClient.client_id,
+    data: {
+      source: describeGrantSource(grant),
+      access_mode: selection.access_mode,
+      purpose_code: selection.purpose_code,
+      stream_names: resolvedStreams.map((stream) => stream.name),
+    },
+  });
+
+  const token = await issueToken(grantId, subjectId, registeredClient.client_id, expiresAt, {
+    traceContext,
+    source: 'hosted_mcp_package_child',
+  });
+
+  return { grant, token, expiresAt };
+}
+
+/**
+ * Create one hosted MCP grant package: one independent source-bounded child
+ * grant per `authorization_details[]` entry, plus a single package-bound
+ * access token returned to the client. The package token never replaces or
+ * weakens child-grant enforcement — the RS still authorizes every read
+ * through the child grant whose source matches the request.
+ *
+ * @param {object} args
+ * @param {string} args.clientId
+ * @param {object[]} args.authorizationDetails — one entry per selected source.
+ * @param {object[]} args.storageBindings — same-index `{connector_id}` per detail.
+ * @param {string[]} args.connectionIds — same-index `connection_id` per detail
+ *   (may be null for connectors without owner-configured connection rows).
+ * @param {object[]} args.sourceMetadata — display hints per detail.
+ * @param {string} [args.subjectId]
+ * @param {object} [args.opts]
+ */
+export async function createHostedMcpGrantPackage({
+  clientId,
+  authorizationDetails,
+  storageBindings = [],
+  connectionIds = [],
+  sourceMetadata = [],
+  subjectId = 'owner_local',
+  opts = {},
+}) {
+  if (!isNonEmptyString(clientId)) {
+    throw buildOAuthAuthorizationCodeError('invalid_request', 'client_id is required');
+  }
+  if (!Array.isArray(authorizationDetails) || authorizationDetails.length === 0) {
+    throw buildOAuthAuthorizationCodeError('invalid_request', 'At least one source must be selected');
+  }
+
+  const registeredClient = await getRegisteredClient(clientId);
+  if (!registeredClient) {
+    throw buildOAuthAuthorizationCodeError('invalid_client', 'Unknown client_id');
+  }
+
+  const packageId = generateId('gpkg');
+  const traceContext = createTraceContext({ scenarioId: opts.scenarioId });
+  const createdAt = nowIso();
+  const packageEnvelope = {
+    version: 'reference.mcp_package.v1',
+    package_id: packageId,
+    subject: { id: subjectId },
+    client: {
+      client_id: clientId,
+      client_display: buildClientDisplayFromRegistration(registeredClient.metadata),
+    },
+    approved_source_count: authorizationDetails.length,
+    source_bounded_child_grants: true,
+  };
+
+  if (isPostgresStorageBackend()) {
+    await pgExec(
+      `INSERT INTO grant_packages(
+         package_id, subject_id, client_id, status, package_json,
+         trace_id, scenario_id, created_at, approved_at, revoked_at
+       ) VALUES($1, $2, $3, 'active', $4::jsonb, $5, $6, $7, $8, NULL)`,
+      [
+        packageId,
+        subjectId,
+        clientId,
+        JSON.stringify(packageEnvelope),
+        traceContext.trace_id,
+        traceContext.scenario_id,
+        createdAt,
+        createdAt,
+      ],
+    );
+  } else {
+    exec(referenceQueries.authGrantPackagesInsert, [
+      packageId,
+      subjectId,
+      clientId,
+      JSON.stringify(packageEnvelope),
+      traceContext.trace_id,
+      traceContext.scenario_id,
+      createdAt,
+      createdAt,
+    ]);
+  }
+
+  const childGrants = [];
+  for (const [index, detail] of authorizationDetails.entries()) {
+    const request = normalizePendingGrantRequest(
+      { client_id: clientId, authorization_details: [detail] },
+      opts,
+    );
+    const selectedStorageBinding = normalizeStorageBinding(storageBindings[index]);
+    if (selectedStorageBinding) {
+      request.storage_binding = selectedStorageBinding;
+    }
+    requireStructuredPendingRequestShape(request);
+    request.trace_context = traceContext;
+    const childRegisteredClient = await requirePendingRequestClientRegistration(request);
+    const { sourceBinding, storageBinding } = requireStructuredPendingRequestBindings(request);
+    request.source_binding = describeSourceBinding(sourceBinding);
+    request.storage_binding = normalizeStorageBinding(storageBinding);
+    const manifest = await requireGrantManifestForBindings(sourceBinding, storageBinding, opts);
+    request.manifest_version = manifest.version;
+    const resolvedStreams = resolveGrantSelection(request.selection, manifest);
+    const { grant, token } = await persistChildGrantForPackage({
+      request,
+      registeredClient: childRegisteredClient,
+      subjectId,
+      sourceBinding,
+      storageBinding,
+      manifest,
+      resolvedStreams,
+      traceContext,
+    });
+    const connectionId = isNonEmptyString(connectionIds[index]) ? connectionIds[index] : null;
+    const source = describePackageMemberSource(grant, connectionId, sourceMetadata[index]);
+    const addedAt = nowIso();
+    if (isPostgresStorageBackend()) {
+      await pgExec(
+        `INSERT INTO grant_package_members(
+           package_id, grant_id, token_id, source_json, status, added_at, revoked_at
+         ) VALUES($1, $2, $3, $4::jsonb, 'active', $5, NULL)`,
+        [packageId, grant.grant_id, token, JSON.stringify(source), addedAt],
+      );
+    } else {
+      exec(referenceQueries.authGrantPackageMembersInsert, [
+        packageId,
+        grant.grant_id,
+        token,
+        JSON.stringify(source),
+        addedAt,
+      ]);
+    }
+    childGrants.push({ grant, token, source, connection_id: connectionId });
+  }
+
+  const packageToken = await issuePackageToken(packageId, subjectId, clientId, null, {
+    traceContext,
+    source: 'hosted_mcp_package',
+  });
+
+  await emitSpineEvent({
+    event_type: 'grant_package.issued',
+    trace_id: traceContext.trace_id,
+    scenario_id: traceContext.scenario_id,
+    request_id: traceContext.request_id,
+    actor_type: 'authorization_server',
+    actor_id: 'pdpp_as',
+    subject_type: 'subject',
+    subject_id: subjectId,
+    object_type: 'grant_package',
+    object_id: packageId,
+    status: 'succeeded',
+    client_id: clientId,
+    token_id: packageToken,
+    data: {
+      child_grant_ids: childGrants.map((entry) => entry.grant.grant_id),
+      sources: childGrants.map((entry) => entry.source),
+    },
+  });
+
+  return {
+    package: {
+      ...packageEnvelope,
+      child_grants: childGrants.map((entry) => ({
+        grant_id: entry.grant.grant_id,
+        source: entry.source,
+      })),
+    },
+    package_id: packageId,
+    token: packageToken,
+    child_grants: childGrants,
+    trace_context: traceContext,
+  };
+}
+
+/**
+ * Resolve a hosted-MCP package id to its currently active members. Each
+ * member entry exposes the child grant, its access token, its storage
+ * binding, and an enriched `source` (with `connection_id` when known) that
+ * the MCP fan-out can use to scope per-source reads.
+ *
+ * Returns `null` when the package itself is missing or revoked. An active
+ * package with all members revoked returns `{ package, members: [] }`.
+ */
+export async function getGrantPackageAccess(packageId) {
+  if (!isNonEmptyString(packageId)) return null;
+  const packageRow = isPostgresStorageBackend()
+    ? await pgOne(
+        `SELECT package_id, subject_id, client_id, status, package_json::text AS package_json,
+                trace_id, scenario_id, created_at, approved_at, revoked_at
+         FROM grant_packages
+         WHERE package_id = $1`,
+        [packageId],
+      )
+    : getOne(referenceQueries.authGrantPackagesGetById, [packageId]);
+  const grantPackage = normalizePackageRow(packageRow);
+  if (!grantPackage || grantPackage.status !== 'active') {
+    return null;
+  }
+
+  const memberRows = isPostgresStorageBackend()
+    ? (await postgresQuery(
+        `SELECT gm.package_id, gm.grant_id, gm.token_id, gm.source_json::text AS source_json,
+                gm.status, gm.added_at, gm.revoked_at,
+                g.status AS grant_status, g.grant_json::text AS grant_json,
+                g.storage_binding_json::text AS storage_binding_json,
+                t.revoked AS token_revoked, t.expires_at AS token_expires_at
+         FROM grant_package_members gm
+         JOIN grants g ON gm.grant_id = g.grant_id
+         JOIN tokens t ON gm.token_id = t.token_id
+         WHERE gm.package_id = $1
+           AND gm.status = 'active'
+         ORDER BY gm.added_at, gm.grant_id`,
+        [packageId],
+      )).rows
+    : allowUnboundedReadAcknowledged(referenceQueries.authGrantPackageMembersListActiveByPackage, [packageId]);
+
+  const activeMembers = [];
+  for (const row of memberRows) {
+    if (row.grant_status !== 'active' || row.token_revoked) continue;
+    if (row.token_expires_at && new Date(row.token_expires_at).getTime() <= Date.now()) continue;
+    let grantState;
+    try {
+      grantState = requirePersistedGrantState(row);
+    } catch {
+      continue;
+    }
+    const persistedSource = parsePackageJson(row.source_json) || describeGrantSource(grantState.grant);
+    activeMembers.push({
+      package_id: packageId,
+      grant_id: row.grant_id,
+      token: row.token_id,
+      source: persistedSource,
+      grant: grantState.grant,
+      grant_storage_binding: grantState.storageBinding,
+      connection_id: persistedSource?.connection_id || null,
+    });
+  }
+
+  return {
+    package: grantPackage,
+    members: activeMembers,
+  };
+}
+
+export async function revokeGrantPackage(packageId, context = {}) {
+  const now = nowIso();
+  if (isPostgresStorageBackend()) {
+    await pgExec("UPDATE grant_packages SET status = 'revoked', revoked_at = $1 WHERE package_id = $2 AND status = 'active'", [now, packageId]);
+    await pgExec("UPDATE tokens SET revoked = TRUE WHERE package_id = $1", [packageId]);
+    await pgExec("UPDATE grant_package_members SET status = 'revoked', revoked_at = $1 WHERE package_id = $2 AND status = 'active'", [now, packageId]);
+    await pgExec("UPDATE oauth_refresh_tokens SET status = 'revoked', revoked_at = $1 WHERE package_id = $2 AND status = 'active'", [now, packageId]);
+  } else {
+    exec(referenceQueries.authGrantPackagesMarkRevoked, [now, packageId]);
+    exec(referenceQueries.authTokensRevokeByPackage, [packageId]);
+    exec(referenceQueries.authGrantPackageMembersMarkRevokedByPackage, [now, packageId]);
+    exec(referenceQueries.authOauthRefreshTokensRevokeByPackage, [now, packageId]);
+  }
+
+  await emitSpineEvent({
+    event_type: 'grant_package.revoked',
+    trace_id: context.trace_id || undefined,
+    scenario_id: context.scenario_id || undefined,
+    request_id: context.request_id || undefined,
+    actor_type: 'authorization_server',
+    actor_id: 'pdpp_as',
+    object_type: 'grant_package',
+    object_id: packageId,
+    status: 'succeeded',
+    data: {},
+  });
+}
+
+export async function issueOAuthAuthorizationCodeForPackageDeviceCode(deviceCode, { packageId, token }) {
+  if (!isNonEmptyString(deviceCode)) return null;
+  const row = isPostgresStorageBackend()
+    ? await pgOne(
+        `SELECT id, device_code, client_id, redirect_uri, state, status, expires_at
+         FROM oauth_authorization_codes
+         WHERE device_code = $1`,
+        [deviceCode],
+      )
+    : getOne(referenceQueries.authOauthAuthorizationCodesGetByDeviceCode, [deviceCode]);
+
+  if (!row || row.status !== 'pending') return null;
+  if (isExpired(row)) {
+    if (isPostgresStorageBackend()) {
+      await pgExec(
+        `UPDATE oauth_authorization_codes SET status = 'expired' WHERE device_code = $1 AND status = 'pending'`,
+        [deviceCode],
+      );
+    } else {
+      exec(referenceQueries.authOauthAuthorizationCodesMarkExpiredByDeviceCode, [deviceCode]);
+    }
+    throw buildOAuthAuthorizationCodeError('invalid_request', 'OAuth authorization request has expired');
+  }
+
+  const code = generateId('oacode');
+  const issuedAt = nowIso();
+  const expiresAt = expiresInIso(300);
+  if (isPostgresStorageBackend()) {
+    await pgExec(
+      `UPDATE oauth_authorization_codes
+       SET code = $1, grant_id = NULL, package_id = $2, token_id = $3, status = 'issued',
+           issued_at = $4, expires_at = $5
+       WHERE device_code = $6 AND status = 'pending'`,
+      [code, packageId, token, issuedAt, expiresAt, deviceCode],
+    );
+  } else {
+    exec(
+      referenceQueries.authOauthAuthorizationCodesIssuePackageForDeviceCode,
+      [code, packageId, token, issuedAt, expiresAt, deviceCode],
+    );
+  }
+
+  return {
+    code,
+    client_id: row.client_id,
+    redirect_uri: row.redirect_uri,
+    state: row.state || null,
+    expires_at: expiresAt,
+  };
+}
+
 export async function stageOAuthAuthorizationCodeRequest({
   deviceCode,
   clientId,
@@ -2927,7 +3481,7 @@ export async function exchangeOAuthAuthorizationCode({
   const row = isPostgresStorageBackend()
     ? await pgOne(
         `SELECT id, code, client_id, redirect_uri, code_challenge, code_challenge_method,
-                status, grant_id, token_id, expires_at, consumed_at
+                status, grant_id, package_id, token_id, expires_at, consumed_at
          FROM oauth_authorization_codes
          WHERE code = $1`,
         [code],
@@ -2975,20 +3529,30 @@ export async function exchangeOAuthAuthorizationCode({
   const response = {
     access_token: row.token_id,
     token_type: 'Bearer',
-    grant_id: row.grant_id,
+    ...(row.package_id ? { grant_package_id: row.package_id } : { grant_id: row.grant_id }),
   };
 
   if (clientSupportsOAuthRefreshToken(registeredClient)) {
     const tokenInfo = await introspect(row.token_id);
-    if (!tokenInfo.active || tokenInfo.client_id !== clientId || tokenInfo.grant_id !== row.grant_id) {
+    const tokenMatches = row.package_id
+      ? tokenInfo.grant_package_id === row.package_id && tokenInfo.pdpp_token_kind === 'mcp_package'
+      : tokenInfo.grant_id === row.grant_id && tokenInfo.pdpp_token_kind === 'client';
+    if (!tokenInfo.active || tokenInfo.client_id !== clientId || !tokenMatches) {
       throw buildOAuthAuthorizationCodeError('invalid_grant', 'Issued grant token is no longer active');
     }
-    response.refresh_token = await issueOAuthRefreshToken({
-      clientId,
-      grantId: row.grant_id,
-      subjectId: tokenInfo.subject_id,
-      expiresAt: tokenInfo.exp ? new Date(tokenInfo.exp * 1000).toISOString() : null,
-    });
+    response.refresh_token = row.package_id
+      ? await issueOAuthRefreshTokenForPackage({
+          clientId,
+          packageId: row.package_id,
+          subjectId: tokenInfo.subject_id,
+          expiresAt: tokenInfo.exp ? new Date(tokenInfo.exp * 1000).toISOString() : null,
+        })
+      : await issueOAuthRefreshToken({
+          clientId,
+          grantId: row.grant_id,
+          subjectId: tokenInfo.subject_id,
+          expiresAt: tokenInfo.exp ? new Date(tokenInfo.exp * 1000).toISOString() : null,
+        });
   }
 
   return response;
@@ -3008,7 +3572,7 @@ export async function exchangeOAuthRefreshToken({
   const refreshTokenHash = hashOAuthRefreshToken(refreshToken);
   const row = isPostgresStorageBackend()
     ? await pgOne(
-        `SELECT refresh_token_hash, client_id, grant_id, subject_id, status,
+        `SELECT refresh_token_hash, client_id, grant_id, package_id, subject_id, status,
                 created_at, expires_at, last_used_at, revoked_at
          FROM oauth_refresh_tokens
          WHERE refresh_token_hash = $1`,
@@ -3033,14 +3597,27 @@ export async function exchangeOAuthRefreshToken({
 
   let accessToken;
   try {
-    accessToken = await issueToken(row.grant_id, row.subject_id, row.client_id, row.expires_at || null, {
-      source: 'oauth_refresh_token',
-    });
+    if (row.package_id) {
+      const grantPackage = await getGrantPackageAccess(row.package_id);
+      if (!grantPackage) {
+        const err = new Error('Grant package is no longer active');
+        err.code = 'package_revoked';
+        throw err;
+      }
+      accessToken = await issuePackageToken(row.package_id, row.subject_id, row.client_id, row.expires_at || null, {
+        source: 'oauth_refresh_token',
+      });
+    } else {
+      accessToken = await issueToken(row.grant_id, row.subject_id, row.client_id, row.expires_at || null, {
+        source: 'oauth_refresh_token',
+      });
+    }
   } catch (err) {
     const code = [
       'grant_revoked',
       'grant_invalid',
       'grant_consumed',
+      'package_revoked',
       'not_found',
     ].includes(err?.code) ? 'invalid_grant' : (err?.code || 'invalid_grant');
     throw buildOAuthRefreshTokenError(code, err?.message || 'Refresh token grant is no longer valid');
@@ -3062,7 +3639,7 @@ export async function exchangeOAuthRefreshToken({
     access_token: accessToken,
     token_type: 'Bearer',
     refresh_token: refreshToken,
-    grant_id: row.grant_id,
+    ...(row.package_id ? { grant_package_id: row.package_id } : { grant_id: row.grant_id }),
   };
 }
 
@@ -3713,14 +4290,19 @@ export async function issueOwnerToken(subjectId, meta = {}) {
 export async function introspect(token) {
   const row = isPostgresStorageBackend()
     ? await pgOne(
-        `SELECT t.token_id, t.grant_id, t.subject_id, t.client_id, t.token_kind, t.expires_at, t.revoked,
+        `SELECT t.token_id, t.grant_id, t.package_id, t.subject_id, t.client_id, t.token_kind, t.expires_at, t.revoked,
                 g.status AS grant_status,
                 g.grant_json::text AS grant_json,
                 g.trace_id,
                 g.scenario_id,
+                gp.status AS package_status,
+                gp.package_json::text AS package_json,
+                gp.trace_id AS package_trace_id,
+                gp.scenario_id AS package_scenario_id,
                 g.storage_binding_json::text AS storage_binding_json
          FROM tokens t
          LEFT JOIN grants g ON t.grant_id = g.grant_id
+         LEFT JOIN grant_packages gp ON t.package_id = gp.package_id
          WHERE t.token_id = $1`,
         [token],
       )
@@ -3740,7 +4322,15 @@ export async function introspect(token) {
             trace_id: row.trace_id,
             scenario_id: row.scenario_id,
           }
-        : {}),
+        : row.token_kind === 'mcp_package'
+          ? {
+              grant_package_id: row.package_id,
+              client_id: row.client_id,
+              subject_id: row.subject_id,
+              trace_id: row.package_trace_id,
+              scenario_id: row.package_scenario_id,
+            }
+          : {}),
     };
   }
 
@@ -3757,7 +4347,15 @@ export async function introspect(token) {
             trace_id: row.trace_id,
             scenario_id: row.scenario_id,
           }
-        : {}),
+        : row.token_kind === 'mcp_package'
+          ? {
+              grant_package_id: row.package_id,
+              client_id: row.client_id,
+              subject_id: row.subject_id,
+              trace_id: row.package_trace_id,
+              scenario_id: row.package_scenario_id,
+            }
+          : {}),
     };
   }
 
@@ -3774,6 +4372,18 @@ export async function introspect(token) {
     };
   }
 
+  if (row.token_kind === 'mcp_package' && row.package_status !== 'active') {
+    return {
+      active: false,
+      inactive_reason: 'package_revoked',
+      grant_package_id: row.package_id,
+      client_id: row.client_id,
+      subject_id: row.subject_id,
+      trace_id: row.package_trace_id,
+      scenario_id: row.package_scenario_id,
+    };
+  }
+
   const result = {
     active: true,
     pdpp_token_kind: row.token_kind,
@@ -3783,6 +4393,14 @@ export async function introspect(token) {
 
   if (row.token_kind === 'owner' && row.client_id) {
     result.client_id = row.client_id;
+  }
+
+  if (row.token_kind === 'mcp_package') {
+    result.grant_package_id = row.package_id;
+    result.client_id = row.client_id;
+    result.package = parsePackageJson(row.package_json);
+    result.trace_id = row.package_trace_id;
+    result.scenario_id = row.package_scenario_id;
   }
 
   if (row.token_kind === 'client') {

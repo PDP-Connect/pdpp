@@ -18,11 +18,15 @@ export const DEFAULT_SERVER_VERSION = '0.0.0';
 export function createPdppMcpServer({
   providerUrl,
   accessToken,
+  rsClient,
   fetch = globalThis.fetch,
   serverName = DEFAULT_SERVER_NAME,
   serverVersion = DEFAULT_SERVER_VERSION,
 }) {
-  const rs = new RsClient({ providerUrl, accessToken, fetch });
+  // Callers may inject a custom RsClient-compatible adapter (e.g. the hosted
+  // adapter's PackageRsClient fan-out). Otherwise we build a single-bearer
+  // RsClient from the supplied accessToken.
+  const rs = rsClient ?? new RsClient({ providerUrl, accessToken, fetch });
   const server = new McpServer({ name: serverName, version: serverVersion });
 
   const tools = buildTools({ rs, providerUrl });

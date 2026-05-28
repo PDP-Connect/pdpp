@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
-import { revokeGrant } from '../server/auth.js';
+import { revokeGrant, revokeGrantPackage } from '../server/auth.js';
 import { startServer } from '../server/index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -33,6 +33,17 @@ function pkceChallenge(verifier) {
 
 async function registerSpotify(asUrl) {
   const manifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
+  const { status } = await fetchJson(`${asUrl}/connectors`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(manifest),
+  });
+  assert.equal(status, 201);
+  return manifest;
+}
+
+async function registerGithub(asUrl) {
+  const manifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/github.json'), 'utf8'));
   const { status } = await fetchJson(`${asUrl}/connectors`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -159,6 +170,92 @@ async function completeOauthCodeFlow({ asUrl, client, manifest }) {
     refreshToken: body.refresh_token || null,
     grantId: body.grant_id,
     code,
+  };
+}
+
+// Drive the multi-source hosted-MCP picker end-to-end:
+//   1. Register multiple connectors with the AS.
+//   2. Open the picker (GET /oauth/authorize without authorization_details).
+//   3. Post the multi-select picker form with `selection=connector:<id>` rows.
+//   4. Follow the redirect to the client's callback, capture the package code.
+//   5. Exchange the code for a `grant_package_id`-bearing access token at
+//      /oauth/token, including a refresh token.
+//
+// Returns the access token, refresh token, package id, and PKCE artefacts so
+// the caller can drive /mcp under the package bearer and exercise refresh
+// against the same package.
+async function completeMultiSourcePackageFlow({ asUrl, client, connectorIds }) {
+  const verifier = randomBytes(32).toString('base64url');
+  const state = 'pkg-state-456';
+  const challenge = pkceChallenge(verifier);
+
+  const authorizeUrl = new URL(`${asUrl}/oauth/authorize`);
+  authorizeUrl.searchParams.set('client_id', client.client_id);
+  authorizeUrl.searchParams.set('redirect_uri', 'https://client.example/callback');
+  authorizeUrl.searchParams.set('response_type', 'code');
+  authorizeUrl.searchParams.set('state', state);
+  authorizeUrl.searchParams.set('code_challenge', challenge);
+  authorizeUrl.searchParams.set('code_challenge_method', 'S256');
+
+  // No `authorization_details` and no `connector_id` → AS renders the
+  // multi-source picker page so we can submit a multi-select form.
+  const pickerResp = await fetch(authorizeUrl, { redirect: 'manual' });
+  assert.equal(pickerResp.status, 200);
+  const pickerHtml = await pickerResp.text();
+  for (const id of connectorIds) {
+    assert.ok(pickerHtml.includes(`connector:${id}`), `picker should advertise connector:${id}`);
+  }
+
+  // POST the multi-source approval. Owner auth is disabled for tests
+  // (`ownerAuthPassword: ''`), so `requireOwnerSession` and `requireCsrf`
+  // are no-ops and the form goes through without a session cookie.
+  const params = new URLSearchParams();
+  params.append('client_id', client.client_id);
+  params.append('redirect_uri', 'https://client.example/callback');
+  params.append('response_type', 'code');
+  params.append('state', state);
+  params.append('code_challenge', challenge);
+  params.append('code_challenge_method', 'S256');
+  for (const id of connectorIds) {
+    params.append('selection', `connector:${id}`);
+  }
+
+  const approveResp = await fetch(`${asUrl}/oauth/authorize/mcp-package`, {
+    method: 'POST',
+    redirect: 'manual',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: params.toString(),
+  });
+  assert.equal(approveResp.status, 302);
+  const callback = new URL(approveResp.headers.get('location'));
+  assert.equal(callback.origin, 'https://client.example');
+  assert.equal(callback.searchParams.get('state'), state);
+  const code = callback.searchParams.get('code');
+  assert.ok(code);
+
+  const { status, body } = await fetchJson(`${asUrl}/oauth/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'authorization_code',
+      code,
+      client_id: client.client_id,
+      redirect_uri: 'https://client.example/callback',
+      code_verifier: verifier,
+    }).toString(),
+  });
+  assert.equal(status, 200);
+  assert.equal(body.token_type, 'Bearer');
+  assert.ok(body.access_token);
+  assert.ok(body.grant_package_id, 'multi-source approval issues a package-bound token');
+  assert.equal(body.grant_id, undefined, 'package tokens MUST NOT carry a child grant_id at the OAuth surface');
+
+  return {
+    accessToken: body.access_token,
+    refreshToken: body.refresh_token || null,
+    packageId: body.grant_package_id,
+    verifier,
+    state,
   };
 }
 
@@ -296,7 +393,20 @@ test('hosted MCP OAuth code flow issues a scoped client token usable at /mcp', a
     });
     assert.equal(tools.status, 200);
     const toolNames = tools.body.result.tools.map((tool) => tool.name).sort();
-    assert.deepEqual(toolNames, ['fetch', 'fetch_blob', 'list_streams', 'query_records', 'schema', 'search']);
+    assert.deepEqual(toolNames, [
+      'create_event_subscription',
+      'delete_event_subscription',
+      'fetch',
+      'fetch_blob',
+      'get_event_subscription',
+      'list_event_subscriptions',
+      'list_streams',
+      'query_records',
+      'schema',
+      'search',
+      'send_test_event',
+      'update_event_subscription',
+    ]);
 
     const refreshedTools = await postMcpJson(rsUrl, refreshed.body.access_token, {
       jsonrpc: '2.0',
@@ -390,7 +500,7 @@ test('/mcp rejects missing and owner bearers', async () => {
     assert.equal(missing.body.error.resource_metadata, `${rsUrl}/.well-known/oauth-protected-resource/mcp`);
     const mcpMetadata = await fetchProtectedResourceMetadata(missing.body.error.resource_metadata);
     assert.equal(mcpMetadata.resource, `${rsUrl}/mcp`);
-    assert.deepEqual(mcpMetadata.pdpp_token_kinds_supported, ['client']);
+    assert.deepEqual(mcpMetadata.pdpp_token_kinds_supported, ['client', 'mcp_package']);
     assert.equal(mcpMetadata.pdpp_agent_discovery.mcp.endpoint, `${rsUrl}/mcp`);
 
     const ownerToken = await issueOwnerToken(asUrl);
@@ -498,6 +608,271 @@ test('dynamic registration accepts only public authorization-code and refresh-to
       }),
     });
     assert.equal(nativeLoopback.status, 201);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+// End-to-end coverage for the hosted-MCP grant-package construction
+// (OpenSpec change `add-hosted-mcp-grant-packages`, tasks 5.1 / 5.5 / 5.6).
+// These prove that the AS→package-token→`/mcp`→PackageRsClient chain holds
+// under multi-source approval, child-grant revocation, and full package
+// revocation. The unit suite in `package-rs-client.test.js` covers the
+// adapter routing in isolation; this suite proves the live wiring.
+
+test('multi-source hosted MCP picker issues a package token usable at /mcp with source-tagged reads', async () => {
+  const server = await startOpenTestServer();
+  const asUrl = `http://localhost:${server.asPort}`;
+  const rsUrl = `http://localhost:${server.rsPort}`;
+
+  try {
+    const spotify = await registerSpotify(asUrl);
+    const github = await registerGithub(asUrl);
+    const client = await registerAuthCodeClient(asUrl);
+
+    const { accessToken, refreshToken, packageId } = await completeMultiSourcePackageFlow({
+      asUrl,
+      client,
+      connectorIds: [spotify.connector_id, github.connector_id],
+    });
+    assert.ok(refreshToken, 'multi-source package issues a refresh token');
+    assert.equal(refreshToken.startsWith('rt_'), true);
+
+    const initialize = await postMcpJson(rsUrl, accessToken, {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: {
+        protocolVersion: '2025-06-18',
+        capabilities: {},
+        clientInfo: { name: 'hosted-multi-source-test', version: '0.0.0' },
+      },
+    });
+    assert.equal(initialize.status, 200);
+    assert.equal(initialize.body.result.serverInfo.name, 'pdpp-reference-mcp');
+
+    // schema fan-out: streams from both children should appear, each
+    // tagged with the source's connector_id and grant_id.
+    const schemaCall = await postMcpJson(rsUrl, accessToken, {
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'tools/call',
+      params: { name: 'schema', arguments: {} },
+    });
+    assert.equal(schemaCall.status, 200);
+    assert.equal(schemaCall.body.result.isError, undefined);
+    const schemaData = schemaCall.body.result.structuredContent.data;
+    assert.ok(schemaData?.data?.package?.grant_package, 'schema response carries package metadata');
+    assert.equal(schemaData.data.package.member_count, 2);
+    const schemaConnectorIds = new Set(
+      (schemaData.data.streams || []).map((s) => s.source?.connector_id).filter(Boolean),
+    );
+    assert.ok(schemaConnectorIds.has(spotify.connector_id), 'schema fanout includes spotify streams');
+    assert.ok(schemaConnectorIds.has(github.connector_id), 'schema fanout includes github streams');
+    const schemaGrantIds = new Set(
+      (schemaData.data.streams || []).map((s) => s.source?.grant_id).filter(Boolean),
+    );
+    assert.equal(schemaGrantIds.size, 2, 'each stream is tagged with its child grant_id');
+
+    // list_streams fan-out: rows tagged + meta.package.member_count = 2.
+    const listCall = await postMcpJson(rsUrl, accessToken, {
+      jsonrpc: '2.0',
+      id: 3,
+      method: 'tools/call',
+      params: { name: 'list_streams', arguments: {} },
+    });
+    assert.equal(listCall.status, 200);
+    const listData = listCall.body.result.structuredContent.data;
+    assert.equal(listData?.meta?.package?.member_count, 2);
+    const listConnectorIds = new Set(
+      (listData.data || []).map((row) => row.source?.connector_id).filter(Boolean),
+    );
+    assert.ok(listConnectorIds.has(spotify.connector_id));
+    assert.ok(listConnectorIds.has(github.connector_id));
+
+    // The package token MUST NOT reach a non-/mcp REST surface. The
+    // canonical REST surfaces are gated by `requireClient` (returns 403
+    // permission_error for package tokens) or by manifest resolution
+    // that does not know how to interpret a package token's missing
+    // grant binding (surfaces as a typed 4xx). Either way the response
+    // is not 200 and is not an OK envelope.
+    const restProbe = await fetchJson(`${rsUrl}/v1/schema`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    assert.notEqual(restProbe.status, 200, 'package tokens MUST NOT serve REST /v1/schema');
+    assert.ok(
+      restProbe.status === 403 || restProbe.status === 404,
+      `expected REST surface to reject package token, got ${restProbe.status}`,
+    );
+
+    // Refresh-token exchange must succeed and return a fresh package token.
+    const refreshed = await fetchJson(`${asUrl}/oauth/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'refresh_token',
+        refresh_token: refreshToken,
+        client_id: client.client_id,
+      }).toString(),
+    });
+    assert.equal(refreshed.status, 200);
+    assert.equal(refreshed.body.grant_package_id, packageId);
+    assert.equal(refreshed.body.grant_id, undefined);
+    assert.ok(refreshed.body.access_token);
+    assert.notEqual(refreshed.body.access_token, accessToken);
+
+    // The refreshed package token still reaches /mcp with both children.
+    const refreshedSchema = await postMcpJson(rsUrl, refreshed.body.access_token, {
+      jsonrpc: '2.0',
+      id: 4,
+      method: 'tools/call',
+      params: { name: 'schema', arguments: {} },
+    });
+    assert.equal(refreshedSchema.status, 200);
+    const refreshedSchemaData = refreshedSchema.body.result.structuredContent.data;
+    assert.equal(refreshedSchemaData.data.package.member_count, 2);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('revoking one child grant silently removes that source from the package /mcp fanout', async () => {
+  const server = await startOpenTestServer();
+  const asUrl = `http://localhost:${server.asPort}`;
+  const rsUrl = `http://localhost:${server.rsPort}`;
+
+  try {
+    const spotify = await registerSpotify(asUrl);
+    const github = await registerGithub(asUrl);
+    const client = await registerAuthCodeClient(asUrl);
+
+    const { accessToken, packageId } = await completeMultiSourcePackageFlow({
+      asUrl,
+      client,
+      connectorIds: [spotify.connector_id, github.connector_id],
+    });
+
+    await postMcpJson(rsUrl, accessToken, {
+      jsonrpc: '2.0',
+      id: 0,
+      method: 'initialize',
+      params: {
+        protocolVersion: '2025-06-18',
+        capabilities: {},
+        clientInfo: { name: 'revoke-child-test', version: '0.0.0' },
+      },
+    });
+
+    // Baseline: both sources present.
+    const before = await postMcpJson(rsUrl, accessToken, {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: { name: 'schema', arguments: {} },
+    });
+    assert.equal(before.status, 200);
+    const beforeData = before.body.result.structuredContent.data;
+    assert.equal(beforeData.data.package.member_count, 2);
+    const childGrants = beforeData.data.package.sources.map((s) => ({
+      grant_id: s.grant_id,
+      connector_id: s.connector_id,
+    }));
+    const spotifyChild = childGrants.find((c) => c.connector_id === spotify.connector_id);
+    const githubChild = childGrants.find((c) => c.connector_id === github.connector_id);
+    assert.ok(spotifyChild && githubChild, 'package exposes one child grant per source');
+
+    // Revoke just the spotify child grant. The package and the github child
+    // stay active.
+    await revokeGrant(spotifyChild.grant_id, { request_id: 'multi-source-child-revoke-test' });
+
+    const after = await postMcpJson(rsUrl, accessToken, {
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'tools/call',
+      params: { name: 'schema', arguments: {} },
+    });
+    assert.equal(after.status, 200);
+    const afterData = after.body.result.structuredContent.data;
+    assert.equal(afterData.data.package.member_count, 1, 'revoked child is no longer counted in the package fanout');
+    const afterConnectorIds = new Set(afterData.data.streams.map((s) => s.source?.connector_id));
+    assert.ok(!afterConnectorIds.has(spotify.connector_id), 'spotify streams are absent after its child grant is revoked');
+    assert.ok(afterConnectorIds.has(github.connector_id), 'github streams still present');
+    const afterSourceConnectorIds = afterData.data.package.sources.map((s) => s.connector_id);
+    assert.deepEqual(afterSourceConnectorIds, [github.connector_id]);
+
+    // The package token itself stays valid because the package is still
+    // active and has one active member.
+    assert.equal(after.body.result.isError, undefined);
+
+    // Sanity: the package is still active, only the child is revoked.
+    assert.ok(packageId);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('revoking the package invalidates /mcp access and the refresh-token exchange', async () => {
+  const server = await startOpenTestServer();
+  const asUrl = `http://localhost:${server.asPort}`;
+  const rsUrl = `http://localhost:${server.rsPort}`;
+
+  try {
+    const spotify = await registerSpotify(asUrl);
+    const github = await registerGithub(asUrl);
+    const client = await registerAuthCodeClient(asUrl);
+
+    const { accessToken, refreshToken, packageId } = await completeMultiSourcePackageFlow({
+      asUrl,
+      client,
+      connectorIds: [spotify.connector_id, github.connector_id],
+    });
+
+    // Confirm the token works before revocation.
+    const before = await postMcpJson(rsUrl, accessToken, {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: {
+        protocolVersion: '2025-06-18',
+        capabilities: {},
+        clientInfo: { name: 'pkg-revoke-test', version: '0.0.0' },
+      },
+    });
+    assert.equal(before.status, 200);
+
+    // Revoke the package.
+    await revokeGrantPackage(packageId, { request_id: 'multi-source-package-revoke-test' });
+
+    // /mcp must now reject the package bearer. introspection marks the
+    // token inactive with `inactive_reason = 'package_revoked'`; that
+    // does not map to a grant_revoked/grant_expired/grant_invalid 403,
+    // so requireToken falls through to a 401 challenge.
+    const after = await postMcpJson(rsUrl, accessToken, {
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'tools/list',
+      params: {},
+    });
+    assert.equal(after.status, 401);
+    assert.equal(after.body.error.code, 'authentication_error');
+    assert.equal(
+      after.body.error.resource_metadata,
+      `${rsUrl}/.well-known/oauth-protected-resource/mcp`,
+    );
+
+    // The refresh-token exchange must also fail — the package's refresh
+    // token row gets revoked alongside the package.
+    const refreshAttempt = await fetchJson(`${asUrl}/oauth/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'refresh_token',
+        refresh_token: refreshToken,
+        client_id: client.client_id,
+      }).toString(),
+    });
+    assert.equal(refreshAttempt.status, 400);
+    assert.equal(refreshAttempt.body.error, 'invalid_grant');
   } finally {
     await closeServer(server);
   }
