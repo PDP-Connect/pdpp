@@ -28,33 +28,10 @@ The forkable implementation substrate SHALL live in `reference-implementation/` 
 ### Requirement: Native and polyfill realizations stay honest
 The reference implementation SHALL support both native-provider and polyfill realizations over one engine substrate while keeping their public source identity honest. Public artifacts SHALL identify the data source with a single discriminated **source object** of shape `{ kind: 'connector' | 'provider_native', id: string }` rather than with parallel top-level `connector_id` and `provider_id` scalars. The kind discriminator names the realization; the `id` field carries the kind-keyed identifier (a registered connector id when `kind = 'connector'`, a registered native provider id when `kind = 'provider_native'`).
 
-#### Scenario: A native provider request is staged
-- **WHEN** a client requests data from a native provider realization
-- **THEN** the public request and public artifacts SHALL identify that source with a source object whose `kind` is `provider_native` and whose `id` is the configured native provider id
-- **AND** the public artifacts SHALL NOT carry a top-level `provider_id` scalar or a top-level `connector_id` scalar alongside the source object
-
-#### Scenario: A polyfill request is staged
-- **WHEN** a client requests data from a connector-based or collected realization
-- **THEN** the public request and public artifacts SHALL identify that source with a source object whose `kind` is `connector` and whose `id` is the registered connector identifier
-- **AND** the public artifacts SHALL NOT carry a top-level `provider_id` scalar or a top-level `connector_id` scalar alongside the source object
-
-#### Scenario: Source object rejects mixed shapes
-- **WHEN** a public request body, grant, or spine event payload presents both a top-level `connector_id` scalar and a top-level `provider_id` scalar, or presents either of those scalars alongside a source object
-- **THEN** the reference SHALL reject the artifact with an `invalid_request` (for staged requests) or `grant_invalid` (for grants) error whose message names the canonical source-object shape
-
-#### Scenario: Internal storage remains connector-shaped
-- **WHEN** the implementation needs connector-shaped or storage-specific internal identifiers
-- **THEN** those identifiers MAY remain internal implementation details, but they SHALL not leak into native-provider public artifacts unless explicitly documented as reference-only internals
-
-#### Scenario: Native mode is configured
-- **WHEN** the reference implementation starts in native-provider mode
-- **THEN** the native manifest SHALL include explicit native provider identity and structured `storage_binding`
-- **AND** startup SHALL derive the public source-object identity (`kind = 'provider_native'`, `id = <native provider id>`) and the internal storage binding from that manifest rather than from separate native override flags
-
-#### Scenario: Reference-only event-spine rows expose the source object
-- **WHEN** a reference-only spine reader returns spine event rows
-- **THEN** each row SHALL carry the source object as `source_kind` and `source_id` columns whose values match the source object inside the row's payload
-- **AND** the legacy top-level `provider_id` column SHALL NOT appear in the row shape
+#### Scenario: Docker n.eko deployments resolve bundled connector manifests
+- **WHEN** the reference Docker deployment runs the n.eko compose overlay for browser-managed polyfill connectors
+- **THEN** the deployment SHALL provide an in-network manifest registry for the bundled polyfill connector manifests used by that overlay
+- **AND** the in-network registry SHALL preserve the connector manifest's declared public connector identifier rather than inventing a Docker-only connector identity
 
 ### Requirement: CLI and tests are first-class consumers
 The CLI and executable tests SHALL consume the real public or reference-designated surfaces of the implementation rather than private database shortcuts or website-only glue.
@@ -149,6 +126,7 @@ The reference implementation SHALL treat dashboard-submitted responses to live r
 - **AND** it SHALL NOT write those values to `.env.local`, durable SQLite state, or other long-lived reference configuration as part of this control-plane action
 
 ### Requirement: The Collection boundary stays explicit
+
 The reference implementation SHALL keep the Collection boundary explicit across core semantics, Collection Profile semantics, and runtime-only behavior.
 
 #### Scenario: Shared collection semantics are classified
@@ -162,6 +140,17 @@ The reference implementation SHALL keep the Collection boundary explicit across 
 #### Scenario: Orchestrator behavior is classified
 - **WHEN** behavior concerns scheduling, retry, credential storage, webhook adaptation, batch import, or multi-connector coordination
 - **THEN** it SHALL be treated as runtime/orchestrator behavior unless and until a concrete interoperability need justifies a new profile
+
+#### Scenario: Multi-instance connector orchestration is classified
+- **WHEN** the reference distinguishes two configured accounts, devices, or local bindings that share the same connector implementation
+- **THEN** connector instance identity SHALL be treated as reference runtime/orchestrator identity unless and until a concrete interoperability need promotes it into a Collection Profile or PDPP protocol surface
+- **AND** the reference SHALL NOT use `connector_id` alone as the durable runtime key for state, records, schedules, active-run leases, diagnostics, or owner actions
+
+#### Scenario: Default connector-only compatibility has been migrated away
+- **WHEN** the reference needs a default configured connection for a connector-only historical deployment
+- **THEN** it SHALL represent that default as a normal connector instance with `source_kind = "account"` and `source_binding.kind = "default_account"`
+- **AND** it SHALL NOT create, expose, or require connector instances with `source_kind = "legacy"` or `source_binding.kind = "legacy_default"`
+- **AND** migrations SHALL rewrite existing direct `connector_instance_id` references from the old compatibility id to the deterministic default account connection id without dropping records, state, schedules, search rows, blobs, gaps, or attention records
 
 #### Scenario: The reference makes an optimistic collection choice before the spec is fully frozen
 - **WHEN** the reference implementation enforces a strong Collection Profile behavior before the PDPP spec is fully settled
@@ -3375,3 +3364,376 @@ If `pdpp collector` is invoked without `@pdpp/local-collector` resolvable on the
 - **WHEN** `pdpp collector advertise` is invoked on a host where `@pdpp/local-collector` is installed
 - **THEN** the shim SHALL resolve the runner via `require.resolve('@pdpp/local-collector/package.json')`
 - **AND** SHALL forward argv to the resolved binary
+
+### Requirement: Bounded runs SHALL record recoverable detail gaps before committing list progress
+The reference implementation SHALL NOT durably advance list-level cursor progress past declared required connector detail whose content is unknown unless the missing detail is durably recorded as an explicit recoverable detail gap or backlog entry. The gap record SHALL include enough safe targeting information for a later run to retry the missing detail without replaying the full committed list tranche.
+
+#### Scenario: Required detail exhausts recoverable pressure
+- **WHEN** a connector enumerates a list cursor tranche, declares the listed keys that require detail for that cursor boundary, and a required detail fetch for one listed item exhausts recoverable upstream pressure
+- **THEN** the run MAY commit list-level cursor progress only if the missing detail is durably recorded as a pending recoverable detail gap before checkpoint commit
+- **AND** the connector SHALL NOT emit a placeholder record that represents the required detail as complete
+
+#### Scenario: Same-bucket detail pressure defers later tranche items
+- **WHEN** a connector observes recoverable upstream pressure for one required detail item in a same-bucket list-plus-detail tranche
+- **THEN** the connector MAY proactively record later unattempted items in the same tranche as pending recoverable detail gaps without fetching each item
+- **AND** the reference-only detail coverage SHALL include every deferred required key in `gap_keys`
+- **AND** diagnostics for deferred items SHALL NOT imply that those items were attempted or that they exhausted a retry budget
+
+#### Scenario: Required detail is missing without a durable gap
+- **WHEN** a bounded run reaches checkpoint commit with list-level progress whose declared detail coverage includes an item whose required detail was neither hydrated, explicitly optional/skipped, nor durably recorded as a recoverable gap
+- **THEN** the runtime SHALL reject the commit or fail the run
+- **AND** the main cursor SHALL NOT advance past that item
+
+#### Scenario: Connector does not declare detail coverage
+- **WHEN** a connector does not emit the reference-only detail coverage signal for a list cursor boundary
+- **THEN** the runtime SHALL NOT infer missing required detail from ordinary record absence alone
+- **AND** the connector SHALL NOT use the successful-with-pending-detail cursor semantics for that boundary
+
+#### Scenario: Optional detail is skipped
+- **WHEN** a connector skips detail that the stream semantics treat as optional and declares that skip in the reference-only coverage for the cursor boundary
+- **THEN** the skip SHALL be explicit in connector output or reference observability
+- **AND** the runtime SHALL NOT treat that optional skip as a required-detail recoverable gap
+
+### Requirement: Detail-gap recovery SHALL target backlog before full-tranche replay
+The reference implementation SHALL use durable detail-gap backlog entries to recover missing required detail for already-committed list cursor boundaries without requiring ordinary forward collection to replay the entire original list tranche.
+
+#### Scenario: A future run sees pending gaps
+- **WHEN** a future run starts for the same source and scope as pending detail gaps
+- **THEN** the reference runtime or connector orchestration SHALL make those gaps available for targeted recovery before or alongside ordinary forward list collection
+- **AND** recovery SHALL use the connector's normal retry, adaptive lane, pacing, and cancellation controls for that upstream detail bucket
+
+#### Scenario: Gap recovery succeeds
+- **WHEN** targeted recovery fetches the missing required detail
+- **THEN** the connector SHALL emit the real hydrated record
+- **AND** the reference implementation SHALL mark the corresponding gap as recovered only after the record is durably accepted
+
+#### Scenario: Gap recovery exhausts retry again
+- **WHEN** targeted recovery again exhausts recoverable upstream pressure
+- **THEN** the reference implementation MAY keep the gap pending with updated attempt metadata and a bounded next-attempt time
+- **AND** it SHALL NOT fabricate complete data or clear the backlog entry without successful recovery or explicit terminal evidence
+
+### Requirement: Detail-gap state SHALL remain reference-only until promoted
+Connector detail-gap backlog storage, recovery scheduling, and observability SHALL be treated as reference-only behavior for the first implementation tranche. This behavior SHALL NOT be presented as a Collection Profile protocol requirement unless a later OpenSpec change and root protocol update promote a standard wire contract.
+
+#### Scenario: Reference observability exposes gaps
+- **WHEN** `_ref` timelines, summaries, or diagnostics expose detail-gap state
+- **THEN** those artifacts SHALL be labeled reference-only
+- **AND** they SHALL distinguish pending, recovered, and terminal gaps from fully collected records
+
+#### Scenario: A protocol reader reviews Collection Profile semantics
+- **WHEN** a reviewer asks whether detail-gap backlog entries are required Collection Profile messages or fields
+- **THEN** the reference documentation SHALL state that they are not normative Collection Profile protocol in this tranche
+- **AND** it SHALL identify any connector/runtime reporting mechanism as internal reference behavior
+- **AND** portable connectors and protocol readers SHALL NOT rely on the reference `DETAIL_GAP` signal, detail-coverage signal, backlog schema, or cursor interpretation unless a later root protocol change promotes an explicit wire contract
+
+#### Scenario: Gap metadata is stored or displayed
+- **WHEN** the reference stores or displays detail-gap locators, reasons, or errors
+- **THEN** it SHALL avoid bearer tokens, cookies, secret-bearing URLs, request bodies, and raw private payloads
+- **AND** it SHALL store only the safe targeting information needed for recovery and auditability
+
+### Requirement: Reference connector catalog SHALL hide unproven manifests by default
+
+The reference implementation's operator-only `_ref/connectors` catalog SHALL exclude any connector whose manifest is not explicitly opted in as a public listing. This requirement governs reference/operator catalog behavior and is not part of the PDPP protocol contract.
+
+#### Scenario: Manifest is explicitly hidden
+
+- **WHEN** a connector manifest declares
+  `capabilities.public_listing.listed: false`
+- **THEN** the reference catalog SHALL NOT include that connector in
+  the default `_ref/connectors` response.
+
+#### Scenario: Manifest declares unproven status
+
+- **WHEN** a connector manifest declares
+  `capabilities.public_listing.status: "unproven"` without
+  `listed: true`
+- **THEN** the reference catalog SHALL NOT include that connector in
+  the default `_ref/connectors` response.
+
+#### Scenario: Manifest requires a local-device binding without an explicit opt-in
+
+- **WHEN** a connector manifest declares
+  `runtime_requirements.bindings.local_device.required: true` and does
+  not declare `capabilities.public_listing.listed: true`
+- **THEN** the reference catalog SHALL NOT include that connector in
+  the default `_ref/connectors` response, because the provider Docker
+  deployment cannot satisfy the local-device binding.
+
+#### Scenario: Connector ID matches a known reference stub
+
+- **WHEN** a connector ID contains a known reference test stub
+  identifier (such as `manual_action_stub`, `manual-action-stub`, or
+  `stream-test-stub`)
+- **THEN** the reference catalog SHALL NOT include that connector,
+  regardless of manifest contents.
+
+#### Scenario: Manifest is explicitly listed
+
+- **WHEN** a connector manifest declares
+  `capabilities.public_listing.listed: true`
+- **THEN** the reference catalog SHALL include that connector in the
+  default `_ref/connectors` response, provided the connector ID does
+  not match a known reference stub identifier.
+
+### Requirement: First-party manifests SHALL declare public listing status
+
+Every first-party reference manifest distributed under `packages/polyfill-connectors/manifests/` SHALL declare `capabilities.public_listing.listed` as a boolean. Manifests SHALL NOT rely on the implicit default-visible fallback.
+
+#### Scenario: First-party manifest omits public_listing
+
+- **WHEN** a first-party reference manifest does not declare
+  `capabilities.public_listing.listed`
+- **THEN** the manifest set's honesty test SHALL fail and the manifest
+  SHALL NOT be shipped.
+
+#### Scenario: First-party manifest declares listed false
+
+- **WHEN** a first-party reference manifest declares
+  `capabilities.public_listing.listed: false`
+- **THEN** the manifest SHALL also declare
+  `capabilities.public_listing.status` as either `"unproven"` (the
+  default reason for hiding a not-yet-exercised manifest) or
+  `"deprecated_upstream"` (the reason for hiding a manifest whose
+  upstream API has been shut down). Both values are absolute
+  hidden-by-design reasons; no other status value paired with
+  `listed: false` is permitted.
+
+### Requirement: Reference connector catalog SHALL be complete for listed first-party manifests
+
+After the reference implementation's startup `reconcilePolyfillManifests` pass, every first-party manifest under `packages/polyfill-connectors/manifests/` that declares `capabilities.public_listing.listed: true` SHALL be present in the connectors table and SHALL appear in `GET /_ref/connectors`, regardless of whether the operator has ever scheduled or run the connector. Registration through this path is the catalog visibility act; it is NOT schedule enablement. Hidden / unproven first-party manifests, manifests outside the shipped first-party set (custom user-authored connectors), and known stub connector IDs SHALL NOT be auto-registered by this path.
+
+#### Scenario: Listed first-party manifest with no prior schedule or run
+
+- **WHEN** a first-party manifest under
+  `packages/polyfill-connectors/manifests/` declares
+  `capabilities.public_listing.listed: true`
+- **AND** the connectors table contains no row for that manifest's
+  `connector_id` (no schedule, no prior run)
+- **THEN** the reference implementation's startup
+  `reconcilePolyfillManifests` pass SHALL register the manifest so the
+  operator catalog includes it.
+
+#### Scenario: Hidden first-party manifest with no prior schedule or run
+
+- **WHEN** a first-party manifest under
+  `packages/polyfill-connectors/manifests/` declares
+  `capabilities.public_listing.listed: false` (or omits a
+  `listed: true` declaration)
+- **AND** the connectors table contains no row for that manifest's
+  `connector_id`
+- **THEN** the reference implementation's startup
+  `reconcilePolyfillManifests` pass SHALL NOT register the manifest,
+  preserving the hidden-from-catalog state for unproven and
+  deprecated-upstream manifests.
+
+#### Scenario: Custom user-authored manifest with no prior schedule or run
+
+- **WHEN** a manifest declaring `capabilities.public_listing.listed: true`
+  is registered by means other than the shipped first-party manifests
+  directory (e.g. a user-authored custom connector)
+- **THEN** the reference implementation's startup
+  `reconcilePolyfillManifests` pass SHALL NOT alter that registration,
+  because it operates only on files under the shipped first-party
+  manifests directory.
+
+#### Scenario: Registration is not schedule enablement
+
+- **WHEN** `reconcilePolyfillManifests` auto-registers a listed
+  first-party manifest on startup
+- **THEN** the scheduler eligibility filter
+  (`refresh_policy.background_safe`) and the operator-driven schedule
+  creation path SHALL continue to gate background runs independently,
+  so the auto-registration alone SHALL NOT cause the connector to run
+  on a schedule.
+
+### Requirement: Deprecated-upstream manifests SHALL be hidden and manual
+
+A connector manifest whose `capabilities.public_listing.status` is `"deprecated_upstream"` SHALL declare `capabilities.public_listing.listed: false` and SHALL NOT declare `capabilities.refresh_policy.background_safe: true` or `capabilities.refresh_policy.recommended_mode: "automatic"`. A connector whose upstream API has been shut down cannot run, so honesty requires both the catalog hide (so operators do not see a dead connector advertised as ready) and the schedule-eligibility hide (so the reference scheduler does not queue runs against an API that no longer exists).
+
+#### Scenario: Deprecated-upstream manifest declares listed=true
+
+- **WHEN** a manifest declares
+  `capabilities.public_listing.status: "deprecated_upstream"`
+- **AND** that same manifest declares
+  `capabilities.public_listing.listed: true`
+- **THEN** the manifest set's honesty test SHALL fail, and the
+  reference deployment SHALL treat the manifest as misconfigured.
+
+#### Scenario: Deprecated-upstream manifest with background-safe refresh policy
+
+- **WHEN** a manifest declares
+  `capabilities.public_listing.status: "deprecated_upstream"`
+- **AND** that same manifest declares
+  `capabilities.refresh_policy.background_safe: true`
+- **THEN** the manifest set's honesty test SHALL fail, and the
+  reference deployment SHALL treat the manifest as misconfigured.
+
+#### Scenario: Deprecated-upstream manifest with automatic recommended mode
+
+- **WHEN** a manifest declares
+  `capabilities.public_listing.status: "deprecated_upstream"`
+- **AND** that same manifest declares
+  `capabilities.refresh_policy.recommended_mode: "automatic"`
+- **THEN** the manifest set's honesty test SHALL fail, and the
+  reference deployment SHALL treat the manifest as misconfigured.
+
+### Requirement: Hidden manifests SHALL NOT be background-safe
+
+A connector manifest that is not publicly listed in the reference catalog SHALL NOT declare `capabilities.refresh_policy.background_safe: true`. This interlock keeps the reference scheduler from quietly running a connector that the catalog has marked unproven, local-only, or otherwise not ready.
+
+#### Scenario: Hidden manifest with a background-safe refresh policy
+
+- **WHEN** a manifest declares
+  `capabilities.public_listing.listed: false` (or omits `listed: true`
+  while declaring `status: "unproven"`)
+- **AND** that same manifest declares
+  `capabilities.refresh_policy.background_safe: true`
+- **THEN** the manifest set's honesty test SHALL fail, and the
+  reference deployment SHALL treat the manifest as misconfigured.
+
+#### Scenario: Listed manifest with a background-safe refresh policy
+
+- **WHEN** a manifest declares
+  `capabilities.public_listing.listed: true`
+- **AND** that same manifest declares
+  `capabilities.refresh_policy.background_safe: true`
+- **THEN** the manifest is eligible for the reference scheduler under
+  the existing scheduler eligibility filter.
+
+### Requirement: Broken-in-current-deployment manifests SHALL NOT auto-schedule
+
+A connector manifest whose `capabilities.public_listing.status` is `"broken_in_current_deployment"` SHALL NOT declare `capabilities.refresh_policy.background_safe: true` and SHALL NOT declare `capabilities.refresh_policy.recommended_mode: "automatic"`. A manifest that the reference deployment already knows is broken at the runtime layer MUST NOT advertise itself as automatically schedulable; the operator surfaces SHALL require manual operator action until the underlying breakage is resolved.
+
+#### Scenario: Broken manifest with background-safe refresh policy
+
+- **WHEN** a manifest declares
+  `capabilities.public_listing.status: "broken_in_current_deployment"`
+- **AND** that same manifest declares
+  `capabilities.refresh_policy.background_safe: true`
+- **THEN** the manifest set's honesty test SHALL fail, and the
+  reference deployment SHALL treat the manifest as misconfigured.
+
+#### Scenario: Broken manifest with automatic recommended mode
+
+- **WHEN** a manifest declares
+  `capabilities.public_listing.status: "broken_in_current_deployment"`
+- **AND** that same manifest declares
+  `capabilities.refresh_policy.recommended_mode: "automatic"`
+- **THEN** the manifest set's honesty test SHALL fail, and the
+  reference deployment SHALL treat the manifest as misconfigured.
+
+### Requirement: Needs-human-auth manifests SHALL NOT auto-schedule
+
+A connector manifest whose `capabilities.public_listing.status` is `"needs_human_auth"` SHALL NOT declare `capabilities.refresh_policy.background_safe: true` and SHALL NOT declare `capabilities.refresh_policy.recommended_mode: "automatic"`. A manifest that requires human-supplied credentials, OTP confirmation, or a manual browser action cannot honestly run unattended. The reference today models no durable no-human unattended auth capability, so until such a capability is explicitly modeled, `needs_human_auth` is incompatible with automatic background refresh.
+
+#### Scenario: Needs-human-auth manifest with background-safe refresh policy
+
+- **WHEN** a manifest declares
+  `capabilities.public_listing.status: "needs_human_auth"`
+- **AND** that same manifest declares
+  `capabilities.refresh_policy.background_safe: true`
+- **THEN** the manifest set's honesty test SHALL fail, and the
+  reference deployment SHALL treat the manifest as misconfigured.
+
+#### Scenario: Needs-human-auth manifest with automatic recommended mode
+
+- **WHEN** a manifest declares
+  `capabilities.public_listing.status: "needs_human_auth"`
+- **AND** that same manifest declares
+  `capabilities.refresh_policy.recommended_mode: "automatic"`
+- **THEN** the manifest set's honesty test SHALL fail, and the
+  reference deployment SHALL treat the manifest as misconfigured.
+
+### Requirement: The reference auto-enrolls eligible connectors when deployment credentials are present
+The reference implementation SHALL, on server boot, enroll a default enabled
+schedule for every first-party connector whose shipped manifest meets all of
+the following facts AND whose declared environment variables are populated in
+the running process: `recommended_mode=automatic`,
+`background_safe=true` (or absent), `public_listing.listed=true`,
+`public_listing.status=proven`, and `capabilities.auth.kind=env` with a
+non-empty `capabilities.auth.required` list of environment variable names.
+
+#### Scenario: Eligible connector with deployment env is enrolled on boot
+- **WHEN** the reference server starts, manifest reconciliation has completed, and a registered first-party manifest satisfies the five-fact eligibility test
+- **AND** every entry of `capabilities.auth.required` is satisfied: a string entry SHALL be satisfied when its named `process.env` value is non-empty, and an alias-array entry SHALL be satisfied when **any** of its listed env names is non-empty in `process.env` (matching the runtime first-set-wins resolution in `packages/polyfill-connectors/src/auth.ts`)
+- **AND** no persisted schedule row exists for that connector
+- **THEN** the reference SHALL insert a new schedule row with `enabled=true`, `interval_seconds=capabilities.refresh_policy.recommended_interval_seconds` (falling back to 3600 when the manifest omits an interval), and `jitter_seconds=0`
+- **AND** the reference SHALL NOT inspect, copy, or log the env variable values
+
+#### Scenario: Missing env keeps the connector honestly unscheduled
+- **WHEN** a registered first-party manifest is otherwise auto-enroll eligible but at least one entry of `capabilities.auth.required` is unsatisfied (the named `process.env` value is absent or empty for a string entry, or every alias in an alias-array entry is absent or empty in `process.env`)
+- **THEN** the reference SHALL NOT create a schedule row for that connector
+- **AND** the connector SHALL continue to surface as `NOSCHED` in `scheduler-doctor` and the dashboard SHALL NOT claim the connector is currently runnable
+
+#### Scenario: Auto-enrollment never overrides operator intent
+- **WHEN** the reference boots and a persisted schedule row already exists for a connector that would otherwise be auto-enroll eligible
+- **THEN** the reference SHALL NOT alter `enabled`, `interval_seconds`, `jitter_seconds`, or any other field of that row
+- **AND** the reference SHALL NOT re-enable a row the operator had paused
+
+#### Scenario: Manual, paused, background-unsafe, or unproven connectors are never auto-enrolled
+- **WHEN** a registered first-party manifest declares `recommended_mode` of `manual` or `paused`, OR `background_safe: false`, OR `public_listing.status` other than `proven`, OR omits `capabilities.auth.required`
+- **THEN** the reference SHALL NOT auto-enroll a schedule for that connector even when every env name happens to be present
+- **AND** existing schedule mutation gates (refusing to create or resume an enabled schedule for an ineligible connector) SHALL continue to apply
+
+#### Scenario: Operators can opt out of auto-enrollment
+- **WHEN** the reference boots with `PDPP_SKIP_AUTO_SCHEDULE_ENROLLMENT=1` in its environment or with the equivalent constructor option set to `false`
+- **THEN** the reference SHALL skip the auto-enrollment pass entirely
+- **AND** schedule mutation via the regular schedule API SHALL still work as before
+
+### Requirement: Failed connector exits SHALL preserve bounded owner diagnostics
+
+When a connector child process exits before emitting a valid `DONE` message, the reference runtime SHALL persist enough bounded diagnostic evidence for the owner to understand the observed failure class after the process has exited. The terminal run failure data SHALL include a runtime-authored `failure_origin` and `failure_message`. If the connector wrote stderr before exit, the terminal failure data SHALL also include a bounded, redacted stderr diagnostic excerpt with byte-count and truncation metadata.
+
+The persisted stderr diagnostic SHALL be treated as connector-authored, untrusted diagnostic evidence. It SHALL be visible only on owner/control-plane surfaces and SHALL NOT be exposed through grant-scoped `/v1` data, search, schema, or blob APIs.
+
+The runtime SHALL bound stderr capture before persistence; it SHALL NOT accumulate unbounded stderr in memory for the lifetime of a run. The diagnostic excerpt SHALL be redacted before it is written to the run timeline and SHALL preserve metadata that tells the owner whether the excerpt was truncated.
+
+#### Scenario: Connector exits before DONE after writing stderr
+
+- **WHEN** a connector child process writes stderr and exits with a non-zero code before emitting `DONE`
+- **THEN** the persisted terminal `run.failed` data SHALL include `failure_origin: "connector"`
+- **AND** it SHALL include a runtime-authored `failure_message`
+- **AND** it SHALL include the connector `exit_code`
+- **AND** it SHALL include a `connector_diagnostics.stderr_tail` object containing a bounded redacted excerpt, `bytes_observed`, `bytes_captured`, `truncated`, and `redacted`.
+
+#### Scenario: Connector stderr exceeds the diagnostic cap
+
+- **WHEN** a connector writes more stderr than the configured diagnostic cap before exiting
+- **THEN** the persisted `connector_diagnostics.stderr_tail.text` SHALL contain only a bounded tail excerpt
+- **AND** `truncated` SHALL be `true`
+- **AND** `bytes_observed` SHALL be greater than `bytes_captured`.
+
+#### Scenario: Connector stderr contains a secret-like value
+
+- **WHEN** captured connector stderr contains a value matching the reference diagnostic redaction policy
+- **THEN** the persisted stderr excerpt SHALL contain the redacted replacement rather than the original secret
+- **AND** the diagnostic metadata SHALL indicate that redaction was applied.
+
+#### Scenario: Client-token read cannot access connector stderr diagnostics
+
+- **WHEN** a grant-scoped client token reads records, search results, schema, blobs, or other `/v1` resources within its grant
+- **THEN** connector stderr diagnostics from run timelines SHALL NOT be included in the response
+- **AND** the client SHALL NOT receive a URL or object identifier that grants access to those diagnostics.
+
+#### Scenario: Owner run timeline can inspect connector stderr diagnostics
+
+- **WHEN** the owner reads the failed run timeline through the reference control plane
+- **THEN** the terminal failure event SHALL include the bounded connector diagnostic fields
+- **AND** the diagnostic SHALL be labeled or shaped so the dashboard can distinguish connector-authored stderr from runtime-authored failure classification.
+
+### Requirement: Node diagnostic reports SHALL be secret-minimized when enabled
+
+When the reference implementation enables Node.js diagnostic reports for a process whose environment may be inherited by connector child processes, it SHALL configure those reports to exclude environment variables and network details. Diagnostic reports are reference/operator artifacts for crash investigation; they SHALL NOT become grant-scoped PDPP data, and the reference SHALL NOT expose report paths or report contents through `/v1` client APIs.
+
+#### Scenario: Dev command enables connector-inheritable Node reports
+
+- **WHEN** a reference dev command enables `--report-on-fatalerror` or `--report-uncaught-exception`
+- **AND** connector child processes may inherit those report settings through `NODE_OPTIONS` or process environment
+- **THEN** the command SHALL also enable `--report-exclude-env`
+- **AND** it SHALL enable `--report-exclude-network`.
+
+#### Scenario: A connector child produces a Node diagnostic report
+
+- **WHEN** a connector child process produces a Node diagnostic report
+- **THEN** the report SHALL be treated as an operator-local diagnostic artifact
+- **AND** client-token `/v1` reads SHALL NOT expose the report content, path, or object identifier.
