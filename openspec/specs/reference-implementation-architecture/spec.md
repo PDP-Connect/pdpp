@@ -4087,3 +4087,298 @@ A test under `bin/reconcile-manifests.test.ts` SHALL iterate every connector tha
 #### Scenario: A schema edit removes a stream from the registry without removing it from the manifest
 - **WHEN** the connector's `SCHEMAS` registry no longer includes a stream that the manifest still declares
 - **THEN** the regression test SHALL fail with `missing_emit` listing that stream (or `missing_schema` if the connector still emits it)
+
+### Requirement: Direct record delete SHALL be atomic
+
+The reference implementation SHALL treat direct owner-authenticated record delete as one atomic mutation of live record state, per-stream version state, and record change history. Search-index maintenance and disclosure-spine observability SHALL remain outside this durable record mutation unit unless a later OpenSpec change explicitly widens the boundary.
+
+#### Scenario: Successful direct delete
+
+- **WHEN** the reference directly deletes an existing live record
+- **THEN** the live `records` row delete marker, appended deleted `record_changes` row, and `version_counter` advance SHALL commit as one atomic unit
+- **AND** the appended `record_changes.version` SHALL be the version recorded by `version_counter` for that `(connector_id, stream)` after the commit
+
+#### Scenario: No-op direct delete
+
+- **WHEN** the reference directly deletes a record that is absent or already deleted
+- **THEN** it SHALL NOT append a `record_changes` row
+- **AND** it SHALL NOT advance `version_counter`
+
+#### Scenario: Direct delete mutation failure
+
+- **WHEN** an error occurs before the durable direct-delete mutation commits
+- **THEN** the reference SHALL NOT leave `records`, `record_changes`, and `version_counter` in a partially advanced state
+- **AND** a later mutation for the same `(connector_id, stream)` SHALL NOT collide with or skip around a partially written version
+
+#### Scenario: Derived index delete maintenance
+
+- **WHEN** durable direct record delete commits successfully
+- **THEN** lexical and semantic index delete maintenance MAY run after the commit as derived maintenance
+- **AND** failure in derived index delete maintenance SHALL NOT retroactively partially commit or roll back the durable direct delete mutation
+
+### Requirement: Durable record ingest SHALL be atomic
+
+The reference implementation SHALL treat durable record ingest as one atomic mutation of live record state, per-stream version state, and record change history. Search-index maintenance and disclosure-spine observability SHALL remain outside this durable record mutation unit unless a later OpenSpec change explicitly widens the boundary.
+
+#### Scenario: Successful record mutation
+
+- **WHEN** the reference ingests a record whose payload changes durable state
+- **THEN** the live `records` row, appended `record_changes` row, and `version_counter` advance SHALL commit as one atomic unit
+- **AND** the appended `record_changes.version` SHALL be the version recorded by `version_counter` for that `(connector_id, stream)` after the commit
+
+#### Scenario: No-op re-ingest
+
+- **WHEN** the reference ingests a record whose durable payload is identical to the current live state
+- **THEN** it SHALL NOT append a `record_changes` row
+- **AND** it SHALL NOT advance `version_counter`
+
+#### Scenario: Repeated delete
+
+- **WHEN** the reference receives a delete for a record that is already deleted or absent
+- **THEN** it SHALL NOT append a duplicate delete change
+- **AND** it SHALL NOT advance `version_counter`
+
+#### Scenario: Durable mutation failure
+
+- **WHEN** an error occurs before the durable ingest mutation commits
+- **THEN** the reference SHALL NOT leave `records`, `record_changes`, and `version_counter` in a partially advanced state
+- **AND** a later ingest for the same `(connector_id, stream)` SHALL NOT collide with or skip around a partially written version
+
+#### Scenario: Derived index maintenance
+
+- **WHEN** durable record ingest commits successfully
+- **THEN** lexical and semantic index maintenance MAY run after the commit as derived maintenance
+- **AND** failure in derived index maintenance SHALL NOT retroactively partially commit or roll back the durable record mutation
+
+### Requirement: Public client self-registration SHALL be publicly discoverable
+
+The reference implementation SHALL support public-client self-registration through the advertised dynamic registration endpoint when DCR is enabled.
+
+#### Scenario: Stranger registers a public client
+
+- **WHEN** a third-party client fetches authorization-server metadata
+- **AND** DCR is enabled
+- **THEN** the metadata SHALL include `registration_endpoint`
+- **AND** `pdpp_registration_modes_supported` SHALL include `dynamic`.
+
+#### Scenario: Public registration succeeds
+
+- **WHEN** a third-party client posts supported public-client metadata to `registration_endpoint` without an initial access token
+- **THEN** the reference SHALL create a public client with `token_endpoint_auth_method: "none"`
+- **AND** the response SHALL include the assigned `client_id`
+- **AND** the request SHALL NOT grant data access or mint bearer tokens
+- **AND** the reference SHALL emit an auditable `client.registered` spine event.
+
+#### Scenario: Invalid bearer registration is rejected
+
+- **WHEN** a caller posts public-client metadata with an invalid bearer initial-access token
+- **THEN** the reference SHALL NOT create a client
+- **AND** the reference SHALL return an OAuth `invalid_client` error
+- **AND** the reference SHALL emit an auditable `client.register_rejected` spine event.
+
+#### Scenario: Public registration validates metadata strictly
+
+- **WHEN** a public registration request includes unsupported OAuth metadata, confidential-client claims, unsupported auth methods, or malformed URI metadata
+- **THEN** the reference SHALL reject the request
+- **AND** the error SHALL include request correlation data.
+
+#### Scenario: Public registration is rate limited
+
+- **WHEN** unauthenticated registration attempts exceed the reference rate limit for a request origin
+- **THEN** the reference SHALL return HTTP 429
+- **AND** the response SHALL include `Retry-After`.
+
+### Requirement: Reference schedules SHALL express desired freshness without causing manual-attention retry storms
+
+Reference schedules SHALL express desired data freshness and launch eligibility for a connection/source. A due schedule SHALL NOT be interpreted as a guarantee that every due instant creates a run.
+
+#### Scenario: Due schedule is blocked by unresolved attention
+
+- **WHEN** a connection schedule becomes due
+- **AND** an equivalent unresolved attention request exists for that connection/source
+- **THEN** the reference scheduler SHALL NOT start another automatic run for that schedule
+- **AND** it SHALL record or expose that the schedule was skipped, paused, or suppressed because owner/operator attention remains unresolved
+- **AND** the connection SHALL preserve an explicit operator path to resume, run now, or re-enable automatic scheduling after the attention request is resolved
+
+#### Scenario: Freshness intent remains visible while launch is suppressed
+
+- **WHEN** a schedule is paused or suppressed because owner/operator attention is required
+- **THEN** the reference SHALL continue to expose the desired freshness policy separately from the current launch eligibility
+- **AND** it SHALL NOT report the connection as fresh merely because automatic launches are suppressed
+
+#### Scenario: Resolved attention does not replay an unbounded schedule backlog
+
+- **WHEN** a schedule has missed one or more due instants while launch was paused or suppressed for owner/operator attention
+- **AND** the attention request is resolved or explicitly overridden
+- **THEN** the reference SHALL NOT automatically start one run for every missed due instant
+- **AND** it SHALL make the schedule eligible for the next normal launch or at most one latest-state catch-up run by default
+- **AND** any broader backfill SHALL be explicit, bounded, and available only when the connector declares safe interval semantics
+
+### Requirement: Reference runs SHALL be bounded attempts when owner/operator attention is required
+
+Reference runs SHALL remain bounded execution attempts. A run that discovers a required owner/operator action SHALL finish with a typed waiting-for-operator outcome or equivalent terminal evidence rather than remaining active indefinitely.
+
+#### Scenario: Run creates durable attention evidence
+
+- **WHEN** a run cannot proceed without owner/operator action such as login, OTP, account review, consent, filesystem availability, or device availability
+- **THEN** the run SHALL finish as a bounded attempt
+- **AND** the reference SHALL create or update a durable typed attention request linked to the connection/source and the run evidence when available
+- **AND** the run outcome SHALL be distinguishable from retryable infrastructure failure and terminal connector failure
+
+#### Scenario: Manual attention does not hide partial data state
+
+- **WHEN** a run produces usable data but cannot fully complete without owner/operator action
+- **THEN** the reference MAY expose a succeeded-with-gaps outcome
+- **AND** it SHALL preserve attention evidence for the missing action
+- **AND** it SHALL NOT require another automatic run until the unresolved action is resolved or explicitly overridden
+
+### Requirement: Reference attention requests SHALL be durable, typed, notified, and resumable
+
+The reference SHALL model owner/operator attention as a durable typed request keyed to connection/source and optionally linked to a run. The request SHALL include enough policy state to notify the owner safely, suppress duplicate noise, and resume intentionally.
+
+#### Scenario: Attention request captures the operator contract
+
+- **WHEN** the reference creates or updates an attention request
+- **THEN** the request SHALL include a machine-readable reason
+- **AND** it SHALL include safe human-readable instructions that do not expose secrets
+- **AND** it SHALL include status, creation time, last-observed time, optional expiry or review time, and a resume action or re-enable path
+- **AND** it SHALL include notification state and quiet-hour or suppression metadata sufficient to avoid repeated noisy notifications
+
+#### Scenario: Equivalent attention is deduplicated per connection
+
+- **WHEN** repeated attempts encounter the same unresolved owner/operator requirement for a connection/source
+- **THEN** the reference SHALL update or reuse the existing attention request instead of creating unbounded duplicate requests
+- **AND** suppression for that request SHALL apply only to the affected connection/source unless the operator explicitly chooses a broader scope
+
+### Requirement: Reference notification policy SHALL avoid silent failures and noisy repeats
+
+The reference SHALL surface manual-attention requirements through explicit notification policy. It SHALL avoid both silent suppression and repeated unresolved alerts. Notification delivery state SHALL be persisted on the durable attention record so the operator console can answer "did we tell the owner?" without rereading transport logs.
+
+#### Scenario: Owner is notified with bounded repetition
+
+- **WHEN** a new attention request requires owner/operator action
+- **THEN** the reference SHALL mark notification as pending, sent, suppressed, failed, or acknowledged according to delivery outcome
+- **AND** the notification state SHALL be a durable axis on the attention record, persisted alongside lifecycle and updated by the notification fanout path even when delivery is short-circuited (channel unavailable, no opted-in subscription, policy-suppressed)
+- **AND** repeated notifications for the same unresolved request SHALL be governed by quiet-hour and suppression policy
+- **AND** the reference SHALL keep the request visible until it is resolved, expired, or intentionally dismissed
+
+#### Scenario: Notification failure does not cause a run storm
+
+- **WHEN** notification delivery fails for an attention request
+- **THEN** the reference SHALL preserve the unresolved attention request and notification failure state
+- **AND** the durable attention record SHALL record `notification_state: failed` without changing `lifecycle`, so the projection continues to surface needs_attention
+- **AND** it SHALL NOT treat notification failure as permission to repeatedly launch the same scheduled run
+
+#### Scenario: Owner-side acknowledgement is recorded as a notification outcome
+
+- **WHEN** the owner advances an attention prompt past `open` (lifecycle transitions to `acknowledged` or `in_progress`)
+- **THEN** the durable notification state SHALL be updated to `acknowledged`
+- **AND** the operator console SHALL be able to distinguish "we delivered the push" from "the owner has seen the prompt" without inspecting transport logs
+
+#### Scenario: Operator-visible notification state degrades honestly when evidence is missing
+
+- **WHEN** the projection has no structured attention record and is falling back to the schedule's `human_attention_needed` flag
+- **THEN** the operator-visible notification state for that CTA SHALL be null (unknown)
+- **AND** the dashboard SHALL NOT fabricate a `sent`/`pending` claim that the durable evidence cannot support
+
+### Requirement: Reference local collector scheduling SHALL remain host-supervisor-owned
+
+The reference SHALL keep server schedule policy separate from local collector host supervision. Server-side schedule intent MAY inform local collector diagnostics or prompts, but it SHALL NOT claim control over host-local timing, filesystem availability, or device wake behavior.
+
+#### Scenario: Local collector requires host action
+
+- **WHEN** a local collector cannot run because the device, filesystem, credentials, or host supervisor requires action
+- **THEN** the reference MAY create or expose an attention request or diagnostic
+- **AND** server schedules SHALL NOT repeatedly launch remote attempts that cannot control the local host condition
+- **AND** the remediation path SHALL identify the local collector or host supervisor as the action owner
+
+### Requirement: Annotated routes SHALL attach reference-contract manifests at registration
+The reference implementation SHALL look up the `@pdpp/reference-contract` manifest for every HTTP route mounted with a `{ contract: '<operation id>' }` annotation. The lookup SHALL run at route registration so drift between the server and the contract package fails fast rather than silently.
+
+#### Scenario: Unknown contract operation id
+- **WHEN** a route is mounted with a `{ contract }` operation id that is not exported by `@pdpp/reference-contract`
+- **THEN** the reference implementation SHALL throw at route registration
+- **AND** SHALL identify the unknown operation id in the error message.
+
+### Requirement: Allowlisted contract routes SHALL enforce request contracts at runtime
+The reference implementation SHALL maintain an explicit allowlist of reference-contract operation ids whose annotated routes have transport-level request validation enforced. Validation SHALL use the shared reference-contract schemas rather than server-local duplicate schemas. The allowlist SHALL be defined in the server transport/adapter layer and SHALL NOT be inferred from the manifest alone.
+
+#### Scenario: Malformed request on an allowlisted contract route
+- **WHEN** a caller sends a request whose params, query, headers, or body violate the route's declared reference-contract request schema, and the route's operation id is in the request-validation allowlist
+- **THEN** the reference implementation SHALL reject the request before the route handler mutates state or serves data
+- **AND** the rejection SHALL use a structured error envelope with a request id, picking an OAuth-shaped or PDPP-shaped envelope based on the route manifest's declared 400 response schema.
+
+#### Scenario: Protected route validation ordering
+- **WHEN** an unauthenticated caller sends a malformed request to an allowlisted protected contract route
+- **THEN** authentication SHALL run before request-shape validation
+- **AND** the response SHALL remain an authentication failure rather than leaking contract validation details.
+
+### Requirement: Non-allowlisted contract routes SHALL preserve handler-owned diagnostics
+The reference implementation SHALL NOT pre-empt handler-owned rejection diagnostics on annotated routes that are outside the request-validation allowlist. Handler-emitted error codes (OAuth `invalid_client_metadata`, PDPP `invalid_status`, etc.), structured `param` hints, reference trace ids, and spine events such as `client.register_rejected` SHALL remain observable for malformed input.
+
+#### Scenario: Malformed request on a non-allowlisted contract route
+- **WHEN** a caller sends a request that violates the declared request schema on an annotated route NOT in the request-validation allowlist
+- **THEN** the transport SHALL pass the request through to the route handler
+- **AND** any handler-emitted error code, message, `param` hint, reference trace id, or spine event SHALL remain observable to clients and to `trace show`.
+
+### Requirement: Response validation SHALL be explicit and non-mutating
+The reference implementation SHALL validate JSON responses only for routes explicitly enrolled in a response-validation allowlist. Response validation SHALL inspect the payload the handler intends to send and SHALL NOT serialize, strip, coerce, or otherwise transform the response.
+
+#### Scenario: Canary response violates its schema
+- **WHEN** an allowlisted contract route attempts to send a JSON response that violates its declared response schema
+- **THEN** the reference implementation SHALL fail closed with a server-side contract error
+- **AND** it SHALL NOT send the invalid payload as if it matched the contract.
+
+#### Scenario: Non-JSON or non-allowlisted response
+- **WHEN** a route sends a redirect, 204 response, binary body, stream, server-sent event, or a JSON response from a route not yet in the response-validation allowlist
+- **THEN** response validation SHALL NOT transform or strip that response
+- **AND** broader response validation SHALL require explicit enrollment after schema exactness is proven.
+
+### Requirement: Route contract validation SHALL remain a transport boundary
+Runtime route-contract validation SHALL live in the transport/HTTP adapter layer. Operation modules SHALL remain framework-independent and SHALL NOT import the reference-contract package solely to validate HTTP wire shapes.
+
+#### Scenario: Operation boundary remains pure
+- **WHEN** a route delegates to a canonical operation module
+- **THEN** request and response validation SHALL be applied by the host adapter around the operation
+- **AND** the operation module SHALL remain free of Fastify, Express, concrete storage, and reference-contract runtime dependencies.
+
+### Requirement: Source webhook ingress is reference-only and source-authenticated
+
+The reference implementation SHALL expose source webhook ingress only as reference-runtime behavior. It SHALL NOT advertise source webhooks as core PDPP support, SHALL NOT add event-driven grant semantics, and SHALL NOT accept source callbacks authenticated with owner bearer tokens, client grant tokens, or local collector device credentials.
+
+#### Scenario: A source callback reaches the reference ingress endpoint
+- **WHEN** a caller posts a source webhook callback to the reference endpoint
+- **THEN** the reference SHALL authenticate the callback with a source-specific credential before processing the body
+- **AND** the reference SHALL reject missing, malformed, stale, or invalid signatures before mutating records or scheduler state
+
+#### Scenario: Metadata is requested
+- **WHEN** a client reads public PDPP metadata
+- **THEN** the reference SHALL NOT advertise the reference source webhook endpoint as a public PDPP capability
+
+### Requirement: Source webhook ingress prevents replay before mutation
+
+The reference implementation SHALL persist an idempotency decision for each accepted source webhook event before applying record mutations or scheduler signals. The idempotency key SHALL be bound to the source id and event id.
+
+#### Scenario: A duplicate source event is received
+- **WHEN** a source webhook event with a previously accepted source id and event id is received again
+- **THEN** the reference SHALL return an idempotent duplicate outcome
+- **AND** the reference SHALL NOT reapply record mutations or scheduler signals for that event
+
+### Requirement: Source webhook record pushes use existing ingest semantics
+
+Accepted source webhook record pushes SHALL be normalized into the existing record ingest path for the matching connector/source stream. The webhook path SHALL NOT bypass stream lookup, record validation, tombstone behavior, versioning, indexing, or grant-visible query behavior.
+
+#### Scenario: A signed record-push callback is accepted
+- **WHEN** an authenticated source callback carries records for a declared stream
+- **THEN** the reference SHALL process those records through the existing record-ingest operation for that connector/source and stream
+- **AND** the response SHALL report accepted and rejected record counts from that operation
+
+### Requirement: Source webhook run triggers are scheduler input only
+
+Accepted source webhook run-trigger callbacks SHALL be treated as scheduler input. They SHALL NOT directly execute connector runs or bypass scheduler-owned non-overlap, backoff, rate-limit, owner-attention, or diagnostics behavior.
+
+#### Scenario: A signed run-trigger callback is accepted
+- **WHEN** an authenticated source callback requests a connector/source refresh
+- **THEN** the reference SHALL record a scheduler input signal for that connector/source
+- **AND** the webhook handler SHALL NOT start the connector run inline
+
