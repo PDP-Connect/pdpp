@@ -23,7 +23,7 @@ are event pointers, inline data, or both."
 ## Context
 
 This note is the verification pass that the triage asked for. It was produced by
-independently reading current code, tests, and merged OpenSpec — not by trusting
+independently reading current code, tests, and merged OpenSpec - not by trusting
 prior agents' summaries.
 
 Finding: the owner-level standards review the triage asked for already happened
@@ -36,7 +36,7 @@ the triage was written.
 
 ### Current-code facts (verified 2026-05-28, branch `workstream/ri-webhook-standards-review`)
 
-Envelope — `reference-implementation/operations/as-client-event-subscriptions/index.ts:276` (`buildEventPayload`):
+Envelope - `reference-implementation/operations/as-client-event-subscriptions/index.ts:276` (`buildEventPayload`):
 
 - CloudEvents 1.0 JSON **structured mode**. `specversion: "1.0"`, PDPP profile
   version travels in the `pdppversion: "1"` CloudEvents extension attribute.
@@ -50,7 +50,7 @@ Envelope — `reference-implementation/operations/as-client-event-subscriptions/
   `pdpp.subscription.test`, `pdpp.grant.revoked`
   (`reference-implementation/operations/rs-client-event-derive/index.ts:50`).
 
-Signing/headers — `reference-implementation/operations/rs-client-event-deliver/index.ts`:
+Signing/headers - `reference-implementation/operations/rs-client-event-deliver/index.ts`:
 
 - Standard Webhooks v1: `webhook-id`, `webhook-timestamp`,
   `webhook-signature: v1,<base64(HMAC-SHA256(key, "{id}.{ts}.{body}"))>`.
@@ -59,19 +59,19 @@ Signing/headers — `reference-implementation/operations/rs-client-event-deliver
   token); SHA-256 hash stored, raw secret returned once on create.
 - Rotation: verifier accepts any space-separated `v1,<sig>` token.
 
-Retry/disable — `rs-client-event-deliver/index.ts:29` + `server/client-event-delivery-worker.ts`:
+Retry/disable - `rs-client-event-deliver/index.ts:29` + `server/client-event-delivery-worker.ts`:
 
-- Exponential backoff with 80–120% jitter, 6 stages
-  `[30, 120, 600, 3600, 21600, 86400]` (30 s → 1 day).
+- Exponential backoff with 80-120% jitter, 6 stages
+  `[30, 120, 600, 3600, 21600, 86400]` (30 s to 1 day).
 - Outcomes: `delivered`, `verified`, `retry`, `final_failure`.
 - After max attempts the subscription transitions to `disabled_failure`
-  (`as-client-event-subscriptions/index.ts`); grant revoke →
+  (`as-client-event-subscriptions/index.ts`); grant revoke ->
   `disabled_revoked`; states: `pending_verification`, `active`, `disabled`,
   `disabled_failure`, `disabled_revoked`, `deleted`.
 - Verification handshake: a `subscription.verify` event must be echoed with the
-  matching `challenge` to move `pending_verification → active`.
+  matching `challenge` to move `pending_verification` to `active`.
 
-Payload mode — hint-only, grant-scoped. `data` carries `stream`,
+Payload mode - hint-only, grant-scoped. `data` carries `stream`,
 `changes_since` (opaque cursor), `change_count_hint`; the e2e test asserts no
 `record` / `record_json` body. Clients re-fetch through the grant-scoped read
 API.
@@ -94,8 +94,8 @@ Management surfaces (all present, all grant-scoped):
   "reference_extension"`, naming the CloudEvents and Standard Webhooks profiles.
 
 Spec state: the normative contract is **merged** into
-`openspec/specs/reference-implementation-architecture/spec.md` (≈ lines
-1495–1600 client surface; 2033+ operator disable; 2897+ MCP tools). It is a
+`openspec/specs/reference-implementation-architecture/spec.md` (around lines
+1495-1600 client surface; 2033+ operator disable; 2897+ MCP tools). It is a
 `reference_extension`, not PDPP Core.
 
 ## Stakes
@@ -115,7 +115,7 @@ warranted in this lane. Each triage question is answered by merged code+spec:
 | `specversion` | `"1.0"` (CloudEvents), profile in `pdppversion: "1"` extension |
 | Header names | Standard Webhooks `webhook-id` / `webhook-timestamp` / `webhook-signature` |
 | Signed payload shape | `v1,base64(HMAC-SHA256(key, "{id}.{ts}.{body}"))`, `whsec_` per-sub secret |
-| Retry/disable policy | 6-stage jittered backoff → `disabled_failure`; revoke → `disabled_revoked` |
+| Retry/disable policy | 6-stage jittered backoff to `disabled_failure`; revoke to `disabled_revoked` |
 | Payload mode | Hint-only, grant-scoped (event + opaque `changes_since` + count); client re-fetches |
 | Core vs reference | `reference_extension`, not Core |
 
@@ -126,7 +126,7 @@ addresses this directly and defers binary as a non-goal: structured-mode JSON is
 still literally CloudEvents 1.0 conformant, the only in-tree receiver parses the
 structured body today, and the binary/structured trade-off deserves its own
 change "once a receiver case actually needs `ce-*` headers (e.g., a
-Knative-native consumer)." That reasoning holds — there is no out-of-tree
+Knative-native consumer)." That reasoning holds - there is no out-of-tree
 receiver, so binary would be speculative coupling. The deferral is sound, not a
 gap.
 
@@ -136,10 +136,10 @@ These prior-art v1 recommendations are not implemented. They are correctly out
 of scope for the standards-alignment tranche but should not be silently lost:
 
 1. **Subscription lifecycle events / expiry.** Prior art (High confidence)
-   recommended `expires_at` ≤ grant TTL and a `subscription.expiring` event
+   recommended `expires_at` at or before grant TTL and a `subscription.expiring` event
    (Stripe/Graph/Google channel-expiry pattern). The shipped subscription has no
-   `expires_at` and emits no expiring event; lifecycle today is verify → active
-   → disabled(\*). For autonomous AI clients this is the most load-bearing gap:
+   `expires_at` and emits no expiring event; lifecycle today is verify to active
+   to disabled. For autonomous AI clients this is the most load-bearing gap:
    a subscription whose grant lapses goes silent rather than signalling.
 2. **Catch-up / replay endpoint.** Prior art recommended
    `GET /v1/event-subscriptions/:id/events?since=<cursor>` so a reconnecting or
@@ -180,7 +180,7 @@ surfaces, they stay deferred here.
   expiry/lifecycle events; catch-up/replay endpoint) as future OpenSpec
   candidates. Note: `reference-implementation/test/client-event-subscriptions-e2e.test.js`
   has one failing assertion (line 315, `404 !== 200`) on the downstream
-  `/v1/streams/:stream/records?changes_since=` read, not on webhook delivery —
+  `/v1/streams/:stream/records?changes_since=` read, not on webhook delivery -
   the webhook envelope/signature/hint assertions in that same test pass. The
   failure is in the read-contract / route-family area (out of this lane, active
   work) and is identical to baseline `main` (no webhook-code diff vs `main`).
