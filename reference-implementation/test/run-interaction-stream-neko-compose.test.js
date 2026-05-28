@@ -10,7 +10,14 @@ const CHATGPT_CONNECTOR_ID = 'https://registry.pdpp.org/connectors/chatgpt';
 const CHASE_CONNECTOR_ID = 'https://registry.pdpp.org/connectors/chase';
 const USAA_CONNECTOR_ID = 'https://registry.pdpp.org/connectors/usaa';
 const AMAZON_CONNECTOR_ID = 'https://registry.pdpp.org/connectors/amazon';
-const MANAGED_CONNECTOR_IDS = [CHATGPT_CONNECTOR_ID, CHASE_CONNECTOR_ID, USAA_CONNECTOR_ID, AMAZON_CONNECTOR_ID];
+const REDDIT_CONNECTOR_ID = 'https://registry.pdpp.org/connectors/reddit';
+const MANAGED_CONNECTOR_IDS = [
+  CHATGPT_CONNECTOR_ID,
+  CHASE_CONNECTOR_ID,
+  USAA_CONNECTOR_ID,
+  AMAZON_CONNECTOR_ID,
+  REDDIT_CONNECTOR_ID,
+];
 
 test('n.eko compose overlay uses service DNS instead of reference network namespace', async () => {
   const [overlay, envExample] = await Promise.all([
@@ -71,4 +78,18 @@ test('Amazon remains an owner-present managed n.eko connector, not background-sa
   assert.equal(amazonManifest.capabilities.refresh_policy.recommended_mode, 'manual');
   assert.equal(amazonManifest.capabilities.refresh_policy.background_safe, false);
   assert.match(envExample, new RegExp(`PDPP_NEKO_MANAGED_CONNECTORS=.*${AMAZON_CONNECTOR_ID}`));
+});
+
+test('Reddit remains an owner-present managed n.eko connector, not background-safe', async () => {
+  const redditManifest = JSON.parse(
+    await readFile(`${REPO_ROOT}packages/polyfill-connectors/manifests/reddit.json`, 'utf8'),
+  );
+  const envExample = await readFile(ENV_EXAMPLE_FILE, 'utf8');
+
+  assert.equal(redditManifest.connector_id, REDDIT_CONNECTOR_ID);
+  assert.equal(redditManifest.runtime_requirements.bindings.browser.required, true);
+  assert.deepEqual(redditManifest.capabilities.human_interaction, ['credentials']);
+  assert.equal(redditManifest.capabilities.refresh_policy.recommended_mode, 'manual');
+  assert.equal(redditManifest.capabilities.refresh_policy.background_safe, false);
+  assert.match(envExample, new RegExp(`PDPP_NEKO_MANAGED_CONNECTORS=.*${REDDIT_CONNECTOR_ID}`));
 });

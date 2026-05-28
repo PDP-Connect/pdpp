@@ -88,8 +88,14 @@ verify_reference_env() {
   [[ -n "$managed" ]] || fail "reference is missing PDPP_NEKO_MANAGED_CONNECTORS; did you omit docker-compose.neko.yml?"
   [[ "$managed" == *"https://registry.pdpp.org/connectors/chatgpt"* ]] \
     || fail "managed connector list does not include ChatGPT"
+  [[ "$managed" == *"https://registry.pdpp.org/connectors/chase"* ]] \
+    || fail "managed connector list does not include Chase"
   [[ "$managed" == *"https://registry.pdpp.org/connectors/usaa"* ]] \
     || fail "managed connector list does not include USAA"
+  [[ "$managed" == *"https://registry.pdpp.org/connectors/amazon"* ]] \
+    || fail "managed connector list does not include Amazon"
+  [[ "$managed" == *"https://registry.pdpp.org/connectors/reddit"* ]] \
+    || fail "managed connector list does not include Reddit"
   [[ "$mode" == "dynamic" ]] || fail "expected PDPP_NEKO_SURFACE_MODE=dynamic, got '${mode:-<empty>}'"
   [[ "$cap" =~ ^[1-9][0-9]*$ ]] || fail "PDPP_NEKO_SURFACE_CAP must be a positive integer, got '${cap:-<empty>}'"
   [[ -n "$allocator" ]] || fail "dynamic mode requires PDPP_NEKO_ALLOCATOR_URL"
