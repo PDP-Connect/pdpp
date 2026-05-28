@@ -242,6 +242,50 @@ report_present() {
   [[ -s "$report_abs" ]]
 }
 
+thinking_block_replay_error() {
+  local file="$1"
+  [[ -f "$file" ]] \
+    && grep -q '`thinking` or `redacted_thinking` blocks in the latest assistant message cannot be modified' "$file"
+}
+
+invoke_claude_main() {
+  local output_file="$1"
+  local exit_code=0
+  (
+    cd "$worktree_abs"
+    claude \
+      --print \
+      --model "$model" \
+      --no-session-persistence \
+      --setting-sources user \
+      --strict-mcp-config \
+      --mcp-config "$mcp_config" \
+      --dangerously-skip-permissions \
+      "$main_prompt"
+  ) >"$output_file" 2>&1 || exit_code=$?
+  return "$exit_code"
+}
+
+invoke_claude_recovery() {
+  local output_file="$1"
+  local prompt="$2"
+  local exit_code=0
+  (
+    cd "$worktree_abs"
+    claude \
+      --print \
+      --model "$model" \
+      --no-session-persistence \
+      --setting-sources user \
+      --strict-mcp-config \
+      --mcp-config "$mcp_config" \
+      --dangerously-skip-permissions \
+      --disallowedTools "Edit" "MultiEdit" "Write(!$report_abs)" "NotebookEdit" \
+      "$prompt"
+  ) >"$output_file" 2>&1 || exit_code=$?
+  return "$exit_code"
+}
+
 # ---- main invocation --------------------------------------------------------
 
 # The wrapper prompt: original prompt + an explicit, non-overridable contract
@@ -268,19 +312,20 @@ echo "claude-workstream: report=$report_abs"
 echo "claude-workstream: invoking claude (model=$model)…"
 
 main_exit=0
-(
-  cd "$worktree_abs"
-  claude \
-    --print \
-    --model "$model" \
-    --no-session-persistence \
-    --setting-sources project,local \
-    --strict-mcp-config \
-    --mcp-config "$mcp_config" \
-    --dangerously-skip-permissions \
-    --append-system-prompt "Worker lane '$lane'. Write the required report to $report_abs before ending. Follow docs/agent-workstream-playbook.md." \
-    "$main_prompt"
-) >"$transcript" 2>&1 || main_exit=$?
+invoke_claude_main "$transcript" || main_exit=$?
+
+retry_transcript="$artifact_dir/transcript-retry-1.log"
+main_retried=false
+if [[ $main_exit -ne 0 ]] && thinking_block_replay_error "$transcript"; then
+  echo "claude-workstream: thinking-block replay API error — retrying with clean setting sources" >&2
+  main_retried=true
+  main_exit=0
+  invoke_claude_main "$retry_transcript" || main_exit=$?
+  {
+    printf '\n--- retry transcript (%s) ---\n' "$retry_transcript"
+    cat "$retry_transcript"
+  } >>"$transcript"
+fi
 
 git -C "$worktree_abs" status --short >"$git_after" 2>&1 || true
 
@@ -312,20 +357,20 @@ evidence does not support a 'complete' status, write Status: blocked and
 state what is missing. End with the verbatim \`git status --short\` output."
 
     recovery_exit=0
-    (
-      cd "$worktree_abs"
-      claude \
-        --print \
-        --model "$model" \
-        --no-session-persistence \
-        --setting-sources project,local \
-        --strict-mcp-config \
-        --mcp-config "$mcp_config" \
-        --dangerously-skip-permissions \
-        --disallowedTools "Edit" "MultiEdit" "Write(!$report_abs)" "NotebookEdit" \
-        --append-system-prompt "Recovery pass for lane '$lane'. Report-only. The only file you may write is $report_abs." \
-        "$recovery_prompt"
-    ) >"$recovery_transcript" 2>&1 || recovery_exit=$?
+    invoke_claude_recovery "$recovery_transcript" "$recovery_prompt" || recovery_exit=$?
+
+    retry_recovery_transcript="$artifact_dir/recovery-retry-1.log"
+    recovery_retried=false
+    if [[ $recovery_exit -ne 0 ]] && thinking_block_replay_error "$recovery_transcript"; then
+      echo "claude-workstream: recovery thinking-block replay API error — retrying with clean setting sources" >&2
+      recovery_retried=true
+      recovery_exit=0
+      invoke_claude_recovery "$retry_recovery_transcript" "$recovery_prompt" || recovery_exit=$?
+      {
+        printf '\n--- recovery retry transcript (%s) ---\n' "$retry_recovery_transcript"
+        cat "$retry_recovery_transcript"
+      } >>"$recovery_transcript"
+    fi
 
     if report_present; then
       report_state="recovered"
@@ -342,6 +387,9 @@ fi
 if [[ "$report_state" = "absent" ]]; then
   final_status="failed"
   final_exit=1
+elif [[ $main_exit -ne 0 ]]; then
+  final_status="failed"
+  final_exit="$main_exit"
 else
   final_status="complete"
   final_exit=$main_exit
