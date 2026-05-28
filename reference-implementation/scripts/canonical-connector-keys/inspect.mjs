@@ -6,8 +6,16 @@
  *
  * Walks every table that owns a `connector_id` column and, for each
  * distinct value, classifies it against the canonical allowlist in
- * `reference-implementation/server/connector-key.js`. Surfaces three
- * additional findings the OpenSpec change explicitly names:
+ * `reference-implementation/server/connector-key.js`. Also walks the
+ * known JSONB surfaces that embed `connector_id` inside structured
+ * payloads (`grants.grant_json`, `grants.storage_binding_json`,
+ * `grant_package_members.source_json`, `pending_consents.params_json`)
+ * and classifies every extracted identifier with the same
+ * `classifyConnectorId` function so the dry-run fails closed on
+ * unmapped identifiers inside JSONB.
+ *
+ * Surfaces three additional findings the OpenSpec change explicitly
+ * names:
  *
  *   - `legacy` / `default_account` placeholders on
  *     `connector_instances.source_binding_json`;
@@ -23,7 +31,6 @@
 
 import {
   canonicalConnectorKey,
-  firstPartyConnectorKeys,
   isLegacyLocalAlias,
   isRegistryUrlConnectorId,
   legacyLocalAliasMap,
@@ -31,21 +38,132 @@ import {
 } from '../../server/connector-key.js';
 
 const LOCAL_DEVICE_PREFIX = 'local-device:';
+const CONNECTOR_SOURCE_KINDS = new Set(['connector', 'provider_native']);
 
 /**
- * JSONB surfaces that embed connector_id values inside structured
- * payloads. The dry-run reports row counts so the write migration in
- * §3.3 can budget a deeper sweep; per-row JSONB extraction is out of
- * scope for the dry-run itself.
+ * Quote a Postgres identifier (table or column name) and escape any
+ * embedded double-quotes per the SQL standard. The dry-run only ever
+ * queries identifiers it discovered itself from `information_schema`
+ * (or hard-coded surface names in JSONB_CONNECTOR_ID_SHAPES), so SQL
+ * injection is not the threat model here. The helper exists so a
+ * mis-named table that happens to contain a `"` character cannot break
+ * the surrounding query, and so any future dynamic identifier passes
+ * through one audited choke point.
+ *
+ * Rejects empty strings, non-strings, and identifiers containing a
+ * null byte, since none of those are valid Postgres identifiers and
+ * silently quoting them would mask a real bug.
+ *
+ * @param {unknown} identifier
+ * @returns {string} e.g. `"connector_instances"` or `"weird""name"`
  */
-export const JSONB_CONNECTOR_ID_SURFACES = Object.freeze([
-  { table: 'grants', column: 'grant_json', why: 'embeds connector_id inside scope' },
-  { table: 'grants', column: 'storage_binding_json', why: 'storage binding payload' },
-  { table: 'grant_packages', column: 'package_json', why: 'package members reference connector ids' },
-  { table: 'grant_package_members', column: 'source_json', why: 'per-member source identity' },
-  { table: 'pending_consents', column: 'params_json', why: 'request params and approved selections' },
-  { table: 'tokens', column: null, why: 'no direct column; resolved via grants' },
-  { table: 'connector_instances', column: 'source_binding_json', why: 'kind=legacy/default_account placeholders' },
+export function quotePgIdentifier(identifier) {
+  if (typeof identifier !== 'string' || identifier.length === 0) {
+    throw new Error('quotePgIdentifier: identifier must be a non-empty string');
+  }
+  if (identifier.includes('\0')) {
+    throw new Error('quotePgIdentifier: identifier contains null byte');
+  }
+  return `"${identifier.replace(/"/g, '""')}"`;
+}
+
+/**
+ * Known JSONB surfaces and the per-shape extractors that pull
+ * embedded `connector_id` values out of them. Each `extract` callback
+ * runs against one parsed JSONB row and returns an array of
+ * `{ path, value }` entries — one per identifier found. The dry-run
+ * then classifies every value with `classifyConnectorId`, just like
+ * the direct `connector_id` column scan, so unmapped JSONB
+ * identifiers fail the same way unmapped column identifiers do.
+ *
+ * Shape sources (read/write call sites in the reference implementation):
+ *
+ *   - `grants.grant_json` → `$.source.id` when `$.source.kind` is
+ *     `connector` or `provider_native`. Written by
+ *     `server/auth.js::describeSourceBinding` and friends.
+ *   - `grants.storage_binding_json` → `$.connector_id`. Written by
+ *     `server/auth.js::normalizeStorageBinding`.
+ *   - `grant_package_members.source_json` → `$.id` when `$.kind` is
+ *     `connector` or `provider_native`. Written by
+ *     `server/auth.js::describePackageMemberSource`.
+ *   - `pending_consents.params_json` → `$.source_binding.id` (kind
+ *     filter) and `$.storage_binding.connector_id`. Written by the
+ *     pending-consent normalizer around `auth.js` line 540.
+ *
+ * `grant_packages.package_json` is intentionally NOT extracted: the
+ * envelope today carries `{version, package_id, subject, client,
+ * approved_source_count, source_bounded_child_grants}` only —
+ * connector identifiers live on the child grants and on the
+ * `grant_package_members.source_json` rows, both of which the
+ * inspector already classifies.
+ *
+ * `connector_instances.source_binding_json` is also NOT extracted
+ * here: the per-row connector identity already lives on the row's
+ * `connector_id` column (which the direct-column scan covers), and
+ * the JSONB carries `{kind: 'default_account'|'local_device'|...}`
+ * placeholder/discriminator metadata only.
+ */
+export const JSONB_CONNECTOR_ID_SHAPES = Object.freeze([
+  {
+    table: 'grants',
+    column: 'grant_json',
+    extract: (json) => {
+      if (!json?.source || !CONNECTOR_SOURCE_KINDS.has(json.source.kind)) return [];
+      if (typeof json.source.id !== 'string' || json.source.id.length === 0) return [];
+      return [{ path: '$.source.id', value: json.source.id }];
+    },
+  },
+  {
+    table: 'grants',
+    column: 'storage_binding_json',
+    extract: (json) => {
+      if (typeof json?.connector_id !== 'string' || json.connector_id.length === 0) return [];
+      return [{ path: '$.connector_id', value: json.connector_id }];
+    },
+  },
+  {
+    table: 'grant_package_members',
+    column: 'source_json',
+    extract: (json) => {
+      if (!json || !CONNECTOR_SOURCE_KINDS.has(json.kind)) return [];
+      if (typeof json.id !== 'string' || json.id.length === 0) return [];
+      return [{ path: '$.id', value: json.id }];
+    },
+  },
+  {
+    table: 'pending_consents',
+    column: 'params_json',
+    extract: (json) => {
+      const out = [];
+      const sb = json?.source_binding;
+      if (sb && CONNECTOR_SOURCE_KINDS.has(sb.kind) && typeof sb.id === 'string' && sb.id.length > 0) {
+        out.push({ path: '$.source_binding.id', value: sb.id });
+      }
+      const stg = json?.storage_binding;
+      if (stg && typeof stg.connector_id === 'string' && stg.connector_id.length > 0) {
+        out.push({ path: '$.storage_binding.connector_id', value: stg.connector_id });
+      }
+      return out;
+    },
+  },
+]);
+
+/**
+ * Sites the dry-run knows about but does NOT extract per-row, kept
+ * in the report so the §3.3 write-migration plan can see them in one
+ * place.
+ */
+export const JSONB_NON_EXTRACTED_SURFACES = Object.freeze([
+  {
+    table: 'grant_packages',
+    column: 'package_json',
+    why: 'envelope carries no embedded connector_id; identifiers live on child grants and grant_package_members.source_json',
+  },
+  {
+    table: 'connector_instances',
+    column: 'source_binding_json',
+    why: 'JSONB carries kind placeholders only (`default_account`, `local_device`, …); the operational connector_id lives on the row column',
+  },
 ]);
 
 /**
@@ -69,11 +187,10 @@ export function makePostgresDriver(pool) {
     },
 
     async countDistinctConnectorIds(table) {
-      // Identifier interpolation: `table` comes from information_schema,
-      // not user input. Wrap in double-quotes defensively.
+      const quoted = quotePgIdentifier(table);
       const { rows } = await pool.query(
         `SELECT connector_id AS value, COUNT(*)::bigint AS count
-           FROM "${table}"
+           FROM ${quoted}
           GROUP BY connector_id
           ORDER BY count DESC, connector_id ASC`,
       );
@@ -93,12 +210,6 @@ export function makePostgresDriver(pool) {
     },
 
     async countLegacyDisplayNames() {
-      // Owner-visible `display_name` values that match the migration
-      // placeholders we no longer want as selectable connections. Both
-      // strings are described in
-      // `packages/reference-contract/src/common/canonical.ts`
-      // (`ConnectionDisplayNameSchema`) and on the live pdpp.vivid.fish
-      // deployment per the consent-scope closeout report.
       const { rows } = await pool.query(
         `SELECT display_name AS value, COUNT(*)::bigint AS count
            FROM connector_instances
@@ -109,8 +220,34 @@ export function makePostgresDriver(pool) {
       return rows.map((r) => ({ value: r.value, count: Number(r.count) }));
     },
 
-    async countJsonbSurfaceRows(table) {
-      const { rows } = await pool.query(`SELECT COUNT(*)::bigint AS count FROM "${table}"`);
+    async hasColumn(table, column) {
+      const { rows } = await pool.query(
+        `SELECT 1
+           FROM information_schema.columns
+          WHERE table_schema = current_schema()
+            AND table_name = $1
+            AND column_name = $2
+          LIMIT 1`,
+        [table, column],
+      );
+      return rows.length > 0;
+    },
+
+    async readJsonbColumn(table, column) {
+      const quotedTable = quotePgIdentifier(table);
+      const quotedColumn = quotePgIdentifier(column);
+      const { rows } = await pool.query(
+        `SELECT ${quotedColumn} AS value
+           FROM ${quotedTable}
+          WHERE ${quotedColumn} IS NOT NULL`,
+      );
+      // node-pg returns parsed JS objects for jsonb columns by default.
+      return rows.map((r) => r.value);
+    },
+
+    async countTableRows(table) {
+      const quoted = quotePgIdentifier(table);
+      const { rows } = await pool.query(`SELECT COUNT(*)::bigint AS count FROM ${quoted}`);
       return Number(rows[0]?.count ?? 0);
     },
   };
@@ -217,13 +354,48 @@ function requiresRewrite(classification, value) {
   return typeof value !== 'string' || value !== classification.canonicalKey;
 }
 
+function buildClassifiedDistinct(value, count) {
+  const classification = classifyConnectorId(value);
+  return {
+    value,
+    count,
+    classification: classification.classification,
+    canonicalKey: classification.canonicalKey,
+    inner: classification.inner ?? null,
+    reason: classification.reason ?? null,
+    rewriteRequired: requiresRewrite(classification, value),
+    unmapped: isUnmappedClassification(classification),
+  };
+}
+
+function aggregateExtractions(extractions) {
+  // extractions: [{ path, value }]  →  Map<`${path} ${value}`, count>
+  const counts = new Map();
+  for (const { path, value } of extractions) {
+    const key = `${path} ${value}`;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  const distinct = [];
+  for (const [key, count] of counts) {
+    const sep = key.indexOf(' ');
+    const path = key.slice(0, sep);
+    const value = key.slice(sep + 1);
+    const entry = buildClassifiedDistinct(value, count);
+    distinct.push({ path, ...entry });
+  }
+  distinct.sort((a, b) => b.count - a.count || a.value.localeCompare(b.value));
+  return distinct;
+}
+
 /**
  * Run the full inspection. Driver shape:
  *   - listConnectorIdColumns(): Promise<{table,column}[]>
  *   - countDistinctConnectorIds(table): Promise<{value,count}[]>
  *   - countSourceBindingPlaceholders(): Promise<{kind,count}[]>
  *   - countLegacyDisplayNames(): Promise<{value,count}[]>
- *   - countJsonbSurfaceRows(table): Promise<number>
+ *   - hasColumn(table, column): Promise<boolean>
+ *   - readJsonbColumn(table, column): Promise<unknown[]>  // parsed JSONB
+ *   - countTableRows(table): Promise<number>
  */
 export async function inspect(driver) {
   if (!driver) {
@@ -235,19 +407,7 @@ export async function inspect(driver) {
   const tables = [];
   for (const { table, column } of columns) {
     const distinct = await driver.countDistinctConnectorIds(table);
-    const classified = distinct.map((row) => {
-      const classification = classifyConnectorId(row.value);
-      return {
-        value: row.value,
-        count: row.count,
-        classification: classification.classification,
-        canonicalKey: classification.canonicalKey,
-        inner: classification.inner ?? null,
-        reason: classification.reason ?? null,
-        rewriteRequired: requiresRewrite(classification, row.value),
-        unmapped: isUnmappedClassification(classification),
-      };
-    });
+    const classified = distinct.map((row) => buildClassifiedDistinct(row.value, row.count));
     tables.push({
       table,
       column,
@@ -264,17 +424,60 @@ export async function inspect(driver) {
   const legacyDisplayNames = await driver.countLegacyDisplayNames();
 
   const jsonbSurfaces = [];
-  for (const surface of JSONB_CONNECTOR_ID_SURFACES) {
-    if (!surface.column) {
-      jsonbSurfaces.push({ ...surface, rowCount: null });
+  for (const shape of JSONB_CONNECTOR_ID_SHAPES) {
+    const exists = await driver.hasColumn(shape.table, shape.column);
+    if (!exists) {
+      jsonbSurfaces.push({
+        table: shape.table,
+        column: shape.column,
+        present: false,
+        rowsScanned: 0,
+        extractedCount: 0,
+        distinctCount: 0,
+        unmappedDistinctCount: 0,
+        unmappedRowCount: 0,
+        rewriteRowCount: 0,
+        distinct: [],
+      });
       continue;
     }
-    const rowCount = await driver.countJsonbSurfaceRows(surface.table);
-    jsonbSurfaces.push({ ...surface, rowCount });
+    const rows = await driver.readJsonbColumn(shape.table, shape.column);
+    const extractions = [];
+    for (const row of rows) {
+      try {
+        for (const hit of shape.extract(row)) extractions.push(hit);
+      } catch {
+        // A malformed JSONB row that throws during extraction is
+        // treated as one unmapped extraction so it still fails closed.
+        extractions.push({ path: '<extract-error>', value: '<extract-error>' });
+      }
+    }
+    const distinct = aggregateExtractions(extractions);
+    jsonbSurfaces.push({
+      table: shape.table,
+      column: shape.column,
+      present: true,
+      rowsScanned: rows.length,
+      extractedCount: extractions.length,
+      distinctCount: distinct.length,
+      unmappedDistinctCount: distinct.filter((d) => d.unmapped).length,
+      unmappedRowCount: distinct.filter((d) => d.unmapped).reduce((acc, d) => acc + d.count, 0),
+      rewriteRowCount: distinct.filter((d) => d.rewriteRequired).reduce((acc, d) => acc + d.count, 0),
+      distinct,
+    });
   }
 
-  const totalUnmappedRows = tables.reduce((acc, t) => acc + t.unmappedRowCount, 0);
-  const totalRewriteRows = tables.reduce((acc, t) => acc + t.rewriteRowCount, 0);
+  const nonExtractedSurfaces = [];
+  for (const surface of JSONB_NON_EXTRACTED_SURFACES) {
+    const exists = await driver.hasColumn(surface.table, surface.column);
+    const rowCount = exists ? await driver.countTableRows(surface.table) : 0;
+    nonExtractedSurfaces.push({ ...surface, present: exists, rowCount });
+  }
+
+  const totalUnmappedRowsColumns = tables.reduce((acc, t) => acc + t.unmappedRowCount, 0);
+  const totalUnmappedRowsJsonb = jsonbSurfaces.reduce((acc, s) => acc + s.unmappedRowCount, 0);
+  const totalRewriteRowsColumns = tables.reduce((acc, t) => acc + t.rewriteRowCount, 0);
+  const totalRewriteRowsJsonb = jsonbSurfaces.reduce((acc, s) => acc + s.rewriteRowCount, 0);
   const totalRowsTouched = tables.reduce((acc, t) => acc + t.rowsTotal, 0);
 
   return {
@@ -283,12 +486,17 @@ export async function inspect(driver) {
     sourceBindingPlaceholders,
     legacyDisplayNames,
     jsonbSurfaces,
+    nonExtractedJsonbSurfaces: nonExtractedSurfaces,
     summary: {
       tablesScanned: tables.length,
       totalRowsTouched,
-      totalRewriteRows,
-      totalUnmappedRows,
-      hasUnmapped: totalUnmappedRows > 0,
+      totalRewriteRows: totalRewriteRowsColumns + totalRewriteRowsJsonb,
+      totalRewriteRowsColumns,
+      totalRewriteRowsJsonb,
+      totalUnmappedRows: totalUnmappedRowsColumns + totalUnmappedRowsJsonb,
+      totalUnmappedRowsColumns,
+      totalUnmappedRowsJsonb,
+      hasUnmapped: totalUnmappedRowsColumns + totalUnmappedRowsJsonb > 0,
     },
   };
 }
@@ -305,8 +513,8 @@ export function formatHumanReport(report) {
   lines.push('');
   lines.push(`tables_scanned:      ${report.summary.tablesScanned}`);
   lines.push(`total_rows_touched:  ${report.summary.totalRowsTouched}`);
-  lines.push(`rewrite_rows:        ${report.summary.totalRewriteRows}`);
-  lines.push(`unmapped_rows:       ${report.summary.totalUnmappedRows}`);
+  lines.push(`rewrite_rows:        ${report.summary.totalRewriteRows} (columns=${report.summary.totalRewriteRowsColumns}, jsonb=${report.summary.totalRewriteRowsJsonb})`);
+  lines.push(`unmapped_rows:       ${report.summary.totalUnmappedRows} (columns=${report.summary.totalUnmappedRowsColumns}, jsonb=${report.summary.totalUnmappedRowsJsonb})`);
   lines.push(`status:              ${report.summary.hasUnmapped ? 'FAIL (unmapped found)' : 'OK'}`);
   lines.push('');
 
@@ -346,11 +554,34 @@ export function formatHumanReport(report) {
   }
 
   if (report.jsonbSurfaces.length > 0) {
-    lines.push(`## jsonb surfaces requiring deeper write-migration sweep`);
+    lines.push(`## jsonb embedded connector_id extraction`);
     for (const s of report.jsonbSurfaces) {
-      const col = s.column ?? '(indirect via grants)';
-      const count = s.rowCount === null ? 'n/a' : s.rowCount;
-      lines.push(`    ${s.table}.${col}  rows=${count}  — ${s.why}`);
+      if (!s.present) {
+        lines.push(`  ${s.table}.${s.column}  (column missing on this deployment — skipped)`);
+        continue;
+      }
+      lines.push(`  ${s.table}.${s.column}  rows=${s.rowsScanned} extracted=${s.extractedCount} distinct=${s.distinctCount} rewrite=${s.rewriteRowCount} unmapped=${s.unmappedRowCount}`);
+      for (const d of s.distinct) {
+        const tag = d.unmapped
+          ? 'UNMAPPED'
+          : d.rewriteRequired
+            ? `→ ${d.canonicalKey}`
+            : 'ok';
+        const detail = d.classification === 'wrapped_local_device' && d.inner
+          ? ` (inner=${d.inner.classification}${d.inner.canonicalKey ? '→' + d.inner.canonicalKey : ''})`
+          : '';
+        lines.push(`    ${tag.padEnd(20)} ${d.classification.padEnd(28)} count=${d.count.toString().padStart(7)}  ${d.path}=${d.value}${detail}`);
+        if (d.reason) lines.push(`        reason: ${d.reason}`);
+      }
+    }
+    lines.push('');
+  }
+
+  if (report.nonExtractedJsonbSurfaces.length > 0) {
+    lines.push(`## jsonb surfaces with no embedded connector_id (informational)`);
+    for (const s of report.nonExtractedJsonbSurfaces) {
+      const presence = s.present ? `rows=${s.rowCount}` : '(missing)';
+      lines.push(`    ${s.table}.${s.column}  ${presence}  — ${s.why}`);
     }
     lines.push('');
   }

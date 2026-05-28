@@ -16,11 +16,21 @@ import {
   classifyConnectorId,
   formatHumanReport,
   inspect,
-  JSONB_CONNECTOR_ID_SURFACES,
+  JSONB_CONNECTOR_ID_SHAPES,
+  JSONB_NON_EXTRACTED_SURFACES,
+  quotePgIdentifier,
 } from './inspect.mjs';
 import { parseArgs } from './cli.mjs';
 
-function makeDriver({ columns = [], distinctByTable = {}, placeholders = [], legacyNames = [], jsonbCounts = {} } = {}) {
+function makeDriver({
+  columns = [],
+  distinctByTable = {},
+  placeholders = [],
+  legacyNames = [],
+  jsonbRowsBySurface = {},
+  missingJsonbSurfaces = new Set(),
+  jsonbTableRowCounts = {},
+} = {}) {
   return {
     async listConnectorIdColumns() {
       return columns;
@@ -34,8 +44,14 @@ function makeDriver({ columns = [], distinctByTable = {}, placeholders = [], leg
     async countLegacyDisplayNames() {
       return legacyNames;
     },
-    async countJsonbSurfaceRows(table) {
-      return jsonbCounts[table] ?? 0;
+    async hasColumn(table, column) {
+      return !missingJsonbSurfaces.has(`${table}.${column}`);
+    },
+    async readJsonbColumn(table, column) {
+      return jsonbRowsBySurface[`${table}.${column}`] ?? [];
+    },
+    async countTableRows(table) {
+      return jsonbTableRowCounts[table] ?? 0;
     },
   };
 }
@@ -143,7 +159,7 @@ test('inspect: all-mapped fixture produces no unmapped rows and accurate counts'
       { kind: 'default_account', count: 1 },
     ],
     legacyNames: [{ value: 'default account', count: 1 }],
-    jsonbCounts: { grants: 12, grant_packages: 3, grant_package_members: 9, pending_consents: 2, connector_instances: 5 },
+    jsonbTableRowCounts: { grant_packages: 3, connector_instances: 5 },
   });
 
   const report = await inspect(driver);
@@ -161,6 +177,8 @@ test('inspect: all-mapped fixture produces no unmapped rows and accurate counts'
   // records: 7 (local-device:claude-code → claude-code)
   //          + 42 (gmail url) = 49
   // total = 2 + 5 + 49 = 56.
+  assert.equal(report.summary.totalRewriteRowsColumns, 56);
+  assert.equal(report.summary.totalRewriteRowsJsonb, 0);
   assert.equal(report.summary.totalRewriteRows, 56);
 
   const connectorInstancesTable = report.tables.find((t) => t.table === 'connector_instances');
@@ -180,9 +198,14 @@ test('inspect: all-mapped fixture produces no unmapped rows and accurate counts'
   );
   assert.equal(report.legacyDisplayNames[0].value, 'default account');
 
-  // JSONB surface counts are reported but not classified deeply.
-  const grantsSurface = report.jsonbSurfaces.find((s) => s.table === 'grants' && s.column === 'grant_json');
-  assert.equal(grantsSurface.rowCount, 12);
+  // No JSONB rows supplied → every extracted surface reports zero.
+  for (const s of report.jsonbSurfaces) {
+    assert.equal(s.extractedCount, 0);
+    assert.equal(s.unmappedRowCount, 0);
+  }
+  const grantPackages = report.nonExtractedJsonbSurfaces.find((s) => s.table === 'grant_packages');
+  assert.equal(grantPackages.rowCount, 3);
+  assert.equal(grantPackages.present, true);
 });
 
 test('inspect: ambiguous wrapped-local-device + unknown URL fixture surfaces fail-closed counts', async () => {
@@ -212,6 +235,8 @@ test('inspect: ambiguous wrapped-local-device + unknown URL fixture surfaces fai
   assert.equal(report.summary.hasUnmapped, true);
   // 3 (mystery URL) + 2 (wrapped bogus) + 1 (https) = 6 unmapped rows.
   assert.equal(report.summary.totalUnmappedRows, 6);
+  assert.equal(report.summary.totalUnmappedRowsColumns, 6);
+  assert.equal(report.summary.totalUnmappedRowsJsonb, 0);
 
   const records = report.tables.find((t) => t.table === 'records');
   const wrappedBogus = records.distinct.find((r) => r.value === 'local-device:something-bogus');
@@ -225,6 +250,141 @@ test('inspect: ambiguous wrapped-local-device + unknown URL fixture surfaces fai
   assert.match(mystery.reason, /first-party allowlist/);
 });
 
+test('inspect: jsonb extractor classifies embedded mapped + unmapped connector_ids', async () => {
+  const driver = makeDriver({
+    columns: [],
+    jsonbRowsBySurface: {
+      'grants.grant_json': [
+        // Mapped: provider_native source.
+        { source: { kind: 'provider_native', id: 'northstar_hr_native' } },
+        // Mapped: URL-shaped first-party slug in the allowlist.
+        { source: { kind: 'connector', id: 'https://registry.pdpp.org/connectors/gmail' } },
+        { source: { kind: 'connector', id: 'https://registry.pdpp.org/connectors/gmail' } },
+        // Other kinds (no source.id) are skipped, not failed.
+        { source: { kind: 'other', id: 'something' } },
+        // Missing/null source → no extraction.
+        {},
+        null,
+      ],
+      'grants.storage_binding_json': [
+        { connector_id: 'https://registry.pdpp.org/connectors/gmail' },
+        { connector_id: 'claude_code' },
+        // Null storage_binding → no extraction.
+        { connector_id: null },
+      ],
+      'grant_package_members.source_json': [
+        { kind: 'connector', id: 'local-device:claude-code', connection_id: 'cnx_abc' },
+        { kind: 'provider_native', id: 'northstar_hr_native' },
+      ],
+      'pending_consents.params_json': [
+        {
+          source_binding: { kind: 'connector', id: 'https://registry.pdpp.org/connectors/slack' },
+          storage_binding: { connector_id: 'https://registry.pdpp.org/connectors/slack' },
+        },
+      ],
+    },
+  });
+
+  const report = await inspect(driver);
+
+  // No unmapped rows in this fixture: every embedded value is in the
+  // canonical allowlist (or wraps a value that is).
+  assert.equal(report.summary.totalUnmappedRowsJsonb, 0);
+  assert.equal(report.summary.hasUnmapped, false);
+
+  const grantJson = report.jsonbSurfaces.find((s) => s.table === 'grants' && s.column === 'grant_json');
+  assert.equal(grantJson.present, true);
+  assert.equal(grantJson.rowsScanned, 6);
+  // Three extractions: northstar_hr_native, gmail URL ×2.
+  assert.equal(grantJson.extractedCount, 3);
+  assert.equal(grantJson.distinctCount, 2);
+  const gmailRow = grantJson.distinct.find((d) => d.value.endsWith('/gmail'));
+  assert.equal(gmailRow.path, '$.source.id');
+  assert.equal(gmailRow.classification, 'url_first_party');
+  assert.equal(gmailRow.canonicalKey, 'gmail');
+  assert.equal(gmailRow.rewriteRequired, true);
+
+  const storageJson = report.jsonbSurfaces.find((s) => s.column === 'storage_binding_json');
+  assert.equal(storageJson.extractedCount, 2);
+  const aliasRow = storageJson.distinct.find((d) => d.value === 'claude_code');
+  assert.equal(aliasRow.classification, 'canonical_legacy_alias');
+  assert.equal(aliasRow.canonicalKey, 'claude-code');
+
+  const memberJson = report.jsonbSurfaces.find((s) => s.table === 'grant_package_members');
+  assert.equal(memberJson.extractedCount, 2);
+  const wrapped = memberJson.distinct.find((d) => d.value === 'local-device:claude-code');
+  assert.equal(wrapped.classification, 'wrapped_local_device');
+  assert.equal(wrapped.canonicalKey, 'claude-code');
+  assert.equal(wrapped.unmapped, false);
+
+  const paramsJson = report.jsonbSurfaces.find((s) => s.table === 'pending_consents');
+  // Two paths extracted from one row: source_binding.id + storage_binding.connector_id.
+  assert.equal(paramsJson.extractedCount, 2);
+  assert.equal(paramsJson.distinctCount, 2);
+  const paths = paramsJson.distinct.map((d) => d.path).sort();
+  assert.deepEqual(paths, ['$.source_binding.id', '$.storage_binding.connector_id']);
+});
+
+test('inspect: jsonb extractor fails closed on unmapped embedded identifiers', async () => {
+  const driver = makeDriver({
+    columns: [],
+    jsonbRowsBySurface: {
+      'grants.grant_json': [
+        // Unmapped URL-shaped slug inside the source binding.
+        { source: { kind: 'connector', id: 'https://registry.pdpp.org/connectors/unknown' } },
+        { source: { kind: 'connector', id: 'https://registry.pdpp.org/connectors/unknown' } },
+      ],
+      'grants.storage_binding_json': [
+        // Wrapped local-device with bogus inner.
+        { connector_id: 'local-device:totally-bogus-vendor' },
+      ],
+      'pending_consents.params_json': [
+        // Garbled identifier on the source_binding path.
+        { source_binding: { kind: 'connector', id: 'https' }, storage_binding: { connector_id: 'gmail' } },
+      ],
+    },
+  });
+
+  const report = await inspect(driver);
+
+  assert.equal(report.summary.hasUnmapped, true);
+  // 2 (grant_json) + 1 (storage_binding wrapped bogus) + 1 (params_json source_binding 'https')
+  assert.equal(report.summary.totalUnmappedRowsJsonb, 4);
+  // The mapped storage_binding 'gmail' in params_json should not count as unmapped.
+  const params = report.jsonbSurfaces.find((s) => s.table === 'pending_consents');
+  const stg = params.distinct.find((d) => d.path === '$.storage_binding.connector_id');
+  assert.equal(stg.classification, 'canonical_first_party');
+  assert.equal(stg.unmapped, false);
+
+  const grantJson = report.jsonbSurfaces.find((s) => s.column === 'grant_json');
+  const unknown = grantJson.distinct[0];
+  assert.equal(unknown.classification, 'unmapped');
+  assert.equal(unknown.count, 2);
+});
+
+test('inspect: missing JSONB columns on the deployment are reported but do not throw', async () => {
+  const driver = makeDriver({
+    columns: [],
+    missingJsonbSurfaces: new Set([
+      'grants.grant_json',
+      'grants.storage_binding_json',
+      'grant_package_members.source_json',
+      'pending_consents.params_json',
+      'grant_packages.package_json',
+      'connector_instances.source_binding_json',
+    ]),
+  });
+  const report = await inspect(driver);
+  for (const s of report.jsonbSurfaces) {
+    assert.equal(s.present, false);
+    assert.equal(s.extractedCount, 0);
+  }
+  for (const s of report.nonExtractedJsonbSurfaces) {
+    assert.equal(s.present, false);
+    assert.equal(s.rowCount, 0);
+  }
+});
+
 test('inspect: produces a stable human report containing every section', async () => {
   const driver = makeDriver({
     columns: [{ table: 'connector_instances', column: 'connector_id' }],
@@ -233,13 +393,12 @@ test('inspect: produces a stable human report containing every section', async (
     },
     placeholders: [{ kind: 'default_account', count: 1 }],
     legacyNames: [{ value: 'legacy', count: 1 }],
-    jsonbCounts: {
-      grants: 1,
-      grant_packages: 1,
-      grant_package_members: 1,
-      pending_consents: 1,
-      connector_instances: 1,
+    jsonbRowsBySurface: {
+      'grants.grant_json': [
+        { source: { kind: 'connector', id: 'https://registry.pdpp.org/connectors/gmail' } },
+      ],
     },
+    jsonbTableRowCounts: { grant_packages: 1, connector_instances: 1 },
   });
 
   const report = await inspect(driver);
@@ -248,8 +407,11 @@ test('inspect: produces a stable human report containing every section', async (
   assert.match(human, /connector_instances\.connector_id/);
   assert.match(human, /source_binding_json\.kind/);
   assert.match(human, /display_name placeholders/);
-  assert.match(human, /jsonb surfaces requiring deeper write-migration sweep/);
+  assert.match(human, /jsonb embedded connector_id extraction/);
   assert.match(human, /grants\.grant_json/);
+  assert.match(human, /\$\.source\.id=https:\/\/registry\.pdpp\.org\/connectors\/gmail/);
+  assert.match(human, /no embedded connector_id/);
+  assert.match(human, /grant_packages\.package_json/);
 });
 
 test('inspect: tables list is exhaustive when no columns are returned', async () => {
@@ -277,11 +439,47 @@ test('parseArgs: throws on unknown flag', () => {
   assert.throws(() => parseArgs(['node', 'cli.mjs', 'inspect', '--write']), /Unknown argument/);
 });
 
-test('JSONB_CONNECTOR_ID_SURFACES enumerates the known JSONB sites', () => {
-  const tables = JSONB_CONNECTOR_ID_SURFACES.map((s) => s.table);
-  assert.ok(tables.includes('grants'));
-  assert.ok(tables.includes('grant_packages'));
-  assert.ok(tables.includes('grant_package_members'));
-  assert.ok(tables.includes('pending_consents'));
-  assert.ok(tables.includes('connector_instances'));
+test('JSONB_CONNECTOR_ID_SHAPES enumerates the known JSONB sites with extractors', () => {
+  const sites = JSONB_CONNECTOR_ID_SHAPES.map((s) => `${s.table}.${s.column}`).sort();
+  assert.deepEqual(sites, [
+    'grant_package_members.source_json',
+    'grants.grant_json',
+    'grants.storage_binding_json',
+    'pending_consents.params_json',
+  ]);
+  for (const s of JSONB_CONNECTOR_ID_SHAPES) {
+    assert.equal(typeof s.extract, 'function');
+  }
+});
+
+test('JSONB_NON_EXTRACTED_SURFACES lists informational sites with row counts only', () => {
+  const sites = JSONB_NON_EXTRACTED_SURFACES.map((s) => `${s.table}.${s.column}`).sort();
+  assert.deepEqual(sites, [
+    'connector_instances.source_binding_json',
+    'grant_packages.package_json',
+  ]);
+});
+
+test('quotePgIdentifier: wraps a plain identifier in double-quotes', () => {
+  assert.equal(quotePgIdentifier('connector_instances'), '"connector_instances"');
+  assert.equal(quotePgIdentifier('grants'), '"grants"');
+});
+
+test('quotePgIdentifier: escapes embedded double-quotes by doubling them', () => {
+  // If a (hypothetical) information_schema row ever surfaced a table
+  // name containing a double-quote, naive `"${id}"` interpolation
+  // would split the SQL string. The helper must escape it instead.
+  assert.equal(quotePgIdentifier('weird"name'), '"weird""name"');
+  assert.equal(quotePgIdentifier('a"b"c'), '"a""b""c"');
+  // Round-trip parity: the unescaped form recovers the original.
+  const escaped = quotePgIdentifier('a"b"c');
+  const unwrapped = escaped.slice(1, -1).replace(/""/g, '"');
+  assert.equal(unwrapped, 'a"b"c');
+});
+
+test('quotePgIdentifier: rejects empty / non-string / null-byte identifiers', () => {
+  assert.throws(() => quotePgIdentifier(''), /non-empty string/);
+  assert.throws(() => quotePgIdentifier(null), /non-empty string/);
+  assert.throws(() => quotePgIdentifier(123), /non-empty string/);
+  assert.throws(() => quotePgIdentifier('a\0b'), /null byte/);
 });
