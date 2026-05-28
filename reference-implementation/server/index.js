@@ -57,6 +57,7 @@ import {
   encodeHostedMcpSelection,
   parseHostedMcpSelections,
 } from './hosted-mcp-selection.js';
+import { canonicalConnectorKey } from './connector-key.js';
 import {
   createPostgresConnectorInstanceStore,
   createSqliteConnectorInstanceStore,
@@ -3103,6 +3104,14 @@ function buildAsApp(opts = {}) {
       const manifest = await getConnectorManifest(connectorId).catch(() => null);
       if (!manifest) continue;
       const connectorLabel = manifest.display_name || manifest.name || connectorId;
+      // Display token for the meta sub-line. Prefer the canonical short
+      // connector key (`gmail`, `claude-code`) so the picker does not leak
+      // URL-shaped first-party connector ids
+      // (`https://registry.pdpp.org/connectors/...`) into owner-facing
+      // copy. For unknown / custom third-party connectors the helper
+      // returns `null`; we fall back to the original id so the row still
+      // carries a stable identifier the operator can grep for.
+      const connectorMetaToken = canonicalConnectorKey(connectorId) ?? connectorId;
       const streamCount = Array.isArray(manifest.streams) ? manifest.streams.length : 0;
       const connections = await listActiveBindingsForGrant({ ownerSubjectId, connectorId }).catch(() => []);
       if (connections.length === 0) {
@@ -3116,8 +3125,8 @@ function buildAsApp(opts = {}) {
           connectionId: null,
           label: connectorLabel,
           meta: streamCount
-            ? `${connectorId} · ${streamCount} streams · no configured connection`
-            : `${connectorId} · no configured connection`,
+            ? `${connectorMetaToken} · ${streamCount} streams · no configured connection`
+            : `${connectorMetaToken} · no configured connection`,
         });
         continue;
       }
@@ -3131,8 +3140,8 @@ function buildAsApp(opts = {}) {
           connectionId,
           label: displayName ? `${connectorLabel} — ${displayName}` : connectorLabel,
           meta: streamCount
-            ? `${connectorId} · ${streamCount} streams · ${connectionId}`
-            : `${connectorId} · ${connectionId}`,
+            ? `${connectorMetaToken} · ${streamCount} streams · ${connectionId}`
+            : `${connectorMetaToken} · ${connectionId}`,
         });
       }
     }

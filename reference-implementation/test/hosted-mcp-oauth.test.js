@@ -545,6 +545,18 @@ test('hosted MCP source selection uses hosted-ui option styles', async () => {
     assert.match(html, /class="hosted-ui-option"/);
     assert.match(html, /class="hosted-ui-button" data-variant="primary"/);
 
+    // Regression: owner-facing picker copy MUST NOT leak URL-shaped
+    // first-party connector ids. The canonical short `connector_key`
+    // (`spotify`) is the only connector identifier that may appear in
+    // human meta copy alongside the display name. See
+    // `openspec/changes/canonicalize-connector-keys/`.
+    assert.equal(
+      html.includes('https://registry.pdpp.org'),
+      false,
+      'picker meta copy MUST NOT show registry URLs; expected canonical connector keys',
+    );
+    assert.match(html, /spotify/, 'picker meta copy should show canonical key `spotify`');
+
     const cssResp = await fetch(`${asUrl}/__pdpp/hosted-ui.css`);
     assert.equal(cssResp.status, 200);
     const css = await cssResp.text();
