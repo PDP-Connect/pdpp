@@ -47,19 +47,54 @@ unchanged.
     ctx, matching the `ref-spine-correlations.ts` adapter pattern.
 - [x] 2.3 Move `_ref` dataset routes (`GET /_ref/dataset/summary`, `…/summary/streams`, `POST …/summary/rebuild`, `…/summary/reconcile`, `GET /_ref/dataset/size`, `…/top`, `POST …/size/rebuild`, `…/size/reconcile`, `GET /_ref/records/version-stats`).
   - [x] All 9 routes extracted to `server/routes/ref-dataset.ts` with `mountRefDatasetSummary`, `mountRefDatasetSummaryStreams`, `mountRefDatasetSummaryRebuild`, `mountRefDatasetSummaryReconcile`, `mountRefDatasetSize`, `mountRefDatasetTop`, `mountRefRecordsVersionStats`, `mountRefDatasetSizeRebuild`, `mountRefDatasetSizeReconcile`. Behaviour-preserving: same owner-session posture, same contract metadata, same query-string parsing, same Postgres/SQLite backend bifurcation, same response envelopes and error handling. `buildDatasetSummaryDeps` and `buildRetainedSizeProjection` moved from `buildAsApp` closure into the adapter (sole call sites). Covered by `test/ref-dataset-routes.test.js` (10/10), `test/ref-read-owner-gate.test.js` (3/3), `test/ref-dataset-summary-operation.test.js`, and `test/ref-dataset-summary-streams-operation.test.js`.
-- [ ] 2.4 Move `_ref` connectors / connections / connector-instances routes (list/get/run/schedule pause/resume/delete and `PATCH /_ref/connections/:connectorInstanceId`).
+- [x] 2.4 Move `_ref` connectors / connections / connector-instances routes (list/get/run/schedule pause/resume/delete and `PATCH /_ref/connections/:connectorInstanceId`).
+  - [x] All 18 routes extracted to `server/routes/ref-connectors.ts` with
+    per-route `mount...` fns: `mountRefConnectorsList`,
+    `mountRefConnectorDetail`, `mountRefConnectorScheduleGet`,
+    `mountRefConnectionsList`, `mountRefConnectorInstancesList`,
+    `mountRefConnectionDetail`, `mountRefConnectorInstanceDetail`,
+    `mountRefConnectionSetDisplayName`, `mountRefConnectorRun`,
+    `mountRefConnectionRun`, `mountRefConnectorScheduleUpsert`,
+    `mountRefConnectionScheduleUpsert`, `mountRefConnectorSchedulePause`,
+    `mountRefConnectionSchedulePause`, `mountRefConnectorScheduleResume`,
+    `mountRefConnectionScheduleResume`, `mountRefConnectorScheduleDelete`,
+    `mountRefConnectionScheduleDelete`. Behaviour-preserving: same
+    owner-session posture, contract metadata, response envelopes, status
+    codes, error mapping, owner-subject namespace resolution, and the
+    `onScheduleMutation` callback. `projectRefConnection`,
+    `sendRefConnectionDetail`, `resolveRefConnectorNamespace`, and
+    `resolveRefConnectionNamespace` moved from the `buildAsApp` closure
+    into the adapter (sole call sites). Controller surface
+    (`runNow`/`upsertSchedule`/`setScheduleEnabled`/`deleteSchedule`/
+    `getSchedule`/`listSchedules`) and substrate reads
+    (`listConnectorSummaries`/`getConnectorDetail`/
+    `resolveRegisteredConnectorManifest`/
+    `resolveOwnerConnectorNamespace`/`createRequestConnectorInstanceStore`)
+    are host-injected via ctx. Covered by
+    `test/ref-connectors-routes.test.js` (17/17),
+    `test/connector-instance-admission-routes.test.js` (7/7),
+    `test/ref-control-connection-scope.test.js`,
+    `test/ref-connectors-{list,detail}-{boundary,operation}.test.js`,
+    `test/ref-connectors-connection-projection.test.js`,
+    `test/ref-connector-schedule-get-{boundary,operation}.test.js`,
+    `test/connector-instances-acceptance.test.js`, and
+    `test/control-plane.test.js`.
 - [ ] 2.5 Move `_ref` approvals, records-timeline, schedules, deployment, clients, search routes.
 - [ ] 2.6 Move `_ref` device-exporters routes (enrollment-codes/enroll, list, source-instances, diagnostics, revoke, heartbeat, ingest-batches, source-instance state/local-collector-gaps).
 - [ ] 2.7 Update `buildAsApp` in `server/index.js` to call each
   sub-family's mount function at the same point in route registration;
   delete the moved blocks. (Partial: 2.2 list endpoints wired via
   `refSpineCorrelationsContext`; 2.2 detail/timeline endpoints wired
-  via `refSpineTimelinesContext`; remaining sub-families pending.)
+  via `refSpineTimelinesContext`; 2.3 dataset endpoints wired via
+  `refDatasetContext`; 2.4 connectors / connections /
+  connector-instances wired via `refConnectorsContext`; remaining
+  sub-families pending.)
 - [~] 2.8 Acceptance: targeted tests under `reference-implementation/test/` (ref-control, dataset summary, device exporter, web push, schedules) pass; `pnpm --dir reference-implementation run verify` passes.
   - [x] Tests covering 2.2 list endpoints pass: `node --test test/control-plane.test.js` (21/21), `node --test test/ref-read-owner-gate.test.js` (3/3), `node --test test/ref-spine-correlations-list-{boundary,operation}.test.js` (10/10).
   - [x] Tests covering 2.2 detail/timeline endpoints pass: `node --test test/control-plane.test.js`, `node --test test/ref-read-owner-gate.test.js`, `node --test test/ref-spine-events-page-{boundary,operation}.test.js`.
   - [x] Tests covering 2.3 dataset routes pass: `node --test test/ref-dataset-routes.test.js` (10/10), `test/ref-read-owner-gate.test.js` (3/3), `test/ref-dataset-summary-operation.test.js`, `test/ref-dataset-summary-streams-operation.test.js`.
-  - [ ] Remaining sub-family acceptance still gated by §§2.4–2.7 landing.
+  - [x] Tests covering 2.4 connectors / connections / connector-instances routes pass: `node --test test/ref-connectors-routes.test.js` (17/17), `test/connector-instance-admission-routes.test.js` (7/7), `test/ref-control-connection-scope.test.js`, `test/ref-connectors-list-{boundary,operation}.test.js`, `test/ref-connectors-detail-{boundary,operation}.test.js`, `test/ref-connectors-connection-projection.test.js`, `test/ref-connector-schedule-get-{boundary,operation}.test.js`, `test/connector-instances-acceptance.test.js`, `test/control-plane.test.js` (all green, 126 total).
+  - [ ] Remaining sub-family acceptance still gated by §§2.5–2.7 landing.
 
 ## 3. RS read family
 
