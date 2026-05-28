@@ -20,7 +20,9 @@
  *     rewritten — those tables are ephemeral test scaffolding);
  *   - local-device wrappers rewrite the inner connector key only, preserving
  *     the `local-device:` prefix and any trailing `:<encoded source_instance_id>`;
- *   - row counts MUST be preserved for every touched table.
+ *   - row counts MUST be preserved for every touched table except
+ *     intentional `connectors` parent-row collapse when multiple old ids
+ *     map to one canonical key.
  *
  * All writes happen inside a single transaction so a mid-flight failure
  * rolls back to the pre-migration snapshot.
@@ -224,12 +226,35 @@ function splitConnectorParentRewrites(columnRewrites) {
   return { parent, rest };
 }
 
+function chooseConnectorParentSource(newValue, rewrites) {
+  const registrySource = `https://registry.pdpp.org/connectors/${newValue}`;
+  return (
+    rewrites.find((r) => r.oldValue === registrySource) ??
+    [...rewrites].sort((a, b) => String(a.oldValue).localeCompare(String(b.oldValue)))[0]
+  );
+}
+
+function groupConnectorParentRewrites(parentRewrites) {
+  const byNewValue = new Map();
+  for (const r of parentRewrites) {
+    const rewrites = byNewValue.get(r.newValue) ?? [];
+    rewrites.push(r);
+    byNewValue.set(r.newValue, rewrites);
+  }
+  return [...byNewValue.entries()].map(([newValue, rewrites]) => ({
+    newValue,
+    rewrites,
+    source: chooseConnectorParentSource(newValue, rewrites),
+  }));
+}
+
 /**
  * Apply a plan inside a single transaction. Driver must extend the
  * read-only inspector driver with:
  *
  *   - `beginTransaction()` / `commit()` / `rollback()`
- *   - `copyConnectorParentRow(oldValue, newValue) → rowCount`
+ *   - `connectorParentRowExists(connectorId) → boolean`
+ *   - `upsertConnectorParentRow(oldValue, newValue) → rowCount`
  *   - `deleteConnectorParentRow(oldValue) → rowCount`
  *   - `updateConnectorIdColumn(table, column, oldValue, newValue) → rowCount`
  *   - `readJsonbRowsWithPk(table, pkCols, jsonbColumn) → [{ pk, value }]`
@@ -238,8 +263,9 @@ function splitConnectorParentRewrites(columnRewrites) {
  * The function:
  *   1. opens a transaction;
  *   2. snapshots the row count of every touched table;
- *   3. copies rewritten `connectors.connector_id` parent rows to their
- *      canonical key before child FKs are updated;
+ *   3. upserts rewritten `connectors.connector_id` parent rows to their
+ *      canonical key before child FKs are updated; many old ids may collapse
+ *      into one canonical parent, in which case the registry URL source wins;
  *   4. runs each non-parent `UPDATE … WHERE column = oldValue` and verifies the
  *      affected row count equals the expected count from the dry-run;
  *   5. for each JSONB surface that exists, reads every row with the
@@ -249,7 +275,7 @@ function splitConnectorParentRewrites(columnRewrites) {
  *   6. deletes the old `connectors.connector_id` parent rows once children
  *      no longer reference them;
  *   7. re-snapshots the row count of every touched table and asserts
- *      it is unchanged (no rewrite may delete or insert rows);
+ *      it is unchanged except for intentional parent connector row collapse;
  *   8. commits.
  *
  * Any error rolls back. A row-count mismatch (column or per-row JSONB)
@@ -261,15 +287,20 @@ export async function applyPlan(driver, plan) {
     const before = await snapshotRowCounts(driver, plan);
     const { parent: connectorParentRewrites, rest: ordinaryColumnRewrites } =
       splitConnectorParentRewrites(plan.columnRewrites);
+    const connectorParentGroups = groupConnectorParentRewrites(connectorParentRewrites);
+    let connectorRowDelta = 0;
 
-    for (const r of connectorParentRewrites) {
-      const affected = await driver.copyConnectorParentRow(r.oldValue, r.newValue);
-      if (affected !== r.expectedRows) {
+    for (const group of connectorParentGroups) {
+      const existed = await driver.connectorParentRowExists(group.newValue);
+      const affected = await driver.upsertConnectorParentRow(group.source.oldValue, group.newValue);
+      if (affected !== 1) {
         throw new Error(
-          `applyPlan: connector parent copy affected ${affected} rows, expected ${r.expectedRows} ` +
-            `for connectors.connector_id ${JSON.stringify(r.oldValue)} → ${JSON.stringify(r.newValue)}`,
+          `applyPlan: connector parent upsert affected ${affected} rows, expected 1 ` +
+            `for connectors.connector_id ${JSON.stringify(group.source.oldValue)} → ` +
+            `${JSON.stringify(group.newValue)}`,
         );
       }
+      if (!existed) connectorRowDelta += 1;
     }
 
     const columnsApplied = [];
@@ -337,14 +368,17 @@ export async function applyPlan(driver, plan) {
             `for connectors.connector_id ${JSON.stringify(r.oldValue)}`,
         );
       }
+      connectorRowDelta -= affected;
       columnsApplied.push({ ...r, actualRows: affected });
     }
 
     const after = await snapshotRowCounts(driver, plan);
     for (const t of Object.keys(before)) {
-      if (before[t] !== after[t]) {
+      const expectedAfter = t === 'connectors' ? before[t] + connectorRowDelta : before[t];
+      if (expectedAfter !== after[t]) {
         throw new Error(
-          `applyPlan: row count for ${t} changed from ${before[t]} to ${after[t]}`,
+          `applyPlan: row count for ${t} changed from ${before[t]} to ${after[t]} ` +
+            `(expected ${expectedAfter})`,
         );
       }
     }
@@ -436,13 +470,22 @@ export function makePostgresWriteDriver(client) {
     async rollback() {
       await client.query('ROLLBACK');
     },
-    async copyConnectorParentRow(oldValue, newValue) {
+    async connectorParentRowExists(connectorId) {
+      const res = await client.query(
+        `SELECT 1 FROM connectors WHERE connector_id = $1 LIMIT 1`,
+        [connectorId],
+      );
+      return (res.rowCount ?? 0) > 0;
+    },
+    async upsertConnectorParentRow(oldValue, newValue) {
       const res = await client.query(
         `INSERT INTO connectors (connector_id, manifest, created_at)
          SELECT $1, manifest, created_at
            FROM connectors
           WHERE connector_id = $2
-         ON CONFLICT (connector_id) DO NOTHING`,
+         ON CONFLICT (connector_id) DO UPDATE
+             SET manifest = EXCLUDED.manifest,
+                 created_at = EXCLUDED.created_at`,
         [newValue, oldValue],
       );
       return res.rowCount ?? 0;
@@ -517,7 +560,7 @@ export function formatApplyResult(result) {
     lines.push(`  ${j.table}.${j.column}  rows_updated=${j.rowsUpdated}`);
   }
   lines.push('');
-  lines.push(`row counts (before / after, must match):`);
+  lines.push(`row counts (before / after; only connectors may intentionally collapse):`);
   const tables = Object.keys(result.rowCounts.before).sort();
   for (const t of tables) {
     lines.push(`  ${t.padEnd(36)} ${result.rowCounts.before[t]} → ${result.rowCounts.after[t]}`);

@@ -17,7 +17,8 @@
  *   - any unmapped active-tier value aborts before any write;
  *   - backup/scratch tables are skipped by default and rewritten only
  *     with `--include-backup-tables` (scratch is never rewritten);
- *   - row counts are preserved on every touched table;
+ *   - row counts are preserved on every touched table except intentional
+ *     `connectors` parent-row collapse when old ids share a canonical key;
  *   - a mid-flight failure rolls the transaction back to its
  *     pre-migration snapshot.
  *
@@ -133,14 +134,20 @@ function makeMemoryDriver(initialState, options = {}) {
       tables = txSnapshot;
       txSnapshot = null;
     },
-    async copyConnectorParentRow(oldValue, newValue) {
+    async connectorParentRowExists(connectorId) {
+      return getTable('connectors').rows.some((row) => row.connector_id === connectorId);
+    },
+    async upsertConnectorParentRow(oldValue, newValue) {
       const connectors = getTable('connectors');
-      if (connectors.rows.some((row) => row.connector_id === newValue)) {
-        return 0;
-      }
       const source = connectors.rows.find((row) => row.connector_id === oldValue);
       if (!source) return 0;
-      connectors.rows.push({ ...structuredClone(source), connector_id: newValue });
+      const next = { ...structuredClone(source), connector_id: newValue };
+      const existingIndex = connectors.rows.findIndex((row) => row.connector_id === newValue);
+      if (existingIndex === -1) {
+        connectors.rows.push(next);
+      } else {
+        connectors.rows[existingIndex] = next;
+      }
       return 1;
     },
     async deleteConnectorParentRow(oldValue) {
@@ -446,17 +453,39 @@ test('migrate: parent connector keys are copied before child FK rewrites and del
   }
 });
 
-test('migrate: parent key conflict fails closed instead of merging manifests implicitly', async () => {
+test('migrate: duplicate parent rows collapse to one canonical row and prefer registry manifest', async () => {
   const state = buildAllMappedState();
-  state.connectors.rows.push({ connector_id: 'gmail', name: 'Existing canonical Gmail manifest' });
-  const driver = makeMemoryDriver(state, { enforceConnectorInstanceFk: true });
-  const before = structuredClone(driver._tables());
-
-  await assert.rejects(
-    () => migrate(driver, { apply: true }),
-    /connector parent copy affected 0 rows, expected 1/,
+  state.connectors.rows.push(
+    { connector_id: 'https://registry.pdpp.org/connectors/claude-code', name: 'Registry Claude manifest' },
+    { connector_id: 'claude-code', name: 'Existing stub Claude manifest' },
   );
-  assert.deepEqual(driver._tables(), before, 'conflicting parent-key copy rolls back');
+  const driver = makeMemoryDriver(state, { enforceConnectorInstanceFk: true });
+
+  const beforeCount = driver._tables().connectors.rows.length;
+  const result = await migrate(driver, { apply: true });
+
+  const claudeParents = driver._tables().connectors.rows.filter(
+    (row) => row.connector_id === 'claude-code',
+  );
+  assert.equal(claudeParents.length, 1);
+  assert.equal(
+    claudeParents[0].name,
+    'Registry Claude manifest',
+    'registry URL manifest should win over legacy alias and pre-existing stub',
+  );
+  assert.equal(
+    driver._tables().connectors.rows.some((row) => row.connector_id === 'claude_code'),
+    false,
+  );
+  assert.equal(
+    driver._tables().connectors.rows.some(
+      (row) => row.connector_id === 'https://registry.pdpp.org/connectors/claude-code',
+    ),
+    false,
+  );
+  assert.equal(driver._tables().connectors.rows.length, beforeCount - 2);
+  assert.equal(result.applied.rowCounts.before.connectors, beforeCount);
+  assert.equal(result.applied.rowCounts.after.connectors, beforeCount - 2);
 });
 
 test('migrate: --apply rewrites JSONB embedded connector_ids through the same mapping', async () => {
@@ -740,5 +769,5 @@ test('formatApplyResult: includes column rewrites, jsonb surfaces, and row-count
   assert.match(human, /canonical connector-key migration — applied/);
   assert.match(human, /rows=\d+/);
   assert.match(human, /jsonb surfaces:/);
-  assert.match(human, /row counts \(before \/ after, must match\):/);
+  assert.match(human, /row counts \(before \/ after; only connectors may intentionally collapse\):/);
 });
