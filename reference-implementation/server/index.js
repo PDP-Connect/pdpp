@@ -627,8 +627,9 @@ function sanitizeDeviceExporterDiagnosticText(value) {
 }
 
 function referenceLocalDeviceStorageTarget(connectorId, connectorInstanceId) {
+  const connectorKey = canonicalConnectorKey(connectorId) ?? connectorId;
   return {
-    connector_id: `local-device:${encodeURIComponent(connectorId)}`,
+    connector_id: connectorKey,
     connector_instance_id: connectorInstanceId,
   };
 }
@@ -667,9 +668,11 @@ async function ensureReferenceConnectorCatalogEntry(connectorId, connectorDispla
     await registerConnector(localCollectorManifest);
     return;
   }
+  const connectorKey = canonicalConnectorKey(connectorId) ?? connectorId;
   const manifest = {
-    connector_id: connectorId,
-    display_name: connectorDisplayName || connectorId,
+    connector_id: connectorKey,
+    ...(connectorKey !== connectorId ? { manifest_uri: connectorId } : {}),
+    display_name: connectorDisplayName || connectorKey,
     streams: [],
   };
   if (isPostgresStorageBackend()) {
@@ -677,11 +680,11 @@ async function ensureReferenceConnectorCatalogEntry(connectorId, connectorDispla
       `INSERT INTO connectors(connector_id, manifest)
        VALUES($1, $2::jsonb)
        ON CONFLICT(connector_id) DO NOTHING`,
-      [connectorId, JSON.stringify(manifest)],
+      [connectorKey, JSON.stringify(manifest)],
     );
     return;
   }
-  exec(referenceQueries.authConnectorsUpsert, [connectorId, JSON.stringify(manifest)]);
+  exec(referenceQueries.authConnectorsUpsert, [connectorKey, JSON.stringify(manifest)]);
 }
 
 function typeFor(status) {

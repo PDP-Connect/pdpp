@@ -22,6 +22,10 @@ import {
   postgresQuery,
   withPostgresTransaction,
 } from './postgres-storage.js';
+import {
+  canonicalConnectorKey,
+  canonicalConnectorKeyFromManifest,
+} from './connector-key.js';
 
 function generateToken() {
   return randomBytes(32).toString('hex');
@@ -63,8 +67,8 @@ async function pgExec(sql, params = []) {
 
 let configuredNativeManifest = null;
 const LEGACY_LOCAL_CONNECTOR_MANIFEST_ALIASES = new Map([
-  ['claude_code', 'https://registry.pdpp.org/connectors/claude-code'],
-  ['codex', 'https://registry.pdpp.org/connectors/codex'],
+  ['claude_code', 'claude-code'],
+  ['codex', 'codex'],
 ]);
 const PENDING_CONSENT_REQUEST_URI_PREFIX = 'urn:pdpp:pending-consent:';
 const SUPPORTED_CLIENT_AUTH_METHODS = new Set(['none']);
@@ -2286,17 +2290,18 @@ function validateConnectorManifest(manifest = {}, code = 'invalid_request', opts
  */
 export async function registerConnector(manifest) {
   validateConnectorManifest(manifest);
+  const { connectorId, storedManifest } = normalizeConnectorManifestForStorage(manifest);
   if (isPostgresStorageBackend()) {
     await pgExec(
       `INSERT INTO connectors(connector_id, manifest)
        VALUES($1, $2::jsonb)
        ON CONFLICT (connector_id) DO UPDATE SET manifest = EXCLUDED.manifest`,
-      [manifest.connector_id, JSON.stringify(manifest)],
+      [connectorId, JSON.stringify(storedManifest)],
     );
   } else {
     exec(referenceQueries.authConnectorsUpsert, [
-      manifest.connector_id,
-      JSON.stringify(manifest),
+      connectorId,
+      JSON.stringify(storedManifest),
     ]);
   }
   // Lexical retrieval index drift-detect + backfill. Handles three cases
@@ -2311,7 +2316,7 @@ export async function registerConnector(manifest) {
   // No-op for connectors with no participating streams.
   // Lazy import keeps the records ↔ search ↔ auth cycle clean.
   const { lexicalIndexBackfillForManifest } = await import('./search.js');
-  await lexicalIndexBackfillForManifest({ manifest });
+  await lexicalIndexBackfillForManifest({ manifest: storedManifest });
 
   // Semantic retrieval index drift-detect + backfill. Parallel to lexical;
   // handles the same three cases for semantic_fields, plus the backend-
@@ -2320,9 +2325,24 @@ export async function registerConnector(manifest) {
   // === false at startServer time) or when no stream declares semantic_fields.
   const { semanticIndexBackfillForManifest, getSemanticBackend } = await import('./search-semantic.js');
   if (getSemanticBackend()) {
-    await semanticIndexBackfillForManifest({ manifest });
+    await semanticIndexBackfillForManifest({ manifest: storedManifest });
   }
-  return manifest.connector_id;
+  return connectorId;
+}
+
+function normalizeConnectorManifestForStorage(manifest) {
+  const connectorId = canonicalConnectorKeyFromManifest(manifest) ?? manifest.connector_id;
+  if (connectorId === manifest.connector_id) {
+    return { connectorId, storedManifest: manifest };
+  }
+  const storedManifest = {
+    ...cloneJson(manifest),
+    connector_id: connectorId,
+  };
+  if (!storedManifest.manifest_uri) {
+    storedManifest.manifest_uri = manifest.connector_id;
+  }
+  return { connectorId, storedManifest };
 }
 
 /**
@@ -2364,7 +2384,7 @@ export async function getConnectorManifest(connectorId) {
 }
 
 async function getConnectorManifestRow(connectorId) {
-  return isPostgresStorageBackend()
+  const exact = isPostgresStorageBackend()
     ? await pgOne(
         `SELECT manifest::text AS manifest
          FROM connectors
@@ -2372,6 +2392,17 @@ async function getConnectorManifestRow(connectorId) {
         [connectorId],
       )
     : getOne(referenceQueries.authConnectorsGetManifestById, [connectorId]);
+  if (exact) return exact;
+  const canonical = canonicalConnectorKey(connectorId);
+  if (!canonical || canonical === connectorId) return null;
+  return isPostgresStorageBackend()
+    ? await pgOne(
+        `SELECT manifest::text AS manifest
+         FROM connectors
+         WHERE connector_id = $1`,
+        [canonical],
+      )
+    : getOne(referenceQueries.authConnectorsGetManifestById, [canonical]);
 }
 
 function parseAndValidateConnectorManifestRow(row, connectorId) {
@@ -2394,10 +2425,7 @@ async function getLegacyLocalConnectorAliasManifest(connectorId) {
   const canonicalRow = await getConnectorManifestRow(canonicalConnectorId);
   if (!canonicalRow) return null;
   const manifest = parseAndValidateConnectorManifestRow(canonicalRow, canonicalConnectorId);
-  return {
-    ...cloneJson(manifest),
-    connector_id: connectorId,
-  };
+  return cloneJson(manifest);
 }
 
 export async function getManifestForStorageBinding(storageBinding, opts = {}) {

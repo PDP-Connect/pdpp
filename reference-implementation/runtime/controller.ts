@@ -33,6 +33,7 @@ import {
   getConnectorManifest,
   initiateOwnerDeviceAuthorization,
 } from "../server/auth.js";
+import { canonicalConnectorKey, canonicalConnectorKeyFromManifest } from "../server/connector-key.js";
 import { isPostgresStorageBackend, postgresQuery } from "../server/postgres-storage.js";
 import { getSyncState } from "../server/records.js";
 import type { BrowserSurfaceLeaseStore } from "../server/stores/browser-surface-lease-store.ts";
@@ -562,6 +563,49 @@ function fingerprintsEqual(a: ManifestFingerprint | null, b: ManifestFingerprint
   return !!(a && b && a.version === b.version && a.streams === b.streams);
 }
 
+function addConnectorLookupKey(keys: string[], key: unknown): void {
+  if (typeof key !== "string") {
+    return;
+  }
+  const trimmed = key.trim();
+  if (trimmed && !keys.includes(trimmed)) {
+    keys.push(trimmed);
+  }
+}
+
+function connectorLookupKeys(connectorId: string, manifest?: ConnectorManifest | null): string[] {
+  const keys: string[] = [];
+  addConnectorLookupKey(keys, connectorId);
+  addConnectorLookupKey(keys, canonicalConnectorKey(connectorId));
+  if (manifest && typeof manifest === "object") {
+    addConnectorLookupKey(keys, (manifest as { connector_id?: unknown }).connector_id);
+    addConnectorLookupKey(keys, (manifest as { manifest_uri?: unknown }).manifest_uri);
+    addConnectorLookupKey(keys, canonicalConnectorKeyFromManifest(manifest));
+  }
+  return keys;
+}
+
+function setManifestLookupAliases<T>(
+  entries: Map<string, T>,
+  connectorId: string,
+  manifest: ConnectorManifest,
+  value: T
+): void {
+  for (const key of connectorLookupKeys(connectorId, manifest)) {
+    entries.set(key, value);
+  }
+}
+
+function getFirstByConnectorLookupKey<T>(entries: ReadonlyMap<string, T>, keys: readonly string[]): T | null {
+  for (const key of keys) {
+    const value = entries.get(key);
+    if (value !== undefined) {
+      return value;
+    }
+  }
+  return null;
+}
+
 /**
  * Read the operator-facing display name from a connector manifest, if
  * present. Falls back to the manifest's `name` field, then to null. The
@@ -608,13 +652,16 @@ function loadReferenceFixtureFingerprints(): Map<string, ManifestFingerprint> {
       const manifest = JSON.parse(
         readFileSync(join(REFERENCE_MANIFESTS_DIR, file), "utf8")
       ) as ConnectorManifest | null;
+      if (!manifest || typeof manifest !== "object") {
+        continue;
+      }
       const connectorId = (manifest as { connector_id?: unknown } | null)?.connector_id;
       if (typeof connectorId !== "string" || !connectorId.trim()) {
         continue;
       }
       const fp = fingerprintManifest(manifest);
       if (fp) {
-        entries.set(connectorId.trim(), fp);
+        setManifestLookupAliases(entries, connectorId.trim(), manifest, fp);
       }
     } catch {
       // Ignore malformed local fixture manifests during runtime path discovery.
@@ -649,15 +696,18 @@ function loadPolyfillConnectorPaths(): Map<string, string> {
     }
     try {
       const manifest = JSON.parse(readFileSync(join(POLYFILL_MANIFESTS_DIR, file), "utf8")) as ConnectorManifest | null;
+      if (!manifest || typeof manifest !== "object") {
+        continue;
+      }
       const connectorId = (manifest as { connector_id?: unknown } | null)?.connector_id;
       if (typeof connectorId !== "string" || !connectorId.trim()) {
         continue;
       }
       const trimmedId = connectorId.trim();
-      paths.set(trimmedId, connectorPath);
+      setManifestLookupAliases(paths, trimmedId, manifest, connectorPath);
       const fp = fingerprintManifest(manifest);
       if (fp) {
-        fingerprints.set(trimmedId, fp);
+        setManifestLookupAliases(fingerprints, trimmedId, manifest, fp);
       }
     } catch {
       // Ignore malformed manifests when building the local connector-path map.
@@ -704,15 +754,18 @@ export function resolveDefaultConnectorPath(connectorId: string, manifest?: Conn
   const referenceFingerprints = loadReferenceFixtureFingerprints();
   const polyfillFingerprints = loadPolyfillManifestFingerprints();
   const polyfillPaths = loadPolyfillConnectorPaths();
-  const polyfillPath = polyfillPaths.get(connectorId) || null;
-  const hasReferenceFixture = referenceFingerprints.has(connectorId);
+  const lookupKeys = connectorLookupKeys(connectorId, manifest ?? null);
+  const polyfillPath = getFirstByConnectorLookupKey(polyfillPaths, lookupKeys);
+  const referenceFingerprint = getFirstByConnectorLookupKey(referenceFingerprints, lookupKeys);
+  const polyfillFingerprint = getFirstByConnectorLookupKey(polyfillFingerprints, lookupKeys);
+  const hasReferenceFixture = referenceFingerprint !== null;
 
   const activeFingerprint = fingerprintManifest(manifest ?? null);
   if (activeFingerprint) {
-    if (polyfillPath && fingerprintsEqual(activeFingerprint, polyfillFingerprints.get(connectorId) ?? null)) {
+    if (polyfillPath && fingerprintsEqual(activeFingerprint, polyfillFingerprint)) {
       return polyfillPath;
     }
-    if (hasReferenceFixture && fingerprintsEqual(activeFingerprint, referenceFingerprints.get(connectorId) ?? null)) {
+    if (hasReferenceFixture && fingerprintsEqual(activeFingerprint, referenceFingerprint)) {
       return SEED_CONNECTOR_PATH;
     }
   }

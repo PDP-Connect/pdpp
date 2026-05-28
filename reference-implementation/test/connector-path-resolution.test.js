@@ -32,6 +32,7 @@ import {
   __resetControllerPathResolverCachesForTests,
   resolveDefaultConnectorPath,
 } from '../runtime/controller.ts';
+import { canonicalConnectorKeyFromManifest } from '../server/connector-key.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, '..');
@@ -117,5 +118,25 @@ test('still resolves polyfill-only connectors (no reference fixture collision) t
     resolved,
     /packages\/polyfill-connectors\/connectors\/ynab\/index\.ts$/,
     `expected polyfill ynab connector, got ${resolved}`,
+  );
+});
+
+test('resolves canonical connector keys for URL-shaped reference fixture manifests', () => {
+  __resetControllerPathResolverCachesForTests();
+  const spotify = readManifest(REFERENCE_MANIFESTS_DIR, 'spotify.json');
+  const canonicalKey = canonicalConnectorKeyFromManifest(spotify);
+  assert.equal(canonicalKey, 'spotify');
+
+  const storedManifest = {
+    ...spotify,
+    connector_id: canonicalKey,
+    manifest_uri: spotify.connector_id,
+  };
+  const resolved = resolveDefaultConnectorPath(canonicalKey, storedManifest);
+  assert.ok(resolved, 'canonical spotify key must resolve to a runnable connector path');
+  assert.match(
+    resolved,
+    /reference-implementation\/connectors\/seed\/index\.js$/,
+    `expected reference seed for canonical spotify key, got ${resolved}`,
   );
 });

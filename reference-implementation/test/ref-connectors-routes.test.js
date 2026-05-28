@@ -16,6 +16,7 @@ import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import { canonicalConnectorKeyFromManifest } from '../server/connector-key.js';
 import { startServer } from '../server/index.js';
 import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
 
@@ -70,6 +71,10 @@ async function registerSpotifyManifest(asUrl) {
   return manifest;
 }
 
+function connectorKeyForManifest(manifest) {
+  return canonicalConnectorKeyFromManifest(manifest) ?? manifest.connector_id;
+}
+
 async function seedSpotifyInstance(connectorId) {
   const store = createSqliteConnectorInstanceStore();
   await store.upsert({
@@ -105,21 +110,23 @@ test('GET /_ref/connectors/:connectorId returns not_found for unknown connector'
 test('GET /_ref/connectors/:connectorId returns ref_connector_detail for registered connector', async () => {
   await withServer(async ({ asUrl }) => {
     const manifest = await registerSpotifyManifest(asUrl);
+    const connectorId = connectorKeyForManifest(manifest);
     const { status, body } = await fetchJson(
-      `${asUrl}/_ref/connectors/${encodeURIComponent(manifest.connector_id)}`,
+      `${asUrl}/_ref/connectors/${encodeURIComponent(connectorId)}`,
     );
     assert.equal(status, 200);
     assert.equal(body.object, 'ref_connector_detail');
-    assert.equal(body.connector_id, manifest.connector_id);
+    assert.equal(body.connector_id, connectorId);
   });
 });
 
 test('GET /_ref/connectors/:connectorId/schedule returns not_found when no schedule exists', async () => {
   await withServer(async ({ asUrl }) => {
     const manifest = await registerSpotifyManifest(asUrl);
-    await seedSpotifyInstance(manifest.connector_id);
+    const connectorId = connectorKeyForManifest(manifest);
+    await seedSpotifyInstance(connectorId);
     const { status, body } = await fetchJson(
-      `${asUrl}/_ref/connectors/${encodeURIComponent(manifest.connector_id)}/schedule`,
+      `${asUrl}/_ref/connectors/${encodeURIComponent(connectorId)}/schedule`,
     );
     assert.equal(status, 404);
     assert.equal(body?.error?.code, 'not_found');
@@ -147,9 +154,10 @@ test('GET /_ref/connector-instances returns list envelope', async () => {
 test('GET /_ref/connections projects display_name and schedule for seeded instance', async () => {
   await withServer(async ({ asUrl }) => {
     const manifest = await registerSpotifyManifest(asUrl);
-    await seedSpotifyInstance(manifest.connector_id);
+    const connectorId = connectorKeyForManifest(manifest);
+    await seedSpotifyInstance(connectorId);
     const { status, body } = await fetchJson(
-      `${asUrl}/_ref/connections?connector_id=${encodeURIComponent(manifest.connector_id)}`,
+      `${asUrl}/_ref/connections?connector_id=${encodeURIComponent(connectorId)}`,
     );
     assert.equal(status, 200);
     assert.equal(body.data.length, 1);
@@ -163,7 +171,7 @@ test('GET /_ref/connections projects display_name and schedule for seeded instan
 test('GET /_ref/connections/:connectorInstanceId returns ref_connection envelope', async () => {
   await withServer(async ({ asUrl }) => {
     const manifest = await registerSpotifyManifest(asUrl);
-    await seedSpotifyInstance(manifest.connector_id);
+    await seedSpotifyInstance(connectorKeyForManifest(manifest));
     const { status, body } = await fetchJson(
       `${asUrl}/_ref/connections/${SPOTIFY_INSTANCE_ID}`,
     );
@@ -176,7 +184,7 @@ test('GET /_ref/connections/:connectorInstanceId returns ref_connection envelope
 test('GET /_ref/connector-instances/:connectorInstanceId returns ref_connection envelope (alias)', async () => {
   await withServer(async ({ asUrl }) => {
     const manifest = await registerSpotifyManifest(asUrl);
-    await seedSpotifyInstance(manifest.connector_id);
+    await seedSpotifyInstance(connectorKeyForManifest(manifest));
     const { status, body } = await fetchJson(
       `${asUrl}/_ref/connector-instances/${SPOTIFY_INSTANCE_ID}`,
     );
@@ -189,7 +197,7 @@ test('GET /_ref/connector-instances/:connectorInstanceId returns ref_connection 
 test('PATCH /_ref/connections/:connectorInstanceId rejects empty display_name with invalid_request', async () => {
   await withServer(async ({ asUrl }) => {
     const manifest = await registerSpotifyManifest(asUrl);
-    await seedSpotifyInstance(manifest.connector_id);
+    await seedSpotifyInstance(connectorKeyForManifest(manifest));
     const { status, body } = await fetchJson(
       `${asUrl}/_ref/connections/${SPOTIFY_INSTANCE_ID}`,
       {
@@ -207,7 +215,7 @@ test('PATCH /_ref/connections/:connectorInstanceId rejects empty display_name wi
 test('PATCH /_ref/connections/:connectorInstanceId updates owner-facing display_name', async () => {
   await withServer(async ({ asUrl }) => {
     const manifest = await registerSpotifyManifest(asUrl);
-    await seedSpotifyInstance(manifest.connector_id);
+    await seedSpotifyInstance(connectorKeyForManifest(manifest));
     const { status, body } = await fetchJson(
       `${asUrl}/_ref/connections/${SPOTIFY_INSTANCE_ID}`,
       {
@@ -226,7 +234,7 @@ test('PATCH /_ref/connections/:connectorInstanceId updates owner-facing display_
 test('POST /_ref/connections/:connectorInstanceId/run returns 202 (started run)', async () => {
   await withServer(async ({ asUrl }) => {
     const manifest = await registerSpotifyManifest(asUrl);
-    await seedSpotifyInstance(manifest.connector_id);
+    await seedSpotifyInstance(connectorKeyForManifest(manifest));
     const resp = await fetchJson(`${asUrl}/_ref/connections/${SPOTIFY_INSTANCE_ID}/run`, {
       method: 'POST',
     });
@@ -238,7 +246,8 @@ test('POST /_ref/connections/:connectorInstanceId/run returns 202 (started run)'
 test('PUT /_ref/connections/:connectorInstanceId/schedule upserts and returns schedule', async () => {
   await withServer(async ({ asUrl }) => {
     const manifest = await registerSpotifyManifest(asUrl);
-    await seedSpotifyInstance(manifest.connector_id);
+    const connectorId = connectorKeyForManifest(manifest);
+    await seedSpotifyInstance(connectorId);
     const { status, body } = await fetchJson(
       `${asUrl}/_ref/connections/${SPOTIFY_INSTANCE_ID}/schedule`,
       {
@@ -248,7 +257,7 @@ test('PUT /_ref/connections/:connectorInstanceId/schedule upserts and returns sc
       },
     );
     assert.equal(status, 200);
-    assert.equal(body.connector_id, manifest.connector_id);
+    assert.equal(body.connector_id, connectorId);
     assert.equal(body.connector_instance_id, SPOTIFY_INSTANCE_ID);
     assert.equal(body.enabled, true);
   });
@@ -257,7 +266,7 @@ test('PUT /_ref/connections/:connectorInstanceId/schedule upserts and returns sc
 test('POST /_ref/connections/:connectorInstanceId/schedule/pause disables an existing schedule', async () => {
   await withServer(async ({ asUrl }) => {
     const manifest = await registerSpotifyManifest(asUrl);
-    await seedSpotifyInstance(manifest.connector_id);
+    await seedSpotifyInstance(connectorKeyForManifest(manifest));
     await fetchJson(`${asUrl}/_ref/connections/${SPOTIFY_INSTANCE_ID}/schedule`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -275,7 +284,7 @@ test('POST /_ref/connections/:connectorInstanceId/schedule/pause disables an exi
 test('POST /_ref/connections/:connectorInstanceId/schedule/resume enables a paused schedule', async () => {
   await withServer(async ({ asUrl }) => {
     const manifest = await registerSpotifyManifest(asUrl);
-    await seedSpotifyInstance(manifest.connector_id);
+    await seedSpotifyInstance(connectorKeyForManifest(manifest));
     await fetchJson(`${asUrl}/_ref/connections/${SPOTIFY_INSTANCE_ID}/schedule`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -293,7 +302,7 @@ test('POST /_ref/connections/:connectorInstanceId/schedule/resume enables a paus
 test('DELETE /_ref/connections/:connectorInstanceId/schedule returns 204 after deletion', async () => {
   await withServer(async ({ asUrl }) => {
     const manifest = await registerSpotifyManifest(asUrl);
-    await seedSpotifyInstance(manifest.connector_id);
+    await seedSpotifyInstance(connectorKeyForManifest(manifest));
     await fetchJson(`${asUrl}/_ref/connections/${SPOTIFY_INSTANCE_ID}/schedule`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -309,7 +318,7 @@ test('DELETE /_ref/connections/:connectorInstanceId/schedule returns 204 after d
 test('DELETE /_ref/connections/:connectorInstanceId/schedule returns 404 when nothing to delete', async () => {
   await withServer(async ({ asUrl }) => {
     const manifest = await registerSpotifyManifest(asUrl);
-    await seedSpotifyInstance(manifest.connector_id);
+    await seedSpotifyInstance(connectorKeyForManifest(manifest));
     const { status, body } = await fetchJson(
       `${asUrl}/_ref/connections/${SPOTIFY_INSTANCE_ID}/schedule`,
       { method: 'DELETE' },
