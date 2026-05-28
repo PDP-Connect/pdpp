@@ -6,6 +6,15 @@ import {
   buildScrubbedTestEnv,
 } from '../scripts/test-env.js';
 
+async function closeServer(server) {
+  server.asServer.closeAllConnections();
+  server.rsServer.closeAllConnections();
+  await Promise.allSettled([
+    new Promise((resolve) => server.asServer.close(resolve)),
+    new Promise((resolve) => server.rsServer.close(resolve)),
+  ]);
+}
+
 describe('run-tests env scrub', () => {
   it('removes owner-auth vars exported by the parent shell', () => {
     const polluted = {
@@ -40,6 +49,43 @@ describe('run-tests env scrub', () => {
       PDPP_RUNTIME_QUIET: '0',
     });
     assert.equal(quietExplicit.PDPP_RUNTIME_QUIET, '0');
+  });
+
+  it('direct node --test startServer ignores inherited owner-auth env unless options opt in', async () => {
+    assert.ok(process.env.NODE_TEST_CONTEXT, 'sanity: this test runs under node --test');
+    const previous = {
+      PDPP_OWNER_FORCE_SECURE_COOKIES: process.env.PDPP_OWNER_FORCE_SECURE_COOKIES,
+      PDPP_OWNER_PASSWORD: process.env.PDPP_OWNER_PASSWORD,
+      PDPP_OWNER_SAMESITE: process.env.PDPP_OWNER_SAMESITE,
+      PDPP_OWNER_SUBJECT_ID: process.env.PDPP_OWNER_SUBJECT_ID,
+      PDPP_OWNER_TOKEN: process.env.PDPP_OWNER_TOKEN,
+    };
+    process.env.PDPP_OWNER_FORCE_SECURE_COOKIES = '1';
+    process.env.PDPP_OWNER_PASSWORD = 'bootstrap-probe';
+    process.env.PDPP_OWNER_SAMESITE = 'strict';
+    process.env.PDPP_OWNER_SUBJECT_ID = 'owner-probe';
+    process.env.PDPP_OWNER_TOKEN = 'owner-token-probe';
+
+    const { startServer } = await import('../server/index.js');
+    const server = await startServer({
+      asPort: 0,
+      dbPath: ':memory:',
+      quiet: true,
+      rsPort: 0,
+    });
+    try {
+      const response = await fetch(`http://localhost:${server.asPort}/_ref/traces`);
+      assert.equal(response.status, 200);
+    } finally {
+      await closeServer(server);
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = value;
+        }
+      }
+    }
   });
 
   it('lists the owner-auth vars that the harness must scrub', () => {
