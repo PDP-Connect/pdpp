@@ -150,6 +150,63 @@ export function parseExplorerPeekParam(raw: string | undefined | null): {
   };
 }
 
+interface ExplorerFeedDayGroup {
+  /** ISO date key (yyyy-mm-dd) extracted from `displayAt`; "" when unparseable. */
+  day: string;
+  /** Human-readable label for the day header. Falls back to "Undated". */
+  label: string;
+  entries: ExplorerFeedEntry[];
+}
+
+// Server-deterministic day label. Locale-pinned so SSR and client agree.
+const DAY_LABEL_FMT = new Intl.DateTimeFormat("en-US", {
+  weekday: "short",
+  month: "short",
+  day: "numeric",
+  year: "numeric",
+  timeZone: "UTC",
+});
+
+function dayKeyFromDisplayAt(displayAt: string): string {
+  if (typeof displayAt !== "string" || displayAt.length < 10) {
+    return "";
+  }
+  // ISO timestamps from pickSearchDisplayTimestamp lead with yyyy-mm-dd. We
+  // group on that ISO date prefix so two entries from the same calendar day
+  // (in their source timezone) bucket together regardless of clock time.
+  const candidate = displayAt.slice(0, 10);
+  return Number.isNaN(Date.parse(`${candidate}T00:00:00Z`)) ? "" : candidate;
+}
+
+function labelForDayKey(day: string): string {
+  if (!day) {
+    return "Undated";
+  }
+  const ms = Date.parse(`${day}T00:00:00Z`);
+  if (Number.isNaN(ms)) {
+    return "Undated";
+  }
+  return DAY_LABEL_FMT.format(new Date(ms));
+}
+
+export function groupFeedByDay(entries: ExplorerFeedEntry[]): ExplorerFeedDayGroup[] {
+  // The feed arrives sorted by displayAt desc; preserve that order by
+  // walking the list once and starting a new group whenever the day key
+  // changes. Re-sorting per-group would break the page-level ordering
+  // contract the page applies after fan-in.
+  const groups: ExplorerFeedDayGroup[] = [];
+  let current: ExplorerFeedDayGroup | null = null;
+  for (const entry of entries) {
+    const day = dayKeyFromDisplayAt(entry.displayAt);
+    if (!current || current.day !== day) {
+      current = { day, label: labelForDayKey(day), entries: [] };
+      groups.push(current);
+    }
+    current.entries.push(entry);
+  }
+  return groups;
+}
+
 export function buildExplorerHref(
   routes: Routes,
   opts: {
@@ -415,28 +472,44 @@ function ExplorerMain({
         {feed.length === 0 ? (
           <p className="pdpp-caption text-muted-foreground italic">{emptyFeedMessage(lens)}</p>
         ) : (
-          <DataList>
-            {feed.map((entry) => {
-              const key = explorerPeekParam(entry);
-              return (
-                <li key={key}>
-                  <ExplorerRow
-                    entry={entry}
-                    peekHref={buildExplorerHref(routes, {
-                      query,
-                      connectionIds: selectedConnectionIds,
-                      streams: selectedStreams,
-                      since,
-                      until,
-                      peek: key,
-                    })}
-                    recordHref={routes.record(entry.connectionId ?? entry.connectorId, entry.stream, entry.recordId)}
-                    selected={peekId === key}
-                  />
-                </li>
-              );
-            })}
-          </DataList>
+          <div className="flex flex-col gap-5">
+            {groupFeedByDay(feed).map((group) => (
+              <section aria-label={group.label} key={`${group.day || "undated"}:${group.entries[0]?.recordId ?? ""}`}>
+                <header className="mb-1.5 flex items-baseline justify-between gap-3 border-border/60 border-b pb-1">
+                  <h3 className="pdpp-eyebrow text-muted-foreground">{group.label}</h3>
+                  <span className="pdpp-caption text-muted-foreground tabular-nums">
+                    {group.entries.length.toLocaleString()}
+                  </span>
+                </header>
+                <DataList>
+                  {group.entries.map((entry) => {
+                    const key = explorerPeekParam(entry);
+                    return (
+                      <li key={key}>
+                        <ExplorerRow
+                          entry={entry}
+                          peekHref={buildExplorerHref(routes, {
+                            query,
+                            connectionIds: selectedConnectionIds,
+                            streams: selectedStreams,
+                            since,
+                            until,
+                            peek: key,
+                          })}
+                          recordHref={routes.record(
+                            entry.connectionId ?? entry.connectorId,
+                            entry.stream,
+                            entry.recordId
+                          )}
+                          selected={peekId === key}
+                        />
+                      </li>
+                    );
+                  })}
+                </DataList>
+              </section>
+            ))}
+          </div>
         )}
         {truncated && lens === "recent" ? (
           <p className="pdpp-caption mt-3 text-muted-foreground italic">

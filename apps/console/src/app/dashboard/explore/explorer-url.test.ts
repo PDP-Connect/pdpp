@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   buildExplorerHref,
+  type ExplorerFeedEntry,
   explorerPeekParam,
+  groupFeedByDay,
   parseExplorerPeekParam,
 } from "../components/views/records-explorer-view.tsx";
 import { dashboardRoutes } from "../components/views/routes.ts";
@@ -152,4 +154,67 @@ test("explorerPeekParam round-trips a connection id containing the separator", (
   };
   const raw = explorerPeekParam(entry);
   assert.deepEqual(parseExplorerPeekParam(raw), entry);
+});
+
+function fakeEntry(displayAt: string, recordId: string): ExplorerFeedEntry {
+  return {
+    connectorId: "gmail",
+    connectionId: "conn-personal",
+    connectionDisplayName: "Personal Gmail",
+    stream: "messages",
+    recordId,
+    emittedAt: displayAt,
+    displayAt,
+    summary: `summary ${recordId}`,
+  };
+}
+
+test("groupFeedByDay buckets entries by ISO date and preserves order", () => {
+  const groups = groupFeedByDay([
+    fakeEntry("2026-05-28T14:30:00Z", "r1"),
+    fakeEntry("2026-05-28T08:15:00Z", "r2"),
+    fakeEntry("2026-05-27T22:00:00Z", "r3"),
+    fakeEntry("2026-05-25T05:00:00Z", "r4"),
+  ]);
+  assert.equal(groups.length, 3);
+  assert.deepEqual(
+    groups.map((g) => g.day),
+    ["2026-05-28", "2026-05-27", "2026-05-25"]
+  );
+  assert.deepEqual(
+    groups[0]?.entries.map((e) => e.recordId),
+    ["r1", "r2"]
+  );
+  assert.equal(groups[1]?.entries.length, 1);
+  assert.equal(groups[2]?.entries.length, 1);
+});
+
+test("groupFeedByDay does not collapse non-adjacent days into one group", () => {
+  // Page-level ordering must be preserved: an entry that lands between two
+  // same-day entries (because of an interleaved second day) must start a
+  // fresh group rather than merging back into an earlier one.
+  const groups = groupFeedByDay([
+    fakeEntry("2026-05-28T14:00:00Z", "r1"),
+    fakeEntry("2026-05-27T14:00:00Z", "r2"),
+    fakeEntry("2026-05-28T08:00:00Z", "r3"),
+  ]);
+  assert.deepEqual(
+    groups.map((g) => g.day),
+    ["2026-05-28", "2026-05-27", "2026-05-28"]
+  );
+});
+
+test("groupFeedByDay labels missing dates as Undated", () => {
+  const groups = groupFeedByDay([fakeEntry("", "r1"), fakeEntry("not-a-date", "r2")]);
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0]?.day, "");
+  assert.equal(groups[0]?.label, "Undated");
+  assert.equal(groups[0]?.entries.length, 2);
+});
+
+test("groupFeedByDay renders a stable, locale-pinned day label", () => {
+  const groups = groupFeedByDay([fakeEntry("2026-05-28T14:30:00Z", "r1")]);
+  // en-US, UTC: "Thu, May 28, 2026". Locale and timeZone are pinned so SSR
+  // and client agree.
+  assert.equal(groups[0]?.label, "Thu, May 28, 2026");
 });
