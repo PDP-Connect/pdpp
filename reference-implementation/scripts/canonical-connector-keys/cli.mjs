@@ -8,13 +8,21 @@
  * Usage:
  *   PDPP_STORAGE_BACKEND=postgres \
  *   PDPP_DATABASE_URL=postgres://... \
- *   node reference-implementation/scripts/canonical-connector-keys/cli.mjs inspect [--json] [--allow-unmapped]
+ *   node reference-implementation/scripts/canonical-connector-keys/cli.mjs inspect [--json] [--allow-unmapped] [--include-backup-tables]
  *
  * Flags:
- *   --json             emit the full JSON report instead of the human summary
- *   --allow-unmapped   do NOT exit non-zero if unmapped values are found
- *                      (useful while reviewing a problem instance; the
- *                      default behavior fails closed per design §3)
+ *   --json                   emit the full JSON report instead of the human summary
+ *   --allow-unmapped         do NOT exit non-zero if unmapped values are found in
+ *                            active tables (useful while reviewing a problem
+ *                            instance; the default fails closed per design §3)
+ *   --include-backup-tables  reserved for the §3.3 write migration; parsed and
+ *                            represented in opts but does not change dry-run
+ *                            scanning behaviour
+ *
+ * Exit code:
+ *   0 — no unmapped rows in active tables (backup/scratch warnings are non-blocking)
+ *   1 — unmapped rows found in active tables (or env error); bypass with --allow-unmapped
+ *   2 — usage error
  *
  * The command opens one Postgres connection, runs SELECT-only queries
  * (information_schema discovery, GROUP BY counts), and exits. No table
@@ -26,11 +34,12 @@ import { inspect, formatHumanReport, makePostgresDriver } from './inspect.mjs';
 export function parseArgs(argv) {
   const args = argv.slice(2);
   const command = args[0];
-  const opts = { json: false, allowUnmapped: false };
+  const opts = { json: false, allowUnmapped: false, includeBackupTables: false };
   for (let i = 1; i < args.length; i++) {
     const a = args[i];
     if (a === '--json') opts.json = true;
     else if (a === '--allow-unmapped') opts.allowUnmapped = true;
+    else if (a === '--include-backup-tables') opts.includeBackupTables = true;
     else throw new Error(`Unknown argument: ${a}`);
   }
   return { command, opts };
@@ -80,9 +89,9 @@ async function main() {
     process.stdout.write(formatHumanReport(report) + '\n');
   }
 
-  if (report.summary.hasUnmapped && !opts.allowUnmapped) {
+  if (report.summary.hasUnmappedActive && !opts.allowUnmapped) {
     process.stderr.write(
-      `\nFAIL: ${report.summary.totalUnmappedRows} unmapped connector_id rows. ` +
+      `\nFAIL: ${report.summary.totalUnmappedRowsActive} unmapped connector_id rows in active tables. ` +
         `Run with --allow-unmapped to bypass for review.\n`,
     );
     process.exit(1);

@@ -40,6 +40,31 @@ import {
 const LOCAL_DEVICE_PREFIX = 'local-device:';
 const CONNECTOR_SOURCE_KINDS = new Set(['connector', 'provider_native']);
 
+const SCRATCH_RE = /^cleanup_\d{8}_/;
+const BACKUP_RE = /^backup_\d{8}_/;
+const COMPACT_BACKUP_RE = /^compact_.+_backup_/;
+
+/**
+ * Classify a table name into one of three surface tiers based solely on
+ * its naming pattern. No database access required.
+ *
+ *   scratch — ephemeral test scaffolding (`cleanup_YYYYMMDD_*`)
+ *   backup  — forensic rollback artifacts (`backup_YYYYMMDD_*`, `compact_*_backup_*`)
+ *   active  — everything else (live migration targets)
+ *
+ * Unmapped rows in `active` tables block the migration. Backup/scratch
+ * unmapped rows are reported as warnings only.
+ *
+ * @param {string} tableName
+ * @returns {'active' | 'backup' | 'scratch'}
+ */
+export function classifyTableSurface(tableName) {
+  if (SCRATCH_RE.test(tableName)) return 'scratch';
+  if (BACKUP_RE.test(tableName)) return 'backup';
+  if (COMPACT_BACKUP_RE.test(tableName)) return 'backup';
+  return 'active';
+}
+
 /**
  * Quote a Postgres identifier (table or column name) and escape any
  * embedded double-quotes per the SQL standard. The dry-run only ever
@@ -409,6 +434,7 @@ export async function inspect(driver) {
     tables.push({
       table,
       column,
+      surfaceClass: classifyTableSurface(table),
       rowsTotal: classified.reduce((acc, r) => acc + r.count, 0),
       distinctCount: classified.length,
       unmappedDistinctCount: classified.filter((r) => r.unmapped).length,
@@ -478,6 +504,21 @@ export async function inspect(driver) {
   const totalRewriteRowsJsonb = jsonbSurfaces.reduce((acc, s) => acc + s.rewriteRowCount, 0);
   const totalRowsTouched = tables.reduce((acc, t) => acc + t.rowsTotal, 0);
 
+  // Per-tier unmapped counts. JSONB surfaces are always extracted from
+  // base table names (grants, grant_package_members, pending_consents)
+  // which are always `active`. Backup/scratch tables surface their
+  // connector_id through the direct-column scan only.
+  const totalUnmappedRowsActive =
+    tables
+      .filter((t) => t.surfaceClass === 'active')
+      .reduce((acc, t) => acc + t.unmappedRowCount, 0) + totalUnmappedRowsJsonb;
+  const totalUnmappedRowsBackup = tables
+    .filter((t) => t.surfaceClass === 'backup')
+    .reduce((acc, t) => acc + t.unmappedRowCount, 0);
+  const totalUnmappedRowsScratch = tables
+    .filter((t) => t.surfaceClass === 'scratch')
+    .reduce((acc, t) => acc + t.unmappedRowCount, 0);
+
   return {
     generatedAt: new Date().toISOString(),
     tables,
@@ -491,10 +532,16 @@ export async function inspect(driver) {
       totalRewriteRows: totalRewriteRowsColumns + totalRewriteRowsJsonb,
       totalRewriteRowsColumns,
       totalRewriteRowsJsonb,
+      // All-tier totals retained for backwards compatibility.
       totalUnmappedRows: totalUnmappedRowsColumns + totalUnmappedRowsJsonb,
       totalUnmappedRowsColumns,
       totalUnmappedRowsJsonb,
+      // Per-tier unmapped counts (primary gate is hasUnmappedActive).
+      totalUnmappedRowsActive,
+      totalUnmappedRowsBackup,
+      totalUnmappedRowsScratch,
       hasUnmapped: totalUnmappedRowsColumns + totalUnmappedRowsJsonb > 0,
+      hasUnmappedActive: totalUnmappedRowsActive > 0,
     },
   };
 }
@@ -512,27 +559,38 @@ export function formatHumanReport(report) {
   lines.push(`tables_scanned:      ${report.summary.tablesScanned}`);
   lines.push(`total_rows_touched:  ${report.summary.totalRowsTouched}`);
   lines.push(`rewrite_rows:        ${report.summary.totalRewriteRows} (columns=${report.summary.totalRewriteRowsColumns}, jsonb=${report.summary.totalRewriteRowsJsonb})`);
-  lines.push(`unmapped_rows:       ${report.summary.totalUnmappedRows} (columns=${report.summary.totalUnmappedRowsColumns}, jsonb=${report.summary.totalUnmappedRowsJsonb})`);
-  lines.push(`status:              ${report.summary.hasUnmapped ? 'FAIL (unmapped found)' : 'OK'}`);
+  lines.push(`unmapped_rows:       ${report.summary.totalUnmappedRows} all tiers (active=${report.summary.totalUnmappedRowsActive}, backup=${report.summary.totalUnmappedRowsBackup}, scratch=${report.summary.totalUnmappedRowsScratch})`);
+  const activeStatus = report.summary.hasUnmappedActive
+    ? 'FAIL — active tables have unmapped rows (migration blocked)'
+    : 'OK — no unmapped rows in active tables';
+  const backupNote =
+    report.summary.totalUnmappedRowsBackup + report.summary.totalUnmappedRowsScratch > 0
+      ? ` [WARN: ${report.summary.totalUnmappedRowsBackup + report.summary.totalUnmappedRowsScratch} unmapped in backup/scratch — not blocking]`
+      : '';
+  lines.push(`status:              ${activeStatus}${backupNote}`);
   lines.push('');
 
-  for (const t of report.tables) {
-    if (t.distinctCount === 0) continue;
-    lines.push(`## ${t.table}.${t.column}`);
-    lines.push(`  rows=${t.rowsTotal} distinct=${t.distinctCount} rewrite=${t.rewriteRowCount} unmapped=${t.unmappedRowCount}`);
-    for (const d of t.distinct) {
-      const tag = d.unmapped
-        ? 'UNMAPPED'
-        : d.rewriteRequired
-          ? `→ ${d.canonicalKey}`
-          : 'ok';
-      const detail = d.classification === 'wrapped_local_device' && d.inner
-        ? ` (inner=${d.inner.classification}${d.inner.canonicalKey ? '→' + d.inner.canonicalKey : ''})`
-        : '';
-      lines.push(`    ${tag.padEnd(20)} ${d.classification.padEnd(28)} count=${d.count.toString().padStart(7)}  ${d.value}${detail}`);
-      if (d.reason) lines.push(`        reason: ${d.reason}`);
+  for (const tier of ['active', 'backup', 'scratch']) {
+    const tierTables = report.tables.filter((t) => t.surfaceClass === tier && t.distinctCount > 0);
+    if (tierTables.length === 0) continue;
+    lines.push(`## tables — ${tier}`);
+    for (const t of tierTables) {
+      lines.push(`### ${t.table}.${t.column}`);
+      lines.push(`  rows=${t.rowsTotal} distinct=${t.distinctCount} rewrite=${t.rewriteRowCount} unmapped=${t.unmappedRowCount}`);
+      for (const d of t.distinct) {
+        const tag = d.unmapped
+          ? 'UNMAPPED'
+          : d.rewriteRequired
+            ? `→ ${d.canonicalKey}`
+            : 'ok';
+        const detail = d.classification === 'wrapped_local_device' && d.inner
+          ? ` (inner=${d.inner.classification}${d.inner.canonicalKey ? '→' + d.inner.canonicalKey : ''})`
+          : '';
+        lines.push(`    ${tag.padEnd(20)} ${d.classification.padEnd(28)} count=${d.count.toString().padStart(7)}  ${d.value}${detail}`);
+        if (d.reason) lines.push(`        reason: ${d.reason}`);
+      }
+      lines.push('');
     }
-    lines.push('');
   }
 
   if (report.sourceBindingPlaceholders.length > 0) {

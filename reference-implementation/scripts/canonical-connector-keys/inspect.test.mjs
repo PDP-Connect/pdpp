@@ -14,6 +14,7 @@ import test from 'node:test';
 
 import {
   classifyConnectorId,
+  classifyTableSurface,
   formatHumanReport,
   inspect,
   JSONB_CONNECTOR_ID_SHAPES,
@@ -130,6 +131,39 @@ test('classifyConnectorId: null/empty values are unmapped', () => {
     assert.equal(c.classification, 'unmapped');
     assert.equal(c.canonicalKey, null);
   }
+});
+
+test('classifyTableSurface: cleanup_ prefix → scratch', () => {
+  assert.equal(classifyTableSurface('cleanup_20260526_synthetic_records'), 'scratch');
+  assert.equal(classifyTableSurface('cleanup_20260101_test'), 'scratch');
+});
+
+test('classifyTableSurface: backup_ prefix → backup', () => {
+  assert.equal(classifyTableSurface('backup_20260526_codex_source_replay_records'), 'backup');
+  assert.equal(classifyTableSurface('backup_20260101_anything'), 'backup');
+});
+
+test('classifyTableSurface: compact_*_backup_ pattern → backup', () => {
+  assert.equal(classifyTableSurface('compact_record_history_backup_1779829900930_969063'), 'backup');
+  assert.equal(classifyTableSurface('compact_record_changes_backup_1779832748470_726455'), 'backup');
+});
+
+test('classifyTableSurface: everything else → active', () => {
+  for (const name of ['connectors', 'connector_instances', 'grants', 'records', 'record_changes', 'retained_size_connection', 'retained_size_stream', 'pending_consents']) {
+    assert.equal(classifyTableSurface(name), 'active');
+  }
+});
+
+test('classifyTableSurface: backup_ prefix requires 8-digit date segment', () => {
+  // No date segment → active, not backup
+  assert.equal(classifyTableSurface('backup_anything'), 'active');
+  // Only 7 digits → active
+  assert.equal(classifyTableSurface('backup_2026052_test'), 'active');
+});
+
+test('classifyTableSurface: cleanup_ prefix requires 8-digit date segment', () => {
+  assert.equal(classifyTableSurface('cleanup_anything'), 'active');
+  assert.equal(classifyTableSurface('cleanup_2026052_test'), 'active');
 });
 
 test('inspect: all-mapped fixture produces no unmapped rows and accurate counts', async () => {
@@ -412,6 +446,33 @@ test('inspect: produces a stable human report containing every section', async (
   assert.match(human, /\$\.source\.id=https:\/\/registry\.pdpp\.org\/connectors\/gmail/);
   assert.match(human, /no embedded connector_id/);
   assert.match(human, /grant_packages\.package_json/);
+  // Status line should reflect active-table gate
+  assert.match(human, /OK — no unmapped rows in active tables/);
+  // Tables section should be grouped by tier
+  assert.match(human, /tables — active/);
+});
+
+test('formatHumanReport: backup/scratch warn label and active FAIL label are correct', async () => {
+  const driver = makeDriver({
+    columns: [
+      { table: 'connectors', column: 'connector_id' },
+      { table: 'backup_20260526_records', column: 'connector_id' },
+    ],
+    distinctByTable: {
+      connectors: [
+        { value: 'https://registry.pdpp.org/connectors/unknown-active', count: 2 },
+      ],
+      backup_20260526_records: [
+        { value: 'pg_runtime_1234', count: 1 },
+      ],
+    },
+  });
+  const report = await inspect(driver);
+  const human = formatHumanReport(report);
+  assert.match(human, /FAIL — active tables have unmapped rows/);
+  assert.match(human, /WARN.*backup\/scratch.*not blocking/);
+  assert.match(human, /tables — active/);
+  assert.match(human, /tables — backup/);
 });
 
 test('inspect: tables list is exhaustive when no columns are returned', async () => {
@@ -419,6 +480,96 @@ test('inspect: tables list is exhaustive when no columns are returned', async ()
   assert.equal(report.summary.tablesScanned, 0);
   assert.equal(report.summary.hasUnmapped, false);
   assert.equal(report.summary.totalUnmappedRows, 0);
+  assert.equal(report.summary.hasUnmappedActive, false);
+  assert.equal(report.summary.totalUnmappedRowsActive, 0);
+  assert.equal(report.summary.totalUnmappedRowsBackup, 0);
+  assert.equal(report.summary.totalUnmappedRowsScratch, 0);
+});
+
+test('inspect: surfaceClass is set on each table entry', async () => {
+  const driver = makeDriver({
+    columns: [
+      { table: 'connectors', column: 'connector_id' },
+      { table: 'backup_20260526_records', column: 'connector_id' },
+      { table: 'cleanup_20260526_synthetic_records', column: 'connector_id' },
+      { table: 'compact_record_history_backup_1779829900930_969063', column: 'connector_id' },
+    ],
+    distinctByTable: {
+      connectors: [{ value: 'gmail', count: 1 }],
+      backup_20260526_records: [{ value: 'gmail', count: 5 }],
+      cleanup_20260526_synthetic_records: [{ value: 'gmail', count: 3 }],
+      compact_record_history_backup_1779829900930_969063: [{ value: 'gmail', count: 10 }],
+    },
+  });
+  const report = await inspect(driver);
+  const byTable = Object.fromEntries(report.tables.map((t) => [t.table, t.surfaceClass]));
+  assert.equal(byTable['connectors'], 'active');
+  assert.equal(byTable['backup_20260526_records'], 'backup');
+  assert.equal(byTable['cleanup_20260526_synthetic_records'], 'scratch');
+  assert.equal(byTable['compact_record_history_backup_1779829900930_969063'], 'backup');
+});
+
+test('inspect: unmapped rows in backup/scratch do not set hasUnmappedActive', async () => {
+  const driver = makeDriver({
+    columns: [
+      { table: 'backup_20260526_records', column: 'connector_id' },
+      { table: 'cleanup_20260526_synthetic_records', column: 'connector_id' },
+    ],
+    distinctByTable: {
+      backup_20260526_records: [
+        { value: 'https://registry.pdpp.org/connectors/unknown-backup', count: 5 },
+      ],
+      cleanup_20260526_synthetic_records: [
+        { value: 'pg_runtime_1234567890_scratch', count: 3 },
+      ],
+    },
+  });
+  const report = await inspect(driver);
+  assert.equal(report.summary.hasUnmapped, true);
+  assert.equal(report.summary.totalUnmappedRows, 8);
+  assert.equal(report.summary.hasUnmappedActive, false);
+  assert.equal(report.summary.totalUnmappedRowsActive, 0);
+  assert.equal(report.summary.totalUnmappedRowsBackup, 5);
+  assert.equal(report.summary.totalUnmappedRowsScratch, 3);
+});
+
+test('inspect: unmapped rows in active tables set hasUnmappedActive', async () => {
+  const driver = makeDriver({
+    columns: [
+      { table: 'connectors', column: 'connector_id' },
+      { table: 'backup_20260526_records', column: 'connector_id' },
+    ],
+    distinctByTable: {
+      connectors: [
+        { value: 'https://registry.pdpp.org/connectors/unknown-active', count: 5 },
+      ],
+      backup_20260526_records: [
+        { value: 'https://registry.pdpp.org/connectors/unknown-backup', count: 3 },
+      ],
+    },
+  });
+  const report = await inspect(driver);
+  assert.equal(report.summary.hasUnmappedActive, true);
+  assert.equal(report.summary.totalUnmappedRowsActive, 5);
+  assert.equal(report.summary.totalUnmappedRowsBackup, 3);
+  assert.equal(report.summary.totalUnmappedRowsScratch, 0);
+  assert.equal(report.summary.totalUnmappedRows, 8);
+});
+
+test('inspect: JSONB unmapped rows count toward totalUnmappedRowsActive', async () => {
+  const driver = makeDriver({
+    columns: [],
+    jsonbRowsBySurface: {
+      'grants.grant_json': [
+        { source: { kind: 'connector', id: 'https://registry.pdpp.org/connectors/unknown' } },
+      ],
+    },
+  });
+  const report = await inspect(driver);
+  assert.equal(report.summary.hasUnmappedActive, true);
+  assert.equal(report.summary.totalUnmappedRowsActive, 1);
+  assert.equal(report.summary.totalUnmappedRowsBackup, 0);
+  assert.equal(report.summary.totalUnmappedRowsScratch, 0);
 });
 
 test('parseArgs: defaults', () => {
@@ -426,6 +577,7 @@ test('parseArgs: defaults', () => {
   assert.equal(command, 'inspect');
   assert.equal(opts.json, false);
   assert.equal(opts.allowUnmapped, false);
+  assert.equal(opts.includeBackupTables, false);
 });
 
 test('parseArgs: --json and --allow-unmapped', () => {
@@ -433,6 +585,13 @@ test('parseArgs: --json and --allow-unmapped', () => {
   assert.equal(command, 'inspect');
   assert.equal(opts.json, true);
   assert.equal(opts.allowUnmapped, true);
+  assert.equal(opts.includeBackupTables, false);
+});
+
+test('parseArgs: --include-backup-tables is parsed and defaults false', () => {
+  const { command, opts } = parseArgs(['node', 'cli.mjs', 'inspect', '--include-backup-tables']);
+  assert.equal(command, 'inspect');
+  assert.equal(opts.includeBackupTables, true);
 });
 
 test('parseArgs: throws on unknown flag', () => {
