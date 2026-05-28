@@ -346,7 +346,9 @@ export type DedupeOutcome =
  */
 export function decideDedupe(input: DedupeDecisionInput): DedupeOutcome {
   const { existing, proposed, cooldown_seconds } = input;
-  if (!existing) return { kind: "create" };
+  if (!existing) {
+    return { kind: "create" };
+  }
 
   if (!isTerminal(existing.lifecycle)) {
     if (axesDiffer(existing, proposed)) {
@@ -374,8 +376,12 @@ function axesDiffer(a: AttentionRecord, b: CreateAttentionInput): boolean {
 // ─── Expiry ────────────────────────────────────────────────────────────────
 
 export function isExpired(record: AttentionRecord, now: string): boolean {
-  if (!record.expires_at) return false;
-  if (isTerminal(record.lifecycle)) return false;
+  if (!record.expires_at) {
+    return false;
+  }
+  if (isTerminal(record.lifecycle)) {
+    return false;
+  }
   return Date.parse(record.expires_at) <= Date.parse(now);
 }
 
@@ -442,9 +448,15 @@ export interface PushPayloadOptions {
  * responsible for wrapping it in VAPID/TTL/urgency envelopes.
  */
 export function pushPayload(record: AttentionRecord, options: PushPayloadOptions): PushPayload | null {
-  if (record.sensitivity === "secret") return null;
-  if (record.owner_action === "none") return null;
-  if (isTerminal(record.lifecycle)) return null;
+  if (record.sensitivity === "secret") {
+    return null;
+  }
+  if (record.owner_action === "none") {
+    return null;
+  }
+  if (isTerminal(record.lifecycle)) {
+    return null;
+  }
 
   const showSource = !options.hide_source && options.connection_display !== null;
   const sourceLabel = showSource ? (options.connection_display as string) : "A connection";
@@ -504,11 +516,21 @@ function stripTrailingSlash(s: string): string {
  * (no response required, no expiry close) should not toggle the pill.
  */
 export function isHealthRelevant(record: AttentionRecord, now: string): boolean {
-  if (isTerminal(record.lifecycle)) return false;
-  if (isExpired(record, now)) return false;
-  if (record.response_contract === "response_required") return true;
-  if (record.progress_posture === "blocked") return true;
-  if (record.owner_action !== "none" && record.owner_action !== "act_elsewhere") return true;
+  if (isTerminal(record.lifecycle)) {
+    return false;
+  }
+  if (isExpired(record, now)) {
+    return false;
+  }
+  if (record.response_contract === "response_required") {
+    return true;
+  }
+  if (record.progress_posture === "blocked") {
+    return true;
+  }
+  if (record.owner_action !== "none" && record.owner_action !== "act_elsewhere") {
+    return true;
+  }
   return false;
 }
 
@@ -539,8 +561,12 @@ export type AutoDetectOutcome =
  */
 export function classifyAutoDetect(input: AutoDetectInput): AutoDetectOutcome {
   const { record, evidence, now } = input;
-  if (isTerminal(record.lifecycle)) return { kind: "no_change", reason: "terminal" };
-  if (!record.auto_detect) return { kind: "no_change", reason: "auto_detect_disabled" };
+  if (isTerminal(record.lifecycle)) {
+    return { kind: "no_change", reason: "terminal" };
+  }
+  if (!record.auto_detect) {
+    return { kind: "no_change", reason: "auto_detect_disabled" };
+  }
   switch (evidence) {
     case "proceeded":
       return { kind: "resolve", record: transition(record, { to: "resolved", now }) };

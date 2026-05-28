@@ -498,11 +498,15 @@ export async function drainPromisesWithDeadline(
   let timeoutHandle: NodeJS.Timeout | null = null;
   const deadline = new Promise<"timeout">((resolve) => {
     timeoutHandle = setTimeout(() => resolve("timeout"), timeoutMs);
-    if (timeoutHandle.unref) timeoutHandle.unref();
+    if (timeoutHandle.unref) {
+      timeoutHandle.unref();
+    }
   });
   const allSettled = Promise.allSettled(snapshot).then(() => "settled" as const);
   const outcome = await Promise.race([allSettled, deadline]);
-  if (timeoutHandle) clearTimeout(timeoutHandle);
+  if (timeoutHandle) {
+    clearTimeout(timeoutHandle);
+  }
   const elapsedMs = Date.now() - startMs;
   if (outcome === "settled") {
     return { drained: snapshot.length, timedOut: 0, elapsedMs };
@@ -859,9 +863,13 @@ function getRuntimeProjection(
  */
 function resolveWebBaseUrl(): string {
   const explicit = process.env.PDPP_WEB_BASE_URL?.trim();
-  if (explicit) return explicit;
+  if (explicit) {
+    return explicit;
+  }
   const referenceOrigin = process.env.PDPP_REFERENCE_ORIGIN?.trim();
-  if (referenceOrigin) return referenceOrigin;
+  if (referenceOrigin) {
+    return referenceOrigin;
+  }
   return "http://localhost:3000";
 }
 
@@ -913,7 +921,9 @@ async function fireNtfy(args: {
 
 async function buildAttentionOutcomeRecorder(args: { runId: string; requestId: string | null }) {
   const requestId = args.requestId;
-  if (!requestId) return null;
+  if (!requestId) {
+    return null;
+  }
   const runId = args.runId;
   // Lazy import keeps the runtime startup graph small; this module is only
   // loaded when an interaction actually fires push delivery.
@@ -926,7 +936,9 @@ async function buildAttentionOutcomeRecorder(args: { runId: string; requestId: s
       now: string;
     }) => Promise<unknown>;
   };
-  if (typeof store.recordNotificationOutcomeById !== "function") return null;
+  if (typeof store.recordNotificationOutcomeById !== "function") {
+    return null;
+  }
   return async ({ state, reason }: { state: string; reason: string | null }) => {
     await store.recordNotificationOutcomeById!({
       attentionId: `att_${runId}_${requestId}`,
@@ -998,11 +1010,19 @@ async function fireAssistanceWebPush(args: {
 // server module so we can filter without paying the dynamic-import cost on
 // every progress tick.
 export function shouldFanoutAssistanceProgressMessage(message: unknown): boolean {
-  if (!message || typeof message !== "object") return false;
+  if (!message || typeof message !== "object") {
+    return false;
+  }
   const m = message as Record<string, unknown>;
-  if (m.type !== "ASSISTANCE") return false;
-  if (m.response_contract !== "none") return false;
-  if (typeof m.owner_action !== "string" || m.owner_action === "none") return false;
+  if (m.type !== "ASSISTANCE") {
+    return false;
+  }
+  if (m.response_contract !== "none") {
+    return false;
+  }
+  if (typeof m.owner_action !== "string" || m.owner_action === "none") {
+    return false;
+  }
   return m.progress_posture === "running" || m.progress_posture === "blocked";
 }
 

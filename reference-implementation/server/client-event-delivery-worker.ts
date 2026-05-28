@@ -153,7 +153,9 @@ export function createDeliveryWorker(opts: DeliveryWorkerOptions = {}): Delivery
   }
 
   async function tickInternal(): Promise<{ attempted: number; outcomes: DeliveryOutcome[] }> {
-    if (inFlight) return { attempted: 0, outcomes: [] };
+    if (inFlight) {
+      return { attempted: 0, outcomes: [] };
+    }
     inFlight = true;
     try {
       const due = await claimDueQueue(new Date(nowMs()).toISOString());
@@ -209,7 +211,9 @@ export function createDeliveryWorker(opts: DeliveryWorkerOptions = {}): Delivery
   return {
     tick: tickInternal,
     start(): void {
-      if (timer) return;
+      if (timer) {
+        return;
+      }
       timer = setInterval(() => {
         tickInternal().catch(() => {
           /* ignored; surfaced via attempt log */
@@ -230,6 +234,8 @@ export function createDeliveryWorker(opts: DeliveryWorkerOptions = {}): Delivery
 
 let defaultWorker: DeliveryWorker | null = null;
 export function getDefaultDeliveryWorker(): DeliveryWorker {
-  if (!defaultWorker) defaultWorker = createDeliveryWorker();
+  if (!defaultWorker) {
+    defaultWorker = createDeliveryWorker();
+  }
   return defaultWorker;
 }

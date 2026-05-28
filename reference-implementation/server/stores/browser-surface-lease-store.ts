@@ -102,7 +102,9 @@ function surfaceMetadata(surface: BrowserSurfaceWithPersistenceMetadata): Browse
 }
 
 function mapSurface(row: BrowserSurfaceRow | null | undefined): BrowserSurfaceWithPersistenceMetadata | null {
-  if (!row) return null;
+  if (!row) {
+    return null;
+  }
   return {
     surface_id: row.surface_id,
     backend: row.backend,
@@ -127,7 +129,9 @@ function mapSurface(row: BrowserSurfaceRow | null | undefined): BrowserSurfaceWi
 }
 
 function mapLease(row: BrowserSurfaceLeaseRow | null | undefined): BrowserSurfaceLease | null {
-  if (!row) return null;
+  if (!row) {
+    return null;
+  }
   return {
     lease_id: row.lease_id,
     connector_id: row.connector_id,

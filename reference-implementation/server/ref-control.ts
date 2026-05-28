@@ -947,14 +947,20 @@ const ACCEPTED_COVERAGE_PRECEDENCE: readonly AcceptedCoveragePolicy[] = [
 ];
 
 function pickAcceptedCoverage(streams: readonly ManifestStream[]): AcceptedCoveragePolicy | null {
-  if (streams.length === 0) return null;
+  if (streams.length === 0) {
+    return null;
+  }
   const seen = new Set<AcceptedCoveragePolicy>();
   for (const stream of streams) {
     const policy = readAcceptedCoveragePolicy(stream);
-    if (policy !== null) seen.add(policy);
+    if (policy !== null) {
+      seen.add(policy);
+    }
   }
   for (const policy of ACCEPTED_COVERAGE_PRECEDENCE) {
-    if (seen.has(policy)) return policy;
+    if (seen.has(policy)) {
+      return policy;
+    }
   }
   return null;
 }
@@ -967,21 +973,31 @@ function pickAcceptedCoverage(streams: readonly ManifestStream[]): AcceptedCover
  * accepted-absent, so the projection refuses to project healthy.
  */
 function pickRequiredAcceptedCoverage(streams: readonly ManifestStream[]): AcceptedCoveragePolicy | null {
-  if (streams.length === 0) return null;
+  if (streams.length === 0) {
+    return null;
+  }
   const seen = new Set<AcceptedCoveragePolicy>();
   for (const stream of streams) {
-    if (!isRequiredStream(stream)) continue;
+    if (!isRequiredStream(stream)) {
+      continue;
+    }
     const policy = readAcceptedCoveragePolicy(stream);
-    if (policy !== null) seen.add(policy);
+    if (policy !== null) {
+      seen.add(policy);
+    }
   }
   for (const policy of ACCEPTED_COVERAGE_PRECEDENCE) {
-    if (seen.has(policy)) return policy;
+    if (seen.has(policy)) {
+      return policy;
+    }
   }
   return null;
 }
 
 function readAcceptedCoveragePolicy(stream: ManifestStream | undefined): AcceptedCoveragePolicy | null {
-  if (!stream || typeof stream !== "object") return null;
+  if (!stream || typeof stream !== "object") {
+    return null;
+  }
   const value = stream.coverage_policy;
   if (value === "unsupported" || value === "unavailable" || value === "deferred" || value === "inventory_only") {
     return value;
@@ -990,7 +1006,9 @@ function readAcceptedCoveragePolicy(stream: ManifestStream | undefined): Accepte
 }
 
 function isRequiredStream(stream: ManifestStream | undefined): boolean {
-  if (!stream || typeof stream !== "object") return false;
+  if (!stream || typeof stream !== "object") {
+    return false;
+  }
   // Default to required when absent so a manifest-declared stream is
   // load-bearing unless explicitly opted out.
   return stream.required !== false;
@@ -1148,7 +1166,9 @@ export function projectConnectorOutboxAxisFromHeartbeats(
   let severity: "active" | "stalled" | null = null;
   for (const row of heartbeats) {
     const trusted = row.deviceStatus === "active" && row.sourceStatus === "active" && row.deviceRevokedAt === null;
-    if (trusted) anyTrustedEvidence = true;
+    if (trusted) {
+      anyTrustedEvidence = true;
+    }
     const result = deriveOutboxAxisFromHeartbeat(
       {
         evidenceTrusted: trusted,
@@ -1161,8 +1181,12 @@ export function projectConnectorOutboxAxisFromHeartbeats(
         staleHeartbeatThresholdMs: OUTBOX_STALE_HEARTBEAT_THRESHOLD_MS,
       }
     );
-    if (result.unreliable) anyUnreliable = true;
-    if (!trusted) continue;
+    if (result.unreliable) {
+      anyUnreliable = true;
+    }
+    if (!trusted) {
+      continue;
+    }
     if (result.axis === "stalled") {
       severity = "stalled";
     } else if (result.axis === "active" && severity !== "stalled") {
@@ -1290,10 +1314,18 @@ function combineUnreliableSources(
   remoteSurfaceUnreliable: boolean = false
 ): readonly string[] {
   const sources: string[] = [];
-  if (detailGapsUnreliable) sources.push("detail_gaps");
-  if (outboxUnreliable) sources.push("outbox");
-  if (attentionUnreliable) sources.push("attention_store");
-  if (remoteSurfaceUnreliable) sources.push("remote_surface_store");
+  if (detailGapsUnreliable) {
+    sources.push("detail_gaps");
+  }
+  if (outboxUnreliable) {
+    sources.push("outbox");
+  }
+  if (attentionUnreliable) {
+    sources.push("attention_store");
+  }
+  if (remoteSurfaceUnreliable) {
+    sources.push("remote_surface_store");
+  }
   return sources;
 }
 
@@ -1376,19 +1408,27 @@ function pickMostUrgentAttention(records: readonly AttentionRecord[]): Attention
   return [...records].sort((a, b) => {
     const aResp = a.response_contract === "response_required" ? 1 : 0;
     const bResp = b.response_contract === "response_required" ? 1 : 0;
-    if (aResp !== bResp) return bResp - aResp;
+    if (aResp !== bResp) {
+      return bResp - aResp;
+    }
     const aBlocked = a.progress_posture === "blocked" ? 1 : 0;
     const bBlocked = b.progress_posture === "blocked" ? 1 : 0;
-    if (aBlocked !== bBlocked) return bBlocked - aBlocked;
+    if (aBlocked !== bBlocked) {
+      return bBlocked - aBlocked;
+    }
     const aExpiry = a.expires_at ? Date.parse(a.expires_at) : Number.POSITIVE_INFINITY;
     const bExpiry = b.expires_at ? Date.parse(b.expires_at) : Number.POSITIVE_INFINITY;
-    if (aExpiry !== bExpiry) return aExpiry - bExpiry;
+    if (aExpiry !== bExpiry) {
+      return aExpiry - bExpiry;
+    }
     return Date.parse(a.created_at) - Date.parse(b.created_at);
   })[0]!;
 }
 
 function ownerActionForEvidence(action: OwnerAction): ConnectionAttentionEvidence["ownerAction"] {
-  if (action === "none") return null;
+  if (action === "none") {
+    return null;
+  }
   return action;
 }
 
@@ -1462,17 +1502,27 @@ function rankRemoteSurfaceLease(status: BrowserSurfaceLease["status"]): number {
   // Lower rank = more urgent. `leased` above `waiting` so an operator
   // viewing a connection sees "running" before "queued" when both
   // exist; the waiting variants share a rung.
-  if (status === "leased") return 0;
-  if (status === "starting_surface") return 1;
-  if (status === "waiting_for_browser_surface") return 2;
+  if (status === "leased") {
+    return 0;
+  }
+  if (status === "starting_surface") {
+    return 1;
+  }
+  if (status === "waiting_for_browser_surface") {
+    return 2;
+  }
   return 3;
 }
 
 function pickMostUrgentLease(leases: readonly BrowserSurfaceLease[]): BrowserSurfaceLease | null {
-  if (leases.length === 0) return null;
+  if (leases.length === 0) {
+    return null;
+  }
   return [...leases].sort((a, b) => {
     const r = rankRemoteSurfaceLease(a.status) - rankRemoteSurfaceLease(b.status);
-    if (r !== 0) return r;
+    if (r !== 0) {
+      return r;
+    }
     // Stable secondary: most-recent requested_at first.
     const at = Date.parse(b.requested_at) - Date.parse(a.requested_at);
     return Number.isFinite(at) ? at : 0;
@@ -1481,16 +1531,22 @@ function pickMostUrgentLease(leases: readonly BrowserSurfaceLease[]): BrowserSur
 
 function surfaceRecencyMs(surface: BrowserSurface): number {
   const lastUsed = Date.parse(surface.last_used_at);
-  if (Number.isFinite(lastUsed)) return lastUsed;
+  if (Number.isFinite(lastUsed)) {
+    return lastUsed;
+  }
   const created = Date.parse(surface.created_at);
   return Number.isFinite(created) ? created : 0;
 }
 
 function pickMostRecentSurface(surfaces: readonly BrowserSurface[]): BrowserSurface | null {
-  if (surfaces.length === 0) return null;
+  if (surfaces.length === 0) {
+    return null;
+  }
   return [...surfaces].sort((a, b) => {
     const at = surfaceRecencyMs(b) - surfaceRecencyMs(a);
-    if (at !== 0) return at;
+    if (at !== 0) {
+      return at;
+    }
     return b.surface_id.localeCompare(a.surface_id);
   })[0]!;
 }
@@ -1821,7 +1877,9 @@ export async function mapWithConcurrency<T, R>(
       try {
         results[index] = await worker(items[index]!, index);
       } catch (err) {
-        if (firstError === null) firstError = err;
+        if (firstError === null) {
+          firstError = err;
+        }
       } finally {
         inFlight--;
         onChange?.(inFlight);
@@ -1829,9 +1887,13 @@ export async function mapWithConcurrency<T, R>(
     }
   };
   const workers: Promise<void>[] = [];
-  for (let i = 0; i < effectiveLimit; i++) workers.push(runOne());
+  for (let i = 0; i < effectiveLimit; i++) {
+    workers.push(runOne());
+  }
   await Promise.all(workers);
-  if (firstError !== null) throw firstError;
+  if (firstError !== null) {
+    throw firstError;
+  }
   return results;
 }
 

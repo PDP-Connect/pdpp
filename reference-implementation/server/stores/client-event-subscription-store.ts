@@ -128,12 +128,16 @@ function pgScopeJsonToText(value: unknown): string {
   // Postgres returns JSONB columns as already-parsed JS objects. Round-trip to
   // text so SubscriptionRow.scope_json remains a string for the operation
   // layer, which parses it on read.
-  if (typeof value === "string") return value;
+  if (typeof value === "string") {
+    return value;
+  }
   return JSON.stringify(value);
 }
 
 function pgPayloadJsonToText(value: unknown): string {
-  if (typeof value === "string") return value;
+  if (typeof value === "string") {
+    return value;
+  }
   return JSON.stringify(value);
 }
 
@@ -195,7 +199,9 @@ export function createPostgresClientEventSubscriptionStore(): ClientEventSubscri
           WHERE subscription_id = $1`,
         [id]
       );
-      if (result.rowCount === 0) return null;
+      if (result.rowCount === 0) {
+        return null;
+      }
       return pgSubscriptionRow(result.rows[0]);
     },
     async listSubscriptionsByClient(clientId: string): Promise<SubscriptionRow[]> {
@@ -277,10 +283,14 @@ let postgresStoreSingleton: ClientEventSubscriptionStore | null = null;
 
 export function getDefaultClientEventSubscriptionStore(): ClientEventSubscriptionStore {
   if (isPostgresStorageBackend()) {
-    if (!postgresStoreSingleton) postgresStoreSingleton = createPostgresClientEventSubscriptionStore();
+    if (!postgresStoreSingleton) {
+      postgresStoreSingleton = createPostgresClientEventSubscriptionStore();
+    }
     return postgresStoreSingleton;
   }
-  if (!sqliteStoreSingleton) sqliteStoreSingleton = createSqliteClientEventSubscriptionStore();
+  if (!sqliteStoreSingleton) {
+    sqliteStoreSingleton = createSqliteClientEventSubscriptionStore();
+  }
   return sqliteStoreSingleton;
 }
 
@@ -569,7 +579,9 @@ export async function getSubscriptionSummary(subscriptionId: string): Promise<Su
           AND s.status != 'deleted'`,
       [subscriptionId]
     );
-    if (result.rowCount === 0) return null;
+    if (result.rowCount === 0) {
+      return null;
+    }
     return pgSummaryRow(result.rows[0]);
   }
   return getOne<SubscriptionSummaryRow>(referenceQueries.clientEventSubscriptionsGetSubscriptionSummary, [

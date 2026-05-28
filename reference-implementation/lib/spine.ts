@@ -1170,7 +1170,9 @@ export async function listSpineCorrelations(
   if (key === "grant" && page.length > 0) {
     for (const s of page) {
       const gid = s.grant_id ?? s.id ?? null;
-      if (!gid) continue;
+      if (!gid) {
+        continue;
+      }
       const row = getOne<{ readonly package_id: string | null }>(
         referenceQueries.authGrantPackageMembersGetPackageIdByGrant,
         [gid]

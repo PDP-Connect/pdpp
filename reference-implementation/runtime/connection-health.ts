@@ -1452,8 +1452,12 @@ const SECRET_CONDITION_PATTERN =
 const LONG_OPAQUE_CONDITION_PATTERN = /\b[A-Za-z0-9_-]{24,}\b/;
 
 function normalizeConditionReason(value: string | null | undefined, fallback: string): string {
-  if (!value) return fallback;
-  if (containsSecretLike(value)) return fallback;
+  if (!value) {
+    return fallback;
+  }
+  if (containsSecretLike(value)) {
+    return fallback;
+  }
   const normalized = value
     .trim()
     .toLowerCase()
@@ -1463,7 +1467,9 @@ function normalizeConditionReason(value: string | null | undefined, fallback: st
 }
 
 function containsSecretLike(value: string | null | undefined): boolean {
-  if (!value) return false;
+  if (!value) {
+    return false;
+  }
   return SECRET_CONDITION_PATTERN.test(value) || LONG_OPAQUE_CONDITION_PATTERN.test(value);
 }
 
@@ -1528,9 +1534,15 @@ function pickSupportingConditionIds(
     ids.push(dominantConditionId);
   }
   for (const conditionValue of conditions) {
-    if (ids.length >= 6) break;
-    if (conditionValue.id === dominantConditionId) continue;
-    if (conditionValue.status === "true" && conditionValue.severity === "info") continue;
+    if (ids.length >= 6) {
+      break;
+    }
+    if (conditionValue.id === dominantConditionId) {
+      continue;
+    }
+    if (conditionValue.status === "true" && conditionValue.severity === "info") {
+      continue;
+    }
     ids.push(conditionValue.id);
   }
   return ids;
@@ -1553,7 +1565,9 @@ function firstConditionId(
 ): string | null {
   for (const type of types) {
     const found = conditions.find((item) => item.type === type && item.status === "false");
-    if (found) return found.id;
+    if (found) {
+      return found.id;
+    }
   }
   return null;
 }

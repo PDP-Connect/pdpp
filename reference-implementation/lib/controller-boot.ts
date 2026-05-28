@@ -30,9 +30,13 @@ export interface BootControllerOpts {
 }
 
 function resolveControllerId(opts: BootControllerOpts): string {
-  if (opts.controllerId && opts.controllerId.length > 0) return opts.controllerId;
+  if (opts.controllerId && opts.controllerId.length > 0) {
+    return opts.controllerId;
+  }
   const fromEnv = process.env.PDPP_CONTROLLER_ID;
-  if (fromEnv && fromEnv.length > 0) return fromEnv;
+  if (fromEnv && fromEnv.length > 0) {
+    return fromEnv;
+  }
   return os.hostname();
 }
 
@@ -209,7 +213,9 @@ async function reconcilePostgres(epoch: BootEpoch): Promise<ReconcileResult> {
       let abandoned = 0;
       for (const orphan of rows) {
         const inserted = await emitRunAbandoned(client, orphan, epoch, "postgres");
-        if (inserted) abandoned++;
+        if (inserted) {
+          abandoned++;
+        }
       }
       return { abandoned, selected: rows.length };
     }
@@ -263,7 +269,9 @@ function reconcileSqlite(epoch: BootEpoch): Promise<ReconcileResult> {
     // enforced by the spine_run_abandoned_cause_unique partial index.
     // eslint-disable-next-line no-await-in-loop
     const inserted = emitRunAbandonedSyncSqlite(orphan, epoch);
-    if (inserted) abandoned++;
+    if (inserted) {
+      abandoned++;
+    }
   }
   return Promise.resolve({ abandoned, selected: orphans.length });
 }
@@ -324,7 +332,9 @@ async function emitRunAbandoned(
 
 function emitRunAbandonedSyncSqlite(orphan: OrphanRow, epoch: BootEpoch): boolean {
   const db = getDb();
-  if (!db) return false;
+  if (!db) {
+    return false;
+  }
   const raw = db as unknown as {
     prepare: (sql: string) => { run: (...args: unknown[]) => { changes: number } };
   };
