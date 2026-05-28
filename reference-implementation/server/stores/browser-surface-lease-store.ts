@@ -63,6 +63,7 @@ export interface BrowserSurfaceLeaseStore {
   getLease(leaseId: string): Promise<BrowserSurfaceLease | null>;
   listSurfaces(): Promise<BrowserSurfaceWithPersistenceMetadata[]>;
   listNonTerminalLeases(): Promise<BrowserSurfaceLease[]>;
+  repairStaleSurfaceActiveLeases(): Promise<void>;
   updateLeaseTerminal(
     leaseId: string,
     status: Extract<BrowserSurfaceLease["status"], "released" | "expired" | "deferred" | "cancelled" | "surface_failed">,
@@ -285,6 +286,22 @@ class SqliteBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
     return Promise.resolve(rows.map((row) => mapLease(row)!));
   }
 
+  repairStaleSurfaceActiveLeases(): Promise<void> {
+    // REVIEWED-DYNAMIC: static lease/surface invariant repair run during browser-surface boot hydration.
+    execDynamicSqlAcknowledged(
+      `UPDATE browser_surfaces
+       SET active_lease_id = NULL
+       WHERE active_lease_id IS NOT NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM browser_surface_leases
+           WHERE lease_id = browser_surfaces.active_lease_id
+             AND surface_id = browser_surfaces.surface_id
+             AND status NOT IN (${TERMINAL_STATUS_SQL})
+         )`
+    );
+    return Promise.resolve();
+  }
+
   updateLeaseTerminal(
     leaseId: string,
     status: Extract<BrowserSurfaceLease["status"], "released" | "expired" | "deferred" | "cancelled" | "surface_failed">,
@@ -422,6 +439,20 @@ class PostgresBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
        ORDER BY CASE priority_class WHEN 'owner_interactive' THEN 0 ELSE 1 END, requested_at, lease_id`
     );
     return (result.rows as BrowserSurfaceLeaseRow[]).map((row) => mapLease(row)!);
+  }
+
+  async repairStaleSurfaceActiveLeases(): Promise<void> {
+    await this.#query(
+      `UPDATE browser_surfaces
+       SET active_lease_id = NULL
+       WHERE active_lease_id IS NOT NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM browser_surface_leases
+           WHERE lease_id = browser_surfaces.active_lease_id
+             AND surface_id = browser_surfaces.surface_id
+             AND status NOT IN (${TERMINAL_STATUS_SQL})
+         )`
+    );
   }
 
   async updateLeaseTerminal(

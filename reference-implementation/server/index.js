@@ -8892,6 +8892,7 @@ export async function resolveNekoBrowserSurfaceControllerOptions({
     return {};
   }
 
+  await browserSurfaceLeaseStore.repairStaleSurfaceActiveLeases();
   const browserSurfaceLeaseManager = new BrowserSurfaceLeaseManager({
     config: runtimeConfig.leaseConfig,
     initialSurfaces: await browserSurfaceLeaseStore.listSurfaces(),

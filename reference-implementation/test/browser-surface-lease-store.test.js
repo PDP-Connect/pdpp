@@ -119,6 +119,44 @@ test("persists starting dynamic surface metadata for allocator reconciliation", 
   }
 });
 
+test("SQLite repair clears active surface pointers whose leases are terminal or missing", async () => {
+  const store = setup();
+  try {
+    const activeSurface = surface({
+      surface_id: "surface_active",
+      active_lease_id: "lease_active",
+    });
+    const releasedSurface = surface({
+      surface_id: "surface_released",
+      active_lease_id: "lease_released",
+    });
+    const missingSurface = surface({
+      surface_id: "surface_missing",
+      active_lease_id: "lease_missing",
+    });
+    await store.upsertSurface(activeSurface);
+    await store.upsertSurface(releasedSurface);
+    await store.upsertSurface(missingSurface);
+    await store.upsertLease(lease({ lease_id: "lease_active", surface_id: "surface_active" }));
+    await store.upsertLease(
+      lease({
+        lease_id: "lease_released",
+        surface_id: "surface_released",
+        status: "released",
+        released_at: "2026-05-12T12:01:00.000Z",
+      }),
+    );
+
+    await store.repairStaleSurfaceActiveLeases();
+
+    assert.equal((await store.getSurface("surface_active")).active_lease_id, "lease_active");
+    assert.equal((await store.getSurface("surface_released")).active_lease_id, undefined);
+    assert.equal((await store.getSurface("surface_missing")).active_lease_id, undefined);
+  } finally {
+    teardown();
+  }
+});
+
 test("SQLite browser surface schema exposes dynamic allocator metadata columns", () => {
   setup();
   try {
@@ -347,6 +385,23 @@ test("Postgres store maps dynamic surface metadata with the same persistence sha
     "2026-05-12T12:00:00.000Z",
   ]);
   assert.deepEqual(await store.getSurface("surface_dynamic_pg"), dynamicSurface);
+});
+
+test("Postgres repair clears active surface pointers not backed by non-terminal leases", async () => {
+  const queries = [];
+  const client = {
+    async query(sql, params = []) {
+      queries.push({ sql, params });
+      return { rows: [] };
+    },
+  };
+  const store = createPostgresBrowserSurfaceLeaseStore(client);
+
+  await store.repairStaleSurfaceActiveLeases();
+
+  assert.match(queries[0].sql, /UPDATE browser_surfaces/);
+  assert.match(queries[0].sql, /active_lease_id = NULL/);
+  assert.match(queries[0].sql, /status NOT IN/);
 });
 
 test("queued browser-surface leases are separate from controller_active_runs", async () => {
