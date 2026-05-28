@@ -67,9 +67,9 @@
 
 ## 5. Validation
 
-- [ ] 5.1 `pnpm -C reference-implementation run verify` passes.
-  (Not yet rerun in this lane; focused targeted tests pass — see
-  `repair-report.md`. Full `verify` is reserved for owner-merge.)
+- [x] 5.1 `pnpm -C reference-implementation run verify` passes.
+  (RI owner reran on `main` after the reference code-quality tranche
+  landed; typecheck and Ultracite both pass.)
 - [x] 5.2 `pnpm -C apps/console run types:check` passes.
 - [x] 5.3 Targeted node --test passes for the new console tests.
 - [x] 5.4 `openspec validate add-grant-package-operator-visibility --strict` passes.
@@ -91,10 +91,6 @@
 
 ## Residual risks
 
-- Full `pnpm -C reference-implementation run verify` was not rerun on
-  this branch; targeted reference tests + `hosted-mcp-oauth.test.js` +
-  spine regressions all pass. Owner should run full `verify` before
-  merging to main.
 - The protocol-level cascade leaves `grants.status` on each child row
   unchanged when a package is revoked. Enforcement runs through the
   revoked package-bound MCP token + revoked `grant_package_members`
