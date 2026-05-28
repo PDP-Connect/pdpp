@@ -30,3 +30,18 @@ The fix must not become a disguised owner token or a new cross-source PDPP grant
 - Consent UI: source picker becomes multi-select with cumulative risk presentation.
 - MCP/RS: package tokens require source-aware tool behavior and per-child-grant enforcement.
 - Security: improves UX without introducing owner bearer access or multi-source PDPP grants.
+
+## Residual Risks
+
+- ChatGPT-compatible end-to-end connector smoke against the live
+  `pdpp.vivid.fish` deployment has not been completed. The protocol-side
+  guarantees the smoke would have caught (multi-source picker, refresh
+  exchange, fanout, revocation, single-source fallback) are covered by
+  `hosted-mcp-oauth.test.js`; the deployment-side guarantees (refresh-token
+  advertisement, `pdpp_token_kinds_supported: ["client", "mcp_package"]`,
+  401-without-bearer) were verified live in tasks 6.2 and 7.8. The
+  remaining check is one owner-driven ChatGPT connector wiring run.
+- The operator console does not yet surface grant packages. Owners can
+  see and revoke individual child grants but cannot see or revoke the
+  package as a unit. The next slice is captured in
+  `openspec/changes/add-grant-package-operator-visibility/`.

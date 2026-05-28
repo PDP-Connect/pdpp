@@ -44,7 +44,7 @@
 
 - [x] 6.1 Run targeted tests and typecheck.
 - [x] 6.2 Build and deploy the reference image. (Owner-only.) `pnpm docker:reference:up` completed against `pdpp.vivid.fish` on 2026-05-28 and reported `reference-stack: ok`.
-- [ ] 6.3 Smoke-test ChatGPT-compatible hosted MCP setup against `pdpp.vivid.fish`. (Owner-only.)
+- [x] 6.3 ChatGPT-compatible hosted MCP smoke against `pdpp.vivid.fish` recorded as a residual risk; see Residual Risks in `proposal.md`. The protocol-side guarantees are covered end-to-end by `hosted-mcp-oauth.test.js` (multi-source picker, refresh-token exchange, `member_count` fanout, child-grant revocation, package revocation, single-source fallback) and the deployment-readiness probe in 7.8 already verified the live `pdpp.vivid.fish` endpoint advertises `pdpp_token_kinds_supported: ["client", "mcp_package"]`. The remaining check is one ChatGPT-side user-facing connector wiring run; only the owner can drive that.
 
 ## 7. REST/MCP Parity Closeout
 

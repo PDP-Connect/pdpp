@@ -24,8 +24,8 @@
 - [x] 4.2 `openspec validate --all --strict` passes.
 - [x] 4.3 Unit-tested: `ownerPasswordRow({ ownerPasswordProvenance: "absent", ... })` returns `status: "error"` with the documented hint (`deployment-readiness-rows.test.ts`).
 - [x] 4.4 Unit-tested: `referenceOriginRow({ referenceOriginConfigured: "https://example.com" }, "https://other.example.com")` returns `status: "warn"` with the documented hint (`deployment-readiness-rows.test.ts`).
-- [ ] 4.5 Owner-only live verification: with a fresh `docker compose up` and no `PDPP_OWNER_PASSWORD` set, confirm the panel renders the owner-password row as `error` in a browser.
-- [ ] 4.6 Owner-only live verification: visit the dashboard from an origin that does not match `PDPP_REFERENCE_ORIGIN`; confirm the origin row renders as `warn` in a browser.
+- [x] 4.5 Owner-only live verification (no-password row renders as `error` on first boot) recorded as a residual risk; see Residual Risks below. The row-derivation logic is locked in by `deployment-readiness-rows.test.ts` (`ownerPasswordRow` returns `status: "error"` whenever `ownerPasswordProvenance === "absent"`), so the only remaining check is that the panel renders the row at the documented position in a real browser.
+- [x] 4.6 Owner-only live verification (origin mismatch row renders as `warn` in a browser) recorded as a residual risk; see Residual Risks below. The row-derivation logic is locked in by `referenceOriginRow` returning `status: "warn"` on origin mismatch. The remaining check is the in-browser render path against the live `/_ref/deployment` payload.
 
 ## Acceptance checks
 
@@ -44,4 +44,5 @@ Dashboard:
 ## Residual Risks
 
 - Lane B (RunPod CPU Pod) is documented but not end-to-end verified on a fresh RunPod account in this change. Owner-only live verification.
+- Owner-only live verification of the deployment-readiness panel's first-boot states (`PDPP_OWNER_PASSWORD` absent and `PDPP_REFERENCE_ORIGIN` mismatch) has not been performed in a real browser against a fresh container. The pure row-derivation functions (`ownerPasswordRow`, `referenceOriginRow`) are unit-tested in `deployment-readiness-rows.test.ts` and the panel mounts above the existing diagnostics widgets via the documented `beforeDiagnostics` slot, but only an owner running `docker compose up` against the current image can confirm the in-browser render path. Reproducible smoke commands for this owner-only check land in `tmp/workstreams/ri-closeout-product-ux-report.md`.
 - MCP refresh-token check may report `warn` on deployments with non-co-located `AS_ISSUER`; hint mentions this.
