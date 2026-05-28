@@ -1509,7 +1509,7 @@ Known-gap and skip diagnostics SHALL include bounded recovery hints when the run
 
 ### Requirement: Client event subscriptions are a discoverable RI extension and grant-scoped
 
-The reference implementation SHALL expose outbound client event subscriptions at the canonical resource-server path `/v1/event-subscriptions`. It SHALL advertise the surface in the resource server's protected-resource metadata document under `capabilities.client_event_subscriptions`, with `supported: true`, `stability: "reference_extension"`, and `scope: "reference_implementation"`. The advertisement SHALL document the endpoint, supported event types, signing algorithm and header names, delivery semantics (at-least-once, after-commit, retry schedule, max attempts), verification handshake, hint cursor field, callback-URL HTTPS requirement, and client-visible byte limits. The reference SHALL NOT widen client grants to enable subscriptions, and SHALL NOT accept owner bearer tokens or local device credentials as authorization for client subscription endpoints.
+The reference implementation SHALL expose outbound client event subscriptions at the canonical resource-server path `/v1/event-subscriptions`. It SHALL advertise the surface in the resource server's protected-resource metadata document under `capabilities.client_event_subscriptions`, with `supported: true`, `stability: "reference_extension"`, and `scope: "reference_implementation"`. The advertisement SHALL document the endpoint, supported event types, the signing profile and header names, delivery semantics (at-least-once, after-commit, retry schedule, max attempts), verification handshake, hint cursor field, callback-URL HTTPS requirement, and client-visible byte limits. The reference SHALL NOT widen client grants to enable subscriptions, and SHALL NOT accept owner bearer tokens or local device credentials as authorization for client subscription endpoints.
 
 Subscription create, read, list, update, delete, and test-event operations SHALL require a client bearer whose grant is currently active. The persisted subscription SHALL record the bearer's `(grant_id, client_id, subject_id)` and SHALL refuse any subsequent operation by a bearer whose `(client_id, grant_id)` does not match.
 
@@ -1517,6 +1517,7 @@ Subscription create, read, list, update, delete, and test-event operations SHALL
 - **WHEN** an authorized client posts a subscription create request to `POST /v1/event-subscriptions` with a client bearer token whose grant is active
 - **THEN** the reference SHALL persist the subscription with the bearer's `(grant_id, client_id, subject_id)` snapshotted
 - **AND** the response SHALL include the freshly generated delivery secret exactly once
+- **AND** the secret SHALL carry the Standard Webhooks `whsec_` prefix
 
 #### Scenario: A different client attempts to read another client's subscription
 - **WHEN** a client bearer requests `GET /v1/event-subscriptions/:id` for a subscription whose stored `client_id` differs from the bearer's
@@ -1529,7 +1530,9 @@ Subscription create, read, list, update, delete, and test-event operations SHALL
 #### Scenario: A client reads the protected-resource metadata
 - **WHEN** a client reads `/.well-known/oauth-protected-resource` on the resource server
 - **THEN** the response SHALL include `capabilities.client_event_subscriptions` with `supported: true`, `stability: "reference_extension"`, and an `endpoint` of `/v1/event-subscriptions`
-- **AND** the advertisement SHALL include the signing algorithm `HMAC-SHA256`, the signature header `PDPP-Event-Signature`, the canonical signed-payload form `<timestamp>.<body>`, the set of supported event types (`pdpp.subscription.verify`, `pdpp.subscription.test`, `pdpp.records.changed`, `pdpp.grant.revoked`), the delivery semantics (at-least-once, after-commit, max-attempts), the verification handshake shape, and the hint cursor location
+- **AND** the advertisement SHALL declare the envelope as `format: "cloudevents+json"`, `specversion: "1.0"`, `pdppversion: "1"`, `content_type: "application/cloudevents+json; charset=utf-8"`, and `subscription_id_location: "data.subscription_id"`
+- **AND** the advertisement SHALL declare the signing profile as `standard-webhooks` with `algorithm: "HMAC-SHA256"`, `id_header: "webhook-id"`, `timestamp_header: "webhook-timestamp"`, `signature_header: "webhook-signature"`, `signed_payload: "{webhook-id}.{webhook-timestamp}.{body}"`, `signature_encoding: "v1,<base64>"`, and `secret_prefix: "whsec_"`
+- **AND** the advertisement SHALL include the set of supported event types (`pdpp.subscription.verify`, `pdpp.subscription.test`, `pdpp.records.changed`, `pdpp.grant.revoked`), the delivery semantics (at-least-once, after-commit, max-attempts), the verification handshake shape, and the hint cursor location
 
 ### Requirement: Subscription delivery is verified before any record-driven events ship
 
@@ -1553,11 +1556,12 @@ The reference SHALL deliver no record-driven events to a callback URL until the 
 
 ### Requirement: Events are projection-safe hints derived from grant scope
 
-The reference SHALL derive client events from `record_changes` and grant scope using a pure derivation step. The derived envelope SHALL NOT contain record bodies, field values, or resource identifiers outside the bound grant. It SHALL include the stream name only when that stream is in the subscription's scope snapshot, and a `changes_since` cursor that can be passed to the existing records-list endpoint to retrieve the notified change. The envelope's `source` SHALL be the canonical dereferenceable path of the subscription on the resource server (`/v1/event-subscriptions/<subscription_id>`).
+The reference SHALL derive client events from `record_changes` and grant scope using a pure derivation step. The derived envelope SHALL conform to CloudEvents 1.0 (`specversion: "1.0"`) JSON structured mode and SHALL carry the PDPP profile version in the `pdppversion` CloudEvents extension attribute. Top-level keys in the emitted envelope SHALL be CloudEvents context attributes only (standard or extension); CloudEvents attribute names SHALL be lowercase alphanumeric, so PDPP fields that would carry an underscore SHALL live inside `data` rather than at the top level. The occurrence time SHALL be emitted as the standard CloudEvents `time` attribute. The subscription identifier SHALL be emitted as `data.subscription_id` (the standard `source` URL also encodes the subscription path). The envelope SHALL NOT contain record bodies, field values, or resource identifiers outside the bound grant. It SHALL include the stream name only when that stream is in the subscription's scope snapshot, and a `changes_since` cursor that can be passed to the existing records-list endpoint to retrieve the notified change. The envelope's `source` SHALL be the canonical dereferenceable path of the subscription on the resource server (`/v1/event-subscriptions/<subscription_id>`).
 
 #### Scenario: A record changes in a stream the grant covers
 - **WHEN** `ingestRecord` commits a change for a stream that lies inside an active subscription's scope snapshot
 - **THEN** the reference SHALL enqueue a `pdpp.records.changed` envelope referencing that stream
+- **AND** the envelope SHALL set `specversion` to `"1.0"` and `pdppversion` to `"1"`
 - **AND** the envelope's `data.changes_since` SHALL be an opaque cursor the client can pass to `rs.records.list` to retrieve the change
 - **AND** the envelope's `source` SHALL be `/v1/event-subscriptions/<subscription_id>`
 
@@ -1568,10 +1572,14 @@ The reference SHALL derive client events from `record_changes` and grant scope u
 #### Scenario: An envelope is constructed
 - **WHEN** the derivation step builds an envelope for any event type
 - **THEN** the envelope SHALL NOT include record bodies, projected field values, or resource identifiers that are not already declared in the bound grant
+- **AND** the envelope SHALL NOT use any value other than `"1.0"` for `specversion`
+- **AND** every top-level key in the emitted envelope SHALL be a CloudEvents context attribute conforming to the lowercase-alphanumeric naming rule (no underscores)
+- **AND** the occurrence time SHALL be emitted as the standard CloudEvents `time` attribute
+- **AND** the subscription identifier SHALL be emitted as `data.subscription_id`
 
 ### Requirement: Event delivery is signed, after-commit, idempotent, and retried
 
-The reference SHALL enqueue events only after the underlying durable mutation has committed and is readable through the existing read path. Each delivery request SHALL carry an HMAC-SHA256 signature over `<timestamp>.<raw body>` using the per-subscription secret, plus a stable `PDPP-Event-Id` for receiver-side idempotency. Delivery SHALL be at-least-once with exponential backoff retry and a final dead-letter state.
+The reference SHALL enqueue events only after the underlying durable mutation has committed and is readable through the existing read path. Each delivery request SHALL carry a Standard Webhooks signature constructed as `HMAC-SHA256(secret, "{webhook-id}.{webhook-timestamp}.{raw body}")` and emitted as `webhook-signature: v1,<base64>`, plus a stable `webhook-id` for receiver-side idempotency and a `webhook-timestamp` recording the unix-seconds value used in the signed string. Delivery SHALL be at-least-once with exponential backoff retry and a final dead-letter state.
 
 #### Scenario: A record change commits
 - **WHEN** `ingestRecord` returns `changed`
@@ -1579,7 +1587,10 @@ The reference SHALL enqueue events only after the underlying durable mutation ha
 
 #### Scenario: A delivery attempt is made
 - **WHEN** the delivery worker posts an event to a subscription callback
-- **THEN** the request SHALL include `PDPP-Event-Timestamp`, `PDPP-Event-Id`, `PDPP-Subscription-Id`, and `PDPP-Event-Signature: sha256=<hex>` over `<timestamp>.<raw body>` keyed by the subscription secret
+- **THEN** the request SHALL include `webhook-id` (the stable event id), `webhook-timestamp` (the unix-seconds value used in the signed string), and `webhook-signature` (a `v1,<base64>` token computed as `HMAC-SHA256(secret_key, "{webhook-id}.{webhook-timestamp}.{raw body}")`)
+- **AND** the request SHALL NOT include any `PDPP-Event-*` headers or any `PDPP-Subscription-Id` header
+- **AND** the request `content-type` SHALL be `application/cloudevents+json; charset=utf-8` (CloudEvents JSON structured mode)
+- **AND** the signed `{raw body}` SHALL be the exact bytes of the structured-mode envelope that the receiver reads from the request body
 - **AND** the reference SHALL persist an attempt log row recording status code, latency, and a bounded response snippet
 
 #### Scenario: A delivery attempt fails transiently
@@ -1592,6 +1603,11 @@ The reference SHALL enqueue events only after the underlying durable mutation ha
 - **THEN** the reference SHALL mark the event `final_failure`
 - **AND** SHALL transition the subscription to `disabled_failure`
 - **AND** SHALL stop delivering further events for that subscription until it is re-enabled
+
+#### Scenario: A receiver verifies a delivery with a stock Standard Webhooks library
+- **WHEN** a receiver verifies the delivery using the secret returned at subscription create, the `webhook-id` and `webhook-timestamp` headers, and the raw request body
+- **THEN** any conforming Standard Webhooks library SHALL accept the `webhook-signature` value without PDPP-specific code
+- **AND** the subscription secret SHALL be a `whsec_`-prefixed string whose suffix base64-decodes to the HMAC key
 
 ### Requirement: Subscription state tracks grant lifecycle
 
@@ -2028,3 +2044,102 @@ sandbox UI, concrete database driver, and process environment.
 - **THEN** the migration SHALL preserve existing atomicity, visibility,
   redaction, and secrecy guarantees
 - **AND** those guarantees SHALL be pinned by focused tests before merge
+
+### Requirement: Operator oversight surface for client event subscriptions
+
+The reference implementation SHALL expose a reference-only, owner-session-gated oversight surface for client event subscriptions at the operator paths `GET /_ref/event-subscriptions`, `GET /_ref/event-subscriptions/:subscription_id`, and `POST /_ref/event-subscriptions/:subscription_id/disable`. These routes SHALL share the same owner-session middleware as every other `/_ref/*` route. They SHALL NOT accept client bearer tokens. They SHALL NOT modify the protocol-level `/v1/event-subscriptions` surface, and the protected-resource metadata advertisement at `/.well-known/oauth-protected-resource` SHALL NOT advertise them — they are reference-only and discoverable only via the operator console and CLI.
+
+The operator projection returned by `GET /_ref/event-subscriptions` and `GET /_ref/event-subscriptions/:subscription_id` SHALL NOT include the subscription's `secret`, `secret_hash`, or `secret_text`. The detail projection SHALL include the bound grant's scope snapshot, the full callback URL, and at most twenty-five most-recent attempt rows for the subscription.
+
+The operator oversight surface SHALL be read-mostly. The reference SHALL NOT expose operator-initiated subscription creation, re-enable, secret rotation, or attempt replay via these routes. Operator-initiated disable is the only mutating affordance.
+
+#### Scenario: An operator lists subscriptions on the instance
+- **WHEN** an operator with a valid owner session reads `GET /_ref/event-subscriptions`
+- **THEN** the reference SHALL return a `{object: 'list', data}` envelope containing every non-deleted subscription persisted on the instance
+- **AND** each row SHALL include `subscription_id`, `client_id`, `grant_id`, `status`, `disabled_reason`, the callback URL's host component, `created_at`, `updated_at`, `disabled_at`, a pending-queue count, the last attempt's outcome (timestamp, ok flag, HTTP status code), and a final-failure attempt count
+- **AND** the response SHALL NOT include `secret`, `secret_hash`, or `secret_text` for any row
+
+#### Scenario: An operator filters the list by client, grant, or status
+- **WHEN** the operator passes `?client_id=`, `?grant_id=`, or `?status=` (or any combination)
+- **THEN** the reference SHALL return only the subscriptions matching every supplied filter
+- **AND** unknown filter values SHALL still return a well-formed empty list rather than a 4xx error
+
+#### Scenario: An operator reads the detail projection
+- **WHEN** the operator requests `GET /_ref/event-subscriptions/:subscription_id` for a subscription that exists and is not deleted
+- **THEN** the response SHALL include the full callback URL, the bound grant's scope snapshot, the same status fields as the list projection, and a bounded list of at most twenty-five most-recent attempt rows ordered by `attempted_at` descending
+- **AND** the response SHALL NOT include the subscription's secret material
+
+#### Scenario: An operator requests a deleted or unknown subscription
+- **WHEN** the operator requests `GET /_ref/event-subscriptions/:subscription_id` for a subscription whose status is `deleted` or whose id does not exist
+- **THEN** the reference SHALL return HTTP 404 with a standard error envelope
+
+#### Scenario: A request without an owner session is rejected
+- **WHEN** any of the three `/_ref/event-subscriptions*` routes is called without a valid owner session
+- **THEN** the reference SHALL respond with the standard owner-session-required envelope (HTTP 401) that the rest of the `/_ref/*` surface uses
+- **AND** the response SHALL NOT disclose whether the requested subscription exists
+
+#### Scenario: A request with a client bearer is rejected
+- **WHEN** any of the three `/_ref/event-subscriptions*` routes is called with an `Authorization: Bearer` header carrying a client token (with or without an owner session cookie)
+- **THEN** the reference SHALL still require the owner-session middleware to pass; absent a valid owner session it SHALL return HTTP 401 regardless of bearer presence
+
+### Requirement: Operator-initiated subscription disable is a recoverable safety valve
+
+The reference SHALL expose `POST /_ref/event-subscriptions/:subscription_id/disable` as the operator's safety-valve to stop deliveries to a callback without touching the bound grant or the client's own subscription state machine. The route SHALL accept an optional JSON body `{ reason: string }` whose value (when provided) replaces the default `disabled_reason` value `"operator_disabled"` on the persisted row. The route SHALL be idempotent: invocations on subscriptions already in `disabled`, `disabled_failure`, `disabled_revoked`, or `deleted` SHALL succeed without modifying the row.
+
+A subscription disabled by the operator SHALL remain recoverable through the client's own `PATCH /v1/event-subscriptions/:id { enabled: true }` request. The reference SHALL NOT add an operator-initiated re-enable path; an operator who needs to permanently stop a callback SHALL revoke the bound grant.
+
+#### Scenario: An operator disables an active subscription
+- **WHEN** the operator posts to `POST /_ref/event-subscriptions/:subscription_id/disable` for a subscription in `active` or `pending_verification` status
+- **THEN** the reference SHALL transition the subscription to `disabled`
+- **AND** the persisted `disabled_reason` SHALL be `"operator_disabled"` when no reason was supplied, or the operator-supplied reason string otherwise
+- **AND** the reference SHALL drop any pending queued events for that subscription
+- **AND** the response SHALL return the operator detail projection for the now-disabled subscription
+
+#### Scenario: A client re-enables an operator-disabled subscription
+- **WHEN** the client whose grant binds the subscription sends `PATCH /v1/event-subscriptions/:id { enabled: true }` to a subscription in `disabled` status with `disabled_reason: "operator_disabled"` (or an operator-supplied reason)
+- **THEN** the reference SHALL transition the subscription back to `active`
+- **AND** subsequent in-scope record changes SHALL again enqueue events for that subscription
+
+#### Scenario: Operator disable on an already-disabled subscription
+- **WHEN** the operator posts to `POST /_ref/event-subscriptions/:subscription_id/disable` for a subscription whose status is already `disabled`, `disabled_failure`, `disabled_revoked`, or `deleted`
+- **THEN** the reference SHALL return HTTP 200 (idempotent success) with the current detail projection
+- **AND** SHALL NOT overwrite the existing `disabled_reason` or `disabled_at` columns
+
+#### Scenario: Operator disable preserves the bound grant
+- **WHEN** the operator disables a subscription bound to an active grant
+- **THEN** the bound grant SHALL remain `active`
+- **AND** other subscriptions bound to the same grant SHALL be unaffected
+
+### Requirement: Operator oversight is mirrored by the reference CLI
+
+The `@pdpp/cli` package SHALL expose `pdpp ref event-subscriptions list`, `pdpp ref event-subscriptions show <subscription-id>`, and `pdpp ref event-subscriptions disable <subscription-id>` subcommands that call the corresponding `_ref` routes using the existing owner-session cookie cache. The CLI SHALL refuse to send the disable POST without explicit confirmation (a `yes`-typed prompt or the `--yes` flag). The CLI SHALL never display or echo subscription secret material, since the `_ref` projection never includes it.
+
+#### Scenario: An operator runs the list command
+- **WHEN** the operator invokes `pdpp ref event-subscriptions list --as-url <url>` with a cached owner session
+- **THEN** the CLI SHALL fetch `GET /_ref/event-subscriptions` and render the operator projection in the requested format (`table` by default, `json` on `--format json`)
+- **AND** the CLI SHALL forward `--client-id`, `--grant-id`, and `--status` flags as query parameters
+
+#### Scenario: An operator runs the disable command without --yes
+- **WHEN** the operator invokes `pdpp ref event-subscriptions disable <subscription-id> --as-url <url>` without `--yes`
+- **THEN** the CLI SHALL print the subscription summary and prompt for `yes` before posting to `POST /_ref/event-subscriptions/:id/disable`
+- **AND** any input other than `yes` (case-insensitive) SHALL abort with exit code 1 and no network call
+
+#### Scenario: An operator runs the disable command with --yes
+- **WHEN** the operator invokes `pdpp ref event-subscriptions disable <subscription-id> --as-url <url> --yes --reason loop_suspected`
+- **THEN** the CLI SHALL post `{"reason": "loop_suspected"}` to the disable route without prompting
+- **AND** the CLI SHALL render the resulting detail projection
+
+### Requirement: Operator oversight is mirrored by the reference dashboard
+
+The reference operator console SHALL expose `/dashboard/event-subscriptions` as a list-with-peek view backed by the `_ref/event-subscriptions*` routes. The dashboard SHALL display only the operator projection (no secret material). The peek pane SHALL include a confirmed Disable affordance that posts to `POST /_ref/event-subscriptions/:id/disable` via a server action. The dashboard SHALL NOT expose any other mutating affordance for client subscriptions.
+
+#### Scenario: An operator visits the dashboard page
+- **WHEN** the operator navigates to `/dashboard/event-subscriptions` with a valid owner session
+- **THEN** the dashboard SHALL render the list of subscriptions with status badges, callback hosts, last attempt outcomes, and counts
+- **AND** SHALL provide filter controls for client, grant, and status
+
+#### Scenario: An operator opens the peek pane and disables a subscription
+- **WHEN** the operator opens the peek pane for a subscription in `active` status, confirms the disable dialog, and submits the form
+- **THEN** the dashboard SHALL invoke the disable server action, which calls `POST /_ref/event-subscriptions/:id/disable`
+- **AND** the dashboard SHALL refresh the page to render the now-disabled status
+
