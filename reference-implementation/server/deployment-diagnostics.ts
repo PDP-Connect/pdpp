@@ -120,24 +120,27 @@ export interface DeploymentDiagnosticsInput {
 // Updated: openspec/changes/publish-pdpp-local-collector — collector
 // protocol-version surface for `@pdpp/local-collector` compatibility.
 export interface CollectorPairing {
-  // null when no collector has enrolled. "legacy_unknown" when a paired
-  // device has no stored protocol version (predates the header). Otherwise
-  // the most-recent paired device's protocol version.
-  readonly protocol_version: string | "legacy_unknown" | null;
-  // True when ANY paired device's protocol version is not in the server's
-  // accepted set. Drives the `collector_protocol_outdated` dashboard
-  // warning. False when no collector is paired.
-  readonly protocol_outdated: boolean;
-  // The agent/runner version advertised by paired collectors at heartbeat
-  // time. Surfaced for visible drift; not enforced by the server.
-  readonly runner_version: string | null;
   // Bundled connector entrypoint versions advertised by the runner. Today
   // the runner does not yet advertise these per-connector, so this is
   // typically empty. Keyed by connector_id.
   readonly connector_versions: Readonly<Record<string, string>>;
+  // True when ANY paired device's protocol version is not in the server's
+  // accepted set. Drives the `collector_protocol_outdated` dashboard
+  // warning. False when no collector is paired.
+  readonly protocol_outdated: boolean;
+  // null when no collector has enrolled. "legacy_unknown" when a paired
+  // device has no stored protocol version (predates the header). Otherwise
+  // the most-recent paired device's protocol version.
+  readonly protocol_version: string | "legacy_unknown" | null;
+  // The agent/runner version advertised by paired collectors at heartbeat
+  // time. Surfaced for visible drift; not enforced by the server.
+  readonly runner_version: string | null;
 }
 
 export interface RuntimeCapabilityPosture {
+  // The server's accepted set of collector protocol versions. Dashboard
+  // compares paired-device versions against this list.
+  readonly accepted_collector_protocol_versions: readonly string[];
   readonly bindings: {
     readonly browser: boolean;
     readonly filesystem: boolean;
@@ -148,9 +151,6 @@ export interface RuntimeCapabilityPosture {
   // runtime adapter resolves this from the device-exporter store; the
   // pure builder treats it as a single boolean.
   readonly collector_paired: boolean;
-  // The server's accepted set of collector protocol versions. Dashboard
-  // compares paired-device versions against this list.
-  readonly accepted_collector_protocol_versions: readonly string[];
   // Per-pairing detail. Null when collector_paired is false.
   readonly collector_pairing: CollectorPairing | null;
   // True iff the provider/control-plane runtime is running inside a

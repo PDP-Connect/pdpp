@@ -18,40 +18,40 @@
  *       reference-implementation-architecture/spec.md
  */
 
-import { exec, getOne, referenceQueries, allowUnboundedReadAcknowledged } from "../../lib/db.ts";
-import { isPostgresStorageBackend, postgresQuery } from "../postgres-storage.js";
+import { allowUnboundedReadAcknowledged, exec, getOne, referenceQueries } from "../../lib/db.ts";
 import type {
   ClientEventSubscriptionStore,
   QueuedEventForEnqueue,
   SubscriptionRow,
   SubscriptionStatus,
 } from "../../operations/as-client-event-subscriptions/index.ts";
+import { isPostgresStorageBackend, postgresQuery } from "../postgres-storage.js";
 
 export interface QueueRow {
-  readonly queue_id: number;
-  readonly subscription_id: string;
+  readonly attempt_count: number;
+  readonly callback_url: string;
+  readonly enqueued_at: string;
   readonly event_id: string;
   readonly event_type: string;
-  readonly payload_json: string;
-  readonly enqueued_at: string;
   readonly next_attempt_at: string;
-  readonly attempt_count: number;
-  readonly status: string;
-  readonly callback_url: string;
+  readonly payload_json: string;
+  readonly queue_id: number;
   readonly secret_text: string;
-  readonly verification_challenge: string | null;
+  readonly status: string;
+  readonly subscription_id: string;
   readonly subscription_status: SubscriptionStatus;
+  readonly verification_challenge: string | null;
 }
 
 export interface AttemptRow {
   readonly attempt_id: number;
-  readonly queue_id: number;
   readonly attempted_at: string;
-  readonly status_code: number | null;
-  readonly ok: number;
-  readonly latency_ms: number | null;
   readonly error: string | null;
+  readonly latency_ms: number | null;
+  readonly ok: number;
+  readonly queue_id: number;
   readonly response_snippet: string | null;
+  readonly status_code: number | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -59,8 +59,12 @@ export interface AttemptRow {
 // ---------------------------------------------------------------------------
 
 export function createSqliteClientEventSubscriptionStore(): ClientEventSubscriptionStore {
+  // The `ClientEventSubscriptionStore` interface declares each method as
+  // `Promise<X> | X` so SQLite can stay synchronous while Postgres awaits the
+  // driver. Methods below return synchronously; the operation layer awaits
+  // everything uniformly.
   return {
-    async insertSubscription(row: SubscriptionRow): Promise<void> {
+    insertSubscription(row: SubscriptionRow): void {
       exec(referenceQueries.clientEventSubscriptionsInsertSubscription, [
         row.subscription_id,
         row.grant_id,
@@ -76,49 +80,35 @@ export function createSqliteClientEventSubscriptionStore(): ClientEventSubscript
         row.updated_at,
       ]);
     },
-    async getSubscriptionById(id: string): Promise<SubscriptionRow | null> {
-      return getOne<SubscriptionRow>(
-        referenceQueries.clientEventSubscriptionsGetSubscriptionById,
-        [id],
-      );
+    getSubscriptionById(id: string): SubscriptionRow | null {
+      return getOne<SubscriptionRow>(referenceQueries.clientEventSubscriptionsGetSubscriptionById, [id]);
     },
-    async listSubscriptionsByClient(clientId: string): Promise<SubscriptionRow[]> {
+    listSubscriptionsByClient(clientId: string): SubscriptionRow[] {
       return [
         ...allowUnboundedReadAcknowledged<SubscriptionRow>(
           referenceQueries.clientEventSubscriptionsListSubscriptionsByClient,
-          [clientId],
+          [clientId]
         ),
       ];
     },
-    async listSubscriptionsByGrant(grantId: string): Promise<SubscriptionRow[]> {
+    listSubscriptionsByGrant(grantId: string): SubscriptionRow[] {
       return [
         ...allowUnboundedReadAcknowledged<SubscriptionRow>(
           referenceQueries.clientEventSubscriptionsListSubscriptionsByGrant,
-          [grantId],
+          [grantId]
         ),
       ];
     },
-    async updateStatus(id, status, updatedAt, disabledAt, disabledReason): Promise<void> {
-      exec(referenceQueries.clientEventSubscriptionsUpdateStatus, [
-        status,
-        updatedAt,
-        disabledAt,
-        disabledReason,
-        id,
-      ]);
+    updateStatus(id, status, updatedAt, disabledAt, disabledReason): void {
+      exec(referenceQueries.clientEventSubscriptionsUpdateStatus, [status, updatedAt, disabledAt, disabledReason, id]);
     },
-    async updateSecret(id, secretHash, secretText, updatedAt): Promise<void> {
-      exec(referenceQueries.clientEventSubscriptionsUpdateSecret, [
-        secretHash,
-        secretText,
-        updatedAt,
-        id,
-      ]);
+    updateSecret(id, secretHash, secretText, updatedAt): void {
+      exec(referenceQueries.clientEventSubscriptionsUpdateSecret, [secretHash, secretText, updatedAt, id]);
     },
-    async deleteSubscription(id): Promise<void> {
+    deleteSubscription(id): void {
       exec(referenceQueries.clientEventSubscriptionsDeleteSubscription, [id]);
     },
-    async enqueueEvent(event: QueuedEventForEnqueue): Promise<void> {
+    enqueueEvent(event: QueuedEventForEnqueue): void {
       exec(referenceQueries.clientEventSubscriptionsInsertQueue, [
         event.subscriptionId,
         event.eventId,
@@ -128,7 +118,7 @@ export function createSqliteClientEventSubscriptionStore(): ClientEventSubscript
         event.nextAttemptAt,
       ]);
     },
-    async dropQueuedForSubscription(id): Promise<void> {
+    dropQueuedForSubscription(id): void {
       exec(referenceQueries.clientEventSubscriptionsDropQueuedForSubscription, [id]);
     },
   };
@@ -142,12 +132,16 @@ function pgScopeJsonToText(value: unknown): string {
   // Postgres returns JSONB columns as already-parsed JS objects. Round-trip to
   // text so SubscriptionRow.scope_json remains a string for the operation
   // layer, which parses it on read.
-  if (typeof value === "string") return value;
+  if (typeof value === "string") {
+    return value;
+  }
   return JSON.stringify(value);
 }
 
 function pgPayloadJsonToText(value: unknown): string {
-  if (typeof value === "string") return value;
+  if (typeof value === "string") {
+    return value;
+  }
   return JSON.stringify(value);
 }
 
@@ -168,12 +162,9 @@ function pgSubscriptionRow(raw: Record<string, unknown>): SubscriptionRow {
         : String(raw.verification_challenge),
     created_at: String(raw.created_at),
     updated_at: String(raw.updated_at),
-    disabled_at:
-      raw.disabled_at === null || raw.disabled_at === undefined ? null : String(raw.disabled_at),
+    disabled_at: raw.disabled_at === null || raw.disabled_at === undefined ? null : String(raw.disabled_at),
     disabled_reason:
-      raw.disabled_reason === null || raw.disabled_reason === undefined
-        ? null
-        : String(raw.disabled_reason),
+      raw.disabled_reason === null || raw.disabled_reason === undefined ? null : String(raw.disabled_reason),
   };
 }
 
@@ -200,7 +191,7 @@ export function createPostgresClientEventSubscriptionStore(): ClientEventSubscri
           row.verification_challenge,
           row.created_at,
           row.updated_at,
-        ],
+        ]
       );
     },
     async getSubscriptionById(id: string): Promise<SubscriptionRow | null> {
@@ -210,9 +201,11 @@ export function createPostgresClientEventSubscriptionStore(): ClientEventSubscri
                 created_at, updated_at, disabled_at, disabled_reason
            FROM client_event_subscriptions
           WHERE subscription_id = $1`,
-        [id],
+        [id]
       );
-      if (result.rowCount === 0) return null;
+      if (result.rowCount === 0) {
+        return null;
+      }
       return pgSubscriptionRow(result.rows[0]);
     },
     async listSubscriptionsByClient(clientId: string): Promise<SubscriptionRow[]> {
@@ -223,7 +216,7 @@ export function createPostgresClientEventSubscriptionStore(): ClientEventSubscri
            FROM client_event_subscriptions
           WHERE client_id = $1
           ORDER BY created_at, subscription_id`,
-        [clientId],
+        [clientId]
       );
       return result.rows.map(pgSubscriptionRow);
     },
@@ -235,7 +228,7 @@ export function createPostgresClientEventSubscriptionStore(): ClientEventSubscri
            FROM client_event_subscriptions
           WHERE grant_id = $1
           ORDER BY created_at, subscription_id`,
-        [grantId],
+        [grantId]
       );
       return result.rows.map(pgSubscriptionRow);
     },
@@ -247,7 +240,7 @@ export function createPostgresClientEventSubscriptionStore(): ClientEventSubscri
                 disabled_at = $3,
                 disabled_reason = $4
           WHERE subscription_id = $5`,
-        [status, updatedAt, disabledAt, disabledReason, id],
+        [status, updatedAt, disabledAt, disabledReason, id]
       );
     },
     async updateSecret(id, secretHash, secretText, updatedAt): Promise<void> {
@@ -257,14 +250,11 @@ export function createPostgresClientEventSubscriptionStore(): ClientEventSubscri
                 secret_text = $2,
                 updated_at = $3
           WHERE subscription_id = $4`,
-        [secretHash, secretText, updatedAt, id],
+        [secretHash, secretText, updatedAt, id]
       );
     },
     async deleteSubscription(id): Promise<void> {
-      await postgresQuery(
-        `DELETE FROM client_event_subscriptions WHERE subscription_id = $1`,
-        [id],
-      );
+      await postgresQuery("DELETE FROM client_event_subscriptions WHERE subscription_id = $1", [id]);
     },
     async enqueueEvent(event: QueuedEventForEnqueue): Promise<void> {
       await postgresQuery(
@@ -273,14 +263,7 @@ export function createPostgresClientEventSubscriptionStore(): ClientEventSubscri
            enqueued_at, next_attempt_at, attempt_count, status
          )
          VALUES($1, $2, $3, $4::jsonb, $5, $6, 0, 'pending')`,
-        [
-          event.subscriptionId,
-          event.eventId,
-          event.eventType,
-          event.payloadJson,
-          event.enqueuedAt,
-          event.nextAttemptAt,
-        ],
+        [event.subscriptionId, event.eventId, event.eventType, event.payloadJson, event.enqueuedAt, event.nextAttemptAt]
       );
     },
     async dropQueuedForSubscription(id): Promise<void> {
@@ -289,7 +272,7 @@ export function createPostgresClientEventSubscriptionStore(): ClientEventSubscri
             SET status = 'dropped'
           WHERE subscription_id = $1
             AND status = 'pending'`,
-        [id],
+        [id]
       );
     },
   };
@@ -304,10 +287,14 @@ let postgresStoreSingleton: ClientEventSubscriptionStore | null = null;
 
 export function getDefaultClientEventSubscriptionStore(): ClientEventSubscriptionStore {
   if (isPostgresStorageBackend()) {
-    if (!postgresStoreSingleton) postgresStoreSingleton = createPostgresClientEventSubscriptionStore();
+    if (!postgresStoreSingleton) {
+      postgresStoreSingleton = createPostgresClientEventSubscriptionStore();
+    }
     return postgresStoreSingleton;
   }
-  if (!sqliteStoreSingleton) sqliteStoreSingleton = createSqliteClientEventSubscriptionStore();
+  if (!sqliteStoreSingleton) {
+    sqliteStoreSingleton = createSqliteClientEventSubscriptionStore();
+  }
   return sqliteStoreSingleton;
 }
 
@@ -330,14 +317,14 @@ export async function listActiveSubscriptions(): Promise<SubscriptionRow[]> {
          FROM client_event_subscriptions
         WHERE status = 'active'
         ORDER BY created_at, subscription_id`,
-      [],
+      []
     );
     return result.rows.map(pgSubscriptionRow);
   }
   return [
     ...allowUnboundedReadAcknowledged<SubscriptionRow>(
       referenceQueries.clientEventSubscriptionsListActiveSubscriptions,
-      [],
+      []
     ),
   ];
 }
@@ -385,15 +372,12 @@ export async function claimDueQueue(beforeIso: string): Promise<QueueRow[]> {
           AND q.next_attempt_at <= $1
         ORDER BY q.next_attempt_at, q.queue_id
         LIMIT 100`,
-      [beforeIso],
+      [beforeIso]
     );
     return result.rows.map(pgQueueRow);
   }
   return [
-    ...allowUnboundedReadAcknowledged<QueueRow>(
-      referenceQueries.clientEventSubscriptionsClaimDueQueue,
-      [beforeIso],
-    ),
+    ...allowUnboundedReadAcknowledged<QueueRow>(referenceQueries.clientEventSubscriptionsClaimDueQueue, [beforeIso]),
   ];
 }
 
@@ -402,7 +386,7 @@ export async function updateQueueAttempt(
   attemptCount: number,
   nextAttemptAt: string,
   status: "pending" | "delivered" | "final_failure" | "dropped",
-  lastError: string | null,
+  lastError: string | null
 ): Promise<void> {
   if (isPostgresStorageBackend()) {
     await postgresQuery(
@@ -412,7 +396,7 @@ export async function updateQueueAttempt(
               status = $3,
               last_error = $4
         WHERE queue_id = $5`,
-      [attemptCount, nextAttemptAt, status, lastError, queueId],
+      [attemptCount, nextAttemptAt, status, lastError, queueId]
     );
     return;
   }
@@ -432,7 +416,7 @@ export async function insertAttempt(
   ok: boolean,
   latencyMs: number | null,
   error: string | null,
-  responseSnippet: string | null,
+  responseSnippet: string | null
 ): Promise<void> {
   if (isPostgresStorageBackend()) {
     await postgresQuery(
@@ -440,7 +424,7 @@ export async function insertAttempt(
          queue_id, attempted_at, status_code, ok, latency_ms, error, response_snippet
        )
        VALUES($1, $2, $3, $4, $5, $6, $7)`,
-      [queueId, attemptedAt, statusCode, ok ? 1 : 0, latencyMs, error, responseSnippet],
+      [queueId, attemptedAt, statusCode, ok ? 1 : 0, latencyMs, error, responseSnippet]
     );
     return;
   }
@@ -473,40 +457,38 @@ export interface ListAllSubscriptionsFilters {
 }
 
 export interface SubscriptionSummaryRow {
-  readonly subscription_id: string;
-  readonly grant_id: string;
-  readonly client_id: string;
-  readonly subject_id: string;
   readonly callback_url: string;
-  readonly scope_json: string;
-  readonly status: SubscriptionStatus;
+  readonly client_id: string;
   readonly created_at: string;
-  readonly updated_at: string;
   readonly disabled_at: string | null;
   readonly disabled_reason: string | null;
-  readonly pending_queue_count: number;
   readonly final_failure_count: number;
-  readonly last_attempted_at: string | null;
+  readonly grant_id: string;
   readonly last_attempt_ok: number | null;
   readonly last_attempt_status_code: number | null;
+  readonly last_attempted_at: string | null;
+  readonly pending_queue_count: number;
+  readonly scope_json: string;
+  readonly status: SubscriptionStatus;
+  readonly subject_id: string;
+  readonly subscription_id: string;
+  readonly updated_at: string;
 }
 
 export interface SubscriptionAttemptRow {
   readonly attempt_id: number;
-  readonly queue_id: number;
+  readonly attempted_at: string;
+  readonly error: string | null;
   readonly event_id: string;
   readonly event_type: string;
-  readonly attempted_at: string;
-  readonly status_code: number | null;
-  readonly ok: number;
   readonly latency_ms: number | null;
-  readonly error: string | null;
+  readonly ok: number;
+  readonly queue_id: number;
   readonly response_snippet: string | null;
+  readonly status_code: number | null;
 }
 
-export async function listAllSubscriptions(
-  filters: ListAllSubscriptionsFilters = {},
-): Promise<SubscriptionRow[]> {
+export async function listAllSubscriptions(filters: ListAllSubscriptionsFilters = {}): Promise<SubscriptionRow[]> {
   const clientId = filters.clientId ?? null;
   const grantId = filters.grantId ?? null;
   const status = filters.status ?? null;
@@ -521,15 +503,19 @@ export async function listAllSubscriptions(
           AND ($2::text IS NULL OR grant_id = $2)
           AND ($3::text IS NULL OR status = $3)
         ORDER BY created_at DESC, subscription_id ASC`,
-      [clientId, grantId, status],
+      [clientId, grantId, status]
     );
     return result.rows.map(pgSubscriptionRow);
   }
   return [
-    ...allowUnboundedReadAcknowledged<SubscriptionRow>(
-      referenceQueries.clientEventSubscriptionsListAllSubscriptions,
-      [clientId, clientId, grantId, grantId, status, status],
-    ),
+    ...allowUnboundedReadAcknowledged<SubscriptionRow>(referenceQueries.clientEventSubscriptionsListAllSubscriptions, [
+      clientId,
+      clientId,
+      grantId,
+      grantId,
+      status,
+      status,
+    ]),
   ];
 }
 
@@ -544,22 +530,15 @@ function pgSummaryRow(raw: Record<string, unknown>): SubscriptionSummaryRow {
     status: raw.status as SubscriptionStatus,
     created_at: String(raw.created_at),
     updated_at: String(raw.updated_at),
-    disabled_at:
-      raw.disabled_at === null || raw.disabled_at === undefined ? null : String(raw.disabled_at),
+    disabled_at: raw.disabled_at === null || raw.disabled_at === undefined ? null : String(raw.disabled_at),
     disabled_reason:
-      raw.disabled_reason === null || raw.disabled_reason === undefined
-        ? null
-        : String(raw.disabled_reason),
+      raw.disabled_reason === null || raw.disabled_reason === undefined ? null : String(raw.disabled_reason),
     pending_queue_count: Number(raw.pending_queue_count ?? 0),
     final_failure_count: Number(raw.final_failure_count ?? 0),
     last_attempted_at:
-      raw.last_attempted_at === null || raw.last_attempted_at === undefined
-        ? null
-        : String(raw.last_attempted_at),
+      raw.last_attempted_at === null || raw.last_attempted_at === undefined ? null : String(raw.last_attempted_at),
     last_attempt_ok:
-      raw.last_attempt_ok === null || raw.last_attempt_ok === undefined
-        ? null
-        : Number(raw.last_attempt_ok),
+      raw.last_attempt_ok === null || raw.last_attempt_ok === undefined ? null : Number(raw.last_attempt_ok),
     last_attempt_status_code:
       raw.last_attempt_status_code === null || raw.last_attempt_status_code === undefined
         ? null
@@ -567,9 +546,7 @@ function pgSummaryRow(raw: Record<string, unknown>): SubscriptionSummaryRow {
   };
 }
 
-export async function getSubscriptionSummary(
-  subscriptionId: string,
-): Promise<SubscriptionSummaryRow | null> {
+export async function getSubscriptionSummary(subscriptionId: string): Promise<SubscriptionSummaryRow | null> {
   if (isPostgresStorageBackend()) {
     const result = await postgresQuery(
       `SELECT s.subscription_id,
@@ -604,20 +581,21 @@ export async function getSubscriptionSummary(
          FROM client_event_subscriptions s
         WHERE s.subscription_id = $1
           AND s.status != 'deleted'`,
-      [subscriptionId],
+      [subscriptionId]
     );
-    if (result.rowCount === 0) return null;
+    if (result.rowCount === 0) {
+      return null;
+    }
     return pgSummaryRow(result.rows[0]);
   }
-  return getOne<SubscriptionSummaryRow>(
-    referenceQueries.clientEventSubscriptionsGetSubscriptionSummary,
-    [subscriptionId],
-  );
+  return getOne<SubscriptionSummaryRow>(referenceQueries.clientEventSubscriptionsGetSubscriptionSummary, [
+    subscriptionId,
+  ]);
 }
 
 export async function listAttemptsForSubscription(
   subscriptionId: string,
-  limit: number,
+  limit: number
 ): Promise<SubscriptionAttemptRow[]> {
   if (isPostgresStorageBackend()) {
     const result = await postgresQuery(
@@ -636,7 +614,7 @@ export async function listAttemptsForSubscription(
         WHERE q.subscription_id = $1
         ORDER BY a.attempt_id DESC
         LIMIT $2`,
-      [subscriptionId, limit],
+      [subscriptionId, limit]
     );
     return result.rows.map((raw: Record<string, unknown>) => ({
       attempt_id: Number(raw.attempt_id),
@@ -654,7 +632,7 @@ export async function listAttemptsForSubscription(
   return [
     ...allowUnboundedReadAcknowledged<SubscriptionAttemptRow>(
       referenceQueries.clientEventSubscriptionsListAttemptsForSubscription,
-      [subscriptionId, limit],
+      [subscriptionId, limit]
     ),
   ];
 }
@@ -666,7 +644,7 @@ export async function listAttemptsForQueue(queueId: number): Promise<AttemptRow[
          FROM client_event_attempts
         WHERE queue_id = $1
         ORDER BY attempt_id`,
-      [queueId],
+      [queueId]
     );
     return result.rows.map((raw: Record<string, unknown>) => ({
       attempt_id: Number(raw.attempt_id),
@@ -680,9 +658,8 @@ export async function listAttemptsForQueue(queueId: number): Promise<AttemptRow[
     }));
   }
   return [
-    ...allowUnboundedReadAcknowledged<AttemptRow>(
-      referenceQueries.clientEventSubscriptionsListAttemptsForQueue,
-      [queueId],
-    ),
+    ...allowUnboundedReadAcknowledged<AttemptRow>(referenceQueries.clientEventSubscriptionsListAttemptsForQueue, [
+      queueId,
+    ]),
   ];
 }

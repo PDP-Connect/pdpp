@@ -396,6 +396,7 @@ test('hosted MCP OAuth code flow issues a scoped client token usable at /mcp', a
     assert.deepEqual(toolNames, [
       'create_event_subscription',
       'delete_event_subscription',
+      'discover_event_subscription_capabilities',
       'fetch',
       'fetch_blob',
       'get_event_subscription',

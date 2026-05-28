@@ -37,6 +37,7 @@ export interface AutoEnrollConnectorRow {
 export type AutoEnrollListConnectors = () => Promise<readonly AutoEnrollConnectorRow[]>;
 
 export interface AutoEnrollOptions {
+  controller: AutoEnrollControllerLike;
   /**
    * Whether the pass should run at all. Defaults to true. The caller is
    * responsible for resolving the operator override
@@ -50,7 +51,6 @@ export interface AutoEnrollOptions {
    * a key lookup; values are never logged or stored.
    */
   env?: Readonly<Record<string, string | undefined>>;
-  controller: AutoEnrollControllerLike;
   listConnectors: AutoEnrollListConnectors;
   log?: (line: string) => void;
 }
@@ -91,9 +91,9 @@ function getCapabilities(manifest: unknown): ManifestCapabilities | null {
 }
 
 interface PolicyFacts {
-  readonly recommendedMode: string | null;
   readonly backgroundSafe: boolean | null;
   readonly recommendedIntervalSeconds: number | null;
+  readonly recommendedMode: string | null;
 }
 
 function getPolicyFacts(caps: ManifestCapabilities): PolicyFacts {
@@ -128,17 +128,7 @@ function getListingFacts(caps: ManifestCapabilities): ListingFacts {
   };
 }
 
-/**
- * Manifest `capabilities.auth.required` entries are either a string env name
- * or an alias array (`[primary, ...fallbacks]`). The runtime auth resolver in
- * `packages/polyfill-connectors/src/auth.ts::resolveEnvEntry` uses first-set-
- * wins: any one alias being non-empty is enough to satisfy the requirement.
- * The enrollment gate must agree with that resolution so we never refuse to
- * enroll a connector that the runtime would happily authenticate from a
- * fallback alias. Alias arrays are encoded here as a `"a|b|c"` token; the
- * presence check downstream splits on `|` and tests for any non-empty value.
- */
-function extractEnvRequirement(caps: ManifestCapabilities): readonly string[] | null {
+function readAuthRequiredList(caps: ManifestCapabilities): readonly unknown[] | null {
   const auth = caps.auth;
   if (!auth || typeof auth !== "object" || Array.isArray(auth)) {
     return null;
@@ -151,31 +141,54 @@ function extractEnvRequirement(caps: ManifestCapabilities): readonly string[] | 
   if (!Array.isArray(required) || required.length === 0) {
     return null;
   }
+  return required;
+}
+
+function encodeAliasEntry(entry: readonly unknown[]): string | null {
+  const variants: string[] = [];
+  for (const v of entry) {
+    if (typeof v === "string" && v.trim().length > 0) {
+      variants.push(v.trim());
+    }
+  }
+  if (variants.length === 0) {
+    return null;
+  }
+  return variants.join("|");
+}
+
+function encodeEnvEntry(entry: unknown): string | null {
+  if (typeof entry === "string" && entry.trim().length > 0) {
+    return entry.trim();
+  }
+  if (Array.isArray(entry)) {
+    return encodeAliasEntry(entry);
+  }
+  return null;
+}
+
+/**
+ * Manifest `capabilities.auth.required` entries are either a string env name
+ * or an alias array (`[primary, ...fallbacks]`). The runtime auth resolver in
+ * `packages/polyfill-connectors/src/auth.ts::resolveEnvEntry` uses first-set-
+ * wins: any one alias being non-empty is enough to satisfy the requirement.
+ * The enrollment gate must agree with that resolution so we never refuse to
+ * enroll a connector that the runtime would happily authenticate from a
+ * fallback alias. Alias arrays are encoded here as a `"a|b|c"` token; the
+ * presence check downstream splits on `|` and tests for any non-empty value.
+ */
+function extractEnvRequirement(caps: ManifestCapabilities): readonly string[] | null {
+  const required = readAuthRequiredList(caps);
+  if (!required) {
+    return null;
+  }
   const names: string[] = [];
   for (const entry of required) {
-    if (typeof entry === "string" && entry.trim().length > 0) {
-      names.push(entry.trim());
-      continue;
+    const encoded = encodeEnvEntry(entry);
+    if (encoded === null) {
+      return null;
     }
-    if (Array.isArray(entry)) {
-      // Alias-array entry: encode as a `|`-joined any-of token so the
-      // downstream presence check accepts the requirement when any one
-      // variant is non-empty, matching the runtime's first-set-wins
-      // semantics.
-      const variants: string[] = [];
-      for (const v of entry) {
-        if (typeof v === "string" && v.trim().length > 0) {
-          variants.push(v.trim());
-        }
-      }
-      if (variants.length === 0) {
-        return null;
-      }
-      // Encode alias arrays as comma-joined "any-of" tokens.
-      names.push(variants.join("|"));
-      continue;
-    }
-    return null;
+    names.push(encoded);
   }
   return names;
 }

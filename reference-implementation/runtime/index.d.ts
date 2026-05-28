@@ -40,22 +40,22 @@ export interface RuntimeBrowserSurfaceEnv {
 }
 
 export interface RuntimeRunConnectorOptions {
+  automationMode?: RuntimeRunAutomationMode | null;
+  /**
+   * Explicit browser-surface child env override for tests and integration
+   * seams. Values here win over `browserSurfaceLease` fields.
+   */
+  browserSurfaceEnv?: RuntimeBrowserSurfaceEnv | null;
   /**
    * Managed browser-surface lease selected by the controller. When present
    * with a CDP URL, `runConnector` forwards the lease-scoped
    * `PDPP_BROWSER_SURFACE_*` env block to the connector child.
    */
   browserSurfaceLease?: RuntimeBrowserSurfaceLease | null;
-  /**
-   * Explicit browser-surface child env override for tests and integration
-   * seams. Values here win over `browserSurfaceLease` fields.
-   */
-  browserSurfaceEnv?: RuntimeBrowserSurfaceEnv | null;
   collectionMode?: RuntimeCollectionMode;
   connectorId: string;
   connectorInstanceId?: string | null;
   connectorPath: string;
-  automationMode?: RuntimeRunAutomationMode | null;
   grantId?: string | null;
   manifest: Record<string, unknown>;
   onInteraction?: (...args: unknown[]) => unknown;
@@ -115,8 +115,8 @@ export interface ConnectorRunDiagnostics {
 export type RuntimeFailureOrigin = "connector" | "runtime" | "transport" | "storage";
 
 export interface RuntimeRunConnectorResult {
-  checkpoint_summary?: Record<string, unknown> | null;
   automation_mode?: RuntimeRunAutomationMode | null;
+  checkpoint_summary?: Record<string, unknown> | null;
   connector_diagnostics?: ConnectorRunDiagnostics;
   connector_error?: { message?: string; retryable?: boolean | null } | null;
   failure_message?: string;

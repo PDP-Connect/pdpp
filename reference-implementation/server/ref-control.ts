@@ -9,36 +9,25 @@
 // reference implementation exposes for its own dashboard. Clients must
 // not depend on the response shape.
 
-import type {
-  BrowserSurface,
-  BrowserSurfaceLease,
-} from "@opendatalabs/remote-surface/leases";
+import type { BrowserSurface, BrowserSurfaceLease } from "@opendatalabs/remote-surface/leases";
 import { allowUnboundedReadAcknowledged, getOne, iterateDynamicSqlAcknowledged, referenceQueries } from "../lib/db.ts";
 import { listSpineCorrelations, type SpineSummary } from "../lib/spine.ts";
+import { type AttentionRecord, isHealthRelevant, type OwnerAction } from "../runtime/attention.ts";
+import { readBrowserSurfaceProfileKey } from "../runtime/browser-surface-profile-key.ts";
 import {
-  type AttentionRecord,
-  isHealthRelevant,
-  type OwnerAction,
-} from "../runtime/attention.ts";
-import {
-  computeConnectionHealth,
   type ConnectionAttentionEvidence,
   type ConnectionHealthSnapshot,
   type ConnectionRemoteSurfaceEvidence,
   type CoverageAxis,
+  computeConnectionHealth,
   deriveOutboxAxisFromHeartbeat,
   type FreshnessAxis,
   type NextAction,
   type OutboxAxis,
 } from "../runtime/connection-health.ts";
-import { readBrowserSurfaceProfileKey } from "../runtime/browser-surface-profile-key.ts";
 import { getConnectorManifest } from "./auth.js";
 import { deriveReferenceFreshness, type ReferenceFreshness } from "./freshness.ts";
 import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.js";
-import {
-  listRetainedSizeConnections,
-  listRetainedSizeStreams,
-} from "./retained-size-read-model.js";
 import {
   chooseDisplayTimestamp,
   compareTimestampValues,
@@ -47,6 +36,7 @@ import {
   type SemanticTimestamp,
   timestampWithinWindow,
 } from "./ref-record-utils.ts";
+import { listRetainedSizeConnections, listRetainedSizeStreams } from "./retained-size-read-model.js";
 import { getDefaultBrowserSurfaceLeaseStore } from "./stores/browser-surface-lease-store.ts";
 import { getDefaultConnectorAttentionStore } from "./stores/connector-attention-store.js";
 import { getDefaultConnectorDetailGapStore } from "./stores/connector-detail-gap-store.js";
@@ -59,16 +49,6 @@ import { getDefaultDeviceExporterStore } from "./stores/device-exporter-store.js
 // ─── Shared domain types ────────────────────────────────────────────────────
 
 interface ManifestStream extends ManifestStreamLike {
-  name: string;
-  semantics?: string;
-  /**
-   * Required-stream policy. Defaults to `true` when absent so that streams
-   * declared in a manifest without explicit policy are treated as
-   * load-bearing for connection health. Manifest authors opt OUT of
-   * required-stream policy by setting `required: false` (i.e. the stream
-   * is documented but not load-bearing).
-   */
-  required?: boolean;
   /**
    * Accepted-coverage policy for the stream. Default (absent) means
    * `collect`: the connector intends to collect this stream and any
@@ -86,6 +66,16 @@ interface ManifestStream extends ManifestStreamLike {
    * absent) and degrades health rather than projecting green.
    */
   coverage_policy?: "collect" | "deferred" | "inventory_only" | "unavailable" | "unsupported";
+  name: string;
+  /**
+   * Required-stream policy. Defaults to `true` when absent so that streams
+   * declared in a manifest without explicit policy are treated as
+   * load-bearing for connection health. Manifest authors opt OUT of
+   * required-stream policy by setting `required: false` (i.e. the stream
+   * is documented but not load-bearing).
+   */
+  required?: boolean;
+  semantics?: string;
 }
 
 type AcceptedCoveragePolicy = "deferred" | "inventory_only" | "unavailable" | "unsupported";
@@ -200,7 +190,7 @@ interface ConnectorDetailGapStoreLike {
   }): Promise<readonly PendingDetailGapSummary[]> | readonly PendingDetailGapSummary[];
   listPendingGapsForConnector?: (
     connectorId: string,
-    options?: { limit?: number },
+    options?: { limit?: number }
   ) => Promise<readonly PendingDetailGapSummary[]> | readonly PendingDetailGapSummary[];
 }
 
@@ -259,15 +249,15 @@ export interface ConnectorSummary {
    */
   readonly next_action: NextAction | null;
   readonly refresh_policy: unknown;
-  readonly schedule: unknown;
-  readonly stream_count?: number;
-  readonly streams: string[];
   /**
    * Storage bytes by retention class. `total_retained_bytes` is kept for
    * compatibility; this breakdown lets the operator distinguish current live
    * records from retained change history.
    */
   readonly retained_bytes?: RetainedBytesBreakdown | null;
+  readonly schedule: unknown;
+  readonly stream_count?: number;
+  readonly streams: string[];
   readonly total_records: number;
   readonly total_retained_bytes?: number | null;
 }
@@ -501,9 +491,7 @@ async function getLatestRunSummary(
   return toConnectorRunSummary(summaries[0] ?? null);
 }
 
-async function getRetainedBytesForConnection(
-  connectorInstanceId: string,
-): Promise<RetainedBytesBreakdown | null> {
+async function getRetainedBytesForConnection(connectorInstanceId: string): Promise<RetainedBytesBreakdown | null> {
   const row = (await listRetainedSizeConnections({ connectorInstanceId }))[0] as
     | {
         current_record_json_bytes?: number;
@@ -527,7 +515,7 @@ async function getRetainedBytesForConnection(
 
 async function getConnectorRecordProjection(
   connectorId: string,
-  connectorInstanceId?: string,
+  connectorInstanceId?: string
 ): Promise<RecordProjection> {
   let rows: RecordProjectionRow[];
   if (connectorInstanceId) {
@@ -536,18 +524,16 @@ async function getConnectorRecordProjection(
         stream: row.stream,
         record_count: Number(row.record_count || 0),
         last_updated: null,
-      }),
+      })
     ) as RecordProjectionRow[];
   } else {
-    rows = (await listRetainedSizeStreams({})).filter(
-      (row: { connector_id?: string }) => row.connector_id === connectorId,
-    ).map(
-      (row: { stream: string; record_count?: number }) => ({
+    rows = (await listRetainedSizeStreams({}))
+      .filter((row: { connector_id?: string }) => row.connector_id === connectorId)
+      .map((row: { stream: string; record_count?: number }) => ({
         stream: row.stream,
         record_count: Number(row.record_count || 0),
         last_updated: null,
-      }),
-    ) as RecordProjectionRow[];
+      })) as RecordProjectionRow[];
   }
   const byStream = new Map<string, StreamProjection>();
   let latest: string | null = null;
@@ -566,9 +552,7 @@ async function getConnectorRecordProjection(
   return {
     byStream,
     freshness: buildFreshness(latest),
-    retainedBytes: connectorInstanceId
-      ? await getRetainedBytesForConnection(connectorInstanceId)
-      : null,
+    retainedBytes: connectorInstanceId ? await getRetainedBytesForConnection(connectorInstanceId) : null,
     totalRecords: rows.reduce((sum, row) => sum + Number(row.record_count || 0), 0),
   };
 }
@@ -598,7 +582,7 @@ interface ConnectorAttentionStoreLike {
  */
 export async function getConnectorAttentionProjection(
   connectorId: string,
-  options: { readonly connectorInstanceId?: string } = {},
+  options: { readonly connectorInstanceId?: string } = {}
 ): Promise<AttentionStoreProjection> {
   try {
     const store = getDefaultConnectorAttentionStore() as ConnectorAttentionStoreLike;
@@ -618,7 +602,7 @@ export async function getConnectorAttentionProjection(
 
 async function getConnectorDetailGapProjection(
   connectorId: string,
-  connectorInstanceId?: string,
+  connectorInstanceId?: string
 ): Promise<DetailGapProjection> {
   try {
     const store = getDefaultConnectorDetailGapStore() as ConnectorDetailGapStoreLike;
@@ -685,9 +669,7 @@ async function listRegisteredConnectorRows(): Promise<readonly ConnectorRow[]> {
 }
 
 function getConnectorInstanceStore() {
-  return isPostgresStorageBackend()
-    ? createPostgresConnectorInstanceStore()
-    : createSqliteConnectorInstanceStore();
+  return isPostgresStorageBackend() ? createPostgresConnectorInstanceStore() : createSqliteConnectorInstanceStore();
 }
 
 function recordStorageConnectorIdForConnection(instance: ConnectorInstanceRow): string {
@@ -698,12 +680,12 @@ function recordStorageConnectorIdForConnection(instance: ConnectorInstanceRow): 
 }
 
 async function listConnectorInstanceRowsForDashboard(
-  registeredRows: readonly ConnectorRow[],
+  registeredRows: readonly ConnectorRow[]
 ): Promise<readonly ConnectorInstanceRow[]> {
   const store = getConnectorInstanceStore();
   const instances = await store.listByOwner(REFERENCE_OWNER_SUBJECT_ID);
   const active = instances.filter(
-    (instance: ConnectorInstanceRow) => instance.status !== "revoked" && !instance.revokedAt,
+    (instance: ConnectorInstanceRow) => instance.status !== "revoked" && !instance.revokedAt
   );
   if (active.length > 0) {
     return active;
@@ -722,11 +704,11 @@ async function listConnectorInstanceRowsForDashboard(
         displayName: manifest.display_name || row.connector_id,
         now,
       });
-    }),
+    })
   );
   return ensured.filter(
     (instance): instance is ConnectorInstanceRow =>
-      instance !== null && instance.status !== "revoked" && !instance.revokedAt,
+      instance !== null && instance.status !== "revoked" && !instance.revokedAt
   );
 }
 
@@ -763,7 +745,7 @@ export function isPublicReferenceConnector(row: ConnectorRow, manifest: Connecto
 function getScheduleFrom(
   controller: ControllerLike | null | undefined,
   connectorId: string,
-  options: { readonly connectorInstanceId?: string } = {},
+  options: { readonly connectorInstanceId?: string } = {}
 ): Promise<unknown> {
   if (controller && typeof controller.getSchedule === "function") {
     return (controller as ScheduleLike).getSchedule(connectorId, options);
@@ -840,11 +822,7 @@ function hasTerminalKnownGap(run: ConnectorRunSummary | null): boolean {
     }
     // Any other unknown severity counts as terminal (conservative);
     // recognized non-degrading and retryable severities are not terminal.
-    return (
-      severity !== "informational" &&
-      severity !== "recoverable" &&
-      severity !== "transient"
-    );
+    return severity !== "informational" && severity !== "recoverable" && severity !== "transient";
   });
 }
 
@@ -923,9 +901,7 @@ function mapCoverageAxis(
 ): CoverageAxis {
   const hasDetailGap = hasPendingDetailGap(pendingDetailGaps);
   const hasTerminal = hasTerminalKnownGap(lastRun);
-  const hasRetryable = lastRun
-    ? lastRun.known_gaps.some((gap) => isRetryableKnownGap(gap))
-    : false;
+  const hasRetryable = lastRun ? lastRun.known_gaps.some((gap) => isRetryableKnownGap(gap)) : false;
   // Contradictory manifest (required AND accepted-absent) takes precedence
   // over the success path so a misconfigured manifest can never paint
   // green. The label still names the declared accepted-coverage policy
@@ -970,17 +946,21 @@ const ACCEPTED_COVERAGE_PRECEDENCE: readonly AcceptedCoveragePolicy[] = [
   "inventory_only",
 ];
 
-function pickAcceptedCoverage(
-  streams: readonly ManifestStream[]
-): AcceptedCoveragePolicy | null {
-  if (streams.length === 0) return null;
+function pickAcceptedCoverage(streams: readonly ManifestStream[]): AcceptedCoveragePolicy | null {
+  if (streams.length === 0) {
+    return null;
+  }
   const seen = new Set<AcceptedCoveragePolicy>();
   for (const stream of streams) {
     const policy = readAcceptedCoveragePolicy(stream);
-    if (policy !== null) seen.add(policy);
+    if (policy !== null) {
+      seen.add(policy);
+    }
   }
   for (const policy of ACCEPTED_COVERAGE_PRECEDENCE) {
-    if (seen.has(policy)) return policy;
+    if (seen.has(policy)) {
+      return policy;
+    }
   }
   return null;
 }
@@ -992,40 +972,43 @@ function pickAcceptedCoverage(
  * connector simultaneously claims the stream is load-bearing AND
  * accepted-absent, so the projection refuses to project healthy.
  */
-function pickRequiredAcceptedCoverage(
-  streams: readonly ManifestStream[]
-): AcceptedCoveragePolicy | null {
-  if (streams.length === 0) return null;
+function pickRequiredAcceptedCoverage(streams: readonly ManifestStream[]): AcceptedCoveragePolicy | null {
+  if (streams.length === 0) {
+    return null;
+  }
   const seen = new Set<AcceptedCoveragePolicy>();
   for (const stream of streams) {
-    if (!isRequiredStream(stream)) continue;
+    if (!isRequiredStream(stream)) {
+      continue;
+    }
     const policy = readAcceptedCoveragePolicy(stream);
-    if (policy !== null) seen.add(policy);
+    if (policy !== null) {
+      seen.add(policy);
+    }
   }
   for (const policy of ACCEPTED_COVERAGE_PRECEDENCE) {
-    if (seen.has(policy)) return policy;
+    if (seen.has(policy)) {
+      return policy;
+    }
   }
   return null;
 }
 
-function readAcceptedCoveragePolicy(
-  stream: ManifestStream | undefined
-): AcceptedCoveragePolicy | null {
-  if (!stream || typeof stream !== "object") return null;
+function readAcceptedCoveragePolicy(stream: ManifestStream | undefined): AcceptedCoveragePolicy | null {
+  if (!stream || typeof stream !== "object") {
+    return null;
+  }
   const value = stream.coverage_policy;
-  if (
-    value === "unsupported" ||
-    value === "unavailable" ||
-    value === "deferred" ||
-    value === "inventory_only"
-  ) {
+  if (value === "unsupported" || value === "unavailable" || value === "deferred" || value === "inventory_only") {
     return value;
   }
   return null;
 }
 
 function isRequiredStream(stream: ManifestStream | undefined): boolean {
-  if (!stream || typeof stream !== "object") return false;
+  if (!stream || typeof stream !== "object") {
+    return false;
+  }
   // Default to required when absent so a manifest-declared stream is
   // load-bearing unless explicitly opted out.
   return stream.required !== false;
@@ -1106,10 +1089,9 @@ function readIsoMillis(value: unknown): number | null {
 }
 
 function schedulerFailureAnchorMillis(schedule: Record<string, unknown> | null): number | null {
-  const candidates = [
-    readIsoMillis(schedule?.last_finished_at),
-    readIsoMillis(schedule?.last_started_at),
-  ].filter((value): value is number => value !== null);
+  const candidates = [readIsoMillis(schedule?.last_finished_at), readIsoMillis(schedule?.last_started_at)].filter(
+    (value): value is number => value !== null
+  );
   if (candidates.length === 0) {
     return null;
   }
@@ -1118,7 +1100,7 @@ function schedulerFailureAnchorMillis(schedule: Record<string, unknown> | null):
 
 function succeededRunSupersedesSchedulerBackoff(
   lastRun: ConnectorRunSummary | null,
-  schedule: Record<string, unknown> | null,
+  schedule: Record<string, unknown> | null
 ): boolean {
   if (lastRun?.status !== "succeeded") {
     return false;
@@ -1139,17 +1121,17 @@ function succeededRunSupersedesSchedulerBackoff(
 export const OUTBOX_STALE_HEARTBEAT_THRESHOLD_MS = 30 * 60 * 1000;
 
 interface HeartbeatRow {
-  readonly sourceInstanceId: string;
-  readonly deviceId: string;
   readonly connectorId: string;
   readonly connectorInstanceId: string | null;
-  readonly sourceStatus: string;
-  readonly deviceStatus: string;
+  readonly deviceId: string;
   readonly deviceRevokedAt: string | null;
+  readonly deviceStatus: string;
   readonly lastHeartbeatAt: string | null;
   readonly lastHeartbeatStatus: string | null;
   readonly lastIngestAt: string | null;
   readonly recordsPending: number | null;
+  readonly sourceInstanceId: string;
+  readonly sourceStatus: string;
   readonly updatedAt: string | null;
 }
 
@@ -1165,9 +1147,61 @@ interface HeartbeatRow {
  *   and roll up: `stalled` dominates `active` dominates `idle`;
  *   any `unreliable: true` adds `outbox` to `unreliableSources`.
  */
+interface OutboxAxisAccumulator {
+  anyTrustedEvidence: boolean;
+  anyUnreliable: boolean;
+  sawTrustedIdle: boolean;
+  sawTrustedUnknown: boolean;
+  severity: "active" | "stalled" | null;
+}
+
+function escalateOutboxAxisSeverity(
+  current: "active" | "stalled" | null,
+  rowAxis: OutboxAxis
+): "active" | "stalled" | null {
+  if (rowAxis === "stalled") {
+    return "stalled";
+  }
+  if (rowAxis === "active" && current !== "stalled") {
+    return "active";
+  }
+  return current;
+}
+
+function accumulateOutboxAxisRow(acc: OutboxAxisAccumulator, row: HeartbeatRow, nowIso: string): void {
+  const trusted = row.deviceStatus === "active" && row.sourceStatus === "active" && row.deviceRevokedAt === null;
+  if (trusted) {
+    acc.anyTrustedEvidence = true;
+  }
+  const result = deriveOutboxAxisFromHeartbeat(
+    {
+      evidenceTrusted: trusted,
+      lastHeartbeatAt: row.lastHeartbeatAt,
+      lastHeartbeatStatus: normalizeHeartbeatStatusForAxis(row.lastHeartbeatStatus),
+      recordsPending: row.recordsPending,
+    },
+    {
+      nowIso,
+      staleHeartbeatThresholdMs: OUTBOX_STALE_HEARTBEAT_THRESHOLD_MS,
+    }
+  );
+  if (result.unreliable) {
+    acc.anyUnreliable = true;
+  }
+  if (!trusted) {
+    return;
+  }
+  acc.severity = escalateOutboxAxisSeverity(acc.severity, result.axis);
+  if (result.axis === "idle") {
+    acc.sawTrustedIdle = true;
+  } else if (result.axis === "unknown") {
+    acc.sawTrustedUnknown = true;
+  }
+}
+
 export function projectConnectorOutboxAxisFromHeartbeats(
   heartbeats: readonly HeartbeatRow[],
-  options: { readonly nowIso: string },
+  options: { readonly nowIso: string }
 ): { axis: OutboxAxis; unreliable: boolean; hasEvidence: boolean } {
   if (heartbeats.length === 0) {
     return { axis: "unknown", unreliable: false, hasEvidence: false };
@@ -1177,58 +1211,35 @@ export function projectConnectorOutboxAxisFromHeartbeats(
   // heartbeat we have never observed (axis = unknown) must not be
   // silently treated as idle, or a dead collector with no record of life
   // would paint the connection green.
-  let anyUnreliable = false;
-  let anyTrustedEvidence = false;
-  let sawTrustedIdle = false;
-  let sawTrustedUnknown = false;
-  let severity: "active" | "stalled" | null = null;
+  const acc: OutboxAxisAccumulator = {
+    anyUnreliable: false,
+    anyTrustedEvidence: false,
+    sawTrustedIdle: false,
+    sawTrustedUnknown: false,
+    severity: null,
+  };
   for (const row of heartbeats) {
-    const trusted =
-      row.deviceStatus === "active" && row.sourceStatus === "active" && row.deviceRevokedAt === null;
-    if (trusted) anyTrustedEvidence = true;
-    const result = deriveOutboxAxisFromHeartbeat(
-      {
-        evidenceTrusted: trusted,
-        lastHeartbeatAt: row.lastHeartbeatAt,
-        lastHeartbeatStatus: normalizeHeartbeatStatusForAxis(row.lastHeartbeatStatus),
-        recordsPending: row.recordsPending,
-      },
-      {
-        nowIso: options.nowIso,
-        staleHeartbeatThresholdMs: OUTBOX_STALE_HEARTBEAT_THRESHOLD_MS,
-      },
-    );
-    if (result.unreliable) anyUnreliable = true;
-    if (!trusted) continue;
-    if (result.axis === "stalled") {
-      severity = "stalled";
-    } else if (result.axis === "active" && severity !== "stalled") {
-      severity = "active";
-    } else if (result.axis === "idle") {
-      sawTrustedIdle = true;
-    } else if (result.axis === "unknown") {
-      sawTrustedUnknown = true;
-    }
+    accumulateOutboxAxisRow(acc, row, options.nowIso);
   }
   // If every row is untrusted (e.g. all sources/devices revoked), there
   // is no honest evidence — keep `unknown` rather than implying idle.
-  if (!anyTrustedEvidence) {
-    return { axis: "unknown", unreliable: anyUnreliable, hasEvidence: false };
+  if (!acc.anyTrustedEvidence) {
+    return { axis: "unknown", unreliable: acc.anyUnreliable, hasEvidence: false };
   }
-  if (severity !== null) {
-    return { axis: severity, unreliable: anyUnreliable, hasEvidence: true };
+  if (acc.severity !== null) {
+    return { axis: acc.severity, unreliable: acc.anyUnreliable, hasEvidence: true };
   }
   // No trusted instance is actively working or stalled. We can only
   // promise `idle` when every trusted instance reported idle — a missing
   // heartbeat on any trusted instance keeps the axis `unknown`.
-  if (sawTrustedIdle && !sawTrustedUnknown) {
-    return { axis: "idle", unreliable: anyUnreliable, hasEvidence: true };
+  if (acc.sawTrustedIdle && !acc.sawTrustedUnknown) {
+    return { axis: "idle", unreliable: acc.anyUnreliable, hasEvidence: true };
   }
-  return { axis: "unknown", unreliable: anyUnreliable, hasEvidence: sawTrustedIdle };
+  return { axis: "unknown", unreliable: acc.anyUnreliable, hasEvidence: acc.sawTrustedIdle };
 }
 
 function normalizeHeartbeatStatusForAxis(
-  value: string | null,
+  value: string | null
 ): "blocked" | "healthy" | "retrying" | "starting" | "stopped" | null {
   switch (value) {
     case "blocked":
@@ -1253,7 +1264,7 @@ function normalizeHeartbeatStatusForAxis(
  */
 export async function getConnectorOutboxAxis(
   connectorId: string,
-  options: { readonly connectorInstanceId?: string | null } = {},
+  options: { readonly connectorInstanceId?: string | null } = {}
 ): Promise<{ axis: OutboxAxis; heartbeats: readonly HeartbeatRow[]; unreliable: boolean }> {
   const store = getDefaultDeviceExporterStore();
   if (typeof store.listSourceInstanceHeartbeatsByConnector !== "function") {
@@ -1267,7 +1278,7 @@ export async function getConnectorOutboxAxis(
     // heartbeat on device A would degrade device B's connection-health pill.
     const rows = (await store.listSourceInstanceHeartbeatsByConnector(
       connectorId,
-      connectorInstanceId !== null ? { connectorInstanceId } : undefined,
+      connectorInstanceId === null ? undefined : { connectorInstanceId }
     )) as readonly HeartbeatRow[];
     const result = projectConnectorOutboxAxisFromHeartbeats(rows, { nowIso: new Date().toISOString() });
     return { axis: result.axis, heartbeats: rows, unreliable: result.unreliable };
@@ -1284,11 +1295,9 @@ export async function getConnectorOutboxAxis(
  * Returns `null` when no trusted source rows exist; we do not surface
  * device-side progress derived solely from revoked / inactive rows.
  */
-export function projectLocalDeviceProgress(
-  heartbeats: readonly HeartbeatRow[],
-): LocalDeviceProgress | null {
+export function projectLocalDeviceProgress(heartbeats: readonly HeartbeatRow[]): LocalDeviceProgress | null {
   const trusted = heartbeats.filter(
-    (row) => row.deviceStatus === "active" && row.sourceStatus === "active" && row.deviceRevokedAt === null,
+    (row) => row.deviceStatus === "active" && row.sourceStatus === "active" && row.deviceRevokedAt === null
   );
   if (trusted.length === 0) {
     return null;
@@ -1299,11 +1308,9 @@ export function projectLocalDeviceProgress(
   let recordsPending = 0;
   let sawPending = false;
   for (const row of trusted) {
-    if (row.lastHeartbeatAt !== null) {
-      if (lastHeartbeatAt === null || row.lastHeartbeatAt > lastHeartbeatAt) {
-        lastHeartbeatAt = row.lastHeartbeatAt;
-        lastHeartbeatStatus = row.lastHeartbeatStatus;
-      }
+    if (row.lastHeartbeatAt !== null && (lastHeartbeatAt === null || row.lastHeartbeatAt > lastHeartbeatAt)) {
+      lastHeartbeatAt = row.lastHeartbeatAt;
+      lastHeartbeatStatus = row.lastHeartbeatStatus;
     }
     if (row.lastIngestAt !== null && (lastIngestAt === null || row.lastIngestAt > lastIngestAt)) {
       lastIngestAt = row.lastIngestAt;
@@ -1325,14 +1332,22 @@ export function projectLocalDeviceProgress(
 function combineUnreliableSources(
   detailGapsUnreliable: boolean,
   outboxUnreliable: boolean,
-  attentionUnreliable: boolean = false,
-  remoteSurfaceUnreliable: boolean = false,
+  attentionUnreliable = false,
+  remoteSurfaceUnreliable = false
 ): readonly string[] {
   const sources: string[] = [];
-  if (detailGapsUnreliable) sources.push("detail_gaps");
-  if (outboxUnreliable) sources.push("outbox");
-  if (attentionUnreliable) sources.push("attention_store");
-  if (remoteSurfaceUnreliable) sources.push("remote_surface_store");
+  if (detailGapsUnreliable) {
+    sources.push("detail_gaps");
+  }
+  if (outboxUnreliable) {
+    sources.push("outbox");
+  }
+  if (attentionUnreliable) {
+    sources.push("attention_store");
+  }
+  if (remoteSurfaceUnreliable) {
+    sources.push("remote_surface_store");
+  }
   return sources;
 }
 
@@ -1367,11 +1382,11 @@ function selectAttentionEvidence(input: {
   readonly nowIso: string;
 }): ConnectionAttentionEvidence | null {
   const candidates = input.attentionRecords.filter(
-    (record) =>
-      OPEN_LIFECYCLES.has(record.lifecycle) && isHealthRelevant(record, input.nowIso),
+    (record) => OPEN_LIFECYCLES.has(record.lifecycle) && isHealthRelevant(record, input.nowIso)
   );
-  if (candidates.length > 0) {
-    const picked = pickMostUrgentAttention(candidates);
+  const [first, ...restCandidates] = candidates;
+  if (first) {
+    const picked = pickMostUrgentAttention([first, ...restCandidates]);
     return {
       actionTarget: picked.action_target,
       expiresAt: picked.expires_at,
@@ -1409,28 +1424,37 @@ function selectAttentionEvidence(input: {
  *   4. Earliest `created_at` as a stable tiebreak (don't flip CTAs on
  *      every refresh when two records are equally urgent).
  */
-function pickMostUrgentAttention(records: readonly AttentionRecord[]): AttentionRecord {
+function pickMostUrgentAttention(records: readonly [AttentionRecord, ...AttentionRecord[]]): AttentionRecord {
   // The list is small (<= number of open attention records per
-  // connection — typically 0-2); a single linear scan with a max-by
-  // comparator is fine.
-  return [...records].sort((a, b) => {
-    const aResp = a.response_contract === "response_required" ? 1 : 0;
-    const bResp = b.response_contract === "response_required" ? 1 : 0;
-    if (aResp !== bResp) return bResp - aResp;
-    const aBlocked = a.progress_posture === "blocked" ? 1 : 0;
-    const bBlocked = b.progress_posture === "blocked" ? 1 : 0;
-    if (aBlocked !== bBlocked) return bBlocked - aBlocked;
-    const aExpiry = a.expires_at ? Date.parse(a.expires_at) : Number.POSITIVE_INFINITY;
-    const bExpiry = b.expires_at ? Date.parse(b.expires_at) : Number.POSITIVE_INFINITY;
-    if (aExpiry !== bExpiry) return aExpiry - bExpiry;
-    return Date.parse(a.created_at) - Date.parse(b.created_at);
-  })[0]!;
+  // connection — typically 0-2); a single reduce over the non-empty
+  // tuple keeps the urgency comparator local.
+  const [head, ...rest] = records;
+  return rest.reduce((best, candidate) => (compareAttentionUrgency(best, candidate) <= 0 ? best : candidate), head);
 }
 
-function ownerActionForEvidence(
-  action: OwnerAction,
-): ConnectionAttentionEvidence["ownerAction"] {
-  if (action === "none") return null;
+function compareAttentionUrgency(a: AttentionRecord, b: AttentionRecord): number {
+  const aResp = a.response_contract === "response_required" ? 1 : 0;
+  const bResp = b.response_contract === "response_required" ? 1 : 0;
+  if (aResp !== bResp) {
+    return bResp - aResp;
+  }
+  const aBlocked = a.progress_posture === "blocked" ? 1 : 0;
+  const bBlocked = b.progress_posture === "blocked" ? 1 : 0;
+  if (aBlocked !== bBlocked) {
+    return bBlocked - aBlocked;
+  }
+  const aExpiry = a.expires_at ? Date.parse(a.expires_at) : Number.POSITIVE_INFINITY;
+  const bExpiry = b.expires_at ? Date.parse(b.expires_at) : Number.POSITIVE_INFINITY;
+  if (aExpiry !== bExpiry) {
+    return aExpiry - bExpiry;
+  }
+  return Date.parse(a.created_at) - Date.parse(b.created_at);
+}
+
+function ownerActionForEvidence(action: OwnerAction): ConnectionAttentionEvidence["ownerAction"] {
+  if (action === "none") {
+    return null;
+  }
   return action;
 }
 
@@ -1442,7 +1466,7 @@ function ownerActionForEvidence(
  * value so the projection contract stays exact.
  */
 function pickedNotificationState(
-  record: AttentionRecord,
+  record: AttentionRecord
 ): "acknowledged" | "failed" | "pending" | "sent" | "suppressed" {
   const raw = (record as { notification_state?: unknown }).notification_state;
   if (raw === "acknowledged" || raw === "failed" || raw === "pending" || raw === "sent" || raw === "suppressed") {
@@ -1504,39 +1528,55 @@ function rankRemoteSurfaceLease(status: BrowserSurfaceLease["status"]): number {
   // Lower rank = more urgent. `leased` above `waiting` so an operator
   // viewing a connection sees "running" before "queued" when both
   // exist; the waiting variants share a rung.
-  if (status === "leased") return 0;
-  if (status === "starting_surface") return 1;
-  if (status === "waiting_for_browser_surface") return 2;
+  if (status === "leased") {
+    return 0;
+  }
+  if (status === "starting_surface") {
+    return 1;
+  }
+  if (status === "waiting_for_browser_surface") {
+    return 2;
+  }
   return 3;
 }
 
-function pickMostUrgentLease(
-  leases: readonly BrowserSurfaceLease[],
-): BrowserSurfaceLease | null {
-  if (leases.length === 0) return null;
-  return [...leases].sort((a, b) => {
+function pickMostUrgentLease(leases: readonly BrowserSurfaceLease[]): BrowserSurfaceLease | null {
+  if (leases.length === 0) {
+    return null;
+  }
+  const [mostUrgent] = [...leases].sort((a, b) => {
     const r = rankRemoteSurfaceLease(a.status) - rankRemoteSurfaceLease(b.status);
-    if (r !== 0) return r;
+    if (r !== 0) {
+      return r;
+    }
     // Stable secondary: most-recent requested_at first.
     const at = Date.parse(b.requested_at) - Date.parse(a.requested_at);
     return Number.isFinite(at) ? at : 0;
-  })[0]!;
+  });
+  return mostUrgent ?? null;
 }
 
 function surfaceRecencyMs(surface: BrowserSurface): number {
   const lastUsed = Date.parse(surface.last_used_at);
-  if (Number.isFinite(lastUsed)) return lastUsed;
+  if (Number.isFinite(lastUsed)) {
+    return lastUsed;
+  }
   const created = Date.parse(surface.created_at);
   return Number.isFinite(created) ? created : 0;
 }
 
 function pickMostRecentSurface(surfaces: readonly BrowserSurface[]): BrowserSurface | null {
-  if (surfaces.length === 0) return null;
-  return [...surfaces].sort((a, b) => {
+  if (surfaces.length === 0) {
+    return null;
+  }
+  const [mostRecent] = [...surfaces].sort((a, b) => {
     const at = surfaceRecencyMs(b) - surfaceRecencyMs(a);
-    if (at !== 0) return at;
+    if (at !== 0) {
+      return at;
+    }
     return b.surface_id.localeCompare(a.surface_id);
-  })[0]!;
+  });
+  return mostRecent ?? null;
 }
 
 /**
@@ -1546,40 +1586,130 @@ function pickMostRecentSurface(surfaces: readonly BrowserSurface[]): BrowserSurf
  * (host browser / API connectors), so they cannot be silently degraded
  * by the absence of a lease/surface row.
  */
+function projectActiveBrowserSurfaceLease(
+  picked: BrowserSurfaceLease,
+  surface: BrowserSurface | undefined
+): ConnectorBrowserSurfaceProjection | null {
+  if (surface?.health === "unhealthy") {
+    return {
+      evidence: {
+        axis: "failed",
+        leaseId: picked.lease_id,
+        leaseStatus: picked.status,
+        profileKey: surface.profile_key,
+        surfaceHealth: surface.health,
+        surfaceId: surface.surface_id,
+        waitReason: "surface_unhealthy",
+      },
+      unreliable: false,
+    };
+  }
+  if (picked.status === "leased") {
+    return {
+      evidence: {
+        axis: "leased",
+        leaseId: picked.lease_id,
+        leaseStatus: picked.status,
+        profileKey: picked.profile_key,
+        surfaceHealth: surface?.health ?? null,
+        surfaceId: picked.surface_id ?? null,
+        waitReason: null,
+      },
+      unreliable: false,
+    };
+  }
+  if (ACTIVE_WAITING_LEASE_STATUSES.has(picked.status)) {
+    return {
+      evidence: {
+        axis: "waiting",
+        leaseId: picked.lease_id,
+        leaseStatus: picked.status,
+        profileKey: picked.profile_key,
+        surfaceHealth: surface?.health ?? null,
+        surfaceId: picked.surface_id ?? null,
+        waitReason: picked.wait_reason ?? null,
+      },
+      unreliable: false,
+    };
+  }
+  return null;
+}
+
+function projectFallbackBrowserSurfaceFromSurface(surface: BrowserSurface): ConnectorBrowserSurfaceProjection {
+  if (surface.health === "unhealthy") {
+    return {
+      evidence: {
+        axis: "failed",
+        leaseId: surface.active_lease_id ?? null,
+        leaseStatus: null,
+        profileKey: surface.profile_key,
+        surfaceHealth: surface.health,
+        surfaceId: surface.surface_id,
+        waitReason: "surface_unhealthy",
+      },
+      unreliable: false,
+    };
+  }
+  return {
+    evidence: {
+      axis: "idle",
+      leaseId: null,
+      leaseStatus: null,
+      profileKey: surface.profile_key,
+      surfaceHealth: surface.health,
+      surfaceId: surface.surface_id,
+      waitReason: null,
+    },
+    unreliable: false,
+  };
+}
+
+const BROWSER_SURFACE_UNRELIABLE_PROJECTION: ConnectorBrowserSurfaceProjection = {
+  evidence: {
+    axis: "unknown",
+    leaseId: null,
+    leaseStatus: null,
+    profileKey: null,
+    surfaceHealth: null,
+    surfaceId: null,
+    waitReason: null,
+  },
+  unreliable: true,
+};
+
+const BROWSER_SURFACE_UNKNOWN_PROJECTION: ConnectorBrowserSurfaceProjection = {
+  evidence: {
+    axis: "unknown",
+    leaseId: null,
+    leaseStatus: null,
+    profileKey: null,
+    surfaceHealth: null,
+    surfaceId: null,
+    waitReason: null,
+  },
+  unreliable: false,
+};
+
 export async function getConnectorBrowserSurfaceProjection(
   connectorId: string,
-  options: { readonly profileKey?: string | null; readonly store?: BrowserSurfaceLeaseStoreReader } = {},
+  options: { readonly profileKey?: string | null; readonly store?: BrowserSurfaceLeaseStoreReader } = {}
 ): Promise<ConnectorBrowserSurfaceProjection> {
-  const store =
-    options.store ??
-    (getDefaultBrowserSurfaceLeaseStore() as BrowserSurfaceLeaseStoreReader);
+  const store = options.store ?? (getDefaultBrowserSurfaceLeaseStore() as BrowserSurfaceLeaseStoreReader);
   let leases: readonly BrowserSurfaceLease[];
   let surfaces: readonly BrowserSurface[];
   try {
-    [leases, surfaces] = await Promise.all([
-      store.listNonTerminalLeases(),
-      store.listSurfaces(),
-    ]);
+    [leases, surfaces] = await Promise.all([store.listNonTerminalLeases(), store.listSurfaces()]);
   } catch {
-    return {
-      evidence: {
-        axis: "unknown",
-        leaseId: null,
-        leaseStatus: null,
-        profileKey: null,
-        surfaceHealth: null,
-        surfaceId: null,
-        waitReason: null,
-      },
-      unreliable: true,
-    };
+    return BROWSER_SURFACE_UNRELIABLE_PROJECTION;
   }
 
+  const matchesProfile = (profileKey: string | null | undefined): boolean =>
+    !options.profileKey || profileKey === options.profileKey;
   const connectorLeases = leases.filter(
-    (lease) => lease.connector_id === connectorId && (!options.profileKey || lease.profile_key === options.profileKey),
+    (lease) => lease.connector_id === connectorId && matchesProfile(lease.profile_key)
   );
   const connectorSurfaces = surfaces.filter(
-    (surface) => surface.connector_id === connectorId && (!options.profileKey || surface.profile_key === options.profileKey),
+    (surface) => surface.connector_id === connectorId && matchesProfile(surface.profile_key)
   );
 
   if (connectorLeases.length === 0 && connectorSurfaces.length === 0) {
@@ -1588,56 +1718,15 @@ export async function getConnectorBrowserSurfaceProjection(
     return { evidence: null, unreliable: false };
   }
 
+  // 1-2. Active lease evidence is the freshest signal. A stale unhealthy
+  // surface from an earlier failed launch must not poison a connection that
+  // subsequently leased a ready surface successfully.
   const picked = pickMostUrgentLease(connectorLeases);
-
-  // 1-2. Active lease evidence is the freshest signal. A stale
-  // unhealthy surface from an earlier failed launch must not poison a
-  // connection that subsequently leased a ready surface successfully.
   if (picked) {
-    const surface = picked.surface_id
-      ? connectorSurfaces.find((s) => s.surface_id === picked.surface_id)
-      : undefined;
-    if (surface?.health === "unhealthy") {
-      return {
-        evidence: {
-          axis: "failed",
-          leaseId: picked.lease_id,
-          leaseStatus: picked.status,
-          profileKey: surface.profile_key,
-          surfaceHealth: surface.health,
-          surfaceId: surface.surface_id,
-          waitReason: "surface_unhealthy",
-        },
-        unreliable: false,
-      };
-    }
-    if (picked.status === "leased") {
-      return {
-        evidence: {
-          axis: "leased",
-          leaseId: picked.lease_id,
-          leaseStatus: picked.status,
-          profileKey: picked.profile_key,
-          surfaceHealth: surface?.health ?? null,
-          surfaceId: picked.surface_id ?? null,
-          waitReason: null,
-        },
-        unreliable: false,
-      };
-    }
-    if (ACTIVE_WAITING_LEASE_STATUSES.has(picked.status)) {
-      return {
-        evidence: {
-          axis: "waiting",
-          leaseId: picked.lease_id,
-          leaseStatus: picked.status,
-          profileKey: picked.profile_key,
-          surfaceHealth: surface?.health ?? null,
-          surfaceId: picked.surface_id ?? null,
-          waitReason: picked.wait_reason ?? null,
-        },
-        unreliable: false,
-      };
+    const surface = picked.surface_id ? connectorSurfaces.find((s) => s.surface_id === picked.surface_id) : undefined;
+    const projection = projectActiveBrowserSurfaceLease(picked, surface);
+    if (projection) {
+      return projection;
     }
   }
 
@@ -1646,51 +1735,14 @@ export async function getConnectorBrowserSurfaceProjection(
   // history, not the present runtime state.
   const surface = pickMostRecentSurface(connectorSurfaces);
   if (surface) {
-    if (surface.health === "unhealthy") {
-      return {
-        evidence: {
-          axis: "failed",
-          leaseId: surface.active_lease_id ?? null,
-          leaseStatus: null,
-          profileKey: surface.profile_key,
-          surfaceHealth: surface.health,
-          surfaceId: surface.surface_id,
-          waitReason: "surface_unhealthy",
-        },
-        unreliable: false,
-      };
-    }
-    return {
-      evidence: {
-        axis: "idle",
-        leaseId: null,
-        leaseStatus: null,
-        profileKey: surface.profile_key,
-        surfaceHealth: surface.health,
-        surfaceId: surface.surface_id,
-        waitReason: null,
-      },
-      unreliable: false,
-    };
+    return projectFallbackBrowserSurfaceFromSurface(surface);
   }
 
-  // No surface row and no recognized lease status — conservative
-  // `unknown` so the dashboard surfaces the gap rather than painting
-  // false-green over evidence we cannot classify.
-  return {
-    evidence: {
-      axis: "unknown",
-      leaseId: null,
-      leaseStatus: null,
-      profileKey: null,
-      surfaceHealth: null,
-      surfaceId: null,
-      waitReason: null,
-    },
-    unreliable: false,
-  };
+  // No surface row and no recognized lease status — conservative `unknown`
+  // so the dashboard surfaces the gap rather than painting false-green over
+  // evidence we cannot classify.
+  return BROWSER_SURFACE_UNKNOWN_PROJECTION;
 }
-
 export function projectConnectorSummaryConnectionHealth(input: {
   /**
    * Durable structured attention records the caller has already filtered
@@ -1738,20 +1790,18 @@ export function projectConnectorSummaryConnectionHealth(input: {
   const effectiveSchedulerBackoff = staleSchedulerBackoff ? null : schedulerBackoff;
   const pendingDetailGaps = input.pendingDetailGaps ?? [];
   const humanAttentionNeeded = schedule?.human_attention_needed === true;
-  const activeRunId = typeof schedule?.active_run_id === "string" && schedule.active_run_id ? schedule.active_run_id : null;
+  const activeRunId =
+    typeof schedule?.active_run_id === "string" && schedule.active_run_id ? schedule.active_run_id : null;
   const nextDueAt = !staleSchedulerBackoff && typeof schedule?.next_due_at === "string" ? schedule.next_due_at : null;
-  const lastErrorCode = !staleSchedulerBackoff && typeof schedule?.last_error_code === "string" ? schedule.last_error_code : null;
+  const lastErrorCode =
+    !staleSchedulerBackoff && typeof schedule?.last_error_code === "string" ? schedule.last_error_code : null;
   const scheduleLastSuccessfulAt =
     typeof schedule?.last_successful_at === "string" ? schedule.last_successful_at : null;
-  const backoffConsecutiveFailures = readNumber(effectiveSchedulerBackoff?.consecutive_failures) ?? 0;
-  const backoffNextRunAt = typeof effectiveSchedulerBackoff?.next_run_at === "string" ? effectiveSchedulerBackoff.next_run_at : nextDueAt;
-  const backoffReasonClass =
-    typeof effectiveSchedulerBackoff?.reason_class === "string" ? effectiveSchedulerBackoff.reason_class : lastErrorCode;
-  const hasRetryBackoffEvidence =
-    effectiveSchedulerBackoff !== null &&
-    (effectiveSchedulerBackoff.backoff_applied === true || backoffConsecutiveFailures > 0);
-  const schedulerFailureStatus =
-    hasRetryBackoffEvidence ? "failed" : null;
+  const backoffEvidence = projectSchedulerBackoffEvidence({
+    effectiveSchedulerBackoff,
+    lastErrorCode,
+    nextDueAt,
+  });
   const nowIso = input.nowIso ?? new Date().toISOString();
   const attention = selectAttentionEvidence({
     attentionRecords: input.attentionRecords ?? [],
@@ -1762,14 +1812,7 @@ export function projectConnectorSummaryConnectionHealth(input: {
   return computeConnectionHealth({
     activity: { active: activeRunId !== null },
     attention,
-    backoff: hasRetryBackoffEvidence
-      ? {
-          backoffApplied: effectiveSchedulerBackoff?.backoff_applied === true,
-          consecutiveFailures: backoffConsecutiveFailures,
-          nextRunAt: backoffNextRunAt,
-          reasonClass: backoffReasonClass,
-        }
-      : null,
+    backoff: backoffEvidence.backoff,
     coverage: buildCoverageEvidence(input.lastRun, pendingDetailGaps, input.manifestStreams ?? []),
     freshness: { axis: mapFreshnessAxis(input.freshness) },
     outbox: input.outbox ?? { axis: "unknown" },
@@ -1778,7 +1821,7 @@ export function projectConnectorSummaryConnectionHealth(input: {
     run: {
       hasDegradingGaps: hasPendingDetailGap(pendingDetailGaps) || hasDegradingKnownGap(input.lastRun),
       lastSuccessAt: input.lastSuccessfulRun?.last_at ?? scheduleLastSuccessfulAt,
-      latestStatus: mapRunStatus(input.lastRun?.status) ?? schedulerFailureStatus,
+      latestStatus: mapRunStatus(input.lastRun?.status) ?? backoffEvidence.schedulerFailureStatus,
       reasonCode:
         input.lastRun?.failure_reason ??
         firstDegradingKnownGapReason(input.lastRun) ??
@@ -1788,6 +1831,46 @@ export function projectConnectorSummaryConnectionHealth(input: {
     schedule: schedule ? { enabled: schedule.enabled !== false } : null,
     observedAt: nowIso,
   });
+}
+
+interface BackoffEvidenceProjection {
+  readonly backoff: {
+    readonly backoffApplied: boolean;
+    readonly consecutiveFailures: number;
+    readonly nextRunAt: string | null;
+    readonly reasonClass: string | null;
+  } | null;
+  readonly schedulerFailureStatus: "failed" | null;
+}
+
+function projectSchedulerBackoffEvidence(input: {
+  readonly effectiveSchedulerBackoff: ReturnType<typeof asBackoffRecord>;
+  readonly lastErrorCode: string | null;
+  readonly nextDueAt: string | null;
+}): BackoffEvidenceProjection {
+  const { effectiveSchedulerBackoff, lastErrorCode, nextDueAt } = input;
+  const backoffConsecutiveFailures = readNumber(effectiveSchedulerBackoff?.consecutive_failures) ?? 0;
+  const hasRetryBackoffEvidence =
+    effectiveSchedulerBackoff !== null &&
+    (effectiveSchedulerBackoff.backoff_applied === true || backoffConsecutiveFailures > 0);
+  if (!hasRetryBackoffEvidence) {
+    return { backoff: null, schedulerFailureStatus: null };
+  }
+  const backoffNextRunAt =
+    typeof effectiveSchedulerBackoff?.next_run_at === "string" ? effectiveSchedulerBackoff.next_run_at : nextDueAt;
+  const backoffReasonClass =
+    typeof effectiveSchedulerBackoff?.reason_class === "string"
+      ? effectiveSchedulerBackoff.reason_class
+      : lastErrorCode;
+  return {
+    backoff: {
+      backoffApplied: effectiveSchedulerBackoff?.backoff_applied === true,
+      consecutiveFailures: backoffConsecutiveFailures,
+      nextRunAt: backoffNextRunAt,
+      reasonClass: backoffReasonClass,
+    },
+    schedulerFailureStatus: "failed",
+  };
 }
 
 function buildConnectorFreshness({
@@ -1814,9 +1897,7 @@ function buildConnectorFreshness({
   // heartbeat timestamp as a freshness anchor. A recent heartbeat is
   // honest evidence the collector is alive even if no new data arrived.
   const recordLastUpdatedAt =
-    lastRun == null && lastHeartbeatAt != null
-      ? lastHeartbeatAt
-      : (live.freshness.captured_at ?? null);
+    lastRun == null && lastHeartbeatAt != null ? lastHeartbeatAt : (live.freshness.captured_at ?? null);
   return deriveReferenceFreshness({
     lastAttemptedAt: lastRun?.last_at ?? null,
     lastAttemptStatus: lastRun?.status ?? null,
@@ -1850,7 +1931,7 @@ export async function mapWithConcurrency<T, R>(
   items: readonly T[],
   limit: number,
   worker: (item: T, index: number) => Promise<R>,
-  options: { readonly onInFlightChange?: (inFlight: number) => void } = {},
+  options: { readonly onInFlightChange?: (inFlight: number) => void } = {}
 ): Promise<R[]> {
   if (items.length === 0) {
     return [];
@@ -1866,10 +1947,16 @@ export async function mapWithConcurrency<T, R>(
       const index = nextIndex++;
       inFlight++;
       onChange?.(inFlight);
+      const item = items[index];
+      if (item === undefined) {
+        continue;
+      }
       try {
-        results[index] = await worker(items[index]!, index);
+        results[index] = await worker(item, index);
       } catch (err) {
-        if (firstError === null) firstError = err;
+        if (firstError === null) {
+          firstError = err;
+        }
       } finally {
         inFlight--;
         onChange?.(inFlight);
@@ -1877,9 +1964,13 @@ export async function mapWithConcurrency<T, R>(
     }
   };
   const workers: Promise<void>[] = [];
-  for (let i = 0; i < effectiveLimit; i++) workers.push(runOne());
+  for (let i = 0; i < effectiveLimit; i++) {
+    workers.push(runOne());
+  }
   await Promise.all(workers);
-  if (firstError !== null) throw firstError;
+  if (firstError !== null) {
+    throw firstError;
+  }
   return results;
 }
 
@@ -1891,11 +1982,11 @@ export interface ListConnectorSummariesOptions {
 
 export async function listConnectorSummaries(
   controller?: ControllerLike | null,
-  options: ListConnectorSummariesOptions = {},
+  options: ListConnectorSummariesOptions = {}
 ): Promise<ConnectorSummary[]> {
   const connectorRows = await listRegisteredConnectorRows();
   const manifestsByConnectorId = new Map(
-    connectorRows.map((row) => [row.connector_id, parseManifest(row.manifest, row.connector_id)]),
+    connectorRows.map((row) => [row.connector_id, parseManifest(row.manifest, row.connector_id)])
   );
   const rows = await listConnectorInstanceRowsForDashboard(connectorRows);
   const summaries = await mapWithConcurrency(
@@ -1913,20 +2004,19 @@ export async function listConnectorSummaries(
       }
       const live = await getConnectorRecordProjection(
         recordStorageConnectorIdForConnection(instance),
-        connectorInstanceId,
+        connectorInstanceId
       );
-      const [schedule, lastRun, lastSuccessfulRun, detailGaps, outbox, attention, remoteSurface] =
-        await Promise.all([
-          getScheduleFrom(controller, connectorId, { connectorInstanceId }),
-          getLatestRunSummary(connectorId),
-          getLatestRunSummary(connectorId, "succeeded"),
-          getConnectorDetailGapProjection(connectorId, connectorInstanceId),
-          getConnectorOutboxAxis(connectorId, { connectorInstanceId }),
-          getConnectorAttentionProjection(connectorId, { connectorInstanceId }),
-          getConnectorBrowserSurfaceProjection(connectorId, {
-            profileKey: readBrowserSurfaceProfileKey(connectorId, connectorInstanceId, manifest),
-          }),
-        ]);
+      const [schedule, lastRun, lastSuccessfulRun, detailGaps, outbox, attention, remoteSurface] = await Promise.all([
+        getScheduleFrom(controller, connectorId, { connectorInstanceId }),
+        getLatestRunSummary(connectorId),
+        getLatestRunSummary(connectorId, "succeeded"),
+        getConnectorDetailGapProjection(connectorId, connectorInstanceId),
+        getConnectorOutboxAxis(connectorId, { connectorInstanceId }),
+        getConnectorAttentionProjection(connectorId, { connectorInstanceId }),
+        getConnectorBrowserSurfaceProjection(connectorId, {
+          profileKey: readBrowserSurfaceProfileKey(connectorId, connectorInstanceId, manifest),
+        }),
+      ]);
       const refreshPolicy = extractRefreshPolicy(manifest);
       const localDeviceProgress =
         instance.sourceKind === "local_device" ? projectLocalDeviceProgress(outbox.heartbeats) : null;
@@ -1934,12 +2024,9 @@ export async function listConnectorSummaries(
       // check with no known local backlog. Active/pending outboxes still show
       // progress via the outbox axis rather than a false "fresh" claim.
       const canUseHeartbeatForFreshness =
-        localDeviceProgress?.last_heartbeat_status === "healthy"
-          && (localDeviceProgress.records_pending == null || localDeviceProgress.records_pending === 0);
-      const freshnessHeartbeatAt =
-        canUseHeartbeatForFreshness
-          ? localDeviceProgress.last_heartbeat_at
-          : null;
+        localDeviceProgress?.last_heartbeat_status === "healthy" &&
+        (localDeviceProgress.records_pending == null || localDeviceProgress.records_pending === 0);
+      const freshnessHeartbeatAt = canUseHeartbeatForFreshness ? localDeviceProgress.last_heartbeat_at : null;
       const freshness = buildConnectorFreshness({
         lastRun,
         lastSuccessfulRun,
@@ -1960,7 +2047,7 @@ export async function listConnectorSummaries(
           detailGaps.unreliable,
           outbox.unreliable,
           attention.unreliable,
-          remoteSurface.unreliable,
+          remoteSurface.unreliable
         ),
         schedule,
       });
@@ -1987,7 +2074,7 @@ export async function listConnectorSummaries(
         last_successful_run: lastSuccessfulRun,
       };
     },
-    options.onInFlightChange ? { onInFlightChange: options.onInFlightChange } : {},
+    options.onInFlightChange ? { onInFlightChange: options.onInFlightChange } : {}
   );
   return summaries.filter((summary): summary is ConnectorSummary => summary !== null);
 }
@@ -2001,16 +2088,15 @@ export async function getConnectorDetail(
     throw new RefControlError(`Unknown connector: ${connectorId}`, "not_found");
   }
   const live = await getConnectorRecordProjection(connectorId);
-  const [schedule, lastRun, lastSuccessfulRun, detailGaps, outbox, attention, remoteSurface] =
-    await Promise.all([
-      getScheduleFrom(controller, connectorId),
-      getLatestRunSummary(connectorId),
-      getLatestRunSummary(connectorId, "succeeded"),
-      getConnectorDetailGapProjection(connectorId),
-      getConnectorOutboxAxis(connectorId),
-      getConnectorAttentionProjection(connectorId),
-      getConnectorBrowserSurfaceProjection(connectorId),
-    ]);
+  const [schedule, lastRun, lastSuccessfulRun, detailGaps, outbox, attention, remoteSurface] = await Promise.all([
+    getScheduleFrom(controller, connectorId),
+    getLatestRunSummary(connectorId),
+    getLatestRunSummary(connectorId, "succeeded"),
+    getConnectorDetailGapProjection(connectorId),
+    getConnectorOutboxAxis(connectorId),
+    getConnectorAttentionProjection(connectorId),
+    getConnectorBrowserSurfaceProjection(connectorId),
+  ]);
   const refreshPolicy = extractRefreshPolicy(manifest);
   const freshness = buildConnectorFreshness({
     lastRun,
@@ -2031,7 +2117,7 @@ export async function getConnectorDetail(
       detailGaps.unreliable,
       outbox.unreliable,
       attention.unreliable,
-      remoteSurface.unreliable,
+      remoteSurface.unreliable
     ),
     schedule,
   });

@@ -531,13 +531,13 @@ export interface SemanticRetrievalScoreCapability {
 }
 
 export interface SemanticRetrievalCapability {
+  count_supported: false;
+  cross_stream: boolean;
   // Pagination/count metadata per canonicalize-public-read-contract task 4.3.
   // Semantic search uses opaque-cursor pagination over a persisted snapshot
   // (cursor_supported: true). The runtime does NOT compute counts on
   // semantic responses; clients should not request `count=`.
   cursor_supported: true;
-  count_supported: false;
-  cross_stream: boolean;
   default_limit: number;
   dimensions: number;
   distance_metric: string;
@@ -645,11 +645,11 @@ export interface HybridRetrievalCapabilityInput {
 }
 
 export interface HybridRetrievalCapability {
-  cross_stream: boolean;
-  cursor_supported: boolean;
   // canonicalize-public-read-contract task 4.3: hybrid composes lexical +
   // semantic snapshots and does NOT compute counts (count_supported: false).
   count_supported: false;
+  cross_stream: boolean;
+  cursor_supported: boolean;
   default_limit: number;
   endpoint: string;
   max_limit: number;
@@ -707,13 +707,21 @@ export interface ClientEventSubscriptionsCapabilityInput {
 }
 
 export interface ClientEventSubscriptionsCapability {
-  supported: true;
-  stability: "reference_extension";
+  // Reject non-HTTPS callbacks except for development loopback.
+  callback_url: {
+    https_required: true;
+    localhost_exception: true;
+  };
+  delivery: {
+    at_least_once: true;
+    after_commit: true;
+    coalescing: false;
+    retry_schedule_seconds: readonly [30, 120, 600, 3600, 21600, 86400];
+    max_attempts: 6;
+    dead_letter_state: "disabled_failure";
+    response_window_seconds: 10;
+  };
   endpoint: string;
-  // Subscriptions are reference-only. Cross-implementation
-  // standardization is future work.
-  scope: "reference_implementation";
-  transport: "https_webhook";
   // CloudEvents 1.0 structured-mode JSON body. PDPP profile version is
   // carried in the `pdppversion` CloudEvents extension attribute so the
   // envelope stays interoperable with the CloudEvents 1.x ecosystem.
@@ -729,15 +737,7 @@ export interface ClientEventSubscriptionsCapability {
     content_type: "application/cloudevents+json; charset=utf-8";
     specversion: "1.0";
     pdppversion: "1";
-    fields: readonly [
-      "specversion",
-      "pdppversion",
-      "id",
-      "type",
-      "source",
-      "time",
-      "data",
-    ];
+    fields: readonly ["specversion", "pdppversion", "id", "type", "source", "time", "data"];
     subscription_id_location: "data.subscription_id";
     no_record_bodies: true;
   };
@@ -747,6 +747,17 @@ export interface ClientEventSubscriptionsCapability {
     "pdpp.records.changed",
     "pdpp.grant.revoked",
   ];
+  hint_cursor: {
+    cursor_field: "data.changes_since";
+    read_endpoint_template: "/v1/streams/{stream}/records?changes_since={cursor}";
+  };
+  limits: {
+    callback_url_max_bytes: 2048;
+    response_snippet_capture_bytes: 512;
+  };
+  // Subscriptions are reference-only. Cross-implementation
+  // standardization is future work.
+  scope: "reference_implementation";
   // Standard Webhooks (https://www.standardwebhooks.com) compatible
   // signing. Off-the-shelf Standard Webhooks libraries can verify
   // deliveries against the secret returned at subscription create.
@@ -761,40 +772,19 @@ export interface ClientEventSubscriptionsCapability {
     secret_prefix: "whsec_";
     secret_payload_encoding: "base64";
   };
-  delivery: {
-    at_least_once: true;
-    after_commit: true;
-    coalescing: false;
-    retry_schedule_seconds: readonly [30, 120, 600, 3600, 21600, 86400];
-    max_attempts: 6;
-    dead_letter_state: "disabled_failure";
-    response_window_seconds: 10;
-  };
+  stability: "reference_extension";
+  supported: true;
+  transport: "https_webhook";
   verification: {
     handshake: "post_with_challenge_echo";
     challenge_event_type: "pdpp.subscription.verify";
-  };
-  hint_cursor: {
-    cursor_field: "data.changes_since";
-    read_endpoint_template: "/v1/streams/{stream}/records?changes_since={cursor}";
-  };
-  // Reject non-HTTPS callbacks except for development loopback.
-  callback_url: {
-    https_required: true;
-    localhost_exception: true;
-  };
-  limits: {
-    callback_url_max_bytes: 2048;
-    response_snippet_capture_bytes: 512;
   };
 }
 
 export function buildClientEventSubscriptionsCapability({
   supported = true,
   endpoint = "/v1/event-subscriptions",
-}: ClientEventSubscriptionsCapabilityInput = {}):
-  | ClientEventSubscriptionsCapability
-  | { supported: false } {
+}: ClientEventSubscriptionsCapabilityInput = {}): ClientEventSubscriptionsCapability | { supported: false } {
   if (!supported) {
     return { supported: false };
   }
@@ -809,15 +799,7 @@ export function buildClientEventSubscriptionsCapability({
       content_type: "application/cloudevents+json; charset=utf-8",
       specversion: "1.0",
       pdppversion: "1",
-      fields: [
-        "specversion",
-        "pdppversion",
-        "id",
-        "type",
-        "source",
-        "time",
-        "data",
-      ] as const,
+      fields: ["specversion", "pdppversion", "id", "type", "source", "time", "data"] as const,
       subscription_id_location: "data.subscription_id",
       no_record_bodies: true,
     },
@@ -842,7 +824,7 @@ export function buildClientEventSubscriptionsCapability({
       at_least_once: true,
       after_commit: true,
       coalescing: false,
-      retry_schedule_seconds: [30, 120, 600, 3600, 21600, 86400] as const,
+      retry_schedule_seconds: [30, 120, 600, 3600, 21_600, 86_400] as const,
       max_attempts: 6,
       dead_letter_state: "disabled_failure",
       response_window_seconds: 10,
@@ -873,8 +855,8 @@ export function buildClientEventSubscriptionsCapability({
 // document free of `null` / `undefined` keys.
 export interface AuthorizationServerMetadataInput {
   agentConnectEndpoint?: string | null;
-  authorizationEndpoint?: string | null;
   authorizationDetailsTypesSupported?: readonly string[] | null;
+  authorizationEndpoint?: string | null;
   codeChallengeMethodsSupported?: readonly string[] | null;
   deviceAuthorizationEndpoint?: string | null;
   grantTypesSupported?: readonly string[] | null;

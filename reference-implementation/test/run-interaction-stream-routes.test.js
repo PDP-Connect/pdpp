@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url';
 
 import { isManagedNekoSurfaceApproved, startServer } from '../server/index.js';
 import { createMockCompanion } from '../server/streaming/cdp-companion.js';
-import { BrowserSurfaceLeaseManager, DEFAULT_NEKO_PRIORITY_RANKS } from '../runtime/browser-surface-leases.ts';
+import { BrowserSurfaceLeaseManager, DEFAULT_NEKO_PRIORITY_RANKS } from '@opendatalabs/remote-surface/leases';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, '..');

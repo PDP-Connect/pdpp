@@ -3,12 +3,14 @@ import test from "node:test";
 
 import {
   BrowserSurfaceLeaseManager,
-  DEFAULT_NEKO_READINESS_TIMEOUT_MS,
   DEFAULT_NEKO_PRIORITY_RANKS,
+  projectBrowserSurfaceLease,
+} from "@opendatalabs/remote-surface/leases";
+import {
+  DEFAULT_NEKO_READINESS_TIMEOUT_MS,
   browserSurfaceLeaseEnv,
   parseNekoBrowserSurfaceLeaseConfig,
   parseNekoBrowserSurfaceRuntimeConfig,
-  projectBrowserSurfaceLease,
 } from "../runtime/browser-surface-leases.ts";
 
 function config(overrides = {}) {

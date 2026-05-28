@@ -146,18 +146,18 @@ export interface ConnectionConditionRemediation {
 }
 
 export interface ConnectionHealthCondition {
-  readonly id: string;
-  readonly type: ConnectionConditionType;
-  readonly status: ConnectionConditionStatus;
-  readonly severity: ConnectionConditionSeverity;
-  readonly reason: string;
-  readonly message: string;
-  readonly origin: ConnectionConditionOrigin;
-  readonly observed_at: string | null;
-  readonly expires_at: string | null;
   readonly current: boolean;
-  readonly sensitivity: ConnectionConditionSensitivity;
+  readonly expires_at: string | null;
+  readonly id: string;
+  readonly message: string;
+  readonly observed_at: string | null;
+  readonly origin: ConnectionConditionOrigin;
+  readonly reason: string;
   readonly remediation: ConnectionConditionRemediation | null;
+  readonly sensitivity: ConnectionConditionSensitivity;
+  readonly severity: ConnectionConditionSeverity;
+  readonly status: ConnectionConditionStatus;
+  readonly type: ConnectionConditionType;
 }
 
 /** Freshness axis: is the connection's last durable progress within policy? */
@@ -322,6 +322,17 @@ export interface NextAction {
   readonly action_target: string | null;
   readonly attention_id: string | null;
   readonly expires_at: string | null;
+  /**
+   * Durable notification delivery state for the attention prompt
+   * driving this CTA. `null` for schedule-fallback CTAs (the precise
+   * record is unknown) and for non-attention states. The dashboard
+   * uses this to render "we notified you on another device" vs.
+   * "delivery failed — open the dashboard" without rereading
+   * transport logs. The spec scenario "Notification failure does not
+   * cause a run storm" requires this to remain visible even after
+   * the push channel rejects delivery.
+   */
+  readonly notification_state: "acknowledged" | "failed" | "pending" | "sent" | "suppressed" | null;
   readonly owner_action: "act_elsewhere" | "operate_attachment" | "provide_value" | null;
   readonly reason_code: string | null;
   readonly response_contract: "response_required" | "none" | null;
@@ -334,17 +345,6 @@ export interface NextAction {
    * precision. `none` is reserved for non-needs-attention states.
    */
   readonly source: "none" | "schedule_fallback" | "structured";
-  /**
-   * Durable notification delivery state for the attention prompt
-   * driving this CTA. `null` for schedule-fallback CTAs (the precise
-   * record is unknown) and for non-attention states. The dashboard
-   * uses this to render "we notified you on another device" vs.
-   * "delivery failed — open the dashboard" without rereading
-   * transport logs. The spec scenario "Notification failure does not
-   * cause a run storm" requires this to remain visible even after
-   * the push channel rejects delivery.
-   */
-  readonly notification_state: "acknowledged" | "failed" | "pending" | "sent" | "suppressed" | null;
 }
 
 /**
@@ -370,7 +370,6 @@ export interface ConnectionHealthSnapshot {
   readonly badges: ConnectionBadges;
   readonly conditions: readonly ConnectionHealthCondition[];
   readonly dominant_condition_id: string | null;
-  readonly supporting_condition_ids: readonly string[];
   readonly last_success_at: string | null;
   /** Non-secret CTA. `null` when the connection does not need attention. */
   readonly next_action: NextAction | null;
@@ -387,6 +386,7 @@ export interface ConnectionHealthSnapshot {
    */
   readonly remote_surface: RemoteSurfaceDetail | null;
   readonly state: ConnectionHealthState;
+  readonly supporting_condition_ids: readonly string[];
   /**
    * When `state === "unknown"`, names the evidence source that made the
    * projection unreliable so the UI can show *why*, per spec scenario
@@ -436,6 +436,13 @@ export interface ConnectionAttentionEvidence {
   readonly expiresAt: string | null;
   readonly id: string | null;
   readonly lifecycle: "acknowledged" | "in_progress" | "open";
+  /**
+   * Durable notification delivery state for the prompt. Forwarded to
+   * `NextAction.notification_state`. `null` for fallback evidence
+   * synthesized from `human_attention_needed` (no structured record
+   * exists, so delivery state is unknown).
+   */
+  readonly notificationState?: "acknowledged" | "failed" | "pending" | "sent" | "suppressed" | null;
   readonly ownerAction: "act_elsewhere" | "operate_attachment" | "provide_value" | null;
   readonly reasonCode: string | null;
   readonly responseContract: "response_required" | "none" | null;
@@ -448,13 +455,6 @@ export interface ConnectionAttentionEvidence {
    * the operator payload).
    */
   readonly sensitivity?: "non_secret" | "none" | "secret";
-  /**
-   * Durable notification delivery state for the prompt. Forwarded to
-   * `NextAction.notification_state`. `null` for fallback evidence
-   * synthesized from `human_attention_needed` (no structured record
-   * exists, so delivery state is unknown).
-   */
-  readonly notificationState?: "acknowledged" | "failed" | "pending" | "sent" | "suppressed" | null;
 }
 
 /** Coverage rollup. Caller aggregates per-stream evidence into one axis. */
@@ -533,15 +533,48 @@ export interface ComputeConnectionHealthInput {
   readonly backoff: ConnectionBackoffEvidence | null;
   readonly coverage: ConnectionCoverageEvidence | null;
   readonly freshness: ConnectionFreshnessEvidence | null;
+  readonly observedAt?: string | null;
   readonly outbox: ConnectionOutboxEvidence | null;
   readonly projection: ConnectionProjectionEvidence | null;
   readonly remoteSurface?: ConnectionRemoteSurfaceEvidence | null;
   readonly run: ConnectionRunEvidence | null;
   readonly schedule: ConnectionScheduleEvidence | null;
-  readonly observedAt?: string | null;
 }
 
 // ─── Projection ───────────────────────────────────────────────────────────
+
+interface ClassificationContext {
+  readonly axes: ConnectionAxes;
+  readonly badges: ConnectionBadges;
+  readonly conditionSet: ReadonlyMap<ConnectionConditionType, ConnectionHealthCondition>;
+  readonly conditions: readonly ConnectionHealthCondition[];
+  readonly input: ComputeConnectionHealthInput;
+  readonly lastSuccessAt: string | null;
+  readonly nextAttemptAt: string | null;
+  readonly remoteSurface: RemoteSurfaceDetail | null;
+}
+
+type ClassificationStep = (
+  ctx: ClassificationContext
+) => Omit<SnapshotArgs, "conditions" | "dominantConditionId" | "supportingConditionIds"> | null;
+
+// Ordered precedence: each step returns a snapshot args object when it claims
+// the verdict, otherwise null and we fall through to the next step. The order
+// encodes UI policy: unreliable evidence beats current owner action beats
+// owner pause beats blocking conditions beats retry exhaustion beats backoff
+// beats degraded evidence beats no-verdict beats healthy.
+const HEALTH_CLASSIFICATION_STEPS: readonly ClassificationStep[] = [
+  classifyUnreliableProjection,
+  classifyOpenAttention,
+  classifyOwnerPaused,
+  classifyReadinessBlocked,
+  classifyRetryPolicyExhausted,
+  classifyCoolingOff,
+  classifyDegradedEvidence,
+  classifyCurrentEvidenceWithoutVerdict,
+  classifyNeverRunIdle,
+  classifyHealthy,
+];
 
 export function computeConnectionHealth(input: ComputeConnectionHealthInput): ConnectionHealthSnapshot {
   const axes = projectAxes(input);
@@ -552,9 +585,19 @@ export function computeConnectionHealth(input: ComputeConnectionHealthInput): Co
   const lastSuccessAt = input.run?.lastSuccessAt ?? null;
   const nextAttemptAt = conditionExpired(input.backoff?.nextRunAt ?? null, input.observedAt ?? null)
     ? null
-    : input.backoff?.nextRunAt ?? null;
-  const finish = (
-    args: Omit<SnapshotArgs, "conditions" | "dominantConditionId" | "supportingConditionIds">,
+    : (input.backoff?.nextRunAt ?? null);
+  const ctx: ClassificationContext = {
+    axes,
+    badges,
+    conditions,
+    conditionSet,
+    input,
+    lastSuccessAt,
+    nextAttemptAt,
+    remoteSurface,
+  };
+  const finishWith = (
+    args: Omit<SnapshotArgs, "conditions" | "dominantConditionId" | "supportingConditionIds">
   ): ConnectionHealthSnapshot => {
     const dominantConditionId = pickDominantConditionId(args.state, conditions);
     return snapshot({
@@ -564,159 +607,15 @@ export function computeConnectionHealth(input: ComputeConnectionHealthInput): Co
       supportingConditionIds: pickSupportingConditionIds(conditions, dominantConditionId),
     });
   };
-
-  // 1. Projection unreliable -> unknown. Highest precedence so the UI
-  //    never paints a confident pill on top of broken evidence.
-  if (conditionSet.get("ProjectionReliable")?.status === "false") {
-    return finish({
-      state: "unknown",
-      reasonCode: null,
-      lastSuccessAt,
-      nextAttemptAt,
-      axes,
-      badges,
-      remoteSurface,
-      unknownReasons: input.projection?.unreliableSources ?? [],
-    });
+  for (const step of HEALTH_CLASSIFICATION_STEPS) {
+    const args = step(ctx);
+    if (args) {
+      return finishWith(args);
+    }
   }
-
-  // 2. Required attention open -> needs_attention. Current owner action
-  //    is actionable even before the first terminal run exists.
-  const attention = conditionSet.get("AttentionClear");
-  if (attention?.status === "false") {
-    return finish({
-      state: "needs_attention",
-      reasonCode: attention.reason,
-      lastSuccessAt,
-      nextAttemptAt,
-      axes,
-      badges,
-      remoteSurface,
-      nextAction: input.attention ? projectNextAction(input.attention) : null,
-    });
-  }
-
-  // 3. Owner-paused -> idle. Manual pause beats run/coverage/backoff
-  //    state because the system is intentionally not making progress.
-  if (conditionSet.get("ScheduleEligible")?.status === "false") {
-    return finish({
-      state: "idle",
-      reasonCode: null,
-      lastSuccessAt,
-      nextAttemptAt: null,
-      axes,
-      badges,
-      remoteSurface,
-    });
-  }
-
-  const readinessBlocker = readinessBlockedCondition(conditions);
-  if (readinessBlocker) {
-    return finish({
-      state: "blocked",
-      reasonCode: readinessBlocker.reason,
-      lastSuccessAt,
-      nextAttemptAt,
-      axes,
-      badges,
-      remoteSurface,
-    });
-  }
-
-  // 4. Give-up streak crossed -> blocked.
-  const retryPolicy = conditionSet.get("RetryPolicyClear");
-  if (retryPolicy?.status === "false" && retryPolicy.severity === "blocked") {
-    return finish({
-      state: "blocked",
-      reasonCode: retryPolicy.reason,
-      lastSuccessAt,
-      nextAttemptAt,
-      axes,
-      badges,
-      remoteSurface,
-    });
-  }
-
-  // 5. Backoff currently delaying retry -> cooling_off.
-  if (retryPolicy?.status === "false") {
-    return finish({
-      state: "cooling_off",
-      reasonCode: retryPolicy.reason,
-      lastSuccessAt,
-      nextAttemptAt,
-      axes,
-      badges,
-      remoteSurface,
-    });
-  }
-
-  // 6. Outbox stalled, coverage incomplete, gaps present, or last run
-  //    failed -> degraded. Success-with-gaps must not be healthy.
-  if (hasDegradingCondition(conditions)) {
-    return finish({
-      state: "degraded",
-      reasonCode: degradedReasonCode(input),
-      lastSuccessAt,
-      nextAttemptAt,
-      axes,
-      badges,
-      remoteSurface,
-    });
-  }
-
-  // 6b. If current local/device evidence exists but no terminal collection
-  //     verdict exists, the health verdict is unknown, not idle. Activity
-  //     is orthogonal; "Idle" must not masquerade as a health verdict for
-  //     a connection that is actively maintained but not fully proven.
-  if (
-    conditionSet.get("CollectionSucceeded")?.status === "unknown" &&
-    hasCurrentEvidenceWithoutCollectionVerdict(conditionSet)
-  ) {
-    return finish({
-      state: "unknown",
-      reasonCode: null,
-      lastSuccessAt: null,
-      nextAttemptAt,
-      axes,
-      badges,
-      remoteSurface,
-      unknownReasons: ["collection"],
-    });
-  }
-
-  // 6c. Never run (no terminal evidence yet) -> idle only when no
-  //     stronger current evidence exists.
-  if (conditionSet.get("CollectionSucceeded")?.status === "unknown") {
-    return finish({
-      state: "idle",
-      reasonCode: null,
-      lastSuccessAt: null,
-      nextAttemptAt,
-      axes,
-      badges,
-      remoteSurface,
-    });
-  }
-
-  // 7. Healthy requires:
-  //    - last run succeeded with no degrading gaps
-  //    - coverage complete (or unknown is NOT acceptable — see below)
-  //    - freshness fresh (stale is never silently healthy)
-  if (isHealthyConditionSet(conditionSet)) {
-    return finish({
-      state: "healthy",
-      reasonCode: null,
-      lastSuccessAt,
-      nextAttemptAt,
-      axes,
-      badges,
-      remoteSurface,
-    });
-  }
-
-  // 8. Fallback -> unknown. Reached when evidence combinations don't
-  //    line up cleanly (e.g. succeeded run but coverage axis is unknown).
-  return finish({
+  // Fallback -> unknown. Reached when evidence combinations don't line up
+  // cleanly (e.g. succeeded run but coverage axis is unknown).
+  return finishWith({
     state: "unknown",
     reasonCode: null,
     lastSuccessAt,
@@ -728,14 +627,190 @@ export function computeConnectionHealth(input: ComputeConnectionHealthInput): Co
   });
 }
 
-function hasCurrentEvidenceWithoutCollectionVerdict(
-  conditions: ReadonlyMap<ConnectionConditionType, ConnectionHealthCondition>,
+function classifyUnreliableProjection(ctx: ClassificationContext): ReturnType<ClassificationStep> {
+  // 1. Projection unreliable -> unknown. Highest precedence so the UI never
+  //    paints a confident pill on top of broken evidence.
+  if (ctx.conditionSet.get("ProjectionReliable")?.status !== "false") {
+    return null;
+  }
+  return {
+    state: "unknown",
+    reasonCode: null,
+    lastSuccessAt: ctx.lastSuccessAt,
+    nextAttemptAt: ctx.nextAttemptAt,
+    axes: ctx.axes,
+    badges: ctx.badges,
+    remoteSurface: ctx.remoteSurface,
+    unknownReasons: ctx.input.projection?.unreliableSources ?? [],
+  };
+}
+
+function classifyOpenAttention(ctx: ClassificationContext): ReturnType<ClassificationStep> {
+  // 2. Required attention open -> needs_attention. Current owner action is
+  //    actionable even before the first terminal run exists.
+  const attention = ctx.conditionSet.get("AttentionClear");
+  if (attention?.status !== "false") {
+    return null;
+  }
+  return {
+    state: "needs_attention",
+    reasonCode: attention.reason,
+    lastSuccessAt: ctx.lastSuccessAt,
+    nextAttemptAt: ctx.nextAttemptAt,
+    axes: ctx.axes,
+    badges: ctx.badges,
+    remoteSurface: ctx.remoteSurface,
+    nextAction: ctx.input.attention ? projectNextAction(ctx.input.attention) : null,
+  };
+}
+
+function classifyOwnerPaused(ctx: ClassificationContext): ReturnType<ClassificationStep> {
+  // 3. Owner-paused -> idle. Manual pause beats run/coverage/backoff state
+  //    because the system is intentionally not making progress.
+  if (ctx.conditionSet.get("ScheduleEligible")?.status !== "false") {
+    return null;
+  }
+  return {
+    state: "idle",
+    reasonCode: null,
+    lastSuccessAt: ctx.lastSuccessAt,
+    nextAttemptAt: null,
+    axes: ctx.axes,
+    badges: ctx.badges,
+    remoteSurface: ctx.remoteSurface,
+  };
+}
+
+function classifyReadinessBlocked(ctx: ClassificationContext): ReturnType<ClassificationStep> {
+  const blocker = readinessBlockedCondition(ctx.conditions);
+  if (!blocker) {
+    return null;
+  }
+  return {
+    state: "blocked",
+    reasonCode: blocker.reason,
+    lastSuccessAt: ctx.lastSuccessAt,
+    nextAttemptAt: ctx.nextAttemptAt,
+    axes: ctx.axes,
+    badges: ctx.badges,
+    remoteSurface: ctx.remoteSurface,
+  };
+}
+
+function classifyRetryPolicyExhausted(ctx: ClassificationContext): ReturnType<ClassificationStep> {
+  // 4. Give-up streak crossed -> blocked.
+  const retryPolicy = ctx.conditionSet.get("RetryPolicyClear");
+  if (!(retryPolicy?.status === "false" && retryPolicy.severity === "blocked")) {
+    return null;
+  }
+  return {
+    state: "blocked",
+    reasonCode: retryPolicy.reason,
+    lastSuccessAt: ctx.lastSuccessAt,
+    nextAttemptAt: ctx.nextAttemptAt,
+    axes: ctx.axes,
+    badges: ctx.badges,
+    remoteSurface: ctx.remoteSurface,
+  };
+}
+
+function classifyCoolingOff(ctx: ClassificationContext): ReturnType<ClassificationStep> {
+  // 5. Backoff currently delaying retry -> cooling_off.
+  const retryPolicy = ctx.conditionSet.get("RetryPolicyClear");
+  if (retryPolicy?.status !== "false") {
+    return null;
+  }
+  return {
+    state: "cooling_off",
+    reasonCode: retryPolicy.reason,
+    lastSuccessAt: ctx.lastSuccessAt,
+    nextAttemptAt: ctx.nextAttemptAt,
+    axes: ctx.axes,
+    badges: ctx.badges,
+    remoteSurface: ctx.remoteSurface,
+  };
+}
+
+function classifyDegradedEvidence(ctx: ClassificationContext): ReturnType<ClassificationStep> {
+  // 6. Outbox stalled, coverage incomplete, gaps present, or last run failed
+  //    -> degraded. Success-with-gaps must not be healthy.
+  if (!hasDegradingCondition(ctx.conditions)) {
+    return null;
+  }
+  return {
+    state: "degraded",
+    reasonCode: degradedReasonCode(ctx.input),
+    lastSuccessAt: ctx.lastSuccessAt,
+    nextAttemptAt: ctx.nextAttemptAt,
+    axes: ctx.axes,
+    badges: ctx.badges,
+    remoteSurface: ctx.remoteSurface,
+  };
+}
+
+function classifyCurrentEvidenceWithoutVerdict(ctx: ClassificationContext): ReturnType<ClassificationStep> {
+  // 6b. If fresh retained/source evidence exists but no terminal collection
+  //     verdict exists, the health verdict is unknown, not idle. Local outbox
+  //     availability and active draining are orthogonal axis evidence.
+  if (
+    !(
+      ctx.conditionSet.get("CollectionSucceeded")?.status === "unknown" &&
+      hasFreshEvidenceWithoutCollectionVerdict(ctx.conditionSet)
+    )
+  ) {
+    return null;
+  }
+  return {
+    state: "unknown",
+    reasonCode: null,
+    lastSuccessAt: null,
+    nextAttemptAt: ctx.nextAttemptAt,
+    axes: ctx.axes,
+    badges: ctx.badges,
+    remoteSurface: ctx.remoteSurface,
+    unknownReasons: ["collection"],
+  };
+}
+
+function classifyNeverRunIdle(ctx: ClassificationContext): ReturnType<ClassificationStep> {
+  // 6c. Never run (no terminal evidence yet) -> idle only when no stronger
+  //     current evidence exists.
+  if (ctx.conditionSet.get("CollectionSucceeded")?.status !== "unknown") {
+    return null;
+  }
+  return {
+    state: "idle",
+    reasonCode: null,
+    lastSuccessAt: null,
+    nextAttemptAt: ctx.nextAttemptAt,
+    axes: ctx.axes,
+    badges: ctx.badges,
+    remoteSurface: ctx.remoteSurface,
+  };
+}
+
+function classifyHealthy(ctx: ClassificationContext): ReturnType<ClassificationStep> {
+  // 7. Healthy requires last run succeeded with no degrading gaps, coverage
+  //    complete (not unknown), and fresh freshness (stale is never silently
+  //    healthy).
+  if (!isHealthyConditionSet(ctx.conditionSet)) {
+    return null;
+  }
+  return {
+    state: "healthy",
+    reasonCode: null,
+    lastSuccessAt: ctx.lastSuccessAt,
+    nextAttemptAt: ctx.nextAttemptAt,
+    axes: ctx.axes,
+    badges: ctx.badges,
+    remoteSurface: ctx.remoteSurface,
+  };
+}
+
+function hasFreshEvidenceWithoutCollectionVerdict(
+  conditions: ReadonlyMap<ConnectionConditionType, ConnectionHealthCondition>
 ): boolean {
-  return (
-    conditionIsTrue(conditions, "Fresh") ||
-    conditionIsTrue(conditions, "LocalExporterAvailable") ||
-    conditionIsTrue(conditions, "BacklogClear")
-  );
+  return conditionIsTrue(conditions, "Fresh");
 }
 
 // ─── Axis projection ──────────────────────────────────────────────────────
@@ -773,21 +848,21 @@ function projectBadges(input: ComputeConnectionHealthInput, axes: ConnectionAxes
 }
 
 function indexConditions(
-  conditions: readonly ConnectionHealthCondition[],
+  conditions: readonly ConnectionHealthCondition[]
 ): ReadonlyMap<ConnectionConditionType, ConnectionHealthCondition> {
   return new Map(conditions.map((item) => [item.type, item]));
 }
 
 function conditionIsFalse(
   conditions: ReadonlyMap<ConnectionConditionType, ConnectionHealthCondition>,
-  type: ConnectionConditionType,
+  type: ConnectionConditionType
 ): boolean {
   return conditions.get(type)?.status === "false";
 }
 
 function conditionIsTrue(
   conditions: ReadonlyMap<ConnectionConditionType, ConnectionHealthCondition>,
-  type: ConnectionConditionType,
+  type: ConnectionConditionType
 ): boolean {
   return conditions.get(type)?.status === "true";
 }
@@ -810,9 +885,7 @@ function hasDegradingCondition(conditions: readonly ConnectionHealthCondition[])
   });
 }
 
-function isHealthyConditionSet(
-  conditions: ReadonlyMap<ConnectionConditionType, ConnectionHealthCondition>,
-): boolean {
+function isHealthyConditionSet(conditions: ReadonlyMap<ConnectionConditionType, ConnectionHealthCondition>): boolean {
   return (
     conditionIsTrue(conditions, "CollectionSucceeded") &&
     conditionIsTrue(conditions, "SourceCoverageComplete") &&
@@ -827,7 +900,10 @@ function isHealthyConditionSet(
   );
 }
 
-function projectConditions(input: ComputeConnectionHealthInput, axes: ConnectionAxes): readonly ConnectionHealthCondition[] {
+function projectConditions(
+  input: ComputeConnectionHealthInput,
+  axes: ConnectionAxes
+): readonly ConnectionHealthCondition[] {
   const observedAt = input.observedAt ?? input.run?.lastSuccessAt ?? input.backoff?.nextRunAt ?? null;
   return [
     projectionReliableCondition(input),
@@ -885,12 +961,18 @@ function conditionIsCurrent(expiresAt: string | null, observedAt: string | null)
 }
 
 function conditionExpired(expiresAt: string | null, observedAt: string | null): boolean {
-  if (!expiresAt || !observedAt) {
+  if (!expiresAt) {
+    return false;
+  }
+  if (!observedAt) {
     return false;
   }
   const expiresAtMs = Date.parse(expiresAt);
+  if (!Number.isFinite(expiresAtMs)) {
+    return false;
+  }
   const observedAtMs = Date.parse(observedAt);
-  if (!Number.isFinite(expiresAtMs) || !Number.isFinite(observedAtMs)) {
+  if (!Number.isFinite(observedAtMs)) {
     return false;
   }
   return expiresAtMs <= observedAtMs;
@@ -906,7 +988,12 @@ function projectionReliableCondition(input: ComputeConnectionHealthInput): Conne
       reason: CONDITION_REASON.PROJECTION_UNRELIABLE,
       message: `Projection evidence is unreliable: ${sources.join(", ")}.`,
       origin: "read_model",
-      remediation: { action: "wait", label: "Wait for the reference read model to refresh", retryable: true, target: null },
+      remediation: {
+        action: "wait",
+        label: "Wait for the reference read model to refresh",
+        retryable: true,
+        target: null,
+      },
     });
   }
   return condition({
@@ -938,7 +1025,12 @@ function scheduleEligibleCondition(input: ComputeConnectionHealthInput): Connect
       reason: CONDITION_REASON.SCHEDULE_PAUSED,
       message: "The schedule is paused.",
       origin: "scheduler",
-      remediation: { action: "wait", label: "Resume the schedule when fresh data is needed", retryable: false, target: "schedule" },
+      remediation: {
+        action: "wait",
+        label: "Resume the schedule when fresh data is needed",
+        retryable: false,
+        target: "schedule",
+      },
     });
   }
   return condition({
@@ -1122,10 +1214,18 @@ function runtimeAvailableCondition(input: ComputeConnectionHealthInput): Connect
       type: "RuntimeAvailable",
       status: "false",
       severity: "error",
-      reason: normalizeConditionReason(remoteSurface.waitReason ?? remoteSurface.leaseStatus, CONDITION_REASON.RUNTIME_UNAVAILABLE),
+      reason: normalizeConditionReason(
+        remoteSurface.waitReason ?? remoteSurface.leaseStatus,
+        CONDITION_REASON.RUNTIME_UNAVAILABLE
+      ),
       message: "The managed runtime surface is not available.",
       origin: "remote_surface",
-      remediation: { action: "check_runtime", label: "Check the browser surface runtime", retryable: true, target: "remote_surface" },
+      remediation: {
+        action: "check_runtime",
+        label: "Check the browser surface runtime",
+        retryable: true,
+        target: "remote_surface",
+      },
     });
   }
   if (remoteSurface.axis === "unknown") {
@@ -1167,11 +1267,16 @@ function remoteSurfaceAvailableCondition(input: ComputeConnectionHealthInput): C
       severity: "error",
       reason: normalizeConditionReason(
         remoteSurface.waitReason ?? remoteSurface.leaseStatus,
-        CONDITION_REASON.REMOTE_SURFACE_FAILED,
+        CONDITION_REASON.REMOTE_SURFACE_FAILED
       ),
       message: "The managed remote browser surface is unavailable.",
       origin: "remote_surface",
-      remediation: { action: "check_runtime", label: "Check the browser surface runtime", retryable: true, target: "remote_surface" },
+      remediation: {
+        action: "check_runtime",
+        label: "Check the browser surface runtime",
+        retryable: true,
+        target: "remote_surface",
+      },
     });
   }
   if (remoteSurface.axis === "unknown") {
@@ -1222,9 +1327,13 @@ function localExporterAvailableCondition(axes: ConnectionAxes): ConnectionHealth
         reason: CONDITION_REASON.LOCAL_EXPORTER_STALLED,
         message: "Local exporter work is stalled or blocked.",
         origin: "local_device",
-        remediation: { action: "clear_backlog", label: "Inspect the local collector backlog", retryable: true, target: "local_device" },
+        remediation: {
+          action: "clear_backlog",
+          label: "Inspect the local collector backlog",
+          retryable: true,
+          target: "local_device",
+        },
       });
-    case "unknown":
     default:
       return condition({
         type: "LocalExporterAvailable",
@@ -1326,7 +1435,12 @@ function backlogClearCondition(axes: ConnectionAxes): ConnectionHealthCondition 
         reason: CONDITION_REASON.OUTBOX_ACTIVE,
         message: "Local-device outbox work is currently draining.",
         origin: "local_device",
-        remediation: { action: "wait", label: "Wait for the local-device outbox to drain", retryable: true, target: "local_device" },
+        remediation: {
+          action: "wait",
+          label: "Wait for the local-device outbox to drain",
+          retryable: true,
+          target: "local_device",
+        },
       });
     case "stalled":
       return condition({
@@ -1336,9 +1450,13 @@ function backlogClearCondition(axes: ConnectionAxes): ConnectionHealthCondition 
         reason: CONDITION_REASON.OUTBOX_STALLED,
         message: "Local-device outbox work appears stalled.",
         origin: "local_device",
-        remediation: { action: "clear_backlog", label: "Inspect the local collector backlog", retryable: true, target: "local_device" },
+        remediation: {
+          action: "clear_backlog",
+          label: "Inspect the local collector backlog",
+          retryable: true,
+          target: "local_device",
+        },
       });
-    case "unknown":
     default:
       return condition({
         type: "BacklogClear",
@@ -1352,20 +1470,12 @@ function backlogClearCondition(axes: ConnectionAxes): ConnectionHealthCondition 
 }
 
 function isDegradingCoverage(axis: CoverageAxis): boolean {
-  return (
-    axis === "gaps" ||
-    axis === "partial" ||
-    axis === "retryable_gap" ||
-    axis === "terminal_gap"
-  );
+  return axis === "gaps" || axis === "partial" || axis === "retryable_gap" || axis === "terminal_gap";
 }
 
 function firstReasonCode(input: ComputeConnectionHealthInput): string | null {
   return (
-    input.run?.reasonCode ??
-    stripClassPrefix(input.backoff?.reasonClass ?? null) ??
-    input.attention?.reasonCode ??
-    null
+    input.run?.reasonCode ?? stripClassPrefix(input.backoff?.reasonClass ?? null) ?? input.attention?.reasonCode ?? null
   );
 }
 
@@ -1421,8 +1531,12 @@ const SECRET_CONDITION_PATTERN =
 const LONG_OPAQUE_CONDITION_PATTERN = /\b[A-Za-z0-9_-]{24,}\b/;
 
 function normalizeConditionReason(value: string | null | undefined, fallback: string): string {
-  if (!value) return fallback;
-  if (containsSecretLike(value)) return fallback;
+  if (!value) {
+    return fallback;
+  }
+  if (containsSecretLike(value)) {
+    return fallback;
+  }
   const normalized = value
     .trim()
     .toLowerCase()
@@ -1432,7 +1546,9 @@ function normalizeConditionReason(value: string | null | undefined, fallback: st
 }
 
 function containsSecretLike(value: string | null | undefined): boolean {
-  if (!value) return false;
+  if (!value) {
+    return false;
+  }
   return SECRET_CONDITION_PATTERN.test(value) || LONG_OPAQUE_CONDITION_PATTERN.test(value);
 }
 
@@ -1441,17 +1557,19 @@ function readinessBlockedCondition(conditions: readonly ConnectionHealthConditio
   if (conditionSet.get("CollectionSucceeded")?.status === "true") {
     return null;
   }
-  return conditions.find(
-    (item) =>
-      item.status === "false" &&
-      item.severity === "blocked" &&
-      (item.type === "CredentialsValid" || item.type === "RuntimeAvailable"),
-  ) ?? null;
+  return (
+    conditions.find(
+      (item) =>
+        item.status === "false" &&
+        item.severity === "blocked" &&
+        (item.type === "CredentialsValid" || item.type === "RuntimeAvailable")
+    ) ?? null
+  );
 }
 
 function pickDominantConditionId(
   state: ConnectionHealthState,
-  conditions: readonly ConnectionHealthCondition[],
+  conditions: readonly ConnectionHealthCondition[]
 ): string | null {
   const byType = new Map(conditions.map((item) => [item.type, item]));
   switch (state) {
@@ -1488,16 +1606,22 @@ function pickDominantConditionId(
 
 function pickSupportingConditionIds(
   conditions: readonly ConnectionHealthCondition[],
-  dominantConditionId: string | null,
+  dominantConditionId: string | null
 ): readonly string[] {
   const ids: string[] = [];
   if (dominantConditionId) {
     ids.push(dominantConditionId);
   }
   for (const conditionValue of conditions) {
-    if (ids.length >= 6) break;
-    if (conditionValue.id === dominantConditionId) continue;
-    if (conditionValue.status === "true" && conditionValue.severity === "info") continue;
+    if (ids.length >= 6) {
+      break;
+    }
+    if (conditionValue.id === dominantConditionId) {
+      continue;
+    }
+    if (conditionValue.status === "true" && conditionValue.severity === "info") {
+      continue;
+    }
     ids.push(conditionValue.id);
   }
   return ids;
@@ -1505,7 +1629,7 @@ function pickSupportingConditionIds(
 
 function conditionId(
   conditionValue: ConnectionHealthCondition | undefined,
-  status: ConnectionConditionStatus,
+  status: ConnectionConditionStatus
 ): string | null {
   return conditionValue?.status === status ? conditionValue.id : null;
 }
@@ -1516,11 +1640,13 @@ function failingConditionId(conditionValue: ConnectionHealthCondition | undefine
 
 function firstConditionId(
   conditions: readonly ConnectionHealthCondition[],
-  types: readonly ConnectionConditionType[],
+  types: readonly ConnectionConditionType[]
 ): string | null {
   for (const type of types) {
     const found = conditions.find((item) => item.type === type && item.status === "false");
-    if (found) return found.id;
+    if (found) {
+      return found.id;
+    }
   }
   return null;
 }
@@ -1556,13 +1682,13 @@ interface SnapshotArgs {
   readonly badges: ConnectionBadges;
   readonly conditions: readonly ConnectionHealthCondition[];
   readonly dominantConditionId: string | null;
-  readonly supportingConditionIds: readonly string[];
   readonly lastSuccessAt: string | null;
   readonly nextAction?: NextAction | null;
   readonly nextAttemptAt: string | null;
   readonly reasonCode: string | null;
   readonly remoteSurface?: RemoteSurfaceDetail | null;
   readonly state: ConnectionHealthState;
+  readonly supportingConditionIds: readonly string[];
   readonly unknownReasons?: readonly string[];
 }
 
@@ -1602,7 +1728,7 @@ function projectNextAction(attention: ConnectionAttentionEvidence): NextAction {
   // Schedule-fallback evidence has no durable record, so notification
   // state is unknown — surface `null` rather than fabricating `pending`.
   const notificationState: NextAction["notification_state"] = isStructured
-    ? attention.notificationState ?? "pending"
+    ? (attention.notificationState ?? "pending")
     : null;
   if (attention.sensitivity === "secret") {
     // Block every potentially-revealing field; keep the bare minimum so

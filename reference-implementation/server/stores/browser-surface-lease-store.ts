@@ -12,76 +12,83 @@ import {
   withPostgresTransaction,
 } from "../postgres-storage.js";
 
-type Queryable = {
+interface Queryable {
   query(sql: string, params?: unknown[]): Promise<{ rows: BrowserSurfaceRow[] | BrowserSurfaceLeaseRow[] }>;
-};
+}
 
 interface BrowserSurfaceRow {
-  surface_id: string;
-  backend: BrowserSurface["backend"];
-  profile_key: string;
-  connector_id: string;
-  surface_subject_id: string | null;
   account_key: string | null;
-  surface_mode: BrowserSurfacePersistenceMetadata["surface_mode"] | null;
-  surface_source: string | null;
+  active_lease_id: string | null;
+  backend: BrowserSurface["backend"];
   cdp_url: string;
-  stream_base_url: string;
-  stream_origin: string | null;
-  health: BrowserSurface["health"];
+  connector_id: string;
   container_id: string | null;
   container_name: string | null;
-  profile_dir: string | null;
-  profile_volume: string | null;
-  active_lease_id: string | null;
   created_at: string;
+  health: BrowserSurface["health"];
   last_used_at: string;
+  profile_dir: string | null;
+  profile_key: string;
+  profile_volume: string | null;
+  stream_base_url: string;
+  stream_origin: string | null;
+  surface_id: string;
+  surface_mode: BrowserSurfacePersistenceMetadata["surface_mode"] | null;
+  surface_source: string | null;
+  surface_subject_id: string | null;
 }
 
 interface BrowserSurfaceLeaseRow {
-  lease_id: string;
-  surface_id: string | null;
-  connector_id: string;
-  profile_key: string;
-  surface_subject_id: string | null;
   account_key: string | null;
-  run_id: string;
-  status: BrowserSurfaceLease["status"];
-  priority_class: BrowserSurfaceLease["priority_class"];
-  requested_at: string;
-  leased_at: string | null;
-  released_at: string | null;
+  connector_id: string;
   expires_at: string;
   fencing_token: number;
+  lease_id: string;
+  leased_at: string | null;
+  priority_class: BrowserSurfaceLease["priority_class"];
+  profile_key: string;
+  released_at: string | null;
+  requested_at: string;
+  run_id: string;
+  status: BrowserSurfaceLease["status"];
+  surface_id: string | null;
+  surface_subject_id: string | null;
   wait_reason: BrowserSurfaceLease["wait_reason"] | null;
 }
 
 export interface BrowserSurfaceLeaseStore {
-  upsertSurface(surface: BrowserSurfaceWithPersistenceMetadata): Promise<BrowserSurfaceWithPersistenceMetadata>;
-  upsertLease(lease: BrowserSurfaceLease): Promise<BrowserSurfaceLease>;
-  getSurface(surfaceId: string): Promise<BrowserSurfaceWithPersistenceMetadata | null>;
+  clearSurfaceActiveLease(
+    surfaceId: string,
+    leaseId: string,
+    fencingToken: number
+  ): Promise<BrowserSurfaceWithPersistenceMetadata | null>;
   getLease(leaseId: string): Promise<BrowserSurfaceLease | null>;
-  listSurfaces(): Promise<BrowserSurfaceWithPersistenceMetadata[]>;
+  getSurface(surfaceId: string): Promise<BrowserSurfaceWithPersistenceMetadata | null>;
   listNonTerminalLeases(): Promise<BrowserSurfaceLease[]>;
+  listSurfaces(): Promise<BrowserSurfaceWithPersistenceMetadata[]>;
   repairStaleSurfaceActiveLeases(): Promise<void>;
   updateLeaseTerminal(
     leaseId: string,
-    status: Extract<BrowserSurfaceLease["status"], "released" | "expired" | "deferred" | "cancelled" | "surface_failed">,
+    status: Extract<
+      BrowserSurfaceLease["status"],
+      "released" | "expired" | "deferred" | "cancelled" | "surface_failed"
+    >,
     options?: { releasedAt?: string; waitReason?: BrowserSurfaceLease["wait_reason"] | null }
   ): Promise<BrowserSurfaceLease | null>;
-  clearSurfaceActiveLease(surfaceId: string, leaseId: string, fencingToken: number): Promise<BrowserSurfaceWithPersistenceMetadata | null>;
+  upsertLease(lease: BrowserSurfaceLease): Promise<BrowserSurfaceLease>;
+  upsertSurface(surface: BrowserSurfaceWithPersistenceMetadata): Promise<BrowserSurfaceWithPersistenceMetadata>;
   withLeaseTransaction<T>(fn: (store: BrowserSurfaceLeaseStore) => Promise<T> | T): Promise<T>;
 }
 
 const TERMINAL_STATUS_SQL = TERMINAL_BROWSER_SURFACE_LEASE_STATUSES.map((status) => `'${status}'`).join(", ");
 
 export interface BrowserSurfacePersistenceMetadata {
-  readonly surface_mode?: "static" | "dynamic";
-  readonly surface_source?: string;
   readonly container_name?: string;
   readonly profile_dir?: string;
   readonly profile_volume?: string;
   readonly stream_origin?: string;
+  readonly surface_mode?: "static" | "dynamic";
+  readonly surface_source?: string;
 }
 
 type BrowserSurfaceWithPersistenceMetadata = BrowserSurface & BrowserSurfacePersistenceMetadata;
@@ -95,7 +102,9 @@ function surfaceMetadata(surface: BrowserSurfaceWithPersistenceMetadata): Browse
 }
 
 function mapSurface(row: BrowserSurfaceRow | null | undefined): BrowserSurfaceWithPersistenceMetadata | null {
-  if (!row) return null;
+  if (!row) {
+    return null;
+  }
   return {
     surface_id: row.surface_id,
     backend: row.backend,
@@ -119,8 +128,18 @@ function mapSurface(row: BrowserSurfaceRow | null | undefined): BrowserSurfaceWi
   };
 }
 
+function mapRequiredSurface(row: BrowserSurfaceRow): BrowserSurfaceWithPersistenceMetadata {
+  const surface = mapSurface(row);
+  if (!surface) {
+    throw new Error("browser surface row unexpectedly missing");
+  }
+  return surface;
+}
+
 function mapLease(row: BrowserSurfaceLeaseRow | null | undefined): BrowserSurfaceLease | null {
-  if (!row) return null;
+  if (!row) {
+    return null;
+  }
   return {
     lease_id: row.lease_id,
     connector_id: row.connector_id,
@@ -138,6 +157,14 @@ function mapLease(row: BrowserSurfaceLeaseRow | null | undefined): BrowserSurfac
     ...(row.surface_id ? { surface_id: row.surface_id } : {}),
     ...(row.wait_reason ? { wait_reason: row.wait_reason } : {}),
   };
+}
+
+function mapRequiredLease(row: BrowserSurfaceLeaseRow): BrowserSurfaceLease {
+  const lease = mapLease(row);
+  if (!lease) {
+    throw new Error("browser surface lease row unexpectedly missing");
+  }
+  return lease;
 }
 
 function sqliteSurfaceParams(surface: BrowserSurfaceWithPersistenceMetadata): BindValue[] {
@@ -189,7 +216,7 @@ function firstDynamicRow<R>(sql: string, params: BindValue[] = []): R | undefine
   for (const row of iterateDynamicSqlAcknowledged<R>(sql, params)) {
     return row;
   }
-  return undefined;
+  return;
 }
 
 function allDynamicRows<R>(sql: string, params: BindValue[] = []): R[] {
@@ -266,14 +293,16 @@ class SqliteBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
 
   getLease(leaseId: string): Promise<BrowserSurfaceLease | null> {
     // REVIEWED-DYNAMIC: static primary-key lookup for the compact browser lease store.
-    const row = firstDynamicRow<BrowserSurfaceLeaseRow>("SELECT * FROM browser_surface_leases WHERE lease_id = ?", [leaseId]);
+    const row = firstDynamicRow<BrowserSurfaceLeaseRow>("SELECT * FROM browser_surface_leases WHERE lease_id = ?", [
+      leaseId,
+    ]);
     return Promise.resolve(mapLease(row));
   }
 
   listSurfaces(): Promise<BrowserSurfaceWithPersistenceMetadata[]> {
     // REVIEWED-DYNAMIC: browser surfaces are a small controller-owned runtime table.
     const rows = allDynamicRows<BrowserSurfaceRow>("SELECT * FROM browser_surfaces ORDER BY surface_id");
-    return Promise.resolve(rows.map((row) => mapSurface(row)!));
+    return Promise.resolve(rows.map(mapRequiredSurface));
   }
 
   listNonTerminalLeases(): Promise<BrowserSurfaceLease[]> {
@@ -283,7 +312,7 @@ class SqliteBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
        WHERE status NOT IN (${TERMINAL_STATUS_SQL})
        ORDER BY CASE priority_class WHEN 'owner_interactive' THEN 0 ELSE 1 END, requested_at, lease_id`
     );
-    return Promise.resolve(rows.map((row) => mapLease(row)!));
+    return Promise.resolve(rows.map(mapRequiredLease));
   }
 
   repairStaleSurfaceActiveLeases(): Promise<void> {
@@ -304,7 +333,10 @@ class SqliteBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
 
   updateLeaseTerminal(
     leaseId: string,
-    status: Extract<BrowserSurfaceLease["status"], "released" | "expired" | "deferred" | "cancelled" | "surface_failed">,
+    status: Extract<
+      BrowserSurfaceLease["status"],
+      "released" | "expired" | "deferred" | "cancelled" | "surface_failed"
+    >,
     options: { releasedAt?: string; waitReason?: BrowserSurfaceLease["wait_reason"] | null } = {}
   ): Promise<BrowserSurfaceLease | null> {
     // REVIEWED-DYNAMIC: static terminal-state mutation for the browser lease store.
@@ -317,7 +349,11 @@ class SqliteBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
     return this.getLease(leaseId);
   }
 
-  clearSurfaceActiveLease(surfaceId: string, leaseId: string, fencingToken: number): Promise<BrowserSurfaceWithPersistenceMetadata | null> {
+  clearSurfaceActiveLease(
+    surfaceId: string,
+    leaseId: string,
+    fencingToken: number
+  ): Promise<BrowserSurfaceWithPersistenceMetadata | null> {
     // REVIEWED-DYNAMIC: static fenced surface release mutation for the browser lease store.
     execDynamicSqlAcknowledged(
       `UPDATE browser_surfaces
@@ -345,17 +381,24 @@ class SqliteBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
     } catch (err) {
       try {
         db.exec("ROLLBACK");
-      } catch {}
+      } catch {
+        // Rollback failure is non-actionable; the original error is rethrown below.
+      }
       throw err;
     }
   }
 }
 
 class PostgresBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
-  readonly #query: (sql: string, params?: unknown[]) => Promise<{ rows: BrowserSurfaceRow[] | BrowserSurfaceLeaseRow[] }>;
+  readonly #query: (
+    sql: string,
+    params?: unknown[]
+  ) => Promise<{ rows: BrowserSurfaceRow[] | BrowserSurfaceLeaseRow[] }>;
 
   constructor(client?: Queryable) {
-    this.#query = client ? (sql, params = []) => client.query(sql, params) : (sql, params = []) => postgresQuery(sql, params);
+    this.#query = client
+      ? (sql, params = []) => client.query(sql, params)
+      : (sql, params = []) => postgresQuery(sql, params);
   }
 
   async upsertSurface(surface: BrowserSurfaceWithPersistenceMetadata): Promise<BrowserSurfaceWithPersistenceMetadata> {
@@ -429,7 +472,7 @@ class PostgresBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
 
   async listSurfaces(): Promise<BrowserSurfaceWithPersistenceMetadata[]> {
     const result = await this.#query("SELECT * FROM browser_surfaces ORDER BY surface_id");
-    return (result.rows as BrowserSurfaceRow[]).map((row) => mapSurface(row)!);
+    return (result.rows as BrowserSurfaceRow[]).map(mapRequiredSurface);
   }
 
   async listNonTerminalLeases(): Promise<BrowserSurfaceLease[]> {
@@ -438,7 +481,7 @@ class PostgresBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
        WHERE status NOT IN (${TERMINAL_STATUS_SQL})
        ORDER BY CASE priority_class WHEN 'owner_interactive' THEN 0 ELSE 1 END, requested_at, lease_id`
     );
-    return (result.rows as BrowserSurfaceLeaseRow[]).map((row) => mapLease(row)!);
+    return (result.rows as BrowserSurfaceLeaseRow[]).map(mapRequiredLease);
   }
 
   async repairStaleSurfaceActiveLeases(): Promise<void> {
@@ -457,7 +500,10 @@ class PostgresBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
 
   async updateLeaseTerminal(
     leaseId: string,
-    status: Extract<BrowserSurfaceLease["status"], "released" | "expired" | "deferred" | "cancelled" | "surface_failed">,
+    status: Extract<
+      BrowserSurfaceLease["status"],
+      "released" | "expired" | "deferred" | "cancelled" | "surface_failed"
+    >,
     options: { releasedAt?: string; waitReason?: BrowserSurfaceLease["wait_reason"] | null } = {}
   ): Promise<BrowserSurfaceLease | null> {
     await this.#query(
@@ -469,7 +515,11 @@ class PostgresBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
     return this.getLease(leaseId);
   }
 
-  async clearSurfaceActiveLease(surfaceId: string, leaseId: string, fencingToken: number): Promise<BrowserSurfaceWithPersistenceMetadata | null> {
+  async clearSurfaceActiveLease(
+    surfaceId: string,
+    leaseId: string,
+    fencingToken: number
+  ): Promise<BrowserSurfaceWithPersistenceMetadata | null> {
     await this.#query(
       `UPDATE browser_surfaces
        SET active_lease_id = NULL

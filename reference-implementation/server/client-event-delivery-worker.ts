@@ -8,35 +8,33 @@
  */
 
 import {
-  executeDelivery,
-  type DeliveryDependencies,
-  type DeliveryOutcome,
-} from "../operations/rs-client-event-deliver/index.ts";
-import {
   executeRecordDeliveryFailure,
   executeVerificationOutcome,
 } from "../operations/as-client-event-subscriptions/index.ts";
 import {
-  type QueueRow,
+  type DeliveryDependencies,
+  type DeliveryOutcome,
+  executeDelivery,
+} from "../operations/rs-client-event-deliver/index.ts";
+import {
   claimDueQueue,
   getDefaultClientEventSubscriptionStore,
   insertAttempt,
+  type QueueRow,
   updateQueueAttempt,
 } from "./stores/client-event-subscription-store.ts";
 
-export interface HttpTransport {
-  (req: {
-    url: string;
-    method: "POST";
-    headers: Record<string, string>;
-    body: string;
-  }): Promise<{
-    statusCode: number | null;
-    bodyText: string | null;
-    errorMessage: string | null;
-    latencyMs: number;
-  }>;
-}
+export type HttpTransport = (req: {
+  url: string;
+  method: "POST";
+  headers: Record<string, string>;
+  body: string;
+}) => Promise<{
+  statusCode: number | null;
+  bodyText: string | null;
+  errorMessage: string | null;
+  latencyMs: number;
+}>;
 
 const RESPONSE_WINDOW_MS = 10_000;
 
@@ -63,15 +61,15 @@ export const defaultHttpTransport: HttpTransport = async ({ url, method, headers
 
 export interface DeliveryWorkerOptions {
   readonly nowMs?: () => number;
-  readonly transport?: HttpTransport;
   readonly randomJitterFactor?: () => number;
   readonly tickIntervalMs?: number;
+  readonly transport?: HttpTransport;
 }
 
 export interface DeliveryWorker {
-  tick(): Promise<{ readonly attempted: number; readonly outcomes: ReadonlyArray<DeliveryOutcome> }>;
   start(): void;
   stop(): void;
+  tick(): Promise<{ readonly attempted: number; readonly outcomes: readonly DeliveryOutcome[] }>;
 }
 
 export function createDeliveryWorker(opts: DeliveryWorkerOptions = {}): DeliveryWorker {
@@ -101,12 +99,20 @@ export function createDeliveryWorker(opts: DeliveryWorkerOptions = {}): Delivery
         secret: (row as unknown as { secret_text: string }).secret_text,
         verificationChallenge: (row as unknown as { verification_challenge: string | null }).verification_challenge,
       },
-      deliveryDeps,
+      deliveryDeps
     );
     const attemptedAt = new Date(nowMs()).toISOString();
 
     if (outcome.kind === "delivered" || outcome.kind === "verified") {
-      await insertAttempt(row.queue_id, attemptedAt, outcome.statusCode, true, outcome.latencyMs, null, outcome.bodyText);
+      await insertAttempt(
+        row.queue_id,
+        attemptedAt,
+        outcome.statusCode,
+        true,
+        outcome.latencyMs,
+        null,
+        outcome.bodyText
+      );
       await updateQueueAttempt(row.queue_id, row.attempt_count + 1, attemptedAt, "delivered", null);
       if (outcome.kind === "verified") {
         await executeVerificationOutcome(row.subscription_id, "verified", {
@@ -122,7 +128,7 @@ export function createDeliveryWorker(opts: DeliveryWorkerOptions = {}): Delivery
         false,
         outcome.latencyMs,
         outcome.error,
-        outcome.bodyText,
+        outcome.bodyText
       );
       await updateQueueAttempt(row.queue_id, outcome.attemptCount, outcome.nextAttemptIso, "pending", outcome.error);
     } else {
@@ -133,7 +139,7 @@ export function createDeliveryWorker(opts: DeliveryWorkerOptions = {}): Delivery
         false,
         outcome.latencyMs,
         outcome.error,
-        outcome.bodyText,
+        outcome.bodyText
       );
       await updateQueueAttempt(row.queue_id, outcome.attemptCount, attemptedAt, "final_failure", outcome.error);
       await executeRecordDeliveryFailure(row.subscription_id, {
@@ -143,36 +149,53 @@ export function createDeliveryWorker(opts: DeliveryWorkerOptions = {}): Delivery
     }
     return outcome;
   }
+  // Classifies a queue row into one of three pre-delivery dispositions. The
+  // table is the spec; this function makes the table local and exhaustive so
+  // the tick loop only orchestrates I/O around it.
+  type RowDisposition =
+    | { kind: "deliver" }
+    | { kind: "skip" }
+    | { kind: "drop"; reason: "subscription_inactive" | "subscription_revoked" | "subscription_disabled" };
+
+  function classifyRow(row: QueueRow): RowDisposition {
+    if (row.subscription_status === "deleted") {
+      return { kind: "drop", reason: "subscription_inactive" };
+    }
+    if (row.subscription_status === "disabled_revoked") {
+      return row.event_type === "pdpp.grant.revoked"
+        ? { kind: "deliver" }
+        : { kind: "drop", reason: "subscription_revoked" };
+    }
+    if (row.subscription_status === "pending_verification") {
+      return row.event_type === "pdpp.subscription.verify" ? { kind: "deliver" } : { kind: "skip" };
+    }
+    if (row.subscription_status === "disabled" || row.subscription_status === "disabled_failure") {
+      return row.event_type === "pdpp.subscription.verify"
+        ? { kind: "deliver" }
+        : { kind: "drop", reason: "subscription_disabled" };
+    }
+    return { kind: "deliver" };
+  }
+
+  async function dropRow(row: QueueRow, reason: string): Promise<void> {
+    await updateQueueAttempt(row.queue_id, row.attempt_count, new Date(nowMs()).toISOString(), "dropped", reason);
+  }
 
   async function tickInternal(): Promise<{ attempted: number; outcomes: DeliveryOutcome[] }> {
-    if (inFlight) return { attempted: 0, outcomes: [] };
+    if (inFlight) {
+      return { attempted: 0, outcomes: [] };
+    }
     inFlight = true;
     try {
       const due = await claimDueQueue(new Date(nowMs()).toISOString());
       const outcomes: DeliveryOutcome[] = [];
       for (const row of due) {
-        // Skip rows whose subscription is no longer eligible. The verify event
-        // is allowed through while the subscription is still
-        // `pending_verification`.
-        if (row.subscription_status === "deleted") {
-          await updateQueueAttempt(row.queue_id, row.attempt_count, new Date(nowMs()).toISOString(), "dropped", "subscription_inactive");
+        const disposition = classifyRow(row);
+        if (disposition.kind === "skip") {
           continue;
         }
-        if (row.subscription_status === "disabled_revoked" && row.event_type !== "pdpp.grant.revoked") {
-          await updateQueueAttempt(row.queue_id, row.attempt_count, new Date(nowMs()).toISOString(), "dropped", "subscription_revoked");
-          continue;
-        }
-        if (
-          row.subscription_status === "pending_verification" &&
-          row.event_type !== "pdpp.subscription.verify"
-        ) {
-          continue;
-        }
-        if (
-          (row.subscription_status === "disabled" || row.subscription_status === "disabled_failure") &&
-          row.event_type !== "pdpp.subscription.verify"
-        ) {
-          await updateQueueAttempt(row.queue_id, row.attempt_count, new Date(nowMs()).toISOString(), "dropped", "subscription_disabled");
+        if (disposition.kind === "drop") {
+          await dropRow(row, disposition.reason);
           continue;
         }
         outcomes.push(await processOne(row));
@@ -186,7 +209,9 @@ export function createDeliveryWorker(opts: DeliveryWorkerOptions = {}): Delivery
   return {
     tick: tickInternal,
     start(): void {
-      if (timer) return;
+      if (timer) {
+        return;
+      }
       timer = setInterval(() => {
         tickInternal().catch(() => {
           /* ignored; surfaced via attempt log */
@@ -207,6 +232,8 @@ export function createDeliveryWorker(opts: DeliveryWorkerOptions = {}): Delivery
 
 let defaultWorker: DeliveryWorker | null = null;
 export function getDefaultDeliveryWorker(): DeliveryWorker {
-  if (!defaultWorker) defaultWorker = createDeliveryWorker();
+  if (!defaultWorker) {
+    defaultWorker = createDeliveryWorker();
+  }
   return defaultWorker;
 }

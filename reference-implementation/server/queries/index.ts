@@ -140,6 +140,10 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly authConnectorsListIds: SmallEnumerationQuery;
   // Auth — connectors (manifest registry)
   readonly authConnectorsUpsert: MutationQuery;
+  readonly authGrantPackageMembersGetPackageIdByGrant: ReadOneQuery;
+  readonly authGrantPackageMembersListAllByPackage: SmallEnumerationQuery;
+  // Auth — grant_packages (operator-visible read surface)
+  readonly authGrantPackagesListAll: SmallEnumerationQuery;
   readonly authGrantsGetForIssuance: ReadOneQuery;
   readonly authGrantsGetForRevocation: ReadOneQuery;
   // Auth — grants
@@ -147,10 +151,6 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly authGrantsListActiveIdsByClientId: SmallEnumerationQuery;
   readonly authGrantsMarkConsumed: MutationQuery;
   readonly authGrantsMarkRevoked: MutationQuery;
-  readonly authOauthClientsDeleteByClientId: MutationQuery;
-  readonly authOauthClientsGetByClientId: ReadOneQuery;
-  readonly authOauthClientsListByIssuerSubject: SmallEnumerationQuery;
-  readonly authOauthClientsUpsert: MutationQuery;
   // Auth — oauth_authorization_codes (OAuth code + PKCE bridge)
   readonly authOauthAuthorizationCodesConsumeCode: MutationQuery;
   readonly authOauthAuthorizationCodesGetByCode: ReadOneQuery;
@@ -158,6 +158,10 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly authOauthAuthorizationCodesIssueForDeviceCode: MutationQuery;
   readonly authOauthAuthorizationCodesMarkExpiredByDeviceCode: MutationQuery;
   readonly authOauthAuthorizationCodesUpsertPending: MutationQuery;
+  readonly authOauthClientsDeleteByClientId: MutationQuery;
+  readonly authOauthClientsGetByClientId: ReadOneQuery;
+  readonly authOauthClientsListByIssuerSubject: SmallEnumerationQuery;
+  readonly authOauthClientsUpsert: MutationQuery;
   // Auth — oauth_refresh_tokens (hosted MCP durable OAuth sessions)
   readonly authOauthRefreshTokensGetByToken: ReadOneQuery;
   readonly authOauthRefreshTokensInsert: MutationQuery;
@@ -186,16 +190,31 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly authTokensInsertOwner: MutationQuery;
   readonly authTokensRevokeByClientId: MutationQuery;
   readonly authTokensRevokeByGrant: MutationQuery;
-  // Auth — grant_packages (operator-visible read surface)
-  readonly authGrantPackagesListAll: SmallEnumerationQuery;
-  readonly authGrantPackageMembersListAllByPackage: SmallEnumerationQuery;
-  readonly authGrantPackageMembersGetPackageIdByGrant: ReadOneQuery;
   readonly blobsGetRowById: ReadOneQuery;
   readonly blobsGetStoredById: ReadOneQuery;
   readonly blobsInsertBinding: MutationQuery;
   // Blobs — content-addressed blob persistence + binding maintenance.
   readonly blobsInsertBlob: MutationQuery;
   readonly blobsListBindingsById: ReadManyQuery;
+  readonly clientEventSubscriptionsClaimDueQueue: SmallEnumerationQuery;
+  readonly clientEventSubscriptionsDeleteSubscription: MutationQuery;
+  readonly clientEventSubscriptionsDropQueuedForSubscription: MutationQuery;
+  readonly clientEventSubscriptionsGetSubscriptionById: ReadOneQuery;
+  readonly clientEventSubscriptionsGetSubscriptionSummary: ReadOneQuery;
+  readonly clientEventSubscriptionsInsertAttempt: MutationQuery;
+  readonly clientEventSubscriptionsInsertQueue: MutationQuery;
+  // Client event subscriptions (outbound, reference-only).
+  readonly clientEventSubscriptionsInsertSubscription: MutationQuery;
+  readonly clientEventSubscriptionsListActiveSubscriptions: SmallEnumerationQuery;
+  // Client event subscriptions — operator oversight reads (reference-only).
+  readonly clientEventSubscriptionsListAllSubscriptions: SmallEnumerationQuery;
+  readonly clientEventSubscriptionsListAttemptsForQueue: SmallEnumerationQuery;
+  readonly clientEventSubscriptionsListAttemptsForSubscription: SmallEnumerationQuery;
+  readonly clientEventSubscriptionsListSubscriptionsByClient: SmallEnumerationQuery;
+  readonly clientEventSubscriptionsListSubscriptionsByGrant: SmallEnumerationQuery;
+  readonly clientEventSubscriptionsUpdateQueueAttempt: MutationQuery;
+  readonly clientEventSubscriptionsUpdateSecret: MutationQuery;
+  readonly clientEventSubscriptionsUpdateStatus: MutationQuery;
   readonly connectorInstancesGetByBinding: ReadOneQuery;
   readonly connectorInstancesGetById: ReadOneQuery;
   readonly connectorInstancesInsert: MutationQuery;
@@ -359,25 +378,6 @@ export interface ReferenceQueryRegistry extends Readonly<Record<string, Register
   readonly searchSnapshotsInsert: MutationQuery;
   // Source webhooks — replay/idempotency guard.
   readonly sourceWebhooksClaimEvent: MutationQuery;
-  // Client event subscriptions (outbound, reference-only).
-  readonly clientEventSubscriptionsInsertSubscription: MutationQuery;
-  readonly clientEventSubscriptionsGetSubscriptionById: ReadOneQuery;
-  readonly clientEventSubscriptionsListSubscriptionsByClient: SmallEnumerationQuery;
-  readonly clientEventSubscriptionsListActiveSubscriptions: SmallEnumerationQuery;
-  readonly clientEventSubscriptionsListSubscriptionsByGrant: SmallEnumerationQuery;
-  readonly clientEventSubscriptionsUpdateStatus: MutationQuery;
-  readonly clientEventSubscriptionsUpdateSecret: MutationQuery;
-  readonly clientEventSubscriptionsDeleteSubscription: MutationQuery;
-  readonly clientEventSubscriptionsInsertQueue: MutationQuery;
-  readonly clientEventSubscriptionsClaimDueQueue: SmallEnumerationQuery;
-  readonly clientEventSubscriptionsUpdateQueueAttempt: MutationQuery;
-  readonly clientEventSubscriptionsDropQueuedForSubscription: MutationQuery;
-  readonly clientEventSubscriptionsInsertAttempt: MutationQuery;
-  readonly clientEventSubscriptionsListAttemptsForQueue: SmallEnumerationQuery;
-  // Client event subscriptions — operator oversight reads (reference-only).
-  readonly clientEventSubscriptionsListAllSubscriptions: SmallEnumerationQuery;
-  readonly clientEventSubscriptionsGetSubscriptionSummary: ReadOneQuery;
-  readonly clientEventSubscriptionsListAttemptsForSubscription: SmallEnumerationQuery;
   // Spine — controller-side terminal-event existence probe.
   readonly spineCheckRunTerminal: ReadOneQuery;
   readonly spineGetRunTerminalEvent: ReadOneQuery;
