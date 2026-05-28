@@ -82,5 +82,6 @@ function createEmptyLeaseStore() {
     async listNonTerminalLeases() {
       return [];
     },
+    async repairStaleSurfaceActiveLeases() {},
   };
 }
