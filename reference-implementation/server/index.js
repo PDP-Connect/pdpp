@@ -3068,17 +3068,20 @@ function buildAsApp(opts = {}) {
   }
 
   // Hosted MCP picker policy — what the owner is approving when they check
-  // a row in the multi-source picker. Continuous, all streams, client-policy
-  // retention. Encoded once so the picker's "what you're approving" copy,
-  // the authorization_details[] sent to the AS, and the per-child grants
-  // match by construction.
+  // a row in the multi-source picker. The picker exposes owner control over
+  // the streams subset (per-source) and the package access mode (one radio
+  // for every source in the package). Retention remains the AS-side
+  // package default; the picker copy describes it factually rather than
+  // implying owner control — see Residual Risks in
+  // openspec/changes/design-fast-broad-agent-consent/design.md.
   const HOSTED_MCP_PICKER_PURPOSE_CODE = 'https://pdpp.org/purpose/personal_ai_assistant';
   const HOSTED_MCP_PICKER_PURPOSE_DESCRIPTION = 'Allow this MCP client to read selected personal data through PDPP.';
-  const HOSTED_MCP_PICKER_ACCESS_MODE = 'continuous';
+  const HOSTED_MCP_PICKER_DEFAULT_ACCESS_MODE = 'continuous';
   const HOSTED_MCP_PICKER_RETENTION = Object.freeze({
     classification: 'client_policy',
     description: 'The MCP client controls any retention of fetched results.',
   });
+  const HOSTED_MCP_PICKER_SUPPORTED_ACCESS_MODES = new Set(['single_use', 'continuous']);
 
   // Build one source-bounded authorization_details entry for a hosted MCP
   // package. `streamNames` is the owner-approved subset of stream names for
@@ -3090,19 +3093,28 @@ function buildAsApp(opts = {}) {
   // already validated against the connector manifest; callers SHOULD pass
   // `null` instead of an empty array because the AS rejects empty
   // `streams[]` arrays in `normalizePendingGrantRequest`.
-  function buildHostedMcpAuthorizationDetailForConnector(connectorId, streamNames = null) {
+  // `accessMode` is the picker-resolved package access mode applied to
+  // every entry in the package; passing `null` or an unknown value falls
+  // back to the spec-default `continuous`. Callers SHOULD validate the
+  // submitted value against `HOSTED_MCP_PICKER_SUPPORTED_ACCESS_MODES`
+  // before calling this helper so the AS can return a typed
+  // `invalid_request` error rather than silently widening an unknown mode.
+  function buildHostedMcpAuthorizationDetailForConnector(connectorId, streamNames = null, accessMode = null) {
     let streams;
     if (Array.isArray(streamNames) && streamNames.length > 0) {
       streams = streamNames.map((name) => ({ name }));
     } else {
       streams = [{ name: '*' }];
     }
+    const resolvedAccessMode = HOSTED_MCP_PICKER_SUPPORTED_ACCESS_MODES.has(accessMode)
+      ? accessMode
+      : HOSTED_MCP_PICKER_DEFAULT_ACCESS_MODE;
     return {
       type: 'https://pdpp.org/data-access',
       source: { kind: 'connector', id: connectorId },
       purpose_code: HOSTED_MCP_PICKER_PURPOSE_CODE,
       purpose_description: HOSTED_MCP_PICKER_PURPOSE_DESCRIPTION,
-      access_mode: HOSTED_MCP_PICKER_ACCESS_MODE,
+      access_mode: resolvedAccessMode,
       retention: HOSTED_MCP_PICKER_RETENTION,
       streams,
     };
@@ -3236,7 +3248,35 @@ function buildAsApp(opts = {}) {
     // path of least resistance is not "approve everything in silence."
     // See openspec/changes/design-fast-broad-agent-consent/.
     const riskCopy = rows.length
-      ? `<p class="pdpp-body"><strong>Reference-experimental multi-source consent.</strong> Each checked source issues one independent, source-bounded PDPP grant. Within a source you can uncheck individual streams to narrow what the MCP client may read; an unchecked stream is excluded from the issued child grant. Access mode: continuous, client-policy retention.</p>`
+      ? `<p class="pdpp-body"><strong>Reference-experimental multi-source consent.</strong> Each checked source issues one independent, source-bounded PDPP grant. Within a source you can uncheck individual streams to narrow what the MCP client may read; an unchecked stream is excluded from the issued child grant. Retention follows the MCP client's own policy and is recorded with each issued grant; this picker does not narrow retention.</p>`
+      : '';
+
+    // Package-level access-mode control. One radio group, applied to every
+    // child grant issued by the ceremony. Default is `continuous` to
+    // preserve the prior baseline; selecting `single_use` narrows every
+    // child grant to one consumption + expiry on use. Mixed access modes
+    // across sources in one package are out of scope — see
+    // openspec/changes/design-fast-broad-agent-consent/specs/agent-consent-bundling/spec.md.
+    const accessModeControl = rows.length
+      ? `
+        <fieldset class="hosted-ui-access-mode">
+          <legend class="hosted-ui-access-mode-legend">Access mode</legend>
+          <label class="hosted-ui-access-mode-option">
+            <input type="radio" name="access_mode" value="continuous" checked />
+            <span class="hosted-ui-access-mode-body">
+              <span class="hosted-ui-access-mode-label">Continuous access (default)</span>
+              <span class="hosted-ui-access-mode-meta">The MCP client may keep reading until you revoke this grant.</span>
+            </span>
+          </label>
+          <label class="hosted-ui-access-mode-option">
+            <input type="radio" name="access_mode" value="single_use" />
+            <span class="hosted-ui-access-mode-body">
+              <span class="hosted-ui-access-mode-label">Single use</span>
+              <span class="hosted-ui-access-mode-meta">The MCP client may read once. The grant expires on first use.</span>
+            </span>
+          </label>
+        </fieldset>
+      `
       : '';
 
     return renderHostedDocument({
@@ -3256,6 +3296,7 @@ function buildAsApp(opts = {}) {
               <input type="hidden" name="_csrf" value="${hostedEscape(csrfToken)}" />
               ${hidden}
               <div class="hosted-ui-option-group">${options}</div>
+              ${accessModeControl}
               ${submit}
             </form>
           `,
@@ -3638,6 +3679,27 @@ function buildAsApp(opts = {}) {
         // ignored so an orphaned stream toggle cannot smuggle authority into
         // a deselected source.
         const { bySource: streamSelectionsBySource } = parseHostedMcpStreamSelections(body.stream);
+        // Package-level access mode. One radio group in the picker means
+        // one value here, applied to every child grant. An absent value
+        // falls back to the spec-default `continuous` (preserving prior
+        // baseline behavior for any caller that doesn't render the radio,
+        // e.g. the `connector_id=` shortcut on GET /oauth/authorize that
+        // bypasses this POST handler entirely). An unknown value yields a
+        // typed `invalid_request` so a malformed picker submission can't
+        // silently widen.
+        const rawAccessMode = typeof body.access_mode === 'string' ? body.access_mode.trim() : '';
+        let packageAccessMode = HOSTED_MCP_PICKER_DEFAULT_ACCESS_MODE;
+        if (rawAccessMode) {
+          if (!HOSTED_MCP_PICKER_SUPPORTED_ACCESS_MODES.has(rawAccessMode)) {
+            return oauthError(
+              res,
+              400,
+              'invalid_request',
+              "access_mode must be 'single_use' or 'continuous'",
+            );
+          }
+          packageAccessMode = rawAccessMode;
+        }
 
         const ownerSubjectId = req?.ownerAuth?.subjectId || 'owner_local';
         const authorizationDetails = [];
@@ -3710,7 +3772,7 @@ function buildAsApp(opts = {}) {
           }
 
           authorizationDetails.push(
-            buildHostedMcpAuthorizationDetailForConnector(connectorId, narrowedStreamNames),
+            buildHostedMcpAuthorizationDetailForConnector(connectorId, narrowedStreamNames, packageAccessMode),
           );
           storageBindings.push({ connector_id: connectorId });
           connectionIds.push(resolvedConnectionId || null);

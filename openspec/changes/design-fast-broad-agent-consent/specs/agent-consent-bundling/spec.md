@@ -72,3 +72,46 @@ When the hosted MCP package picker presents a connector-backed source, it SHALL 
 - **THEN** the AS SHALL NOT issue a child grant for that source
 - **AND** the package SHALL contain only child grants for sources with at least one selected stream
 - **AND** if every selected source ends up with zero selected streams the AS SHALL return a typed `invalid_request` error naming the affected source(s) by manifest display name.
+
+### Requirement: Hosted MCP picker SHALL let the owner choose the package access mode
+
+The hosted MCP package picker SHALL expose a single owner-facing control that selects the package access mode for every child grant issued by the ceremony. The control SHALL offer the two protocol-enforced access modes (`single_use` and `continuous`) defined by `spec-core.md`. The AS SHALL apply the submitted access mode to every `authorization_details[]` entry the picker emits; mixed-access packages are out of scope for this picker. The picker SHALL default to `continuous` to preserve the prior baseline behavior, and the owner-facing copy SHALL describe what each mode means in plain language before submission.
+
+#### Scenario: Owner accepts the default continuous access
+
+- **WHEN** the owner submits the picker without changing the access-mode control
+- **THEN** every child grant issued by the package SHALL carry `access_mode: 'continuous'`
+- **AND** the picker MAY rely on the spec-default `continuous` semantics rather than re-encoding the value into every checkbox.
+
+#### Scenario: Owner narrows the package to single-use access
+
+- **WHEN** the owner selects the `single_use` access-mode control before submitting
+- **THEN** every child grant issued by the package SHALL carry `access_mode: 'single_use'`
+- **AND** each child grant SHALL be subject to the same single-use lifecycle (one consumption, expiry on use) that `spec-core.md` already defines for non-package single-use grants
+- **AND** the AS SHALL NOT silently upgrade a `single_use` selection to `continuous` for any source in the package.
+
+#### Scenario: Picker rejects unsupported access-mode submissions
+
+- **WHEN** the picker POST submits an `access_mode` value that is not `single_use` or `continuous`
+- **THEN** the AS SHALL return a typed `invalid_request` error
+- **AND** the AS SHALL NOT issue any child grant for the request.
+
+### Requirement: Hosted MCP picker copy SHALL be honest about retention narrowing
+
+The hosted MCP picker SHALL NOT advertise retention as an owner-controllable dimension until the picker's `retention` shape is reconciled with the `spec-core.md` `retention: { max_duration, on_expiry }` shape. The picker MAY continue to issue child grants whose `retention` reflects the AS-side default for hosted MCP packages, but the owner-facing copy SHALL describe that default factually rather than implying owner control over it.
+
+#### Scenario: Picker describes retention as a fixed package default
+
+- **WHEN** the picker renders the cumulative-risk disclosure copy
+- **THEN** the copy SHALL identify retention as a package-level default (not an owner-narrowable knob in this ceremony)
+- **AND** the copy SHALL NOT promise a per-source retention preset that the picker does not actually emit.
+
+### Requirement: Grant detail spine events SHALL surface what the package picker approved
+
+Every `grant.issued` spine event for a hosted MCP package child grant SHALL include the structured fields a downstream operator surface (dashboard timeline, CLI grant timeline, `/_ref/grants/:grantId/timeline`) needs to recognise a narrowed grant without re-deriving the picker submission. Specifically the event `data` SHALL include the resolved `access_mode`, the resolved `stream_names`, and the `retention` policy declaration carried on the issued grant.
+
+#### Scenario: Operator inspects the timeline for a narrowed package child grant
+
+- **WHEN** an operator opens the spine timeline for a child grant issued by the hosted MCP package picker
+- **THEN** the `grant.issued` event data SHALL include `access_mode`, `stream_names`, and `retention`
+- **AND** a child grant narrowed to a subset of streams SHALL be distinguishable from a wildcard child grant by inspecting `stream_names` against the connector manifest at the issued-at time.

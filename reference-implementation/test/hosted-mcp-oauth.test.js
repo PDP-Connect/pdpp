@@ -994,6 +994,7 @@ function buildHostedMcpPickerForm({
   state,
   challenge,
   sourceSelections,
+  accessMode,
 }) {
   const params = new URLSearchParams();
   params.append('client_id', client.client_id);
@@ -1002,6 +1003,9 @@ function buildHostedMcpPickerForm({
   params.append('state', state);
   params.append('code_challenge', challenge);
   params.append('code_challenge_method', 'S256');
+  if (typeof accessMode === 'string') {
+    params.append('access_mode', accessMode);
+  }
   for (const { connectorId, connectionId = null, streamNames } of sourceSelections) {
     params.append('selection', encodeHostedMcpSelection({ connectorId, connectionId }));
     for (const streamName of streamNames) {
@@ -1391,6 +1395,279 @@ test('POST /oauth/authorize/mcp-package ignores stream entries whose source was 
     const access = await getGrantPackageAccess(body.grant_package_id);
     assert.equal(access.members.length, 1, 'orphan stream entries MUST NOT create a child grant');
     assert.equal(access.members[0].grant.source.id, spotify.connector_id);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+// ─── Access-mode narrowing ──────────────────────────────────────────────────
+// The hosted MCP picker exposes one package-level access-mode radio that
+// applies the chosen mode (`continuous` default, `single_use` opt-in) to every
+// child grant in the package. The picker:
+//   - renders both options with `continuous` pre-selected so the no-action
+//     default preserves prior behavior;
+//   - the picker copy describes retention as a fixed package default (not an
+//     owner-narrowable knob);
+//   - submitting `access_mode=single_use` narrows every child grant in the
+//     package to single_use without any other change to the form;
+//   - submitting `access_mode=continuous` (or omitting the field) keeps every
+//     child grant continuous;
+//   - submitting any other value returns a typed `invalid_request` envelope
+//     and issues no grants;
+//   - `grant.issued` spine events for every child grant record the resolved
+//     access mode, stream names, and retention so the operator dashboard can
+//     tell narrowed grants from wildcard ones without re-deriving the picker
+//     submission.
+
+test('hosted MCP picker renders an access-mode radio with continuous default and retention-as-default copy', async () => {
+  const server = await startOpenTestServer();
+  const asUrl = `http://localhost:${server.asPort}`;
+
+  try {
+    await registerSpotify(asUrl);
+    const client = await registerAuthCodeClient(asUrl);
+    const verifier = randomBytes(32).toString('base64url');
+
+    const authorizeUrl = new URL(`${asUrl}/oauth/authorize`);
+    authorizeUrl.searchParams.set('client_id', client.client_id);
+    authorizeUrl.searchParams.set('redirect_uri', 'https://client.example/callback');
+    authorizeUrl.searchParams.set('response_type', 'code');
+    authorizeUrl.searchParams.set('state', 'access-mode-render');
+    authorizeUrl.searchParams.set('code_challenge', pkceChallenge(verifier));
+    authorizeUrl.searchParams.set('code_challenge_method', 'S256');
+
+    const resp = await fetch(authorizeUrl);
+    assert.equal(resp.status, 200);
+    const html = await resp.text();
+
+    assert.match(html, /class="hosted-ui-access-mode"/, 'picker must render the access-mode fieldset');
+    assert.ok(
+      html.includes('name="access_mode" value="continuous" checked'),
+      'picker must pre-select continuous',
+    );
+    assert.ok(
+      html.includes('name="access_mode" value="single_use"'),
+      'picker must offer single_use as the narrowing option',
+    );
+    assert.ok(
+      !html.includes('name="access_mode" value="single_use" checked'),
+      'picker must NOT pre-select single_use',
+    );
+
+    // Retention copy honesty: don't promise an owner-narrowable retention
+    // knob the picker does not actually emit. The spec change in this
+    // tranche pins this copy until the retention shape is reconciled.
+    assert.ok(
+      !html.includes('client-policy retention'),
+      'picker must not assert the legacy client-policy phrase',
+    );
+    assert.match(
+      html,
+      /retention/i,
+      'picker should mention retention so the owner sees that it is a fixed package default',
+    );
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('POST /oauth/authorize/mcp-package narrows every child grant to single_use when the picker submits it', async () => {
+  const server = await startOpenTestServer();
+  const asUrl = `http://localhost:${server.asPort}`;
+
+  try {
+    const spotify = await registerSpotify(asUrl);
+    const github = await registerGithub(asUrl);
+    const client = await registerAuthCodeClient(asUrl);
+
+    const verifier = randomBytes(32).toString('base64url');
+    const state = 'access-mode-single-use';
+    const challenge = pkceChallenge(verifier);
+
+    const params = buildHostedMcpPickerForm({
+      client,
+      state,
+      challenge,
+      accessMode: 'single_use',
+      sourceSelections: [
+        { connectorId: spotify.connector_id, streamNames: spotify.streams.map((s) => s.name) },
+        { connectorId: github.connector_id, streamNames: github.streams.map((s) => s.name) },
+      ],
+    });
+
+    const approveResp = await exchangePackageCode({ asUrl, client, params });
+    assert.equal(approveResp.status, 302);
+    const code = new URL(approveResp.headers.get('location')).searchParams.get('code');
+
+    const { status, body } = await fetchJson(`${asUrl}/oauth/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        code,
+        client_id: client.client_id,
+        redirect_uri: 'https://client.example/callback',
+        code_verifier: verifier,
+      }).toString(),
+    });
+    assert.equal(status, 200);
+    const access = await getGrantPackageAccess(body.grant_package_id);
+    assert.equal(access.members.length, 2);
+    for (const member of access.members) {
+      assert.equal(
+        member.grant.access_mode,
+        'single_use',
+        `child grant for ${member.grant.source.id} must be single_use when picker submits single_use`,
+      );
+    }
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('POST /oauth/authorize/mcp-package defaults every child grant to continuous when access_mode is absent', async () => {
+  const server = await startOpenTestServer();
+  const asUrl = `http://localhost:${server.asPort}`;
+
+  try {
+    const spotify = await registerSpotify(asUrl);
+    const client = await registerAuthCodeClient(asUrl);
+
+    const verifier = randomBytes(32).toString('base64url');
+    const state = 'access-mode-default';
+    const challenge = pkceChallenge(verifier);
+
+    // Omit `accessMode` from the helper → no `access_mode` field on the form.
+    // This is the "stale picker / no radio submitted" path.
+    const params = buildHostedMcpPickerForm({
+      client,
+      state,
+      challenge,
+      sourceSelections: [
+        { connectorId: spotify.connector_id, streamNames: spotify.streams.map((s) => s.name) },
+      ],
+    });
+
+    const approveResp = await exchangePackageCode({ asUrl, client, params });
+    assert.equal(approveResp.status, 302);
+    const code = new URL(approveResp.headers.get('location')).searchParams.get('code');
+
+    const { status, body } = await fetchJson(`${asUrl}/oauth/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        code,
+        client_id: client.client_id,
+        redirect_uri: 'https://client.example/callback',
+        code_verifier: verifier,
+      }).toString(),
+    });
+    assert.equal(status, 200);
+    const access = await getGrantPackageAccess(body.grant_package_id);
+    assert.equal(access.members.length, 1);
+    assert.equal(
+      access.members[0].grant.access_mode,
+      'continuous',
+      'missing access_mode must default to continuous (prior baseline)',
+    );
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('POST /oauth/authorize/mcp-package rejects an unsupported access_mode value without issuing grants', async () => {
+  const server = await startOpenTestServer();
+  const asUrl = `http://localhost:${server.asPort}`;
+
+  try {
+    const spotify = await registerSpotify(asUrl);
+    const client = await registerAuthCodeClient(asUrl);
+
+    const verifier = randomBytes(32).toString('base64url');
+    const state = 'access-mode-bad';
+    const challenge = pkceChallenge(verifier);
+
+    const params = buildHostedMcpPickerForm({
+      client,
+      state,
+      challenge,
+      accessMode: 'forever',
+      sourceSelections: [
+        { connectorId: spotify.connector_id, streamNames: spotify.streams.map((s) => s.name) },
+      ],
+    });
+
+    const approveResp = await fetch(`${asUrl}/oauth/authorize/mcp-package`, {
+      method: 'POST',
+      redirect: 'manual',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: params.toString(),
+    });
+    assert.equal(approveResp.status, 400);
+    const errorBody = await approveResp.json();
+    assert.equal(errorBody.error, 'invalid_request');
+    assert.match(errorBody.error_description, /access_mode/);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('hosted MCP child-grant grant.issued spine event records access_mode, stream_names, and retention', async () => {
+  const server = await startOpenTestServer();
+  const asUrl = `http://localhost:${server.asPort}`;
+
+  try {
+    const spotify = await registerSpotify(asUrl);
+    const client = await registerAuthCodeClient(asUrl);
+
+    const verifier = randomBytes(32).toString('base64url');
+    const state = 'access-mode-spine-event';
+    const challenge = pkceChallenge(verifier);
+
+    const params = buildHostedMcpPickerForm({
+      client,
+      state,
+      challenge,
+      accessMode: 'single_use',
+      sourceSelections: [
+        // Narrow streams to a subset so the test can verify stream_names
+        // surfaces narrowing as well.
+        { connectorId: spotify.connector_id, streamNames: ['saved_tracks'] },
+      ],
+    });
+
+    const approveResp = await exchangePackageCode({ asUrl, client, params });
+    assert.equal(approveResp.status, 302);
+    const code = new URL(approveResp.headers.get('location')).searchParams.get('code');
+    const { status, body } = await fetchJson(`${asUrl}/oauth/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        code,
+        client_id: client.client_id,
+        redirect_uri: 'https://client.example/callback',
+        code_verifier: verifier,
+      }).toString(),
+    });
+    assert.equal(status, 200);
+    const access = await getGrantPackageAccess(body.grant_package_id);
+    const childGrantId = access.members[0].grant.grant_id;
+
+    // Owner-session middleware is a no-op when `ownerAuthPassword: ''`
+    // (see `startOpenTestServer`), so the timeline read here matches the
+    // existing security-auth-surfaces fixtures: anonymous fetch, envelope
+    // exposes spine events under `.data`.
+    const { status: timelineStatus, body: timeline } = await fetchJson(
+      `${asUrl}/_ref/grants/${encodeURIComponent(childGrantId)}/timeline`,
+    );
+    assert.equal(timelineStatus, 200);
+    const issuedEvent = timeline.data.find((e) => e.event_type === 'grant.issued');
+    assert.ok(issuedEvent, 'child grant timeline must contain a grant.issued event');
+    assert.equal(issuedEvent.data.access_mode, 'single_use');
+    assert.deepEqual(issuedEvent.data.stream_names, ['saved_tracks']);
+    assert.ok(issuedEvent.data.retention, 'grant.issued must surface retention so operators can see what was approved');
   } finally {
     await closeServer(server);
   }

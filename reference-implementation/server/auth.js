@@ -2717,6 +2717,7 @@ export async function approveGrant(deviceCode, subjectId = 'owner_local', opts =
     access_mode: selection.access_mode,
     purpose_code: selection.purpose_code,
     stream_names: resolvedStreams.map((stream) => stream.name),
+    retention: selection.retention ?? null,
   };
 
   await emitSpineEvent({
@@ -3013,6 +3014,7 @@ async function persistChildGrantForPackage({
       access_mode: selection.access_mode,
       purpose_code: selection.purpose_code,
       stream_names: resolvedStreams.map((stream) => stream.name),
+      retention: selection.retention ?? null,
     },
   });
 

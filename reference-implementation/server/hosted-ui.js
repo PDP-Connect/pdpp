@@ -422,6 +422,50 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
   gap: 0.125rem;
 }
 
+.hosted-ui-access-mode {
+  display: grid;
+  gap: 0.375rem;
+  margin: 0 0 1rem;
+  padding: 0.625rem 0.875rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  background: var(--card);
+}
+.hosted-ui-access-mode-legend {
+  padding: 0 0.25rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  letter-spacing: 0.025em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+.hosted-ui-access-mode-option {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.625rem;
+  align-items: start;
+  padding: 0.375rem 0.25rem;
+  cursor: pointer;
+  font-size: 0.8125rem;
+}
+.hosted-ui-access-mode-option input {
+  margin: 0.2rem 0 0;
+  accent-color: var(--primary);
+}
+.hosted-ui-access-mode-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+.hosted-ui-access-mode-label {
+  font-weight: 600;
+  color: var(--foreground);
+}
+.hosted-ui-access-mode-meta {
+  color: var(--muted-foreground);
+}
+
 .hosted-ui-actions {
   display: flex;
   gap: 0.75rem;
