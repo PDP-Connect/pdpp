@@ -242,7 +242,6 @@ import {
   RefConnectorScheduleGetNotFoundError,
   executeRefConnectorScheduleGet,
 } from '../operations/ref-connector-schedule-get/index.ts';
-import { executeRefSpineCorrelationsList } from '../operations/ref-spine-correlations-list/index.ts';
 import { executeRefSpineEventsPage } from '../operations/ref-spine-events-page/index.ts';
 import { executeRefSpineSearch } from '../operations/ref-spine-search/index.ts';
 import { executeRefRecordsTimeline } from '../operations/ref-records-timeline/index.ts';
@@ -309,6 +308,18 @@ import {
   mountRsProtectedResourceMetadata,
   mountRsRoot,
 } from './routes/root-and-discovery.ts';
+import {
+  mountRefGrants,
+  mountRefRuns,
+  mountRefTraces,
+} from './routes/ref-spine-correlations.ts';
+import {
+  mountRefWebPushConfig,
+  mountRefWebPushCreateSubscription,
+  mountRefWebPushDeleteSubscription,
+  mountRefWebPushListSubscriptions,
+  mountRefWebPushTest,
+} from './routes/web-push.ts';
 
 const AS_PORT = parseInt(process.env.AS_PORT || '7662');
 const RS_PORT = parseInt(process.env.RS_PORT || '7663');
@@ -3970,72 +3981,22 @@ function buildAsApp(opts = {}) {
     pdppError(res, outcome.status, outcome.errorCode, outcome.errorMessage);
   });
 
-  // Reference-only event spine inspection surfaces for CLI/tests/future console.
-  function parseListFilters(query) {
-    const legacyConnectorId = typeof query.connector_id === 'string' && query.connector_id.trim()
-      ? query.connector_id.trim()
-      : null;
-    return {
-      limit: query.limit,
-      cursor: query.cursor,
-      since: query.since,
-      until: query.until,
-      status: query.status,
-      clientId: query.client_id,
-      sourceKind: query.source_kind || (legacyConnectorId ? 'connector' : undefined),
-      sourceId: query.source_id || legacyConnectorId || undefined,
-      grantId: query.grant_id,
-      q: query.q,
-    };
-  }
-
   // Spine correlation list / timeline / search routes delegate envelope
-  // assembly to canonical operation modules. The host adapter retains
-  // ownership of owner-auth, query-string parsing, cursor validation
-  // (`InvalidCursorError` → 400), 404-on-empty-first-page, and contract
-  // metadata; the operation owns response shape (per-kind discriminators,
-  // pagination fields, and live-bearer redaction on timelines). See
-  // openspec/changes/mount-ref-spine-operations.
-
-  const spineCorrelationsListDeps = {
+  // assembly to canonical operation modules. Timeline and search remain
+  // inline below; the list routes (`/_ref/traces`, `/_ref/grants`,
+  // `/_ref/runs`) are mounted via `server/routes/ref-spine-correlations.ts`
+  // per OpenSpec change `split-reference-server-by-route-family`.
+  // Behaviour-preserving extraction: same mount points, same handler
+  // chain, same envelope. See openspec/changes/mount-ref-spine-operations
+  // for the operation contract.
+  const refSpineCorrelationsContext = {
+    requireOwnerSession: ownerAuth.requireOwnerSession,
     listSpineCorrelations: (kind, filters) => listSpineCorrelations(kind, filters),
+    handleError,
   };
-
-  app.get('/_ref/traces', ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const envelope = await executeRefSpineCorrelationsList(
-        { kind: 'trace', filters: parseListFilters(req.query) },
-        spineCorrelationsListDeps,
-      );
-      res.json(envelope);
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  app.get('/_ref/grants', ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const envelope = await executeRefSpineCorrelationsList(
-        { kind: 'grant', filters: parseListFilters(req.query) },
-        spineCorrelationsListDeps,
-      );
-      res.json(envelope);
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  app.get('/_ref/runs', ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const envelope = await executeRefSpineCorrelationsList(
-        { kind: 'run', filters: parseListFilters(req.query) },
-        spineCorrelationsListDeps,
-      );
-      res.json(envelope);
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
+  mountRefTraces(app, refSpineCorrelationsContext);
+  mountRefGrants(app, refSpineCorrelationsContext);
+  mountRefRuns(app, refSpineCorrelationsContext);
 
   // ────────────────────────────────────────────────────────────────────────
   // /_ref/grant-packages — operator visibility for hosted-MCP grant packages
@@ -4226,75 +4187,24 @@ function buildAsApp(opts = {}) {
     }
   });
 
-  app.get('/_ref/web-push/config', ownerAuth.requireOwnerSession, async (req, res) => {
-    res.json({
-      object: 'web_push_config',
-      enabled: webPushConfig.enabled,
-      public_key: webPushConfig.enabled ? webPushConfig.publicKey : null,
-      unavailable_reason: webPushConfig.enabled ? null : webPushConfig.unavailableReason,
-    });
-  });
-
-  app.get('/_ref/web-push/subscriptions', ownerAuth.requireOwnerSession, async (req, res) => {
-    const ownerSubjectId = getOwnerSubjectId(req);
-    res.json({
-      object: 'list',
-      data: await webPushStore.list(ownerSubjectId),
-      has_more: false,
-    });
-  });
-
-  app.post('/_ref/web-push/subscriptions', ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      if (!webPushConfig.enabled) {
-        return pdppError(res, 503, 'web_push_unavailable', webPushConfig.unavailableReason);
-      }
-      const ownerSubjectId = getOwnerSubjectId(req);
-      const record = await webPushStore.upsert(ownerSubjectId, req.body?.subscription || req.body, {
-        user_agent: req.get('user-agent') || null,
-        platform: req.body?.platform || null,
-        device_label: req.body?.device_label || null,
-      });
-      res.status(201).json({ object: 'web_push_subscription', subscription: record });
-    } catch (err) {
-      if (err?.status === 400) {
-        return pdppError(res, 400, err.code || 'invalid_request', err.message);
-      }
-      handleError(res, err);
-    }
-  });
-
-  app.delete('/_ref/web-push/subscriptions', ownerAuth.requireOwnerSession, async (req, res) => {
-    const endpoint = typeof req.body?.endpoint === 'string' ? req.body.endpoint : null;
-    if (!endpoint) {
-      return pdppError(res, 400, 'invalid_request', 'endpoint is required');
-    }
-    const ownerSubjectId = getOwnerSubjectId(req);
-    const revoked = await webPushStore.revoke(ownerSubjectId, endpoint);
-    res.json({ object: 'web_push_subscription_deleted', deleted: Boolean(revoked) });
-  });
-
-  app.post('/_ref/web-push/test', ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      if (!webPushConfig.enabled) {
-        return pdppError(res, 503, 'web_push_unavailable', webPushConfig.unavailableReason);
-      }
-      const ownerSubjectId = getOwnerSubjectId(req);
-      const result = await fanoutTestWebPush({
-        config: webPushConfig,
-        store: webPushStore,
-        ownerSubjectId,
-      });
-      res.json({
-        object: 'web_push_test_notification',
-        attempted: result.attempted,
-        sent: result.sent,
-        unavailable: Boolean(result.unavailable),
-      });
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
+  // Operator-only Web Push surfaces are mounted via
+  // `server/routes/web-push.ts` per OpenSpec change
+  // `split-reference-server-by-route-family` (§5.2). Behaviour-preserving
+  // extraction: same mount points, same handler chain, same envelopes.
+  const refWebPushContext = {
+    fanoutTestWebPush,
+    getOwnerSubjectId,
+    handleError,
+    pdppError,
+    requireOwnerSession: ownerAuth.requireOwnerSession,
+    webPushConfig,
+    webPushStore,
+  };
+  mountRefWebPushConfig(app, refWebPushContext);
+  mountRefWebPushListSubscriptions(app, refWebPushContext);
+  mountRefWebPushCreateSubscription(app, refWebPushContext);
+  mountRefWebPushDeleteSubscription(app, refWebPushContext);
+  mountRefWebPushTest(app, refWebPushContext);
 
   // Reference-only — not the public lexical retrieval surface.
   // /_ref/search is a spine-only artifact/id-jump helper for the operator

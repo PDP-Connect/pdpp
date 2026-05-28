@@ -10,14 +10,46 @@
 
 ## 2. `_ref` operations family
 
-- [ ] 2.1 Create `reference-implementation/server/routes/ref-operations.ts` exporting `mountRefOperations(app, ctx)`.
-- [ ] 2.2 Move `_ref` traces / grants / runs / timelines routes (`GET /_ref/traces`, `GET /_ref/traces/:traceId`, `GET /_ref/grants`, `GET /_ref/grants/:grantId/timeline`, `GET /_ref/runs`, `GET /_ref/runs/:runId/timeline`).
+The original §2.1 plan called for one combined `ref-operations.ts` adapter
+covering every `_ref` family. In practice each sub-bullet (2.2–2.6) is a
+clean, independently verifiable extraction; bundling them into one file
+would put a ~3,000-LOC adapter under one commit. We are instead landing
+per-sub-family adapter files (e.g. `ref-spine-correlations.ts`) using
+the same `mount...` pattern established in `root-and-discovery.ts`. The
+acceptance bar (no protocol-observable change, parity tests pass) is
+unchanged.
+
+- [x] 2.1 Adapter files live under `server/routes/<sub-family>.ts`,
+  exporting per-route `mount...` functions following the
+  `root-and-discovery.ts` pattern. (Decision revision: one combined
+  `ref-operations.ts` would be ~3,000 LOC; per-sub-family files match
+  the §1 precedent and keep each tranche reviewable in one commit.)
+- [~] 2.2 Move `_ref` traces / grants / runs / timelines routes
+  (`GET /_ref/traces`, `GET /_ref/traces/:traceId`, `GET /_ref/grants`,
+  `GET /_ref/grants/:grantId/timeline`, `GET /_ref/runs`,
+  `GET /_ref/runs/:runId/timeline`).
+  - [x] List endpoints (`/_ref/traces`, `/_ref/grants`, `/_ref/runs`)
+    extracted to `server/routes/ref-spine-correlations.ts` with
+    `mountRefTraces`, `mountRefGrants`, `mountRefRuns`. Behaviour-
+    preserving; covered by `test/control-plane.test.js` (21 tests pass)
+    and `test/ref-read-owner-gate.test.js` (3 tests pass).
+  - [ ] Detail / timeline endpoints (`/_ref/traces/:traceId`,
+    `/_ref/grants/:grantId/timeline`, `/_ref/runs/:runId/timeline`)
+    remain inline in `index.js`. They couple to `parseTimelineFilters`,
+    `executeRefSpineEventsPage`, and live-bearer redaction helpers; the
+    extraction is well-defined but deferred to keep this tranche
+    independently reviewable.
 - [ ] 2.3 Move `_ref` dataset routes (`GET /_ref/dataset/summary`, `…/summary/streams`, `POST …/summary/rebuild`, `…/summary/reconcile`, `GET /_ref/dataset/size`, `…/top`, `POST …/size/rebuild`, `…/size/reconcile`, `GET /_ref/records/version-stats`).
 - [ ] 2.4 Move `_ref` connectors / connections / connector-instances routes (list/get/run/schedule pause/resume/delete and `PATCH /_ref/connections/:connectorInstanceId`).
 - [ ] 2.5 Move `_ref` approvals, records-timeline, schedules, deployment, clients, search routes.
 - [ ] 2.6 Move `_ref` device-exporters routes (enrollment-codes/enroll, list, source-instances, diagnostics, revoke, heartbeat, ingest-batches, source-instance state/local-collector-gaps).
-- [ ] 2.7 Update `buildAsApp` in `server/index.js` to call `mountRefOperations` at the same point in route registration; delete the moved blocks.
-- [ ] 2.8 Acceptance: targeted tests under `reference-implementation/test/` (ref-control, dataset summary, device exporter, web push, schedules) pass; `pnpm --dir reference-implementation run verify` passes.
+- [ ] 2.7 Update `buildAsApp` in `server/index.js` to call each
+  sub-family's mount function at the same point in route registration;
+  delete the moved blocks. (Partial: 2.2 list endpoints wired via
+  `refSpineCorrelationsContext`; remaining sub-families pending.)
+- [~] 2.8 Acceptance: targeted tests under `reference-implementation/test/` (ref-control, dataset summary, device exporter, web push, schedules) pass; `pnpm --dir reference-implementation run verify` passes.
+  - [x] Tests covering 2.2 list endpoints pass: `node --test test/control-plane.test.js` (21/21), `node --test test/ref-read-owner-gate.test.js` (3/3), `node --test test/ref-spine-correlations-list-{boundary,operation}.test.js` (10/10).
+  - [ ] Remaining sub-family acceptance still gated by §§2.3–2.7 landing.
 
 ## 3. RS read family
 
@@ -38,7 +70,7 @@
 ## 5. Smaller families (each its own commit, after §1–§4)
 
 - [ ] 5.1 `server/routes/run-interaction.ts` — `POST /_ref/runs/:runId/interaction` plus dev playground.
-- [ ] 5.2 `server/routes/web-push.ts` — `_ref/web-push/*` (5 routes).
+- [x] 5.2 `server/routes/web-push.ts` — `_ref/web-push/*` (5 routes). Landed: five per-route mount fns (`mountRefWebPushConfig`, `mountRefWebPushListSubscriptions`, `mountRefWebPushCreateSubscription`, `mountRefWebPushDeleteSubscription`, `mountRefWebPushTest`). Behaviour-preserving; covered by `test/web-push-notifications.test.js` (36/37 pass, 1 pre-existing skip).
 - [ ] 5.3 `server/routes/source-webhooks.ts` — `POST /_ref/source-webhooks/:sourceId`.
 - [ ] 5.4 `server/routes/remote-surface.ts` — any non-streaming neko/browser-surface routes still in `index.js`.
 
