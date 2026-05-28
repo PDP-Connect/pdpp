@@ -119,17 +119,45 @@ async function connectClient(fakeFetch) {
   return { client, server };
 }
 
-test('lists read-only tools with read-only annotations', async () => {
+test('lists the expected tools and annotates read-only tools as read-only', async () => {
   const { fetch } = makeFakeRs();
   const { client, server } = await connectClient(fetch);
 
   const tools = await client.listTools();
   const names = tools.tools.map((tool) => tool.name).sort();
-  assert.deepEqual(names, ['fetch', 'fetch_blob', 'list_streams', 'query_records', 'schema', 'search']);
+  assert.deepEqual(names, [
+    'create_event_subscription',
+    'delete_event_subscription',
+    'fetch',
+    'fetch_blob',
+    'get_event_subscription',
+    'list_event_subscriptions',
+    'list_streams',
+    'query_records',
+    'schema',
+    'search',
+    'send_test_event',
+    'update_event_subscription',
+  ]);
 
+  const READ_ONLY = new Set([
+    'schema',
+    'list_streams',
+    'query_records',
+    'search',
+    'fetch',
+    'fetch_blob',
+    'list_event_subscriptions',
+    'get_event_subscription',
+  ]);
   for (const tool of tools.tools) {
-    assert.equal(tool.annotations?.readOnlyHint, true, `${tool.name} must be readOnlyHint=true`);
-    assert.equal(tool.annotations?.destructiveHint, false);
+    if (READ_ONLY.has(tool.name)) {
+      assert.equal(tool.annotations?.readOnlyHint, true, `${tool.name} must be readOnlyHint=true`);
+      assert.equal(tool.annotations?.destructiveHint, false);
+    } else {
+      assert.equal(tool.annotations?.readOnlyHint, false, `${tool.name} must be readOnlyHint=false`);
+      assert.equal(tool.annotations?.openWorldHint, false, `${tool.name} must be openWorldHint=false`);
+    }
   }
 
   await client.close();
