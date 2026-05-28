@@ -14,7 +14,7 @@ This is a survey/synthesis note, not a fresh design. The purpose is to draw a si
 
 ## Context
 
-PDPP-as-protocol is the headline; the reference implementation, Collection Profile, polyfill connectors, and operator console are downstream surfaces (`docs/voice-and-framing.md`). Within the reference implementation, the canonical nouns for management work are `connector_id`, `connection`, `device`, `run`, `schedule`, `coverage`, `grant` (`design-notes/full-context-refresh.md`).
+PDPP-as-protocol is the headline; the reference implementation, Collection Profile, polyfill connectors, and operator console are downstream surfaces (`docs/voice-and-framing.md`). Within the reference implementation, the canonical nouns for management work are connector type identity, `connection`, `device`, `run`, `schedule`, `coverage`, and `grant` (`design-notes/full-context-refresh.md`). The active `canonicalize-connector-keys` change is tightening connector type identity from overloaded URL-shaped `connector_id` values toward canonical `connector_key` plus `manifest_uri`.
 
 The journey the user named for this lane is:
 
