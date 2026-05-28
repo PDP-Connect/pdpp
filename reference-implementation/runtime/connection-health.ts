@@ -552,9 +552,9 @@ export function computeConnectionHealth(input: ComputeConnectionHealthInput): Co
   const lastSuccessAt = input.run?.lastSuccessAt ?? null;
   const nextAttemptAt = conditionExpired(input.backoff?.nextRunAt ?? null, input.observedAt ?? null)
     ? null
-    : input.backoff?.nextRunAt ?? null;
+    : (input.backoff?.nextRunAt ?? null);
   const finish = (
-    args: Omit<SnapshotArgs, "conditions" | "dominantConditionId" | "supportingConditionIds">,
+    args: Omit<SnapshotArgs, "conditions" | "dominantConditionId" | "supportingConditionIds">
   ): ConnectionHealthSnapshot => {
     const dominantConditionId = pickDominantConditionId(args.state, conditions);
     return snapshot({
@@ -729,7 +729,7 @@ export function computeConnectionHealth(input: ComputeConnectionHealthInput): Co
 }
 
 function hasCurrentEvidenceWithoutCollectionVerdict(
-  conditions: ReadonlyMap<ConnectionConditionType, ConnectionHealthCondition>,
+  conditions: ReadonlyMap<ConnectionConditionType, ConnectionHealthCondition>
 ): boolean {
   return (
     conditionIsTrue(conditions, "Fresh") ||
@@ -773,21 +773,21 @@ function projectBadges(input: ComputeConnectionHealthInput, axes: ConnectionAxes
 }
 
 function indexConditions(
-  conditions: readonly ConnectionHealthCondition[],
+  conditions: readonly ConnectionHealthCondition[]
 ): ReadonlyMap<ConnectionConditionType, ConnectionHealthCondition> {
   return new Map(conditions.map((item) => [item.type, item]));
 }
 
 function conditionIsFalse(
   conditions: ReadonlyMap<ConnectionConditionType, ConnectionHealthCondition>,
-  type: ConnectionConditionType,
+  type: ConnectionConditionType
 ): boolean {
   return conditions.get(type)?.status === "false";
 }
 
 function conditionIsTrue(
   conditions: ReadonlyMap<ConnectionConditionType, ConnectionHealthCondition>,
-  type: ConnectionConditionType,
+  type: ConnectionConditionType
 ): boolean {
   return conditions.get(type)?.status === "true";
 }
@@ -810,9 +810,7 @@ function hasDegradingCondition(conditions: readonly ConnectionHealthCondition[])
   });
 }
 
-function isHealthyConditionSet(
-  conditions: ReadonlyMap<ConnectionConditionType, ConnectionHealthCondition>,
-): boolean {
+function isHealthyConditionSet(conditions: ReadonlyMap<ConnectionConditionType, ConnectionHealthCondition>): boolean {
   return (
     conditionIsTrue(conditions, "CollectionSucceeded") &&
     conditionIsTrue(conditions, "SourceCoverageComplete") &&
@@ -827,7 +825,10 @@ function isHealthyConditionSet(
   );
 }
 
-function projectConditions(input: ComputeConnectionHealthInput, axes: ConnectionAxes): readonly ConnectionHealthCondition[] {
+function projectConditions(
+  input: ComputeConnectionHealthInput,
+  axes: ConnectionAxes
+): readonly ConnectionHealthCondition[] {
   const observedAt = input.observedAt ?? input.run?.lastSuccessAt ?? input.backoff?.nextRunAt ?? null;
   return [
     projectionReliableCondition(input),
@@ -906,7 +907,12 @@ function projectionReliableCondition(input: ComputeConnectionHealthInput): Conne
       reason: CONDITION_REASON.PROJECTION_UNRELIABLE,
       message: `Projection evidence is unreliable: ${sources.join(", ")}.`,
       origin: "read_model",
-      remediation: { action: "wait", label: "Wait for the reference read model to refresh", retryable: true, target: null },
+      remediation: {
+        action: "wait",
+        label: "Wait for the reference read model to refresh",
+        retryable: true,
+        target: null,
+      },
     });
   }
   return condition({
@@ -938,7 +944,12 @@ function scheduleEligibleCondition(input: ComputeConnectionHealthInput): Connect
       reason: CONDITION_REASON.SCHEDULE_PAUSED,
       message: "The schedule is paused.",
       origin: "scheduler",
-      remediation: { action: "wait", label: "Resume the schedule when fresh data is needed", retryable: false, target: "schedule" },
+      remediation: {
+        action: "wait",
+        label: "Resume the schedule when fresh data is needed",
+        retryable: false,
+        target: "schedule",
+      },
     });
   }
   return condition({
@@ -1122,10 +1133,18 @@ function runtimeAvailableCondition(input: ComputeConnectionHealthInput): Connect
       type: "RuntimeAvailable",
       status: "false",
       severity: "error",
-      reason: normalizeConditionReason(remoteSurface.waitReason ?? remoteSurface.leaseStatus, CONDITION_REASON.RUNTIME_UNAVAILABLE),
+      reason: normalizeConditionReason(
+        remoteSurface.waitReason ?? remoteSurface.leaseStatus,
+        CONDITION_REASON.RUNTIME_UNAVAILABLE
+      ),
       message: "The managed runtime surface is not available.",
       origin: "remote_surface",
-      remediation: { action: "check_runtime", label: "Check the browser surface runtime", retryable: true, target: "remote_surface" },
+      remediation: {
+        action: "check_runtime",
+        label: "Check the browser surface runtime",
+        retryable: true,
+        target: "remote_surface",
+      },
     });
   }
   if (remoteSurface.axis === "unknown") {
@@ -1167,11 +1186,16 @@ function remoteSurfaceAvailableCondition(input: ComputeConnectionHealthInput): C
       severity: "error",
       reason: normalizeConditionReason(
         remoteSurface.waitReason ?? remoteSurface.leaseStatus,
-        CONDITION_REASON.REMOTE_SURFACE_FAILED,
+        CONDITION_REASON.REMOTE_SURFACE_FAILED
       ),
       message: "The managed remote browser surface is unavailable.",
       origin: "remote_surface",
-      remediation: { action: "check_runtime", label: "Check the browser surface runtime", retryable: true, target: "remote_surface" },
+      remediation: {
+        action: "check_runtime",
+        label: "Check the browser surface runtime",
+        retryable: true,
+        target: "remote_surface",
+      },
     });
   }
   if (remoteSurface.axis === "unknown") {
@@ -1222,7 +1246,12 @@ function localExporterAvailableCondition(axes: ConnectionAxes): ConnectionHealth
         reason: CONDITION_REASON.LOCAL_EXPORTER_STALLED,
         message: "Local exporter work is stalled or blocked.",
         origin: "local_device",
-        remediation: { action: "clear_backlog", label: "Inspect the local collector backlog", retryable: true, target: "local_device" },
+        remediation: {
+          action: "clear_backlog",
+          label: "Inspect the local collector backlog",
+          retryable: true,
+          target: "local_device",
+        },
       });
     case "unknown":
     default:
@@ -1326,7 +1355,12 @@ function backlogClearCondition(axes: ConnectionAxes): ConnectionHealthCondition 
         reason: CONDITION_REASON.OUTBOX_ACTIVE,
         message: "Local-device outbox work is currently draining.",
         origin: "local_device",
-        remediation: { action: "wait", label: "Wait for the local-device outbox to drain", retryable: true, target: "local_device" },
+        remediation: {
+          action: "wait",
+          label: "Wait for the local-device outbox to drain",
+          retryable: true,
+          target: "local_device",
+        },
       });
     case "stalled":
       return condition({
@@ -1336,7 +1370,12 @@ function backlogClearCondition(axes: ConnectionAxes): ConnectionHealthCondition 
         reason: CONDITION_REASON.OUTBOX_STALLED,
         message: "Local-device outbox work appears stalled.",
         origin: "local_device",
-        remediation: { action: "clear_backlog", label: "Inspect the local collector backlog", retryable: true, target: "local_device" },
+        remediation: {
+          action: "clear_backlog",
+          label: "Inspect the local collector backlog",
+          retryable: true,
+          target: "local_device",
+        },
       });
     case "unknown":
     default:
@@ -1352,20 +1391,12 @@ function backlogClearCondition(axes: ConnectionAxes): ConnectionHealthCondition 
 }
 
 function isDegradingCoverage(axis: CoverageAxis): boolean {
-  return (
-    axis === "gaps" ||
-    axis === "partial" ||
-    axis === "retryable_gap" ||
-    axis === "terminal_gap"
-  );
+  return axis === "gaps" || axis === "partial" || axis === "retryable_gap" || axis === "terminal_gap";
 }
 
 function firstReasonCode(input: ComputeConnectionHealthInput): string | null {
   return (
-    input.run?.reasonCode ??
-    stripClassPrefix(input.backoff?.reasonClass ?? null) ??
-    input.attention?.reasonCode ??
-    null
+    input.run?.reasonCode ?? stripClassPrefix(input.backoff?.reasonClass ?? null) ?? input.attention?.reasonCode ?? null
   );
 }
 
@@ -1441,17 +1472,19 @@ function readinessBlockedCondition(conditions: readonly ConnectionHealthConditio
   if (conditionSet.get("CollectionSucceeded")?.status === "true") {
     return null;
   }
-  return conditions.find(
-    (item) =>
-      item.status === "false" &&
-      item.severity === "blocked" &&
-      (item.type === "CredentialsValid" || item.type === "RuntimeAvailable"),
-  ) ?? null;
+  return (
+    conditions.find(
+      (item) =>
+        item.status === "false" &&
+        item.severity === "blocked" &&
+        (item.type === "CredentialsValid" || item.type === "RuntimeAvailable")
+    ) ?? null
+  );
 }
 
 function pickDominantConditionId(
   state: ConnectionHealthState,
-  conditions: readonly ConnectionHealthCondition[],
+  conditions: readonly ConnectionHealthCondition[]
 ): string | null {
   const byType = new Map(conditions.map((item) => [item.type, item]));
   switch (state) {
@@ -1488,7 +1521,7 @@ function pickDominantConditionId(
 
 function pickSupportingConditionIds(
   conditions: readonly ConnectionHealthCondition[],
-  dominantConditionId: string | null,
+  dominantConditionId: string | null
 ): readonly string[] {
   const ids: string[] = [];
   if (dominantConditionId) {
@@ -1505,7 +1538,7 @@ function pickSupportingConditionIds(
 
 function conditionId(
   conditionValue: ConnectionHealthCondition | undefined,
-  status: ConnectionConditionStatus,
+  status: ConnectionConditionStatus
 ): string | null {
   return conditionValue?.status === status ? conditionValue.id : null;
 }
@@ -1516,7 +1549,7 @@ function failingConditionId(conditionValue: ConnectionHealthCondition | undefine
 
 function firstConditionId(
   conditions: readonly ConnectionHealthCondition[],
-  types: readonly ConnectionConditionType[],
+  types: readonly ConnectionConditionType[]
 ): string | null {
   for (const type of types) {
     const found = conditions.find((item) => item.type === type && item.status === "false");
@@ -1602,7 +1635,7 @@ function projectNextAction(attention: ConnectionAttentionEvidence): NextAction {
   // Schedule-fallback evidence has no durable record, so notification
   // state is unknown — surface `null` rather than fabricating `pending`.
   const notificationState: NextAction["notification_state"] = isStructured
-    ? attention.notificationState ?? "pending"
+    ? (attention.notificationState ?? "pending")
     : null;
   if (attention.sensitivity === "secret") {
     // Block every potentially-revealing field; keep the bare minimum so

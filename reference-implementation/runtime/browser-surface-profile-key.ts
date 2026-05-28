@@ -1,6 +1,9 @@
-export type BrowserSurfaceProfileManifest = {
-  readonly capabilities?: unknown;
-} | null | undefined;
+export type BrowserSurfaceProfileManifest =
+  | {
+      readonly capabilities?: unknown;
+    }
+  | null
+  | undefined;
 
 /**
  * Returns the remote-browser profile key used by both runtime leasing and
@@ -11,7 +14,7 @@ export type BrowserSurfaceProfileManifest = {
 export function readBrowserSurfaceProfileKey(
   connectorId: string,
   connectorInstanceId: string,
-  manifest: BrowserSurfaceProfileManifest,
+  manifest: BrowserSurfaceProfileManifest
 ): string {
   const caps = manifest && typeof manifest === "object" ? (manifest as { capabilities?: unknown }).capabilities : null;
   const browserSurface =

@@ -22,13 +22,17 @@ export interface NekoSurfaceAllocatorClientOptions {
 }
 
 export class NekoSurfaceAllocatorError extends Error {
-  readonly code: "allocator_http_error" | "allocator_fetch_error" | "allocator_timeout" | "allocator_malformed_response";
+  readonly code:
+    | "allocator_http_error"
+    | "allocator_fetch_error"
+    | "allocator_timeout"
+    | "allocator_malformed_response";
   readonly status?: number;
 
   constructor(
     code: NekoSurfaceAllocatorError["code"],
     message: string,
-    options: { status?: number; cause?: unknown } = {},
+    options: { status?: number; cause?: unknown } = {}
   ) {
     super(message, options.cause === undefined ? undefined : { cause: options.cause });
     this.name = "NekoSurfaceAllocatorError";
@@ -74,7 +78,11 @@ export class NekoSurfaceAllocatorClient implements BrowserSurfaceAllocator {
   }
 
   async getSurfaceStatus(surfaceId: string): Promise<BrowserSurface | null> {
-    const payload = await this.#requestJson(`surfaces/${encodeURIComponent(surfaceId)}`, { method: "GET" }, { nullOn404: true });
+    const payload = await this.#requestJson(
+      `surfaces/${encodeURIComponent(surfaceId)}`,
+      { method: "GET" },
+      { nullOn404: true }
+    );
     return payload === null ? null : parseSurfaceEnvelope(payload, "surface status response");
   }
 
@@ -86,7 +94,7 @@ export class NekoSurfaceAllocatorClient implements BrowserSurfaceAllocator {
         body: JSON.stringify({ reason: request.reason }),
         headers: { "content-type": "application/json" },
       },
-      { nullOn404: true },
+      { nullOn404: true }
     );
     return payload === null ? null : parseSurfaceEnvelope(payload, "stop surface response");
   }
@@ -109,7 +117,7 @@ export class NekoSurfaceAllocatorClient implements BrowserSurfaceAllocator {
         throw new NekoSurfaceAllocatorError(
           "allocator_http_error",
           `n.eko allocator ${init.method ?? "GET"} ${url.pathname} failed with HTTP ${response.status}`,
-          { status: response.status },
+          { status: response.status }
         );
       }
       try {
@@ -118,7 +126,7 @@ export class NekoSurfaceAllocatorClient implements BrowserSurfaceAllocator {
         throw new NekoSurfaceAllocatorError(
           "allocator_malformed_response",
           `n.eko allocator ${init.method ?? "GET"} ${url.pathname} returned invalid JSON`,
-          { cause },
+          { cause }
         );
       }
     } catch (cause) {
@@ -129,13 +137,13 @@ export class NekoSurfaceAllocatorClient implements BrowserSurfaceAllocator {
         throw new NekoSurfaceAllocatorError(
           "allocator_timeout",
           `n.eko allocator ${init.method ?? "GET"} ${url.pathname} timed out after ${String(this.#timeoutMs)}ms`,
-          { cause },
+          { cause }
         );
       }
       throw new NekoSurfaceAllocatorError(
         "allocator_fetch_error",
         `n.eko allocator ${init.method ?? "GET"} ${url.pathname} request failed`,
-        { cause },
+        { cause }
       );
     } finally {
       clearTimeout(timeout);
@@ -166,7 +174,9 @@ function parseSurfaceListEnvelope(value: unknown): BrowserSurface[] {
   if (!isRecord(value) || !Array.isArray(value.surfaces)) {
     throw malformed("surface list response must contain a surfaces array");
   }
-  return value.surfaces.map((surface, index) => parseBrowserSurface(surface, `surface list response at index ${String(index)}`));
+  return value.surfaces.map((surface, index) =>
+    parseBrowserSurface(surface, `surface list response at index ${String(index)}`)
+  );
 }
 
 function parseBrowserSurface(value: unknown, label: string): BrowserSurface {
@@ -286,6 +296,6 @@ function malformed(message: string, cause?: unknown): NekoSurfaceAllocatorError 
   return new NekoSurfaceAllocatorError(
     "allocator_malformed_response",
     `malformed n.eko allocator response: ${message}`,
-    cause === undefined ? {} : { cause },
+    cause === undefined ? {} : { cause }
   );
 }

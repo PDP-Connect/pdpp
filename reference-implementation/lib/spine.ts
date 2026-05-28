@@ -486,13 +486,13 @@ function assertRunStartedIsStamped(input: SpineEventInput): void {
   if (typeof epoch !== "string" || epoch.length === 0) {
     throw new Error(
       "emitSpineEvent: run.started requires data.boot_epoch (string uuid); controller singleton not initialized? " +
-        "See docs/run-reconciliation-design-brief.md §3.3.",
+        "See docs/run-reconciliation-design-brief.md §3.3."
     );
   }
   if (typeof seq !== "number" || !Number.isFinite(seq) || seq < 1) {
     throw new Error(
       "emitSpineEvent: run.started requires data.seq (positive integer); controller singleton not initialized? " +
-        "See docs/run-reconciliation-design-brief.md §3.3.",
+        "See docs/run-reconciliation-design-brief.md §3.3."
     );
   }
 }
@@ -756,12 +756,7 @@ function summarizeEvents(events: readonly SpineEventRecord[]): SpineSummary | nu
   // boot-epoch reconciliation (see docs/run-reconciliation-design-brief.md
   // §3.7). All run-status projection code must read from this set; never
   // hardcode subset checks like `["completed", "failed"]` elsewhere.
-  const RUN_TERMINAL_EVENT_TYPES = new Set([
-    "run.completed",
-    "run.failed",
-    "run.cancelled",
-    "run.abandoned",
-  ]);
+  const RUN_TERMINAL_EVENT_TYPES = new Set(["run.completed", "run.failed", "run.cancelled", "run.abandoned"]);
   let status = "unknown";
   // Pass 1: prefer the most recent run-terminal event when summarizing a run.
   for (let i = events.length - 1; i >= 0; i -= 1) {
@@ -1178,7 +1173,7 @@ export async function listSpineCorrelations(
       if (!gid) continue;
       const row = getOne<{ readonly package_id: string | null }>(
         referenceQueries.authGrantPackageMembersGetPackageIdByGrant,
-        [gid],
+        [gid]
       );
       if (row?.package_id) {
         s.grant_package_id = row.package_id;

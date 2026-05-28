@@ -729,15 +729,7 @@ export interface ClientEventSubscriptionsCapability {
     content_type: "application/cloudevents+json; charset=utf-8";
     specversion: "1.0";
     pdppversion: "1";
-    fields: readonly [
-      "specversion",
-      "pdppversion",
-      "id",
-      "type",
-      "source",
-      "time",
-      "data",
-    ];
+    fields: readonly ["specversion", "pdppversion", "id", "type", "source", "time", "data"];
     subscription_id_location: "data.subscription_id";
     no_record_bodies: true;
   };
@@ -792,9 +784,7 @@ export interface ClientEventSubscriptionsCapability {
 export function buildClientEventSubscriptionsCapability({
   supported = true,
   endpoint = "/v1/event-subscriptions",
-}: ClientEventSubscriptionsCapabilityInput = {}):
-  | ClientEventSubscriptionsCapability
-  | { supported: false } {
+}: ClientEventSubscriptionsCapabilityInput = {}): ClientEventSubscriptionsCapability | { supported: false } {
   if (!supported) {
     return { supported: false };
   }
@@ -809,15 +799,7 @@ export function buildClientEventSubscriptionsCapability({
       content_type: "application/cloudevents+json; charset=utf-8",
       specversion: "1.0",
       pdppversion: "1",
-      fields: [
-        "specversion",
-        "pdppversion",
-        "id",
-        "type",
-        "source",
-        "time",
-        "data",
-      ] as const,
+      fields: ["specversion", "pdppversion", "id", "type", "source", "time", "data"] as const,
       subscription_id_location: "data.subscription_id",
       no_record_bodies: true,
     },

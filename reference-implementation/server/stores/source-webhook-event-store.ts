@@ -27,7 +27,7 @@ export function createPostgresSourceWebhookEventStore(): SourceWebhookEventStore
         `INSERT INTO source_webhook_events(source_id, event_id, body_hash, received_at)
          VALUES($1, $2, $3, $4)
          ON CONFLICT(source_id, event_id) DO NOTHING`,
-        [sourceId, eventId, bodyHash, receivedAt],
+        [sourceId, eventId, bodyHash, receivedAt]
       );
       return result.rowCount === 1;
     },
@@ -35,9 +35,7 @@ export function createPostgresSourceWebhookEventStore(): SourceWebhookEventStore
 }
 
 export function createSourceWebhookEventStore(): SourceWebhookEventStore {
-  return isPostgresStorageBackend()
-    ? createPostgresSourceWebhookEventStore()
-    : createSqliteSourceWebhookEventStore();
+  return isPostgresStorageBackend() ? createPostgresSourceWebhookEventStore() : createSqliteSourceWebhookEventStore();
 }
 
 let defaultStore: SourceWebhookEventStore | null = null;

@@ -53,7 +53,7 @@ async function nextSeqForController(controllerId: string): Promise<number> {
        FROM spine_events
        WHERE event_type = 'controller.booted'
          AND data_json->>'controller_id' = $1`,
-      [controllerId],
+      [controllerId]
     );
     return Number(rows[0]?.next_seq ?? 1);
   }
@@ -61,14 +61,16 @@ async function nextSeqForController(controllerId: string): Promise<number> {
   if (!db) {
     return 1;
   }
-  const row = (db as unknown as {
-    prepare: (sql: string) => { get: (arg: string) => { next_seq: number } | undefined };
-  })
+  const row = (
+    db as unknown as {
+      prepare: (sql: string) => { get: (arg: string) => { next_seq: number } | undefined };
+    }
+  )
     .prepare(
       `SELECT COALESCE(MAX(CAST(json_extract(data_json, '$.seq') AS INTEGER)), 0) + 1 AS next_seq
        FROM spine_events
        WHERE event_type = 'controller.booted'
-         AND json_extract(data_json, '$.controller_id') = ?`,
+         AND json_extract(data_json, '$.controller_id') = ?`
     )
     .get(controllerId);
   return Number(row?.next_seq ?? 1);
@@ -82,13 +84,9 @@ async function nextSeqForController(controllerId: string): Promise<number> {
  * Returns the resolved BootEpoch so the caller (startServer) can pass
  * it to the orphan reconciler (Stage 6).
  */
-export async function emitControllerBootedAndStashEpoch(
-  opts: BootControllerOpts = {},
-): Promise<BootEpoch> {
+export async function emitControllerBootedAndStashEpoch(opts: BootControllerOpts = {}): Promise<BootEpoch> {
   const controllerId = resolveControllerId(opts);
-  const bootEpoch = opts.bootEpoch && opts.bootEpoch.length > 0
-    ? opts.bootEpoch
-    : randomUUID();
+  const bootEpoch = opts.bootEpoch && opts.bootEpoch.length > 0 ? opts.bootEpoch : randomUUID();
   const seq = await nextSeqForController(controllerId);
 
   await emitSpineEvent({
@@ -177,9 +175,10 @@ interface PgClient {
 async function reconcilePostgres(epoch: BootEpoch): Promise<ReconcileResult> {
   // Single transaction: SELECT orphans, INSERT run.abandoned for each.
   // Unique-violation on spine_run_abandoned_cause_unique → idempotent no-op.
-  return (withPostgresTransaction as (fn: (c: PgClient) => Promise<ReconcileResult>) => Promise<ReconcileResult>)(async (client: PgClient) => {
-    const { rows } = await client.query<OrphanRow>(
-      `
+  return (withPostgresTransaction as (fn: (c: PgClient) => Promise<ReconcileResult>) => Promise<ReconcileResult>)(
+    async (client: PgClient) => {
+      const { rows } = await client.query<OrphanRow>(
+        `
       SELECT
         s.event_id,
         s.run_id,
@@ -205,16 +204,17 @@ async function reconcilePostgres(epoch: BootEpoch): Promise<ReconcileResult> {
             AND (r.data_json->>'caused_by_event_id') = s.event_id
         )
       `,
-      [epoch.boot_epoch, epoch.controller_id],
-    );
+        [epoch.boot_epoch, epoch.controller_id]
+      );
 
-    let abandoned = 0;
-    for (const orphan of rows) {
-      const inserted = await emitRunAbandoned(client, orphan, epoch, "postgres");
-      if (inserted) abandoned++;
+      let abandoned = 0;
+      for (const orphan of rows) {
+        const inserted = await emitRunAbandoned(client, orphan, epoch, "postgres");
+        if (inserted) abandoned++;
+      }
+      return { abandoned, selected: rows.length };
     }
-    return { abandoned, selected: rows.length };
-  });
+  );
 }
 
 function reconcileSqlite(epoch: BootEpoch): Promise<ReconcileResult> {
@@ -222,13 +222,13 @@ function reconcileSqlite(epoch: BootEpoch): Promise<ReconcileResult> {
   if (!db) {
     return Promise.resolve({ abandoned: 0, selected: 0 });
   }
-  const raw = (db as unknown as {
+  const raw = db as unknown as {
     prepare: (sql: string) => {
       all: (...args: unknown[]) => unknown[];
       run: (...args: unknown[]) => unknown;
     };
     transaction: <T>(fn: () => T) => () => T;
-  });
+  };
 
   const selectStmt = raw.prepare(
     `
@@ -254,7 +254,7 @@ function reconcileSqlite(epoch: BootEpoch): Promise<ReconcileResult> {
         WHERE r.event_type = 'run.abandoned'
           AND json_extract(r.data_json, '$.caused_by_event_id') = s.event_id
       )
-    `,
+    `
   );
   const orphans = selectStmt.all(epoch.boot_epoch, epoch.controller_id, epoch.controller_id) as OrphanRow[];
 
@@ -273,7 +273,7 @@ async function emitRunAbandoned(
   client: PgClient,
   orphan: OrphanRow,
   epoch: BootEpoch,
-  _backend: "postgres" | "sqlite",
+  _backend: "postgres" | "sqlite"
 ): Promise<boolean> {
   const eventId = `evt_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
   const occurredAt = new Date().toISOString();
@@ -309,7 +309,7 @@ async function emitRunAbandoned(
         orphan.run_id ?? orphan.event_id,
         orphan.run_id,
         dataJson,
-      ],
+      ]
     );
     return true;
   } catch (err) {
@@ -326,9 +326,9 @@ async function emitRunAbandoned(
 function emitRunAbandonedSyncSqlite(orphan: OrphanRow, epoch: BootEpoch): boolean {
   const db = getDb();
   if (!db) return false;
-  const raw = (db as unknown as {
+  const raw = db as unknown as {
     prepare: (sql: string) => { run: (...args: unknown[]) => { changes: number } };
-  });
+  };
 
   const eventId = `evt_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
   const occurredAt = new Date().toISOString();
@@ -353,7 +353,7 @@ function emitRunAbandonedSyncSqlite(orphan: OrphanRow, epoch: BootEpoch): boolea
         data_json, version
       )
       VALUES (?, 'run.abandoned', ?, ?, ?, ?, 'runtime', ?, 'run', ?, 'abandoned', ?, ?, 'v1')
-      `,
+      `
     );
     stmt.run(
       eventId,
@@ -364,7 +364,7 @@ function emitRunAbandonedSyncSqlite(orphan: OrphanRow, epoch: BootEpoch): boolea
       orphan.actor_id,
       orphan.run_id ?? orphan.event_id,
       orphan.run_id,
-      dataJson,
+      dataJson
     );
     return true;
   } catch (err) {

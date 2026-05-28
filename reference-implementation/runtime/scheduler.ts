@@ -198,11 +198,7 @@ export interface UnresolvedAttentionEvidence {
 export type HasUnresolvedAttentionHandler = (
   connectorId: string,
   connectorInstanceId?: string
-) =>
-  | Promise<UnresolvedAttentionEvidence | null | undefined>
-  | UnresolvedAttentionEvidence
-  | null
-  | undefined;
+) => Promise<UnresolvedAttentionEvidence | null | undefined> | UnresolvedAttentionEvidence | null | undefined;
 
 export interface SchedulerOptions {
   connectors: readonly ConnectorSchedule[];
@@ -303,7 +299,8 @@ function runtimeKey(schedule: Pick<ConnectorSchedule, "connectorId" | "connector
 }
 
 function getManifestRefreshPolicy(manifest: SchedulerManifest | null | undefined): AutomationRefreshPolicy | null {
-  const capabilities = manifest && typeof manifest === "object" ? (manifest as { capabilities?: unknown }).capabilities : null;
+  const capabilities =
+    manifest && typeof manifest === "object" ? (manifest as { capabilities?: unknown }).capabilities : null;
   if (!capabilities || typeof capabilities !== "object" || Array.isArray(capabilities)) {
     return null;
   }
@@ -377,10 +374,7 @@ function newestHistoryEpochMs(history: readonly RunRecord[]): number {
   return newest;
 }
 
-function resolveLastRunEpochMs(
-  lastRunTimeMs: number | undefined,
-  history: readonly RunRecord[]
-): number {
+function resolveLastRunEpochMs(lastRunTimeMs: number | undefined, history: readonly RunRecord[]): number {
   const fromMap = normalizeSchedulerEpochMs(lastRunTimeMs);
   if (fromMap > 0) {
     return fromMap;
@@ -589,7 +583,11 @@ function buildNotReadySkip(connectorId: string, reason: string, connectorInstanc
   };
 }
 
-function buildAutomationPolicySkip(connectorId: string, reason: string | null, connectorInstanceId?: string): RunRecord {
+function buildAutomationPolicySkip(
+  connectorId: string,
+  reason: string | null,
+  connectorInstanceId?: string
+): RunRecord {
   return {
     connectorId,
     connectorInstanceId: connectorInstanceId ?? null,
@@ -668,7 +666,11 @@ function buildBackoffSkip(connectorId: string, decision: BackoffDecision, connec
 const BACKOFF_STARTED_PREFIX = "schedule.back_off.started:";
 const GAVE_UP_PREFIX = "schedule.gave_up:";
 
-function buildBackoffStartedEvent(connectorId: string, decision: BackoffDecision, connectorInstanceId?: string): RunRecord {
+function buildBackoffStartedEvent(
+  connectorId: string,
+  decision: BackoffDecision,
+  connectorInstanceId?: string
+): RunRecord {
   const payload = JSON.stringify({
     reason_class: decision.reasonClass,
     consecutive_failures: decision.consecutiveFailures,
@@ -735,7 +737,11 @@ function buildGaveUpEvent(
 function findLastSuccessAt(history: readonly RunRecord[], connectorKey: string): string | null {
   for (let i = history.length - 1; i >= 0; i--) {
     const record = history[i];
-    if (record && (record.connectorInstanceId || record.connectorId) === connectorKey && record.status === "succeeded") {
+    if (
+      record &&
+      (record.connectorInstanceId || record.connectorId) === connectorKey &&
+      record.status === "succeeded"
+    ) {
       return record.completedAt;
     }
   }
@@ -755,11 +761,7 @@ function readSchedulerEventReasonClass(record: RunRecord, prefix: string): strin
   }
 }
 
-function currentStreakHasSchedulerEvent(
-  history: readonly RunRecord[],
-  prefix: string,
-  reasonClass: string
-): boolean {
+function currentStreakHasSchedulerEvent(history: readonly RunRecord[], prefix: string, reasonClass: string): boolean {
   const lastSuccessIndex = history.findLastIndex((record) => record.status === "succeeded");
   return history
     .slice(lastSuccessIndex + 1)
@@ -1114,10 +1116,12 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     if (!schedulerStore) {
       return;
     }
-    Promise.resolve(schedulerStore.upsertLastRunTime(connectorInstanceId, lastRunTimeMs, nowIso(), connectorId)).catch((err: unknown) => {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(`[scheduler] failed to persist last_run_time for ${connectorId}: ${message}`);
-    });
+    Promise.resolve(schedulerStore.upsertLastRunTime(connectorInstanceId, lastRunTimeMs, nowIso(), connectorId)).catch(
+      (err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[scheduler] failed to persist last_run_time for ${connectorId}: ${message}`);
+      }
+    );
   }
 
   function handleGrantFailureDisable(reason: string | null | undefined, connectorInstanceId: string): void {
@@ -1344,7 +1348,14 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
   }
 
   async function executeRun(schedule: ConnectorSchedule, isManual = false): Promise<RunRecord | null> {
-    const { connectorId, connectorInstanceId = connectorId, connectorPath, manifest, ownerToken, grantAccessMode = "continuous" } = schedule;
+    const {
+      connectorId,
+      connectorInstanceId = connectorId,
+      connectorPath,
+      manifest,
+      ownerToken,
+      grantAccessMode = "continuous",
+    } = schedule;
     const key = connectorInstanceId;
     const triggerKind: RunTriggerKind = isManual ? "manual" : "scheduled";
     const refreshPolicy = getManifestRefreshPolicy(manifest);
@@ -1389,9 +1400,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
             return null;
           }
           runtime.notifiedAttentionSkips.set(key, attentionEvidence.key);
-          return recordAndNotify(
-            buildUnresolvedAttentionSkip(connectorId, attentionEvidence, connectorInstanceId)
-          );
+          return recordAndNotify(buildUnresolvedAttentionSkip(connectorId, attentionEvidence, connectorInstanceId));
         }
         // No durable attention evidence. Clear suppression so the next
         // observed attention emits a fresh skip record. This is also the
@@ -1458,7 +1467,12 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
           markNeedsHuman(connectorId, connectorInstanceId);
         }
         return onInteraction(
-          withSchedulerInteractionContext(interaction, { connectorDisplayName, connectorId, connectorInstanceId, runId: currentRunId })
+          withSchedulerInteractionContext(interaction, {
+            connectorDisplayName,
+            connectorId,
+            connectorInstanceId,
+            runId: currentRunId,
+          })
         );
       };
 
@@ -1586,7 +1600,9 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
           runtime.announcedBlockedClass.set(key, decision.reasonClass);
         } else {
           runtime.announcedBlockedClass.set(key, decision.reasonClass);
-          eventsToEmit.push(buildGaveUpEvent(connectorId, decision, findLastSuccessAt(history, key), schedule.connectorInstanceId));
+          eventsToEmit.push(
+            buildGaveUpEvent(connectorId, decision, findLastSuccessAt(history, key), schedule.connectorInstanceId)
+          );
         }
         // Auto-dispatch is suppressed for blocked connectors. Manual
         // `runNow` still works (it bypasses this evaluator entirely via

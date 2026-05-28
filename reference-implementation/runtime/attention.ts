@@ -235,14 +235,10 @@ export function createAttention(input: CreateAttentionInput): AttentionRecord {
  * no response contract is observability, not attention; it should be a
  * progress message instead.
  */
-function validateAxes(
-  posture: ProgressPosture,
-  action: OwnerAction,
-  contract: ResponseContract,
-): void {
+function validateAxes(posture: ProgressPosture, action: OwnerAction, contract: ResponseContract): void {
   if (action === "none" && contract === "none" && posture === "running") {
     throw new Error(
-      "attention: posture=running + owner_action=none + response_contract=none is not assistance; emit PROGRESS instead",
+      "attention: posture=running + owner_action=none + response_contract=none is not assistance; emit PROGRESS instead"
     );
   }
   if (contract === "response_required" && action === "none") {
@@ -259,9 +255,7 @@ export interface TransitionInput {
 
 export function transition(record: AttentionRecord, input: TransitionInput): AttentionRecord {
   if (!canTransition(record.lifecycle, input.to)) {
-    throw new Error(
-      `attention: invalid transition ${record.lifecycle} -> ${input.to} for ${record.id}`,
-    );
+    throw new Error(`attention: invalid transition ${record.lifecycle} -> ${input.to} for ${record.id}`);
   }
   // Lifecycle progress into acknowledged/in_progress is the canonical
   // signal that the owner has seen the prompt — promote the durable
@@ -305,10 +299,7 @@ const VALID_NOTIFICATION_STATES: ReadonlySet<NotificationState> = new Set([
  * failure does not cause a run storm" requires the attention to stay
  * visible while the failure is recorded.
  */
-export function recordNotificationOutcome(
-  record: AttentionRecord,
-  input: NotificationOutcomeInput,
-): AttentionRecord {
+export function recordNotificationOutcome(record: AttentionRecord, input: NotificationOutcomeInput): AttentionRecord {
   if (!VALID_NOTIFICATION_STATES.has(input.outcome)) {
     throw new Error(`attention: invalid notification outcome ${input.outcome}`);
   }
@@ -450,10 +441,7 @@ export interface PushPayloadOptions {
  * The returned object is the *content* layer; the push runtime is
  * responsible for wrapping it in VAPID/TTL/urgency envelopes.
  */
-export function pushPayload(
-  record: AttentionRecord,
-  options: PushPayloadOptions,
-): PushPayload | null {
+export function pushPayload(record: AttentionRecord, options: PushPayloadOptions): PushPayload | null {
   if (record.sensitivity === "secret") return null;
   if (record.owner_action === "none") return null;
   if (isTerminal(record.lifecycle)) return null;

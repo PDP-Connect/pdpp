@@ -428,7 +428,11 @@ export class NekoSurfaceAllocatorService {
       },
     };
     if (surfaceSubjectId !== undefined) {
-      return { ...surface, ...(accountKey !== undefined ? { account_key: accountKey } : {}), surface_subject_id: surfaceSubjectId };
+      return {
+        ...surface,
+        ...(accountKey !== undefined ? { account_key: accountKey } : {}),
+        surface_subject_id: surfaceSubjectId,
+      };
     }
     if (accountKey !== undefined) {
       return { ...surface, account_key: accountKey };

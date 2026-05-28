@@ -66,10 +66,17 @@ export interface BrowserSurfaceLeaseStore {
   repairStaleSurfaceActiveLeases(): Promise<void>;
   updateLeaseTerminal(
     leaseId: string,
-    status: Extract<BrowserSurfaceLease["status"], "released" | "expired" | "deferred" | "cancelled" | "surface_failed">,
+    status: Extract<
+      BrowserSurfaceLease["status"],
+      "released" | "expired" | "deferred" | "cancelled" | "surface_failed"
+    >,
     options?: { releasedAt?: string; waitReason?: BrowserSurfaceLease["wait_reason"] | null }
   ): Promise<BrowserSurfaceLease | null>;
-  clearSurfaceActiveLease(surfaceId: string, leaseId: string, fencingToken: number): Promise<BrowserSurfaceWithPersistenceMetadata | null>;
+  clearSurfaceActiveLease(
+    surfaceId: string,
+    leaseId: string,
+    fencingToken: number
+  ): Promise<BrowserSurfaceWithPersistenceMetadata | null>;
   withLeaseTransaction<T>(fn: (store: BrowserSurfaceLeaseStore) => Promise<T> | T): Promise<T>;
 }
 
@@ -266,7 +273,9 @@ class SqliteBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
 
   getLease(leaseId: string): Promise<BrowserSurfaceLease | null> {
     // REVIEWED-DYNAMIC: static primary-key lookup for the compact browser lease store.
-    const row = firstDynamicRow<BrowserSurfaceLeaseRow>("SELECT * FROM browser_surface_leases WHERE lease_id = ?", [leaseId]);
+    const row = firstDynamicRow<BrowserSurfaceLeaseRow>("SELECT * FROM browser_surface_leases WHERE lease_id = ?", [
+      leaseId,
+    ]);
     return Promise.resolve(mapLease(row));
   }
 
@@ -304,7 +313,10 @@ class SqliteBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
 
   updateLeaseTerminal(
     leaseId: string,
-    status: Extract<BrowserSurfaceLease["status"], "released" | "expired" | "deferred" | "cancelled" | "surface_failed">,
+    status: Extract<
+      BrowserSurfaceLease["status"],
+      "released" | "expired" | "deferred" | "cancelled" | "surface_failed"
+    >,
     options: { releasedAt?: string; waitReason?: BrowserSurfaceLease["wait_reason"] | null } = {}
   ): Promise<BrowserSurfaceLease | null> {
     // REVIEWED-DYNAMIC: static terminal-state mutation for the browser lease store.
@@ -317,7 +329,11 @@ class SqliteBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
     return this.getLease(leaseId);
   }
 
-  clearSurfaceActiveLease(surfaceId: string, leaseId: string, fencingToken: number): Promise<BrowserSurfaceWithPersistenceMetadata | null> {
+  clearSurfaceActiveLease(
+    surfaceId: string,
+    leaseId: string,
+    fencingToken: number
+  ): Promise<BrowserSurfaceWithPersistenceMetadata | null> {
     // REVIEWED-DYNAMIC: static fenced surface release mutation for the browser lease store.
     execDynamicSqlAcknowledged(
       `UPDATE browser_surfaces
@@ -352,10 +368,15 @@ class SqliteBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
 }
 
 class PostgresBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
-  readonly #query: (sql: string, params?: unknown[]) => Promise<{ rows: BrowserSurfaceRow[] | BrowserSurfaceLeaseRow[] }>;
+  readonly #query: (
+    sql: string,
+    params?: unknown[]
+  ) => Promise<{ rows: BrowserSurfaceRow[] | BrowserSurfaceLeaseRow[] }>;
 
   constructor(client?: Queryable) {
-    this.#query = client ? (sql, params = []) => client.query(sql, params) : (sql, params = []) => postgresQuery(sql, params);
+    this.#query = client
+      ? (sql, params = []) => client.query(sql, params)
+      : (sql, params = []) => postgresQuery(sql, params);
   }
 
   async upsertSurface(surface: BrowserSurfaceWithPersistenceMetadata): Promise<BrowserSurfaceWithPersistenceMetadata> {
@@ -457,7 +478,10 @@ class PostgresBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
 
   async updateLeaseTerminal(
     leaseId: string,
-    status: Extract<BrowserSurfaceLease["status"], "released" | "expired" | "deferred" | "cancelled" | "surface_failed">,
+    status: Extract<
+      BrowserSurfaceLease["status"],
+      "released" | "expired" | "deferred" | "cancelled" | "surface_failed"
+    >,
     options: { releasedAt?: string; waitReason?: BrowserSurfaceLease["wait_reason"] | null } = {}
   ): Promise<BrowserSurfaceLease | null> {
     await this.#query(
@@ -469,7 +493,11 @@ class PostgresBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
     return this.getLease(leaseId);
   }
 
-  async clearSurfaceActiveLease(surfaceId: string, leaseId: string, fencingToken: number): Promise<BrowserSurfaceWithPersistenceMetadata | null> {
+  async clearSurfaceActiveLease(
+    surfaceId: string,
+    leaseId: string,
+    fencingToken: number
+  ): Promise<BrowserSurfaceWithPersistenceMetadata | null> {
     await this.#query(
       `UPDATE browser_surfaces
        SET active_lease_id = NULL
