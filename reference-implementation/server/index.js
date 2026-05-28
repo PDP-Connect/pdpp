@@ -235,8 +235,6 @@ import {
   RecordDetailVisibilityError,
   executeRecordDetail,
 } from '../operations/rs-records-detail/index.ts';
-import { executeRefDatasetSummary } from '../operations/ref-dataset-summary/index.ts';
-import { executeRefDatasetSummaryStreams } from '../operations/ref-dataset-summary-streams/index.ts';
 import { executeRefConnectorsList } from '../operations/ref-connectors-list/index.ts';
 import {
   RefConnectorDetailNotFoundError,
@@ -327,6 +325,17 @@ import {
   mountRefWebPushTest,
 } from './routes/web-push.ts';
 import { mountRefSourceWebhooks } from './routes/source-webhooks.ts';
+import {
+  mountRefDatasetSize,
+  mountRefDatasetSizeRebuild,
+  mountRefDatasetSizeReconcile,
+  mountRefDatasetSummary,
+  mountRefDatasetSummaryRebuild,
+  mountRefDatasetSummaryReconcile,
+  mountRefDatasetSummaryStreams,
+  mountRefDatasetTop,
+  mountRefRecordsVersionStats,
+} from './routes/ref-dataset.ts';
 
 const AS_PORT = parseInt(process.env.AS_PORT || '7662');
 const RS_PORT = parseInt(process.env.RS_PORT || '7663');
@@ -4526,399 +4535,44 @@ function buildAsApp(opts = {}) {
     }
   );
 
-  // Reference-only dataset summary for the operator-console hero band. Envelope
-  // assembly lives in the canonical `ref.dataset.summary` operation
-  // (operations/ref-dataset-summary). This route is a Fastify host adapter:
-  // it owns owner auth and response writing, and wires native capability
-  // helpers (split out of the previous `getDatasetSummary` in
-  // server/records.js) into the operation's dependency contract. Not a PDPP
-  // protocol surface — `record_json_bytes` remains an adapter-native operator
-  // diagnostic per `define-reference-operation-environments` contract
-  // correction (4); the operation preserves that constraint.
-  const buildDatasetSummaryDependencies = (aggregate, { projection, streamSeeds = false } = {}) => ({
-    getProjection: projection,
-    getCounts: async () => {
-      const agg = await aggregate();
-      return {
-        connector_count: agg.connector_count,
-        stream_count: agg.stream_count,
-        record_count: agg.record_count,
-      };
-    },
-    getRetainedBytes: async () => {
-      const [agg, recordChangesJsonBytes, blobBytes] = await Promise.all([
-        aggregate(),
-        getDatasetRecordChangesBytes(),
-        getDatasetBlobBytes(),
-      ]);
-      return {
-        record_json_bytes: agg.record_json_bytes,
-        record_changes_json_bytes: recordChangesJsonBytes,
-        blob_bytes: blobBytes,
-      };
-    },
-    getRecordTimeBounds: () => getDatasetRecordTimeBounds(),
-    getIngestedTimeBounds: async () => {
-      const agg = await aggregate();
-      return {
-        earliest: agg.earliest_ingested_at,
-        latest: agg.latest_ingested_at,
-      };
-    },
-    listTopConnectorCandidates: () => listDatasetTopConnectorCandidates(),
-    ...(streamSeeds ? { listStreamProjectionSeeds: () => listDatasetSummaryStreamProjectionSeeds() } : {}),
-  });
-
-  const getRetainedSizeDatasetSummaryProjection = async () => {
-    const [global, connections, streams] = await Promise.all([
-      getRetainedSizeGlobal(),
-      listRetainedSizeConnections({}),
-      listRetainedSizeStreams({}),
-    ]);
-    return {
-      counts: {
-        connector_count: connections.length,
-        stream_count: streams.length,
-        record_count: Number(global.record_count || 0),
-      },
-      retained_bytes: {
-        record_json_bytes: Number(global.current_record_json_bytes || 0),
-        record_changes_json_bytes: Number(global.record_history_json_bytes || 0),
-        blob_bytes: Number(global.blob_bytes || 0),
-      },
-      record_time_bounds: { earliest: null, latest: null },
-      ingested_time_bounds: { earliest: null, latest: null },
-      top_connector_candidates: [...connections]
-        .sort((a, b) => {
-          const byCount = Number(b.record_count || 0) - Number(a.record_count || 0);
-          if (byCount !== 0) return byCount;
-          return String(a.connector_instance_id || '').localeCompare(String(b.connector_instance_id || ''));
-        })
-        .slice(0, 8)
-        .map((row) => ({
-          connector_id: row.connector_id,
-          record_count: Number(row.record_count || 0),
-        })),
-      metadata: {
-        computed_at: global.computed_at,
-        state: global.metadata?.state || (global.dirty ? 'stale' : 'fresh'),
-        stale_since: global.metadata?.stale_since || null,
-        rebuild_status: global.metadata?.rebuild_status || 'idle',
-        last_error: global.metadata?.last_error || null,
-        source_high_watermark: global.metadata?.source_high_watermark || null,
-      },
-    };
+  // `/_ref/dataset/*` and `/_ref/records/version-stats` routes extracted to
+  // `server/routes/ref-dataset.ts` per `split-reference-server-by-route-family`
+  // §2.3. Context wires the same substrate functions that previously lived
+  // inline here; behaviour is identical.
+  const refDatasetContext = {
+    requireOwnerSession: ownerAuth.requireOwnerSession,
+    handleError,
+    createRequestAbortSignal,
+    isPostgresStorageBackend,
+    getDatasetRecordsAggregate,
+    getDatasetRecordChangesBytes,
+    getDatasetBlobBytes,
+    getDatasetRecordTimeBounds,
+    listDatasetTopConnectorCandidates,
+    listDatasetSummaryStreamProjectionSeeds,
+    getDatasetSummaryStreamRecordTimeBounds,
+    getDatasetSummaryProjection,
+    listStreamProjections,
+    rebuildDatasetSummaryProjection,
+    reconcileDirtyDatasetSummaryRecordTimeBounds,
+    getRetainedSizeGlobal,
+    listRetainedSizeConnections,
+    listRetainedSizeStreams,
+    listRetainedSizeTop,
+    rebuildRetainedSize,
+    reconcileDirtyRetainedSize,
+    buildRecordVersionStatsEnvelope,
+    createRequestConnectorInstanceStore,
   };
-
-  app.get('/_ref/dataset/summary', { contract: 'refDatasetSummary' }, ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      // Cache the records aggregate so `record_count` and `*_ingested_at`
-      // come from the same SQL snapshot — the operation calls `getCounts`
-      // and `getIngestedTimeBounds` independently, but the previous native
-      // helper used one aggregate row for both.
-      let cachedAggregate = null;
-      const aggregate = async () => {
-        if (cachedAggregate === null) {
-          cachedAggregate = await getDatasetRecordsAggregate();
-        }
-        return cachedAggregate;
-      };
-
-      const summary = await executeRefDatasetSummary(buildDatasetSummaryDependencies(aggregate, {
-        projection: isPostgresStorageBackend()
-          ? getRetainedSizeDatasetSummaryProjection
-          : () => getDatasetSummaryProjection(),
-      }));
-      res.json(summary);
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  // Reference-only per-`(connector_id, stream)` dataset-summary inspection.
-  // Reads the rows already maintained by the dataset-summary read model
-  // (`dataset_summary_stream_projection`) and surfaces them honestly —
-  // NULL record-time bounds and the dirty-bound flag pass through rather
-  // than being zero-filled. Envelope assembly lives in the canonical
-  // `ref.dataset.summary.streams` operation; this route is the Fastify
-  // host adapter. Not a PDPP protocol surface.
-  app.get('/_ref/dataset/summary/streams', { contract: 'refDatasetSummaryStreams' }, ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const connectorIdFilter = typeof req.query?.connector_id === 'string' && req.query.connector_id.trim()
-        ? req.query.connector_id.trim()
-        : null;
-      const envelope = await executeRefDatasetSummaryStreams(
-        { connector_id: connectorIdFilter },
-        {
-          listStreams: async ({ connectorId }) => {
-            if (isPostgresStorageBackend()) {
-              // `connector_id` is the public route filter — it MUST be
-              // forwarded as `connectorId`, NOT `connectorInstanceId`.
-              // The retained_size_stream Postgres table carries both
-              // columns; we filter on `connector_id` to match the SQLite
-              // `dataset_summary_stream_projection` filter semantics.
-              const rows = await listRetainedSizeStreams(
-                connectorId ? { connectorId } : {},
-              );
-              return rows.map((row) => ({
-                connector_id: row.connector_id,
-                stream: row.stream,
-                record_count: Number(row.record_count || 0),
-                record_json_bytes: Number(row.current_record_json_bytes || 0),
-                earliest_ingested_at: null,
-                latest_ingested_at: null,
-                earliest_record_time: null,
-                latest_record_time: null,
-                consent_time_field: null,
-                dirty_record_time_bounds: Boolean(row.dirty),
-                computed_at: row.computed_at || null,
-              }));
-            }
-            return listStreamProjections({ connectorId });
-          },
-          getProjectionMetadata: async () => {
-            if (isPostgresStorageBackend()) {
-              const global = await getRetainedSizeGlobal();
-              return {
-                computed_at: global.computed_at || null,
-                state: global.metadata?.state || (global.dirty ? 'stale' : 'fresh'),
-                stale_since: global.metadata?.stale_since || null,
-                rebuild_status: global.metadata?.rebuild_status || 'idle',
-                last_error: global.metadata?.last_error || null,
-                source_high_watermark: global.metadata?.source_high_watermark || null,
-              };
-            }
-            return getDatasetSummaryProjection().metadata;
-          },
-        },
-      );
-      res.json(envelope);
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  app.post('/_ref/dataset/summary/rebuild', { contract: 'refDatasetSummaryRebuild' }, ownerAuth.requireOwnerSession, async (req, res) => {
-    const requestAbort = createRequestAbortSignal(req, 'dataset summary rebuild request closed');
-    try {
-      let cachedAggregate = null;
-      const aggregate = async () => {
-        if (cachedAggregate === null) {
-          cachedAggregate = await getDatasetRecordsAggregate();
-        }
-        return cachedAggregate;
-      };
-      if (isPostgresStorageBackend()) {
-        await rebuildRetainedSize();
-        const summary = await executeRefDatasetSummary(buildDatasetSummaryDependencies(aggregate, {
-          projection: getRetainedSizeDatasetSummaryProjection,
-        }));
-        res.json(summary);
-        return;
-      }
-      const projection = await rebuildDatasetSummaryProjection({
-        ...buildDatasetSummaryDependencies(aggregate, { streamSeeds: true }),
-      }, { signal: requestAbort.signal });
-      const summary = await executeRefDatasetSummary({
-        getProjection: () => projection,
-        getCounts: () => {
-          throw new Error('dataset summary rebuild response must use projection');
-        },
-        getRetainedBytes: () => {
-          throw new Error('dataset summary rebuild response must use projection');
-        },
-        getRecordTimeBounds: () => {
-          throw new Error('dataset summary rebuild response must use projection');
-        },
-        getIngestedTimeBounds: () => {
-          throw new Error('dataset summary rebuild response must use projection');
-        },
-        listTopConnectorCandidates: () => {
-          throw new Error('dataset summary rebuild response must use projection');
-        },
-      });
-      res.json(summary);
-    } catch (err) {
-      handleError(res, err);
-    } finally {
-      requestAbort.cleanup();
-    }
-  });
-
-  app.post('/_ref/dataset/summary/reconcile', { contract: 'refDatasetSummaryReconcile' }, ownerAuth.requireOwnerSession, async (req, res) => {
-    const requestAbort = createRequestAbortSignal(req, 'dataset summary reconcile request closed');
-    try {
-      if (isPostgresStorageBackend()) {
-        const result = await reconcileDirtyRetainedSize();
-        const summary = await executeRefDatasetSummary(buildDatasetSummaryDependencies(() => {
-          throw new Error('dataset summary reconcile response must use retained-size projection');
-        }, { projection: getRetainedSizeDatasetSummaryProjection }));
-        res.json({
-          object: 'dataset_summary_reconcile',
-          reconciled: result.streams || 0,
-          deferred: 0,
-          residual: 0,
-          summary,
-        });
-        return;
-      }
-      const result = await reconcileDirtyDatasetSummaryRecordTimeBounds({
-        getStreamRecordTimeBounds: (connectorId, stream, consentTimeField) =>
-          getDatasetSummaryStreamRecordTimeBounds(connectorId, stream, consentTimeField),
-      }, { signal: requestAbort.signal });
-      const summary = await executeRefDatasetSummary({
-        getProjection: () => getDatasetSummaryProjection(),
-        getCounts: () => {
-          throw new Error('dataset summary reconcile response must use projection');
-        },
-        getRetainedBytes: () => {
-          throw new Error('dataset summary reconcile response must use projection');
-        },
-        getRecordTimeBounds: () => {
-          throw new Error('dataset summary reconcile response must use projection');
-        },
-        getIngestedTimeBounds: () => {
-          throw new Error('dataset summary reconcile response must use projection');
-        },
-        listTopConnectorCandidates: () => {
-          throw new Error('dataset summary reconcile response must use projection');
-        },
-      });
-      res.json({
-        object: 'dataset_summary_reconcile',
-        reconciled: result.reconciled,
-        deferred: result.deferred,
-        residual: result.residual,
-        summary,
-      });
-    } catch (err) {
-      handleError(res, err);
-    } finally {
-      requestAbort.cleanup();
-    }
-  });
-
-  app.get('/_ref/dataset/size', { contract: 'refDatasetSize' }, ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const grain = typeof req.query.grain === 'string' && req.query.grain
-        ? req.query.grain
-        : 'global';
-      if (!['global', 'connection', 'stream'].includes(grain)) {
-        const err = new Error(`unsupported retained-size grain '${grain}'`);
-        err.code = 'invalid_request';
-        throw err;
-      }
-      const connectorInstanceId = typeof req.query.connector_instance_id === 'string'
-        ? req.query.connector_instance_id
-        : undefined;
-      const stream = typeof req.query.stream === 'string' ? req.query.stream : undefined;
-      let rows;
-      if (grain === 'global') {
-        rows = [await getRetainedSizeGlobal()];
-      } else if (grain === 'connection') {
-        rows = await listRetainedSizeConnections({ connectorInstanceId });
-      } else if (grain === 'stream') {
-        rows = await listRetainedSizeStreams({ connectorInstanceId, stream });
-      }
-      const global = await getRetainedSizeGlobal();
-      res.json({
-        object: 'ref_dataset_size',
-        grain,
-        rows,
-        projection: {
-          computed_at: global.computed_at,
-          dirty: global.dirty,
-          metadata: global.metadata,
-        },
-      });
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  app.get('/_ref/dataset/top', { contract: 'refDatasetTop' }, ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const scope = typeof req.query.scope === 'string' && req.query.scope
-        ? req.query.scope
-        : 'connection';
-      const measure = typeof req.query.measure === 'string' && req.query.measure
-        ? req.query.measure
-        : 'total_retained_bytes';
-      const rows = await listRetainedSizeTop({
-        scope,
-        measure,
-        limit: req.query.limit,
-      });
-      const global = await getRetainedSizeGlobal();
-      res.json({
-        object: 'ref_dataset_top',
-        scope,
-        measure,
-        rows,
-        projection: {
-          computed_at: global.computed_at,
-          dirty: Boolean(global.dirty || rows.some((row) => row.dirty)),
-          metadata: rows[0]?.metadata || global.metadata,
-        },
-      });
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  app.get('/_ref/records/version-stats', { contract: 'refRecordsVersionStats' }, ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const connectorInstanceId =
-        typeof req.query.connector_instance_id === 'string' && req.query.connector_instance_id.trim()
-          ? req.query.connector_instance_id.trim()
-          : null;
-      const stream =
-        typeof req.query.stream === 'string' && req.query.stream.trim()
-          ? req.query.stream.trim()
-          : null;
-      const risk =
-        typeof req.query.risk === 'string' && req.query.risk.trim()
-          ? req.query.risk.trim()
-          : null;
-      const envelope = await buildRecordVersionStatsEnvelope({
-        connectorInstanceId,
-        stream,
-        risk,
-        limit: req.query.limit,
-      }, {
-        connectorInstanceStore: createRequestConnectorInstanceStore(),
-      });
-      res.json(envelope);
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  app.post('/_ref/dataset/size/rebuild', { contract: 'refDatasetSizeRebuild' }, ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const projection = await rebuildRetainedSize();
-      res.json({
-        object: 'ref_dataset_size_rebuild',
-        projection,
-      });
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  app.post('/_ref/dataset/size/reconcile', { contract: 'refDatasetSizeReconcile' }, ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const result = await reconcileDirtyRetainedSize();
-      const projection = await getRetainedSizeGlobal();
-      res.json({
-        object: 'ref_dataset_size_reconcile',
-        ...result,
-        projection,
-      });
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
+  mountRefDatasetSummary(app, refDatasetContext);
+  mountRefDatasetSummaryStreams(app, refDatasetContext);
+  mountRefDatasetSummaryRebuild(app, refDatasetContext);
+  mountRefDatasetSummaryReconcile(app, refDatasetContext);
+  mountRefDatasetSize(app, refDatasetContext);
+  mountRefDatasetTop(app, refDatasetContext);
+  mountRefRecordsVersionStats(app, refDatasetContext);
+  mountRefDatasetSizeRebuild(app, refDatasetContext);
+  mountRefDatasetSizeReconcile(app, refDatasetContext);
 
   // Reference-only connector catalog list. Envelope assembly lives in the
   // canonical `ref.connectors.list` operation; this route owns owner auth,
