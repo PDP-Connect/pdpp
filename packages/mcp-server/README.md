@@ -73,6 +73,7 @@ All tools forward to existing RS endpoints under the scoped client token.
 | `fetch_blob` | `GET /v1/blobs/{blob_id}` |
 | `list_event_subscriptions` | `GET /v1/event-subscriptions` |
 | `get_event_subscription` | `GET /v1/event-subscriptions/{id}` |
+| `discover_event_subscription_capabilities` | `GET /.well-known/oauth-protected-resource` |
 
 Plus one resource template: `pdpp://stream/{name}` → `GET /v1/streams/{name}`.
 
@@ -107,7 +108,14 @@ Receiver constraints:
   clients pull changes by passing `data.changes_since` to `query_records`.
 - Authoritative wire shape (event types, signing profile, retry schedule, verification
   handshake) is advertised at `capabilities.client_event_subscriptions` on the RS
-  protected-resource metadata: `GET /.well-known/oauth-protected-resource`.
+  protected-resource metadata: `GET /.well-known/oauth-protected-resource`. The
+  read-only `discover_event_subscription_capabilities` tool fetches that
+  advertisement so an MCP client never has to leave the adapter to plan a
+  subscription call.
+- Use event subscriptions when a long-lived receiver needs low-latency change
+  notifications; prefer polling via `query_records` with `changes_since` for
+  one-shot reads, short-lived clients, or environments where a reachable HTTPS
+  callback is impractical.
 
 The MCP adapter does not host a callback receiver. Your application is responsible for
 running a reachable HTTPS endpoint that handles `pdpp.subscription.verify` (echo the

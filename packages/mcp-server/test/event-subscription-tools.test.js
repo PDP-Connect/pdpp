@@ -34,6 +34,33 @@ function makeFakeRs(overrides = {}) {
       contentType: init.headers?.['Content-Type'],
     });
 
+    // RFC 9728 protected-resource metadata is public. Serve the canned
+    // advertisement before the bearer check so the discovery tool exercises
+    // the unauthenticated path.
+    if (url.pathname === '/.well-known/oauth-protected-resource' && (init.method === 'GET' || !init.method)) {
+      if (overrides[`GET ${url.pathname}`]) {
+        return overrides[`GET ${url.pathname}`](url, init, parsedBody);
+      }
+      return jsonResponse({
+        resource: 'https://provider.test',
+        issuer: 'https://provider.test',
+        capabilities: {
+          client_event_subscriptions: {
+            supported: true,
+            stability: 'reference_extension',
+            scope: 'reference_implementation',
+            endpoint: '/v1/event-subscriptions',
+            envelope: { format: 'cloudevents+json', specversion: '1.0' },
+            signing: { profile: 'standard-webhooks', algorithm: 'HMAC-SHA256' },
+            event_types: ['pdpp.subscription.verify', 'pdpp.subscription.test', 'pdpp.records.changed', 'pdpp.grant.revoked'],
+            hint_cursor_location: 'data.changes_since',
+            callback_url: { max_bytes: 2048, requires_https: true, localhost_dev_allowed: true },
+            retry: { schedule: ['1m', '5m', '30m', '2h', '24h'], max_attempts: 12 },
+          },
+        },
+      });
+    }
+
     if (auth !== 'Bearer scoped-token') {
       return jsonResponse(
         { error: { type: 'authentication', code: 'invalid_token', message: 'bad token' } },
@@ -501,6 +528,80 @@ test('subscription tool descriptions are static (no manifest interpolation)', as
     ]) {
       assert.match(byName[name].description, /capabilities\.client_event_subscriptions/);
     }
+    // Every write tool must explain events-vs-polling so an agent does not
+    // default to subscriptions for one-shot reads.
+    for (const name of [
+      'create_event_subscription',
+      'update_event_subscription',
+      'send_test_event',
+    ]) {
+      assert.match(byName[name].description, /polling|query_records.*changes_since/);
+    }
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
+test('discover_event_subscription_capabilities returns capability block when advertised', async () => {
+  const { fetch, calls } = makeFakeRs();
+  const { client, server } = await connectClient(fetch);
+  try {
+    const result = await client.callTool({ name: 'discover_event_subscription_capabilities', arguments: {} });
+    assert.equal(result.isError, undefined);
+    assert.equal(result.structuredContent.supported, true);
+    assert.equal(result.structuredContent.capability.endpoint, '/v1/event-subscriptions');
+    assert.deepEqual(result.structuredContent.capability.event_types, [
+      'pdpp.subscription.verify',
+      'pdpp.subscription.test',
+      'pdpp.records.changed',
+      'pdpp.grant.revoked',
+    ]);
+    assert.equal(result.structuredContent.http_status, 200);
+    const lastCall = calls.at(-1);
+    assert.equal(lastCall.method, 'GET');
+    assert.equal(lastCall.pathname, '/.well-known/oauth-protected-resource');
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
+test('discover_event_subscription_capabilities surfaces supported=false when capability absent', async () => {
+  const { fetch } = makeFakeRs({
+    'GET /.well-known/oauth-protected-resource': () =>
+      new Response(
+        JSON.stringify({ resource: 'https://provider.test', issuer: 'https://provider.test', capabilities: {} }),
+        { status: 200, headers: { 'content-type': 'application/json', 'x-request-id': 'req_test' } }
+      ),
+  });
+  const { client, server } = await connectClient(fetch);
+  try {
+    const result = await client.callTool({ name: 'discover_event_subscription_capabilities', arguments: {} });
+    assert.equal(result.isError, undefined);
+    assert.equal(result.structuredContent.supported, false);
+    assert.equal(result.structuredContent.capability, null);
+    assert.match(result.content[0].text, /NOT advertised|polling/);
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
+test('discover_event_subscription_capabilities propagates RS error envelope', async () => {
+  const { fetch } = makeFakeRs({
+    'GET /.well-known/oauth-protected-resource': () =>
+      new Response(
+        JSON.stringify({ error: { type: 'untrusted_host', code: 'untrusted_host', message: 'host not allowed' } }),
+        { status: 400, headers: { 'content-type': 'application/json', 'x-request-id': 'req_test' } }
+      ),
+  });
+  const { client, server } = await connectClient(fetch);
+  try {
+    const result = await client.callTool({ name: 'discover_event_subscription_capabilities', arguments: {} });
+    assert.equal(result.isError, true);
+    assert.equal(result.structuredContent.error.code, 'untrusted_host');
+    assert.equal(result.structuredContent.http_status, 400);
   } finally {
     await client.close();
     await server.close();
