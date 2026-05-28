@@ -25,5 +25,18 @@
       "!report.*.json",
       "!node_modules"
     ]
+  },
+  "linter": {
+    "rules": {
+      "style": {
+        // Closed TypeScript unions should handle every case explicitly without
+        // a redundant default. Open-ended switches over strings/numbers still
+        // use default branches in code.
+        "useDefaultSwitchClause": "off"
+      },
+      "nursery": {
+        "useExhaustiveSwitchCases": "error"
+      }
+    }
   }
 }

@@ -478,7 +478,6 @@ export function pushPayload(record: AttentionRecord, options: PushPayloadOptions
 }
 
 function ownerActionTitle(action: OwnerAction): string {
-  // biome-ignore lint/style/useDefaultSwitchClause: OwnerAction is a closed union; omitting default keeps new variants type-visible.
   switch (action) {
     case "provide_value":
       return "Owner input needed";
@@ -492,7 +491,6 @@ function ownerActionTitle(action: OwnerAction): string {
 }
 
 function ownerActionBodyFragment(action: OwnerAction): string {
-  // biome-ignore lint/style/useDefaultSwitchClause: OwnerAction is a closed union; omitting default keeps new variants type-visible.
   switch (action) {
     case "provide_value":
       return "a code or value";
@@ -569,7 +567,6 @@ export function classifyAutoDetect(input: AutoDetectInput): AutoDetectOutcome {
   if (!record.auto_detect) {
     return { kind: "no_change", reason: "auto_detect_disabled" };
   }
-  // biome-ignore lint/style/useDefaultSwitchClause: evidence is a closed union; omitting default keeps new variants type-visible.
   switch (evidence) {
     case "proceeded":
       return { kind: "resolve", record: transition(record, { to: "resolved", now }) };
