@@ -18,8 +18,9 @@
  *   - backup/scratch tables are scanned but NOT rewritten unless the caller
  *     explicitly opts in with `--include-backup-tables` (scratch is never
  *     rewritten — those tables are ephemeral test scaffolding);
- *   - local-device wrappers rewrite the inner connector key only, preserving
- *     the `local-device:` prefix and any trailing `:<encoded source_instance_id>`;
+ *   - local-device wrappers collapse to the canonical connector key; the
+ *     configured source/device distinction belongs on `connector_instance_id`
+ *     and source binding metadata, not in `connector_id`;
  *   - row counts MUST be preserved for every touched table except
  *     intentional `connectors` parent-row collapse when multiple old ids
  *     map to one canonical key.
@@ -35,7 +36,6 @@ import {
   quotePgIdentifier,
 } from './inspect.mjs';
 
-const LOCAL_DEVICE_PREFIX = 'local-device:';
 const CONNECTOR_SOURCE_KINDS = new Set(['connector', 'provider_native']);
 
 /**
@@ -44,10 +44,10 @@ const CONNECTOR_SOURCE_KINDS = new Set(['connector', 'provider_native']);
  *
  *   - URL-shaped first-party ids (`https://registry.pdpp.org/connectors/gmail` → `gmail`);
  *   - legacy snake_case aliases (`claude_code` → `claude-code`);
- *   - wrapped local-device forms, preserving the wrapper and optional
+ *   - wrapped local-device forms, removing the wrapper and optional
  *     trailing `:source_instance_id` segment (e.g. `local-device:claude_code`
- *     → `local-device:claude-code`, `local-device:claude_code:cin_legacy_abc`
- *     → `local-device:claude-code:cin_legacy_abc`).
+ *     → `claude-code`, `local-device:claude_code:cin_legacy_abc`
+ *     → `claude-code`).
  *
  * Returns `null` when the value is unmapped (caller MUST treat that as
  * an abort condition — the migration plan never rewrites unmapped
@@ -63,12 +63,6 @@ export function rewriteStoredValue(value) {
   if (classification.classification === 'unmapped') return null;
   if (classification.canonicalKey === null) return null;
 
-  if (classification.classification === 'wrapped_local_device') {
-    const tail = value.slice(LOCAL_DEVICE_PREFIX.length);
-    const colonIdx = tail.indexOf(':');
-    const trailing = colonIdx === -1 ? '' : tail.slice(colonIdx);
-    return `${LOCAL_DEVICE_PREFIX}${encodeURIComponent(classification.canonicalKey)}${trailing}`;
-  }
   return classification.canonicalKey;
 }
 

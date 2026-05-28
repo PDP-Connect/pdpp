@@ -11,9 +11,9 @@
  *     rewritten to canonical keys;
  *   - JSONB-embedded connector ids are rewritten through the same
  *     mapping (per shape in `JSONB_REWRITE_SHAPES`);
- *   - `local-device:<inner>[:<source_instance_id>]` wrappers are
- *     rewritten on the inner connector key only and preserve the
- *     wrapper + trailing source-instance segment;
+ *   - `local-device:<inner>[:<source_instance_id>]` wrappers collapse
+ *     to the canonical connector key because connection/device identity
+ *     belongs on `connector_instance_id`;
  *   - any unmapped active-tier value aborts before any write;
  *   - backup/scratch tables are skipped by default and rewritten only
  *     with `--include-backup-tables` (scratch is never rewritten);
@@ -235,20 +235,21 @@ test('rewriteStoredValue: legacy snake_case alias → canonical hyphen form', ()
   assert.equal(rewriteStoredValue('claude_code'), 'claude-code');
 });
 
-test('rewriteStoredValue: wrapped local-device unwraps inner only', () => {
-  assert.equal(rewriteStoredValue('local-device:claude_code'), 'local-device:claude-code');
-  assert.equal(rewriteStoredValue('local-device:claude-code'), 'local-device:claude-code');
+test('rewriteStoredValue: wrapped local-device collapses to canonical connector key', () => {
+  assert.equal(rewriteStoredValue('local-device:claude_code'), 'claude-code');
+  assert.equal(rewriteStoredValue('local-device:claude-code'), 'claude-code');
 });
 
-test('rewriteStoredValue: wrapped local-device preserves trailing source_instance_id', () => {
+test('rewriteStoredValue: wrapped local-device drops trailing source_instance_id segment', () => {
   assert.equal(
     rewriteStoredValue('local-device:claude_code:cin_legacy_abc'),
-    'local-device:claude-code:cin_legacy_abc',
+    'claude-code',
   );
-  // Already canonical inner — trailing segment still preserved.
+  // Already canonical inner — trailing segment still belongs on
+  // connector_instance_id, not connector_id.
   assert.equal(
     rewriteStoredValue('local-device:codex:cin_xyz'),
-    'local-device:codex:cin_xyz',
+    'codex',
   );
 });
 
@@ -510,8 +511,8 @@ test('migrate: --apply rewrites JSONB embedded connector_ids through the same ma
   );
   assert.equal(
     member.source_json.id,
-    'local-device:claude-code',
-    'wrapped local-device id inside JSONB rewrites inner key only',
+    'claude-code',
+    'wrapped local-device id inside JSONB collapses to canonical key',
   );
   assert.equal(member.source_json.connection_id, 'cnx_2', 'unrelated JSONB fields preserved');
 
@@ -521,19 +522,19 @@ test('migrate: --apply rewrites JSONB embedded connector_ids through the same ma
   assert.equal(pc.params_json.other_field, 'preserved');
 });
 
-test('migrate: --apply rewrites local-device wrappers preserving the inner-only swap', async () => {
+test('migrate: --apply rewrites local-device wrappers to canonical connector key', async () => {
   const driver = makeMemoryDriver(buildAllMappedState());
   await migrate(driver, { apply: true });
 
   const records = driver._tables().records.rows;
   const wrapped = records.find((r) => r.record_id === 'rec_3');
-  assert.equal(wrapped.connector_id, 'local-device:claude-code');
+  assert.equal(wrapped.connector_id, 'claude-code');
 
   const wrappedWithSourceInstance = records.find((r) => r.record_id === 'rec_4');
   assert.equal(
     wrappedWithSourceInstance.connector_id,
-    'local-device:claude-code:cin_legacy_abc',
-    'trailing :source_instance_id segment is preserved',
+    'claude-code',
+    'trailing :source_instance_id segment is removed from connector_id',
   );
 
   const native = records.find((r) => r.record_id === 'rec_5');
