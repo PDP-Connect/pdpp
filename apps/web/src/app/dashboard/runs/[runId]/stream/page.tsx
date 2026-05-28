@@ -141,7 +141,7 @@ export default async function RunInteractionStreamPage({
     <StreamSurface
       connector={connector}
       interactionId={streamableAssistance.id}
-      interactionKind="manual_action"
+      interactionKind={streamableAssistance.kind}
       interactionMessage={streamableAssistance.message}
       runId={runId}
     />

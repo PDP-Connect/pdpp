@@ -596,12 +596,11 @@ body>p{display:none!important}
             'interaction_id',
           );
         }
-        // Streaming companion is for `manual_action` — the only kind that needs
-        // browser control rather than a credential/OTP form. The historical
-        // `host_browser_required` kind was retired with the host-browser bridge
-        // in `introduce-local-collector-runner`; surface a clear error if any
-        // legacy connector still emits it.
-        if (pending.kind !== 'manual_action') {
+        // Streaming companion is for browser-backed interactions. `manual_action`
+        // is always browser-backed; `otp` may also need a browser surface when
+        // the source asks for a code inside a live login flow. Credentials stay
+        // form-only and must not receive a browser stream token.
+        if (!['manual_action', 'otp'].includes(pending.kind)) {
           return pdppError(
             res,
             409,

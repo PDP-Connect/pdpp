@@ -3185,6 +3185,83 @@ rl.on('line', (line) => {
     }
   });
 
+  await t.test('browser-surface-backed otp INTERACTION projects streamable assistance with secret input', async () => {
+    const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+    const { asPort, rsPort } = server;
+    const { ownerToken, connectorId } = await setupConnector(server, asPort);
+    const asUrl = `http://localhost:${asPort}`;
+
+    const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-test-interaction-browser-otp-'));
+    const connectorPath = join(tmpDir, 'connector.mjs');
+    writeFileSync(connectorPath, `
+import { createInterface } from 'readline';
+const rl = createInterface({ input: process.stdin });
+let started = false;
+rl.on('line', (line) => {
+  const msg = JSON.parse(line);
+  if (msg.type === 'START' && !started) {
+    started = true;
+    process.stdout.write(JSON.stringify({
+      type: 'INTERACTION',
+      request_id: 'int_otp_browser',
+      kind: 'otp',
+      message: 'Enter code',
+      schema: { type: 'object', properties: { code: { type: 'string' } }, required: ['code'] },
+      timeout_seconds: 300
+    }) + '\\n');
+    return;
+  }
+  if (msg.type === 'INTERACTION_RESPONSE') {
+    process.stdout.write(JSON.stringify({ type: 'RECORD', stream: 'items', key: 'after_otp', data: { id: 'after_otp', value: 'continued' }, emitted_at: new Date().toISOString() }) + '\\n');
+    process.stdout.write(JSON.stringify({ type: 'DONE', status: 'succeeded', records_emitted: 1 }) + '\\n');
+    rl.close();
+    process.exit(0);
+  }
+});
+`, 'utf-8');
+
+    try {
+      const result = await runConnector({
+        connectorPath,
+        connectorId,
+        ownerToken,
+        manifest: MINIMAL_MANIFEST,
+        state: null,
+        collectionMode: 'full_refresh',
+        persistState: true,
+        rsUrl: `http://localhost:${rsPort}`,
+        browserSurfaceEnv: {
+          PDPP_BROWSER_SURFACE_REQUIRED: 'neko',
+          PDPP_BROWSER_SURFACE_STREAM_BASE_URL: 'http://surface.example.test',
+        },
+        onInteraction: async (msg) => {
+          assert.equal(msg.kind, 'otp');
+          return { type: 'INTERACTION_RESPONSE', request_id: msg.request_id, status: 'success', data: { code: '123456' } };
+        },
+      });
+
+      assert.equal(result.status, 'succeeded');
+      const { body: runTimeline } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(result.run_id)}/timeline`);
+      const assistanceRequested = (runTimeline.data || []).find((event) => event.event_type === 'run.assistance_requested');
+      assert.ok(assistanceRequested, 'expected run.assistance_requested event');
+      assert.equal(assistanceRequested.interaction_id, 'int_otp_browser');
+      assert.equal(assistanceRequested.data.owner_action, 'operate_attachment');
+      assert.equal(assistanceRequested.data.response_contract, 'response_required');
+      assert.equal(assistanceRequested.data.sensitivity, 'secret');
+      assert.equal(assistanceRequested.data.kind, 'otp');
+      assert.deepEqual(assistanceRequested.data.attachments, [{ kind: 'browser_surface', role: 'streaming_companion' }]);
+      assert.deepEqual(assistanceRequested.data.input_schema, {
+        type: 'object',
+        properties: { code: { type: 'string' } },
+        required: ['code'],
+      });
+      assert.ok(!JSON.stringify(runTimeline.data || []).includes('123456'), 'run timelines should not persist OTP values');
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+      await closeServer(server);
+    }
+  });
+
   await t.test('nonblocking ASSISTANCE records assistance without interaction-required behavior', async () => {
     const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
     const { asPort, rsPort } = server;

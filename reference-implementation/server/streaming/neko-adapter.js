@@ -1107,15 +1107,11 @@ export function createNekoCompanion(options = {}) {
   async function applyInitialNavigation(signal) {
     if (!navigationUrl || navigationApplied) return false;
     if (!pageNavigationCdpAllowed) {
-      const err = createCdpError(
-        'n.eko CDP navigation control is not configured',
-        'neko_cdp_navigation_unavailable',
-      );
       safeLog(logger, 'warn', 'neko_initial_navigation_skipped', {
         browser_owner_mode: browserOwnerMode,
         stealth_mode: stealthMode,
       });
-      throw err;
+      return false;
     }
 
     try {

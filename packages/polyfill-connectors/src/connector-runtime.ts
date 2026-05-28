@@ -43,7 +43,7 @@ import { createInterface } from "node:readline";
 import type { Browser, BrowserContext, CDPSession, Page } from "playwright";
 
 import { type AuthConfig, resolveAuth } from "./auth.ts";
-import { manualAction } from "./browser-handoff.ts";
+import { manualAction, prepareBrowserInteractionTarget } from "./browser-handoff.ts";
 import type {
   AssistanceCompletionStatus,
   AssistanceRequest,
@@ -596,12 +596,6 @@ async function runInBrowser(args: {
   } = args;
   const { context: ctx, release } = await acquireBrowser(browser, name);
   const visibility = resolveBrowserRuntimeVisibility(browser, name);
-  const browserSendInteraction = makeBrowserInteractionKeepalive({
-    context: ctx,
-    diagnostics: process.env.PDPP_BROWSER_SURFACE_DIAGNOSTICS === "1",
-    progress,
-    sendInteraction: (req) => sendInteraction(decorateBrowserManualAction(req, visibility)),
-  });
   // Prevention layer (Layer A): register a SIGTERM/SIGINT handler that
   // awaits release() before exit. Without this, Docker stop / controller
   // restart kills this child process before the `finally` block below
@@ -629,6 +623,23 @@ async function runInBrowser(args: {
   let page: Page | null = null;
   try {
     page = await ctx.newPage();
+    const browserSendInteraction = makeBrowserInteractionKeepalive({
+      context: ctx,
+      diagnostics: process.env.PDPP_BROWSER_SURFACE_DIAGNOSTICS === "1",
+      progress,
+      sendInteraction: async (req) => {
+        const decorated = decorateBrowserManualAction(req, visibility);
+        if (decorated.kind !== "otp") {
+          return sendInteraction(decorated);
+        }
+        const { interactionId } = await prepareBrowserInteractionTarget({
+          page: page as Page,
+          reason: "2fa",
+          ...(decorated.request_id ? { interactionId: decorated.request_id } : {}),
+        });
+        return sendInteraction({ ...decorated, request_id: interactionId });
+      },
+    });
     await captureBrowserPage(baseCtx.capture, page, "runtime-new-page");
     await closeBrowserContextPagesExcept(ctx, page);
     await establishSession(

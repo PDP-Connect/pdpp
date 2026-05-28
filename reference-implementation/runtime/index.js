@@ -1121,13 +1121,25 @@ function validateAssistanceMessage(msg, scopeByStream) {
   }
 }
 
-function buildAssistanceRequestedDataFromInteraction(msg, runSource) {
+function hasBrowserSurfaceLaunchEnv(env) {
+  return Boolean(
+    env
+      && typeof env === 'object'
+      && (
+        optionalNonEmptyEnv(env.PDPP_BROWSER_SURFACE_STREAM_BASE_URL)
+        || optionalNonEmptyEnv(env.PDPP_BROWSER_SURFACE_REMOTE_CDP_URL)
+      )
+  );
+}
+
+function buildAssistanceRequestedDataFromInteraction(msg, runSource, options = {}) {
   const isSecretValue = msg.kind === 'credentials' || msg.kind === 'otp';
+  const hasBrowserSurface = msg.kind === 'manual_action' || (msg.kind === 'otp' && options.browserSurfaceAvailable === true);
   return {
     source: runSource,
     assistance_request_id: msg.request_id,
     progress_posture: 'blocked',
-    owner_action: msg.kind === 'manual_action' ? 'operate_attachment' : 'provide_value',
+    owner_action: hasBrowserSurface ? 'operate_attachment' : 'provide_value',
     response_contract: 'response_required',
     sensitivity: isSecretValue ? 'secret' : 'non_secret',
     message: sanitizeAssistanceTimelineString(msg.message) || 'Owner assistance requested.',
@@ -1135,7 +1147,7 @@ function buildAssistanceRequestedDataFromInteraction(msg, runSource) {
     stream: msg.stream || null,
     ...(msg.timeout_seconds == null ? {} : { timeout_seconds: msg.timeout_seconds }),
     ...(isSecretValue && msg.schema != null ? { input_schema: sanitizeAssistanceInputSchema(msg.schema) } : {}),
-    ...(msg.kind === 'manual_action'
+    ...(hasBrowserSurface
       ? { attachments: [{ kind: 'browser_surface', role: 'streaming_companion' }] }
       : {}),
   };
@@ -2238,7 +2250,9 @@ export async function runConnector(opts) {
             status: 'started',
             run_id: runId,
             interaction_id: msg.request_id,
-            data: buildAssistanceRequestedDataFromInteraction(msg, runSource),
+            data: buildAssistanceRequestedDataFromInteraction(msg, runSource, {
+              browserSurfaceAvailable: hasBrowserSurfaceLaunchEnv(browserSurfaceLaunchEnv),
+            }),
           });
 
           // Durable structured attention upsert. The interaction is now

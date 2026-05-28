@@ -51,7 +51,11 @@ export function RunInteractionForm({ runId, interactionId, kind, message, fields
     submitWithStatus(new FormData(), "cancelled");
   }
 
-  const showFields = kind !== "manual_action" && fields.length > 0;
+  const effectiveFields =
+    kind === "otp" && fields.length === 0
+      ? [{ format: "text" as const, label: "Code", name: "code", required: true }]
+      : fields;
+  const showFields = kind !== "manual_action" && effectiveFields.length > 0;
   const submitLabel = getSubmitLabel(kind);
 
   return (
@@ -64,7 +68,7 @@ export function RunInteractionForm({ runId, interactionId, kind, message, fields
       <p className="pdpp-caption text-muted-foreground">{message}</p>
       {showFields ? (
         <div className="grid gap-2">
-          {fields.map((field) => {
+          {effectiveFields.map((field) => {
             const fieldId = `interaction-${interactionId}-${field.name}`;
             return (
               <label className="flex flex-col gap-1" htmlFor={fieldId} key={field.name}>

@@ -226,7 +226,7 @@ function CurrentAssistanceSection({
           fields={currentAssistance.fields}
           interactionId={currentAssistance.id}
           key={currentAssistance.id}
-          kind={currentAssistance.ownerAction === "operate_attachment" ? "manual_action" : currentAssistance.kind}
+          kind={currentAssistance.kind}
           message={currentAssistance.message}
           runId={runId}
         />

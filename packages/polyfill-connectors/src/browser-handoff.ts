@@ -178,17 +178,18 @@ function generateInteractionId(): string {
   return `int_${String(Date.now())}_${randomBytes(4).toString("hex")}`;
 }
 
-// ─── prepareManualAction: the binding-local handoff helper ─────────────────
+// ─── Browser-interaction target registration ────────────────────────────────
 
 export type ManualActionReason = "login" | "2fa" | "captcha" | "oauth_popup" | "manual_action";
 
-export interface PrepareManualActionArgs {
+export interface PrepareBrowserInteractionTargetArgs {
   /**
    * Test/integration seam. Defaults to `process.env`. The launcher mutates
    * `process.env` directly after a successful patchright launch, so the
    * default is the right thing in production.
    */
   readonly env?: NodeJS.ProcessEnv;
+  readonly interactionId?: string;
   readonly page: Page;
   readonly reason?: ManualActionReason;
   /**
@@ -207,7 +208,9 @@ export interface PrepareManualActionArgs {
   readonly resolveWsUrl?: (page: Page, opts: ResolveWsUrlOptions) => Promise<string>;
 }
 
-export interface PrepareManualActionResult {
+export type PrepareManualActionArgs = PrepareBrowserInteractionTargetArgs;
+
+export interface PrepareBrowserInteractionTargetResult {
   /** Generated interactionId; the connector then includes this in its INTERACTION envelope. */
   readonly interactionId: string;
   /**
@@ -218,6 +221,8 @@ export interface PrepareManualActionResult {
    */
   readonly registered: boolean;
 }
+
+export type PrepareManualActionResult = PrepareBrowserInteractionTargetResult;
 
 interface ManualActionPageMetadata {
   readonly pageTitle?: string;
@@ -310,11 +315,11 @@ function registerCdpManualActionTarget(args: {
 }
 
 /**
- * Prepare a browser handoff for a `manual_action` interaction.
+ * Prepare a browser handoff for an interaction tied to the current page.
  *
- * Generates an interactionId, resolves the CDP page-target wsUrl for the
- * exact `Page`, and registers `(runId, interactionId) -> wsUrl` with the
- * reference server's run-target registry. Returns the interactionId so the
+ * Generates or accepts an interactionId, resolves the CDP page-target wsUrl
+ * for the exact `Page`, and registers `(runId, interactionId) -> wsUrl` with
+ * the reference server's run-target registry. Returns the interactionId so the
  * caller can include it as the request_id on its INTERACTION envelope.
  *
  * Best-effort by design: if the env isn't wired up for streaming, if the
@@ -323,11 +328,13 @@ function registerCdpManualActionTarget(args: {
  * connector run continues; only streaming for that specific interaction
  * is unavailable.
  */
-export async function prepareManualAction(args: PrepareManualActionArgs): Promise<PrepareManualActionResult> {
+export async function prepareBrowserInteractionTarget(
+  args: PrepareBrowserInteractionTargetArgs
+): Promise<PrepareBrowserInteractionTargetResult> {
   const env = args.env ?? process.env;
   const resolveStreamingRegistration = args.resolveStreamingRegistration ?? resolveStreamingRegistrationFromEnv;
   const resolveWsUrl = args.resolveWsUrl ?? resolveWsUrlForExactPage;
-  const interactionId = generateInteractionId();
+  const interactionId = args.interactionId ?? generateInteractionId();
 
   const registration = await resolveStreamingRegistration(env);
   if (!registration) {
@@ -385,6 +392,10 @@ export async function prepareManualAction(args: PrepareManualActionArgs): Promis
   }
 
   return { interactionId, registered: true };
+}
+
+export function prepareManualAction(args: PrepareManualActionArgs): Promise<PrepareManualActionResult> {
+  return prepareBrowserInteractionTarget(args);
 }
 
 // ─── manualAction: connector-author convenience layer ──────────────────────

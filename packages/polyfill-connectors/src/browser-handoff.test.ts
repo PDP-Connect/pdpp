@@ -34,6 +34,7 @@ import {
   BROWSER_SURFACE_REQUIRED_ENV,
   BROWSER_SURFACE_STREAM_BASE_URL_ENV,
   manualAction,
+  prepareBrowserInteractionTarget,
   prepareManualAction,
   resolveWsUrlForExactPage,
   type SendInteraction,
@@ -336,6 +337,45 @@ test("prepareManualAction PUTs the composed wsUrl + page metadata when env is fu
     sent.url,
     `http://127.0.0.1:7662/admin/runs/run_test_123/interactions/${result.interactionId}/streaming-target`
   );
+});
+
+test("prepareBrowserInteractionTarget can register an existing otp interaction id", async () => {
+  const env = envWithManagedNekoSurface();
+  const page = makeMockPage({
+    url: "https://www.reddit.com/login/",
+    title: "Welcome to Reddit",
+  });
+
+  let registeredArgs: unknown;
+  const result = await prepareBrowserInteractionTarget({
+    env,
+    interactionId: "int_existing_otp",
+    page,
+    reason: "2fa",
+    resolveStreamingRegistration: () =>
+      Promise.resolve({
+        runId: "run_test_123",
+        register: (args) => {
+          registeredArgs = args;
+          return Promise.resolve(true);
+        },
+        unregister: () => Promise.resolve(true),
+      }),
+  });
+
+  assert.equal(result.registered, true);
+  assert.equal(result.interactionId, "int_existing_otp");
+  assert.ok(registeredArgs && typeof registeredArgs === "object");
+  const args = registeredArgs as {
+    backend?: string;
+    descriptor?: Record<string, unknown>;
+    interactionId?: string;
+    reason?: string;
+  };
+  assert.equal(args.backend, "neko");
+  assert.equal(args.interactionId, "int_existing_otp");
+  assert.equal(args.reason, "2fa");
+  assert.equal(args.descriptor?.interaction_id, "int_existing_otp");
 });
 
 test("prepareManualAction registers managed n.eko descriptor from lease env without exposing CDP details", async () => {

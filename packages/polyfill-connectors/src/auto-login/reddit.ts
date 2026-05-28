@@ -111,6 +111,11 @@ export async function ensureRedditSession({ context, page, sendInteraction }: En
     const resp = await sendInteraction({
       kind: "otp",
       message: "Reddit requires a 2FA verification code. Enter the 6-digit code from your authenticator app or SMS:",
+      schema: {
+        type: "object",
+        properties: { code: { type: "string", pattern: "^\\d{6}$" } },
+        required: ["code"],
+      },
       timeout_seconds: 300,
     });
     const code = otpCode(resp);

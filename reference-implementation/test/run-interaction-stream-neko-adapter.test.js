@@ -1280,6 +1280,35 @@ test('n.eko adapter navigates an explicit start URL through CDP in non-strict mo
   await companion.stop();
 });
 
+test('n.eko adapter treats initial navigation as best-effort when CDP control is unavailable', async () => {
+  const fetchImpl = makeFetch([
+    {
+      method: 'GET',
+      url: 'https://neko.test/api/room/screen/cast.jpg',
+      response: makeResponse({ body: 'jpeg' }),
+    },
+  ]);
+  const logs = [];
+  const companion = createNekoCompanion({
+    origin: 'https://neko.test',
+    bearerToken: 'token-no-cdp',
+    fetchImpl,
+    logger: { warn: (entry) => logs.push(entry) },
+    sleep: makeAbortableSleep(),
+    startUrl: 'https://www.reddit.com/login/',
+  });
+  const frames = [];
+  companion.onFrame((frame) => frames.push(frame));
+
+  await companion.start({ width: 800, height: 600, deviceScaleFactor: 2 });
+  await waitFor(() => frames.length === 1);
+
+  assert.ok(logs.some((entry) => entry.msg === 'neko_initial_navigation_skipped'));
+  assert.equal(fetchImpl.calls.some((call) => String(call.url).includes('/json')), false);
+
+  await companion.stop();
+});
+
 test('n.eko adapter emits remote editable focus events through CDP in non-strict modes', async () => {
   const fetchImpl = makeFetch([
     {

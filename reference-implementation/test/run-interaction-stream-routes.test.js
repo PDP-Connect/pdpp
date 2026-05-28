@@ -322,7 +322,7 @@ test('managed n.eko approval rejects a non-ready real lease-manager surface', ()
   );
 });
 
-test('mint requires a pending manual_action interaction', async () => {
+test('mint accepts a pending manual_action interaction', async () => {
   await withHarness({}, async ({ asUrl, spotifyManifest }) => {
     const started = await startRun(asUrl, spotifyManifest.connector_id);
     const pending = await waitForPendingInteraction(asUrl, started.run_id);
@@ -357,6 +357,25 @@ test('mint requires a pending manual_action interaction', async () => {
     assert.ok(assistanceCancelled, 'manual_action cancellation should project to run.assistance_cancelled');
     assert.equal(assistanceCancelled.interaction_id, pending.interaction_id);
     assert.equal(assistanceCancelled.data.status, 'cancelled');
+  });
+});
+
+test('mint accepts a pending otp interaction for browser-backed verification flows', async () => {
+  await withHarness({ kind: 'otp' }, async ({ asUrl, spotifyManifest }) => {
+    const started = await startRun(asUrl, spotifyManifest.connector_id);
+    const pending = await waitForPendingInteraction(asUrl, started.run_id);
+    const mint = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(started.run_id)}/run-interaction-stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        interaction_id: pending.interaction_id,
+        viewport: { width: 800, height: 600 },
+      }),
+    });
+    assert.equal(mint.status, 201);
+    assert.equal(mint.body.object, 'run_interaction_stream_session');
+    assert.equal(mint.body.interaction_id, pending.interaction_id);
+    await cancelRun(asUrl, started.run_id, pending.interaction_id);
   });
 });
 

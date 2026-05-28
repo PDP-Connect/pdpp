@@ -241,7 +241,7 @@ interface ConnectionStatus {
 const CONNECTING: ConnectionStatus = { display: "connecting", cause: null, troubleMessage: null };
 const LIVE: ConnectionStatus = { display: "live", cause: null, troubleMessage: null };
 
-const SUPPORTED_KINDS = new Set(["manual_action"]);
+const SUPPORTED_KINDS = new Set(["manual_action", "otp"]);
 
 // Poll the run timeline so the resolved success state appears the instant
 // the controller observes the upstream interaction is satisfied. The SSE
@@ -1342,8 +1342,8 @@ export function StreamSurface({
     });
   }, [autoOpen, openBrowser]);
 
-  // Operator might land on an unsupported interaction kind (credential / OTP).
-  // The streaming companion can't satisfy those; keep one explicit escape.
+  // Operator might land on an unsupported interaction kind (credentials).
+  // Browser-backed OTP flows are streamable; credentials-only prompts are not.
   if (!SUPPORTED_KINDS.has(interactionKind)) {
     return (
       <UnsupportedSurface
