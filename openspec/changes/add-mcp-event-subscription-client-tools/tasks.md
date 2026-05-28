@@ -16,15 +16,19 @@
 - [x] 3.5 Add `delete_event_subscription`. Input: `subscription_id`. Output: empty body, `status: 204` surfaced in summary text. Annotate `destructiveHint: true`.
 - [x] 3.6 Add `send_test_event`. Input: `subscription_id`. Output: `{event_id}`. Annotate `idempotentHint: false`.
 - [x] 3.7 Every write tool description SHALL state: REST endpoint forwarded to, the side effect, the scoped-client-bearer requirement, the receiver constraint (HTTPS reachable, Standard Webhooks signed, CloudEvents structured-mode JSON, no record bodies, `data.changes_since` for pull-based reads), and a pointer to `capabilities.client_event_subscriptions` for the authoritative wire-shape spec.
+- [x] 3.8 Add read-only `discover_event_subscription_capabilities` tool that GETs `/.well-known/oauth-protected-resource`, extracts `capabilities.client_event_subscriptions`, and returns `{supported, capability, data, provider_url, request_id, http_status}` so an MCP client never has to leave the adapter to learn supported event types, signing profile, retry schedule, or hint cursor location. The tool SHALL surface `supported: false` (not an error) when the advertisement omits the capability.
+- [x] 3.9 Subscription tool descriptions SHALL explicitly state when to use event subscriptions (long-lived receiver, low-latency change notifications) versus when to prefer polling via `query_records` with `changes_since` (one-shot reads, short-lived clients), and point to `discover_event_subscription_capabilities` for the authoritative wire shape.
 
 ## 4. Tests
 
 - [x] 4.1 Add `packages/mcp-server/test/event-subscription-tools.test.js` covering tool list registration, forwarding HTTP method/path/body, error-envelope passthrough, structuredContent envelope shape, and annotation honesty.
 - [x] 4.2 Confirm existing `packages/mcp-server/test/canonical-mirror.test.js`, `server.integration.test.js`, and other tests still pass.
+- [x] 4.3 Add discovery-tool tests covering: capability block returned verbatim when advertised, `supported: false` when capability absent, RS error envelope propagated through MCP `isError: true`, and integration-test tools/list now includes `discover_event_subscription_capabilities` as a read-only tool.
 
 ## 5. Docs
 
 - [x] 5.1 Update `packages/mcp-server/README.md` Tools table with the six new tools and add a "Side-effectful tools" section that names the scoped-bearer requirement and the receiver constraints.
+- [x] 5.2 Document `discover_event_subscription_capabilities` in the README Tools table and add the events-vs-polling decision rule to the "Side-effectful tools" section.
 
 ## 6. CLI decision
 

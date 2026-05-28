@@ -142,8 +142,25 @@ const EVENT_SUB_OUTPUT_SCHEMA_SHAPE = {
   http_status: z.number().int(),
 };
 
+// Discovery tool returns the event-subscription capability block from
+// `/.well-known/oauth-protected-resource` plus a derived `supported` boolean
+// so an MCP client can branch on availability without re-reading the
+// advertisement.
+const EVENT_SUB_DISCOVERY_OUTPUT_SCHEMA_SHAPE = {
+  supported: z
+    .boolean()
+    .describe('`true` when the protected-resource metadata advertises `capabilities.client_event_subscriptions.supported === true`.'),
+  capability: z
+    .unknown()
+    .describe('The full `capabilities.client_event_subscriptions` block from the RS advertisement, or `null` when unsupported.'),
+  data: z.unknown().describe('Full protected-resource metadata body. Source of truth for issuer, supported scopes, and other capabilities.'),
+  provider_url: z.string(),
+  request_id: z.string().nullable(),
+  http_status: z.number().int(),
+};
+
 const SUBSCRIPTION_TOOL_FOOTER =
-  ' Receivers must be HTTPS endpoints reachable from the configured PDPP instance (http://localhost is permitted only in development). Events are signed per Standard Webhooks (`webhook-id`, `webhook-timestamp`, `webhook-signature: v1,<base64>`) using the per-subscription secret returned at create. Envelope is CloudEvents 1.0 JSON structured mode (`application/cloudevents+json`); record bodies are never pushed — clients pull changes via `query_records` with `changes_since=<data.changes_since>`. Authoritative wire shape lives at `capabilities.client_event_subscriptions` on `/.well-known/oauth-protected-resource`.';
+  ' Use event subscriptions when you need low-latency notification of changes from a long-lived receiver; prefer polling via `query_records` with `changes_since` for one-shot reads or short-lived clients. Receivers must be HTTPS endpoints reachable from the configured PDPP instance (http://localhost is permitted only in development). Events are signed per Standard Webhooks (`webhook-id`, `webhook-timestamp`, `webhook-signature: v1,<base64>`) using the per-subscription secret returned at create. Envelope is CloudEvents 1.0 JSON structured mode (`application/cloudevents+json`); record bodies are never pushed — events carry IDs and a `data.changes_since` cursor that clients pull via `query_records` with `changes_since=<data.changes_since>`. Call `discover_event_subscription_capabilities` for the authoritative supported event types, retry schedule, and signing profile (sourced from `capabilities.client_event_subscriptions` on `/.well-known/oauth-protected-resource`).';
 
 const SUBSCRIPTION_ID_DESCRIPTION =
   'Subscription identifier returned by `create_event_subscription` or `list_event_subscriptions` (prefix `sub_`).';
@@ -309,6 +326,19 @@ export function buildTools({ rs, providerUrl }) {
           { query }
         );
         return toFetchToolResult(response, providerUrl, args.id);
+      },
+    },
+    {
+      name: 'discover_event_subscription_capabilities',
+      title: 'Discover event subscription capabilities',
+      description:
+        'Return the reference implementation\'s event-subscription advertisement by fetching `GET /.well-known/oauth-protected-resource` and extracting `capabilities.client_event_subscriptions`. Use this before calling `create_event_subscription` to learn supported event types (e.g. `pdpp.records.changed`, `pdpp.grant.revoked`), signing profile, retry schedule, verification handshake, callback-URL byte limit, and the hint cursor location. This endpoint is unauthenticated by design (RFC 9728). If the deployment does not advertise event subscriptions, the tool surfaces the absence as `supported: false`. Read-only.',
+      annotations: SUBSCRIPTION_READ_ANNOTATIONS,
+      inputSchema: EMPTY_TOOL_INPUT_SCHEMA,
+      outputSchema: z.object(EVENT_SUB_DISCOVERY_OUTPUT_SCHEMA_SHAPE),
+      handler: async () => {
+        const response = await rs.getJson('/.well-known/oauth-protected-resource');
+        return toEventSubDiscoveryResult(response, providerUrl);
       },
     },
     {
@@ -795,6 +825,35 @@ function toEventSubToolResult(response, providerUrl, label) {
   };
 }
 
+function toEventSubDiscoveryResult(response, providerUrl) {
+  if (!response.ok) {
+    return errorToolResult(response, providerUrl);
+  }
+  const body = response.body && typeof response.body === 'object' ? response.body : {};
+  const capabilities = body.capabilities && typeof body.capabilities === 'object' ? body.capabilities : {};
+  const advertised = capabilities.client_event_subscriptions ?? null;
+  const supported = !!(advertised && typeof advertised === 'object' && advertised.supported === true);
+  const summary = supported
+    ? `event subscriptions supported: endpoint=${advertised?.endpoint ?? 'unknown'} stability=${advertised?.stability ?? 'unknown'}. See structuredContent.capability for event types, signing profile, and retry schedule.`
+    : 'event subscriptions NOT advertised by this PDPP instance. Call `query_records` with `changes_since` to poll instead. See structuredContent.data for the full protected-resource metadata.';
+  return {
+    content: [
+      {
+        type: 'text',
+        text: summary,
+      },
+    ],
+    structuredContent: {
+      supported,
+      capability: advertised,
+      data: response.body,
+      provider_url: providerUrl,
+      request_id: response.requestId,
+      http_status: response.status,
+    },
+  };
+}
+
 function summarizeEventSubBody(response, label) {
   if (response.status === 204) {
     return `${label}: 204 No Content. Subscription removed; subsequent reads will return 404.`;
@@ -868,5 +927,6 @@ export const __internal = {
   toSearchToolResult,
   toFetchToolResult,
   toEventSubToolResult,
+  toEventSubDiscoveryResult,
   resolveStreamName,
 };

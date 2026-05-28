@@ -128,6 +128,7 @@ test('lists the expected tools and annotates read-only tools as read-only', asyn
   assert.deepEqual(names, [
     'create_event_subscription',
     'delete_event_subscription',
+    'discover_event_subscription_capabilities',
     'fetch',
     'fetch_blob',
     'get_event_subscription',
@@ -149,6 +150,7 @@ test('lists the expected tools and annotates read-only tools as read-only', asyn
     'fetch_blob',
     'list_event_subscriptions',
     'get_event_subscription',
+    'discover_event_subscription_capabilities',
   ]);
   for (const tool of tools.tools) {
     if (READ_ONLY.has(tool.name)) {
