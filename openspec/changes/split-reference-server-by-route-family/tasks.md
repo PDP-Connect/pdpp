@@ -24,7 +24,7 @@ unchanged.
   `root-and-discovery.ts` pattern. (Decision revision: one combined
   `ref-operations.ts` would be ~3,000 LOC; per-sub-family files match
   the §1 precedent and keep each tranche reviewable in one commit.)
-- [~] 2.2 Move `_ref` traces / grants / runs / timelines routes
+- [x] 2.2 Move `_ref` traces / grants / runs / timelines routes
   (`GET /_ref/traces`, `GET /_ref/traces/:traceId`, `GET /_ref/grants`,
   `GET /_ref/grants/:grantId/timeline`, `GET /_ref/runs`,
   `GET /_ref/runs/:runId/timeline`).
@@ -33,12 +33,18 @@ unchanged.
     `mountRefTraces`, `mountRefGrants`, `mountRefRuns`. Behaviour-
     preserving; covered by `test/control-plane.test.js` (21 tests pass)
     and `test/ref-read-owner-gate.test.js` (3 tests pass).
-  - [ ] Detail / timeline endpoints (`/_ref/traces/:traceId`,
+  - [x] Detail / timeline endpoints (`/_ref/traces/:traceId`,
     `/_ref/grants/:grantId/timeline`, `/_ref/runs/:runId/timeline`)
-    remain inline in `index.js`. They couple to `parseTimelineFilters`,
-    `executeRefSpineEventsPage`, and live-bearer redaction helpers; the
-    extraction is well-defined but deferred to keep this tranche
-    independently reviewable.
+    extracted to `server/routes/ref-spine-timelines.ts` with
+    `mountRefTraceTimeline`, `mountRefGrantTimeline`,
+    `mountRefRunTimeline`. Behaviour-preserving: same `limit`/`cursor`
+    parsing, same 404-on-empty-first-page, same `invalid_cursor`
+    discrimination. `parseTimelinePageOptions` and the
+    `TIMELINE_DEFAULT_LIMIT` / `TIMELINE_MAX_LIMIT` constants moved
+    into the new module (sole call site). `executeRefSpineEventsPage`
+    continues to own envelope shape and live-bearer redaction. The
+    spine substrate read (`listSpineEventsPage`) is host-injected via
+    ctx, matching the `ref-spine-correlations.ts` adapter pattern.
 - [ ] 2.3 Move `_ref` dataset routes (`GET /_ref/dataset/summary`, `…/summary/streams`, `POST …/summary/rebuild`, `…/summary/reconcile`, `GET /_ref/dataset/size`, `…/top`, `POST …/size/rebuild`, `…/size/reconcile`, `GET /_ref/records/version-stats`).
 - [ ] 2.4 Move `_ref` connectors / connections / connector-instances routes (list/get/run/schedule pause/resume/delete and `PATCH /_ref/connections/:connectorInstanceId`).
 - [ ] 2.5 Move `_ref` approvals, records-timeline, schedules, deployment, clients, search routes.
@@ -46,9 +52,11 @@ unchanged.
 - [ ] 2.7 Update `buildAsApp` in `server/index.js` to call each
   sub-family's mount function at the same point in route registration;
   delete the moved blocks. (Partial: 2.2 list endpoints wired via
-  `refSpineCorrelationsContext`; remaining sub-families pending.)
+  `refSpineCorrelationsContext`; 2.2 detail/timeline endpoints wired
+  via `refSpineTimelinesContext`; remaining sub-families pending.)
 - [~] 2.8 Acceptance: targeted tests under `reference-implementation/test/` (ref-control, dataset summary, device exporter, web push, schedules) pass; `pnpm --dir reference-implementation run verify` passes.
   - [x] Tests covering 2.2 list endpoints pass: `node --test test/control-plane.test.js` (21/21), `node --test test/ref-read-owner-gate.test.js` (3/3), `node --test test/ref-spine-correlations-list-{boundary,operation}.test.js` (10/10).
+  - [x] Tests covering 2.2 detail/timeline endpoints pass: `node --test test/control-plane.test.js`, `node --test test/ref-read-owner-gate.test.js`, `node --test test/ref-spine-events-page-{boundary,operation}.test.js`.
   - [ ] Remaining sub-family acceptance still gated by §§2.3–2.7 landing.
 
 ## 3. RS read family
