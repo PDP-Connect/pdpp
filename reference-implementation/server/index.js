@@ -1513,14 +1513,21 @@ function resolveOwnerAuthPlaceholderConfig(opts = {}) {
   // Explicit opts win over env so the harness can set them per-test. When
   // neither is set, placeholder auth stays off and the server keeps its
   // current open local-dev behavior.
+  //
+  // Node's built-in test runner sets NODE_TEST_CONTEXT. In that mode,
+  // direct `node --test test/foo.test.js` invocations must be hermetic
+  // even when the developer shell exports real operator env vars. The
+  // production process still reads env normally; tests that need owner auth
+  // opt in with explicit startServer({ ownerAuthPassword, ... }) options.
+  const readOwnerAuthEnv = !process.env.NODE_TEST_CONTEXT;
   const password =
     opts.ownerAuthPassword ??
-    (typeof process.env.PDPP_OWNER_PASSWORD === 'string' && process.env.PDPP_OWNER_PASSWORD
+    (readOwnerAuthEnv && typeof process.env.PDPP_OWNER_PASSWORD === 'string' && process.env.PDPP_OWNER_PASSWORD
       ? process.env.PDPP_OWNER_PASSWORD
       : null);
   const subjectId =
     opts.ownerAuthSubjectId ??
-    (typeof process.env.PDPP_OWNER_SUBJECT_ID === 'string' && process.env.PDPP_OWNER_SUBJECT_ID
+    (readOwnerAuthEnv && typeof process.env.PDPP_OWNER_SUBJECT_ID === 'string' && process.env.PDPP_OWNER_SUBJECT_ID
       ? process.env.PDPP_OWNER_SUBJECT_ID
       : null);
   // Force `Secure` on owner cookies behind a TLS-terminating proxy where
@@ -1528,8 +1535,10 @@ function resolveOwnerAuthPlaceholderConfig(opts = {}) {
   // so plain-HTTP local development continues to issue usable cookies.
   const forceSecureCookies =
     opts.ownerAuthForceSecureCookies ??
-    (process.env.PDPP_OWNER_FORCE_SECURE_COOKIES === '1' ||
-      process.env.PDPP_OWNER_FORCE_SECURE_COOKIES === 'true');
+    (readOwnerAuthEnv && (
+      process.env.PDPP_OWNER_FORCE_SECURE_COOKIES === '1' ||
+      process.env.PDPP_OWNER_FORCE_SECURE_COOKIES === 'true'
+    ));
   // SameSite mode for the owner session and CSRF cookies. `lax` keeps the
   // existing flow (login redirects from /owner/login back to /consent)
   // working. `strict` is opt-in for deployments that don't rely on
@@ -1537,11 +1546,13 @@ function resolveOwnerAuthPlaceholderConfig(opts = {}) {
   const sameSiteRaw =
     typeof opts.ownerAuthSameSite === 'string'
       ? opts.ownerAuthSameSite
-      : process.env.PDPP_OWNER_SAMESITE;
+      : readOwnerAuthEnv
+        ? process.env.PDPP_OWNER_SAMESITE
+        : undefined;
   const sameSite = sameSiteRaw === 'strict' ? 'strict' : 'lax';
   const sessionTtlRaw =
     opts.ownerAuthSessionTtlSeconds ??
-    (typeof process.env.PDPP_OWNER_SESSION_TTL_SECONDS === 'string'
+    (readOwnerAuthEnv && typeof process.env.PDPP_OWNER_SESSION_TTL_SECONDS === 'string'
       ? process.env.PDPP_OWNER_SESSION_TTL_SECONDS
       : null);
   const sessionTtlSeconds =
