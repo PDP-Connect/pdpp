@@ -19,7 +19,7 @@
  *      envelope.
  *   5. The same revoke endpoint returns `409 already_revoked` on a
  *      second call.
- *   6. `GET /_ref/grants` rows whose binding token is a package token
+ *   6. `GET /_ref/grants` rows whose grant id is a package member
  *      surface `grant_package_id` on the spine row; non-package grants
  *      omit the field.
  */
@@ -189,6 +189,11 @@ test('GET /_ref/grant-packages lists the package with no secret material', async
       client,
       connectorIds: [spotify.connector_id, github.connector_id],
     });
+    const { packageId: secondPackageId } = await completeMultiSourcePackageFlow({
+      asUrl,
+      client,
+      connectorIds: [spotify.connector_id, github.connector_id],
+    });
 
     const { status, body } = await fetchJson(`${asUrl}/_ref/grant-packages`);
     assert.equal(status, 200);
@@ -202,6 +207,23 @@ test('GET /_ref/grant-packages lists the package with no secret material', async
     assert.equal(typeof row.subject_id, 'string');
     assert.equal(typeof row.client_id, 'string');
     assertNoSecretMaterial(body);
+
+    const firstPage = await fetchJson(`${asUrl}/_ref/grant-packages?limit=1`);
+    assert.equal(firstPage.status, 200);
+    assert.equal(firstPage.body.data.length, 1);
+    assert.equal(firstPage.body.has_more, true);
+    assert.equal(typeof firstPage.body.next_cursor, 'string');
+
+    const secondPage = await fetchJson(
+      `${asUrl}/_ref/grant-packages?limit=1&cursor=${encodeURIComponent(firstPage.body.next_cursor)}`,
+    );
+    assert.equal(secondPage.status, 200);
+    assert.equal(secondPage.body.data.length, 1);
+    const pagedIds = new Set([
+      firstPage.body.data[0].package_id,
+      secondPage.body.data[0].package_id,
+    ]);
+    assert.deepEqual(pagedIds, new Set([packageId, secondPackageId]));
   } finally {
     await closeServer(server);
   }
@@ -312,7 +334,7 @@ test('POST /_ref/grant-packages/:id/revoke cascades revocation; second call retu
   }
 });
 
-test('GET /_ref/grants surfaces grant_package_id on child rows whose token is package-bound and omits it otherwise', async () => {
+test('GET /_ref/grants surfaces grant_package_id on package-member child rows and omits it otherwise', async () => {
   const server = await startTestServer();
   const asUrl = `http://localhost:${server.asPort}`;
 

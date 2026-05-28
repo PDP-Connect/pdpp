@@ -31,7 +31,7 @@ and revoke without per-child manual revocation.
 - **WHEN** the operator submits the revoke affordance on a package
   detail surface
 - **THEN** the reference implementation SHALL revoke every active
-  member child grant
+  package membership
 - **AND** SHALL flip the package row to `revoked`
 - **AND** SHALL invalidate the package-bound MCP refresh token on the
   next exchange.
@@ -48,12 +48,13 @@ and revoke without per-child manual revocation.
 
 The reference implementation SHALL surface a child grant's parent
 package id on the operator console grant list and grant detail
-surfaces whenever the binding token is a package token.
+surfaces whenever the grant is a member of a package.
 
 #### Scenario: Operator views the grants list
 
 - **WHEN** the operator opens the grants list on the operator console
-- **THEN** every grant row whose binding token is a package token
+- **THEN** every grant row whose grant id is present in
+  `grant_package_members`
   SHALL carry the parent `grant_package_id`
 - **AND** the row SHALL render a pivot affordance to the package
   detail surface.

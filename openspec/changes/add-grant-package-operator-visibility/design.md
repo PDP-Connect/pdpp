@@ -7,7 +7,9 @@ selected source. The protocol semantics and the resource-server enforcement
 are intentionally narrow — each tool call still runs under exactly one
 child-grant scoped bearer; the package never appears on persisted
 subscription rows; the package's `revokeGrantPackage` is implemented as a
-convenience wrapper that revokes every child.
+convenience wrapper that revokes the package token, package row, and every
+package membership. Child grant rows remain source-bounded facts; access
+enforcement for the package runs through active package membership.
 
 The operator surface lags. From `/dashboard/grants` today:
 
@@ -38,7 +40,7 @@ offered" — `design-fast-broad-agent-consent` tasks.md §3).
   and a link to the child's standalone detail.
 - The operator can revoke a package from its detail page using the same
   confirmation pattern as the grant detail page. Revocation cascades to
-  the children exactly as `revokeGrantPackage` already does today.
+  package membership exactly as `revokeGrantPackage` already does today.
 - A child grant viewed standalone surfaces its `grant_package_id` and
   links back to the package detail page when applicable.
 - The new endpoints are owner-session gated, return typed envelopes that
@@ -96,12 +98,14 @@ client concern.
 ### 2. Surface `grant_package_id` on child-grant rows
 
 `/_ref/grants` already returns rows joined from the existing spine
-correlations table. The token table carries `package_id`; when the
-binding token for the spine row's most recent grant.issued event is a
-package token, the spine row surface adds `grant_package_id`. The
-existing `RefSpineCorrelationsList` operation extends its envelope with
-this optional field. Clients that do not understand the new field ignore
-it.
+correlations table. The package membership table carries the binding
+fact from child grant to parent package; package bearer tokens have
+`NULL grant_id` and are therefore not the right source of truth for a
+child-grant pivot. When a spine row's grant id appears in
+`grant_package_members`, the spine row surface adds `grant_package_id`.
+The existing `RefSpineCorrelationsList` operation extends its envelope
+with this optional field. Clients that do not understand the new field
+ignore it.
 
 The grant detail timeline does not gain new event types in this change
 — the existing `grant_package.issued` event under `object_type:
@@ -112,7 +116,7 @@ pinned "issued under package" header; not in scope here.
 
 **Alternative considered:** invent a `grant.bound_to_package` event type
 keyed against the child grant. Rejected because the binding fact is
-already represented in the tokens table and the existing
+already represented in `grant_package_members` and the existing
 `grant_package.issued` event; minting a redundant event type would
 require schema migration and new operation code for no behavioral gain.
 
@@ -148,7 +152,9 @@ The revoke server action on the package detail page:
   on success or a typed error on failure.
 
 The detail page renders the existing list of child grants with their
-post-revocation statuses; the operator sees the cascade directly.
+package-member status and revoked timestamp; the operator sees the
+cascade directly without implying the source-bounded grant row itself
+was deleted or rewritten.
 
 ### 5. Apps/web is not mirrored
 
@@ -159,12 +165,12 @@ single source of truth for which surface receives new dashboard pages.
 
 ## Risks / Trade-offs
 
-- **Token-table read on every spine row.** Surfacing `grant_package_id`
+- **Package-membership read on every spine row.** Surfacing `grant_package_id`
   on the grants list adds a join. The existing spine query is already
-  doing one join; adding the tokens table is bounded by the number of
-  active grants the operator owns (small in practice). If the query
-  becomes a hotspot, the implementation lane can cache the projection
-  on the spine row at issuance time.
+  doing one join; adding the package membership lookup is bounded by
+  the number of grants on the current page. If the query becomes a
+  hotspot, the implementation lane can cache the projection on the
+  spine row at issuance time.
 - **Operator could revoke a package they thought was small.** The
   detail page must show the full child list before the revoke
   confirmation so the operator sees the blast radius. The implementation
@@ -180,20 +186,22 @@ single source of truth for which surface receives new dashboard pages.
   passes.
 - `openspec validate --all --strict` passes.
 - After implementation:
-  - `GET /_ref/grant-packages` returns a paginated envelope of packages
-    with the listed fields.
+- `GET /_ref/grant-packages` returns a bounded, cursor-paginated
+    envelope of packages with the listed fields.
   - `GET /_ref/grant-packages/:id` returns the detail shape with
     children, status, and timestamps.
-  - `POST /_ref/grant-packages/:id/revoke` revokes every child and
-    flips the package row to `status: revoked`.
+  - `POST /_ref/grant-packages/:id/revoke` revokes every active
+    package membership, invalidates the package-bound token, and flips
+    the package row to `status: revoked`.
   - `/dashboard/grants/packages` renders the index against the new
     endpoint.
   - `/dashboard/grants/packages/:id` renders the detail and exposes
     the revoke server action; revocation invalidates the package's
     MCP refresh token on the next exchange (already implemented at
     the auth layer).
-  - `/dashboard/grants` rows whose binding token is a package token
-    surface a "package …" pivot link to the package detail page.
+  - `/dashboard/grants` rows whose grant id is present in
+    `grant_package_members` surface a "package …" pivot link to the
+    package detail page.
   - A regression test verifies each page's invariants (no secret
     fields, package id round-trips through the URL, child-grant link
     targets, etc.).

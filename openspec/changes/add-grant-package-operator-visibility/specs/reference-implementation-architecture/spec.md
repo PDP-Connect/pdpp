@@ -37,7 +37,7 @@ hosted-MCP authorization-flow artifact.
 
 - **WHEN** an owner-authenticated request hits the package revoke
   endpoint for an active package
-- **THEN** every active member child grant SHALL be revoked
+- **THEN** every active package membership SHALL be revoked
 - **AND** the package row SHALL flip to `revoked`
 - **AND** the package's MCP refresh-token exchange SHALL be rejected
   on the next attempt.
@@ -84,23 +84,23 @@ does not have to learn a new layout.
 #### Scenario: Operator opens a child grant page
 
 - **WHEN** the operator opens `/dashboard/grants/<grantId>` for a
-  grant whose binding token is a package token
+  grant whose grant id is present in `grant_package_members`
 - **THEN** the page SHALL render a pivot link to the package detail
   page.
 
 ### Requirement: The `_ref/grants` spine envelope SHALL carry `grant_package_id`
 
 The `executeRefSpineCorrelationsList` operation (kind=`grant`) SHALL
-include `grant_package_id` on every row whose binding token is a
-package token. The field SHALL be omitted otherwise. Existing consumers
+include `grant_package_id` on every row whose grant id is a member of a
+grant package. The field SHALL be omitted otherwise. Existing consumers
 SHALL continue to function because they ignore unknown fields by
 contract.
 
 #### Scenario: Owner lists grants and one row is package-bound
 
 - **WHEN** the spine correlations list operation runs for grants
-- **AND** at least one returned grant is bound to a token whose
-  `package_id` is non-null
+- **AND** at least one returned grant id is present in
+  `grant_package_members`
 - **THEN** the envelope SHALL surface `grant_package_id` for that row
 - **AND** the envelope SHALL omit `grant_package_id` for rows whose
-  binding token has no `package_id`.
+  grant id is not a package member.

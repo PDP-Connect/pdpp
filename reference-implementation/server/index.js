@@ -4049,12 +4049,37 @@ function buildAsApp(opts = {}) {
   // subject_id / client_id / status / children` shape consumed by the
   // hosted-MCP OAuth flow at authorization time.
   // Spec: openspec/changes/add-grant-package-operator-visibility/
-  app.get('/_ref/grant-packages', ownerAuth.requireOwnerSession, async (_req, res) => {
+  function parseGrantPackageListQuery(query) {
+    const rawLimit = query?.limit;
+    let limit = 50;
+    if (rawLimit !== undefined && rawLimit !== null) {
+      const parsed = Number.parseInt(String(rawLimit), 10);
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        const err = new Error(`limit must be a positive integer (got "${rawLimit}")`);
+        err.code = 'invalid_request';
+        err.param = 'limit';
+        throw err;
+      }
+      if (parsed > 200) {
+        const err = new Error('limit exceeds maximum 200');
+        err.code = 'invalid_request';
+        err.param = 'limit';
+        throw err;
+      }
+      limit = parsed;
+    }
+    return {
+      limit,
+      cursor: typeof query?.cursor === 'string' && query.cursor.length > 0 ? query.cursor : null,
+    };
+  }
+
+  app.get('/_ref/grant-packages', ownerAuth.requireOwnerSession, async (req, res) => {
     try {
-      const packages = await listGrantPackagesForOwner();
+      const page = await listGrantPackagesForOwner(parseGrantPackageListQuery(req.query));
       res.json({
         object: 'list',
-        data: packages.map((pkg) => ({
+        data: page.data.map((pkg) => ({
           object: 'grant_package_summary',
           package_id: pkg.package_id,
           subject_id: pkg.subject_id,
@@ -4065,7 +4090,9 @@ function buildAsApp(opts = {}) {
           approved_at: pkg.approved_at,
           revoked_at: pkg.revoked_at,
         })),
-        has_more: false,
+        has_more: page.has_more,
+        next_cursor: page.next_cursor,
+        limit: page.limit,
       });
     } catch (err) {
       handleError(res, err);

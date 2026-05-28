@@ -25,13 +25,12 @@ respects the existing protocol contract.
   grants (id, source, status), the bound subject and client, and timestamps.
   These read endpoints reuse the existing `getGrantPackageAccess` helper and
   the grant-package store; no new storage shape.
-- Surface the existing `grant_package.issued` and `grant_package.revoked`
-  spine events on a child grant's timeline by extending
-  `executeRefSpineCorrelationsList` (kind=`grant`) and the grant-timeline
-  envelope so the child carries its `grant_package_id` field whenever the
-  bound token came from a package. The current child-grant spine row is not
-  changed; the package id is read alongside it from the existing tokens
-  table.
+- Surface package linkage on child-grant operator rows by extending
+  `executeRefSpineCorrelationsList` (kind=`grant`) so the child carries
+  its `grant_package_id` field whenever its grant id appears in
+  `grant_package_members`. The current child-grant spine row is not
+  changed; the package id is read alongside it from the existing package
+  membership table.
 - Add a `/dashboard/grants/packages` index page (read-only) and a
   `/dashboard/grants/packages/[packageId]` detail page that show the
   member child grants, the sources the package was approved over, the
@@ -75,8 +74,8 @@ respects the existing protocol contract.
     `/_ref/grant-packages/:id/revoke` route that calls the existing
     `revokeGrantPackage`.
   - `reference-implementation/operations/ref-spine-correlations-list/`
-    and `ref-grant-timeline/` (if present) — annotate child-grant rows
-    with their `grant_package_id` when the binding token has one.
+    and spine storage helpers — annotate child-grant rows with their
+    `grant_package_id` when the grant is a package member.
   - `apps/console/src/app/dashboard/grants/packages/page.tsx` — new
     list page.
   - `apps/console/src/app/dashboard/grants/packages/[packageId]/page.tsx`
@@ -91,8 +90,8 @@ respects the existing protocol contract.
     console.
   - Owners viewing a child grant can see and jump to the parent package.
   - Per-grant revocation still works as before; package revocation
-    cascades to children exactly as today's `revokeGrantPackage` already
-    does.
+    cascades to package membership exactly as today's `revokeGrantPackage`
+    already does.
 - Protocol impact: none. No new protocol semantics; the package
   primitive is already in `add-hosted-mcp-grant-packages`. This change
   only exposes the already-issued packages to the operator surface.

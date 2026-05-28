@@ -9,7 +9,8 @@
 ## 2. Reference server `_ref` endpoints
 
 - [x] 2.1 Add `listGrantPackagesForOwner({cursor, limit})` to
-  `reference-implementation/server/auth.js`, paginating by created_at DESC.
+  `reference-implementation/server/auth.js`, paginating by created_at DESC
+  with a bounded page size.
 - [x] 2.2 Mount `GET /_ref/grant-packages` (owner-session gated) returning
   an envelope `{ data: GrantPackageSummary[], next_cursor, truncated }`.
 - [x] 2.3 Mount `GET /_ref/grant-packages/:id` returning `{ data:
@@ -20,12 +21,11 @@
   `revokeGrantPackage`. Reject with `409 already_revoked` if the package
   is not active.
 - [x] 2.5 Extend `executeRefSpineCorrelationsList` (kind=`grant`) so each
-  spine row carries `grant_package_id` when the binding token is a
-  package token. The field is omitted when the grant is not bound to a
-  package; existing consumers that ignore unknown fields continue to
-  work. (Lookup reads `grant_package_members.grant_id` — the package's
-  MCP refresh token has a NULL `grant_id`, so the binding fact lives on
-  the membership table, not on tokens.)
+  spine row carries `grant_package_id` when the grant id is present in
+  `grant_package_members`. The field is omitted when the grant is not a
+  package member; existing consumers that ignore unknown fields continue
+  to work. (The package's MCP refresh token has a NULL `grant_id`, so
+  the binding fact lives on the membership table, not on tokens.)
 
 ## 3. Console: list + detail pages
 
@@ -53,8 +53,8 @@
   including the typed `not_found` and `already_revoked` cases.
   (`reference-implementation/test/ref-grant-packages.test.js`.)
 - [x] 4.2 Spine correlations list test asserting
-  `grant_package_id` is returned for child-grant rows whose token is a
-  package token and omitted otherwise.
+  `grant_package_id` is returned for child-grant rows whose grant id is
+  present in `grant_package_members` and omitted otherwise.
   (Covered by the last case in `ref-grant-packages.test.js`, which
   drives `_ref/grants` end-to-end through the reference server.)
 - [x] 4.3 Console invariants tests for the new list and detail pages:
@@ -82,12 +82,12 @@
 - Visiting the package detail page shows both child grants with their
   source, status, and a link to each child grant detail.
 - Submitting the revoke form on the package detail page revokes both
-  child grants and flips the package row to `status: revoked`. The
-  package's MCP refresh-token exchange is rejected on the next attempt
-  (already verified end-to-end by `hosted-mcp-oauth.test.js`).
+  package memberships and flips the package row to `status: revoked`.
+  The package's MCP refresh-token exchange is rejected on the next
+  attempt (already verified end-to-end by `hosted-mcp-oauth.test.js`).
 - A child grant viewed at `/dashboard/grants/[id]` shows the package
-  pivot link when the binding token is a package token, and does not
-  show it for grants issued outside a package ceremony.
+  pivot link when the grant is a package member, and does not show it
+  for grants issued outside a package ceremony.
 
 ## Residual risks
 
@@ -100,6 +100,4 @@
   revoked package-bound MCP token + revoked `grant_package_members`
   row; the operator-visible cascade on the package detail page lives on
   `member_status` and the member `revoked_at`. This matches existing
-  `hosted-mcp-oauth.test.js` behavior and is intentional, but operators
-  should not interpret a child grant's `active` status badge as
-  "package-bound bearer still works".
+  `hosted-mcp-oauth.test.js` behavior and is intentional.

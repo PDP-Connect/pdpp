@@ -3249,24 +3249,72 @@ export async function getGrantPackageAccess(packageId) {
  * Reference-only operator surface. Not part of the PDPP protocol; do
  * not expose to clients.
  */
-export async function listGrantPackagesForOwner() {
+function encodeGrantPackageCursor(row) {
+  return Buffer.from(JSON.stringify({
+    created_at: row.created_at,
+    package_id: row.package_id,
+  }), 'utf8').toString('base64url');
+}
+
+function decodeGrantPackageCursor(cursor) {
+  if (!isNonEmptyString(cursor)) return null;
+  try {
+    const decoded = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'));
+    if (
+      decoded
+      && isNonEmptyString(decoded.created_at)
+      && isNonEmptyString(decoded.package_id)
+    ) {
+      return {
+        created_at: decoded.created_at,
+        package_id: decoded.package_id,
+      };
+    }
+  } catch {
+    // handled below
+  }
+  const err = new Error('Invalid grant package cursor');
+  err.code = 'invalid_cursor';
+  throw err;
+}
+
+export async function listGrantPackagesForOwner(opts = {}) {
+  const limit = Number.isInteger(opts.limit) && opts.limit > 0 ? opts.limit : 50;
+  const cursor = decodeGrantPackageCursor(opts.cursor);
   let rows;
   if (isPostgresStorageBackend()) {
+    const params = [];
+    let where = '';
+    if (cursor) {
+      params.push(cursor.created_at, cursor.package_id);
+      where = 'WHERE (gp.created_at < $1 OR (gp.created_at = $1 AND gp.package_id < $2))';
+    }
+    params.push(limit + 1);
+    const limitPlaceholder = `$${params.length}`;
     rows = (await postgresQuery(
       `SELECT gp.package_id, gp.subject_id, gp.client_id, gp.status,
               gp.trace_id, gp.scenario_id, gp.created_at, gp.approved_at, gp.revoked_at,
               (SELECT COUNT(*) FROM grant_package_members gpm
                  WHERE gpm.package_id = gp.package_id) AS member_count
          FROM grant_packages gp
-         ORDER BY gp.created_at DESC, gp.package_id DESC`,
-      [],
+         ${where}
+         ORDER BY gp.created_at DESC, gp.package_id DESC
+         LIMIT ${limitPlaceholder}`,
+      params,
     )).rows;
   } else {
     rows = [
       ...allowUnboundedReadAcknowledged(referenceQueries.authGrantPackagesListAll, []),
     ];
+    if (cursor) {
+      rows = rows.filter((row) => (
+        row.created_at < cursor.created_at
+        || (row.created_at === cursor.created_at && row.package_id < cursor.package_id)
+      ));
+    }
+    rows = rows.slice(0, limit + 1);
   }
-  return rows
+  const normalized = rows
     .map((row) => {
       const pkg = normalizePackageRow(row);
       if (!pkg) return null;
@@ -3280,6 +3328,15 @@ export async function listGrantPackagesForOwner() {
       };
     })
     .filter((row) => row !== null);
+  const data = normalized.slice(0, limit);
+  const hasMore = normalized.length > limit;
+  const tail = hasMore ? data.at(-1) : null;
+  return {
+    data,
+    has_more: hasMore,
+    next_cursor: tail ? encodeGrantPackageCursor(tail) : null,
+    limit,
+  };
 }
 
 /**
