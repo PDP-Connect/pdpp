@@ -16,21 +16,24 @@
  *   - Empty-query fan-out KNOWS the connection per row. Row key, peek
  *     param, attribution, and full-record link all carry the concrete
  *     `connection_id`.
- *   - Search hits today do NOT carry `connection_id` from the public
- *     `/v1/search*` contract. We resolve to a concrete connection only
- *     when (a) the server happens to return one (forward-compatible), or
- *     (b) exactly one connection of that connector type is visible
- *     ("deduction, not guessing"). Otherwise the row is connector-scoped
- *     and the UI says so.
- *   - Selected-connection chips fall back to a connector-type post-filter
- *     in search mode for the same reason; the chip label and the spec
- *     both call this out instead of pretending to filter by connection.
+ *   - Search hits carry `connection_id` whenever the snapshot recorded the
+ *     binding (canonical read contract, task 3.2). When present we resolve
+ *     directly. Pre-identity snapshots may still omit the field; we fall
+ *     back to the visible-set deduction only when exactly one connection of
+ *     that connector type is visible ("deduction, not guessing"). Otherwise
+ *     the row is connector-scoped and the UI says so.
+ *   - Selected-connection chips also fall back to a connector-type post-
+ *     filter in search mode because the public surface does not yet narrow
+ *     storage fan-in by `connection_id` (canonical read contract, task 3.3
+ *     follow-up). The chip label and the spec both call this out instead of
+ *     pretending to filter by connection.
  */
 import { DashboardShell, ServerUnreachable } from "../components/shell.tsx";
 import {
   buildExplorerHref,
   type ExplorerConnectionFacet,
   type ExplorerFeedEntry,
+  type ExplorerLens,
   type ExplorerPeekData,
   type ExplorerWarning,
   parseExplorerPeekParam,
@@ -46,6 +49,7 @@ import {
   listConnectorManifests,
   queryRecords,
   type SearchResultHit,
+  type StreamRecord,
   searchRecordsHybrid,
   searchRecordsLexical,
 } from "../lib/rs-client.ts";
@@ -69,6 +73,8 @@ const MAX_FEED_CONNECTIONS = 12;
 const MAX_FEED_STREAMS_PER_CONNECTION = 4;
 const MAX_FEED_RECORDS_PER_STREAM = 8;
 const FEED_TOTAL_CAP = 50;
+const TIME_RANGE_RECORDS_PER_STREAM = 50;
+const TIME_RANGE_TOTAL_CAP = 500;
 const SEARCH_PAGE_LIMIT = 25;
 
 function uniqueStrings(values: Array<string | null | undefined>): string[] {
@@ -119,11 +125,76 @@ interface FeedLoadResult {
   warnings: ExplorerWarning[];
 }
 
+function isValidIsoDate(value: string): boolean {
+  if (!value) {
+    return false;
+  }
+  return !Number.isNaN(Date.parse(value));
+}
+
 function describeError(err: unknown): string {
   if (err instanceof Error) {
     return err.message;
   }
   return String(err);
+}
+
+function parseRecordTimestamp(raw: unknown): number | null {
+  if (raw === null || raw === undefined) {
+    return null;
+  }
+  if (typeof raw === "number") {
+    const ms = raw > 1e12 ? raw : raw * 1000;
+    return Number.isFinite(ms) ? ms : null;
+  }
+  if (typeof raw !== "string") {
+    return null;
+  }
+  const ms = Date.parse(raw);
+  return Number.isNaN(ms) ? null : ms;
+}
+
+function isWithinWindow(ms: number, sinceMs: number | null, untilMs: number | null): boolean {
+  if (sinceMs !== null && ms < sinceMs) {
+    return false;
+  }
+  return !(untilMs !== null && ms >= untilMs);
+}
+
+function recordData(record: StreamRecord): Record<string, unknown> {
+  return record.data && typeof record.data === "object" ? (record.data as Record<string, unknown>) : {};
+}
+
+function toTimeRangeEntry({
+  consentTimeField,
+  record,
+  sinceMs,
+  streamName,
+  summary,
+  untilMs,
+}: {
+  consentTimeField: string;
+  record: StreamRecord;
+  sinceMs: number | null;
+  streamName: string;
+  summary: RefConnectorSummary;
+  untilMs: number | null;
+}): ExplorerFeedEntry | null {
+  const data = recordData(record);
+  const ms = parseRecordTimestamp(data[consentTimeField]);
+  if (ms === null || !isWithinWindow(ms, sinceMs, untilMs)) {
+    return null;
+  }
+  return {
+    connectorId: summary.connector_id,
+    connectionId: summary.connection_id,
+    connectionDisplayName: summary.display_name || summary.connector_display_name || summary.connector_id,
+    stream: streamName,
+    recordId: record.id,
+    emittedAt: record.emitted_at,
+    displayAt: new Date(ms).toISOString(),
+    summary: summarize(summary.connector_id, streamName, data),
+  };
 }
 
 async function loadEmptyQueryFeed(
@@ -201,6 +272,84 @@ async function loadEmptyQueryFeed(
   const truncated = flat.length > FEED_TOTAL_CAP;
   return {
     entries: flat.slice(0, FEED_TOTAL_CAP),
+    fromSearch: false,
+    hybridUsed: false,
+    truncated,
+    warnings,
+  };
+}
+
+async function loadTimeRangeFeed(
+  since: string,
+  until: string,
+  filteredSummaries: RefConnectorSummary[],
+  timestampMetadata: ReadonlyMap<string, SearchTimestampMetadata>,
+  filterStreams: ReadonlySet<string>
+): Promise<FeedLoadResult> {
+  // Time-anchored cross-stream feed. The old standalone timeline loader is
+  // connector-scoped; Explore is connection-first, so this lens fans out per
+  // concrete connection instance and keeps row attribution exact.
+  const sinceMs = since ? Date.parse(since) : null;
+  const untilMs = until ? Date.parse(until) : null;
+
+  type StreamFetchResult = { ok: true; entries: ExplorerFeedEntry[] } | { ok: false; failure: ExplorerWarning };
+  const fetches: Promise<StreamFetchResult>[] = [];
+
+  for (const summary of filteredSummaries) {
+    const streams = (summary.streams ?? []).filter((streamName) => {
+      if (filterStreams.size > 0 && !filterStreams.has(streamName)) {
+        return false;
+      }
+      const metadata = lookupSearchTimestampMetadata(timestampMetadata, summary.connector_id, streamName);
+      return typeof metadata?.consent_time_field === "string" && metadata.consent_time_field.length > 0;
+    });
+    for (const streamName of streams) {
+      const metadata = lookupSearchTimestampMetadata(timestampMetadata, summary.connector_id, streamName);
+      const consentTimeField = metadata?.consent_time_field;
+      if (!(typeof consentTimeField === "string" && consentTimeField.length > 0)) {
+        continue;
+      }
+      fetches.push(
+        queryRecords(summary.connector_id, streamName, {
+          connectorInstanceId: summary.connector_instance_id ?? summary.connection_id,
+          limit: TIME_RANGE_RECORDS_PER_STREAM,
+          order: "desc",
+        })
+          .then(
+            (page): StreamFetchResult => ({
+              ok: true,
+              entries: page.data
+                .map((record) => toTimeRangeEntry({ consentTimeField, record, sinceMs, streamName, summary, untilMs }))
+                .filter((entry): entry is ExplorerFeedEntry => entry !== null),
+            })
+          )
+          .catch(
+            (err): StreamFetchResult => ({
+              ok: false,
+              failure: {
+                code: "partial_fan_in",
+                message: `${summary.display_name || summary.connector_display_name || summary.connector_id} · ${streamName}: ${describeError(err)}`,
+              },
+            })
+          )
+      );
+    }
+  }
+
+  const results = await Promise.all(fetches);
+  const entries: ExplorerFeedEntry[] = [];
+  const warnings: ExplorerWarning[] = [];
+  for (const result of results) {
+    if (result.ok) {
+      entries.push(...result.entries);
+    } else {
+      warnings.push(result.failure);
+    }
+  }
+  entries.sort((a, b) => (Date.parse(b.displayAt) || 0) - (Date.parse(a.displayAt) || 0));
+  const truncated = entries.length > TIME_RANGE_TOTAL_CAP;
+  return {
+    entries: entries.slice(0, TIME_RANGE_TOTAL_CAP),
     fromSearch: false,
     hybridUsed: false,
     truncated,
@@ -382,6 +531,40 @@ async function buildPeek(
   }
 }
 
+interface FeedDispatch {
+  feed: FeedLoadResult;
+  lens: ExplorerLens;
+}
+
+async function dispatchFeed(args: {
+  query: string;
+  since: string;
+  until: string;
+  filteredSummaries: RefConnectorSummary[];
+  filterStreamSet: ReadonlySet<string>;
+  timestampMetadata: ReadonlyMap<string, SearchTimestampMetadata>;
+  filterConnectionSet: ReadonlySet<string>;
+}): Promise<FeedDispatch> {
+  const { query, since, until, filteredSummaries, filterStreamSet, timestampMetadata, filterConnectionSet } = args;
+  const hasTimeWindow = since !== "" || until !== "";
+  if (query) {
+    const feed = await loadSearchFeed(
+      query,
+      filteredSummaries,
+      filterStreamSet,
+      timestampMetadata,
+      filterConnectionSet
+    );
+    return { feed, lens: hasTimeWindow ? "search_with_ignored_time_window" : "search" };
+  }
+  if (hasTimeWindow) {
+    const feed = await loadTimeRangeFeed(since, until, filteredSummaries, timestampMetadata, filterStreamSet);
+    return { feed, lens: "time_range" };
+  }
+  const feed = await loadEmptyQueryFeed(filteredSummaries, timestampMetadata, filterStreamSet);
+  return { feed, lens: "recent" };
+}
+
 async function buildTimestampMetadata(): Promise<Map<string, SearchTimestampMetadata>> {
   const metadata = new Map<string, SearchTimestampMetadata>();
   for (const manifest of await listConnectorManifests()) {
@@ -403,6 +586,8 @@ export default async function RecordsExplorerPage({
     connection?: string | string[];
     stream?: string | string[];
     peek?: string;
+    since?: string;
+    until?: string;
   }>;
 }) {
   // Empty-query loads still need the DAL gate; loadSearchFeed and the
@@ -418,6 +603,10 @@ export default async function RecordsExplorerPage({
   const query = (params.q ?? "").trim();
   const selectedConnectionIds = uniqueStrings(asStringArray(params.connection));
   const selectedStreams = uniqueStrings(asStringArray(params.stream));
+  const rawSince = (params.since ?? "").trim();
+  const rawUntil = (params.until ?? "").trim();
+  const since = isValidIsoDate(rawSince) ? rawSince : "";
+  const until = isValidIsoDate(rawUntil) ? rawUntil : "";
 
   let summaries: RefConnectorSummary[];
   try {
@@ -446,10 +635,19 @@ export default async function RecordsExplorerPage({
   const timestampMetadata = await buildTimestampMetadata();
 
   let feedResult: FeedLoadResult;
+  let lens: ExplorerLens;
   try {
-    feedResult = query
-      ? await loadSearchFeed(query, filteredSummaries, filterStreamSet, timestampMetadata, filterConnectionSet)
-      : await loadEmptyQueryFeed(filteredSummaries, timestampMetadata, filterStreamSet);
+    const dispatch = await dispatchFeed({
+      query,
+      since,
+      until,
+      filteredSummaries,
+      filterStreamSet,
+      timestampMetadata,
+      filterConnectionSet,
+    });
+    feedResult = dispatch.feed;
+    lens = dispatch.lens;
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
@@ -488,6 +686,9 @@ export default async function RecordsExplorerPage({
     connections,
     selectedConnectionIds,
     selectedStreams,
+    since,
+    until,
+    lens,
     fromSearch: feedResult.fromSearch,
     hybridUsed: feedResult.hybridUsed,
     feed: feedResult.entries,

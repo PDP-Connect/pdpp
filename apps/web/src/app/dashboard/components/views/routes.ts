@@ -29,6 +29,14 @@ export interface Routes {
      */
     explore: string;
     records: string;
+    /**
+     * @deprecated The Timeline subpage was absorbed into Explore by
+     * `absorb-timeline-into-explore-ia`. The `/dashboard/records/timeline`
+     * URL redirects to `/dashboard/explore`. Sandbox still mounts the
+     * standalone view at `/sandbox/records/timeline` until the sandbox IA
+     * is realigned in a follow-on tranche. Remove this field when both
+     * surfaces stop referencing the old path.
+     */
     recordsTimeline: string;
     schedules: string;
     search: string;
@@ -37,6 +45,7 @@ export interface Routes {
     traces: string;
     deployment: string;
     deviceExporters: string;
+    eventSubscriptions: string;
   };
   stream(connectorId: string, stream: string): string;
   streamHealth(connectorId: string, stream: string): string;
@@ -59,6 +68,7 @@ function makeRoutes(basePath: string, opts: { overview?: string } = {}): Routes 
       traces: `${basePath}/traces`,
       deployment: `${basePath}/deployment`,
       deviceExporters: `${basePath}/device-exporters`,
+      eventSubscriptions: `${basePath}/event-subscriptions`,
     },
     grant: (id) => `${basePath}/grants/${enc(id)}`,
     run: (id) => `${basePath}/runs/${enc(id)}`,

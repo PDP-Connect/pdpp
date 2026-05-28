@@ -114,9 +114,9 @@ const QUICK_ACTIONS: DashboardCommand[] = [
   {
     id: "quick-records-timeline",
     title: "Record activity",
-    description: "Inspect recent record ingestion activity across connectors.",
-    href: "/dashboard/records/timeline",
-    keywords: ["records", "timeline", "activity", "history"],
+    description: "Inspect recent record activity by date window in Explore.",
+    href: "/dashboard/explore",
+    keywords: ["records", "timeline", "activity", "history", "explore"],
     kind: "action",
     section: "Quick action",
   },

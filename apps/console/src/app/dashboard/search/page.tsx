@@ -1,9 +1,10 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { shouldAttemptSemanticUplift } from "pdpp-reference-implementation/deployment-diagnostics";
 import { DashboardShell, ServerUnreachable } from "../components/shell.tsx";
-import { WarningsBanner } from "../components/warnings-banner.tsx";
 import { dashboardRoutes } from "../components/views/routes.ts";
 import { type SearchData, SearchView } from "../components/views/search-view.tsx";
+import { WarningsBanner } from "../components/warnings-banner.tsx";
 import { ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import type { CanonicalReadWarning } from "../lib/read-envelope.ts";
 import {
@@ -27,8 +28,8 @@ import {
 import {
   lookupSearchTimestampMetadata,
   pickSearchDisplayTimestamp,
-  searchTimestampMetadataKey,
   type SearchTimestampMetadata,
+  searchTimestampMetadataKey,
 } from "../lib/search-record-timestamps.ts";
 import { summarize } from "../lib/timeline-summaries.ts";
 import { verifyDashboardSession } from "../lib/verify-session.ts";
@@ -233,10 +234,7 @@ async function searchRecords(query: string, cursor: string | null, prevStack: st
         prevStack,
         retrievalNotice: buildRetrievalNotice(semanticIndexState),
         debug,
-        warnings: dedupeWarnings([
-          ...(hybridResult.page.warnings ?? []),
-          ...(lexicalPage.warnings ?? []),
-        ]),
+        warnings: dedupeWarnings([...(hybridResult.page.warnings ?? []), ...(lexicalPage.warnings ?? [])]),
       };
     }
     // Hybrid call failed — fall through to the lexical+semantic blend.
@@ -313,10 +311,7 @@ async function searchRecords(query: string, cursor: string | null, prevStack: st
     prevStack,
     retrievalNotice: buildRetrievalNotice(semanticIndexState),
     debug,
-    warnings: dedupeWarnings([
-      ...(lexicalPage.warnings ?? []),
-      ...(semanticPage?.warnings ?? []),
-    ]),
+    warnings: dedupeWarnings([...(lexicalPage.warnings ?? []), ...(semanticPage?.warnings ?? [])]),
   };
 }
 
@@ -491,6 +486,16 @@ export default async function SearchPage({
               {JSON.stringify(result.records.debug, null, 2)}
             </pre>
           ) : null
+        }
+        emptyHint={
+          <>
+            Paste a request, trace, grant, or run id for a direct jump. To browse records by connection and stream, head
+            to{" "}
+            <Link className="underline underline-offset-2 hover:text-foreground" href={dashboardRoutes.section.explore}>
+              Explore
+            </Link>
+            .
+          </>
         }
         query={query}
         retrievalNotice={result?.records.retrievalNotice ?? null}

@@ -12,10 +12,15 @@
  */
 import Link from "next/link";
 import type { ReactNode } from "react";
+import { Button, buttonVariants } from "@/components/ui/button.tsx";
 import { Input } from "@/components/ui/input.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
+import { defaultWindow } from "../../lib/timeline.ts";
 import { Callout, DataList, FilterSummary, PageHeader, Section, SplitLayout, Toolbar } from "../primitives.tsx";
 import type { Routes } from "./routes.ts";
+
+/** Active feed lens. URL state (q + since/until) is the source of truth. */
+export type ExplorerLens = "recent" | "search" | "time_range" | "search_with_ignored_time_window";
 
 export interface ExplorerConnectionFacet {
   /** Stable connection identity. URL chips key on this. */
@@ -68,18 +73,24 @@ export interface RecordsExplorerData {
   /** Always present, sorted by display name. */
   connections: ExplorerConnectionFacet[];
   feed: ExplorerFeedEntry[];
-  /** Whether feed came from a search call (true) or the recency fan-out (false). */
+  /** Whether feed came from a search call (true) or the recency/time-range fan-out (false). */
   fromSearch: boolean;
   /** Whether the hybrid retrieval endpoint was used for this load. */
   hybridUsed: boolean;
+  /** Active feed lens — derived from `query` and `since`/`until` together. */
+  lens: ExplorerLens;
   peek: ExplorerPeekData | null;
   query: string;
   /** Connection ids currently selected. */
   selectedConnectionIds: string[];
   /** Stream names currently selected. */
   selectedStreams: string[];
+  /** ISO date (yyyy-mm-dd) for the `since` filter, or empty when unset. */
+  since: string;
   /** True when the feed was truncated to the explorer's fan-out cap. */
   truncated: boolean;
+  /** ISO date (yyyy-mm-dd) for the `until` filter, or empty when unset. */
+  until: string;
   /**
    * Honest surfacing of partial fan-in failures, capability downgrades, and
    * (when the canonical read contract carries them) `meta.warnings` from the
@@ -146,6 +157,8 @@ export function buildExplorerHref(
     connectionIds?: string[];
     streams?: string[];
     peek?: string;
+    since?: string;
+    until?: string;
   }
 ): string {
   const params = new URLSearchParams();
@@ -157,6 +170,12 @@ export function buildExplorerHref(
   }
   for (const s of opts.streams ?? []) {
     params.append("stream", s);
+  }
+  if (opts.since) {
+    params.set("since", opts.since);
+  }
+  if (opts.until) {
+    params.set("until", opts.until);
   }
   if (opts.peek) {
     params.set("peek", opts.peek);
@@ -171,10 +190,13 @@ export function RecordsExplorerView({ data, routes }: { data: RecordsExplorerDat
     connections,
     selectedConnectionIds,
     selectedStreams,
+    since,
+    until,
     feed,
     peek,
     fromSearch,
     hybridUsed,
+    lens,
     truncated,
     warnings,
   } = data;
@@ -183,14 +205,16 @@ export function RecordsExplorerView({ data, routes }: { data: RecordsExplorerDat
     <ExplorerMain
       connections={connections}
       feed={feed}
-      fromSearch={fromSearch}
       hybridUsed={hybridUsed}
+      lens={lens}
       peekId={peek ? explorerPeekParam(peek) : null}
       query={query}
       routes={routes}
       selectedConnectionIds={selectedConnectionIds}
       selectedStreams={selectedStreams}
+      since={since}
       truncated={truncated}
+      until={until}
       warnings={warnings}
     />
   );
@@ -213,6 +237,8 @@ export function RecordsExplorerView({ data, routes }: { data: RecordsExplorerDat
                 query,
                 connectionIds: selectedConnectionIds,
                 streams: selectedStreams,
+                since,
+                until,
               })}
               peek={peek}
               routes={routes}
@@ -232,14 +258,36 @@ function feedCountLabel(count: number, fromSearch: boolean, truncated: boolean):
   return `${count.toLocaleString()}${suffix} ${verb}`;
 }
 
-function feedDescription(fromSearch: boolean, hybridUsed: boolean): string {
-  if (!fromSearch) {
-    return "Recent across every visible connection. Submit a query to search.";
+function feedDescription(lens: ExplorerLens, hybridUsed: boolean): string {
+  if (lens === "time_range") {
+    return "Time-anchored across every stream that declares a consent-time field, sorted by the owner's data time. Streams without a declared time field are excluded.";
   }
-  if (hybridUsed) {
-    return "Hybrid retrieval (lexical + semantic), deduplicated by record key. Public search results do not yet carry connection identity, so rows are scoped to the connector unless exactly one connection of that type is configured.";
+  if (lens === "search_with_ignored_time_window") {
+    if (hybridUsed) {
+      return "Hybrid retrieval (lexical + semantic). The time window in the URL is not applied to search — clear the query to fall back to the time-range lens.";
+    }
+    return "Lexical retrieval. The time window in the URL is not applied to search — clear the query to fall back to the time-range lens.";
   }
-  return "Lexical retrieval. Results match record text under the owner token. Public search results do not yet carry connection identity, so rows are scoped to the connector unless exactly one connection of that type is configured.";
+  if (lens === "search") {
+    if (hybridUsed) {
+      return "Hybrid retrieval (lexical + semantic), deduplicated by record key. Public search results do not yet carry connection identity, so rows are scoped to the connector unless exactly one connection of that type is configured.";
+    }
+    return "Lexical retrieval. Results match record text under the owner token. Public search results do not yet carry connection identity, so rows are scoped to the connector unless exactly one connection of that type is configured.";
+  }
+  return "Recent across every visible connection. Submit a query, or pick a date window, to narrow further.";
+}
+
+function lensLabel(lens: ExplorerLens): string {
+  if (lens === "time_range") {
+    return "Time range";
+  }
+  if (lens === "search") {
+    return "Search";
+  }
+  if (lens === "search_with_ignored_time_window") {
+    return "Search · time window not applied to search";
+  }
+  return "Recent";
 }
 
 function ExplorerMain({
@@ -247,9 +295,11 @@ function ExplorerMain({
   connections,
   selectedConnectionIds,
   selectedStreams,
+  since,
+  until,
   feed,
-  fromSearch,
   hybridUsed,
+  lens,
   truncated,
   peekId,
   routes,
@@ -259,9 +309,11 @@ function ExplorerMain({
   connections: ExplorerConnectionFacet[];
   selectedConnectionIds: string[];
   selectedStreams: string[];
+  since: string;
+  until: string;
   feed: ExplorerFeedEntry[];
-  fromSearch: boolean;
   hybridUsed: boolean;
+  lens: ExplorerLens;
   truncated: boolean;
   peekId: string | null;
   routes: Routes;
@@ -279,12 +331,19 @@ function ExplorerMain({
   for (const s of selectedStreams) {
     filterItems.push({ label: "stream", value: s });
   }
+  if (since) {
+    filterItems.push({ label: "since", value: since });
+  }
+  if (until) {
+    filterItems.push({ label: "until", value: until });
+  }
 
   const resetHref = filterItems.length > 0 || query ? buildExplorerHref(routes, {}) : undefined;
+  const exploreHref = routes.section.explore;
 
   return (
     <>
-      <form action={routes.section.explore} method="get">
+      <form action={exploreHref} method="get">
         <Toolbar>
           <label className="flex min-w-0 flex-1 flex-col gap-1" htmlFor="records-explorer-q">
             <span className="pdpp-eyebrow">Query</span>
@@ -303,6 +362,8 @@ function ExplorerMain({
           {selectedStreams.map((s) => (
             <input key={`s:${s}`} name="stream" type="hidden" value={s} />
           ))}
+          {since ? <input name="since" type="hidden" value={since} /> : null}
+          {until ? <input name="until" type="hidden" value={until} /> : null}
           <button
             className="pdpp-label mt-5 self-start rounded-md border border-border bg-background px-3 py-1.5 hover:bg-muted/60"
             type="submit"
@@ -312,6 +373,20 @@ function ExplorerMain({
         </Toolbar>
       </form>
 
+      <TimeWindowForm
+        exploreHref={exploreHref}
+        query={query}
+        routes={routes}
+        selectedConnectionIds={selectedConnectionIds}
+        selectedStreams={selectedStreams}
+        since={since}
+        until={until}
+      />
+
+      <p className="pdpp-caption mb-4 text-muted-foreground">
+        Lens: <span className="font-medium text-foreground">{lensLabel(lens)}</span>
+      </p>
+
       <FilterSummary items={filterItems} resetHref={resetHref} />
 
       <ConnectionFacets
@@ -320,6 +395,8 @@ function ExplorerMain({
         routes={routes}
         selectedConnectionIds={selectedConnectionIds}
         selectedStreams={selectedStreams}
+        since={since}
+        until={until}
       />
 
       <StreamFacets
@@ -328,15 +405,15 @@ function ExplorerMain({
         routes={routes}
         selectedConnectionIds={selectedConnectionIds}
         selectedStreams={selectedStreams}
+        since={since}
+        until={until}
       />
 
       <ExplorerWarnings warnings={warnings} />
 
-      <Section description={feedDescription(fromSearch, hybridUsed)} title="Records">
+      <Section description={feedDescription(lens, hybridUsed)} title="Records">
         {feed.length === 0 ? (
-          <p className="pdpp-caption text-muted-foreground italic">
-            {fromSearch ? "No records match this query." : "No retained records yet on any visible connection."}
-          </p>
+          <p className="pdpp-caption text-muted-foreground italic">{emptyFeedMessage(lens)}</p>
         ) : (
           <DataList>
             {feed.map((entry) => {
@@ -349,6 +426,8 @@ function ExplorerMain({
                       query,
                       connectionIds: selectedConnectionIds,
                       streams: selectedStreams,
+                      since,
+                      until,
                       peek: key,
                     })}
                     recordHref={routes.record(entry.connectionId ?? entry.connectorId, entry.stream, entry.recordId)}
@@ -359,14 +438,108 @@ function ExplorerMain({
             })}
           </DataList>
         )}
-        {truncated ? (
+        {truncated && lens === "recent" ? (
           <p className="pdpp-caption mt-3 text-muted-foreground italic">
-            Showing the most recent {feed.length.toLocaleString()} records across visible connections. Submit a query to
-            narrow further.
+            Showing the most recent {feed.length.toLocaleString()} records across visible connections. Submit a query or
+            pick a date window to narrow further.
+          </p>
+        ) : null}
+        {truncated && lens === "time_range" ? (
+          <p className="pdpp-caption mt-3 text-muted-foreground italic">
+            Showing the first {feed.length.toLocaleString()} time-anchored records in this window. Narrow by connection,
+            stream, or date window to inspect more precisely.
           </p>
         ) : null}
       </Section>
     </>
+  );
+}
+
+function emptyFeedMessage(lens: ExplorerLens): string {
+  if (lens === "search" || lens === "search_with_ignored_time_window") {
+    return "No records match this query.";
+  }
+  if (lens === "time_range") {
+    return "No time-anchored records in this window. Try widening the range, clearing chips, or loading more data.";
+  }
+  return "No retained records yet on any visible connection.";
+}
+
+function TimeWindowForm({
+  exploreHref,
+  query,
+  routes,
+  selectedConnectionIds,
+  selectedStreams,
+  since,
+  until,
+}: {
+  exploreHref: string;
+  query: string;
+  routes: Routes;
+  selectedConnectionIds: string[];
+  selectedStreams: string[];
+  since: string;
+  until: string;
+}) {
+  return (
+    <form action={exploreHref} className="mb-4" method="get">
+      <Toolbar
+        trailing={
+          <div className="pdpp-caption flex flex-wrap gap-3">
+            {([1, 7, 30, 90] as const).map((d) => {
+              const { since: s, until: u } = defaultWindow(d);
+              const href = buildExplorerHref(routes, {
+                query,
+                connectionIds: selectedConnectionIds,
+                streams: selectedStreams,
+                since: s,
+                until: u,
+              });
+              return (
+                <Link
+                  className="text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                  href={href}
+                  key={d}
+                >
+                  {d}d
+                </Link>
+              );
+            })}
+          </div>
+        }
+      >
+        <label className="flex min-w-0 flex-col gap-1" htmlFor="records-explorer-since">
+          <span className="pdpp-eyebrow">Since</span>
+          <Input defaultValue={since} id="records-explorer-since" name="since" type="date" />
+        </label>
+        <label className="flex min-w-0 flex-col gap-1" htmlFor="records-explorer-until">
+          <span className="pdpp-eyebrow">Until</span>
+          <Input defaultValue={until} id="records-explorer-until" name="until" type="date" />
+        </label>
+        {/* Preserve query + chip state so the date submit doesn't drop them. */}
+        {query ? <input name="q" type="hidden" value={query} /> : null}
+        {selectedConnectionIds.map((id) => (
+          <input key={`t:c:${id}`} name="connection" type="hidden" value={id} />
+        ))}
+        {selectedStreams.map((s) => (
+          <input key={`t:s:${s}`} name="stream" type="hidden" value={s} />
+        ))}
+        <Button className="mt-5" size="sm" type="submit">
+          Apply
+        </Button>
+        <Link
+          className={`${buttonVariants({ variant: "ghost", size: "sm" })} mt-5`}
+          href={buildExplorerHref(routes, {
+            query,
+            connectionIds: selectedConnectionIds,
+            streams: selectedStreams,
+          })}
+        >
+          Clear window
+        </Link>
+      </Toolbar>
+    </form>
   );
 }
 
@@ -376,12 +549,16 @@ function ConnectionFacets({
   selectedStreams,
   query,
   routes,
+  since,
+  until,
 }: {
   connections: ExplorerConnectionFacet[];
   selectedConnectionIds: string[];
   selectedStreams: string[];
   query: string;
   routes: Routes;
+  since: string;
+  until: string;
 }) {
   if (connections.length === 0) {
     return null;
@@ -398,6 +575,8 @@ function ConnectionFacets({
           query,
           connectionIds: nextIds,
           streams: selectedStreams,
+          since,
+          until,
         });
         return (
           <Link
@@ -426,12 +605,16 @@ function StreamFacets({
   selectedStreams,
   query,
   routes,
+  since,
+  until,
 }: {
   connections: ExplorerConnectionFacet[];
   selectedConnectionIds: string[];
   selectedStreams: string[];
   query: string;
   routes: Routes;
+  since: string;
+  until: string;
 }) {
   // Limit to streams of the currently selected connections; falls back to
   // every visible stream when nothing is filtered.
@@ -458,6 +641,8 @@ function StreamFacets({
           query,
           connectionIds: selectedConnectionIds,
           streams: nextStreams,
+          since,
+          until,
         });
         return (
           <Link

@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { shouldAttemptSemanticUplift } from "pdpp-reference-implementation/deployment-diagnostics";
 import { DashboardShell, ServerUnreachable } from "../components/shell.tsx";
@@ -25,8 +26,8 @@ import {
 import {
   lookupSearchTimestampMetadata,
   pickSearchDisplayTimestamp,
-  searchTimestampMetadataKey,
   type SearchTimestampMetadata,
+  searchTimestampMetadataKey,
 } from "../lib/search-record-timestamps.ts";
 import { summarize } from "../lib/timeline-summaries.ts";
 import { verifyDashboardSession } from "../lib/verify-session.ts";
@@ -458,6 +459,16 @@ export default async function SearchPage({
               {JSON.stringify(result.records.debug, null, 2)}
             </pre>
           ) : null
+        }
+        emptyHint={
+          <>
+            Paste a request, trace, grant, or run id for a direct jump. To browse records by connection and stream, head
+            to{" "}
+            <Link className="underline underline-offset-2 hover:text-foreground" href={dashboardRoutes.section.explore}>
+              Explore
+            </Link>
+            .
+          </>
         }
         query={query}
         retrievalNotice={result?.records.retrievalNotice ?? null}

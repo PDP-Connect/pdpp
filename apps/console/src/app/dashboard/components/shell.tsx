@@ -167,18 +167,16 @@ function GrantsSubnav() {
 }
 
 function RecordsSubnav({ routes }: { routes: Routes }) {
-  // Both modes expose Timeline: the mock-owner sandbox renders the same
-  // shared records-timeline view against the seeded dataset.
-  // Records subnav keeps an `Explorer` entry during the IA transition, but
-  // it points at the top-level Explore route — same destination as the
-  // top-level nav. The Connections rename and the Timeline absorption are
-  // separate OpenSpec tranches.
+  // Time-range browsing was absorbed into the top-level Explore route by
+  // `absorb-timeline-into-explore-ia`, so the Timeline entry is gone.
+  // The subnav header is now `Connections` for vocabulary clarity; the
+  // URL prefix stays `/dashboard/records/*` until a future tranche
+  // retires the subtree.
   const items = [
     { href: routes.section.records, label: "Connectors" },
     { href: routes.section.explore, label: "Explorer" },
-    { href: routes.section.recordsTimeline, label: "Timeline" },
   ];
-  return <SidebarSubnav items={items} label="Records" />;
+  return <SidebarSubnav items={items} label="Connections" />;
 }
 
 function SidebarSubnav({ label, items }: { label: string; items: Array<{ href: string; label: string }> }) {

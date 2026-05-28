@@ -29,6 +29,14 @@ export interface Routes {
      */
     explore: string;
     records: string;
+    /**
+     * @deprecated The Timeline subpage was absorbed into Explore by
+     * `absorb-timeline-into-explore-ia`. The `/dashboard/records/timeline`
+     * URL redirects to `/dashboard/explore`. Sandbox still mounts the
+     * standalone view at `/sandbox/records/timeline` until the sandbox IA
+     * is realigned in a follow-on tranche. Remove this field when both
+     * surfaces stop referencing the old path.
+     */
     recordsTimeline: string;
     schedules: string;
     search: string;

@@ -27,6 +27,38 @@ test("buildExplorerHref returns the bare path when nothing is set", () => {
   assert.equal(href, "/dashboard/explore");
 });
 
+test("buildExplorerHref carries the date window when set", () => {
+  const href = buildExplorerHref(dashboardRoutes, {
+    since: "2026-05-21",
+    until: "2026-05-28",
+  });
+  const url = new URL(href, "https://example.test");
+  assert.equal(url.pathname, "/dashboard/explore");
+  assert.equal(url.searchParams.get("since"), "2026-05-21");
+  assert.equal(url.searchParams.get("until"), "2026-05-28");
+});
+
+test("buildExplorerHref preserves date window alongside chip + query state", () => {
+  const href = buildExplorerHref(dashboardRoutes, {
+    query: "invoice",
+    connectionIds: ["gmail-personal"],
+    streams: ["messages"],
+    since: "2026-05-21",
+    until: "2026-05-28",
+  });
+  const url = new URL(href, "https://example.test");
+  assert.equal(url.searchParams.get("q"), "invoice");
+  assert.deepEqual(url.searchParams.getAll("connection"), ["gmail-personal"]);
+  assert.deepEqual(url.searchParams.getAll("stream"), ["messages"]);
+  assert.equal(url.searchParams.get("since"), "2026-05-21");
+  assert.equal(url.searchParams.get("until"), "2026-05-28");
+});
+
+test("buildExplorerHref omits empty date params", () => {
+  const href = buildExplorerHref(dashboardRoutes, { since: "", until: "" });
+  assert.equal(href, "/dashboard/explore");
+});
+
 test("explorerPeekParam round-trips a concrete connection_id when known", () => {
   const entry = {
     connectorId: "gmail",

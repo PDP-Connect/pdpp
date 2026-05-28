@@ -44,6 +44,14 @@ const nextConfig = {
         destination: '/dashboard/explore',
         permanent: false,
       },
+      // Time-range browsing was absorbed into Explore by
+      // `absorb-timeline-into-explore-ia`. Non-permanent so the redirect
+      // can be folded into a wider records-subtree retirement later.
+      {
+        source: '/dashboard/records/timeline',
+        destination: '/dashboard/explore',
+        permanent: false,
+      },
       {
         source: '/dashboard/data',
         destination: '/dashboard/records',
@@ -56,12 +64,12 @@ const nextConfig = {
       },
       {
         source: '/dashboard/timeline',
-        destination: '/dashboard/records/timeline',
+        destination: '/dashboard/explore',
         permanent: false,
       },
       {
         source: '/dashboard/timeline/:rest*',
-        destination: '/dashboard/records/timeline/:rest*',
+        destination: '/dashboard/explore',
         permanent: false,
       },
       // Bare connector-style paths from the pre-v1 dashboard map to Records.
