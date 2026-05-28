@@ -165,3 +165,23 @@ The website-hosted sandbox SHALL serve every public dataset-summary surface — 
 - **THEN** the website-local public builder that previously constructed the live-shaped dataset-summary response SHALL be deleted so it cannot be imported by the public route
 - **AND** the migration SHALL include a regression test proving the public route still returns a live-shaped `dataset_summary` envelope from the sandbox fixture profile
 - **AND** the migration SHALL include a regression test pinning the dashboard data source's envelope to the canonical operation's envelope under the same fixture profile, so any future re-introduction of a parallel local mapping in the data source is caught by test failure
+
+### Requirement: Demo bridge routes SHALL remain sandbox-only and non-authoritative
+
+Website routes that expose mock AS/RS behavior for the public sandbox SHALL remain sandbox-prefixed, deterministic, and explicitly demo-only. They SHALL NOT redefine the primary reference contract or become required by the live reference dashboard.
+
+#### Scenario: Sandbox exposes a mock public endpoint
+- **WHEN** `apps/web` exposes a mock endpoint such as `/sandbox/v1/schema`, `/sandbox/v1/search`, or `/sandbox/v1/streams/:stream/records`
+- **THEN** the endpoint SHALL return deterministic fictional data
+- **AND** it SHALL preserve the relevant shape of the corresponding reference/public surface where practical
+- **AND** it SHALL NOT be documented as the live AS/RS endpoint for real deployments
+
+#### Scenario: Live dashboard fetches reference data
+- **WHEN** `/dashboard/**` renders live reference state
+- **THEN** it SHALL continue using the configured live AS/RS clients and owner-access rules
+- **AND** it SHALL NOT silently fall back to sandbox data
+
+#### Scenario: Sandbox dashboard fetches demo data
+- **WHEN** `/sandbox/**` renders dashboard-like demo state
+- **THEN** it SHALL use a sandbox data-source implementation compatible with the dashboard feature layer
+- **AND** it SHALL NOT mint owner tokens, forward owner-session cookies, or call the live AS/RS

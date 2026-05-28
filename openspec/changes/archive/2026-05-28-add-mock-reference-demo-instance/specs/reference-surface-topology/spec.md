@@ -1,3 +1,8 @@
+## RENAMED Requirements
+
+- FROM: `### Requirement: A sandbox surface SHALL be mock-backed and pedagogical`
+- TO: `### Requirement: A sandbox surface SHALL be mock-backed and clearly distinct from live operation`
+
 ## MODIFIED Requirements
 
 ### Requirement: A sandbox surface SHALL be mock-backed and clearly distinct from live operation

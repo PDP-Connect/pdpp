@@ -42,20 +42,6 @@ The dashboard route family SHALL be treated as stateful live-instance operation.
 - **WHEN** the website is deployed as a public documentation site without an intended live reference instance
 - **THEN** `/dashboard/**` SHALL be disabled, hidden, or clearly unavailable rather than implying Vana operates a canonical live owner dashboard
 
-### Requirement: A sandbox surface SHALL be mock-backed and pedagogical
-
-Any public sandbox surface SHALL be mock-backed, resettable, and clearly labeled as simulated. It SHALL teach protocol flows and API shapes without collecting real platform credentials or presenting itself as a live owner reference instance.
-
-#### Scenario: A visitor opens the sandbox
-- **WHEN** a visitor uses `/sandbox/**`
-- **THEN** the surface SHALL use mock or seeded data
-- **AND** the visitor SHALL be told that the environment is simulated and resettable
-- **AND** the sandbox SHALL NOT request real connector credentials or imply that it stores real owner data
-
-#### Scenario: Sandbox UI reuses dashboard components
-- **WHEN** sandbox pages reuse components from the live dashboard
-- **THEN** the sandbox SHALL retain distinct chrome or labeling so users can distinguish simulated education from live operation
-
 ### Requirement: Reference coverage SHALL be visible as a falsifiable public artifact
 
 The reference implementation SHALL expose a coverage matrix that reports the status of important protocol concepts, flows, optional extensions, and reference-only operator surfaces. The matrix SHALL distinguish specified, documented, implemented, tested, demonstrated, deferred, and not-applicable states.
@@ -173,4 +159,25 @@ Dashboard status indicators SHALL remain distinguishable in both light and dark 
   shape/position and label, not only by color
 - **AND** the chosen success and destructive token SHALL meet WCAG AA
   contrast against the dark background for the indicator and label
+
+### Requirement: A sandbox surface SHALL be mock-backed and clearly distinct from live operation
+
+Any public sandbox surface SHALL be mock-backed, resettable, and clearly labeled as simulated. It SHALL demonstrate protocol flows, API shapes, and reference-instance behavior without collecting real platform credentials or presenting itself as a live owner reference instance. A sandbox route family MAY include both lightweight guided walkthroughs and a mock-owner reference demo instance, but it SHALL keep both distinct from the live `/dashboard/**` operator surface.
+
+#### Scenario: A visitor opens the sandbox
+- **WHEN** a visitor uses `/sandbox/**`
+- **THEN** the surface SHALL use mock or seeded data
+- **AND** the visitor SHALL be told that the environment is simulated and resettable
+- **AND** the sandbox SHALL NOT request real connector credentials or imply that it stores real owner data
+
+#### Scenario: Sandbox UI reuses dashboard components
+- **WHEN** sandbox pages reuse components from the live dashboard
+- **THEN** the sandbox SHALL retain persistent labeling so users can distinguish simulated demo operation from live operation
+- **AND** the live `/dashboard/**` owner-auth and live-reference behavior SHALL NOT be weakened to support the demo
+
+#### Scenario: Sandbox hosts a mock-owner reference demo instance
+- **WHEN** `/sandbox/**` presents dashboard-like or API-like reference behavior
+- **THEN** the behavior SHALL be backed by deterministic mock state
+- **AND** the route family SHALL make clear that it is a demo reference instance rather than a hosted live owner dashboard
+- **AND** the primary dashboard-like experience SHALL prioritize the same dashboard information architecture over tutorial-specific chrome
 
