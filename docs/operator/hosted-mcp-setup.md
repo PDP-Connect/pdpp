@@ -16,17 +16,26 @@ If you do not yet have a reachable self-hosted deployment, start with the
   - `/.well-known/oauth-protected-resource/mcp`
   - `/mcp`
 
-For the live Vana development deployment, the MCP server URL is:
+## Your MCP server URL
+
+Your MCP server URL is always:
 
 ```text
-https://pdpp.vivid.fish/mcp
+<PDPP_REFERENCE_ORIGIN>/mcp
 ```
+
+Substitute `<PDPP_REFERENCE_ORIGIN>` with the value you set in `.env.docker`.
+For a RunPod CPU Pod this is `https://<podid>-3002.proxy.runpod.net/mcp`.
+For a local Docker host this is typically `http://localhost:3002/mcp`.
+
+Use this URL in every MCP client setup step below — not `pdpp.vivid.fish/mcp`,
+which is the Vana development deployment and only serves data collected there.
 
 ## ChatGPT
 
 1. Open ChatGPT connector creation.
 2. Choose a custom MCP connector.
-3. Set the MCP server URL to `https://pdpp.vivid.fish/mcp`.
+3. Set the MCP server URL to `<PDPP_REFERENCE_ORIGIN>/mcp`.
 4. Choose OAuth authentication.
 5. Complete connector registration and sign in to the PDPP owner dashboard when redirected.
 6. Select the PDPP source the connector should read and approve the grant.
@@ -40,10 +49,10 @@ dashboard credentials or operator/admin control.
 ## Claude
 
 Claude products expose remote MCP configuration in different places depending
-on product and account tier. Use the same server URL:
+on product and account tier. Use your server URL:
 
 ```text
-https://pdpp.vivid.fish/mcp
+<PDPP_REFERENCE_ORIGIN>/mcp
 ```
 
 When the client offers authentication, choose OAuth and complete the PDPP owner

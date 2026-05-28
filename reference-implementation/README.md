@@ -396,9 +396,8 @@ reference stack. The quickest self-hosted path uses the public GHCR images:
 
 ```bash
 cp .env.docker.example .env.docker
-# edit .env.docker and set PDPP_OWNER_PASSWORD for a protected dashboard
-# (also gates every `_ref` read + mutation so deployed reference instances
-#  never expose grants/runs/timelines/connectors/diagnostics unauthenticated)
+bash scripts/generate-secrets.sh --write  # fills PDPP_OWNER_PASSWORD and VAPID keys
+# set PDPP_REFERENCE_ORIGIN in .env.docker to your deployment URL
 docker compose --env-file .env.docker pull
 pnpm docker:reference:quick
 ```
