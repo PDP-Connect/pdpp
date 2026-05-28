@@ -2585,7 +2585,10 @@ async function postgresDeleteAllRecordsForConnector(connectorId) {
   }
 
   if (deletedCount > 0) {
-    markDatasetSummaryProjectionStale('bulk connector record delete bypassed exact dataset summary projection deltas');
+    // Postgres dashboard summary reads from the retained-size projection
+    // (see `getRetainedSizeDatasetSummaryProjection` in server/index.js).
+    // The SQLite `dataset_summary_projection` is unused in Postgres mode,
+    // so only the retained-size projection is marked dirty here.
     await markRetainedSizeConnectionDirty({ connectorInstanceId: null });
   }
 
