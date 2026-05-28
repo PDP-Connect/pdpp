@@ -42,6 +42,7 @@ import {
 } from "../components/views/records-explorer-view.tsx";
 import { dashboardRoutes } from "../components/views/routes.ts";
 import { getOwnerToken, getRsInternalUrl, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
+import { classifyRecordKind } from "../lib/record-kind.ts";
 import { listConnectorSummaries, type RefConnectorSummary } from "../lib/ref-client.ts";
 import {
   getRecord,
@@ -194,6 +195,7 @@ function toTimeRangeEntry({
     emittedAt: record.emitted_at,
     displayAt: new Date(ms).toISOString(),
     summary: summarize(summary.connector_id, streamName, data),
+    kind: classifyRecordKind(streamName, data).kind,
   };
 }
 
@@ -240,6 +242,7 @@ async function loadEmptyQueryFeed(
                   emittedAt: record.emitted_at,
                   displayAt: display.value,
                   summary: summarize(summary.connector_id, streamName, data as Record<string, unknown>),
+                  kind: classifyRecordKind(streamName, data as Record<string, unknown>).kind,
                 };
                 return entry;
               }),
@@ -439,6 +442,9 @@ async function loadSearchFeed(
       emittedAt: hit.emitted_at,
       displayAt: display.value,
       summary: hit.snippet?.text ?? `${hit.stream}/${hit.record_key}`,
+      // Search hits carry no record body, so kind is stream-name-only and
+      // intentionally degrades to `generic` when the stream name is opaque.
+      kind: classifyRecordKind(hit.stream, null).kind,
       retrievalMode: hit.retrieval_mode ?? (hybridUsed ? "hybrid" : "lexical"),
     };
   });

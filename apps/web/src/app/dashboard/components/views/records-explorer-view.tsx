@@ -15,6 +15,7 @@ import type { ReactNode } from "react";
 import { Button, buttonVariants } from "@/components/ui/button.tsx";
 import { Input } from "@/components/ui/input.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
+import type { RecordKind } from "../../lib/record-kind.ts";
 import { defaultWindow } from "../../lib/timeline.ts";
 import { Callout, DataList, FilterSummary, PageHeader, Section, SplitLayout, Toolbar } from "../primitives.tsx";
 import type { Routes } from "./routes.ts";
@@ -40,6 +41,13 @@ export interface ExplorerFeedEntry {
   /** Display timestamp picked via `pickSearchDisplayTimestamp` when known. */
   displayAt: string;
   emittedAt: string;
+  /**
+   * Coarse presentation kind (message / money / event / titled / generic),
+   * derived from the connector::stream pair and — when the lens holds the
+   * record body — its field names. Presentation metadata only; see
+   * `record-kind.ts`. Defaults to `generic` when omitted.
+   */
+  kind?: RecordKind;
   recordId: string;
   /** Present when the entry came from a search hit, drives the badge. */
   retrievalMode?: "lexical" | "semantic" | "hybrid";
@@ -153,9 +161,9 @@ export function parseExplorerPeekParam(raw: string | undefined | null): {
 interface ExplorerFeedDayGroup {
   /** ISO date key (yyyy-mm-dd) extracted from `displayAt`; "" when unparseable. */
   day: string;
+  entries: ExplorerFeedEntry[];
   /** Human-readable label for the day header. Falls back to "Undated". */
   label: string;
-  entries: ExplorerFeedEntry[];
 }
 
 // Server-deterministic day label. Locale-pinned so SSR and client agree.
@@ -898,6 +906,40 @@ function ActivityStrip({
   );
 }
 
+// Kind tag tones. Subtle washes only — the tag is a skim aid, not a status.
+// `generic` renders no tag (nothing to disambiguate), keeping the common case
+// quiet and reserving visual weight for the type-distinct rows.
+const KIND_TAG_LABELS: Record<RecordKind, string> = {
+  message: "message",
+  money: "money",
+  event: "event",
+  titled: "item",
+  generic: "",
+};
+
+const KIND_TAG_TONE: Record<RecordKind, string> = {
+  message: "border-[color:var(--human)]/25 bg-[color:var(--human-wash)] text-foreground",
+  money: "border-[color:var(--success)]/30 bg-[color:var(--success-wash)] text-foreground",
+  event: "border-primary/25 bg-primary/5 text-foreground",
+  titled: "border-border/80 bg-muted/40 text-muted-foreground",
+  generic: "",
+};
+
+function KindTag({ kind }: { kind: RecordKind | undefined }) {
+  const k = kind ?? "generic";
+  const label = KIND_TAG_LABELS[k];
+  if (!label) {
+    return null;
+  }
+  return (
+    <span
+      className={`pdpp-eyebrow inline-flex shrink-0 items-center rounded-[3px] border px-1.5 py-0.5 ${KIND_TAG_TONE[k]}`}
+    >
+      {label}
+    </span>
+  );
+}
+
 function ExplorerRow({
   entry,
   peekHref,
@@ -919,6 +961,7 @@ function ExplorerRow({
         <Timestamp value={entry.displayAt} />
       </Link>
       <Link className="pdpp-caption flex items-baseline gap-2 whitespace-nowrap" href={peekHref}>
+        <KindTag kind={entry.kind} />
         <span className="truncate font-medium font-mono text-foreground">{entry.connectorId}</span>
         <span className="truncate font-mono text-muted-foreground">{entry.stream}</span>
       </Link>

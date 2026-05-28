@@ -157,6 +157,9 @@ const SUMMARIES: Record<string, SummaryFn> = {
   "github::gists": (d) => s(d.description ?? d.filename, 100),
 };
 
+// A numeric field whose name ends in `cents` is an unambiguous cents amount.
+const CENTS_FIELD_RE = /_cents$|^cents$/;
+
 function formatAmount(milli: number): string {
   // YNAB-style milliunits convention; usaa amounts are in dollars. We
   // heuristically format both: if |n| > 10000 assume milliunits.
@@ -174,16 +177,58 @@ function summarizeMessageLike(data: RecordData): string | null {
   return null;
 }
 
+// Cents-denominated amount (e.g. `amount_cents: -1245` → "-$12.45"). Distinct
+// from `formatAmount`, which heuristically straddles dollars vs. YNAB
+// milliunits; a field whose name ends in `_cents` is unambiguous.
+function formatCents(cents: number): string {
+  const sign = cents < 0 ? "-" : "";
+  return `${sign}$${(Math.abs(cents) / 100).toFixed(2)}`;
+}
+
+function pickMoneyAmount(data: RecordData): string {
+  if (typeof data.amount === "number") {
+    return formatAmount(data.amount);
+  }
+  // Any `*_cents` field (amount_cents, gross_pay_cents, net_pay_cents, …).
+  for (const [k, v] of Object.entries(data)) {
+    if (typeof v === "number" && CENTS_FIELD_RE.test(k)) {
+      return formatCents(v);
+    }
+  }
+  return s(data.amount, 16);
+}
+
 function summarizeTransactionLike(data: RecordData): string | null {
-  const amt = typeof data.amount === "number" ? formatAmount(data.amount) : s(data.amount, 16);
-  const desc = s(data.description ?? data.memo ?? data.payee_name, 80);
+  const amt = pickMoneyAmount(data);
+  // Broaden the descriptor set so demo and real connectors that label the
+  // counterparty `merchant` (not `description`/`payee_name`) still surface a
+  // human line instead of falling through to a bare timestamp.
+  const desc = s(data.merchant ?? data.description ?? data.memo ?? data.payee_name ?? data.category, 80);
   if (amt || desc) {
     return [amt, desc].filter(Boolean).join(" — ");
   }
   return null;
 }
 
-const COMMON_TITLE_FIELDS = ["title", "name", "subject", "description"] as const;
+const COMMON_TITLE_FIELDS = [
+  "title",
+  "name",
+  "subject",
+  "merchant",
+  "provider_name",
+  "employer",
+  "document_kind",
+  "description",
+] as const;
+
+function hasCentsField(data: RecordData): boolean {
+  for (const [k, v] of Object.entries(data)) {
+    if (typeof v === "number" && CENTS_FIELD_RE.test(k)) {
+      return true;
+    }
+  }
+  return false;
+}
 
 function summarizeCommonTitleField(data: RecordData): string | null {
   for (const field of COMMON_TITLE_FIELDS) {
@@ -217,7 +262,10 @@ function summarizeFallback(stream: string, data: RecordData): string {
       return msg;
     }
   }
-  if (streamLower.includes("transaction")) {
+  // Money-shaped by stream name *or* by carrying an unambiguous `*_cents`
+  // field — covers connectors (and the sandbox demo) whose stream is
+  // `pay_statements` / `orders` / etc. rather than literally "transactions".
+  if (streamLower.includes("transaction") || hasCentsField(data)) {
     const tx = summarizeTransactionLike(data);
     if (tx) {
       return tx;

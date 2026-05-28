@@ -19,6 +19,7 @@ import {
   type RecordsExplorerData,
 } from "@/app/dashboard/components/views/records-explorer-view.tsx";
 import type { DashboardDataSource } from "@/app/dashboard/lib/data-source.ts";
+import { classifyRecordKind } from "@/app/dashboard/lib/record-kind.ts";
 import type { RefConnectorSummary } from "@/app/dashboard/lib/ref-client.ts";
 import {
   lookupSearchTimestampMetadata,
@@ -173,6 +174,7 @@ async function loadEmptyQueryFeed(
                   emittedAt: record.emitted_at,
                   displayAt: display.value,
                   summary: summarize(summary.connector_id, streamName, data),
+                  kind: classifyRecordKind(streamName, data).kind,
                 };
               }),
             })
@@ -243,6 +245,7 @@ function toTimeRangeEntry({
     emittedAt,
     displayAt: new Date(ms).toISOString(),
     summary: summarize(summary.connector_id, streamName, data),
+    kind: classifyRecordKind(streamName, data).kind,
   };
 }
 
@@ -401,6 +404,9 @@ async function loadSearchFeed(
       emittedAt: hit.emitted_at,
       displayAt: display.value,
       summary: hit.snippet?.text ?? `${hit.stream}/${hit.record_key}`,
+      // Search hits carry no record body, so kind is stream-name-only and
+      // intentionally degrades to `generic` when the stream name is opaque.
+      kind: classifyRecordKind(hit.stream, null).kind,
       retrievalMode: hit.retrieval_mode ?? (hybridUsed ? "hybrid" : "lexical"),
     };
   });
