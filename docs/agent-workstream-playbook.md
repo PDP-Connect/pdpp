@@ -67,6 +67,47 @@ that toolchain.
 
 ## Communication Model
 
+### Live Owner Ledger
+
+The owner agent must keep one current operating ledger at:
+
+```bash
+tmp/workstreams/ri-owner-current-state.md
+```
+
+The ledger is the live coordination object for long-running RI ownership. It is
+not a committed roadmap or a substitute for OpenSpec; it is a local state file
+that reduces human steering and survives chat drift, compaction, and worker
+handoffs.
+
+Update the ledger before returning to the human owner, before and after major
+delegation/merge/review passes, and immediately after context restoration. A
+clean checkpoint is a ledger update, not a stop reason.
+
+Each ledger update should include:
+
+- live objects: branches, worktrees, tmux panes, reports, OpenSpec changes, and
+  local deployment state relevant to the current pass;
+- active delegated lanes and report paths;
+- current evidence: tests, probes, commits, deployment checks, or unresolved
+  failures;
+- owner decision state for each object: waiting, review, revise, merge, delete,
+  park, or done;
+- next action;
+- exact stop condition.
+
+Return to the human owner only for:
+
+- a named human-only decision;
+- an unresolved verification failure the owner agent cannot clear;
+- an explicit checkpoint the human requested;
+- a real budget, safety, or repository-integrity boundary.
+
+Before asking the human what to do next, classify whether the question is truly
+human-only. If it is not, make the RI-owner decision, document it in the ledger,
+and continue. Worker done is not owner done; the owner remains responsible for
+review, validation, merge, deployment, cleanup, and docket reduction.
+
 ### Mandatory Owner Checkpoint
 
 Codex must not coordinate from memory. Before answering status, launching worker
