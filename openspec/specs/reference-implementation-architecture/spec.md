@@ -2193,3 +2193,350 @@ The per-pair durable tail SHALL clear `record_changes`, `records`, `version_coun
 - **WHEN** the active backend has a connector with no live `records` rows but still has `record_changes` history or surviving `blob_bindings`
 - **THEN** the connector-wide helper SHALL discover those `(connector_instance_id, stream)` pairs from the active backend and drop the residual history and bindings
 
+### Requirement: Blob Store Conformance Harness
+
+The reference implementation SHALL maintain a test-only blob-store conformance harness before promoting blob persistence into a production storage interface.
+
+#### Scenario: Multiple drivers prove the blob-store contract
+
+**WHEN** the blob-store conformance suite runs
+**THEN** it SHALL exercise at least the production SQLite-backed driver and one non-SQLite memory driver
+**AND** both drivers SHALL satisfy the same content-address and binding invariants while advertising their backend identity.
+
+#### Scenario: Broken driver proves falsifiability
+
+**WHEN** a deliberately broken blob-store driver violates content-address dedupe or binding idempotency
+**THEN** the conformance suite SHALL fail.
+
+#### Scenario: Harness remains test-only
+
+**WHEN** the harness is introduced
+**THEN** it SHALL NOT create a production `BlobStore` interface
+**AND** SHALL NOT change public `/v1/blobs` wire behavior
+**AND** SHALL NOT move blob bytes out of SQLite.
+
+### Requirement: Connector state and scheduler persistence semantics SHALL be conformance-tested before storage extraction
+
+Before introducing production `ConnectorStateStore` or `SchedulerStore` abstractions, the reference implementation SHALL define reusable test-only conformance scenarios that pin the current connector-state, schedule, and active-run persistence obligations.
+
+#### Scenario: Connector state conformance
+
+- **WHEN** a candidate connector-state persistence driver is evaluated
+- **THEN** it SHALL pass conformance scenarios for owner-scoped state upsert/list, overwrite behavior, grant-scoped state isolation, and allowed-stream enforcement where feasible
+- **AND** any behavior left to route/runtime tests SHALL be explicitly documented as deferred from the storage conformance harness
+
+#### Scenario: Schedule conformance
+
+- **WHEN** a candidate scheduler persistence driver is evaluated
+- **THEN** it SHALL pass conformance scenarios for schedule create, update, list, pause, resume, and delete behavior where feasible
+- **AND** schedule policy warnings that are not storage behavior SHALL remain covered by controller tests unless a narrow persistence seam already exists
+
+#### Scenario: Active-run conformance
+
+- **WHEN** a candidate active-run persistence driver is evaluated
+- **THEN** it SHALL pass conformance scenarios for one-active-run-per-connector, unique run id, lookup, delete, and abandoned-run cleanup behavior where feasible
+- **AND** any controller-only behavior SHALL remain covered by existing route/controller tests
+
+#### Scenario: Harness boundary
+
+- **WHEN** the conformance harness is implemented
+- **THEN** it SHALL live under `reference-implementation/test/**`
+- **AND** it SHALL expose semantic lifecycle operations rather than raw SQL, table names, generic repositories, or production store interfaces
+- **AND** it SHALL include a falsifiability proof that fails on at least one deliberately broken state, schedule, or active-run invariant
+
+### Requirement: Consent and owner-device auth semantics SHALL be conformance-tested before storage extraction
+
+Before introducing production `ConsentStore` or `OwnerDeviceAuthStore` abstractions, the reference implementation SHALL define reusable test-only conformance scenarios that pin the current pending-consent and owner-device-authorization lifecycle/security obligations.
+
+#### Scenario: Pending consent conformance
+
+- **WHEN** a candidate pending-consent storage driver is evaluated
+- **THEN** it SHALL pass conformance scenarios for pending lookup, terminal approval/denial behavior, approval-id indirection, and expiry or unavailable-state behavior where feasible
+- **AND** any behavior left to route-level tests SHALL be explicitly documented as deferred from the storage conformance harness
+
+#### Scenario: Owner device authorization conformance
+
+- **WHEN** a candidate owner-device-authorization storage driver is evaluated
+- **THEN** it SHALL pass conformance scenarios for start, lookup, poll-before-approval, approval/exchange, denied/expired rejection, and polling interval behavior where feasible
+- **AND** it SHALL preserve the current reference secret-handling boundary for `device_code`, `user_code`, and approval identifiers
+
+#### Scenario: Harness boundary
+
+- **WHEN** the conformance harness is implemented
+- **THEN** it SHALL live under `reference-implementation/test/**`
+- **AND** it SHALL expose semantic lifecycle operations rather than raw SQL, table names, generic repositories, or production store interfaces
+- **AND** it SHALL include a falsifiability proof that fails on at least one deliberately broken lifecycle or security invariant
+
+### Requirement: Disclosure spine SHALL have a reusable conformance harness
+
+The reference implementation SHALL provide a test-only conformance harness for disclosure-spine semantics before extracting production `DisclosureSpineStore` contracts or claiming alternate storage adapter compatibility for spine behavior.
+
+#### Scenario: Current SQLite reference driver
+
+- **WHEN** the disclosure-spine conformance harness runs against the current SQLite-backed reference implementation
+- **THEN** it SHALL prove append order, correlation timeline ordering, pagination cursor behavior where supported, terminal event lookup, and correlation summary aggregate extent through reusable scenarios
+- **AND** it SHALL NOT require production code to expose a generic repository, raw SQL handle, route handler, ORM builder, or `DisclosureSpineStore` abstraction
+
+#### Scenario: Harness falsifiability
+
+- **WHEN** the conformance harness is exercised against a deliberately broken test fixture for at least one spine invariant
+- **THEN** the test suite SHALL prove that the harness detects the broken behavior
+- **AND** the broken fixture SHALL NOT be used as a production adapter or environment profile
+
+#### Scenario: Scope boundary
+
+- **WHEN** the harness is introduced
+- **THEN** it SHALL remain limited to disclosure-spine semantics
+- **AND** it SHALL NOT claim coverage for record storage, lexical retrieval, semantic retrieval, hybrid retrieval, blob content, or connector runtime behavior
+
+### Requirement: Lexical Retrieval Conformance Harness
+
+The reference implementation SHALL maintain a test-only lexical retrieval conformance harness before promoting lexical indexing into a production storage interface.
+
+#### Scenario: Multiple drivers prove the lexical contract
+
+**WHEN** the lexical conformance suite runs
+**THEN** it SHALL exercise at least the production SQLite-backed driver and one non-SQLite memory driver
+**AND** both drivers SHALL satisfy the same semantic retrieval invariants while advertising their backend identity and score semantics.
+
+#### Scenario: Broken driver proves falsifiability
+
+**WHEN** a deliberately broken lexical driver drops indexed content or violates deterministic result ordering
+**THEN** the conformance suite SHALL fail.
+
+#### Scenario: Harness remains test-only
+
+**WHEN** the harness is introduced
+**THEN** it SHALL NOT create a production `LexicalIndex` interface
+**AND** SHALL NOT change public `/v1/search` behavior.
+
+### Requirement: Durable record mutation SHALL have a reusable conformance harness
+
+The reference implementation SHALL provide a test-only conformance harness for durable record mutation semantics before extracting a production `RecordStore` or adding a second storage adapter for records.
+
+#### Scenario: Current SQLite reference driver
+
+- **WHEN** the record mutation conformance harness runs against the current SQLite-backed reference implementation
+- **THEN** it SHALL prove changed writes, no-op writes, ingest deletes, direct deletes, rollback behavior, and version contiguity through the same reusable scenarios
+- **AND** it SHALL NOT require production code to expose a generic repository, SQL handle, ORM builder, or `RecordStore` abstraction
+
+#### Scenario: Harness falsifiability
+
+- **WHEN** the conformance harness is exercised against a deliberately broken test fixture for at least one durable mutation invariant
+- **THEN** the test suite SHALL prove that the harness detects the broken behavior
+- **AND** the broken fixture SHALL NOT be used as a production adapter or environment profile
+
+#### Scenario: Scope boundary
+
+- **WHEN** the harness is introduced
+- **THEN** it SHALL remain limited to durable record mutation semantics
+- **AND** it SHALL NOT claim coverage for record read/list cursors, `changes_since`, range filters, `expand[]`, lexical retrieval, semantic retrieval, hybrid retrieval, or disclosure spine conformance
+
+### Requirement: Durable record reads SHALL have a reusable conformance harness
+
+The reference implementation SHALL provide a test-only conformance harness for durable record read semantics before extracting production `RecordStore` read contracts or claiming alternate storage adapter compatibility for record reads.
+
+#### Scenario: Current SQLite reference driver
+
+- **WHEN** the record-read conformance harness runs against the current SQLite-backed reference implementation
+- **THEN** it SHALL prove stable record-list pagination, cursor round trips, `changes_since` bootstrap/cursor behavior, field projection, and declared filter behavior through reusable scenarios
+- **AND** it SHALL NOT require production code to expose a generic repository, raw SQL handle, route handler, ORM builder, or `RecordStore` abstraction
+
+#### Scenario: Harness falsifiability
+
+- **WHEN** the conformance harness is exercised against a deliberately broken test fixture for at least one record-read invariant
+- **THEN** the test suite SHALL prove that the harness detects the broken behavior
+- **AND** the broken fixture SHALL NOT be used as a production adapter or environment profile
+
+#### Scenario: Scope boundary
+
+- **WHEN** the harness is introduced
+- **THEN** it SHALL remain limited to durable record read/list semantics
+- **AND** it SHALL NOT claim coverage for record mutation atomicity, disclosure spine conformance, lexical retrieval, semantic retrieval, hybrid retrieval, blob content, or connector runtime behavior
+
+### Requirement: Connectors SHALL build their `validateRecord` from a shared `makeValidateRecord` helper
+The polyfill-connectors package SHALL provide a `makeValidateRecord(schemas)` helper that takes a stream-keyed registry of zod schemas and returns a `ValidateRecord` closure with consistent diagnostic shape (`{ ok: true, data }` on pass; `{ ok: false, issues: [{ path, message }, ...] }` on fail; pass-through `{ ok: true, data }` on unknown stream).
+
+Every connector that ships a `schemas.ts` SHALL build its `validateRecord` from this helper rather than reimplementing the safeParse / unwrap / format-issues loop.
+
+#### Scenario: A new connector author adds shape validation
+- **WHEN** a connector author writes a `schemas.ts` for their connector
+- **THEN** the file SHALL declare a stream-keyed `SCHEMAS` registry of zod schemas
+- **AND** export `validateRecord = makeValidateRecord(SCHEMAS)` as the connector's validator
+- **AND** SHALL NOT reimplement the safeParse / format-issues loop inline
+
+#### Scenario: An unknown stream passes through
+- **WHEN** the helper is invoked with a stream name not present in the registry
+- **THEN** the helper SHALL return `{ ok: true, data }` without further checks
+- **AND** the connector runtime SHALL emit the record normally
+
+### Requirement: Connector status SHALL distinguish capability, selection, and outcome
+The reference implementation SHALL keep connector stream capability, owner/run stream selection, and run outcome distinct when computing connector health. A stream that is not available in the selected connector mode SHALL NOT by itself imply that a run failed or that selected data was lost.
+
+#### Scenario: Unsupported stream is not selected by default
+- **WHEN** a connector manifest marks a stream as unsupported in the active collection mode
+- **THEN** the reference SHALL NOT request that stream by default for that mode
+- **AND** the connector health state SHALL NOT become degraded solely because that unsupported stream exists in the manifest
+
+#### Scenario: Selected stream cannot be collected
+- **WHEN** the owner or runtime explicitly requests a stream and the connector cannot collect that selected stream
+- **THEN** the reference SHALL record an actionable or explicitly accepted informational gap
+- **AND** it SHALL NOT silently report complete coverage for the selected stream
+
+#### Scenario: Successful run has only informational limitations
+- **WHEN** a connector run succeeds and its only gaps are informational capability limitations or user-disabled streams
+- **THEN** the reference SHALL treat the run as successful as configured for connector health
+- **AND** the dashboard MAY surface the limitations in a detail view without rendering the connector as degraded
+
+### Requirement: Known gaps SHALL carry severity semantics
+The reference implementation SHALL classify known gaps by severity or reason class before using them for health projection. Gap severity SHALL distinguish informational limitations, transient/retryable pressure, actionable missing selected data, and recoverable detail backlog.
+
+#### Scenario: Informational gap is recorded
+- **WHEN** a connector reports an expected unsupported-in-mode stream, user-disabled stream, or out-of-scope stream
+- **THEN** the reference SHALL classify the gap as informational
+- **AND** informational gaps SHALL NOT by themselves mark connector health as degraded
+
+#### Scenario: Transient gap is recorded
+- **WHEN** a connector reports rate limit, upstream pressure, temporary unavailability, or retry exhaustion for selected data
+- **THEN** the reference SHALL classify the gap as transient unless a more specific recovery model applies
+- **AND** connector health MAY become degraded or cooling-off according to retry/backoff policy
+
+#### Scenario: Actionable gap is recorded
+- **WHEN** selected data was not delivered and the owner, operator, or connector author can take action to recover coverage
+- **THEN** the reference SHALL classify the gap as actionable
+- **AND** connector health SHALL surface degraded or needs-attention status until a later run resolves the condition
+
+#### Scenario: Recoverable detail backlog is recorded
+- **WHEN** missing required detail is represented by the reference detail-gap recovery model
+- **THEN** the reference SHALL classify that gap as recoverable
+- **AND** connector health SHALL follow the detail-gap recovery policy rather than treating the gap as a generic unknown failure
+
+### Requirement: Connector health SHALL use gap severity rather than gap count
+The reference connector-health projection SHALL NOT treat every non-empty known-gap list as degraded. It SHALL evaluate run status, gap severity, auth/setup state, retry/backoff state, and freshness state.
+
+#### Scenario: Slack has only expected slackdump-mode limitations
+- **WHEN** Slack runs in slackdump archive mode and the only unavailable streams are `stars`, `user_groups`, `reminders`, or `dm_read_states` marked unsupported in that mode
+- **THEN** the reference SHALL NOT mark Slack degraded solely because those streams are unavailable
+- **AND** the dashboard SHALL keep the limitation visible as connector detail or coverage information
+
+#### Scenario: Actionable selected-stream gap remains degraded
+- **WHEN** a successful run includes an actionable gap for data selected by the owner or runtime
+- **THEN** the reference SHALL mark connector health as degraded or needs-attention according to the health classifier
+
+#### Scenario: Historical unclassified gap is read
+- **WHEN** the reference reads an older known gap without severity metadata
+- **THEN** it SHALL treat the gap conservatively as actionable unless a newer classified run supersedes it
+
+### Requirement: Stream-level read operations SHALL direct callers to `/v1/schema` for field-level filters
+
+The operation summary text published by `@pdpp/reference-contract` for `listStreams` and `getStreamMetadata` SHALL explicitly state that these endpoints return stream-level totals only, and SHALL direct the caller to `GET /v1/schema` first when they need field-level filter capabilities. This turns a class of foreseeable 400-failures (a caller attaches `filter[...]` to a stream-level endpoint that does not accept it) into a self-teaching contract hint. Connection identity on these operations' response items is owned by `expose-connection-identity-on-public-read` and is NOT defined here.
+
+#### Scenario: An LLM caller reads the `listStreams` summary
+
+- **WHEN** an LLM caller or contract-driven tool description renders the `listStreams` operation summary
+- **THEN** the summary SHALL state that the endpoint returns stream-level totals
+- **AND** the summary SHALL name `/v1/schema` as the endpoint to consult for field-level filter capabilities before constructing a filtered query.
+
+#### Scenario: An LLM caller reads the `getStreamMetadata` summary
+
+- **WHEN** an LLM caller or contract-driven tool description renders the `getStreamMetadata` operation summary
+- **THEN** the summary SHALL state that the endpoint returns metadata for a single stream and SHALL NOT advertise field-level filtering
+- **AND** the summary SHALL name `/v1/schema` as the endpoint to consult for field-level filter capabilities.
+
+### Requirement: Hybrid pagination unavailability SHALL be advertised and cross-referenced
+
+When the hybrid retrieval extension is advertised on the resource server, the protected-resource discovery hints SHALL include `hybrid_pagination_supported` derived from the same live runtime state that drives the hybrid capability advertisement, and the `searchRecordsHybrid` operation summary SHALL reference that hint and SHALL name lexical search as the cursor-pagination fallback. The agent-facing query cookbook SHALL document the same limitation, so callers learn the boundary from contract or docs before they hit a 400.
+
+#### Scenario: Hybrid is advertised but cursor pagination is not supported
+
+- **WHEN** the resource server advertises the hybrid retrieval extension and the runtime hybrid implementation does not support cursor pagination
+- **THEN** `pdpp_discovery_hints.hybrid_pagination_supported` SHALL be present in the protected-resource metadata document with value `false`
+- **AND** the `searchRecordsHybrid` operation summary SHALL reference `pdpp_discovery_hints.hybrid_pagination_supported`
+- **AND** the operation summary SHALL name lexical search as the recommended fallback when cursor pagination is required.
+
+#### Scenario: Hybrid is not advertised
+
+- **WHEN** the resource server does not advertise the hybrid retrieval extension
+- **THEN** `pdpp_discovery_hints.hybrid_pagination_supported` SHALL be omitted from the protected-resource metadata document rather than emitted with a default value
+- **AND** the contract for `searchRecordsHybrid` MAY still reference the hint, but consumers SHALL treat an omitted hint as "field not applicable on this resource server."
+
+#### Scenario: The query cookbook documents the same boundary
+
+- **WHEN** an agent reads `docs/agent-skills/pdpp-data-access/references/query-cookbook.md`
+- **THEN** the cookbook SHALL state that hybrid does not support `cursor`
+- **AND** the cookbook SHALL recommend lexical search as the fallback when the caller needs more than `limit` results.
+
+### Requirement: The `filter` parameter description SHALL point callers at `/v1/schema` `field_capabilities`
+
+The JSON Schema `description` on the `filter` property of `ListRecordsQuerySchema` published by `@pdpp/reference-contract` SHALL describe both the exact-match shape (`filter[field]=value`) and the range shape (`filter[field][op]=value`), and SHALL name `field_capabilities` on `GET /v1/schema` as the source of the legal operator set for `op`. This is a description change only; it SHALL NOT change the parameter's type, format, or runtime validation.
+
+#### Scenario: A caller renders the `filter` parameter description
+
+- **WHEN** an LLM caller or contract-driven tool description renders the `description` of the `filter` parameter on the records-list operation
+- **THEN** the description SHALL include both `filter[field]=value` and `filter[field][op]=value` as legal shapes
+- **AND** the description SHALL name `field_capabilities` from `GET /v1/schema` as the source of the legal `op` values
+- **AND** the parameter's `type`, `format`, and runtime validation SHALL NOT change relative to the pre-change contract.
+
+### Requirement: Reference auth docs SHALL distinguish shipped profile from future OAuth profiles
+
+The reference documentation SHALL distinguish the live reference auth profile from generic OAuth authorization-code profiles that are not currently advertised.
+
+#### Scenario: App token issuance is documented
+
+- **WHEN** documentation explains how clients obtain app tokens
+- **THEN** it SHALL NOT imply the current reference exposes a generic authorization-code redirect flow
+- **AND** it SHALL describe the shipped PAR plus consent direct-token handoff as the current reference profile.
+
+### Requirement: Authorization-server metadata SHALL declare agent connect endpoint
+
+The reference public contract SHALL include the agent connect endpoint that the authorization server emits.
+
+#### Scenario: AS metadata is fetched
+
+- **WHEN** a caller fetches `/.well-known/oauth-authorization-server`
+- **THEN** the metadata SHALL include `agent_connect_endpoint`
+- **AND** the public contract schema and generated docs SHALL describe the field as a URI.
+
+### Requirement: Browser-backed polyfill connectors SHALL declare a browser runtime binding
+
+The reference implementation SHALL make browser automation requirements visible in polyfill connector manifests using `runtime_requirements.bindings.browser`.
+
+#### Scenario: Browser-backed connector manifest is inspected
+
+- **WHEN** a polyfill connector uses the reference browser runtime
+- **THEN** its manifest SHALL declare `runtime_requirements.bindings.browser.required` equal to `true`
+- **AND** the manifest SHALL NOT rely on `network` alone to imply browser automation.
+
+#### Scenario: Reference runtime starts a connector
+
+- **WHEN** the reference runtime sends a `START` envelope to a connector
+- **THEN** the available bindings SHALL include `browser`
+- **AND** a manifest requiring the `browser` binding SHALL pass binding matching when the runtime can supply browser automation.
+
+#### Scenario: Runtime requirement binding declaration is malformed
+
+- **WHEN** a connector manifest declares an unsupported runtime binding or a non-boolean `required` value
+- **THEN** connector registration SHALL reject the manifest with a typed `invalid_request` response that identifies the malformed runtime requirement.
+
+### Requirement: Polyfill connector manifests SHALL expose external subprocess tool dependencies
+
+The reference implementation SHALL support static manifest metadata for external subprocess tools required by polyfill connectors.
+
+#### Scenario: Connector manifest declares an external subprocess tool
+
+- **WHEN** a polyfill connector depends on an external subprocess binary
+- **THEN** its manifest SHALL declare the dependency under `runtime_requirements.external_tools`
+- **AND** each declaration SHALL include `name`, `license`, and `purpose`.
+
+#### Scenario: Slack connector manifest is inspected
+
+- **WHEN** the Slack connector manifest is inspected
+- **THEN** it SHALL declare `slackdump` as an external tool
+- **AND** the declaration SHALL include its license and an owner-usable install hint.
+- **AND** the declaration MAY include non-executed detection metadata.
+
+#### Scenario: External tool declaration is malformed
+
+- **WHEN** a connector manifest declares malformed `runtime_requirements.external_tools`
+- **THEN** connector registration SHALL reject the manifest with a typed `invalid_request` response that identifies the malformed external tool declaration.
+
