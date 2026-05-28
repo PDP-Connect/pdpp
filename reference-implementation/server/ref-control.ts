@@ -1147,7 +1147,58 @@ interface HeartbeatRow {
  *   and roll up: `stalled` dominates `active` dominates `idle`;
  *   any `unreliable: true` adds `outbox` to `unreliableSources`.
  */
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: outbox rollup is a compact dominance table over heartbeat evidence.
+interface OutboxAxisAccumulator {
+  anyTrustedEvidence: boolean;
+  anyUnreliable: boolean;
+  sawTrustedIdle: boolean;
+  sawTrustedUnknown: boolean;
+  severity: "active" | "stalled" | null;
+}
+
+function escalateOutboxAxisSeverity(
+  current: "active" | "stalled" | null,
+  rowAxis: OutboxAxis
+): "active" | "stalled" | null {
+  if (rowAxis === "stalled") {
+    return "stalled";
+  }
+  if (rowAxis === "active" && current !== "stalled") {
+    return "active";
+  }
+  return current;
+}
+
+function accumulateOutboxAxisRow(acc: OutboxAxisAccumulator, row: HeartbeatRow, nowIso: string): void {
+  const trusted = row.deviceStatus === "active" && row.sourceStatus === "active" && row.deviceRevokedAt === null;
+  if (trusted) {
+    acc.anyTrustedEvidence = true;
+  }
+  const result = deriveOutboxAxisFromHeartbeat(
+    {
+      evidenceTrusted: trusted,
+      lastHeartbeatAt: row.lastHeartbeatAt,
+      lastHeartbeatStatus: normalizeHeartbeatStatusForAxis(row.lastHeartbeatStatus),
+      recordsPending: row.recordsPending,
+    },
+    {
+      nowIso,
+      staleHeartbeatThresholdMs: OUTBOX_STALE_HEARTBEAT_THRESHOLD_MS,
+    }
+  );
+  if (result.unreliable) {
+    acc.anyUnreliable = true;
+  }
+  if (!trusted) {
+    return;
+  }
+  acc.severity = escalateOutboxAxisSeverity(acc.severity, result.axis);
+  if (result.axis === "idle") {
+    acc.sawTrustedIdle = true;
+  } else if (result.axis === "unknown") {
+    acc.sawTrustedUnknown = true;
+  }
+}
+
 export function projectConnectorOutboxAxisFromHeartbeats(
   heartbeats: readonly HeartbeatRow[],
   options: { readonly nowIso: string }
@@ -1160,59 +1211,31 @@ export function projectConnectorOutboxAxisFromHeartbeats(
   // heartbeat we have never observed (axis = unknown) must not be
   // silently treated as idle, or a dead collector with no record of life
   // would paint the connection green.
-  let anyUnreliable = false;
-  let anyTrustedEvidence = false;
-  let sawTrustedIdle = false;
-  let sawTrustedUnknown = false;
-  let severity: "active" | "stalled" | null = null;
+  const acc: OutboxAxisAccumulator = {
+    anyUnreliable: false,
+    anyTrustedEvidence: false,
+    sawTrustedIdle: false,
+    sawTrustedUnknown: false,
+    severity: null,
+  };
   for (const row of heartbeats) {
-    const trusted = row.deviceStatus === "active" && row.sourceStatus === "active" && row.deviceRevokedAt === null;
-    if (trusted) {
-      anyTrustedEvidence = true;
-    }
-    const result = deriveOutboxAxisFromHeartbeat(
-      {
-        evidenceTrusted: trusted,
-        lastHeartbeatAt: row.lastHeartbeatAt,
-        lastHeartbeatStatus: normalizeHeartbeatStatusForAxis(row.lastHeartbeatStatus),
-        recordsPending: row.recordsPending,
-      },
-      {
-        nowIso: options.nowIso,
-        staleHeartbeatThresholdMs: OUTBOX_STALE_HEARTBEAT_THRESHOLD_MS,
-      }
-    );
-    if (result.unreliable) {
-      anyUnreliable = true;
-    }
-    if (!trusted) {
-      continue;
-    }
-    if (result.axis === "stalled") {
-      severity = "stalled";
-    } else if (result.axis === "active" && severity !== "stalled") {
-      severity = "active";
-    } else if (result.axis === "idle") {
-      sawTrustedIdle = true;
-    } else if (result.axis === "unknown") {
-      sawTrustedUnknown = true;
-    }
+    accumulateOutboxAxisRow(acc, row, options.nowIso);
   }
   // If every row is untrusted (e.g. all sources/devices revoked), there
   // is no honest evidence — keep `unknown` rather than implying idle.
-  if (!anyTrustedEvidence) {
-    return { axis: "unknown", unreliable: anyUnreliable, hasEvidence: false };
+  if (!acc.anyTrustedEvidence) {
+    return { axis: "unknown", unreliable: acc.anyUnreliable, hasEvidence: false };
   }
-  if (severity !== null) {
-    return { axis: severity, unreliable: anyUnreliable, hasEvidence: true };
+  if (acc.severity !== null) {
+    return { axis: acc.severity, unreliable: acc.anyUnreliable, hasEvidence: true };
   }
   // No trusted instance is actively working or stalled. We can only
   // promise `idle` when every trusted instance reported idle — a missing
   // heartbeat on any trusted instance keeps the axis `unknown`.
-  if (sawTrustedIdle && !sawTrustedUnknown) {
-    return { axis: "idle", unreliable: anyUnreliable, hasEvidence: true };
+  if (acc.sawTrustedIdle && !acc.sawTrustedUnknown) {
+    return { axis: "idle", unreliable: acc.anyUnreliable, hasEvidence: true };
   }
-  return { axis: "unknown", unreliable: anyUnreliable, hasEvidence: sawTrustedIdle };
+  return { axis: "unknown", unreliable: acc.anyUnreliable, hasEvidence: acc.sawTrustedIdle };
 }
 
 function normalizeHeartbeatStatusForAxis(
@@ -1361,8 +1384,9 @@ function selectAttentionEvidence(input: {
   const candidates = input.attentionRecords.filter(
     (record) => OPEN_LIFECYCLES.has(record.lifecycle) && isHealthRelevant(record, input.nowIso)
   );
-  if (candidates.length > 0) {
-    const picked = pickMostUrgentAttention(candidates);
+  const [first, ...restCandidates] = candidates;
+  if (first) {
+    const picked = pickMostUrgentAttention([first, ...restCandidates]);
     return {
       actionTarget: picked.action_target,
       expiresAt: picked.expires_at,
@@ -1400,29 +1424,31 @@ function selectAttentionEvidence(input: {
  *   4. Earliest `created_at` as a stable tiebreak (don't flip CTAs on
  *      every refresh when two records are equally urgent).
  */
-function pickMostUrgentAttention(records: readonly AttentionRecord[]): AttentionRecord {
+function pickMostUrgentAttention(records: readonly [AttentionRecord, ...AttentionRecord[]]): AttentionRecord {
   // The list is small (<= number of open attention records per
-  // connection — typically 0-2); a single linear scan with a max-by
-  // comparator is fine.
-  // biome-ignore lint/style/noNonNullAssertion: caller guards records.length > 0 before invoking this helper.
-  return [...records].sort((a, b) => {
-    const aResp = a.response_contract === "response_required" ? 1 : 0;
-    const bResp = b.response_contract === "response_required" ? 1 : 0;
-    if (aResp !== bResp) {
-      return bResp - aResp;
-    }
-    const aBlocked = a.progress_posture === "blocked" ? 1 : 0;
-    const bBlocked = b.progress_posture === "blocked" ? 1 : 0;
-    if (aBlocked !== bBlocked) {
-      return bBlocked - aBlocked;
-    }
-    const aExpiry = a.expires_at ? Date.parse(a.expires_at) : Number.POSITIVE_INFINITY;
-    const bExpiry = b.expires_at ? Date.parse(b.expires_at) : Number.POSITIVE_INFINITY;
-    if (aExpiry !== bExpiry) {
-      return aExpiry - bExpiry;
-    }
-    return Date.parse(a.created_at) - Date.parse(b.created_at);
-  })[0]!;
+  // connection — typically 0-2); a single reduce over the non-empty
+  // tuple keeps the urgency comparator local.
+  const [head, ...rest] = records;
+  return rest.reduce((best, candidate) => (compareAttentionUrgency(best, candidate) <= 0 ? best : candidate), head);
+}
+
+function compareAttentionUrgency(a: AttentionRecord, b: AttentionRecord): number {
+  const aResp = a.response_contract === "response_required" ? 1 : 0;
+  const bResp = b.response_contract === "response_required" ? 1 : 0;
+  if (aResp !== bResp) {
+    return bResp - aResp;
+  }
+  const aBlocked = a.progress_posture === "blocked" ? 1 : 0;
+  const bBlocked = b.progress_posture === "blocked" ? 1 : 0;
+  if (aBlocked !== bBlocked) {
+    return bBlocked - aBlocked;
+  }
+  const aExpiry = a.expires_at ? Date.parse(a.expires_at) : Number.POSITIVE_INFINITY;
+  const bExpiry = b.expires_at ? Date.parse(b.expires_at) : Number.POSITIVE_INFINITY;
+  if (aExpiry !== bExpiry) {
+    return aExpiry - bExpiry;
+  }
+  return Date.parse(a.created_at) - Date.parse(b.created_at);
 }
 
 function ownerActionForEvidence(action: OwnerAction): ConnectionAttentionEvidence["ownerAction"] {
@@ -1518,8 +1544,7 @@ function pickMostUrgentLease(leases: readonly BrowserSurfaceLease[]): BrowserSur
   if (leases.length === 0) {
     return null;
   }
-  // biome-ignore lint/style/noNonNullAssertion: length-guarded above; sort+[0] is non-null by construction.
-  return [...leases].sort((a, b) => {
+  const [mostUrgent] = [...leases].sort((a, b) => {
     const r = rankRemoteSurfaceLease(a.status) - rankRemoteSurfaceLease(b.status);
     if (r !== 0) {
       return r;
@@ -1527,7 +1552,8 @@ function pickMostUrgentLease(leases: readonly BrowserSurfaceLease[]): BrowserSur
     // Stable secondary: most-recent requested_at first.
     const at = Date.parse(b.requested_at) - Date.parse(a.requested_at);
     return Number.isFinite(at) ? at : 0;
-  })[0]!;
+  });
+  return mostUrgent ?? null;
 }
 
 function surfaceRecencyMs(surface: BrowserSurface): number {
@@ -1543,14 +1569,14 @@ function pickMostRecentSurface(surfaces: readonly BrowserSurface[]): BrowserSurf
   if (surfaces.length === 0) {
     return null;
   }
-  // biome-ignore lint/style/noNonNullAssertion: length-guarded above; sort+[0] is non-null by construction.
-  return [...surfaces].sort((a, b) => {
+  const [mostRecent] = [...surfaces].sort((a, b) => {
     const at = surfaceRecencyMs(b) - surfaceRecencyMs(a);
     if (at !== 0) {
       return at;
     }
     return b.surface_id.localeCompare(a.surface_id);
-  })[0]!;
+  });
+  return mostRecent ?? null;
 }
 
 /**
@@ -1560,7 +1586,110 @@ function pickMostRecentSurface(surfaces: readonly BrowserSurface[]): BrowserSurf
  * (host browser / API connectors), so they cannot be silently degraded
  * by the absence of a lease/surface row.
  */
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: projection joins leases, surfaces, profile scoping, and fallback status in one evidence boundary.
+function projectActiveBrowserSurfaceLease(
+  picked: BrowserSurfaceLease,
+  surface: BrowserSurface | undefined
+): ConnectorBrowserSurfaceProjection | null {
+  if (surface?.health === "unhealthy") {
+    return {
+      evidence: {
+        axis: "failed",
+        leaseId: picked.lease_id,
+        leaseStatus: picked.status,
+        profileKey: surface.profile_key,
+        surfaceHealth: surface.health,
+        surfaceId: surface.surface_id,
+        waitReason: "surface_unhealthy",
+      },
+      unreliable: false,
+    };
+  }
+  if (picked.status === "leased") {
+    return {
+      evidence: {
+        axis: "leased",
+        leaseId: picked.lease_id,
+        leaseStatus: picked.status,
+        profileKey: picked.profile_key,
+        surfaceHealth: surface?.health ?? null,
+        surfaceId: picked.surface_id ?? null,
+        waitReason: null,
+      },
+      unreliable: false,
+    };
+  }
+  if (ACTIVE_WAITING_LEASE_STATUSES.has(picked.status)) {
+    return {
+      evidence: {
+        axis: "waiting",
+        leaseId: picked.lease_id,
+        leaseStatus: picked.status,
+        profileKey: picked.profile_key,
+        surfaceHealth: surface?.health ?? null,
+        surfaceId: picked.surface_id ?? null,
+        waitReason: picked.wait_reason ?? null,
+      },
+      unreliable: false,
+    };
+  }
+  return null;
+}
+
+function projectFallbackBrowserSurfaceFromSurface(surface: BrowserSurface): ConnectorBrowserSurfaceProjection {
+  if (surface.health === "unhealthy") {
+    return {
+      evidence: {
+        axis: "failed",
+        leaseId: surface.active_lease_id ?? null,
+        leaseStatus: null,
+        profileKey: surface.profile_key,
+        surfaceHealth: surface.health,
+        surfaceId: surface.surface_id,
+        waitReason: "surface_unhealthy",
+      },
+      unreliable: false,
+    };
+  }
+  return {
+    evidence: {
+      axis: "idle",
+      leaseId: null,
+      leaseStatus: null,
+      profileKey: surface.profile_key,
+      surfaceHealth: surface.health,
+      surfaceId: surface.surface_id,
+      waitReason: null,
+    },
+    unreliable: false,
+  };
+}
+
+const BROWSER_SURFACE_UNRELIABLE_PROJECTION: ConnectorBrowserSurfaceProjection = {
+  evidence: {
+    axis: "unknown",
+    leaseId: null,
+    leaseStatus: null,
+    profileKey: null,
+    surfaceHealth: null,
+    surfaceId: null,
+    waitReason: null,
+  },
+  unreliable: true,
+};
+
+const BROWSER_SURFACE_UNKNOWN_PROJECTION: ConnectorBrowserSurfaceProjection = {
+  evidence: {
+    axis: "unknown",
+    leaseId: null,
+    leaseStatus: null,
+    profileKey: null,
+    surfaceHealth: null,
+    surfaceId: null,
+    waitReason: null,
+  },
+  unreliable: false,
+};
+
 export async function getConnectorBrowserSurfaceProjection(
   connectorId: string,
   options: { readonly profileKey?: string | null; readonly store?: BrowserSurfaceLeaseStoreReader } = {}
@@ -1571,26 +1700,16 @@ export async function getConnectorBrowserSurfaceProjection(
   try {
     [leases, surfaces] = await Promise.all([store.listNonTerminalLeases(), store.listSurfaces()]);
   } catch {
-    return {
-      evidence: {
-        axis: "unknown",
-        leaseId: null,
-        leaseStatus: null,
-        profileKey: null,
-        surfaceHealth: null,
-        surfaceId: null,
-        waitReason: null,
-      },
-      unreliable: true,
-    };
+    return BROWSER_SURFACE_UNRELIABLE_PROJECTION;
   }
 
+  const matchesProfile = (profileKey: string | null | undefined): boolean =>
+    !options.profileKey || profileKey === options.profileKey;
   const connectorLeases = leases.filter(
-    (lease) => lease.connector_id === connectorId && (!options.profileKey || lease.profile_key === options.profileKey)
+    (lease) => lease.connector_id === connectorId && matchesProfile(lease.profile_key)
   );
   const connectorSurfaces = surfaces.filter(
-    (surface) =>
-      surface.connector_id === connectorId && (!options.profileKey || surface.profile_key === options.profileKey)
+    (surface) => surface.connector_id === connectorId && matchesProfile(surface.profile_key)
   );
 
   if (connectorLeases.length === 0 && connectorSurfaces.length === 0) {
@@ -1599,54 +1718,15 @@ export async function getConnectorBrowserSurfaceProjection(
     return { evidence: null, unreliable: false };
   }
 
+  // 1-2. Active lease evidence is the freshest signal. A stale unhealthy
+  // surface from an earlier failed launch must not poison a connection that
+  // subsequently leased a ready surface successfully.
   const picked = pickMostUrgentLease(connectorLeases);
-
-  // 1-2. Active lease evidence is the freshest signal. A stale
-  // unhealthy surface from an earlier failed launch must not poison a
-  // connection that subsequently leased a ready surface successfully.
   if (picked) {
     const surface = picked.surface_id ? connectorSurfaces.find((s) => s.surface_id === picked.surface_id) : undefined;
-    if (surface?.health === "unhealthy") {
-      return {
-        evidence: {
-          axis: "failed",
-          leaseId: picked.lease_id,
-          leaseStatus: picked.status,
-          profileKey: surface.profile_key,
-          surfaceHealth: surface.health,
-          surfaceId: surface.surface_id,
-          waitReason: "surface_unhealthy",
-        },
-        unreliable: false,
-      };
-    }
-    if (picked.status === "leased") {
-      return {
-        evidence: {
-          axis: "leased",
-          leaseId: picked.lease_id,
-          leaseStatus: picked.status,
-          profileKey: picked.profile_key,
-          surfaceHealth: surface?.health ?? null,
-          surfaceId: picked.surface_id ?? null,
-          waitReason: null,
-        },
-        unreliable: false,
-      };
-    }
-    if (ACTIVE_WAITING_LEASE_STATUSES.has(picked.status)) {
-      return {
-        evidence: {
-          axis: "waiting",
-          leaseId: picked.lease_id,
-          leaseStatus: picked.status,
-          profileKey: picked.profile_key,
-          surfaceHealth: surface?.health ?? null,
-          surfaceId: picked.surface_id ?? null,
-          waitReason: picked.wait_reason ?? null,
-        },
-        unreliable: false,
-      };
+    const projection = projectActiveBrowserSurfaceLease(picked, surface);
+    if (projection) {
+      return projection;
     }
   }
 
@@ -1655,52 +1735,14 @@ export async function getConnectorBrowserSurfaceProjection(
   // history, not the present runtime state.
   const surface = pickMostRecentSurface(connectorSurfaces);
   if (surface) {
-    if (surface.health === "unhealthy") {
-      return {
-        evidence: {
-          axis: "failed",
-          leaseId: surface.active_lease_id ?? null,
-          leaseStatus: null,
-          profileKey: surface.profile_key,
-          surfaceHealth: surface.health,
-          surfaceId: surface.surface_id,
-          waitReason: "surface_unhealthy",
-        },
-        unreliable: false,
-      };
-    }
-    return {
-      evidence: {
-        axis: "idle",
-        leaseId: null,
-        leaseStatus: null,
-        profileKey: surface.profile_key,
-        surfaceHealth: surface.health,
-        surfaceId: surface.surface_id,
-        waitReason: null,
-      },
-      unreliable: false,
-    };
+    return projectFallbackBrowserSurfaceFromSurface(surface);
   }
 
-  // No surface row and no recognized lease status — conservative
-  // `unknown` so the dashboard surfaces the gap rather than painting
-  // false-green over evidence we cannot classify.
-  return {
-    evidence: {
-      axis: "unknown",
-      leaseId: null,
-      leaseStatus: null,
-      profileKey: null,
-      surfaceHealth: null,
-      surfaceId: null,
-      waitReason: null,
-    },
-    unreliable: false,
-  };
+  // No surface row and no recognized lease status — conservative `unknown`
+  // so the dashboard surfaces the gap rather than painting false-green over
+  // evidence we cannot classify.
+  return BROWSER_SURFACE_UNKNOWN_PROJECTION;
 }
-
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: summary health projection combines freshness, attention, assistance, outbox, and surface axes into one owner-facing state.
 export function projectConnectorSummaryConnectionHealth(input: {
   /**
    * Durable structured attention records the caller has already filtered
@@ -1755,17 +1797,11 @@ export function projectConnectorSummaryConnectionHealth(input: {
     !staleSchedulerBackoff && typeof schedule?.last_error_code === "string" ? schedule.last_error_code : null;
   const scheduleLastSuccessfulAt =
     typeof schedule?.last_successful_at === "string" ? schedule.last_successful_at : null;
-  const backoffConsecutiveFailures = readNumber(effectiveSchedulerBackoff?.consecutive_failures) ?? 0;
-  const backoffNextRunAt =
-    typeof effectiveSchedulerBackoff?.next_run_at === "string" ? effectiveSchedulerBackoff.next_run_at : nextDueAt;
-  const backoffReasonClass =
-    typeof effectiveSchedulerBackoff?.reason_class === "string"
-      ? effectiveSchedulerBackoff.reason_class
-      : lastErrorCode;
-  const hasRetryBackoffEvidence =
-    effectiveSchedulerBackoff !== null &&
-    (effectiveSchedulerBackoff.backoff_applied === true || backoffConsecutiveFailures > 0);
-  const schedulerFailureStatus = hasRetryBackoffEvidence ? "failed" : null;
+  const backoffEvidence = projectSchedulerBackoffEvidence({
+    effectiveSchedulerBackoff,
+    lastErrorCode,
+    nextDueAt,
+  });
   const nowIso = input.nowIso ?? new Date().toISOString();
   const attention = selectAttentionEvidence({
     attentionRecords: input.attentionRecords ?? [],
@@ -1776,14 +1812,7 @@ export function projectConnectorSummaryConnectionHealth(input: {
   return computeConnectionHealth({
     activity: { active: activeRunId !== null },
     attention,
-    backoff: hasRetryBackoffEvidence
-      ? {
-          backoffApplied: effectiveSchedulerBackoff?.backoff_applied === true,
-          consecutiveFailures: backoffConsecutiveFailures,
-          nextRunAt: backoffNextRunAt,
-          reasonClass: backoffReasonClass,
-        }
-      : null,
+    backoff: backoffEvidence.backoff,
     coverage: buildCoverageEvidence(input.lastRun, pendingDetailGaps, input.manifestStreams ?? []),
     freshness: { axis: mapFreshnessAxis(input.freshness) },
     outbox: input.outbox ?? { axis: "unknown" },
@@ -1792,7 +1821,7 @@ export function projectConnectorSummaryConnectionHealth(input: {
     run: {
       hasDegradingGaps: hasPendingDetailGap(pendingDetailGaps) || hasDegradingKnownGap(input.lastRun),
       lastSuccessAt: input.lastSuccessfulRun?.last_at ?? scheduleLastSuccessfulAt,
-      latestStatus: mapRunStatus(input.lastRun?.status) ?? schedulerFailureStatus,
+      latestStatus: mapRunStatus(input.lastRun?.status) ?? backoffEvidence.schedulerFailureStatus,
       reasonCode:
         input.lastRun?.failure_reason ??
         firstDegradingKnownGapReason(input.lastRun) ??
@@ -1802,6 +1831,46 @@ export function projectConnectorSummaryConnectionHealth(input: {
     schedule: schedule ? { enabled: schedule.enabled !== false } : null,
     observedAt: nowIso,
   });
+}
+
+interface BackoffEvidenceProjection {
+  readonly backoff: {
+    readonly backoffApplied: boolean;
+    readonly consecutiveFailures: number;
+    readonly nextRunAt: string | null;
+    readonly reasonClass: string | null;
+  } | null;
+  readonly schedulerFailureStatus: "failed" | null;
+}
+
+function projectSchedulerBackoffEvidence(input: {
+  readonly effectiveSchedulerBackoff: ReturnType<typeof asBackoffRecord>;
+  readonly lastErrorCode: string | null;
+  readonly nextDueAt: string | null;
+}): BackoffEvidenceProjection {
+  const { effectiveSchedulerBackoff, lastErrorCode, nextDueAt } = input;
+  const backoffConsecutiveFailures = readNumber(effectiveSchedulerBackoff?.consecutive_failures) ?? 0;
+  const hasRetryBackoffEvidence =
+    effectiveSchedulerBackoff !== null &&
+    (effectiveSchedulerBackoff.backoff_applied === true || backoffConsecutiveFailures > 0);
+  if (!hasRetryBackoffEvidence) {
+    return { backoff: null, schedulerFailureStatus: null };
+  }
+  const backoffNextRunAt =
+    typeof effectiveSchedulerBackoff?.next_run_at === "string" ? effectiveSchedulerBackoff.next_run_at : nextDueAt;
+  const backoffReasonClass =
+    typeof effectiveSchedulerBackoff?.reason_class === "string"
+      ? effectiveSchedulerBackoff.reason_class
+      : lastErrorCode;
+  return {
+    backoff: {
+      backoffApplied: effectiveSchedulerBackoff?.backoff_applied === true,
+      consecutiveFailures: backoffConsecutiveFailures,
+      nextRunAt: backoffNextRunAt,
+      reasonClass: backoffReasonClass,
+    },
+    schedulerFailureStatus: "failed",
+  };
 }
 
 function buildConnectorFreshness({
@@ -1878,9 +1947,12 @@ export async function mapWithConcurrency<T, R>(
       const index = nextIndex++;
       inFlight++;
       onChange?.(inFlight);
+      const item = items[index];
+      if (item === undefined) {
+        continue;
+      }
       try {
-        // biome-ignore lint/style/noNonNullAssertion: while-loop guard proves index < items.length; noUncheckedIndexedAccess widens the index expression.
-        results[index] = await worker(items[index]!, index);
+        results[index] = await worker(item, index);
       } catch (err) {
         if (firstError === null) {
           firstError = err;

@@ -171,8 +171,10 @@ function parseSurfaceEnvelope(value: unknown, label: string): BrowserSurface {
 }
 
 function parseSurfaceListEnvelope(value: unknown): BrowserSurface[] {
-  // biome-ignore lint/complexity/useSimplifiedLogicExpression: malformed-envelope guard names the two structural requirements.
-  if (!isRecord(value) || !Array.isArray(value.surfaces)) {
+  if (!isRecord(value)) {
+    throw malformed("surface list response must contain a surfaces array");
+  }
+  if (!Array.isArray(value.surfaces)) {
     throw malformed("surface list response must contain a surfaces array");
   }
   return value.surfaces.map((surface, index) =>

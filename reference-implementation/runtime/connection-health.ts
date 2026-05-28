@@ -543,7 +543,39 @@ export interface ComputeConnectionHealthInput {
 
 // ─── Projection ───────────────────────────────────────────────────────────
 
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: top-level health projection composes axes/badges/conditions and derives an aggregate status; each step calls a helper, so the residual branching is the inherent classification table.
+interface ClassificationContext {
+  readonly axes: ConnectionAxes;
+  readonly badges: ConnectionBadges;
+  readonly conditionSet: ReadonlyMap<ConnectionConditionType, ConnectionHealthCondition>;
+  readonly conditions: readonly ConnectionHealthCondition[];
+  readonly input: ComputeConnectionHealthInput;
+  readonly lastSuccessAt: string | null;
+  readonly nextAttemptAt: string | null;
+  readonly remoteSurface: RemoteSurfaceDetail | null;
+}
+
+type ClassificationStep = (
+  ctx: ClassificationContext
+) => Omit<SnapshotArgs, "conditions" | "dominantConditionId" | "supportingConditionIds"> | null;
+
+// Ordered precedence: each step returns a snapshot args object when it claims
+// the verdict, otherwise null and we fall through to the next step. The order
+// encodes UI policy: unreliable evidence beats current owner action beats
+// owner pause beats blocking conditions beats retry exhaustion beats backoff
+// beats degraded evidence beats no-verdict beats healthy.
+const HEALTH_CLASSIFICATION_STEPS: readonly ClassificationStep[] = [
+  classifyUnreliableProjection,
+  classifyOpenAttention,
+  classifyOwnerPaused,
+  classifyReadinessBlocked,
+  classifyRetryPolicyExhausted,
+  classifyCoolingOff,
+  classifyDegradedEvidence,
+  classifyCurrentEvidenceWithoutVerdict,
+  classifyNeverRunIdle,
+  classifyHealthy,
+];
+
 export function computeConnectionHealth(input: ComputeConnectionHealthInput): ConnectionHealthSnapshot {
   const axes = projectAxes(input);
   const badges = projectBadges(input, axes);
@@ -554,7 +586,17 @@ export function computeConnectionHealth(input: ComputeConnectionHealthInput): Co
   const nextAttemptAt = conditionExpired(input.backoff?.nextRunAt ?? null, input.observedAt ?? null)
     ? null
     : (input.backoff?.nextRunAt ?? null);
-  const finish = (
+  const ctx: ClassificationContext = {
+    axes,
+    badges,
+    conditions,
+    conditionSet,
+    input,
+    lastSuccessAt,
+    nextAttemptAt,
+    remoteSurface,
+  };
+  const finishWith = (
     args: Omit<SnapshotArgs, "conditions" | "dominantConditionId" | "supportingConditionIds">
   ): ConnectionHealthSnapshot => {
     const dominantConditionId = pickDominantConditionId(args.state, conditions);
@@ -565,159 +607,15 @@ export function computeConnectionHealth(input: ComputeConnectionHealthInput): Co
       supportingConditionIds: pickSupportingConditionIds(conditions, dominantConditionId),
     });
   };
-
-  // 1. Projection unreliable -> unknown. Highest precedence so the UI
-  //    never paints a confident pill on top of broken evidence.
-  if (conditionSet.get("ProjectionReliable")?.status === "false") {
-    return finish({
-      state: "unknown",
-      reasonCode: null,
-      lastSuccessAt,
-      nextAttemptAt,
-      axes,
-      badges,
-      remoteSurface,
-      unknownReasons: input.projection?.unreliableSources ?? [],
-    });
+  for (const step of HEALTH_CLASSIFICATION_STEPS) {
+    const args = step(ctx);
+    if (args) {
+      return finishWith(args);
+    }
   }
-
-  // 2. Required attention open -> needs_attention. Current owner action
-  //    is actionable even before the first terminal run exists.
-  const attention = conditionSet.get("AttentionClear");
-  if (attention?.status === "false") {
-    return finish({
-      state: "needs_attention",
-      reasonCode: attention.reason,
-      lastSuccessAt,
-      nextAttemptAt,
-      axes,
-      badges,
-      remoteSurface,
-      nextAction: input.attention ? projectNextAction(input.attention) : null,
-    });
-  }
-
-  // 3. Owner-paused -> idle. Manual pause beats run/coverage/backoff
-  //    state because the system is intentionally not making progress.
-  if (conditionSet.get("ScheduleEligible")?.status === "false") {
-    return finish({
-      state: "idle",
-      reasonCode: null,
-      lastSuccessAt,
-      nextAttemptAt: null,
-      axes,
-      badges,
-      remoteSurface,
-    });
-  }
-
-  const readinessBlocker = readinessBlockedCondition(conditions);
-  if (readinessBlocker) {
-    return finish({
-      state: "blocked",
-      reasonCode: readinessBlocker.reason,
-      lastSuccessAt,
-      nextAttemptAt,
-      axes,
-      badges,
-      remoteSurface,
-    });
-  }
-
-  // 4. Give-up streak crossed -> blocked.
-  const retryPolicy = conditionSet.get("RetryPolicyClear");
-  if (retryPolicy?.status === "false" && retryPolicy.severity === "blocked") {
-    return finish({
-      state: "blocked",
-      reasonCode: retryPolicy.reason,
-      lastSuccessAt,
-      nextAttemptAt,
-      axes,
-      badges,
-      remoteSurface,
-    });
-  }
-
-  // 5. Backoff currently delaying retry -> cooling_off.
-  if (retryPolicy?.status === "false") {
-    return finish({
-      state: "cooling_off",
-      reasonCode: retryPolicy.reason,
-      lastSuccessAt,
-      nextAttemptAt,
-      axes,
-      badges,
-      remoteSurface,
-    });
-  }
-
-  // 6. Outbox stalled, coverage incomplete, gaps present, or last run
-  //    failed -> degraded. Success-with-gaps must not be healthy.
-  if (hasDegradingCondition(conditions)) {
-    return finish({
-      state: "degraded",
-      reasonCode: degradedReasonCode(input),
-      lastSuccessAt,
-      nextAttemptAt,
-      axes,
-      badges,
-      remoteSurface,
-    });
-  }
-
-  // 6b. If current local/device evidence exists but no terminal collection
-  //     verdict exists, the health verdict is unknown, not idle. Activity
-  //     is orthogonal; "Idle" must not masquerade as a health verdict for
-  //     a connection that is actively maintained but not fully proven.
-  if (
-    conditionSet.get("CollectionSucceeded")?.status === "unknown" &&
-    hasCurrentEvidenceWithoutCollectionVerdict(conditionSet)
-  ) {
-    return finish({
-      state: "unknown",
-      reasonCode: null,
-      lastSuccessAt: null,
-      nextAttemptAt,
-      axes,
-      badges,
-      remoteSurface,
-      unknownReasons: ["collection"],
-    });
-  }
-
-  // 6c. Never run (no terminal evidence yet) -> idle only when no
-  //     stronger current evidence exists.
-  if (conditionSet.get("CollectionSucceeded")?.status === "unknown") {
-    return finish({
-      state: "idle",
-      reasonCode: null,
-      lastSuccessAt: null,
-      nextAttemptAt,
-      axes,
-      badges,
-      remoteSurface,
-    });
-  }
-
-  // 7. Healthy requires:
-  //    - last run succeeded with no degrading gaps
-  //    - coverage complete (or unknown is NOT acceptable — see below)
-  //    - freshness fresh (stale is never silently healthy)
-  if (isHealthyConditionSet(conditionSet)) {
-    return finish({
-      state: "healthy",
-      reasonCode: null,
-      lastSuccessAt,
-      nextAttemptAt,
-      axes,
-      badges,
-      remoteSurface,
-    });
-  }
-
-  // 8. Fallback -> unknown. Reached when evidence combinations don't
-  //    line up cleanly (e.g. succeeded run but coverage axis is unknown).
-  return finish({
+  // Fallback -> unknown. Reached when evidence combinations don't line up
+  // cleanly (e.g. succeeded run but coverage axis is unknown).
+  return finishWith({
     state: "unknown",
     reasonCode: null,
     lastSuccessAt,
@@ -727,6 +625,187 @@ export function computeConnectionHealth(input: ComputeConnectionHealthInput): Co
     remoteSurface,
     unknownReasons: ["unclassified"],
   });
+}
+
+function classifyUnreliableProjection(ctx: ClassificationContext): ReturnType<ClassificationStep> {
+  // 1. Projection unreliable -> unknown. Highest precedence so the UI never
+  //    paints a confident pill on top of broken evidence.
+  if (ctx.conditionSet.get("ProjectionReliable")?.status !== "false") {
+    return null;
+  }
+  return {
+    state: "unknown",
+    reasonCode: null,
+    lastSuccessAt: ctx.lastSuccessAt,
+    nextAttemptAt: ctx.nextAttemptAt,
+    axes: ctx.axes,
+    badges: ctx.badges,
+    remoteSurface: ctx.remoteSurface,
+    unknownReasons: ctx.input.projection?.unreliableSources ?? [],
+  };
+}
+
+function classifyOpenAttention(ctx: ClassificationContext): ReturnType<ClassificationStep> {
+  // 2. Required attention open -> needs_attention. Current owner action is
+  //    actionable even before the first terminal run exists.
+  const attention = ctx.conditionSet.get("AttentionClear");
+  if (attention?.status !== "false") {
+    return null;
+  }
+  return {
+    state: "needs_attention",
+    reasonCode: attention.reason,
+    lastSuccessAt: ctx.lastSuccessAt,
+    nextAttemptAt: ctx.nextAttemptAt,
+    axes: ctx.axes,
+    badges: ctx.badges,
+    remoteSurface: ctx.remoteSurface,
+    nextAction: ctx.input.attention ? projectNextAction(ctx.input.attention) : null,
+  };
+}
+
+function classifyOwnerPaused(ctx: ClassificationContext): ReturnType<ClassificationStep> {
+  // 3. Owner-paused -> idle. Manual pause beats run/coverage/backoff state
+  //    because the system is intentionally not making progress.
+  if (ctx.conditionSet.get("ScheduleEligible")?.status !== "false") {
+    return null;
+  }
+  return {
+    state: "idle",
+    reasonCode: null,
+    lastSuccessAt: ctx.lastSuccessAt,
+    nextAttemptAt: null,
+    axes: ctx.axes,
+    badges: ctx.badges,
+    remoteSurface: ctx.remoteSurface,
+  };
+}
+
+function classifyReadinessBlocked(ctx: ClassificationContext): ReturnType<ClassificationStep> {
+  const blocker = readinessBlockedCondition(ctx.conditions);
+  if (!blocker) {
+    return null;
+  }
+  return {
+    state: "blocked",
+    reasonCode: blocker.reason,
+    lastSuccessAt: ctx.lastSuccessAt,
+    nextAttemptAt: ctx.nextAttemptAt,
+    axes: ctx.axes,
+    badges: ctx.badges,
+    remoteSurface: ctx.remoteSurface,
+  };
+}
+
+function classifyRetryPolicyExhausted(ctx: ClassificationContext): ReturnType<ClassificationStep> {
+  // 4. Give-up streak crossed -> blocked.
+  const retryPolicy = ctx.conditionSet.get("RetryPolicyClear");
+  if (!(retryPolicy?.status === "false" && retryPolicy.severity === "blocked")) {
+    return null;
+  }
+  return {
+    state: "blocked",
+    reasonCode: retryPolicy.reason,
+    lastSuccessAt: ctx.lastSuccessAt,
+    nextAttemptAt: ctx.nextAttemptAt,
+    axes: ctx.axes,
+    badges: ctx.badges,
+    remoteSurface: ctx.remoteSurface,
+  };
+}
+
+function classifyCoolingOff(ctx: ClassificationContext): ReturnType<ClassificationStep> {
+  // 5. Backoff currently delaying retry -> cooling_off.
+  const retryPolicy = ctx.conditionSet.get("RetryPolicyClear");
+  if (retryPolicy?.status !== "false") {
+    return null;
+  }
+  return {
+    state: "cooling_off",
+    reasonCode: retryPolicy.reason,
+    lastSuccessAt: ctx.lastSuccessAt,
+    nextAttemptAt: ctx.nextAttemptAt,
+    axes: ctx.axes,
+    badges: ctx.badges,
+    remoteSurface: ctx.remoteSurface,
+  };
+}
+
+function classifyDegradedEvidence(ctx: ClassificationContext): ReturnType<ClassificationStep> {
+  // 6. Outbox stalled, coverage incomplete, gaps present, or last run failed
+  //    -> degraded. Success-with-gaps must not be healthy.
+  if (!hasDegradingCondition(ctx.conditions)) {
+    return null;
+  }
+  return {
+    state: "degraded",
+    reasonCode: degradedReasonCode(ctx.input),
+    lastSuccessAt: ctx.lastSuccessAt,
+    nextAttemptAt: ctx.nextAttemptAt,
+    axes: ctx.axes,
+    badges: ctx.badges,
+    remoteSurface: ctx.remoteSurface,
+  };
+}
+
+function classifyCurrentEvidenceWithoutVerdict(ctx: ClassificationContext): ReturnType<ClassificationStep> {
+  // 6b. If current local/device evidence exists but no terminal collection
+  //     verdict exists, the health verdict is unknown, not idle. Activity is
+  //     orthogonal; "Idle" must not masquerade as a health verdict for a
+  //     connection that is actively maintained but not fully proven.
+  if (
+    !(
+      ctx.conditionSet.get("CollectionSucceeded")?.status === "unknown" &&
+      hasCurrentEvidenceWithoutCollectionVerdict(ctx.conditionSet)
+    )
+  ) {
+    return null;
+  }
+  return {
+    state: "unknown",
+    reasonCode: null,
+    lastSuccessAt: null,
+    nextAttemptAt: ctx.nextAttemptAt,
+    axes: ctx.axes,
+    badges: ctx.badges,
+    remoteSurface: ctx.remoteSurface,
+    unknownReasons: ["collection"],
+  };
+}
+
+function classifyNeverRunIdle(ctx: ClassificationContext): ReturnType<ClassificationStep> {
+  // 6c. Never run (no terminal evidence yet) -> idle only when no stronger
+  //     current evidence exists.
+  if (ctx.conditionSet.get("CollectionSucceeded")?.status !== "unknown") {
+    return null;
+  }
+  return {
+    state: "idle",
+    reasonCode: null,
+    lastSuccessAt: null,
+    nextAttemptAt: ctx.nextAttemptAt,
+    axes: ctx.axes,
+    badges: ctx.badges,
+    remoteSurface: ctx.remoteSurface,
+  };
+}
+
+function classifyHealthy(ctx: ClassificationContext): ReturnType<ClassificationStep> {
+  // 7. Healthy requires last run succeeded with no degrading gaps, coverage
+  //    complete (not unknown), and fresh freshness (stale is never silently
+  //    healthy).
+  if (!isHealthyConditionSet(ctx.conditionSet)) {
+    return null;
+  }
+  return {
+    state: "healthy",
+    reasonCode: null,
+    lastSuccessAt: ctx.lastSuccessAt,
+    nextAttemptAt: ctx.nextAttemptAt,
+    axes: ctx.axes,
+    badges: ctx.badges,
+    remoteSurface: ctx.remoteSurface,
+  };
 }
 
 function hasCurrentEvidenceWithoutCollectionVerdict(
@@ -887,14 +966,18 @@ function conditionIsCurrent(expiresAt: string | null, observedAt: string | null)
 }
 
 function conditionExpired(expiresAt: string | null, observedAt: string | null): boolean {
-  // biome-ignore lint/complexity/useSimplifiedLogicExpression: guard-clause form names the two missing inputs directly.
-  if (!expiresAt || !observedAt) {
+  if (!expiresAt) {
+    return false;
+  }
+  if (!observedAt) {
     return false;
   }
   const expiresAtMs = Date.parse(expiresAt);
+  if (!Number.isFinite(expiresAtMs)) {
+    return false;
+  }
   const observedAtMs = Date.parse(observedAt);
-  // biome-ignore lint/complexity/useSimplifiedLogicExpression: separate finite checks keep timestamp parse failures explicit.
-  if (!Number.isFinite(expiresAtMs) || !Number.isFinite(observedAtMs)) {
+  if (!Number.isFinite(observedAtMs)) {
     return false;
   }
   return expiresAtMs <= observedAtMs;
