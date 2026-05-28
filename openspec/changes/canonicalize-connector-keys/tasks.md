@@ -22,7 +22,7 @@
 - [ ] 4.1 Update first-party manifests to use `connector_key` plus `manifest_uri`.
 - [ ] 4.2 Update manifest registration and lookup to key by `connector_key`.
 - [ ] 4.3 Update runtime/storage/read/search/blob/event-subscription code to require canonical connector keys in active paths.
-- [ ] 4.4 Update hosted MCP package and consent selection parsing to use opaque or structured selection values, not delimiter-split connector ids.
+- [x] 4.4 Update hosted MCP package and consent selection parsing to use opaque or structured selection values, not delimiter-split connector ids. (Tranche 1: picker now emits `base64url(JSON.stringify({connector_id, connection_id}))` selection values; AS POST handler decodes via `parseHostedMcpSelections` from `server/hosted-mcp-selection.js`. Encoder/parser unit-tested and HTTP-layer regression-tested. Payload field name will flip from `connector_id` to `connector_key` once the broader canonical-key migration lands.)
 - [ ] 4.5 Update owner dashboard, Explore, Records/Connections, event subscriptions, deployment tokens, and grant package surfaces to display connector names and connection names without registry URLs or legacy labels.
 - [ ] 4.6 Update local-collector setup/config paths to advertise and accept canonical connector keys only.
 

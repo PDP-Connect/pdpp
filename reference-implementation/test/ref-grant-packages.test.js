@@ -31,6 +31,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
+import { encodeHostedMcpSelection } from '../server/hosted-mcp-selection.js';
 import { startServer } from '../server/index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -136,7 +137,7 @@ async function completeMultiSourcePackageFlow({ asUrl, client, connectorIds }) {
   params.append('code_challenge', challenge);
   params.append('code_challenge_method', 'S256');
   for (const id of connectorIds) {
-    params.append('selection', `connector:${id}`);
+    params.append('selection', encodeHostedMcpSelection({ connectorId: id, connectionId: null }));
   }
 
   const approveResp = await fetch(`${asUrl}/oauth/authorize/mcp-package`, {

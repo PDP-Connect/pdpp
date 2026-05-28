@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 import { revokeGrant, revokeGrantPackage } from '../server/auth.js';
+import { encodeHostedMcpSelection } from '../server/hosted-mcp-selection.js';
 import { startServer } from '../server/index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -176,7 +177,10 @@ async function completeOauthCodeFlow({ asUrl, client, manifest }) {
 // Drive the multi-source hosted-MCP picker end-to-end:
 //   1. Register multiple connectors with the AS.
 //   2. Open the picker (GET /oauth/authorize without authorization_details).
-//   3. Post the multi-select picker form with `selection=connector:<id>` rows.
+//   3. Post the multi-select picker form with one opaque selection value per
+//      approved row. The picker emits base64url(JSON) payloads so URL-shaped
+//      connector ids cannot collide with any wrapping delimiter; the test
+//      reuses the production encoder for the same reason.
 //   4. Follow the redirect to the client's callback, capture the package code.
 //   5. Exchange the code for a `grant_package_id`-bearing access token at
 //      /oauth/token, including a refresh token.
@@ -202,8 +206,15 @@ async function completeMultiSourcePackageFlow({ asUrl, client, connectorIds }) {
   const pickerResp = await fetch(authorizeUrl, { redirect: 'manual' });
   assert.equal(pickerResp.status, 200);
   const pickerHtml = await pickerResp.text();
+  // The picker MUST NOT advertise raw `connector:<url>` form values: that
+  // shape collapsed when split at the first `:`. Each row must carry the
+  // structured selection encoding instead, and the URL-shaped connector id
+  // MUST appear only in human-facing meta copy, not as the submitted value.
+  assert.ok(!pickerHtml.includes('value="connector:'), 'picker MUST NOT submit raw connector:<id> selection values');
+  assert.ok(!pickerHtml.includes('value="connection:'), 'picker MUST NOT submit raw connection:<id>:<id> selection values');
   for (const id of connectorIds) {
-    assert.ok(pickerHtml.includes(`connector:${id}`), `picker should advertise connector:${id}`);
+    const encoded = encodeHostedMcpSelection({ connectorId: id, connectionId: null });
+    assert.ok(pickerHtml.includes(`value="${encoded}"`), `picker should advertise opaque selection for ${id}`);
   }
 
   // POST the multi-source approval. Owner auth is disabled for tests
@@ -217,7 +228,7 @@ async function completeMultiSourcePackageFlow({ asUrl, client, connectorIds }) {
   params.append('code_challenge', challenge);
   params.append('code_challenge_method', 'S256');
   for (const id of connectorIds) {
-    params.append('selection', `connector:${id}`);
+    params.append('selection', encodeHostedMcpSelection({ connectorId: id, connectionId: null }));
   }
 
   const approveResp = await fetch(`${asUrl}/oauth/authorize/mcp-package`, {
@@ -451,6 +462,60 @@ test('hosted MCP OAuth code flow issues a scoped client token usable at /mcp', a
     });
     assert.equal(afterRevoke.status, 400);
     assert.equal(afterRevoke.body.error, 'invalid_grant');
+  } finally {
+    await closeServer(server);
+  }
+});
+
+// Regression: the legacy `connection:<connector_id>:<connection_id>` form
+// shape collapsed when `connector_id` was URL-shaped because the AS split on
+// the first `:` and tried to resolve `https` as a connector. The picker now
+// emits opaque base64url(JSON) selection values, and the AS MUST refuse the
+// legacy delimited shape with a clean typed error instead of leaking
+// "Unknown connector: https" or guessing through a parser fallback.
+test('POST /oauth/authorize/mcp-package rejects legacy delimited selection without leaking "https"', async () => {
+  const server = await startOpenTestServer();
+  const asUrl = `http://localhost:${server.asPort}`;
+
+  try {
+    const manifest = await registerSpotify(asUrl);
+    assert.match(manifest.connector_id, /^https?:\/\//, 'precondition: first-party manifest carries URL-shaped id');
+    const client = await registerAuthCodeClient(asUrl);
+
+    const verifier = randomBytes(32).toString('base64url');
+    const challenge = pkceChallenge(verifier);
+
+    const params = new URLSearchParams();
+    params.append('client_id', client.client_id);
+    params.append('redirect_uri', 'https://client.example/callback');
+    params.append('response_type', 'code');
+    params.append('state', 'legacy-shape');
+    params.append('code_challenge', challenge);
+    params.append('code_challenge_method', 'S256');
+    // Exactly the bug-triggering shape: `connection:<url>:<connection_id>`.
+    params.append('selection', `connection:${manifest.connector_id}:conn_owner_local`);
+
+    const resp = await fetch(`${asUrl}/oauth/authorize/mcp-package`, {
+      method: 'POST',
+      redirect: 'manual',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: params.toString(),
+    });
+    const body = await resp.json();
+
+    assert.equal(resp.status, 400);
+    assert.equal(body.error, 'invalid_request');
+    assert.ok(typeof body.error_description === 'string', 'response carries an error_description');
+    assert.equal(
+      body.error_description.toLowerCase().includes('https'),
+      false,
+      `error_description MUST NOT mention "https"; got: ${body.error_description}`,
+    );
+    assert.equal(
+      body.error_description.toLowerCase().includes('unknown connector'),
+      false,
+      'parser MUST NOT collapse the URL and reach the "Unknown connector" branch',
+    );
   } finally {
     await closeServer(server);
   }

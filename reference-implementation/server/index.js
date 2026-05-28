@@ -54,6 +54,10 @@ import {
   projectBindingForWire,
 } from './connection-identity.js';
 import {
+  encodeHostedMcpSelection,
+  parseHostedMcpSelections,
+} from './hosted-mcp-selection.js';
+import {
   createPostgresConnectorInstanceStore,
   createSqliteConnectorInstanceStore,
   makeConnectorInstanceSourceBindingKey,
@@ -3092,36 +3096,6 @@ function buildAsApp(opts = {}) {
     };
   }
 
-  // Parse `connector:<id>` / `connection:<connector_id>:<connection_id>`
-  // form values from the multi-select picker. Returns one normalized entry
-  // per selected source — no AS-side enrichment, so the issued package
-  // matches what the owner saw in the picker.
-  function parseHostedMcpSelections(rawValues) {
-    const values = Array.isArray(rawValues) ? rawValues : (typeof rawValues === 'string' ? [rawValues] : []);
-    const seen = new Set();
-    const out = [];
-    for (const raw of values) {
-      if (typeof raw !== 'string' || !raw.trim()) continue;
-      const trimmed = raw.trim();
-      if (seen.has(trimmed)) continue;
-      seen.add(trimmed);
-      if (trimmed.startsWith('connection:')) {
-        const rest = trimmed.slice('connection:'.length);
-        const sep = rest.indexOf(':');
-        if (sep <= 0 || sep === rest.length - 1) continue;
-        const connectorId = rest.slice(0, sep);
-        const connectionId = rest.slice(sep + 1);
-        if (!connectorId || !connectionId) continue;
-        out.push({ connectorId, connectionId });
-      } else if (trimmed.startsWith('connector:')) {
-        const connectorId = trimmed.slice('connector:'.length);
-        if (!connectorId) continue;
-        out.push({ connectorId, connectionId: null });
-      }
-    }
-    return out;
-  }
-
   async function listHostedMcpPickerRows(ownerSubjectId = 'owner_local') {
     const connectorIds = await listRegisteredConnectorIds();
     const rows = [];
@@ -3133,9 +3107,11 @@ function buildAsApp(opts = {}) {
       const connections = await listActiveBindingsForGrant({ ownerSubjectId, connectorId }).catch(() => []);
       if (connections.length === 0) {
         // Connector with no configured connection — show the connector
-        // itself; child grant will not pin a connection_id.
+        // itself; child grant will not pin a connection_id. The selection
+        // value is an opaque base64url(JSON) payload so URL-shaped connector
+        // ids cannot collide with any wrapping delimiter on the wire.
         rows.push({
-          formValue: `connector:${connectorId}`,
+          formValue: encodeHostedMcpSelection({ connectorId, connectionId: null }),
           connectorId,
           connectionId: null,
           label: connectorLabel,
@@ -3150,7 +3126,7 @@ function buildAsApp(opts = {}) {
         const displayName = projected?.display_name;
         const connectionId = projected?.connection_id || conn.connectorInstanceId;
         rows.push({
-          formValue: `connection:${connectorId}:${connectionId}`,
+          formValue: encodeHostedMcpSelection({ connectorId, connectionId }),
           connectorId,
           connectionId,
           label: displayName ? `${connectorLabel} — ${displayName}` : connectorLabel,
@@ -3558,15 +3534,18 @@ function buildAsApp(opts = {}) {
   });
 
   // Hosted MCP multi-source consent POST. The picker submits checked
-  // `selection=` values (`connector:<id>` or `connection:<connector_id>:<connection_id>`)
-  // plus the PKCE-mirrored authorize params. The handler:
+  // `selection=` values as opaque base64url(JSON) payloads — see
+  // server/hosted-mcp-selection.js — plus the PKCE-mirrored authorize
+  // params. The handler:
   //   1. Validates the PKCE/authorize params (same shape as GET /oauth/authorize).
-  //   2. Resolves each selection to one source-bounded authorization_details[] entry.
+  //   2. Decodes each selection structurally to one source-bounded
+  //      authorization_details[] entry. No delimiter splitting; URL-shaped
+  //      connector ids cannot collapse.
   //   3. Calls createHostedMcpGrantPackage: one independent child grant per source
   //      plus a single package-bound access token.
   //   4. Stages a package-bound OAuth authorization code and redirects the
   //      client back to its redirect_uri with `code=...`.
-  // Spec: openspec/changes/add-hosted-mcp-grant-packages/specs/agent-consent-bundling/spec.md
+  // Spec: openspec/changes/canonicalize-connector-keys/specs/agent-consent-bundling/spec.md
   app.post(
     '/oauth/authorize/mcp-package',
     ownerAuth.requireOwnerSession,
