@@ -31,8 +31,8 @@ services:
       # stealth design rationale and the fingerprint-probe.mjs investigation
       # that established Runtime.enable as the dominant detection vector.
       PDPP_NEKO_STEALTH_MODE: ${PDPP_NEKO_STEALTH_MODE:-strict}
-      NEKO_USERNAME: operator
-      NEKO_PASSWORD: "1"
+      NEKO_USERNAME: ${NEKO_USERNAME:-operator}
+      NEKO_PASSWORD: ${NEKO_PASSWORD:-neko}
 
   neko:
     image: ${NEKO_IMAGE:-pdpp-neko:local}
@@ -51,6 +51,8 @@ services:
       NEKO_SERVER_PROXY: "true"
       NEKO_MEMBER_PROVIDER: noauth
       NEKO_SESSION_IMPLICIT_HOSTING: "true"
+      NEKO_USERNAME: ${NEKO_USERNAME:-operator}
+      NEKO_PASSWORD: ${NEKO_PASSWORD:-neko}
       NEKO_DESKTOP_SCREEN: ${NEKO_DESKTOP_SCREEN:-1440x900@30}
       NEKO_WEBRTC_UDPMUX: ${NEKO_WEBRTC_PORT:-59000}
       NEKO_WEBRTC_TCPMUX: ${NEKO_WEBRTC_PORT:-59000}
@@ -95,8 +97,8 @@ services:
       NEKO_DESKTOP_SCREEN: ${NEKO_DESKTOP_SCREEN:-1440x900@30}
       NEKO_WEBRTC_NAT1TO1: ${NEKO_WEBRTC_NAT1TO1:-127.0.0.1}
       NEKO_WEBRTC_ICESERVERS: ${NEKO_WEBRTC_ICESERVERS:-[]}
-      NEKO_USERNAME: operator
-      NEKO_PASSWORD: ${NEKO_PASSWORD:-1}
+      NEKO_USERNAME: ${NEKO_USERNAME:-operator}
+      NEKO_PASSWORD: ${NEKO_PASSWORD:-neko}
     expose:
       - "7331"
     volumes:

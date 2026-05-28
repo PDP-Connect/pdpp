@@ -29,6 +29,8 @@ test('n.eko compose overlay uses service DNS instead of reference network namesp
   assert.match(overlay, /PDPP_NEKO_BASE_URL:\s*\$\{PDPP_NEKO_BASE_URL-http:\/\/neko:8080\/neko\}/);
   assert.match(overlay, /PDPP_NEKO_PROXY_ALLOWED_HOSTS:\s*\$\{PDPP_NEKO_PROXY_ALLOWED_HOSTS:-neko:8080\}/);
   assert.match(overlay, /PDPP_NEKO_CDP_HTTP_URL:\s*\$\{PDPP_NEKO_CDP_HTTP_URL-http:\/\/neko:9223\}/);
+  assert.match(overlay, /NEKO_USERNAME:\s*\$\{NEKO_USERNAME:-operator\}/);
+  assert.match(overlay, /NEKO_PASSWORD:\s*\$\{NEKO_PASSWORD:-neko\}/);
   assert.match(
     overlay,
     new RegExp(`PDPP_NEKO_MANAGED_CONNECTORS:\\s*\\$\\{PDPP_NEKO_MANAGED_CONNECTORS:-${CHATGPT_CONNECTOR_ID}\\}`),
