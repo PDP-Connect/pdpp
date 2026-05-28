@@ -232,6 +232,24 @@ The hosted MCP surface is read-only by design. Revoking the grant from
 `/dashboard/deployment/tokens` invalidates both the access and refresh
 tokens.
 
+### Verify event delivery (optional)
+
+If the connected client wants to subscribe to record changes, your
+deployment can deliver Standard Webhooks–signed CloudEvents to any HTTPS
+receiver. Before pointing a real client at the deployment, sanity-check
+delivery with the bundled local receiver:
+
+```sh
+# From the repo root, in a separate terminal:
+node scripts/event-subscription-test-receiver.mjs
+```
+
+Then follow [`docs/operator/event-subscriptions.md`](event-subscriptions.md)
+to create a subscription against the receiver and watch the verification
+handshake complete. The receiver verifies the signature, echoes the
+verify challenge, and pretty-prints every envelope. Subscriptions are
+visible at `/dashboard/event-subscriptions`.
+
 ---
 
 ## Connector credentials today
@@ -271,6 +289,9 @@ future reader does not re-derive that they are intentionally absent.
 
 - [`docs/operator/hosted-mcp-setup.md`](hosted-mcp-setup.md) — wiring Claude /
   ChatGPT to `/mcp`.
+- [`docs/operator/event-subscriptions.md`](event-subscriptions.md) —
+  client-driven outbound webhooks, the operator console surface, and the
+  bundled local test receiver script.
 - [`docs/operator/local-collector-runbook.md`](local-collector-runbook.md) —
   running browser-backed connectors on a host with a visible Chromium.
 - [`docs/operator/dynamic-neko-operator-guide.md`](../dynamic-neko-operator-guide.md) —

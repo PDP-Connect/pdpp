@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { notFound } from "next/navigation";
 import { PageHeader } from "../../components/primitives.tsx";
 import { DashboardShell, ServerUnreachable } from "../../components/shell.tsx";
@@ -50,9 +51,18 @@ export default async function GrantDetailPage({
 
   const revoked = envelope.events.some((e) => e.event_type === "grant.revoked" || e.status === "revoked");
 
+  const subscriptionsHref = `/dashboard/event-subscriptions?grant_id=${encodeURIComponent(grantId)}`;
+
   return (
     <DashboardShell active="grants">
       <TimelineDetailView
+        beforeTimeline={
+          <div className="pdpp-caption mb-6 text-muted-foreground">
+            <Link className="underline-offset-2 hover:underline" href={subscriptionsHref}>
+              Event subscriptions for this grant →
+            </Link>
+          </div>
+        }
         breadcrumbs={[{ label: "Grants", href: "/dashboard/grants" }, { label: "Grant" }]}
         cliCommand={`pdpp ref grant timeline ${grantId}`}
         count={`${envelope.events.length} events${revoked ? " · revoked" : ""}`}
