@@ -1,12 +1,15 @@
-import { DashboardShell } from "@/app/dashboard/components/shell.tsx";
-import { RecordsTimelineView } from "@/app/dashboard/components/views/records-timeline-view.tsx";
-import { sandboxRoutes } from "@/app/dashboard/components/views/routes.ts";
-import { defaultWindow, loadTimeline } from "@/app/dashboard/lib/timeline.ts";
-import { sandboxDashboardDataSource } from "../../_demo/data-source.ts";
+import { redirect } from "next/navigation";
 
-// The sandbox dataset is deterministic and lives in-process; rendering
-// at request time keeps the date-window form responsive for ?since/?until
-// without invalidating a Next cache.
+/**
+ * Sandbox time-range browsing moved to /sandbox/explore.
+ *
+ * The standalone Timeline view was absorbed into the Explore canvas by
+ * `absorb-timeline-into-explore-ia`; next.config.mjs provides a route-level
+ * redirect. This module-level redirect handles direct server-component
+ * navigations so SSR also lands on the correct surface.
+ *
+ * Query params (since / until) are forwarded to preserve any deep links.
+ */
 export const dynamic = "force-dynamic";
 
 export default async function SandboxRecordsTimelinePage({
@@ -14,20 +17,10 @@ export default async function SandboxRecordsTimelinePage({
 }: {
   searchParams: Promise<{ since?: string; until?: string }>;
 }) {
-  const { since: sinceParam, until: untilParam } = await searchParams;
-  // Sandbox records are seeded around the frozen demo clock (early 2026),
-  // not around real "now", so a 7-day default would render an empty view.
-  // Using a 1-year window keeps the seeded records visible without
-  // changing the live dashboard's default behavior.
-  const fallback = defaultWindow(365);
-  const since = sinceParam || fallback.since;
-  const until = untilParam || fallback.until;
-
-  const result = await loadTimeline({ since, until }, sandboxDashboardDataSource);
-
-  return (
-    <DashboardShell active="records" mode="mock-owner">
-      <RecordsTimelineView result={result} routes={sandboxRoutes} since={since} until={until} />
-    </DashboardShell>
-  );
+  const { since, until } = await searchParams;
+  const params = new URLSearchParams();
+  if (since) params.set("since", since);
+  if (until) params.set("until", until);
+  const qs = params.size > 0 ? `?${params.toString()}` : "";
+  redirect(`/sandbox/explore${qs}`);
 }

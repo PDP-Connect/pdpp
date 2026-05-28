@@ -39,8 +39,8 @@ const FORCE_DYNAMIC_RE = /export\s+const\s+dynamic\s*=\s*["']force-dynamic["']/;
 const PRIMARY_DASHBOARD_PAGES = [
   "page.tsx",
   "overview/page.tsx",
+  "explore/page.tsx",
   "records/page.tsx",
-  "records/timeline/page.tsx",
   "records/[connector]/page.tsx",
   "records/[connector]/[stream]/page.tsx",
   "records/[connector]/[stream]/[recordKey]/page.tsx",
@@ -64,6 +64,7 @@ const PRIMARY_DASHBOARD_PAGES = [
 const DASHBOARD_DIR = join(SANDBOX_DIR, "..", "dashboard");
 const PARITY_PAGES = [
   "page.tsx",
+  "explore/page.tsx",
   "records/page.tsx",
   "schedules/page.tsx",
   "search/page.tsx",
@@ -75,6 +76,7 @@ const PARITY_PAGES = [
 
 const SANDBOX_PARITY_PAGES = [
   "page.tsx",
+  "explore/page.tsx",
   "records/page.tsx",
   "schedules/page.tsx",
   "search/page.tsx",
@@ -170,7 +172,7 @@ test("/sandbox layout does not render global site chrome around mock-owner dashb
 });
 
 test("query-driven sandbox pages are dynamic so server pages receive search params", async () => {
-  for (const rel of ["search/page.tsx", "grants/page.tsx", "runs/page.tsx", "traces/page.tsx"]) {
+  for (const rel of ["explore/page.tsx", "search/page.tsx", "grants/page.tsx", "runs/page.tsx", "traces/page.tsx"]) {
     const src = await readFile(join(SANDBOX_DIR, rel), "utf8");
     assert.match(src, FORCE_DYNAMIC_RE, `${rel} must be force-dynamic because it reads searchParams`);
   }

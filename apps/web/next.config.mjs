@@ -171,6 +171,13 @@ const nextConfig = {
         destination: '/dashboard/explore',
         permanent: false,
       },
+      // Sandbox IA parity: sandbox/records/timeline redirects to sandbox/explore
+      // now that the sandbox Explore canvas exists. Mirrors the live redirect above.
+      {
+        source: '/sandbox/records/timeline',
+        destination: '/sandbox/explore',
+        permanent: false,
+      },
       {
         source: '/dashboard/data',
         destination: '/dashboard/records',
