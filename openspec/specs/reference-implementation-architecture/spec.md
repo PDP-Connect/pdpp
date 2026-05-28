@@ -45,43 +45,17 @@ The CLI and executable tests SHALL consume the real public or reference-designat
 - **THEN** those tests SHALL prefer black-box interaction with the running reference surfaces unless a narrower white-box test is intentionally justified for implementation internals
 
 ### Requirement: Reference-only surfaces are explicit
-Debugging, replay, trace, and operator-control surfaces that are useful for the reference implementation but are not part of core PDPP SHALL be explicitly marked as reference-only.
+
+The reference implementation SHALL explicitly mark debugging, replay, trace,
+dashboard summary, retained-size, record-version observability, and
+operator-control surfaces as reference-only when those surfaces are useful to
+the reference implementation but are not part of core PDPP.
 
 #### Scenario: A trace or timeline endpoint is exposed
-- **WHEN** the implementation exposes trace, timeline, or similar introspection surfaces
-- **THEN** those surfaces SHALL be clearly described as reference-only artifacts rather than as core PDPP protocol requirements
 
-#### Scenario: The current `_ref` read surface is treated as stable substrate
-- **WHEN** the implementation exposes the current reference-designated event-spine readers
-- **THEN** the durable `_ref` read surface SHALL stay limited to:
-  - `GET /_ref/traces/:traceId`
-  - `GET /_ref/grants/:grantId/timeline`
-  - `GET /_ref/runs/:runId/timeline`
-  - `GET /_ref/traces` (list, filter, paginate)
-  - `GET /_ref/grants` (list, filter, paginate)
-  - `GET /_ref/runs` (list, filter, paginate)
-  - `GET /_ref/search?q=...` (id-aware read-only jump helper)
-  - `GET /_ref/dataset/summary` (dashboard overview dataset summary)
-
-#### Scenario: The dashboard summarizes dataset credibility
-- **WHEN** the reference dashboard renders a dataset summary or credibility overview
-- **THEN** it MAY consume `GET /_ref/dataset/summary`
-- **AND** that route SHALL remain documented as a reference-only read surface rather than as a public PDPP API
-
-#### Scenario: A later control-plane phase widens `_ref` mutation narrowly
-- **WHEN** a later control-plane phase needs a truthful operator mutation surface for a live bounded collection run
-- **THEN** the reference MAY add an owner-only `_ref` mutation endpoint limited to:
-  - `POST /_ref/runs/:runId/interaction`
-- **AND** that route SHALL be documented as reference-only control-plane behavior rather than as a public PDPP API
-- **AND** the reference SHALL NOT widen `_ref` into broader mutation/control endpoints in the same tranche without a further explicit OpenSpec change
-
-#### Scenario: Run timelines expose checkpoint staging separately from checkpoint commit
-- **WHEN** the reference runtime receives `STATE` during a bounded collection run
-- **THEN** the `_ref` run timeline SHALL distinguish checkpoint staging from checkpoint commit so the checkpointed-streaming model is visible in reference artifacts rather than implied only by runtime internals
-
-#### Scenario: Runtime validation failures remain inspectable in the reference substrate
-- **WHEN** a bounded collection run fails because the runtime rejects connector output or an interaction handler response before `DONE`
-- **THEN** the durable `_ref` run timeline SHALL still record `run.failed` with an explicit machine-readable reason instead of leaving that failure visible only as a thrown local error
+- **WHEN** the implementation exposes trace, timeline, version-churn, or similar introspection surfaces
+- **THEN** those surfaces SHALL be clearly described as reference-only
+  artifacts rather than as core PDPP protocol requirements.
 
 ### Requirement: Reference control-plane mutations require owner session when enabled
 The reference implementation SHALL require the placeholder owner session on reference-only `_ref` mutation routes when owner auth is enabled. When owner auth is disabled, the reference implementation SHALL preserve the current open local-dev behavior for those routes.
@@ -3737,3 +3711,197 @@ When the reference implementation enables Node.js diagnostic reports for a proce
 - **WHEN** a connector child process produces a Node diagnostic report
 - **THEN** the report SHALL be treated as an operator-local diagnostic artifact
 - **AND** client-token `/v1` reads SHALL NOT expose the report content, path, or object identifier.
+
+### Requirement: OAuth error responses SHALL include request identifiers
+
+The reference implementation SHALL keep authorization-server OAuth errors RFC-shaped while adding a stable request identifier.
+
+#### Scenario: OAuth endpoint rejects a request
+
+- **WHEN** an OAuth authorization-server endpoint returns an error response with `error`
+- **THEN** the JSON body SHALL include `request_id`
+- **AND** the response SHALL include a `Request-Id` header with the same value
+- **AND** the body SHALL retain the OAuth `error` and `error_description` fields when a description is available.
+
+#### Scenario: OAuth errors are compared with PDPP resource errors
+
+- **WHEN** a client receives an OAuth endpoint error
+- **THEN** the error SHALL NOT be wrapped in the nested PDPP resource-server error envelope
+- **AND** clients SHALL treat `request_id` as the cross-surface correlation key.
+
+### Requirement: Dashboard BFF device approval SHALL use the JSON CSRF exemption
+The reference implementation SHALL allow same-origin dashboard backend callers to drive the canonical RFC 8628 device flow by POSTing JSON to `/device/approve` and `/device/deny` with a valid owner session cookie. The reference implementation SHALL NOT introduce a private owner-token mint endpoint that bypasses the public device-flow state machine.
+
+#### Scenario: BFF approves a device flow with a valid owner session cookie
+- **WHEN** the dashboard BFF POSTs to `/device/approve` with `Content-Type: application/json`, a valid `pdpp_owner_session` cookie, and a staged device `user_code`
+- **THEN** the AS SHALL approve the staged device request
+- **AND** the subsequent `/oauth/token` device-code exchange SHALL return the bearer issued by the canonical device flow
+
+#### Scenario: JSON approval without a valid owner session is rejected
+- **WHEN** the dashboard BFF POSTs to `/device/approve` with `Content-Type: application/json` but without a valid owner session cookie
+- **THEN** the AS SHALL return 401 with `owner_session_required`
+
+#### Scenario: Hosted-form CSRF enforcement remains in place
+- **WHEN** a caller POSTs a form-encoded body to `/device/approve` without a valid hosted-form CSRF token
+- **THEN** the AS SHALL return 403 with `csrf_token_invalid`
+
+#### Scenario: Private owner-token mint endpoint is absent
+- **WHEN** a caller requests `POST /_ref/owner/mint-self-export-token`
+- **THEN** the AS SHALL NOT mint a bearer through that route
+
+### Requirement: Reference freshness SHALL be derived from run evidence when available
+
+Reference RS and `_ref` surfaces that emit `freshness` SHALL derive the field from connector run evidence and connector refresh policy when those inputs are available. The reference SHALL NOT report a fabricated `last_attempted_at` from record timestamps.
+
+#### Scenario: Recent successful run is current
+
+- **WHEN** a connector has a latest successful run with `finished_at` inside `capabilities.refresh_policy.maximum_staleness_seconds`
+- **THEN** RS and `_ref` freshness for that connector's streams SHALL include `captured_at` equal to the latest successful run time
+- **AND** `status` SHALL be `current`.
+
+#### Scenario: Latest failed attempt marks data stale
+
+- **WHEN** a connector has a latest failed or cancelled run attempt after the latest successful run
+- **THEN** freshness SHALL include `last_attempted_at` equal to the failed or cancelled attempt time
+- **AND** `status` SHALL be `stale`.
+
+#### Scenario: Record timestamp fallback remains unknown without policy
+
+- **WHEN** the reference has record `last_updated` evidence but no connector run evidence or maximum staleness policy
+- **THEN** freshness MAY include `captured_at` from the record timestamp
+- **AND** it SHALL keep `status` equal to `unknown`
+- **AND** it SHALL NOT emit `last_attempted_at`.
+
+#### Scenario: Missing maximum staleness does not invent freshness guarantees
+
+- **WHEN** a connector has a successful run but no `maximum_staleness_seconds` declaration
+- **THEN** freshness SHALL NOT report `current` solely because a run exists
+- **AND** it SHALL keep `status` equal to `unknown` unless the latest attempt failed after the latest success.
+
+### Requirement: Authorization-server metadata SHALL publish pre-registered public clients
+
+When the reference authorization server advertises `pre_registered_public`, it SHALL publish the usable public client identifiers in authorization-server metadata.
+
+#### Scenario: Dynamic registration is disabled
+
+- **WHEN** a public caller fetches `/.well-known/oauth-authorization-server`
+- **AND** dynamic registration is disabled
+- **THEN** the metadata SHALL omit `registration_endpoint`
+- **AND** `pdpp_registration_modes_supported` SHALL include `pre_registered_public`
+- **AND** `pdpp_pre_registered_public_clients` SHALL contain at least one usable public client.
+
+#### Scenario: Public clients are advertised
+
+- **WHEN** `pdpp_pre_registered_public_clients` is present
+- **THEN** every entry SHALL include `client_id`, `client_name`, and `token_endpoint_auth_method`
+- **AND** every entry SHALL describe a configured pre-registered public client
+- **AND** the list SHALL NOT include dynamically registered clients, owner-scoped clients, secrets, access tokens, or private registration state.
+
+#### Scenario: Dynamic registration is also available
+
+- **WHEN** dynamic registration is available to the caller
+- **THEN** the metadata SHALL advertise both `dynamic` and `pre_registered_public`
+- **AND** `pdpp_pre_registered_public_clients` SHALL still list the configured pre-registered public clients.
+
+### Requirement: RS 401 responses SHALL advertise protected-resource metadata when safe
+The reference Resource Server SHALL include a `WWW-Authenticate` header with a `Bearer` challenge and RFC 9728 `resource_metadata` parameter when rejecting a bearer-authenticated public query request with HTTP 401. The `resource_metadata` value SHALL point at the RS protected-resource metadata URL derived from the same configured public resource origin used by `GET /.well-known/oauth-protected-resource`. The JSON error body SHALL include the same URL as `error.resource_metadata` and SHALL include an `error.next_step` hint that tells agents to use resource metadata discovery before retrying protected `/v1/**` endpoints. When the metadata URL would require deriving a public origin from an untrusted request host, the reference SHALL omit the challenge and body hints rather than advertise that host.
+
+#### Scenario: Missing bearer token gets metadata challenge
+- **WHEN** a client requests a protected RS `/v1/**` endpoint without an Authorization header
+- **THEN** the reference SHALL respond with HTTP 401
+- **AND** the response SHALL include `WWW-Authenticate: Bearer resource_metadata="<metadata-url>"`
+- **AND** `<metadata-url>` SHALL be the RFC 9728 protected-resource metadata URL for the resolved RS resource origin
+- **AND** the JSON body SHALL include `error.resource_metadata` equal to `<metadata-url>`
+- **AND** the JSON body SHALL include `error.next_step`
+
+#### Scenario: Invalid bearer token gets metadata challenge
+- **WHEN** a client requests a protected RS `/v1/**` endpoint with an invalid bearer token
+- **THEN** the reference SHALL respond with HTTP 401
+- **AND** the response SHALL include the same `WWW-Authenticate` `resource_metadata` challenge
+- **AND** the JSON body SHALL include the same `error.resource_metadata` value
+
+#### Scenario: Untrusted public host is not advertised
+- **WHEN** a client requests a protected RS `/v1/**` endpoint through a public request host that is neither local/private nor listed in `PDPP_TRUSTED_HOSTS`
+- **AND** no explicit non-loopback RS public URL is configured
+- **THEN** the reference SHALL respond with HTTP 401
+- **AND** the response SHALL omit `WWW-Authenticate` rather than deriving metadata from the untrusted host
+- **AND** the JSON body SHALL omit `error.resource_metadata` and `error.next_step`
+
+### Requirement: Manifest reconciliation MUST invalidate records on the reference-fixture → polyfill transition and MUST preserve records on every other manifest diff
+
+When the reference performs polyfill manifest reconciliation at startup and observes that a connector's persisted manifest's `(version, sorted-stream-names)` fingerprint matches the on-disk reference-fixture manifest fingerprint for that same `connector_id`, AND the shipped polyfill manifest fingerprint is different, the reference SHALL invalidate every record previously persisted for that connector before re-registering the new manifest. Invalidation SHALL remove records, change history, version counters, blob bindings, and lexical and semantic index entries for the affected connector, and SHALL be logged per connector with the deleted record count.
+
+When reconciliation observes a structural manifest diff that is NOT this reference-fixture → polyfill transition (for example: a polyfill manifest evolves with new `query.search.semantic_fields`, a description revision, a schema addition, a polyfill-only connector version bump, or a connector with no reference-fixture collision), the reference SHALL re-register the new manifest and SHALL NOT invalidate any records.
+
+#### Scenario: A seeded reference fixture is replaced by the shipped polyfill manifest at boot
+- **WHEN** the reference starts with a database whose persisted manifest fingerprint matches the on-disk reference-fixture fingerprint for a given `connector_id`, and the shipped polyfill manifest fingerprint for that same `connector_id` is different
+- **THEN** reconciliation SHALL delete every record persisted under that `connector_id` before the new manifest is registered
+- **AND** the dashboard, search endpoints, and dataset summary SHALL NOT advertise any prior-shape record as fresh data after reconciliation completes
+
+#### Scenario: An ordinary polyfill manifest evolution is reconciled
+- **WHEN** the persisted manifest is the prior polyfill version for a given `connector_id` and the shipped polyfill manifest differs only in details such as added `semantic_fields`, a copy revision, an added stream view, or a polyfill version bump with the same stream set
+- **THEN** reconciliation SHALL re-register the new manifest
+- **AND** SHALL NOT delete any records for that `connector_id`
+
+#### Scenario: A polyfill-only connector with no reference-fixture collision is reconciled
+- **WHEN** a connector's `connector_id` has no corresponding manifest under `reference-implementation/manifests/`, and the shipped polyfill manifest differs from the persisted manifest
+- **THEN** reconciliation SHALL re-register the new manifest
+- **AND** SHALL NOT delete any records for that `connector_id`
+
+#### Scenario: The persisted manifest already matches the shipped polyfill manifest
+- **WHEN** the persisted manifest for a `connector_id` is structurally equal to the shipped polyfill manifest at boot
+- **THEN** reconciliation SHALL NOT invalidate any records for that `connector_id`
+
+#### Scenario: A connector is registered for the first time at boot
+- **WHEN** the persisted database contains no manifest row for a `connector_id` that the shipped polyfill manifests cover
+- **THEN** reconciliation SHALL NOT invalidate records (there are none) and SHALL NOT auto-register the connector either
+
+#### Scenario: A direct registerConnector call updates an existing manifest
+- **WHEN** an operator or test calls `registerConnector` with a manifest that differs from the persisted manifest, outside the reconciliation loop
+- **THEN** records SHALL NOT be deleted as a side effect of the registration call
+
+#### Scenario: Reconciliation invalidation is observable
+- **WHEN** reconciliation invalidates records for a connector via the reference-fixture → polyfill transition
+- **THEN** it SHALL emit a log line that names the connector id and the number of records deleted, so the operator can audit which prior-shape data was discarded
+
+### Requirement: Record-version churn observability SHALL be bounded and reference-only
+
+The reference implementation SHALL expose owner-only record-version observability
+for detecting streams whose retained history grows disproportionately to current
+records. This observability SHALL remain a reference-only operator diagnostic
+and SHALL NOT change PDPP Core record read semantics, Collection Profile
+messages, or public `/v1` resource-server contracts.
+
+#### Scenario: Owner lists version churn stats
+
+- **WHEN** an owner-authenticated caller requests `GET /_ref/records/version-stats`
+- **THEN** the response SHALL contain bounded aggregate rows keyed by
+  `connector_instance_id` and `stream`
+- **AND** each row SHALL include current record count, retained record-history
+  count, versions-per-record, projection freshness when projection-backed,
+  recent write timestamps when known, and a reference-only risk classification
+- **AND** the response SHALL NOT include raw `record_json`, raw
+  `record_changes.record_json`, credentials, or connector payload bodies.
+
+#### Scenario: Non-owner caller attempts to read version churn stats
+
+- **WHEN** a caller without owner authorization requests
+  `GET /_ref/records/version-stats`
+- **THEN** the reference implementation SHALL reject the request using the same
+  owner-auth policy as other `_ref` operator reads.
+
+#### Scenario: Version-churn stats are filtered
+
+- **WHEN** an owner passes exact `connector_instance_id`, exact `stream`, or
+  `risk` filters
+- **THEN** the route SHALL apply those filters before returning rows
+- **AND** result size SHALL remain capped by a server-enforced limit.
+
+#### Scenario: Version-churn stats do not imply compaction
+
+- **WHEN** a stream is classified as high churn
+- **THEN** the reference implementation SHALL surface that classification as
+  operator evidence only
+- **AND** it SHALL NOT automatically compact, delete, merge, or rewrite
+  `record_changes` history.
+
