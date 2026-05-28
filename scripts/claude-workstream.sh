@@ -23,16 +23,33 @@
 #     --report <report-path-relative-to-worktree-or-absolute> \
 #     [--model <alias|model-id>] \
 #     [--no-recovery] \
-#     [--artifact-root <dir>]
+#     [--artifact-root <dir>] \
+#     [--tmux] \
+#     [--tmux-session <session>]
 #
 # Defaults:
-#   --model       opus
+#   --model        opus
 #   --artifact-root  <git-common-dir>/../tmp/workstreams/claude-wrapper/<lane>/<ts>
+#   --tmux-session main   (only relevant when --tmux is given)
+#
+# --tmux mode:
+#   Re-execs this script (without --tmux) inside a new tmux window named
+#   "ws-<lane>" in the target session, then exits 0 immediately. The claude
+#   invocation runs inside tmux and survives terminal disconnection, SSH
+#   drops, and login-session cleanup. Actual exit code and report state are
+#   tracked via status.json and surfaced by `pnpm workstreams:status`.
+#
+#   The session is created headlessly if it does not already exist. Launch
+#   aborts if a window named "ws-<lane>" already exists to avoid clobbering
+#   a live prior run.
 #
 # The script is intentionally invocation-only: it does not edit the workstream
 # hub under .git/workstreams, and it does not merge. Owner reviews the diff.
 
 set -euo pipefail
+
+# Save original args before `shift` consumes them (needed for --tmux re-exec).
+orig_args=("$@")
 
 # ---- arg parsing ------------------------------------------------------------
 
@@ -43,6 +60,8 @@ report_path=""
 model="opus"
 artifact_root=""
 do_recovery=1
+use_tmux=0
+tmux_session_name="main"
 
 die() {
   echo "claude-workstream: $*" >&2
@@ -50,7 +69,7 @@ die() {
 }
 
 usage() {
-  sed -n '2,40p' "$0"
+  sed -n '2,55p' "$0"
   exit 2
 }
 
@@ -63,6 +82,8 @@ while [[ $# -gt 0 ]]; do
     --model) model="${2:-}"; shift 2 ;;
     --artifact-root) artifact_root="${2:-}"; shift 2 ;;
     --no-recovery) do_recovery=0; shift ;;
+    --tmux) use_tmux=1; shift ;;
+    --tmux-session) tmux_session_name="${2:-}"; shift 2 ;;
     -h|--help) usage ;;
     *) die "unknown arg: $1" ;;
   esac
@@ -82,6 +103,48 @@ command -v jq >/dev/null 2>&1 || die "jq required for status.json writes"
 case "$lane" in
   */*|*..*|"") die "invalid lane name: $lane" ;;
 esac
+
+# ---- tmux launch mode -------------------------------------------------------
+# Re-exec self inside a new tmux window so the claude invocation survives
+# terminal disconnection or login-session cleanup. Exits 0 immediately;
+# actual status is tracked via status.json and `pnpm workstreams:status`.
+if [[ $use_tmux -eq 1 ]]; then
+  command -v tmux >/dev/null 2>&1 || die "tmux not on PATH (required for --tmux)"
+  window_name="ws-$lane"
+  script_abs="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+
+  # Rebuild args without --tmux / --tmux-session for the inner invocation.
+  passthrough_args=()
+  skip_next=0
+  for arg in "${orig_args[@]}"; do
+    if [[ $skip_next -eq 1 ]]; then skip_next=0; continue; fi
+    case "$arg" in
+      --tmux) ;;
+      --tmux-session) skip_next=1 ;;
+      *) passthrough_args+=("$arg") ;;
+    esac
+  done
+
+  # printf %q produces bash-compatible quoting for safe embedding in bash -c.
+  quoted_cmd="$(printf '%q ' "$script_abs" "${passthrough_args[@]}")"
+
+  # Create session headlessly if it does not exist.
+  tmux new-session -d -s "$tmux_session_name" 2>/dev/null || true
+
+  # Refuse to clobber a live prior run.
+  if tmux list-windows -t "$tmux_session_name" -F '#{window_name}' 2>/dev/null \
+       | grep -qxF "$window_name"; then
+    die "tmux window '${tmux_session_name}:${window_name}' already exists — check 'pnpm workstreams:status' before re-launching"
+  fi
+
+  tmux new-window -t "$tmux_session_name" -n "$window_name" -- bash -c "$quoted_cmd"
+
+  echo "claude-workstream: lane=$lane launched in tmux ${tmux_session_name}:${window_name}"
+  echo "claude-workstream: monitor: tmux capture-pane -t '${tmux_session_name}:${window_name}' -p -S -50 | tail -20"
+  echo "claude-workstream: attach:  tmux attach -t '${tmux_session_name}'"
+  echo "claude-workstream: status:  pnpm workstreams:status"
+  exit 0
+fi
 
 worktree_abs="$(cd "$worktree" && pwd)"
 prompt_abs="$(cd "$(dirname "$prompt_file")" && pwd)/$(basename "$prompt_file")"

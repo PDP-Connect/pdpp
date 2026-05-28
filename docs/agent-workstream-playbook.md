@@ -333,6 +333,73 @@ meaningful transition:
 Keep entries single-line and append-only. The card remains the human-readable
 source of truth.
 
+### Reliable Worker Launch
+
+**Why `nohup` and background-shell launches fail in this environment**
+
+Running `nohup scripts/claude-workstream.sh ... &` or similar detach patterns is
+unreliable. `nohup` masks SIGHUP, but the spawned process remains a child of the
+login shell and is placed in the same systemd user-session cgroup. When the
+session ends — SSH disconnect, terminal window close, `loginctl kill-session`, or
+PAM cleanup — the kernel sends SIGKILL to every process in the cgroup. SIGKILL
+cannot be caught or masked, so the claude invocation is reaped before completing.
+
+tmux processes are children of the `tmux-server` daemon, which runs in its own
+cgroup outside any login session. They survive disconnection, SSH drops, and user
+session cleanup.
+
+**Recommended: `--tmux` flag**
+
+Pass `--tmux` to `claude-workstream.sh`. The script re-execs itself inside a new
+tmux window named `ws-<lane>`, prints monitoring hints, and exits 0 immediately.
+The actual claude invocation runs inside tmux and is tracked via `status.json`.
+
+```bash
+scripts/claude-workstream.sh \
+  --lane my-lane \
+  --worktree /path/to/worktree \
+  --prompt tmp/workstreams/my-lane-prompt.md \
+  --report tmp/workstreams/my-lane-report.md \
+  --tmux
+# ↳ creates tmux window "ws-my-lane" in session "main" and exits 0
+```
+
+Default session is `main`. Override with `--tmux-session <name>`:
+
+```bash
+scripts/claude-workstream.sh ... --tmux --tmux-session workers
+```
+
+Monitor progress:
+
+```bash
+# Tail the transcript live
+tmux capture-pane -t 'main:ws-my-lane' -p -S -50 | tail -20
+
+# Or attach interactively
+tmux attach -t main
+
+# Check lane status (reads status.json)
+pnpm workstreams:status
+```
+
+The launch is refused if a tmux window `ws-<lane>` already exists in the target
+session. Run `pnpm workstreams:status` to confirm whether the prior run is still
+active before re-launching.
+
+**Manual fallback if `--tmux` is unavailable**
+
+```bash
+tmux new-session -d -s main 2>/dev/null || true
+tmux new-window -t main -n ws-my-lane -- bash -c '
+  scripts/claude-workstream.sh \
+    --lane my-lane \
+    --worktree /path/to/worktree \
+    --prompt tmp/workstreams/my-lane-prompt.md \
+    --report tmp/workstreams/my-lane-report.md
+'
+```
+
 ### Worker Agent
 
 A worker owns one bounded lane. A worker:
