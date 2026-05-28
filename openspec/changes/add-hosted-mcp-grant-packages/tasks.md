@@ -43,7 +43,7 @@
 ## 6. Deployment
 
 - [x] 6.1 Run targeted tests and typecheck.
-- [ ] 6.2 Build and deploy the reference image. (Owner-only.)
+- [x] 6.2 Build and deploy the reference image. (Owner-only.) `pnpm docker:reference:up` completed against `pdpp.vivid.fish` on 2026-05-28 and reported `reference-stack: ok`.
 - [ ] 6.3 Smoke-test ChatGPT-compatible hosted MCP setup against `pdpp.vivid.fish`. (Owner-only.)
 
 ## 7. REST/MCP Parity Closeout
@@ -55,4 +55,4 @@
 - [x] 7.5 Centralize legacy local connector identity equivalence outside hosted-MCP picker code.
 - [x] 7.6 Add regressions for search mode routing, filter forwarding, and centralized connector identity.
 - [x] 7.7 Validate OpenSpec, targeted MCP/reference tests, and reference typecheck.
-- [ ] 7.8 Build, deploy, and smoke-test the updated hosted MCP path. (Owner-only.)
+- [x] 7.8 Build, deploy, and smoke-test the updated hosted MCP path. (Owner-only.) Verified `/.well-known/oauth-protected-resource/mcp` advertises `pdpp_token_kinds_supported: ["client", "mcp_package"]`, `/mcp` fails closed with `401` without a bearer, and dashboard routes load behind owner auth.
