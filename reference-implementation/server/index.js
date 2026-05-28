@@ -317,6 +317,10 @@ import {
 } from './routes/web-push.ts';
 import { mountRefSourceWebhooks } from './routes/source-webhooks.ts';
 import {
+  mountRefDevPlaygroundSession,
+  mountRefRunInteraction,
+} from './routes/run-interaction.ts';
+import {
   mountRefDatasetSize,
   mountRefDatasetSizeRebuild,
   mountRefDatasetSizeReconcile,
@@ -4438,6 +4442,11 @@ function buildAsApp(opts = {}) {
   // production deployments leave it disabled. Owner session is still required
   // when owner-auth is enabled — the playground is for the deploying operator,
   // not unauth'd visitors.
+  //
+  // Route extracted to `server/routes/run-interaction.ts` per OpenSpec change
+  // `split-reference-server-by-route-family` (§5.1). Behaviour-preserving:
+  // same gate condition, same owner-session posture, same response envelope,
+  // same error mapping.
   const streamPlaygroundEnabled =
     process.env.NODE_ENV !== 'production' || process.env.PDPP_ENABLE_STREAM_PLAYGROUND === '1';
   if (streamPlaygroundEnabled && controller) {
@@ -4446,32 +4455,11 @@ function buildAsApp(opts = {}) {
       controller,
       logger: opts.streamingLogger,
     });
-    app.post('/_ref/dev/playground/session', ownerAuth.requireOwnerSession, async (req, res) => {
-      try {
-        const backend =
-          typeof req.query?.backend === 'string'
-            ? req.query.backend
-            : typeof req.body?.backend === 'string'
-              ? req.body.backend
-              : undefined;
-        const streamDebug =
-          typeof req.query?.stream_debug === 'string'
-            ? req.query.stream_debug
-            : typeof req.body?.stream_debug === 'string'
-              ? req.body.stream_debug
-              : undefined;
-        const session = await playground.getOrCreatePlaygroundSession({ backend, streamDebug });
-        return res.status(200).json({
-          object: 'stream_playground_session',
-          backend: session.backend,
-          run_id: session.runId,
-          interaction_id: session.interactionId,
-        });
-      } catch (err) {
-        const message = err?.message || 'playground session failed';
-        opts.streamingLogger?.warn?.({ err: message }, 'stream_playground_session_failed');
-        return pdppError(res, 500, 'playground_failed', message);
-      }
+    mountRefDevPlaygroundSession(app, {
+      logger: opts.streamingLogger,
+      pdppError,
+      playground,
+      requireOwnerSession: ownerAuth.requireOwnerSession,
     });
   }
 
@@ -4480,42 +4468,17 @@ function buildAsApp(opts = {}) {
   // existing run timeline; this route is mutation-only and is not a public
   // PDPP API. Submitted `data` satisfies the current run only — it is not
   // written to `.env.local`, SQLite config/state, or spine event payloads.
-  app.post(
-    '/_ref/runs/:runId/interaction',
-    { contract: 'refRunInteraction' },
-    ownerAuth.requireOwnerSession,
-    async (req, res) => {
-      try {
-        if (!controller || typeof controller.respondToInteraction !== 'function') {
-          return pdppError(res, 404, 'not_found', 'Controller is not configured on this server');
-        }
-        const runId = decodeURIComponent(req.params.runId);
-        const body = req.body || {};
-        if (typeof body.interaction_id !== 'string' || !body.interaction_id.trim()) {
-          return pdppError(res, 400, 'invalid_request', 'interaction_id is required', 'interaction_id');
-        }
-        if (body.status !== 'success' && body.status !== 'cancelled') {
-          return pdppError(res, 400, 'invalid_status', 'status must be "success" or "cancelled"', 'status');
-        }
-        if (body.data != null && (typeof body.data !== 'object' || Array.isArray(body.data))) {
-          return pdppError(res, 400, 'invalid_request', 'data must be an object if provided', 'data');
-        }
-        const result = controller.respondToInteraction(runId, {
-          interaction_id: body.interaction_id,
-          status: body.status,
-          data: body.data,
-        });
-        res.status(202).json({
-          object: 'run_interaction_ack',
-          run_id: runId,
-          interaction_id: body.interaction_id,
-          status: result.status,
-        });
-      } catch (err) {
-        handleError(res, err);
-      }
-    }
-  );
+  //
+  // Route extracted to `server/routes/run-interaction.ts` per OpenSpec change
+  // `split-reference-server-by-route-family` (§5.1). Behaviour-preserving:
+  // same contract metadata, same owner-session posture, same validation,
+  // same response envelope, same error codes.
+  mountRefRunInteraction(app, {
+    controller,
+    handleError,
+    pdppError,
+    requireOwnerSession: ownerAuth.requireOwnerSession,
+  });
 
   // `/_ref/dataset/*` and `/_ref/records/version-stats` routes extracted to
   // `server/routes/ref-dataset.ts` per `split-reference-server-by-route-family`
