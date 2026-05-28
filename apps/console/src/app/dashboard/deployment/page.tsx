@@ -4,7 +4,7 @@ import { ConnectAgentCard } from "../components/connect-agent-card.tsx";
 import { LivePoller } from "../components/live-poller.tsx";
 import { DashboardShell, ServerUnreachable } from "../components/shell.tsx";
 import { DeploymentDiagnosticsView, isDeploymentIndexing } from "../components/views/deployment-diagnostics-view.tsx";
-import { ReferenceServerUnreachableError } from "../lib/owner-token.ts";
+import { getReferencePublicOrigin, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import { type DeploymentDiagnostics, getDeploymentDiagnostics } from "../lib/ref-client.ts";
 
 export const dynamic = "force-dynamic";
@@ -19,6 +19,12 @@ export const dynamic = "force-dynamic";
 export default async function DeploymentPage() {
   let report: DeploymentDiagnostics | null = null;
   let unreachable = false;
+  // The operator console renders against the running deployment, so the
+  // provider URL is the deployment's own public origin. Auto-populating it
+  // into the `pdpp connect <provider-url>` command keeps the surface
+  // correct-by-construction — operators can copy/paste without inventing
+  // the URL.
+  const providerUrl = await getReferencePublicOrigin();
   try {
     report = await getDeploymentDiagnostics();
   } catch (err) {
@@ -46,7 +52,7 @@ export default async function DeploymentPage() {
             Tokens
           </Link>
         }
-        afterDiagnostics={<ConnectAgentCard mode="live" />}
+        afterDiagnostics={<ConnectAgentCard mode="live" providerUrl={providerUrl} />}
         breadcrumbs={[{ href: "/dashboard", label: "Dashboard" }, { label: "Deployment" }]}
         description="Operator diagnostics for the reference retrieval surfaces. Read-only. Secret environment values are redacted before reaching this page."
         report={report}

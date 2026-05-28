@@ -11,6 +11,7 @@ import {
   pdppCliCollectorEnrollCommand,
   pdppCliCollectorRunCommand,
   pdppCliConnectCommand,
+  pdppCliConnectCommandFor,
   pdppCliInstallCommand,
   pdppCliMonorepoCommand,
   pdppCliNoInstallCommand,
@@ -27,6 +28,13 @@ test("package info advertises the @pdpp/cli@beta specifier", () => {
 
 test("connect command uses npx + package specifier", () => {
   assert.match(pdppCliConnectCommand, NPX_CONNECT_PREFIX);
+});
+
+test("connect command can be rendered for a concrete provider URL", () => {
+  assert.equal(
+    pdppCliConnectCommandFor("https://pdpp.vivid.fish"),
+    "npx -y @pdpp/cli@beta connect https://pdpp.vivid.fish"
+  );
 });
 
 test("install command uses npx + --help", () => {

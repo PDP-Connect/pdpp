@@ -25,6 +25,16 @@ export function pdppCliNoInstallCommand(cliCommand: string): string | null {
 }
 
 /**
+ * Render the public `pdpp connect <provider-url>` command for a specific
+ * provider URL. Used by operator surfaces that already know the running
+ * deployment's public origin and should not force the operator to substitute
+ * the `<provider-url>` placeholder by hand.
+ */
+export function pdppCliConnectCommandFor(providerUrl: string): string {
+  return createPdppCliCommand(providerUrl);
+}
+
+/**
  * Render the public `@pdpp/local-collector@beta` enrollment command for a freshly
  * minted enrollment code. Operators paste this on the host that has Claude
  * Code / Codex data to exchange the one-time code for a device-scoped
