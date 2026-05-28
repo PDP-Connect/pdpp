@@ -437,7 +437,11 @@ export function emitSpineEvent(
   input: SpineEventInput = {},
   dbHandle: SpineDatabase | null = null
 ): Promise<SpineEventRecord | null> {
-  assertRunStartedIsStamped(input);
+  try {
+    assertRunStartedIsStamped(input);
+  } catch (e) {
+    return Promise.reject(e);
+  }
 
   if (!dbHandle && isPostgresStorageBackend()) {
     return postgresEmitSpineEvent(input) as Promise<SpineEventRecord | null>;
