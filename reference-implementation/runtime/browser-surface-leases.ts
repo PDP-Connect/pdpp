@@ -1,17 +1,3 @@
-export {
-  BROWSER_SURFACE_BACKEND_NEKO,
-  BROWSER_SURFACE_LEASE_STATUSES,
-  BROWSER_SURFACE_PRIORITY_CLASSES,
-  BROWSER_SURFACE_WAIT_REASONS,
-  BrowserSurfaceLeaseManager,
-  DEFAULT_NEKO_IDLE_TTL_MS,
-  DEFAULT_NEKO_LEASE_WAIT_TIMEOUT_MS,
-  DEFAULT_NEKO_PRIORITY_CLASS,
-  DEFAULT_NEKO_PRIORITY_RANKS,
-  TERMINAL_BROWSER_SURFACE_LEASE_STATUSES,
-  isTerminalBrowserSurfaceLeaseStatus,
-  projectBrowserSurfaceLease,
-} from "@opendatalabs/remote-surface/leases";
 export type {
   AcquireBrowserSurfaceLeaseRequest,
   BrowserSurface,
@@ -35,18 +21,32 @@ export type {
   StopBrowserSurfaceRequest,
   TerminalBrowserSurfaceLeaseResult,
 } from "@opendatalabs/remote-surface/leases";
-
-import {
+export {
+  BROWSER_SURFACE_BACKEND_NEKO,
+  BROWSER_SURFACE_LEASE_STATUSES,
   BROWSER_SURFACE_PRIORITY_CLASSES,
+  BROWSER_SURFACE_WAIT_REASONS,
+  BrowserSurfaceLeaseManager,
   DEFAULT_NEKO_IDLE_TTL_MS,
   DEFAULT_NEKO_LEASE_WAIT_TIMEOUT_MS,
   DEFAULT_NEKO_PRIORITY_CLASS,
   DEFAULT_NEKO_PRIORITY_RANKS,
+  isTerminalBrowserSurfaceLeaseStatus,
+  projectBrowserSurfaceLease,
+  TERMINAL_BROWSER_SURFACE_LEASE_STATUSES,
+} from "@opendatalabs/remote-surface/leases";
+
+import {
+  BROWSER_SURFACE_PRIORITY_CLASSES,
   type BrowserSurface,
   type BrowserSurfaceLease,
   type BrowserSurfaceLeaseConfig,
-  type BrowserSurfacePriorityClass,
   type BrowserSurfaceMode,
+  type BrowserSurfacePriorityClass,
+  DEFAULT_NEKO_IDLE_TTL_MS,
+  DEFAULT_NEKO_LEASE_WAIT_TIMEOUT_MS,
+  DEFAULT_NEKO_PRIORITY_CLASS,
+  DEFAULT_NEKO_PRIORITY_RANKS,
 } from "@opendatalabs/remote-surface/leases";
 
 export const DEFAULT_NEKO_READINESS_TIMEOUT_MS = 120_000;
@@ -61,8 +61,8 @@ export interface NekoDynamicBrowserSurfaceRuntimeConfig {
 }
 
 export interface NekoBrowserSurfaceRuntimeConfig {
-  readonly leaseConfig: BrowserSurfaceLeaseConfig;
   readonly dynamic?: NekoDynamicBrowserSurfaceRuntimeConfig;
+  readonly leaseConfig: BrowserSurfaceLeaseConfig;
 }
 
 export function browserSurfaceLeaseEnv(lease: BrowserSurfaceLease, surface: BrowserSurface): Record<string, string> {

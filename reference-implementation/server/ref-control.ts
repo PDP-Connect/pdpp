@@ -13,22 +13,21 @@ import type { BrowserSurface, BrowserSurfaceLease } from "@opendatalabs/remote-s
 import { allowUnboundedReadAcknowledged, getOne, iterateDynamicSqlAcknowledged, referenceQueries } from "../lib/db.ts";
 import { listSpineCorrelations, type SpineSummary } from "../lib/spine.ts";
 import { type AttentionRecord, isHealthRelevant, type OwnerAction } from "../runtime/attention.ts";
+import { readBrowserSurfaceProfileKey } from "../runtime/browser-surface-profile-key.ts";
 import {
-  computeConnectionHealth,
   type ConnectionAttentionEvidence,
   type ConnectionHealthSnapshot,
   type ConnectionRemoteSurfaceEvidence,
   type CoverageAxis,
+  computeConnectionHealth,
   deriveOutboxAxisFromHeartbeat,
   type FreshnessAxis,
   type NextAction,
   type OutboxAxis,
 } from "../runtime/connection-health.ts";
-import { readBrowserSurfaceProfileKey } from "../runtime/browser-surface-profile-key.ts";
 import { getConnectorManifest } from "./auth.js";
 import { deriveReferenceFreshness, type ReferenceFreshness } from "./freshness.ts";
 import { isPostgresStorageBackend, postgresQuery } from "./postgres-storage.js";
-import { listRetainedSizeConnections, listRetainedSizeStreams } from "./retained-size-read-model.js";
 import {
   chooseDisplayTimestamp,
   compareTimestampValues,
@@ -37,6 +36,7 @@ import {
   type SemanticTimestamp,
   timestampWithinWindow,
 } from "./ref-record-utils.ts";
+import { listRetainedSizeConnections, listRetainedSizeStreams } from "./retained-size-read-model.js";
 import { getDefaultBrowserSurfaceLeaseStore } from "./stores/browser-surface-lease-store.ts";
 import { getDefaultConnectorAttentionStore } from "./stores/connector-attention-store.js";
 import { getDefaultConnectorDetailGapStore } from "./stores/connector-detail-gap-store.js";
@@ -49,16 +49,6 @@ import { getDefaultDeviceExporterStore } from "./stores/device-exporter-store.js
 // ─── Shared domain types ────────────────────────────────────────────────────
 
 interface ManifestStream extends ManifestStreamLike {
-  name: string;
-  semantics?: string;
-  /**
-   * Required-stream policy. Defaults to `true` when absent so that streams
-   * declared in a manifest without explicit policy are treated as
-   * load-bearing for connection health. Manifest authors opt OUT of
-   * required-stream policy by setting `required: false` (i.e. the stream
-   * is documented but not load-bearing).
-   */
-  required?: boolean;
   /**
    * Accepted-coverage policy for the stream. Default (absent) means
    * `collect`: the connector intends to collect this stream and any
@@ -76,6 +66,16 @@ interface ManifestStream extends ManifestStreamLike {
    * absent) and degrades health rather than projecting green.
    */
   coverage_policy?: "collect" | "deferred" | "inventory_only" | "unavailable" | "unsupported";
+  name: string;
+  /**
+   * Required-stream policy. Defaults to `true` when absent so that streams
+   * declared in a manifest without explicit policy are treated as
+   * load-bearing for connection health. Manifest authors opt OUT of
+   * required-stream policy by setting `required: false` (i.e. the stream
+   * is documented but not load-bearing).
+   */
+  required?: boolean;
+  semantics?: string;
 }
 
 type AcceptedCoveragePolicy = "deferred" | "inventory_only" | "unavailable" | "unsupported";
@@ -249,15 +249,15 @@ export interface ConnectorSummary {
    */
   readonly next_action: NextAction | null;
   readonly refresh_policy: unknown;
-  readonly schedule: unknown;
-  readonly stream_count?: number;
-  readonly streams: string[];
   /**
    * Storage bytes by retention class. `total_retained_bytes` is kept for
    * compatibility; this breakdown lets the operator distinguish current live
    * records from retained change history.
    */
   readonly retained_bytes?: RetainedBytesBreakdown | null;
+  readonly schedule: unknown;
+  readonly stream_count?: number;
+  readonly streams: string[];
   readonly total_records: number;
   readonly total_retained_bytes?: number | null;
 }
@@ -1103,17 +1103,17 @@ function succeededRunSupersedesSchedulerBackoff(
 export const OUTBOX_STALE_HEARTBEAT_THRESHOLD_MS = 30 * 60 * 1000;
 
 interface HeartbeatRow {
-  readonly sourceInstanceId: string;
-  readonly deviceId: string;
   readonly connectorId: string;
   readonly connectorInstanceId: string | null;
-  readonly sourceStatus: string;
-  readonly deviceStatus: string;
+  readonly deviceId: string;
   readonly deviceRevokedAt: string | null;
+  readonly deviceStatus: string;
   readonly lastHeartbeatAt: string | null;
   readonly lastHeartbeatStatus: string | null;
   readonly lastIngestAt: string | null;
   readonly recordsPending: number | null;
+  readonly sourceInstanceId: string;
+  readonly sourceStatus: string;
   readonly updatedAt: string | null;
 }
 

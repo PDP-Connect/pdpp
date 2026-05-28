@@ -409,8 +409,8 @@ let currentBootEpoch: BootEpoch | null = null;
 
 export interface BootEpoch {
   readonly boot_epoch: string;
-  readonly seq: number;
   readonly controller_id: string;
+  readonly seq: number;
 }
 
 export function setCurrentBootEpoch(epoch: BootEpoch): void {

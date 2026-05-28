@@ -18,7 +18,14 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-
+import {
+  type BrowserSurface,
+  type BrowserSurfaceAllocator,
+  type BrowserSurfaceLease,
+  type BrowserSurfaceLeaseManager,
+  type BrowserSurfaceProjection,
+  projectBrowserSurfaceLease,
+} from "@opendatalabs/remote-surface/leases";
 import { getOne, referenceQueries } from "../lib/db.ts";
 import { createTraceContext, emitSpineEvent, type SpineTraceContext } from "../lib/spine.ts";
 import {
@@ -28,6 +35,7 @@ import {
 } from "../server/auth.js";
 import { isPostgresStorageBackend, postgresQuery } from "../server/postgres-storage.js";
 import { getSyncState } from "../server/records.js";
+import { type BrowserSurfaceLeaseStore } from "../server/stores/browser-surface-lease-store.ts";
 import {
   type ActiveRunRecord,
   getDefaultSchedulerStore,
@@ -35,31 +43,22 @@ import {
   type SchedulerRunHistoryRecord,
   type SchedulerStore,
 } from "../server/stores/scheduler-store.ts";
-import {
-  type BrowserSurface,
-  type BrowserSurfaceAllocator,
-  type BrowserSurfaceLease,
-  type BrowserSurfaceLeaseManager,
-  type BrowserSurfaceProjection,
-  projectBrowserSurfaceLease,
-} from "@opendatalabs/remote-surface/leases";
 import { browserSurfaceLeaseEnv } from "./browser-surface-leases.ts";
+import { readBrowserSurfaceProfileKey } from "./browser-surface-profile-key.ts";
 import {
   type BrowserSurfaceReadinessProbe,
   type BrowserSurfaceReadinessProbeResult,
 } from "./browser-surface-readiness.ts";
-import { type BrowserSurfaceLeaseStore } from "../server/stores/browser-surface-lease-store.ts";
-import { readBrowserSurfaceProfileKey } from "./browser-surface-profile-key.ts";
 import { runConnector } from "./index.js";
-import type { RunRecord } from "./scheduler.ts";
 import {
   automaticIneligibilityReason,
   automationModeCopy,
+  projectRunAutomationPolicy,
   type RunAutomationMode,
   type RunTriggerKind,
-  projectRunAutomationPolicy,
 } from "./run-automation-policy.ts";
-import { computeNextRunWithBackoff, type BackoffDecision } from "./scheduler-backoff.ts";
+import type { RunRecord } from "./scheduler.ts";
+import { type BackoffDecision, computeNextRunWithBackoff } from "./scheduler-backoff.ts";
 
 // ─── Path constants ─────────────────────────────────────────────────────────
 
@@ -107,7 +106,6 @@ interface TerminalRunRow {
 
 export interface RuntimeProjection {
   readonly active_run_id: string | null;
-  readonly pending_run_id?: string;
   readonly browser_surface_lease_id?: string;
   readonly browser_surface_profile_key?: string;
   readonly browser_surface_status?: BrowserSurfaceProjection["browser_surface_status"];
@@ -117,6 +115,7 @@ export interface RuntimeProjection {
   readonly last_finished_at: string | null;
   readonly last_started_at: string | null;
   readonly last_successful_at: string | null;
+  readonly pending_run_id?: string;
 }
 
 export interface SchedulerBackoffApi {
@@ -148,7 +147,6 @@ export interface ScheduleApi {
   readonly active_run_id: string | null;
   readonly automation_mode: RunAutomationMode;
   readonly automation_summary: string;
-  readonly pending_run_id?: string;
   readonly browser_surface_lease_id?: string;
   readonly browser_surface_profile_key?: string;
   readonly browser_surface_status?: BrowserSurfaceProjection["browser_surface_status"];
@@ -178,9 +176,10 @@ export interface ScheduleApi {
   readonly last_started_at: string | null;
   readonly last_successful_at: string | null;
   readonly minimum_interval_warning: string | null;
-  readonly notification_posture: "action_required" | "informational" | "none";
   readonly next_due_at: string | null;
+  readonly notification_posture: "action_required" | "informational" | "none";
   readonly object: "schedule";
+  readonly pending_run_id?: string;
   readonly recommended_policy: RefreshPolicy | null;
   readonly scheduler_backoff: SchedulerBackoffApi | null;
   readonly trigger_kind: "scheduled";
@@ -281,29 +280,14 @@ type RunConnectorFn = typeof runConnector;
  * concrete shape so this module does not import the registry directly.
  */
 export interface RunTargetNonceHooks {
-  registerNonce(args: { runId: string; nonce: string }): void;
   clearNonce(args: { runId: string }): void;
+  registerNonce(args: { runId: string; nonce: string }): void;
 }
 
 export interface ControllerOptions {
   asPublicUrl?: string;
-  connectorPathResolver?: ConnectorPathResolver;
-  logger?: ControllerLogger;
-  ownerClientId?: string;
-  ownerSubjectId?: string;
-  rsUrl?: string;
-  runtime?: unknown;
-  /**
-   * Mutable runtime-context bag the surrounding server populates after
-   * its listeners are bound. The controller reads `rsUrl` and the new
-   * `referenceBaseUrl` lazily so it picks up the realized values once
-   * the AS server has actually allocated its port.
-   */
-  runtimeContext?: { rsUrl?: string; referenceBaseUrl?: string };
-  scheduler?: unknown;
   browserSurfaceAllocator?: BrowserSurfaceAllocator;
   browserSurfaceLeaseManager?: BrowserSurfaceLeaseManager;
-  browserSurfaceReadinessTimeoutMs?: number;
   browserSurfaceLeaseStore?: BrowserSurfaceLeaseStore;
   /**
    * Optional preflight readiness probe. Production wiring installs a default
@@ -315,7 +299,22 @@ export interface ControllerOptions {
    * set to `null`, the gate is disabled.
    */
   browserSurfaceReadinessProbe?: BrowserSurfaceReadinessProbe | null;
+  browserSurfaceReadinessTimeoutMs?: number;
+  connectorPathResolver?: ConnectorPathResolver;
+  logger?: ControllerLogger;
+  ownerClientId?: string;
+  ownerSubjectId?: string;
+  rsUrl?: string;
   runConnectorImpl?: RunConnectorFn;
+  runtime?: unknown;
+  /**
+   * Mutable runtime-context bag the surrounding server populates after
+   * its listeners are bound. The controller reads `rsUrl` and the new
+   * `referenceBaseUrl` lazily so it picks up the realized values once
+   * the AS server has actually allocated its port.
+   */
+  runtimeContext?: { rsUrl?: string; referenceBaseUrl?: string };
+  scheduler?: unknown;
   // Optional store override; defaults to the configured storage-backed singleton.
   // Tests use this to substitute fakes without touching module-scoped state.
   schedulerStore?: SchedulerStore;
@@ -334,6 +333,7 @@ export interface ControllerOptions {
 
 export interface Controller {
   cancelBrowserSurfaceRun(runId: string): Promise<BrowserSurfaceProjection | null>;
+  cleanupIdleBrowserSurfaces(): Promise<BrowserSurfaceProjection[]>;
   clearNeedsHuman(connectorId: string, options?: ConnectorInstanceOptions): void;
   deleteSchedule(connectorId: string, options?: ConnectorInstanceOptions): Promise<boolean>;
   /**
@@ -352,19 +352,18 @@ export interface Controller {
    *     paths A/B couldn't intercept (SIGKILL, OOM, power loss).
    */
   drainActiveRuns(timeoutMs: number): Promise<DrainSummary>;
-  cleanupIdleBrowserSurfaces(): Promise<BrowserSurfaceProjection[]>;
   expireBrowserSurfaceWaits(): Promise<BrowserSurfaceProjection[]>;
   getActiveRun(connectorId: string, options?: ConnectorInstanceOptions): ActiveRun | null;
   getPendingInteraction(runId: string): PendingInteractionProjection | null;
   getSchedule(connectorId: string, options?: ConnectorInstanceOptions): Promise<ScheduleApi | null>;
   isNeedsHuman(connectorId: string, options?: ConnectorInstanceOptions): boolean;
   issueRuntimeOwnerToken(): Promise<string>;
+  listBrowserSurfaceRunProjections(): BrowserSurfaceRunProjection[];
   listSchedules(): Promise<ScheduleApi[]>;
   markNeedsHuman(connectorId: string, options?: ConnectorInstanceOptions): void;
   promoteBrowserSurfaceLeasesAfterBoot(): Promise<void>;
   reconcileBrowserSurfaceLeasesAfterBoot(): Promise<void>;
   respondToInteraction(runId: string, input?: RunInteractionResponseInput): RunInteractionAck;
-  listBrowserSurfaceRunProjections(): BrowserSurfaceRunProjection[];
   runNow(connectorId: string, options?: RunNowOptions): Promise<RunNowResult>;
   setScheduleEnabled(
     connectorId: string,
@@ -380,9 +379,9 @@ export interface Controller {
 
 export interface DrainSummary {
   readonly drained: number;
-  readonly timedOut: number;
   /** Wall-clock milliseconds spent in drainActiveRuns. */
   readonly elapsedMs: number;
+  readonly timedOut: number;
 }
 
 interface RuntimeInteraction {
@@ -736,16 +735,16 @@ export function __resetControllerPathResolverCachesForTests(): void {
  * connector is currently running, the in-memory active-run row still wins.
  */
 interface ScheduleHistoryFacts {
+  /** Latest durable last-run timestamp, from history or `scheduler_last_run_times`. */
+  readonly lastRunTimeMs: number | null;
+  /** Error/skip code for the most recent terminal row, when that row was not successful. */
+  readonly latestErrorCode: string | null;
+  readonly latestFinishedAt: string | null;
   /** Most recent run that actually started (status in {succeeded, failed}). */
   readonly latestStartedAt: string | null;
-  readonly latestFinishedAt: string | null;
   readonly latestStatus: "failed" | "skipped" | "succeeded" | null;
   /** Most recent `succeeded` record's `completedAt`. */
   readonly latestSuccessfulAt: string | null;
-  /** Error/skip code for the most recent terminal row, when that row was not successful. */
-  readonly latestErrorCode: string | null;
-  /** Latest durable last-run timestamp, from history or `scheduler_last_run_times`. */
-  readonly lastRunTimeMs: number | null;
   /** Recent durable scheduler history for this connector instance, oldest to newest. */
   readonly recentRuns: readonly SchedulerRunHistoryRecord[];
 }
@@ -753,12 +752,12 @@ interface ScheduleHistoryFacts {
 type ScheduleHistoryIndex = ReadonlyMap<string, ScheduleHistoryFacts>;
 
 interface MutableScheduleHistoryFacts {
-  latestStartedAt: string | null;
+  lastRunTimeMs: number | null;
+  latestErrorCode: string | null;
   latestFinishedAt: string | null;
+  latestStartedAt: string | null;
   latestStatus: "failed" | "skipped" | "succeeded" | null;
   latestSuccessfulAt: string | null;
-  latestErrorCode: string | null;
-  lastRunTimeMs: number | null;
   recentRuns: SchedulerRunHistoryRecord[];
 }
 

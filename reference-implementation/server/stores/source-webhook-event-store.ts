@@ -2,10 +2,10 @@ import { exec, referenceQueries } from "../../lib/db.ts";
 import { getStorageBackendKind, isPostgresStorageBackend, postgresQuery } from "../postgres-storage.js";
 
 export interface SourceWebhookEventClaim {
-  readonly sourceId: string;
-  readonly eventId: string;
   readonly bodyHash: string;
+  readonly eventId: string;
   readonly receivedAt: string;
+  readonly sourceId: string;
 }
 
 export interface SourceWebhookEventStore {

@@ -37,6 +37,7 @@ export interface AutoEnrollConnectorRow {
 export type AutoEnrollListConnectors = () => Promise<readonly AutoEnrollConnectorRow[]>;
 
 export interface AutoEnrollOptions {
+  controller: AutoEnrollControllerLike;
   /**
    * Whether the pass should run at all. Defaults to true. The caller is
    * responsible for resolving the operator override
@@ -50,7 +51,6 @@ export interface AutoEnrollOptions {
    * a key lookup; values are never logged or stored.
    */
   env?: Readonly<Record<string, string | undefined>>;
-  controller: AutoEnrollControllerLike;
   listConnectors: AutoEnrollListConnectors;
   log?: (line: string) => void;
 }
@@ -91,9 +91,9 @@ function getCapabilities(manifest: unknown): ManifestCapabilities | null {
 }
 
 interface PolicyFacts {
-  readonly recommendedMode: string | null;
   readonly backgroundSafe: boolean | null;
   readonly recommendedIntervalSeconds: number | null;
+  readonly recommendedMode: string | null;
 }
 
 function getPolicyFacts(caps: ManifestCapabilities): PolicyFacts {

@@ -18,40 +18,40 @@
  *       reference-implementation-architecture/spec.md
  */
 
-import { exec, getOne, referenceQueries, allowUnboundedReadAcknowledged } from "../../lib/db.ts";
-import { isPostgresStorageBackend, postgresQuery } from "../postgres-storage.js";
+import { allowUnboundedReadAcknowledged, exec, getOne, referenceQueries } from "../../lib/db.ts";
 import type {
   ClientEventSubscriptionStore,
   QueuedEventForEnqueue,
   SubscriptionRow,
   SubscriptionStatus,
 } from "../../operations/as-client-event-subscriptions/index.ts";
+import { isPostgresStorageBackend, postgresQuery } from "../postgres-storage.js";
 
 export interface QueueRow {
-  readonly queue_id: number;
-  readonly subscription_id: string;
+  readonly attempt_count: number;
+  readonly callback_url: string;
+  readonly enqueued_at: string;
   readonly event_id: string;
   readonly event_type: string;
-  readonly payload_json: string;
-  readonly enqueued_at: string;
   readonly next_attempt_at: string;
-  readonly attempt_count: number;
-  readonly status: string;
-  readonly callback_url: string;
+  readonly payload_json: string;
+  readonly queue_id: number;
   readonly secret_text: string;
-  readonly verification_challenge: string | null;
+  readonly status: string;
+  readonly subscription_id: string;
   readonly subscription_status: SubscriptionStatus;
+  readonly verification_challenge: string | null;
 }
 
 export interface AttemptRow {
   readonly attempt_id: number;
-  readonly queue_id: number;
   readonly attempted_at: string;
-  readonly status_code: number | null;
-  readonly ok: number;
-  readonly latency_ms: number | null;
   readonly error: string | null;
+  readonly latency_ms: number | null;
+  readonly ok: number;
+  readonly queue_id: number;
   readonly response_snippet: string | null;
+  readonly status_code: number | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -443,35 +443,35 @@ export interface ListAllSubscriptionsFilters {
 }
 
 export interface SubscriptionSummaryRow {
-  readonly subscription_id: string;
-  readonly grant_id: string;
-  readonly client_id: string;
-  readonly subject_id: string;
   readonly callback_url: string;
-  readonly scope_json: string;
-  readonly status: SubscriptionStatus;
+  readonly client_id: string;
   readonly created_at: string;
-  readonly updated_at: string;
   readonly disabled_at: string | null;
   readonly disabled_reason: string | null;
-  readonly pending_queue_count: number;
   readonly final_failure_count: number;
-  readonly last_attempted_at: string | null;
+  readonly grant_id: string;
   readonly last_attempt_ok: number | null;
   readonly last_attempt_status_code: number | null;
+  readonly last_attempted_at: string | null;
+  readonly pending_queue_count: number;
+  readonly scope_json: string;
+  readonly status: SubscriptionStatus;
+  readonly subject_id: string;
+  readonly subscription_id: string;
+  readonly updated_at: string;
 }
 
 export interface SubscriptionAttemptRow {
   readonly attempt_id: number;
-  readonly queue_id: number;
+  readonly attempted_at: string;
+  readonly error: string | null;
   readonly event_id: string;
   readonly event_type: string;
-  readonly attempted_at: string;
-  readonly status_code: number | null;
-  readonly ok: number;
   readonly latency_ms: number | null;
-  readonly error: string | null;
+  readonly ok: number;
+  readonly queue_id: number;
   readonly response_snippet: string | null;
+  readonly status_code: number | null;
 }
 
 export async function listAllSubscriptions(filters: ListAllSubscriptionsFilters = {}): Promise<SubscriptionRow[]> {

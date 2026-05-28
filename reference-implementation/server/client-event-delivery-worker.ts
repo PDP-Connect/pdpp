@@ -8,19 +8,19 @@
  */
 
 import {
-  executeDelivery,
-  type DeliveryDependencies,
-  type DeliveryOutcome,
-} from "../operations/rs-client-event-deliver/index.ts";
-import {
   executeRecordDeliveryFailure,
   executeVerificationOutcome,
 } from "../operations/as-client-event-subscriptions/index.ts";
 import {
-  type QueueRow,
+  type DeliveryDependencies,
+  type DeliveryOutcome,
+  executeDelivery,
+} from "../operations/rs-client-event-deliver/index.ts";
+import {
   claimDueQueue,
   getDefaultClientEventSubscriptionStore,
   insertAttempt,
+  type QueueRow,
   updateQueueAttempt,
 } from "./stores/client-event-subscription-store.ts";
 
@@ -63,15 +63,15 @@ export const defaultHttpTransport: HttpTransport = async ({ url, method, headers
 
 export interface DeliveryWorkerOptions {
   readonly nowMs?: () => number;
-  readonly transport?: HttpTransport;
   readonly randomJitterFactor?: () => number;
   readonly tickIntervalMs?: number;
+  readonly transport?: HttpTransport;
 }
 
 export interface DeliveryWorker {
-  tick(): Promise<{ readonly attempted: number; readonly outcomes: ReadonlyArray<DeliveryOutcome> }>;
   start(): void;
   stop(): void;
+  tick(): Promise<{ readonly attempted: number; readonly outcomes: ReadonlyArray<DeliveryOutcome> }>;
 }
 
 export function createDeliveryWorker(opts: DeliveryWorkerOptions = {}): DeliveryWorker {

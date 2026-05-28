@@ -146,18 +146,18 @@ export interface ConnectionConditionRemediation {
 }
 
 export interface ConnectionHealthCondition {
-  readonly id: string;
-  readonly type: ConnectionConditionType;
-  readonly status: ConnectionConditionStatus;
-  readonly severity: ConnectionConditionSeverity;
-  readonly reason: string;
-  readonly message: string;
-  readonly origin: ConnectionConditionOrigin;
-  readonly observed_at: string | null;
-  readonly expires_at: string | null;
   readonly current: boolean;
-  readonly sensitivity: ConnectionConditionSensitivity;
+  readonly expires_at: string | null;
+  readonly id: string;
+  readonly message: string;
+  readonly observed_at: string | null;
+  readonly origin: ConnectionConditionOrigin;
+  readonly reason: string;
   readonly remediation: ConnectionConditionRemediation | null;
+  readonly sensitivity: ConnectionConditionSensitivity;
+  readonly severity: ConnectionConditionSeverity;
+  readonly status: ConnectionConditionStatus;
+  readonly type: ConnectionConditionType;
 }
 
 /** Freshness axis: is the connection's last durable progress within policy? */
@@ -322,6 +322,17 @@ export interface NextAction {
   readonly action_target: string | null;
   readonly attention_id: string | null;
   readonly expires_at: string | null;
+  /**
+   * Durable notification delivery state for the attention prompt
+   * driving this CTA. `null` for schedule-fallback CTAs (the precise
+   * record is unknown) and for non-attention states. The dashboard
+   * uses this to render "we notified you on another device" vs.
+   * "delivery failed — open the dashboard" without rereading
+   * transport logs. The spec scenario "Notification failure does not
+   * cause a run storm" requires this to remain visible even after
+   * the push channel rejects delivery.
+   */
+  readonly notification_state: "acknowledged" | "failed" | "pending" | "sent" | "suppressed" | null;
   readonly owner_action: "act_elsewhere" | "operate_attachment" | "provide_value" | null;
   readonly reason_code: string | null;
   readonly response_contract: "response_required" | "none" | null;
@@ -334,17 +345,6 @@ export interface NextAction {
    * precision. `none` is reserved for non-needs-attention states.
    */
   readonly source: "none" | "schedule_fallback" | "structured";
-  /**
-   * Durable notification delivery state for the attention prompt
-   * driving this CTA. `null` for schedule-fallback CTAs (the precise
-   * record is unknown) and for non-attention states. The dashboard
-   * uses this to render "we notified you on another device" vs.
-   * "delivery failed — open the dashboard" without rereading
-   * transport logs. The spec scenario "Notification failure does not
-   * cause a run storm" requires this to remain visible even after
-   * the push channel rejects delivery.
-   */
-  readonly notification_state: "acknowledged" | "failed" | "pending" | "sent" | "suppressed" | null;
 }
 
 /**
@@ -370,7 +370,6 @@ export interface ConnectionHealthSnapshot {
   readonly badges: ConnectionBadges;
   readonly conditions: readonly ConnectionHealthCondition[];
   readonly dominant_condition_id: string | null;
-  readonly supporting_condition_ids: readonly string[];
   readonly last_success_at: string | null;
   /** Non-secret CTA. `null` when the connection does not need attention. */
   readonly next_action: NextAction | null;
@@ -387,6 +386,7 @@ export interface ConnectionHealthSnapshot {
    */
   readonly remote_surface: RemoteSurfaceDetail | null;
   readonly state: ConnectionHealthState;
+  readonly supporting_condition_ids: readonly string[];
   /**
    * When `state === "unknown"`, names the evidence source that made the
    * projection unreliable so the UI can show *why*, per spec scenario
@@ -436,6 +436,13 @@ export interface ConnectionAttentionEvidence {
   readonly expiresAt: string | null;
   readonly id: string | null;
   readonly lifecycle: "acknowledged" | "in_progress" | "open";
+  /**
+   * Durable notification delivery state for the prompt. Forwarded to
+   * `NextAction.notification_state`. `null` for fallback evidence
+   * synthesized from `human_attention_needed` (no structured record
+   * exists, so delivery state is unknown).
+   */
+  readonly notificationState?: "acknowledged" | "failed" | "pending" | "sent" | "suppressed" | null;
   readonly ownerAction: "act_elsewhere" | "operate_attachment" | "provide_value" | null;
   readonly reasonCode: string | null;
   readonly responseContract: "response_required" | "none" | null;
@@ -448,13 +455,6 @@ export interface ConnectionAttentionEvidence {
    * the operator payload).
    */
   readonly sensitivity?: "non_secret" | "none" | "secret";
-  /**
-   * Durable notification delivery state for the prompt. Forwarded to
-   * `NextAction.notification_state`. `null` for fallback evidence
-   * synthesized from `human_attention_needed` (no structured record
-   * exists, so delivery state is unknown).
-   */
-  readonly notificationState?: "acknowledged" | "failed" | "pending" | "sent" | "suppressed" | null;
 }
 
 /** Coverage rollup. Caller aggregates per-stream evidence into one axis. */
@@ -533,12 +533,12 @@ export interface ComputeConnectionHealthInput {
   readonly backoff: ConnectionBackoffEvidence | null;
   readonly coverage: ConnectionCoverageEvidence | null;
   readonly freshness: ConnectionFreshnessEvidence | null;
+  readonly observedAt?: string | null;
   readonly outbox: ConnectionOutboxEvidence | null;
   readonly projection: ConnectionProjectionEvidence | null;
   readonly remoteSurface?: ConnectionRemoteSurfaceEvidence | null;
   readonly run: ConnectionRunEvidence | null;
   readonly schedule: ConnectionScheduleEvidence | null;
-  readonly observedAt?: string | null;
 }
 
 // ─── Projection ───────────────────────────────────────────────────────────
@@ -1589,13 +1589,13 @@ interface SnapshotArgs {
   readonly badges: ConnectionBadges;
   readonly conditions: readonly ConnectionHealthCondition[];
   readonly dominantConditionId: string | null;
-  readonly supportingConditionIds: readonly string[];
   readonly lastSuccessAt: string | null;
   readonly nextAction?: NextAction | null;
   readonly nextAttemptAt: string | null;
   readonly reasonCode: string | null;
   readonly remoteSurface?: RemoteSurfaceDetail | null;
   readonly state: ConnectionHealthState;
+  readonly supportingConditionIds: readonly string[];
   readonly unknownReasons?: readonly string[];
 }
 

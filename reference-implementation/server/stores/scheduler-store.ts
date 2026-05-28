@@ -26,8 +26,8 @@ import { getStorageBackendKind, isPostgresStorageBackend, postgresQuery } from "
 // ─── Domain records (public, semantic) ──────────────────────────────────────
 
 export interface ScheduleRecord {
-  readonly connector_instance_id: string;
   readonly connector_id: string;
+  readonly connector_instance_id: string;
   readonly created_at: string;
   readonly enabled: boolean;
   readonly interval_seconds: number;
@@ -36,8 +36,8 @@ export interface ScheduleRecord {
 }
 
 export interface ScheduleCreate {
-  readonly connector_instance_id?: string;
   readonly connector_id: string;
+  readonly connector_instance_id?: string;
   readonly created_at: string;
   readonly enabled: boolean;
   readonly interval_seconds: number;
@@ -53,8 +53,8 @@ export interface ScheduleUpdate {
 }
 
 export interface ActiveRunRecord {
-  readonly connector_instance_id?: string;
   readonly connector_id: string;
+  readonly connector_instance_id?: string;
   readonly run_id: string;
   readonly scenario_id: string;
   readonly started_at: string;
@@ -82,8 +82,8 @@ export interface SchedulerRunHistoryRecord {
 }
 
 export interface SchedulerLastRunTimeRecord {
-  readonly connector_instance_id: string;
   readonly connector_id: string;
+  readonly connector_instance_id: string;
   readonly last_run_time_ms: number;
   readonly updated_at: string;
 }
@@ -119,8 +119,8 @@ export interface SchedulerStore {
 // ─── SQLite implementation ──────────────────────────────────────────────────
 
 interface ScheduleSqliteRow {
-  readonly connector_instance_id: string;
   readonly connector_id: string;
+  readonly connector_instance_id: string;
   readonly created_at: string;
   readonly enabled: 0 | 1 | boolean;
   readonly interval_seconds: number;

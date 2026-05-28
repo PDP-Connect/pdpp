@@ -17,52 +17,55 @@ type Queryable = {
 };
 
 interface BrowserSurfaceRow {
-  surface_id: string;
-  backend: BrowserSurface["backend"];
-  profile_key: string;
-  connector_id: string;
-  surface_subject_id: string | null;
   account_key: string | null;
-  surface_mode: BrowserSurfacePersistenceMetadata["surface_mode"] | null;
-  surface_source: string | null;
+  active_lease_id: string | null;
+  backend: BrowserSurface["backend"];
   cdp_url: string;
-  stream_base_url: string;
-  stream_origin: string | null;
-  health: BrowserSurface["health"];
+  connector_id: string;
   container_id: string | null;
   container_name: string | null;
-  profile_dir: string | null;
-  profile_volume: string | null;
-  active_lease_id: string | null;
   created_at: string;
+  health: BrowserSurface["health"];
   last_used_at: string;
+  profile_dir: string | null;
+  profile_key: string;
+  profile_volume: string | null;
+  stream_base_url: string;
+  stream_origin: string | null;
+  surface_id: string;
+  surface_mode: BrowserSurfacePersistenceMetadata["surface_mode"] | null;
+  surface_source: string | null;
+  surface_subject_id: string | null;
 }
 
 interface BrowserSurfaceLeaseRow {
-  lease_id: string;
-  surface_id: string | null;
-  connector_id: string;
-  profile_key: string;
-  surface_subject_id: string | null;
   account_key: string | null;
-  run_id: string;
-  status: BrowserSurfaceLease["status"];
-  priority_class: BrowserSurfaceLease["priority_class"];
-  requested_at: string;
-  leased_at: string | null;
-  released_at: string | null;
+  connector_id: string;
   expires_at: string;
   fencing_token: number;
+  lease_id: string;
+  leased_at: string | null;
+  priority_class: BrowserSurfaceLease["priority_class"];
+  profile_key: string;
+  released_at: string | null;
+  requested_at: string;
+  run_id: string;
+  status: BrowserSurfaceLease["status"];
+  surface_id: string | null;
+  surface_subject_id: string | null;
   wait_reason: BrowserSurfaceLease["wait_reason"] | null;
 }
 
 export interface BrowserSurfaceLeaseStore {
-  upsertSurface(surface: BrowserSurfaceWithPersistenceMetadata): Promise<BrowserSurfaceWithPersistenceMetadata>;
-  upsertLease(lease: BrowserSurfaceLease): Promise<BrowserSurfaceLease>;
-  getSurface(surfaceId: string): Promise<BrowserSurfaceWithPersistenceMetadata | null>;
+  clearSurfaceActiveLease(
+    surfaceId: string,
+    leaseId: string,
+    fencingToken: number
+  ): Promise<BrowserSurfaceWithPersistenceMetadata | null>;
   getLease(leaseId: string): Promise<BrowserSurfaceLease | null>;
-  listSurfaces(): Promise<BrowserSurfaceWithPersistenceMetadata[]>;
+  getSurface(surfaceId: string): Promise<BrowserSurfaceWithPersistenceMetadata | null>;
   listNonTerminalLeases(): Promise<BrowserSurfaceLease[]>;
+  listSurfaces(): Promise<BrowserSurfaceWithPersistenceMetadata[]>;
   repairStaleSurfaceActiveLeases(): Promise<void>;
   updateLeaseTerminal(
     leaseId: string,
@@ -72,23 +75,20 @@ export interface BrowserSurfaceLeaseStore {
     >,
     options?: { releasedAt?: string; waitReason?: BrowserSurfaceLease["wait_reason"] | null }
   ): Promise<BrowserSurfaceLease | null>;
-  clearSurfaceActiveLease(
-    surfaceId: string,
-    leaseId: string,
-    fencingToken: number
-  ): Promise<BrowserSurfaceWithPersistenceMetadata | null>;
+  upsertLease(lease: BrowserSurfaceLease): Promise<BrowserSurfaceLease>;
+  upsertSurface(surface: BrowserSurfaceWithPersistenceMetadata): Promise<BrowserSurfaceWithPersistenceMetadata>;
   withLeaseTransaction<T>(fn: (store: BrowserSurfaceLeaseStore) => Promise<T> | T): Promise<T>;
 }
 
 const TERMINAL_STATUS_SQL = TERMINAL_BROWSER_SURFACE_LEASE_STATUSES.map((status) => `'${status}'`).join(", ");
 
 export interface BrowserSurfacePersistenceMetadata {
-  readonly surface_mode?: "static" | "dynamic";
-  readonly surface_source?: string;
   readonly container_name?: string;
   readonly profile_dir?: string;
   readonly profile_volume?: string;
   readonly stream_origin?: string;
+  readonly surface_mode?: "static" | "dynamic";
+  readonly surface_source?: string;
 }
 
 type BrowserSurfaceWithPersistenceMetadata = BrowserSurface & BrowserSurfacePersistenceMetadata;

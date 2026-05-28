@@ -27,9 +27,9 @@ import type { SchedulerRunHistoryRecord, SchedulerStore } from "../server/stores
 import { runConnector } from "./index.js";
 import {
   type AutomationRefreshPolicy,
+  projectRunAutomationPolicy,
   type RunAutomationMode,
   type RunTriggerKind,
-  projectRunAutomationPolicy,
 } from "./run-automation-policy.ts";
 import { type BackoffDecision, computeNextRunWithBackoff } from "./scheduler-backoff.ts";
 
@@ -400,18 +400,18 @@ interface SchedulerRuntime {
   readonly exhaustedGrants: Set<string>;
   readonly history: RunRecord[];
   readonly lastRunTime: Map<string, number>;
-  readonly notifiedDisabledGrantFailures: Set<string>;
-  // Tracks connectors for which we have already emitted one needs-human skip
-  // record this cycle. Cleared when the owner clears the needs-human flag via
-  // clearNeedsHuman / runNow so the next automatic tick emits a fresh skip.
-  readonly notifiedNeedsHumanSkips: Set<string>;
-  readonly notifiedNotReadySkips: Map<string, string>;
   // Tracks the durable attention key (from `hasUnresolvedAttention`) for
   // which we last emitted a suppression skip record. Keyed by
   // connector_instance_id. A different key means a fresh attention
   // identity and re-arms the emitter; an absent key (attention resolved)
   // clears the entry so the next observed suppression emits a new skip.
   readonly notifiedAttentionSkips: Map<string, string>;
+  readonly notifiedDisabledGrantFailures: Set<string>;
+  // Tracks connectors for which we have already emitted one needs-human skip
+  // record this cycle. Cleared when the owner clears the needs-human flag via
+  // clearNeedsHuman / runNow so the next automatic tick emits a fresh skip.
+  readonly notifiedNeedsHumanSkips: Set<string>;
+  readonly notifiedNotReadySkips: Map<string, string>;
   running: boolean;
   readonly timers: NodeJS.Timeout[];
 }
@@ -990,6 +990,7 @@ function buildExhaustedFailureRecord({
 // ─── Core run loop ──────────────────────────────────────────────────────────
 
 interface RunConnectorCall {
+  automationMode?: RunAutomationMode;
   collectionMode: "full_refresh" | "incremental";
   connectorId: string;
   connectorInstanceId?: string;
@@ -1004,7 +1005,6 @@ interface RunConnectorCall {
   rsUrl: string;
   state: Record<string, unknown> | null;
   triggerKind?: RunTriggerKind;
-  automationMode?: RunAutomationMode;
 }
 
 async function invokeRunConnector(call: RunConnectorCall): Promise<RunConnectorResult> {

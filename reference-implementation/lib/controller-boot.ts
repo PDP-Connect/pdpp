@@ -16,16 +16,15 @@
 
 import { randomUUID } from "node:crypto";
 import os from "node:os";
-
-import { isPostgresStorageBackend, postgresQuery, withPostgresTransaction } from "../server/postgres-storage.js";
 import { getDb } from "../server/db.js";
-import { emitSpineEvent, setCurrentBootEpoch, type BootEpoch } from "./spine.ts";
+import { isPostgresStorageBackend, postgresQuery, withPostgresTransaction } from "../server/postgres-storage.js";
+import { type BootEpoch, emitSpineEvent, setCurrentBootEpoch } from "./spine.ts";
 
 export interface BootControllerOpts {
-  /** Override for testing; defaults to PDPP_CONTROLLER_ID || os.hostname(). */
-  controllerId?: string;
   /** Override for testing; defaults to randomUUID. */
   bootEpoch?: string;
+  /** Override for testing; defaults to PDPP_CONTROLLER_ID || os.hostname(). */
+  controllerId?: string;
   /** Process fingerprint fields. */
   gitSha?: string | null;
 }
@@ -140,13 +139,13 @@ export interface ReconcileResult {
 }
 
 interface OrphanRow {
-  event_id: string;
-  run_id: string | null;
   actor_id: string;
-  trace_id: string | null;
-  scenario_id: string | null;
+  event_id: string;
   original_boot_epoch: string | null;
   original_controller_id: string | null;
+  run_id: string | null;
+  scenario_id: string | null;
+  trace_id: string | null;
 }
 
 /**

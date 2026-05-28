@@ -124,10 +124,10 @@ export type AttachmentKind = "browser_surface" | "url" | "qr" | "file" | "fixtur
 
 export interface AttentionAttachment {
   readonly kind: AttachmentKind;
-  /** Opaque, ephemeral reference resolved by the surface layer. */
-  readonly ref: string;
   /** Optional non-secret label safe for display. */
   readonly label?: string;
+  /** Opaque, ephemeral reference resolved by the surface layer. */
+  readonly ref: string;
 }
 
 // ─── Core record ───────────────────────────────────────────────────────────
@@ -141,29 +141,27 @@ export interface AttentionAttachment {
  * reason code + interaction kind).  Equality drives dedupe and supersession.
  */
 export interface AttentionRecord {
-  readonly id: string;
-  readonly dedupe_key: string;
-  readonly connection_id: string;
-  readonly run_id: string | null;
-  readonly reason_code: string;
-  readonly progress_posture: ProgressPosture;
-  readonly owner_action: OwnerAction;
-  readonly response_contract: ResponseContract;
-  readonly sensitivity: Sensitivity;
-  readonly auto_detect: boolean;
-  readonly lifecycle: AttentionLifecycle;
-  readonly created_at: string;
-  readonly updated_at: string;
-  readonly expires_at: string | null;
-  readonly owner_copy: string | null;
   readonly action_target: string | null;
   readonly attachments: readonly AttentionAttachment[];
+  readonly auto_detect: boolean;
+  readonly connection_id: string;
+  readonly created_at: string;
+  readonly dedupe_key: string;
+  readonly expires_at: string | null;
+  readonly id: string;
+  readonly lifecycle: AttentionLifecycle;
   /**
    * Free-form non-secret metadata for the timeline / dashboard.  Values are
    * passed through `redact()` before this record is constructed — the
    * runtime never trusts a caller to hand-classify metadata as safe.
    */
   readonly metadata: Readonly<Record<string, unknown>>;
+  /**
+   * Short, redaction-safe reason explaining the latest notification
+   * outcome (e.g. "no_opted_in_channel", "quiet_hours", "vapid_rejected").
+   * Free-form opaque label; never contains owner copy or secret content.
+   */
+  readonly notification_reason: string | null;
   /**
    * Durable notification delivery state. Defaults to `"pending"` on
    * create; updated by the notification fanout path via
@@ -174,33 +172,35 @@ export interface AttentionRecord {
   readonly notification_state: NotificationState;
   /** ISO-8601 time the last notification outcome was recorded. */
   readonly notification_updated_at: string | null;
-  /**
-   * Short, redaction-safe reason explaining the latest notification
-   * outcome (e.g. "no_opted_in_channel", "quiet_hours", "vapid_rejected").
-   * Free-form opaque label; never contains owner copy or secret content.
-   */
-  readonly notification_reason: string | null;
+  readonly owner_action: OwnerAction;
+  readonly owner_copy: string | null;
+  readonly progress_posture: ProgressPosture;
+  readonly reason_code: string;
+  readonly response_contract: ResponseContract;
+  readonly run_id: string | null;
+  readonly sensitivity: Sensitivity;
+  readonly updated_at: string;
 }
 
 // ─── Construction ──────────────────────────────────────────────────────────
 
 export interface CreateAttentionInput {
-  readonly id: string;
-  readonly dedupe_key: string;
-  readonly connection_id: string;
-  readonly run_id?: string | null;
-  readonly reason_code: string;
-  readonly progress_posture: ProgressPosture;
-  readonly owner_action: OwnerAction;
-  readonly response_contract: ResponseContract;
-  readonly sensitivity?: Sensitivity;
-  readonly auto_detect?: boolean;
-  readonly now: string;
-  readonly expires_at?: string | null;
-  readonly owner_copy?: string | null;
   readonly action_target?: string | null;
   readonly attachments?: readonly AttentionAttachment[];
+  readonly auto_detect?: boolean;
+  readonly connection_id: string;
+  readonly dedupe_key: string;
+  readonly expires_at?: string | null;
+  readonly id: string;
   readonly metadata?: Readonly<Record<string, unknown>>;
+  readonly now: string;
+  readonly owner_action: OwnerAction;
+  readonly owner_copy?: string | null;
+  readonly progress_posture: ProgressPosture;
+  readonly reason_code: string;
+  readonly response_contract: ResponseContract;
+  readonly run_id?: string | null;
+  readonly sensitivity?: Sensitivity;
 }
 
 export function createAttention(input: CreateAttentionInput): AttentionRecord {
@@ -249,8 +249,8 @@ function validateAxes(posture: ProgressPosture, action: OwnerAction, contract: R
 // ─── Transitions ───────────────────────────────────────────────────────────
 
 export interface TransitionInput {
-  readonly to: AttentionLifecycle;
   readonly now: string;
+  readonly to: AttentionLifecycle;
 }
 
 export function transition(record: AttentionRecord, input: TransitionInput): AttentionRecord {
@@ -276,8 +276,8 @@ export function transition(record: AttentionRecord, input: TransitionInput): Att
 // ─── Notification state ────────────────────────────────────────────────────
 
 export interface NotificationOutcomeInput {
-  readonly outcome: NotificationState;
   readonly now: string;
+  readonly outcome: NotificationState;
   /** Opaque, redaction-safe reason label. Never holds owner copy or secrets. */
   readonly reason?: string | null;
 }
@@ -319,12 +319,12 @@ export function isNotificationDeliveryFailed(record: AttentionRecord): boolean {
 // ─── Dedupe / cooldown / supersession ──────────────────────────────────────
 
 export interface DedupeDecisionInput {
+  /** Cooldown window in seconds. */
+  readonly cooldown_seconds: number;
   /** Currently active (non-terminal) record sharing the dedupe_key, if any. */
   readonly existing: AttentionRecord | null;
   /** Proposed creation. */
   readonly proposed: CreateAttentionInput;
-  /** Cooldown window in seconds. */
-  readonly cooldown_seconds: number;
 }
 
 export type DedupeOutcome =
@@ -410,24 +410,24 @@ function redactMetadata(meta: Readonly<Record<string, unknown>>): Record<string,
 }
 
 export interface PushPayload {
-  readonly title: string;
-  readonly body: string;
-  readonly url: string;
-  readonly tag: string;
   readonly attention_id: string;
+  readonly body: string;
   readonly connection_id: string;
   readonly reason_code: string;
+  readonly tag: string;
+  readonly title: string;
+  readonly url: string;
 }
 
 export interface PushPayloadOptions {
-  /** Dashboard origin, e.g. "https://dashboard.example". */
-  readonly dashboard_origin: string;
   /**
    * Display name for the connection; caller-supplied because connector
    * display copy isn't part of this module.  `null` means use a generic
    * "A connection" label so lock-screen text stays non-revealing.
    */
   readonly connection_display: string | null;
+  /** Dashboard origin, e.g. "https://dashboard.example". */
+  readonly dashboard_origin: string;
   /** If true (privacy mode), strip connection display from the body. */
   readonly hide_source?: boolean;
 }
@@ -515,7 +515,6 @@ export function isHealthRelevant(record: AttentionRecord, now: string): boolean 
 // ─── Auto-detected resolution ──────────────────────────────────────────────
 
 export interface AutoDetectInput {
-  readonly record: AttentionRecord;
   /**
    * Evidence the connector / controller observed:
    *   - `proceeded`: the run continued past the blocking condition
@@ -525,6 +524,7 @@ export interface AutoDetectInput {
    */
   readonly evidence: "proceeded" | "still_blocked" | "unknown";
   readonly now: string;
+  readonly record: AttentionRecord;
 }
 
 export type AutoDetectOutcome =
