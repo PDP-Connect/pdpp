@@ -50,7 +50,7 @@ function buildNav(routes: Routes, mode: ShellMode): NavItem[] {
     { href: routes.section.traces, label: "Traces", match: (a) => a === "traces" },
     { href: routes.section.grants, label: "Grants", match: (a) => a === "grants" },
     { href: routes.section.runs, label: "Runs", match: (a) => a === "runs" },
-    { href: routes.section.records, label: "Records", match: (a) => a === "records" },
+    { href: routes.section.records, label: "Connections", match: (a) => a === "records" },
     { href: routes.section.schedules, label: "Schedules", match: (a) => a === "schedules" },
     { href: routes.section.deployment, label: "Deployment", match: (a) => a === "deployment" },
   ];
@@ -147,7 +147,6 @@ function SidebarContent({ active, mode, routes }: { active: DashboardSection; mo
         </nav>
 
         {active === "grants" && mode === "live" ? <GrantsSubnav /> : null}
-        {active === "records" ? <RecordsSubnav routes={routes} /> : null}
       </div>
 
       {mode === "mock-owner" ? <SandboxFooter /> : <EnvFooter />}
@@ -165,19 +164,6 @@ function GrantsSubnav() {
     { href: "/dashboard/grants/request", label: "Grant request" },
   ];
   return <SidebarSubnav items={items} label="Grants workspace" />;
-}
-
-function RecordsSubnav({ routes }: { routes: Routes }) {
-  // Time-range browsing was absorbed into the top-level Explore route by
-  // `absorb-timeline-into-explore-ia`, so the Timeline entry is gone.
-  // The subnav header is now `Connections` for vocabulary clarity; the
-  // URL prefix stays `/dashboard/records/*` until a future tranche
-  // retires the subtree.
-  const items = [
-    { href: routes.section.records, label: "Connectors" },
-    { href: routes.section.explore, label: "Explorer" },
-  ];
-  return <SidebarSubnav items={items} label="Connections" />;
 }
 
 function SidebarSubnav({ label, items }: { label: string; items: Array<{ href: string; label: string }> }) {

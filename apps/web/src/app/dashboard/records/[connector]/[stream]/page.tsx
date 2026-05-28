@@ -70,7 +70,7 @@ export default async function StreamPage({
     if (err instanceof ReferenceServerUnreachableError) {
       return (
         <DashboardShell active="records">
-          <PageHeader title="Records" />
+          <PageHeader title="Connections" />
           <ServerUnreachable />
         </DashboardShell>
       );
@@ -105,7 +105,7 @@ export default async function StreamPage({
           </>
         }
         breadcrumbs={[
-          { label: "Records", href: "/dashboard/records" },
+          { label: "Connections", href: "/dashboard/records" },
           { label: connectionId, href: `/dashboard/records/${encodeURIComponent(connectionId)}` },
           { label: streamName },
         ]}

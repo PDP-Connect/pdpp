@@ -35,7 +35,7 @@ export default async function RecordDetailPage({
     if (err instanceof ReferenceServerUnreachableError) {
       return (
         <DashboardShell active="records">
-          <PageHeader title="Records" />
+          <PageHeader title="Connections" />
           <ServerUnreachable />
         </DashboardShell>
       );
@@ -62,7 +62,7 @@ export default async function RecordDetailPage({
     <DashboardShell active="records">
       <PageHeader
         breadcrumbs={[
-          { label: "Records", href: "/dashboard/records" },
+          { label: "Connections", href: "/dashboard/records" },
           { label: connectionId, href: connectorHref },
           { label: streamName, href: streamHref },
           { label: recordId },

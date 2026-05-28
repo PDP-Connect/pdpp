@@ -50,10 +50,11 @@ function buildShortcuts({ basePath, overviewHref }: { basePath: string; overview
   const shortcuts = [
     { label: "Overview", href: overviewHref },
     { label: "Search", href: `${basePath}/search` },
+    { label: "Explore", href: `${basePath}/explore` },
     { label: "Traces", href: `${basePath}/traces` },
     { label: "Grants", href: `${basePath}/grants` },
     { label: "Runs", href: `${basePath}/runs` },
-    { label: "Records", href: `${basePath}/records` },
+    { label: "Connections", href: `${basePath}/records` },
   ];
   if (basePath === "/dashboard") {
     shortcuts.push({ label: "Device exporters", href: `${basePath}/device-exporters` });

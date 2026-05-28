@@ -32,7 +32,7 @@ export function RecordDetailView({
     <>
       <PageHeader
         breadcrumbs={[
-          { label: "Records", href: routes.section.records },
+          { label: "Connections", href: routes.section.records },
           { label: connectorId, href: routes.connector(connectorId) },
           { label: streamName, href: routes.stream(connectorId, streamName) },
           { label: recordId },

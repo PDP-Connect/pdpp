@@ -137,7 +137,7 @@ export default async function ConnectorPage({ params }: { params: Promise<{ conn
     if (err instanceof ReferenceServerUnreachableError) {
       return (
         <DashboardShell active="records">
-          <PageHeader title="Records" />
+          <PageHeader title="Connections" />
           <ServerUnreachable />
         </DashboardShell>
       );
@@ -186,7 +186,7 @@ export default async function ConnectorPage({ params }: { params: Promise<{ conn
             />
           </>
         }
-        breadcrumbs={[{ label: "Records", href: "/dashboard/records" }, { label: displayName }]}
+        breadcrumbs={[{ label: "Connections", href: "/dashboard/records" }, { label: displayName }]}
         count={headerCount}
         description={
           <ConnectionIdentityLine

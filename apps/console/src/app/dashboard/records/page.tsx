@@ -97,7 +97,7 @@ export default async function RecordsIndexPage() {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
         <DashboardShell active="records">
-          <PageHeader title="Records" />
+          <PageHeader title="Connections" />
           <ServerUnreachable />
         </DashboardShell>
       );

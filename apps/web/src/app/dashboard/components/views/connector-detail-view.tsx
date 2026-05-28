@@ -59,7 +59,7 @@ export function ConnectorDetailView({
             {extraActions}
           </>
         }
-        breadcrumbs={[{ label: "Records", href: routes.section.records }, { label: displayName }]}
+        breadcrumbs={[{ label: "Connections", href: routes.section.records }, { label: displayName }]}
         count={`${totalRecords.toLocaleString()} records · ${streams.length} stream${streams.length === 1 ? "" : "s"}`}
         description={
           <>

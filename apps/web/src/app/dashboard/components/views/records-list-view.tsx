@@ -110,8 +110,8 @@ export function RecordsListView({
       {pollerSlot}
       <PageHeader
         actions={
-          <Link className={buttonVariants({ variant: "outline", size: "sm" })} href={routes.section.recordsTimeline}>
-            Activity timeline →
+          <Link className={buttonVariants({ variant: "outline", size: "sm" })} href={routes.section.explore}>
+            Open in Explore →
           </Link>
         }
         count={
@@ -124,7 +124,7 @@ export function RecordsListView({
             ? "Owner control plane for your connections. Counts reflect records the server has retained; local-collector backlogs surface as 'pending on devices' here and per-connection below. Click Sync now to pull fresh data; drill in to browse streams and records."
             : "Sandbox demo: deterministic mock connections. Click into a connection to browse streams and records."
         }
-        title="Records"
+        title="Connections"
       />
 
       <section aria-label="Connection health summary" className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-4">

@@ -27,7 +27,7 @@ export function RecordsTimelineView({ since, until, result, routes }: RecordsTim
   return (
     <>
       <PageHeader
-        breadcrumbs={[{ label: "Records", href: routes.section.records }, { label: "Timeline" }]}
+        breadcrumbs={[{ label: "Connections", href: routes.section.records }, { label: "Timeline" }]}
         count={`${result.entries.length} entries · ${result.sources} streams scanned · ${result.scanned} records`}
         description="Time-anchored records across all connectors, sorted by the owner's data time."
         title="Timeline"

@@ -64,7 +64,7 @@ export default async function StreamHealthPage({
     <DashboardShell active="records">
       <PageHeader
         breadcrumbs={[
-          { label: "Records", href: "/dashboard/records" },
+          { label: "Connections", href: "/dashboard/records" },
           { label: connectionId, href: `/dashboard/records/${encodeURIComponent(connectionId)}` },
           { label: streamName, href: streamPath },
           { label: "health" },
