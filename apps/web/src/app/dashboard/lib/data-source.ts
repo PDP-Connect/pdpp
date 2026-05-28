@@ -67,7 +67,7 @@ export interface DashboardDataSource {
   getDatasetSummary(): Promise<DatasetSummary>;
   getDeploymentDiagnostics(): Promise<DeploymentDiagnostics>;
   getGrantTimeline(grantId: string): Promise<TimelineEnvelope | null>;
-  getRecord(connectorId: string, stream: string, recordId: string): Promise<StreamRecord>;
+  getRecord(connectorId: string, stream: string, recordId: string, opts?: { connectorInstanceId?: string | null }): Promise<StreamRecord>;
   getRunTimeline(runId: string): Promise<TimelineEnvelope | null>;
   getTraceTimeline(traceId: string): Promise<TimelineEnvelope | null>;
   isHybridRetrievalAdvertised(): Promise<boolean>;
@@ -85,7 +85,7 @@ export interface DashboardDataSource {
   queryRecords(
     connectorId: string,
     stream: string,
-    opts?: { limit?: number; cursor?: string; order?: "asc" | "desc" }
+    opts?: { connectorInstanceId?: string | null; limit?: number; cursor?: string; order?: "asc" | "desc" }
   ): Promise<RecordsPage>;
   // ── Search ─────────────────────────────────────────────────────────────
   refSearch(query: string): Promise<{
