@@ -1291,6 +1291,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     }
   }
 
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: retry loop classifies outcome → schedule next attempt → record per-attempt history in one closure; helper extraction would split lastError/lastDecision state without clarifying retry semantics.
   async function runWithRetries(schedule: ConnectorSchedule, call: RunConnectorCall): Promise<RunRecord> {
     const { connectorId, connectorInstanceId = connectorId, maxRetries = 2 } = schedule;
     let attempt = 0;
@@ -1347,6 +1348,7 @@ export function createScheduler(opts: SchedulerOptions): Scheduler {
     return failRecord;
   }
 
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: executeRun is the scheduler's run pipeline (gate eligibility → emit skips → run with retries → settle history); each step needs the shared schedule, runtime, and attention state.
   async function executeRun(schedule: ConnectorSchedule, isManual = false): Promise<RunRecord | null> {
     const {
       connectorId,

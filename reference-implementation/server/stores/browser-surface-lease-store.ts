@@ -286,6 +286,7 @@ class SqliteBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
   listSurfaces(): Promise<BrowserSurfaceWithPersistenceMetadata[]> {
     // REVIEWED-DYNAMIC: browser surfaces are a small controller-owned runtime table.
     const rows = allDynamicRows<BrowserSurfaceRow>("SELECT * FROM browser_surfaces ORDER BY surface_id");
+    // biome-ignore lint/style/noNonNullAssertion: mapSurface returns null only for null/undefined input; SELECT rows are real.
     return Promise.resolve(rows.map((row) => mapSurface(row)!));
   }
 
@@ -296,6 +297,7 @@ class SqliteBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
        WHERE status NOT IN (${TERMINAL_STATUS_SQL})
        ORDER BY CASE priority_class WHEN 'owner_interactive' THEN 0 ELSE 1 END, requested_at, lease_id`
     );
+    // biome-ignore lint/style/noNonNullAssertion: mapLease returns null only for null/undefined input; SELECT rows are real.
     return Promise.resolve(rows.map((row) => mapLease(row)!));
   }
 
@@ -456,6 +458,7 @@ class PostgresBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
 
   async listSurfaces(): Promise<BrowserSurfaceWithPersistenceMetadata[]> {
     const result = await this.#query("SELECT * FROM browser_surfaces ORDER BY surface_id");
+    // biome-ignore lint/style/noNonNullAssertion: mapSurface returns null only for null/undefined input; SELECT rows are real.
     return (result.rows as BrowserSurfaceRow[]).map((row) => mapSurface(row)!);
   }
 
@@ -465,6 +468,7 @@ class PostgresBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
        WHERE status NOT IN (${TERMINAL_STATUS_SQL})
        ORDER BY CASE priority_class WHEN 'owner_interactive' THEN 0 ELSE 1 END, requested_at, lease_id`
     );
+    // biome-ignore lint/style/noNonNullAssertion: mapLease returns null only for null/undefined input; SELECT rows are real.
     return (result.rows as BrowserSurfaceLeaseRow[]).map((row) => mapLease(row)!);
   }
 

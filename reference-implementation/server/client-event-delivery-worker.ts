@@ -150,6 +150,7 @@ export function createDeliveryWorker(opts: DeliveryWorkerOptions = {}): Delivery
     return outcome;
   }
 
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: one tick must claim, deliver, classify, and persist outcomes under a single in-flight guard.
   async function tickInternal(): Promise<{ attempted: number; outcomes: DeliveryOutcome[] }> {
     if (inFlight) {
       return { attempted: 0, outcomes: [] };

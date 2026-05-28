@@ -42,6 +42,7 @@ export function parseNekoBrowserSurfaceLeaseConfig(env: NodeJS.ProcessEnv = proc
   return parseNekoBrowserSurfaceRuntimeConfig(env).leaseConfig;
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: env parsing branches over independent env keys (mode, cap, profile, allocator URL, timeouts); each branch is a single guard with no shared structure to extract.
 export function parseNekoBrowserSurfaceRuntimeConfig(
   env: NodeJS.ProcessEnv = process.env
 ): NekoBrowserSurfaceRuntimeConfig {

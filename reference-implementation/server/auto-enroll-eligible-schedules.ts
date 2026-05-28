@@ -138,6 +138,7 @@ function getListingFacts(caps: ManifestCapabilities): ListingFacts {
  * fallback alias. Alias arrays are encoded here as a `"a|b|c"` token; the
  * presence check downstream splits on `|` and tests for any non-empty value.
  */
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: this mirrors the manifest auth shape so enrollment and runtime auth stay visibly aligned.
 function extractEnvRequirement(caps: ManifestCapabilities): readonly string[] | null {
   const auth = caps.auth;
   if (!auth || typeof auth !== "object" || Array.isArray(auth)) {

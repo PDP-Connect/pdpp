@@ -895,8 +895,7 @@ async function fireNtfy(args: {
       interaction.kind === "manual_action"
         ? `${webBaseUrl}/dashboard/runs/${encodedRunId}/stream?interaction_id=${encodedInteractionId}`
         : `${webBaseUrl}/dashboard/runs/${encodedRunId}`;
-    const tags =
-      interaction.kind === "credentials" || interaction.kind === "otp" ? ["key"] : ["construction"];
+    const tags = interaction.kind === "credentials" || interaction.kind === "otp" ? ["key"] : ["construction"];
     await notify({
       title: `PDPP ${connectorDisplayName}: ${interaction.kind} needed`,
       message,
@@ -933,6 +932,7 @@ async function buildAttentionOutcomeRecorder(args: { runId: string; requestId: s
     return null;
   }
   return async ({ state, reason }: { state: string; reason: string | null }) => {
+    // biome-ignore lint/style/noNonNullAssertion: guard above proves recordNotificationOutcomeById is a function.
     await store.recordNotificationOutcomeById!({
       attentionId: `att_${runId}_${requestId}`,
       outcome: state,
@@ -1050,12 +1050,14 @@ function brokerInteraction(
     // line runs. Failure of `fireNtfy` is internally swallowed to keep
     // interaction handling unaffected; we discard the promise on purpose.
     if (notifyArgs) {
+      // biome-ignore lint/complexity/noVoid: notification fanout is intentionally fire-and-forget and internally guarded.
       void fireNtfy({
         interaction,
         connectorDisplayName: notifyArgs.connectorDisplayName,
         runId,
         log: notifyArgs.log,
       });
+      // biome-ignore lint/complexity/noVoid: notification fanout must not block interaction resolution.
       void fireWebPush({
         interaction,
         connectorDisplayName: notifyArgs.connectorDisplayName,
@@ -1521,9 +1523,14 @@ export function createController(opts: ControllerOptions = {}): Controller {
 
     let current = lease;
     while (current.status === "starting_surface") {
+      // Stub allocator used only when no real allocator is configured.
+      // Each method matches the BrowserSurfaceAllocator async signature; the
+      // throwing ensureSurface has no real await but must remain async to
+      // satisfy the interface.
       const allocator =
         browserSurfaceAllocator ??
         ({
+          // biome-ignore lint/suspicious/useAwait: matches BrowserSurfaceAllocator async signature.
           ensureSurface: async () => {
             throw new Error("browser surface allocator is not configured");
           },
@@ -1552,6 +1559,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
   async function reclaimCapacityAndPromoteLease(
     lease: BrowserSurfaceLease
   ): Promise<{ lease: BrowserSurfaceLease; surface?: BrowserSurface; reclaimed: boolean }> {
+    // biome-ignore lint/complexity/useSimplifiedLogicExpression: guard names the two required collaborators independently.
     if (!browserSurfaceLeaseManager || !browserSurfaceAllocator) {
       return { lease, reclaimed: false };
     }
@@ -1594,6 +1602,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
   function promoteBrowserSurfaceLease(lease: BrowserSurfaceLease, reason: string): void {
     const promotedOptions = pendingBrowserSurfaceLaunches.get(lease.run_id) ?? {};
     pendingBrowserSurfaceLaunches.delete(lease.run_id);
+    // biome-ignore lint/complexity/noVoid: promotion resumes a queued run asynchronously; failures are handled in the attached catch.
     void runNow(lease.connector_id, {
       ...promotedOptions,
       runId: lease.run_id,
@@ -1676,6 +1685,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
    * This is the gate that prevents the "ask the human for an OTP and
    * THEN discover the CDP socket was already dead" failure mode.
    */
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: readiness gate must serialize probe → outcome classification → typed event emission → lease release in one place; splitting it loses the linear failure trail.
   async function runBrowserSurfaceReadinessGate(
     lease: BrowserSurfaceLease,
     surface: BrowserSurface | null,
@@ -1772,10 +1782,12 @@ export function createController(opts: ControllerOptions = {}): Controller {
     return result;
   }
 
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: surface-failure invalidation must coordinate lease manager, durable store, persistence rollback, and allocator stop in a single linear path; splitting risks state divergence.
   async function invalidateBrowserSurfaceAfterProbeFailure(
     lease: BrowserSurfaceLease,
     probeCode: string
   ): Promise<void> {
+    // biome-ignore lint/complexity/useSimplifiedLogicExpression: early return makes each missing prerequisite explicit.
     if (!browserSurfaceLeaseManager || !lease.surface_id) {
       return;
     }
@@ -1790,6 +1802,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
       try {
         await browserSurfaceLeaseStore.withLeaseTransaction(async (store) => {
           await store.upsertSurface({
+            // biome-ignore lint/style/noNonNullAssertion: outer guard proves invalidated.surface; narrowing does not survive the async callback boundary.
             ...invalidated.surface!,
             health: "unhealthy",
           });
@@ -1859,6 +1872,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
   }
 
   async function cleanupIdleBrowserSurfaces(): Promise<BrowserSurfaceProjection[]> {
+    // biome-ignore lint/complexity/useSimplifiedLogicExpression: cleanup requires both manager and allocator; guard form is clearer.
     if (!browserSurfaceLeaseManager || !browserSurfaceAllocator) {
       return [];
     }
@@ -1874,6 +1888,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     return cleanupResult.promoted.map((lease) => projectBrowserSurfaceLease(lease));
   }
 
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: boot reconciliation must order allocator inventory, lease repair, and durable persistence; each branch checks a distinct staleness mode.
   async function reconcileBrowserSurfaceLeasesAfterBoot(): Promise<void> {
     await startupControllerRunReconciliation;
     if (!browserSurfaceLeaseManager) {
@@ -1993,6 +2008,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
   // pulling unbounded rows.
   const SCHEDULE_HISTORY_PROJECTION_LIMIT = 500;
 
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: history projection walks per-connector × per-kind newest-first while merging two store sources (run history + last-run times); the loop structure is the algorithm.
   async function loadScheduleHistoryIndex(): Promise<ScheduleHistoryIndex> {
     // One bounded read of recent run history, grouped per connector. The
     // store returns rows in chronological order (oldest to newest); we walk
@@ -2112,6 +2128,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     const connectorInstanceId = options.connectorInstanceId || connectorId;
     const directSchedule = await getScheduleRecord(connectorInstanceId);
     let schedule = directSchedule;
+    // biome-ignore lint/complexity/useSimplifiedLogicExpression: fallback lookup should read as "no direct schedule and no explicit instance".
     if (!schedule && !options.connectorInstanceId) {
       const matches = (await schedulerStore.listSchedules()).filter(
         (candidate) => candidate.connector_id === connectorId
@@ -2230,6 +2247,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     return activeRuns.get(runtimeKey(connectorId, options.connectorInstanceId)) || null;
   }
 
+  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: controller run orchestration is inherently sequential (manifest → eligibility → surface → automation → trigger → emit); decomposition into helpers fragments shared closure state without clarifying flow.
   async function runNow(connectorId: string, options: RunNowOptions = {}): Promise<RunNowResult> {
     const connectorInstanceId = options.connectorInstanceId || connectorId;
     const key = runtimeKey(connectorId, connectorInstanceId);
@@ -2671,6 +2689,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
             // app) and we want their subscribed PWA to ring. INTERACTION
             // pushes still flow through brokerInteraction → fireWebPush.
             if (shouldFanoutAssistanceProgressMessage(msg)) {
+              // biome-ignore lint/complexity/noVoid: assistance push is nonblocking progress fanout.
               void fireAssistanceWebPush({
                 assistance: msg as Record<string, unknown>,
                 connectorDisplayName,
@@ -2740,7 +2759,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
   // Returns the count drained, the count timed out, and elapsed wall-clock
   // time so the caller can log a useful summary.
   async function drainActiveRuns(timeoutMs: number): Promise<DrainSummary> {
-    return drainPromisesWithDeadline(activeRunPromises, timeoutMs);
+    return await drainPromisesWithDeadline(activeRunPromises, timeoutMs);
   }
 
   function respondToInteraction(runId: string, input: RunInteractionResponseInput = {}): RunInteractionAck {

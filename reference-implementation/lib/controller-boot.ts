@@ -164,6 +164,7 @@ interface OrphanRow {
  * NOT swallow this — boot must abort. See design brief §3.4 failure
  * semantics.
  */
+// biome-ignore lint/suspicious/useAwait: tagged async to match the reconciler boundary; awaiting the inner Promise would add noise without changing behavior.
 export async function reconcileOrphanedRunsAtBoot(epoch: BootEpoch): Promise<ReconcileResult> {
   if (isPostgresStorageBackend()) {
     return reconcilePostgres(epoch);
@@ -178,7 +179,7 @@ interface PgClient {
 async function reconcilePostgres(epoch: BootEpoch): Promise<ReconcileResult> {
   // Single transaction: SELECT orphans, INSERT run.abandoned for each.
   // Unique-violation on spine_run_abandoned_cause_unique → idempotent no-op.
-  return (withPostgresTransaction as (fn: (c: PgClient) => Promise<ReconcileResult>) => Promise<ReconcileResult>)(
+  return await (withPostgresTransaction as (fn: (c: PgClient) => Promise<ReconcileResult>) => Promise<ReconcileResult>)(
     async (client: PgClient) => {
       const { rows } = await client.query<OrphanRow>(
         `

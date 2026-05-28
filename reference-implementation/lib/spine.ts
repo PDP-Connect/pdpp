@@ -726,6 +726,7 @@ function pickFirstNonNull<T extends keyof SpineEventRecord>(
   return null;
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: spine summary reduces every event-type branch into a single immutable summary; helper extraction would fragment the per-event-type case logic.
 function summarizeEvents(events: readonly SpineEventRecord[]): SpineSummary | null {
   if (events.length === 0) {
     return null;

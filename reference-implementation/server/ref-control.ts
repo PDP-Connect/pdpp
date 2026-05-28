@@ -1147,6 +1147,7 @@ interface HeartbeatRow {
  *   and roll up: `stalled` dominates `active` dominates `idle`;
  *   any `unreliable: true` adds `outbox` to `unreliableSources`.
  */
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: outbox rollup is a compact dominance table over heartbeat evidence.
 export function projectConnectorOutboxAxisFromHeartbeats(
   heartbeats: readonly HeartbeatRow[],
   options: { readonly nowIso: string }
@@ -1403,6 +1404,7 @@ function pickMostUrgentAttention(records: readonly AttentionRecord[]): Attention
   // The list is small (<= number of open attention records per
   // connection — typically 0-2); a single linear scan with a max-by
   // comparator is fine.
+  // biome-ignore lint/style/noNonNullAssertion: caller guards records.length > 0 before invoking this helper.
   return [...records].sort((a, b) => {
     const aResp = a.response_contract === "response_required" ? 1 : 0;
     const bResp = b.response_contract === "response_required" ? 1 : 0;
@@ -1516,6 +1518,7 @@ function pickMostUrgentLease(leases: readonly BrowserSurfaceLease[]): BrowserSur
   if (leases.length === 0) {
     return null;
   }
+  // biome-ignore lint/style/noNonNullAssertion: length-guarded above; sort+[0] is non-null by construction.
   return [...leases].sort((a, b) => {
     const r = rankRemoteSurfaceLease(a.status) - rankRemoteSurfaceLease(b.status);
     if (r !== 0) {
@@ -1540,6 +1543,7 @@ function pickMostRecentSurface(surfaces: readonly BrowserSurface[]): BrowserSurf
   if (surfaces.length === 0) {
     return null;
   }
+  // biome-ignore lint/style/noNonNullAssertion: length-guarded above; sort+[0] is non-null by construction.
   return [...surfaces].sort((a, b) => {
     const at = surfaceRecencyMs(b) - surfaceRecencyMs(a);
     if (at !== 0) {
@@ -1556,6 +1560,7 @@ function pickMostRecentSurface(surfaces: readonly BrowserSurface[]): BrowserSurf
  * (host browser / API connectors), so they cannot be silently degraded
  * by the absence of a lease/surface row.
  */
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: projection joins leases, surfaces, profile scoping, and fallback status in one evidence boundary.
 export async function getConnectorBrowserSurfaceProjection(
   connectorId: string,
   options: { readonly profileKey?: string | null; readonly store?: BrowserSurfaceLeaseStoreReader } = {}
@@ -1695,6 +1700,7 @@ export async function getConnectorBrowserSurfaceProjection(
   };
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: summary health projection combines freshness, attention, assistance, outbox, and surface axes into one owner-facing state.
 export function projectConnectorSummaryConnectionHealth(input: {
   /**
    * Durable structured attention records the caller has already filtered
@@ -1873,6 +1879,7 @@ export async function mapWithConcurrency<T, R>(
       inFlight++;
       onChange?.(inFlight);
       try {
+        // biome-ignore lint/style/noNonNullAssertion: while-loop guard proves index < items.length; noUncheckedIndexedAccess widens the index expression.
         results[index] = await worker(items[index]!, index);
       } catch (err) {
         if (firstError === null) {

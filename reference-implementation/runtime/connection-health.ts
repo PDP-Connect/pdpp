@@ -543,6 +543,7 @@ export interface ComputeConnectionHealthInput {
 
 // ─── Projection ───────────────────────────────────────────────────────────
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: top-level health projection composes axes/badges/conditions and derives an aggregate status; each step calls a helper, so the residual branching is the inherent classification table.
 export function computeConnectionHealth(input: ComputeConnectionHealthInput): ConnectionHealthSnapshot {
   const axes = projectAxes(input);
   const badges = projectBadges(input, axes);
@@ -886,11 +887,13 @@ function conditionIsCurrent(expiresAt: string | null, observedAt: string | null)
 }
 
 function conditionExpired(expiresAt: string | null, observedAt: string | null): boolean {
+  // biome-ignore lint/complexity/useSimplifiedLogicExpression: guard-clause form names the two missing inputs directly.
   if (!expiresAt || !observedAt) {
     return false;
   }
   const expiresAtMs = Date.parse(expiresAt);
   const observedAtMs = Date.parse(observedAt);
+  // biome-ignore lint/complexity/useSimplifiedLogicExpression: separate finite checks keep timestamp parse failures explicit.
   if (!Number.isFinite(expiresAtMs) || !Number.isFinite(observedAtMs)) {
     return false;
   }
