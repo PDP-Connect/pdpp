@@ -31,7 +31,7 @@ import {
 } from './metadata.ts';
 import { deriveReferenceFreshness } from './freshness.ts';
 import { createTraceContext, emitSpineEvent, generateSpineId, listSpineCorrelations, listSpineEventsPage, searchSpine } from '../lib/spine.ts';
-import { exec, getOne, InvalidCursorError, referenceQueries, transaction } from '../lib/db.ts';
+import { exec, getOne, referenceQueries, transaction } from '../lib/db.ts';
 import {
   registerConnector, getConnectorManifest, getConfiguredNativeManifest, getManifestForStorageBinding,
   introspect, revokeGrant, revokeGrantPackage,
@@ -242,7 +242,6 @@ import {
   RefConnectorScheduleGetNotFoundError,
   executeRefConnectorScheduleGet,
 } from '../operations/ref-connector-schedule-get/index.ts';
-import { executeRefSpineEventsPage } from '../operations/ref-spine-events-page/index.ts';
 import { executeRefSpineSearch } from '../operations/ref-spine-search/index.ts';
 import { executeRefRecordsTimeline } from '../operations/ref-records-timeline/index.ts';
 import {
@@ -313,6 +312,11 @@ import {
   mountRefRuns,
   mountRefTraces,
 } from './routes/ref-spine-correlations.ts';
+import {
+  mountRefGrantTimeline,
+  mountRefRunTimeline,
+  mountRefTraceTimeline,
+} from './routes/ref-spine-timelines.ts';
 import {
   mountRefWebPushConfig,
   mountRefWebPushCreateSubscription,
@@ -1089,38 +1093,6 @@ async function rejectMutation(res, req, context, err) {
     },
   });
   return pdppError(res, status, code, err.message);
-}
-
-// Spine timeline envelope assembly and live-bearer redaction live in the
-// `ref.spine.events.page` operation; see
-// reference-implementation/operations/ref-spine-events-page/index.ts.
-// The host adapter still owns query-string parsing for `limit`/`cursor`
-// (including the 400 error shape and the upper bound) because cursor
-// validation is route-layer concern: an invalid cursor must short-circuit
-// before any operation runs.
-
-const TIMELINE_DEFAULT_LIMIT = 2_000;
-const TIMELINE_MAX_LIMIT = 5_000;
-
-function parseTimelinePageOptions(req, res) {
-  const rawLimit = req.query?.limit;
-  let limit = TIMELINE_DEFAULT_LIMIT;
-  if (rawLimit !== undefined && rawLimit !== null && rawLimit !== '') {
-    const parsed = Number(rawLimit);
-    if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed <= 0) {
-      pdppError(res, 400, 'invalid_request', `limit must be a positive integer (got "${rawLimit}")`, 'limit');
-      return null;
-    }
-    if (parsed > TIMELINE_MAX_LIMIT) {
-      pdppError(res, 400, 'invalid_request', `limit ${parsed} exceeds maximum ${TIMELINE_MAX_LIMIT}`, 'limit');
-      return null;
-    }
-    limit = parsed;
-  }
-  const cursor = typeof req.query?.cursor === 'string' && req.query.cursor.length > 0
-    ? req.query.cursor
-    : null;
-  return { limit, cursor };
 }
 
 // ─── Auth middleware ─────────────────────────────────────────────────────────
@@ -4234,49 +4206,24 @@ function buildAsApp(opts = {}) {
     }
   });
 
-  function handleSpineTimeline(kind, idParamKey, notFoundMessage) {
-    return async (req, res) => {
-      try {
-        const id = decodeURIComponent(req.params[idParamKey]);
-        const opts = parseTimelinePageOptions(req, res);
-        if (!opts) return;
-        const page = await listSpineEventsPage(kind, id, opts);
-        if (!page.events.length && !opts.cursor) {
-          return pdppError(res, 404, 'not_found', notFoundMessage);
-        }
-        const envelope = executeRefSpineEventsPage({
-          kind,
-          id,
-          cursor: opts.cursor,
-          page,
-        });
-        res.json(envelope);
-      } catch (err) {
-        if (err instanceof InvalidCursorError) {
-          return pdppError(res, 400, 'invalid_cursor', err.message, 'cursor');
-        }
-        handleError(res, err);
-      }
-    };
-  }
-
-  app.get(
-    '/_ref/traces/:traceId',
-    ownerAuth.requireOwnerSession,
-    handleSpineTimeline('trace', 'traceId', 'Trace not found'),
-  );
-
-  app.get(
-    '/_ref/grants/:grantId/timeline',
-    ownerAuth.requireOwnerSession,
-    handleSpineTimeline('grant', 'grantId', 'Grant timeline not found'),
-  );
-
-  app.get(
-    '/_ref/runs/:runId/timeline',
-    ownerAuth.requireOwnerSession,
-    handleSpineTimeline('run', 'runId', 'Run timeline not found'),
-  );
+  // Spine detail / timeline routes are mounted via
+  // `server/routes/ref-spine-timelines.ts` per OpenSpec change
+  // `split-reference-server-by-route-family` (§2.2 detail/timeline
+  // sub-bullet). Behaviour-preserving extraction: same mount points,
+  // same handler chain (ownerAuth.requireOwnerSession), same envelope,
+  // same `limit`/`cursor` validation, same 404-on-empty-first-page, and
+  // same `invalid_cursor` discrimination. The canonical
+  // `ref.spine.events.page` operation continues to own envelope shape
+  // and live-bearer redaction.
+  const refSpineTimelinesContext = {
+    requireOwnerSession: ownerAuth.requireOwnerSession,
+    listSpineEventsPage: (kind, id, opts) => listSpineEventsPage(kind, id, opts),
+    handleError,
+    pdppError,
+  };
+  mountRefTraceTimeline(app, refSpineTimelinesContext);
+  mountRefGrantTimeline(app, refSpineTimelinesContext);
+  mountRefRunTimeline(app, refSpineTimelinesContext);
 
   // Run-interaction streaming companion (reference-only). The store and
   // companion factory live in this AS app so the mint route, the SSE viewer
