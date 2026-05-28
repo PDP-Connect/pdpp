@@ -3,6 +3,10 @@
 This runbook connects a self-hosted PDPP reference deployment to MCP clients
 that support remote Streamable HTTP MCP servers.
 
+If you do not yet have a reachable self-hosted deployment, start with the
+[self-host quickstart](selfhost-quickstart.md). Come back here once
+`/dashboard/deployment` reports healthy.
+
 ## Prerequisites
 
 - The reference deployment is reachable over HTTPS.

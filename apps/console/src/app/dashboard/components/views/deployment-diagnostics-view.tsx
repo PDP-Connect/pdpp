@@ -7,6 +7,7 @@ import { EmptyState } from "../shell.tsx";
 interface DeploymentDiagnosticsViewProps {
   actions?: ReactNode;
   afterDiagnostics?: ReactNode;
+  beforeDiagnostics?: ReactNode;
   breadcrumbs?: { href?: string; label: string }[];
   description: string;
   report: DeploymentDiagnostics;
@@ -16,6 +17,7 @@ interface DeploymentDiagnosticsViewProps {
 export function DeploymentDiagnosticsView({
   actions,
   afterDiagnostics,
+  beforeDiagnostics,
   breadcrumbs,
   description,
   report,
@@ -25,6 +27,7 @@ export function DeploymentDiagnosticsView({
     <>
       <PageHeader actions={actions} breadcrumbs={breadcrumbs} description={description} title={title} />
 
+      {beforeDiagnostics}
       <WarningsSection warnings={report.warnings} />
       <RuntimeCapabilitiesSection capabilities={report.runtime_capabilities} />
       <LexicalSection report={report} />

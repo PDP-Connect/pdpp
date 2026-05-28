@@ -386,6 +386,11 @@ pnpm reference-contract:check-generated
 
 ### Docker Compose reference stack
 
+For an end-to-end operator runbook (Docker host or RunPod CPU Pod, env vars,
+dashboard verification, MCP wiring), see
+[`docs/operator/selfhost-quickstart.md`](../docs/operator/selfhost-quickstart.md).
+The notes below are the topology reference; the quickstart is the procedure.
+
 The supported Docker path is a root-level Compose assembly for the live
 reference stack. The quickest self-hosted path uses the public GHCR images:
 
