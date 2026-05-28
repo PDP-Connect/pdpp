@@ -29,6 +29,9 @@ const REFERENCE_IMPL_DIR = join(__dirname, '..');
 const POLYFILL_MANIFESTS_DIR = join(REFERENCE_IMPL_DIR, '..', 'packages', 'polyfill-connectors', 'manifests');
 
 async function closeServer(server) {
+  server.schedulerManager?.stop?.();
+  server.abortStartupBackfill?.('test shutdown');
+  await Promise.resolve(server.startupBackfillDone).catch(() => {});
   server.asServer.closeAllConnections();
   server.rsServer.closeAllConnections();
   await Promise.allSettled([

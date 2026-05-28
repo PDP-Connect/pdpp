@@ -749,14 +749,13 @@ function classifyDegradedEvidence(ctx: ClassificationContext): ReturnType<Classi
 }
 
 function classifyCurrentEvidenceWithoutVerdict(ctx: ClassificationContext): ReturnType<ClassificationStep> {
-  // 6b. If current local/device evidence exists but no terminal collection
-  //     verdict exists, the health verdict is unknown, not idle. Activity is
-  //     orthogonal; "Idle" must not masquerade as a health verdict for a
-  //     connection that is actively maintained but not fully proven.
+  // 6b. If fresh retained/source evidence exists but no terminal collection
+  //     verdict exists, the health verdict is unknown, not idle. Local outbox
+  //     availability and active draining are orthogonal axis evidence.
   if (
     !(
       ctx.conditionSet.get("CollectionSucceeded")?.status === "unknown" &&
-      hasCurrentEvidenceWithoutCollectionVerdict(ctx.conditionSet)
+      hasFreshEvidenceWithoutCollectionVerdict(ctx.conditionSet)
     )
   ) {
     return null;
@@ -808,14 +807,10 @@ function classifyHealthy(ctx: ClassificationContext): ReturnType<ClassificationS
   };
 }
 
-function hasCurrentEvidenceWithoutCollectionVerdict(
+function hasFreshEvidenceWithoutCollectionVerdict(
   conditions: ReadonlyMap<ConnectionConditionType, ConnectionHealthCondition>
 ): boolean {
-  return (
-    conditionIsTrue(conditions, "Fresh") ||
-    conditionIsTrue(conditions, "LocalExporterAvailable") ||
-    conditionIsTrue(conditions, "BacklogClear")
-  );
+  return conditionIsTrue(conditions, "Fresh");
 }
 
 // ─── Axis projection ──────────────────────────────────────────────────────
