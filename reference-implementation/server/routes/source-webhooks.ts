@@ -18,6 +18,7 @@ import {
   type SourceWebhookResult,
 } from "../../operations/ref-source-webhook-ingest/index.ts";
 import { executeRecordsIngest } from "../../operations/rs-records-ingest/index.ts";
+import type { RunNowResult } from "../../runtime/controller.ts";
 
 interface RouteRequest {
   readonly body?: unknown;
@@ -68,7 +69,7 @@ export interface SourceWebhookController {
       readonly priorityClass: "scheduled_refresh";
       readonly triggerKind: "webhook";
     }
-  ): unknown | Promise<unknown>;
+  ): RunNowResult | Promise<RunNowResult>;
 }
 
 export interface SourceWebhookAutomationPolicy {
@@ -166,12 +167,11 @@ export function mountRefSourceWebhooks(app: AppLike, ctx: MountRefSourceWebhooks
             // truthiness of the returned value to decide whether to fall
             // back to `signalScheduler`. We forward the raw controller
             // result unchanged to preserve that behaviour.
-            const handle = await ctx.controller.runNow(connectorId, {
+            return ctx.controller.runNow(connectorId, {
               manifest,
               priorityClass: "scheduled_refresh",
               triggerKind,
             });
-            return handle as Awaited<ReturnType<NonNullable<Parameters<typeof executeSourceWebhook>[1]["requestRun"]>>>;
           },
         }
       );
