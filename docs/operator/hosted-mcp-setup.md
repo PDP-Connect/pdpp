@@ -63,6 +63,37 @@ current MCP setup command or settings UI and use the same URL above.
 - The hosted MCP surface is read-only and does not run connectors, schedules,
   browser sessions, or operator-console actions.
 
+## Trusted local agents (operator-side)
+
+The owner-token path is a separate surface for the operator and for trusted
+local agents that run on the operator's behalf — a CLI tool you wrote, a
+backup script you run from your laptop, an agent like a personal assistant
+that lives on a machine you control. It is not the route for ordinary MCP
+clients.
+
+Provision one from `/dashboard/deployment/tokens`:
+
+1. Sign in to the operator dashboard at `/owner/login`.
+2. Open the **Deployment → Tokens** page in the operator console
+   (`/dashboard/deployment/tokens`).
+3. Enter a token name that identifies the bearer (for example `local-cli`,
+   `backup-script`, or the local agent's name).
+4. Click **Issue token**. The dashboard registers a fresh OAuth client
+   (RFC 7591), drives the device authorization flow under your signed-in
+   owner session, and renders the bearer once. Copy it now — the dashboard
+   does not store it.
+5. The bearer is bound to that named client. Revoking the client (RFC 7592)
+   from the same page cascade-revokes the bearer.
+
+Use the bearer as `Authorization: Bearer …` against `/v1/*`. The owner
+bearer is an explicitly broader credential than a PDPP grant; treat it as
+operator-grade material, not something to paste into a third-party agent
+session.
+
+Ordinary MCP clients (Claude, ChatGPT, third-party agents) should keep
+using the OAuth scoped-grant flow at `/mcp` described above. `/mcp` rejects
+owner bearers on purpose.
+
 ## Troubleshooting
 
 - `Unsupported grant_types metadata values: refresh_token`: the deployment is

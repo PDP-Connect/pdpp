@@ -154,7 +154,20 @@ You should see three real conversation records.
 
 ## Hand the token to a coding agent
 
-Open a coding agent of your choice (Claude Code, Cursor, etc.). Paste the following prompt, substituting your token:
+The owner token you just minted is the operator's full read credential. Use it
+only with a trusted local agent that runs on your behalf — a coding agent on
+your own machine, a CLI tool you wrote, a backup script. It is **not** the
+right shape for an ordinary MCP client.
+
+For routine MCP clients (the public Claude or ChatGPT connectors, third-party
+agents, any session you do not personally control), use the scoped-grant flow
+described in [`docs/operator/hosted-mcp-setup.md`](operator/hosted-mcp-setup.md)
+and the `pdpp connect <provider-url>` CLI command. The hosted `/mcp` endpoint
+rejects owner bearers on purpose.
+
+For a quick local self-test through a trusted agent on your own machine, open
+a coding agent (Claude Code, Cursor, etc.) and paste the following prompt,
+substituting your token:
 
 ````
 I have a locally-running PDPP server. Your job is to explore the data it exposes.

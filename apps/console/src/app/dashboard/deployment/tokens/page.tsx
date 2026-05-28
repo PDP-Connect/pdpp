@@ -3,7 +3,7 @@ import { Button, buttonVariants } from "@/components/ui/button.tsx";
 import { Input } from "@/components/ui/input.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
 import { CopyButton } from "../../components/copy-button.tsx";
-import { PageHeader } from "../../components/primitives.tsx";
+import { Callout, PageHeader } from "../../components/primitives.tsx";
 import { DashboardShell, ServerUnreachable } from "../../components/shell.tsx";
 import { buildOwnerBootstrapExamples, getOwnerBootstrapFlow } from "../../lib/operator-bootstrap.ts";
 import { ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
@@ -200,6 +200,33 @@ function InlineNotice({ message }: { message: string }) {
   );
 }
 
+// Owner bearers and the routine MCP scoped-grant flow are two separate paths
+// with two separate audiences. Tokens issued here cover the whole RS read
+// surface under the operator's identity — fine for a CLI you wrote yourself,
+// a backup script you run from your laptop, or a trusted local agent that
+// acts on the operator's behalf. They are explicitly the wrong shape for
+// ordinary MCP clients (Claude, ChatGPT, third-party agents); the hosted
+// MCP endpoint rejects owner bearers by design.
+function OwnerScopeCallout() {
+  return (
+    <Callout className="mb-6" surface="human" title="Use this for operator and trusted-agent access only">
+      <p className="pdpp-caption text-muted-foreground">
+        Tokens issued here are owner bearers — they grant the operator's full read access to{" "}
+        <code className="font-mono">/v1/*</code>. Use them for the operator themselves, for CLI tools and scripts you
+        wrote, and for trusted local agents that run on your behalf.
+      </p>
+      <p className="pdpp-caption mt-2 text-muted-foreground">
+        Ordinary MCP clients (Claude, ChatGPT, third-party agents) should connect through the OAuth scoped-grant flow at{" "}
+        <code className="font-mono">/mcp</code>. That path is documented in the{" "}
+        <Link className="underline-offset-2 hover:underline" href="/dashboard/deployment">
+          deployment overview
+        </Link>
+        's connect-an-agent card. <code className="font-mono">/mcp</code> rejects owner bearers on purpose.
+      </p>
+    </Callout>
+  );
+}
+
 function TokensListSection({
   tokens,
   highlightClientId,
@@ -332,9 +359,11 @@ export default async function DeploymentTokensPage({ searchParams }: { searchPar
           </Link>
         }
         breadcrumbs={[{ label: "Deployment", href: "/dashboard/deployment" }, { label: "Tokens" }]}
-        description="Issue an owner bearer for the reference RS."
+        description="Owner bearers for the operator and trusted local agents that run on the operator's behalf. Not the path for ordinary MCP clients."
         title="Tokens"
       />
+
+      <OwnerScopeCallout />
 
       {error ? <InlineError message={error} prefix="Action failed" /> : null}
       {notice === "revoked" ? <InlineNotice message="Token revoked. Its bearer no longer works." /> : null}
