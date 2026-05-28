@@ -2772,6 +2772,7 @@ The reference dashboard SHALL relabel the Records subnav header to `Connections`
 - **WHEN** an operator visits the records-index page or any per-connection drilldown
 - **THEN** the URL SHALL remain rooted at `/dashboard/records` in this tranche
 - **AND** the rename of the Records subtree to `/dashboard/connections` (and the corresponding nav relabel) SHALL be scoped to a subsequent OpenSpec change, not this one
+
 ### Requirement: Reference dashboard exposes a records explorer surface
 The reference dashboard SHALL expose an owner-only records-explorer surface at `/dashboard/records/explorer` that browses owner-visible records through existing public PDPP and existing `_ref` read endpoints, without introducing new RS or `_ref` endpoints.
 
@@ -2905,3 +2906,145 @@ The reference dashboard SHALL expose the records explorer as a top-level operato
 - **WHEN** an operator visits the records-index page or any per-connection drilldown
 - **THEN** the URL SHALL remain rooted at `/dashboard/records` in this tranche
 - **AND** the rename of the Records subtree to `/dashboard/connections` (and the corresponding nav relabel) SHALL be scoped to a subsequent OpenSpec change, not this one
+
+### Requirement: The MCP adapter SHALL expose client event subscription management tools
+
+The reference MCP adapter (`packages/mcp-server`) SHALL register tools that forward the client-facing `/v1/event-subscriptions[...]` REST surface verbatim. Each tool SHALL use the same scoped client bearer the adapter already caches via `pdpp connect`. The adapter SHALL NOT introduce a new authorization mode and SHALL NOT accept owner credentials for these tools — the existing owner-credential refusal in `packages/mcp-server/src/index.js` SHALL still gate startup.
+
+Each subscription tool SHALL forward to exactly one REST endpoint, MUST NOT silently drop or rename a forwarded field, and SHALL surface the RS response (or typed error envelope) under the standard `structuredContent` shape the existing read tools use.
+
+#### Scenario: An MCP client lists the registered tools
+
+- **WHEN** an MCP client connected to the adapter calls `tools/list`
+- **THEN** the response SHALL include `create_event_subscription`, `list_event_subscriptions`, `get_event_subscription`, `update_event_subscription`, `delete_event_subscription`, and `send_test_event` in addition to the existing read tools
+
+#### Scenario: A client creates a subscription through MCP
+
+- **WHEN** an MCP client calls `create_event_subscription` with an HTTPS `callback_url`
+- **THEN** the adapter SHALL issue `POST /v1/event-subscriptions` to the configured provider with `Authorization: Bearer <scoped-client-token>` and a JSON body containing `callback_url` (and `filters` when supplied)
+- **AND** the tool result's `structuredContent.data` SHALL include the RS response body verbatim, including the `whsec_`-prefixed delivery secret returned exactly once
+
+#### Scenario: A client deletes a subscription through MCP
+
+- **WHEN** an MCP client calls `delete_event_subscription` with a `subscription_id`
+- **THEN** the adapter SHALL issue `DELETE /v1/event-subscriptions/<id>` with the scoped bearer attached
+- **AND** the tool SHALL surface `status: 204` in the structured content without echoing a synthetic body
+
+#### Scenario: The RS rejects a non-HTTPS callback URL
+
+- **WHEN** an MCP client calls `create_event_subscription` with a `callback_url` the RS rejects with a typed `invalid_request` envelope
+- **THEN** the tool result SHALL set `isError: true`
+- **AND** the structured content SHALL preserve the RS error envelope's `type`, `code`, and `message` rather than masking them
+
+#### Scenario: An owner credential is present in the environment
+
+- **WHEN** the adapter is started with `PDPP_OWNER_TOKEN` or `PDPP_OWNER_SESSION_COOKIE` in the environment
+- **THEN** the adapter SHALL refuse to start with the existing exit code, regardless of which tools (read or write) are registered
+
+### Requirement: Subscription tools SHALL annotate their side effects honestly
+
+Each subscription tool SHALL set MCP tool annotations that reflect the underlying REST endpoint's side effect. Read-only tools (`list_event_subscriptions`, `get_event_subscription`) SHALL advertise `readOnlyHint: true` and `idempotentHint: true`. Write tools SHALL advertise `readOnlyHint: false`. `delete_event_subscription` SHALL advertise `destructiveHint: true`. `update_event_subscription` and `send_test_event` SHALL advertise `idempotentHint: false` because they affect server state on each call (secret rotation mints a new secret; test-event enqueue mints a new event id).
+
+All subscription tools SHALL advertise `openWorldHint: false` because their side effects are bounded to the configured PDPP resource server.
+
+#### Scenario: A client harness inspects tool annotations
+
+- **WHEN** an MCP client reads the `annotations` block for `delete_event_subscription`
+- **THEN** the annotations SHALL include `readOnlyHint: false`, `destructiveHint: true`, `idempotentHint: true`, and `openWorldHint: false`
+
+#### Scenario: A client harness inspects update tool annotations
+
+- **WHEN** an MCP client reads the `annotations` block for `update_event_subscription` or `send_test_event`
+- **THEN** the annotations SHALL include `readOnlyHint: false`, `destructiveHint: false`, `idempotentHint: false`, and `openWorldHint: false`
+
+### Requirement: The MCP adapter SHALL expose an event-subscription discovery tool
+
+The adapter SHALL register a read-only `discover_event_subscription_capabilities` tool that fetches the resource server's protected-resource metadata at `/.well-known/oauth-protected-resource` and surfaces `capabilities.client_event_subscriptions`. The tool SHALL set `readOnlyHint: true`, `idempotentHint: true`, and `openWorldHint: false`. The endpoint is unauthenticated per RFC 9728; the adapter MAY include the configured bearer in the request but SHALL NOT require authentication for this discovery tool to succeed.
+
+The tool's `structuredContent` SHALL include `supported` (boolean derived from `capability.supported === true`), `capability` (the advertised block verbatim, or `null` when absent), `data` (the full protected-resource metadata body), and the standard `provider_url`, `request_id`, and `http_status` fields.
+
+When the advertisement omits `capabilities.client_event_subscriptions`, the tool SHALL surface `supported: false` and `capability: null` and SHALL NOT set `isError`. RS errors (e.g. untrusted-host envelopes) SHALL propagate as `isError: true` with the typed envelope preserved.
+
+#### Scenario: A client discovers supported event types before subscribing
+
+- **WHEN** an MCP client calls `discover_event_subscription_capabilities` against a reference instance that advertises `client_event_subscriptions`
+- **THEN** the adapter SHALL issue `GET /.well-known/oauth-protected-resource` to the configured provider
+- **AND** `structuredContent.supported` SHALL be `true`
+- **AND** `structuredContent.capability` SHALL contain the `endpoint`, `event_types`, `signing`, `envelope`, and `retry` fields advertised by the RS
+
+#### Scenario: A deployment does not advertise event subscriptions
+
+- **WHEN** the protected-resource metadata omits `capabilities.client_event_subscriptions`
+- **THEN** the tool SHALL return `structuredContent.supported: false` and `structuredContent.capability: null`
+- **AND** the tool result SHALL NOT set `isError`
+- **AND** the prose `content[0].text` SHALL guide the caller toward `query_records` with `changes_since` as the polling alternative
+
+### Requirement: Subscription tool descriptions SHALL explain when to use events versus polling
+
+Every write tool description (`create_event_subscription`, `update_event_subscription`, `send_test_event`) and every read tool description that touches the subscription substrate SHALL state when event subscriptions are appropriate (long-lived receiver, low-latency change notification) and when polling via `query_records` with `changes_since` is the better choice (one-shot reads, short-lived clients, environments without a reachable HTTPS callback). Descriptions SHALL also reference `discover_event_subscription_capabilities` as the authoritative source for supported event types, signing profile, and retry schedule.
+
+#### Scenario: An LLM agent reads a write-tool description
+
+- **WHEN** an MCP client inspects the description of `create_event_subscription`, `update_event_subscription`, or `send_test_event`
+- **THEN** the description SHALL mention both event subscriptions and the polling alternative
+- **AND** the description SHALL name `discover_event_subscription_capabilities` (directly or via the protected-resource metadata path) as the way to learn supported event types and wire shape
+
+### Requirement: MCP Adapter Remains Outside the Reference Control Plane
+The reference implementation SHALL package the MCP adapter as a client-side adapter over the existing PDPP resource-server API, not as a new reference-server control plane or collection runtime. The adapter package SHALL NOT import from `reference-implementation/` server internals and SHALL NOT require a PDPP monorepo checkout to run after publication.
+
+#### Scenario: Package boundary is inspected
+- **WHEN** maintainers inspect the MCP adapter package imports and package metadata
+- **THEN** the package SHALL depend only on published/workspace packages and public PDPP HTTP surfaces, and SHALL NOT import reference server modules or connector runtime internals
+
+#### Scenario: Reference server behavior is compared before and after adapter installation
+- **WHEN** the MCP adapter package is added to the workspace
+- **THEN** existing AS, RS, grant, connector, scheduler, and collection-profile routes SHALL remain wire-compatible because the adapter consumes those routes instead of modifying them
+
+### Requirement: Authorization Server Supports Public OAuth Code With PKCE For Hosted MCP
+The reference authorization server SHALL support OAuth `authorization_code` with PKCE S256 for public hosted MCP clients. The flow SHALL bridge to existing PDPP pending-consent approval and SHALL issue the same kind of grant-scoped client bearer tokens already enforced by the resource server.
+
+#### Scenario: Public client registers for authorization code
+- **WHEN** dynamic client registration receives public-client metadata with `grant_types: ["authorization_code", "refresh_token"]`, `response_types: ["code"]`, redirect URIs, and `token_endpoint_auth_method: "none"`
+- **THEN** the reference AS SHALL register the client if all metadata is valid
+
+#### Scenario: Client starts authorization
+- **WHEN** a registered public client calls `/oauth/authorize` with `response_type=code`, an exact registered `redirect_uri`, `code_challenge_method=S256`, and a code challenge
+- **THEN** the AS SHALL stage or bind a PDPP pending-consent request and present the owner consent flow
+
+#### Scenario: Owner approves hosted MCP consent
+- **WHEN** the owner approves a pending authorization-code consent request
+- **THEN** the AS SHALL issue a PDPP grant and client token, mint a short-lived single-use authorization code bound to client, redirect URI, and PKCE challenge, and redirect the browser with `code` and optional `state`
+
+#### Scenario: Client exchanges code
+- **WHEN** the client posts `/oauth/token` with `grant_type=authorization_code`, the authorization code, matching client id, matching redirect URI, and a valid PKCE verifier
+- **THEN** the AS SHALL return the scoped client bearer token, return an opaque grant-scoped refresh token when the registered client requested `refresh_token`, and mark the code consumed
+
+#### Scenario: Client refreshes hosted MCP access
+- **WHEN** the client posts `/oauth/token` with `grant_type=refresh_token`, the opaque refresh token, and the matching public client id
+- **THEN** the AS SHALL issue a new scoped client bearer for the same PDPP grant without widening source, stream, subject, purpose, retention, or storage-binding scope
+
+#### Scenario: Refresh token no longer matches an active grant
+- **WHEN** the client posts `/oauth/token` with an unknown refresh token, a mismatched client id, or a token tied to a revoked or invalid grant
+- **THEN** the AS SHALL reject the exchange and SHALL NOT issue a new bearer
+
+#### Scenario: Code is reused or verifier is wrong
+- **WHEN** a client reuses an authorization code or supplies the wrong PKCE verifier
+- **THEN** the AS SHALL reject the exchange and SHALL NOT issue a token
+
+### Requirement: Authorization Metadata Advertises Hosted MCP OAuth Capabilities
+The authorization server metadata SHALL truthfully advertise OAuth code-flow support needed by hosted MCP clients.
+
+#### Scenario: Client discovers authorization server metadata
+- **WHEN** a client fetches `/.well-known/oauth-authorization-server`
+- **THEN** the response SHALL include `authorization_endpoint`, `authorization_code` and `refresh_token` in `grant_types_supported`, `code` in `response_types_supported`, and `S256` in `code_challenge_methods_supported`
+
+### Requirement: Hosted MCP OAuth Does Not Leak Bearers
+The hosted MCP OAuth approval path SHALL NOT place access tokens in browser-rendered HTML, redirect URLs, logs intended for users, or consent exchange codes.
+
+#### Scenario: Approval redirects to client
+- **WHEN** owner approval completes for an authorization-code request
+- **THEN** the browser redirect SHALL include only the authorization code and optional state, and SHALL NOT include the access token, refresh token, or grant JSON
+
+#### Scenario: Token endpoint returns bearer
+- **WHEN** the registered client exchanges the authorization code successfully
+- **THEN** the bearer SHALL be returned only from `/oauth/token` in the JSON response body
