@@ -116,8 +116,10 @@ git_before="$artifact_dir/git-status-before.txt"
 git_after="$artifact_dir/git-status-after.txt"
 status_json="$artifact_dir/status.json"
 recovery_transcript="$artifact_dir/recovery.log"
+mcp_config="$artifact_dir/mcp-empty.json"
 
 cp "$prompt_abs" "$prompt_copy"
+printf '{"mcpServers":{}}\n' >"$mcp_config"
 
 # ---- snapshot pre-state -----------------------------------------------------
 
@@ -208,6 +210,9 @@ main_exit=0
   claude \
     --print \
     --model "$model" \
+    --no-session-persistence \
+    --strict-mcp-config \
+    --mcp-config "$mcp_config" \
     --dangerously-skip-permissions \
     --append-system-prompt "Worker lane '$lane'. Write the required report to $report_abs before ending. Follow docs/agent-workstream-playbook.md." \
     "$main_prompt"
@@ -248,6 +253,9 @@ state what is missing. End with the verbatim \`git status --short\` output."
       claude \
         --print \
         --model "$model" \
+        --no-session-persistence \
+        --strict-mcp-config \
+        --mcp-config "$mcp_config" \
         --dangerously-skip-permissions \
         --disallowedTools "Edit" "MultiEdit" "Write(!$report_abs)" "NotebookEdit" \
         --append-system-prompt "Recovery pass for lane '$lane'. Report-only. The only file you may write is $report_abs." \
