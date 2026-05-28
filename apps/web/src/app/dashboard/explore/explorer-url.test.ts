@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   buildExplorerHref,
+  computeActivityStripCells,
   type ExplorerFeedEntry,
   explorerPeekParam,
   groupFeedByDay,
@@ -217,4 +218,46 @@ test("groupFeedByDay renders a stable, locale-pinned day label", () => {
   // en-US, UTC: "Thu, May 28, 2026". Locale and timeZone are pinned so SSR
   // and client agree.
   assert.equal(groups[0]?.label, "Thu, May 28, 2026");
+});
+
+const NOW_MS = Date.parse("2026-05-28T12:00:00Z");
+
+test("computeActivityStripCells produces a contiguous oldest→newest window", () => {
+  const cells = computeActivityStripCells([], 30, NOW_MS);
+  assert.equal(cells.length, 30);
+  // Oldest first, newest last; newest cell is the day containing `now`.
+  assert.equal(cells[0]?.day, "2026-04-29");
+  assert.equal(cells.at(-1)?.day, "2026-05-28");
+  assert.equal(cells.at(-1)?.isToday, true);
+  assert.equal(cells[0]?.isToday, false);
+});
+
+test("computeActivityStripCells counts entries by ISO day with zeros for missing days", () => {
+  const cells = computeActivityStripCells(
+    [
+      fakeEntry("2026-05-28T14:00:00Z", "r1"),
+      fakeEntry("2026-05-28T08:00:00Z", "r2"),
+      fakeEntry("2026-05-27T22:00:00Z", "r3"),
+      // Outside window — must not leak into the strip.
+      fakeEntry("2026-04-01T00:00:00Z", "rOld"),
+    ],
+    30,
+    NOW_MS
+  );
+  const byDay = new Map(cells.map((c) => [c.day, c.count]));
+  assert.equal(byDay.get("2026-05-28"), 2);
+  assert.equal(byDay.get("2026-05-27"), 1);
+  assert.equal(byDay.get("2026-05-26"), 0);
+  // The "2026-04-01" entry is outside the 30-day window and is dropped.
+  assert.equal(byDay.has("2026-04-01"), false);
+});
+
+test("computeActivityStripCells ignores entries with missing or unparseable dates", () => {
+  const cells = computeActivityStripCells(
+    [fakeEntry("", "r1"), fakeEntry("not-a-date", "r2"), fakeEntry("2026-05-28T00:00:00Z", "r3")],
+    7,
+    NOW_MS
+  );
+  const total = cells.reduce((sum, c) => sum + c.count, 0);
+  assert.equal(total, 1);
 });

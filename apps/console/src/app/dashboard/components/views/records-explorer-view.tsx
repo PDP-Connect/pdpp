@@ -207,6 +207,54 @@ export function groupFeedByDay(entries: ExplorerFeedEntry[]): ExplorerFeedDayGro
   return groups;
 }
 
+export interface ExplorerActivityCell {
+  /** Number of feed entries whose `displayAt` falls on this day. */
+  count: number;
+  /** ISO date key (yyyy-mm-dd) for the day. */
+  day: string;
+  /** True when this cell is "today" relative to the reference clock. */
+  isToday: boolean;
+}
+
+const MS_PER_DAY = 86_400_000;
+
+function isoDayFromMs(ms: number): string {
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+/**
+ * Day-bucketed counts over the last `days` calendar days, sorted oldest →
+ * newest. Cells with no matching entries render as zero, not as gaps, so the
+ * strip is a stable shape regardless of how much data the bounded fan-out
+ * found. The reference clock is `now` (defaulting to `Date.now()`) so SSR can
+ * be deterministic and tests can pin a window.
+ */
+export function computeActivityStripCells(
+  entries: ExplorerFeedEntry[],
+  days = 30,
+  now: number = Date.now()
+): ExplorerActivityCell[] {
+  const counts = new Map<string, number>();
+  for (const e of entries) {
+    const day = dayKeyFromDisplayAt(e.displayAt);
+    if (!day) {
+      continue;
+    }
+    counts.set(day, (counts.get(day) ?? 0) + 1);
+  }
+  const todayKey = isoDayFromMs(now);
+  const cells: ExplorerActivityCell[] = [];
+  for (let i = days - 1; i >= 0; i -= 1) {
+    const dayKey = isoDayFromMs(now - i * MS_PER_DAY);
+    cells.push({
+      day: dayKey,
+      count: counts.get(dayKey) ?? 0,
+      isToday: dayKey === todayKey,
+    });
+  }
+  return cells;
+}
+
 export function buildExplorerHref(
   routes: Routes,
   opts: {
@@ -467,6 +515,17 @@ function ExplorerMain({
       />
 
       <ExplorerWarnings warnings={warnings} />
+
+      {lens === "recent" && feed.length > 0 ? (
+        <ActivityStrip
+          cells={computeActivityStripCells(feed)}
+          query={query}
+          routes={routes}
+          selectedConnectionIds={selectedConnectionIds}
+          selectedStreams={selectedStreams}
+          totalRecords={feed.length}
+        />
+      ) : null}
 
       <Section description={feedDescription(lens, hybridUsed)} title="Records">
         {feed.length === 0 ? (
@@ -757,6 +816,85 @@ function ExplorerWarnings({ warnings }: { warnings: ExplorerWarning[] }) {
         ))}
       </ul>
     </Callout>
+  );
+}
+
+// Server-deterministic day label for the strip tooltip. Locale-pinned, UTC.
+const ACTIVITY_CELL_LABEL_FMT = new Intl.DateTimeFormat("en-US", {
+  weekday: "short",
+  month: "short",
+  day: "numeric",
+  timeZone: "UTC",
+});
+
+function ActivityStrip({
+  cells,
+  query,
+  routes,
+  selectedConnectionIds,
+  selectedStreams,
+  totalRecords,
+}: {
+  cells: ExplorerActivityCell[];
+  query: string;
+  routes: Routes;
+  selectedConnectionIds: string[];
+  selectedStreams: string[];
+  totalRecords: number;
+}) {
+  if (cells.length === 0) {
+    return null;
+  }
+  const max = cells.reduce((m, c) => Math.max(m, c.count), 0);
+  return (
+    <section aria-label={`activity over the last ${cells.length} days`} className="mb-5">
+      <div className="mb-1.5 flex items-baseline justify-between gap-3">
+        <h2 className="pdpp-eyebrow text-muted-foreground">Activity · last {cells.length} days</h2>
+        <span className="pdpp-caption text-muted-foreground tabular-nums">
+          from the most recent {totalRecords.toLocaleString()} records
+        </span>
+      </div>
+      <div className="flex h-10 items-end gap-[2px]">
+        {cells.map((c) => {
+          const intensity = max === 0 || c.count === 0 ? 0 : 0.18 + 0.82 * (c.count / max);
+          const nextDay = isoDayFromMs(Date.parse(`${c.day}T00:00:00Z`) + MS_PER_DAY);
+          const dayLabel = ACTIVITY_CELL_LABEL_FMT.format(new Date(`${c.day}T00:00:00Z`));
+          const title = `${dayLabel} · ${c.count.toLocaleString()} record${c.count === 1 ? "" : "s"}`;
+          const wrapperClass = `relative flex h-full min-w-[6px] flex-1 flex-col justify-end rounded-sm ${
+            c.isToday ? "ring-1 ring-foreground/40" : ""
+          }`;
+          const fill = (
+            <span
+              aria-hidden
+              className="block w-full rounded-sm bg-foreground"
+              style={{
+                height: c.count === 0 ? "8%" : `${Math.round(intensity * 100)}%`,
+                opacity: c.count === 0 ? 0.12 : 1,
+              }}
+            />
+          );
+          if (c.count === 0) {
+            return (
+              <span className={wrapperClass} key={c.day} title={title}>
+                {fill}
+              </span>
+            );
+          }
+          const href = buildExplorerHref(routes, {
+            query,
+            connectionIds: selectedConnectionIds,
+            streams: selectedStreams,
+            since: c.day,
+            until: nextDay,
+          });
+          return (
+            <Link className={`${wrapperClass} hover:opacity-80`} href={href} key={c.day} title={title}>
+              {fill}
+            </Link>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 
