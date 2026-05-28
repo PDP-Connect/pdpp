@@ -824,7 +824,7 @@ export function buildClientEventSubscriptionsCapability({
       at_least_once: true,
       after_commit: true,
       coalescing: false,
-      retry_schedule_seconds: [30, 120, 600, 3600, 21600, 86400] as const,
+      retry_schedule_seconds: [30, 120, 600, 3600, 21_600, 86_400] as const,
       max_attempts: 6,
       dead_letter_state: "disabled_failure",
       response_window_seconds: 10,

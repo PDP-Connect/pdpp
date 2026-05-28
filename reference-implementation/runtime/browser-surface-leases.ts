@@ -183,7 +183,7 @@ function defaultStaticProfileKey(managedConnectorIds: readonly string[]): string
 function parseSurfaceMode(value: string | undefined): BrowserSurfaceMode | undefined {
   const mode = emptyToUndefined(value);
   if (!mode) {
-    return undefined;
+    return;
   }
   if (mode === "static" || mode === "dynamic") {
     return mode;

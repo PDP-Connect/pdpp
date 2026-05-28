@@ -250,7 +250,7 @@ export function createPostgresClientEventSubscriptionStore(): ClientEventSubscri
       );
     },
     async deleteSubscription(id): Promise<void> {
-      await postgresQuery(`DELETE FROM client_event_subscriptions WHERE subscription_id = $1`, [id]);
+      await postgresQuery("DELETE FROM client_event_subscriptions WHERE subscription_id = $1", [id]);
     },
     async enqueueEvent(event: QueuedEventForEnqueue): Promise<void> {
       await postgresQuery(

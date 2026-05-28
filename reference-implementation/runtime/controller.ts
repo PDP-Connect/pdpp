@@ -35,7 +35,7 @@ import {
 } from "../server/auth.js";
 import { isPostgresStorageBackend, postgresQuery } from "../server/postgres-storage.js";
 import { getSyncState } from "../server/records.js";
-import { type BrowserSurfaceLeaseStore } from "../server/stores/browser-surface-lease-store.ts";
+import type { BrowserSurfaceLeaseStore } from "../server/stores/browser-surface-lease-store.ts";
 import {
   type ActiveRunRecord,
   getDefaultSchedulerStore,
@@ -45,10 +45,7 @@ import {
 } from "../server/stores/scheduler-store.ts";
 import { browserSurfaceLeaseEnv } from "./browser-surface-leases.ts";
 import { readBrowserSurfaceProfileKey } from "./browser-surface-profile-key.ts";
-import {
-  type BrowserSurfaceReadinessProbe,
-  type BrowserSurfaceReadinessProbeResult,
-} from "./browser-surface-readiness.ts";
+import type { BrowserSurfaceReadinessProbe, BrowserSurfaceReadinessProbeResult } from "./browser-surface-readiness.ts";
 import { runConnector } from "./index.js";
 import {
   automaticIneligibilityReason,
@@ -1541,9 +1538,9 @@ export function createController(opts: ControllerOptions = {}): Controller {
       const readyResult = await browserSurfaceLeaseManager.ensureStartingSurfaceReady({
         leaseId: current.lease_id,
         allocator,
-        ...(browserSurfaceReadinessTimeoutMs !== undefined
-          ? { readinessTimeoutMs: browserSurfaceReadinessTimeoutMs }
-          : {}),
+        ...(browserSurfaceReadinessTimeoutMs === undefined
+          ? {}
+          : { readinessTimeoutMs: browserSurfaceReadinessTimeoutMs }),
       });
       current = readyResult.lease;
       await persistBrowserSurfaceLeaseMutation(readyResult.lease, readyResult.surface);
@@ -1691,13 +1688,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
       return { ok: true, pageTargetCount: 0 };
     }
     let result: BrowserSurfaceReadinessProbeResult;
-    if (!surface) {
-      result = {
-        ok: false,
-        code: "browser_surface_not_ready",
-        detail: `lease ${lease.lease_id} references missing surface ${lease.surface_id || "(none)"}`,
-      };
-    } else {
+    if (surface) {
       try {
         result = await browserSurfaceReadinessProbe.probe(surface);
       } catch (err) {
@@ -1708,6 +1699,12 @@ export function createController(opts: ControllerOptions = {}): Controller {
           detail: `readiness probe threw: ${message}`,
         };
       }
+    } else {
+      result = {
+        ok: false,
+        code: "browser_surface_not_ready",
+        detail: `lease ${lease.lease_id} references missing surface ${lease.surface_id || "(none)"}`,
+      };
     }
     if (result.ok) {
       try {
@@ -2540,32 +2537,30 @@ export function createController(opts: ControllerOptions = {}): Controller {
       // proven the CDP target is alive RIGHT NOW. Probe before we hand env
       // to the connector and ask the human for an OTP. On failure, emit a
       // typed event, release the lease, and return surface_failed.
-      if (browserSurfaceLease && browserSurfaceEnv) {
-        if (browserSurfaceReadinessProbe) {
-          const surfaceForProbe = browserSurfaceLease.surface_id
-            ? (browserSurfaceLeaseManager.getSurface(browserSurfaceLease.surface_id) ?? null)
-            : null;
-          const probeResult = await runBrowserSurfaceReadinessGate(
-            browserSurfaceLease,
-            surfaceForProbe,
-            connectorId,
-            runId,
-            traceContext
-          );
-          if (!probeResult.ok) {
-            pendingBrowserSurfaceLaunches.delete(runId);
-            const projected = projectBrowserSurfaceLease(browserSurfaceLease);
-            return {
-              run_id: runId,
-              trace_id: traceContext.trace_id,
-              status: "surface_failed",
-              browser_surface: {
-                ...projected,
-                browser_surface_status: "surface_failed",
-              },
-              ...automationMetadata,
-            };
-          }
+      if (browserSurfaceLease && browserSurfaceEnv && browserSurfaceReadinessProbe) {
+        const surfaceForProbe = browserSurfaceLease.surface_id
+          ? (browserSurfaceLeaseManager.getSurface(browserSurfaceLease.surface_id) ?? null)
+          : null;
+        const probeResult = await runBrowserSurfaceReadinessGate(
+          browserSurfaceLease,
+          surfaceForProbe,
+          connectorId,
+          runId,
+          traceContext
+        );
+        if (!probeResult.ok) {
+          pendingBrowserSurfaceLaunches.delete(runId);
+          const projected = projectBrowserSurfaceLease(browserSurfaceLease);
+          return {
+            run_id: runId,
+            trace_id: traceContext.trace_id,
+            status: "surface_failed",
+            browser_surface: {
+              ...projected,
+              browser_surface_status: "surface_failed",
+            },
+            ...automationMetadata,
+          };
         }
       }
     }

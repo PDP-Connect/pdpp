@@ -7,7 +7,7 @@ import {
   type StopBrowserSurfaceRequest,
 } from "@opendatalabs/remote-surface/leases";
 
-const DEFAULT_ALLOCATOR_TIMEOUT_MS = 5_000;
+const DEFAULT_ALLOCATOR_TIMEOUT_MS = 5000;
 const VALID_HEALTH = new Set<BrowserSurfaceHealth>(["starting", "ready", "unhealthy", "stopping"]);
 
 type AllocatorFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
@@ -241,7 +241,7 @@ function requiredString(value: Record<string, unknown>, key: string, label: stri
 
 function optionalString(value: unknown, key: string, label: string): string | undefined {
   if (value === undefined) {
-    return undefined;
+    return;
   }
   if (typeof value !== "string" || value.length === 0) {
     throw malformed(`${label} has invalid ${key}`);
@@ -269,7 +269,7 @@ function parseIsoString(value: unknown, key: string, label: string): string {
 
 function parseMetadata(value: unknown, label: string): Readonly<Record<string, string>> | undefined {
   if (value === undefined) {
-    return undefined;
+    return;
   }
   if (!isRecord(value)) {
     throw malformed(`${label} has invalid allocator_metadata`);

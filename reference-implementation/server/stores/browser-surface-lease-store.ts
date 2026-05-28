@@ -200,7 +200,7 @@ function firstDynamicRow<R>(sql: string, params: BindValue[] = []): R | undefine
   for (const row of iterateDynamicSqlAcknowledged<R>(sql, params)) {
     return row;
   }
-  return undefined;
+  return;
 }
 
 function allDynamicRows<R>(sql: string, params: BindValue[] = []): R[] {

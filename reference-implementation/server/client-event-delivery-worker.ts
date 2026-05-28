@@ -24,19 +24,17 @@ import {
   updateQueueAttempt,
 } from "./stores/client-event-subscription-store.ts";
 
-export interface HttpTransport {
-  (req: {
-    url: string;
-    method: "POST";
-    headers: Record<string, string>;
-    body: string;
-  }): Promise<{
-    statusCode: number | null;
-    bodyText: string | null;
-    errorMessage: string | null;
-    latencyMs: number;
-  }>;
-}
+export type HttpTransport = (req: {
+  url: string;
+  method: "POST";
+  headers: Record<string, string>;
+  body: string;
+}) => Promise<{
+  statusCode: number | null;
+  bodyText: string | null;
+  errorMessage: string | null;
+  latencyMs: number;
+}>;
 
 const RESPONSE_WINDOW_MS = 10_000;
 

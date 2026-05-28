@@ -264,20 +264,19 @@ export class NekoSurfaceAllocatorService {
     const existing = await this.#findOwnedContainer(request.surfaceId);
     if (existing !== null) {
       this.#assertContainerMatchesRequest(existing, request);
-      if (!isInspectRunning(existing)) {
-        // An exited container is not safe to "start again" — its previous run
-        // may have lost its network attachment, left the profile in a half-
-        // initialized state, or hit a crash loop. Replacing it is cheaper
-        // than re-binding clients to a dead CDP socket and is the only way
-        // an allocator-aware boot reconcile can make progress when prior
-        // surfaces were OOM/network-evicted across restarts.
-        if (this.#isReplaceableExitedContainer(existing)) {
-          await this.#removeContainer(existing.Id);
-        } else {
-          await this.#startContainer(existing.Id);
-          return this.#surfaceFromInspect(await this.#inspectContainer(existing.Id), { request });
-        }
+      if (isInspectRunning(existing)) {
+        return this.#surfaceFromInspect(await this.#inspectContainer(existing.Id), { request });
+      }
+      // An exited container is not safe to "start again" — its previous run
+      // may have lost its network attachment, left the profile in a half-
+      // initialized state, or hit a crash loop. Replacing it is cheaper
+      // than re-binding clients to a dead CDP socket and is the only way
+      // an allocator-aware boot reconcile can make progress when prior
+      // surfaces were OOM/network-evicted across restarts.
+      if (this.#isReplaceableExitedContainer(existing)) {
+        await this.#removeContainer(existing.Id);
       } else {
+        await this.#startContainer(existing.Id);
         return this.#surfaceFromInspect(await this.#inspectContainer(existing.Id), { request });
       }
     }
@@ -430,7 +429,7 @@ export class NekoSurfaceAllocatorService {
     if (surfaceSubjectId !== undefined) {
       return {
         ...surface,
-        ...(accountKey !== undefined ? { account_key: accountKey } : {}),
+        ...(accountKey === undefined ? {} : { account_key: accountKey }),
         surface_subject_id: surfaceSubjectId,
       };
     }

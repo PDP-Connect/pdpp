@@ -1254,7 +1254,7 @@ export async function getConnectorOutboxAxis(
     // heartbeat on device A would degrade device B's connection-health pill.
     const rows = (await store.listSourceInstanceHeartbeatsByConnector(
       connectorId,
-      connectorInstanceId !== null ? { connectorInstanceId } : undefined
+      connectorInstanceId === null ? undefined : { connectorInstanceId }
     )) as readonly HeartbeatRow[];
     const result = projectConnectorOutboxAxisFromHeartbeats(rows, { nowIso: new Date().toISOString() });
     return { axis: result.axis, heartbeats: rows, unreliable: result.unreliable };
@@ -1284,11 +1284,9 @@ export function projectLocalDeviceProgress(heartbeats: readonly HeartbeatRow[]):
   let recordsPending = 0;
   let sawPending = false;
   for (const row of trusted) {
-    if (row.lastHeartbeatAt !== null) {
-      if (lastHeartbeatAt === null || row.lastHeartbeatAt > lastHeartbeatAt) {
-        lastHeartbeatAt = row.lastHeartbeatAt;
-        lastHeartbeatStatus = row.lastHeartbeatStatus;
-      }
+    if (row.lastHeartbeatAt !== null && (lastHeartbeatAt === null || row.lastHeartbeatAt > lastHeartbeatAt)) {
+      lastHeartbeatAt = row.lastHeartbeatAt;
+      lastHeartbeatStatus = row.lastHeartbeatStatus;
     }
     if (row.lastIngestAt !== null && (lastIngestAt === null || row.lastIngestAt > lastIngestAt)) {
       lastIngestAt = row.lastIngestAt;
@@ -1310,8 +1308,8 @@ export function projectLocalDeviceProgress(heartbeats: readonly HeartbeatRow[]):
 function combineUnreliableSources(
   detailGapsUnreliable: boolean,
   outboxUnreliable: boolean,
-  attentionUnreliable: boolean = false,
-  remoteSurfaceUnreliable: boolean = false
+  attentionUnreliable = false,
+  remoteSurfaceUnreliable = false
 ): readonly string[] {
   const sources: string[] = [];
   if (detailGapsUnreliable) {
