@@ -53,14 +53,33 @@ Or, without cloning: download
 [`.env.docker.example`](../../.env.docker.example) to an empty directory and
 rename the example to `.env.docker`.
 
-### 2. Set the minimum env vars
+### 2. Generate secrets
 
-Edit `.env.docker` and set at least:
+Run the helper script to fill the required secrets into `.env.docker`:
+
+```sh
+bash scripts/generate-secrets.sh --write
+```
+
+This sets `PDPP_OWNER_PASSWORD` and the VAPID key pair for browser push
+notifications. It never overwrites a value you have already set. The generated
+output is printed if you prefer to review it before writing:
+
+```sh
+bash scripts/generate-secrets.sh          # print to stdout; no files modified
+bash scripts/generate-secrets.sh --write  # patch .env.docker in place
+```
+
+### 3. Set the remaining required variable
+
+Open `.env.docker` and set:
 
 | Variable | Set to | Why |
 |---|---|---|
-| `PDPP_OWNER_PASSWORD` | a password you choose | Gates `/owner`, `/device`, `/consent`, `/dashboard`. Leaving it empty leaves those routes open. |
 | `PDPP_REFERENCE_ORIGIN` | the external URL your dashboard will be reached at (e.g. `https://pdpp.example.com` or `http://localhost:3002`) | Used by the OAuth and MCP flows to compose callback URLs. A mismatch silently breaks Claude / ChatGPT login. |
+
+`PDPP_OWNER_PASSWORD` was set by the script in the previous step. If you
+skipped the script, set it here.
 
 The default Postgres credentials in the compose file (`pdpp` / `pdpp`) are
 intentionally weak and bound to loopback only (`127.0.0.1:55432`). **Do not
@@ -72,7 +91,7 @@ You can leave every other variable blank. Connector credentials
 for the connectors you intend to run; see the comments in
 `.env.docker.example`.
 
-### 3. Pull and start
+### 4. Pull and start
 
 ```sh
 docker compose --env-file .env.docker pull
@@ -87,7 +106,7 @@ listening — embedding download continues in the background.
 If you do not need semantic search yet, set
 `PDPP_EMBEDDING_DOWNLOAD_ALLOWED=0` in `.env.docker` to skip the download.
 
-### 4. Verify in the dashboard
+### 5. Verify in the dashboard
 
 Open the dashboard at `PDPP_REFERENCE_ORIGIN` (default
 `http://localhost:3002`), then `/owner/login`. Enter your
@@ -104,7 +123,7 @@ The in-dashboard *deployment readiness* panel flags the most common first-boot
 misconfigurations here: missing owner password, public-origin mismatch, storage
 state, embedding cache state, and hosted MCP refresh-token metadata.
 
-### 5. Updating
+### 6. Updating
 
 ```sh
 docker compose --env-file .env.docker pull
@@ -115,7 +134,7 @@ The named volumes (`pdpp-transformers`, `pdpp-home`, `pdpp-postgres-data`)
 persist across `up -d` runs. Do not auto-update on a schedule; database
 migrations land between releases and require an operator-driven re-pull.
 
-### 6. Backup
+### 7. Backup
 
 The two pieces of state you care about:
 
@@ -184,9 +203,11 @@ git clone https://github.com/vana-com/pdpp
 cd pdpp
 cp .env.docker.example .env.docker
 
-# Replace the placeholder with the proxy URL RunPod gave you:
+# Generate required secrets (owner password, VAPID keys):
+bash scripts/generate-secrets.sh --write
+
+# Set the origin to the proxy URL RunPod gave you:
 sed -i 's|^PDPP_REFERENCE_ORIGIN=.*|PDPP_REFERENCE_ORIGIN=https://<podid>-3002.proxy.runpod.net|' .env.docker
-sed -i 's|^PDPP_OWNER_PASSWORD=.*|PDPP_OWNER_PASSWORD=<your-password>|' .env.docker
 
 docker compose --env-file .env.docker pull
 docker compose --env-file .env.docker up -d

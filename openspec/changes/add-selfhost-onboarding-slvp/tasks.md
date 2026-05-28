@@ -27,6 +27,12 @@
 - [x] 4.5 Owner-only live verification (no-password row renders as `error` on first boot) recorded as a residual risk; see Residual Risks below. The row-derivation logic is locked in by `deployment-readiness-rows.test.ts` (`ownerPasswordRow` returns `status: "error"` whenever `ownerPasswordProvenance === "absent"`), so the only remaining check is that the panel renders the row at the documented position in a real browser.
 - [x] 4.6 Owner-only live verification (origin mismatch row renders as `warn` in a browser) recorded as a residual risk; see Residual Risks below. The row-derivation logic is locked in by `referenceOriginRow` returning `status: "warn"` on origin mismatch. The remaining check is the in-browser render path against the live `/_ref/deployment` payload.
 
+## 5. Secret-generation helper
+
+- [x] 5.1 Add `scripts/generate-secrets.sh` that generates `PDPP_OWNER_PASSWORD` and the VAPID key pair, prints to stdout by default, and patches `.env.docker` in place only when `--write` is passed. Existing non-empty values are never overwritten.
+- [x] 5.2 Update `docs/operator/selfhost-quickstart.md` Lane A to add step 2 (`bash scripts/generate-secrets.sh --write`) and step 3 (set `PDPP_REFERENCE_ORIGIN` manually). Renumber subsequent steps.
+- [x] 5.3 Update `docs/operator/selfhost-quickstart.md` Lane B step 2 to use `bash scripts/generate-secrets.sh --write` instead of manual `sed` for the password.
+
 ## Acceptance checks
 
 ```sh
