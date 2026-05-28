@@ -39,6 +39,23 @@ require_env_file() {
   [[ -f .env.docker ]] || fail ".env.docker is missing; copy .env.docker.example first"
 }
 
+# Compute PDPP_REFERENCE_REVISION for build-time injection.
+# Prefers any value already in the environment (e.g. set by a CI caller),
+# then falls back to `git describe --tags --always --dirty`, then a bare
+# short SHA. Exported so docker compose inherits it when expanding the
+# ${PDPP_REFERENCE_REVISION:-unknown} build arg in docker-compose.yml.
+inject_revision() {
+  if [[ -z "${PDPP_REFERENCE_REVISION:-}" ]]; then
+    PDPP_REFERENCE_REVISION="$(
+      git describe --tags --always --dirty 2>/dev/null \
+        || git rev-parse --short=12 HEAD 2>/dev/null \
+        || echo 'unknown'
+    )"
+  fi
+  export PDPP_REFERENCE_REVISION
+  echo "reference-stack: revision=${PDPP_REFERENCE_REVISION}"
+}
+
 service_container() {
   "${COMPOSE[@]}" ps -q "$1"
 }
@@ -143,10 +160,12 @@ case "$cmd" in
     [[ $# -eq 0 ]] || fail "unexpected extra arguments: $*"
     case "$mode" in
       --build-app)
+        inject_revision
         "${COMPOSE[@]}" build reference web neko-allocator
         "${COMPOSE[@]}" up -d --no-build "${SERVICES[@]}"
         ;;
       --build-all)
+        inject_revision
         "${COMPOSE[@]}" up -d --build "${SERVICES[@]}"
         ;;
       --no-build)

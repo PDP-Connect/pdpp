@@ -5,6 +5,8 @@ services:
       context: .
       dockerfile: Dockerfile
       target: reference
+      args:
+        PDPP_REFERENCE_REVISION: ${PDPP_REFERENCE_REVISION:-unknown}
     environment:
       AS_PORT: "7662"
       RS_PORT: "7663"
