@@ -128,6 +128,14 @@ function mapSurface(row: BrowserSurfaceRow | null | undefined): BrowserSurfaceWi
   };
 }
 
+function mapRequiredSurface(row: BrowserSurfaceRow): BrowserSurfaceWithPersistenceMetadata {
+  const surface = mapSurface(row);
+  if (!surface) {
+    throw new Error("browser surface row unexpectedly missing");
+  }
+  return surface;
+}
+
 function mapLease(row: BrowserSurfaceLeaseRow | null | undefined): BrowserSurfaceLease | null {
   if (!row) {
     return null;
@@ -149,6 +157,14 @@ function mapLease(row: BrowserSurfaceLeaseRow | null | undefined): BrowserSurfac
     ...(row.surface_id ? { surface_id: row.surface_id } : {}),
     ...(row.wait_reason ? { wait_reason: row.wait_reason } : {}),
   };
+}
+
+function mapRequiredLease(row: BrowserSurfaceLeaseRow): BrowserSurfaceLease {
+  const lease = mapLease(row);
+  if (!lease) {
+    throw new Error("browser surface lease row unexpectedly missing");
+  }
+  return lease;
 }
 
 function sqliteSurfaceParams(surface: BrowserSurfaceWithPersistenceMetadata): BindValue[] {
@@ -286,8 +302,7 @@ class SqliteBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
   listSurfaces(): Promise<BrowserSurfaceWithPersistenceMetadata[]> {
     // REVIEWED-DYNAMIC: browser surfaces are a small controller-owned runtime table.
     const rows = allDynamicRows<BrowserSurfaceRow>("SELECT * FROM browser_surfaces ORDER BY surface_id");
-    // biome-ignore lint/style/noNonNullAssertion: mapSurface returns null only for null/undefined input; SELECT rows are real.
-    return Promise.resolve(rows.map((row) => mapSurface(row)!));
+    return Promise.resolve(rows.map(mapRequiredSurface));
   }
 
   listNonTerminalLeases(): Promise<BrowserSurfaceLease[]> {
@@ -297,8 +312,7 @@ class SqliteBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
        WHERE status NOT IN (${TERMINAL_STATUS_SQL})
        ORDER BY CASE priority_class WHEN 'owner_interactive' THEN 0 ELSE 1 END, requested_at, lease_id`
     );
-    // biome-ignore lint/style/noNonNullAssertion: mapLease returns null only for null/undefined input; SELECT rows are real.
-    return Promise.resolve(rows.map((row) => mapLease(row)!));
+    return Promise.resolve(rows.map(mapRequiredLease));
   }
 
   repairStaleSurfaceActiveLeases(): Promise<void> {
@@ -458,8 +472,7 @@ class PostgresBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
 
   async listSurfaces(): Promise<BrowserSurfaceWithPersistenceMetadata[]> {
     const result = await this.#query("SELECT * FROM browser_surfaces ORDER BY surface_id");
-    // biome-ignore lint/style/noNonNullAssertion: mapSurface returns null only for null/undefined input; SELECT rows are real.
-    return (result.rows as BrowserSurfaceRow[]).map((row) => mapSurface(row)!);
+    return (result.rows as BrowserSurfaceRow[]).map(mapRequiredSurface);
   }
 
   async listNonTerminalLeases(): Promise<BrowserSurfaceLease[]> {
@@ -468,8 +481,7 @@ class PostgresBrowserSurfaceLeaseStore implements BrowserSurfaceLeaseStore {
        WHERE status NOT IN (${TERMINAL_STATUS_SQL})
        ORDER BY CASE priority_class WHEN 'owner_interactive' THEN 0 ELSE 1 END, requested_at, lease_id`
     );
-    // biome-ignore lint/style/noNonNullAssertion: mapLease returns null only for null/undefined input; SELECT rows are real.
-    return (result.rows as BrowserSurfaceLeaseRow[]).map((row) => mapLease(row)!);
+    return (result.rows as BrowserSurfaceLeaseRow[]).map(mapRequiredLease);
   }
 
   async repairStaleSurfaceActiveLeases(): Promise<void> {

@@ -149,8 +149,38 @@ export function createDeliveryWorker(opts: DeliveryWorkerOptions = {}): Delivery
     }
     return outcome;
   }
+  // Classifies a queue row into one of three pre-delivery dispositions. The
+  // table is the spec; this function makes the table local and exhaustive so
+  // the tick loop only orchestrates I/O around it.
+  type RowDisposition =
+    | { kind: "deliver" }
+    | { kind: "skip" }
+    | { kind: "drop"; reason: "subscription_inactive" | "subscription_revoked" | "subscription_disabled" };
 
-  // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: one tick must claim, deliver, classify, and persist outcomes under a single in-flight guard.
+  function classifyRow(row: QueueRow): RowDisposition {
+    if (row.subscription_status === "deleted") {
+      return { kind: "drop", reason: "subscription_inactive" };
+    }
+    if (row.subscription_status === "disabled_revoked") {
+      return row.event_type === "pdpp.grant.revoked"
+        ? { kind: "deliver" }
+        : { kind: "drop", reason: "subscription_revoked" };
+    }
+    if (row.subscription_status === "pending_verification") {
+      return row.event_type === "pdpp.subscription.verify" ? { kind: "deliver" } : { kind: "skip" };
+    }
+    if (row.subscription_status === "disabled" || row.subscription_status === "disabled_failure") {
+      return row.event_type === "pdpp.subscription.verify"
+        ? { kind: "deliver" }
+        : { kind: "drop", reason: "subscription_disabled" };
+    }
+    return { kind: "deliver" };
+  }
+
+  async function dropRow(row: QueueRow, reason: string): Promise<void> {
+    await updateQueueAttempt(row.queue_id, row.attempt_count, new Date(nowMs()).toISOString(), "dropped", reason);
+  }
+
   async function tickInternal(): Promise<{ attempted: number; outcomes: DeliveryOutcome[] }> {
     if (inFlight) {
       return { attempted: 0, outcomes: [] };
@@ -160,43 +190,12 @@ export function createDeliveryWorker(opts: DeliveryWorkerOptions = {}): Delivery
       const due = await claimDueQueue(new Date(nowMs()).toISOString());
       const outcomes: DeliveryOutcome[] = [];
       for (const row of due) {
-        // Skip rows whose subscription is no longer eligible. The verify event
-        // is allowed through while the subscription is still
-        // `pending_verification`.
-        if (row.subscription_status === "deleted") {
-          await updateQueueAttempt(
-            row.queue_id,
-            row.attempt_count,
-            new Date(nowMs()).toISOString(),
-            "dropped",
-            "subscription_inactive"
-          );
+        const disposition = classifyRow(row);
+        if (disposition.kind === "skip") {
           continue;
         }
-        if (row.subscription_status === "disabled_revoked" && row.event_type !== "pdpp.grant.revoked") {
-          await updateQueueAttempt(
-            row.queue_id,
-            row.attempt_count,
-            new Date(nowMs()).toISOString(),
-            "dropped",
-            "subscription_revoked"
-          );
-          continue;
-        }
-        if (row.subscription_status === "pending_verification" && row.event_type !== "pdpp.subscription.verify") {
-          continue;
-        }
-        if (
-          (row.subscription_status === "disabled" || row.subscription_status === "disabled_failure") &&
-          row.event_type !== "pdpp.subscription.verify"
-        ) {
-          await updateQueueAttempt(
-            row.queue_id,
-            row.attempt_count,
-            new Date(nowMs()).toISOString(),
-            "dropped",
-            "subscription_disabled"
-          );
+        if (disposition.kind === "drop") {
+          await dropRow(row, disposition.reason);
           continue;
         }
         outcomes.push(await processOne(row));

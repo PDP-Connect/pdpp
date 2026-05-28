@@ -41,11 +41,19 @@ export function browserSurfaceLeaseEnv(lease: BrowserSurfaceLease, surface: Brow
 export function parseNekoBrowserSurfaceLeaseConfig(env: NodeJS.ProcessEnv = process.env): BrowserSurfaceLeaseConfig {
   return parseNekoBrowserSurfaceRuntimeConfig(env).leaseConfig;
 }
+interface ParsedNekoEnvShape {
+  readonly configuredStaticProfileKey: string | undefined;
+  readonly managedConnectorIds: readonly string[];
+  readonly managedConnectors: Set<string>;
+  readonly requestedSurfaceMode: BrowserSurfaceMode | undefined;
+  readonly staticCdpHttpUrl: string | undefined;
+  readonly staticProfileKey: string | undefined;
+  readonly staticStreamBaseUrl: string | undefined;
+  readonly surfaceCap: number;
+  readonly surfaceMode: BrowserSurfaceMode;
+}
 
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: env parsing branches over independent env keys (mode, cap, profile, allocator URL, timeouts); each branch is a single guard with no shared structure to extract.
-export function parseNekoBrowserSurfaceRuntimeConfig(
-  env: NodeJS.ProcessEnv = process.env
-): NekoBrowserSurfaceRuntimeConfig {
+function readNekoEnvShape(env: NodeJS.ProcessEnv): ParsedNekoEnvShape {
   const managedConnectorIds = splitCsv(env.PDPP_NEKO_MANAGED_CONNECTORS);
   const managedConnectors = new Set(managedConnectorIds);
   const requestedSurfaceMode = parseSurfaceMode(env.PDPP_NEKO_SURFACE_MODE);
@@ -68,22 +76,52 @@ export function parseNekoBrowserSurfaceRuntimeConfig(
   }
 
   const surfaceMode: BrowserSurfaceMode = requestedSurfaceMode ?? (staticProfileKey ? "static" : "dynamic");
-  const staticCdpHttpUrl = emptyToUndefined(env.PDPP_NEKO_CDP_HTTP_URL);
-  const staticStreamBaseUrl = emptyToUndefined(env.PDPP_NEKO_BASE_URL);
-  if (surfaceMode === "static" && managedConnectors.size > 0) {
-    if (surfaceCap !== 1) {
-      throw new Error("PDPP_NEKO_SURFACE_CAP must be exactly 1 in static n.eko surface mode");
-    }
-    if (!staticCdpHttpUrl) {
-      throw new Error("PDPP_NEKO_CDP_HTTP_URL is required in static n.eko surface mode");
-    }
-    if (!staticStreamBaseUrl) {
-      throw new Error("PDPP_NEKO_BASE_URL is required in static n.eko surface mode");
-    }
-  }
-  const leaseConfig: BrowserSurfaceLeaseConfig = {
+  return {
+    managedConnectorIds,
     managedConnectors,
+    requestedSurfaceMode,
     surfaceCap,
+    configuredStaticProfileKey,
+    staticProfileKey,
+    surfaceMode,
+    staticCdpHttpUrl: emptyToUndefined(env.PDPP_NEKO_CDP_HTTP_URL),
+    staticStreamBaseUrl: emptyToUndefined(env.PDPP_NEKO_BASE_URL),
+  };
+}
+
+function enforceStaticModeInvariants(shape: ParsedNekoEnvShape): void {
+  if (shape.surfaceMode !== "static" || shape.managedConnectors.size === 0) {
+    return;
+  }
+  if (shape.surfaceCap !== 1) {
+    throw new Error("PDPP_NEKO_SURFACE_CAP must be exactly 1 in static n.eko surface mode");
+  }
+  if (!shape.staticCdpHttpUrl) {
+    throw new Error("PDPP_NEKO_CDP_HTTP_URL is required in static n.eko surface mode");
+  }
+  if (!shape.staticStreamBaseUrl) {
+    throw new Error("PDPP_NEKO_BASE_URL is required in static n.eko surface mode");
+  }
+}
+
+function enforceDynamicModeInvariants(shape: ParsedNekoEnvShape): void {
+  if (shape.staticCdpHttpUrl) {
+    throw new Error("PDPP_NEKO_CDP_HTTP_URL is static-only and must not be configured in dynamic n.eko surface mode");
+  }
+  if (shape.staticStreamBaseUrl) {
+    throw new Error("PDPP_NEKO_BASE_URL is static-only and must not be configured in dynamic n.eko surface mode");
+  }
+  if (shape.configuredStaticProfileKey) {
+    throw new Error(
+      "PDPP_NEKO_STATIC_PROFILE_KEY is static-only and must not be configured in dynamic n.eko surface mode"
+    );
+  }
+}
+
+function buildLeaseConfig(shape: ParsedNekoEnvShape, env: NodeJS.ProcessEnv): BrowserSurfaceLeaseConfig {
+  return {
+    managedConnectors: shape.managedConnectors,
+    surfaceCap: shape.surfaceCap,
     leaseWaitTimeoutMs: parseIntegerEnv(
       env.PDPP_NEKO_LEASE_WAIT_TIMEOUT_MS,
       "PDPP_NEKO_LEASE_WAIT_TIMEOUT_MS",
@@ -92,28 +130,23 @@ export function parseNekoBrowserSurfaceRuntimeConfig(
     idleTtlMs: parseIntegerEnv(env.PDPP_NEKO_IDLE_TTL_MS, "PDPP_NEKO_IDLE_TTL_MS", DEFAULT_NEKO_IDLE_TTL_MS),
     defaultPriorityClass: parsePriorityClass(env.PDPP_NEKO_DEFAULT_PRIORITY_CLASS),
     priorityRanks: DEFAULT_NEKO_PRIORITY_RANKS,
-    surfaceMode,
-    ...(staticProfileKey ? { staticProfileKey } : {}),
-    ...(staticCdpHttpUrl ? { staticCdpHttpUrl } : {}),
-    ...(staticStreamBaseUrl ? { staticStreamBaseUrl } : {}),
+    surfaceMode: shape.surfaceMode,
+    ...(shape.staticProfileKey ? { staticProfileKey: shape.staticProfileKey } : {}),
+    ...(shape.staticCdpHttpUrl ? { staticCdpHttpUrl: shape.staticCdpHttpUrl } : {}),
+    ...(shape.staticStreamBaseUrl ? { staticStreamBaseUrl: shape.staticStreamBaseUrl } : {}),
   };
+}
 
-  if (surfaceMode === "static" || managedConnectors.size === 0) {
+export function parseNekoBrowserSurfaceRuntimeConfig(
+  env: NodeJS.ProcessEnv = process.env
+): NekoBrowserSurfaceRuntimeConfig {
+  const shape = readNekoEnvShape(env);
+  enforceStaticModeInvariants(shape);
+  const leaseConfig = buildLeaseConfig(shape, env);
+  if (shape.surfaceMode === "static" || shape.managedConnectors.size === 0) {
     return { leaseConfig };
   }
-
-  if (staticCdpHttpUrl) {
-    throw new Error("PDPP_NEKO_CDP_HTTP_URL is static-only and must not be configured in dynamic n.eko surface mode");
-  }
-  if (staticStreamBaseUrl) {
-    throw new Error("PDPP_NEKO_BASE_URL is static-only and must not be configured in dynamic n.eko surface mode");
-  }
-  if (configuredStaticProfileKey) {
-    throw new Error(
-      "PDPP_NEKO_STATIC_PROFILE_KEY is static-only and must not be configured in dynamic n.eko surface mode"
-    );
-  }
-
+  enforceDynamicModeInvariants(shape);
   return {
     leaseConfig,
     dynamic: parseDynamicRuntimeConfig(env),

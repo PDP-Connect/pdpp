@@ -59,17 +59,12 @@ export interface AttemptRow {
 // ---------------------------------------------------------------------------
 
 export function createSqliteClientEventSubscriptionStore(): ClientEventSubscriptionStore {
-  // ClientEventSubscriptionStore methods may return `Promise<X> | X` so the
-  // SQLite backend can execute synchronously while the Postgres backend
-  // awaits the driver. Each method below is declared `async` to match the
-  // structural shape Postgres uses; biome's useAwait fires because the
-  // SQLite path has no real `await`, but replacing `async` with a
-  // Promise.resolve wrapper would hurt readability without changing the
-  // interface contract documented at the ClientEventSubscriptionStore
-  // declaration site.
+  // The `ClientEventSubscriptionStore` interface declares each method as
+  // `Promise<X> | X` so SQLite can stay synchronous while Postgres awaits the
+  // driver. Methods below return synchronously; the operation layer awaits
+  // everything uniformly.
   return {
-    // biome-ignore lint/suspicious/useAwait: SQLite path is synchronous; interface allows Promise|sync.
-    async insertSubscription(row: SubscriptionRow): Promise<void> {
+    insertSubscription(row: SubscriptionRow): void {
       exec(referenceQueries.clientEventSubscriptionsInsertSubscription, [
         row.subscription_id,
         row.grant_id,
@@ -85,12 +80,10 @@ export function createSqliteClientEventSubscriptionStore(): ClientEventSubscript
         row.updated_at,
       ]);
     },
-    // biome-ignore lint/suspicious/useAwait: SQLite path is synchronous; interface allows Promise|sync.
-    async getSubscriptionById(id: string): Promise<SubscriptionRow | null> {
+    getSubscriptionById(id: string): SubscriptionRow | null {
       return getOne<SubscriptionRow>(referenceQueries.clientEventSubscriptionsGetSubscriptionById, [id]);
     },
-    // biome-ignore lint/suspicious/useAwait: SQLite path is synchronous; interface allows Promise|sync.
-    async listSubscriptionsByClient(clientId: string): Promise<SubscriptionRow[]> {
+    listSubscriptionsByClient(clientId: string): SubscriptionRow[] {
       return [
         ...allowUnboundedReadAcknowledged<SubscriptionRow>(
           referenceQueries.clientEventSubscriptionsListSubscriptionsByClient,
@@ -98,8 +91,7 @@ export function createSqliteClientEventSubscriptionStore(): ClientEventSubscript
         ),
       ];
     },
-    // biome-ignore lint/suspicious/useAwait: SQLite path is synchronous; interface allows Promise|sync.
-    async listSubscriptionsByGrant(grantId: string): Promise<SubscriptionRow[]> {
+    listSubscriptionsByGrant(grantId: string): SubscriptionRow[] {
       return [
         ...allowUnboundedReadAcknowledged<SubscriptionRow>(
           referenceQueries.clientEventSubscriptionsListSubscriptionsByGrant,
@@ -107,20 +99,16 @@ export function createSqliteClientEventSubscriptionStore(): ClientEventSubscript
         ),
       ];
     },
-    // biome-ignore lint/suspicious/useAwait: SQLite path is synchronous; interface allows Promise|sync.
-    async updateStatus(id, status, updatedAt, disabledAt, disabledReason): Promise<void> {
+    updateStatus(id, status, updatedAt, disabledAt, disabledReason): void {
       exec(referenceQueries.clientEventSubscriptionsUpdateStatus, [status, updatedAt, disabledAt, disabledReason, id]);
     },
-    // biome-ignore lint/suspicious/useAwait: SQLite path is synchronous; interface allows Promise|sync.
-    async updateSecret(id, secretHash, secretText, updatedAt): Promise<void> {
+    updateSecret(id, secretHash, secretText, updatedAt): void {
       exec(referenceQueries.clientEventSubscriptionsUpdateSecret, [secretHash, secretText, updatedAt, id]);
     },
-    // biome-ignore lint/suspicious/useAwait: SQLite path is synchronous; interface allows Promise|sync.
-    async deleteSubscription(id): Promise<void> {
+    deleteSubscription(id): void {
       exec(referenceQueries.clientEventSubscriptionsDeleteSubscription, [id]);
     },
-    // biome-ignore lint/suspicious/useAwait: SQLite path is synchronous; interface allows Promise|sync.
-    async enqueueEvent(event: QueuedEventForEnqueue): Promise<void> {
+    enqueueEvent(event: QueuedEventForEnqueue): void {
       exec(referenceQueries.clientEventSubscriptionsInsertQueue, [
         event.subscriptionId,
         event.eventId,
@@ -130,8 +118,7 @@ export function createSqliteClientEventSubscriptionStore(): ClientEventSubscript
         event.nextAttemptAt,
       ]);
     },
-    // biome-ignore lint/suspicious/useAwait: SQLite path is synchronous; interface allows Promise|sync.
-    async dropQueuedForSubscription(id): Promise<void> {
+    dropQueuedForSubscription(id): void {
       exec(referenceQueries.clientEventSubscriptionsDropQueuedForSubscription, [id]);
     },
   };

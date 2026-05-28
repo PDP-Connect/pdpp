@@ -164,8 +164,7 @@ interface OrphanRow {
  * NOT swallow this — boot must abort. See design brief §3.4 failure
  * semantics.
  */
-// biome-ignore lint/suspicious/useAwait: tagged async to match the reconciler boundary; awaiting the inner Promise would add noise without changing behavior.
-export async function reconcileOrphanedRunsAtBoot(epoch: BootEpoch): Promise<ReconcileResult> {
+export function reconcileOrphanedRunsAtBoot(epoch: BootEpoch): Promise<ReconcileResult> {
   if (isPostgresStorageBackend()) {
     return reconcilePostgres(epoch);
   }

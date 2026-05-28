@@ -74,8 +74,10 @@ import type {
   MutationReturningOneQuery,
   ReadManyQuery,
   ReadOneQuery,
+  ReferenceQueryRegistry,
   SmallEnumerationQuery,
 } from "../server/queries/index.ts";
+import { referenceQueries as registeredReferenceQueries } from "../server/queries/index.ts";
 
 // Re-export the registry handle types and the frozen registry instance
 // so call sites can import everything they need from `lib/db.ts`. Not a
@@ -91,8 +93,7 @@ export type {
   RegisteredQuery,
   SmallEnumerationQuery,
 } from "../server/queries/index.ts";
-// biome-ignore lint/performance/noBarrelFile: see above.
-export { referenceQueries } from "../server/queries/index.ts";
+export const referenceQueries: ReferenceQueryRegistry = registeredReferenceQueries;
 
 // ---------------------------------------------------------------------------
 // Parameter and result types
