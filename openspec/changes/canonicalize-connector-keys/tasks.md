@@ -6,7 +6,7 @@
 
 ## 2. OpenSpec And Contract Alignment
 
-- [x] 2.1 Validate this OpenSpec change with `openspec validate canonicalize-connector-keys --strict`. (Tranche 1: validated clean on `workstream/ri-canonical-connector-keys-full` at commits 6fefb100 + 91c1afe2.)
+- [x] 2.1 Validate this OpenSpec change with `openspec validate canonicalize-connector-keys --strict`. (Tranche 1: validated clean after adding canonical connector-key helpers and hosted MCP picker meta cleanup.)
 - [ ] 2.2 Cross-check `expose-connection-identity-on-public-read`, `agent-consent-bundling`, and MCP adapter specs for contradictory `connector_id`/`connector_key` wording.
 - [ ] 2.3 Decide whether any root `spec-core.md` or `spec-collection-profile.md` language must change in this tranche or whether it requires a separate protocol-spec change.
 

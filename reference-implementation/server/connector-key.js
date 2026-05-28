@@ -95,7 +95,7 @@ const NATIVE_CONNECTOR_KEYS = Object.freeze(['northstar_hr_native']);
 const NATIVE_CONNECTOR_KEY_SET = new Set(NATIVE_CONNECTOR_KEYS);
 
 // Snake_case local-collector aliases that historically appeared as bare
-// `connector_id` values in pending pending-consent rows and as runtime
+// `connector_id` values in pending-consent rows and as runtime
 // envelope keys, before the polyfill manifests adopted the hyphenated form.
 // Migration-only: post-migration code should not write these. Pinning them
 // here keeps the mapping under one allowlist so the migration plan, the
