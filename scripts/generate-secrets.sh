@@ -114,8 +114,18 @@ patch_env_file() {
   _patch_var() {
     local var="$1" val="$2"
     if grep -qE "^${var}=[[:space:]]*$" "$target"; then
-      sed -i "s|^${var}=[[:space:]]*$|${var}=${val}|" "$target"
+      _PDPP_T="$target" _PDPP_V="$var" _PDPP_U="$val" node -e '
+        const fs = require("node:fs");
+        const t = process.env._PDPP_T, v = process.env._PDPP_V, u = process.env._PDPP_U;
+        const c = fs.readFileSync(t, "utf8");
+        fs.writeFileSync(t, c.replace(new RegExp("^" + v + "=[ \t]*$", "m"), v + "=" + u));
+      '
       printf '  set   %s\n' "$var"
+      if [[ "$var" == "PDPP_OWNER_PASSWORD" ]]; then
+        printf '\n  *** Owner password — save this now; it will not be shown again ***\n'
+        printf '  %s=%s\n' "$var" "$val"
+        printf '  *******************************************************************\n\n'
+      fi
     elif grep -qE "^${var}=" "$target"; then
       printf '  skip  %s (already set)\n' "$var"
     else
