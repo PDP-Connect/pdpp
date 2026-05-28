@@ -45,6 +45,7 @@ Open owner decisions are detailed in `design-notes/2026-04-27-prior-art-review.m
 - [ ] If permission sets or agent roles are selected, write a separate design/implementation change before code.
 - [ ] If no broad setup primitive is selected, update `pdpp-data-access` guidance to explain why repeated source-by-source approvals are intentional.
 - [ ] Do not change `/oauth/par`, consent storage, consent UI, or grant issuance until this design track reaches an owner-reviewed decision.
+- [x] Owner-approved tranche: ship per-stream narrowing inside the existing hosted MCP picker (no PAR/consent-storage change; ceremony still issues one source-bounded child grant per selected source). Implementation lives in `reference-implementation/server/index.js` / `hosted-mcp-selection.js` and is pinned by the spec scenarios in `specs/agent-consent-bundling/spec.md` ("Hosted MCP picker SHALL let the owner narrow streams within a selected source").
 
 ## 5. Validation
 

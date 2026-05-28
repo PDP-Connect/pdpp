@@ -128,6 +128,7 @@ async function completeMultiSourcePackageFlow({ asUrl, client, connectorIds }) {
 
   const pickerResp = await fetch(authorizeUrl, { redirect: 'manual' });
   assert.equal(pickerResp.status, 200);
+  const pickerHtml = await pickerResp.text();
 
   const params = new URLSearchParams();
   params.append('client_id', client.client_id);
@@ -138,6 +139,14 @@ async function completeMultiSourcePackageFlow({ asUrl, client, connectorIds }) {
   params.append('code_challenge_method', 'S256');
   for (const id of connectorIds) {
     params.append('selection', encodeHostedMcpSelection({ connectorId: id, connectionId: null }));
+  }
+  // Mirror the picker's pre-checked stream checkboxes; the AS now treats a
+  // selected source with zero stream form values as "owner deselected
+  // every stream for this source." See hosted-mcp-oauth.test.js for the
+  // narrowing matrix; this helper exercises the no-narrowing path.
+  const streamRegex = /name="stream" value="([^"]+)" checked/g;
+  for (const match of pickerHtml.matchAll(streamRegex)) {
+    params.append('stream', match[1]);
   }
 
   const approveResp = await fetch(`${asUrl}/oauth/authorize/mcp-package`, {

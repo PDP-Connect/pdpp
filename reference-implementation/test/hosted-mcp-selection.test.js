@@ -18,8 +18,12 @@ import test from 'node:test';
 
 import {
   encodeHostedMcpSelection,
+  encodeHostedMcpStreamSelection,
+  hostedMcpSourceKey,
   parseHostedMcpSelection,
   parseHostedMcpSelections,
+  parseHostedMcpStreamSelection,
+  parseHostedMcpStreamSelections,
 } from '../server/hosted-mcp-selection.js';
 
 test('round-trips a URL-shaped connector id without delimiter collapse', () => {
@@ -137,4 +141,90 @@ test('encoder rejects inputs without a usable connectorId', () => {
   assert.throws(() => encodeHostedMcpSelection({ connectorId: '' }), TypeError);
   assert.throws(() => encodeHostedMcpSelection({ connectorId: '   ' }), TypeError);
   assert.throws(() => encodeHostedMcpSelection({ connectorId: 42 }), TypeError);
+});
+
+test('stream selection round-trips a (connector, connection, stream) tuple', () => {
+  const urlShaped = 'https://registry.pdpp.org/connectors/gmail';
+  const encoded = encodeHostedMcpStreamSelection({
+    connectorId: urlShaped,
+    connectionId: 'conn_01HXYZ',
+    streamName: 'messages',
+  });
+  assert.equal(encoded.includes(':'), false, 'opaque stream selection must not contain `:`');
+  assert.equal(encoded.includes('/'), false, 'opaque stream selection must not contain `/`');
+  assert.deepEqual(parseHostedMcpStreamSelection(encoded), {
+    connectorId: urlShaped,
+    connectionId: 'conn_01HXYZ',
+    streamName: 'messages',
+  });
+});
+
+test('stream selection encoder rejects inputs missing a stream or connector', () => {
+  assert.throws(() => encodeHostedMcpStreamSelection(null), TypeError);
+  assert.throws(() => encodeHostedMcpStreamSelection({}), TypeError);
+  assert.throws(
+    () => encodeHostedMcpStreamSelection({ connectorId: 'gmail' }),
+    TypeError,
+  );
+  assert.throws(
+    () => encodeHostedMcpStreamSelection({ connectorId: 'gmail', streamName: '   ' }),
+    TypeError,
+  );
+  assert.throws(
+    () => encodeHostedMcpStreamSelection({ connectorId: '', streamName: 'messages' }),
+    TypeError,
+  );
+});
+
+test('stream selections parse into entries and a per-source set keyed by hostedMcpSourceKey', () => {
+  const gmailMessages = encodeHostedMcpStreamSelection({
+    connectorId: 'gmail',
+    connectionId: 'conn_a',
+    streamName: 'messages',
+  });
+  const gmailThreads = encodeHostedMcpStreamSelection({
+    connectorId: 'gmail',
+    connectionId: 'conn_a',
+    streamName: 'threads',
+  });
+  const slackChannels = encodeHostedMcpStreamSelection({
+    connectorId: 'slack',
+    connectionId: null,
+    streamName: 'channels',
+  });
+  // Duplicate entry should be deduped.
+  const { entries, bySource } = parseHostedMcpStreamSelections([
+    gmailMessages,
+    gmailThreads,
+    slackChannels,
+    gmailMessages,
+    'not-a-real-selection',
+  ]);
+  assert.equal(entries.length, 3, 'duplicates and malformed entries dropped');
+  const gmailKey = hostedMcpSourceKey({ connectorId: 'gmail', connectionId: 'conn_a' });
+  const slackKey = hostedMcpSourceKey({ connectorId: 'slack', connectionId: null });
+  assert.deepEqual([...bySource.get(gmailKey)].sort(), ['messages', 'threads']);
+  assert.deepEqual([...bySource.get(slackKey)], ['channels']);
+});
+
+test('stream selections return empty containers for missing or non-iterable inputs', () => {
+  const empty = parseHostedMcpStreamSelections(undefined);
+  assert.deepEqual(empty.entries, []);
+  assert.equal(empty.bySource.size, 0);
+});
+
+test('hostedMcpSourceKey matches the dedupe key parseHostedMcpStreamSelections uses internally', () => {
+  const stream = encodeHostedMcpStreamSelection({
+    connectorId: 'gmail',
+    connectionId: 'conn_a',
+    streamName: 'messages',
+  });
+  const { bySource } = parseHostedMcpStreamSelections([stream]);
+  const lookup = hostedMcpSourceKey({ connectorId: 'gmail', connectionId: 'conn_a' });
+  assert.ok(bySource.has(lookup), 'source key matches the parsed grouping key');
+  assert.notDeepEqual(
+    bySource.get(lookup),
+    bySource.get(hostedMcpSourceKey({ connectorId: 'gmail', connectionId: null })),
+    'blank connection id and present connection id must produce different keys',
+  );
 });

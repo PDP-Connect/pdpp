@@ -6,8 +6,11 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
-import { revokeGrant, revokeGrantPackage } from '../server/auth.js';
-import { encodeHostedMcpSelection } from '../server/hosted-mcp-selection.js';
+import { getGrantPackageAccess, revokeGrant, revokeGrantPackage } from '../server/auth.js';
+import {
+  encodeHostedMcpSelection,
+  encodeHostedMcpStreamSelection,
+} from '../server/hosted-mcp-selection.js';
 import { startServer } from '../server/index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -220,6 +223,12 @@ async function completeMultiSourcePackageFlow({ asUrl, client, connectorIds }) {
   // POST the multi-source approval. Owner auth is disabled for tests
   // (`ownerAuthPassword: ''`), so `requireOwnerSession` and `requireCsrf`
   // are no-ops and the form goes through without a session cookie.
+  //
+  // The picker renders per-stream checkboxes for each source, pre-checked,
+  // so an owner who clicks "Approve" without narrowing submits one
+  // `stream=<encoded>` entry per (source, stream). Mirror that here so this
+  // helper tests the no-narrowing path; tests for narrowing construct their
+  // own forms instead of going through this helper.
   const params = new URLSearchParams();
   params.append('client_id', client.client_id);
   params.append('redirect_uri', 'https://client.example/callback');
@@ -229,6 +238,12 @@ async function completeMultiSourcePackageFlow({ asUrl, client, connectorIds }) {
   params.append('code_challenge_method', 'S256');
   for (const id of connectorIds) {
     params.append('selection', encodeHostedMcpSelection({ connectorId: id, connectionId: null }));
+  }
+  // Scrape every pre-checked stream form value from the rendered picker and
+  // submit them. This is what a browser would do for "approve everything".
+  const streamRegex = /name="stream" value="([^"]+)" checked/g;
+  for (const match of pickerHtml.matchAll(streamRegex)) {
+    params.append('stream', match[1]);
   }
 
   const approveResp = await fetch(`${asUrl}/oauth/authorize/mcp-package`, {
@@ -951,6 +966,431 @@ test('revoking the package invalidates /mcp access and the refresh-token exchang
     });
     assert.equal(refreshAttempt.status, 400);
     assert.equal(refreshAttempt.body.error, 'invalid_grant');
+  } finally {
+    await closeServer(server);
+  }
+});
+
+// Stream-narrowing inside the hosted MCP picker.
+//
+// `completeMultiSourcePackageFlow` above always submits the wildcard form by
+// implicitly accepting every stream the picker pre-checks. These tests prove
+// the rest of the matrix:
+//
+//   - the picker renders an owner-controllable checkbox per manifest stream
+//     and pre-checks them all (the default == "no narrowing");
+//   - the POST handler narrows a child grant when a subset of streams is
+//     submitted;
+//   - leaving every stream checked for a source preserves the canonical
+//     wildcard so future manifest revisions extend cleanly;
+//   - deselecting every stream for one source drops that source from the
+//     package without affecting other sources;
+//   - deselecting every stream across all selected sources returns a typed
+//     `invalid_request` envelope that names the affected sources by manifest
+//     display name (no raw URLs, no cin_ ids).
+
+function buildHostedMcpPickerForm({
+  client,
+  state,
+  challenge,
+  sourceSelections,
+}) {
+  const params = new URLSearchParams();
+  params.append('client_id', client.client_id);
+  params.append('redirect_uri', 'https://client.example/callback');
+  params.append('response_type', 'code');
+  params.append('state', state);
+  params.append('code_challenge', challenge);
+  params.append('code_challenge_method', 'S256');
+  for (const { connectorId, connectionId = null, streamNames } of sourceSelections) {
+    params.append('selection', encodeHostedMcpSelection({ connectorId, connectionId }));
+    for (const streamName of streamNames) {
+      params.append('stream', encodeHostedMcpStreamSelection({ connectorId, connectionId, streamName }));
+    }
+  }
+  return params;
+}
+
+async function exchangePackageCode({ asUrl, client, params }) {
+  const approveResp = await fetch(`${asUrl}/oauth/authorize/mcp-package`, {
+    method: 'POST',
+    redirect: 'manual',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: params.toString(),
+  });
+  return approveResp;
+}
+
+test('hosted MCP picker renders a per-stream checkbox per source, pre-checked', async () => {
+  const server = await startOpenTestServer();
+  const asUrl = `http://localhost:${server.asPort}`;
+
+  try {
+    const spotify = await registerSpotify(asUrl);
+    const github = await registerGithub(asUrl);
+    const client = await registerAuthCodeClient(asUrl);
+    const verifier = randomBytes(32).toString('base64url');
+
+    const authorizeUrl = new URL(`${asUrl}/oauth/authorize`);
+    authorizeUrl.searchParams.set('client_id', client.client_id);
+    authorizeUrl.searchParams.set('redirect_uri', 'https://client.example/callback');
+    authorizeUrl.searchParams.set('response_type', 'code');
+    authorizeUrl.searchParams.set('state', 'streams-render-test');
+    authorizeUrl.searchParams.set('code_challenge', pkceChallenge(verifier));
+    authorizeUrl.searchParams.set('code_challenge_method', 'S256');
+
+    const resp = await fetch(authorizeUrl);
+    assert.equal(resp.status, 200);
+    const html = await resp.text();
+
+    // The picker MUST render the per-source <fieldset> grouping that holds
+    // both the source toggle and the per-stream checkboxes.
+    assert.match(html, /class="hosted-ui-option-source"/, 'picker must wrap each row in the fieldset');
+    assert.match(html, /class="hosted-ui-option-streams"/, 'picker must render the per-source stream block');
+    assert.match(html, /class="hosted-ui-stream-option"/, 'picker must render at least one stream checkbox');
+
+    // Every manifest stream for a selected source must be rendered, and the
+    // checkbox MUST be pre-checked so the no-action default still authorizes
+    // every stream (matches prior behavior; narrowing is opt-in).
+    for (const stream of spotify.streams) {
+      const streamFormValue = encodeHostedMcpStreamSelection({
+        connectorId: spotify.connector_id,
+        connectionId: null,
+        streamName: stream.name,
+      });
+      assert.ok(
+        html.includes(`name="stream" value="${streamFormValue}" checked`),
+        `picker must render a pre-checked stream checkbox for spotify::${stream.name}`,
+      );
+    }
+    for (const stream of github.streams) {
+      const streamFormValue = encodeHostedMcpStreamSelection({
+        connectorId: github.connector_id,
+        connectionId: null,
+        streamName: stream.name,
+      });
+      assert.ok(
+        html.includes(`name="stream" value="${streamFormValue}" checked`),
+        `picker must render a pre-checked stream checkbox for github::${stream.name}`,
+      );
+    }
+
+    // Owner-facing risk copy should mention per-stream narrowing now that
+    // the picker offers it.
+    assert.match(html, /uncheck/i, 'picker risk copy should mention deselecting streams');
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('POST /oauth/authorize/mcp-package narrows the child grant to the submitted stream subset', async () => {
+  const server = await startOpenTestServer();
+  const asUrl = `http://localhost:${server.asPort}`;
+
+  try {
+    const spotify = await registerSpotify(asUrl);
+    const github = await registerGithub(asUrl);
+    const client = await registerAuthCodeClient(asUrl);
+
+    const verifier = randomBytes(32).toString('base64url');
+    const state = 'streams-narrow';
+    const challenge = pkceChallenge(verifier);
+
+    // Owner approves both connectors but narrows each one. The picker is
+    // free-form: any subset of pre-checked streams may be submitted.
+    const params = buildHostedMcpPickerForm({
+      client,
+      state,
+      challenge,
+      sourceSelections: [
+        {
+          connectorId: spotify.connector_id,
+          streamNames: ['saved_tracks'],
+        },
+        {
+          connectorId: github.connector_id,
+          streamNames: ['repositories', 'starred_repos'],
+        },
+      ],
+    });
+
+    const approveResp = await exchangePackageCode({ asUrl, client, params });
+    assert.equal(approveResp.status, 302);
+    const callback = new URL(approveResp.headers.get('location'));
+    const code = callback.searchParams.get('code');
+    assert.ok(code);
+
+    const { status, body } = await fetchJson(`${asUrl}/oauth/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        code,
+        client_id: client.client_id,
+        redirect_uri: 'https://client.example/callback',
+        code_verifier: verifier,
+      }).toString(),
+    });
+    assert.equal(status, 200);
+    const packageId = body.grant_package_id;
+    assert.ok(packageId, 'narrowed approval still issues a package-bound token');
+
+    // Inspect the persisted child grants. `getGrantPackageAccess` returns
+    // members ordered by `added_at, grant_id` — i.e. spotify first because
+    // the picker emits selections in iteration order — but we MUST NOT rely
+    // on that ordering. Sort by connector instead.
+    const access = await getGrantPackageAccess(packageId);
+    assert.ok(access, 'package is retrievable after issuance');
+    assert.equal(access.members.length, 2);
+    const byConnector = new Map(
+      access.members.map((m) => [m.grant.source.id, m]),
+    );
+    const spotifyChild = byConnector.get(spotify.connector_id);
+    const githubChild = byConnector.get(github.connector_id);
+    assert.ok(spotifyChild && githubChild, 'one child per approved connector');
+
+    const spotifyStreamNames = spotifyChild.grant.streams.map((s) => s.name).sort();
+    const githubStreamNames = githubChild.grant.streams.map((s) => s.name).sort();
+    assert.deepEqual(spotifyStreamNames, ['saved_tracks'], 'spotify child carries only the approved stream');
+    assert.deepEqual(
+      githubStreamNames,
+      ['repositories', 'starred_repos'],
+      'github child carries exactly the approved subset',
+    );
+
+    // Defense-in-depth: the manifest declares more streams than what the
+    // owner approved, so the picker MUST NOT have silently widened the
+    // grant. Compare against the manifest itself rather than reasserting
+    // the literal list above.
+    const spotifyManifestStreamNames = spotify.streams.map((s) => s.name);
+    const githubManifestStreamNames = github.streams.map((s) => s.name);
+    assert.ok(
+      spotifyManifestStreamNames.length > spotifyStreamNames.length,
+      'spotify manifest declares more streams than the owner approved',
+    );
+    assert.ok(
+      githubManifestStreamNames.length > githubStreamNames.length,
+      'github manifest declares more streams than the owner approved',
+    );
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('POST /oauth/authorize/mcp-package preserves the wildcard when every stream stays checked', async () => {
+  const server = await startOpenTestServer();
+  const asUrl = `http://localhost:${server.asPort}`;
+
+  try {
+    const spotify = await registerSpotify(asUrl);
+    const client = await registerAuthCodeClient(asUrl);
+
+    const verifier = randomBytes(32).toString('base64url');
+    const state = 'streams-wildcard';
+    const challenge = pkceChallenge(verifier);
+
+    // Submit every stream the manifest declares. The picker default leaves
+    // all streams pre-checked, so this is the "no narrowing" path.
+    const params = buildHostedMcpPickerForm({
+      client,
+      state,
+      challenge,
+      sourceSelections: [
+        {
+          connectorId: spotify.connector_id,
+          streamNames: spotify.streams.map((stream) => stream.name),
+        },
+      ],
+    });
+
+    const approveResp = await exchangePackageCode({ asUrl, client, params });
+    assert.equal(approveResp.status, 302);
+    const code = new URL(approveResp.headers.get('location')).searchParams.get('code');
+    const { status, body } = await fetchJson(`${asUrl}/oauth/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        code,
+        client_id: client.client_id,
+        redirect_uri: 'https://client.example/callback',
+        code_verifier: verifier,
+      }).toString(),
+    });
+    assert.equal(status, 200);
+    const packageId = body.grant_package_id;
+    const access = await getGrantPackageAccess(packageId);
+    assert.equal(access.members.length, 1);
+    const child = access.members[0];
+    const grantedNames = new Set(child.grant.streams.map((s) => s.name));
+    for (const stream of spotify.streams) {
+      assert.ok(grantedNames.has(stream.name), `child grant must include ${stream.name} when no narrowing happened`);
+    }
+    assert.equal(grantedNames.size, spotify.streams.length, 'child grant must not include extra streams');
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('POST /oauth/authorize/mcp-package drops a source whose streams are all unchecked but keeps the others', async () => {
+  const server = await startOpenTestServer();
+  const asUrl = `http://localhost:${server.asPort}`;
+
+  try {
+    const spotify = await registerSpotify(asUrl);
+    const github = await registerGithub(asUrl);
+    const client = await registerAuthCodeClient(asUrl);
+
+    const verifier = randomBytes(32).toString('base64url');
+    const state = 'streams-partial-drop';
+    const challenge = pkceChallenge(verifier);
+
+    // Owner toggled the spotify source checkbox but unchecked every stream
+    // inside it. github keeps a single stream. Result: package contains
+    // only the github child grant; the spotify source is silently dropped
+    // because the owner expressed "no streams" for it.
+    const params = buildHostedMcpPickerForm({
+      client,
+      state,
+      challenge,
+      sourceSelections: [
+        { connectorId: spotify.connector_id, streamNames: [] },
+        { connectorId: github.connector_id, streamNames: ['commits'] },
+      ],
+    });
+
+    const approveResp = await exchangePackageCode({ asUrl, client, params });
+    assert.equal(approveResp.status, 302);
+    const code = new URL(approveResp.headers.get('location')).searchParams.get('code');
+    const { status, body } = await fetchJson(`${asUrl}/oauth/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        code,
+        client_id: client.client_id,
+        redirect_uri: 'https://client.example/callback',
+        code_verifier: verifier,
+      }).toString(),
+    });
+    assert.equal(status, 200);
+
+    const packageId = body.grant_package_id;
+    const access = await getGrantPackageAccess(packageId);
+    assert.equal(access.members.length, 1, 'only the source with selected streams becomes a child grant');
+    const child = access.members[0];
+    assert.equal(child.grant.source.id, github.connector_id);
+    const streamNames = child.grant.streams.map((s) => s.name).sort();
+    assert.deepEqual(streamNames, ['commits']);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('POST /oauth/authorize/mcp-package returns a typed error when every selected source has zero streams', async () => {
+  const server = await startOpenTestServer();
+  const asUrl = `http://localhost:${server.asPort}`;
+
+  try {
+    const spotify = await registerSpotify(asUrl);
+    const github = await registerGithub(asUrl);
+    const client = await registerAuthCodeClient(asUrl);
+
+    const verifier = randomBytes(32).toString('base64url');
+    const state = 'streams-all-empty';
+    const challenge = pkceChallenge(verifier);
+
+    const params = buildHostedMcpPickerForm({
+      client,
+      state,
+      challenge,
+      sourceSelections: [
+        { connectorId: spotify.connector_id, streamNames: [] },
+        { connectorId: github.connector_id, streamNames: [] },
+      ],
+    });
+
+    const resp = await exchangePackageCode({ asUrl, client, params });
+    assert.equal(resp.status, 400);
+    const respBody = await resp.json();
+    assert.equal(respBody.error, 'invalid_request');
+    assert.ok(typeof respBody.error_description === 'string');
+    // Error names the affected sources by manifest display name. It MUST
+    // NOT leak a raw registry URL or a cin_ id.
+    assert.match(respBody.error_description, /Select at least one stream/);
+    assert.equal(
+      respBody.error_description.toLowerCase().includes('https://'),
+      false,
+      'error message MUST NOT leak registry URLs',
+    );
+    assert.equal(
+      respBody.error_description.toLowerCase().includes('cin_'),
+      false,
+      'error message MUST NOT leak raw connection ids',
+    );
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('POST /oauth/authorize/mcp-package ignores stream entries whose source was not also selected', async () => {
+  const server = await startOpenTestServer();
+  const asUrl = `http://localhost:${server.asPort}`;
+
+  try {
+    const spotify = await registerSpotify(asUrl);
+    const github = await registerGithub(asUrl);
+    const client = await registerAuthCodeClient(asUrl);
+
+    const verifier = randomBytes(32).toString('base64url');
+    const state = 'streams-orphan';
+    const challenge = pkceChallenge(verifier);
+
+    const params = new URLSearchParams();
+    params.append('client_id', client.client_id);
+    params.append('redirect_uri', 'https://client.example/callback');
+    params.append('response_type', 'code');
+    params.append('state', state);
+    params.append('code_challenge', challenge);
+    params.append('code_challenge_method', 'S256');
+    // Only spotify's source checkbox is submitted. The picker would have
+    // also submitted github's stream entries if the owner clicked them
+    // before unchecking the source; the AS MUST ignore orphan streams so a
+    // stale stream toggle cannot smuggle authority into a deselected
+    // source.
+    params.append('selection', encodeHostedMcpSelection({
+      connectorId: spotify.connector_id,
+      connectionId: null,
+    }));
+    params.append('stream', encodeHostedMcpStreamSelection({
+      connectorId: spotify.connector_id,
+      connectionId: null,
+      streamName: 'saved_tracks',
+    }));
+    params.append('stream', encodeHostedMcpStreamSelection({
+      connectorId: github.connector_id,
+      connectionId: null,
+      streamName: 'repositories',
+    }));
+
+    const approveResp = await exchangePackageCode({ asUrl, client, params });
+    assert.equal(approveResp.status, 302);
+    const code = new URL(approveResp.headers.get('location')).searchParams.get('code');
+    const { status, body } = await fetchJson(`${asUrl}/oauth/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        code,
+        client_id: client.client_id,
+        redirect_uri: 'https://client.example/callback',
+        code_verifier: verifier,
+      }).toString(),
+    });
+    assert.equal(status, 200);
+    const access = await getGrantPackageAccess(body.grant_package_id);
+    assert.equal(access.members.length, 1, 'orphan stream entries MUST NOT create a child grant');
+    assert.equal(access.members[0].grant.source.id, spotify.connector_id);
   } finally {
     await closeServer(server);
   }

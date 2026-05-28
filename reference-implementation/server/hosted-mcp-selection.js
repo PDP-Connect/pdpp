@@ -128,3 +128,106 @@ export function parseHostedMcpSelections(rawValues) {
   }
   return out;
 }
+
+/**
+ * Encode one picker stream checkbox value. Each stream checkbox carries its
+ * own source identity so the POST handler can dispatch a stream to the
+ * matching `(connector_id, connection_id)` selection without cross-field
+ * correlation. The encoded value is base64url(JSON) for the same
+ * delimiter-free reasons that govern `encodeHostedMcpSelection`.
+ *
+ * @param {{ connectorId: string, connectionId?: string | null, streamName: string }} input
+ * @returns {string}
+ */
+export function encodeHostedMcpStreamSelection(input) {
+  if (!input || typeof input !== 'object') {
+    throw new TypeError('encodeHostedMcpStreamSelection requires an object input');
+  }
+  const connectorId = typeof input.connectorId === 'string' ? input.connectorId.trim() : '';
+  if (!connectorId) {
+    throw new TypeError('encodeHostedMcpStreamSelection requires a non-empty connectorId');
+  }
+  const streamName = typeof input.streamName === 'string' ? input.streamName.trim() : '';
+  if (!streamName) {
+    throw new TypeError('encodeHostedMcpStreamSelection requires a non-empty streamName');
+  }
+  const connectionId = typeof input.connectionId === 'string' && input.connectionId.trim()
+    ? input.connectionId.trim()
+    : null;
+  return encodePayload({ connector_id: connectorId, connection_id: connectionId, stream: streamName });
+}
+
+/**
+ * Parse a single submitted stream-selection value.
+ *
+ * @param {unknown} raw
+ * @returns {{ connectorId: string, connectionId: string | null, streamName: string } | null}
+ */
+export function parseHostedMcpStreamSelection(raw) {
+  const payload = decodePayload(raw);
+  if (!payload) return null;
+  const connectorId = typeof payload.connector_id === 'string' ? payload.connector_id.trim() : '';
+  if (!connectorId) return null;
+  const streamName = typeof payload.stream === 'string' ? payload.stream.trim() : '';
+  if (!streamName) return null;
+  const connectionRaw = typeof payload.connection_id === 'string' ? payload.connection_id.trim() : '';
+  const connectionId = connectionRaw ? connectionRaw : null;
+  return { connectorId, connectionId, streamName };
+}
+
+/**
+ * Parse zero or more submitted stream-selection values, deduplicating by
+ * (connector_id, connection_id, stream). The result is grouped by source key
+ * so callers can join it against the source selections without an extra pass.
+ *
+ * The returned `bySource` map keys each source by the same JSON string used
+ * for dedupe in `parseHostedMcpSelections`, so callers can look up a stream
+ * subset for any selected source without recomputing the key.
+ *
+ * @param {unknown} rawValues
+ * @returns {{
+ *   entries: Array<{ connectorId: string, connectionId: string | null, streamName: string }>,
+ *   bySource: Map<string, Set<string>>,
+ * }}
+ */
+export function parseHostedMcpStreamSelections(rawValues) {
+  const values = Array.isArray(rawValues)
+    ? rawValues
+    : (typeof rawValues === 'string' ? [rawValues] : []);
+  const seenEntries = new Set();
+  const entries = [];
+  const bySource = new Map();
+  for (const raw of values) {
+    const parsed = parseHostedMcpStreamSelection(raw);
+    if (!parsed) continue;
+    const sourceKey = JSON.stringify([parsed.connectorId, parsed.connectionId ?? '']);
+    const entryKey = `${sourceKey}::${parsed.streamName}`;
+    if (seenEntries.has(entryKey)) continue;
+    seenEntries.add(entryKey);
+    entries.push(parsed);
+    let streams = bySource.get(sourceKey);
+    if (!streams) {
+      streams = new Set();
+      bySource.set(sourceKey, streams);
+    }
+    streams.add(parsed.streamName);
+  }
+  return { entries, bySource };
+}
+
+/**
+ * Build the deterministic source dedupe key used by `parseHostedMcpSelections`
+ * and `parseHostedMcpStreamSelections.bySource`. Exposed so callers building a
+ * lookup from a `{ connectorId, connectionId }` tuple do not have to mirror
+ * the internal JSON shape by hand.
+ *
+ * @param {{ connectorId: string, connectionId?: string | null }} selection
+ * @returns {string}
+ */
+export function hostedMcpSourceKey(selection) {
+  const connectorId = typeof selection?.connectorId === 'string' ? selection.connectorId : '';
+  const connectionId = typeof selection?.connectionId === 'string' && selection.connectionId
+    ? selection.connectionId
+    : '';
+  return JSON.stringify([connectorId, connectionId]);
+}

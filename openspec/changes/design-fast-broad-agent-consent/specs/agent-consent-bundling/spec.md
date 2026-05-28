@@ -49,3 +49,26 @@ The AS SHALL NOT accept arbitrary client-authored "all data" packages without va
 - **WHEN** a client stages a broad package containing many maximal continuous source scopes
 - **THEN** the AS SHALL either reject it or require a stronger consent ceremony than a narrow request
 - **AND** the owner SHALL see which sources and scope dimensions make the request broad.
+
+### Requirement: Hosted MCP picker SHALL let the owner narrow streams within a selected source
+
+When the hosted MCP package picker presents a connector-backed source, it SHALL render an owner-controllable list of the connector's manifest streams alongside the source toggle. Deselecting an individual stream SHALL exclude that stream from the issued child grant. The AS SHALL NOT silently widen the issued child grant beyond the streams the picker observed as selected at submission time.
+
+#### Scenario: Owner narrows streams within a selected source
+
+- **WHEN** the owner selects a hosted MCP source and deselects one or more streams within that source before submitting
+- **THEN** the issued child grant SHALL authorize only the streams that remained selected
+- **AND** the AS SHALL NOT include deselected streams in the resulting `authorization_details`.
+
+#### Scenario: Owner leaves every stream selected for a source
+
+- **WHEN** the owner selects a hosted MCP source without deselecting any of its streams
+- **THEN** the AS MAY emit the canonical `[{ name: "*" }]` shorthand for that source so the child grant naturally expands when a future manifest revision adds streams
+- **AND** the issued child grant SHALL authorize every manifest stream for that source at the time of approval.
+
+#### Scenario: Owner deselects every stream for a selected source
+
+- **WHEN** the owner selects a hosted MCP source but deselects every stream within it
+- **THEN** the AS SHALL NOT issue a child grant for that source
+- **AND** the package SHALL contain only child grants for sources with at least one selected stream
+- **AND** if every selected source ends up with zero selected streams the AS SHALL return a typed `invalid_request` error naming the affected source(s) by manifest display name.

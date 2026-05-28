@@ -361,6 +361,67 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
   overflow-wrap: anywhere;
 }
 
+.hosted-ui-option-source {
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  padding: 0.25rem 0.75rem 0.75rem;
+  margin: 0;
+  background: var(--card);
+}
+.hosted-ui-option-source-legend {
+  padding: 0 0.25rem;
+  display: block;
+  width: 100%;
+}
+.hosted-ui-option-source-legend .hosted-ui-option {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 0.5rem 0.25rem;
+  margin: 0;
+}
+.hosted-ui-option-source-legend .hosted-ui-option:hover {
+  background: transparent;
+}
+.hosted-ui-option-source-legend .hosted-ui-option:has(input:checked) {
+  border: none;
+  box-shadow: none;
+}
+
+.hosted-ui-option-streams {
+  display: grid;
+  gap: 0.375rem;
+  padding: 0.5rem 0.25rem 0.25rem 1.75rem;
+  border-top: 1px dashed var(--border);
+}
+
+.hosted-ui-option-streams-empty {
+  margin: 0.5rem 0 0;
+  padding: 0 0.25rem 0.25rem 1.75rem;
+  font-size: 0.8125rem;
+  color: var(--muted-foreground);
+}
+
+.hosted-ui-stream-option {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.625rem;
+  align-items: start;
+  font-size: 0.8125rem;
+  padding: 0.25rem 0;
+  cursor: pointer;
+}
+.hosted-ui-stream-option input {
+  margin: 0.2rem 0 0;
+  accent-color: var(--primary);
+}
+.hosted-ui-stream-option-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
 .hosted-ui-actions {
   display: flex;
   gap: 0.75rem;

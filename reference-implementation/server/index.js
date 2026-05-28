@@ -55,7 +55,10 @@ import {
 } from './connection-identity.js';
 import {
   encodeHostedMcpSelection,
+  encodeHostedMcpStreamSelection,
+  hostedMcpSourceKey,
   parseHostedMcpSelections,
+  parseHostedMcpStreamSelections,
 } from './hosted-mcp-selection.js';
 import { canonicalConnectorKey } from './connector-key.js';
 import {
@@ -3085,7 +3088,23 @@ function buildAsApp(opts = {}) {
     description: 'The MCP client controls any retention of fetched results.',
   });
 
-  function buildHostedMcpAuthorizationDetailForConnector(connectorId) {
+  // Build one source-bounded authorization_details entry for a hosted MCP
+  // package. `streamNames` is the owner-approved subset of stream names for
+  // this source. Passing `null` (or omitting the argument) preserves the
+  // legacy default of `[{ name: '*' }]` for callers — including the
+  // `connector_id=` shortcut on `/oauth/authorize/mcp-package` — that have
+  // not yet been wired through the per-stream picker. When `streamNames` is
+  // provided, it MUST be a non-empty array of names that the picker has
+  // already validated against the connector manifest; callers SHOULD pass
+  // `null` instead of an empty array because the AS rejects empty
+  // `streams[]` arrays in `normalizePendingGrantRequest`.
+  function buildHostedMcpAuthorizationDetailForConnector(connectorId, streamNames = null) {
+    let streams;
+    if (Array.isArray(streamNames) && streamNames.length > 0) {
+      streams = streamNames.map((name) => ({ name }));
+    } else {
+      streams = [{ name: '*' }];
+    }
     return {
       type: 'https://pdpp.org/data-access',
       source: { kind: 'connector', id: connectorId },
@@ -3093,7 +3112,7 @@ function buildAsApp(opts = {}) {
       purpose_description: HOSTED_MCP_PICKER_PURPOSE_DESCRIPTION,
       access_mode: HOSTED_MCP_PICKER_ACCESS_MODE,
       retention: HOSTED_MCP_PICKER_RETENTION,
-      streams: [{ name: '*' }],
+      streams,
     };
   }
 
@@ -3112,7 +3131,15 @@ function buildAsApp(opts = {}) {
       // returns `null`; we fall back to the original id so the row still
       // carries a stable identifier the operator can grep for.
       const connectorMetaToken = canonicalConnectorKey(connectorId) ?? connectorId;
-      const streamCount = Array.isArray(manifest.streams) ? manifest.streams.length : 0;
+      const manifestStreams = Array.isArray(manifest.streams) ? manifest.streams : [];
+      const streamCount = manifestStreams.length;
+      // Snapshot the stream list so each row can render an independent
+      // per-stream checkbox. The picker defaults every checkbox to
+      // checked; deselecting one narrows that source's child grant.
+      const streamSummaries = manifestStreams.map((stream) => ({
+        name: stream.name,
+        description: typeof stream.description === 'string' ? stream.description : null,
+      }));
       const connections = await listActiveBindingsForGrant({ ownerSubjectId, connectorId }).catch(() => []);
       if (connections.length === 0) {
         // Connector with no configured connection — show the connector
@@ -3127,6 +3154,7 @@ function buildAsApp(opts = {}) {
           meta: streamCount
             ? `${connectorMetaToken} · ${streamCount} streams · no configured connection`
             : `${connectorMetaToken} · no configured connection`,
+          streams: streamSummaries,
         });
         continue;
       }
@@ -3142,6 +3170,7 @@ function buildAsApp(opts = {}) {
           meta: streamCount
             ? `${connectorMetaToken} · ${streamCount} streams · ${connectionId}`
             : `${connectorMetaToken} · ${connectionId}`,
+          streams: streamSummaries,
         });
       }
     }
@@ -3161,15 +3190,48 @@ function buildAsApp(opts = {}) {
       })
       .join('\n');
 
+    const renderRowStreams = (row) => {
+      if (!Array.isArray(row.streams) || row.streams.length === 0) {
+        return '<p class="hosted-ui-option-streams-empty">This connector manifest declares no streams.</p>';
+      }
+      const items = row.streams
+        .map((stream) => {
+          const streamFormValue = encodeHostedMcpStreamSelection({
+            connectorId: row.connectorId,
+            connectionId: row.connectionId,
+            streamName: stream.name,
+          });
+          const description = stream.description
+            ? `<span class="hosted-ui-stream-meta">${hostedEscape(stream.description)}</span>`
+            : '';
+          return `
+            <label class="hosted-ui-stream-option">
+              <input type="checkbox" name="stream" value="${hostedEscape(streamFormValue)}" checked />
+              <span class="hosted-ui-stream-option-body">
+                <span class="hosted-ui-stream-name">${hostedEscape(stream.name)}</span>
+                ${description}
+              </span>
+            </label>
+          `;
+        })
+        .join('\n');
+      return `<div class="hosted-ui-option-streams">${items}</div>`;
+    };
+
     const options = rows.length
       ? rows.map((row) => `
-          <label class="hosted-ui-option">
-            <input type="checkbox" name="selection" value="${hostedEscape(row.formValue)}" />
-            <span class="hosted-ui-option-body">
-              <span class="hosted-ui-option-title">${hostedEscape(row.label)}</span>
-              <span class="hosted-ui-option-meta">${hostedEscape(row.meta)}</span>
-            </span>
-          </label>
+          <fieldset class="hosted-ui-option-source">
+            <legend class="hosted-ui-option-source-legend">
+              <label class="hosted-ui-option">
+                <input type="checkbox" name="selection" value="${hostedEscape(row.formValue)}" />
+                <span class="hosted-ui-option-body">
+                  <span class="hosted-ui-option-title">${hostedEscape(row.label)}</span>
+                  <span class="hosted-ui-option-meta">${hostedEscape(row.meta)}</span>
+                </span>
+              </label>
+            </legend>
+            ${renderRowStreams(row)}
+          </fieldset>
         `).join('\n')
       : '<p class="pdpp-body">No connector manifests are registered on this reference server.</p>';
 
@@ -3182,7 +3244,7 @@ function buildAsApp(opts = {}) {
     // path of least resistance is not "approve everything in silence."
     // See openspec/changes/design-fast-broad-agent-consent/.
     const riskCopy = rows.length
-      ? `<p class="pdpp-body"><strong>Reference-experimental multi-source consent.</strong> Each checked source issues one independent, source-bounded PDPP grant. The MCP client receives a package token that the resource server enforces through those child grants. Continuous access, all streams, client-policy retention.</p>`
+      ? `<p class="pdpp-body"><strong>Reference-experimental multi-source consent.</strong> Each checked source issues one independent, source-bounded PDPP grant. Within a source you can uncheck individual streams to narrow what the MCP client may read; an unchecked stream is excluded from the issued child grant. Access mode: continuous, client-policy retention.</p>`
       : '';
 
     return renderHostedDocument({
@@ -3578,6 +3640,12 @@ function buildAsApp(opts = {}) {
         if (selections.length === 0) {
           return oauthError(res, 400, 'invalid_request', 'At least one source must be selected');
         }
+        // Per-source stream subsets submitted by the picker. Each entry is a
+        // base64url(JSON) payload identifying `(connector, connection,
+        // stream)`; stream entries whose source was not also checked are
+        // ignored so an orphaned stream toggle cannot smuggle authority into
+        // a deselected source.
+        const { bySource: streamSelectionsBySource } = parseHostedMcpStreamSelections(body.stream);
 
         const ownerSubjectId = req?.ownerAuth?.subjectId || 'owner_local';
         const authorizationDetails = [];
@@ -3585,6 +3653,7 @@ function buildAsApp(opts = {}) {
         const connectionIds = [];
         const sourceMetadata = [];
         const seenChildKeys = new Set();
+        const sourcesWithEmptyStreams = [];
 
         for (const selection of selections) {
           const { connectorId, connectionId } = selection;
@@ -3606,13 +3675,74 @@ function buildAsApp(opts = {}) {
           if (seenChildKeys.has(childKey)) continue;
           seenChildKeys.add(childKey);
 
-          authorizationDetails.push(buildHostedMcpAuthorizationDetailForConnector(connectorId));
+          // Compute the per-source stream subset. The picker emits a
+          // pre-checked `stream` entry for every manifest stream on every
+          // rendered row, so the absence of any stream entries for a
+          // selected source means either:
+          //   (a) the manifest declares no streams (preserve legacy
+          //       wildcard behavior — `authorization_details[].streams`
+          //       cannot be empty, and downstream `resolveGrantSelection`
+          //       expands `*` to whatever the manifest exposes), OR
+          //   (b) the owner deliberately unchecked every stream for this
+          //       source. In case (b) we MUST NOT silently issue a child
+          //       grant covering every stream. We drop the source from the
+          //       package; if every selected source is dropped, the
+          //       handler returns a clear 400 below rather than issuing an
+          //       empty package.
+          const manifestStreamNames = Array.isArray(manifest.streams)
+            ? manifest.streams.map((stream) => stream.name).filter((name) => typeof name === 'string')
+            : [];
+          const sourceKey = hostedMcpSourceKey({ connectorId, connectionId: resolvedConnectionId });
+          const selectedStreamSet = streamSelectionsBySource.get(sourceKey) || new Set();
+          const validStreamNames = manifestStreamNames.filter((name) => selectedStreamSet.has(name));
+
+          let narrowedStreamNames = null;
+          if (manifestStreamNames.length === 0) {
+            // (a) — preserve wildcard for connectors with no manifest streams.
+            narrowedStreamNames = null;
+          } else if (validStreamNames.length === 0) {
+            // (b) — owner deselected every stream for this source. Skip it.
+            sourcesWithEmptyStreams.push({
+              connectorId,
+              connectionId: resolvedConnectionId || null,
+              connectorLabel: manifest.display_name || manifest.name || connectorId,
+            });
+            continue;
+          } else if (validStreamNames.length === manifestStreamNames.length) {
+            // All streams remain selected: emit canonical wildcard so the
+            // child grant naturally expands when a future manifest revision
+            // adds streams.
+            narrowedStreamNames = null;
+          } else {
+            narrowedStreamNames = validStreamNames;
+          }
+
+          authorizationDetails.push(
+            buildHostedMcpAuthorizationDetailForConnector(connectorId, narrowedStreamNames),
+          );
           storageBindings.push({ connector_id: connectorId });
           connectionIds.push(resolvedConnectionId || null);
           sourceMetadata.push({
             display_name: resolvedConnectionId || null,
             connector_display_name: manifest.display_name || manifest.name || connectorId,
           });
+        }
+
+        if (authorizationDetails.length === 0) {
+          // The picker accepted source checkboxes but every selected source
+          // had its streams fully deselected. Returning a typed error
+          // surfaces the inconsistency to the owner without leaking a raw
+          // connector identifier — the message names the connector(s) by
+          // manifest display name.
+          const labels = sourcesWithEmptyStreams.map((entry) => entry.connectorLabel).join(', ');
+          return oauthError(
+            res,
+            400,
+            'invalid_request',
+            labels
+              ? `Select at least one stream to authorize for: ${labels}`
+              : 'At least one source must be selected',
+          );
         }
 
         const explicitBaseUrl = opts.asPublicUrl || (!opts.ignoreAmbientPublicUrls ? process.env.AS_PUBLIC_URL : null);
