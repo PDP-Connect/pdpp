@@ -422,40 +422,17 @@ function positiveViewportSize(size: { height?: number; width?: number } | null |
   return !!size && Number(size.width) > 0 && Number(size.height) > 0;
 }
 
-function viewportOrientation(size: { height: number; width: number }): "landscape" | "portrait" | "square" {
-  const longestSide = Math.max(size.width, size.height);
-  if (longestSide <= 0 || Math.abs(size.width - size.height) / longestSide <= 0.05) {
-    return "square";
-  }
-  return size.width > size.height ? "landscape" : "portrait";
-}
-
-function compatibleViewportOrientation(
-  a: { height: number; width: number },
-  b: { height: number; width: number }
-): boolean {
-  const aOrientation = viewportOrientation(a);
-  const bOrientation = viewportOrientation(b);
-  return aOrientation === "square" || bOrientation === "square" || aOrientation === bOrientation;
-}
-
 function nekoMediaSettleSampleHasDisplayableFrame(sample: NekoMediaSettleSample): boolean {
   if (!(positiveViewportSize(sample.media) && positiveViewportSize(sample.screen))) {
     return false;
   }
-  const media = sample.media as { height: number; width: number };
-  const screen = sample.screen as { height: number; width: number };
   const inbound = sample.inbound;
   const inboundHasFrame =
     !inbound ||
     (Number(inbound.frameWidth) > 0 && Number(inbound.frameHeight) > 0) ||
     Number(inbound.framesPerSecond) > 0 ||
     Number(inbound.framesDecoded) > 0;
-  return (
-    inboundHasFrame &&
-    compatibleViewportOrientation(media, sample.requested) &&
-    compatibleViewportOrientation(screen, sample.requested)
-  );
+  return inboundHasFrame;
 }
 
 function readContainerRect(node: Element | null): { height: number; width: number } | null {
