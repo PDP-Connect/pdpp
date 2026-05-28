@@ -594,8 +594,22 @@ test('parseArgs: --include-backup-tables is parsed and defaults false', () => {
   assert.equal(opts.includeBackupTables, true);
 });
 
+test('parseArgs: write command with --apply', () => {
+  const { command, opts } = parseArgs(['node', 'cli.mjs', 'write', '--apply']);
+  assert.equal(command, 'write');
+  assert.equal(opts.apply, true);
+  assert.equal(opts.includeBackupTables, false);
+  assert.equal(opts.allowUnmapped, false);
+});
+
+test('parseArgs: write command defaults to plan-only (--apply off)', () => {
+  const { command, opts } = parseArgs(['node', 'cli.mjs', 'write']);
+  assert.equal(command, 'write');
+  assert.equal(opts.apply, false);
+});
+
 test('parseArgs: throws on unknown flag', () => {
-  assert.throws(() => parseArgs(['node', 'cli.mjs', 'inspect', '--write']), /Unknown argument/);
+  assert.throws(() => parseArgs(['node', 'cli.mjs', 'inspect', '--bogus']), /Unknown argument/);
 });
 
 test('JSONB_CONNECTOR_ID_SHAPES enumerates the known JSONB sites with extractors', () => {

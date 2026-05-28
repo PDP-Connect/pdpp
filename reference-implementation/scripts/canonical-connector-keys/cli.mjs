@@ -1,45 +1,68 @@
 #!/usr/bin/env node
 
 /**
- * canonical-connector-keys CLI — read-only dry-run for the
+ * canonical-connector-keys CLI — dry-run and write migration for the
  * canonical connector-key migration (OpenSpec change
- * `canonicalize-connector-keys`, tasks §3.2).
+ * `canonicalize-connector-keys`, tasks §3.2 and §3.3).
  *
  * Usage:
  *   PDPP_STORAGE_BACKEND=postgres \
  *   PDPP_DATABASE_URL=postgres://... \
- *   node reference-implementation/scripts/canonical-connector-keys/cli.mjs inspect [--json] [--allow-unmapped] [--include-backup-tables]
+ *   node reference-implementation/scripts/canonical-connector-keys/cli.mjs <command> [flags]
+ *
+ * Commands:
+ *   inspect  — read-only dry-run. Discovers every connector_id column +
+ *              JSONB surface, classifies values, reports rewrite/unmapped
+ *              counts by surface tier. Exits non-zero when active-tier
+ *              tables contain unmapped values.
+ *   write    — apply the canonical-key rewrite in a single transaction.
+ *              Always runs `inspect` first and refuses to write when
+ *              active tables contain unmapped rows. Pair with `--apply`
+ *              to perform writes; without `--apply` the command prints
+ *              the plan that would be applied but performs no writes.
  *
  * Flags:
  *   --json                   emit the full JSON report instead of the human summary
  *   --allow-unmapped         do NOT exit non-zero if unmapped values are found in
- *                            active tables (useful while reviewing a problem
- *                            instance; the default fails closed per design §3)
- *   --include-backup-tables  reserved for the §3.3 write migration; parsed and
- *                            represented in opts but does not change dry-run
- *                            scanning behaviour
+ *                            active tables (review/diagnostic only; MUST NOT be
+ *                            paired with --apply on a production deployment)
+ *   --include-backup-tables  include backup-tier tables in the plan and in the
+ *                            fail-closed unmapped check. Scratch tables are
+ *                            never rewritten. Default: off.
+ *   --apply                  (write command only) actually perform writes inside
+ *                            a single transaction. Without --apply the write
+ *                            command prints the plan it would execute but writes
+ *                            nothing.
  *
  * Exit code:
  *   0 — no unmapped rows in active tables (backup/scratch warnings are non-blocking)
  *   1 — unmapped rows found in active tables (or env error); bypass with --allow-unmapped
  *   2 — usage error
  *
- * The command opens one Postgres connection, runs SELECT-only queries
- * (information_schema discovery, GROUP BY counts), and exits. No table
- * is written.
+ * The command opens one Postgres connection. `inspect` runs SELECT-only
+ * queries; `write` opens a single client for BEGIN/COMMIT/ROLLBACK so
+ * any mid-flight failure rolls the transaction back to the pre-migration
+ * snapshot.
  */
 
 import { inspect, formatHumanReport, makePostgresDriver } from './inspect.mjs';
+import { formatApplyResult, makePostgresWriteDriver, migrate } from './writer.mjs';
 
 export function parseArgs(argv) {
   const args = argv.slice(2);
   const command = args[0];
-  const opts = { json: false, allowUnmapped: false, includeBackupTables: false };
+  const opts = {
+    json: false,
+    allowUnmapped: false,
+    includeBackupTables: false,
+    apply: false,
+  };
   for (let i = 1; i < args.length; i++) {
     const a = args[i];
     if (a === '--json') opts.json = true;
     else if (a === '--allow-unmapped') opts.allowUnmapped = true;
     else if (a === '--include-backup-tables') opts.includeBackupTables = true;
+    else if (a === '--apply') opts.apply = true;
     else throw new Error(`Unknown argument: ${a}`);
   }
   return { command, opts };
@@ -64,13 +87,37 @@ async function loadPgPool() {
   return pg.default?.Pool ?? pg.Pool;
 }
 
-async function main() {
-  const { command, opts } = parseArgs(process.argv);
-  if (command !== 'inspect') {
-    process.stderr.write('Usage: cli.mjs inspect [--json] [--allow-unmapped]\n');
-    process.exit(2);
+function formatPlanSummary(plan) {
+  const lines = [];
+  lines.push(`# canonical connector-key migration — plan (not applied)`);
+  lines.push('');
+  lines.push(`include_backup_tables: ${plan.options.includeBackupTables}`);
+  lines.push('');
+  lines.push(`column rewrites (${plan.columnRewrites.length} distinct):`);
+  for (const r of plan.columnRewrites) {
+    lines.push(
+      `  ${r.surfaceClass.padEnd(7)} ${r.table}.${r.column}  ` +
+        `rows=${r.expectedRows}  ${r.oldValue} → ${r.newValue}`,
+    );
   }
+  if (plan.skipped.backupRowsColumns > 0 || plan.skipped.scratchRowsColumns > 0) {
+    lines.push('');
+    lines.push(
+      `skipped: backup_rows=${plan.skipped.backupRowsColumns} ` +
+        `scratch_rows=${plan.skipped.scratchRowsColumns} ` +
+        `(re-run with --include-backup-tables to include backup tables; ` +
+        `scratch tables are always skipped)`,
+    );
+  }
+  lines.push('');
+  lines.push(`jsonb surfaces (per-row apply runs at execution time):`);
+  for (const s of plan.jsonbSurfaces) {
+    lines.push(`  ${s.table}.${s.column}  pk=[${s.primaryKey.join(',')}]`);
+  }
+  return lines.join('\n');
+}
 
+async function runInspect(opts) {
   const databaseUrl = requireEnv();
   const Pool = await loadPgPool();
   const pool = new Pool({ connectionString: databaseUrl });
@@ -96,6 +143,56 @@ async function main() {
     );
     process.exit(1);
   }
+}
+
+async function runWrite(opts) {
+  const databaseUrl = requireEnv();
+  const Pool = await loadPgPool();
+  const pool = new Pool({ connectionString: databaseUrl });
+  const client = await pool.connect();
+
+  let result;
+  try {
+    const driver = makePostgresWriteDriver(client);
+    result = await migrate(driver, {
+      apply: opts.apply,
+      includeBackupTables: opts.includeBackupTables,
+      allowUnmapped: opts.allowUnmapped,
+    });
+  } finally {
+    client.release();
+    await pool.end();
+  }
+
+  if (opts.json) {
+    process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+    return;
+  }
+
+  process.stdout.write(formatHumanReport(result.report) + '\n');
+  process.stdout.write('\n');
+  if (result.applied) {
+    process.stdout.write(formatApplyResult(result.applied) + '\n');
+  } else {
+    process.stdout.write(formatPlanSummary(result.plan) + '\n');
+    process.stdout.write('\n(no --apply flag: no writes performed)\n');
+  }
+}
+
+async function main() {
+  const { command, opts } = parseArgs(process.argv);
+  if (command === 'inspect') {
+    await runInspect(opts);
+    return;
+  }
+  if (command === 'write') {
+    await runWrite(opts);
+    return;
+  }
+  process.stderr.write(
+    'Usage: cli.mjs <inspect|write> [--json] [--allow-unmapped] [--include-backup-tables] [--apply]\n',
+  );
+  process.exit(2);
 }
 
 const isDirectInvocation = (() => {
