@@ -326,11 +326,19 @@ Structured log output SHALL NOT contain the plaintext of access tokens, refresh 
 
 ### Requirement: The CLI entrypoint SHALL produce a final structured log record on crash or signal
 
-When `reference-implementation/server/index.js` is run as a CLI entrypoint, it SHALL install process-level handlers for `uncaughtException`, `unhandledRejection`, `SIGTERM`, and `SIGINT`. Each handler SHALL emit exactly one log record before the process exits. These handlers SHALL NOT be installed when `server/index.js` is imported as a library (for example, from a test harness); the reference implementation SHALL NOT register global `process.on` listeners from any code path other than the CLI entrypoint block.
+When `reference-implementation/server/index.js` is run as a CLI entrypoint, it SHALL install process-level handlers for `uncaughtException`, `unhandledRejection`, `SIGTERM`, and `SIGINT`. Each handler SHALL emit exactly one log record before the process exits, except that the `uncaughtException` handler SHALL downgrade closed-pipe write errors on owned process stdio (`process.stdout` / `process.stderr`) to a single `warn` record and return without exiting. These handlers SHALL NOT be installed when `server/index.js` is imported as a library (for example, from a test harness); the reference implementation SHALL NOT register global `process.on` listeners from any code path other than the CLI entrypoint block.
+
+A "closed-pipe write error" for the purposes of this requirement is an `Error` with `syscall === 'write'` and `code` in the set `{ 'EPIPE', 'ERR_STREAM_DESTROYED', 'ERR_STREAM_WRITE_AFTER_END' }`. Any other error SHALL take the existing fatal-log + non-zero-exit path.
 
 #### Scenario: Uncaught exception at the CLI entrypoint
 - **WHEN** the CLI is running and code in a request handler or background task throws and the error is not otherwise caught
 - **THEN** exactly one `fatal` log record SHALL be emitted on stdout with the error name, message, and stack before the process exits with a non-zero code
+
+#### Scenario: Closed-pipe write error on owned process stdio
+- **WHEN** the CLI is running and an `EPIPE` (or equivalent closed-pipe error) is raised by a write to `process.stdout` or `process.stderr` and reaches the `uncaughtException` handler
+- **THEN** the handler SHALL emit at most one `warn` log record describing the closed-pipe condition
+- **AND** the handler SHALL NOT exit the process
+- **AND** subsequent unrelated errors SHALL still be classified by the same handler
 
 #### Scenario: Unhandled promise rejection at the CLI entrypoint
 - **WHEN** the CLI is running and a promise rejection propagates to the top level
@@ -2751,7 +2759,8 @@ The reference dashboard SHALL relabel the Records subnav header to `Connections`
 - **AND** the rename of the Records subtree to `/dashboard/connections` (and the corresponding nav relabel) SHALL be scoped to a subsequent OpenSpec change, not this one
 
 ### Requirement: Reference dashboard exposes a records explorer surface
-The reference dashboard SHALL expose an owner-only records-explorer surface at `/dashboard/records/explorer` that browses owner-visible records through existing public PDPP and existing `_ref` read endpoints, without introducing new RS or `_ref` endpoints.
+
+The reference dashboard SHALL expose an owner-only records-explorer surface at `/dashboard/explore` (with the legacy `/dashboard/records/explorer` URL preserved by redirect) that browses owner-visible records through existing public PDPP and existing `_ref` read endpoints, without introducing new RS or `_ref` endpoints.
 
 #### Scenario: The explorer reads through the existing RS contract
 - **WHEN** the records explorer renders results
@@ -2808,10 +2817,11 @@ The reference dashboard SHALL expose an owner-only records-explorer surface at `
 - **THEN** it SHALL render a recency-sorted feed sourced from a bounded fan-out over owner-visible connections rather than from a new RS endpoint
 - **AND** the fan-out SHALL be bounded by a fixed cap on (connections, streams per connection, records per stream) so the empty-query load remains cheap
 
-#### Scenario: The explorer does not replace the cross-artifact search page
-- **WHEN** an owner needs to jump to a trace, grant, or run by id
-- **THEN** that flow SHALL remain at `/dashboard/search` and SHALL NOT be moved into the explorer
-- **AND** the explorer SHALL be reachable from the existing Records subnav alongside `Connectors` and `Timeline`
+#### Scenario: The explorer is the sole owner-token record search surface
+- **WHEN** an owner wants to find records by free-text content
+- **THEN** the dashboard SHALL surface that query on `/dashboard/explore` only
+- **AND** `/dashboard/search` SHALL NOT render an owner-token record-content search section
+- **AND** the explorer's search lens SHALL remain reachable via `/dashboard/explore?q=<query>` and via the redirect from `/dashboard/search?q=<query>` (without `jump=0`)
 
 #### Scenario: The explorer does not invent grant or projection chrome the owner token does not have
 - **WHEN** the explorer renders under an owner token
@@ -4736,4 +4746,176 @@ The reference implementation SHALL keep first-party blob hydration coverage audi
 - **WHEN** blob hydration support is added to another first-party stream
 - **THEN** tests SHALL prove that connector output can produce a visible `blob_ref.fetch_url`
 - **AND** tests SHALL prove that byte fetch is grant-safe through `GET /v1/blobs/{blob_id}`
+
+### Requirement: Reference dashboard SHALL scope Search to spine artifact jumps
+
+The reference dashboard's `/dashboard/search` surface SHALL be a spine
+artifact lookup utility for traces, grants, and runs (and any future spine
+artifact families served by `GET /_ref/search`). It SHALL NOT render an
+owner-token record content search section. Record content search SHALL be
+the responsibility of `/dashboard/explore` only. This requirement governs
+the dashboard's consumption of the public retrieval endpoints; it SHALL NOT
+modify any RS or `_ref` read contract.
+
+#### Scenario: Search renders artifact buckets only
+
+- **WHEN** an authenticated operator visits `/dashboard/search?q=<query>` with `jump=0`
+- **THEN** the page SHALL render artifact buckets (traces, grants, runs) returned by `GET /_ref/search`
+- **AND** the page SHALL NOT render a record-results section, retrieval-state notice, semantic uplift badge, or hybrid retrieval badge
+- **AND** the page SHALL NOT call `GET /v1/search`, `GET /v1/search/hybrid`, or `GET /v1/search/semantic`
+
+#### Scenario: Free-text submit redirects to Explore
+
+- **WHEN** an authenticated operator submits a non-empty `q` to `/dashboard/search` without `jump=0` and the query does not resolve to a spine artifact id
+- **THEN** the page SHALL redirect to `/dashboard/explore?q=<query>` so record content search happens on one surface
+- **AND** the redirect SHALL preserve the URL-encoded query exactly
+- **AND** the empty-state copy SHALL link to `/dashboard/explore` so operators discover the record search surface without needing to know about the redirect
+
+#### Scenario: Exact-id jump still resolves through Search
+
+- **WHEN** an authenticated operator submits a query that exactly matches a known trace, grant, or run id on `/dashboard/search` with `jump=1`
+- **THEN** the page SHALL redirect to that artifact's canonical detail route (`/dashboard/traces/<id>`, `/dashboard/grants/<id>`, or `/dashboard/runs/<id>`)
+- **AND** the exact-id redirect SHALL take precedence over the free-text redirect to Explore
+
+#### Scenario: The sandbox Search surface mirrors the live scope
+
+- **WHEN** a sandbox visitor submits a query on `/sandbox/search`
+- **THEN** the page SHALL render the deterministic mock spine artifact buckets only
+- **AND** the page SHALL NOT call the sandbox data source's record search methods
+- **AND** the same exact-id and free-text redirect rules SHALL apply, targeting `/sandbox/explore`
+
+#### Scenario: Command palette free-text submit reaches Explore
+
+- **WHEN** an operator types a free-text query into the command palette and submits
+- **THEN** the palette SHALL navigate to `/dashboard/search?q=<query>&jump=1`
+- **AND** the resulting page SHALL redirect to `/dashboard/explore?q=<query>` when the query does not resolve to a spine id
+
+### Requirement: Polyfill connector authoring layer SHALL provide a reusable per-record fingerprint cursor
+
+The reference polyfill-connectors package SHALL expose a shared primitive that connector authors can adopt to suppress no-op record emits on streams whose source re-derives the full record each run (archive rebuilds, full-collection refetches, file-mtime triggers, aggregate re-derivation). The primitive SHALL:
+
+- compute a stable per-record fingerprint over the emitted record fields with a caller-declared exclusion list for run-clock fields;
+- accept the prior STATE cursor and tolerantly decode the prior fingerprint map (legacy cursor shapes, missing fields, malformed entries SHALL NOT throw and SHALL produce an empty map for those entries);
+- answer whether a given record's fingerprint has moved relative to the prior cursor;
+- always carry forward the fingerprint of skipped records so the next STATE write does not silently drop them;
+- track ids observed in the current run so that, on full-scan streams, fingerprints for ids absent from the current run can be pruned at run boundary;
+- expose the prior fingerprint value so a connector with derived-field-preservation policy can read it without breaking the encapsulation.
+
+Adoption SHALL be opt-in. Connectors whose source provides a strong incremental cursor SHALL NOT be forced to use the primitive. The primitive SHALL NOT modify the public RECORD or STATE wire shape; the fingerprint map is carried inside the connector's STATE cursor, which is already opaque to the runtime.
+
+The runtime byte-equivalence no-op check at the storage layer SHALL remain in force as a backstop. The authoring-layer primitive SHALL NOT be relied on as the sole churn-prevention layer.
+
+#### Scenario: Identical second run emits no records
+
+- **WHEN** a connector adopts the primitive on a stream and the source state has not moved between runs
+- **THEN** the second run SHALL emit zero RECORD messages for that stream
+- **AND** the STATE cursor for that stream SHALL still carry the full per-record fingerprint map forward
+
+#### Scenario: Run-clock field does not cause a re-emit
+
+- **WHEN** a record's fingerprint excludes a run-clock field (e.g. `fetched_at`) and only that field advances between runs
+- **THEN** `shouldEmit` SHALL return `false`
+- **AND** the prior fingerprint SHALL be preserved in the next STATE write
+
+#### Scenario: Source mutation re-emits exactly that record
+
+- **WHEN** the source value of a single record changes between runs
+- **THEN** `shouldEmit` SHALL return `true` for that record and `false` for unchanged records
+- **AND** only the changed record SHALL appear in the run's RECORD output
+
+#### Scenario: Source deletion is pruned at run boundary
+
+- **WHEN** a record present in the prior cursor is not observed on a requested full-scan stream this run
+- **THEN** the prune operation SHALL remove that id from the next STATE cursor
+- **AND** a later re-add of the same id SHALL re-emit the record rather than be silently skipped as a no-op
+
+#### Scenario: Legacy or malformed prior state is tolerated
+
+- **WHEN** the prior STATE cursor has no `fingerprints` field, has a malformed shape, or contains entries with the wrong value type
+- **THEN** the primitive SHALL produce an empty prior map for the malformed portion
+- **AND** the run SHALL proceed without throwing and re-emit every record as new
+
+### Requirement: First-party polyfill stream coverage SHALL be provenance-honest
+The reference implementation SHALL distinguish verified owner-account connector data from seed, fixture, demo, scaffolded, or blocked connector data when using first-party polyfill connectors as evidence of reference behavior.
+
+#### Scenario: A connector has local rows from a fixture path
+- **WHEN** local records for a connector were produced by seed or demo data rather than verified owner-account ingestion
+- **THEN** the reference SHALL NOT present those rows as owner-account evidence
+- **AND** the connector status, documentation, or task tracking SHALL mark the data as untrusted until purged and re-ingested from a verified source
+
+### Requirement: Layer 2 stream additions SHALL be connector-scoped and test-backed
+Each Layer 2 stream addition for a first-party polyfill connector SHALL include manifest schema updates, connector extraction logic, and tests or live-smoke evidence appropriate to the data source.
+
+#### Scenario: A new local-file stream is added
+- **WHEN** a local-file connector gains a new stream
+- **THEN** tests SHALL cover parsing, primary-key stability, incremental behavior, and manifest validation
+
+#### Scenario: A browser-backed stream is added
+- **WHEN** a browser-backed connector gains a new stream
+- **THEN** the change SHALL record whether verification used real owner interaction, scrubbed fixtures, or synthetic fixtures
+
+### Requirement: Low-risk reference stores expose semantic production interfaces
+
+The reference implementation SHALL expose production storage interfaces for pending consent, owner device authorization, connector state, connector schedules, and active-run coordination only after the relevant semantics have conformance coverage and at least one non-SQLite or Postgres-oriented proof.
+
+#### Scenario: A low-risk store is extracted
+
+**WHEN** a storage seam for pending consent, owner device authorization, connector state, schedules, or active runs is promoted into production code
+**THEN** callers SHALL depend on a semantic store interface rather than raw SQLite handles, prepared statements, or query builders.
+
+#### Scenario: A production SQLite store is accepted
+
+**WHEN** the reference implementation provides a SQLite-backed implementation of one of these stores
+**THEN** that implementation SHALL pass the existing conformance suite for the capability through a production-store-backed test adapter.
+
+#### Scenario: Runtime backend selection is requested
+
+**WHEN** a change wants to select SQLite, Postgres, or any other storage backend at runtime
+**THEN** that behavior SHALL be proposed separately and SHALL NOT be introduced by the low-risk store extraction.
+
+#### Scenario: A harder storage/search surface is considered
+
+**WHEN** code touches record reads, record writes, disclosure-spine storage, lexical retrieval, semantic retrieval, hybrid retrieval, or blob byte storage
+**THEN** it SHALL NOT reuse the low-risk store extraction as sufficient proof and SHALL require a separate contract and evidence gate.
+
+### Requirement: Connector child stdio failures SHALL be handled at the runtime boundary
+
+When the connector runtime spawns a connector child process, it SHALL attach `error` listeners to the child's `stdin`, `stdout`, and `stderr` streams before performing the first write or read. A closed-pipe error (`code` in the set `{ 'EPIPE', 'ERR_STREAM_DESTROYED', 'ERR_STREAM_WRITE_AFTER_END' }`) on any of those owned streams SHALL be downgraded to a typed operational outcome on the run; it SHALL NOT propagate as an uncaught exception. Any other error class on those streams SHALL still terminate the run with the existing failure shape.
+
+The runtime SHALL also guard `proc.stdin.write` call sites against a non-writable stdin (`proc.stdin.writable === false`) and SHALL surface that condition as the same typed operational outcome rather than as a thrown synchronous exception.
+
+The runtime SHALL distinguish two terminal_reason values for runs that fail without a DONE message, depending on whether the runtime observed the failed write:
+
+- **`connector_stdin_closed`** — the runtime observed a stdin write rejection (the helper either saw `proc.stdin.writable === false` or caught a closed-pipe `error` event on the stdin stream). The resolved outcome and persisted `run.failed` data SHALL also carry `stdin_closed_at_phase` naming the protocol phase the failed write was attempting (`start` for the initial START message, `interaction_response` for an INTERACTION_RESPONSE delivery, or `unknown` when the runtime only observed an asynchronous stream error).
+- **`connector_exit_without_done`** — the child exited without DONE but the kernel pipe absorbed every parent write before the child closed, so the runtime never observed a write rejection. This is the existing failure shape.
+
+In both cases, the parent process SHALL NOT emit an `uncaughtException`, and the resolved outcome SHALL carry one of these typed terminal_reason values.
+
+#### Scenario: Connector child exits before reading START — runtime observed the EPIPE
+- **WHEN** the runtime spawns a connector and writes START to a stdin whose far side has already closed
+- **AND** the helper sees the failed write (either via `writable === false` or via a closed-pipe `error` event)
+- **THEN** the resolved outcome's `terminal_reason` SHALL be `connector_stdin_closed`
+- **AND** the resolved outcome SHALL include `stdin_closed_at_phase: 'start'`
+- **AND** the parent process SHALL NOT emit an `uncaughtException`
+
+#### Scenario: Connector child exits before reading START — kernel absorbed the write
+- **WHEN** the runtime spawns a connector and writes START to a stdin whose kernel pipe accepts the bytes before the child closes
+- **AND** the child then exits without sending DONE
+- **THEN** the resolved outcome's `terminal_reason` SHALL be `connector_exit_without_done`
+- **AND** the parent process SHALL NOT emit an `uncaughtException`
+
+#### Scenario: Connector child closes stdin during INTERACTION_RESPONSE delivery
+- **WHEN** the runtime tries to write an `INTERACTION_RESPONSE` to a connector whose stdin has already closed
+- **AND** the runtime helper observes the failed write
+- **THEN** the resolved outcome's `terminal_reason` SHALL be `connector_stdin_closed`
+- **AND** the resolved outcome SHALL include `stdin_closed_at_phase: 'interaction_response'`
+- **AND** the run lifecycle SHALL still drain to a terminal record via the existing `'close'` handler
+
+#### Scenario: Non-EPIPE error on connector stdio is not downgraded
+- **WHEN** the runtime's `proc.stdin` listener receives an `error` whose `code` is not in the closed-pipe set (for example a `TypeError` synthesized by Node)
+- **THEN** the runtime SHALL terminate the run via its existing failure path and the error SHALL surface to the run's caller, not be silently swallowed
+
+#### Scenario: A successful DONE outranks any later stdin-close on teardown
+- **WHEN** the connector emits DONE and the runtime later observes a stdin write rejection during cleanup
+- **THEN** the resolved outcome's `terminal_reason` SHALL reflect the DONE status (`connector_reported_failed`, `connector_reported_cancelled`, or null on success), not `connector_stdin_closed`
 
