@@ -1308,7 +1308,7 @@ async function resolveOwnerConnectorNamespace(req, connectorId, options = {}) {
   const ownerSubjectId = options.ownerSubjectId || getOwnerTokenSubjectId(req);
   // Connectors are stored under canonical short keys (registerConnector calls
   // normalizeConnectorManifestForStorage which maps URL-form connector ids like
-  // 'https://registry.pdpp.org/connectors/spotify' → 'spotify'). Callers may
+  // 'https://registry.pdpp.org/connectors/spotify' to 'spotify'). Callers may
   // supply either form, so normalise here before the instance-store lookup to
   // prevent FK mismatches on ensureDefaultAccountConnection.
   const canonicalId = (connectorId && canonicalConnectorKey(connectorId)) ?? connectorId;
