@@ -85,6 +85,8 @@ but are not part of core PDPP.
   fallback unless the returned summary was successfully computed with
   `record_count === 0`.
 
+## ADDED Requirements
+
 ### Requirement: Retained-size reads SHALL expose bounded logical-byte measures
 
 The reference implementation SHALL expose owner-only retained-size reads as

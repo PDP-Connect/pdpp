@@ -45,14 +45,14 @@ The CLI and executable tests SHALL consume the real public or reference-designat
 - **THEN** those tests SHALL prefer black-box interaction with the running reference surfaces unless a narrower white-box test is intentionally justified for implementation internals
 
 ### Requirement: Reference-only surfaces are explicit
-Debugging, replay, trace, and operator-control surfaces that are useful for the reference implementation but are not part of core PDPP SHALL be explicitly marked as reference-only.
+Debugging, replay, trace, dashboard summary, and operator-control surfaces that are useful for the reference implementation but are not part of core PDPP SHALL be explicitly marked as reference-only.
 
 #### Scenario: A trace or timeline endpoint is exposed
 - **WHEN** the implementation exposes trace, timeline, or similar introspection surfaces
 - **THEN** those surfaces SHALL be clearly described as reference-only artifacts rather than as core PDPP protocol requirements
 
 #### Scenario: The current `_ref` read surface is treated as stable substrate
-- **WHEN** the implementation exposes the current reference-designated readers
+- **WHEN** the implementation exposes the current reference-designated event-spine readers
 - **THEN** the durable `_ref` read surface SHALL stay limited to:
   - `GET /_ref/traces/:traceId`
   - `GET /_ref/grants/:grantId/timeline`
@@ -62,13 +62,7 @@ Debugging, replay, trace, and operator-control surfaces that are useful for the 
   - `GET /_ref/runs` (list, filter, paginate)
   - `GET /_ref/search?q=...` (id-aware read-only jump helper)
   - `GET /_ref/dataset/summary` (dashboard overview dataset summary)
-  - `GET /_ref/connectors` (connector summary list)
-  - `GET /_ref/connectors/:connectorId` (connector detail)
-  - `GET /_ref/approvals` (pending approval list)
-  - `GET /_ref/records/timeline` (record activity timeline)
-  - `GET /_ref/schedules` (connector schedule list)
-  - `GET /_ref/connectors/:connectorId/schedule` (connector schedule detail)
-  - `GET /_ref/deployment` (operator deployment diagnostics)
+  - `GET /_ref/dataset/summary/streams` (per-`(connector_id, stream)` dataset-summary projection rows)
 
 #### Scenario: The dashboard summarizes dataset credibility
 - **WHEN** the reference dashboard renders a dataset summary or credibility overview
@@ -4448,4 +4442,291 @@ The tool SHALL NOT operate across distinct `(connector_instance_id, stream, reco
 - **WHEN** the operator runs the repair tool on a record whose current row has null derived fields, but the candidate prior `record_changes` row differs from the current row in some field outside the policy's `derivedFields`
 - **THEN** the tool SHALL NOT use that prior row as a refill source
 - **AND** if no other candidate prior row satisfies the equivalence guard, the record SHALL be skipped (no version allocated, no `record_changes` row appended)
+
+### Requirement: Retained-size reads SHALL expose bounded logical-byte measures
+
+The reference implementation SHALL expose owner-only retained-size reads as
+typed logical-byte measures over finite, bounded grains.
+
+#### Scenario: Retained-size measures are explicit
+
+- **WHEN** a retained-size row is returned
+- **THEN** it SHALL label current record JSON bytes, record-history JSON bytes,
+  blob bytes, total retained bytes, record count, and blob count separately
+- **AND** `total_retained_bytes` SHALL be the server-computed sum of the
+  logical retained-byte categories for that row.
+
+#### Scenario: Physical storage is not confused with retained data size
+
+- **WHEN** the implementation exposes database physical storage metrics
+- **THEN** those metrics SHALL be labeled separately from retained logical
+  bytes
+- **AND** retained-size reads SHALL NOT use physical table or index size as the
+  owner-facing retained data measure.
+
+#### Scenario: Retained-size grains are finite
+
+- **WHEN** retained-size rows are requested
+- **THEN** supported grains SHALL be limited to global dataset, connection, and
+  stream unless a later capability adds a manifest-authored record-family
+  classifier
+- **AND** the implementation SHALL NOT accept arbitrary JSON-path group-bys or
+  ad hoc dimensions in this capability
+- **AND** it SHALL NOT advertise a record-family grain until rebuild and
+  incremental maintenance populate that grain from a real bounded
+  classification source.
+
+#### Scenario: Connection grain uses connector instance identity
+
+- **WHEN** a retained-size row represents an owner-facing connection
+- **THEN** the row SHALL be keyed by `connector_instance_id`
+- **AND** stream and record-family rows SHALL remain attributable to that
+  connection.
+
+#### Scenario: Future record-family values are bounded
+
+- **WHEN** a connector emits or classifies a record-family value for
+  retained-size grouping
+- **THEN** the value SHALL be drawn from a bounded connector-authored or
+  manifest-authored set
+- **AND** unauthored free-form record content SHALL NOT become a retained-size
+  dimension label.
+
+### Requirement: Retained-size top-N rows SHALL be bounded drill-down aids
+
+The reference implementation SHALL support bounded top-N retained-size rows for
+owner introspection without introducing an ad hoc query engine.
+
+#### Scenario: Top-N rows are capped
+
+- **WHEN** an owner requests retained-size top-N rows
+- **THEN** the response SHALL cap the result count server-side
+- **AND** it SHALL reject or clamp unsupported limits, scopes, measures, and
+  bucket kinds.
+
+#### Scenario: Top-N rows contain identifiers not payloads
+
+- **WHEN** a retained-size top-N row identifies a large connection, stream,
+  record, or blob
+- **THEN** it SHALL contain the identifiers needed for drill-down
+- **AND** it SHALL NOT include raw connector payloads, credentials, cookies,
+  interaction answers, or arbitrary record text.
+
+#### Scenario: Top-N freshness is honest
+
+- **WHEN** top-N rows are stale, approximate, rebuilding, or failed
+- **THEN** the response SHALL expose metadata sufficient for the dashboard to
+  avoid presenting those rows as fresh exact truth.
+
+### Requirement: The dashboard summary stream rows are exposed as a reference-only read
+The reference implementation SHALL expose the per-`(connector_id, stream)` rows already maintained by the dataset-summary read model as a reference-only read endpoint so the dashboard can render a per-stream retained-size breakdown without re-scanning canonical records, record changes, or blobs.
+
+#### Scenario: The endpoint returns every projection row
+- **WHEN** an authorized owner requests `GET /_ref/dataset/summary/streams` with no query parameters
+- **THEN** the reference SHALL return one row per `(connector_id, stream)` from the dataset-summary stream projection
+- **AND** each row SHALL carry `connector_id`, `stream`, `record_count`, `record_json_bytes`, `earliest_ingested_at`, `latest_ingested_at`, `earliest_record_time`, `latest_record_time`, `computed_at`, and `dirty_record_time_bounds`
+- **AND** the response SHALL be bounded by the projection rows rather than by the size of the canonical records substrate
+- **AND** the response envelope SHALL carry the same projection-freshness metadata block (`computed_at`, `state`, `stale_since`, `rebuild_status`, `last_error`, optional `source_high_watermark`) that `GET /_ref/dataset/summary` exposes
+
+#### Scenario: The optional connector_id filter narrows the response
+- **WHEN** an authorized owner requests `GET /_ref/dataset/summary/streams?connector_id=<id>`
+- **THEN** the reference SHALL return only the projection rows whose `connector_id` matches the supplied value
+- **AND** the response envelope SHALL still carry the same projection-freshness metadata block, unchanged by the filter
+- **AND** an empty result set SHALL be returned as an empty `streams` array rather than as a 404
+
+#### Scenario: NULL and dirty time bounds are surfaced honestly
+- **WHEN** a projection row has no manifest-declared `consent_time_field`, has never been reconciled, or carries the dirty-bound flag set
+- **THEN** `earliest_record_time` and `latest_record_time` SHALL be returned as `null` for that row rather than zero-filled, empty-string, or fabricated values
+- **AND** `dirty_record_time_bounds` SHALL be returned as a boolean indicating whether the projection believes the record-time bounds are no longer trustworthy
+- **AND** the dashboard SHALL be able to distinguish a row whose record-time bounds are honestly unknown from a row whose bounds are known and fresh
+
+#### Scenario: The endpoint stays an owner-gated reference-only surface
+- **WHEN** the reference implementation mounts `GET /_ref/dataset/summary/streams`
+- **THEN** that route SHALL be gated by the same owner-session check that gates `GET /_ref/dataset/summary`
+- **AND** that route SHALL remain documented as a reference-only read surface rather than as a public PDPP API
+
+### Requirement: The Postgres records backend hydrates manifest-declared one-hop relationship expansions
+
+The reference implementation's Postgres records backend SHALL implement the
+same grant-scoped one-hop parent → child relationship expansion contract
+already provided by the SQLite backend. When a caller requests `expand[]`
+on a Postgres deployment, the backend SHALL fetch declared child records,
+project them through the child grant, and attach them to the parent
+response page rather than rejecting or silently ignoring the request.
+
+#### Scenario: A Postgres deployment hydrates a manifest-declared `has_many` relation
+
+- **WHEN** a client calls `queryRecords` with `expand=recently_played` and `expand_limit[recently_played]=1` against a Postgres-backed deployment
+- **AND** the grant covers both `saved_tracks` and `recently_played`
+- **AND** the parent record has more than one matching child
+- **THEN** the response SHALL include each parent record with an `expanded.recently_played` object
+- **AND** `expanded.recently_played.object` SHALL be `'list'`
+- **AND** `expanded.recently_played.data` SHALL contain exactly one child record
+- **AND** `expanded.recently_played.has_more` SHALL be `true`
+- **AND** the response envelope SHALL match the shape the SQLite backend returns for the same request.
+
+#### Scenario: A Postgres deployment hydrates a `has_one` relation
+
+- **WHEN** a client calls `queryRecords` with `expand=message_bodies` against a Postgres-backed deployment
+- **AND** the grant covers both `messages` and `message_bodies`
+- **THEN** each parent record SHALL include `expanded.message_bodies` set to the matching single child record
+- **OR** to `null` when no matching child exists
+- **AND** the child SHALL be projected through the child grant's `fields` selection.
+
+#### Scenario: Single-record fetch honors expand on Postgres
+
+- **WHEN** a client calls `getRecord` with `expand=recently_played` and `expand_limit[recently_played]=1` against a Postgres-backed deployment
+- **THEN** the response SHALL include `expanded.recently_played` with the same shape as the list endpoint.
+
+### Requirement: Postgres expansion enforces child grant scope, projection, and isolation
+
+The Postgres expansion path SHALL enforce the same authorization and
+isolation invariants the SQLite path enforces. Children outside the
+child grant's `time_range`, `resources`, or connector-instance scope
+SHALL NOT appear in the expanded payload. Fields outside the child
+grant's `fields` selection SHALL NOT appear on expanded child records.
+
+#### Scenario: Expansion without the child stream grant is rejected
+
+- **WHEN** a client calls `queryRecords` with `expand=recently_played` against a Postgres-backed deployment
+- **AND** the grant covers `saved_tracks` but not `recently_played`
+- **THEN** the call SHALL throw with `error.code === 'insufficient_scope'`.
+
+#### Scenario: Child rows from other connector instances are not visible
+
+- **WHEN** two distinct connector instances on the same Postgres database have records for the same stream pair
+- **AND** a client expands a relation on one connector instance's parent record
+- **THEN** the expanded payload SHALL contain only child records owned by the same connector instance as the parent
+- **AND** SHALL NOT contain child records from the other connector instance.
+
+#### Scenario: Child field projection respects the grant
+
+- **WHEN** a client expands a relation and the child grant restricts `fields` to a subset
+- **THEN** the expanded child records' `data` object SHALL contain only the granted fields, plus any required-by-schema fields the SQLite path includes
+- **AND** SHALL NOT include any fields outside the grant.
+
+### Requirement: Postgres expansion validates the request shape with the same parser as SQLite
+
+The Postgres expansion path SHALL use the same `normalizeExpandRequest`
+parser the SQLite expansion path uses, so the accepted request shape,
+the allowlist of relations, the cardinality constraints on
+`expand_limit`, the nested-expansion rejection, and the default/max
+limit enforcement remain identical across backends. The parser is
+extracted to a shared `record-expand-helpers.js` module so both backends
+import from one source of truth.
+
+#### Scenario: Unsupported relation name returns `invalid_expand`
+
+- **WHEN** a client calls `queryRecords` with `expand=not_a_relation` against a Postgres-backed deployment
+- **THEN** the call SHALL throw with `error.code === 'invalid_expand'`.
+
+#### Scenario: `expand_limit` on a `has_one` relation returns `invalid_expand`
+
+- **WHEN** a client calls `expand=message_bodies&expand_limit[message_bodies]=2` against a Postgres-backed deployment
+- **AND** `message_bodies` is declared as `has_one`
+- **THEN** the call SHALL throw with `error.code === 'invalid_expand'`.
+
+#### Scenario: `expand_limit` value above the manifest `max_limit` returns `invalid_expand`
+
+- **WHEN** a client calls `expand=recently_played&expand_limit[recently_played]=9999` against a Postgres-backed deployment
+- **AND** the manifest declares `max_limit: 50` for `recently_played`
+- **THEN** the call SHALL throw with `error.code === 'invalid_expand'`.
+
+### Requirement: Postgres expansion is incompatible with `changes_since`
+
+The Postgres expansion path SHALL preserve the SQLite contract that
+`expand[]` cannot be combined with `changes_since`. Requests carrying
+both SHALL reject with `invalid_expand` before any SQL runs.
+
+#### Scenario: `expand` with `changes_since` is rejected on Postgres
+
+- **WHEN** a client calls `queryRecords` with `expand=recently_played` and `changes_since=beginning` against a Postgres-backed deployment
+- **THEN** the call SHALL throw with `error.code === 'invalid_expand'`.
+
+### Requirement: Postgres expansion rejects unsafe manifest JSON fields before SQL interpolation
+
+The Postgres expansion path SHALL re-validate every manifest-declared
+JSON field used to build SQL (`foreign_key`, `primary_key`,
+`cursor_field`, `consent_time_field`) against the shared
+`SAFE_JSON_FIELD` regex before any value is interpolated into a query.
+Fields that fail the regex SHALL cause the request to reject before any
+SQL is sent.
+
+#### Scenario: A child stream missing from the manifest rejects the expansion
+
+- **WHEN** a client requests an `expand` whose declared child stream is not present in `manifest.streams`
+- **THEN** the call SHALL throw with `error.code === 'invalid_expand'`.
+
+#### Scenario: A child stream with a multi-part primary key rejects the expansion
+
+- **WHEN** a client requests an `expand` whose declared child stream uses a multi-column `primary_key`
+- **THEN** the call SHALL throw with `error.code === 'invalid_expand'` — mirroring the SQLite path's first-party-only `primary_key: ['id']` constraint.
+
+### Requirement: First-party expansion declarations are conservative and grant-safe
+
+First-party connector manifests SHALL enable `query.expand` only for relations that the current reference engine can serve as one-hop parent-to-child expansions with child grant projection.
+
+#### Scenario: A safe child collection is expanded
+
+- **WHEN** a first-party stream declares `query.expand` for a has-many child collection
+- **AND** the child stream has a top-level foreign key referencing the parent record key
+- **AND** the caller's grant includes both parent and child streams
+- **THEN** record list and detail responses MAY include the child records under `expanded.<relation>`
+- **AND** the child records SHALL be projected according to the child stream grant.
+
+#### Scenario: A child stream is not granted
+
+- **WHEN** a caller requests an enabled expansion but the grant does not include the related child stream
+- **THEN** the reference SHALL reject the request with insufficient scope rather than silently omitting or partially hydrating the relation.
+
+#### Scenario: A tempting reverse relation is present
+
+- **WHEN** a relation requires looking up a parent or sibling from a foreign key on the current record
+- **THEN** first-party manifests SHALL NOT enable it through `query.expand` until a reverse/belongs-to relation contract is specified and tested.
+
+### Requirement: First-party binary streams hydrate through the reference blob substrate
+
+The reference implementation SHALL use its existing blob substrate for first-party connector streams that collect binary file content. A connector that hydrates source bytes SHALL store those bytes through the reference blob storage seam and SHALL expose them to clients through a record `blob_ref` decorated with `fetch_url` at read time.
+
+#### Scenario: A connector hydrates a file-like record
+
+- **WHEN** a first-party connector successfully collects bytes for a file-like record
+- **THEN** the connector SHALL emit a record that references the stored bytes through `data.blob_ref`
+- **AND** the reference SHALL serve those bytes through `GET /v1/blobs/{blob_id}` under the existing blob authorization rules
+- **AND** the reference SHALL NOT require clients to construct stream-specific `/content`, `/download`, or equivalent byte URLs
+
+#### Scenario: A connector cannot hydrate bytes
+
+- **WHEN** a first-party connector can describe a file-like source object but cannot safely collect its bytes
+- **THEN** the connector SHALL preserve the metadata record
+- **AND** the record SHALL expose a non-secret hydration status or equivalent manifest-declared field that lets clients distinguish hydrated and metadata-only records
+- **AND** the connector SHALL NOT fabricate a `blob_ref` for bytes it did not store
+
+#### Scenario: A client lacks blob field visibility
+
+- **WHEN** a caller can read a file-like record but the grant projection does not include the record's `blob_ref` field
+- **THEN** the reference SHALL NOT expose a usable blob `fetch_url`
+- **AND** `GET /v1/blobs/{blob_id}` SHALL remain unauthorized unless some visible record exposes that blob reference under the caller's grant
+
+#### Scenario: A visible blob is served with private cache semantics
+
+- **WHEN** a caller fetches a visible blob through `GET /v1/blobs/{blob_id}`
+- **THEN** the response SHALL include `Content-Type`, `Content-Length`, and `Cache-Control: private, no-store`
+- **AND** a `HEAD /v1/blobs/{blob_id}` request under the same grant SHALL return the same status and metadata headers without a response body
+
+### Requirement: First-party blob hydration coverage stays auditable
+
+The reference implementation SHALL keep first-party blob hydration coverage auditable by classifying shipped connector streams that may contain collectible binary content.
+
+#### Scenario: A first-party connector has binary-capable streams
+
+- **WHEN** a shipped first-party connector stream can contain source file bytes, attachments, statements, receipts, exports, or uploaded files
+- **THEN** the implementation work SHALL classify that stream as hydrated, metadata-only, deferred, or not applicable
+- **AND** the classification SHALL document the reason when hydration is not implemented
+
+#### Scenario: Blob hydration expands to a new stream
+
+- **WHEN** blob hydration support is added to another first-party stream
+- **THEN** tests SHALL prove that connector output can produce a visible `blob_ref.fetch_url`
+- **AND** tests SHALL prove that byte fetch is grant-safe through `GET /v1/blobs/{blob_id}`
 
