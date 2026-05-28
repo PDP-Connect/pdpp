@@ -52,7 +52,7 @@ Debugging, replay, trace, dashboard summary, and operator-control surfaces that 
 - **THEN** those surfaces SHALL be clearly described as reference-only artifacts rather than as core PDPP protocol requirements
 
 #### Scenario: The current `_ref` read surface is treated as stable substrate
-- **WHEN** the implementation exposes the current reference-designated event-spine readers
+- **WHEN** the implementation exposes the current reference-designated readers
 - **THEN** the durable `_ref` read surface SHALL stay limited to:
   - `GET /_ref/traces/:traceId`
   - `GET /_ref/grants/:grantId/timeline`
@@ -63,6 +63,13 @@ Debugging, replay, trace, dashboard summary, and operator-control surfaces that 
   - `GET /_ref/search?q=...` (id-aware read-only jump helper)
   - `GET /_ref/dataset/summary` (dashboard overview dataset summary)
   - `GET /_ref/dataset/summary/streams` (per-`(connector_id, stream)` dataset-summary projection rows)
+  - `GET /_ref/connectors` (connector summary list)
+  - `GET /_ref/connectors/:connectorId` (connector detail)
+  - `GET /_ref/approvals` (pending approval list)
+  - `GET /_ref/records/timeline` (record activity timeline)
+  - `GET /_ref/schedules` (connector schedule list)
+  - `GET /_ref/connectors/:connectorId/schedule` (connector schedule detail)
+  - `GET /_ref/deployment` (operator deployment diagnostics)
 
 #### Scenario: The dashboard summarizes dataset credibility
 - **WHEN** the reference dashboard renders a dataset summary or credibility overview
