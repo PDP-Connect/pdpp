@@ -434,6 +434,40 @@ test("dynamic mode ignores persisted static surface rows from a previous boot", 
   assert.equal(result.surface?.health, "starting");
 });
 
+test("boot detaches persisted active_lease_id when the active lease is no longer non-terminal", () => {
+  const { leases } = manager({
+    initialSurfaces: [
+      {
+        surface_id: "surface_stale_active",
+        backend: "neko",
+        profile_key: "chatgpt",
+        connector_id: "chatgpt",
+        cdp_url: "http://neko:9222",
+        stream_base_url: "http://neko:8080",
+        health: "unhealthy",
+        active_lease_id: "lease_released",
+        created_at: "2026-05-12T11:00:00.000Z",
+        last_used_at: "2026-05-12T11:00:00.000Z",
+      },
+    ],
+    initialLeases: [
+      {
+        lease_id: "lease_waiting",
+        connector_id: "chatgpt",
+        profile_key: "chatgpt",
+        run_id: "run_waiting",
+        status: "waiting_for_browser_surface",
+        priority_class: "scheduled_refresh",
+        requested_at: "2026-05-12T11:00:00.000Z",
+        expires_at: "2026-05-12T12:01:00.000Z",
+        fencing_token: 1,
+      },
+    ],
+  });
+
+  assert.equal(leases.getSurface("surface_stale_active")?.active_lease_id, undefined);
+});
+
 test("dynamic capacity starts a surface before it becomes leased", async () => {
   const { leases } = manager();
   const allocator = new FakeBrowserSurfaceAllocator();
@@ -781,6 +815,7 @@ test("invalidateSurface evicts an in-memory surface so the next acquire cannot r
   const removed = leases.invalidateSurface("surface_stale");
 
   assert.equal(removed.surface?.surface_id, "surface_stale");
+  assert.equal(removed.surface?.active_lease_id, undefined);
   assert.equal(leases.getSurface("surface_stale"), undefined);
 
   // Next acquire must NOT reuse the dead surface; it should create a new one
@@ -813,6 +848,7 @@ test("invalidateSurface optionally fails an active lease so callers do not doubl
 
   assert.equal(result.lease?.status, "surface_failed");
   assert.equal(result.lease?.wait_reason, "surface_unhealthy");
+  assert.equal(result.surface?.active_lease_id, undefined);
   assert.equal(leases.getSurface("surface_active"), undefined);
 });
 
