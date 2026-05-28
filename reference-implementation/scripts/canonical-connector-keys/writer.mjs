@@ -211,11 +211,26 @@ async function snapshotRowCounts(driver, plan) {
   return counts;
 }
 
+function splitConnectorParentRewrites(columnRewrites) {
+  const parent = [];
+  const rest = [];
+  for (const r of columnRewrites) {
+    if (r.table === 'connectors' && r.column === 'connector_id') {
+      parent.push(r);
+    } else {
+      rest.push(r);
+    }
+  }
+  return { parent, rest };
+}
+
 /**
  * Apply a plan inside a single transaction. Driver must extend the
  * read-only inspector driver with:
  *
  *   - `beginTransaction()` / `commit()` / `rollback()`
+ *   - `copyConnectorParentRow(oldValue, newValue) → rowCount`
+ *   - `deleteConnectorParentRow(oldValue) → rowCount`
  *   - `updateConnectorIdColumn(table, column, oldValue, newValue) → rowCount`
  *   - `readJsonbRowsWithPk(table, pkCols, jsonbColumn) → [{ pk, value }]`
  *   - `updateJsonbRow(table, pkCols, pkValues, jsonbColumn, newJson) → rowCount`
@@ -223,15 +238,19 @@ async function snapshotRowCounts(driver, plan) {
  * The function:
  *   1. opens a transaction;
  *   2. snapshots the row count of every touched table;
- *   3. runs each `UPDATE … WHERE column = oldValue` and verifies the
+ *   3. copies rewritten `connectors.connector_id` parent rows to their
+ *      canonical key before child FKs are updated;
+ *   4. runs each non-parent `UPDATE … WHERE column = oldValue` and verifies the
  *      affected row count equals the expected count from the dry-run;
- *   4. for each JSONB surface that exists, reads every row with the
+ *   5. for each JSONB surface that exists, reads every row with the
  *      JSONB column populated, computes the new payload via `shape.apply`,
  *      and updates per primary key (each update MUST affect exactly one
  *      row);
- *   5. re-snapshots the row count of every touched table and asserts
+ *   6. deletes the old `connectors.connector_id` parent rows once children
+ *      no longer reference them;
+ *   7. re-snapshots the row count of every touched table and asserts
  *      it is unchanged (no rewrite may delete or insert rows);
- *   6. commits.
+ *   8. commits.
  *
  * Any error rolls back. A row-count mismatch (column or per-row JSONB)
  * is treated as a failure and rolled back.
@@ -240,9 +259,21 @@ export async function applyPlan(driver, plan) {
   await driver.beginTransaction();
   try {
     const before = await snapshotRowCounts(driver, plan);
+    const { parent: connectorParentRewrites, rest: ordinaryColumnRewrites } =
+      splitConnectorParentRewrites(plan.columnRewrites);
+
+    for (const r of connectorParentRewrites) {
+      const affected = await driver.copyConnectorParentRow(r.oldValue, r.newValue);
+      if (affected !== r.expectedRows) {
+        throw new Error(
+          `applyPlan: connector parent copy affected ${affected} rows, expected ${r.expectedRows} ` +
+            `for connectors.connector_id ${JSON.stringify(r.oldValue)} → ${JSON.stringify(r.newValue)}`,
+        );
+      }
+    }
 
     const columnsApplied = [];
-    for (const r of plan.columnRewrites) {
+    for (const r of ordinaryColumnRewrites) {
       const affected = await driver.updateConnectorIdColumn(
         r.table,
         r.column,
@@ -298,6 +329,17 @@ export async function applyPlan(driver, plan) {
       });
     }
 
+    for (const r of connectorParentRewrites) {
+      const affected = await driver.deleteConnectorParentRow(r.oldValue);
+      if (affected !== r.expectedRows) {
+        throw new Error(
+          `applyPlan: connector parent delete affected ${affected} rows, expected ${r.expectedRows} ` +
+            `for connectors.connector_id ${JSON.stringify(r.oldValue)}`,
+        );
+      }
+      columnsApplied.push({ ...r, actualRows: affected });
+    }
+
     const after = await snapshotRowCounts(driver, plan);
     for (const t of Object.keys(before)) {
       if (before[t] !== after[t]) {
@@ -338,6 +380,13 @@ export async function applyPlan(driver, plan) {
  *     rows in production).
  */
 export async function migrate(driver, options = {}) {
+  if (options.apply && options.allowUnmapped) {
+    throw new Error(
+      'migrate: refusing to apply with allowUnmapped=true. ' +
+        '--allow-unmapped is diagnostic-only; resolve unmapped active values before writing.',
+    );
+  }
+
   const report = await inspect(driver);
 
   const blockedActive = report.summary.totalUnmappedRowsActive;
@@ -386,6 +435,24 @@ export function makePostgresWriteDriver(client) {
     },
     async rollback() {
       await client.query('ROLLBACK');
+    },
+    async copyConnectorParentRow(oldValue, newValue) {
+      const res = await client.query(
+        `INSERT INTO connectors (connector_id, manifest, created_at)
+         SELECT $1, manifest, created_at
+           FROM connectors
+          WHERE connector_id = $2
+         ON CONFLICT (connector_id) DO NOTHING`,
+        [newValue, oldValue],
+      );
+      return res.rowCount ?? 0;
+    },
+    async deleteConnectorParentRow(oldValue) {
+      const res = await client.query(
+        `DELETE FROM connectors WHERE connector_id = $1`,
+        [oldValue],
+      );
+      return res.rowCount ?? 0;
     },
     async updateConnectorIdColumn(table, column, oldValue, newValue) {
       const qt = quotePgIdentifier(table);

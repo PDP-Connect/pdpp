@@ -62,7 +62,7 @@ function makeMemoryDriver(initialState, options = {}) {
   // Deep clone so each test's mutations are isolated.
   let tables = structuredClone(initialState);
   let txSnapshot = null;
-  const { onAfterColumnUpdate, onAfterJsonbUpdate } = options;
+  const { enforceConnectorInstanceFk = false, onAfterColumnUpdate, onAfterJsonbUpdate } = options;
 
   function getTable(name) {
     const t = tables[name];
@@ -133,8 +133,42 @@ function makeMemoryDriver(initialState, options = {}) {
       tables = txSnapshot;
       txSnapshot = null;
     },
+    async copyConnectorParentRow(oldValue, newValue) {
+      const connectors = getTable('connectors');
+      if (connectors.rows.some((row) => row.connector_id === newValue)) {
+        return 0;
+      }
+      const source = connectors.rows.find((row) => row.connector_id === oldValue);
+      if (!source) return 0;
+      connectors.rows.push({ ...structuredClone(source), connector_id: newValue });
+      return 1;
+    },
+    async deleteConnectorParentRow(oldValue) {
+      if (enforceConnectorInstanceFk && tables.connector_instances) {
+        const stillReferenced = tables.connector_instances.rows.some(
+          (row) => row.connector_id === oldValue,
+        );
+        if (stillReferenced) {
+          throw new Error(`connector FK violation deleting ${oldValue}`);
+        }
+      }
+      const connectors = getTable('connectors');
+      const before = connectors.rows.length;
+      connectors.rows = connectors.rows.filter((row) => row.connector_id !== oldValue);
+      return before - connectors.rows.length;
+    },
     async updateConnectorIdColumn(tableName, columnName, oldValue, newValue) {
       const t = getTable(tableName);
+      if (
+        enforceConnectorInstanceFk &&
+        tableName === 'connector_instances' &&
+        columnName === 'connector_id'
+      ) {
+        const parentExists = tables.connectors?.rows.some((row) => row.connector_id === newValue);
+        if (!parentExists) {
+          throw new Error(`connector FK violation updating connector_instances to ${newValue}`);
+        }
+      }
       let count = 0;
       for (const row of t.rows) {
         if (row[columnName] === oldValue) {
@@ -394,6 +428,37 @@ test('migrate: --apply rewrites URL-shaped first-party ids in direct columns', a
   assert.equal(ci.find((r) => r.instance_id === 'cin_3').connector_id, 'claude-code');
 });
 
+test('migrate: parent connector keys are copied before child FK rewrites and deleted after', async () => {
+  const driver = makeMemoryDriver(buildAllMappedState(), { enforceConnectorInstanceFk: true });
+
+  await migrate(driver, { apply: true });
+
+  const connectors = driver._tables().connectors.rows.map((r) => r.connector_id).sort();
+  assert.ok(connectors.includes('gmail'));
+  assert.ok(connectors.includes('claude-code'));
+  assert.equal(connectors.includes(GMAIL_URL), false, 'old URL parent key removed after child rewrites');
+  assert.equal(connectors.includes('claude_code'), false, 'old alias parent key removed after child rewrites');
+  for (const row of driver._tables().connector_instances.rows) {
+    assert.ok(
+      connectors.includes(row.connector_id),
+      `connector_instances.${row.instance_id} must reference a surviving parent connector row`,
+    );
+  }
+});
+
+test('migrate: parent key conflict fails closed instead of merging manifests implicitly', async () => {
+  const state = buildAllMappedState();
+  state.connectors.rows.push({ connector_id: 'gmail', name: 'Existing canonical Gmail manifest' });
+  const driver = makeMemoryDriver(state, { enforceConnectorInstanceFk: true });
+  const before = structuredClone(driver._tables());
+
+  await assert.rejects(
+    () => migrate(driver, { apply: true }),
+    /connector parent copy affected 0 rows, expected 1/,
+  );
+  assert.deepEqual(driver._tables(), before, 'conflicting parent-key copy rolls back');
+});
+
 test('migrate: --apply rewrites JSONB embedded connector_ids through the same mapping', async () => {
   const driver = makeMemoryDriver(buildAllMappedState());
   await migrate(driver, { apply: true });
@@ -483,18 +548,28 @@ test('migrate: unmapped active value aborts before any write', async () => {
   assert.deepEqual(driver._tables(), before, 'no rows mutated when the migration is aborted');
 });
 
-test('migrate: --allow-unmapped bypasses the fail-closed check but never rewrites the unmapped row', async () => {
+test('migrate: --allow-unmapped is diagnostic-only and cannot be applied', async () => {
   const state = buildAllMappedState();
   state.records.rows.push({ record_id: 'rec_unmapped', connector_id: UNKNOWN_URL });
   const driver = makeMemoryDriver(state);
 
-  await migrate(driver, { apply: true, allowUnmapped: true });
+  await assert.rejects(
+    () => migrate(driver, { apply: true, allowUnmapped: true }),
+    /refusing to apply with allowUnmapped=true/,
+  );
+});
 
-  const records = driver._tables().records.rows;
-  // The unmapped row is left exactly as-is.
-  assert.equal(records.find((r) => r.record_id === 'rec_unmapped').connector_id, UNKNOWN_URL);
-  // Mapped rows around it still rewrite.
-  assert.equal(records.find((r) => r.record_id === 'rec_1').connector_id, 'gmail');
+test('migrate: --allow-unmapped bypasses the fail-closed check for dry-run planning only', async () => {
+  const state = buildAllMappedState();
+  state.records.rows.push({ record_id: 'rec_unmapped', connector_id: UNKNOWN_URL });
+  const driver = makeMemoryDriver(state);
+  const before = structuredClone(driver._tables());
+
+  const result = await migrate(driver, { apply: false, allowUnmapped: true });
+
+  assert.equal(result.applied, null);
+  assert.ok(result.plan.columnRewrites.length > 0);
+  assert.deepEqual(driver._tables(), before, 'diagnostic planning must not mutate rows');
 });
 
 test('migrate: backup tables are skipped by default and rewritten only with --include-backup-tables', async () => {
