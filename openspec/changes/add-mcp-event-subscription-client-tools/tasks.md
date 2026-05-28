@@ -34,7 +34,7 @@
 
 - [x] 7.1 `node --test packages/mcp-server/test/` passes.
 - [x] 7.2 `openspec validate add-mcp-event-subscription-client-tools --strict` passes.
-- [ ] 7.3 `openspec validate --all --strict` passes.
+- [x] 7.3 `openspec validate --all --strict` passes.
 
 ## Acceptance checks
 
