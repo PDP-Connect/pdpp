@@ -23,6 +23,7 @@ import { fileURLToPath } from 'node:url';
 
 import { startServer } from '../server/index.js';
 import { validateRequest, listOperations } from '@pdpp/reference-contract';
+import { canonicalConnectorKey } from '../server/connector-key.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, '..');
@@ -271,7 +272,7 @@ test('GET /_ref/inbox/:runId renders pending interaction HTML and JSON', async (
       assert.equal(json.body.object, 'ref_inbox_item');
       assert.deepEqual(json.body.data, {
         run_id: started.run_id,
-        connector_id: spotifyManifest.connector_id,
+        connector_id: canonicalConnectorKey(spotifyManifest.connector_id) ?? spotifyManifest.connector_id,
         interaction_id: pending.interaction_id,
         kind: 'credentials',
         stream: null,
