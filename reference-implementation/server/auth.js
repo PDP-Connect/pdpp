@@ -236,6 +236,16 @@ function isScalarAggregateGroupFieldSchema(fieldSchema) {
   return ['boolean', 'integer', 'number', 'string'].includes(nonNull[0]);
 }
 
+// `group_by_time` buckets a date/date-time field with calendar `date_trunc`
+// semantics, so the declared field must be a string with format date or
+// date-time (nullable variant allowed). See:
+//   openspec/changes/add-aggregate-time-buckets-and-distinct
+function isTimeBucketAggregateFieldSchema(fieldSchema) {
+  const nonNull = nonNullSchemaTypes(fieldSchema);
+  if (nonNull.length !== 1 || nonNull[0] !== 'string') return false;
+  return fieldSchema?.format === 'date' || fieldSchema?.format === 'date-time';
+}
+
 function resolveConfiguredNativeStorageBinding(opts = {}) {
   const nativeManifest = resolveConfiguredNativeManifest(opts);
   const connectorId = nativeManifest?.storage_binding?.connector_id;
@@ -2239,7 +2249,7 @@ function validateConnectorManifest(manifest = {}, code = 'invalid_request', opts
       if (!declared || typeof declared !== 'object' || Array.isArray(declared)) {
         throw invalidConnectorManifest(`Stream '${stream.name}' query.aggregations must be an object`, code);
       }
-      const allowedKeys = new Set(['count', 'sum', 'min', 'max', 'group_by']);
+      const allowedKeys = new Set(['count', 'sum', 'min', 'max', 'group_by', 'group_by_time', 'count_distinct']);
       const unknownKeys = Object.keys(declared).filter((key) => !allowedKeys.has(key));
       if (unknownKeys.length) {
         throw invalidConnectorManifest(`Stream '${stream.name}' query.aggregations has unsupported keys: ${unknownKeys.join(', ')}`, code);
@@ -2247,7 +2257,7 @@ function validateConnectorManifest(manifest = {}, code = 'invalid_request', opts
       if (declared.count !== undefined && declared.count !== true) {
         throw invalidConnectorManifest(`Stream '${stream.name}' query.aggregations.count must be true when declared`, code);
       }
-      for (const key of ['sum', 'min', 'max', 'group_by']) {
+      for (const key of ['sum', 'min', 'max', 'group_by', 'group_by_time', 'count_distinct']) {
         const fields = declared[key];
         if (fields === undefined) continue;
         if (!Array.isArray(fields) || fields.length === 0 || fields.some((field) => !isNonEmptyString(field))) {
@@ -2271,6 +2281,12 @@ function validateConnectorManifest(manifest = {}, code = 'invalid_request', opts
           }
           if (key === 'group_by' && !isScalarAggregateGroupFieldSchema(fieldSchema)) {
             throw invalidConnectorManifest(`Stream '${stream.name}' query.aggregations.group_by entry '${fieldName}' must be a top-level scalar field; arrays, objects, blobs, and ambiguous types are not supported`, code);
+          }
+          if (key === 'group_by_time' && !isTimeBucketAggregateFieldSchema(fieldSchema)) {
+            throw invalidConnectorManifest(`Stream '${stream.name}' query.aggregations.group_by_time entry '${fieldName}' must be a string field with format date or date-time, or the nullable variant`, code);
+          }
+          if (key === 'count_distinct' && !isScalarAggregateGroupFieldSchema(fieldSchema)) {
+            throw invalidConnectorManifest(`Stream '${stream.name}' query.aggregations.count_distinct entry '${fieldName}' must be a top-level scalar field; arrays, objects, blobs, and ambiguous types are not supported`, code);
           }
         }
       }

@@ -456,10 +456,13 @@ const SUPPORTED_AGGREGATE_QUERY_PARAMS = new Set([
   'connector_instance_id',
   'field',
   'filter',
+  'granularity',
   'group_by',
+  'group_by_time',
   'limit',
   'metric',
   'subject_id',
+  'time_zone',
 ]);
 
 /**
@@ -470,9 +473,14 @@ const SUPPORTED_AGGREGATE_QUERY_PARAMS = new Set([
  */
 export { resolveRequestConnectionId, CONNECTION_ALIAS_DEPRECATED_WARNING_CODE };
 export const validateConnectionAlias = validateConnectionAliasShared;
-const SUPPORTED_AGGREGATE_METRICS = new Set(['count', 'sum', 'min', 'max']);
+const SUPPORTED_AGGREGATE_METRICS = new Set(['count', 'sum', 'min', 'max', 'count_distinct']);
 const MAX_AGGREGATE_GROUP_LIMIT = 100;
 const DEFAULT_AGGREGATE_GROUP_LIMIT = 10;
+// Calendar `date_trunc` granularity set for `group_by_time` (weeks start
+// Monday). See openspec/changes/add-aggregate-time-buckets-and-distinct.
+const SUPPORTED_AGGREGATE_GRANULARITIES = new Set([
+  'minute', 'hour', 'day', 'week', 'month', 'quarter', 'year',
+]);
 
 function getFieldSchema(manifestStream, field) {
   return manifestStream?.schema?.properties?.[field] || null;
@@ -556,6 +564,99 @@ function coerceComparableValue(value, fieldSchema, { strict = false } = {}) {
   }
 
   return String(value);
+}
+
+// --- group_by_time calendar bucketing --------------------------------------
+//
+// The in-process aggregate floor computes time buckets with calendar
+// `date_trunc` semantics (weeks start Monday) in the effective IANA zone,
+// using `Intl.DateTimeFormat` so day/week/month/quarter/year boundaries
+// respect the zone and DST without a SQL round trip. Bucket keys are ISO
+// strings: a date (`YYYY-MM-DD`) for day/week/month/quarter/year, and a
+// minute/hour timestamp (`YYYY-MM-DDTHH:MM:00Z`-style, zone-qualified) for the
+// sub-day units. See openspec/changes/add-aggregate-time-buckets-and-distinct.
+
+function resolveAggregateTimeZone(rawZone) {
+  if (!rawZone) return 'UTC';
+  try {
+    // Throws RangeError for an unknown IANA zone.
+    new Intl.DateTimeFormat('en-US', { timeZone: rawZone });
+    return rawZone;
+  } catch {
+    throw invalidQueryError(`Unknown time_zone: '${rawZone}'`);
+  }
+}
+
+// Decompose an absolute instant into wall-clock parts for the given IANA zone.
+function zonedParts(epochMs, timeZone) {
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  });
+  const parts = {};
+  for (const p of fmt.formatToParts(new Date(epochMs))) {
+    if (p.type !== 'literal') parts[p.type] = p.value;
+  }
+  // `Intl` emits hour "24" at midnight in some engines; normalize to 0.
+  const hour = parts.hour === '24' ? 0 : Number(parts.hour);
+  return {
+    year: Number(parts.year),
+    month: Number(parts.month),
+    day: Number(parts.day),
+    hour,
+    minute: Number(parts.minute),
+    second: Number(parts.second),
+  };
+}
+
+// ISO day-of-week (1 = Monday .. 7 = Sunday) for a Y/M/D in proleptic
+// Gregorian terms. Used to snap weeks to a Monday start.
+function isoDayOfWeek(year, month, day) {
+  const dow = new Date(Date.UTC(year, month - 1, day)).getUTCDay(); // 0=Sun
+  return dow === 0 ? 7 : dow;
+}
+
+function pad2(n) {
+  return String(n).padStart(2, '0');
+}
+
+/**
+ * Calendar-truncate the instant `value` to the start of its `granularity`
+ * bucket in `timeZone`, returning a stable ISO key string. Returns `null`
+ * when the value is null or unparseable so the caller can route it to the
+ * single null bucket.
+ */
+function bucketStartForGranularity(value, granularity, timeZone) {
+  const epochMs = parseDateValue(value);
+  if (epochMs == null) return null;
+  const { year, month, day, hour, minute } = zonedParts(epochMs, timeZone);
+
+  switch (granularity) {
+    case 'minute':
+      return `${year}-${pad2(month)}-${pad2(day)}T${pad2(hour)}:${pad2(minute)}`;
+    case 'hour':
+      return `${year}-${pad2(month)}-${pad2(day)}T${pad2(hour)}:00`;
+    case 'day':
+      return `${year}-${pad2(month)}-${pad2(day)}`;
+    case 'week': {
+      // Snap back to Monday in the zone's wall-clock calendar.
+      const offset = isoDayOfWeek(year, month, day) - 1;
+      const monday = new Date(Date.UTC(year, month - 1, day - offset));
+      return `${monday.getUTCFullYear()}-${pad2(monday.getUTCMonth() + 1)}-${pad2(monday.getUTCDate())}`;
+    }
+    case 'month':
+      return `${year}-${pad2(month)}-01`;
+    case 'quarter': {
+      const quarterStartMonth = month - ((month - 1) % 3);
+      return `${year}-${pad2(quarterStartMonth)}-01`;
+    }
+    case 'year':
+      return `${year}-01-01`;
+    default:
+      return null;
+  }
 }
 
 /**
@@ -784,14 +885,14 @@ function validateTopLevelAggregateParams(requestParams) {
 function normalizeAggregateMetric(value) {
   const metric = String(value || '').trim();
   if (!SUPPORTED_AGGREGATE_METRICS.has(metric)) {
-    throw invalidQueryError('metric must be one of count, sum, min, max');
+    throw invalidQueryError('metric must be one of count, sum, min, max, count_distinct');
   }
   return metric;
 }
 
-function normalizeAggregateLimit(value, groupBy) {
-  if (!groupBy) {
-    if (value != null) throw invalidQueryError('limit is only supported with group_by');
+function normalizeAggregateLimit(value, grouped) {
+  if (!grouped) {
+    if (value != null) throw invalidQueryError('limit is only supported with group_by or group_by_time');
     return null;
   }
   if (value == null || value === '') return DEFAULT_AGGREGATE_GROUP_LIMIT;
@@ -837,15 +938,61 @@ function normalizeAggregateRequest(requestParams, streamGrant, manifestStream) {
   const groupBy = requestParams.group_by == null || requestParams.group_by === ''
     ? null
     : String(requestParams.group_by).trim();
-  const limit = normalizeAggregateLimit(requestParams.limit, groupBy);
+  const groupByTime = requestParams.group_by_time == null || requestParams.group_by_time === ''
+    ? null
+    : String(requestParams.group_by_time).trim();
+  const granularityRaw = requestParams.granularity == null || requestParams.granularity === ''
+    ? null
+    : String(requestParams.granularity).trim();
+  const timeZoneRaw = requestParams.time_zone == null || requestParams.time_zone === ''
+    ? null
+    : String(requestParams.time_zone).trim();
+
+  // Exactly one grouping dimension in v1: group_by XOR group_by_time.
+  if (groupBy && groupByTime) {
+    throw invalidQueryError('group_by and group_by_time cannot be combined; choose one grouping dimension');
+  }
+  const grouped = Boolean(groupBy || groupByTime);
+  const limit = normalizeAggregateLimit(requestParams.limit, grouped);
+
+  // granularity is required with group_by_time and forbidden otherwise.
+  let granularity = null;
+  let timeZone = null;
+  if (groupByTime) {
+    if (!granularityRaw) {
+      throw invalidQueryError('granularity is required when group_by_time is present');
+    }
+    if (!SUPPORTED_AGGREGATE_GRANULARITIES.has(granularityRaw)) {
+      throw invalidQueryError(`granularity must be one of ${[...SUPPORTED_AGGREGATE_GRANULARITIES].join(', ')}`);
+    }
+    granularity = granularityRaw;
+    timeZone = resolveAggregateTimeZone(timeZoneRaw);
+  } else {
+    if (granularityRaw) {
+      throw invalidQueryError('granularity is only supported with group_by_time');
+    }
+    if (timeZoneRaw) {
+      throw invalidQueryError('time_zone is only supported with group_by_time');
+    }
+  }
 
   if (metric === 'count') {
     if (field) throw invalidQueryError('field is not supported for count');
     if (aggregations.count !== true) {
       throw invalidQueryError(`Count aggregation is not declared for stream '${manifestStream?.name || ''}'`);
     }
+  } else if (metric === 'count_distinct') {
+    if (grouped) throw invalidQueryError('count_distinct does not support grouping; omit group_by and group_by_time');
+    if (!field) throw invalidQueryError('field is required for count_distinct');
+    const fieldSchema = getFieldSchema(manifestStream, field);
+    if (!fieldSchema) throw invalidQueryError(`Unknown field: ${field}`, 'unknown_field');
+    requireAggregateFieldGranted(streamGrant, field);
+    requireDeclaredAggregate(manifestStream, 'count_distinct', field);
+    if (!isScalarAggregateSchema(fieldSchema)) {
+      throw invalidQueryError(`count_distinct requires a scalar field; '${field}' is not scalar`);
+    }
   } else {
-    if (groupBy) throw invalidQueryError('group_by is supported only with metric=count');
+    if (grouped) throw invalidQueryError(`${metric} does not support grouping; group_by and group_by_time are only valid with metric=count`);
     if (!field) throw invalidQueryError(`field is required for ${metric}`);
     const fieldSchema = getFieldSchema(manifestStream, field);
     if (!fieldSchema) throw invalidQueryError(`Unknown field: ${field}`, 'unknown_field');
@@ -869,7 +1016,22 @@ function normalizeAggregateRequest(requestParams, streamGrant, manifestStream) {
     }
   }
 
-  return { metric, field, groupBy, limit };
+  if (groupByTime) {
+    if (metric !== 'count') {
+      throw invalidQueryError('group_by_time is only valid with metric=count');
+    }
+    const timeSchema = getFieldSchema(manifestStream, groupByTime);
+    if (!timeSchema) throw invalidQueryError(`Unknown field: ${groupByTime}`, 'unknown_field');
+    requireAggregateFieldGranted(streamGrant, groupByTime);
+    requireDeclaredAggregate(manifestStream, 'group_by_time', groupByTime);
+    if (!isMinMaxAggregateSchema(timeSchema) || nonNullSchemaTypes(timeSchema).has('string') === false) {
+      // group_by_time fields are declared date/date-time strings (validated at
+      // manifest time); reject anything that slipped through as non-date.
+      throw invalidQueryError(`group_by_time requires a date or date-time field; '${groupByTime}' is not supported`);
+    }
+  }
+
+  return { metric, field, groupBy, groupByTime, granularity, timeZone, limit };
 }
 
 function jsonExtractExpr(field) {
@@ -2129,6 +2291,11 @@ export async function aggregateRecords(storageTarget, stream, grant, requestPara
   let bestComparable = null;
   let bestValue = null;
   const groups = new Map();
+  // group_by_time buckets keyed by ISO bucket start; the null/unparseable
+  // bucket is keyed separately and sorted last.
+  const timeBuckets = new Map();
+  // count_distinct: distinct non-null values keyed by canonical JSON.
+  const distinctValues = new Set();
   const aggregateFieldSchema = aggregateRequest.field
     ? getFieldSchema(manifestStream, aggregateRequest.field)
     : null;
@@ -2147,6 +2314,25 @@ export async function aggregateRecords(storageTarget, stream, grant, requestPara
       const entry = groups.get(key) || { key: rawGroupValue, count: 0 };
       entry.count += 1;
       groups.set(key, entry);
+      continue;
+    }
+
+    if (aggregateRequest.groupByTime) {
+      const bucketKey = bucketStartForGranularity(
+        rawData[aggregateRequest.groupByTime] ?? null,
+        aggregateRequest.granularity,
+        aggregateRequest.timeZone,
+      );
+      const mapKey = bucketKey == null ? '__null__' : bucketKey;
+      const entry = timeBuckets.get(mapKey) || { key: bucketKey, count: 0 };
+      entry.count += 1;
+      timeBuckets.set(mapKey, entry);
+      continue;
+    }
+
+    if (aggregateRequest.metric === 'count_distinct') {
+      const value = rawData[aggregateRequest.field] ?? null;
+      if (value != null) distinctValues.add(JSON.stringify(value));
       continue;
     }
 
@@ -2176,6 +2362,14 @@ export async function aggregateRecords(storageTarget, stream, grant, requestPara
     metric: aggregateRequest.metric,
     field: aggregateRequest.field,
     group_by: aggregateRequest.groupBy,
+    // Additive time-bucket fields: null for non-time aggregations so the
+    // payload stays backward-compatible.
+    group_by_time: aggregateRequest.groupByTime,
+    granularity: aggregateRequest.granularity,
+    time_zone: aggregateRequest.timeZone,
+    // The in-process floor is exact; only a future accelerated estimator
+    // would flip this to true.
+    approximate: false,
     filtered_record_count: visibleCount,
   };
 
@@ -2188,8 +2382,21 @@ export async function aggregateRecords(storageTarget, stream, grant, requestPara
         return JSON.stringify(left.key).localeCompare(JSON.stringify(right.key));
       })
       .slice(0, aggregateRequest.limit);
+  } else if (aggregateRequest.groupByTime) {
+    response.limit = aggregateRequest.limit;
+    // Time buckets are a series: order by bucket start ascending, with the
+    // null/unparseable bucket sorted last.
+    response.groups = [...timeBuckets.values()]
+      .sort((left, right) => {
+        if (left.key == null) return right.key == null ? 0 : 1;
+        if (right.key == null) return -1;
+        return left.key < right.key ? -1 : left.key > right.key ? 1 : 0;
+      })
+      .slice(0, aggregateRequest.limit);
   } else if (aggregateRequest.metric === 'count') {
     response.value = visibleCount;
+  } else if (aggregateRequest.metric === 'count_distinct') {
+    response.value = distinctValues.size;
   } else if (aggregateRequest.metric === 'sum') {
     response.value = sum;
   } else {
@@ -2963,15 +3170,70 @@ export async function aggregateRecordsAcrossBindings(bindings, stream, grant, re
   delete perBindingParams.connection_id;
   delete perBindingParams.connector_instance_id;
 
+  // Exact count_distinct cannot be soundly merged from per-binding distinct
+  // counts (summing would overcount values shared across connections). Rather
+  // than silently return a wrong number, reject the cross-connection case and
+  // tell the caller to scope with `connection_id`. This preserves the
+  // semantic-floor contract: never diverge from the exact distinct meaning.
+  if ((requestParams.metric || '') === 'count_distinct') {
+    throw invalidQueryError(
+      'count_distinct across multiple connections is not supported; scope with connection_id',
+    );
+  }
+
+  const isTimeBucket = typeof requestParams.group_by_time === 'string'
+    && requestParams.group_by_time.trim() !== '';
+
   let total = 0;
   let meta = null;
+  // Merge group_by_time buckets across disjoint bindings: counts in the same
+  // bucket key are additive because each binding sees a disjoint record set.
+  const mergedTimeBuckets = new Map();
+  let mergedLimit = null;
+  let mergedGroupByTime = null;
+  let mergedGranularity = null;
+  let mergedTimeZone = null;
   for (const binding of bindings) {
     const target = buildBindingStorageTarget(binding.connectorId, binding.connectorInstanceId);
     const result = await aggregateRecords(target, stream, grant, perBindingParams, manifest);
     total += Number(result?.value || 0);
     meta = mergeMetaWarnings(meta, result?.meta);
+    if (isTimeBucket && Array.isArray(result?.groups)) {
+      mergedLimit = result.limit ?? mergedLimit;
+      mergedGroupByTime = result.group_by_time ?? mergedGroupByTime;
+      mergedGranularity = result.granularity ?? mergedGranularity;
+      mergedTimeZone = result.time_zone ?? mergedTimeZone;
+      for (const bucket of result.groups) {
+        const mapKey = bucket.key == null ? '__null__' : bucket.key;
+        const entry = mergedTimeBuckets.get(mapKey) || { key: bucket.key, count: 0 };
+        entry.count += Number(bucket.count || 0);
+        mergedTimeBuckets.set(mapKey, entry);
+      }
+    }
   }
   for (const w of extraWarnings) meta = appendUniqueWarning(meta, w);
+
+  if (isTimeBucket) {
+    const response = {
+      object: 'aggregation',
+      metric: requestParams.metric || 'count',
+      group_by_time: mergedGroupByTime,
+      granularity: mergedGranularity,
+      time_zone: mergedTimeZone,
+      approximate: false,
+      groups: [...mergedTimeBuckets.values()]
+        .sort((left, right) => {
+          if (left.key == null) return right.key == null ? 0 : 1;
+          if (right.key == null) return -1;
+          return left.key < right.key ? -1 : left.key > right.key ? 1 : 0;
+        })
+        .slice(0, mergedLimit ?? undefined),
+    };
+    if (mergedLimit != null) response.limit = mergedLimit;
+    if (meta && Object.keys(meta).length) response.meta = meta;
+    return response;
+  }
+
   const response = {
     object: 'aggregation',
     metric: requestParams.metric || 'count',

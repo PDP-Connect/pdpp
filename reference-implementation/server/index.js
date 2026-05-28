@@ -1924,6 +1924,14 @@ function buildFieldAggregationCapabilities(aggregations, field, granted) {
       declared: Array.isArray(aggregations?.group_by) && aggregations.group_by.includes(field),
       granted,
     }),
+    group_by_time: buildFieldCapabilityFlag({
+      declared: Array.isArray(aggregations?.group_by_time) && aggregations.group_by_time.includes(field),
+      granted,
+    }),
+    count_distinct: buildFieldCapabilityFlag({
+      declared: Array.isArray(aggregations?.count_distinct) && aggregations.count_distinct.includes(field),
+      granted,
+    }),
   };
 }
 
@@ -6769,6 +6777,8 @@ function buildRsApp(opts = {}) {
         metric: typeof requestParams.metric === 'string' ? requestParams.metric : null,
         field: typeof requestParams.field === 'string' ? requestParams.field : null,
         group_by: typeof requestParams.group_by === 'string' ? requestParams.group_by : null,
+        group_by_time: typeof requestParams.group_by_time === 'string' ? requestParams.group_by_time : null,
+        granularity: typeof requestParams.granularity === 'string' ? requestParams.granularity : null,
         limit: requestParams.limit ? Number(requestParams.limit) : null,
       };
       queryContext = {

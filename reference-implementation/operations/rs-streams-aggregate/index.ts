@@ -104,6 +104,8 @@ export interface StreamsAggregateOutput {
     metric: string | null;
     field: string | null;
     group_by: string | null;
+    group_by_time: string | null;
+    granularity: string | null;
     limit: number | null;
   };
   /**
@@ -166,6 +168,8 @@ export async function executeStreamsAggregate(
     metric: readStringOrNull(input.requestParams.metric),
     field: readStringOrNull(input.requestParams.field),
     group_by: readStringOrNull(input.requestParams.group_by),
+    group_by_time: readStringOrNull(input.requestParams.group_by_time),
+    granularity: readStringOrNull(input.requestParams.granularity),
     limit: readLimitOrNull(input.requestParams.limit),
   };
 
