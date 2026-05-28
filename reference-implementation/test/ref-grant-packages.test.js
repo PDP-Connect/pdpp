@@ -31,6 +31,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
+import { canonicalConnectorKeyFromManifest } from '../server/connector-key.js';
 import { encodeHostedMcpSelection } from '../server/hosted-mcp-selection.js';
 import { startServer } from '../server/index.js';
 
@@ -83,10 +84,21 @@ function pkceChallenge(verifier) {
   return createHash('sha256').update(verifier).digest('base64url');
 }
 
+// Register a first-party connector fixture with the AS using its canonical
+// short connector key. The fixture manifests on disk still ship URL-shaped
+// `connector_id` values; the AS storage and the hosted MCP picker key
+// everything by canonical connector key now that `canonicalize-connector-keys`
+// has landed. Returning the manifest with `connector_id` rewritten to the
+// canonical form keeps `manifest.connector_id` consistent with the value the
+// picker emits and the AS validates.
 async function registerConnector(asUrl, name) {
-  const manifest = JSON.parse(
+  const raw = JSON.parse(
     readFileSync(join(REFERENCE_IMPL_DIR, `manifests/${name}.json`), 'utf8'),
   );
+  const canonical = canonicalConnectorKeyFromManifest(raw);
+  const manifest = !canonical || canonical === raw.connector_id
+    ? raw
+    : { ...raw, connector_id: canonical };
   const { status } = await fetchJson(`${asUrl}/connectors`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

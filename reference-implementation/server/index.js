@@ -3058,10 +3058,6 @@ function buildAsApp(opts = {}) {
         purpose_code: 'https://pdpp.org/purpose/personal_ai_assistant',
         purpose_description: 'Allow this MCP client to read selected personal data through PDPP.',
         access_mode: 'continuous',
-        retention: {
-          classification: 'client_policy',
-          description: 'The MCP client controls any retention of fetched results.',
-        },
         streams: [{ name: '*' }],
       },
     ];
@@ -3070,17 +3066,15 @@ function buildAsApp(opts = {}) {
   // Hosted MCP picker policy — what the owner is approving when they check
   // a row in the multi-source picker. The picker exposes owner control over
   // the streams subset (per-source) and the package access mode (one radio
-  // for every source in the package). Retention remains the AS-side
-  // package default; the picker copy describes it factually rather than
-  // implying owner control — see Residual Risks in
-  // openspec/changes/design-fast-broad-agent-consent/design.md.
+  // for every source in the package). The picker intentionally does NOT
+  // emit a `retention` field on the child grants: `spec-core.md` defines
+  // `retention` as `{ max_duration, on_expiry }`, and the generic hosted
+  // MCP ceremony does not have a per-source machine-readable retention
+  // commitment to encode. Absence means "no machine-readable retention
+  // bound" — see openspec/changes/design-fast-broad-agent-consent/.
   const HOSTED_MCP_PICKER_PURPOSE_CODE = 'https://pdpp.org/purpose/personal_ai_assistant';
   const HOSTED_MCP_PICKER_PURPOSE_DESCRIPTION = 'Allow this MCP client to read selected personal data through PDPP.';
   const HOSTED_MCP_PICKER_DEFAULT_ACCESS_MODE = 'continuous';
-  const HOSTED_MCP_PICKER_RETENTION = Object.freeze({
-    classification: 'client_policy',
-    description: 'The MCP client controls any retention of fetched results.',
-  });
   const HOSTED_MCP_PICKER_SUPPORTED_ACCESS_MODES = new Set(['single_use', 'continuous']);
 
   // Build one source-bounded authorization_details entry for a hosted MCP
@@ -3115,7 +3109,6 @@ function buildAsApp(opts = {}) {
       purpose_code: HOSTED_MCP_PICKER_PURPOSE_CODE,
       purpose_description: HOSTED_MCP_PICKER_PURPOSE_DESCRIPTION,
       access_mode: resolvedAccessMode,
-      retention: HOSTED_MCP_PICKER_RETENTION,
       streams,
     };
   }
@@ -3248,7 +3241,7 @@ function buildAsApp(opts = {}) {
     // path of least resistance is not "approve everything in silence."
     // See openspec/changes/design-fast-broad-agent-consent/.
     const riskCopy = rows.length
-      ? `<p class="pdpp-body"><strong>Reference-experimental multi-source consent.</strong> Each checked source issues one independent, source-bounded PDPP grant. Within a source you can uncheck individual streams to narrow what the MCP client may read; an unchecked stream is excluded from the issued child grant. Retention follows the MCP client's own policy and is recorded with each issued grant; this picker does not narrow retention.</p>`
+      ? `<p class="pdpp-body"><strong>Reference-experimental multi-source consent.</strong> Each checked source issues one independent, source-bounded PDPP grant. Within a source you can uncheck individual streams to narrow what the MCP client may read; an unchecked stream is excluded from the issued child grant. This ceremony does not encode a machine-readable retention bound on the issued grants; how long fetched results are kept is governed by the MCP client's own policy and any external agreements you have with that client.</p>`
       : '';
 
     // Package-level access-mode control. One radio group, applied to every

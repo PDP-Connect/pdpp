@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 import { getGrantPackageAccess, revokeGrant, revokeGrantPackage } from '../server/auth.js';
+import { canonicalConnectorKeyFromManifest } from '../server/connector-key.js';
 import {
   encodeHostedMcpSelection,
   encodeHostedMcpStreamSelection,
@@ -35,8 +36,24 @@ function pkceChallenge(verifier) {
   return createHash('sha256').update(verifier).digest('base64url');
 }
 
-async function registerSpotify(asUrl) {
-  const manifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
+// Register a first-party connector fixture with the AS using its canonical
+// short connector key (e.g. `spotify`, `github`). The fixture manifests on
+// disk still ship URL-shaped `connector_id` values for catalog purposes, but
+// the AS storage and the hosted MCP picker key everything by canonical
+// connector key now that `canonicalize-connector-keys` has landed. Returning
+// the manifest with `connector_id` rewritten to canonical form lets test
+// callers reference `manifest.connector_id` and naturally see the same
+// identifier the picker renders, the spine event records, and the AS
+// validator accepts — without each test re-deriving the canonical key.
+function canonicalizeManifestForRegistration(manifest) {
+  const canonical = canonicalConnectorKeyFromManifest(manifest);
+  if (!canonical || canonical === manifest.connector_id) return manifest;
+  return { ...manifest, connector_id: canonical };
+}
+
+async function registerFirstPartyConnectorFixture(asUrl, fixtureName) {
+  const raw = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, `manifests/${fixtureName}.json`), 'utf8'));
+  const manifest = canonicalizeManifestForRegistration(raw);
   const { status } = await fetchJson(`${asUrl}/connectors`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -46,15 +63,12 @@ async function registerSpotify(asUrl) {
   return manifest;
 }
 
+async function registerSpotify(asUrl) {
+  return registerFirstPartyConnectorFixture(asUrl, 'spotify');
+}
+
 async function registerGithub(asUrl) {
-  const manifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/github.json'), 'utf8'));
-  const { status } = await fetchJson(`${asUrl}/connectors`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(manifest),
-  });
-  assert.equal(status, 201);
-  return manifest;
+  return registerFirstPartyConnectorFixture(asUrl, 'github');
 }
 
 async function registerAuthCodeClient(asUrl, opts = {}) {
@@ -493,8 +507,15 @@ test('POST /oauth/authorize/mcp-package rejects legacy delimited selection witho
   const asUrl = `http://localhost:${server.asPort}`;
 
   try {
-    const manifest = await registerSpotify(asUrl);
-    assert.match(manifest.connector_id, /^https?:\/\//, 'precondition: first-party manifest carries URL-shaped id');
+    await registerSpotify(asUrl);
+    // Hard-coded URL-shaped first-party connector id. The legacy delimited
+    // shape under test (`connection:<url>:<connection_id>`) is the exact
+    // pre-canonicalization bug surface: an owner-supplied URL embedded
+    // inside a colon-delimited payload. The post-canonicalize-connector-keys
+    // AS no longer stores manifests under URL keys, but the parser still
+    // needs to reject this shape without leaking "https" or collapsing the
+    // URL into the "Unknown connector" error branch.
+    const legacyUrlShapedConnectorId = 'https://registry.pdpp.org/connectors/spotify';
     const client = await registerAuthCodeClient(asUrl);
 
     const verifier = randomBytes(32).toString('base64url');
@@ -508,7 +529,7 @@ test('POST /oauth/authorize/mcp-package rejects legacy delimited selection witho
     params.append('code_challenge', challenge);
     params.append('code_challenge_method', 'S256');
     // Exactly the bug-triggering shape: `connection:<url>:<connection_id>`.
-    params.append('selection', `connection:${manifest.connector_id}:conn_owner_local`);
+    params.append('selection', `connection:${legacyUrlShapedConnectorId}:conn_owner_local`);
 
     const resp = await fetch(`${asUrl}/oauth/authorize/mcp-package`, {
       method: 'POST',
@@ -1406,8 +1427,9 @@ test('POST /oauth/authorize/mcp-package ignores stream entries whose source was 
 // child grant in the package. The picker:
 //   - renders both options with `continuous` pre-selected so the no-action
 //     default preserves prior behavior;
-//   - the picker copy describes retention as a fixed package default (not an
-//     owner-narrowable knob);
+//   - the picker copy is honest that the ceremony does NOT encode a
+//     machine-readable retention bound on the issued grants (so the picker
+//     does not mislabel a non-Core retention shape as a retention policy);
 //   - submitting `access_mode=single_use` narrows every child grant in the
 //     package to single_use without any other change to the form;
 //   - submitting `access_mode=continuous` (or omitting the field) keeps every
@@ -1415,11 +1437,12 @@ test('POST /oauth/authorize/mcp-package ignores stream entries whose source was 
 //   - submitting any other value returns a typed `invalid_request` envelope
 //     and issues no grants;
 //   - `grant.issued` spine events for every child grant record the resolved
-//     access mode, stream names, and retention so the operator dashboard can
-//     tell narrowed grants from wildcard ones without re-deriving the picker
-//     submission.
+//     access mode, stream names, and an explicit `retention: null` so the
+//     operator dashboard can tell narrowed grants from wildcard ones without
+//     re-deriving the picker submission and can see that no machine-readable
+//     retention bound was encoded.
 
-test('hosted MCP picker renders an access-mode radio with continuous default and retention-as-default copy', async () => {
+test('hosted MCP picker renders an access-mode radio with continuous default and surfaces that retention is not encoded', async () => {
   const server = await startOpenTestServer();
   const asUrl = `http://localhost:${server.asPort}`;
 
@@ -1454,17 +1477,25 @@ test('hosted MCP picker renders an access-mode radio with continuous default and
       'picker must NOT pre-select single_use',
     );
 
-    // Retention copy honesty: don't promise an owner-narrowable retention
-    // knob the picker does not actually emit. The spec change in this
-    // tranche pins this copy until the retention shape is reconciled.
+    // Retention copy honesty: the picker must not promise an
+    // owner-narrowable retention knob, must not advertise the
+    // off-spec `client_policy` classification, and must say plainly
+    // that no machine-readable retention bound is encoded in this
+    // ceremony. spec-core.md defines retention as `{ max_duration,
+    // on_expiry }`; the generic hosted MCP picker has no per-source
+    // commitment to encode, so absence is the honest answer.
     assert.ok(
       !html.includes('client-policy retention'),
       'picker must not assert the legacy client-policy phrase',
     );
+    assert.ok(
+      !html.includes('client_policy'),
+      'picker must not surface the off-spec retention.classification value',
+    );
     assert.match(
       html,
-      /retention/i,
-      'picker should mention retention so the owner sees that it is a fixed package default',
+      /does not encode a machine-readable retention bound/i,
+      'picker should tell the owner that retention is not encoded by this ceremony',
     );
   } finally {
     await closeServer(server);
@@ -1613,7 +1644,7 @@ test('POST /oauth/authorize/mcp-package rejects an unsupported access_mode value
   }
 });
 
-test('hosted MCP child-grant grant.issued spine event records access_mode, stream_names, and retention', async () => {
+test('hosted MCP child-grant grant.issued spine event records access_mode, stream_names, and an explicit retention: null', async () => {
   const server = await startOpenTestServer();
   const asUrl = `http://localhost:${server.asPort}`;
 
@@ -1667,7 +1698,20 @@ test('hosted MCP child-grant grant.issued spine event records access_mode, strea
     assert.ok(issuedEvent, 'child grant timeline must contain a grant.issued event');
     assert.equal(issuedEvent.data.access_mode, 'single_use');
     assert.deepEqual(issuedEvent.data.stream_names, ['saved_tracks']);
-    assert.ok(issuedEvent.data.retention, 'grant.issued must surface retention so operators can see what was approved');
+    // The picker intentionally does NOT encode a machine-readable
+    // retention bound (no Core `{ max_duration, on_expiry }` commitment
+    // exists for this generic ceremony). The event still surfaces the
+    // field as an explicit `null` so a dashboard reading the timeline
+    // can see absence rather than guessing why retention is missing.
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(issuedEvent.data, 'retention'),
+      'grant.issued must surface a retention key so absence is visible to operators',
+    );
+    assert.equal(
+      issuedEvent.data.retention,
+      null,
+      'hosted MCP picker must not encode a non-Core retention shape; absence is rendered as null',
+    );
   } finally {
     await closeServer(server);
   }

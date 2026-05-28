@@ -96,22 +96,31 @@ The hosted MCP package picker SHALL expose a single owner-facing control that se
 - **THEN** the AS SHALL return a typed `invalid_request` error
 - **AND** the AS SHALL NOT issue any child grant for the request.
 
-### Requirement: Hosted MCP picker copy SHALL be honest about retention narrowing
+### Requirement: Hosted MCP picker SHALL NOT encode a non-Core retention shape
 
-The hosted MCP picker SHALL NOT advertise retention as an owner-controllable dimension until the picker's `retention` shape is reconciled with the `spec-core.md` `retention: { max_duration, on_expiry }` shape. The picker MAY continue to issue child grants whose `retention` reflects the AS-side default for hosted MCP packages, but the owner-facing copy SHALL describe that default factually rather than implying owner control over it.
+The hosted MCP picker SHALL NOT emit a `retention` field on the `authorization_details[]` entries it constructs, and the issued child grants SHALL NOT carry a `retention` object that does not match the `spec-core.md` shape `{ max_duration, on_expiry }`. In the generic Claude/ChatGPT hosted MCP ceremony no Core-shaped per-source retention commitment exists; absence is the honest answer, and absence SHALL be how the picker conveys it. The owner-facing copy SHALL state plainly that this ceremony does not encode a machine-readable retention bound on the issued grants, and that any retention of fetched results is governed by the MCP client's own policy and any external agreements the owner has with that client.
 
-#### Scenario: Picker describes retention as a fixed package default
+#### Scenario: Picker says the ceremony does not encode a retention bound
 
 - **WHEN** the picker renders the cumulative-risk disclosure copy
-- **THEN** the copy SHALL identify retention as a package-level default (not an owner-narrowable knob in this ceremony)
-- **AND** the copy SHALL NOT promise a per-source retention preset that the picker does not actually emit.
+- **THEN** the copy SHALL state that this ceremony does not encode a machine-readable retention bound on the issued grants
+- **AND** the copy SHALL NOT call this a retention policy encoded in the grant
+- **AND** the copy SHALL NOT advertise an owner-controllable retention preset that the picker does not actually emit.
+
+#### Scenario: Picker-issued child grants omit the retention field
+
+- **WHEN** the picker emits an `authorization_details[]` entry for a selected source
+- **THEN** the entry SHALL NOT include a `retention` object
+- **AND** the issued child grant SHALL NOT carry a `retention` object whose shape does not match `spec-core.md`'s `{ max_duration, on_expiry }`.
 
 ### Requirement: Grant detail spine events SHALL surface what the package picker approved
 
-Every `grant.issued` spine event for a hosted MCP package child grant SHALL include the structured fields a downstream operator surface (dashboard timeline, CLI grant timeline, `/_ref/grants/:grantId/timeline`) needs to recognise a narrowed grant without re-deriving the picker submission. Specifically the event `data` SHALL include the resolved `access_mode`, the resolved `stream_names`, and the `retention` policy declaration carried on the issued grant.
+Every `grant.issued` spine event for a hosted MCP package child grant SHALL include the structured fields a downstream operator surface (dashboard timeline, CLI grant timeline, `/_ref/grants/:grantId/timeline`) needs to recognise a narrowed grant without re-deriving the picker submission. Specifically the event `data` SHALL include the resolved `access_mode` and the resolved `stream_names` from the issued grant, and the event `data` SHALL make the absence of a machine-readable retention bound visible — either by omitting the `retention` key or by surfacing it as an explicit `null`. The event `data` SHALL NOT include a non-Core retention shape (for example, a `classification` field).
 
 #### Scenario: Operator inspects the timeline for a narrowed package child grant
 
 - **WHEN** an operator opens the spine timeline for a child grant issued by the hosted MCP package picker
-- **THEN** the `grant.issued` event data SHALL include `access_mode`, `stream_names`, and `retention`
+- **THEN** the `grant.issued` event data SHALL include `access_mode` and `stream_names`
+- **AND** the event data SHALL convey retention absence as `retention: null` (or by omitting the key) when no Core-shaped retention is carried on the grant
+- **AND** the event data SHALL NOT include a non-Core retention shape such as `retention.classification`
 - **AND** a child grant narrowed to a subset of streams SHALL be distinguishable from a wildcard child grant by inspecting `stream_names` against the connector manifest at the issued-at time.
