@@ -459,6 +459,9 @@ async function buildPeek(
     return {
       connectorId: parsed.connectorId,
       connectionId: connection?.connection_id ?? null,
+      connectionDisplayName: connection
+        ? connection.display_name || connection.connector_display_name || connection.connector_id
+        : null,
       stream: parsed.stream,
       recordId: parsed.recordId,
       emittedAt: record.emitted_at,
@@ -470,6 +473,9 @@ async function buildPeek(
     return {
       connectorId: parsed.connectorId,
       connectionId: connection?.connection_id ?? null,
+      connectionDisplayName: connection
+        ? connection.display_name || connection.connector_display_name || connection.connector_id
+        : null,
       stream: parsed.stream,
       recordId: parsed.recordId,
       emittedAt: "",

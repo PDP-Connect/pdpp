@@ -107,7 +107,7 @@ export function RecordsExplorerView({ data, routes }: { data: RecordsExplorerDat
       <PageHeader
         breadcrumbs={[{ label: "Explore" }]}
         count={feedCountLabel(feed.length, fromSearch, truncated)}
-        description="Browse recent records, search by text, or filter by date window. Each connection stays distinct — two Gmail accounts stay two."
+        description="Browse and search records across every connection. Two accounts of the same connector stay distinct — they never collapse."
         title="Explore"
       />
 
@@ -236,7 +236,21 @@ function ExplorerMain({
 
       <Section description={feedDescription(lens, hybridUsed)} title={feedSectionTitle(lens)}>
         {feed.length === 0 ? (
-          <EmptyState hint={emptyFeedMessage(lens)} title="No records" />
+          connections.length === 0 ? (
+            <EmptyState
+              hint={
+                <span>
+                  No connectors are configured yet.{" "}
+                  <Link className="underline underline-offset-2 hover:text-foreground" href={routes.section.records}>
+                    Add a connection →
+                  </Link>
+                </span>
+              }
+              title="No connections"
+            />
+          ) : (
+            <EmptyState hint={emptyFeedMessage(lens)} title="No records" />
+          )
         ) : (
           <div className="flex flex-col gap-5">
             {groupFeedByDay(feed).map((group) => (
@@ -789,7 +803,7 @@ function ExplorerCard({
           className="pdpp-caption text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
           href={recordHref}
         >
-          open →
+          Open record →
         </Link>
       </div>
     </div>
@@ -812,15 +826,22 @@ function ExplorerPeek({
       className="sticky top-16 max-h-[calc(100vh-5rem)] overflow-y-auto overscroll-contain rounded-md border border-border/80 bg-background"
     >
       <div className="pdpp-caption sticky top-0 flex items-center justify-between gap-2 border-border/80 border-b bg-muted/40 px-3 py-2 backdrop-blur">
-        <span className="truncate font-medium font-mono">
-          {peek.connectorId} / {peek.stream}
-        </span>
+        <div className="min-w-0">
+          <span className="truncate font-medium font-mono">
+            {peek.connectorId} / {peek.stream}
+          </span>
+          {peek.connectionDisplayName ? (
+            <span className="ml-1.5 text-muted-foreground normal-case tracking-normal">
+              · {peek.connectionDisplayName}
+            </span>
+          ) : null}
+        </div>
         <div className="flex items-center gap-3 whitespace-nowrap">
           <Link
             className="text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
             href={openHref}
           >
-            open full →
+            Open record →
           </Link>
           <Link aria-label="close peek" className="text-muted-foreground hover:text-foreground" href={closeHref}>
             ×

@@ -56,6 +56,8 @@ export interface ExplorerPeekData {
   /** Pretty-printed JSON body. `null` when the record could not be read. */
   bodyJson: string | null;
   connectionId: string | null;
+  /** Human-readable connection label; falls back to `null` when identity is not resolved. */
+  connectionDisplayName: string | null;
   connectorId: string;
   emittedAt: string;
   /** Error message when the body could not be fetched. */
