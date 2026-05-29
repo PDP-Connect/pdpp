@@ -275,8 +275,6 @@ import { executeAsDeviceAuthInit } from '../operations/as-device-authorization-i
 import { executeAsDeviceTokenExchange } from '../operations/as-device-token-exchange/index.ts';
 import { executeAsDeviceDecision } from '../operations/as-device-decision/index.ts';
 import { executeAsIntrospect } from '../operations/as-introspect/index.ts';
-import { executeAsPolyfillConnectorRegister } from '../operations/as-polyfill-connector-register/index.ts';
-import { executeAsPolyfillConnectorDetail } from '../operations/as-polyfill-connector-detail/index.ts';
 import { executeAsParCreate } from '../operations/as-par-create/index.ts';
 import { executeAsConsentDecision } from '../operations/as-consent-decision/index.ts';
 import { executeAsConsentExchange } from '../operations/as-consent-exchange/index.ts';
@@ -382,6 +380,10 @@ import {
   mountAsIntrospect,
   mountAsToken,
 } from './routes/as-oauth.ts';
+import {
+  mountAsPolyfillConnectorDetail,
+  mountAsPolyfillConnectorRegister,
+} from './routes/as-polyfill-connectors.ts';
 
 const AS_PORT = parseInt(process.env.AS_PORT || '7662');
 const RS_PORT = parseInt(process.env.RS_PORT || '7663');
@@ -4288,39 +4290,13 @@ function buildAsApp(opts = {}) {
 
   if (!nativeMode) {
     // Polyfill-only connector registry: register/detail semantics live in
-    // the canonical operations (operations/as-polyfill-connector-register
-    // and operations/as-polyfill-connector-detail). The host adapter owns
-    // Express plumbing, native-mode mounting, URL decoding, and response
-    // writing.
-    app.post('/connectors', async (req, res) => {
-      try {
-        const outcome = await executeAsPolyfillConnectorRegister(
-          { manifest: req.body },
-          { registerConnector },
-        );
-        if (outcome.outcome === 'success') {
-          return res.status(outcome.status).json(outcome.envelope);
-        }
-        pdppError(res, outcome.status, outcome.errorCode, outcome.errorMessage);
-      } catch (err) {
-        handleError(res, err);
-      }
-    });
-
-    app.get('/connectors/:connectorId', async (req, res) => {
-      try {
-        const outcome = await executeAsPolyfillConnectorDetail(
-          { connectorId: decodeURIComponent(req.params.connectorId) },
-          { getConnectorManifest },
-        );
-        if (outcome.outcome === 'success') {
-          return res.json(outcome.envelope);
-        }
-        pdppError(res, outcome.status, outcome.errorCode, outcome.errorMessage);
-      } catch (err) {
-        handleError(res, err);
-      }
-    });
+    // `server/routes/as-polyfill-connectors.ts` per OpenSpec change
+    // `split-reference-server-by-route-family`. Behaviour-preserving extraction:
+    // same routes, same operation delegation, same error mapping, same response
+    // envelopes. Only mounted in polyfill mode, matching the original guard.
+    const asPolyfillConnectorsContext = { registerConnector, getConnectorManifest, handleError, pdppError };
+    mountAsPolyfillConnectorRegister(app, asPolyfillConnectorsContext);
+    mountAsPolyfillConnectorDetail(app, asPolyfillConnectorsContext);
   }
 
   // RFC 9126-style PAR envelope semantics live in the canonical
