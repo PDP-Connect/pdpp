@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
+import { getDb } from '../server/db.js';
 import { getGrantPackageAccess, revokeGrant, revokeGrantPackage } from '../server/auth.js';
 import { canonicalConnectorKeyFromManifest } from '../server/connector-key.js';
 import {
@@ -2137,6 +2138,32 @@ test('sourceMetadata.display_name uses human-readable connection name, not raw c
       child.source.connection_id,
       instanceId,
       'source.connection_id carries the stable connection ID for programmatic use',
+    );
+
+    getDb().prepare(
+      'UPDATE grant_package_members SET source_json = ? WHERE package_id = ? AND grant_id = ?',
+    ).run(
+      ...[
+        JSON.stringify({ ...child.source, display_name: instanceId }),
+        tokenBody.grant_package_id,
+        child.grant_id,
+      ],
+    );
+
+    const { body: legacyDetail } = await fetchJson(
+      `${asUrl}/_ref/grant-packages/${encodeURIComponent(tokenBody.grant_package_id)}`,
+    );
+    assert.equal(
+      legacyDetail.children[0].source.display_name,
+      humanDisplayName,
+      'owner package detail sanitizes old rows whose display_name was persisted as the raw connection ID',
+    );
+
+    const legacyAccess = await getGrantPackageAccess(tokenBody.grant_package_id);
+    assert.equal(
+      legacyAccess.members[0].source.display_name,
+      humanDisplayName,
+      'MCP package access sanitizes old rows whose display_name was persisted as the raw connection ID',
     );
   } finally {
     await closeServer(server);

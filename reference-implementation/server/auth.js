@@ -26,6 +26,10 @@ import {
   canonicalConnectorKey,
   canonicalConnectorKeyFromManifest,
 } from './connector-key.js';
+import {
+  listActiveBindingsForGrant,
+  projectBindingForWire,
+} from './connection-identity.js';
 
 function generateToken() {
   return randomBytes(32).toString('hex');
@@ -2934,6 +2938,30 @@ function describePackageMemberSource(grant, connectionId = null, metadata = null
   };
 }
 
+function isRawConnectionDisplayName(source) {
+  return isNonEmptyString(source?.connection_id) && source.display_name === source.connection_id;
+}
+
+async function normalizePersistedPackageMemberSource(source, { ownerSubjectId = null } = {}) {
+  if (!source || typeof source !== 'object') return source;
+  if (!isRawConnectionDisplayName(source)) return source;
+
+  const sanitized = { ...source };
+  const connectorId = isNonEmptyString(sanitized.id) ? sanitized.id : null;
+  if (isNonEmptyString(ownerSubjectId) && connectorId) {
+    const active = await listActiveBindingsForGrant({ ownerSubjectId, connectorId }).catch(() => []);
+    const binding = active.find((row) => row.connectorInstanceId === sanitized.connection_id) || null;
+    const displayName = projectBindingForWire(binding)?.display_name || null;
+    if (displayName) {
+      sanitized.display_name = displayName;
+      return sanitized;
+    }
+  }
+
+  delete sanitized.display_name;
+  return sanitized;
+}
+
 /**
  * Persist one source-bounded child grant + access token for a hosted MCP
  * grant package. Mirrors the durable steps in `approveGrant` for one
@@ -3283,7 +3311,10 @@ export async function getGrantPackageAccess(packageId) {
     } catch {
       continue;
     }
-    const persistedSource = parsePackageJson(row.source_json) || describeGrantSource(grantState.grant);
+    const persistedSource = await normalizePersistedPackageMemberSource(
+      parsePackageJson(row.source_json) || describeGrantSource(grantState.grant),
+      { ownerSubjectId: grantPackage.subject_id },
+    );
     activeMembers.push({
       package_id: packageId,
       grant_id: row.grant_id,
@@ -3441,14 +3472,16 @@ export async function getGrantPackageForOwner(packageId) {
       )).rows
     : allowUnboundedReadAcknowledged(referenceQueries.authGrantPackageMembersListAllByPackage, [packageId]);
 
-  const children = memberRows.map((row) => ({
+  const children = await Promise.all(memberRows.map(async (row) => ({
     grant_id: row.grant_id,
     grant_status: row.grant_status,
     member_status: row.member_status,
     added_at: row.added_at,
     revoked_at: row.member_revoked_at || null,
-    source: parsePackageJson(row.source_json) || null,
-  }));
+    source: await normalizePersistedPackageMemberSource(parsePackageJson(row.source_json) || null, {
+      ownerSubjectId: grantPackage.subject_id,
+    }),
+  })));
 
   return {
     ...grantPackage,
