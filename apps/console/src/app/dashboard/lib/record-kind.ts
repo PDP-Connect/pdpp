@@ -117,8 +117,7 @@ function classifyByWeakField(data: Record<string, unknown>): RecordKind | null {
  * `null` for search hits, which carry only a snippet. Field signals refine
  * the stream-name guess when the body is present; otherwise the stream name
  * alone decides, falling back to `generic`.
- */
-/**
+ *
  * `manifestFieldNames` is an optional list of field names taken from the
  * connector manifest's `schema.properties` keys. When the record body is
  * absent (search hits), manifest fields provide the same heuristic signals
