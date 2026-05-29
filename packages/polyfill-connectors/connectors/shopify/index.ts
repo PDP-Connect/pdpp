@@ -5,12 +5,14 @@ import {
   politeDelay,
   runConnector,
 } from "../../src/connector-runtime.ts";
+import { validateRecord } from "./schemas.ts";
 
 const SESSION_COOKIE = /session|_shop_session|consumer_access_token/;
 
 runConnector({
   name: "shopify",
   browser: {},
+  validateRecord,
   async probeSession({ context }: ProbeSessionArgs): Promise<boolean> {
     const cookies = await context.cookies("https://shop.app/");
     return cookies.some((c) => SESSION_COOKIE.test(c.name) && Boolean(c.value));

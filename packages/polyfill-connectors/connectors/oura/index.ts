@@ -11,6 +11,7 @@
  */
 
 import { type RecordData, runConnector } from "../../src/connector-runtime.ts";
+import { validateRecord } from "./schemas.ts";
 
 const API = "https://api.ouraring.com/v2/usercollection";
 const MAX_PAGES = 100;
@@ -207,6 +208,7 @@ async function runStream<T extends OuraRow>(args: RunStreamArgs<T>): Promise<voi
 
 runConnector({
   name: "oura",
+  validateRecord,
   retryablePattern: /rate_limited|ECONN|fetch failed/i,
   auth: { kind: "env", required: ["OURA_PERSONAL_ACCESS_TOKEN"] },
   async collect({ state, requested, credentials, emit, emitRecord, progress }) {

@@ -5,12 +5,14 @@ import {
   politeDelay,
   runConnector,
 } from "../../src/connector-runtime.ts";
+import { validateRecord } from "./schemas.ts";
 
 const SESSION_COOKIE = /li_at|JSESSIONID/;
 
 runConnector({
   name: "linkedin",
   browser: {},
+  validateRecord,
   async probeSession({ context }: ProbeSessionArgs): Promise<boolean> {
     const cookies = await context.cookies("https://www.linkedin.com/");
     return cookies.some((c) => SESSION_COOKIE.test(c.name) && Boolean(c.value));

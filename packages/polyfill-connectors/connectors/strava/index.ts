@@ -11,6 +11,7 @@
  */
 
 import { type RecordData, runConnector } from "../../src/connector-runtime.ts";
+import { validateRecord } from "./schemas.ts";
 
 interface StravaActivity {
   achievement_count?: number | null;
@@ -94,6 +95,7 @@ function toActivityRecord(a: StravaActivity): RecordData {
 
 runConnector({
   name: "strava",
+  validateRecord,
   retryablePattern: /ECONN|fetch failed|rate_limited/i,
   auth: { kind: "env", required: ["STRAVA_ACCESS_TOKEN"] },
   async collect({ state, requested, credentials, emit, emitRecord, progress }) {

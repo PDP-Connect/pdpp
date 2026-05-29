@@ -31,17 +31,13 @@ export const SCHEMALESS_CONNECTOR_ALLOWLIST: Readonly<Record<string, SchemalessJ
   // imessage, and loom now wire emit-time validateRecord (connectors/<name>/
   // schemas.ts). Their entries were removed per the shrink-only invariant.
 
-  // Lane B — medium risk: well-structured API responses, but no emit-side gate
-  // catches unexpected field changes.
-  anthropic: "Lane B: schemas.ts not yet authored (API connector).",
-  notion: "Lane B: schemas.ts not yet authored (API connector).",
-  oura: "Lane B: schemas.ts not yet authored (API connector).",
-  spotify: "Lane B: schemas.ts not yet authored (API connector).",
-  strava: "Lane B: schemas.ts not yet authored (API connector).",
-  pocket: "Lane B: schemas.ts not yet authored (API connector).",
-  linkedin: "Lane B: schemas.ts not yet authored (API connector).",
-  shopify: "Lane B: schemas.ts not yet authored (API connector).",
-  uber: "Lane B: schemas.ts not yet authored (API connector).",
+  // Lane B — COMPLETE (2026-05-28): anthropic, notion, oura, spotify, strava,
+  // pocket, linkedin, shopify, and uber now wire emit-time validateRecord
+  // (connectors/<name>/schemas.ts). Their entries were removed per the
+  // shrink-only invariant. notion/oura/spotify/strava/pocket are
+  // emit-shape-derived; anthropic/linkedin/shopify/uber are scaffolds that do
+  // not yet emit a RECORD, so their schemas follow the manifest stream contract
+  // (loom precedent) and the first real emit is shape-checked.
 
   // Lane C — lower risk: upload-only or trivial record shapes. Still incomplete
   // per the authoring guide pre-ship checklist.

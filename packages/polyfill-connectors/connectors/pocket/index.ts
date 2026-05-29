@@ -16,6 +16,7 @@
  */
 
 import { type RecordData, runConnector } from "../../src/connector-runtime.ts";
+import { validateRecord } from "./schemas.ts";
 
 interface PocketAuthor {
   name?: string;
@@ -120,6 +121,7 @@ async function fetchPocketPage(body: PocketRequestBody, offset: number): Promise
 
 runConnector({
   name: "pocket",
+  validateRecord,
   retryablePattern: /ECONN|fetch failed/i,
   auth: {
     kind: "env",

@@ -11,6 +11,7 @@
  */
 
 import { politeDelay, runConnector } from "../../src/connector-runtime.ts";
+import { validateRecord } from "./schemas.ts";
 
 const API = "https://api.notion.com/v1";
 const NOTION_VERSION = "2022-06-28";
@@ -209,6 +210,7 @@ async function runStream(args: RunStreamArgs): Promise<void> {
 
 runConnector({
   name: "notion",
+  validateRecord,
   retryablePattern: /ECONN|fetch failed|rate_limited/i,
   auth: { kind: "env", required: ["NOTION_API_TOKEN"] },
   // Notion marks deleted items with archived=true rather than omitting them.

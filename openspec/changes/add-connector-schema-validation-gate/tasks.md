@@ -42,7 +42,16 @@
   focused `schemas.test.ts` proving the schema accepts representative emitted
   records — parser-derived for google_takeout/twitter_archive, emit-literal for
   whatsapp/imessage, manifest-contract for loom which does not yet emit.)
-- [ ] Lane B: author schemas for the medium-risk API connectors; remove entries.
+- [x] Lane B: author schemas for the medium-risk API connectors; remove entries.
+  (All nine wire `validateRecord` from a sibling `schemas.ts`; allowlist entries
+  removed; gate green at 25 validated, 6 allowlisted, 0 unexplained. Each
+  connector has a focused `schemas.test.ts`. notion/oura/spotify/strava/pocket
+  are emit-shape-derived from their `emitRecord` builders; anthropic/linkedin/
+  shopify/uber are browser scaffolds that do not yet emit a RECORD, so their
+  schemas follow the manifest stream contract — loom precedent — and the first
+  real emit is shape-checked rather than silently trusted. pocket is DEPRECATED
+  (API gone) but schematized so the gate measures it and a future file-based
+  re-import variant is guarded.)
 - [ ] Lane C: author schemas for the lower-risk connectors; remove entries.
 - [ ] Lane D: migrate Codex to the shared fingerprint cursor (independent of this
   gate).

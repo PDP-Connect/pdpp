@@ -17,6 +17,7 @@
  */
 
 import { runConnector } from "../../src/connector-runtime.ts";
+import { validateRecord } from "./schemas.ts";
 
 const API = "https://api.spotify.com/v1";
 const MAX_PAGES = 200;
@@ -227,6 +228,7 @@ async function collectRecentlyPlayed(
 
 runConnector({
   name: "spotify",
+  validateRecord,
   retryablePattern: /rate_limited|ECONN|fetch failed/i,
   auth: { kind: "env", required: ["SPOTIFY_ACCESS_TOKEN"] },
   async collect({ state, requested, credentials, emit, emitRecord, progress }) {
