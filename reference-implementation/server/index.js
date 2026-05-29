@@ -62,6 +62,7 @@ import {
   parseHostedMcpStreamSelections,
 } from './hosted-mcp-selection.js';
 import { canonicalConnectorKey, isInternalConnectorId } from './connector-key.js';
+import { codeToStatus, typeFor } from './routes/ref-error-status.ts';
 import {
   createPostgresConnectorInstanceStore,
   createSqliteConnectorInstanceStore,
@@ -670,55 +671,6 @@ async function ensureReferenceConnectorCatalogEntry(connectorId, connectorDispla
   }
   exec(referenceQueries.authConnectorsUpsert, [connectorKey, JSON.stringify(manifest)]);
 }
-
-function typeFor(status) {
-  if (status === 400) return 'invalid_request_error';
-  if (status === 401) return 'authentication_error';
-  if (status === 403) return 'permission_error';
-  if (status === 404) return 'not_found_error';
-  if (status === 410) return 'gone_error';
-  if (status === 429) return 'rate_limit_error';
-  return 'api_error';
-}
-
-const codeToStatus = {
-  grant_stream_not_allowed: 403,
-  grant_expired: 403,
-  grant_revoked: 403,
-  grant_consumed: 403,
-  grant_invalid: 403,
-  field_not_granted: 403,
-  insufficient_scope: 403,
-  invalid_argument: 400,
-  invalid_cursor: 400,
-  invalid_request: 400,
-  invalid_client: 400,
-  invalid_client_metadata: 400,
-  connector_invalid: 400,
-  invalid_record: 400,
-  invalid_record_identity: 400,
-  invalid_expand: 400,
-  ambiguous_connector_instance: 400,
-  ambiguous_connection: 409,
-  connection_not_found: 404,
-  connector_instance_connector_mismatch: 400,
-  connector_instance_inactive: 400,
-  connector_instance_selector_required: 400,
-  connector_instance_store_required: 500,
-  owner_subject_required: 400,
-  unknown_field: 400,
-  unsupported_version: 400,
-  authentication_error: 401,
-  connector_instance_owner_mismatch: 403,
-  blob_not_found: 404,
-  connector_instance_not_found: 404,
-  not_found: 404,
-  run_already_active: 409,
-  no_pending_interaction: 409,
-  interaction_id_mismatch: 409,
-  invalid_status: 400,
-  cursor_expired: 410,
-};
 
 function handleError(res, err) {
   const code = err.code || 'api_error';
