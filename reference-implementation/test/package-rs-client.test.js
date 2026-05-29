@@ -114,6 +114,7 @@ test('schema fan-out merges streams per source and tags package metadata', async
   assert.equal(out.body.data.streams.length, 3);
   for (const s of out.body.data.streams) {
     assert.ok(s.source && s.source.grant_id, 'every stream carries source identity');
+    assert.equal(s.source.connector_key, s.source.connector_id, 'source tag keeps connector_id compatibility while adding connector_key');
   }
   assert.equal(out.body.data.package.member_count, 2);
   assert.equal(out.body.data.package.sources.length, 2);

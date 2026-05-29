@@ -311,9 +311,11 @@ function stripConnectionId(query) {
 // -------- envelope helpers --------
 
 function memberSourceTag(member) {
+  const connectorKey = member.source?.id ?? null;
   return {
     grant_id: member.grant_id,
-    connector_key: member.source?.id ?? null,
+    connector_id: connectorKey,
+    connector_key: connectorKey,
     connection_id: member.connection_id ?? null,
     ...(member.source?.display_name ? { display_name: member.source.display_name } : {}),
   };
