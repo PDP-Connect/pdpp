@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { createContext, type ReactNode, useContext, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button.tsx";
 import { Input } from "@/components/ui/input.tsx";
+import { listDashboardCommands } from "../lib/actions.ts";
 
 interface CommandPaletteContextValue {
   close: () => void;
@@ -46,22 +47,6 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
   return <CommandPaletteContext.Provider value={value}>{children}</CommandPaletteContext.Provider>;
 }
 
-function buildShortcuts({ basePath, overviewHref }: { basePath: string; overviewHref: string }) {
-  const shortcuts = [
-    { label: "Overview", href: overviewHref },
-    { label: "Jump", href: `${basePath}/search` },
-    { label: "Explore", href: `${basePath}/explore` },
-    { label: "Traces", href: `${basePath}/traces` },
-    { label: "Grants", href: `${basePath}/grants` },
-    { label: "Runs", href: `${basePath}/runs` },
-    { label: "Connections", href: `${basePath}/records` },
-  ];
-  if (basePath === "/dashboard") {
-    shortcuts.push({ label: "Device exporters", href: `${basePath}/device-exporters` });
-  }
-  return shortcuts;
-}
-
 export function CommandPaletteTrigger() {
   const palette = useCommandPalette();
   return (
@@ -83,16 +68,16 @@ export function CommandPaletteTrigger() {
 
 export function CommandPalette({
   basePath = "/dashboard",
-  overviewHref = basePath,
 }: {
   basePath?: string;
-  overviewHref?: string;
 } = {}) {
   const router = useRouter();
   const palette = useCommandPalette();
   const [query, setQuery] = useState("");
   const inputRef = useRef<HTMLInputElement | null>(null);
-  const shortcuts = buildShortcuts({ basePath, overviewHref });
+  const allCommands = listDashboardCommands();
+  const navCommands = allCommands.filter((c) => c.section === "Navigate");
+  const actionCommands = allCommands.filter((c) => c.section === "Quick action");
 
   useEffect(() => {
     if (palette.isOpen) {
@@ -113,6 +98,11 @@ export function CommandPalette({
     }
     palette.close();
     router.push(`${basePath}/search?q=${encodeURIComponent(trimmed)}&jump=1`);
+  }
+
+  function navigate(href: string) {
+    palette.close();
+    router.push(href);
   }
 
   return (
@@ -140,18 +130,28 @@ export function CommandPalette({
             value={query}
           />
           <div className="mt-3 flex flex-wrap gap-1.5 text-muted-foreground">
-            {shortcuts.map((s) => (
+            {navCommands.map((cmd) => (
               <Button
-                key={s.href}
-                onClick={() => {
-                  palette.close();
-                  router.push(s.href);
-                }}
+                key={cmd.id}
+                onClick={() => navigate(cmd.href)}
                 size="xs"
                 type="button"
                 variant="outline"
               >
-                {s.label}
+                {cmd.title}
+              </Button>
+            ))}
+          </div>
+          <div className="mt-3 flex flex-wrap gap-1.5 text-muted-foreground">
+            {actionCommands.map((cmd) => (
+              <Button
+                key={cmd.id}
+                onClick={() => navigate(cmd.href)}
+                size="xs"
+                type="button"
+                variant="secondary"
+              >
+                {cmd.title}
               </Button>
             ))}
           </div>
