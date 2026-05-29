@@ -90,16 +90,6 @@ import {
   listAllSubscriptions,
   listAttemptsForSubscription,
 } from './stores/client-event-subscription-store.ts';
-import { executeRefClientEventSubscriptionsList } from '../operations/ref-client-event-subscriptions-list/index.ts';
-import {
-  executeRefClientEventSubscriptionsGet,
-  RefClientEventSubscriptionsNotFoundError,
-} from '../operations/ref-client-event-subscriptions-get/index.ts';
-import {
-  executeRefClientEventSubscriptionsDisable,
-  RefClientEventSubscriptionsDisableInvalidRequestError,
-  RefClientEventSubscriptionsDisableNotFoundError,
-} from '../operations/ref-client-event-subscriptions-disable/index.ts';
 import { getDefaultDeliveryWorker } from './client-event-delivery-worker.ts';
 import { setClientEventEnqueueHook } from './records.js';
 import { DeviceBatchConflictError, createDeviceExporterStore } from './stores/device-exporter-store.js';
@@ -342,6 +332,14 @@ import {
   mountRefSchedules,
   mountRefSearch,
 } from './routes/ref-admin.ts';
+import {
+  mountRefEventSubscriptionsDisable,
+  mountRefEventSubscriptionsGet,
+  mountRefEventSubscriptionsList,
+  mountRefGrantPackagesGet,
+  mountRefGrantPackagesList,
+  mountRefGrantPackagesRevoke,
+} from './routes/ref-grants.ts';
 import {
   mountRefDatasetSize,
   mountRefDatasetSizeRebuild,
@@ -3928,190 +3926,32 @@ function buildAsApp(opts = {}) {
   // /_ref/grant-packages — operator visibility for hosted-MCP grant packages
   // ────────────────────────────────────────────────────────────────────────
   // Read-mostly operator surface that exposes the grant-package primitive
-  // (`add-hosted-mcp-grant-packages`) on the dashboard. Listing returns
-  // every package in `created_at DESC` order with member counts; detail
-  // returns the full child cascade; revoke is a thin wrapper around the
-  // existing `revokeGrantPackage` storage helper. The package never
-  // exposes raw token material; the projection is the same `package_id /
-  // subject_id / client_id / status / children` shape consumed by the
-  // hosted-MCP OAuth flow at authorization time.
-  // Spec: openspec/changes/add-grant-package-operator-visibility/
-  function parseGrantPackageListQuery(query) {
-    const rawLimit = query?.limit;
-    let limit = 50;
-    if (rawLimit !== undefined && rawLimit !== null) {
-      const parsed = Number.parseInt(String(rawLimit), 10);
-      if (!Number.isFinite(parsed) || parsed <= 0) {
-        const err = new Error(`limit must be a positive integer (got "${rawLimit}")`);
-        err.code = 'invalid_request';
-        err.param = 'limit';
-        throw err;
-      }
-      if (parsed > 200) {
-        const err = new Error('limit exceeds maximum 200');
-        err.code = 'invalid_request';
-        err.param = 'limit';
-        throw err;
-      }
-      limit = parsed;
-    }
-    return {
-      limit,
-      cursor: typeof query?.cursor === 'string' && query.cursor.length > 0 ? query.cursor : null,
-    };
-  }
-
-  app.get('/_ref/grant-packages', ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const page = await listGrantPackagesForOwner(parseGrantPackageListQuery(req.query));
-      res.json({
-        object: 'list',
-        data: page.data.map((pkg) => ({
-          object: 'grant_package_summary',
-          package_id: pkg.package_id,
-          subject_id: pkg.subject_id,
-          client_id: pkg.client_id,
-          status: pkg.status,
-          member_count: pkg.member_count,
-          created_at: pkg.created_at,
-          approved_at: pkg.approved_at,
-          revoked_at: pkg.revoked_at,
-        })),
-        has_more: page.has_more,
-        next_cursor: page.next_cursor,
-        limit: page.limit,
-      });
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  app.get('/_ref/grant-packages/:id', ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const pkg = await getGrantPackageForOwner(req.params.id);
-      if (!pkg) {
-        return pdppError(res, 404, 'not_found', `grant package not found: ${req.params.id}`);
-      }
-      res.json({
-        object: 'grant_package',
-        package_id: pkg.package_id,
-        subject_id: pkg.subject_id,
-        client_id: pkg.client_id,
-        status: pkg.status,
-        member_count: pkg.member_count,
-        created_at: pkg.created_at,
-        approved_at: pkg.approved_at,
-        revoked_at: pkg.revoked_at,
-        trace_id: pkg.trace_id,
-        scenario_id: pkg.scenario_id,
-        children: pkg.children.map((child) => ({
-          object: 'grant_package_child',
-          grant_id: child.grant_id,
-          grant_status: child.grant_status,
-          member_status: child.member_status,
-          added_at: child.added_at,
-          revoked_at: child.revoked_at,
-          source: child.source,
-        })),
-      });
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  app.post('/_ref/grant-packages/:id/revoke', ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const pkg = await getGrantPackageForOwner(req.params.id);
-      if (!pkg) {
-        return pdppError(res, 404, 'not_found', `grant package not found: ${req.params.id}`);
-      }
-      if (pkg.status !== 'active') {
-        return pdppError(res, 409, 'already_revoked', `grant package ${req.params.id} is already ${pkg.status}`);
-      }
-      await revokeGrantPackage(req.params.id, {
-        request_id: typeof req.headers['x-request-id'] === 'string' ? req.headers['x-request-id'] : undefined,
-      });
-      const after = await getGrantPackageForOwner(req.params.id);
-      res.json({
-        object: 'grant_package_revoke_result',
-        package_id: req.params.id,
-        status: after?.status ?? 'revoked',
-        revoked_at: after?.revoked_at ?? new Date().toISOString(),
-        revoked_child_count: after ? after.children.length : 0,
-      });
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  // ────────────────────────────────────────────────────────────────────────
-  // /_ref/event-subscriptions — operator oversight of client event subscriptions
-  // ────────────────────────────────────────────────────────────────────────
-  // Read-mostly oversight surface for the subscriptions clients have
-  // created at `/v1/event-subscriptions`. Owner-session gated like every
-  // other `/_ref/*` route. The disable endpoint is the operator safety
-  // valve; there is intentionally no operator create / re-enable / rotate
-  // / replay path. See:
+  // `/_ref/grant-packages` and `/_ref/event-subscriptions` routes extracted
+  // to `server/routes/ref-grants.ts` per `split-reference-server-by-route-family`.
+  // Behaviour-preserving extraction: same mount points, same owner-session
+  // posture, same envelopes. Grant-packages spec:
+  //   openspec/changes/add-grant-package-operator-visibility/
+  // Event-subscriptions spec:
   //   openspec/changes/add-client-event-subscription-management/
-  app.get('/_ref/event-subscriptions', ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const envelope = await executeRefClientEventSubscriptionsList(
-        {
-          clientId: typeof req.query.client_id === 'string' ? req.query.client_id : null,
-          grantId: typeof req.query.grant_id === 'string' ? req.query.grant_id : null,
-          status: typeof req.query.status === 'string' ? req.query.status : null,
-        },
-        {
-          listAllSubscriptions,
-          getSubscriptionSummary,
-        },
-      );
-      res.json(envelope);
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  app.get('/_ref/event-subscriptions/:id', ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const detail = await executeRefClientEventSubscriptionsGet(req.params.id, {
-        getSubscriptionSummary,
-        listAttemptsForSubscription,
-      });
-      res.json(detail);
-    } catch (err) {
-      if (err instanceof RefClientEventSubscriptionsNotFoundError) {
-        return pdppError(res, 404, err.code, err.message);
-      }
-      handleError(res, err);
-    }
-  });
-
-  app.post('/_ref/event-subscriptions/:id/disable', ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const reason =
-        req.body && typeof req.body === 'object' && typeof req.body.reason === 'string'
-          ? req.body.reason
-          : null;
-      const out = await executeRefClientEventSubscriptionsDisable(
-        { subscriptionId: req.params.id, reason },
-        { store: getDefaultClientEventSubscriptionStore(), nowIso: () => new Date().toISOString() },
-      );
-      const detail = await executeRefClientEventSubscriptionsGet(out.subscriptionId, {
-        getSubscriptionSummary,
-        listAttemptsForSubscription,
-      });
-      res.json(detail);
-    } catch (err) {
-      if (err instanceof RefClientEventSubscriptionsDisableNotFoundError) {
-        return pdppError(res, 404, err.code, err.message);
-      }
-      if (err instanceof RefClientEventSubscriptionsDisableInvalidRequestError) {
-        return pdppError(res, 400, err.code, err.message);
-      }
-      handleError(res, err);
-    }
-  });
+  const refGrantsContext = {
+    handleError,
+    pdppError,
+    requireOwnerSession: ownerAuth.requireOwnerSession,
+    listGrantPackagesForOwner,
+    getGrantPackageForOwner,
+    revokeGrantPackage,
+    listAllSubscriptions,
+    getSubscriptionSummary,
+    listAttemptsForSubscription,
+    getClientEventSubscriptionStore: getDefaultClientEventSubscriptionStore,
+    nowIso: () => new Date().toISOString(),
+  };
+  mountRefGrantPackagesList(app, refGrantsContext);
+  mountRefGrantPackagesGet(app, refGrantsContext);
+  mountRefGrantPackagesRevoke(app, refGrantsContext);
+  mountRefEventSubscriptionsList(app, refGrantsContext);
+  mountRefEventSubscriptionsGet(app, refGrantsContext);
+  mountRefEventSubscriptionsDisable(app, refGrantsContext);
 
   // Operator-only Web Push surfaces are mounted via
   // `server/routes/web-push.ts` per OpenSpec change
