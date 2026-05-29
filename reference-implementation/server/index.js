@@ -321,6 +321,14 @@ import {
   mountRefRunInteraction,
 } from './routes/run-interaction.ts';
 import {
+  mountRefApprovals,
+  mountRefClients,
+  mountRefDeployment,
+  mountRefRecordsTimeline,
+  mountRefSchedules,
+  mountRefSearch,
+} from './routes/ref-admin.ts';
+import {
   mountRefDatasetSize,
   mountRefDatasetSizeRebuild,
   mountRefDatasetSizeReconcile,
@@ -4395,22 +4403,91 @@ function buildAsApp(opts = {}) {
   mountRefWebPushDeleteSubscription(app, refWebPushContext);
   mountRefWebPushTest(app, refWebPushContext);
 
-  // Reference-only — not the public lexical retrieval surface.
-  // /_ref/search is a spine-only artifact/id-jump helper for the operator
-  // console. The public lexical retrieval contract lives at GET /v1/search;
-  // these two routes share neither shape nor backing. See:
-  //   openspec/changes/add-lexical-retrieval-extension/specs/lexical-retrieval/spec.md
-  app.get('/_ref/search', { contract: 'refSearch' }, ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const envelope = await executeRefSpineSearch(
-        { query: req.query.q || '' },
-        { searchSpine: (query) => searchSpine(query) },
-      );
-      res.json(envelope);
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
+  // `/_ref/search`, `/_ref/approvals`, `/_ref/records/timeline`,
+  // `/_ref/schedules`, `/_ref/deployment`, and `/_ref/clients` routes
+  // extracted to `server/routes/ref-admin.ts` per
+  // `split-reference-server-by-route-family` §2.5. The host wires
+  // capability-shaped substrate dependencies; the adapter owns owner-auth,
+  // contract metadata, response writing, and query-string parsing.
+  const refAdminContext = {
+    requireOwnerSession: ownerAuth.requireOwnerSession,
+    handleError,
+    pdppError,
+    listPendingApprovals: () => listPendingApprovals(),
+    collectRecordsTimelineEntries: (input) => collectRecordsTimelineEntries(input),
+    listSchedules: async () => (controller ? await controller.listSchedules() : []),
+    collectDeploymentReport: (req) => collectDeploymentDiagnostics(
+      {
+        getBackend: () => getSemanticBackend(),
+        getDb: () => getDb(),
+        computeIndexState: () => computeSemanticIndexState(),
+        getBackfillProgress: () => getSemanticIndexBackfillProgress(),
+        getLexicalBackfillProgress: () => getLexicalIndexBackfillProgress(),
+        getConfiguredNativeManifest: () => getConfiguredNativeManifest(),
+        listRegisteredConnectorIds: () => listRegisteredConnectorIds(),
+        getConnectorManifest: (connectorId) => getConnectorManifest(connectorId),
+        getRuntimeCapabilityPosture: async () => {
+          const inContainer =
+            process.env.PDPP_FORCE_CONTAINER === '1' || existsSync('/.dockerenv');
+          let collectorPaired = false;
+          let pairing = null;
+          try {
+            const subjectId = getOwnerSubjectId(req);
+            const devices = await deviceExporterStore.listDevices(subjectId);
+            const activeDevices = Array.isArray(devices)
+              ? devices.filter((d) => d.status === 'active')
+              : [];
+            collectorPaired = activeDevices.length > 0;
+            if (collectorPaired) {
+              const sorted = [...activeDevices].sort((a, b) => {
+                const aT = Date.parse(a.lastHeartbeatAt || a.updatedAt || a.createdAt || '') || 0;
+                const bT = Date.parse(b.lastHeartbeatAt || b.updatedAt || b.createdAt || '') || 0;
+                return bT - aT;
+              });
+              const outdated = activeDevices.some(
+                (d) => !SUPPORTED_COLLECTOR_PROTOCOL_VERSIONS.includes(d.collectorProtocolVersion || ''),
+              );
+              const outdatedDevice = outdated
+                ? activeDevices.find(
+                    (d) => !SUPPORTED_COLLECTOR_PROTOCOL_VERSIONS.includes(d.collectorProtocolVersion || ''),
+                  )
+                : null;
+              const representative = outdatedDevice || sorted[0];
+              const observedVersion = representative?.collectorProtocolVersion ?? null;
+              pairing = {
+                protocol_version: observedVersion ?? (representative ? 'legacy_unknown' : null),
+                protocol_outdated: outdated,
+                runner_version: representative?.agentVersion ?? null,
+                connector_versions: {},
+              };
+            }
+          } catch {
+            collectorPaired = false;
+            pairing = null;
+          }
+          return {
+            bindings: {
+              browser: false,
+              filesystem: true,
+              local_device: false,
+              network: true,
+            },
+            collector_paired: collectorPaired,
+            accepted_collector_protocol_versions: [...SUPPORTED_COLLECTOR_PROTOCOL_VERSIONS],
+            collector_pairing: pairing,
+            in_container: inContainer,
+          };
+        },
+      },
+      { dbPath: opts.dbPath || DB_PATH }
+    ),
+    listOwnerIssuedClients: (subjectId) => listOwnerIssuedClients(subjectId),
+    searchSpine: (query) => searchSpine(query),
+    getOwnerSubjectId,
+    resolveSingleConnectorIdQueryValue,
+  };
+  mountRefSearch(app, refAdminContext);
+  mountRefApprovals(app, refAdminContext);
 
   // Spine detail / timeline routes are mounted via
   // `server/routes/ref-spine-timelines.ts` per OpenSpec change
@@ -4652,69 +4729,8 @@ function buildAsApp(opts = {}) {
   mountRefConnectorsList(app, refConnectorsContext);
   mountRefConnectorDetail(app, refConnectorsContext);
 
-  // Reference-only pending approvals queue. The canonical
-  // `ref.approvals.list` operation owns the `{object: 'list', data}`
-  // envelope, the created-at-descending sort across both kinds, and the
-  // `request_uri` / `user_code` redaction invariant. The host adapter
-  // owns owner auth and response writing; the substrate composition
-  // (consents + owner-device flows) still lives in `server/ref-control.ts`.
-  app.get('/_ref/approvals', { contract: 'refListApprovals' }, ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const envelope = await executeRefApprovalsList({
-        listPendingApprovals: () => listPendingApprovals(),
-      });
-      res.json(envelope);
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  // Reference-only timeline view. The canonical `ref.records.timeline`
-  // operation owns input normalization, the final `data` slice to the
-  // effective limit, and the `{object: 'list', data, meta}` envelope.
-  // The host adapter still owns owner auth and response writing, and
-  // wires the substrate read (`collectRecordsTimelineEntries`) behind
-  // the capability so the operation never touches the SQLite handle or
-  // manifest store directly.
-  app.get('/_ref/records/timeline', { contract: 'refRecordsTimeline' }, ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const limit = req.query.limit == null ? null : Number.parseInt(String(req.query.limit), 10);
-      const connectorId = resolveSingleConnectorIdQueryValue(req.query.connector_id);
-      const envelope = await executeRefRecordsTimeline(
-        {
-          connectorId,
-          stream: typeof req.query.stream === 'string' ? req.query.stream : null,
-          since: typeof req.query.since === 'string' ? req.query.since : null,
-          until: typeof req.query.until === 'string' ? req.query.until : null,
-          limit: Number.isFinite(limit) ? limit : null,
-          order: req.query.order,
-          timestampMode: req.query.timestamp_mode,
-        },
-        {
-          collectEntries: (input) => collectRecordsTimelineEntries(input),
-        },
-      );
-      res.json(envelope);
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  // Reference-only schedule listing. The canonical `ref.schedules.list`
-  // operation owns the `{object: 'list', data}` envelope; the host adapter
-  // owns owner auth and response writing only. Schedule reads flow through
-  // the controller's capability-shaped `listSchedules` so the operation
-  // never sees the runtime controller or scheduler store directly.
-  app.get('/_ref/schedules', { contract: 'refListSchedules' }, ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const envelope = await executeRefSchedulesList({
-        listSchedules: async () => (controller ? await controller.listSchedules() : []),
-      });
-      res.json(envelope);
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
+  mountRefRecordsTimeline(app, refAdminContext);
+  mountRefSchedules(app, refAdminContext);
 
   mountRefConnectorScheduleGet(app, refConnectorsContext);
   mountRefConnectionsList(app, refConnectorsContext);
@@ -4723,102 +4739,7 @@ function buildAsApp(opts = {}) {
   mountRefConnectorInstanceDetail(app, refConnectorsContext);
   mountRefConnectionSetDisplayName(app, refConnectorsContext);
 
-  // /_ref/deployment — reference operator diagnostics. Not a PDPP protocol
-  // surface; the dashboard's /dashboard/deployment page reads this. The
-  // canonical `ref.deployment` operation owns the public envelope and a
-  // defensive env-redaction invariant; the host wires
-  // `collectDeploymentDiagnostics` (which performs the actual redaction
-  // against the strict allowlist) behind the diagnostic capability so the
-  // operation never imports the substrate helper or `process`.
-  app.get('/_ref/deployment', ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const report = await executeRefDeployment({
-        collectDeploymentReport: () => collectDeploymentDiagnostics(
-          {
-            getBackend: () => getSemanticBackend(),
-            getDb: () => getDb(),
-            computeIndexState: () => computeSemanticIndexState(),
-            getBackfillProgress: () => getSemanticIndexBackfillProgress(),
-            getLexicalBackfillProgress: () => getLexicalIndexBackfillProgress(),
-            getConfiguredNativeManifest: () => getConfiguredNativeManifest(),
-            listRegisteredConnectorIds: () => listRegisteredConnectorIds(),
-            getConnectorManifest: (connectorId) => getConnectorManifest(connectorId),
-            getRuntimeCapabilityPosture: async () => {
-              // Provider/control-plane runtime advertises only the bindings
-              // it can actually satisfy. We honestly never advertise
-              // `browser` here — the runtime gate fails closed on headed
-              // in-container browser launches. `local_device` is also
-              // false; only a paired collector can satisfy that.
-              const inContainer =
-                process.env.PDPP_FORCE_CONTAINER === '1' || existsSync('/.dockerenv');
-              let collectorPaired = false;
-              let pairing = null;
-              try {
-                const subjectId = getOwnerSubjectId(req);
-                const devices = await deviceExporterStore.listDevices(subjectId);
-                const activeDevices = Array.isArray(devices)
-                  ? devices.filter((d) => d.status === 'active')
-                  : [];
-                collectorPaired = activeDevices.length > 0;
-                if (collectorPaired) {
-                  // Pick the most-recently-updated active device as the
-                  // representative pairing for the warning surface. Multiple
-                  // collectors with different protocol versions still drive
-                  // a single dashboard warning, but we report the worst case
-                  // (outdated > current) so the operator notices drift.
-                  const sorted = [...activeDevices].sort((a, b) => {
-                    const aT = Date.parse(a.lastHeartbeatAt || a.updatedAt || a.createdAt || '') || 0;
-                    const bT = Date.parse(b.lastHeartbeatAt || b.updatedAt || b.createdAt || '') || 0;
-                    return bT - aT;
-                  });
-                  const outdated = activeDevices.some(
-                    (d) => !SUPPORTED_COLLECTOR_PROTOCOL_VERSIONS.includes(d.collectorProtocolVersion || ''),
-                  );
-                  const outdatedDevice = outdated
-                    ? activeDevices.find(
-                        (d) => !SUPPORTED_COLLECTOR_PROTOCOL_VERSIONS.includes(d.collectorProtocolVersion || ''),
-                      )
-                    : null;
-                  const representative = outdatedDevice || sorted[0];
-                  const observedVersion = representative?.collectorProtocolVersion ?? null;
-                  pairing = {
-                    protocol_version: observedVersion ?? (representative ? 'legacy_unknown' : null),
-                    protocol_outdated: outdated,
-                    runner_version: representative?.agentVersion ?? null,
-                    // Per-connector bundle versions aren't advertised by
-                    // today's runner. The shape is reserved so a future
-                    // heartbeat extension can fill it without a contract
-                    // change.
-                    connector_versions: {},
-                  };
-                }
-              } catch {
-                // Diagnostics must survive a transient store failure.
-                collectorPaired = false;
-                pairing = null;
-              }
-              return {
-                bindings: {
-                  browser: false,
-                  filesystem: true,
-                  local_device: false,
-                  network: true,
-                },
-                collector_paired: collectorPaired,
-                accepted_collector_protocol_versions: [...SUPPORTED_COLLECTOR_PROTOCOL_VERSIONS],
-                collector_pairing: pairing,
-                in_container: inContainer,
-              };
-            },
-          },
-          { dbPath: opts.dbPath || DB_PATH }
-        ),
-      });
-      res.json(report);
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
+  mountRefDeployment(app, refAdminContext);
 
   app.post('/_ref/device-exporters/enrollment-codes', { contract: 'refCreateDeviceExporterEnrollmentCode' }, ownerAuth.requireOwnerSession, async (req, res) => {
     try {
@@ -5457,37 +5378,7 @@ function buildAsApp(opts = {}) {
     },
   );
 
-  // Operator-issued client listing. Backs the dashboard Tokens page so an
-  // operator can see and revoke the credentials they registered. Returns
-  // only dynamic clients whose `metadata.issuer_subject_id` matches the
-  // requesting owner-session subject — so the listing is per-operator and
-  // pre-registered seeds (`pdpp-web-dashboard`, `cli_longview`, ...) never
-  // appear here. Spec: openspec/changes/dcr-per-owner-token-with-revoke/.
-  // Operator-issued client listing. The canonical `ref.clients.list`
-  // operation owns the `?owner=true` request requirement (typed
-  // `RefClientsListInvalidRequestError` translated to the PDPP
-  // 400 `invalid_request` envelope) and the `{object: 'list', data}`
-  // envelope. The host adapter still owns owner auth and per-operator
-  // subject scoping: `listOwnerIssuedClients` is called with the
-  // requesting owner-session subject so pre-registered seeds never
-  // appear here. See openspec/changes/dcr-per-owner-token-with-revoke/.
-  app.get('/_ref/clients', ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const subjectId = req.ownerSession?.sub || ownerAuth.subjectId || OWNER_AUTH_DEFAULT_SUBJECT_ID;
-      const envelope = await executeRefClientsList(
-        { owner: req.query?.owner },
-        {
-          listOwnerIssuedClients: () => listOwnerIssuedClients(subjectId),
-        },
-      );
-      res.json(envelope);
-    } catch (err) {
-      if (err instanceof RefClientsListInvalidRequestError) {
-        return pdppError(res, 400, 'invalid_request', err.message);
-      }
-      handleError(res, err);
-    }
-  });
+  mountRefClients(app, refAdminContext);
 
   mountRefConnectorRun(app, refConnectorsContext);
   mountRefConnectionRun(app, refConnectorsContext);

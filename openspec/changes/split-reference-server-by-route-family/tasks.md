@@ -79,22 +79,35 @@ unchanged.
     `test/ref-connector-schedule-get-{boundary,operation}.test.js`,
     `test/connector-instances-acceptance.test.js`, and
     `test/control-plane.test.js`.
-- [ ] 2.5 Move `_ref` approvals, records-timeline, schedules, deployment, clients, search routes.
+- [x] 2.5 Move `_ref` approvals, records-timeline, schedules, deployment, clients, search routes.
+  - [x] All 6 routes extracted to `server/routes/ref-admin.ts` with per-route mount fns:
+    `mountRefSearch`, `mountRefApprovals`, `mountRefRecordsTimeline`, `mountRefSchedules`,
+    `mountRefDeployment`, `mountRefClients`. Behaviour-preserving: same owner-session posture,
+    same contract metadata, same query-string parsing (limit, connector_id, stream, since, until,
+    order, timestamp_mode), same response envelopes, same error mapping
+    (`RefClientsListInvalidRequestError` → 400 `invalid_request`). `collectDeploymentDiagnostics`
+    closure (device-exporter pairing, semantic-index state, connector manifests) moved into
+    the `refAdminContext.collectDeploymentReport` capability injected from `buildAsApp`.
+    `getOwnerSubjectId` and `resolveSingleConnectorIdQueryValue` pass through as context
+    capabilities. Covered by `test/ref-admin-routes.test.js` (7/7) and all pre-existing
+    operation-level tests (47/47 — approvals, clients, deployment, records-timeline,
+    schedules boundary + operation suites).
 - [ ] 2.6 Move `_ref` device-exporters routes (enrollment-codes/enroll, list, source-instances, diagnostics, revoke, heartbeat, ingest-batches, source-instance state/local-collector-gaps).
-- [ ] 2.7 Update `buildAsApp` in `server/index.js` to call each
+- [~] 2.7 Update `buildAsApp` in `server/index.js` to call each
   sub-family's mount function at the same point in route registration;
   delete the moved blocks. (Partial: 2.2 list endpoints wired via
   `refSpineCorrelationsContext`; 2.2 detail/timeline endpoints wired
   via `refSpineTimelinesContext`; 2.3 dataset endpoints wired via
   `refDatasetContext`; 2.4 connectors / connections /
-  connector-instances wired via `refConnectorsContext`; remaining
-  sub-families pending.)
+  connector-instances wired via `refConnectorsContext`; 2.5 admin
+  routes wired via `refAdminContext`; remaining sub-families pending.)
 - [~] 2.8 Acceptance: targeted tests under `reference-implementation/test/` (ref-control, dataset summary, device exporter, web push, schedules) pass; `pnpm --dir reference-implementation run verify` passes.
   - [x] Tests covering 2.2 list endpoints pass: `node --test test/control-plane.test.js` (21/21), `node --test test/ref-read-owner-gate.test.js` (3/3), `node --test test/ref-spine-correlations-list-{boundary,operation}.test.js` (10/10).
   - [x] Tests covering 2.2 detail/timeline endpoints pass: `node --test test/control-plane.test.js`, `node --test test/ref-read-owner-gate.test.js`, `node --test test/ref-spine-events-page-{boundary,operation}.test.js`.
   - [x] Tests covering 2.3 dataset routes pass: `node --test test/ref-dataset-routes.test.js` (10/10), `test/ref-read-owner-gate.test.js` (3/3), `test/ref-dataset-summary-operation.test.js`, `test/ref-dataset-summary-streams-operation.test.js`.
   - [x] Tests covering 2.4 connectors / connections / connector-instances routes pass: `node --test test/ref-connectors-routes.test.js` (17/17), `test/connector-instance-admission-routes.test.js` (7/7), `test/ref-control-connection-scope.test.js`, `test/ref-connectors-list-{boundary,operation}.test.js`, `test/ref-connectors-detail-{boundary,operation}.test.js`, `test/ref-connectors-connection-projection.test.js`, `test/ref-connector-schedule-get-{boundary,operation}.test.js`, `test/connector-instances-acceptance.test.js`, `test/control-plane.test.js` (all green, 126 total).
-  - [ ] Remaining sub-family acceptance still gated by §§2.5–2.7 landing.
+  - [x] Tests covering 2.5 admin routes pass: `node --test test/ref-admin-routes.test.js` (7/7), `test/ref-approvals-list-{boundary,operation}.test.js`, `test/ref-clients-list-{boundary,operation}.test.js`, `test/ref-deployment-{boundary,operation}.test.js`, `test/ref-records-timeline-{boundary,operation}.test.js`, `test/ref-schedules-list-{boundary,operation}.test.js` (all green, 54 total).
+  - [ ] Remaining sub-family acceptance still gated by §§2.6–2.7 landing.
 
 ## 3. RS read family
 
