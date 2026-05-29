@@ -5,6 +5,7 @@ import {
   computeActivityStripCells,
   type ExplorerFeedEntry,
   explorerPeekParam,
+  feedSectionTitle,
   groupFeedByDay,
   parseExplorerPeekParam,
 } from "../components/views/records-explorer-view.tsx";
@@ -260,4 +261,11 @@ test("computeActivityStripCells ignores entries with missing or unparseable date
   );
   const total = cells.reduce((sum, c) => sum + c.count, 0);
   assert.equal(total, 1);
+});
+
+test("feedSectionTitle returns lens-appropriate section headings", () => {
+  assert.equal(feedSectionTitle("recent"), "Recent records");
+  assert.equal(feedSectionTitle("time_range"), "Records in range");
+  assert.equal(feedSectionTitle("search"), "Search results");
+  assert.equal(feedSectionTitle("search_with_ignored_time_window"), "Search results");
 });

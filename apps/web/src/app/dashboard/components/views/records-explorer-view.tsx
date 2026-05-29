@@ -18,7 +18,7 @@ import { Timestamp } from "@/components/ui/timestamp.tsx";
 import type { RecordKind } from "../../lib/record-kind.ts";
 import type { RecordPreview } from "../../lib/record-preview.ts";
 import { defaultWindow } from "../../lib/timeline.ts";
-import { Callout, FilterSummary, PageHeader, Section, SplitLayout, Toolbar } from "../primitives.tsx";
+import { Callout, FilterSummary, PageHeader, Section, SplitLayout } from "../primitives.tsx";
 import type { Routes } from "./routes.ts";
 
 /** Active feed lens. URL state (q + since/until) is the source of truth. */
@@ -398,18 +398,6 @@ function feedDescription(lens: ExplorerLens, hybridUsed: boolean): string {
   return "Recent across every visible connection. Submit a query, or pick a date window, to narrow further.";
 }
 
-function lensLabel(lens: ExplorerLens): string {
-  if (lens === "time_range") {
-    return "Time range";
-  }
-  if (lens === "search") {
-    return "Query";
-  }
-  if (lens === "search_with_ignored_time_window") {
-    return "Query · time window not applied to search";
-  }
-  return "Recent";
-}
 
 function ExplorerMain({
   query,
@@ -464,37 +452,7 @@ function ExplorerMain({
 
   return (
     <>
-      <form action={exploreHref} method="get">
-        <Toolbar>
-          <label className="flex min-w-0 flex-1 flex-col gap-1" htmlFor="records-explorer-q">
-            <span className="pdpp-eyebrow">Query</span>
-            <Input
-              defaultValue={query}
-              id="records-explorer-q"
-              name="q"
-              placeholder="text across every searchable stream…"
-              type="search"
-            />
-          </label>
-          {/* Preserve chip state on form submit. */}
-          {selectedConnectionIds.map((id) => (
-            <input key={`c:${id}`} name="connection" type="hidden" value={id} />
-          ))}
-          {selectedStreams.map((s) => (
-            <input key={`s:${s}`} name="stream" type="hidden" value={s} />
-          ))}
-          {since ? <input name="since" type="hidden" value={since} /> : null}
-          {until ? <input name="until" type="hidden" value={until} /> : null}
-          <button
-            className="pdpp-label mt-5 self-start rounded-md border border-border bg-background px-3 py-1.5 hover:bg-muted/60"
-            type="submit"
-          >
-            Search
-          </button>
-        </Toolbar>
-      </form>
-
-      <TimeWindowForm
+      <ExplorerControls
         exploreHref={exploreHref}
         query={query}
         routes={routes}
@@ -503,10 +461,6 @@ function ExplorerMain({
         since={since}
         until={until}
       />
-
-      <p className="pdpp-caption mb-4 text-muted-foreground">
-        Lens: <span className="font-medium text-foreground">{lensLabel(lens)}</span>
-      </p>
 
       <FilterSummary items={filterItems} resetHref={resetHref} />
 
@@ -543,7 +497,7 @@ function ExplorerMain({
         />
       ) : null}
 
-      <Section description={feedDescription(lens, hybridUsed)} title="Records">
+      <Section description={feedDescription(lens, hybridUsed)} title={feedSectionTitle(lens)}>
         {feed.length === 0 ? (
           <p className="pdpp-caption text-muted-foreground italic">{emptyFeedMessage(lens)}</p>
         ) : (
@@ -613,7 +567,7 @@ function emptyFeedMessage(lens: ExplorerLens): string {
   return "No retained records yet on any visible connection.";
 }
 
-function TimeWindowForm({
+function ExplorerControls({
   exploreHref,
   query,
   routes,
@@ -630,65 +584,95 @@ function TimeWindowForm({
   since: string;
   until: string;
 }) {
+  const hasDateWindow = since || until;
   return (
-    <form action={exploreHref} className="mb-4" method="get">
-      <Toolbar
-        trailing={
-          <div className="pdpp-caption flex flex-wrap gap-3">
-            {([1, 7, 30, 90] as const).map((d) => {
-              const { since: s, until: u } = defaultWindow(d);
-              const href = buildExplorerHref(routes, {
-                query,
-                connectionIds: selectedConnectionIds,
-                streams: selectedStreams,
-                since: s,
-                until: u,
-              });
-              return (
-                <Link
-                  className="text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-                  href={href}
-                  key={d}
-                >
-                  {d}d
-                </Link>
-              );
-            })}
-          </div>
-        }
-      >
+    <form action={exploreHref} className="mb-5" method="get">
+      {/* Preserve chip state on form submit. */}
+      {selectedConnectionIds.map((id) => (
+        <input key={`c:${id}`} name="connection" type="hidden" value={id} />
+      ))}
+      {selectedStreams.map((s) => (
+        <input key={`s:${s}`} name="stream" type="hidden" value={s} />
+      ))}
+
+      <div className="flex flex-wrap items-end gap-x-3 gap-y-2">
+        <label className="flex min-w-0 flex-1 flex-col gap-1" htmlFor="records-explorer-q">
+          <span className="pdpp-eyebrow text-muted-foreground">Search records</span>
+          <Input
+            defaultValue={query}
+            id="records-explorer-q"
+            name="q"
+            placeholder="text across every searchable stream…"
+            type="search"
+          />
+        </label>
         <label className="flex min-w-0 flex-col gap-1" htmlFor="records-explorer-since">
-          <span className="pdpp-eyebrow">Since</span>
+          <span className="pdpp-eyebrow text-muted-foreground">Since</span>
           <Input defaultValue={since} id="records-explorer-since" name="since" type="date" />
         </label>
         <label className="flex min-w-0 flex-col gap-1" htmlFor="records-explorer-until">
-          <span className="pdpp-eyebrow">Until</span>
+          <span className="pdpp-eyebrow text-muted-foreground">Until</span>
           <Input defaultValue={until} id="records-explorer-until" name="until" type="date" />
         </label>
-        {/* Preserve query + chip state so the date submit doesn't drop them. */}
-        {query ? <input name="q" type="hidden" value={query} /> : null}
-        {selectedConnectionIds.map((id) => (
-          <input key={`t:c:${id}`} name="connection" type="hidden" value={id} />
-        ))}
-        {selectedStreams.map((s) => (
-          <input key={`t:s:${s}`} name="stream" type="hidden" value={s} />
-        ))}
-        <Button className="mt-5" size="sm" type="submit">
-          Apply
+        <Button className="mt-5" size="sm" type="submit" variant="default">
+          Find
         </Button>
-        <Link
-          className={`${buttonVariants({ variant: "ghost", size: "sm" })} mt-5`}
-          href={buildExplorerHref(routes, {
+        {hasDateWindow ? (
+          <Link
+            className={`${buttonVariants({ variant: "ghost", size: "sm" })} mt-5`}
+            href={buildExplorerHref(routes, {
+              query,
+              connectionIds: selectedConnectionIds,
+              streams: selectedStreams,
+            })}
+          >
+            Clear dates
+          </Link>
+        ) : null}
+      </div>
+
+      <div className="pdpp-caption mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-muted-foreground">
+        <span>Quick range:</span>
+        {([1, 7, 30, 90] as const).map((d) => {
+          const { since: s, until: u } = defaultWindow(d);
+          const href = buildExplorerHref(routes, {
             query,
             connectionIds: selectedConnectionIds,
             streams: selectedStreams,
-          })}
-        >
-          Clear window
-        </Link>
-      </Toolbar>
+            since: s,
+            until: u,
+          });
+          return (
+            <Link
+              className="underline-offset-2 hover:text-foreground hover:underline"
+              href={href}
+              key={d}
+            >
+              {d}d
+            </Link>
+          );
+        })}
+        <span className="ml-auto">
+          <Link
+            className="underline-offset-2 hover:text-foreground hover:underline"
+            href={routes.section.search}
+          >
+            Jump to ID →
+          </Link>
+        </span>
+      </div>
     </form>
   );
+}
+
+export function feedSectionTitle(lens: ExplorerLens): string {
+  if (lens === "search" || lens === "search_with_ignored_time_window") {
+    return "Search results";
+  }
+  if (lens === "time_range") {
+    return "Records in range";
+  }
+  return "Recent records";
 }
 
 function ConnectionFacets({
