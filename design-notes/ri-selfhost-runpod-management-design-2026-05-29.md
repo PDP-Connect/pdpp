@@ -52,7 +52,7 @@ A technically capable person—a friend, an r/selfhosted reader—should be able
 
 Today the quickstart doc (`docs/operator/selfhost-quickstart.md`) covers steps 1–2 procedurally, but the experience has three classes of friction:
 
-- **Missing secret generation.** `PDPP_OWNER_PASSWORD`, `SESSION_SECRET`, and VAPID keys must be set manually. Supabase, n8n, and every major 2026 self-hosted app ship a `generate-secrets.sh`; PDPP does not.
+- **Missing secret generation.** `PDPP_OWNER_PASSWORD` and VAPID keys must be set manually. Supabase, n8n, and every major 2026 self-hosted app ship a `generate-secrets.sh`; PDPP does not.
 - **Security/auth queue not shipped.** Five active OpenSpec changes (auth hardening, ref-read gate, CSRF fix, PWA session, per-token DCR) are all implemented but not closed. Collectively they protect the owner posture.
 - **No ongoing-operations surface.** The scheduler loop is not fully wired; there is no attention surface. An operator who deploys, connects a source, and walks away has no signal when their collection run needs human action.
 
@@ -139,7 +139,7 @@ Target: operator with a Linux or macOS machine capable of running Docker Compose
 
 Flow:
 1. Clone repo or download `docker-compose.yml` + `.env.docker.example`.
-2. Run `scripts/generate-secrets.sh` — auto-generates `PDPP_OWNER_PASSWORD`, `SESSION_SECRET`, VAPID keys.
+2. Run `scripts/generate-secrets.sh` — auto-generates `PDPP_OWNER_PASSWORD` and VAPID keys.
 3. Set `PDPP_REFERENCE_ORIGIN` (public HTTPS URL for this instance).
 4. Optionally add `cloudflared` service for "no domain, no open ports" HTTPS (see below).
 5. `docker compose up -d`.
@@ -155,7 +155,7 @@ Target: operator who wants a cloud instance without managing a host machine.
 Flow:
 1. Create a RunPod CPU Pod with the `pdpp-reference` template (or bootstrap manually via web terminal).
 2. Instance is reachable at `*.proxy.runpod.net` — this becomes `PDPP_REFERENCE_ORIGIN`.
-3. Run `scripts/generate-secrets.sh` in the web terminal.
+3. Run `scripts/generate-secrets.sh` in the web terminal — auto-generates `PDPP_OWNER_PASSWORD` and VAPID keys.
 4. Restart the container with updated env.
 5. Visit `/dashboard/deployment` — readiness panel confirms green.
 
@@ -207,12 +207,12 @@ These are pre-flight tooling fixes. They can ship alongside Phase 1 or immediate
 
 | Item | What it does | Promotion |
 |---|---|---|
-| `scripts/generate-secrets.sh` | Auto-generates `PDPP_OWNER_PASSWORD`, `SESSION_SECRET`, VAPID keys via `openssl rand`; writes to `.env.docker`; never overwrites existing values | Follow-up commit under `add-selfhost-onboarding-slvp` or standalone fix |
+| `scripts/generate-secrets.sh` | Auto-generates `PDPP_OWNER_PASSWORD` and VAPID keys via Node.js crypto; writes to `.env.docker`; never overwrites existing values. `SESSION_SECRET` is not generated here — owner-session signing currently derives key material from `PDPP_OWNER_PASSWORD` in `owner-session.ts`; a standalone session secret is deferred until an auth design explicitly requires it. | Follow-up commit under `add-selfhost-onboarding-slvp` or standalone fix |
 | Cloudflare Tunnel quickstart addition | Add "no domain, no open ports" sub-section to Lane A in `selfhost-quickstart.md` with a Compose snippet adding `cloudflared` service | Doc-only; no OpenSpec required |
 | RunPod Hub → Pod template rename | Update the "deferred RunPod Hub template" framing in `selfhost-runpod-onboarding-slvp-2026-05-27.md` and this note | Doc-only; design note update |
 
 **Acceptance check for Phase 1.5:**
-- `./scripts/generate-secrets.sh` on a fresh clone produces a `.env.docker` with non-empty, non-example values for `PDPP_OWNER_PASSWORD`, `SESSION_SECRET`, `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`.
+- `./scripts/generate-secrets.sh` on a fresh clone produces a `.env.docker` with non-empty, non-example values for `PDPP_OWNER_PASSWORD`, `VAPID_PUBLIC_KEY`, and `VAPID_PRIVATE_KEY`.
 - Running the script twice does not overwrite existing values.
 - `selfhost-quickstart.md` Lane A includes a Cloudflare Tunnel option with an explicit Compose snippet.
 

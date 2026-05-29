@@ -36,11 +36,11 @@ get_var() {
   grep -E "^${var}=" "$file" | head -1 | cut -d= -f2-
 }
 
-# ---- test 1: stdout mode produces all four variables with non-empty values ---
+# ---- test 1: stdout mode produces all three variables with non-empty values ---
 
 OUTPUT="$("$SCRIPT")"
 
-for var in PDPP_OWNER_PASSWORD SESSION_SECRET PDPP_WEB_PUSH_VAPID_PUBLIC_KEY PDPP_WEB_PUSH_VAPID_PRIVATE_KEY; do
+for var in PDPP_OWNER_PASSWORD PDPP_WEB_PUSH_VAPID_PUBLIC_KEY PDPP_WEB_PUSH_VAPID_PRIVATE_KEY; do
   val="$(printf '%s\n' "$OUTPUT" | grep -E "^${var}=" | head -1 | cut -d= -f2-)"
   if [[ -z "$val" ]]; then
     fail "stdout: $var is empty"
@@ -60,7 +60,7 @@ cp "$EXAMPLE" "$ENV_FILE"
 # The script's --write hardcodes ".env.docker"; run from TMP_DIR.
 (cd "$TMP_DIR" && bash "$SCRIPT" --write)
 
-for var in PDPP_OWNER_PASSWORD SESSION_SECRET PDPP_WEB_PUSH_VAPID_PUBLIC_KEY PDPP_WEB_PUSH_VAPID_PRIVATE_KEY; do
+for var in PDPP_OWNER_PASSWORD PDPP_WEB_PUSH_VAPID_PUBLIC_KEY PDPP_WEB_PUSH_VAPID_PRIVATE_KEY; do
   val="$(get_var "$ENV_FILE" "$var")"
   if [[ -z "$val" ]]; then
     fail "--write: $var still empty after patch"
@@ -72,7 +72,6 @@ done
 # ---- test 3: idempotence — second run does not change values ----------------
 
 PASS_VAL_PASSWORD="$(get_var "$ENV_FILE" PDPP_OWNER_PASSWORD)"
-PASS_VAL_SESSION="$(get_var "$ENV_FILE" SESSION_SECRET)"
 PASS_VAL_VAPID_PUB="$(get_var "$ENV_FILE" PDPP_WEB_PUSH_VAPID_PUBLIC_KEY)"
 PASS_VAL_VAPID_PRV="$(get_var "$ENV_FILE" PDPP_WEB_PUSH_VAPID_PRIVATE_KEY)"
 
@@ -80,7 +79,6 @@ PASS_VAL_VAPID_PRV="$(get_var "$ENV_FILE" PDPP_WEB_PUSH_VAPID_PRIVATE_KEY)"
 
 for var_pair in \
   "PDPP_OWNER_PASSWORD:$PASS_VAL_PASSWORD" \
-  "SESSION_SECRET:$PASS_VAL_SESSION" \
   "PDPP_WEB_PUSH_VAPID_PUBLIC_KEY:$PASS_VAL_VAPID_PUB" \
   "PDPP_WEB_PUSH_VAPID_PRIVATE_KEY:$PASS_VAL_VAPID_PRV"; do
   var="${var_pair%%:*}"
@@ -98,14 +96,12 @@ done
 ENV_FILE2="$TMP_DIR/.env.docker.nooverwrite"
 cp "$EXAMPLE" "$ENV_FILE2"
 
-# Pre-set two of the four variables to sentinel values.
+# Pre-set PDPP_OWNER_PASSWORD to a sentinel value; VAPID keys left empty.
 sed -i 's/^PDPP_OWNER_PASSWORD=.*/PDPP_OWNER_PASSWORD=sentinel-password/' "$ENV_FILE2"
-sed -i 's/^SESSION_SECRET=.*/SESSION_SECRET=sentinel-session/' "$ENV_FILE2"
 
 (cd "$TMP_DIR" && cp "$ENV_FILE2" .env.docker && bash "$SCRIPT" --write && cp .env.docker "$ENV_FILE2")
 
 actual_pw="$(get_var "$ENV_FILE2" PDPP_OWNER_PASSWORD)"
-actual_ss="$(get_var "$ENV_FILE2" SESSION_SECRET)"
 vapid_pub="$(get_var "$ENV_FILE2" PDPP_WEB_PUSH_VAPID_PUBLIC_KEY)"
 vapid_prv="$(get_var "$ENV_FILE2" PDPP_WEB_PUSH_VAPID_PRIVATE_KEY)"
 
@@ -113,12 +109,6 @@ if [[ "$actual_pw" == "sentinel-password" ]]; then
   pass "no-overwrite: PDPP_OWNER_PASSWORD preserved"
 else
   fail "no-overwrite: PDPP_OWNER_PASSWORD was '$actual_pw', expected 'sentinel-password'"
-fi
-
-if [[ "$actual_ss" == "sentinel-session" ]]; then
-  pass "no-overwrite: SESSION_SECRET preserved"
-else
-  fail "no-overwrite: SESSION_SECRET was '$actual_ss', expected 'sentinel-session'"
 fi
 
 if [[ -n "$vapid_pub" && -n "$vapid_prv" ]]; then
