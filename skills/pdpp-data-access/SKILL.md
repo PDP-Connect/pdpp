@@ -24,6 +24,8 @@ If you fetched this skill over HTTP from `/.well-known/skills/pdpp-data-access/S
 | Anything secret-handling, cache, or refusal | `references/security.md` |
 | The owner says no, the token expired, the call fails | `references/troubleshooting.md` |
 
+If you need **push delivery** (the PDPP server calls your endpoint when new records arrive) rather than polling, jump to §9 (event subscriptions). The grant and token steps are the same; subscriptions are an add-on, not a replacement.
+
 The patterns in this skill are derived from PAR (RFC 9126), RAR (RFC 9396), DCR (RFC 7591), the device flow (RFC 8628, used only for owner/admin sign-in outside routine agent data access), MCP's local-public-client guidance, and the local-cache UX of `gh auth`, AWS CLI SSO, and Google ADC. PDPP-specific extensions are flagged here when used.
 
 ## Hard rules
@@ -135,9 +137,9 @@ Default to filtered queries over full-table scans. If `/v1/schema` declares a fi
 
 If your harness supports the [Model Context Protocol](https://modelcontextprotocol.io/),
 you can wrap the same scoped client token in an MCP stdio server instead of issuing
-raw HTTP requests. The adapter is a thin read-only client of the RS — every tool
-forwards to an existing `/v1/*` endpoint under the cached scoped token. There are
-no new credentials, scopes, or wire contracts.
+raw HTTP requests. The adapter is a client of the RS — every tool forwards to an
+existing `/v1/*` endpoint under the cached scoped token. There are no new
+credentials, scopes, or wire contracts.
 
 ```jsonc
 // claude_desktop_config.json (or equivalent MCP client config)
@@ -152,9 +154,11 @@ no new credentials, scopes, or wire contracts.
 ```
 
 Run `pdpp connect <provider-url>` first so a scoped client token is cached. The
-adapter exposes `schema`, `list_streams`, `query_records`, `search`, and
-`fetch_blob` tools plus the `pdpp://stream/{name}` resource template, all backed
-by the RS endpoints described in §7.
+adapter exposes `schema`, `list_streams`, `query_records`, `search`, `fetch_blob`,
+and event subscription tools (`discover_event_subscription_capabilities`,
+`create_event_subscription`, `list_event_subscriptions`, `get_event_subscription`,
+`update_event_subscription`, `delete_event_subscription`, `send_test_event`).
+All tools are backed by the RS endpoints described in §7 and §9.
 
 Constraints (these mirror the hard rules above):
 
@@ -166,14 +170,104 @@ Constraints (these mirror the hard rules above):
   adapter surfaces an MCP error directing the operator to run `pdpp connect`.
 - **No new query semantics.** Unknown query arguments are rejected rather than
   silently dropped.
-- **Read-only.** No tool mutates data, triggers collection, or modifies grants.
+- **No record body push.** Event payloads carry a `changes_since` cursor; fetch
+  record bodies via §7 query tools after receiving the event.
 
 The MCP adapter is a convenience for MCP-aware harnesses; the raw-HTTP path in
 this skill remains the canonical interface and the source of truth for query
 shapes. If `@pdpp/mcp-server` is not yet published to npm, consume it from the
 in-repo workspace package or use the raw-HTTP path.
 
-### 9. Renew, revoke, or forget when done
+### 9. Event subscriptions (push delivery)
+
+Use event subscriptions when the task requires **push delivery** — the server
+calls your callback URL when data changes — rather than polling. Subscriptions
+are built on top of the same scoped client grant and require no additional
+authorization step.
+
+**Before creating a subscription**, call `discover_event_subscription_capabilities`
+(MCP) or `GET /.well-known/oauth-protected-resource` (raw HTTP) to confirm the
+deployment supports subscriptions and to learn supported event types, signing
+profile, retry schedule, and callback-URL constraints. This endpoint is
+unauthenticated.
+
+**Supported event types** (from capabilities advertisement):
+- `pdpp.records.changed` — records in at least one subscribed stream changed; payload carries a `changes_since` cursor
+- `pdpp.grant.revoked` — the underlying grant was revoked; the subscription transitions to `disabled_revoked` (not recoverable)
+- `pdpp.subscription.verify` — initial delivery-verification handshake
+- `pdpp.subscription.test` — manually triggered test event
+
+Record bodies are **never included** in event payloads. Use the `changes_since`
+cursor from the event payload with the §7 query tools to fetch changed records.
+
+**Subscription lifecycle:**
+
+| Status | Meaning | Recoverable? |
+| --- | --- | --- |
+| `pending_verification` | Awaiting delivery handshake | Yes |
+| `active` | Delivering normally | — |
+| `disabled` | Manually disabled by client or operator | Yes (client re-enables) |
+| `disabled_failure` | Auto-disabled after repeated delivery failures | Yes (client re-enables) |
+| `disabled_revoked` | Underlying grant was revoked | No |
+| `deleted` | Soft-deleted | No |
+
+**Creating a subscription (MCP):**
+
+```text
+1. discover_event_subscription_capabilities   → confirm supported: true
+2. create_event_subscription(callback_url, filters?)
+     → returns subscription_id + whsec_ secret (returned ONCE; store it)
+3. Your callback receives pdpp.subscription.verify; respond 200
+     → status transitions pending_verification → active
+4. send_test_event(subscription_id) to verify end-to-end delivery
+```
+
+**Creating a subscription (raw HTTP):**
+
+```bash
+# 1. Discover
+curl -fsS "$RS_URL/.well-known/oauth-protected-resource" | jq .capabilities.client_event_subscriptions
+
+# 2. Create
+TOKEN="$(pdpp token <provider-url>)"
+curl -fsS -X POST "$RS_URL/v1/event-subscriptions" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"callback_url":"https://your-host/pdpp-webhook"}'
+# → {"subscription_id":"...","secret":"whsec_...","status":"pending_verification"}
+# Store the secret immediately — it is never returned again.
+unset TOKEN
+```
+
+**Signature verification** (Standard Webhooks format):
+
+```
+webhook-id: <event-id>
+webhook-timestamp: <unix-seconds>
+webhook-signature: v1,<base64-hmac-sha256>
+```
+
+Compute `HMAC-SHA256(key=base64_decode(secret_without_prefix), msg="<webhook-id>.<webhook-timestamp>.<raw-body>")`.
+Reject events where the timestamp is more than 5 minutes old.
+
+**Secret rotation:** call `update_event_subscription(subscription_id, rotate_secret: true)`.
+This is NOT idempotent — each call mints a new secret. Immediately capture and
+update your callback handler.
+
+**Operator console:** The owner can inspect all subscriptions and disable them at
+`/dashboard/event-subscriptions`. Operators cannot create or re-enable
+subscriptions — that is a client responsibility.
+
+**Hard rules for subscriptions:**
+
+- Capture the `whsec_` secret at creation time. If you lose it, rotate via
+  `update_event_subscription`.
+- Do not store the secret in prompts, logs, commits, or PR descriptions.
+- Do not rely on event payloads for record bodies. Always fetch via §7.
+- If you receive `pdpp.grant.revoked`, the subscription cannot be re-enabled.
+  Request a new grant and create a fresh subscription.
+
+### 10. Renew, revoke, or forget when done
 
 - Token near expiry and the task continues → request a fresh grant. Do not introspect-then-extend; client tokens are not refreshable in the current reference.
 - Task complete → revoke: `POST $AS_URL/grants/<grant-id>/revoke`.
