@@ -2293,7 +2293,10 @@ test('PDPP CLI smoke', async (t) => {
 
       const result = await runCli(
         ['grant', 'revoke', approved.grant.grant_id, '--rs-url', rsUrl, '--format', 'json'],
-        { PDPP_CLIENT_TOKEN: approved.token },
+        {
+          PDPP_CLIENT_TOKEN: approved.token,
+          PDPP_OWNER_TOKEN: 'definitely-invalid-owner-token',
+        },
       );
 
       assert.equal(result.json.revoked, true);
@@ -2340,7 +2343,10 @@ test('PDPP CLI smoke', async (t) => {
 
       const result = await runCliExpectFailure(
         ['grant', 'revoke', approved.grant.grant_id, '--as-url', asUrl, '--format', 'json'],
-        { PDPP_CLIENT_TOKEN: approved.token },
+        {
+          PDPP_CLIENT_TOKEN: approved.token,
+          PDPP_OWNER_TOKEN: 'definitely-invalid-owner-token',
+        },
       );
 
       assert.notEqual(result.code, 0);
@@ -2748,7 +2754,10 @@ test('PDPP CLI smoke', async (t) => {
 
       const result = await runCliExpectFailure(
         ['grant', 'revoke', approved.grant.grant_id, '--as-url', asUrl, '--format', 'json'],
-        { PDPP_CLIENT_TOKEN: approved.token },
+        {
+          PDPP_CLIENT_TOKEN: approved.token,
+          PDPP_OWNER_TOKEN: 'definitely-invalid-owner-token',
+        },
       );
 
       assert.notEqual(result.code, 0);

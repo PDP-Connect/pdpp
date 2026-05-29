@@ -30,7 +30,7 @@ export async function runGrant(argv) {
     // own client bearer. See
     // openspec/changes/harden-reference-auth-surfaces/specs/
     //   reference-implementation-architecture/spec.md
-    const token = flags.token || process.env.PDPP_OWNER_TOKEN || process.env.PDPP_CLIENT_TOKEN;
+    const token = flags.token || process.env.PDPP_CLIENT_TOKEN || process.env.PDPP_OWNER_TOKEN;
     if (!token) {
       throw new PdppUsageError(
         'Missing required token. Use --token, PDPP_OWNER_TOKEN, or PDPP_CLIENT_TOKEN. ' +
