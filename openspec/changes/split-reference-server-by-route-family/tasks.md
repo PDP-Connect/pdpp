@@ -117,7 +117,8 @@ unchanged.
   `refDatasetContext`; 2.4 connectors / connections /
   connector-instances wired via `refConnectorsContext`; 2.5 admin
   routes wired via `refAdminContext`; 2.6 device-exporters wired via
-  `refDeviceExportersContext`; remaining
+  `refDeviceExportersContext`; grant-packages and client event-subscriptions
+  oversight routes wired via `refGrantsContext`; remaining
   sub-families pending.)
 - [~] 2.8 Acceptance: targeted tests under `reference-implementation/test/` (ref-control, dataset summary, device exporter, web push, schedules) pass; `pnpm --dir reference-implementation run verify` passes.
   - [x] Tests covering 2.2 list endpoints pass: `node --test test/control-plane.test.js` (21/21), `node --test test/ref-read-owner-gate.test.js` (3/3), `node --test test/ref-spine-correlations-list-{boundary,operation}.test.js` (10/10).
@@ -126,6 +127,9 @@ unchanged.
   - [x] Tests covering 2.4 connectors / connections / connector-instances routes pass: `node --test test/ref-connectors-routes.test.js` (17/17), `test/connector-instance-admission-routes.test.js` (7/7), `test/ref-control-connection-scope.test.js`, `test/ref-connectors-list-{boundary,operation}.test.js`, `test/ref-connectors-detail-{boundary,operation}.test.js`, `test/ref-connectors-connection-projection.test.js`, `test/ref-connector-schedule-get-{boundary,operation}.test.js`, `test/connector-instances-acceptance.test.js`, `test/control-plane.test.js` (all green, 126 total).
   - [x] Tests covering 2.5 admin routes pass: `node --test test/ref-admin-routes.test.js` (7/7), `test/ref-approvals-list-{boundary,operation}.test.js`, `test/ref-clients-list-{boundary,operation}.test.js`, `test/ref-deployment-{boundary,operation}.test.js`, `test/ref-records-timeline-{boundary,operation}.test.js`, `test/ref-schedules-list-{boundary,operation}.test.js` (all green, 54 total).
   - [x] Tests covering 2.6 device-exporters routes pass: `pnpm test -- test/device-exporter-routes.test.js test/device-exporter-state-routes.test.js` (21/21, 0 fail).
+  - [x] Tests covering grant-packages and event-subscriptions oversight routes pass:
+    `node --test test/ref-client-event-subscriptions-routes.test.js test/ref-grant-packages.test.js test/ref-client-event-subscriptions-operations.test.js`
+    (21/21).
   - [ ] Remaining sub-family acceptance still gated by §2.7 landing.
 
 ## 3. RS read family
