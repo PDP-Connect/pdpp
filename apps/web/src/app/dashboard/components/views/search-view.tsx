@@ -73,9 +73,9 @@ export function SearchView({
             href={routes.section.traces}
             items={data.traces}
             renderItem={(t: TraceSummary) => (
-              <Link className="block px-2 py-2 text-xs hover:bg-muted/50" href={routes.trace(t.trace_id)}>
-                <code className="break-all font-medium">{t.trace_id}</code>
-                <div className="text-[11px] text-muted-foreground">
+              <Link className="block px-2 py-2 hover:bg-muted/50" href={routes.trace(t.trace_id)}>
+                <code className="pdpp-caption break-all font-medium">{t.trace_id}</code>
+                <div className="pdpp-caption text-muted-foreground">
                   {t.status} · {t.event_count} events · {t.kinds.slice(0, 3).join(", ")}
                 </div>
               </Link>
@@ -87,9 +87,9 @@ export function SearchView({
             href={routes.section.grants}
             items={data.grants}
             renderItem={(g: GrantSummary) => (
-              <Link className="block px-2 py-2 text-xs hover:bg-muted/50" href={routes.grant(g.grant_id)}>
-                <code className="break-all font-medium">{g.grant_id}</code>
-                <div className="text-[11px] text-muted-foreground">
+              <Link className="block px-2 py-2 hover:bg-muted/50" href={routes.grant(g.grant_id)}>
+                <code className="pdpp-caption break-all font-medium">{g.grant_id}</code>
+                <div className="pdpp-caption text-muted-foreground">
                   {g.status} · client {g.client_id ?? "—"}
                 </div>
               </Link>
@@ -101,9 +101,9 @@ export function SearchView({
             href={routes.section.runs}
             items={data.runs}
             renderItem={(r: RunSummary) => (
-              <Link className="block px-2 py-2 text-xs hover:bg-muted/50" href={routes.run(r.run_id)}>
-                <code className="break-all font-medium">{r.run_id}</code>
-                <div className="text-[11px] text-muted-foreground">
+              <Link className="block px-2 py-2 hover:bg-muted/50" href={routes.run(r.run_id)}>
+                <code className="pdpp-caption break-all font-medium">{r.run_id}</code>
+                <div className="pdpp-caption text-muted-foreground">
                   {r.status} · {r.connector_id ?? "—"}
                 </div>
               </Link>
@@ -134,7 +134,7 @@ function ArtifactSection<T>({
   }
   return (
     <section className="mb-6">
-      <h2 className="mb-2 flex items-baseline justify-between text-muted-foreground text-xs uppercase tracking-wide">
+      <h2 className="pdpp-eyebrow mb-2 flex items-baseline justify-between text-muted-foreground">
         <span>
           {title} ({items.length})
         </span>

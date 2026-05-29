@@ -160,7 +160,7 @@ function ExploreSubnav({ routes }: { routes: Routes }) {
   const items = [
     { href: routes.section.explore, label: "Records feed" },
     { href: routes.section.search, label: "Jump to ID" },
-    { href: routes.section.records, label: "Connections" },
+    { href: routes.section.records, label: "Manage connections" },
   ];
   return <SidebarSubnav items={items} label="Explore workspace" />;
 }
