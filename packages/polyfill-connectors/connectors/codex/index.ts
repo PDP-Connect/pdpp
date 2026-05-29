@@ -105,11 +105,19 @@ async function waitForEmitDrain(): Promise<void> {
 }
 
 const flushAndExit = (code: number): void => {
+  const doExit = (): void => {
+    if (process.stdin.readableEnded) {
+      process.exit(code);
+    } else {
+      process.stdin.once("end", () => process.exit(code));
+      setTimeout(() => process.exit(code), 3000).unref();
+    }
+  };
   if (process.stdout.writableLength > 0) {
-    process.stdout.once("drain", () => process.exit(code));
+    process.stdout.once("drain", doExit);
     setTimeout(() => process.exit(code), 3000).unref();
   } else {
-    process.exit(code);
+    doExit();
   }
 };
 const fail = (m: string, r = false): void => {

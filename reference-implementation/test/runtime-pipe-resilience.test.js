@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, rmSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createServer } from 'node:http';
 
 import { isClosedPipeWriteError } from '../runtime/pipe-errors.js';
 import { deriveTerminalReason } from '../runtime/terminal-reason.js';
@@ -286,4 +287,154 @@ test('runConnector: connector that exits before reading START does not crash the
       `expected stdin_closed_at_phase in {start, interaction_response}, got ${JSON.stringify(surfaced.stdin_closed_at_phase)}`,
     );
   }
+});
+
+// ─── 4. Flush/read handshake regression ──────────────────────────────────────
+//
+// Regression guard for the flush/read race:
+//   - Connector exits when its stdout write buffer drains to the OS pipe.
+//   - At that point bytes may still be in the kernel buffer and the runtime
+//     may not have finished slow HTTP ingest of all RECORD messages.
+//   - Without the handshake, the runtime can call validateDoneRecordsEmitted
+//     before all records are flushed → connector_protocol_violation.
+//
+// The fix: runtime closes child stdin after DONE is consumed+flushed;
+// connector waits for that stdin EOF before process.exit().
+//
+// This test spawns a stub that emits many large records (total > OS pipe
+// buffer), uses a slow mock ingest server, and asserts no mismatch.
+
+test('runConnector: many large records with slow ingest do not trigger connector_protocol_violation', async (t) => {
+  t.timeout ?? (t.timeout = 30000);
+
+  const RECORD_COUNT = 20;
+  const RECORD_PAYLOAD_KB = 60;
+  const INGEST_DELAY_MS = 40;
+
+  // ── Mock RS ingest server ───────────────────────────────────────────────
+  let ingestCallCount = 0;
+  const server = createServer((req, res) => {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', () => {
+      ingestCallCount++;
+      const records_accepted = body.split('\n').filter(Boolean).length;
+      setTimeout(() => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ records_accepted, records_rejected: 0 }));
+      }, INGEST_DELAY_MS);
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  const rsUrl = `http://127.0.0.1:${port}`;
+
+  // ── Stub connector ──────────────────────────────────────────────────────
+  // Implements the generalized flushAndExit: drain stdout, then wait for
+  // stdin EOF (runtime's consumption-complete signal) before process.exit().
+  const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-flush-test-'));
+  const stubPath = join(tmpDir, 'stub-flush.mjs');
+  const payload = 'x'.repeat(RECORD_PAYLOAD_KB * 1024);
+
+  writeFileSync(stubPath, `
+import { createInterface } from 'node:readline';
+import { createServer } from 'node:http';
+
+const RECORD_COUNT = ${RECORD_COUNT};
+const payload = ${JSON.stringify(payload)};
+
+function emit(msg) {
+  const line = JSON.stringify(msg) + '\\n';
+  const ok = process.stdout.write(line);
+  if (ok) return Promise.resolve();
+  return new Promise(resolve => process.stdout.once('drain', resolve));
+}
+
+function flushAndExit(code) {
+  const doExit = () => {
+    if (process.stdin.readableEnded) { process.exit(code); return; }
+    process.stdin.once('end', () => process.exit(code));
+    setTimeout(() => process.exit(code), 3000).unref();
+  };
+  if (process.stdout.writableLength > 0) {
+    process.stdout.once('drain', doExit);
+    setTimeout(() => process.exit(code), 3000).unref();
+  } else {
+    doExit();
+  }
+}
+
+async function main() {
+  // Read START
+  await new Promise(resolve => {
+    const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
+    rl.once('line', () => { rl.close(); resolve(); });
+  });
+
+  for (let i = 0; i < RECORD_COUNT; i++) {
+    await emit({ type: 'RECORD', stream: 'items', key: String(i), data: { id: String(i), body: payload }, emitted_at: new Date().toISOString() });
+  }
+  await emit({ type: 'DONE', status: 'succeeded', records_emitted: RECORD_COUNT });
+  flushAndExit(0);
+}
+
+main().catch(err => {
+  emit({ type: 'DONE', status: 'failed', records_emitted: 0, error: { message: err.message, retryable: false } }).catch(() => {});
+  flushAndExit(1);
+});
+`, 'utf8');
+  chmodSync(stubPath, 0o755);
+
+  // ── Manifest ────────────────────────────────────────────────────────────
+  const manifest = {
+    connector_id: 'https://registry.pdpp.org/connectors/test-flush-handshake-stub',
+    version: '0.1.0',
+    streams: [
+      {
+        name: 'items',
+        primary_key: 'id',
+        schema: {
+          type: 'object',
+          required: ['id'],
+          properties: { id: { type: 'string' }, body: { type: 'string' } },
+        },
+      },
+    ],
+    runtime_requirements: {},
+  };
+
+  let outcome = null;
+  let outcomeError = null;
+  try {
+    outcome = await runConnector({
+      connectorPath: stubPath,
+      connectorId: manifest.connector_id,
+      ownerToken: 'test-owner-token',
+      manifest,
+      state: null,
+      collectionMode: 'full_refresh',
+      rsUrl,
+      onProgress: () => {},
+      onInteraction: () => ({ type: 'INTERACTION_RESPONSE', status: 'cancelled' }),
+      detailGapStore: {
+        async listPendingGaps() { return []; },
+        async upsertPendingGap() { return null; },
+        async markGapStatus() { return null; },
+      },
+    });
+  } catch (err) {
+    outcomeError = err;
+  } finally {
+    server.close();
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+
+  const result = outcome ?? outcomeError;
+  assert.ok(result && typeof result === 'object', 'got a structured outcome');
+  assert.equal(
+    result.status,
+    'succeeded',
+    `expected succeeded, got ${result.status}${result.terminal_reason ? ` (${result.terminal_reason})` : ''}${result.failure_message ? `: ${result.failure_message}` : ''}`,
+  );
+  assert.equal(result.records_emitted, RECORD_COUNT, 'all records counted');
 });

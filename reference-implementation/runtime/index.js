@@ -2625,6 +2625,12 @@ export async function runConnector(opts) {
             // Flush any remaining records
             await flushAll();
           }
+          // Close child stdin to signal that the runtime has finished
+          // consuming DONE (and flushed all records for succeeded runs).
+          // The connector's flushAndExit waits for this EOF before calling
+          // process.exit(), closing the race where the connector exits while
+          // buffered stdout bytes are still in transit through the kernel pipe.
+          try { proc.stdin.end(); } catch {}
           break;
         }
 

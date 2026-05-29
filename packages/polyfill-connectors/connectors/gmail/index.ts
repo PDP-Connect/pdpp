@@ -154,15 +154,23 @@ function emit(msg: EmittedMessage): Promise<void> {
   });
 }
 
-// Drain stdout before exit — otherwise Node may exit with buffered bytes
-// still unwritten on a pipe, truncating the final line.
+// Drain stdout, then wait for the runtime to close our stdin (its
+// consumption-complete signal) before exiting. This closes the race
+// where we exit while buffered stdout bytes are still in transit.
 function flushAndExit(code: number): void {
+  const doExit = (): void => {
+    if (process.stdin.readableEnded) {
+      process.exit(code);
+    } else {
+      process.stdin.once("end", () => process.exit(code));
+      setTimeout(() => process.exit(code), FLUSH_HARD_TIMEOUT_MS).unref();
+    }
+  };
   if (process.stdout.writableLength > 0) {
-    process.stdout.once("drain", () => process.exit(code));
-    // Hard timeout so we don't hang on a pipe that's gone away
+    process.stdout.once("drain", doExit);
     setTimeout(() => process.exit(code), FLUSH_HARD_TIMEOUT_MS).unref();
   } else {
-    process.exit(code);
+    doExit();
   }
 }
 

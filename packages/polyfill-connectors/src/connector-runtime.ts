@@ -310,11 +310,22 @@ export function runConnector(config: RunConnectorConfig): void {
   }
 
   const flushAndExit = (code: number): void => {
+    const doExit = (): void => {
+      // Wait for the runtime to close our stdin (its consumption-complete
+      // signal) before exiting. This closes the race where we exit while
+      // buffered stdout bytes are still in transit through the kernel pipe.
+      if (process.stdin.readableEnded) {
+        process.exit(code);
+      } else {
+        process.stdin.once("end", () => process.exit(code));
+        setTimeout(() => process.exit(code), 3000).unref();
+      }
+    };
     if (process.stdout.writableLength > 0) {
-      process.stdout.once("drain", () => process.exit(code));
+      process.stdout.once("drain", doExit);
       setTimeout(() => process.exit(code), 3000).unref();
     } else {
-      process.exit(code);
+      doExit();
     }
   };
 
