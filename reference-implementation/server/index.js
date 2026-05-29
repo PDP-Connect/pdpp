@@ -391,6 +391,7 @@ import {
 import { mountAsDcr } from './routes/as-dcr.ts';
 import { mountAsPar } from './routes/as-par.ts';
 import { mountAsDeviceUi } from './routes/as-device-ui.ts';
+import { mountRsHostedMcp } from './routes/rs-hosted-mcp.ts';
 
 const AS_PORT = parseInt(process.env.AS_PORT || '7662');
 const RS_PORT = parseInt(process.env.RS_PORT || '7663');
@@ -4238,111 +4239,25 @@ function buildRsApp(opts = {}) {
     next();
   });
 
-  function buildMcpWebRequest(req, resource) {
-    const url = new URL(req.raw?.url || req.url || req.path || '/mcp', resource);
-    const headers = new Headers();
-    for (const [name, value] of Object.entries(req.headers || {})) {
-      if (Array.isArray(value)) {
-        for (const item of value) headers.append(name, String(item));
-      } else if (value !== undefined) {
-        headers.set(name, String(value));
-      }
-    }
-
-    let body;
-    if (!['GET', 'HEAD'].includes(req.method)) {
-      if (Buffer.isBuffer(req.body) || typeof req.body === 'string') {
-        body = req.body;
-      } else if (req.body !== undefined) {
-        body = JSON.stringify(req.body);
-        if (!headers.has('content-type')) {
-          headers.set('content-type', 'application/json');
-        }
-      }
-    }
-
-    return new Request(url.toString(), {
-      method: req.method,
-      headers,
-      body,
-    });
-  }
-
-  async function sendWebResponse(res, response) {
-    res.status(response.status);
-    response.headers.forEach((value, key) => {
-      res.setHeader(key, value);
-    });
-    if (response.status === 204 || response.status === 304) {
-      return res.end();
-    }
-    const body = Buffer.from(await response.arrayBuffer());
-    return res.send(body);
-  }
-
-  async function handleHostedMcp(req, res) {
-    const resource = resolvePublicUrl(req, explicitResource);
-    const inboundToken = req.headers.authorization.slice(7);
-
-    // Package-token resolution. When the inbound bearer is an mcp_package
-    // token, the resource server's REST surface will reject it
-    // (requireClient gates everything outside /mcp). For package tokens we
-    // inject a `PackageRsClient` that fans out reads across the package's
-    // active child grants and routes single-source operations under exactly
-    // one child grant's bearer. Single-source tokens keep the existing
-    // single-bearer RsClient path.
-    let mcpServerOptions;
-    if (req.tokenInfo?.pdpp_token_kind === 'mcp_package') {
-      const access = await getGrantPackageAccess(req.tokenInfo.grant_package_id);
-      if (!access || access.members.length === 0) {
-        return pdppError(res, 403, 'package_revoked', 'Grant package is revoked or has no active members');
-      }
-      const rsClient = createPackageRsClient({
-        providerUrl: resource,
-        members: access.members,
-        fetch: globalThis.fetch,
-      });
-      mcpServerOptions = {
-        providerUrl: resource,
-        rsClient,
-        fetch: globalThis.fetch,
-        serverName: 'pdpp-reference-mcp',
-        serverVersion: referenceRevision,
-      };
-      res.setHeader('x-pdpp-grant-package-id', req.tokenInfo.grant_package_id);
-      res.setHeader('x-pdpp-grant-package-member-count', String(access.members.length));
-    } else {
-      mcpServerOptions = {
-        providerUrl: resource,
-        accessToken: inboundToken,
-        fetch: globalThis.fetch,
-        serverName: 'pdpp-reference-mcp',
-        serverVersion: referenceRevision,
-      };
-    }
-    const webRequest = buildMcpWebRequest(req, resource);
-    const response = await handleStreamableHttpRequest(webRequest, mcpServerOptions);
-    return sendWebResponse(res, response);
-  }
-
-  function setHostedMcpProtectedResourceMetadata(req, res, next) {
-    if (isTrustedMetadataRequestOrigin(req, explicitResource, trustedMetadataHosts)) {
-      const resource = `${resolvePublicUrl(req, explicitResource)}/mcp`;
-      res.locals[PROTECTED_RESOURCE_METADATA_URL_LOCAL] = protectedResourceMetadataUrlForResource(resource);
-    }
-    next();
-  }
-
-  function requireTrustedHostedMcpResource(req, res, next) {
-    if (rejectUntrustedMetadataHost(req, res, explicitResource, trustedMetadataHosts)) {
-      return;
-    }
-    next();
-  }
-
-  app.get('/mcp', requireTrustedHostedMcpResource, setHostedMcpProtectedResourceMetadata, requireToken, requireClientOrMcpPackage, handleHostedMcp);
-  app.post('/mcp', requireTrustedHostedMcpResource, setHostedMcpProtectedResourceMetadata, requireToken, requireClientOrMcpPackage, handleHostedMcp);
-  app.delete('/mcp', requireTrustedHostedMcpResource, setHostedMcpProtectedResourceMetadata, requireToken, requireClientOrMcpPackage, handleHostedMcp);
+  // `GET /mcp`, `POST /mcp`, `DELETE /mcp` are mounted via
+  // `server/routes/rs-hosted-mcp.ts` per OpenSpec change
+  // `split-reference-server-by-route-family` (§5.4). Behaviour-preserving
+  // extraction: same `requireTrustedHostedMcpResource` host guard, same
+  // `setHostedMcpProtectedResourceMetadata` middleware, same
+  // `requireToken` + `requireClientOrMcpPackage` auth posture, same
+  // package-token → PackageRsClient fan-out, same single-bearer path,
+  // same response envelope and headers.
+  mountRsHostedMcp(app, {
+    explicitResource,
+    trustedMetadataHosts,
+    referenceRevision,
+    getGrantPackageAccess,
+    handleStreamableHttpRequest,
+    createPackageRsClient,
+    requireToken,
+    requireClientOrMcpPackage,
+    pdppError,
+  });
 
   // Build rsMutationContext here so both mountRsEventSubscriptions (registered
   // before mountRsReadQueries) and mountRsBlobsUpload / mountRsMutation
