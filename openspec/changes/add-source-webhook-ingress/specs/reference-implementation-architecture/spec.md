@@ -23,7 +23,8 @@ When no per-source HMAC secret is configured for a given `sourceId`, the referen
 - **AND** the reference SHALL authenticate only via the `PDPP-Webhook-Signature` header against the configured per-source HMAC secret
 
 #### Scenario: The source is not configured
-- **WHEN** no per-source HMAC secret is configured for the given `sourceId`
+- **WHEN** the request identifies all required source-webhook headers
+- **AND** no per-source HMAC secret is configured for the given `sourceId`
 - **THEN** the reference SHALL return HTTP 404 with error code `unknown_source` before performing any signature or timestamp check
 
 ---
@@ -41,6 +42,10 @@ Required headers:
 | `PDPP-Webhook-Signature` | `sha256=<lowercase-hex>` | HMAC-SHA256 authenticity |
 
 The signed material SHALL be `"${timestamp}.${body}"` where `timestamp` is the value of the `PDPP-Webhook-Timestamp` header and `body` is the raw UTF-8 request body. The expected signature SHALL be `sha256=` followed by the lowercase hex encoding of `HMAC-SHA256(secret, signed_material)` where `secret` is the per-source HMAC secret. Signature comparison SHALL use a timing-safe equality check.
+
+HTTP header names are case-insensitive. The header names above are the
+canonical documentation casing; adapters MAY receive or normalize them in
+lowercase.
 
 These header names are intentionally PDPP-prefixed rather than the Standard Webhooks v1 names (`webhook-id`, `webhook-timestamp`, `webhook-signature`). Standard Webhooks v1 is the right choice for the outbound client-event-subscription delivery direction (where the reference is the sender). Source webhook ingress is the receiver direction: the reference accepts callbacks from source platforms with their own signing schemes, and standardizing inbound header names would require every source platform to adopt PDPP header names. PDPP-prefixed names correctly signal that this is a reference-specific adapter contract, not a PDPP Core protocol surface.
 
@@ -63,7 +68,7 @@ These header names are intentionally PDPP-prefixed rather than the Standard Webh
 
 ### Requirement: Source webhook ingress enforces a timestamp tolerance window
 
-The reference implementation SHALL reject callbacks whose `PDPP-Webhook-Timestamp` value, when interpreted as Unix epoch seconds, differs from the server's current wall-clock time by more than 300 seconds (5 minutes). Timestamp rejection SHALL occur before signature verification.
+The reference implementation SHALL reject callbacks whose `PDPP-Webhook-Timestamp` value, when interpreted as Unix epoch seconds, differs from the server's current wall-clock time by more than 300 seconds (5 minutes). Timestamp rejection SHALL occur after required-header validation and per-source secret resolution, and before signature verification.
 
 #### Scenario: The timestamp is within the tolerance window
 - **WHEN** `abs(server_time_seconds - timestamp_seconds) <= 300`

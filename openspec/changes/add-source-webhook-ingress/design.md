@@ -33,13 +33,28 @@ Three headers are required:
 | `PDPP-Webhook-Event-Id` | Opaque string | Idempotency key component |
 | `PDPP-Webhook-Signature` | `sha256=<hex(HMAC-SHA256(secret, "${timestamp}.${body}"))>` | Message authenticity |
 
+HTTP header names are case-insensitive. The table shows the canonical casing
+used in the reference documentation; the Express adapter reads the same names
+from Node's lowercased header map.
+
 The signed material is `${timestamp}.${body}` where `body` is the raw request body as a UTF-8 string. This matches common HMAC webhook patterns (Stripe, Svix/Standard Webhooks) while being deliberately source-private — there is no cross-source key reuse or cross-source envelope format.
 
 **Why not Standard Webhooks v1 (`webhook-id` / `webhook-timestamp` / `webhook-signature`)?** Standard Webhooks is the right choice for the *client event subscription* outbound delivery direction (already implemented), where the reference server is the *sender* delivering to subscriber receivers. Source webhook ingress is the *receiver* direction: the reference accepts callbacks from source platforms that each have their own signing scheme. Standardizing the inbound header names would require every source platform to adopt PDPP header names — an impractical interoperability requirement. PDPP-prefixed header names (`PDPP-Webhook-*`) correctly signal that this is a reference-specific adapter contract, not a PDPP Core protocol surface.
 
-### Timestamp tolerance
+### Validation order and timestamp tolerance
 
-±5 minutes from server wall-clock time. Requests outside that window are rejected with `stale_timestamp` (HTTP 401) before signature verification completes. The tolerance is hardcoded (`DEFAULT_TOLERANCE_MS = 5 * 60 * 1000`) and is intentionally not configurable in the initial implementation — variability would create gaps between what operators expect and what the reference enforces.
+The operation first validates the source id and required headers, then resolves
+the per-source secret, then applies the timestamp tolerance, then verifies the
+HMAC signature, then parses and processes the JSON body. Unknown sources are
+therefore rejected before timestamp and signature checks, but missing required
+headers are still reported as header-specific 401 errors.
+
+The timestamp tolerance is ±5 minutes from server wall-clock time. Requests
+outside that window are rejected with `stale_timestamp` (HTTP 401) before
+signature verification completes. The tolerance is hardcoded
+(`DEFAULT_TOLERANCE_MS = 5 * 60 * 1000`) and is intentionally not configurable
+in the initial implementation — variability would create gaps between what
+operators expect and what the reference enforces.
 
 ### Replay protection
 
