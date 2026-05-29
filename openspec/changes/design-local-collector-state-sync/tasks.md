@@ -61,4 +61,4 @@
 - [x] 9.2 `collector-runner.test.ts` covers state load/replay/persist scenarios (7.1–7.4, 7.7) and passes.
 - [x] 9.3 Reference route tests for device state pass (7.5–7.6, plus owner/v1 isolation).
 - [x] 9.4 Gmail-style fixture replay regression passes (7.7).
-- [ ] 9.5 Manual: run the collector against a fixture connector that emits `STATE`, restart the runner, observe replayed cursor on the next pass. (Automated equivalent is 7.7; manual reproduction still recommended before broad rollout.)
+- [ ] 9.5 Manual: run the collector against a fixture connector that emits `STATE`, restart the runner, observe replayed cursor on the next pass. Owner-recommended pre-broad-rollout step: the automated two-pass replay regression (7.7) covers this scenario with a fixture connector; manual confirmation on a real enrolled device catches device-credential and environment misconfigurations that fixtures cannot. Documented as residual risk in `design.md`.

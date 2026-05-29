@@ -101,3 +101,7 @@ Rejected as out of scope. The probe failure path already terminates the lease cl
 - The allocator removes a non-running owned container in `ensureSurface` and creates a fresh one rather than restarting in place.
 - The allocator removes the container during `stopSurface(surface_failed)`; other stop reasons leave the container in place.
 - Static n.eko mode behavior is unchanged: no allocator is consulted, no eviction occurs, the existing static surface is preserved across restart.
+
+## Residual Risks
+
+**Live operator-driven USAA run after deploy (owner-only):** All construction paths are covered by automated tests (1.3, 2.4, 3.3, 4.1–4.7) including allocator-aware reconciliation, probe-failure eviction, and stale container replacement. The one remaining gap is end-to-end confirmation that these mechanisms compose correctly under a real deployed Docker environment where an n.eko container has gone exited and a fresh USAA connector run is attempted. This requires operator access and credentials and cannot be reproduced in CI. The change was designed against real field evidence (`run_1779900509276`) and all individual mechanisms are unit-tested; the live step is a final confidence check, not a prerequisite for the change's correctness claims. Owner should run a USAA connector attempt after deploy and confirm the stale surface is not reused.

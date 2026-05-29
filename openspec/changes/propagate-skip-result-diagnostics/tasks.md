@@ -25,4 +25,4 @@
 ## Deferred follow-up
 
 - [x] Render bounded `SKIP_RESULT.diagnostics` on the dashboard run timeline detail surface as collapsed connector-authored evidence.
-- [ ] Live USAA run with this propagation enabled to capture the actual export-flow root cause from the persisted timeline alone.
+- [ ] Live USAA run with this propagation enabled to capture the actual export-flow root cause from the persisted timeline alone. Owner-only post-deploy step: requires real USAA credentials and operator Docker deployment. Automated tests (3.1–3.4) cover all code paths. Documented as residual risk in `design.md`.

@@ -178,3 +178,9 @@ This audit records the migration decision for implemented connectors. It is not 
 - Should the connector-facing message be a new stdout message type, an extension of `INTERACTION`, or a runtime helper that emits existing messages plus structured timeline metadata?
 - Should assistance attachments be single-primary plus diagnostics, or a list with one recommended attachment?
 - Which parts of assistance should Collection Profile standardize now versus leave as reference-only until more connectors prove the shape?
+
+## Residual Risks
+
+**Live ChatGPT app-push flow in Docker (owner-only, task 6.4):** Unit tests cover the `running`+`act_elsewhere`+`none` passive-wait mapping and the timeout-escalation transition to blocking manual resume. End-to-end confirmation requires a live ChatGPT login session, a managed n.eko/remote-surface deployment, and operator observation. The ChatGPT app-push migration (task 5.1–5.2) is implemented; this step confirms the dashboard renders correctly for a real run. Owner should run one ChatGPT connector attempt in the operator Docker deployment and verify the run shows passive waiting during app-push approval, auto-continues after approval, and does not surface a browser stream CTA unless escalated.
+
+**Live browser-control manual-action flow in Docker (owner-only, task 6.5):** Unit tests cover the `operate_attachment`+`browser_surface` → stream-CTA rendering path. End-to-end confirmation requires a live browser-backed connector (USAA or Chase) running in Docker with a deployed remote surface and operator observation. Owner should run one such connector and verify the stream CTA appears only when `browser_surface` assistance is active, and not during app-push or passive assistance states.

@@ -76,3 +76,7 @@ The dashboard MAY render this as collapsed connector-authored evidence next to t
 - A connector emitting `SKIP_RESULT.diagnostics` that is an array, string, or other non-object value drops the field (it does not propagate) without rejecting the message.
 - A grant-scoped `/v1` read does not include `SKIP_RESULT.diagnostics`. (Existing `/v1` scope rules already exclude run-timeline events; this change adds no new exposure path.)
 - The bounded diagnostics survive on the `known_gap` block emitted in the terminal `run.completed` / `run.failed` payload.
+
+## Residual Risks
+
+**Live USAA export root-cause verification (owner-only):** A live USAA run with diagnostics propagation enabled is the only way to confirm that the `PageDiagnostics` and `BodyResponseDiagnostics` payload emitted at the export failure moment survives into the persisted timeline and is sufficient for offline root-cause analysis without another human-driven run. The automated tests (3.1–3.4) cover all code paths with stub data. This live step cannot be replaced by automation because it requires real USAA credentials and the operator-specific Docker deployment. The owner should run a real USAA export attempt and verify that `data.diagnostics` appears on the `run.stream_skipped` spine event in the run timeline before treating this change as fully proven in production.

@@ -147,6 +147,10 @@ Rejected as a primary mechanism. Local files create divergence between the durab
 - A reference-implementation route test confirms `GET|PUT _ref/device-exporters/:deviceId/source-instances/:sourceInstanceId/state` accepts a valid device bearer token, rejects an owner-session-only request, rejects a credential for a different device, and rejects an unknown source instance.
 - Gmail attachment backfill restart test (offline fixture, no live Gmail) shows the `attachments` stream cursor survives a runner restart when run via the local collector lane.
 
+## Residual Risks
+
+**Manual device-side state replay verification (pre-broad-rollout):** The automated two-pass replay regression (task 7.7) covers the full load/emit/persist/replay cycle using a fixture connector and is the authoritative correctness check. A manual end-to-end run on a real enrolled device — spawning the collector, observing the emitted STATE written to the server, restarting the runner, and confirming the cursor appears in the second pass's `START.state` — is recommended before broad rollout to catch any device-credential, network, or environment misconfiguration that fixture tests cannot exercise. This is a confidence check, not a correctness prerequisite.
+
 ## ADDED Requirements
 
 ### Requirement: Local collector runs replay prior connector state through START

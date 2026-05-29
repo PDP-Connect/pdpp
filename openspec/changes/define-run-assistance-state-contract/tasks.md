@@ -39,5 +39,5 @@
 - [x] 6.1 Validate `openspec validate define-run-assistance-state-contract --strict`.
 - [x] 6.2 Add unit tests for all canonical mappings: app approval, OTP, credentials, browser control, retry/backoff, URL/QR attachment, stream unavailable, timeout escalation.
 - [x] 6.3 Run relevant reference, polyfill connector, remote-surface, and dashboard tests.
-- [ ] 6.4 Run one fresh ChatGPT app-push flow in Docker and verify it shows passive waiting, auto-continues after approval, and does not require the stream unless escalated.
-- [ ] 6.5 Run one browser-control manual-action flow in Docker and verify the stream CTA appears only for `browser_surface` assistance.
+- [ ] 6.4 Run one fresh ChatGPT app-push flow in Docker and verify it shows passive waiting, auto-continues after approval, and does not require the stream unless escalated. Owner-only post-deploy step: requires live ChatGPT credentials, Docker deployment, and operator observation. Unit tests (6.2) cover the state-mapping and timeout-escalation paths. Documented as residual risk in `design.md`.
+- [ ] 6.5 Run one browser-control manual-action flow in Docker and verify the stream CTA appears only for `browser_surface` assistance. Owner-only post-deploy step: requires live browser-backed connector in Docker and operator-driven run. Unit tests (6.2) cover the attachment → CTA mapping. Documented as residual risk in `design.md`.
