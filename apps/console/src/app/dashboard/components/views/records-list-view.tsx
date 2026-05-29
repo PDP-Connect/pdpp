@@ -232,8 +232,8 @@ export function RecordsListView({
         }
         description={
           interactive
-            ? "Owner control plane for your connections. Counts reflect records the server has retained; local-collector backlogs surface as 'pending on devices' here and per-connection below. Click Sync now to pull fresh data; drill in to browse streams and records."
-            : "Sandbox demo: deterministic mock connections. Click into a connection to browse streams and records."
+            ? "Manage your connections and monitor sync health. Retained record counts appear here; local-collector backlogs show as 'pending on devices'. Click Sync now to pull fresh data, or open a connection to browse its streams and records."
+            : "Sandbox demo: deterministic mock connections. Click into a connection to browse its streams and records."
         }
         title="Connections"
       />

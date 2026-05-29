@@ -66,7 +66,7 @@ async function loadRecentActivity(): Promise<RecentActivityOverviewData> {
 async function DatasetSummarySection() {
   try {
     const summary = await loadDashboardSummary();
-    return <OverviewHero recordsHref={dashboardRoutes.section.records} summary={summary} />;
+    return <OverviewHero exploreHref={dashboardRoutes.section.explore} recordsHref={dashboardRoutes.section.records} summary={summary} />;
   } catch (err) {
     return <OverviewHeroError message={err instanceof Error ? err.message : undefined} />;
   }

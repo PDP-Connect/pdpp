@@ -107,7 +107,7 @@ export function RecordsExplorerView({ data, routes }: { data: RecordsExplorerDat
       <PageHeader
         breadcrumbs={[{ label: "Explore" }]}
         count={feedCountLabel(feed.length, fromSearch, truncated)}
-        description="Browse and search records across every connection. Two accounts of the same connector stay distinct — they never collapse."
+        description="Search and browse records across every connection. Filter by connection, stream, or date — each account stays distinct."
         title="Explore"
       />
 

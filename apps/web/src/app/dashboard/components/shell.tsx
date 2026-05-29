@@ -151,11 +151,11 @@ function SidebarContent({ active, mode, routes }: { active: DashboardSection; mo
 
 function ExploreSubnav({ routes }: { routes: Routes }) {
   const items = [
-    { href: routes.section.explore, label: "Browse records" },
+    { href: routes.section.explore, label: "Records feed" },
     { href: routes.section.search, label: "Jump to ID" },
     { href: routes.section.records, label: "Connections" },
   ];
-  return <SidebarSubnav items={items} label="Explore" />;
+  return <SidebarSubnav items={items} label="Explore workspace" />;
 }
 
 function GrantsSubnav() {
