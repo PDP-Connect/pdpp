@@ -31,7 +31,7 @@ Open owner decisions are detailed in `design-notes/2026-04-27-prior-art-review.m
 - [ ] Decide how package-level audit works: package id, timeline grouping, dashboard display, and whether a revoke-package affordance is offered.
 - [ ] Decide whether incremental "add a source later" produces a new package linked via `parent_package_id` or stands alone, and how the dashboard renders the cumulative picture per agent identity.
 - [ ] Decide where owner-authored permission sets are stored when Option C lands (owner-local, manifest, or both) and how they affect client registration.
-- [ ] Confirm any first implementation of Option B is labeled reference-experimental in UI and docs until promoted by a follow-up OpenSpec change.
+- [x] Confirm any first implementation of Option B is labeled reference-experimental in UI and docs until promoted by a follow-up OpenSpec change.
 - [ ] Decide whether AS-side enrichment of `authorization_details` is forbidden (synthesis recommendation: yes — AS may narrow only) and where that rule is captured.
 - [ ] Decide whether cross-source grants stay off the roadmap permanently or are reopened by a future change (synthesis recommendation: stay off).
 - [ ] Decide whether consent-level predicate filters (date / resource / category) are explicitly deferred to a separate OpenSpec change after the query-layer filter grammar settles (synthesis recommendation: defer).
@@ -50,5 +50,5 @@ Open owner decisions are detailed in `design-notes/2026-04-27-prior-art-review.m
 
 ## 5. Validation
 
-- [ ] `openspec validate design-fast-broad-agent-consent --strict`
-- [ ] `openspec validate --all --strict`
+- [x] `openspec validate design-fast-broad-agent-consent --strict`
+- [x] `openspec validate --all --strict`
