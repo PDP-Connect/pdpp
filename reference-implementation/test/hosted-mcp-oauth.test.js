@@ -434,6 +434,7 @@ test('hosted MCP OAuth code flow issues a scoped client token usable at /mcp', a
     assert.equal(tools.status, 200);
     const toolNames = tools.body.result.tools.map((tool) => tool.name).sort();
     assert.deepEqual(toolNames, [
+      'aggregate',
       'create_event_subscription',
       'delete_event_subscription',
       'discover_event_subscription_capabilities',
