@@ -333,7 +333,7 @@ test('scheduler history records checkpoint summaries from runConnector results',
     const scheduler = createScheduler({
       connectors: [
         {
-          connectorId: spotifyManifest.connector_id,
+          connectorId: spotifyManifest.connector_key,
           connectorPath: join(REFERENCE_IMPL_DIR, 'connectors/seed/index.js'),
           manifest: spotifyManifest,
           ownerToken,
@@ -357,7 +357,7 @@ test('scheduler history records checkpoint summaries from runConnector results',
     assert.equal(record.status, 'succeeded');
     assert.deepEqual(record.source, {
       kind: 'connector',
-      id: spotifyManifest.connector_id,
+      id: spotifyManifest.connector_key,
     });
     assert.ok(record.runId);
     assert.ok(record.traceId);
@@ -379,15 +379,15 @@ test('scheduler history records checkpoint summaries from runConnector results',
 
     const stats = scheduler.getStats();
     assert.deepEqual(
-      stats[spotifyManifest.connector_id].lastRun?.source,
+      stats[spotifyManifest.connector_key].lastRun?.source,
       record.source,
     );
     assert.deepEqual(
-      stats[spotifyManifest.connector_id].lastRun?.checkpointSummary,
+      stats[spotifyManifest.connector_key].lastRun?.checkpointSummary,
       record.checkpointSummary,
     );
 
-    const persistedState = stateStore.get(spotifyManifest.connector_id);
+    const persistedState = stateStore.get(spotifyManifest.connector_key);
     assert.ok(persistedState?.top_artists);
     assert.ok(persistedState?.saved_tracks);
   } finally {
@@ -404,10 +404,10 @@ test('scheduler hydrates persisted history without bypassing a fresh persisted l
   const appendedHistory = [];
   const lastRunUpserts = [];
   const persistedHistory = {
-    connectorId: 'https://registry.pdpp.org/connectors/persisted-history',
+    connectorId: 'persisted-history',
     source: {
       kind: 'connector',
-      id: 'https://registry.pdpp.org/connectors/persisted-history',
+      id: 'persisted-history',
     },
     status: 'skipped',
     recordsEmitted: 0,
@@ -481,7 +481,7 @@ test('scheduler hydrates persisted history without bypassing a fresh persisted l
 test('scheduler preserves failure reasons and checkpoint summaries from failed runConnector results', async () => {
   const manifest = {
     protocol_version: '0.1.0',
-    connector_id: 'https://registry.pdpp.org/connectors/scheduler-failure-test',
+    connector_id: 'scheduler-failure-test',
     version: '1.0.0',
     display_name: 'Scheduler Failure Test Connector',
     streams: [
@@ -598,7 +598,7 @@ rl.on('line', (line) => {
 test('scheduler preserves partial checkpoint commit summaries from state persistence failures after DONE(succeeded)', async () => {
   const manifest = {
     protocol_version: '0.1.0',
-    connector_id: 'https://registry.pdpp.org/connectors/scheduler-partial-checkpoint-test',
+    connector_id: 'scheduler-partial-checkpoint-test',
     version: '1.0.0',
     display_name: 'Scheduler Partial Checkpoint Test Connector',
     streams: [
@@ -785,7 +785,7 @@ rl.on('line', (line) => {
 test('scheduler preserves terminal counter mismatch failures from runConnector results', async () => {
   const manifest = {
     protocol_version: '0.1.0',
-    connector_id: 'https://registry.pdpp.org/connectors/scheduler-terminal-counter-mismatch-test',
+    connector_id: 'scheduler-terminal-counter-mismatch-test',
     version: '1.0.0',
     display_name: 'Scheduler Terminal Counter Mismatch Test Connector',
     streams: [
@@ -913,7 +913,7 @@ rl.on('line', (line) => {
 test('scheduler preserves connector-declared terminal error details from failed runs', async () => {
   const manifest = {
     protocol_version: '0.1.0',
-    connector_id: 'https://registry.pdpp.org/connectors/scheduler-terminal-error-test',
+    connector_id: 'scheduler-terminal-error-test',
     version: '1.0.0',
     display_name: 'Scheduler Terminal Error Test Connector',
     streams: [
@@ -1030,7 +1030,7 @@ rl.on('line', (line) => {
 test('scheduler preserves known gaps from partial connector runs', async () => {
   const manifest = {
     protocol_version: '0.1.0',
-    connector_id: 'https://registry.pdpp.org/connectors/scheduler-known-gap-test',
+    connector_id: 'scheduler-known-gap-test',
     version: '1.0.0',
     display_name: 'Scheduler Known Gap Test Connector',
     streams: [
@@ -1124,7 +1124,7 @@ rl.on('line', (line) => {
 test('scheduler preserves connector-declared terminal error details from cancelled runs', async () => {
   const manifest = {
     protocol_version: '0.1.0',
-    connector_id: 'https://registry.pdpp.org/connectors/scheduler-cancelled-terminal-error-test',
+    connector_id: 'scheduler-cancelled-terminal-error-test',
     version: '1.0.0',
     display_name: 'Scheduler Cancelled Terminal Error Test Connector',
     streams: [
@@ -1241,7 +1241,7 @@ rl.on('line', (line) => {
 test('scheduler does not retry deterministic connector protocol violations', async () => {
   const manifest = {
     protocol_version: '0.1.0',
-    connector_id: 'https://registry.pdpp.org/connectors/scheduler-no-retry-protocol-violation',
+    connector_id: 'scheduler-no-retry-protocol-violation',
     version: '1.0.0',
     display_name: 'Scheduler No Retry Protocol Violation Connector',
     streams: [
@@ -1335,7 +1335,7 @@ rl.on('line', (line) => {
 test('scheduler retries connector-declared retryable failures and records the succeeding attempt', async () => {
   const manifest = {
     protocol_version: '0.1.0',
-    connector_id: 'https://registry.pdpp.org/connectors/scheduler-retryable-terminal-error',
+    connector_id: 'scheduler-retryable-terminal-error',
     version: '1.0.0',
     display_name: 'Scheduler Retryable Terminal Error Connector',
     streams: [
@@ -1451,7 +1451,7 @@ rl.on('line', (line) => {
 test('scheduler does not retry connector-declared non-retryable failures', async () => {
   const manifest = {
     protocol_version: '0.1.0',
-    connector_id: 'https://registry.pdpp.org/connectors/scheduler-nonretryable-terminal-error',
+    connector_id: 'scheduler-nonretryable-terminal-error',
     version: '1.0.0',
     display_name: 'Scheduler Nonretryable Terminal Error Connector',
     streams: [
@@ -1550,7 +1550,7 @@ rl.on('line', (line) => {
 test('scheduler does not retry runtime authentication failures from ingest', async () => {
   const manifest = {
     protocol_version: '0.1.0',
-    connector_id: 'https://registry.pdpp.org/connectors/scheduler-authentication-error',
+    connector_id: 'scheduler-authentication-error',
     version: '1.0.0',
     display_name: 'Scheduler Authentication Error Connector',
     streams: [
@@ -1679,7 +1679,7 @@ rl.on('line', (line) => {
 test('scheduler does not retry runtime permission failures from state persistence', async () => {
   const manifest = {
     protocol_version: '0.1.0',
-    connector_id: 'https://registry.pdpp.org/connectors/scheduler-permission-error',
+    connector_id: 'scheduler-permission-error',
     version: '1.0.0',
     display_name: 'Scheduler Permission Error Connector',
     streams: [
@@ -1819,7 +1819,7 @@ rl.on('line', (line) => {
 test('scheduler does not retry deterministic runtime connector_invalid failures', async () => {
   const manifest = {
     protocol_version: '0.1.0',
-    connector_id: 'https://registry.pdpp.org/connectors/scheduler-connector-invalid',
+    connector_id: 'scheduler-connector-invalid',
     version: '1.0.0',
     display_name: 'Scheduler Connector Invalid Connector',
     streams: [
@@ -1950,7 +1950,7 @@ rl.on('line', (line) => {
 test('scheduler retries runtime rate_limit_error failures and records the succeeding attempt', async () => {
   const manifest = {
     protocol_version: '0.1.0',
-    connector_id: 'https://registry.pdpp.org/connectors/scheduler-rate-limit-error',
+    connector_id: 'scheduler-rate-limit-error',
     version: '1.0.0',
     display_name: 'Scheduler Rate Limit Error Connector',
     streams: [
@@ -2079,7 +2079,7 @@ rl.on('line', (line) => {
 test('scheduler retries transient runtime 500 failures and records the succeeding attempt', async () => {
   const manifest = {
     protocol_version: '0.1.0',
-    connector_id: 'https://registry.pdpp.org/connectors/scheduler-runtime-500-retry',
+    connector_id: 'scheduler-runtime-500-retry',
     version: '1.0.0',
     display_name: 'Scheduler Runtime 500 Retry Connector',
     streams: [
@@ -2585,7 +2585,7 @@ test('scheduler start is idempotent and does not launch a second immediate run',
     const scheduler = createScheduler({
       connectors: [
         {
-          connectorId: spotifyManifest.connector_id,
+          connectorId: spotifyManifest.connector_key,
           connectorPath: join(REFERENCE_IMPL_DIR, 'connectors/seed/index.js'),
           manifest: spotifyManifest,
           ownerToken,
@@ -2618,7 +2618,7 @@ test('scheduler emits one disabled skip after deterministic grant lifecycle fail
   for (const terminalReason of ['grant_invalid', 'grant_revoked', 'grant_expired', 'grant_consumed']) {
     const manifest = {
       protocol_version: '0.1.0',
-      connector_id: `https://registry.pdpp.org/connectors/scheduler-${terminalReason}`,
+      connector_id: `scheduler-${terminalReason}`,
       version: '1.0.0',
       display_name: `Scheduler ${terminalReason} Connector`,
       streams: [
@@ -2798,7 +2798,8 @@ test('scheduler records one not-ready skip for automatic runs when runtime prere
   const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
   const manifest = {
     ...spotifyManifest,
-    connector_id: 'https://registry.pdpp.org/connectors/scheduler-not-ready-test',
+    connector_id: 'scheduler-not-ready-test',
+    connector_key: 'scheduler-not-ready-test',
   };
   const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
   const asUrl = `http://localhost:${server.asPort}`;
@@ -2857,7 +2858,8 @@ test('scheduler emits a fresh not-ready skip when readiness reason changes', asy
   const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
   const manifest = {
     ...spotifyManifest,
-    connector_id: 'https://registry.pdpp.org/connectors/scheduler-not-ready-changing-test',
+    connector_id: 'scheduler-not-ready-changing-test',
+    connector_key: 'scheduler-not-ready-changing-test',
   };
   const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
   const asUrl = `http://localhost:${server.asPort}`;
@@ -2916,7 +2918,8 @@ test('scheduler default readiness checker skips missing manifest-declared extern
   const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
   const manifest = {
     ...spotifyManifest,
-    connector_id: 'https://registry.pdpp.org/connectors/scheduler-missing-tool-test',
+    connector_id: 'scheduler-missing-tool-test',
+    connector_key: 'scheduler-missing-tool-test',
     runtime_requirements: {
       bindings: { network: { required: true } },
       external_tools: [
@@ -2983,7 +2986,8 @@ test('scheduler default readiness checker probes SLACKDUMP_BIN with version desp
   const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
   const manifest = {
     ...spotifyManifest,
-    connector_id: 'https://registry.pdpp.org/connectors/scheduler-slackdump-bin-test',
+    connector_id: 'scheduler-slackdump-bin-test',
+    connector_key: 'scheduler-slackdump-bin-test',
     runtime_requirements: {
       bindings: { network: { required: true } },
       external_tools: [
@@ -3110,7 +3114,8 @@ test('scheduler default readiness checker does not treat browser bindings as rea
   const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
   const manifest = {
     ...spotifyManifest,
-    connector_id: 'https://registry.pdpp.org/connectors/scheduler-browser-not-ready-test',
+    connector_id: 'scheduler-browser-not-ready-test',
+    connector_key: 'scheduler-browser-not-ready-test',
     runtime_requirements: {
       bindings: { browser: { required: true }, network: { required: true } },
     },
@@ -3180,7 +3185,7 @@ test('scheduler default readiness checker does not treat browser bindings as rea
 test('scheduler marks connector as needs-human when automatic run triggers interaction', async () => {
   const manifest = {
     protocol_version: '0.1.0',
-    connector_id: 'https://registry.pdpp.org/connectors/scheduler-interaction-test',
+    connector_id: 'scheduler-interaction-test',
     version: '1.0.0',
     display_name: 'Interaction Test Connector',
     streams: [
@@ -3292,7 +3297,8 @@ test('scheduler backoff skip derives next_attempt_at from history when last_run_
   const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
   const manifest = {
     ...spotifyManifest,
-    connector_id: 'https://registry.pdpp.org/connectors/scheduler-backoff-1970-regression',
+    connector_id: 'scheduler-backoff-1970-regression',
+    connector_key: 'scheduler-backoff-1970-regression',
   };
   const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
   const asUrl = `http://localhost:${server.asPort}`;
@@ -3402,7 +3408,8 @@ test('scheduler backoff skip uses gave_up phrasing once health-state crosses blo
   const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
   const manifest = {
     ...spotifyManifest,
-    connector_id: 'https://registry.pdpp.org/connectors/scheduler-backoff-blocked-msg',
+    connector_id: 'scheduler-backoff-blocked-msg',
+    connector_key: 'scheduler-backoff-blocked-msg',
   };
   const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
   const asUrl = `http://localhost:${server.asPort}`;
@@ -3493,7 +3500,8 @@ test('scheduler does not re-emit persisted backoff transition markers on restart
   const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
   const manifest = {
     ...spotifyManifest,
-    connector_id: 'https://registry.pdpp.org/connectors/scheduler-backoff-restart-noise',
+    connector_id: 'scheduler-backoff-restart-noise',
+    connector_key: 'scheduler-backoff-restart-noise',
   };
   const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
   const asUrl = `http://localhost:${server.asPort}`;

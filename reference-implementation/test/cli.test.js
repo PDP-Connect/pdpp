@@ -1754,7 +1754,7 @@ test('PDPP CLI smoke', async (t) => {
       assert.equal(rejected.object_type, 'pending_consent');
       assert.equal(rejected.client_id, registration.json.client_id);
       assert.equal(rejected.data?.source?.kind, 'connector');
-      assert.equal(rejected.data?.source?.id, spotifyManifest.connector_id);
+      assert.equal(rejected.data?.source?.id, canonicalConnectorKey(spotifyManifest.connector_id));
       assert.equal(rejected.data?.error?.code, 'invalid_client');
       assert.match(rejected.data?.error?.message || '', /Unknown client_id/);
       assert.equal(result.stderr, '');
@@ -1803,7 +1803,7 @@ test('PDPP CLI smoke', async (t) => {
       );
       assert.ok(approved, 'trace show should keep consent.approved on the original staged trace');
       assert.equal(approved.data?.source?.kind, 'connector');
-      assert.equal(approved.data?.source?.id, spotifyManifest.connector_id);
+      assert.equal(approved.data?.source?.id, canonicalConnectorKey(spotifyManifest.connector_id));
 
       const grantIssued = (result.json.data || []).find((event) =>
         event.event_type === 'grant.issued'
@@ -1811,7 +1811,7 @@ test('PDPP CLI smoke', async (t) => {
       );
       assert.ok(grantIssued, 'trace show should keep grant.issued on the original staged trace');
       assert.equal(grantIssued.data?.source?.kind, 'connector');
-      assert.equal(grantIssued.data?.source?.id, spotifyManifest.connector_id);
+      assert.equal(grantIssued.data?.source?.id, canonicalConnectorKey(spotifyManifest.connector_id));
 
       const tokenIssued = (result.json.data || []).find((event) =>
         event.event_type === 'token.issued'
@@ -1819,7 +1819,7 @@ test('PDPP CLI smoke', async (t) => {
       );
       assert.ok(tokenIssued, 'trace show should keep token.issued on the original staged trace');
       assert.equal(tokenIssued.data?.source?.kind, 'connector');
-      assert.equal(tokenIssued.data?.source?.id, spotifyManifest.connector_id);
+      assert.equal(tokenIssued.data?.source?.id, canonicalConnectorKey(spotifyManifest.connector_id));
       assert.equal(tokenIssued.data?.issuance_path, 'grant_approval');
       assert.equal(result.stderr, '');
     });
@@ -1934,7 +1934,7 @@ test('PDPP CLI smoke', async (t) => {
       );
       assert.ok(rejected, 'trace show should keep request.rejected on the original staged trace');
       assert.equal(rejected.data?.source?.kind, 'connector');
-      assert.equal(rejected.data?.source?.id, spotifyManifest.connector_id);
+      assert.equal(rejected.data?.source?.id, canonicalConnectorKey(spotifyManifest.connector_id));
       assert.equal(result.stderr, '');
     });
   });
@@ -2066,7 +2066,7 @@ test('PDPP CLI smoke', async (t) => {
       assert.equal(denied.object_type, 'pending_consent');
       assert.equal(denied.status, 'denied');
       assert.equal(denied.data?.source?.kind, 'connector');
-      assert.equal(denied.data?.source?.id, spotifyManifest.connector_id);
+      assert.equal(denied.data?.source?.id, canonicalConnectorKey(spotifyManifest.connector_id));
       assert.equal(result.stderr, '');
     });
   });
@@ -2649,7 +2649,11 @@ test('PDPP CLI smoke', async (t) => {
       });
 
       const updateResp = await fetch(
-        `${rsUrl}/v1/state/${encodeURIComponent(spotifyManifest.connector_id)}?grant_id=${encodeURIComponent(approved.grant.grant_id)}`,
+        // Grant-scoped state writes resolve the grant's storage binding, which
+        // is persisted under the canonical connector key (Decision 1). The PUT
+        // route compares that binding against the path connector id verbatim,
+        // so the path must carry the canonical key to stay in scope.
+        `${rsUrl}/v1/state/${encodeURIComponent(SPOTIFY_CONNECTOR_KEY)}?grant_id=${encodeURIComponent(approved.grant.grant_id)}`,
         {
           method: 'PUT',
           headers: {
@@ -2681,7 +2685,9 @@ test('PDPP CLI smoke', async (t) => {
       assert.deepEqual(stateUpdated.data?.persisted_streams, ['top_artists']);
 
       const rejectedResp = await fetch(
-        `${rsUrl}/v1/state/${encodeURIComponent(spotifyManifest.connector_id)}?grant_id=${encodeURIComponent(approved.grant.grant_id)}`,
+        // Canonical connector key keeps the path in grant scope so the rejection
+        // is driven by the out-of-grant stream, not a connector-id mismatch.
+        `${rsUrl}/v1/state/${encodeURIComponent(SPOTIFY_CONNECTOR_KEY)}?grant_id=${encodeURIComponent(approved.grant.grant_id)}`,
         {
           method: 'PUT',
           headers: {
@@ -3117,7 +3123,7 @@ test('PDPP CLI smoke', async (t) => {
       assert.equal(queryReceived.data?.query_shape, 'record_list');
       assert.equal(queryReceived.data?.has_changes_since, true);
       assert.equal(queryReceived.data?.source?.kind, 'connector');
-      assert.equal(queryReceived.data?.source?.id, spotifyManifest.connector_id);
+      assert.equal(queryReceived.data?.source?.id, canonicalConnectorKey(spotifyManifest.connector_id));
 
       const rejectedEvent = (timeline.json.data || []).find((event) =>
         event.event_type === 'query.rejected' && event.object_id === rejectedRequestId
@@ -3128,7 +3134,7 @@ test('PDPP CLI smoke', async (t) => {
       assert.equal(rejectedEvent.data?.query_shape, 'record_list');
       assert.equal(rejectedEvent.data?.has_changes_since, true);
       assert.equal(rejectedEvent.data?.source?.kind, 'connector');
-      assert.equal(rejectedEvent.data?.source?.id, spotifyManifest.connector_id);
+      assert.equal(rejectedEvent.data?.source?.id, canonicalConnectorKey(spotifyManifest.connector_id));
       assert.equal(rejectedEvent.data?.error?.code, 'field_not_granted');
       assert.match(rejectedEvent.data?.error?.message || '', /Filter on field 'popularity' not in grant/);
 
@@ -3187,7 +3193,7 @@ test('PDPP CLI smoke', async (t) => {
       assert.equal(queryReceived.data?.query_shape, 'record_detail');
       assert.equal(queryReceived.data?.requested_record_id, rejectedId);
       assert.equal(queryReceived.data?.source?.kind, 'connector');
-      assert.equal(queryReceived.data?.source?.id, spotifyManifest.connector_id);
+      assert.equal(queryReceived.data?.source?.id, canonicalConnectorKey(spotifyManifest.connector_id));
 
       const rejectedEvent = (timeline.json.data || []).find((event) =>
         event.event_type === 'query.rejected' && event.object_id === rejectedRequestId
@@ -3198,7 +3204,7 @@ test('PDPP CLI smoke', async (t) => {
       assert.equal(rejectedEvent.data?.query_shape, 'record_detail');
       assert.equal(rejectedEvent.data?.requested_record_id, rejectedId);
       assert.equal(rejectedEvent.data?.source?.kind, 'connector');
-      assert.equal(rejectedEvent.data?.source?.id, spotifyManifest.connector_id);
+      assert.equal(rejectedEvent.data?.source?.id, canonicalConnectorKey(spotifyManifest.connector_id));
       assert.equal(rejectedEvent.data?.error?.code, 'not_found');
       assert.match(rejectedEvent.data?.error?.message || '', /Record not found/);
 
@@ -3293,7 +3299,7 @@ test('PDPP CLI smoke', async (t) => {
         assert.equal(queryReceived.data?.query_shape, scenario.queryShape);
         assert.equal(queryReceived.data?.requested_record_id ?? null, scenario.requestedRecordId ?? null);
         assert.equal(queryReceived.data?.source?.kind, 'connector');
-        assert.equal(queryReceived.data?.source?.id, spotifyManifest.connector_id);
+        assert.equal(queryReceived.data?.source?.id, canonicalConnectorKey(spotifyManifest.connector_id));
 
         const rejectedEvent = (timeline.json.data || []).find((event) =>
           event.event_type === 'query.rejected' && event.object_id === rejectedRequestId
@@ -3304,7 +3310,7 @@ test('PDPP CLI smoke', async (t) => {
         assert.equal(rejectedEvent.data?.query_shape, scenario.queryShape);
         assert.equal(rejectedEvent.data?.requested_record_id ?? null, scenario.requestedRecordId ?? null);
         assert.equal(rejectedEvent.data?.source?.kind, 'connector');
-        assert.equal(rejectedEvent.data?.source?.id, spotifyManifest.connector_id);
+        assert.equal(rejectedEvent.data?.source?.id, canonicalConnectorKey(spotifyManifest.connector_id));
         assert.equal(rejectedEvent.data?.error?.code, scenario.expectedCode);
         assert.match(rejectedEvent.data?.error?.message || '', scenario.expectedMessage);
 
@@ -3380,7 +3386,7 @@ test('PDPP CLI smoke', async (t) => {
       assert.equal(queryReceived.data?.query_shape, 'record_detail');
       assert.equal(queryReceived.data?.requested_record_id, hiddenRecord.id);
       assert.equal(queryReceived.data?.source?.kind, 'connector');
-      assert.equal(queryReceived.data?.source?.id, spotifyManifest.connector_id);
+      assert.equal(queryReceived.data?.source?.id, canonicalConnectorKey(spotifyManifest.connector_id));
 
       const rejectedEvent = (timeline.json.data || []).find((event) =>
         event.event_type === 'query.rejected' && event.object_id === rejectedRequestId
@@ -3391,7 +3397,7 @@ test('PDPP CLI smoke', async (t) => {
       assert.equal(rejectedEvent.data?.query_shape, 'record_detail');
       assert.equal(rejectedEvent.data?.requested_record_id, hiddenRecord.id);
       assert.equal(rejectedEvent.data?.source?.kind, 'connector');
-      assert.equal(rejectedEvent.data?.source?.id, spotifyManifest.connector_id);
+      assert.equal(rejectedEvent.data?.source?.id, canonicalConnectorKey(spotifyManifest.connector_id));
       assert.equal(rejectedEvent.data?.error?.code, 'not_found');
       assert.match(rejectedEvent.data?.error?.message || '', /Record not found/);
 

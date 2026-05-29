@@ -34,7 +34,7 @@ const POLYFILL_MANIFESTS_DIR = join(REFERENCE_IMPL_DIR, '..', 'packages', 'polyf
 // connector_id stores and projects it as `spotify`. Output assertions compare
 // against this canonical key; request inputs may still carry the URL shape
 // because the server canonicalizes connector ids at the boundary.
-const SPOTIFY_CONNECTOR_KEY = canonicalConnectorKey('https://registry.pdpp.org/connectors/spotify');
+const SPOTIFY_CONNECTOR_KEY = canonicalConnectorKey('spotify');
 
 async function closeServer(server) {
   server.schedulerManager?.stop?.();
@@ -218,7 +218,7 @@ test('GET /_ref/connectors finds connector runs that are older than newer runs f
     });
     for (let i = 0; i < 8; i += 1) {
       await emitSyntheticRun({
-        connectorId: `https://registry.pdpp.org/connectors/noisy-${i}`,
+        connectorId: `noisy-${i}`,
         runId: `run_noisy_${i}`,
         status: 'failed',
         occurredAt: `2026-04-24T10:0${i + 1}:00.000Z`,
@@ -768,7 +768,7 @@ test('schedule upsert on unknown connector returns 404', async () => {
 test('schedule upsert returns policy_warning when interval is below minimum_interval_seconds', async () => {
   const manifest = {
     protocol_version: '0.1.0',
-    connector_id: 'https://registry.pdpp.org/connectors/policy-warning-test',
+    connector_id: 'policy-warning-test',
     version: '1.0.0',
     display_name: 'Policy Warning Test',
     streams: [
@@ -826,7 +826,7 @@ test('schedule upsert returns policy_warning when interval is below minimum_inte
 test('schedule upsert rejects enabling manual or background-unsafe connector policy', async () => {
   const manifest = {
     protocol_version: '0.1.0',
-    connector_id: 'https://registry.pdpp.org/connectors/manual-unsafe-test',
+    connector_id: 'manual-unsafe-test',
     version: '1.0.0',
     display_name: 'Manual Unsafe Test',
     streams: [
@@ -869,7 +869,7 @@ test('schedule upsert rejects enabling manual or background-unsafe connector pol
 test('schedule resume rejects a disabled schedule when connector policy is background-unsafe', async () => {
   const manifest = {
     protocol_version: '0.1.0',
-    connector_id: 'https://registry.pdpp.org/connectors/background-unsafe-test',
+    connector_id: 'background-unsafe-test',
     version: '1.0.0',
     display_name: 'Background Unsafe Test',
     streams: [
@@ -923,7 +923,7 @@ test('GET /_ref/schedules surfaces ineligibility_reason for a stale enabled row 
   // we do not delete it — but the scheduler skips it and the listing API
   // must surface an explicit reason so the dashboard does not imply the row
   // is running.
-  const connectorId = 'https://registry.pdpp.org/connectors/stale-unsafe-reconcile-test';
+  const connectorId = 'stale-unsafe-reconcile-test';
   const baseManifest = {
     protocol_version: '0.1.0',
     connector_id: connectorId,
@@ -1010,7 +1010,7 @@ test('GET /_ref/schedules surfaces ineligibility_reason for a stale enabled row 
 });
 
 test('GET /_ref/schedules omits ineligibility_reason when persisted row is disabled or policy is safe', async () => {
-  const safeId = 'https://registry.pdpp.org/connectors/eligible-schedule-listing-test';
+  const safeId = 'eligible-schedule-listing-test';
   const safeManifest = {
     protocol_version: '0.1.0',
     connector_id: safeId,
@@ -1034,7 +1034,7 @@ test('GET /_ref/schedules omits ineligibility_reason when persisted row is disab
     },
   };
 
-  const disabledId = 'https://registry.pdpp.org/connectors/disabled-unsafe-listing-test';
+  const disabledId = 'disabled-unsafe-listing-test';
   const disabledManifest = {
     protocol_version: '0.1.0',
     connector_id: disabledId,
@@ -1125,7 +1125,7 @@ test('GET /_ref/approvals surfaces pending provider-connect consents with grant 
     assert.ok(entry, 'expected a consent approval entry');
     assert.equal(entry.client_id, 'concert_recommendation_app');
     assert.ok(entry.grant_preview);
-    assert.deepEqual(entry.grant_preview.source, { kind: 'connector', id: spotifyManifest.connector_id });
+    assert.deepEqual(entry.grant_preview.source, { kind: 'connector', id: SPOTIFY_CONNECTOR_KEY });
     assert.equal(entry.grant_preview.access_mode, 'single_use');
     assert.ok(Array.isArray(entry.grant_preview.streams));
   });
