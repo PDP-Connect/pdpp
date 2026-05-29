@@ -216,10 +216,12 @@ for (const lane of wrapperLanes) {
     }
   }
   // "aborted" = process was killed before completing; surfaces in the Wrapper Lanes table but
-  // is historical evidence, not a live risk requiring owner action.
+  // is historical evidence, not a live risk requiring owner action. A deliberately aborted
+  // lane with a thin (or zero) transcript is expected, not a signal that work was lost.
 
-  // Thin transcript on any terminal status: Claude exited immediately and the work is likely useless.
-  if (lane.status !== "running" && lane.transcriptBytes >= 0 && lane.transcriptBytes < 200) {
+  // Thin transcript on completed/failed/recovered terminal statuses: Claude exited immediately
+  // and the work is likely useless. Exclude "aborted" — a zero-byte transcript is normal there.
+  if (lane.status !== "running" && lane.status !== "aborted" && lane.transcriptBytes >= 0 && lane.transcriptBytes < 200) {
     risks.push(`WRAPPER-LANE thin-transcript lane=${lane.lane} transcript_bytes=${lane.transcriptBytes} — Claude may not have run; check: cat ${lane.transcriptFile || lane.artifactDir + "/transcript.log"}`);
   }
 }
