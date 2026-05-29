@@ -1,7 +1,8 @@
 ## Status
 
 Superseded by `add-mock-reference-demo-instance`. These tasks describe the rejected scenario-first sandbox attempt and
-should not be used as implementation guidance for the primary sandbox route family.
+should not be used as implementation guidance for the primary sandbox route family. Reconciled and archived with
+`--skip-specs` on 2026-05-28 (see `proposal.md`); the spec delta is not applied to canonical specs.
 
 ## 1. Sandbox Data Model
 

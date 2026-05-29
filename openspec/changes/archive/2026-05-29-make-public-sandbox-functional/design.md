@@ -14,6 +14,10 @@ primary product target. The accepted direction is now:
 
 Retain this file as historical context only. Future work should follow `add-mock-reference-demo-instance`.
 
+Reconciled and archived with `--skip-specs` on 2026-05-28: the delta is not applied to canonical specs because its
+unique scenarios are already canonical in the `reference-demo-instance` capability and it targets a since-renamed
+`reference-surface-topology` requirement title. See `proposal.md` for the scenario-by-scenario mapping.
+
 ## Context
 
 The current `/sandbox` route is intentionally honest but not useful: it says the sandbox is a future mock-backed educational surface. That satisfied the route-topology change, but it is not good enough for an internal demo or a public reviewer. A visitor should be able to click through a simulated PDPP story and understand why the protocol matters without reading the whole spec first.
