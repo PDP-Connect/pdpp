@@ -2851,7 +2851,6 @@ function buildAsApp(opts = {}) {
           formValue: encodeHostedMcpSelection({ connectorId, connectionId: null }),
           connectorId,
           connectionId: null,
-          label: connectorLabel,
           connectorTypeLabel: connectorLabel,
           connectionName: null,
           meta: streamCount
@@ -2869,7 +2868,6 @@ function buildAsApp(opts = {}) {
           formValue: encodeHostedMcpSelection({ connectorId, connectionId }),
           connectorId,
           connectionId,
-          label: displayName ? `${connectorLabel} — ${displayName}` : connectorLabel,
           connectorTypeLabel: connectorLabel,
           connectionName: displayName || null,
           meta: streamCount
@@ -2879,7 +2877,11 @@ function buildAsApp(opts = {}) {
         });
       }
     }
-    rows.sort((a, b) => a.label.localeCompare(b.label));
+    rows.sort((a, b) => {
+      const typeOrder = a.connectorTypeLabel.localeCompare(b.connectorTypeLabel);
+      if (typeOrder !== 0) return typeOrder;
+      return (a.connectionName || '').localeCompare(b.connectionName || '');
+    });
     return rows;
   }
 
