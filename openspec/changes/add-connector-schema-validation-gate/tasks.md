@@ -69,5 +69,19 @@
   make a deliberate, justified entry. Free-form text uses pdppSafeText; ids/dates
   use regex validators; opaque USDA `nutrition` objects are `z.record(string,
   unknown)` — the only non-precise field, and genuinely opaque per the manifest.)
-- [ ] Lane D: migrate Codex to the shared fingerprint cursor (independent of this
-  gate).
+- [x] Lane D: migrate Codex to the shared fingerprint cursor (independent of this
+  gate). (Done in merged commit `a25bbe68`: the seed/seen/prune/serialize run
+  lifecycle was extracted into the generic `openCarryForwardCursor<T>` in
+  `src/fingerprint-cursor.ts`; `openFingerprintCursor` is now its `T = string`
+  hashed-record specialization, and Codex's `main()` opens a single
+  `openCarryForwardCursor<ThreadFingerprint>` seeded from
+  `readPriorThreadFingerprints`, threaded through `emitSessions` /
+  `emitStateCursors` — the two hand-rolled prior+sink `Map<string,
+  ThreadFingerprint>` lifecycles are gone. Codex keeps its own structured gate
+  (`shouldReemitThreadSession`) and count carry-forward, so emit/skip decisions,
+  RECORD/STATE shape, and on-disk bytes are unchanged; Slack/Gmail/YNAB are
+  byte-identical via the wrapper. Verified in this worktree: Codex+cursor tests
+  88 pass / 0 fail, hash-adopter fingerprint tests 28 pass / 0 fail, `verify`
+  exit 0, `openspec validate --all --strict` 42 passed / 0 failed. Pruning of
+  stale Codex thread ids remains intentionally deferred — see the migration
+  report's owner-review point 2.)
