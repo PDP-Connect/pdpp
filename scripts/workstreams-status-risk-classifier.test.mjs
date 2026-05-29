@@ -9,7 +9,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -53,6 +53,26 @@ function runWithFixture(statusData, options = {}) {
       writeFileSync(join(parkedDir, "status.txt"), "parked by owner\n");
     }
 
+    const extraEnv = {};
+    if (options.tmuxOutput !== undefined) {
+      const fakeBin = join(tmp, "bin");
+      mkdirSync(fakeBin, { recursive: true });
+      const tmuxOutput = typeof options.tmuxOutput === "function" ? options.tmuxOutput(tmp) : options.tmuxOutput;
+      const tmuxScript = `#!/usr/bin/env bash
+if [[ "$1" == "list-panes" ]]; then
+  cat <<'TMUX_EOF'
+${tmuxOutput}
+TMUX_EOF
+  exit 0
+fi
+exit 1
+`;
+      const tmuxPath = join(fakeBin, "tmux");
+      writeFileSync(tmuxPath, tmuxScript);
+      chmodSync(tmuxPath, 0o755);
+      extraEnv.PATH = `${fakeBin}:${process.env.PATH}`;
+    }
+
     if (options.corruptStatus) {
       writeFileSync(join(artifactDir, "status.json"), "");
     } else {
@@ -66,7 +86,7 @@ function runWithFixture(statusData, options = {}) {
     return execFileSync("node", [statusScript, "--no-fail"], {
       cwd: tmp,
       encoding: "utf8",
-      env: { ...process.env, HOME: process.env.HOME },
+      env: { ...process.env, ...extraEnv, HOME: process.env.HOME },
     });
   } finally {
     rmSync(tmp, { recursive: true, force: true });
@@ -248,6 +268,41 @@ try {
   }
 } catch (err) {
   fail("running/orphan: script threw", err.message);
+}
+
+// 10. Idle shell panes in the repo should surface as cleanup candidates, while
+// live Claude panes and shells outside the repo should not.
+try {
+  const out = runWithFixture(
+    {
+      lane: "ri-healthy-lane",
+      status: "completed",
+      report_state: "present",
+      exit_code: 0,
+      transcript_bytes: 50000,
+    },
+    {
+      tmuxOutput: (repo) =>
+        [
+          `%1\tmain\t26\tcq-salvage\tzsh\t999999\t${repo}`,
+          `%2\tmain\t6\tri-owner-delegate-live\tclaude\t999998\t${repo}`,
+          `%3\tmain\t8\tzsh\tzsh\t999997\t${tmpdir()}`,
+        ].join("\n"),
+    }
+  );
+  if (!out.includes("Idle Tmux Cleanup Candidates")) {
+    fail("tmux-cleanup: cleanup section missing", out);
+  } else if (!out.includes("main:26:cq-salvage")) {
+    fail("tmux-cleanup: idle repo shell not listed", out);
+  } else if (out.includes("ri-owner-delegate-live pane=%2")) {
+    fail("tmux-cleanup: live Claude pane listed as cleanup candidate", out);
+  } else if (out.includes("main:8:zsh pane=%3")) {
+    fail("tmux-cleanup: shell outside repo listed as cleanup candidate", out);
+  } else {
+    pass("tmux-cleanup: idle repo shell listed and non-candidates excluded");
+  }
+} catch (err) {
+  fail("tmux-cleanup: script threw", err.message);
 }
 
 // --- Summary ---

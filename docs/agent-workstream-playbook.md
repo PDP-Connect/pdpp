@@ -704,4 +704,7 @@ proposal exists.
 - OpenSpec tasks and docs are updated if the work changes durable behavior.
 - The worker branch is clean or remaining uncommitted files are explicitly
   accounted for.
+- Accepted worker tmux windows that have returned to an idle shell are closed, or
+  intentionally left open and noted. Use `pnpm workstreams:status` and its
+  `Idle Tmux Cleanup Candidates` section before final handoff.
 - The next action is either obvious from the report or captured in a task list.

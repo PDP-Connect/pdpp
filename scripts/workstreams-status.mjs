@@ -101,7 +101,7 @@ function parseTmuxPanes() {
       "list-panes",
       "-a",
       "-F",
-      "#{pane_id}\t#{session_name}\t#{window_index}\t#{window_name}\t#{pane_current_command}\t#{pane_current_path}",
+      "#{pane_id}\t#{session_name}\t#{window_index}\t#{window_name}\t#{pane_current_command}\t#{pane_pid}\t#{pane_current_path}",
     ],
     { allowFail: true }
   ).trim();
@@ -112,8 +112,8 @@ function parseTmuxPanes() {
     .split("\n")
     .filter(Boolean)
     .map((line) => {
-      const [paneId, session, windowIndex, windowName, command, path] = line.split("\t");
-      return { paneId, session, windowIndex, windowName, command, path };
+      const [paneId, session, windowIndex, windowName, command, pid, path] = line.split("\t");
+      return { paneId, session, windowIndex, windowName, command, pid, path };
     })
     .filter((pane, index, panes) => panes.findIndex((candidate) => candidate.paneId === pane.paneId) === index);
 }
@@ -154,6 +154,7 @@ const worktrees = parseWorktrees().map((worktree) => ({
 }));
 const tmuxPanes = parseTmuxPanes();
 const claudePanes = tmuxPanes.filter((pane) => pane.command === "claude");
+const idleTmuxCleanupCandidates = tmuxPanes.filter((pane) => isIdleTmuxCleanupCandidate(pane, worktrees));
 const reportFiles = listFiles(tmpReportsDir)
   .filter((file) => file.endsWith(".md"))
   .filter((file) => !file.startsWith(`${wrapperDir}/`))
@@ -273,6 +274,14 @@ printSection(
 );
 
 printSection(
+  "Idle Tmux Cleanup Candidates",
+  idleTmuxCleanupCandidates.map(
+    (pane) =>
+      `- ${pane.session}:${pane.windowIndex}:${pane.windowName} pane=${pane.paneId} shell=${pane.command} path=${formatPath(pane.path)} cleanup="tmux kill-window -t ${pane.session}:${pane.windowIndex}"`
+  )
+);
+
+printSection(
   "Git Worktrees",
   worktrees.map((worktree) => {
     const dirty = worktree.status.dirty.length ? ` dirty=${worktree.status.dirty.length}` : "";
@@ -375,6 +384,19 @@ function sameOrChild(child, parent) {
   if (!(child && parent)) return false;
   const rel = relative(parent, child);
   return rel === "" || (!rel.startsWith("..") && !resolve(parent, rel).startsWith(".."));
+}
+
+function isIdleTmuxCleanupCandidate(pane, knownWorktrees) {
+  const shellCommands = new Set(["bash", "fish", "sh", "zsh"]);
+  if (!shellCommands.has(pane.command)) return false;
+  if (pane.windowName === "OVERSEER") return false;
+  if (!knownWorktrees.some((worktree) => sameOrChild(pane.path, worktree.path))) return false;
+  return !paneHasChildProcesses(pane.pid);
+}
+
+function paneHasChildProcesses(pid) {
+  if (!pid) return false;
+  return exec("ps", ["-o", "pid=", "--ppid", String(pid)], { cwd: repoRoot, allowFail: true }).trim() !== "";
 }
 
 function classifyOpenSpecChanges(names) {
