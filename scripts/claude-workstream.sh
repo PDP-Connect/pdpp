@@ -238,6 +238,10 @@ write_status() {
 # Seed status.json early so a hard crash still leaves a trace.
 write_status "running" "absent" false -1
 
+report_present() {
+  [[ -s "$report_abs" ]]
+}
+
 # ---- signal handling --------------------------------------------------------
 # On catchable termination write status:aborted and exit non-zero.
 # SIGKILL cannot be caught; a killed process leaves status:"running" in the
@@ -256,10 +260,6 @@ trap '_signal_trap INT'  INT
 trap '_signal_trap TERM' TERM
 trap '_signal_trap HUP'  HUP
 trap '_signal_trap QUIT' QUIT
-
-report_present() {
-  [[ -s "$report_abs" ]]
-}
 
 thinking_block_replay_error() {
   local file="$1"
