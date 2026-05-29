@@ -1420,6 +1420,10 @@ async function runStatementsStream(
       stream: "statements",
       reason: "scrape_failed",
       message: msg.slice(0, ID_TEXT_SNIP),
+      diagnostics: {
+        error_class: err instanceof Error ? err.constructor.name : "unknown",
+        message: msg.slice(0, ID_TEXT_SNIP),
+      },
     });
   }
 }
@@ -1488,6 +1492,10 @@ async function runInboxStream(deps: EmitDeps, page: Page): Promise<void> {
       stream: "inbox_messages",
       reason: "scrape_failed",
       message: msg.slice(0, ID_TEXT_SNIP),
+      diagnostics: {
+        error_class: err instanceof Error ? err.constructor.name : "unknown",
+        message: msg.slice(0, ID_TEXT_SNIP),
+      },
     });
   }
 }
@@ -1548,6 +1556,10 @@ async function runCreditCardBillingStream(
       stream: "credit_card_billing",
       reason: "scrape_failed",
       message: msg.slice(0, ID_TEXT_SNIP),
+      diagnostics: {
+        error_class: err instanceof Error ? err.constructor.name : "unknown",
+        message: msg.slice(0, ID_TEXT_SNIP),
+      },
     });
   }
 }
