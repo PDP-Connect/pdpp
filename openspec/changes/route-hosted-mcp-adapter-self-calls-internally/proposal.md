@@ -22,7 +22,7 @@ The archived `2026-05-28-add-hosted-mcp-grant-packages` change specs child-locat
 
 ## Impact
 
-- Config: introduces one optional env (e.g. `RS_INTERNAL_URL`) defaulting to the loopback/service-DNS resource-server address (the same internal address the web app already targets via `PDPP_RS_URL`). When unset, behavior is unchanged (adapter falls back to the public resource).
+- Config: **no new env.** Reuses the existing explicit `PDPP_RS_URL` → `referenceTopology.rsInternalUrl` (and `opts.rsInternalUrl`) internal resource-server address the web app already targets. The internal base is honored only when explicitly configured; when it is not (e.g. default/test setups that bind the RS to an ephemeral port), the adapter falls back to the public resource and behavior is unchanged. See design Decision 1.
 - Code: `handleHostedMcp` / `createPackageRsClient` split the advertised public `resource` from the adapter's internal fetch base. The advertised `providerUrl` on `mcpServerOptions` stays public.
 - No change to the public contract: discovery metadata, token kinds (`client`, `mcp_package`), child-locate forwarding, and per-child enforcement are unchanged.
 - No reverse-proxy change is required by this change (an edge that allows PATCH is an acceptable independent stopgap, not a dependency).
