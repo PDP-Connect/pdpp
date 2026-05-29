@@ -349,7 +349,7 @@ export function renderPendingConsentNotFoundHtml(providerName: string, ui: Conse
   });
 }
 
-interface PendingGrantRequest {
+export interface PendingGrantRequest {
   client?: {
     client_display?: { name?: string | null } | null;
     client_id?: string | null;
@@ -376,7 +376,7 @@ interface PendingGrantRequest {
   } | null;
 }
 
-interface PendingGrant {
+export interface PendingGrant {
   manifestStreamNames?: string[] | null;
   request: PendingGrantRequest;
   userCode?: string | null;

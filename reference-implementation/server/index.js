@@ -272,8 +272,6 @@ import {
 import { executeAsDeviceAuthInit } from '../operations/as-device-authorization-init/index.ts';
 import { executeAsDeviceTokenExchange } from '../operations/as-device-token-exchange/index.ts';
 import { executeAsIntrospect } from '../operations/as-introspect/index.ts';
-import { executeAsConsentDecision } from '../operations/as-consent-decision/index.ts';
-import { executeAsConsentExchange } from '../operations/as-consent-exchange/index.ts';
 import {
   mountAsAuthorizationServerMetadata,
   mountAsRoot,
@@ -388,6 +386,7 @@ import {
   buildApplyGrantRevokeSideEffects,
   mountAsGrantRevoke,
 } from './routes/as-grant-revoke.ts';
+import { mountAsConsent } from './routes/as-consent.ts';
 import { mountAsDcr } from './routes/as-dcr.ts';
 import { mountAsPar } from './routes/as-par.ts';
 import { mountAsDeviceUi } from './routes/as-device-ui.ts';
@@ -3478,209 +3477,24 @@ function buildAsApp(opts = {}) {
   });
 
 
-  // Primary consent shell for the current provider-connect request/approval profile.
-  app.get('/consent', ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const requestUri = typeof req.query.request_uri === 'string' ? req.query.request_uri : null;
-      if (!requestUri) return pdppError(res, 400, 'invalid_request', 'request_uri is required');
-      const { pending } = await getPendingGrantFromRequestUri(requestUri);
-      if (!pending) {
-        // The request_uri parsed but no live pending-consent row backs it:
-        // the link expired, was already approved/denied, or was minted on a
-        // different instance (e.g. before a restart with a fresh store). A
-        // bare "Not found" string was indistinguishable from a routing 404
-        // and gave the owner no recovery path. Render a branded, recoverable
-        // hosted page that tells them to restart the request from the app.
-        // Status stays 404: the addressed pending grant genuinely does not
-        // exist on this instance.
-        return res.status(404).send(renderPendingConsentNotFoundHtml(providerName, consentUi));
-      }
-      const csrfToken = ownerAuth.ensureCsrfToken(req, res);
-      res.send(renderPendingGrantConsentHtml(pending, requestUri, csrfToken, ownerAuth.csrfFieldName, providerName, consentUi));
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-
-  // Consent approve/deny decision semantics (approval_id → request_uri
-  // resolution, deviceCode resolution, store call, error mapping) live
-  // in the canonical `as.consent.decision` operation
-  // (operations/as-consent-decision). The host adapter owns owner-session
-  // + CSRF enforcement, subject-id resolution, content negotiation
-  // between the JSON and HTML approve branches, exchange-code minting,
-  // and HTML rendering.
-  function buildConsentDecisionDeps() {
-    return {
-      getPendingConsentByApprovalId: (id) => consentStore.getPendingConsentByApprovalId(id),
-      buildPendingConsentRequestUri: (deviceCode) => buildPendingConsentRequestUri(deviceCode),
-      getPendingFromRequestUri: (uri) => getPendingGrantFromRequestUri(uri),
-      approveGrant: (deviceCode, subjectId, opts2) => consentStore.approveGrant(deviceCode, subjectId, opts2),
-      denyGrant: (deviceCode) => consentStore.denyGrant(deviceCode),
-    };
-  }
-
-  app.post('/consent/approve', { contract: 'approveConsent' }, ownerAuth.requireOwnerSession, ownerAuth.requireCsrf, async (req, res) => {
-    try {
-      const subjectId = ownerAuth.enabled
-        ? ownerAuth.subjectId
-        : (req.body?.subject_id || req.query?.subject_id || OWNER_AUTH_DEFAULT_SUBJECT_ID);
-      const outcome = await executeAsConsentDecision(
-        {
-          action: 'approve',
-          requestUri: req.body?.request_uri || req.query?.request_uri,
-          approvalId: req.body?.approval_id || req.query?.approval_id,
-          subjectId,
-          approveOptions: { ai_training_consented: req.body?.ai_training_consented },
-        },
-        buildConsentDecisionDeps(),
-      );
-      if (outcome.outcome === 'failure') {
-        return pdppError(res, outcome.status, outcome.errorCode, outcome.errorMessage);
-      }
-      if (outcome.traceContext?.request_id) {
-        res.setHeader('Request-Id', outcome.traceContext.request_id);
-      }
-      if (outcome.traceContext?.trace_id) {
-        setReferenceTraceId(res, outcome.traceContext.trace_id);
-      }
-      const { grant, token } = outcome;
-      const approvedRequestUri = req.body?.request_uri || req.query?.request_uri;
-      const deviceCode = consentStore.parseRequestUri(approvedRequestUri);
-      const oauthCode = await issueOAuthAuthorizationCodeForDeviceCode(deviceCode, {
-        grantId: grant.grant_id,
-        token,
-      });
-      if (oauthCode) {
-        const redirectUrl = new URL(oauthCode.redirect_uri);
-        redirectUrl.searchParams.set('code', oauthCode.code);
-        if (oauthCode.state) {
-          redirectUrl.searchParams.set('state', oauthCode.state);
-        }
-        return res.redirect(302, redirectUrl.toString());
-      }
-      agentConnectAttemptStore.complete(approvedRequestUri, {
-        status: 'approved',
-        token,
-        grant,
-      });
-      const wantsJson = req.is('application/json') || req.accepts(['html', 'json']) === 'json';
-      if (wantsJson) {
-        return res.json({ grant_id: grant.grant_id, token, grant });
-      }
-      // The HTML approval surface is the human-hosted owner consent page. The
-      // bearer SHALL NOT appear anywhere in this response (browser history,
-      // screenshots, screen-shares, password-manager autofill, chat
-      // transcripts that paste the rendered page). Mint a single-use opaque
-      // exchange code for the cold-agent handoff path; the client redeems it
-      // at POST /consent/exchange to receive the bearer in a JSON body.
-      // Spec: openspec/changes/harden-consent-token-handoff/specs/
-      //       reference-implementation-architecture/spec.md
-      const exchangeCode = createConsentExchangeCode({
-        grantId: grant.grant_id,
-        token,
-        grant,
-      });
-      res.send(renderHostedDocument({
-        title: `${providerName} — Access approved`,
-        providerName,
-        body: [
-          renderPageIntro({
-            eyebrow: 'Consent result',
-            title: 'Access approved',
-            lede: 'A grant was issued for this request. Hand the exchange code below to the client that requested access; it will redeem the code for an access token over a fresh JSON request.',
-          }),
-          renderSurface({
-            surface: 'human',
-            children: renderResultState({
-              tone: 'success',
-              title: 'Grant issued',
-              body: 'You can revoke this access any time from the grants dashboard. The exchange code is single-use and expires shortly.',
-            }),
-          }),
-          renderSurface({
-            surface: 'protocol',
-            ariaLabel: 'Technical grant details',
-            children: renderKeyValueList([
-              { label: 'Grant ID', html: `<code>${hostedEscape(grant.grant_id)}</code>` },
-              { label: 'Consent exchange code', html: `<code>${hostedEscape(exchangeCode)}</code>` },
-              { label: 'Redeem at', html: `<code>POST /consent/exchange</code>` },
-            ]),
-          }),
-        ].join('\n'),
-      }));
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-
-  app.post('/consent/deny', ownerAuth.requireOwnerSession, ownerAuth.requireCsrf, async (req, res) => {
-    try {
-      const subjectId = ownerAuth.enabled
-        ? ownerAuth.subjectId
-        : (req.body?.subject_id || req.query?.subject_id || OWNER_AUTH_DEFAULT_SUBJECT_ID);
-      const outcome = await executeAsConsentDecision(
-        {
-          action: 'deny',
-          requestUri: req.body?.request_uri || req.query?.request_uri,
-          approvalId: req.body?.approval_id || req.query?.approval_id,
-          subjectId,
-        },
-        buildConsentDecisionDeps(),
-      );
-      if (outcome.outcome === 'failure') {
-        return pdppError(res, outcome.status, outcome.errorCode, outcome.errorMessage);
-      }
-      if (outcome.traceContext?.request_id) {
-        res.setHeader('Request-Id', outcome.traceContext.request_id);
-      }
-      if (outcome.traceContext?.trace_id) {
-        setReferenceTraceId(res, outcome.traceContext.trace_id);
-      }
-      agentConnectAttemptStore.fail(req.body?.request_uri || req.query?.request_uri, 'denied');
-      res.send(renderHostedDocument({
-        title: `${providerName} — Access denied`,
-        providerName,
-        body: [
-          renderPageIntro({ eyebrow: 'Consent result', title: 'Access Denied' }),
-          renderSurface({
-            children: renderResultState({
-              tone: 'danger',
-              title: 'Request rejected',
-              body: 'The pending data access request was rejected and cleared.',
-            }),
-          }),
-        ].join('\n'),
-      }));
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-
-  // Reference-only redemption surface for the human-hosted approval flow.
-  // The HTML branch of POST /consent/approve embeds an opaque single-use code
-  // instead of the live bearer; the client (or human relaying for the client)
-  // redeems the code here to receive the same JSON body the JSON branch of
-  // POST /consent/approve already returns. Spec:
-  //   openspec/changes/harden-consent-token-handoff/specs/
-  //     reference-implementation-architecture/spec.md
-  // Consent-exchange-code redemption semantics live in the canonical
-  // `as.consent.exchange` operation (operations/as-consent-exchange).
-  app.post('/consent/exchange', { contract: 'exchangeConsentCode' }, async (req, res) => {
-    try {
-      const outcome = await executeAsConsentExchange(
-        { code: typeof req.body?.code === 'string' ? req.body.code : null },
-        { consumeConsentExchangeCode },
-      );
-      if (outcome.outcome === 'success') {
-        return res.json(outcome.envelope);
-      }
-      pdppError(res, outcome.status, outcome.errorCode, outcome.errorMessage);
-    } catch (err) {
-      handleError(res, err);
-    }
+  // Consent route family (GET /consent, POST /consent/approve, POST /consent/deny,
+  // POST /consent/exchange) extracted to `server/routes/as-consent.ts` per
+  // OpenSpec change `split-reference-server-by-route-family`. Behaviour-
+  // preserving: same auth posture (owner-session + CSRF), same operation
+  // delegation, same response envelopes and error mapping.
+  mountAsConsent(app, {
+    ownerAuth,
+    consentStore,
+    agentConnectAttemptStore,
+    buildPendingConsentRequestUri,
+    consentUi,
+    consumeConsentExchangeCode,
+    createConsentExchangeCode,
+    handleError,
+    issueOAuthAuthorizationCodeForDeviceCode,
+    pdppError,
+    providerName,
+    setReferenceTraceId,
   });
 
 
