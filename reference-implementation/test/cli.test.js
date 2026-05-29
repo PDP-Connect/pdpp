@@ -13,6 +13,7 @@ import { parsePendingConsentRequestUri } from '../server/auth.js';
 import { getDb } from '../server/db.js';
 import { ingestRecord } from '../server/records.js';
 import { runConnector } from '../runtime/index.js';
+import { canonicalConnectorKey } from '../server/connector-key.js';
 
 const execFile = promisify(execFileCallback);
 
@@ -20,6 +21,14 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, '..');
 const CLI_PATH = join(REFERENCE_IMPL_DIR, 'cli/index.js');
 const TEST_DCR_INITIAL_ACCESS_TOKEN = 'pdpp-reference-test-initial-access-token';
+
+// Registering the URL-shaped spotify manifest stores the catalog row,
+// connector_instances, and records under the canonical connector key
+// (Decision 1). The owner read/mutation/state routes canonicalize the
+// connector id at the boundary, so error messages and trace source
+// descriptors carry this canonical key. Raw-SQL fixtures that target those
+// rows by connector_id must also use the canonical key.
+const SPOTIFY_CONNECTOR_KEY = canonicalConnectorKey('https://registry.pdpp.org/connectors/spotify');
 
 
 async function closeServer(server) {
@@ -5686,7 +5695,7 @@ rl.on('line', (line) => {
         UPDATE connectors
         SET manifest = ?
         WHERE connector_id = ?
-      `).run('{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}', spotifyManifest.connector_id);
+      `).run('{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}', SPOTIFY_CONNECTOR_KEY);
 
       const rejectedResp = await fetch(
         `${rsUrl}/v1/streams/top_artists/records?connector_id=${encodeURIComponent(spotifyManifest.connector_id)}`,
@@ -5698,6 +5707,10 @@ rl.on('line', (line) => {
       assert.equal(rejectedResp.status, 400);
       const rejectedBody = await rejectedResp.json();
       assert.equal(rejectedBody.error.code, 'connector_invalid');
+      // The owner mutation (delete) route does not canonicalize the connector
+      // id (unlike the read/admission routes — see owner-review note in the
+      // workstream report), so the rejection message and the mutation.rejected
+      // trace event still echo the URL-shaped id the caller supplied.
       assert.match(
         rejectedBody.error.message,
         new RegExp(`Connector manifest for ${spotifyManifest.connector_id} is malformed or no longer valid`),
@@ -5784,7 +5797,7 @@ rl.on('line', (line) => {
         UPDATE connectors
         SET manifest = ?
         WHERE connector_id = ?
-      `).run('{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}', spotifyManifest.connector_id);
+      `).run('{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}', SPOTIFY_CONNECTOR_KEY);
 
       const rejectedResp = await fetch(
         `${rsUrl}/v1/state/${encodeURIComponent(spotifyManifest.connector_id)}`,
@@ -5794,6 +5807,10 @@ rl.on('line', (line) => {
       assert.equal(rejectedResp.status, 400);
       const rejectedBody = await rejectedResp.json();
       assert.equal(rejectedBody.error.code, 'connector_invalid');
+      // The owner state route does not canonicalize the connector id (unlike
+      // the read/admission routes — see owner-review note in the workstream
+      // report), so the rejection message and the state.rejected trace event
+      // still echo the URL-shaped id the caller supplied.
       assert.match(
         rejectedBody.error.message,
         new RegExp(`Connector manifest for ${spotifyManifest.connector_id} is malformed or no longer valid`),
@@ -6601,7 +6618,7 @@ rl.on('line', (line) => {
         UPDATE connectors
         SET manifest = ?
         WHERE connector_id = ?
-      `).run('{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}', spotifyManifest.connector_id);
+      `).run('{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}', SPOTIFY_CONNECTOR_KEY);
 
       const result = await runCliExpectFailure(
         ['owner', 'streams', '--connector-id', spotifyManifest.connector_id, '--rs-url', rsUrl, '--format', 'json'],
@@ -6609,7 +6626,7 @@ rl.on('line', (line) => {
       );
 
       assert.notEqual(result.code, 0);
-      assert.match(result.stderr, new RegExp(`Connector manifest for ${spotifyManifest.connector_id} is malformed or no longer valid`));
+      assert.match(result.stderr, new RegExp(`Connector manifest for ${SPOTIFY_CONNECTOR_KEY} is malformed or no longer valid`));
       const requestId = result.stderr.match(/Request ID: (req_[A-Za-z0-9_]+)/)?.[1];
       const traceId = result.stderr.match(/Reference trace ID: (trc_[A-Za-z0-9_]+)/)?.[1];
       assert.ok(requestId, 'malformed polyfill owner read should surface a request id on stderr');
@@ -6625,7 +6642,7 @@ rl.on('line', (line) => {
       assert.ok(queryReceived, 'trace show should include query.received for malformed polyfill owner reads');
       assert.equal(queryReceived.data?.query_shape, 'stream_list');
       assert.equal(queryReceived.data?.source?.kind, 'connector');
-      assert.equal(queryReceived.data?.source?.id, spotifyManifest.connector_id);
+      assert.equal(queryReceived.data?.source?.id, SPOTIFY_CONNECTOR_KEY);
 
       const rejectedEvent = (trace.json.data || []).find((event) =>
         event.event_type === 'query.rejected' && event.object_id === requestId
@@ -6633,11 +6650,11 @@ rl.on('line', (line) => {
       assert.ok(rejectedEvent, 'trace show should include query.rejected for malformed polyfill owner reads');
       assert.equal(rejectedEvent.data?.query_shape, 'stream_list');
       assert.equal(rejectedEvent.data?.source?.kind, 'connector');
-      assert.equal(rejectedEvent.data?.source?.id, spotifyManifest.connector_id);
+      assert.equal(rejectedEvent.data?.source?.id, SPOTIFY_CONNECTOR_KEY);
       assert.equal(rejectedEvent.data?.error?.code, 'connector_invalid');
       assert.match(
         rejectedEvent.data?.error?.message || '',
-        new RegExp(`Connector manifest for ${spotifyManifest.connector_id} is malformed or no longer valid`),
+        new RegExp(`Connector manifest for ${SPOTIFY_CONNECTOR_KEY} is malformed or no longer valid`),
       );
 
       const servedEvent = (trace.json.data || []).find((event) =>
@@ -6663,7 +6680,7 @@ rl.on('line', (line) => {
         UPDATE connectors
         SET manifest = ?
         WHERE connector_id = ?
-      `).run('{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}', spotifyManifest.connector_id);
+      `).run('{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}', SPOTIFY_CONNECTOR_KEY);
 
       const result = await runCliExpectFailure(
         ['owner', 'get', 'top_artists', protectedRecordId, '--connector-id', spotifyManifest.connector_id, '--rs-url', rsUrl],
@@ -6671,7 +6688,7 @@ rl.on('line', (line) => {
       );
 
       assert.notEqual(result.code, 0);
-      assert.match(result.stderr, new RegExp(`Connector manifest for ${spotifyManifest.connector_id} is malformed or no longer valid`));
+      assert.match(result.stderr, new RegExp(`Connector manifest for ${SPOTIFY_CONNECTOR_KEY} is malformed or no longer valid`));
       const requestId = result.stderr.match(/Request ID: (req_[A-Za-z0-9_]+)/)?.[1];
       const traceId = result.stderr.match(/Reference trace ID: (trc_[A-Za-z0-9_]+)/)?.[1];
       assert.ok(requestId, 'malformed polyfill owner record-detail read should surface a request id on stderr');
@@ -6688,7 +6705,7 @@ rl.on('line', (line) => {
       assert.equal(queryReceived.data?.query_shape, 'record_detail');
       assert.equal(queryReceived.stream_id, 'top_artists');
       assert.equal(queryReceived.data?.source?.kind, 'connector');
-      assert.equal(queryReceived.data?.source?.id, spotifyManifest.connector_id);
+      assert.equal(queryReceived.data?.source?.id, SPOTIFY_CONNECTOR_KEY);
 
       const rejectedEvent = (trace.json.data || []).find((event) =>
         event.event_type === 'query.rejected' && event.object_id === requestId
@@ -6697,11 +6714,11 @@ rl.on('line', (line) => {
       assert.equal(rejectedEvent.data?.query_shape, 'record_detail');
       assert.equal(rejectedEvent.stream_id, 'top_artists');
       assert.equal(rejectedEvent.data?.source?.kind, 'connector');
-      assert.equal(rejectedEvent.data?.source?.id, spotifyManifest.connector_id);
+      assert.equal(rejectedEvent.data?.source?.id, SPOTIFY_CONNECTOR_KEY);
       assert.equal(rejectedEvent.data?.error?.code, 'connector_invalid');
       assert.match(
         rejectedEvent.data?.error?.message || '',
-        new RegExp(`Connector manifest for ${spotifyManifest.connector_id} is malformed or no longer valid`),
+        new RegExp(`Connector manifest for ${SPOTIFY_CONNECTOR_KEY} is malformed or no longer valid`),
       );
 
       const servedEvent = (trace.json.data || []).find((event) =>
@@ -6720,7 +6737,7 @@ rl.on('line', (line) => {
         UPDATE connectors
         SET manifest = ?
         WHERE connector_id = ?
-      `).run('{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}', spotifyManifest.connector_id);
+      `).run('{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}', SPOTIFY_CONNECTOR_KEY);
 
       const result = await runCliExpectFailure(
         ['owner', 'export', 'top_artists', '--connector-id', spotifyManifest.connector_id, '--rs-url', rsUrl],
@@ -6728,7 +6745,7 @@ rl.on('line', (line) => {
       );
 
       assert.notEqual(result.code, 0);
-      assert.match(result.stderr, new RegExp(`Connector manifest for ${spotifyManifest.connector_id} is malformed or no longer valid`));
+      assert.match(result.stderr, new RegExp(`Connector manifest for ${SPOTIFY_CONNECTOR_KEY} is malformed or no longer valid`));
       const requestId = result.stderr.match(/Request ID: (req_[A-Za-z0-9_]+)/)?.[1];
       const traceId = result.stderr.match(/Reference trace ID: (trc_[A-Za-z0-9_]+)/)?.[1];
       assert.ok(requestId, 'malformed polyfill owner record-list read should surface a request id on stderr');
@@ -6745,7 +6762,7 @@ rl.on('line', (line) => {
       assert.equal(queryReceived.data?.query_shape, 'record_list');
       assert.equal(queryReceived.stream_id, 'top_artists');
       assert.equal(queryReceived.data?.source?.kind, 'connector');
-      assert.equal(queryReceived.data?.source?.id, spotifyManifest.connector_id);
+      assert.equal(queryReceived.data?.source?.id, SPOTIFY_CONNECTOR_KEY);
 
       const rejectedEvent = (trace.json.data || []).find((event) =>
         event.event_type === 'query.rejected' && event.object_id === requestId
@@ -6754,11 +6771,11 @@ rl.on('line', (line) => {
       assert.equal(rejectedEvent.data?.query_shape, 'record_list');
       assert.equal(rejectedEvent.stream_id, 'top_artists');
       assert.equal(rejectedEvent.data?.source?.kind, 'connector');
-      assert.equal(rejectedEvent.data?.source?.id, spotifyManifest.connector_id);
+      assert.equal(rejectedEvent.data?.source?.id, SPOTIFY_CONNECTOR_KEY);
       assert.equal(rejectedEvent.data?.error?.code, 'connector_invalid');
       assert.match(
         rejectedEvent.data?.error?.message || '',
-        new RegExp(`Connector manifest for ${spotifyManifest.connector_id} is malformed or no longer valid`),
+        new RegExp(`Connector manifest for ${SPOTIFY_CONNECTOR_KEY} is malformed or no longer valid`),
       );
 
       const servedEvent = (trace.json.data || []).find((event) =>

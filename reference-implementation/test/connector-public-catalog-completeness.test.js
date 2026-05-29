@@ -36,6 +36,7 @@ import {
   reconcilePolyfillManifests,
 } from '../server/polyfill-manifest-reconcile.ts';
 import { listConnectorSummaries } from '../server/ref-control.ts';
+import { canonicalConnectorKey } from '../server/connector-key.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const POLYFILL_MANIFESTS_DIR = resolve(__dirname, '..', '..', 'packages', 'polyfill-connectors', 'manifests');
@@ -50,12 +51,17 @@ function readManifest(filename) {
   return JSON.parse(readFileSync(join(POLYFILL_MANIFESTS_DIR, filename), 'utf8'));
 }
 
+// The operator catalog projects connectors under their canonical connector
+// key (Decision 1), so the expected sets here resolve each manifest's
+// URL-shaped connector_id to its canonical key before comparing against the
+// surface output. canonicalConnectorKey(x) ?? x leaves non-first-party shapes
+// untouched, matching the runtime's own identity function.
 function listedConnectorIds() {
   const ids = [];
   for (const filename of listFirstPartyManifestNames()) {
     const manifest = readManifest(filename);
     if (manifest?.capabilities?.public_listing?.listed === true && typeof manifest.connector_id === 'string') {
-      ids.push(manifest.connector_id);
+      ids.push(canonicalConnectorKey(manifest.connector_id) ?? manifest.connector_id);
     }
   }
   return ids.sort();
@@ -66,7 +72,7 @@ function unlistedConnectorIds() {
   for (const filename of listFirstPartyManifestNames()) {
     const manifest = readManifest(filename);
     if (manifest?.capabilities?.public_listing?.listed !== true && typeof manifest.connector_id === 'string') {
-      ids.push(manifest.connector_id);
+      ids.push(canonicalConnectorKey(manifest.connector_id) ?? manifest.connector_id);
     }
   }
   return ids.sort();

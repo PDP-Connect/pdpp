@@ -9,7 +9,8 @@
     }
   },
   "capabilities": {
-    "human_interaction": ["credentials"]
+    "human_interaction": ["credentials"],
+    "public_listing": { "listed": true }
   },
   "streams": [
     {

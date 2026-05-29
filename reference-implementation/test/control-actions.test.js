@@ -23,10 +23,18 @@ import { closeDb, getDb, initDb } from '../server/db.js';
 import { resolveDefaultConnectorPath } from '../runtime/controller.ts';
 import { createTraceContext, emitSpineEvent } from '../lib/spine.ts';
 import { validateRequest, listOperations } from '@pdpp/reference-contract';
+import { canonicalConnectorKey } from '../server/connector-key.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, '..');
 const POLYFILL_MANIFESTS_DIR = join(REFERENCE_IMPL_DIR, '..', 'packages', 'polyfill-connectors', 'manifests');
+
+// The connector catalog, run summaries, and schedule rows are all keyed by the
+// canonical connector key (Decision 1): registering the URL-shaped manifest
+// connector_id stores and projects it as `spotify`. Output assertions compare
+// against this canonical key; request inputs may still carry the URL shape
+// because the server canonicalizes connector ids at the boundary.
+const SPOTIFY_CONNECTOR_KEY = canonicalConnectorKey('https://registry.pdpp.org/connectors/spotify');
 
 async function closeServer(server) {
   server.schedulerManager?.stop?.();
@@ -100,13 +108,21 @@ async function registerConnector(asUrl, manifest) {
 }
 
 async function emitSyntheticRun({
-  connectorId,
+  connectorId: rawConnectorId,
   runId,
   status,
   occurredAt,
   knownGaps = [],
-  source = { kind: 'connector', id: connectorId },
+  source: rawSource = null,
 }) {
+  // The live runtime launches runs under the canonical connector key and emits
+  // run.* spine events with source.id = that canonical key. Connector-summary
+  // correlation (last_run / last_successful_run) queries run history by the
+  // canonical key, so a synthetic run must use it too or it correlates to
+  // nothing. Canonicalize the (possibly URL-shaped) test connectorId here. See
+  // canonicalize-connector-keys Decision 1.
+  const connectorId = canonicalConnectorKey(rawConnectorId) ?? rawConnectorId;
+  const source = rawSource ?? { kind: 'connector', id: connectorId };
   const trace = createTraceContext({ scenarioId: `scn_${runId}` });
   // The spine-layer enforcement requires every run.started to carry
   // boot_epoch+seq. Synthetic-run fixtures use the harness's current
@@ -178,7 +194,7 @@ test('GET /_ref/connectors lists registered connectors with stream names and fre
     assert.equal(status, 200);
     assert.equal(body.object, 'list');
     assert.ok(Array.isArray(body.data));
-    const entry = body.data.find((c) => c.connector_id === spotifyManifest.connector_id);
+    const entry = body.data.find((c) => c.connector_id === SPOTIFY_CONNECTOR_KEY);
     assert.ok(entry, 'spotify connector should be listed');
     assert.equal(entry.display_name, 'Spotify');
     assert.ok(entry.streams.includes('top_artists'));
@@ -211,7 +227,7 @@ test('GET /_ref/connectors finds connector runs that are older than newer runs f
 
     const { status, body } = await fetchJson(`${asUrl}/_ref/connectors`);
     assert.equal(status, 200);
-    const entry = body.data.find((row) => row.connector_id === connectorId);
+    const entry = body.data.find((row) => row.connector_id === SPOTIFY_CONNECTOR_KEY);
     assert.ok(entry, 'spotify connector should be listed');
     assert.equal(entry.last_run?.run_id, 'run_spotify_older_success');
     assert.equal(entry.last_run?.status, 'succeeded');
@@ -240,7 +256,7 @@ test('GET /_ref/connectors projects known gaps from the latest run summary', asy
 
     const { status, body } = await fetchJson(`${asUrl}/_ref/connectors`);
     assert.equal(status, 200);
-    const entry = body.data.find((row) => row.connector_id === connectorId);
+    const entry = body.data.find((row) => row.connector_id === SPOTIFY_CONNECTOR_KEY);
     assert.ok(entry, 'spotify connector should be listed');
     assert.equal(entry.last_run?.run_id, 'run_spotify_known_gap');
     assert.deepEqual(entry.last_run?.known_gaps, knownGaps);
@@ -297,7 +313,7 @@ test('GET /_ref/connectors projects schedule when one is configured', async () =
     });
     assert.equal(put.status, 200);
     const { body } = await fetchJson(`${asUrl}/_ref/connectors`);
-    const entry = body.data.find((c) => c.connector_id === cid);
+    const entry = body.data.find((c) => c.connector_id === SPOTIFY_CONNECTOR_KEY);
     assert.ok(entry);
     assert.ok(entry.schedule, 'schedule should be projected when configured');
     assert.equal(entry.schedule.interval_seconds, 900);
@@ -431,7 +447,12 @@ test('GET /_ref/records/timeline honors limit and filters records by stream', as
     const { body: streamFiltered } = await fetchJson(`${asUrl}/_ref/records/timeline?stream=saved_tracks`);
     assert.deepEqual(streamFiltered.data, [], 'stream filter excludes wrong streams');
 
-    const { body: connFiltered } = await fetchJson(`${asUrl}/_ref/records/timeline?connector_id=${encodeURIComponent(spotifyManifest.connector_id)}`);
+    // Records are keyed by the canonical connector key, and the timeline
+    // connector_id filter matches against that stored key. (Unlike the
+    // /_ref/connections + admission routes, the timeline filter does not
+    // canonicalize a URL-shaped query value — see owner-review note in the
+    // workstream report.)
+    const { body: connFiltered } = await fetchJson(`${asUrl}/_ref/records/timeline?connector_id=${encodeURIComponent(SPOTIFY_CONNECTOR_KEY)}`);
     assert.equal(connFiltered.data.length, 3);
   } finally {
     await closeServer(server);
@@ -466,7 +487,7 @@ test('POST /_ref/connectors/:connectorId/run starts an async background run and 
     assert.ok(completed, 'manual run should complete in the background');
 
     const { body: connectors } = await fetchJson(`${asUrl}/_ref/connectors`);
-    const entry = connectors.data.find((row) => row.connector_id === cid);
+    const entry = connectors.data.find((row) => row.connector_id === SPOTIFY_CONNECTOR_KEY);
     assert.ok(entry, 'connector should still be listed');
     assert.ok(entry.last_run, 'manual run should project onto connector summaries');
     assert.equal(entry.last_run.run_id, started.run_id);
@@ -530,7 +551,10 @@ test('controller startup reconciles abandoned controller-managed runs after rest
   const spotifyManifest = JSON.parse(
     readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'),
   );
-  const connectorId = spotifyManifest.connector_id;
+  // The connector instance, controller_active_runs rows, and run.* spine
+  // events are all keyed by the canonical connector key (Decision 1), so the
+  // seeded abandoned-run state and the reconciler correlate on the same key.
+  const connectorId = canonicalConnectorKey(spotifyManifest.connector_id) ?? spotifyManifest.connector_id;
   const runId = 'run_controller_restart_orphan';
   let server = null;
 
@@ -629,7 +653,7 @@ test('controller startup reconciles abandoned controller-managed runs after rest
     assert.equal(failed.data?.reason, 'controller_restarted');
 
     const { body: connectors } = await fetchJson(`${asUrl}/_ref/connectors`);
-    const entry = connectors.data.find((row) => row.connector_id === connectorId);
+    const entry = connectors.data.find((row) => row.connector_id === SPOTIFY_CONNECTOR_KEY);
     assert.ok(entry, 'connector should still be listed after restart');
     assert.equal(entry.last_run?.run_id, runId);
     assert.equal(entry.last_run?.status, 'failed');
@@ -670,7 +694,7 @@ test('schedule lifecycle: upsert → list → pause → resume → delete', asyn
     assert.equal(putResp.status, 200);
     const upserted = await putResp.json();
     assert.equal(upserted.object, 'schedule');
-    assert.equal(upserted.connector_id, cid);
+    assert.equal(upserted.connector_id, SPOTIFY_CONNECTOR_KEY);
     assert.equal(upserted.interval_seconds, 1800);
     assert.equal(upserted.jitter_seconds, 30);
     assert.equal(upserted.enabled, true);
@@ -680,7 +704,7 @@ test('schedule lifecycle: upsert → list → pause → resume → delete', asyn
     // List shows it.
     const { body: listed } = await fetchJson(`${asUrl}/_ref/schedules`);
     assert.equal(listed.data.length, 1);
-    assert.equal(listed.data[0].connector_id, cid);
+    assert.equal(listed.data[0].connector_id, SPOTIFY_CONNECTOR_KEY);
 
     // Pause.
     const pauseResp = await fetch(`${asUrl}/_ref/connectors/${encodeURIComponent(cid)}/schedule/pause`, {

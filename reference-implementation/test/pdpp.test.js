@@ -11,10 +11,16 @@ import { getDb } from '../server/db.js';
 import { ingestRecord } from '../server/records.js';
 import { runConnector, loadSyncState } from '../runtime/index.js';
 import { makeDefaultAccountConnectorInstanceId } from '../server/stores/connector-instance-store.js';
+import { canonicalConnectorKey } from '../server/connector-key.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, '..');
 const TEST_DCR_INITIAL_ACCESS_TOKEN = 'pdpp-reference-test-initial-access-token';
+// Registering the URL-shaped spotify manifest stores the catalog row, the
+// connector_instances row, and records under the canonical connector key
+// (Decision 1). Raw-SQL fixtures that target those rows by connector_id must
+// use the canonical key, not the manifest URL, or they match zero rows.
+const SPOTIFY_CONNECTOR_KEY = canonicalConnectorKey('https://registry.pdpp.org/connectors/spotify');
 
 
 async function closeServer(server) {
@@ -4456,7 +4462,7 @@ test('PDPP reference implementation integration', async (t) => {
         UPDATE connectors
         SET manifest = ?
         WHERE connector_id = ?
-      `).run('{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}', spotifyManifest.connector_id);
+      `).run('{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}', SPOTIFY_CONNECTOR_KEY);
 
       const connectorLookupResp = await fetchJson(
         `${asUrl}/connectors/${encodeURIComponent(spotifyManifest.connector_id)}`,
@@ -4477,11 +4483,15 @@ test('PDPP reference implementation integration', async (t) => {
         const rejectedTraceId = rejectedResp.headers.get('PDPP-Reference-Trace-Id');
         assert.ok(rejectedRequestId?.startsWith('req_'));
         assert.ok(rejectedTraceId?.startsWith('trc_qry_'));
+        // Owner read routes canonicalize the connector id at the boundary, so
+        // the rejection message, the query.received source descriptor, and the
+        // query.rejected message all carry the canonical connector key
+        // (Decision 1), not the URL-shaped manifest id.
         const rejectedBody = await rejectedResp.json();
         assert.equal(rejectedBody.error.code, 'connector_invalid');
         assert.match(
           rejectedBody.error.message,
-          new RegExp(`Connector manifest for ${spotifyManifest.connector_id} is malformed or no longer valid`),
+          new RegExp(`Connector manifest for ${SPOTIFY_CONNECTOR_KEY} is malformed or no longer valid`),
         );
 
         const { body: trace } = await fetchJson(`${asUrl}/_ref/traces/${encodeURIComponent(rejectedTraceId)}`);
@@ -4492,7 +4502,7 @@ test('PDPP reference implementation integration', async (t) => {
         assert.ok(queryReceivedEvent, `owner trace should include query.received for malformed ${queryShape} reads`);
         assert.equal(queryReceivedEvent.data.query_shape, queryShape);
         assert.equal(queryReceivedEvent.data.source?.kind, 'connector');
-        assert.equal(queryReceivedEvent.data.source?.id, spotifyManifest.connector_id);
+        assert.equal(queryReceivedEvent.data.source?.id, SPOTIFY_CONNECTOR_KEY);
         if (streamId) {
           assert.equal(queryReceivedEvent.stream_id, streamId);
         }
@@ -4506,7 +4516,7 @@ test('PDPP reference implementation integration', async (t) => {
         assert.equal(rejectedEvent.data.error?.code, 'connector_invalid');
         assert.match(
           rejectedEvent.data.error?.message || '',
-          new RegExp(`Connector manifest for ${spotifyManifest.connector_id} is malformed or no longer valid`),
+          new RegExp(`Connector manifest for ${SPOTIFY_CONNECTOR_KEY} is malformed or no longer valid`),
         );
         if (streamId) {
           assert.equal(rejectedEvent.stream_id, streamId);
@@ -4622,7 +4632,7 @@ test('PDPP reference implementation integration', async (t) => {
         UPDATE connectors
         SET manifest = ?
         WHERE connector_id = ?
-      `).run('{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}', spotifyManifest.connector_id);
+      `).run('{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}', SPOTIFY_CONNECTOR_KEY);
 
       const malformedGetResp = await fetchJson(
         `${rsUrl}/v1/state/${encodeURIComponent(spotifyManifest.connector_id)}`,
@@ -4832,13 +4842,18 @@ test('PDPP reference implementation integration', async (t) => {
         streams: [{ name: 'top_artists' }],
       });
 
-      const grantConnectorInstanceId = makeDefaultAccountConnectorInstanceId('u1', spotifyManifest.connector_id);
+      // The grant-scoped state read canonicalizes the connector id at the
+      // boundary, so it derives the default account connector_instance_id and
+      // looks up grant_connector_state rows under the canonical key. Seed both
+      // the connector_id column and the instance-id derivation with the
+      // canonical key (Decision 1) so the read correlates.
+      const grantConnectorInstanceId = makeDefaultAccountConnectorInstanceId('u1', SPOTIFY_CONNECTOR_KEY);
       const insertGrantState = getDb().prepare(`
         INSERT INTO grant_connector_state(grant_id, connector_id, connector_instance_id, stream, state_json, updated_at)
         VALUES(?, ?, ?, ?, ?, ?)
       `);
-      insertGrantState.run(approved.grant.grant_id, spotifyManifest.connector_id, grantConnectorInstanceId, 'top_artists', JSON.stringify({ cursor: 'granted_cursor' }), '2026-04-18T10:00:00.000Z');
-      insertGrantState.run(approved.grant.grant_id, spotifyManifest.connector_id, grantConnectorInstanceId, 'recently_played', JSON.stringify({ cursor: 'hidden_cursor' }), '2026-04-18T11:00:00.000Z');
+      insertGrantState.run(approved.grant.grant_id, SPOTIFY_CONNECTOR_KEY, grantConnectorInstanceId, 'top_artists', JSON.stringify({ cursor: 'granted_cursor' }), '2026-04-18T10:00:00.000Z');
+      insertGrantState.run(approved.grant.grant_id, SPOTIFY_CONNECTOR_KEY, grantConnectorInstanceId, 'recently_played', JSON.stringify({ cursor: 'hidden_cursor' }), '2026-04-18T11:00:00.000Z');
 
       const getResp = await fetchJson(
         `${rsUrl}/v1/state/${encodeURIComponent(spotifyManifest.connector_id)}?grant_id=${encodeURIComponent(approved.grant.grant_id)}`,
@@ -5363,7 +5378,7 @@ test('PDPP reference implementation integration', async (t) => {
         UPDATE connectors
         SET manifest = ?
         WHERE connector_id = ?
-      `).run('{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}', spotifyManifest.connector_id);
+      `).run('{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}', SPOTIFY_CONNECTOR_KEY);
 
       const rejectedResp = await fetchJson(
         `${rsUrl}/v1/ingest/top_artists?connector_id=${encodeURIComponent(spotifyManifest.connector_id)}`,
@@ -5439,7 +5454,7 @@ test('PDPP reference implementation integration', async (t) => {
         UPDATE connectors
         SET manifest = ?
         WHERE connector_id = ?
-      `).run('{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}', spotifyManifest.connector_id);
+      `).run('{"connector_id":"https://registry.pdpp.org/connectors/spotify","streams":[{"name":"top_artists","primary_key":["missing_id"]}]}', SPOTIFY_CONNECTOR_KEY);
 
       const deleteAllResp = await fetchJson(
         `${rsUrl}/v1/streams/top_artists/records?connector_id=${encodeURIComponent(spotifyManifest.connector_id)}`,

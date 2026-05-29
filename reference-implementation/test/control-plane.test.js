@@ -20,6 +20,7 @@ import { ingestRecord } from '../server/records.js';
 import { getDb } from '../server/db.js';
 import { emitSpineEvent } from '../lib/spine.ts';
 import { runConnector } from '../runtime/index.js';
+import { canonicalConnectorKey } from '../server/connector-key.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, '..');
@@ -526,7 +527,13 @@ test('_ref dataset summary', async (t) => {
       // (saved_at), and `recently_played` (played_at). Seed records matching
       // those streams with real-world timestamps so the dataset summary's
       // `consent_time_field`-driven bounds exercise the live manifest.
-      const spotifyId = spotifyManifest.connector_id;
+      // Records are stored under the canonical connector key (Decision 1), the
+      // same key the connector catalog row is registered under, so the dataset
+      // summary's manifest join (consent_time_field bounds) and the
+      // top_connectors projection correlate. ingestRecord is the low-level
+      // store called directly here, bypassing the route that would otherwise
+      // canonicalize a URL-shaped id, so seed under the canonical key.
+      const spotifyId = canonicalConnectorKey(spotifyManifest.connector_id) ?? spotifyManifest.connector_id;
       await ingestRecord(spotifyId, {
         stream: 'saved_tracks',
         key: 'track_1',
@@ -606,7 +613,9 @@ test('_ref dataset summary', async (t) => {
 
   await t.test('soft-deleted records are excluded from counts, bytes, and timestamp bounds', async () => {
     await withHarness(async ({ asUrl, spotifyManifest }) => {
-      const spotifyId = spotifyManifest.connector_id;
+      // Seed under the canonical connector key — see the populated-instance
+      // test above for why ingestRecord must match the catalog's canonical key.
+      const spotifyId = canonicalConnectorKey(spotifyManifest.connector_id) ?? spotifyManifest.connector_id;
       await ingestRecord(spotifyId, {
         stream: 'saved_tracks',
         key: 'track_live',
