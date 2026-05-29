@@ -35,14 +35,20 @@ the engine/wrapper/registry allowlist.
 
 ## Capabilities
 
-### Modified Capabilities
-
-- `reference-implementation-architecture`: narrows the memory-pressure
-  invariant to the implemented spine timeline pagination and wrapper foundation,
-  adds the staged-file direct-prepare prevention requirement, and documents the
-  correlation-summary aggregate extent guarantee.
-
 ### Added Capabilities
+
+- `reference-implementation-architecture`: adds four new reference-only
+  requirements that the prior `fix-rs-query-memory-pressure` change did not
+  cover — SQL-paginated per-correlation spine timeline endpoints
+  (`/_ref/{runs,grants,traces}/:id/timeline`), a typed bounded-read SQL wrapper
+  with a startup-validated query registry, a staged-file direct-prepare
+  prevention gate, and a correlation-summary aggregate-extent guarantee. These
+  read paths and primitives are distinct from the enumerated-route invariant
+  already canonicalized at `### Requirement: The RS read-path for enumerated
+  routes SHALL not materialize unbounded result arrays`, which is explicitly
+  scoped to its own change's read paths.
+
+### Modified Capabilities
 
 None.
 

@@ -49,6 +49,8 @@ For primary dashboard-mode surfaces, `/dashboard/**` and `/sandbox/**` SHALL ren
 - **THEN** it SHALL render through the same shared records-list view component used by `/sandbox/records`
 - **AND** it SHALL bind the live data source, the live Sync-now action, and the live records-page poller
 
+## ADDED Requirements
+
 ### Requirement: Sandbox API routes SHALL use canonical operations with mock adapters
 
 Sandbox route handlers under `/sandbox/v1/**`, `/sandbox/_ref/**`, and `/sandbox/.well-known/**` SHALL bind canonical AS/RS operation modules to deterministic mock adapter dependencies wherever a canonical operation exists for the corresponding live behavior. Fixture builders MAY construct seeded data and mock dependencies, but SHALL NOT become a parallel implementation of AS/RS business logic when an operation module is available.
@@ -72,8 +74,6 @@ Sandbox route handlers under `/sandbox/v1/**`, `/sandbox/_ref/**`, and `/sandbox
 - **WHEN** `_demo/builders.ts` or equivalent sandbox fixture code is used by a route handler
 - **THEN** the code SHALL be classifiable as seeded fixture construction, mock dependency construction, or a documented operation-gap adapter
 - **AND** it SHALL NOT bypass an available canonical operation module
-
-## ADDED Requirements
 
 ### Requirement: Sandbox connector-health time semantics SHALL use the deterministic sandbox clock
 

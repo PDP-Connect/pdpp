@@ -20,7 +20,11 @@ This change does not alter public PDPP protocol semantics, make the sandbox coll
 
 ### Modified Capabilities
 
-- `reference-demo-instance`: tighten the existing data-source-seam requirement so primary sandbox pages and sandbox API routes bind real feature/operation seams to deterministic mock adapters.
+- `reference-demo-instance`: tighten the existing data-source-seam requirement so primary sandbox pages bind real dashboard feature seams to deterministic mock adapters (adds the safety/demo-driven divergence rule and the live overview/records shared-component scenarios).
+
+### Added Capabilities
+
+- `reference-demo-instance`: add the sandbox-API-route requirement (sandbox `/sandbox/v1|_ref|.well-known/**` handlers bind canonical AS/RS operation modules to mock adapters rather than reimplementing business logic) and the deterministic-sandbox-clock requirement for connector-health time labels. These are distinct from the existing `### Requirement: Demo APIs SHALL be callable and share state with the UI`, which only requires the demo APIs to be callable and state-consistent.
 
 ## Impact
 
