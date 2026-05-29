@@ -260,7 +260,8 @@ export function mountAsAgentConnect(app: AppLike, ctx: MountAsAgentConnectContex
   const handler: RouteHandler = async (req, res) => {
     try {
       const baseUrl = ctx.resolveBaseUrl(req);
-      const bodyClientId = typeof req.body?.client_id === "string" ? req.body.client_id : null;
+      const bodyClientId =
+        typeof req.body?.client_id === "string" && req.body.client_id.trim() ? req.body.client_id : null;
 
       const resolved = await resolveRequestUri(req, baseUrl, bodyClientId, ctx);
       if (!resolved) {
