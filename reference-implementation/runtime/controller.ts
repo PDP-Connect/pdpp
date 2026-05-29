@@ -2218,17 +2218,17 @@ export function createController(opts: ControllerOptions = {}): Controller {
   }
 
   async function getSchedule(connectorId: string, options: ConnectorInstanceOptions = {}): Promise<ScheduleApi | null> {
-    connectorId = canonicalConnectorKey(connectorId) ?? connectorId;
-    const connectorInstanceId = options.connectorInstanceId || connectorId;
+    const resolvedConnectorId = canonicalConnectorKey(connectorId) ?? connectorId;
+    const connectorInstanceId = options.connectorInstanceId || resolvedConnectorId;
     const directSchedule = await getScheduleRecord(connectorInstanceId);
     let schedule = directSchedule;
     if (!(schedule || options.connectorInstanceId)) {
       const matches = (await schedulerStore.listSchedules()).filter(
-        (candidate) => candidate.connector_id === connectorId
+        (candidate) => candidate.connector_id === resolvedConnectorId
       );
       if (matches.length > 1) {
         throw new ControllerError(
-          `Connector '${connectorId}' has multiple schedules; provide connector_instance_id.`,
+          `Connector '${resolvedConnectorId}' has multiple schedules; provide connector_instance_id.`,
           "ambiguous_connector_instance"
         );
       }
@@ -2237,10 +2237,10 @@ export function createController(opts: ControllerOptions = {}): Controller {
     if (!schedule) {
       return null;
     }
-    const policy = await getConnectorRefreshPolicy(connectorId);
+    const policy = await getConnectorRefreshPolicy(resolvedConnectorId);
     const historyIndex = await loadScheduleHistoryIndex();
     const runtimeProjection = getRuntimeProjection(
-      connectorId,
+      resolvedConnectorId,
       schedule.connector_instance_id,
       browserSurfaceLeaseManager,
       historyIndex
@@ -2253,11 +2253,11 @@ export function createController(opts: ControllerOptions = {}): Controller {
     input: ConnectorSchedulePatch,
     options: ConnectorInstanceOptions = {}
   ): Promise<ScheduleUpsertResult> {
-    connectorId = canonicalConnectorKey(connectorId) ?? connectorId;
-    const connectorInstanceId = options.connectorInstanceId || connectorId;
+    const resolvedConnectorId = canonicalConnectorKey(connectorId) ?? connectorId;
+    const connectorInstanceId = options.connectorInstanceId || resolvedConnectorId;
     const now = nowIso();
     const validated = validateScheduleInput(input);
-    const policy = await getConnectorRefreshPolicy(connectorId);
+    const policy = await getConnectorRefreshPolicy(resolvedConnectorId);
     const ineligibilityReason = validated.enabled ? getScheduleIneligibilityReason(policy) : null;
     if (ineligibilityReason) {
       throw new ControllerError(ineligibilityReason, "invalid_request");
@@ -2273,7 +2273,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     } else {
       await schedulerStore.createSchedule({
         connector_instance_id: connectorInstanceId,
-        connector_id: connectorId,
+        connector_id: resolvedConnectorId,
         interval_seconds: validated.interval_seconds,
         jitter_seconds: validated.jitter_seconds,
         enabled: validated.enabled,
@@ -2284,12 +2284,15 @@ export function createController(opts: ControllerOptions = {}): Controller {
     const historyIndex = await loadScheduleHistoryIndex();
     const schedule = scheduleToApi(
       await getScheduleRecord(connectorInstanceId),
-      getRuntimeProjection(connectorId, connectorInstanceId, browserSurfaceLeaseManager, historyIndex),
+      getRuntimeProjection(resolvedConnectorId, connectorInstanceId, browserSurfaceLeaseManager, historyIndex),
       policy,
       historyIndex.get(connectorInstanceId)
     );
     if (!schedule) {
-      throw new ControllerError(`Schedule not found after upsert for connector: ${connectorId}`, "internal_error");
+      throw new ControllerError(
+        `Schedule not found after upsert for connector: ${resolvedConnectorId}`,
+        "internal_error"
+      );
     }
     const policy_warning = buildMinimumIntervalWarning(validated.interval_seconds, policy);
     return { schedule, policy_warning };
@@ -2300,13 +2303,13 @@ export function createController(opts: ControllerOptions = {}): Controller {
     enabled: boolean,
     options: ConnectorInstanceOptions = {}
   ): Promise<ScheduleApi | null> {
-    connectorId = canonicalConnectorKey(connectorId) ?? connectorId;
-    const connectorInstanceId = options.connectorInstanceId || connectorId;
+    const resolvedConnectorId = canonicalConnectorKey(connectorId) ?? connectorId;
+    const connectorInstanceId = options.connectorInstanceId || resolvedConnectorId;
     const existing = await getScheduleRecord(connectorInstanceId);
     if (!existing) {
-      throw new ControllerError(`Schedule not found for connector: ${connectorId}`, "not_found");
+      throw new ControllerError(`Schedule not found for connector: ${resolvedConnectorId}`, "not_found");
     }
-    const policy = await getConnectorRefreshPolicy(connectorId);
+    const policy = await getConnectorRefreshPolicy(resolvedConnectorId);
     const ineligibilityReason = enabled ? getScheduleIneligibilityReason(policy) : null;
     if (ineligibilityReason) {
       throw new ControllerError(ineligibilityReason, "invalid_request");
@@ -2315,7 +2318,12 @@ export function createController(opts: ControllerOptions = {}): Controller {
     const historyIndex = await loadScheduleHistoryIndex();
     return scheduleToApi(
       await getScheduleRecord(connectorInstanceId),
-      getRuntimeProjection(connectorId, existing.connector_instance_id, browserSurfaceLeaseManager, historyIndex),
+      getRuntimeProjection(
+        resolvedConnectorId,
+        existing.connector_instance_id,
+        browserSurfaceLeaseManager,
+        historyIndex
+      ),
       policy
     );
   }
@@ -2329,8 +2337,8 @@ export function createController(opts: ControllerOptions = {}): Controller {
   }
 
   async function deleteSchedule(connectorId: string, options: ConnectorInstanceOptions = {}): Promise<boolean> {
-    connectorId = canonicalConnectorKey(connectorId) ?? connectorId;
-    const connectorInstanceId = options.connectorInstanceId || connectorId;
+    const resolvedConnectorId = canonicalConnectorKey(connectorId) ?? connectorId;
+    const connectorInstanceId = options.connectorInstanceId || resolvedConnectorId;
     const existing = await getScheduleRecord(connectorInstanceId);
     if (!existing) {
       return false;
