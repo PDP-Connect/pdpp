@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { startServer } from '../server/index.js';
 import { closeDb } from '../server/db.js';
 import { createScheduler } from '../runtime/scheduler.ts';
+import { getDefaultSchedulerStore } from '../server/stores/scheduler-store.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, '..');
@@ -304,6 +305,104 @@ test('server-owned scheduler ignores paused and deleted persisted schedules', as
     });
     await new Promise((resolve) => setTimeout(resolve, 500));
     assert.equal(readAttempts(attemptsPath).length, 0, 'deleted schedule should not run after startup');
+  } finally {
+    if (server) {
+      await closeServer(server);
+    }
+    closeDb();
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('autonomous scheduler canonicalizes a legacy URL-shaped schedule connector_id before running', async () => {
+  // GAP A regression: a pre-canonicalization `connector_schedules` row can hold
+  // a URL-shaped (or legacy-alias) `connector_id`. The controller's
+  // `upsertSchedule` canonicalizes on write, but a legacy/migration row seeded
+  // directly into the store bypasses that. `buildConnectors` reads the row and
+  // (before the fix) forwards the non-canonical id straight into the scheduler,
+  // which emits the spine run source and persists run-history / last-run rows
+  // under the non-canonical key — mismatching the canonical key the read and
+  // admission paths key on. This test seeds the legacy row directly, ticks the
+  // scheduler once, and asserts every persisted identity is the canonical key.
+  const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
+  const canonicalKey = spotifyManifest.connector_key; // 'spotify'
+  const legacyConnectorId = spotifyManifest.connector_id; // URL-shaped, non-canonical
+  assert.notEqual(legacyConnectorId, canonicalKey, 'fixture precondition: ids differ');
+
+  const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-scheduler-legacy-canonical-'));
+  const { attemptsPath, connectorPath } = writeLoggingConnector(tmpDir);
+  let server = null;
+
+  try {
+    server = await startServer({
+      quiet: true,
+      asPort: 0,
+      rsPort: 0,
+      dbPath: ':memory:',
+      connectorPathResolver: () => connectorPath,
+    });
+    const asUrl = `http://localhost:${server.asPort}`;
+
+    const registerResp = await fetchJson(`${asUrl}/connectors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(spotifyManifest),
+    });
+    assert.equal(registerResp.status, 201);
+
+    // Seed the schedule row directly — NOT via controller.upsertSchedule, which
+    // would canonicalize — to faithfully model a legacy row written before the
+    // canonicalization slice landed.
+    const store = getDefaultSchedulerStore();
+    const now = new Date().toISOString();
+    await store.createSchedule({
+      connector_id: legacyConnectorId,
+      connector_instance_id: legacyConnectorId,
+      interval_seconds: 60,
+      jitter_seconds: 0,
+      enabled: true,
+      created_at: now,
+      updated_at: now,
+    });
+
+    // Re-run buildConnectors over the freshly-seeded legacy row.
+    await server.schedulerManager.refresh();
+
+    await waitFor(() => readAttempts(attemptsPath).length >= 1, 8000);
+    // The run record is appended to history asynchronously after the run
+    // completes; poll the durable store (SQLite listRunHistory is synchronous)
+    // until the row lands so the assertion sees the persisted identity.
+    let history = [];
+    await waitFor(() => {
+      history = store.listRunHistory(50);
+      return history.length >= 1;
+    }, 8000);
+
+    history = store.listRunHistory(50);
+    const record = history.find((entry) => entry.status === 'succeeded') || history[0];
+    assert.ok(record, 'expected a persisted run-history record from the scheduled run');
+
+    // The persisted run-history connectorId and the emitted spine run source id
+    // must be the canonical key, not the legacy URL-shaped connector_id.
+    assert.equal(
+      record.connectorId,
+      canonicalKey,
+      `run-history connectorId should be canonical '${canonicalKey}', got '${record.connectorId}'`,
+    );
+    assert.equal(
+      record.source?.id,
+      canonicalKey,
+      `spine run source.id should be canonical '${canonicalKey}', got '${record.source?.id}'`,
+    );
+
+    const lastRunTimes = store.listLastRunTimes();
+    const lastRun = lastRunTimes.find((row) => row.connector_id === canonicalKey);
+    assert.ok(
+      lastRun,
+      `last-run row should be keyed by canonical '${canonicalKey}', got ${JSON.stringify(
+        lastRunTimes.map((row) => row.connector_id),
+      )}`,
+    );
   } finally {
     if (server) {
       await closeServer(server);

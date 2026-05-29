@@ -162,6 +162,64 @@ test('ref.source-webhook starts webhook-classified run when run dependency is av
   assert.equal(result.run.trigger_kind, 'webhook');
 });
 
+test('ref.source-webhook canonicalizes a URL-shaped configured connector id for ingest', async () => {
+  let captured;
+  const body = JSON.stringify({
+    action: 'ingest_records',
+    stream: 'messages',
+    records: [{ id: 'm1' }],
+  });
+  const result = await executeSourceWebhook(
+    input(body),
+    deps({
+      resolveConnectorId: () => 'https://registry.pdpp.org/connectors/gmail',
+      ingestRecords: async (payload) => {
+        captured = payload;
+        return { stream: payload.streamName, records_accepted: 1, records_rejected: 0, errors: [] };
+      },
+    }),
+  );
+  assert.equal(result.action, 'ingest_records');
+  assert.equal(captured.connectorId, 'gmail');
+});
+
+test('ref.source-webhook canonicalizes a legacy-alias configured connector id for scheduler signal', async () => {
+  let captured;
+  const result = await executeSourceWebhook(
+    input('{"action":"schedule_run"}'),
+    deps({
+      resolveConnectorId: () => 'claude_code',
+      signalScheduler: (payload) => {
+        captured = payload;
+      },
+    }),
+  );
+  assert.equal(result.action, 'schedule_run');
+  assert.equal(captured.connectorId, 'claude-code');
+});
+
+test('ref.source-webhook canonicalizes a URL-shaped configured connector id for run request', async () => {
+  let capturedPolicy;
+  let capturedRunRequest;
+  const result = await executeSourceWebhook(
+    input('{"action":"schedule_run"}'),
+    deps({
+      resolveConnectorId: () => 'https://registry.pdpp.org/connectors/slack',
+      projectAutomationPolicy: (payload) => {
+        capturedPolicy = payload;
+        return { trigger_kind: 'webhook', automation_mode: 'unattended', allowed_to_start: true };
+      },
+      requestRun: (payload) => {
+        capturedRunRequest = payload;
+        return { run_id: 'run_1', trace_id: 'trc_1', status: 'started', trigger_kind: 'webhook' };
+      },
+    }),
+  );
+  assert.equal(result.action, 'schedule_run');
+  assert.equal(capturedPolicy.connectorId, 'slack');
+  assert.equal(capturedRunRequest.connectorId, 'slack');
+});
+
 test('ref.source-webhook does not start webhook run when automation policy blocks it', async () => {
   let requested = false;
   const result = await executeSourceWebhook(

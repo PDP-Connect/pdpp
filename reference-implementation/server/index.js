@@ -2747,6 +2747,7 @@ function buildAsApp(opts = {}) {
   const refSpineCorrelationsContext = {
     requireOwnerSession: ownerAuth.requireOwnerSession,
     listSpineCorrelations: (kind, filters) => listSpineCorrelations(kind, filters),
+    canonicalConnectorKey,
     handleError,
   };
   mountRefTraces(app, refSpineCorrelationsContext);
@@ -4126,30 +4127,42 @@ function createReferenceSchedulerManager({
     const connectors = [];
     for (const schedule of enabledSchedules) {
       try {
-        const manifest = await getConnectorManifest(schedule.connector_id);
+        // Canonicalize at the autonomous-scheduler boundary. A legacy /
+        // migration `connector_schedules` row can carry a URL-shaped or
+        // legacy-alias `connector_id`: the controller's `upsertSchedule`
+        // canonicalizes on write, but rows seeded before that slice (or by a
+        // non-controller path) do not. Forwarding it verbatim makes the
+        // scheduler emit the spine run source / actor_id and persist
+        // run-history + last-run rows under the non-canonical id, mismatching
+        // the canonical key the read/admission paths key on. Normalize once
+        // here, mirroring the established `canonicalConnectorKey(x) ?? x`
+        // pattern (see index.js:1236, 1310). The manifest still resolves via
+        // alias fallback, so eligible connectors still run.
+        const connectorId = canonicalConnectorKey(schedule.connector_id) ?? schedule.connector_id;
+        const manifest = await getConnectorManifest(connectorId);
         if (!manifest) {
           continue;
         }
         const scheduleIneligibilityReason = getScheduleIneligibilityReason(getManifestRefreshPolicy(manifest));
         if (scheduleIneligibilityReason) {
           logger?.warn?.(
-            { connector_id: schedule.connector_id, reason: scheduleIneligibilityReason },
+            { connector_id: connectorId, reason: scheduleIneligibilityReason },
             'skipping scheduled connector because refresh policy is not background-safe',
           );
           continue;
         }
         const connectorPath = await Promise.resolve(
-          connectorPathResolver(schedule.connector_id, manifest, { priorityClass: 'scheduled_refresh' }),
+          connectorPathResolver(connectorId, manifest, { priorityClass: 'scheduled_refresh' }),
         );
         if (!connectorPath) {
           logger?.warn?.(
-            { connector_id: schedule.connector_id },
+            { connector_id: connectorId },
             'skipping scheduled connector without runnable implementation',
           );
           continue;
         }
         connectors.push({
-          connectorId: schedule.connector_id,
+          connectorId,
           connectorInstanceId: schedule.connector_instance_id,
           connectorPath,
           manifest,

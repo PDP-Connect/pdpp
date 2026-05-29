@@ -38,6 +38,11 @@ interface AppLike {
 }
 
 export interface MountRefSpineCorrelationsContext {
+  // Canonicalize an owner-supplied connector id (registry URL or legacy
+  // alias) to the canonical connector key the spine stores `source_id`
+  // under. Returns `null` for unrecognized ids; callers fall back to the
+  // raw value. Mirrors the threading in `server/routes/ref-connectors.ts`.
+  canonicalConnectorKey(value: string | null | undefined): string | null;
   handleError(res: unknown, err: unknown): void;
   listSpineCorrelations(
     kind: RefSpineCorrelationKind,
@@ -50,9 +55,23 @@ export interface MountRefSpineCorrelationsContext {
 // `buildAsApp`. Filters are forwarded opaquely to the operation, which
 // forwards them to `listSpineCorrelations`. Keeping parsing here (host
 // adapter) preserves the operation's free-form filter bag contract.
-function parseListFilters(query: Readonly<Record<string, unknown>>): RefSpineCorrelationFilters {
+function parseListFilters(
+  query: Readonly<Record<string, unknown>>,
+  canonicalConnectorKey: MountRefSpineCorrelationsContext["canonicalConnectorKey"]
+): RefSpineCorrelationFilters {
   const rawConnectorId = query.connector_id;
-  const legacyConnectorId = typeof rawConnectorId === "string" && rawConnectorId.trim() ? rawConnectorId.trim() : null;
+  const trimmedConnectorId =
+    typeof rawConnectorId === "string" && rawConnectorId.trim() ? rawConnectorId.trim() : null;
+  // Canonicalize the owner-supplied connector_id filter so a URL-shaped value
+  // (e.g. https://registry.pdpp.org/connectors/spotify) matches the canonical
+  // key the spine stamps `source_id` under. Accept the legacy alias at the
+  // boundary, then compare canonically — mirroring the `/_ref/connections`
+  // filter in `server/routes/ref-connectors.ts`. Spine `source_id` filtering
+  // is exact-match (see `lib/spine.ts`), so without this a URL-shaped filter
+  // silently returns zero rows.
+  const legacyConnectorId = trimmedConnectorId
+    ? (canonicalConnectorKey(trimmedConnectorId) ?? trimmedConnectorId)
+    : null;
   return {
     limit: query.limit,
     cursor: query.cursor,
@@ -79,7 +98,10 @@ function mountKind(
   };
   app.get(path, ctx.requireOwnerSession, async (req: RouteRequest, res: RouteResponse) => {
     try {
-      const envelope = await executeRefSpineCorrelationsList({ kind, filters: parseListFilters(req.query) }, deps);
+      const envelope = await executeRefSpineCorrelationsList(
+        { kind, filters: parseListFilters(req.query, ctx.canonicalConnectorKey) },
+        deps
+      );
       res.json(envelope);
     } catch (err) {
       ctx.handleError(res, err);
