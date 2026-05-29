@@ -30,6 +30,7 @@ Generate required secrets for a PDPP reference deployment.
 
 Variables generated:
   PDPP_OWNER_PASSWORD              gates /owner, /device, /consent, /dashboard
+  SESSION_SECRET                   signs dashboard session cookies
   PDPP_WEB_PUSH_VAPID_PUBLIC_KEY   VAPID key pair for browser push notifications
   PDPP_WEB_PUSH_VAPID_PRIVATE_KEY
 
@@ -78,6 +79,9 @@ fi
 # Owner password: 32 random bytes, base64url-encoded (no padding).
 PDPP_OWNER_PASSWORD="$(node -e "process.stdout.write(require('node:crypto').randomBytes(32).toString('base64url'))")"
 
+# Session secret: 48 random bytes, hex-encoded.
+SESSION_SECRET="$(node -e "process.stdout.write(require('node:crypto').randomBytes(48).toString('hex'))")"
+
 # VAPID key pair for browser push (EC P-256, VAPID format).
 # JWK export provides raw key components without manual DER parsing.
 _vapid="$(node --input-type=module <<'NODE'
@@ -99,6 +103,7 @@ PDPP_WEB_PUSH_VAPID_PRIVATE_KEY="$(printf '%s\n' "$_vapid" | sed -n '2p')"
 
 emit() {
   printf 'PDPP_OWNER_PASSWORD=%s\n' "$PDPP_OWNER_PASSWORD"
+  printf 'SESSION_SECRET=%s\n' "$SESSION_SECRET"
   printf 'PDPP_WEB_PUSH_VAPID_PUBLIC_KEY=%s\n' "$PDPP_WEB_PUSH_VAPID_PUBLIC_KEY"
   printf 'PDPP_WEB_PUSH_VAPID_PRIVATE_KEY=%s\n' "$PDPP_WEB_PUSH_VAPID_PRIVATE_KEY"
 }
@@ -135,6 +140,7 @@ patch_env_file() {
 
   printf 'Patching %s:\n' "$target"
   _patch_var PDPP_OWNER_PASSWORD              "$PDPP_OWNER_PASSWORD"
+  _patch_var SESSION_SECRET                   "$SESSION_SECRET"
   _patch_var PDPP_WEB_PUSH_VAPID_PUBLIC_KEY   "$PDPP_WEB_PUSH_VAPID_PUBLIC_KEY"
   _patch_var PDPP_WEB_PUSH_VAPID_PRIVATE_KEY  "$PDPP_WEB_PUSH_VAPID_PRIVATE_KEY"
   printf '\nDone. Keep %s out of version control.\n' "$target"

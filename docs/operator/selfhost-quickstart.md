@@ -91,6 +91,52 @@ You can leave every other variable blank. Connector credentials
 for the connectors you intend to run; see the comments in
 `.env.docker.example`.
 
+### Optional: "no domain, no open ports" with Cloudflare Tunnel
+
+If your Docker host is not publicly reachable — home server behind NAT, VPS
+without a domain, or a machine you do not want to expose directly — Cloudflare
+Tunnel gives you a stable HTTPS URL without opening firewall ports or owning a
+domain.
+
+**One-time setup:**
+
+1. Sign in at [dash.cloudflare.com](https://dash.cloudflare.com), go to
+   **Zero Trust → Networks → Tunnels**, and create a new tunnel.
+2. Copy the tunnel token shown after creation.
+3. Add the `cloudflared` service to your compose stack. Create
+   `docker-compose.override.yml` alongside `docker-compose.yml`:
+
+```yaml
+services:
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: "${CLOUDFLARE_TUNNEL_TOKEN}"
+    networks:
+      - pdpp
+```
+
+4. In the Cloudflare dashboard, add a public hostname for the tunnel pointing to
+   `http://web:3000` (the `web` service on the internal Compose network).
+5. Set the env vars in `.env.docker`:
+
+```sh
+CLOUDFLARE_TUNNEL_TOKEN=<your-tunnel-token>
+PDPP_REFERENCE_ORIGIN=https://<your-hostname>.trycloudflare.com  # or your custom domain
+```
+
+6. Start the full stack:
+
+```sh
+docker compose --env-file .env.docker up -d
+```
+
+The tunnel service connects outbound to Cloudflare; no inbound ports need to be
+opened. `PDPP_REFERENCE_ORIGIN` is the only PDPP-protocol-relevant output of
+this step — set it to the stable HTTPS URL the tunnel provides.
+
 ### 4. Pull and start
 
 ```sh
@@ -293,10 +339,12 @@ A dashboard credential-management UI is a separate, deferred change; see
 These are explicitly out of scope for the SLVP runbook. They are tracked so a
 future reader does not re-derive that they are intentionally absent.
 
-- **RunPod Hub template.** A `hub.json` + `tests.json` single-container image
-  that RunPod's Hub can deploy in one click. Requires a process supervisor
-  inside one image and a release-tag cadence. Tracked in the design notes
-  under
+- **RunPod Pod template / persistent Pod image.** A `pdpp-all-in-one`
+  single-container image with process supervision, auto-generated secrets on
+  first boot, and SQLite default — usable as a RunPod Pod template. Requires a
+  new image shape and a release-tag cadence. RunPod Hub is a serverless worker
+  platform and is the wrong target for a persistent service. Tracked in the
+  design notes under
   [`design-notes/selfhost-runpod-onboarding-slvp-2026-05-27.md`](../../design-notes/selfhost-runpod-onboarding-slvp-2026-05-27.md).
 - **In-dashboard connector credential management UI.** A Plaid-Link-style
   flow that captures, encrypts, and rotates connector credentials from the

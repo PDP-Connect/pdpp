@@ -69,10 +69,10 @@ The capability map breaks into six lanes. For each lane the table below states *
 
 | What exists today | Durable next gap | Owned by | Deferred |
 |---|---|---|---|
-| `selfhost-quickstart.md` Lane A (Docker host) end-to-end; Lane B (RunPod CPU Pod) documented but unverified | RunPod Hub `hub.json` + `tests.json` single-container template; this requires a process-supervised image and a release cadence | `selfhost-runpod-onboarding-slvp-2026-05-27.md` decision log (next slice after `add-selfhost-onboarding-slvp`) | Custom-domain TLS at the PDPP layer; multi-Pod fleet; auto-update; multi-operator RBAC |
+| `selfhost-quickstart.md` Lane A (Docker host) end-to-end; Lane B (RunPod CPU Pod) documented but unverified | RunPod Pod template / persistent Pod image: `pdpp-all-in-one` single-container image with process supervision; this requires a new image shape and release cadence. (RunPod Hub is a serverless worker platform and the wrong target for a persistent service.) | `selfhost-runpod-onboarding-slvp-2026-05-27.md` decision log (next slice after `add-selfhost-onboarding-slvp`) | Custom-domain TLS at the PDPP layer; multi-Pod fleet; auto-update; multi-operator RBAC |
 | Compose graph with three services (`reference`, `web`, optional `postgres`), named volumes for transformer cache, runtime state, and Postgres data | Cohesive "lane B verified once" residual — owner-only live verify recorded as risk in `add-selfhost-onboarding-slvp` | `add-selfhost-onboarding-slvp` residual risks | Single-container image; `pdpp init` CLI |
 
-**Verdict.** Substrate spin-up is the closest to closure: `add-selfhost-onboarding-slvp` is implemented and validated, with the only open work being an owner-only Lane B live walk-through and the deferred Hub template. No additional implementation lane is needed here in the short term unless an owner explicitly funds the Hub template.
+**Verdict.** Substrate spin-up is the closest to closure: `add-selfhost-onboarding-slvp` is implemented and validated, with the only open work being an owner-only Lane B live walk-through and the deferred Pod template. No additional implementation lane is needed here in the short term unless an owner explicitly funds the Pod template.
 
 ### Lane 2 — Instance configuration
 

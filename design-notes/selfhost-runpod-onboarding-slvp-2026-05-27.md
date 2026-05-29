@@ -8,13 +8,13 @@ Related: openspec/changes/add-selfhost-onboarding-slvp (promoted from this note)
 
 ## Question
 
-What is the smallest, durable, verifiable lane that lets a friend or r/selfhosted reader spin up their own PDPP reference deployment (RunPodHub is the lighthouse target), configure connections from the dashboard, collect data, and permission Claude or ChatGPT to read it — without conflating PDPP-the-protocol with a hosted service we are offering?
+What is the smallest, durable, verifiable lane that lets a friend or r/selfhosted reader spin up their own PDPP reference deployment (RunPod CPU Pod is the lighthouse target), configure connections from the dashboard, collect data, and permission Claude or ChatGPT to read it — without conflating PDPP-the-protocol with a hosted service we are offering?
 
 ## Context
 
 PDPP is an authorization and disclosure protocol. The reference implementation is forkable and self-hostable; there is no PDPP-the-company offering a multi-tenant hosted backend. The voice/framing guide (`docs/voice-and-framing.md`) is explicit: do not adopt hosted-service semantics. The site at `pdpp.vivid.fish` is a public reference deployment for inspection, not a product end users sign up for.
 
-The user specifically named **RunPodHub** and **in-dashboard configuration**. Today the repository ships:
+The user specifically named **RunPod** and **in-dashboard configuration**. Today the repository ships:
 
 - Published GHCR images: `ghcr.io/vana-com/pdpp/reference:main`, `ghcr.io/vana-com/pdpp/web:main`.
 - `docker-compose.yml` + `.env.docker.example` with ~150 env vars (the operator-configurable surface).
@@ -26,7 +26,7 @@ What is missing for the friend / r/selfhosted reader:
 - **No self-host quick-start that names the artifacts in one place.** `.env.docker.example` is 13 KB of env vars without a "minimum to boot" reading order. The reference README is reviewer-shaped, not operator-shaped.
 - **No deployment-target-specific guidance**, including but not limited to RunPod. There is no statement of what RunPod-the-substrate provides and what it does not (no multi-container compose, no native custom-domain TLS, no UDP, GPU-only global networking).
 - **No first-boot config validation.** Today the stack will start with a blank `PDPP_OWNER_PASSWORD` (which leaves protected routes open), no `PDPP_REFERENCE_ORIGIN` consistency check, and no actionable diagnostic when an operator visits the dashboard for the first time and something is misaligned.
-- **No path to a RunPod Hub listing** (the `hub.json` + `tests.json` declarative format) — and prior art shows Hub is single-container-only, so we cannot publish today's three-service compose graph directly.
+- **No RunPod Pod template / persistent Pod image** — prior art shows RunPod Hub is a serverless worker platform unsuited for a persistent service; the correct artifact is a single-container Pod template, which requires a new image shape not yet built.
 - **Connection / credential configuration remains env-var driven.** This is fine for SLVP; it is not fine to silently ship a dashboard that implies dashboard-configured credentials when none exist.
 
 The full-context refresh (`design-notes/full-context-refresh.md`) names the relevant nouns: `connector_id`, `connection`, `device`, `run`, `schedule`, `coverage`, `grant`. Self-host onboarding touches `device` (the host machine the operator runs PDPP on), `connection` (operator-configured source instances), and `grant` (what an MCP client like Claude or ChatGPT receives). The Core protocol is unchanged by this work; everything proposed here is reference-implementation and operator-surface.
@@ -60,7 +60,7 @@ This work splits into four primitives. Only the first two are SLVP-eligible righ
 
 ### Deferred (named, not implemented)
 
-3. **RunPod Hub `hub.json` + `tests.json`.** Requires a *single-container* image that runs the reference + web + (optional) Postgres in one Pod. This is a new image shape, a new operational surface (process supervision inside one container, single startup script that auto-generates missing secrets), and a Hub release tag cadence. Worth doing, but it is *not* a low-risk landing today and it depends on decisions about whether SQLite-only is the default Hub image (almost certainly yes) and how the embedding cache is preloaded. Tracked as the next OpenSpec change after this one lands.
+3. **RunPod Pod template / persistent Pod image.** Requires a `pdpp-all-in-one` *single-container* image (process supervision, auto-generated secrets on startup, SQLite default) usable as a RunPod Pod template. RunPod Hub is a serverless worker platform; PDPP is a persistent service, so Hub is the wrong target. The correct artifact is a Pod template pointing at the single-container image. This is a new image shape, a new operational surface, and a Pod template release cadence. Worth doing, but it is *not* a low-risk landing today and it depends on decisions about whether SQLite-only is the default image (almost certainly yes) and how the embedding cache is preloaded. Tracked as the next OpenSpec change after this one lands.
 
 4. **In-dashboard connector credential management UI.** Today credentials are env-var-driven and that is honest. A dashboard UI that captures, encrypts, and rotates connector credentials is a real and durable contract change — it touches the connector manifest authority model, secret storage, and a Plaid-Link-style UX surface. Worth doing, but it is its own OpenSpec change and it must not get smuggled in under an "onboarding polish" lane.
 
@@ -78,7 +78,7 @@ Promote into OpenSpec because:
 
 - adds new owner-facing operator behavior (the readiness panel) that should be reviewable;
 - introduces a new durable doc surface (the quick-start) that the voice/framing guide governs and that we will cite from the public site;
-- names a deferred RunPod Hub direction that should be tracked rather than rediscovered.
+- names a deferred RunPod Pod template direction that should be tracked rather than rediscovered.
 
 OpenSpec change: `openspec/changes/add-selfhost-onboarding-slvp/`.
 
@@ -89,4 +89,5 @@ The deferred items (3, 4 above) are *not* part of this change. They are tracked 
 - 2026-05-27: Captured this note after two parallel research lanes (`tmp/workstreams/research-selfhost-prior-art.md` and `tmp/workstreams/inventory-selfhost.md`). The single most load-bearing fact: **RunPod Hub is single-container only**, so the SLVP cannot promise a Hub one-click deploy of today's compose stack. Lane A (Docker host) is fully ready today; Lane B (RunPod Pod) is reachable today by setting one host port and using the existing compose stack on a single Pod via SSH/Web Terminal, even before a Hub template exists.
 - 2026-05-27: Decided to promote to `add-selfhost-onboarding-slvp` rather than fattening any existing change. The MCP grant package work (`add-hosted-mcp-grant-packages`) is the in-product half of the onboarding; this change is the operator-substrate half.
 - 2026-05-27: Decided to ship the dashboard readiness panel as part of this change rather than deferring it. Rationale: the most common "friend spins this up and it doesn't work" failure modes (owner password unset, reference origin mismatch, embedding cache still downloading) are diagnostic-only, and we already collect each value in `/_ref/deployment`. The risk of leaving them invisible is higher than the risk of one more dashboard view.
-- 2026-05-27: Deferred RunPod Hub template (item 3) and in-dashboard credential UI (item 4) as separate OpenSpec changes. Naming both here so the next worker does not re-derive that they are out of scope.
+- 2026-05-27: Deferred RunPod Pod template (item 3) and in-dashboard credential UI (item 4) as separate OpenSpec changes. Naming both here so the next worker does not re-derive that they are out of scope.
+- 2026-05-29: Updated framing throughout: "RunPod Hub template" replaced with "RunPod Pod template / persistent Pod image". RunPod Hub is a serverless worker platform; PDPP needs a persistent Pod template. Per `design-notes/ri-selfhost-runpod-management-design-2026-05-29.md`.

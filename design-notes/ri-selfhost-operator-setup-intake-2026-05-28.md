@@ -138,7 +138,7 @@ Based on the prior-art survey, the 2026 self-host ecosystem has converged on thi
 | Dashboard readiness panel | Implemented (5 rows, `add-selfhost-onboarding-slvp`) | A Tier-2 row set (Web Push VAPID, n.eko, Postgres, host browser bridge, `PDPP_TRUSTED_HOSTS`) would extend coverage. Management map recommendation 4—optional. |
 | Dashboard settings / config | Partial | Per-connector configuration-readiness rollup (env + manifest + coverage synthesis) is the named next slice per management map Lane 3. Not yet implemented. Needs design note → OpenSpec. |
 | CLI | `pdpp ref` + `pdpp collector` implemented | Reasonable for SLVP. Mutation coverage (schedule pause/resume, connection display-name patch) is incomplete but not blocking the spin-up-to-grant journey. |
-| Docs | `selfhost-quickstart.md` and `hosted-mcp-setup.md` implemented | Cloudflare Tunnel not mentioned as a "no domain, no open ports" Lane A option. RunPod Hub vs Pod template distinction not corrected. Both are doc-only gaps. |
+| Docs | `selfhost-quickstart.md` and `hosted-mcp-setup.md` implemented | Cloudflare Tunnel option added to Lane A. RunPod Pod template framing corrected in quickstart and companion design notes (2026-05-29, `ri-selfhost-phase15-secrets-docs`). |
 
 ## Operator-Management UI: Essential vs Incidental
 
