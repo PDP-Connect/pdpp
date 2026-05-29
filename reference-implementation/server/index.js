@@ -386,23 +386,15 @@ import {
   buildApplyGrantRevokeSideEffects,
   mountAsGrantRevoke,
 } from './routes/as-grant-revoke.ts';
+import { mountAsAuthorize } from './routes/as-authorize.ts';
 import { mountAsConsent } from './routes/as-consent.ts';
 import { mountAsDcr } from './routes/as-dcr.ts';
 import { mountAsPar } from './routes/as-par.ts';
 import { mountAsDeviceUi } from './routes/as-device-ui.ts';
 import { mountRsHostedMcp } from './routes/rs-hosted-mcp.ts';
 import {
-  buildHostedMcpAuthorizationDetailForConnector,
-  buildHostedMcpAuthorizationDetailsForConnector,
-  HOSTED_MCP_PICKER_DEFAULT_ACCESS_MODE,
-  HOSTED_MCP_PICKER_SUPPORTED_ACCESS_MODES,
-  parseAuthorizeAuthorizationDetails,
-  renderHostedMcpSourceSelection,
   renderPendingConsentNotFoundHtml,
   renderPendingGrantConsentHtml,
-  requireAuthorizeString,
-  requireRegisteredRedirectUri,
-  validateAuthorizePkce,
 } from './routes/as-consent-ui-helpers.ts';
 import {
   sanitizeDeviceExporterDiagnostic,
@@ -2644,287 +2636,34 @@ function buildAsApp(opts = {}) {
     hostedMcpSourceKey,
   };
 
-  app.get('/oauth/authorize', ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const clientId = requireAuthorizeString(req.query, 'client_id');
-      const redirectUri = requireAuthorizeString(req.query, 'redirect_uri');
-      const responseType = requireAuthorizeString(req.query, 'response_type');
-      const codeChallenge = requireAuthorizeString(req.query, 'code_challenge');
-      const codeChallengeMethod = requireAuthorizeString(req.query, 'code_challenge_method');
-      const state = typeof req.query?.state === 'string' ? req.query.state : null;
-      validateAuthorizePkce({ responseType, codeChallenge, codeChallengeMethod });
-
-      const client = await getRegisteredClient(clientId);
-      if (!client) return oauthError(res, 400, 'invalid_client', 'Unknown client_id');
-      requireRegisteredRedirectUri(client, redirectUri);
-
-      const authorizationDetails = parseAuthorizeAuthorizationDetails(req.query);
-      const rawConnectorId = typeof req.query?.connector_id === 'string' && req.query.connector_id.trim()
-        ? req.query.connector_id.trim()
-        : null;
-      // Normalize at the boundary: a URL-shaped first-party connector id
-      // (e.g. `https://registry.pdpp.org/connectors/gmail`) must resolve to
-      // its canonical short key (`gmail`) so the pending consent and issued
-      // grant store a canonical connector_id, not a registry URL. Unknown or
-      // custom ids are preserved as-is so third-party connectors still work.
-      const selectedConnectorId = rawConnectorId
-        ? (canonicalConnectorKey(rawConnectorId) ?? rawConnectorId)
-        : null;
-      if (!authorizationDetails && !selectedConnectorId) {
-        const csrfToken = ownerAuth.ensureCsrfToken(req, res);
-        const ownerSubjectId = req?.ownerAuth?.subjectId || 'owner_local';
-        return res.send(await renderHostedMcpSourceSelection(ownerSubjectId, req.query, csrfToken, providerName, consentPickerCaps, consentUi));
-      }
-
-      const details = authorizationDetails || buildHostedMcpAuthorizationDetailsForConnector(selectedConnectorId);
-      const explicitBaseUrl = opts.asPublicUrl || (!opts.ignoreAmbientPublicUrls ? process.env.AS_PUBLIC_URL : null);
-      const output = await consentStore.initiateGrant(
-        {
-          client_id: clientId,
-          authorization_details: details,
-        },
-        {
-          baseUrl: resolvePublicUrl(req, explicitBaseUrl),
-          nativeManifest: resolveNativeManifest(opts),
-        },
-      );
-      const deviceCode = consentStore.parseRequestUri(output.request_uri);
-      await stageOAuthAuthorizationCodeRequest({
-        deviceCode,
-        clientId,
-        redirectUri,
-        state,
-        codeChallenge,
-        codeChallengeMethod,
-        expiresInSeconds: output.expires_in || 300,
-      });
-      return res.redirect(302, output.authorization_url);
-    } catch (err) {
-      oauthError(
-        res,
-        400,
-        err.code || 'invalid_request',
-        err.message || 'Authorization request rejected',
-      );
-    }
-  });
-
-  // Hosted MCP multi-source consent POST. The picker submits checked
-  // `selection=` values as opaque base64url(JSON) payloads — see
-  // server/hosted-mcp-selection.js — plus the PKCE-mirrored authorize
-  // params. The handler:
-  //   1. Validates the PKCE/authorize params (same shape as GET /oauth/authorize).
-  //   2. Decodes each selection structurally to one source-bounded
-  //      authorization_details[] entry. No delimiter splitting; URL-shaped
-  //      connector ids cannot collapse.
-  //   3. Calls createHostedMcpGrantPackage: one independent child grant per source
-  //      plus a single package-bound access token.
-  //   4. Stages a package-bound OAuth authorization code and redirects the
-  //      client back to its redirect_uri with `code=...`.
-  // Spec: openspec/changes/canonicalize-connector-keys/specs/agent-consent-bundling/spec.md
-  app.post(
-    '/oauth/authorize/mcp-package',
-    ownerAuth.requireOwnerSession,
-    ownerAuth.requireCsrf,
-    async (req, res) => {
-      try {
-        const body = req.body || {};
-        const clientId = requireAuthorizeString(body, 'client_id');
-        const redirectUri = requireAuthorizeString(body, 'redirect_uri');
-        const responseType = requireAuthorizeString(body, 'response_type');
-        const codeChallenge = requireAuthorizeString(body, 'code_challenge');
-        const codeChallengeMethod = requireAuthorizeString(body, 'code_challenge_method');
-        const state = typeof body.state === 'string' ? body.state : null;
-        validateAuthorizePkce({ responseType, codeChallenge, codeChallengeMethod });
-
-        const client = await getRegisteredClient(clientId);
-        if (!client) return oauthError(res, 400, 'invalid_client', 'Unknown client_id');
-        requireRegisteredRedirectUri(client, redirectUri);
-
-        const selections = parseHostedMcpSelections(body.selection);
-        if (selections.length === 0) {
-          return oauthError(res, 400, 'invalid_request', 'At least one source must be selected');
-        }
-        // Per-source stream subsets submitted by the picker. Each entry is a
-        // base64url(JSON) payload identifying `(connector, connection,
-        // stream)`; stream entries whose source was not also checked are
-        // ignored so an orphaned stream toggle cannot smuggle authority into
-        // a deselected source.
-        const { bySource: streamSelectionsBySource } = parseHostedMcpStreamSelections(body.stream);
-        // Package-level access mode. One radio group in the picker means
-        // one value here, applied to every child grant. An absent value
-        // falls back to the spec-default `continuous` (preserving prior
-        // baseline behavior for any caller that doesn't render the radio,
-        // e.g. the `connector_id=` shortcut on GET /oauth/authorize that
-        // bypasses this POST handler entirely). An unknown value yields a
-        // typed `invalid_request` so a malformed picker submission can't
-        // silently widen.
-        const rawAccessMode = typeof body.access_mode === 'string' ? body.access_mode.trim() : '';
-        let packageAccessMode = HOSTED_MCP_PICKER_DEFAULT_ACCESS_MODE;
-        if (rawAccessMode) {
-          if (!HOSTED_MCP_PICKER_SUPPORTED_ACCESS_MODES.has(rawAccessMode)) {
-            return oauthError(
-              res,
-              400,
-              'invalid_request',
-              "access_mode must be 'single_use' or 'continuous'",
-            );
-          }
-          packageAccessMode = rawAccessMode;
-        }
-
-        const ownerSubjectId = req?.ownerAuth?.subjectId || 'owner_local';
-        const authorizationDetails = [];
-        const storageBindings = [];
-        const connectionIds = [];
-        const sourceMetadata = [];
-        const seenChildKeys = new Set();
-        const sourcesWithEmptyStreams = [];
-
-        for (const selection of selections) {
-          const { connectorId, connectionId } = selection;
-          const manifest = await getConnectorManifest(connectorId).catch(() => null);
-          if (!manifest) {
-            return oauthError(res, 400, 'invalid_request', `Unknown connector: ${connectorId}`);
-          }
-          let resolvedConnectionId = connectionId;
-          let matchedBinding = null;
-          if (resolvedConnectionId) {
-            // Verify the requested connection is currently active for this
-            // owner+connector. Reject silently-pinning a stale connection.
-            const active = await listActiveBindingsForGrant({ ownerSubjectId, connectorId }).catch(() => []);
-            matchedBinding = active.find((row) => row.connectorInstanceId === resolvedConnectionId) || null;
-            if (!matchedBinding) {
-              return oauthError(res, 400, 'invalid_request', `Connection ${resolvedConnectionId} is not active for ${connectorId}`);
-            }
-          }
-          const childKey = `${connectorId}|${resolvedConnectionId || ''}`;
-          if (seenChildKeys.has(childKey)) continue;
-          seenChildKeys.add(childKey);
-
-          // Compute the per-source stream subset. The picker emits a
-          // pre-checked `stream` entry for every manifest stream on every
-          // rendered row, so the absence of any stream entries for a
-          // selected source means either:
-          //   (a) the manifest declares no streams (preserve legacy
-          //       wildcard behavior — `authorization_details[].streams`
-          //       cannot be empty, and downstream `resolveGrantSelection`
-          //       expands `*` to whatever the manifest exposes), OR
-          //   (b) the owner deliberately unchecked every stream for this
-          //       source. In case (b) we MUST NOT silently issue a child
-          //       grant covering every stream. We drop the source from the
-          //       package; if every selected source is dropped, the
-          //       handler returns a clear 400 below rather than issuing an
-          //       empty package.
-          const manifestStreamNames = Array.isArray(manifest.streams)
-            ? manifest.streams.map((stream) => stream.name).filter((name) => typeof name === 'string')
-            : [];
-          const sourceKey = hostedMcpSourceKey({ connectorId, connectionId: resolvedConnectionId });
-          const selectedStreamSet = streamSelectionsBySource.get(sourceKey) || new Set();
-          const validStreamNames = manifestStreamNames.filter((name) => selectedStreamSet.has(name));
-
-          let narrowedStreamNames = null;
-          if (manifestStreamNames.length === 0) {
-            // (a) — preserve wildcard for connectors with no manifest streams.
-            narrowedStreamNames = null;
-          } else if (validStreamNames.length === 0) {
-            // (b) — owner deselected every stream for this source. Skip it.
-            sourcesWithEmptyStreams.push({
-              connectorId,
-              connectionId: resolvedConnectionId || null,
-              connectorLabel: manifest.display_name || manifest.name || connectorId,
-            });
-            continue;
-          } else if (validStreamNames.length === manifestStreamNames.length) {
-            // All streams remain selected: emit canonical wildcard so the
-            // child grant naturally expands when a future manifest revision
-            // adds streams.
-            narrowedStreamNames = null;
-          } else {
-            narrowedStreamNames = validStreamNames;
-          }
-
-          authorizationDetails.push(
-            buildHostedMcpAuthorizationDetailForConnector(connectorId, narrowedStreamNames, packageAccessMode),
-          );
-          storageBindings.push({ connector_id: connectorId });
-          connectionIds.push(resolvedConnectionId || null);
-          sourceMetadata.push({
-            display_name: projectBindingForWire(matchedBinding)?.display_name || null,
-            connector_display_name: manifest.display_name || manifest.name || connectorId,
-          });
-        }
-
-        if (authorizationDetails.length === 0) {
-          // The picker accepted source checkboxes but every selected source
-          // had its streams fully deselected. Returning a typed error
-          // surfaces the inconsistency to the owner without leaking a raw
-          // connector identifier — the message names the connector(s) by
-          // manifest display name.
-          const labels = sourcesWithEmptyStreams.map((entry) => entry.connectorLabel).join(', ');
-          return oauthError(
-            res,
-            400,
-            'invalid_request',
-            labels
-              ? `Select at least one stream to authorize for: ${labels}`
-              : 'At least one source must be selected',
-          );
-        }
-
-        const explicitBaseUrl = opts.asPublicUrl || (!opts.ignoreAmbientPublicUrls ? process.env.AS_PUBLIC_URL : null);
-        const publicBaseUrl = resolvePublicUrl(req, explicitBaseUrl);
-
-        const packageResult = await createHostedMcpGrantPackage({
-          clientId,
-          authorizationDetails,
-          storageBindings,
-          connectionIds,
-          sourceMetadata,
-          subjectId: ownerSubjectId,
-          opts: {},
-        });
-
-        // Stage a fresh OAuth device-code shell so the package's access
-        // token can be redeemed at /oauth/token. Mirrors the PAR path's
-        // request-uri staging without coupling to pending_consents.
-        const deviceCode = `mcpdev_${randomBytes(16).toString('hex')}`;
-        const stagingExpiresIn = 300;
-        await stageOAuthAuthorizationCodeRequest({
-          deviceCode,
-          clientId,
-          redirectUri,
-          state,
-          codeChallenge,
-          codeChallengeMethod,
-          expiresInSeconds: stagingExpiresIn,
-        });
-
-        const issued = await issueOAuthAuthorizationCodeForPackageDeviceCode(deviceCode, {
-          packageId: packageResult.package_id,
-          token: packageResult.token,
-        });
-        if (!issued) {
-          return oauthError(res, 500, 'server_error', 'Failed to issue authorization code for package');
-        }
-
-        const redirectUrl = new URL(issued.redirect_uri);
-        redirectUrl.searchParams.set('code', issued.code);
-        if (issued.state) {
-          redirectUrl.searchParams.set('state', issued.state);
-        }
-        return res.redirect(302, redirectUrl.toString());
-      } catch (err) {
-        oauthError(
-          res,
-          400,
-          err.code || 'invalid_request',
-          err.message || 'Hosted MCP package authorization rejected',
-        );
-      }
+  // GET /oauth/authorize and POST /oauth/authorize/mcp-package extracted to
+  // `server/routes/as-authorize.ts` per OpenSpec change
+  // `split-reference-server-by-route-family` (§6). Behaviour-preserving:
+  // same owner-session + CSRF enforcement, same PKCE validation, same
+  // consentStore.initiateGrant delegation, same createHostedMcpGrantPackage
+  // delegation, same auth-code staging and redirect.
+  mountAsAuthorize(app, {
+    asPublicUrl: opts.asPublicUrl || null,
+    consentPickerCaps,
+    selectionParsers: {
+      parseHostedMcpSelections,
+      parseHostedMcpStreamSelections,
     },
-  );
-
+    consentStore,
+    consentUi,
+    createHostedMcpGrantPackage,
+    ensureCsrfToken: (req, res) => ownerAuth.ensureCsrfToken(req, res),
+    getRegisteredClient,
+    ignoreAmbientPublicUrls: !!opts.ignoreAmbientPublicUrls,
+    issueOAuthAuthorizationCodeForPackageDeviceCode,
+    nativeManifest: resolveNativeManifest(opts),
+    oauthError,
+    providerName,
+    requireCsrf: ownerAuth.requireCsrf,
+    requireOwnerSession: ownerAuth.requireOwnerSession,
+    resolvePublicUrl,
+    stageOAuthAuthorizationCodeRequest,
+  });
   // POST /oauth/device_authorization and POST /oauth/token extracted to
   // `server/routes/as-oauth.ts` per OpenSpec change
   // `split-reference-server-by-route-family` (§6). Behaviour-preserving:
