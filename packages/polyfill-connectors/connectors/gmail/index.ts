@@ -1542,9 +1542,13 @@ function makeEmitRecord(
     // Validate record against schema.
     const validation = validateRecord(stream, data);
     if (!validation.ok) {
-      process.stderr.write(
-        `[gmail] SKIP_RESULT ${stream} ${canonical}: ${validation.issues.map((i) => `${i.path}: ${i.message}`).join("; ")}\n`
-      );
+      await emit({
+        type: "SKIP_RESULT",
+        stream,
+        reason: "schema_validation_failed",
+        message: `${stream} ${canonical}: ${validation.issues.map((i) => `${i.path}: ${i.message}`).join("; ")}`,
+        diagnostics: { issues: validation.issues },
+      });
       return;
     }
 

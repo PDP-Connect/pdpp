@@ -59,7 +59,21 @@ export interface DoneMessage {
   type: "DONE";
 }
 
-export type EmittedMessage = ProgressMessage | StateMessage | RecordMessage | DoneMessage | InteractionMessage;
+export interface SkipResultMessage {
+  diagnostics?: unknown;
+  message: string;
+  reason: string;
+  stream: string;
+  type: "SKIP_RESULT";
+}
+
+export type EmittedMessage =
+  | ProgressMessage
+  | StateMessage
+  | RecordMessage
+  | DoneMessage
+  | InteractionMessage
+  | SkipResultMessage;
 
 export interface AttachmentRecord {
   blob_ref: BlobRef | null;
