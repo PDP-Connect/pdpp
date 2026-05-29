@@ -220,8 +220,19 @@ for (const lane of wrapperLanes) {
   // lane with a thin (or zero) transcript is expected, not a signal that work was lost.
 
   // Thin transcript on completed/failed/recovered terminal statuses: Claude exited immediately
-  // and the work is likely useless. Exclude "aborted" — a zero-byte transcript is normal there.
-  if (lane.status !== "running" && lane.status !== "aborted" && lane.transcriptBytes >= 0 && lane.transcriptBytes < 200) {
+  // and the work is likely useless. Exclude "aborted" because a zero-byte
+  // transcript is normal there. Also exclude recovered report-only lanes whose
+  // branch has already been removed: those are preserved historical evidence,
+  // not active owner work.
+  const terminalRecoveredHistorical =
+    lane.recovered && lane.reportState === "recovered" && lane.branch && !branchExists(lane.branch);
+  if (
+    lane.status !== "running" &&
+    lane.status !== "aborted" &&
+    !terminalRecoveredHistorical &&
+    lane.transcriptBytes >= 0 &&
+    lane.transcriptBytes < 200
+  ) {
     risks.push(`WRAPPER-LANE thin-transcript lane=${lane.lane} transcript_bytes=${lane.transcriptBytes} — Claude may not have run; check: cat ${lane.transcriptFile || lane.artifactDir + "/transcript.log"}`);
   }
 }
@@ -334,6 +345,11 @@ function labelWorktree(worktree) {
 function formatPath(path) {
   if (!path) return "(unknown)";
   return path.startsWith(repoRoot) ? relative(repoRoot, path) || "." : path;
+}
+
+function branchExists(branch) {
+  if (!branch || branch === "(detached)" || branch === "(unknown)") return false;
+  return exec("git", ["rev-parse", "--verify", `refs/heads/${branch}`], { cwd: repoRoot, allowFail: true }).trim() !== "";
 }
 
 function sameOrChild(child, parent) {

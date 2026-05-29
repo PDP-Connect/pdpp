@@ -155,6 +155,28 @@ try {
   fail("completed/large-bytes: script threw", err.message);
 }
 
+// 6. Recovered report-only lane whose branch no longer exists must NOT appear as a live risk.
+try {
+  const out = runWithFixture({
+    branch: "workstream/already-parked",
+    lane: "ri-recovered-parked-lane",
+    status: "complete",
+    report_state: "recovered",
+    recovered: true,
+    exit_code: 0,
+    transcript_bytes: 1,
+  });
+  if (out.includes("thin-transcript")) {
+    fail("recovered/parked: thin-transcript risk emitted for historical lane", out);
+  } else if (!out.includes("ri-recovered-parked-lane")) {
+    fail("recovered/parked: lane disappeared from wrapper inventory", out);
+  } else {
+    pass("recovered/parked: no live risk, still visible in inventory");
+  }
+} catch (err) {
+  fail("recovered/parked: script threw", err.message);
+}
+
 // --- Summary ---
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) {
