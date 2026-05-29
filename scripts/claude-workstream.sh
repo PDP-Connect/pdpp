@@ -238,6 +238,25 @@ write_status() {
 # Seed status.json early so a hard crash still leaves a trace.
 write_status "running" "absent" false -1
 
+# ---- signal handling --------------------------------------------------------
+# On catchable termination write status:aborted and exit non-zero.
+# SIGKILL cannot be caught; a killed process leaves status:"running" in the
+# artifact until the owner runs `pnpm workstreams:status` and notices.
+_abort_signal_seen=""
+_signal_trap() {
+  _abort_signal_seen="$1"
+  local rs="absent"
+  report_present && rs="present"
+  write_status "aborted" "$rs" false 130
+  git -C "$worktree_abs" status --short >"$git_after" 2>&1 || true
+  echo "claude-workstream: aborted by signal $1 (status.json updated)" >&2
+  exit 130
+}
+trap '_signal_trap INT'  INT
+trap '_signal_trap TERM' TERM
+trap '_signal_trap HUP'  HUP
+trap '_signal_trap QUIT' QUIT
+
 report_present() {
   [[ -s "$report_abs" ]]
 }
@@ -252,6 +271,7 @@ invoke_claude_main() {
   local output_file="$1"
   local exit_code=0
   (
+    trap - INT TERM HUP QUIT
     cd "$worktree_abs"
     printf '%s' "$main_prompt" | \
     claude \
@@ -271,6 +291,7 @@ invoke_claude_recovery() {
   local prompt="$2"
   local exit_code=0
   (
+    trap - INT TERM HUP QUIT
     cd "$worktree_abs"
     printf '%s' "$prompt" | \
     claude \
@@ -383,6 +404,29 @@ state what is missing. End with the verbatim \`git status --short\` output."
 fi
 
 # ---- finalize status --------------------------------------------------------
+# Disable signal traps so normal finalization is not mis-classified as aborted.
+trap - INT TERM HUP QUIT
+
+# If the claude child exited due to a catchable signal (bash exit 128+signum),
+# treat the run as aborted even if the trap did not fire directly (e.g. bash
+# suppresses INT traps when the interrupted command appears in an || chain).
+# 129=HUP 130=INT 131=QUIT 143=TERM
+_exited_by_signal() {
+  case "$main_exit" in
+    129|130|131|143) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+if [[ -n "$_abort_signal_seen" ]] || _exited_by_signal; then
+  final_status="aborted"
+  final_exit="${main_exit:-130}"
+  local_report_state="absent"
+  report_present && local_report_state="present"
+  write_status "$final_status" "$local_report_state" false "$final_exit"
+  echo "claude-workstream: aborted (signal=$_abort_signal_seen exit=$final_exit)" >&2
+  exit "$final_exit"
+fi
 
 if [[ "$report_state" = "absent" ]]; then
   final_status="failed"
