@@ -232,6 +232,35 @@ export function isLegacyLocalAlias(value) {
   return LEGACY_LOCAL_ALIAS_SET.has(trimmed);
 }
 
+// Connector id substrings that identify test/stub/internal connectors that
+// should not appear in owner-facing pickers or public surfaces. Matches the
+// same set filtered by `isPublicReferenceConnector` in ref-control.ts for
+// catalog visibility; kept here so pure connector-key helpers can apply the
+// same guard without importing TypeScript modules.
+const INTERNAL_CONNECTOR_ID_PARTS = Object.freeze([
+  'manual_action_stub',
+  'manual-action-stub',
+  'stream-test-stub',
+  'pg_runtime_',
+  'pg_canonical_',
+  'pg_expand_',
+]);
+
+/**
+ * True iff `value` contains a marker substring that identifies a test,
+ * stub, or internal connector that must not appear in owner-facing consent
+ * pickers or user-visible surfaces. Returns false for null/non-string inputs
+ * (fail open — unknown ids are not silently excluded).
+ *
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+export function isInternalConnectorId(value) {
+  const trimmed = trimOrNull(value);
+  if (!trimmed) return false;
+  return INTERNAL_CONNECTOR_ID_PARTS.some((part) => trimmed.includes(part));
+}
+
 /**
  * Read-only allowlist getters. Returned arrays/objects are frozen so
  * callers cannot accidentally mutate the shared mapping table.

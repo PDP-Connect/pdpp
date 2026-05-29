@@ -20,6 +20,7 @@ import {
   canonicalConnectorKeyFromManifest,
   connectorKeyFromRegistryUrl,
   firstPartyConnectorKeys,
+  isInternalConnectorId,
   isLegacyLocalAlias,
   isRegistryUrlConnectorId,
   legacyLocalAliasMap,
@@ -225,4 +226,25 @@ test('allowlist covers every shipped reference-implementation manifest', () => {
     [],
     `reference manifests reference unknown canonical keys: ${missing.join(', ')}`,
   );
+});
+
+test('isInternalConnectorId identifies test/stub/internal connector ids', () => {
+  // All known internal marker substrings must match.
+  assert.equal(isInternalConnectorId('manual_action_stub'), true);
+  assert.equal(isInternalConnectorId('manual-action-stub'), true);
+  assert.equal(isInternalConnectorId('stream-test-stub'), true);
+  assert.equal(isInternalConnectorId('stream-test-stub-picker-regression'), true);
+  assert.equal(isInternalConnectorId('pg_runtime_gmail'), true);
+  assert.equal(isInternalConnectorId('pg_canonical_test'), true);
+  assert.equal(isInternalConnectorId('pg_expand_records'), true);
+  // First-party and native canonical keys must NOT match.
+  assert.equal(isInternalConnectorId('gmail'), false);
+  assert.equal(isInternalConnectorId('spotify'), false);
+  assert.equal(isInternalConnectorId('claude-code'), false);
+  assert.equal(isInternalConnectorId('northstar_hr_native'), false);
+  // Empty/non-string inputs must fail open (return false, not throw).
+  assert.equal(isInternalConnectorId(null), false);
+  assert.equal(isInternalConnectorId(undefined), false);
+  assert.equal(isInternalConnectorId(''), false);
+  assert.equal(isInternalConnectorId(42), false);
 });

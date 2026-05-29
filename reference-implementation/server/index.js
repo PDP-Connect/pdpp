@@ -60,7 +60,7 @@ import {
   parseHostedMcpSelections,
   parseHostedMcpStreamSelections,
 } from './hosted-mcp-selection.js';
-import { canonicalConnectorKey } from './connector-key.js';
+import { canonicalConnectorKey, isInternalConnectorId } from './connector-key.js';
 import {
   createPostgresConnectorInstanceStore,
   createSqliteConnectorInstanceStore,
@@ -2886,6 +2886,9 @@ function buildAsApp(opts = {}) {
     const connectorIds = await listRegisteredConnectorIds();
     const rows = [];
     for (const connectorId of connectorIds) {
+      // Skip test/stub/internal connectors — they are never owner-configured
+      // sources and must not appear in the consent picker.
+      if (isInternalConnectorId(connectorId)) continue;
       const manifest = await getConnectorManifest(connectorId).catch(() => null);
       if (!manifest) continue;
       const connectorLabel = manifest.display_name || manifest.name || connectorId;
@@ -3358,8 +3361,16 @@ function buildAsApp(opts = {}) {
       requireRegisteredRedirectUri(client, redirectUri);
 
       const authorizationDetails = parseAuthorizeAuthorizationDetails(req.query);
-      const selectedConnectorId = typeof req.query?.connector_id === 'string' && req.query.connector_id.trim()
+      const rawConnectorId = typeof req.query?.connector_id === 'string' && req.query.connector_id.trim()
         ? req.query.connector_id.trim()
+        : null;
+      // Normalize at the boundary: a URL-shaped first-party connector id
+      // (e.g. `https://registry.pdpp.org/connectors/gmail`) must resolve to
+      // its canonical short key (`gmail`) so the pending consent and issued
+      // grant store a canonical connector_id, not a registry URL. Unknown or
+      // custom ids are preserved as-is so third-party connectors still work.
+      const selectedConnectorId = rawConnectorId
+        ? (canonicalConnectorKey(rawConnectorId) ?? rawConnectorId)
         : null;
       if (!authorizationDetails && !selectedConnectorId) {
         const csrfToken = ownerAuth.ensureCsrfToken(req, res);

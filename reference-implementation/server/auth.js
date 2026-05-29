@@ -548,12 +548,27 @@ function normalizePendingGrantRequest(input, opts = {}) {
   if (bindingKind === 'provider_native' && configuredNativeProviderId && sourceId !== configuredNativeProviderId) {
     invalidRequest(`Unknown source: { kind: 'provider_native', id: '${sourceId}' }`);
   }
-  const resolvedConnectorId = bindingKind === 'connector' ? sourceId : configuredNativeStorageConnectorId;
+  // Normalize URL-shaped first-party connector ids to their canonical short
+  // keys at the grant-initiation boundary so pending consents and issued
+  // grants always store a canonical connector_id, not a registry URL.
+  // Unknown / custom connector ids are preserved as-is (fail open) so
+  // third-party manifests continue to work without being in the allowlist.
+  const rawSourceConnectorId = bindingKind === 'connector' ? sourceId : configuredNativeStorageConnectorId;
+  const resolvedConnectorId = rawSourceConnectorId
+    ? (canonicalConnectorKey(rawSourceConnectorId) ?? rawSourceConnectorId)
+    : rawSourceConnectorId;
   if (!resolvedConnectorId) {
     invalidRequest("authorization_details[0].source requires configured native storage for provider_native access");
   }
 
-  const sourceBinding = { kind: bindingKind, id: sourceId };
+  // Use the canonical connector id in the source binding too so that
+  // source_binding.id === storage_binding.connector_id, which the approval
+  // path validates. For provider_native grants the source id is the
+  // provider_id (not a connector_id), so we only normalize connector sources.
+  const canonicalSourceId = bindingKind === 'connector'
+    ? (canonicalConnectorKey(sourceId) ?? sourceId)
+    : sourceId;
+  const sourceBinding = { kind: bindingKind, id: canonicalSourceId };
 
   return {
     request_kind: 'pdpp_selection_request',

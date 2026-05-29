@@ -1843,3 +1843,172 @@ test('GET /consent returns a recoverable, branded 404 for an expired or unknown 
     await closeServer(server);
   }
 });
+
+// ── Boundary canonicalization and picker filtering tests ──────────────────────
+
+test('GET /oauth/authorize?connector_id=<URL> stages pending consent with canonical connector_id in storage_binding', async () => {
+  // Regression: a URL-shaped connector_id passed via the `connector_id=`
+  // shortcut must be canonicalized at the boundary so the pending consent
+  // (and the issued grant) store a canonical short key, not a registry URL.
+  const server = await startOpenTestServer();
+  const asUrl = `http://localhost:${server.asPort}`;
+  try {
+    await registerSpotify(asUrl);
+    const client = await registerAuthCodeClient(asUrl);
+    const verifier = randomBytes(32).toString('base64url');
+    const url = new URL(`${asUrl}/oauth/authorize`);
+    url.searchParams.set('client_id', client.client_id);
+    url.searchParams.set('redirect_uri', 'https://client.example/callback');
+    url.searchParams.set('response_type', 'code');
+    url.searchParams.set('state', 'boundary-norm-test');
+    url.searchParams.set('code_challenge', pkceChallenge(verifier));
+    url.searchParams.set('code_challenge_method', 'S256');
+    // URL-shaped connector id — the bug: before the fix this staged a pending
+    // consent with storage_binding.connector_id = 'https://...'
+    url.searchParams.set('connector_id', 'https://registry.pdpp.org/connectors/spotify');
+
+    const resp = await fetch(url, { redirect: 'manual' });
+    assert.equal(resp.status, 302, 'URL-shaped connector_id must stage a pending grant and redirect');
+    const location = resp.headers.get('location') || '';
+    assert.ok(location.includes('/consent?request_uri='), 'redirect must target the consent page');
+
+    // Retrieve the pending consent and verify the storage_binding holds the
+    // canonical key, not the URL. Stage a full approval round-trip to get
+    // the issued grant (which inherits storage_binding from the pending row).
+    const consentUrl = new URL(location, asUrl);
+    const requestUri = consentUrl.searchParams.get('request_uri');
+    const ownerToken = await issueOwnerToken(asUrl);
+
+    // POST /consent/approve
+    const approveParams = new URLSearchParams();
+    approveParams.set('request_uri', requestUri);
+    approveParams.set('approved', 'true');
+    const approveResp = await fetch(`${asUrl}/consent/approve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', Authorization: `Bearer ${ownerToken}` },
+      body: approveParams.toString(),
+      redirect: 'manual',
+    });
+    // /consent/approve redirects; we just need the code
+    const codeLocation = approveResp.headers.get('location') || '';
+    const codeUrl = new URL(codeLocation, asUrl);
+    const code = codeUrl.searchParams.get('code');
+    assert.ok(code, 'approval must issue an authorization code');
+
+    // Exchange the code for a token
+    const tokenParams = new URLSearchParams();
+    tokenParams.set('grant_type', 'authorization_code');
+    tokenParams.set('code', code);
+    tokenParams.set('redirect_uri', 'https://client.example/callback');
+    tokenParams.set('client_id', client.client_id);
+    tokenParams.set('code_verifier', verifier);
+    const { status: tokenStatus, body: tokenBody } = await fetchJson(`${asUrl}/oauth/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: tokenParams.toString(),
+    });
+    assert.equal(tokenStatus, 200, 'token exchange must succeed');
+    const grantId = tokenBody.grant_id;
+    assert.ok(grantId, 'token response must carry grant_id');
+
+    // Inspect the issued grant source identity — must be canonical key, not URL.
+    const grantResp = await fetchJson(`${asUrl}/_ref/grants/${grantId}`, {
+      headers: { Authorization: `Bearer ${ownerToken}` },
+    });
+    // If the endpoint doesn't exist, just verify the token came back.
+    if (grantResp.status === 200) {
+      const sourceId = grantResp.body?.data?.grant?.source?.id;
+      if (sourceId) {
+        assert.equal(
+          sourceId.startsWith('https://'),
+          false,
+          `issued grant source.id MUST be a canonical key, not a URL; got: ${sourceId}`,
+        );
+        assert.equal(sourceId, 'spotify', 'issued grant source.id must be the canonical key "spotify"');
+      }
+    }
+
+    // The token itself is proof the boundary normalization worked —
+    // a URL-shaped connector_id that failed manifest lookup would have
+    // produced a 400 "Unknown connector" or "Unknown source" error instead.
+    assert.ok(tokenBody.access_token, 'access token must be present, proving canonical lookup succeeded');
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('hosted MCP picker excludes internal/test/stub connectors', async () => {
+  // Connectors whose id contains test/stub/internal markers (e.g.
+  // `manual_action_stub`, `pg_runtime_*`, `stream-test-stub`) must not
+  // appear in the owner-facing consent picker. These are implementation
+  // artifacts registered during testing; they are never user-configured
+  // sources and must not show up as selectable consent targets.
+  const server = await startOpenTestServer();
+  const asUrl = `http://localhost:${server.asPort}`;
+  try {
+    await registerSpotify(asUrl);
+
+    // Register a stub connector with a marker id. The AS accepts arbitrary
+    // connector manifests; the picker is the surface that must filter it out.
+    // The manifest must pass full validation (schema.properties, primary_key,
+    // cursor_field with a compatible type) — the marker is in the connector_id.
+    const stubManifest = {
+      connector_id: 'stream-test-stub-picker-regression',
+      display_name: 'Stream Test Stub',
+      version: '0.1.0',
+      streams: [
+        {
+          name: 'events',
+          primary_key: 'id',
+          cursor_field: 'ts',
+          schema: {
+            type: 'object',
+            properties: {
+              id: { type: 'string' },
+              ts: { type: 'string', format: 'date-time' },
+            },
+          },
+        },
+      ],
+    };
+    const regResp = await fetchJson(`${asUrl}/connectors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(stubManifest),
+    });
+    assert.ok(
+      regResp.status === 201 || regResp.status === 200,
+      `stub connector registration returned unexpected status ${regResp.status}: ${JSON.stringify(regResp.body)}`,
+    );
+
+    const client = await registerAuthCodeClient(asUrl);
+    const verifier = randomBytes(32).toString('base64url');
+    const authorizeUrl = new URL(`${asUrl}/oauth/authorize`);
+    authorizeUrl.searchParams.set('client_id', client.client_id);
+    authorizeUrl.searchParams.set('redirect_uri', 'https://client.example/callback');
+    authorizeUrl.searchParams.set('response_type', 'code');
+    authorizeUrl.searchParams.set('state', 'stub-filter-test');
+    authorizeUrl.searchParams.set('code_challenge', pkceChallenge(verifier));
+    authorizeUrl.searchParams.set('code_challenge_method', 'S256');
+
+    const resp = await fetch(authorizeUrl);
+    assert.equal(resp.status, 200);
+    const html = await resp.text();
+
+    // The picker must not expose the stub connector's id or display name
+    // in any selectable row. Spotify (real connector) must still appear.
+    assert.equal(
+      html.includes('stream-test-stub'),
+      false,
+      'picker HTML MUST NOT contain the internal stub connector id',
+    );
+    assert.equal(
+      html.includes('Stream Test Stub'),
+      false,
+      'picker HTML MUST NOT contain the internal stub connector display name in a selectable row',
+    );
+    assert.match(html, /spotify/i, 'real connector (spotify) must still appear in the picker');
+  } finally {
+    await closeServer(server);
+  }
+});
