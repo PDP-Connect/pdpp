@@ -119,7 +119,7 @@ async function withHarness(fn) {
 function nullableDateTimeManifest() {
   return {
     protocol_version: '0.1.0',
-    connector_id: 'https://registry.pdpp.test/connectors/nullable-datetime',
+    connector_id: 'nullable-datetime',
     version: '1.0.0',
     display_name: 'Nullable DateTime Cursor',
     runtime_requirements: { bindings: { network: { required: true } } },
@@ -153,7 +153,7 @@ function nullableDateTimeManifest() {
 function nullableIntegerManifest() {
   return {
     protocol_version: '0.1.0',
-    connector_id: 'https://registry.pdpp.test/connectors/nullable-integer',
+    connector_id: 'nullable-integer',
     version: '1.0.0',
     display_name: 'Nullable Integer Cursor',
     runtime_requirements: { bindings: { network: { required: true } } },
@@ -184,7 +184,7 @@ function nullableIntegerManifest() {
 function unsupportedPlainStringManifest() {
   return {
     protocol_version: '0.1.0',
-    connector_id: 'https://registry.pdpp.test/connectors/plain-string-cursor',
+    connector_id: 'plain-string-cursor',
     version: '1.0.0',
     display_name: 'Plain String Cursor',
     runtime_requirements: { bindings: { network: { required: true } } },

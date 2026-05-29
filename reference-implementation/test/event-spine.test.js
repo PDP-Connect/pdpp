@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 
 import { startServer } from '../server/index.js';
+import { canonicalConnectorKey } from '../server/connector-key.js';
 import { closeDb, getDb, initDb } from '../server/db.js';
 import { ingestRecord } from '../server/records.js';
 import { runConnector } from '../runtime/index.js';
@@ -534,7 +535,7 @@ test('event spine', async (t) => {
         const event = (traceTimeline.data || []).find((entry) => entry.event_type === eventType);
         assert.ok(event, `expected ${eventType} event`);
         assert.equal(event.data?.source?.kind, 'connector');
-        assert.equal(event.data?.source?.id, spotifyManifest.connector_id);
+        assert.equal(event.data?.source?.id, canonicalConnectorKey(spotifyManifest.connector_id));
         assert.ok(!('connector_id' in (event.data || {})), `${eventType} should use source descriptors instead of raw connector_id`);
         if (eventType === 'request.submitted') {
           assert.equal(event.request_id, initiateRequestId);
@@ -603,7 +604,7 @@ test('event spine', async (t) => {
       assert.equal(deniedEvent.object_type, 'pending_consent');
       assert.equal(deniedEvent.status, 'denied');
       assert.equal(deniedEvent.data?.source?.kind, 'connector');
-      assert.equal(deniedEvent.data?.source?.id, spotifyManifest.connector_id);
+      assert.equal(deniedEvent.data?.source?.id, canonicalConnectorKey(spotifyManifest.connector_id));
 
       const grantIssuedEvent = (traceTimeline.data || []).find((event) => event.event_type === 'grant.issued');
       assert.equal(grantIssuedEvent, undefined, 'denied consent should not issue a grant');
@@ -826,7 +827,7 @@ test('event spine', async (t) => {
         assert.ok(queryReceived, 'expected query.received for rejected connector grant read');
         assert.equal(queryReceived.data.query_shape, 'record_list');
         assert.equal(queryReceived.data.source?.kind, 'connector');
-        assert.equal(queryReceived.data.source?.id, spotifyManifest.connector_id);
+        assert.equal(queryReceived.data.source?.id, canonicalConnectorKey(spotifyManifest.connector_id));
         assert.ok(!('connector_id' in (queryReceived.data || {})));
 
         const rejected = (timeline.data || []).find((event) =>
@@ -836,7 +837,7 @@ test('event spine', async (t) => {
         assert.ok(rejected, 'expected query.rejected for rejected connector grant read');
         assert.equal(rejected.data.query_shape, 'record_list');
         assert.equal(rejected.data.source?.kind, 'connector');
-        assert.equal(rejected.data.source?.id, spotifyManifest.connector_id);
+        assert.equal(rejected.data.source?.id, canonicalConnectorKey(spotifyManifest.connector_id));
         assert.equal(rejected.data.error?.code, 'invalid_request');
         assert.match(rejected.data.error?.message || '', /view and fields are mutually exclusive/);
         assert.ok(!('connector_id' in (rejected.data || {})));
@@ -896,7 +897,7 @@ test('event spine', async (t) => {
         assert.ok(queryReceived, 'expected query.received for rejected connector unknown-field read');
         assert.equal(queryReceived.data.query_shape, 'record_list');
         assert.equal(queryReceived.data.source?.kind, 'connector');
-        assert.equal(queryReceived.data.source?.id, spotifyManifest.connector_id);
+        assert.equal(queryReceived.data.source?.id, canonicalConnectorKey(spotifyManifest.connector_id));
         assert.ok(!('connector_id' in (queryReceived.data || {})));
 
         const rejected = (timeline.data || []).find((event) =>
@@ -906,7 +907,7 @@ test('event spine', async (t) => {
         assert.ok(rejected, 'expected query.rejected for rejected connector unknown-field read');
         assert.equal(rejected.data.query_shape, 'record_list');
         assert.equal(rejected.data.source?.kind, 'connector');
-        assert.equal(rejected.data.source?.id, spotifyManifest.connector_id);
+        assert.equal(rejected.data.source?.id, canonicalConnectorKey(spotifyManifest.connector_id));
         assert.equal(rejected.data.error?.code, 'unknown_field');
         assert.match(rejected.data.error?.message || '', /Unknown field: not_a_real_field/);
         assert.ok(!('connector_id' in (rejected.data || {})));
@@ -1507,7 +1508,7 @@ test('event spine', async (t) => {
     const asUrl = `http://localhost:${server.asPort}`;
     const rsUrl = `http://localhost:${server.rsPort}`;
     const manifest = {
-      connector_id: 'https://registry.pdpp.org/connectors/event-spine-multi-stream-checkpoint-test',
+      connector_id: 'event-spine-multi-stream-checkpoint-test',
       version: '0.1.0',
       streams: [
         {

@@ -17,8 +17,8 @@ import { createSqliteDeviceExporterStore } from '../server/stores/device-exporte
 import { createSqliteSchedulerStore } from '../server/stores/scheduler-store.ts';
 
 const NOW = '2026-05-18T12:00:00.000Z';
-const GMAIL = 'https://test.pdpp.dev/connectors/gmail-acceptance';
-const LOCAL = 'https://test.pdpp.dev/connectors/local-collector-acceptance';
+const GMAIL = 'gmail-acceptance';
+const LOCAL = 'local-collector-acceptance';
 
 function manifest(connectorId, stream = 'messages') {
   return {
@@ -571,7 +571,7 @@ test('legacy connector-keyed stores migrate to one deterministic default account
       'gap_legacy',
       GMAIL,
       'grant_1',
-      '{"connector_id":"https://test.pdpp.dev/connectors/gmail-acceptance"}',
+      `{"connector_id":"${GMAIL}"}`,
       'messages',
       'msg_1',
       '{"path":"/thread"}',

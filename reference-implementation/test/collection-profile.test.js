@@ -292,7 +292,7 @@ rl.on('line', (line) => {
 
 const MINIMAL_MANIFEST = {
   protocol_version: '0.1.0',
-  connector_id: 'https://registry.pdpp.org/connectors/test',
+  connector_id: 'test',
   version: '1.0.0',
   display_name: 'Test Connector',
   streams: [
@@ -300,7 +300,7 @@ const MINIMAL_MANIFEST = {
   ],
 };
 
-function buildMultiStreamManifest(connectorId = 'https://registry.pdpp.org/connectors/test-multi-stream') {
+function buildMultiStreamManifest(connectorId = 'test-multi-stream') {
   return {
     ...MINIMAL_MANIFEST,
     connector_id: connectorId,
@@ -753,7 +753,7 @@ test('Collection Profile conformance', async (t) => {
     const { asPort, rsPort } = server;
     const manifest = {
       ...MINIMAL_MANIFEST,
-      connector_id: 'https://registry.pdpp.org/connectors/test-start-field-normalization',
+      connector_id: 'test-start-field-normalization',
       streams: [
         {
           name: 'items',
@@ -872,7 +872,7 @@ test('Collection Profile conformance', async (t) => {
     const { asPort, rsPort } = server;
     const manifest = {
       ...MINIMAL_MANIFEST,
-      connector_id: 'https://registry.pdpp.org/connectors/test-scope-branch',
+      connector_id: 'test-scope-branch',
       streams: [
         {
           name: 'items',
@@ -939,7 +939,7 @@ test('Collection Profile conformance', async (t) => {
     const { asPort, rsPort } = server;
     const manifest = {
       ...MINIMAL_MANIFEST,
-      connector_id: 'https://registry.pdpp.org/connectors/test-scope-fields-branch',
+      connector_id: 'test-scope-fields-branch',
       streams: [
         {
           name: 'items',
@@ -1310,7 +1310,7 @@ test('Collection Profile conformance', async (t) => {
   await t.test('STATE currently flushes and stages only the named stream when other streams still have buffered records', async () => {
     const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
     const { asPort, rsPort } = server;
-    const manifest = buildMultiStreamManifest('https://registry.pdpp.org/connectors/test-multi-stream-state-boundary');
+    const manifest = buildMultiStreamManifest('test-multi-stream-state-boundary');
     const { ownerToken, connectorId } = await setupConnector(server, asPort, manifest);
     const asUrl = `http://localhost:${asPort}`;
 
@@ -1408,7 +1408,7 @@ rl.on('line', (line) => {
   await t.test('multiple staged stream checkpoints commit successfully without requiring a cross-stream ordering guarantee', async () => {
     const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
     const { asPort, rsPort } = server;
-    const manifest = buildMultiStreamManifest('https://registry.pdpp.org/connectors/test-multi-stream-checkpoint-success');
+    const manifest = buildMultiStreamManifest('test-multi-stream-checkpoint-success');
     const { ownerToken, connectorId } = await setupConnector(server, asPort, manifest);
     const asUrl = `http://localhost:${asPort}`;
 
@@ -1472,7 +1472,7 @@ rl.on('line', (line) => {
   await t.test('multiple staged stream checkpoints still commit nothing when the run fails after staging', async () => {
     const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
     const { asPort, rsPort } = server;
-    const manifest = buildMultiStreamManifest('https://registry.pdpp.org/connectors/test-multi-stream-checkpoint-failure');
+    const manifest = buildMultiStreamManifest('test-multi-stream-checkpoint-failure');
     const { ownerToken, connectorId } = await setupConnector(server, asPort, manifest);
     const asUrl = `http://localhost:${asPort}`;
 
@@ -1566,7 +1566,7 @@ rl.on('line', (line) => {
   await t.test('checkpoint persistence failures after DONE(succeeded) stay inspectable and expose partial commit counts', async () => {
     const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
     const asUrl = `http://localhost:${server.asPort}`;
-    const connectorId = 'https://test/partial-checkpoint-commit';
+    const connectorId = 'partial-checkpoint-commit';
     const manifest = {
       connector_id: connectorId,
       version: '0.1.0',
@@ -1976,7 +1976,7 @@ rl.on('line', (line) => {
     const { asPort, rsPort } = server;
     const manifest = {
       ...MINIMAL_MANIFEST,
-      connector_id: 'https://registry.pdpp.org/connectors/test-time-range',
+      connector_id: 'test-time-range',
       streams: [
         {
           name: 'items',
@@ -4756,7 +4756,7 @@ rl.on('line', (line) => {
   await t.test('DONE(failed) after staging multiple stream checkpoints still commits none of them', async () => {
     const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
     const { asPort, rsPort } = server;
-    const manifest = buildMultiStreamManifest('https://registry.pdpp.org/connectors/test-multi-stream-done-failed');
+    const manifest = buildMultiStreamManifest('test-multi-stream-done-failed');
     const { ownerToken, connectorId } = await setupConnector(server, asPort, manifest);
     const asUrl = `http://localhost:${asPort}`;
 
@@ -6445,7 +6445,7 @@ rl.on('line', (line) => {
     const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
     const { asPort } = server;
     const asUrl = `http://localhost:${asPort}`;
-    const connectorId = 'https://registry.pdpp.org/connectors/invalid-ingest-response';
+    const connectorId = 'invalid-ingest-response';
     const manifest = {
       ...MINIMAL_MANIFEST,
       connector_id: connectorId,
@@ -6677,8 +6677,8 @@ rl.on('line', (line) => {
 
     // Register two different connectors
     const asUrl = `http://localhost:${asPort}`;
-    const manifest1 = { ...MINIMAL_MANIFEST, connector_id: 'https://test/connector-a' };
-    const manifest2 = { ...MINIMAL_MANIFEST, connector_id: 'https://test/connector-b' };
+    const manifest1 = { ...MINIMAL_MANIFEST, connector_id: 'connector-a' };
+    const manifest2 = { ...MINIMAL_MANIFEST, connector_id: 'connector-b' };
 
     await fetchJson(`${asUrl}/connectors`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(manifest1) });
     await fetchJson(`${asUrl}/connectors`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(manifest2) });

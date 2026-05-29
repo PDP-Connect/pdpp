@@ -81,7 +81,7 @@ async function closeServer(server) {
 // sometimes not — exercises independence).
 const MANIFEST_A = {
   protocol_version: '0.1.0',
-  connector_id: 'https://test.pdpp.org/connectors/semantic-a',
+  connector_id: 'semantic-a',
   version: '1.0.0',
   display_name: 'Semantic A',
   capabilities: { human_interaction: ['credentials'] },
@@ -164,7 +164,7 @@ const MANIFEST_A = {
 
 const MANIFEST_B = {
   protocol_version: '0.1.0',
-  connector_id: 'https://test.pdpp.org/connectors/semantic-b',
+  connector_id: 'semantic-b',
   version: '1.0.0',
   display_name: 'Semantic B',
   capabilities: { human_interaction: ['credentials'] },

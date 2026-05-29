@@ -1705,7 +1705,15 @@ export async function resolveGrantScopedStateGrant(connectorId, grantId) {
       err.scenario_id = row.scenario_id || undefined;
       throw err;
     }
-    if (resolved.storageBinding.connector_id !== connectorId) {
+    // Compare connector identity canonically: the request path may carry a
+    // URL-shaped connector id and a stale grant may carry a URL-shaped storage
+    // binding, while the live instance/records are keyed by the canonical key.
+    // Canonicalize both sides so admission matches the same key ingest/read use.
+    // See canonicalize-connector-keys Decision 1/8.
+    const canonicalPathConnectorId = canonicalConnectorKey(connectorId) ?? connectorId;
+    const canonicalBoundConnectorId =
+      canonicalConnectorKey(resolved.storageBinding.connector_id) ?? resolved.storageBinding.connector_id;
+    if (canonicalBoundConnectorId !== canonicalPathConnectorId) {
       const err = new Error(`Grant '${grantId}' is not scoped to connector ${connectorId}`);
       err.code = 'invalid_request';
       err.trace_id = row.trace_id || null;

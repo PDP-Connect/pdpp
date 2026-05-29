@@ -31,12 +31,13 @@ import {
 import { ingestRecord } from '../server/records.js';
 import { reconcilePolyfillManifests } from '../server/polyfill-manifest-reconcile.ts';
 
-const CONNECTOR_ID = 'https://registry.pdpp.test/connectors/seed-flip';
+const CONNECTOR_ID = 'seed-flip';
 
 function referenceFixtureManifest(overrides = {}) {
   return {
     protocol_version: '0.1.0',
     connector_id: CONNECTOR_ID,
+    connector_key: CONNECTOR_ID,
     version: '1.0.0',
     display_name: 'Seed flip fixture (reference shape)',
     runtime_requirements: { bindings: { network: { required: true } } },
@@ -68,6 +69,7 @@ function shippedPolyfillManifest(overrides = {}) {
   return {
     protocol_version: '0.1.0',
     connector_id: CONNECTOR_ID,
+    connector_key: CONNECTOR_ID,
     version: '0.1.0',
     display_name: 'Seed flip fixture (polyfill shape)',
     runtime_requirements: { bindings: { network: { required: true } } },

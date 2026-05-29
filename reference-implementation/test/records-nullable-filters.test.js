@@ -120,7 +120,7 @@ async function withHarness(fn) {
 function nullableFiltersManifest() {
   return {
     protocol_version: '0.1.0',
-    connector_id: 'https://registry.pdpp.test/connectors/nullable-filters',
+    connector_id: 'nullable-filters',
     version: '1.0.0',
     display_name: 'Nullable Filters',
     runtime_requirements: { bindings: { network: { required: true } } },
