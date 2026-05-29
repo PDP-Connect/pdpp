@@ -516,14 +516,20 @@ function connectionHealthTextClass(tone: "success" | "danger" | "neutral" | "run
 function AxisChipBadge({ chip }: { chip: AxisChip }) {
   return (
     <span
-      aria-label={chip.label}
       className={`pdpp-caption inline-flex items-center gap-0 px-2 py-0.5 ${axisChipClass(chip.tone)}`}
       data-axis-tone={chip.tone}
       title={chip.title}
     >
-      <span className="opacity-60">{chip.dimension}</span>
-      <span aria-hidden className="mx-1 opacity-40">·</span>
-      <span className="font-medium">{chip.value}</span>
+      <span className="sr-only">{chip.label}</span>
+      <span aria-hidden className="opacity-60">
+        {chip.dimension}
+      </span>
+      <span aria-hidden className="mx-1 opacity-40">
+        ·
+      </span>
+      <span aria-hidden className="font-medium">
+        {chip.value}
+      </span>
     </span>
   );
 }

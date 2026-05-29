@@ -132,12 +132,14 @@ test("null next_action surfaces no CTA at all", () => {
 // The chip must render dimension (muted) and value (prominent) as
 // distinct elements, not collapse them into the opaque `label` string.
 // This structural assertion verifies the split rendering is present in
-// source and that the accessible label (aria-label) still carries the
-// full `chip.label` so screen readers see both together.
+// source and that a screen-reader-only label still carries the full
+// `chip.label` so screen readers see both together.
 
 const AXIS_CHIP_RENDERS_DIMENSION = /chip\.dimension/;
 const AXIS_CHIP_RENDERS_VALUE = /chip\.value/;
-const AXIS_CHIP_ARIA_LABEL = /aria-label=\{chip\.label\}/;
+const AXIS_CHIP_SR_ONLY_LABEL = /<span className="sr-only">\{chip\.label\}<\/span>/;
+const AXIS_CHIP_VISUAL_SPANS_ARE_HIDDEN =
+  /<span aria-hidden className="opacity-60">\{chip\.dimension\}<\/span>[\s\S]*<span aria-hidden className="font-medium">\{chip\.value\}<\/span>/;
 test("AxisChipBadge renders chip.dimension and chip.value as separate elements", async () => {
   const src = await readFile(ROW_FILE, "utf8");
   const chipBadgeBlock = src.slice(src.indexOf("function AxisChipBadge"));
@@ -145,18 +147,16 @@ test("AxisChipBadge renders chip.dimension and chip.value as separate elements",
   assert.match(chipBadgeBlock, AXIS_CHIP_RENDERS_VALUE);
 });
 
-test("AxisChipBadge uses aria-label={chip.label} for accessible text", async () => {
+test("AxisChipBadge uses sr-only chip.label for accessible text", async () => {
   const src = await readFile(ROW_FILE, "utf8");
   const chipBadgeBlock = src.slice(src.indexOf("function AxisChipBadge"));
-  assert.match(chipBadgeBlock, AXIS_CHIP_ARIA_LABEL);
+  assert.match(chipBadgeBlock, AXIS_CHIP_SR_ONLY_LABEL);
 });
 
-test("AxisChipBadge does not render chip.label as a JSX text node (dimension+value own the visual)", async () => {
+test("AxisChipBadge hides visual dimension and value from assistive text", async () => {
   const src = await readFile(ROW_FILE, "utf8");
   const chipBadgeBlock = src.slice(src.indexOf("function AxisChipBadge"), src.indexOf("function axisChipClass"));
-  // chip.label must not appear as a standalone JSX text node >{chip.label}<
-  // It is fine for it to appear in aria-label={chip.label} (attribute position).
-  assert.equal(/>\s*\{chip\.label\}\s*</.test(chipBadgeBlock), false);
+  assert.match(chipBadgeBlock, AXIS_CHIP_VISUAL_SPANS_ARE_HIDDEN);
 });
 
 // ─── 6.1 / 6.5 wiring assertions ───────────────────────────────────────

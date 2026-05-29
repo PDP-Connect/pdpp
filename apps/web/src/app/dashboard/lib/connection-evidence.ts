@@ -468,9 +468,21 @@ export function formatSourceOutboxState(
 
   switch (state) {
     case "dead_letter":
-      return { dimension: "Outbox", value: "dead-letter", label: "Outbox · dead-letter", title: counts, tone: "danger" };
+      return {
+        dimension: "Outbox",
+        value: "dead-letter",
+        label: "Outbox · dead-letter",
+        title: counts,
+        tone: "danger",
+      };
     case "stale":
-      return { dimension: "Outbox", value: "stale lease", label: "Outbox · stale lease", title: counts, tone: "danger" };
+      return {
+        dimension: "Outbox",
+        value: "stale lease",
+        label: "Outbox · stale lease",
+        title: counts,
+        tone: "danger",
+      };
     case "retrying":
       return { dimension: "Outbox", value: "retrying", label: "Outbox · retrying", title: counts, tone: "warning" };
     case "pending":

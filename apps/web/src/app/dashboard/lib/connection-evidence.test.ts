@@ -672,7 +672,7 @@ test("novel axis values from runtime degrade to dimension='X' value='unknown' no
   } as unknown as RefConnectionHealthSnapshot["axes"]);
   for (const chip of chips) {
     assert.equal(chip.value, "unknown", `expected value='unknown' for novel axis, got '${chip.value}'`);
-    assert.ok(chip.dimension.length > 0, `missing dimension for novel axis chip`);
+    assert.ok(chip.dimension.length > 0, "missing dimension for novel axis chip");
   }
 });
 
