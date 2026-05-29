@@ -3,7 +3,7 @@
  * panel itself (the React rendering) is browser-side; the row derivations
  * are deterministic given a `ServerInputs` and a browser-side probe.
  *
- * Spec: openspec/changes/add-selfhost-onboarding-slvp/design.md
+ * Spec: openspec/changes/archive/2026-05-28-add-selfhost-onboarding-slvp/design.md
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";

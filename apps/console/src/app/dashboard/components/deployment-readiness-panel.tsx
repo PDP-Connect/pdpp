@@ -21,7 +21,7 @@ export { extractReadinessInputs } from "./deployment-readiness-rows.ts";
 // Self-host onboarding SLVP readiness panel. Presents existing diagnostic
 // state as a small, opinionated "can I share this MCP URL?" checklist.
 //
-// Spec: openspec/changes/add-selfhost-onboarding-slvp/design.md
+// Spec: openspec/changes/archive/2026-05-28-add-selfhost-onboarding-slvp/design.md
 //
 // Rows derive from values already present on `/_ref/deployment` plus two
 // browser-side reads (`window.location.origin` and a one-shot fetch of

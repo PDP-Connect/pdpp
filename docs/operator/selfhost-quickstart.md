@@ -146,7 +146,7 @@ The two pieces of state you care about:
 
 A minimal SLVP backup is a `pg_dump` and a `docker run --volumes-from` tarball
 of `pdpp-home`. A dashboard backup UI is deferred; see
-`openspec/changes/add-selfhost-onboarding-slvp` for the deferred slice.
+`openspec/changes/archive/2026-05-28-add-selfhost-onboarding-slvp` for the deferred slice.
 
 ---
 
@@ -323,5 +323,5 @@ future reader does not re-derive that they are intentionally absent.
   any operator-facing copy edits here.
 - [`design-notes/selfhost-runpod-onboarding-slvp-2026-05-27.md`](../../design-notes/selfhost-runpod-onboarding-slvp-2026-05-27.md) —
   the design note this runbook implements.
-- [`openspec/changes/add-selfhost-onboarding-slvp/`](../../openspec/changes/add-selfhost-onboarding-slvp/) —
-  the OpenSpec change tracking this work.
+- [`openspec/changes/archive/2026-05-28-add-selfhost-onboarding-slvp/`](../../openspec/changes/archive/2026-05-28-add-selfhost-onboarding-slvp/) —
+  the OpenSpec change tracking this work (archived after landing).

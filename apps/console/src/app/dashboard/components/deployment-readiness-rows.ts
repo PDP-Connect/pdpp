@@ -3,7 +3,7 @@
  * .ts (not .tsx) sibling so the row computations are importable from
  * node:test without a JSX loader.
  *
- * Spec: openspec/changes/add-selfhost-onboarding-slvp/design.md
+ * Spec: openspec/changes/archive/2026-05-28-add-selfhost-onboarding-slvp/design.md
  */
 import type { DeploymentDiagnostics } from "../lib/ref-client.ts";
 
@@ -115,7 +115,7 @@ export function storageBackendRow(inputs: ServerInputs): ReadinessRow {
       check: "Storage backend",
       status: "warn",
       detail: `Database at ${inputs.databasePath}; vector index (${inputs.vectorIndexKind ?? "unknown"}) is stale.`,
-      hint: "Storage backend reports unhealthy. See `docs/operator/selfhost-quickstart.md#storage`.",
+      hint: "Storage backend reports unhealthy. See `docs/operator/selfhost-quickstart.md` for storage layout.",
     };
   }
   if (inputs.vectorIndexState === "building") {
