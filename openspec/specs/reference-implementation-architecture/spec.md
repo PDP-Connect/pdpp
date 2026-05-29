@@ -45,14 +45,29 @@ The CLI and executable tests SHALL consume the real public or reference-designat
 - **THEN** those tests SHALL prefer black-box interaction with the running reference surfaces unless a narrower white-box test is intentionally justified for implementation internals
 
 ### Requirement: Reference-only surfaces are explicit
-Debugging, replay, trace, dashboard summary, and operator-control surfaces that are useful for the reference implementation but are not part of core PDPP SHALL be explicitly marked as reference-only.
+Debugging, replay, trace, and operator-control surfaces that are useful for the reference implementation but are not part of core PDPP SHALL be explicitly marked as reference-only.
+
+The reference implementation SHALL NOT expose live bearer-token material on any reference-only read surface, even when that surface is otherwise unauthenticated. Every event projected from `spine_events` onto `_ref` timeline responses SHALL satisfy these narrow projection rules before the response is serialized:
+
+1. The top-level `token_id` field SHALL be removed from the event.
+2. When the event's `object_type` equals `'token'`, the event's `object_id` SHALL be replaced with the literal string `<redacted-token-id>` (because `token.issued` events use the bearer string as both `token_id` and `object_id`).
+3. When the event's `object_type` equals `'pending_consent'` or `'owner_device_auth'`, the event's `object_id` SHALL be replaced with the literal string `<redacted-device-code>` (because those events use the live `device_code` as `object_id`, and the device_code is bearer-equivalent — it redeems for an owner bearer at `POST /oauth/token` and resolves to a request_uri that, when paired with `/consent/approve`, issues a client bearer).
+4. The event's top-level `data` object, if present and not an array, SHALL have any of the keys `device_code`, `user_code`, or `request_uri` replaced with the literal string `<redacted-bearer>`. The projection SHALL NOT traverse arrays inside `data` and SHALL NOT recurse into nested objects.
+
+The projection SHALL NOT pattern-match field names beyond the explicit allowlist above, SHALL NOT redact by value shape, and SHALL NOT recurse into nested data objects. Storage of `token_id`, `object_id`, and `data` in `spine_events` is unchanged by this requirement; the projection is a read-time guarantee. A wider name- or shape-based projection, and removal of the bearer from spine storage entirely, are deferred to a separate change.
+
+The operator console projection of pending approvals (`GET /_ref/approvals`) SHALL also satisfy:
+
+1. `approval_id` SHALL be the row's stored opaque `approval_id` (a non-redeemable id minted at row creation), NOT the row's `device_code`.
+2. `request_uri` SHALL be `null` for every entry. The canonical `request_uri` (`urn:pdpp:pending-consent:<device_code>`) embeds the live device_code; clients that legitimately need it receive it as the response of `POST /oauth/par` and SHALL NOT pick it up from the operator console.
+3. `user_code` SHALL be `null` for every entry. The dashboard's owner approve/deny path SHALL POST `approval_id` (not `user_code`) and the AS SHALL resolve `approval_id` to the matching pending row internally behind the existing owner-session + CSRF gate.
 
 #### Scenario: A trace or timeline endpoint is exposed
 - **WHEN** the implementation exposes trace, timeline, or similar introspection surfaces
 - **THEN** those surfaces SHALL be clearly described as reference-only artifacts rather than as core PDPP protocol requirements
 
 #### Scenario: The current `_ref` read surface is treated as stable substrate
-- **WHEN** the implementation exposes the current reference-designated readers
+- **WHEN** the implementation exposes the current reference-designated event-spine readers
 - **THEN** the durable `_ref` read surface SHALL stay limited to:
   - `GET /_ref/traces/:traceId`
   - `GET /_ref/grants/:grantId/timeline`
@@ -62,14 +77,6 @@ Debugging, replay, trace, dashboard summary, and operator-control surfaces that 
   - `GET /_ref/runs` (list, filter, paginate)
   - `GET /_ref/search?q=...` (id-aware read-only jump helper)
   - `GET /_ref/dataset/summary` (dashboard overview dataset summary)
-  - `GET /_ref/dataset/summary/streams` (per-`(connector_id, stream)` dataset-summary projection rows)
-  - `GET /_ref/connectors` (connector summary list)
-  - `GET /_ref/connectors/:connectorId` (connector detail)
-  - `GET /_ref/approvals` (pending approval list)
-  - `GET /_ref/records/timeline` (record activity timeline)
-  - `GET /_ref/schedules` (connector schedule list)
-  - `GET /_ref/connectors/:connectorId/schedule` (connector schedule detail)
-  - `GET /_ref/deployment` (operator deployment diagnostics)
 
 #### Scenario: The dashboard summarizes dataset credibility
 - **WHEN** the reference dashboard renders a dataset summary or credibility overview
@@ -90,6 +97,59 @@ Debugging, replay, trace, dashboard summary, and operator-control surfaces that 
 #### Scenario: Runtime validation failures remain inspectable in the reference substrate
 - **WHEN** a bounded collection run fails because the runtime rejects connector output or an interaction handler response before `DONE`
 - **THEN** the durable `_ref` run timeline SHALL still record `run.failed` with an explicit machine-readable reason instead of leaving that failure visible only as a thrown local error
+
+#### Scenario: A grant timeline event carries `token_id` in storage
+- **WHEN** a caller requests `GET /_ref/grants/:grantId/timeline` for a grant whose stored spine events carry `token_id` values
+- **THEN** the response payload SHALL NOT contain a `token_id` field on any event
+- **AND** every other documented event field (`event_id`, `event_type`, `occurred_at`, `actor_*`, `subject_*`, `grant_id`, `client_id`, `data`, `trace_id`, etc.) SHALL be returned unchanged
+
+#### Scenario: A grant timeline includes a `token.issued` event
+- **WHEN** the timeline includes an event whose `object_type` is `'token'`
+- **THEN** that event's `object_id` SHALL be the literal string `<redacted-token-id>`
+- **AND** the bearer string the event carried in storage SHALL NOT appear anywhere in the serialized response body
+
+#### Scenario: A run timeline event carries `token_id` in storage
+- **WHEN** a caller requests `GET /_ref/runs/:runId/timeline` for a run whose stored spine events carry `token_id` values
+- **THEN** the response payload SHALL NOT contain a `token_id` field on any event
+
+#### Scenario: The projection redacts the device_code on pending_consent events
+- **WHEN** a caller requests `GET /_ref/traces/:traceId` for a trace whose `request.submitted` event has `object_type === 'pending_consent'` and `object_id` equal to the live `device_code`
+- **THEN** the response payload SHALL replace that event's `object_id` with the literal string `<redacted-device-code>`
+- **AND** the live device_code value SHALL NOT appear anywhere in the serialized response body
+
+#### Scenario: The projection redacts the device_code on owner_device_auth events
+- **WHEN** a caller requests `GET /_ref/traces/:traceId` for a trace whose `request.submitted` event has `object_type === 'owner_device_auth'` and `object_id` equal to the live `device_code`
+- **THEN** the response payload SHALL replace that event's `object_id` with the literal string `<redacted-device-code>`
+- **AND** the live device_code value SHALL NOT appear anywhere in the serialized response body
+
+#### Scenario: The projection redacts bearer-equivalent keys in event data
+- **WHEN** a stored spine event's top-level `data` object contains any of the keys `device_code`, `user_code`, or `request_uri`
+- **THEN** the projection SHALL replace each such key's value with the literal string `<redacted-bearer>`
+- **AND** other keys inside `data` SHALL pass through unchanged
+
+#### Scenario: `_ref/approvals` does not expose the live device_code
+- **WHEN** a caller (with owner session, when owner-auth is enabled, or any caller in open local-dev mode) requests `GET /_ref/approvals` while a `pending_consents` row and an `owner_device_auth` row are pending
+- **THEN** the response data array SHALL contain entries whose `approval_id` is the row's stored opaque `approval_id`, NOT the row's `device_code`
+- **AND** the live `device_code` value of either row SHALL NOT appear anywhere in the serialized response body
+- **AND** every consent entry's `request_uri` SHALL be `null`
+- **AND** every entry's `user_code` SHALL be `null`
+
+#### Scenario: The dashboard approves a pending consent by approval_id
+- **WHEN** an authenticated owner submits `POST /consent/approve` with `Content-Type: application/json` and a JSON body of `{ "approval_id": "<row-approval-id>", "subject_id": "owner_local" }`
+- **THEN** the AS SHALL resolve the `approval_id` to the matching pending consent row, derive the canonical `request_uri` from its `device_code` internally, and complete the approval
+- **AND** the response status SHALL be `200`
+- **AND** the response body SHALL be the existing `{ grant_id, token, grant }` envelope
+
+#### Scenario: The dashboard approves a pending owner-device flow by approval_id
+- **WHEN** an authenticated owner submits `POST /device/approve` with `Content-Type: application/x-www-form-urlencoded` and `approval_id=<row-approval-id>&subject_id=owner_local`
+- **THEN** the AS SHALL resolve the `approval_id` to the matching pending owner_device_auth row, derive the `user_code` internally, and complete the approval
+- **AND** the response SHALL be the existing rendered "device access approved" hosted page
+
+#### Scenario: The projection does not traverse `data` payloads or match by field-name shape
+- **WHEN** a stored spine event carries fields other than the explicitly-redacted set (`token_id`, `object_id` for the listed object_types, and the three top-level `data` keys), for example application-level keys inside `data` or values nested in arrays
+- **THEN** the projection SHALL NOT remove or rename those other fields
+- **AND** the projection SHALL NOT inspect string values for bearer-like shape
+- **AND** the projection SHALL NOT recurse into nested objects or arrays inside `data`
 
 ### Requirement: Run interaction control is owner-only and ephemeral
 The reference implementation SHALL treat dashboard-submitted responses to live run interactions as owner-only, reference-only control-plane actions for the current active run. Submitted values SHALL satisfy the current pending interaction only and SHALL NOT become durable credential storage.
@@ -114,7 +174,6 @@ The reference implementation SHALL treat dashboard-submitted responses to live r
 - **AND** it SHALL NOT write those values to `.env.local`, durable SQLite state, or other long-lived reference configuration as part of this control-plane action
 
 ### Requirement: The Collection boundary stays explicit
-
 The reference implementation SHALL keep the Collection boundary explicit across core semantics, Collection Profile semantics, and runtime-only behavior.
 
 #### Scenario: Shared collection semantics are classified
@@ -129,21 +188,10 @@ The reference implementation SHALL keep the Collection boundary explicit across 
 - **WHEN** behavior concerns scheduling, retry, credential storage, webhook adaptation, batch import, or multi-connector coordination
 - **THEN** it SHALL be treated as runtime/orchestrator behavior unless and until a concrete interoperability need justifies a new profile
 
-#### Scenario: Multi-instance connector orchestration is classified
-- **WHEN** the reference distinguishes two configured accounts, devices, or local bindings that share the same connector implementation
-- **THEN** connector instance identity SHALL be treated as reference runtime/orchestrator identity unless and until a concrete interoperability need promotes it into a Collection Profile or PDPP protocol surface
-- **AND** the reference SHALL NOT use `connector_id` alone as the durable runtime key for state, records, schedules, active-run leases, diagnostics, or owner actions
-
-#### Scenario: Default connector-only compatibility has been migrated away
-- **WHEN** the reference needs a default configured connection for a connector-only historical deployment
-- **THEN** it SHALL represent that default as a normal connector instance with `source_kind = "account"` and `source_binding.kind = "default_account"`
-- **AND** it SHALL NOT create, expose, or require connector instances with `source_kind = "legacy"` or `source_binding.kind = "legacy_default"`
-- **AND** migrations SHALL rewrite existing direct `connector_instance_id` references from the old compatibility id to the deterministic default account connection id without dropping records, state, schedules, search rows, blobs, gaps, or attention records
-
-#### Scenario: Persisted schedules are active runtime instructions
-- **WHEN** the long-lived reference server starts with enabled persisted connector schedules
-- **THEN** the reference SHALL treat those schedules as runtime/orchestrator instructions for automatic connector refresh
-- **AND** it SHALL NOT present enabled schedules as automatic if no scheduler loop is active for that server process
+#### Scenario: Durable local collector work is classified
+- **WHEN** behavior concerns local collector outbox storage, local work-unit leasing, stale-lease recovery, drain-before-scan ordering, host-native service lifecycle, resource budgets, or connection-scoped local durable-work diagnostics
+- **THEN** it SHALL be treated as reference runtime/orchestrator behavior unless and until a concrete interoperability need justifies Collection Profile promotion
+- **AND** the reference SHALL NOT describe those local durable-work mechanics as PDPP Core resource-server requirements
 
 #### Scenario: The reference makes an optimistic collection choice before the spec is fully frozen
 - **WHEN** the reference implementation enforces a strong Collection Profile behavior before the PDPP spec is fully settled
@@ -6184,4 +6232,738 @@ Lexical and semantic retrieval contracts SHALL expose backend identity and score
 - **WHEN** semantic retrieval is backed by an approximate vector index
 - **THEN** the capability advertisement SHALL disclose index kind and recall determinism
 - **AND** the adapter SHALL NOT present approximate recall as exact flat-index behavior
+
+### Requirement: The reference SHALL gate grant revocation on a valid owner or grant-scoped client bearer
+`POST /grants/:grantId/revoke` SHALL require an `Authorization: Bearer <token>` header and SHALL accept the request only when the introspected token is one of:
+
+- an owner bearer (`pdpp_token_kind === 'owner'`) whose token row is real and is not token-level-revoked (`inactive_reason === 'token_revoked'`) or token-level-expired (`inactive_reason === 'token_expired'`); or
+- a client bearer (`pdpp_token_kind === 'client'`, or an inactive introspection that still resolves to a `grant_id` because the inactive reason is grant-state-only) whose introspection-resolved `grant_id` exactly equals the URL `:grantId` parameter.
+
+A client bearer whose grant has become malformed (`grant_invalid`), already revoked (`grant_revoked`), or expired (`grant_expired`) SHALL still authenticate the holder for the purpose of revoking that grant — the bearer string itself is authentic and the only legitimate use of such a token is to revoke the grant the client holds.
+
+The reference SHALL perform this check before any grant lookup, before any state mutation, and before any `grant.revoke_*` spine event is emitted on the success path. A request that fails the check SHALL NOT mutate `grants.status` or `tokens.revoked`.
+
+#### Scenario: Revoke without an Authorization header
+- **WHEN** a caller submits `POST /grants/:grantId/revoke` with no `Authorization` header
+- **THEN** the response status SHALL be `401`
+- **AND** the response body SHALL be a PDPP error envelope with `error.code === 'authentication_error'`
+- **AND** the grant's `status` and the grant's tokens' `revoked` columns SHALL remain unchanged
+
+#### Scenario: Revoke with an unknown bearer
+- **WHEN** a caller submits `POST /grants/:grantId/revoke` with an `Authorization: Bearer …` whose value does not match any row in the tokens table
+- **THEN** the response status SHALL be `401`
+- **AND** the grant SHALL remain unchanged
+
+#### Scenario: Revoke with a token-level revoked or expired bearer
+- **WHEN** a caller submits `POST /grants/:grantId/revoke` with a bearer whose introspection returns `active: false` with `inactive_reason` of `token_revoked` or `token_expired`
+- **THEN** the response status SHALL be `401`
+- **AND** the grant SHALL remain unchanged
+
+#### Scenario: Revoke with a client bearer bound to a different grant
+- **WHEN** a caller submits `POST /grants/:grantId/revoke` with a client bearer whose introspected `grant_id` differs from `:grantId`
+- **THEN** the response status SHALL be `403`
+- **AND** the response body SHALL be a PDPP error envelope with `error.code === 'permission_error'`
+- **AND** the targeted grant SHALL remain unchanged
+
+#### Scenario: Revoke with the grant's own client bearer
+- **WHEN** a caller submits `POST /grants/:grantId/revoke` with a valid client bearer whose introspected `grant_id` equals `:grantId`
+- **THEN** the response status SHALL be `200`
+- **AND** the response body SHALL be `{ "revoked": true }`
+- **AND** subsequent introspection of the same token SHALL return `active: false`
+
+#### Scenario: Revoke with the grant's own client bearer for a malformed grant
+- **WHEN** a caller submits `POST /grants/:grantId/revoke` with a client bearer whose introspection returns `active: false` with `inactive_reason: 'grant_invalid'` and whose introspection-resolved `grant_id` equals `:grantId`
+- **THEN** the request SHALL pass the auth gate
+- **AND** the response SHALL be the existing PDPP `grant_invalid` error envelope produced by the revoke handler (status `403`)
+- **AND** the auth gate SHALL NOT short-circuit to `401`
+
+#### Scenario: Revoke with an owner bearer
+- **WHEN** a caller submits `POST /grants/:grantId/revoke` with a valid owner bearer
+- **THEN** the response status SHALL be `200`
+- **AND** the response body SHALL be `{ "revoked": true }`
+- **AND** the grant's `status` SHALL be `'revoked'` regardless of which client originally held it
+
+### Requirement: AS hosted-UI responses SHALL carry clickjacking-defense headers
+Every response from the reference Authorization Server's HTTP application SHALL include the headers `X-Frame-Options: DENY` and `Content-Security-Policy: frame-ancestors 'none'`. The reference SHALL set both headers (the modern CSP form for current browsers and the legacy header for older browsers and embedded webviews).
+
+#### Scenario: A browser fetches the owner-login page
+- **WHEN** a browser issues `GET /owner/login`
+- **THEN** the response SHALL carry `X-Frame-Options: DENY`
+- **AND** the response SHALL carry `Content-Security-Policy: frame-ancestors 'none'`
+
+#### Scenario: A browser fetches the consent shell with a request_uri
+- **WHEN** a browser issues `GET /consent?request_uri=…`
+- **THEN** the response SHALL carry `X-Frame-Options: DENY`
+- **AND** the response SHALL carry `Content-Security-Policy: frame-ancestors 'none'`
+
+#### Scenario: A non-HTML JSON endpoint is requested
+- **WHEN** a caller issues a JSON request such as `POST /introspect`
+- **THEN** the response SHALL still carry both clickjacking-defense headers
+- **AND** the headers SHALL NOT change the response body or content type
+
+### Requirement: Hosted owner forms SHALL be protected by a signed double-submit CSRF token
+
+When the reference owner-auth placeholder is enabled (`PDPP_OWNER_PASSWORD` set), every state-changing form POST originating from a server-rendered hosted owner page SHALL be rejected unless the caller submits a CSRF token that:
+
+1. is present both in the `pdpp_owner_csrf` cookie and in an `_csrf` form field;
+2. has a valid HMAC signature over its nonce when verified with the server-side CSRF secret;
+3. matches the cookie value byte-for-byte under a constant-time comparison.
+
+The server-side CSRF secret SHALL NOT be derived from `PDPP_OWNER_PASSWORD` or any other user-supplied authentication credential. The reference SHALL default to a fresh random 32-byte secret minted per process when owner-auth is enabled. Implementations MAY accept an explicit deployment-supplied CSRF secret (high-entropy and unrelated to any password) for use cases that require a stable secret across restarts, but SHALL NOT use a password-derived value.
+
+The CSRF cookie SHALL be marked `HttpOnly`, `Path=/`, `SameSite=Lax` (or `Strict` when `PDPP_OWNER_SAMESITE=strict`), and `Secure` whenever the request is observed over TLS (`req.secure` or `X-Forwarded-Proto: https`) **or** when `PDPP_OWNER_FORCE_SECURE_COOKIES=1` is set. The hidden field name is `_csrf`. Tokens have the shape `<base64url-nonce>.<base64url-hmac>` and are issued on every hosted-form GET that does not already carry a verifying cookie.
+
+The protected POST surfaces SHALL include at least:
+
+- `POST /owner/login`
+- `POST /owner/logout`
+- `POST /consent/approve`
+- `POST /consent/deny`
+- `POST /device/approve`
+- `POST /device/deny`
+
+Pure JSON callers SHALL remain exempt: a request whose `Content-Type` is exactly `application/json` (parameters such as `; charset=utf-8` permitted) SHALL pass through `requireCsrf` without a CSRF check, because browsers cannot forge a cross-origin JSON POST without a CORS preflight. The exemption SHALL NOT extend to structured-syntax variants such as `application/problem+json` until the reference body parser actually decodes them as JSON. CLIs and server-to-server clients keep their existing programmatic contract.
+
+Every other browser-submittable POST — including `application/x-www-form-urlencoded`, `multipart/form-data`, `text/plain`, and a request with no `Content-Type` header — SHALL require a valid CSRF pair when owner-auth is enabled. The exemption SHALL NOT be defined as "form-encoded only," because the HTML form spec admits `text/plain` as a third valid `enctype`, which a browser can submit cross-origin without a CORS preflight; exempting only the two strict form encodings would leave a `text/plain` bypass.
+
+The CSRF cookie SHALL be rotated on auth-state change (login success and logout) so a token captured before sign-in cannot be reused after it.
+
+The owner session cookie (`pdpp_owner_session`) SHALL also honor the `PDPP_OWNER_SAMESITE` and `PDPP_OWNER_FORCE_SECURE_COOKIES` knobs so deployments behind TLS-terminating proxies can force `Secure` and stricter SameSite without code changes.
+
+This requirement supersedes the prior "P2 follow-up" deferral noted in the original `harden-reference-auth-surfaces` design.
+
+#### Scenario: A browser-form POST `/owner/login` arrives without a CSRF cookie or `_csrf` field
+- **WHEN** a browser submits `POST /owner/login` with `Content-Type: application/x-www-form-urlencoded` and no `pdpp_owner_csrf` cookie or `_csrf` body field
+- **THEN** the response status SHALL be `403`
+- **AND** the response SHALL NOT issue a `pdpp_owner_session` Set-Cookie
+- **AND** the response body SHALL NOT leak whether the submitted password would have been correct
+
+#### Scenario: A text/plain POST `/owner/login` is rejected before the password check
+- **WHEN** a caller submits `POST /owner/login` with `Content-Type: text/plain` and no CSRF pair
+- **THEN** the response status SHALL be `403`
+- **AND** the response SHALL NOT issue a `pdpp_owner_session` Set-Cookie even when the body would have carried a correct password
+
+#### Scenario: A JSON POST `/owner/login` reaches the password branch without a CSRF token
+- **WHEN** a programmatic JSON caller submits `POST /owner/login` with `Content-Type: application/json` and a JSON body containing `password` but no `_csrf` field
+- **THEN** the request SHALL not be rejected by the CSRF gate because JSON callers cannot be cross-origin-forged from a browser without a CORS preflight
+- **AND** an incorrect password SHALL produce a `401`
+- **AND** a correct password SHALL produce a `302` redirect to `return_to` and SHALL issue a `pdpp_owner_session` Set-Cookie
+
+#### Scenario: A browser-form POST `/owner/login` arrives with a valid CSRF pair and a wrong password
+- **WHEN** a browser submits `POST /owner/login` with a `pdpp_owner_csrf` cookie and matching `_csrf` field that both verify against the server secret, but the submitted password is incorrect
+- **THEN** the response status SHALL be `401`
+- **AND** the response SHALL NOT issue a `pdpp_owner_session` Set-Cookie
+
+#### Scenario: A browser-form POST `/owner/login` arrives with a valid CSRF pair and the correct password
+- **WHEN** a browser submits `POST /owner/login` with a verifying CSRF pair and the correct password
+- **THEN** the response status SHALL be `302`
+- **AND** the response SHALL issue a `pdpp_owner_session` Set-Cookie
+- **AND** the response SHALL also issue a rotation Set-Cookie that clears the prior `pdpp_owner_csrf` cookie
+
+#### Scenario: A browser-form POST `/consent/approve` arrives from an authenticated owner without a CSRF token
+- **WHEN** an authenticated owner submits `POST /consent/approve` with `Content-Type: application/x-www-form-urlencoded` and no verifying CSRF pair
+- **THEN** the response status SHALL be `403`
+- **AND** the pending consent request SHALL remain pending
+
+#### Scenario: A browser-form POST `/device/approve` arrives from an authenticated owner without a CSRF token
+- **WHEN** an authenticated owner submits `POST /device/approve` with `Content-Type: application/x-www-form-urlencoded` and no verifying CSRF pair
+- **THEN** the response status SHALL be `403`
+- **AND** the device authorization SHALL remain pending
+
+#### Scenario: A text/plain POST `/consent/approve` arrives from an authenticated owner without a CSRF token
+- **WHEN** an authenticated owner submits `POST /consent/approve?request_uri=…` with `Content-Type: text/plain`, `Accept: text/html`, a session cookie, a non-empty body, and no `pdpp_owner_csrf` cookie or `_csrf` field
+- **THEN** the response status SHALL be `403`
+- **AND** the pending consent request SHALL remain pending (a subsequent JSON `POST /consent/approve` for the same `request_uri` SHALL still succeed)
+
+#### Scenario: A text/plain POST `/device/approve` arrives from an authenticated owner without a CSRF token
+- **WHEN** an authenticated owner submits `POST /device/approve` with `Content-Type: text/plain`, a session cookie, and no CSRF token
+- **THEN** the response status SHALL be `403`
+- **AND** the device authorization SHALL remain pending
+
+#### Scenario: A POST with no Content-Type arrives from an authenticated owner without a CSRF token
+- **WHEN** an authenticated owner submits a state-changing POST with a session cookie, no `Content-Type` header (a "browser fetch with no body" shape), and no CSRF token
+- **THEN** the response status SHALL be `403`
+
+#### Scenario: A JSON POST `/consent/approve` arrives from an authenticated owner without a CSRF token
+- **WHEN** an authenticated owner submits `POST /consent/approve` with `Content-Type: application/json` and no `_csrf` field
+- **THEN** the response SHALL be processed as before
+- **AND** the response status SHALL be `200`
+- **AND** the response body SHALL still return `{ grant_id, token, grant }`
+
+#### Scenario: A CSRF token signed with a password-derived secret is rejected
+- **WHEN** an attacker fetches `GET /owner/login` to capture one (nonce, signature) sample, derives `sha256("pdpp-owner-csrf:" + PDPP_OWNER_PASSWORD)` (or any other password-derived helper), forges a `<nonce>.<sig>` token with that secret, and submits it as both the `pdpp_owner_csrf` cookie and the `_csrf` form field on an authenticated POST `/consent/approve`
+- **THEN** the response status SHALL be `403`
+- **AND** the rendered CSRF token in `GET /consent` SHALL NOT equal the password-derived token
+
+#### Scenario: A forged CSRF cookie/field pair without a valid signature is rejected
+- **WHEN** a caller submits `POST /consent/approve` (form-encoded) with a `pdpp_owner_csrf` cookie and `_csrf` form field that match each other byte-for-byte but whose signature does not verify against the server secret
+- **THEN** the response status SHALL be `403`
+- **AND** no grant SHALL be issued
+
+#### Scenario: An operator opts into stricter cookie posture
+- **WHEN** the server starts with `PDPP_OWNER_SAMESITE=strict`
+- **THEN** every owner session and CSRF Set-Cookie SHALL carry `SameSite=Strict`
+
+#### Scenario: An operator forces `Secure` cookies behind a TLS-terminating proxy
+- **WHEN** the server starts with `PDPP_OWNER_FORCE_SECURE_COOKIES=1`
+- **THEN** every owner session and CSRF Set-Cookie SHALL carry `Secure` even when the inbound request appears as plain HTTP to the Node process
+
+#### Scenario: Local plain-HTTP development still works without configuration
+- **WHEN** the server runs over plain HTTP without `PDPP_OWNER_FORCE_SECURE_COOKIES`
+- **THEN** owner cookies SHALL omit `Secure` so a browser will accept and send them
+- **AND** the hosted owner form flows SHALL still issue and validate CSRF tokens normally
+
+### Requirement: Hosted consent UI SHALL disclose effective access risk
+
+The reference Authorization Server's hosted consent UI SHALL render authorization requests in terms of the effective access the owner is approving, not only in terms of request shorthand. A stream wildcard SHALL NOT be rendered as a bare `*`; the UI SHALL disclose that all streams for the requested source are in scope and SHALL show the resolved stream count and names when the source manifest is available. Long-lived `continuous` access SHALL receive a distinct risk affordance, especially when no expiry or retention bound is present.
+
+Requests for `purpose_category: "ai_training"` SHALL require explicit affirmative consent. When that consent is missing, the AS SHALL reject the request with a typed PDPP error envelope rather than an untyped internal server error.
+
+#### Scenario: Hosted consent receives a wildcard stream request
+- **WHEN** the AS renders `GET /consent?request_uri=...` for a pending request whose authorization details include a stream selection of `*`
+- **THEN** the HTML SHALL NOT render a bare `*` as the stream name
+- **AND** the HTML SHALL indicate that all streams for the requested source are in scope
+- **AND** when the source manifest is known, the HTML SHALL include the resolved stream count and resolved stream names
+
+#### Scenario: Hosted consent receives a continuous grant request
+- **WHEN** the AS renders hosted consent for a request whose effective `access_mode` is `continuous`
+- **THEN** the HTML SHALL include a distinct long-lived-access warning
+- **AND** when no expiry or retention bound is present, the warning SHALL state that the requested access has no explicit expiry
+
+#### Scenario: AI-training request lacks affirmative consent
+- **WHEN** a caller submits an authorization request for `purpose_category: "ai_training"` without the reference's explicit affirmative consent marker
+- **THEN** the AS SHALL reject the request with a typed PDPP error envelope
+- **AND** the response SHALL NOT be a generic `500` internal server error
+
+### Requirement: Host-derived AS/RS metadata SHALL be trusted only for local/private or allowlisted hosts
+
+The reference SHALL pin AS/RS metadata to configured public origins when present. When metadata would derive its origin from request `Host` or `X-Forwarded-Host`, the reference SHALL accept the request only if the resolved request hostname is local/private or matches `PDPP_TRUSTED_HOSTS` (or an equivalent startup option). `PDPP_TRUSTED_HOSTS` entries SHALL be comma/whitespace separated; bare hostnames and URL entries SHALL match exact hostnames; `host:port` entries SHALL also match the request port; wildcard entries of the form `*.example.com` SHALL match subdomains and SHALL NOT match the apex hostname. Rejections SHALL use HTTP `421` and a PDPP error envelope with `error.code` equal to `misdirected_request`.
+
+#### Scenario: Explicit public origins are configured and a hostile forwarded host is sent
+- **WHEN** AS/RS metadata is requested with `X-Forwarded-Host: evil.example`
+- **AND** explicit non-loopback AS/RS public origins are configured
+- **THEN** the metadata document SHALL publish the configured origins
+- **AND** the hostile forwarded host SHALL NOT appear in the issuer, resource, registration endpoint, or PDPP query-base URLs
+
+#### Scenario: No public origin is configured and a private LAN host is sent
+- **WHEN** AS/RS metadata is requested with a private LAN `Host`
+- **AND** no explicit AS/RS public origin is configured
+- **THEN** the metadata document SHALL be allowed
+- **AND** the issuer/resource URLs SHALL derive from that private LAN host
+
+#### Scenario: No public origin is configured and an unknown public host is sent
+- **WHEN** AS/RS metadata is requested with a public `Host` or `X-Forwarded-Host`
+- **AND** that host does not match `PDPP_TRUSTED_HOSTS`
+- **THEN** the reference SHALL reject the request with HTTP `421`
+- **AND** the response body SHALL be a PDPP error envelope with `error.code` equal to `misdirected_request`
+
+#### Scenario: A trusted public host is configured
+- **WHEN** AS/RS metadata is requested with a public `Host` or `X-Forwarded-Host`
+- **AND** that host matches `PDPP_TRUSTED_HOSTS`
+- **THEN** the metadata document SHALL be allowed
+- **AND** the issuer/resource URLs MAY derive from that trusted public host
+
+### Requirement: Runtime Postgres storage SHALL be explicit and default-safe
+
+The reference implementation SHALL keep SQLite as the default runtime storage
+backend and SHALL only use Postgres storage when explicitly configured.
+
+#### Scenario: Default runtime remains SQLite
+
+- **WHEN** the reference runtime starts without `PDPP_STORAGE_BACKEND`
+- **THEN** it SHALL use the existing SQLite-backed storage path
+- **AND** it SHALL NOT require `PDPP_DATABASE_URL`
+- **AND** existing SQLite tests SHALL continue to pass without Postgres.
+
+#### Scenario: Postgres runtime requires an explicit database URL
+
+- **WHEN** `PDPP_STORAGE_BACKEND=postgres` is configured without
+  `PDPP_DATABASE_URL`
+- **THEN** startup SHALL fail fast with a configuration error
+- **AND** it SHALL NOT silently fall back to SQLite.
+
+#### Scenario: Postgres runtime uses runtime dependency scope
+
+- **WHEN** Postgres runtime storage is enabled
+- **THEN** the reference runtime SHALL be able to import and use `pg` from
+  runtime dependency scope
+- **AND** test-only Postgres proof drivers SHALL remain env-gated.
+
+### Requirement: Postgres runtime storage SHALL cover records, blobs, spine, and retrieval
+
+The Postgres runtime backend SHALL provide backing storage for live records,
+record changes, blob rows and bindings, disclosure spine events, lexical
+retrieval state, semantic retrieval state, and hybrid search composition inputs.
+
+#### Scenario: Record and blob APIs preserve public behavior
+
+- **WHEN** records and blobs are ingested, read, listed, deleted, and expanded
+  while `PDPP_STORAGE_BACKEND=postgres`
+- **THEN** public response envelopes, error codes, blob-reference decoration,
+  pagination cursors, and grant filtering SHALL match the SQLite-backed
+  behavior for the same fixtures.
+
+#### Scenario: Disclosure spine APIs preserve public behavior
+
+- **WHEN** disclosure events are emitted and read while
+  `PDPP_STORAGE_BACKEND=postgres`
+- **THEN** event ids, event sequence pagination, correlation summaries, trace
+  timelines, run timelines, and public redaction semantics SHALL match the
+  SQLite-backed behavior for the same fixtures.
+
+#### Scenario: Search APIs preserve public behavior
+
+- **WHEN** lexical, semantic, or hybrid search is executed while
+  `PDPP_STORAGE_BACKEND=postgres`
+- **THEN** the returned records SHALL be grant-safe
+- **AND** response envelopes and pagination semantics SHALL match the existing
+  public search contracts
+- **AND** scoring implementation details MAY differ only where the public
+  contract does not require exact score equality.
+
+### Requirement: Postgres runtime writes SHALL preserve durable ordering guarantees
+
+The Postgres runtime backend SHALL preserve the durable write ordering,
+transactionality, and post-commit index-maintenance boundaries currently
+required for record mutations and disclosure spine events.
+
+#### Scenario: Record mutation transaction remains atomic
+
+- **WHEN** concurrent writers mutate the same `(connector_id, stream)` in
+  Postgres mode
+- **THEN** per-stream versions SHALL be unique and monotonically increasing
+- **AND** live-record updates and `record_changes` appends SHALL commit or roll
+  back together
+- **AND** lexical and semantic index maintenance SHALL occur after the durable
+  record transaction.
+
+#### Scenario: Spine event sequence remains stable
+
+- **WHEN** disclosure events are emitted in Postgres mode
+- **THEN** each event SHALL receive a stable monotonic `event_seq`
+- **AND** timeline pagination SHALL use that logical sequence rather than a
+  backend-specific physical row identifier.
+
+### Requirement: Postgres runtime storage SHALL cover AS and control-plane durable state
+
+The explicit Postgres runtime backend SHALL provide Postgres-backed storage for
+durable authorization-server and operator-control state needed to run the
+reference server without a local persistent SQLite database.
+
+#### Scenario: Authorization state is durable in Postgres mode
+
+- **WHEN** `PDPP_STORAGE_BACKEND=postgres` is configured
+- **THEN** OAuth clients, grants, tokens, pending consent requests, and owner
+  device-authorization requests SHALL be written to and read from Postgres
+- **AND** token introspection, grant revocation, client deletion cascades,
+  consent approval/denial, and owner-device polling SHALL preserve existing
+  public response shapes and error codes.
+
+#### Scenario: Connector and controller state is durable in Postgres mode
+
+- **WHEN** `PDPP_STORAGE_BACKEND=postgres` is configured
+- **THEN** connector manifests, connector sync state, schedules, active runs,
+  and search cursor snapshots SHALL be written to and read from Postgres
+- **AND** reference routes that list connectors, approvals, schedules, active
+  runs, or search pages SHALL not require durable rows in SQLite.
+
+#### Scenario: Postgres runtime names are storage-neutral
+
+- **WHEN** runtime code constructs blob, consent, owner-device, connector-state,
+  or scheduler stores
+- **THEN** production call sites SHALL use storage-neutral factory names
+- **AND** SQLite-specific factory names MAY remain as compatibility aliases only
+  for tests or older imports.
+
+#### Scenario: Dataset record-time bounds preserve manifest semantics
+
+- **WHEN** the `_ref/dataset/summary` route runs against Postgres runtime storage
+- **THEN** `earliest_record_time` and `latest_record_time` SHALL be computed from
+  manifest-declared `consent_time_field` values with the same semantic rule as
+  the SQLite backend.
+
+### Requirement: Postgres runtime validation SHALL be evidence-backed
+
+The Postgres runtime backend SHALL be validated through env-gated tests that run
+against a real Postgres service and through SQLite default tests that prove the
+default runtime remains unchanged.
+
+#### Scenario: Postgres-gated runtime tests execute against the Compose service
+
+- **WHEN** `PDPP_TEST_POSTGRES_URL` is set to the profile-gated Compose
+  Postgres service
+- **THEN** Postgres runtime storage tests SHALL exercise authorization state,
+  connector/control state, records, blobs, disclosure spine, lexical search,
+  semantic search, and hybrid search behavior
+- **AND** those tests SHALL fail on semantic drift rather than only checking
+  successful connection.
+
+#### Scenario: SQLite default tests still pass without Postgres
+
+- **WHEN** `PDPP_TEST_POSTGRES_URL` is unset
+- **THEN** Postgres-specific tests SHALL skip or remain unregistered by explicit
+  env gate
+- **AND** the existing SQLite-backed test suite SHALL continue to pass.
+
+### Requirement: Public read operations SHALL use a canonical response envelope
+The reference implementation SHALL use one canonical envelope family for grant-authorized public read operations. List-like responses SHALL include `object`, `data`, `has_more`, `links`, and `meta`; non-list responses SHALL use the same `object`, `data`, `links`, and `meta` vocabulary without `has_more` unless list semantics apply.
+
+#### Scenario: List response returns canonical envelope
+- **WHEN** a grant-authorized client calls a public list operation such as records list or search
+- **THEN** the response SHALL include `object`, `data`, `has_more`, `links`, and `meta`
+- **AND** `links.self` SHALL represent the effective request
+- **AND** `links.next` SHALL be either an opaque next-page URL or `null`
+- **AND** `meta.warnings` SHALL be present as an array when the operation has non-fatal warnings to report.
+
+#### Scenario: Single-record response uses the same vocabulary
+- **WHEN** a grant-authorized client fetches a single record or stream metadata object
+- **THEN** the response SHALL use `object`, `data`, `links`, and `meta`
+- **AND** it SHALL NOT invent a different envelope vocabulary for the same public read contract.
+
+### Requirement: Public record identity SHALL be connection-scoped
+Every public read result that carries or addresses a record SHALL be scoped by `(connection_id, stream, record_id)`. `connection_id` is the canonical public noun for an owner-configured concrete data source account, device, or profile. `connector_id` identifies the connector or manifest type, and `display_name` carries the owner-facing connection label.
+
+#### Scenario: Record-bearing result carries identity
+- **WHEN** a grant-authorized client receives a record-bearing response item from records list, records detail, search, expansion, or blob metadata
+- **THEN** the item SHALL carry `connection_id`, `connector_id`, `stream`, and `record_id` or their operation-specific equivalents
+- **AND** the item SHALL carry `display_name` when the response needs to name the connection to a human or LLM caller.
+
+#### Scenario: Search hit carries record identity
+- **WHEN** a grant-authorized client receives a search hit
+- **THEN** the hit SHALL carry enough identity to fetch the same record without inference: `connection_id`, `stream`, and `record_id`
+- **AND** clients SHALL NOT need to reconstruct connection identity from connector type, dashboard state, or result ordering.
+
+#### Scenario: Deprecated connector-instance alias is compatibility-only
+- **WHEN** a response carries `connector_instance_id` during the migration window
+- **THEN** it SHALL also carry canonical `connection_id`
+- **AND** generated docs and MCP tools SHALL describe `connector_instance_id` as deprecated compatibility, not the primary public noun.
+
+### Requirement: Public read parameters SHALL be strictly validated
+The reference implementation SHALL reject unsupported public read parameters, fields, filter operators, sort fields, and expansion targets with typed errors rather than silently ignoring them. Temporary compatibility behavior SHALL be reported through structured warnings.
+
+#### Scenario: Unknown parameter is rejected
+- **WHEN** a grant-authorized client sends an unsupported query parameter to a public read operation
+- **THEN** the operation SHALL fail with a typed `unknown_parameter` or equivalent invalid-request error
+- **AND** the error SHALL identify the invalid parameter
+- **AND** the error SHOULD include the valid parameter names for that operation.
+
+#### Scenario: Unsupported filter field is rejected
+- **WHEN** a client filters on a field not advertised as filterable in `/v1/schema`
+- **THEN** the operation SHALL fail with a typed filter error
+- **AND** it SHALL NOT return unfiltered results.
+
+#### Scenario: Temporary compatibility emits warning
+- **WHEN** the reference accepts deprecated or lossy behavior during a compatibility window
+- **THEN** the response SHALL include a structured `meta.warnings` entry identifying the behavior and recovery path.
+
+### Requirement: Public read projection SHALL use one field allowlist primitive
+The reference implementation SHALL expose one projection primitive, `fields`, for public read operations. The field allowlist SHALL be machine-readable, SHALL support dotted paths where applicable, and SHALL apply consistently to top-level records and expanded child records.
+
+#### Scenario: Client requests a subset of fields
+- **WHEN** a grant-authorized client passes `fields` to a public record-list or record-detail operation
+- **THEN** the response SHALL omit non-requested record fields except fields required by the envelope and identity model
+- **AND** the response SHALL preserve the canonical record identity fields required to refetch or attribute the record.
+
+#### Scenario: Projection field is not known
+- **WHEN** a client passes a field path not advertised for the stream
+- **THEN** the operation SHALL reject the request with a typed field error
+- **AND** it SHALL NOT silently widen or ignore the projection.
+
+### Requirement: Public read expansion SHALL be one-hop, inline, and grant-safe
+The reference implementation SHALL expose `expand[]` only for manifest-declared, grant-safe, one-hop parent-to-child relations. Expanded child collections SHALL be inline, depth-capped at one, and bounded by `expand_limit` for has-many relations.
+
+#### Scenario: Client expands a declared child relation
+- **WHEN** a client requests `expand[]=<relation>` for a stream whose schema advertises that relation as expandable
+- **AND** the caller's grant authorizes the child stream and projected child fields
+- **THEN** the response SHALL embed the child records inline under the parent result
+- **AND** the embedded children SHALL preserve their own identity and projection constraints.
+
+#### Scenario: Client requests unsupported expansion
+- **WHEN** a client requests an expansion target not advertised for the stream
+- **THEN** the operation SHALL fail with a typed expansion error
+- **AND** it SHALL NOT silently omit the relation while returning success.
+
+#### Scenario: Reverse relation remains unsupported
+- **WHEN** a client attempts reverse, belongs-to, nested, or arbitrary graph traversal expansion
+- **THEN** the reference SHALL reject the request unless a future OpenSpec change explicitly adds that relation type.
+
+### Requirement: Public read filters SHALL use a small advertised operator vocabulary
+The reference implementation SHALL support exact filters and operator filters through a single canonical vocabulary: `filter[field]=value` for equality and `filter[field][op]=value` for advertised operators. Legal operators SHALL be declared per field in `/v1/schema`.
+
+#### Scenario: Client uses an advertised operator
+- **WHEN** `/v1/schema` advertises operator `gte` for field `sent_at`
+- **AND** the client calls records list with `filter[sent_at][gte]=2026-01-01T00:00:00Z`
+- **THEN** the operation SHALL enforce that range filter.
+
+#### Scenario: Client uses an unadvertised operator
+- **WHEN** a client uses an operator not declared for the field in `/v1/schema`
+- **THEN** the operation SHALL fail with a typed filter-operator error
+- **AND** it SHALL NOT return results as if the filter had been applied.
+
+### Requirement: Public read sorting SHALL use advertised sign-prefix fields
+The reference implementation SHALL expose sorting through a canonical sign-prefix `sort` parameter, where `sort=-field` means descending and `sort=field` means ascending. Sortable fields and default ordering SHALL be advertised in `/v1/schema`.
+
+#### Scenario: Client sorts by advertised field
+- **WHEN** `/v1/schema` advertises `emitted_at` as sortable for a stream
+- **AND** the client passes `sort=-emitted_at`
+- **THEN** the response SHALL be ordered by `emitted_at` descending with a deterministic tie-breaker suitable for cursor pagination.
+
+#### Scenario: Client sorts by unsupported field
+- **WHEN** a client passes a `sort` field not advertised as sortable
+- **THEN** the operation SHALL fail with a typed sort error.
+
+### Requirement: Public read pagination SHALL use opaque cursors and server links
+The canonical public read contract SHALL use `limit`, opaque `cursor`, `has_more`, and server-constructed `links.next`. Cursor contents SHALL NOT be client contract.
+
+#### Scenario: Response has another page
+- **WHEN** a public list operation has more results after the returned page
+- **THEN** `has_more` SHALL be `true`
+- **AND** `links.next` SHALL contain an opaque server-built URL or token-bearing link that the client can follow without reconstructing query state.
+
+#### Scenario: Cursor is reused across incompatible query shape
+- **WHEN** a client reuses a cursor with incompatible filters, sort, search mode, stream, or connection scope
+- **THEN** the operation SHALL reject the cursor with a typed stale or invalid cursor error
+- **AND** it SHALL NOT return a plausible but incorrect page.
+
+### Requirement: Public read counts SHALL be opt-in and cost-graded
+The reference implementation SHALL NOT force exact counts on every public list response. Clients MAY request a count using a graded contract equivalent to `Prefer: count=none|estimated|exact`, and responses SHALL report `meta.count.kind` and, when available, `meta.count.value`.
+
+#### Scenario: Client omits count preference
+- **WHEN** a client calls a public list operation without a count preference
+- **THEN** the response SHALL be allowed to omit a count value
+- **AND** `meta.count.kind` SHALL be `none` or an equivalent explicit no-count marker.
+
+#### Scenario: Client requests estimated count
+- **WHEN** a client requests an estimated count for a stream where the reference has a maintained projection or safe estimate
+- **THEN** the response SHALL include `meta.count.kind = "estimated"` and a numeric `meta.count.value`
+- **AND** the response SHALL NOT imply the estimate is exact.
+
+#### Scenario: Requested count is downgraded
+- **WHEN** a client requests an exact count and the reference can only safely return an estimate or no count
+- **THEN** the response SHALL state the actual `meta.count.kind`
+- **AND** it SHALL include a structured warning explaining the downgrade.
+
+### Requirement: `/v1/schema` SHALL be the canonical public read capability document
+The reference implementation SHALL expose public read capabilities through `GET /v1/schema`. Tool descriptions, docs, and dashboards MAY summarize the contract, but `/v1/schema` SHALL be the machine-readable source of truth for stream fields, filter operators, sortable fields, expansions, projection support, search modes, pagination, count support, and granted connection identities.
+
+#### Scenario: Client discovers field capabilities
+- **WHEN** a client calls `/v1/schema` under a grant
+- **THEN** the response SHALL identify every granted stream and its field capabilities, including filterable fields and legal operators
+- **AND** a client that uses only advertised capabilities SHALL NOT hit a silent no-op.
+
+#### Scenario: Client discovers connection identities
+- **WHEN** a client calls `/v1/schema` under a grant that spans multiple connections
+- **THEN** the response SHALL include the granted `connection_id`, `connector_id`, and `display_name` values needed to scope or explain subsequent reads.
+
+#### Scenario: Client discovers search pagination support
+- **WHEN** a search mode does not support cursor pagination
+- **THEN** `/v1/schema` SHALL advertise that limitation instead of requiring the client to discover it by failed calls.
+
+### Requirement: Public read warnings SHALL be structured and closed over known non-fatal outcomes
+The reference implementation SHALL report non-fatal lossiness, compatibility behavior, approximation, skipped sources, or partial results through structured `meta.warnings` entries with stable codes. Warnings SHALL NOT become a prose-only catch-all.
+
+#### Scenario: Source is skipped as not applicable
+- **WHEN** a multi-source public read skips a source because the requested stream or field is not applicable
+- **THEN** the response MAY still succeed for applicable sources
+- **AND** it SHALL include a structured warning identifying the skipped source and reason.
+
+#### Scenario: Deprecated alias is accepted
+- **WHEN** a request succeeds because the server accepted a deprecated compatibility alias
+- **THEN** the response SHALL include a warning code for deprecated alias usage unless the operation's migration window explicitly suppresses warnings for that alias.
+
+### Requirement: MCP read tools SHALL mirror the canonical public read contract
+The in-repo MCP server and hosted MCP gateway SHALL mirror the canonical public read contract instead of defining a separate read API. MCP tool input schemas SHALL expose the same public arguments as REST, tool output schemas SHALL describe the canonical envelope, `structuredContent` SHALL carry the canonical body, and prose `content[]` SHALL be a concise summary only.
+
+#### Scenario: MCP tool returns structured content
+- **WHEN** an MCP client calls a read tool such as `query_records`, `search`, `fetch`, `list_streams`, `schema`, or `aggregate_records`
+- **THEN** the tool response SHALL include `structuredContent` matching the canonical read envelope or operation body
+- **AND** any text content SHALL be a human summary rather than a second divergent contract.
+
+#### Scenario: MCP validates arguments through the same contract
+- **WHEN** an MCP client supplies filters, fields, sort, expand, count, cursor, or `connection_id`
+- **THEN** the MCP server SHALL forward or validate them according to the same canonical public read contract as REST
+- **AND** it SHALL NOT silently drop arguments that the REST surface would reject.
+
+### Requirement: The reference's hosted consent-approval HTML SHALL NOT embed a live client bearer
+
+When `POST /consent/approve` produces an HTML response (the human-hosted owner-approval surface), the response body, response headers, and any embedded scripts or attributes SHALL NOT contain the bearer string the AS just issued for that approval.
+
+The HTML response SHALL instead embed an opaque single-use **consent exchange code** scoped to the freshly issued grant. The code SHALL be redeemable for the bearer exactly once at the reference-only redemption endpoint defined below.
+
+The JSON branch of `POST /consent/approve` is not affected by this requirement and SHALL continue to return `{ grant_id, token, grant }` directly. The exchange code SHALL only be minted on the HTML branch.
+
+#### Scenario: A human approves consent in the browser
+
+- **WHEN** a browser submits `POST /consent/approve` for a pending consent request and the AS would have rendered the HTML success page
+- **THEN** the response body SHALL NOT contain the bearer string the AS just issued for the resulting grant
+- **AND** the response body SHALL contain an opaque consent exchange code prefixed `cex_`
+- **AND** the response SHALL display the resulting `grant_id`
+
+#### Scenario: A test harness or programmatic client approves with JSON
+
+- **WHEN** a caller submits `POST /consent/approve` with `Content-Type: application/json` (or otherwise negotiates JSON)
+- **THEN** the response SHALL be JSON of shape `{ grant_id, token, grant }` with the bearer in the `token` field
+- **AND** the JSON response SHALL NOT include a consent exchange code
+
+### Requirement: The reference SHALL expose a single-use consent-code redemption endpoint
+
+The reference SHALL expose `POST /consent/exchange` as a reference-only redemption endpoint.
+
+The endpoint SHALL accept `{ code }` in the request body, look up the in-memory consent-exchange entry, and on the first successful redemption SHALL return `{ grant_id, token, grant }` with the same shape as the JSON branch of `POST /consent/approve`.
+
+The endpoint SHALL NOT require additional authentication beyond possession of the code; possession of a freshly minted single-use code is the only authority required to redeem the bearer the AS just issued for that consent request.
+
+The endpoint SHALL enforce single-use semantics: after a successful redemption the code SHALL be invalidated and any subsequent redemption attempt SHALL fail. The endpoint SHALL also enforce a short TTL (default 5 minutes); a redemption attempt against an expired code SHALL fail.
+
+Failure responses SHALL be PDPP error envelopes and SHALL NOT include the bearer string.
+
+#### Scenario: Redeeming a freshly issued code
+
+- **WHEN** a caller submits `POST /consent/exchange` with a `code` that was just minted by an HTML `POST /consent/approve`
+- **THEN** the response status SHALL be `200`
+- **AND** the response body SHALL be `{ grant_id, token, grant }` describing the same grant the approval issued
+- **AND** the returned `token` SHALL be a valid client bearer for that grant (i.e. introspection SHALL return `active: true` for it)
+
+#### Scenario: Replaying a consumed code
+
+- **WHEN** a caller submits `POST /consent/exchange` with a `code` that was already redeemed once
+- **THEN** the response status SHALL be a 4xx PDPP error envelope
+- **AND** the response body SHALL NOT contain the bearer string of the originally issued grant
+
+#### Scenario: Redeeming an expired code
+
+- **WHEN** a caller submits `POST /consent/exchange` with a `code` whose TTL has elapsed
+- **THEN** the response status SHALL be a 4xx PDPP error envelope
+- **AND** the response body SHALL NOT contain the bearer string of the originally issued grant
+
+#### Scenario: Redeeming an unknown code
+
+- **WHEN** a caller submits `POST /consent/exchange` with a `code` the AS never issued
+- **THEN** the response status SHALL be a 4xx PDPP error envelope
+
+### Requirement: Local device exporters remain reference-only
+The reference implementation SHALL support local device exporters as a reference-only ingestion mechanism and SHALL NOT present their enrollment, credential, or ingest routes as PDPP Core client API or Collection Profile protocol surface.
+
+#### Scenario: Device exporter routes are exposed
+- **WHEN** the reference implementation exposes local device exporter enrollment, heartbeat, or ingest routes
+- **THEN** those routes SHALL be documented and implemented as reference-only surfaces
+- **AND** they SHALL NOT be exposed under the public client `/v1` query/read contract
+
+#### Scenario: Public grant artifacts are emitted
+- **WHEN** records pushed by a local device exporter are later queried through existing grant-scoped RS routes
+- **THEN** public artifacts SHALL continue to identify the data source as `{ kind: "connector", id: <connector_id> }`
+- **AND** they SHALL NOT expose a public `source_instance_id` unless a later accepted protocol or profile change adds that contract
+
+### Requirement: Device exporter credentials are narrowly scoped
+The reference implementation SHALL use a dedicated device-scoped ingest credential for local device exporters. Device credentials SHALL be revocable and SHALL authorize only the enrolled device's heartbeat and ingest operations.
+
+#### Scenario: Owner enrolls a device
+- **WHEN** an owner-authenticated operator creates a local device exporter enrollment
+- **THEN** the reference implementation SHALL issue a short-lived one-time enrollment code
+- **AND** exchanging that code SHALL create a server-assigned `device_id` and a device-scoped ingest credential
+
+#### Scenario: Device credential is used outside ingest
+- **WHEN** a caller presents a device-scoped ingest credential to owner routes, public client read/query routes, consent approval routes, grant mutation routes, or other devices' ingest routes
+- **THEN** the reference implementation SHALL reject the request
+
+#### Scenario: Device is revoked
+- **WHEN** an owner revokes an enrolled device
+- **THEN** subsequent heartbeat or ingest attempts using that device credential SHALL fail
+- **AND** existing grant/query behavior for already-ingested records SHALL remain unchanged
+
+### Requirement: Device ingest is source-instance isolated
+The reference implementation SHALL store local device exporter records with source-instance-aware identity before they enter existing record query and index maintenance paths.
+
+#### Scenario: Two devices push the same connector record key
+- **WHEN** two enrolled devices push records for the same `connector_id`, stream, and record key under different source instances
+- **THEN** the reference implementation SHALL preserve both records without silently overwriting or conflating them
+
+#### Scenario: Device submits an unknown source instance
+- **WHEN** a device submits a batch for a `source_instance_id` not assigned to that device
+- **THEN** the reference implementation SHALL reject the batch
+- **AND** it SHALL record a machine-readable rejection reason for diagnostics
+
+### Requirement: Device ingest batches are idempotent
+The reference implementation SHALL make local device exporter batch ingest idempotent by storing outcomes keyed by `(device_id, batch_id, body_hash)`.
+
+#### Scenario: Device retries the same batch
+- **WHEN** a device submits the same `batch_id` with the same `body_hash` after a prior successful or rejected attempt
+- **THEN** the reference implementation SHALL return the original stored outcome without duplicating records
+
+#### Scenario: Device reuses a batch id with different content
+- **WHEN** a device submits a previously seen `batch_id` with a different `body_hash`
+- **THEN** the reference implementation SHALL reject the request as a batch conflict
+- **AND** it SHALL NOT ingest records from the conflicting body
+
+### Requirement: Local exporter agents retry durably
+The local device exporter agent SHALL keep a bounded durable retry queue for batches that could not be delivered, preserve per-source-instance ordering, and report permanent failures through device diagnostics.
+
+#### Scenario: Remote server is temporarily unavailable
+- **WHEN** the local exporter cannot deliver a batch because the reference server is unavailable or returns a retryable error
+- **THEN** the exporter SHALL keep the batch in its local durable queue
+- **AND** it SHALL retry later without reordering batches for the same source instance
+
+#### Scenario: Batch is permanently invalid
+- **WHEN** the reference server rejects a batch with a permanent validation error
+- **THEN** the exporter SHALL stop retrying that batch indefinitely
+- **AND** it SHALL report the failure in local state and device heartbeat diagnostics
+
+### Requirement: Device exporter diagnostics are owner-visible
+The reference implementation SHALL expose owner/operator diagnostics for local device exporters without weakening dashboard owner authentication.
+
+#### Scenario: Owner views device exporters
+- **WHEN** an owner opens the live dashboard device exporter surface
+- **THEN** the dashboard SHALL show enrolled devices, source instances, last heartbeat, last successful ingest, accepted and rejected counts, stale or revoked state, and last error
+
+#### Scenario: Owner auth is enabled
+- **WHEN** owner authentication is configured for the reference instance
+- **THEN** local device exporter diagnostics and enrollment controls SHALL require owner access
+
+### Requirement: Local collector execution remains reference-control-plane behavior
+
+The reference implementation SHALL treat local collector execution as a reference/control-plane collection path, not as PDPP Core Resource Server behavior. Collector enrollment, heartbeat, run execution, upload, diagnostics, and revocation SHALL remain outside the Resource Server read/query surface unless a future Collection Profile explicitly standardizes them.
+
+#### Scenario: A connector requires local execution
+
+- **WHEN** a connector requires a browser, local filesystem, local device state, or owner-assisted runtime capability that the provider/control-plane runtime does not advertise
+- **THEN** the reference SHALL NOT run that connector inside the Resource Server
+- **AND** it SHALL place the connector in an eligible local collector runtime or fail before spawn with an actionable runtime capability diagnostic
+
+#### Scenario: A clean API connector is eligible for provider execution
+
+- **WHEN** a connector's declared requirements are satisfied by the provider/control-plane runtime
+- **THEN** the reference MAY run the connector in that provider/control-plane runtime without requiring a local collector
+- **AND** Resource Server reads SHALL continue to operate only over records already accepted into storage
+
+#### Scenario: Collection Profile semantics are not frozen
+
+- **WHEN** the reference exposes collector enrollment, heartbeat, upload, or diagnostics before Collection Profile normativity is settled
+- **THEN** the reference SHALL label those surfaces as reference/control-plane behavior
+- **AND** it SHALL NOT describe them as PDPP Core requirements
+
+### Requirement: Runtime capability advertisement gates connector spawn
+
+The reference implementation SHALL compare connector runtime requirements against runtime-advertised capabilities before spawning connector code. Missing required capabilities SHALL produce typed diagnostics before connector execution starts.
+
+#### Scenario: A required binding is absent
+
+- **WHEN** a connector declares a required runtime binding and the selected runtime does not advertise that binding
+- **THEN** the reference SHALL fail the run before spawn
+- **AND** it SHALL record a diagnostic that names the missing capability without exposing credentials or owner data
+
+#### Scenario: Placement is derived from existing semantics
+
+- **WHEN** the reference decides whether a connector can run in the provider/control-plane runtime or local collector runtime
+- **THEN** it SHALL derive that decision from connector requirements and runtime capabilities
+- **AND** it SHALL NOT require a broad, manually-maintained runtime-mode taxonomy unless existing primitives prove insufficient
+
+### Requirement: Local collector credentials are device-scoped
+
+The reference implementation SHALL reuse the device-scoped credential boundary for local collector upload and heartbeat. Collector credentials SHALL NOT substitute for owner tokens or client grant tokens.
+
+#### Scenario: A collector uploads data
+
+- **WHEN** a local collector submits records, blobs, run events, diagnostics, or heartbeat data
+- **THEN** the reference SHALL authenticate it with a device-scoped credential
+- **AND** that credential SHALL NOT authorize record reads, consent approval, grant issuance, owner-token minting, or mutation of unrelated devices
 
