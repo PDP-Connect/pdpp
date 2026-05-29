@@ -430,6 +430,7 @@ function KnownGapsSection({
                 recovery: <span className="text-foreground">{formatRecoveryHint(gap)}</span>
                 {gap.message ? ` · ${gap.message}` : ""}
               </div>
+              <GapDiagnosticsPanel diagnostics={gap.diagnostics} />
             </li>
           ))}
         </ul>
@@ -461,6 +462,7 @@ function KnownGapsSection({
                 <div className="pdpp-caption mt-1 text-muted-foreground">
                   {gap.message ? gap.message : "This limitation does not mean selected data was lost."}
                 </div>
+                <GapDiagnosticsPanel diagnostics={gap.diagnostics} />
               </li>
             ))}
           </ul>
@@ -480,6 +482,35 @@ function KnownGapsSection({
         </p>
       ) : null}
     </section>
+  );
+}
+
+/**
+ * Bounded connector-authored diagnostics from SKIP_RESULT.diagnostics.
+ * Rendered collapsed by default — owner-only evidence, labeled as connector-authored,
+ * never as the authoritative runtime failure classification.
+ * See openspec/changes/propagate-skip-result-diagnostics.
+ */
+function GapDiagnosticsPanel({ diagnostics }: { diagnostics?: Record<string, unknown> | null }) {
+  if (!diagnostics || typeof diagnostics !== "object" || Array.isArray(diagnostics)) {
+    return null;
+  }
+  const isSentinel = diagnostics.truncated === true && typeof diagnostics.reason === "string";
+  return (
+    <details className="mt-2">
+      <summary className="pdpp-caption cursor-pointer text-muted-foreground hover:text-foreground">
+        connector diagnostics
+        {isSentinel ? (
+          <span className="ml-2 text-muted-foreground/70">(truncated · {String(diagnostics.reason)})</span>
+        ) : null}
+      </summary>
+      <p className="pdpp-caption mt-1.5 text-muted-foreground/80">
+        Connector-authored evidence. Bounded and redacted by the runtime — not a verified PDPP error classification.
+      </p>
+      <pre className="pdpp-caption mt-1.5 overflow-x-auto rounded border border-border/70 bg-background p-2 font-mono">
+        {JSON.stringify(diagnostics, null, 2)}
+      </pre>
+    </details>
   );
 }
 

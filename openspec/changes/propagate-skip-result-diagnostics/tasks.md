@@ -24,5 +24,5 @@
 
 ## Deferred follow-up
 
-- [ ] Render bounded `SKIP_RESULT.diagnostics` on the dashboard run timeline detail surface as collapsed connector-authored evidence.
+- [x] Render bounded `SKIP_RESULT.diagnostics` on the dashboard run timeline detail surface as collapsed connector-authored evidence.
 - [ ] Live USAA run with this propagation enabled to capture the actual export-flow root cause from the persisted timeline alone.

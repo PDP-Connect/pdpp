@@ -142,3 +142,65 @@ test("normalizeKnownGaps and formatRecoveryHint tolerate unknown payloads", () =
   assert.ok(gap);
   assert.equal(formatRecoveryHint(gap), "manual action required");
 });
+
+test("normalizeKnownGaps propagates bounded SKIP_RESULT diagnostics object", () => {
+  const diagnostics = { phase: "export_artifact_wait_failed", error: "download_empty", dialogs_open: 1 };
+  const [gap] = normalizeKnownGaps([
+    { kind: "skip_result", reason: "export_no_download", diagnostics },
+  ]);
+  assert.ok(gap);
+  assert.deepEqual(gap.diagnostics, diagnostics);
+});
+
+test("normalizeKnownGaps drops diagnostics when value is an array or scalar", () => {
+  const [gapArray] = normalizeKnownGaps([{ kind: "skip_result", reason: "r", diagnostics: ["a", "b"] }]);
+  assert.ok(gapArray);
+  assert.equal(gapArray.diagnostics, undefined);
+
+  const [gapString] = normalizeKnownGaps([{ kind: "skip_result", reason: "r", diagnostics: "text" }]);
+  assert.ok(gapString);
+  assert.equal(gapString.diagnostics, undefined);
+});
+
+test("normalizeKnownGaps passes sentinel diagnostics object through unchanged", () => {
+  const sentinel = { truncated: true, reason: "size_overflow" };
+  const [gap] = normalizeKnownGaps([{ kind: "skip_result", reason: "export_no_download", diagnostics: sentinel }]);
+  assert.ok(gap);
+  assert.deepEqual(gap.diagnostics, sentinel);
+});
+
+test("extractTerminalKnownGaps preserves diagnostics on known gaps", () => {
+  const diagnostics = { phase: "export_artifact_wait_failed", url: "https://example.com" };
+  const terminal = {
+    actor_id: "usaa",
+    actor_type: "runtime",
+    client_id: null,
+    data: {
+      known_gaps: [{ kind: "skip_result", reason: "export_no_download", diagnostics }],
+      known_gaps_summary: { count: 1, truncated: false, by_reason: { export_no_download: 1 } },
+    },
+    event_id: "evt_2",
+    event_type: "run.completed",
+    grant_id: null,
+    interaction_id: null,
+    object_id: "run_2",
+    object_type: "run",
+    occurred_at: "2026-05-28T10:00:00.000Z",
+    provider_id: null,
+    recorded_at: "2026-05-28T10:00:00.000Z",
+    request_id: null,
+    run_id: "run_2",
+    scenario_id: null,
+    status: "completed",
+    stream_id: null,
+    subject_id: null,
+    subject_type: null,
+    token_id: null,
+    trace_id: "trc_2",
+    version: "1",
+  };
+
+  const result = extractTerminalKnownGaps([terminal]);
+  assert.ok(result.gaps[0]);
+  assert.deepEqual(result.gaps[0].diagnostics, diagnostics);
+});

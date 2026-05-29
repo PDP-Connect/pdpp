@@ -1,6 +1,7 @@
 import type { SpineEvent } from "./ref-client.ts";
 
 export interface KnownGap {
+  diagnostics?: Record<string, unknown> | null;
   kind: string;
   message?: string;
   reason: string;
@@ -163,6 +164,7 @@ function normalizeKnownGapEntry(entry: unknown): KnownGap[] {
       ...optionalStringField("message", record.message),
       ...optionalObjectField("recovery_hint", record.recovery_hint),
       ...optionalObjectField("scope", record.scope),
+      ...optionalDiagnosticsField(record.diagnostics),
     },
   ];
 }
@@ -196,6 +198,13 @@ function optionalObjectField<Key extends "recovery_hint" | "scope">(
     return {};
   }
   return { [key]: value } as Partial<Pick<KnownGap, Key>>;
+}
+
+function optionalDiagnosticsField(value: unknown): Pick<KnownGap, "diagnostics"> | {} {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+  return { diagnostics: value as Record<string, unknown> };
 }
 
 function summarizeKnownGaps(gaps: readonly KnownGap[]): KnownGapSummary {
