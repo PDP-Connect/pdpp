@@ -173,5 +173,116 @@ grep -q 'transient-retry transcript' "$tx5" \
   && fail "test5: transient retry should NOT fire for large transcript, but marker found"
 pass "transient retry does not fire when transcript is large (not a transient crash)"
 
+# ---- test 6: transient retry fires on overloaded_error API pattern -----------
+
+cat >"$TMP_BIN/claude" <<'STUB'
+#!/usr/bin/env bash
+COUNT_FILE="${TMPDIR:-/tmp}/claude_invoke_count6_$$_$PPID"
+n=0
+[[ -f "$COUNT_FILE" ]] && n=$(cat "$COUNT_FILE")
+n=$((n + 1))
+echo "$n" >"$COUNT_FILE"
+if [[ $n -eq 1 ]]; then
+  # First invocation: short transcript with API overloaded error
+  printf 'Error: overloaded_error — API is temporarily unavailable\n'
+  exit 1
+else
+  exit 0
+fi
+STUB
+chmod +x "$TMP_BIN/claude"
+
+lane6="test-rel-api-error-retry"
+aroot6="$TMP_DIR/artifacts/$lane6"
+rm -f "${TMPDIR:-/tmp}/claude_invoke_count6_"*_* 2>/dev/null || true
+
+"$WRAPPER" \
+  --lane "$lane6" \
+  --worktree "$REPO_ROOT" \
+  --prompt "$TMP_PROMPT" \
+  --report "$TMP_REPORT" \
+  --artifact-root "$aroot6" \
+  --no-recovery || true
+
+tx6="$(find "$aroot6" -name "transcript.log" | head -1)"
+[[ -f "$tx6" ]] || fail "test6: transcript.log not found"
+
+grep -q 'transient-retry transcript' "$tx6" \
+  || fail "test6: transient retry should fire on overloaded_error pattern but marker not found"
+pass "transient retry fires on overloaded_error API pattern"
+
+# ---- test 7: exit_class=api_error written to status.json on API error --------
+
+sj6="$(find "$aroot6" -name "status.json" 2>/dev/null | head -1)"
+[[ -f "$sj6" ]] || fail "test7: status.json not found"
+
+ec6="$(jq -r '.exit_class // "ABSENT"' "$sj6")"
+[[ "$ec6" != "ABSENT" ]] || fail "test7: exit_class field absent from status.json"
+[[ "$ec6" = "api_error" || "$ec6" = "report_missing" ]] \
+  || fail "test7: expected exit_class=api_error or report_missing, got '$ec6'"
+pass "exit_class present in status.json (exit_class=$ec6)"
+
+# ---- test 8: exit_class=success on zero-exit + report present ----------------
+
+lane8="test-rel-exit-class-success"
+aroot8="$TMP_DIR/artifacts/$lane8"
+REPORT8="$TMP_DIR/report8.md"
+
+# Use a stub that writes a full-length report to $REPORT8 and exits 0.
+# Note: the heredoc must expand $REPORT8 here, so use <<STUB (not <<'STUB').
+cat >"$TMP_BIN/claude" <<STUB
+#!/usr/bin/env bash
+python3 -c "print('Status: complete\n' + 'x' * 300)" > "$REPORT8"
+exit 0
+STUB
+chmod +x "$TMP_BIN/claude"
+
+"$WRAPPER" \
+  --lane "$lane8" \
+  --worktree "$REPO_ROOT" \
+  --prompt "$TMP_PROMPT" \
+  --report "$REPORT8" \
+  --artifact-root "$aroot8" \
+  --no-recovery || true
+
+sj8="$(find "$aroot8" -name "status.json" 2>/dev/null | head -1)"
+[[ -f "$sj8" ]] || fail "test8: status.json not found"
+
+ec8="$(jq -r '.exit_class // "ABSENT"' "$sj8")"
+[[ "$ec8" != "ABSENT" ]] || fail "test8: exit_class field absent from status.json"
+[[ "$ec8" = "success" ]] || fail "test8: expected exit_class=success, got '$ec8'"
+pass "exit_class=success written on zero-exit with report present"
+
+# ---- test 9: report_present rejects stub reports < 200 bytes ----------------
+
+lane9="test-rel-thin-report"
+aroot9="$TMP_DIR/artifacts/$lane9"
+REPORT9="$TMP_DIR/tiny_report9.md"
+
+# Use a stub that writes a tiny file (< 200 bytes) as the report and exits 0.
+# Heredoc expands $REPORT9 at write time.
+cat >"$TMP_BIN/claude" <<STUB
+#!/usr/bin/env bash
+echo "Status: ok" > "$REPORT9"
+exit 0
+STUB
+chmod +x "$TMP_BIN/claude"
+
+"$WRAPPER" \
+  --lane "$lane9" \
+  --worktree "$REPO_ROOT" \
+  --prompt "$TMP_PROMPT" \
+  --report "$REPORT9" \
+  --artifact-root "$aroot9" \
+  --no-recovery || true
+
+sj9="$(find "$aroot9" -name "status.json" 2>/dev/null | head -1)"
+[[ -f "$sj9" ]] || fail "test9: status.json not found"
+
+rs9="$(jq -r '.report_state // "ABSENT"' "$sj9")"
+[[ "$rs9" = "absent" ]] \
+  || fail "test9: report < 200 bytes should be treated as absent, got report_state='$rs9'"
+pass "report_present rejects stub reports under 200 bytes (report_state=$rs9)"
+
 echo ""
 echo "All reliability structural tests passed."

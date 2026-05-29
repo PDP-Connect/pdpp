@@ -191,11 +191,12 @@ head_before="$(git -C "$worktree_abs" rev-parse HEAD 2>/dev/null || echo "unknow
 branch="$(git -C "$worktree_abs" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")"
 
 write_status() {
-  # Args: status_value report_state recovered exit_code
+  # Args: status_value report_state recovered exit_code [exit_class]
   local status_value="$1"
   local report_state="$2"
   local recovered="$3"
   local exit_code="$4"
+  local exit_class="${5:-}"
   local head_after transcript_bytes
   head_after="$(git -C "$worktree_abs" rev-parse HEAD 2>/dev/null || echo "unknown")"
   # transcript_bytes: size of the primary transcript (-1 when the file doesn't exist yet).
@@ -206,6 +207,13 @@ write_status() {
     transcript_bytes="-1"
   fi
   transcript_bytes="${transcript_bytes//[[:space:]]/}"
+  # Derive exit_class on final writes (non-seed) when not explicitly supplied.
+  if [[ -z "$exit_class" && "$status_value" != "running" ]]; then
+    local rp_flag="0"
+    report_present && rp_flag="1"
+    exit_class="$(classify_exit "$exit_code" "$transcript" "$rp_flag" "$_abort_signal_seen")"
+  fi
+  [[ -z "$exit_class" ]] && exit_class="unknown"
   jq -n \
     --arg lane "$lane" \
     --arg worktree "$worktree_abs" \
@@ -221,6 +229,7 @@ write_status() {
     --arg status "$status_value" \
     --arg report_state "$report_state" \
     --arg model "$model" \
+    --arg exit_class "$exit_class" \
     --argjson recovered "$recovered" \
     --argjson exit_code "$exit_code" \
     --argjson transcript_bytes "$transcript_bytes" \
@@ -240,6 +249,7 @@ write_status() {
        report_state: $report_state,
        recovered: $recovered,
        exit_code: $exit_code,
+       exit_class: $exit_class,
        transcript_bytes: $transcript_bytes,
        model: $model
      }' >"$status_json"
@@ -248,8 +258,14 @@ write_status() {
 # Seed status.json early so a hard crash still leaves a trace.
 write_status "running" "absent" false -1
 
+# A report is present only if it is non-empty AND has meaningful content
+# (>= 200 bytes). A file written by a panicking recovery or interrupted Claude
+# that contains only a partial heading is not a usable report.
 report_present() {
-  [[ -s "$report_abs" ]]
+  local sz
+  [[ -f "$report_abs" ]] || return 1
+  sz=$(wc -c <"$report_abs" 2>/dev/null | tr -d ' ')
+  [[ -n "$sz" && "$sz" -ge 200 ]]
 }
 
 # ---- signal handling --------------------------------------------------------
@@ -280,6 +296,18 @@ thinking_block_replay_error() {
 # Returns 0 (true) when the transcript looks like an immediate execution failure
 # that is likely transient: the file is under 100 bytes and contains a known
 # error marker, or the file is completely empty despite the process exiting non-zero.
+#
+# Recognized patterns (checked within the first 500 bytes of the transcript):
+#   - empty transcript on non-zero exit (process-level crash)
+#   - "Execution error"  : CLI-level crash before any work
+#   - "overloaded_error" : Anthropic API 529
+#   - "529"              : HTTP overloaded
+#   - "503"              : HTTP service unavailable
+#   - "500"              : HTTP internal server error
+#   - "rate limit"       : API rate-limit response
+#   - "ECONNRESET"       : TCP connection reset by peer
+#   - "ECONNREFUSED"     : connection refused (proxy / firewall)
+#   - "ETIMEDOUT"        : network timeout before first token
 transient_execution_error() {
   local file="$1"
   local ec="$2"
@@ -289,11 +317,43 @@ transient_execution_error() {
   [[ -z "$sz" ]] && sz=0
   # Empty transcript on non-zero exit is almost always a process-level failure.
   [[ $sz -eq 0 ]] && return 0
-  # Short transcript containing "Execution error" is a known CLI crash pattern.
-  if [[ $sz -lt 200 ]]; then
-    grep -q 'Execution error' "$file" 2>/dev/null && return 0
+  # Short transcript: check for known transient-error patterns.
+  if [[ $sz -lt 500 ]]; then
+    grep -qiE 'Execution error|overloaded_error|rate.?limit|ECONNRESET|ECONNREFUSED|ETIMEDOUT' "$file" 2>/dev/null && return 0
+    grep -qE '(^|[^0-9])(500|503|529)([^0-9]|$)' "$file" 2>/dev/null && return 0
   fi
   return 1
+}
+
+# Returns a short string classifying why a run ended. Used in status.json as
+# exit_class for owner triage. Values:
+#   api_error      — transient API/network failure (recognized pattern)
+#   quick_exit     — non-zero exit with thin transcript but no known API pattern
+#   report_missing — ran to completion but report was not written
+#   signal         — killed by a catchable signal
+#   success        — exited 0 and report is present
+classify_exit() {
+  local exit_code="$1"
+  local transcript_file="$2"
+  local report_ok="$3"   # "1" = report present, "0" = absent
+  local signal_seen="$4" # non-empty = signal name
+  if [[ -n "$signal_seen" ]]; then
+    echo "signal"; return
+  fi
+  if [[ "$report_ok" = "1" && $exit_code -eq 0 ]]; then
+    echo "success"; return
+  fi
+  if transient_execution_error "$transcript_file" "$exit_code"; then
+    echo "api_error"; return
+  fi
+  local sz=0
+  [[ -f "$transcript_file" ]] && sz=$(wc -c <"$transcript_file" 2>/dev/null | tr -d ' ')
+  sz="${sz//[[:space:]]/}"
+  [[ -z "$sz" ]] && sz=0
+  if [[ $exit_code -ne 0 && $sz -lt 200 ]]; then
+    echo "quick_exit"; return
+  fi
+  echo "report_missing"
 }
 
 invoke_claude_main() {

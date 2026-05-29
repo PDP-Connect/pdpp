@@ -208,7 +208,8 @@ for (const lane of wrapperLanes) {
   if (lane.status === "failed") {
     if (!parkedWrapperLane) {
       const txNote = lane.transcriptBytes >= 0 ? ` transcript_bytes=${lane.transcriptBytes}` : "";
-      risks.push(`WRAPPER-LANE failed lane=${lane.lane} run=${lane.startedAt} report_state=${lane.reportState}${txNote}`);
+      const ecNote = lane.exitClass ? ` exit_class=${lane.exitClass}` : "";
+      risks.push(`WRAPPER-LANE failed lane=${lane.lane} run=${lane.startedAt} report_state=${lane.reportState}${txNote}${ecNote}`);
     }
   } else if (lane.status === "running") {
     // Stale "running": started_at === ended_at means the process was SIGKILLed before the final
@@ -347,7 +348,8 @@ printSection(
         const parked = isParkedWrapperLane(lane) ? " parked=true" : "";
         const branch = lane.branch ? ` branch=${lane.branch}` : "";
         const txBytes = lane.transcriptBytes >= 0 ? ` transcript_bytes=${lane.transcriptBytes}` : "";
-        return `- [${lane.status}] lane=${lane.lane}${branch} run=${lane.startedAt} report=${lane.reportState}${txBytes}${recovered}${parked}`;
+        const exitClass = lane.exitClass ? ` exit_class=${lane.exitClass}` : "";
+        return `- [${lane.status}] lane=${lane.lane}${branch} run=${lane.startedAt} report=${lane.reportState}${txBytes}${exitClass}${recovered}${parked}`;
       })
 );
 
@@ -458,6 +460,7 @@ function loadWrapperLanes(wrapperDir) {
         startedAt: data.started_at ?? latestRun,
         endedAt: data.ended_at ?? "",
         exitCode: data.exit_code ?? -1,
+        exitClass: data.exit_class ?? "",
         transcriptBytes: data.transcript_bytes ?? -1,
         artifactDir: data.artifact_dir ?? "",
         transcriptFile: data.transcript_file ?? "",
@@ -473,6 +476,7 @@ function loadWrapperLanes(wrapperDir) {
         startedAt: latestRun,
         endedAt: "",
         exitCode: -1,
+        exitClass: "",
         transcriptBytes: -1,
         artifactDir: "",
         transcriptFile: "",
