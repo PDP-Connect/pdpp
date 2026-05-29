@@ -81,7 +81,7 @@ export function OverviewHero({
           className="text-muted-foreground decoration-muted-foreground/50 underline-offset-2 hover:text-foreground hover:underline"
           href={recordsHref}
         >
-          individual connectors
+          individual connections
         </Link>{" "}
         or <code className="pdpp-caption font-mono">/v1/streams</code>.
       </p>
