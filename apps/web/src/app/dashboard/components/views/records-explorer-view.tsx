@@ -18,6 +18,7 @@ import { Timestamp } from "@/components/ui/timestamp.tsx";
 import type { RecordKind } from "../../lib/record-kind.ts";
 import type { RecordPreview } from "../../lib/record-preview.ts";
 import { defaultWindow } from "../../lib/timeline.ts";
+import { EmptyState } from "../shell.tsx";
 import { Callout, FilterSummary, PageHeader, Section, SplitLayout } from "../primitives.tsx";
 import type { Routes } from "./routes.ts";
 
@@ -345,7 +346,7 @@ export function RecordsExplorerView({ data, routes }: { data: RecordsExplorerDat
       <PageHeader
         breadcrumbs={[{ label: "Explore" }]}
         count={feedCountLabel(feed.length, fromSearch, truncated)}
-        description="Browse and search records across every connection. Two accounts of the same service stay distinct — nothing is collapsed."
+        description="Browse recent records, search by text, or filter by date window. Each connection stays distinct — two Gmail accounts stay two."
         title="Explore"
       />
 
@@ -498,7 +499,7 @@ function ExplorerMain({
 
       <Section description={feedDescription(lens, hybridUsed)} title={feedSectionTitle(lens)}>
         {feed.length === 0 ? (
-          <p className="pdpp-caption text-muted-foreground italic">{emptyFeedMessage(lens)}</p>
+          <EmptyState hint={emptyFeedMessage(lens)} title="No records" />
         ) : (
           <div className="flex flex-col gap-5">
             {groupFeedByDay(feed).map((group) => (
@@ -558,12 +559,12 @@ function ExplorerMain({
 
 function emptyFeedMessage(lens: ExplorerLens): string {
   if (lens === "search" || lens === "search_with_ignored_time_window") {
-    return "No records match this query.";
+    return "No records match this query. Try different terms, or clear the query to browse recent records.";
   }
   if (lens === "time_range") {
-    return "No time-anchored records in this window. Try widening the range, clearing chips, or loading more data.";
+    return "No time-anchored records in this window. Widen the range, clear connection or stream chips, or run a connector to collect more data.";
   }
-  return "No retained records yet on any visible connection.";
+  return "No records yet on any visible connection. Run a connector to start collecting.";
 }
 
 function ExplorerControls({
@@ -631,7 +632,7 @@ function ExplorerControls({
       </div>
 
       <div className="pdpp-caption mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-muted-foreground">
-        <span>Quick range:</span>
+        <span className="text-muted-foreground/60">Range:</span>
         {([1, 7, 30, 90] as const).map((d) => {
           const { since: s, until: u } = defaultWindow(d);
           const href = buildExplorerHref(routes, {
@@ -643,15 +644,17 @@ function ExplorerControls({
           });
           return (
             <Link className="underline-offset-2 hover:text-foreground hover:underline" href={href} key={d}>
-              {d}d
+              {d === 1 ? "today" : `${d}d`}
             </Link>
           );
         })}
-        <span className="ml-auto">
-          <Link className="underline-offset-2 hover:text-foreground hover:underline" href={routes.section.search}>
-            Jump to ID
-          </Link>
-        </span>
+        <span className="mx-1 text-muted-foreground/30">·</span>
+        <Link
+          className="text-muted-foreground/70 underline-offset-2 hover:text-foreground hover:underline"
+          href={routes.section.search}
+        >
+          Jump to trace / grant / run id →
+        </Link>
       </div>
     </form>
   );

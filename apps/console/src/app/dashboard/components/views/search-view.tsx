@@ -11,7 +11,10 @@
 
 import Link from "next/link";
 import type { ReactNode } from "react";
+import { Button } from "@/components/ui/button.tsx";
+import { Input } from "@/components/ui/input.tsx";
 import type { GrantSummary, RunSummary, TraceSummary } from "../../lib/ref-client.ts";
+import { PageHeader } from "../primitives.tsx";
 import type { Routes } from "./routes.ts";
 
 export interface SearchData {
@@ -32,38 +35,35 @@ export function SearchView({
   routes: Routes;
   emptyHint?: ReactNode;
 }) {
+  const artifactCount = data ? data.traces.length + data.grants.length + data.runs.length : null;
   return (
     <>
-      <header className="mb-4 flex items-baseline justify-between gap-4">
-        <h1 className="font-semibold text-lg">Jump</h1>
-        {data ? (
-          <span className="text-muted-foreground text-xs">
-            {data.traces.length + data.grants.length + data.runs.length} artifacts
-          </span>
-        ) : null}
-      </header>
+      <PageHeader
+        breadcrumbs={[{ label: "Explore", href: routes.section.explore }, { label: "Jump" }]}
+        count={artifactCount !== null ? `${artifactCount} artifact${artifactCount === 1 ? "" : "s"}` : undefined}
+        description="Paste a trace, grant, or run id to jump directly to it. For record content search, use Explore."
+        title="Jump to artifact"
+      />
 
-      <form className="mb-6 flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3" method="get">
-        <input
-          autoFocus
-          className="w-full rounded border border-border bg-background px-3 py-2 sm:max-w-md"
-          defaultValue={query}
-          name="q"
-          placeholder="trace id, grant id, or run id…"
-          type="search"
-        />
-        <button
-          className="self-start rounded border border-border px-3 py-2 hover:bg-muted/50 sm:self-auto"
-          type="submit"
-        >
+      <form className="mb-6 flex flex-wrap items-end gap-x-3 gap-y-2" method="get">
+        <label className="flex min-w-0 flex-1 flex-col gap-1" htmlFor="jump-q">
+          <span className="pdpp-eyebrow text-muted-foreground">Artifact id</span>
+          <Input
+            autoFocus
+            defaultValue={query}
+            id="jump-q"
+            name="q"
+            placeholder="trace id, grant id, or run id…"
+            type="search"
+          />
+        </label>
+        <Button size="sm" type="submit" variant="default">
           Go
-        </button>
+        </Button>
       </form>
 
       {query ? null : (
-        <p className="text-muted-foreground text-xs">
-          {emptyHint ?? "Paste a trace, grant, or run id."}
-        </p>
+        <p className="pdpp-caption text-muted-foreground">{emptyHint ?? "Paste a trace, grant, or run id above."}</p>
       )}
 
       {query && data ? (
