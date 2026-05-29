@@ -56,23 +56,22 @@ are both caught:
   allowlist. The test is simpler, colocated with its allowlist, and already in
   the trusted path.
 
-## Detection signal: token presence, not AST
+## Detection signal: sibling schema import and validator reference
 
-The gate matches a `validateRecord` token in `index.ts` rather than parsing the
-`runConnector(...)` call. Rationale:
+The gate requires `connectors/<name>/schemas.ts`, an import from
+`"./schemas.ts"` in `index.ts`, and a `validateRecord` / `validateRecordRaw`
+reference. It does not parse the `runConnector(...)` call. Rationale:
 
 - It matches the existing honesty tests' regex-on-source style (no new tooling).
 - The canonical wiring is `import { ..., validateRecord } from "./schemas.ts"`
   followed by `runConnector({ name, validateRecord, ... })`. Any connector that
-  has authored a schema and wired it will carry the token; any connector that
+  has authored a schema and wired it will satisfy the signal; any connector that
   has not, will not.
-- False-positive risk (token present but not actually passed) is acceptable for
-  a guardrail: it can only let a *validated-looking* connector through, and that
-  connector still has a `schemas.ts` and a `validateRecord` export, which is the
-  behavior we want. A connector cannot accidentally satisfy the gate without
-  having done the schema work. If a future connector legitimately needs a
-  different wiring name, that is a deliberate authoring choice and the gate
-  comment documents how to extend detection.
+- Requiring the sibling `schemas.ts` import avoids a loose token-only pass while
+  still keeping the check at the same lightweight altitude as the existing
+  manifest-honesty tests. If a future connector legitimately needs a different
+  wiring name, that is a deliberate authoring choice and the gate can be
+  extended in one place.
 
 This keeps the gate at the "is validation wired" altitude. It deliberately does
 NOT assert schema *quality* (e.g. `pdppSafeText` usage, per-field bounds) — that

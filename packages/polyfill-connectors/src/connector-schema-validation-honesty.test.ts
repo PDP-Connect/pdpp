@@ -36,14 +36,15 @@ function manifestDeclaresStreams(name: string): boolean {
 
 /**
  * Detection signal for "this connector wires emit-time validation": the
- * entrypoint references a `validateRecord` identifier, which is the token
- * passed into `runConnector({ ..., validateRecord })` (conventionally imported
- * from `./schemas.ts`). This reproduces the audit's 11-wired / 20-missing split
- * exactly on the current tree. See the change's design.md for why token
- * presence (not an AST pass) is the right altitude for a guardrail.
+ * entrypoint must import from a sibling `schemas.ts` file and reference a
+ * `validateRecord`-style identifier. This keeps the guardrail filesystem-local
+ * like the existing honesty tests while avoiding a loose token-only pass.
  */
-function connectorWiresValidation(source: string): boolean {
-  return /\bvalidateRecord\b/u.test(source);
+function connectorWiresValidation(name: string, source: string): boolean {
+  const schemasPath = join(CONNECTORS_DIR, name, "schemas.ts");
+  const importsSiblingSchemas = /from\s+["']\.\/schemas\.ts["']/u.test(source);
+  const referencesValidator = /\bvalidateRecord(?:Raw)?\b/u.test(source);
+  return existsSync(schemasPath) && importsSiblingSchemas && referencesValidator;
 }
 
 function connectorNames(): string[] {
@@ -64,7 +65,7 @@ test("every stream-declaring connector validates records or is allowlisted", () 
     }
 
     const source = readFileSync(join(CONNECTORS_DIR, name, "index.ts"), "utf8");
-    const wires = connectorWiresValidation(source);
+    const wires = connectorWiresValidation(name, source);
     const allowlisted = name in SCHEMALESS_CONNECTOR_ALLOWLIST;
 
     if (wires && allowlisted) {
