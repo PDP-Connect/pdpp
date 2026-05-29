@@ -24,6 +24,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import type { SchedulerRunHistoryRecord, SchedulerStore } from "../server/stores/scheduler-store.ts";
+import { canonicalConnectorKey } from "../server/connector-key.js";
 import { runConnector } from "./index.js";
 import {
   type AutomationRefreshPolicy,
@@ -873,7 +874,8 @@ async function checkFirstPartyLocalSourceReadiness(
   if (!requiredBindingEnabled(manifest, "filesystem")) {
     return null;
   }
-  if (connectorId === "https://registry.pdpp.org/connectors/codex") {
+  const canonicalId = canonicalConnectorKey(connectorId) ?? connectorId;
+  if (canonicalId === "codex") {
     const codexHome = process.env.CODEX_HOME || join(homedir(), ".codex");
     const requiredPaths = [
       process.env.CODEX_SESSIONS_DIR || join(codexHome, "sessions"),
@@ -887,7 +889,7 @@ async function checkFirstPartyLocalSourceReadiness(
     }
     return missing.length > 0 ? `Codex local source path(s) are missing or unreadable: ${missing.join(", ")}` : null;
   }
-  if (connectorId === "https://registry.pdpp.org/connectors/claude-code") {
+  if (canonicalId === "claude-code") {
     const claudeHome = process.env.CLAUDE_CODE_HOME || join(homedir(), ".claude");
     const projectsDir = process.env.CLAUDE_CODE_PROJECTS_DIR || join(claudeHome, "projects");
     return (await canAccessPath(projectsDir))

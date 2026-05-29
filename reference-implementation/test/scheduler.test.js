@@ -3048,6 +3048,64 @@ test('scheduler default readiness checker probes SLACKDUMP_BIN with version desp
   }
 });
 
+test('scheduler default readiness checker applies local-source checks to canonical connector keys', async () => {
+  const tmpDir = mkdtempSync(join(tmpdir(), 'pdpp-scheduler-canonical-local-source-'));
+  const { attemptsPath, connectorPath } = writeLoggingConnector(tmpDir);
+  const previousSessionsDir = process.env.CODEX_SESSIONS_DIR;
+  const previousStateDb = process.env.CODEX_STATE_DB;
+  const completedRuns = [];
+  const scheduler = createScheduler({
+    connectors: [
+      {
+        connectorId: 'codex',
+        connectorPath,
+        manifest: {
+          capabilities: {
+            refresh_policy: { background_safe: true },
+          },
+          runtime_requirements: {
+            bindings: { filesystem: { required: true }, network: { required: true } },
+          },
+        },
+        ownerToken: 'owner-token',
+        intervalMs: 25,
+        maxRetries: 0,
+      },
+    ],
+    rsUrl: 'http://localhost.invalid',
+    onInteraction: async (interaction) => cancelledInteractionResponse(interaction),
+    onRunComplete: (record) => completedRuns.push(record),
+    getState: async () => null,
+    setState: async () => {},
+  });
+
+  try {
+    process.env.CODEX_SESSIONS_DIR = join(tmpDir, 'missing-sessions');
+    process.env.CODEX_STATE_DB = join(tmpDir, 'missing-state.sqlite');
+    scheduler.start();
+    await waitFor(() => completedRuns.length >= 1, 5000);
+    scheduler.stop();
+
+    const [first] = completedRuns;
+    assert.equal(first.status, 'skipped');
+    assert.match(first.error, /^not_ready: Codex local source path\(s\) are missing or unreadable:/);
+    assert.deepEqual(readAttempts(attemptsPath), [], 'canonical local-source checks must prevent connector spawn');
+  } finally {
+    scheduler.stop();
+    if (previousSessionsDir === undefined) {
+      delete process.env.CODEX_SESSIONS_DIR;
+    } else {
+      process.env.CODEX_SESSIONS_DIR = previousSessionsDir;
+    }
+    if (previousStateDb === undefined) {
+      delete process.env.CODEX_STATE_DB;
+    } else {
+      process.env.CODEX_STATE_DB = previousStateDb;
+    }
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
 test('scheduler default readiness checker does not treat browser bindings as ready by default', async () => {
   const spotifyManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'));
   const manifest = {
