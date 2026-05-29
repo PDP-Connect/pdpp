@@ -8,8 +8,10 @@
 // contract metadata, response envelopes, status codes, error mapping, and
 // query-string parsing are unchanged.
 
-import type { ClientEventSubscriptionStore } from "../../operations/as-client-event-subscriptions/index.ts";
-import type { SubscriptionRow } from "../../operations/as-client-event-subscriptions/index.ts";
+import type {
+  ClientEventSubscriptionStore,
+  SubscriptionRow,
+} from "../../operations/as-client-event-subscriptions/index.ts";
 import {
   executeRefClientEventSubscriptionsDisable,
   RefClientEventSubscriptionsDisableInvalidRequestError,
@@ -46,64 +48,61 @@ interface AppLike {
   post(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
 }
 
-// ── /_ref/grant-packages ──────────────────────────────────────────────────
+// /_ref/grant-packages
 
 export interface GrantPackageChild {
+  readonly added_at: string;
   readonly grant_id: string;
   readonly grant_status: string;
   readonly member_status: string;
-  readonly added_at: string;
   readonly revoked_at: string | null;
   readonly source: string | null;
 }
 
 export interface GrantPackageSummaryRow {
-  readonly package_id: string;
-  readonly subject_id: string;
-  readonly client_id: string;
-  readonly status: string;
-  readonly member_count: number;
-  readonly created_at: string;
   readonly approved_at: string | null;
-  readonly revoked_at: string | null;
-  readonly trace_id: string | null;
-  readonly scenario_id: string | null;
   readonly children: readonly GrantPackageChild[];
+  readonly client_id: string;
+  readonly created_at: string;
+  readonly member_count: number;
+  readonly package_id: string;
+  readonly revoked_at: string | null;
+  readonly scenario_id: string | null;
+  readonly status: string;
+  readonly subject_id: string;
+  readonly trace_id: string | null;
 }
 
 export interface GrantPackageListPage {
   readonly data: readonly GrantPackageSummaryRow[];
   readonly has_more: boolean;
-  readonly next_cursor: string | null;
   readonly limit: number;
+  readonly next_cursor: string | null;
 }
 
 export interface MountRefGrantsContext {
+  readonly getClientEventSubscriptionStore: () => ClientEventSubscriptionStore;
+  readonly getGrantPackageForOwner: (id: string) => Promise<GrantPackageSummaryRow | null>;
+  readonly getSubscriptionSummary: (subscriptionId: string) => Promise<SubscriptionSummaryRow | null>;
   readonly handleError: (res: unknown, err: unknown) => void;
-  readonly pdppError: PdppErrorFn;
-  readonly requireOwnerSession: MiddlewareHandler;
+  // event-subscriptions substrate
+  readonly listAllSubscriptions: (filters: ListAllSubscriptionsFilters) => Promise<readonly SubscriptionRow[]>;
+  readonly listAttemptsForSubscription: (
+    subscriptionId: string,
+    limit: number
+  ) => Promise<readonly SubscriptionAttemptRow[]>;
   // grant-packages substrate
   readonly listGrantPackagesForOwner: (query: {
     limit: number;
     cursor: string | null;
   }) => Promise<GrantPackageListPage>;
-  readonly getGrantPackageForOwner: (id: string) => Promise<GrantPackageSummaryRow | null>;
-  readonly revokeGrantPackage: (id: string, opts: { request_id?: string }) => Promise<void>;
-  // event-subscriptions substrate
-  readonly listAllSubscriptions: (
-    filters: ListAllSubscriptionsFilters,
-  ) => Promise<readonly SubscriptionRow[]>;
-  readonly getSubscriptionSummary: (subscriptionId: string) => Promise<SubscriptionSummaryRow | null>;
-  readonly listAttemptsForSubscription: (
-    subscriptionId: string,
-    limit: number,
-  ) => Promise<readonly SubscriptionAttemptRow[]>;
-  readonly getClientEventSubscriptionStore: () => ClientEventSubscriptionStore;
   readonly nowIso: () => string;
+  readonly pdppError: PdppErrorFn;
+  readonly requireOwnerSession: MiddlewareHandler;
+  readonly revokeGrantPackage: (id: string, opts: { request_id?: string }) => Promise<void>;
 }
 
-// Mirrors `parseGrantPackageListQuery` in server/index.js — same validation,
-// same error codes, same defaults.
+// Preserves the original inline validation, error codes, and defaults.
 function parseGrantPackageListQuery(query: Readonly<Record<string, unknown>>): {
   limit: number;
   cursor: string | null;
@@ -136,51 +135,13 @@ function parseGrantPackageListQuery(query: Readonly<Record<string, unknown>>): {
 
 // GET /_ref/grant-packages
 export function mountRefGrantPackagesList(app: AppLike, ctx: MountRefGrantsContext): void {
-  app.get(
-    "/_ref/grant-packages",
-    ctx.requireOwnerSession,
-    async (req: RouteRequest, res: RouteResponse) => {
-      try {
-        const page = await ctx.listGrantPackagesForOwner(parseGrantPackageListQuery(req.query));
-        res.json({
-          object: "list",
-          data: page.data.map((pkg) => ({
-            object: "grant_package_summary",
-            package_id: pkg.package_id,
-            subject_id: pkg.subject_id,
-            client_id: pkg.client_id,
-            status: pkg.status,
-            member_count: pkg.member_count,
-            created_at: pkg.created_at,
-            approved_at: pkg.approved_at,
-            revoked_at: pkg.revoked_at,
-          })),
-          has_more: page.has_more,
-          next_cursor: page.next_cursor,
-          limit: page.limit,
-        });
-      } catch (err) {
-        ctx.handleError(res, err);
-      }
-    },
-  );
-}
-
-// GET /_ref/grant-packages/:id
-export function mountRefGrantPackagesGet(app: AppLike, ctx: MountRefGrantsContext): void {
-  app.get(
-    "/_ref/grant-packages/:id",
-    ctx.requireOwnerSession,
-    async (req: RouteRequest, res: RouteResponse) => {
-      try {
-        const id = req.params.id ?? "";
-        const pkg = await ctx.getGrantPackageForOwner(id);
-        if (!pkg) {
-          ctx.pdppError(res, 404, "not_found", `grant package not found: ${id}`);
-          return;
-        }
-        res.json({
-          object: "grant_package",
+  app.get("/_ref/grant-packages", ctx.requireOwnerSession, async (req: RouteRequest, res: RouteResponse) => {
+    try {
+      const page = await ctx.listGrantPackagesForOwner(parseGrantPackageListQuery(req.query));
+      res.json({
+        object: "list",
+        data: page.data.map((pkg) => ({
+          object: "grant_package_summary",
           package_id: pkg.package_id,
           subject_id: pkg.subject_id,
           client_id: pkg.client_id,
@@ -189,23 +150,53 @@ export function mountRefGrantPackagesGet(app: AppLike, ctx: MountRefGrantsContex
           created_at: pkg.created_at,
           approved_at: pkg.approved_at,
           revoked_at: pkg.revoked_at,
-          trace_id: pkg.trace_id,
-          scenario_id: pkg.scenario_id,
-          children: pkg.children.map((child) => ({
-            object: "grant_package_child",
-            grant_id: child.grant_id,
-            grant_status: child.grant_status,
-            member_status: child.member_status,
-            added_at: child.added_at,
-            revoked_at: child.revoked_at,
-            source: child.source,
-          })),
-        });
-      } catch (err) {
-        ctx.handleError(res, err);
+        })),
+        has_more: page.has_more,
+        next_cursor: page.next_cursor,
+        limit: page.limit,
+      });
+    } catch (err) {
+      ctx.handleError(res, err);
+    }
+  });
+}
+
+// GET /_ref/grant-packages/:id
+export function mountRefGrantPackagesGet(app: AppLike, ctx: MountRefGrantsContext): void {
+  app.get("/_ref/grant-packages/:id", ctx.requireOwnerSession, async (req: RouteRequest, res: RouteResponse) => {
+    try {
+      const id = req.params.id ?? "";
+      const pkg = await ctx.getGrantPackageForOwner(id);
+      if (!pkg) {
+        ctx.pdppError(res, 404, "not_found", `grant package not found: ${id}`);
+        return;
       }
-    },
-  );
+      res.json({
+        object: "grant_package",
+        package_id: pkg.package_id,
+        subject_id: pkg.subject_id,
+        client_id: pkg.client_id,
+        status: pkg.status,
+        member_count: pkg.member_count,
+        created_at: pkg.created_at,
+        approved_at: pkg.approved_at,
+        revoked_at: pkg.revoked_at,
+        trace_id: pkg.trace_id,
+        scenario_id: pkg.scenario_id,
+        children: pkg.children.map((child) => ({
+          object: "grant_package_child",
+          grant_id: child.grant_id,
+          grant_status: child.grant_status,
+          member_status: child.member_status,
+          added_at: child.added_at,
+          revoked_at: child.revoked_at,
+          source: child.source,
+        })),
+      });
+    } catch (err) {
+      ctx.handleError(res, err);
+    }
+  });
 }
 
 // POST /_ref/grant-packages/:id/revoke
@@ -226,8 +217,7 @@ export function mountRefGrantPackagesRevoke(app: AppLike, ctx: MountRefGrantsCon
           return;
         }
         const xRequestId = req.headers["x-request-id"];
-        const revokeOpts: { request_id?: string } =
-          typeof xRequestId === "string" ? { request_id: xRequestId } : {};
+        const revokeOpts: { request_id?: string } = typeof xRequestId === "string" ? { request_id: xRequestId } : {};
         await ctx.revokeGrantPackage(id, revokeOpts);
         const after = await ctx.getGrantPackageForOwner(id);
         res.json({
@@ -240,59 +230,51 @@ export function mountRefGrantPackagesRevoke(app: AppLike, ctx: MountRefGrantsCon
       } catch (err) {
         ctx.handleError(res, err);
       }
-    },
+    }
   );
 }
 
-// ── /_ref/event-subscriptions ─────────────────────────────────────────────
+// /_ref/event-subscriptions
 
 // GET /_ref/event-subscriptions
 export function mountRefEventSubscriptionsList(app: AppLike, ctx: MountRefGrantsContext): void {
-  app.get(
-    "/_ref/event-subscriptions",
-    ctx.requireOwnerSession,
-    async (req: RouteRequest, res: RouteResponse) => {
-      try {
-        const envelope = await executeRefClientEventSubscriptionsList(
-          {
-            clientId: typeof req.query.client_id === "string" ? req.query.client_id : null,
-            grantId: typeof req.query.grant_id === "string" ? req.query.grant_id : null,
-            status: typeof req.query.status === "string" ? req.query.status : null,
-          },
-          {
-            listAllSubscriptions: ctx.listAllSubscriptions,
-            getSubscriptionSummary: ctx.getSubscriptionSummary,
-          },
-        );
-        res.json(envelope);
-      } catch (err) {
-        ctx.handleError(res, err);
-      }
-    },
-  );
+  app.get("/_ref/event-subscriptions", ctx.requireOwnerSession, async (req: RouteRequest, res: RouteResponse) => {
+    try {
+      const envelope = await executeRefClientEventSubscriptionsList(
+        {
+          clientId: typeof req.query.client_id === "string" ? req.query.client_id : null,
+          grantId: typeof req.query.grant_id === "string" ? req.query.grant_id : null,
+          status: typeof req.query.status === "string" ? req.query.status : null,
+        },
+        {
+          listAllSubscriptions: ctx.listAllSubscriptions,
+          getSubscriptionSummary: ctx.getSubscriptionSummary,
+        }
+      );
+      res.json(envelope);
+    } catch (err) {
+      ctx.handleError(res, err);
+    }
+  });
 }
 
 // GET /_ref/event-subscriptions/:id
 export function mountRefEventSubscriptionsGet(app: AppLike, ctx: MountRefGrantsContext): void {
-  app.get(
-    "/_ref/event-subscriptions/:id",
-    ctx.requireOwnerSession,
-    async (req: RouteRequest, res: RouteResponse) => {
-      try {
-        const detail = await executeRefClientEventSubscriptionsGet(req.params.id ?? "", {
-          getSubscriptionSummary: ctx.getSubscriptionSummary,
-          listAttemptsForSubscription: ctx.listAttemptsForSubscription,
-        });
-        res.json(detail);
-      } catch (err) {
-        if (err instanceof RefClientEventSubscriptionsNotFoundError) {
-          ctx.pdppError(res, 404, (err as { code: string }).code, (err as Error).message);
-          return;
-        }
-        ctx.handleError(res, err);
+  app.get("/_ref/event-subscriptions/:id", ctx.requireOwnerSession, async (req: RouteRequest, res: RouteResponse) => {
+    try {
+      const detail = await executeRefClientEventSubscriptionsGet(req.params.id ?? "", {
+        getSubscriptionSummary: ctx.getSubscriptionSummary,
+        listAttemptsForSubscription: ctx.listAttemptsForSubscription,
+      });
+      res.json(detail);
+    } catch (err) {
+      if (err instanceof RefClientEventSubscriptionsNotFoundError) {
+        ctx.pdppError(res, 404, (err as { code: string }).code, (err as Error).message);
+        return;
       }
-    },
-  );
+      ctx.handleError(res, err);
+    }
+  });
 }
 
 // POST /_ref/event-subscriptions/:id/disable
@@ -306,7 +288,7 @@ export function mountRefEventSubscriptionsDisable(app: AppLike, ctx: MountRefGra
         const reason = body && typeof body === "object" && typeof body.reason === "string" ? body.reason : null;
         const out = await executeRefClientEventSubscriptionsDisable(
           { subscriptionId: req.params.id ?? "", reason },
-          { store: ctx.getClientEventSubscriptionStore(), nowIso: ctx.nowIso },
+          { store: ctx.getClientEventSubscriptionStore(), nowIso: ctx.nowIso }
         );
         const detail = await executeRefClientEventSubscriptionsGet(out.subscriptionId, {
           getSubscriptionSummary: ctx.getSubscriptionSummary,
@@ -324,6 +306,6 @@ export function mountRefEventSubscriptionsDisable(app: AppLike, ctx: MountRefGra
         }
         ctx.handleError(res, err);
       }
-    },
+    }
   );
 }
