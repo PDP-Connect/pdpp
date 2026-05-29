@@ -3347,12 +3347,13 @@ function buildAsApp(opts = {}) {
             return oauthError(res, 400, 'invalid_request', `Unknown connector: ${connectorId}`);
           }
           let resolvedConnectionId = connectionId;
+          let matchedBinding = null;
           if (resolvedConnectionId) {
             // Verify the requested connection is currently active for this
             // owner+connector. Reject silently-pinning a stale connection.
             const active = await listActiveBindingsForGrant({ ownerSubjectId, connectorId }).catch(() => []);
-            const match = active.find((row) => row.connectorInstanceId === resolvedConnectionId);
-            if (!match) {
+            matchedBinding = active.find((row) => row.connectorInstanceId === resolvedConnectionId) || null;
+            if (!matchedBinding) {
               return oauthError(res, 400, 'invalid_request', `Connection ${resolvedConnectionId} is not active for ${connectorId}`);
             }
           }
@@ -3408,7 +3409,7 @@ function buildAsApp(opts = {}) {
           storageBindings.push({ connector_id: connectorId });
           connectionIds.push(resolvedConnectionId || null);
           sourceMetadata.push({
-            display_name: resolvedConnectionId || null,
+            display_name: projectBindingForWire(matchedBinding)?.display_name || null,
             connector_display_name: manifest.display_name || manifest.name || connectorId,
           });
         }

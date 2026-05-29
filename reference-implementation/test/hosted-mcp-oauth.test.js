@@ -13,6 +13,7 @@ import {
   encodeHostedMcpStreamSelection,
 } from '../server/hosted-mcp-selection.js';
 import { startServer } from '../server/index.js';
+import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, '..');
@@ -2008,6 +2009,135 @@ test('hosted MCP picker excludes internal/test/stub connectors', async () => {
       'picker HTML MUST NOT contain the internal stub connector display name in a selectable row',
     );
     assert.match(html, /spotify/i, 'real connector (spotify) must still appear in the picker');
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('sourceMetadata.display_name uses human-readable connection name, not raw cin_* id', async () => {
+  // Regression for the bug where `display_name: resolvedConnectionId || null`
+  // set the package member's display_name to the opaque `cin_*` connection ID
+  // instead of the owner-readable name returned by `projectBindingForWire`.
+  // The package member source in `_ref/grant-packages/:id` MUST carry the
+  // human display name; it MUST NOT surface the raw connection ID as a label.
+  const server = await startOpenTestServer();
+  const asUrl = `http://localhost:${server.asPort}`;
+
+  try {
+    const spotify = await registerSpotify(asUrl);
+
+    // Seed a named connection for the spotify connector directly into the store.
+    const instanceId = 'cin_test_spotify_account';
+    const humanDisplayName = 'My Spotify Premium';
+    const store = createSqliteConnectorInstanceStore();
+    const now = new Date().toISOString();
+    await store.upsert({
+      connectorInstanceId: instanceId,
+      ownerSubjectId: 'owner_local',
+      connectorId: spotify.connector_id,
+      displayName: humanDisplayName,
+      status: 'active',
+      sourceKind: 'account',
+      sourceBindingKey: 'spotify-user@example.com',
+      sourceBinding: { account: 'spotify-user@example.com' },
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const client = await registerAuthCodeClient(asUrl);
+    const verifier = randomBytes(32).toString('base64url');
+    const challenge = pkceChallenge(verifier);
+    const state = 'display-name-regression-test';
+
+    const authorizeUrl = new URL(`${asUrl}/oauth/authorize`);
+    authorizeUrl.searchParams.set('client_id', client.client_id);
+    authorizeUrl.searchParams.set('redirect_uri', 'https://client.example/callback');
+    authorizeUrl.searchParams.set('response_type', 'code');
+    authorizeUrl.searchParams.set('state', state);
+    authorizeUrl.searchParams.set('code_challenge', challenge);
+    authorizeUrl.searchParams.set('code_challenge_method', 'S256');
+
+    const pickerResp = await fetch(authorizeUrl, { redirect: 'manual' });
+    assert.equal(pickerResp.status, 200);
+    const pickerHtml = await pickerResp.text();
+
+    // The picker must show the connection under the named connection row.
+    assert.ok(
+      pickerHtml.includes(humanDisplayName),
+      `picker MUST surface the human display name "${humanDisplayName}" as a row label`,
+    );
+
+    // Submit the picker with the connection-scoped selection value.
+    const params = new URLSearchParams();
+    params.append('client_id', client.client_id);
+    params.append('redirect_uri', 'https://client.example/callback');
+    params.append('response_type', 'code');
+    params.append('state', state);
+    params.append('code_challenge', challenge);
+    params.append('code_challenge_method', 'S256');
+    params.append(
+      'selection',
+      encodeHostedMcpSelection({ connectorId: spotify.connector_id, connectionId: instanceId }),
+    );
+    // Mirror the picker's pre-checked stream checkboxes.
+    const streamRegex = /name="stream" value="([^"]+)" checked/g;
+    for (const match of pickerHtml.matchAll(streamRegex)) {
+      params.append('stream', match[1]);
+    }
+
+    const approveResp = await fetch(`${asUrl}/oauth/authorize/mcp-package`, {
+      method: 'POST',
+      redirect: 'manual',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: params.toString(),
+    });
+    assert.equal(approveResp.status, 302);
+    const callback = new URL(approveResp.headers.get('location'));
+    const code = callback.searchParams.get('code');
+    assert.ok(code);
+
+    const { body: tokenBody } = await fetchJson(`${asUrl}/oauth/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        code,
+        client_id: client.client_id,
+        redirect_uri: 'https://client.example/callback',
+        code_verifier: verifier,
+      }).toString(),
+    });
+    assert.ok(tokenBody.grant_package_id, 'connection-scoped package issued');
+
+    // Inspect the package member source — display_name MUST be the human
+    // name, never the raw cin_* connection ID.
+    const { status: detailStatus, body: detail } = await fetchJson(
+      `${asUrl}/_ref/grant-packages/${encodeURIComponent(tokenBody.grant_package_id)}`,
+    );
+    assert.equal(detailStatus, 200);
+    assert.equal(detail.children.length, 1);
+    const child = detail.children[0];
+    assert.ok(child.source, 'child carries a source envelope');
+
+    // The raw cin_* id MUST NOT appear as display_name.
+    assert.notEqual(
+      child.source.display_name,
+      instanceId,
+      'sourceMetadata.display_name MUST NOT be the raw cin_* connection ID',
+    );
+    // The human name MUST appear.
+    assert.equal(
+      child.source.display_name,
+      humanDisplayName,
+      'sourceMetadata.display_name MUST be the human-readable connection name',
+    );
+    // The connection_id IS the raw id and may appear in the source envelope —
+    // but only on the dedicated connection_id field, not as display_name.
+    assert.equal(
+      child.source.connection_id,
+      instanceId,
+      'source.connection_id carries the stable connection ID for programmatic use',
+    );
   } finally {
     await closeServer(server);
   }
