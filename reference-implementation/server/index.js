@@ -271,9 +271,7 @@ import {
 } from '../operations/rs-records-ingest/index.ts';
 import { executeAsDeviceAuthInit } from '../operations/as-device-authorization-init/index.ts';
 import { executeAsDeviceTokenExchange } from '../operations/as-device-token-exchange/index.ts';
-import { executeAsDeviceDecision } from '../operations/as-device-decision/index.ts';
 import { executeAsIntrospect } from '../operations/as-introspect/index.ts';
-import { executeAsParCreate } from '../operations/as-par-create/index.ts';
 import { executeAsConsentDecision } from '../operations/as-consent-decision/index.ts';
 import { executeAsConsentExchange } from '../operations/as-consent-exchange/index.ts';
 import {
@@ -391,6 +389,8 @@ import {
   mountAsGrantRevoke,
 } from './routes/as-grant-revoke.ts';
 import { mountAsDcr } from './routes/as-dcr.ts';
+import { mountAsPar } from './routes/as-par.ts';
+import { mountAsDeviceUi } from './routes/as-device-ui.ts';
 
 const AS_PORT = parseInt(process.env.AS_PORT || '7662');
 const RS_PORT = parseInt(process.env.RS_PORT || '7663');
@@ -3412,168 +3412,37 @@ function buildAsApp(opts = {}) {
   };
   mountAsToken(app, asTokenContext);
 
-  app.get('/device', ownerAuth.requireOwnerSession, async (req, res) => {
-    const userCode = typeof req.query.user_code === 'string' ? req.query.user_code : '';
-    const pending = userCode ? await ownerDeviceAuthStore.getByUserCode(userCode) : null;
-
-    if (!userCode || !pending) {
-      const emptyBody = [
-        renderPageIntro({
-          eyebrow: 'Device verification',
-          title: 'Enter verification code',
-          lede: 'Paste the code shown by the CLI to continue the owner sign-in flow.',
-        }),
-        renderEmptyState({
-          form: {
-            method: 'GET',
-            action: '/device',
-            submitLabel: 'Continue',
-            fields: [
-              { name: 'user_code', label: 'User code', value: userCode || '', autofocus: true, autocomplete: 'one-time-code' },
-            ],
-          },
-        }),
-      ].join('\n');
-      return res.send(renderHostedDocument({
-        title: `${providerName} — Device verification`,
-        providerName,
-        body: emptyBody,
-      }));
-    }
-
-    const facts = renderKeyValueList([
-      { label: 'Client', value: pending.client_id },
-      { label: 'User code', html: `<span class="hosted-ui-code">${hostedEscape(pending.user_code)}</span>` },
-      { label: 'Expires', value: pending.expires_at },
-    ]);
-
-    const ownerBlock = ownerAuth.enabled
-      ? renderKeyValueList([
-          { label: 'Owner subject', html: `<code>${hostedEscape(ownerAuth.subjectId)}</code> <span class="pdpp-caption">signed-in owner</span>` },
-        ])
-      : `<div class="hosted-ui-field">
-  <label for="hosted-ui-subject_id">Subject ID</label>
-  <input id="hosted-ui-subject_id" name="subject_id" value="owner_local" type="text" />
-</div>`;
-
-    const csrfToken = ownerAuth.ensureCsrfToken(req, res);
-    const csrfField = ownerAuth.renderCsrfField(csrfToken);
-    const formOpen = `<form class="hosted-ui-surface" method="POST" action="/device/approve" data-surface="human" aria-label="Approve CLI access">
-  ${csrfField}
-  <input type="hidden" name="user_code" value="${hostedEscape(pending.user_code)}" />
-  ${facts}
-  ${ownerBlock}
-  <div class="hosted-ui-actions">
-    <button type="submit" class="hosted-ui-button" data-variant="primary">Approve and issue owner token</button>
-    <button type="submit" class="hosted-ui-button" data-variant="danger" formaction="/device/deny">Deny</button>
-  </div>
-</form>`;
-
-    const body = [
-      renderPageIntro({
-        eyebrow: 'Device verification',
-        title: `Approve owner access to ${providerName}`,
-        lede: 'A CLI is asking to sign in on your behalf. Approve only if you started this on a device you trust.',
-      }),
-      formOpen,
-    ].join('\n');
-
-    res.send(renderHostedDocument({
-      title: `${providerName} — Approve CLI access`,
-      providerName,
-      body,
-    }));
-  });
-
-  // Device approve/deny decision semantics (approval_id → user_code
-  // resolution behind the owner-session + CSRF gate, store call, error
-  // mapping) live in the canonical `as.device.decision` operation
-  // (operations/as-device-decision). The host adapter owns owner-session
-  // + CSRF enforcement, subject-id resolution, and the hosted-UI HTML
-  // result rendering.
-  function buildDeviceDecisionDeps() {
-    return {
+  // GET /device, POST /device/approve, POST /device/deny extracted to
+  // `server/routes/as-device-ui.ts` per OpenSpec change
+  // `split-reference-server-by-route-family` (§6). Behaviour-preserving:
+  // same owner-session + CSRF enforcement, same subject-id resolution,
+  // same hosted-UI HTML rendering, same error mapping.
+  mountAsDeviceUi(app, {
+    providerName,
+    ownerAuthEnabled: ownerAuth.enabled,
+    ownerSubjectId: ownerAuth.subjectId,
+    ownerAuthDefaultSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
+    requireOwnerSession: ownerAuth.requireOwnerSession,
+    requireCsrf: ownerAuth.requireCsrf,
+    ensureCsrfToken: (req, res) => ownerAuth.ensureCsrfToken(req, res),
+    renderCsrfField: (token) => ownerAuth.renderCsrfField(token),
+    getByUserCode: (userCode) => ownerDeviceAuthStore.getByUserCode(userCode),
+    ui: {
+      escapeHtml: hostedEscape,
+      renderHostedDocument,
+      renderPageIntro,
+      renderEmptyState,
+      renderKeyValueList,
+      renderSurface,
+      renderResultState,
+    },
+    deviceDecision: {
       getByApprovalId: (approvalId) => ownerDeviceAuthStore.getByApprovalId(approvalId),
       approve: (userCode, subjectId) => ownerDeviceAuthStore.approve(userCode, subjectId),
       deny: (userCode, subjectId) => ownerDeviceAuthStore.deny(userCode, subjectId),
-    };
-  }
-
-  app.post('/device/approve', ownerAuth.requireOwnerSession, ownerAuth.requireCsrf, async (req, res) => {
-    const subjectId = ownerAuth.enabled
-      ? ownerAuth.subjectId
-      : (req.body?.subject_id || OWNER_AUTH_DEFAULT_SUBJECT_ID);
-    const outcome = await executeAsDeviceDecision(
-      {
-        action: 'approve',
-        userCode: req.body?.user_code,
-        approvalId: req.body?.approval_id,
-        subjectId,
-      },
-      buildDeviceDecisionDeps(),
-    );
-    if (outcome.outcome === 'success') {
-      return res.send(renderHostedDocument({
-        title: `${providerName} — Device access approved`,
-        providerName,
-        body: [
-          renderPageIntro({ eyebrow: 'Device verification', title: 'Approved' }),
-          renderSurface({
-            surface: 'human',
-            children: renderResultState({
-              tone: 'success',
-              title: 'CLI access approved',
-              body: 'The CLI can return to polling and complete sign-in now.',
-            }),
-          }),
-        ].join('\n'),
-      }));
-    }
-    if (outcome.requestId) {
-      res.setHeader('Request-Id', outcome.requestId);
-    }
-    if (outcome.traceId) {
-      setReferenceTraceId(res, outcome.traceId);
-    }
-    oauthError(res, outcome.status, outcome.errorCode, outcome.errorMessage);
-  });
-
-  app.post('/device/deny', ownerAuth.requireOwnerSession, ownerAuth.requireCsrf, async (req, res) => {
-    const subjectId = ownerAuth.enabled
-      ? ownerAuth.subjectId
-      : (req.body?.subject_id || OWNER_AUTH_DEFAULT_SUBJECT_ID);
-    const outcome = await executeAsDeviceDecision(
-      {
-        action: 'deny',
-        userCode: req.body?.user_code,
-        approvalId: req.body?.approval_id,
-        subjectId,
-      },
-      buildDeviceDecisionDeps(),
-    );
-    if (outcome.outcome === 'success') {
-      return res.send(renderHostedDocument({
-        title: `${providerName} — Device access denied`,
-        providerName,
-        body: [
-          renderPageIntro({ eyebrow: 'Device verification', title: 'Denied' }),
-          renderSurface({
-            children: renderResultState({
-              tone: 'danger',
-              title: 'CLI access denied',
-              body: 'The CLI will stop polling and report that access was denied.',
-            }),
-          }),
-        ].join('\n'),
-      }));
-    }
-    if (outcome.requestId) {
-      res.setHeader('Request-Id', outcome.requestId);
-    }
-    if (outcome.traceId) {
-      setReferenceTraceId(res, outcome.traceId);
-    }
-    oauthError(res, outcome.status, outcome.errorCode, outcome.errorMessage);
+    },
+    oauthError,
+    setReferenceTraceId,
   });
 
   // POST /introspect extracted to `server/routes/as-oauth.ts` per OpenSpec
@@ -4056,33 +3925,17 @@ function buildAsApp(opts = {}) {
     mountAsPolyfillConnectorDetail(app, asPolyfillConnectorsContext);
   }
 
-  // RFC 9126-style PAR envelope semantics live in the canonical
-  // `as.par.create` operation (operations/as-par-create). The host adapter
-  // owns base-URL resolution from explicit opts or ambient env, native
-  // manifest resolution, header propagation, and response writing.
-  app.post('/oauth/par', { contract: 'createPushedAuthorizationRequest' }, async (req, res) => {
-    try {
-      const explicitBaseUrl = opts.asPublicUrl || (!opts.ignoreAmbientPublicUrls ? process.env.AS_PUBLIC_URL : null);
-      const output = await executeAsParCreate(
-        {
-          body: req.body,
-          baseUrl: resolvePublicUrl(req, explicitBaseUrl),
-          nativeManifest: resolveNativeManifest(opts),
-        },
-        {
-          initiateGrant: (body, opts2) => consentStore.initiateGrant(body, opts2),
-        },
-      );
-      if (output.traceContext?.request_id) {
-        res.setHeader('Request-Id', output.traceContext.request_id);
-      }
-      if (output.traceContext?.trace_id) {
-        setReferenceTraceId(res, output.traceContext.trace_id);
-      }
-      res.status(output.status).json(output.envelope);
-    } catch (err) {
-      handleError(res, err);
-    }
+  // POST /oauth/par extracted to `server/routes/as-par.ts` per OpenSpec
+  // change `split-reference-server-by-route-family` (§6). Behaviour-preserving:
+  // same contract metadata, same auth posture (none — public endpoint),
+  // same base-URL resolution, same response envelope, same status codes.
+  const explicitAsBaseUrl = opts.asPublicUrl || (!opts.ignoreAmbientPublicUrls ? process.env.AS_PUBLIC_URL : null);
+  mountAsPar(app, {
+    resolveBaseUrl: (req) => resolvePublicUrl(req, explicitAsBaseUrl),
+    nativeManifest: resolveNativeManifest(opts),
+    initiateGrant: (body, opts2) => consentStore.initiateGrant(body, opts2),
+    handleError,
+    setReferenceTraceId,
   });
 
 
