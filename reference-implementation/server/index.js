@@ -269,8 +269,6 @@ import {
   executeRecordsIngest,
   parseLines as parseIngestLines,
 } from '../operations/rs-records-ingest/index.ts';
-import { executeAsDcrRegister, summarizeDcrRegisterRequest } from '../operations/as-dcr-register/index.ts';
-import { executeAsDcrDelete } from '../operations/as-dcr-delete/index.ts';
 import { executeAsDeviceAuthInit } from '../operations/as-device-authorization-init/index.ts';
 import { executeAsDeviceTokenExchange } from '../operations/as-device-token-exchange/index.ts';
 import { executeAsDeviceDecision } from '../operations/as-device-decision/index.ts';
@@ -392,6 +390,7 @@ import {
   buildApplyGrantRevokeSideEffects,
   mountAsGrantRevoke,
 } from './routes/as-grant-revoke.ts';
+import { mountAsDcr } from './routes/as-dcr.ts';
 
 const AS_PORT = parseInt(process.env.AS_PORT || '7662');
 const RS_PORT = parseInt(process.env.RS_PORT || '7663');
@@ -3086,122 +3085,26 @@ function buildAsApp(opts = {}) {
     trustedMetadataHosts: opts.trustedMetadataHosts,
   });
 
-  // DCR register semantics (input sanitization, extra metadata derivation,
-  // success/failure spine-event data shapes, HTTP status mapping) live in
-  // the canonical `as.dcr.register` operation (operations/as-dcr-register).
-  // The host adapter owns trace-context emission, owner-session resolution,
-  // request-id/trace-id headers, spine-event dispatch, and response writing.
-  app.post('/oauth/register', { contract: 'registerDynamicClient' }, async (req, res) => {
-    const traceContext = createTraceContext();
-    res.setHeader('Request-Id', traceContext.request_id);
-    setReferenceTraceId(res, traceContext.trace_id);
-
-    const ownerSession = ownerAuth.readOwnerSession(req);
-    const authorizationHeader = req.headers.authorization || null;
-    if (!authorizationHeader && !ownerSession) {
-      const retryAfter = publicDcrRateLimiter.check(req);
-      if (retryAfter) {
-        res.setHeader('Retry-After', String(retryAfter));
-        await emitSpineEvent({
-          event_type: 'client.register_rejected',
-          trace_id: traceContext.trace_id,
-          scenario_id: traceContext.scenario_id,
-          request_id: traceContext.request_id,
-          actor_type: 'client',
-          actor_id: 'dynamic_registration',
-          object_type: 'client_registration',
-          object_id: traceContext.request_id,
-          status: 'rejected',
-          data: {
-            ...summarizeDcrRegisterRequest(req.body),
-            error: {
-              code: 'slow_down',
-              message: 'Too many public client registration attempts; retry later',
-            },
-          },
-        });
-        return oauthError(
-          res,
-          429,
-          'slow_down',
-          'Too many public client registration attempts; retry later',
-        );
-      }
-    }
-    const outcome = await executeAsDcrRegister(
-      {
-        body: req.body,
-        authorizationHeader,
-        dcrEnabled: dynamicClientRegistrationEnabled,
-        initialAccessTokens: resolveDynamicClientRegistrationInitialAccessTokensForRequest(
-          req,
-          dynamicClientRegistrationInitialAccessTokens,
-        ),
-        ownerSessionSubjectId: ownerSession?.sub || null,
-      },
-      { registerDynamicClient },
-    );
-
-    if (outcome.outcome === 'success') {
-      await emitSpineEvent({
-        event_type: 'client.registered',
-        trace_id: traceContext.trace_id,
-        scenario_id: traceContext.scenario_id,
-        request_id: traceContext.request_id,
-        actor_type: 'client',
-        actor_id: outcome.registered.client_id,
-        object_type: 'client',
-        object_id: outcome.registered.client_id,
-        status: 'succeeded',
-        client_id: outcome.registered.client_id,
-        data: outcome.spineData,
-      });
-      return res.status(outcome.status).json(outcome.registered);
-    }
-
-    await emitSpineEvent({
-      event_type: 'client.register_rejected',
-      trace_id: traceContext.trace_id,
-      scenario_id: traceContext.scenario_id,
-      request_id: traceContext.request_id,
-      actor_type: 'client',
-      actor_id: 'dynamic_registration',
-      object_type: 'client_registration',
-      object_id: traceContext.request_id,
-      status: 'rejected',
-      data: outcome.spineData,
-    });
-    oauthError(res, outcome.status, outcome.errorCode, outcome.errorMessage);
-  });
-
-  // RFC 7592 client deletion. Owner-session-gated rather than registration-
-  // access-token-gated by deliberate design choice — see the rationale in
-  // openspec/changes/dcr-per-owner-token-with-revoke/design.md. Cascades to
-  // revoke every active grant tied to the client; refuses pre-registered
-  // clients and cross-operator deletes. Idempotent: a second call returns
-  // 404 not_found.
-  // DCR delete semantics (cascading delete + typed error → status mapping)
-  // live in the canonical `as.dcr.delete` operation
-  // (operations/as-dcr-delete). The host adapter owns owner-session
-  // enforcement, request-id/trace-id headers, and response writing.
-  app.delete('/oauth/register/:clientId', ownerAuth.requireOwnerSession, async (req, res) => {
-    const traceContext = createTraceContext();
-    res.setHeader('Request-Id', traceContext.request_id);
-    setReferenceTraceId(res, traceContext.trace_id);
-    const outcome = await executeAsDcrDelete(
-      {
-        clientId: decodeURIComponent(req.params.clientId),
-        actingSubjectId:
-          req.ownerSession?.sub || ownerAuth.subjectId || OWNER_AUTH_DEFAULT_SUBJECT_ID,
-        requestId: traceContext.request_id,
-        traceId: traceContext.trace_id,
-      },
-      { deleteRegisteredClient },
-    );
-    if (outcome.outcome === 'success') {
-      return res.status(outcome.status).end();
-    }
-    pdppError(res, outcome.status, outcome.errorCode, outcome.errorMessage);
+  // DCR register/delete routes — extracted to routes/as-dcr.ts per
+  // openspec/changes/split-reference-server-by-route-family.
+  mountAsDcr(app, {
+    dcrEnabled: dynamicClientRegistrationEnabled,
+    resolveInitialAccessTokensForRequest: (req) =>
+      resolveDynamicClientRegistrationInitialAccessTokensForRequest(
+        req,
+        dynamicClientRegistrationInitialAccessTokens,
+      ),
+    publicDcrRateLimiter,
+    readOwnerSession: (req) => ownerAuth.readOwnerSession(req),
+    requireOwnerSession: ownerAuth.requireOwnerSession,
+    ownerSubjectId: ownerAuth.subjectId || OWNER_AUTH_DEFAULT_SUBJECT_ID,
+    emitSpineEvent,
+    setReferenceTraceId,
+    createTraceContext,
+    oauthError,
+    pdppError,
+    registerDynamicClient,
+    deleteRegisteredClient,
   });
 
   app.get('/oauth/authorize', ownerAuth.requireOwnerSession, async (req, res) => {
