@@ -7,6 +7,7 @@
  * child-grant members and routes each call to one or more children:
  *
  *   - `GET /v1/schema`              — fan out, merge streams + granted_connections.
+ *   - `GET /.well-known/oauth-protected-resource` — server-global passthrough.
  *   - `GET /v1/streams`             — fan out, tag each row with source identity.
  *   - `GET /v1/streams/:s/records`  — require source selector → single child.
  *   - `GET /v1/streams/:s/records/:id` — same as above.
@@ -70,6 +71,7 @@ class PackageRsClient {
 
   async getJson(path, { query, headers } = {}) {
     const route = routeFor('GET', path);
+    if (route.kind === 'passthrough') return this.passthroughGet(path, { query, headers });
     if (route.kind === 'fanout_schema') return this.fanoutSchema({ query, headers });
     if (route.kind === 'fanout_streams') return this.fanoutStreams({ query, headers });
     if (route.kind === 'fanout_search') return this.fanoutSearch(path, { query, headers });
@@ -80,6 +82,12 @@ class PackageRsClient {
     }
     // Fallback: not all paths are mapped (e.g., streams resource template).
     return this.sourceRequiredJson('GET', path, { query, headers });
+  }
+
+  // Server-global public discovery is not scoped to any package child.
+  // Reusing one child client preserves the RsClient-compatible response shape.
+  async passthroughGet(path, { query, headers } = {}) {
+    return this.children[0].client.getJson(path, { query, headers });
   }
 
   async getRaw(path, { query, headers } = {}) {
@@ -263,6 +271,10 @@ class PackageRsClient {
 
 function routeFor(method, path) {
   const clean = path.split('?')[0];
+
+  if (method === 'GET' && clean === '/.well-known/oauth-protected-resource') {
+    return { kind: 'passthrough' };
+  }
 
   if (method === 'GET' && clean === '/v1/schema') return { kind: 'fanout_schema' };
   if (method === 'GET' && clean === '/v1/streams') return { kind: 'fanout_streams' };

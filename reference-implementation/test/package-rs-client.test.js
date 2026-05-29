@@ -5,6 +5,7 @@
 // up the full hosted MCP OAuth flow. Behaviors covered:
 //
 //   - schema fan-out: per-source stream tagging + package metadata
+//   - protected-resource metadata: server-global passthrough
 //   - list_streams fan-out: rows tagged with source identity
 //   - search fan-out: hits tagged with source identity
 //   - search scoped by connection_id: single child call only
@@ -186,6 +187,36 @@ test('schema fan-out understands the canonical { data: { connectors: [{ streams 
   // package-fanout `granted_connections` so consumers get one list.
   assert.ok(Array.isArray(out.body.data.granted_connections));
   assert.equal(out.body.data.granted_connections.length, 1);
+});
+
+test('protected-resource metadata is a server-global passthrough, not a source-required read', async () => {
+  const calls = [];
+  const fetch = makeRouter(async (req) => {
+    calls.push({ token: req.token, path: req.path, query: req.query.toString() });
+    return jsonResponse(200, {
+      resource: 'https://pdpp.test/mcp',
+      capabilities: {
+        client_event_subscriptions: {
+          supported: true,
+          endpoint: '/v1/event-subscriptions',
+        },
+      },
+    });
+  });
+
+  const rs = createPackageRsClient({ providerUrl: PROVIDER, members: [memberA(), memberB()], fetch });
+  const out = await rs.getJson('/.well-known/oauth-protected-resource', {
+    query: { resource: 'https://pdpp.test/mcp' },
+  });
+  assert.equal(out.ok, true);
+  assert.equal(out.body.capabilities.client_event_subscriptions.supported, true);
+  assert.deepEqual(calls, [
+    {
+      token: 'tok_A',
+      path: '/.well-known/oauth-protected-resource',
+      query: 'resource=https%3A%2F%2Fpdpp.test%2Fmcp',
+    },
+  ]);
 });
 
 test('list_streams fan-out tags rows and exposes meta.package.member_count', async () => {
