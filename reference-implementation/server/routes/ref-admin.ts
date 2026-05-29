@@ -9,29 +9,20 @@
 // posture, contract metadata, response envelopes, status codes, error
 // mapping, and query-string parsing are unchanged.
 
+import { executeRefApprovalsList, type RefApproval } from "../../operations/ref-approvals-list/index.ts";
 import {
-  type RefApproval,
-  executeRefApprovalsList,
-} from "../../operations/ref-approvals-list/index.ts";
-import {
-  RefClientsListInvalidRequestError,
-  type RefClientsListClient,
   executeRefClientsList,
+  type RefClientsListClient,
+  RefClientsListInvalidRequestError,
 } from "../../operations/ref-clients-list/index.ts";
+import { executeRefDeployment, type RefDeploymentReport } from "../../operations/ref-deployment/index.ts";
 import {
-  type RefDeploymentReport,
-  executeRefDeployment,
-} from "../../operations/ref-deployment/index.ts";
-import {
+  executeRefRecordsTimeline,
   type RefRecordsTimelineCollectInput,
   type RefRecordsTimelineEntry,
-  executeRefRecordsTimeline,
 } from "../../operations/ref-records-timeline/index.ts";
 import { executeRefSchedulesList } from "../../operations/ref-schedules-list/index.ts";
-import {
-  type RefSpineSearchResult,
-  executeRefSpineSearch,
-} from "../../operations/ref-spine-search/index.ts";
+import { executeRefSpineSearch, type RefSpineSearchResult } from "../../operations/ref-spine-search/index.ts";
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
 
 // Express-shaped surface, structurally typed to avoid pulling in the
@@ -40,9 +31,9 @@ import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract
 
 interface RouteRequest {
   readonly body?: unknown;
+  readonly ownerSession?: { readonly sub?: string } | null;
   readonly params: Readonly<Record<string, string>>;
   readonly query: Readonly<Record<string, unknown>>;
-  readonly ownerSession?: { readonly sub?: string } | null;
 }
 
 interface RouteResponse {
@@ -57,23 +48,23 @@ interface AppLike {
 }
 
 export interface MountRefAdminContext {
-  readonly requireOwnerSession: MiddlewareHandler;
+  readonly collectDeploymentReport: (req: RouteRequest) => Promise<RefDeploymentReport>;
+  readonly collectRecordsTimelineEntries: (
+    input: RefRecordsTimelineCollectInput
+  ) => Promise<readonly RefRecordsTimelineEntry[]> | readonly RefRecordsTimelineEntry[];
+  // Subject resolution — mirrors `getOwnerSubjectId` closure in index.js.
+  readonly getOwnerSubjectId: (req: RouteRequest) => string;
   readonly handleError: (res: unknown, err: unknown) => void;
-  readonly pdppError: PdppErrorFn;
+  readonly listOwnerIssuedClients: (subjectId: string) => Promise<readonly RefClientsListClient[]>;
   // Substrate capabilities — injected by host so the adapter never touches
   // the store handles or process.env directly.
   readonly listPendingApprovals: () => Promise<readonly RefApproval[]> | readonly RefApproval[];
-  readonly collectRecordsTimelineEntries: (
-    input: RefRecordsTimelineCollectInput,
-  ) => Promise<readonly RefRecordsTimelineEntry[]> | readonly RefRecordsTimelineEntry[];
   readonly listSchedules: () => Promise<unknown[]>;
-  readonly collectDeploymentReport: (req: RouteRequest) => Promise<RefDeploymentReport>;
-  readonly listOwnerIssuedClients: (subjectId: string) => Promise<readonly RefClientsListClient[]>;
-  readonly searchSpine: (query: string) => Promise<RefSpineSearchResult> | RefSpineSearchResult;
-  // Subject resolution — mirrors `getOwnerSubjectId` closure in index.js.
-  readonly getOwnerSubjectId: (req: RouteRequest) => string;
+  readonly pdppError: PdppErrorFn;
+  readonly requireOwnerSession: MiddlewareHandler;
   // Query-string helpers — mirrors `resolveSingleConnectorIdQueryValue` in index.js.
   readonly resolveSingleConnectorIdQueryValue: (raw: unknown) => string | null;
+  readonly searchSpine: (query: string) => Promise<RefSpineSearchResult> | RefSpineSearchResult;
 }
 
 // GET /_ref/search
@@ -89,13 +80,13 @@ export function mountRefSearch(app: AppLike, ctx: MountRefAdminContext): void {
       try {
         const envelope = await executeRefSpineSearch(
           { query: (req.query.q as string) || "" },
-          { searchSpine: (query) => ctx.searchSpine(query) },
+          { searchSpine: (query) => ctx.searchSpine(query) }
         );
         res.json(envelope);
       } catch (err) {
         ctx.handleError(res, err);
       }
-    },
+    }
   );
 }
 
@@ -117,7 +108,7 @@ export function mountRefApprovals(app: AppLike, ctx: MountRefAdminContext): void
       } catch (err) {
         ctx.handleError(res, err);
       }
-    },
+    }
   );
 }
 
@@ -132,10 +123,7 @@ export function mountRefRecordsTimeline(app: AppLike, ctx: MountRefAdminContext)
     ctx.requireOwnerSession,
     async (req: RouteRequest, res: RouteResponse) => {
       try {
-        const limit =
-          req.query.limit == null
-            ? null
-            : Number.parseInt(String(req.query.limit), 10);
+        const limit = req.query.limit == null ? null : Number.parseInt(String(req.query.limit), 10);
         const connectorId = ctx.resolveSingleConnectorIdQueryValue(req.query.connector_id);
         const envelope = await executeRefRecordsTimeline(
           {
@@ -149,13 +137,13 @@ export function mountRefRecordsTimeline(app: AppLike, ctx: MountRefAdminContext)
           },
           {
             collectEntries: (input) => ctx.collectRecordsTimelineEntries(input),
-          },
+          }
         );
         res.json(envelope);
       } catch (err) {
         ctx.handleError(res, err);
       }
-    },
+    }
   );
 }
 
@@ -177,7 +165,7 @@ export function mountRefSchedules(app: AppLike, ctx: MountRefAdminContext): void
       } catch (err) {
         ctx.handleError(res, err);
       }
-    },
+    }
   );
 }
 
@@ -187,20 +175,16 @@ export function mountRefSchedules(app: AppLike, ctx: MountRefAdminContext): void
 // `ref.deployment` operation owns the envelope and env-redaction invariant;
 // the host wires `collectDeploymentReport` which performs the actual redaction.
 export function mountRefDeployment(app: AppLike, ctx: MountRefAdminContext): void {
-  app.get(
-    "/_ref/deployment",
-    ctx.requireOwnerSession,
-    async (req: RouteRequest, res: RouteResponse) => {
-      try {
-        const report = await executeRefDeployment({
-          collectDeploymentReport: () => ctx.collectDeploymentReport(req),
-        });
-        res.json(report);
-      } catch (err) {
-        ctx.handleError(res, err);
-      }
-    },
-  );
+  app.get("/_ref/deployment", ctx.requireOwnerSession, async (req: RouteRequest, res: RouteResponse) => {
+    try {
+      const report = await executeRefDeployment({
+        collectDeploymentReport: () => ctx.collectDeploymentReport(req),
+      });
+      res.json(report);
+    } catch (err) {
+      ctx.handleError(res, err);
+    }
+  });
 }
 
 // GET /_ref/clients
@@ -209,26 +193,22 @@ export function mountRefDeployment(app: AppLike, ctx: MountRefAdminContext): voi
 // owns the `?owner=true` requirement and the `{object: 'list', data}` envelope.
 // The adapter owns owner auth and per-operator subject scoping.
 export function mountRefClients(app: AppLike, ctx: MountRefAdminContext): void {
-  app.get(
-    "/_ref/clients",
-    ctx.requireOwnerSession,
-    async (req: RouteRequest, res: RouteResponse) => {
-      try {
-        const subjectId = ctx.getOwnerSubjectId(req);
-        const envelope = await executeRefClientsList(
-          { owner: req.query?.owner },
-          {
-            listOwnerIssuedClients: () => ctx.listOwnerIssuedClients(subjectId),
-          },
-        );
-        res.json(envelope);
-      } catch (err) {
-        if (err instanceof RefClientsListInvalidRequestError) {
-          ctx.pdppError(res, 400, "invalid_request", err.message);
-          return;
+  app.get("/_ref/clients", ctx.requireOwnerSession, async (req: RouteRequest, res: RouteResponse) => {
+    try {
+      const subjectId = ctx.getOwnerSubjectId(req);
+      const envelope = await executeRefClientsList(
+        { owner: req.query?.owner },
+        {
+          listOwnerIssuedClients: () => ctx.listOwnerIssuedClients(subjectId),
         }
-        ctx.handleError(res, err);
+      );
+      res.json(envelope);
+    } catch (err) {
+      if (err instanceof RefClientsListInvalidRequestError) {
+        ctx.pdppError(res, 400, "invalid_request", err.message);
+        return;
       }
-    },
-  );
+      ctx.handleError(res, err);
+    }
+  });
 }
