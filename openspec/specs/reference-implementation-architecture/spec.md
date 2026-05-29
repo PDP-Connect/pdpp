@@ -140,6 +140,11 @@ The reference implementation SHALL keep the Collection boundary explicit across 
 - **AND** it SHALL NOT create, expose, or require connector instances with `source_kind = "legacy"` or `source_binding.kind = "legacy_default"`
 - **AND** migrations SHALL rewrite existing direct `connector_instance_id` references from the old compatibility id to the deterministic default account connection id without dropping records, state, schedules, search rows, blobs, gaps, or attention records
 
+#### Scenario: Persisted schedules are active runtime instructions
+- **WHEN** the long-lived reference server starts with enabled persisted connector schedules
+- **THEN** the reference SHALL treat those schedules as runtime/orchestrator instructions for automatic connector refresh
+- **AND** it SHALL NOT present enabled schedules as automatic if no scheduler loop is active for that server process
+
 #### Scenario: The reference makes an optimistic collection choice before the spec is fully frozen
 - **WHEN** the reference implementation enforces a strong Collection Profile behavior before the PDPP spec is fully settled
 - **THEN** that behavior SHALL be labeled as either an interoperability requirement to be pushed into the Collection Profile spec or as a reference-only choice that does not yet claim normative status
@@ -5593,4 +5598,590 @@ owner-session cookies into logs.
 - **WHEN** a user runs public delegated-access commands such as `connect` or `token`
 - **THEN** the CLI SHALL continue to use scoped client credentials rather than owner sessions
 - **AND** the reference-operator owner-session mechanism SHALL NOT become the routine delegated-access fallback
+
+### Requirement: Reference scheduler lifecycle is explicit
+
+The reference server SHALL own the lifecycle for automatic scheduled connector
+runs in long-lived local and Docker deployments.
+
+#### Scenario: Scheduler starts after internal origins are known
+- **WHEN** the reference server starts automatic scheduling
+- **THEN** it SHALL start the scheduler only after AS and RS listeners have
+  populated server-side loopback origins for connector children
+- **AND** automatic scheduled runs SHALL use the same internal AS/RS origins as
+  controller-managed manual runs
+
+#### Scenario: Scheduler uses persisted schedule state
+- **WHEN** a connector schedule is enabled
+- **THEN** the scheduler SHALL derive automatic run cadence from the persisted
+  schedule row
+- **AND** disabled or deleted schedule rows SHALL NOT launch automatic runs
+
+#### Scenario: Scheduler shares controller state
+- **WHEN** an automatic scheduled run starts
+- **THEN** it SHALL share controller/runtime state for connector path
+  resolution, owner token issuance, active-run conflict prevention, connector
+  state, needs-human state, and run-history persistence
+
+#### Scenario: Scheduler shuts down safely
+- **WHEN** the reference server begins graceful shutdown
+- **THEN** it SHALL stop the scheduler before waiting for connector drain
+- **AND** stopped scheduler retry/backoff timers SHALL NOT launch new connector
+  attempts
+
+#### Scenario: Docker runs the same scheduler lifecycle
+- **WHEN** the Docker reference service runs the standard
+  `reference-implementation/server/index.js` entrypoint
+- **THEN** enabled persisted schedules SHALL execute through the same server-owned
+  scheduler lifecycle as non-Docker long-lived startup
+
+#### Scenario: Schedule projection reflects durable history after restart
+- **WHEN** an operator-facing schedule projection is built for a persisted
+  connector schedule (e.g. via `controller.listSchedules` or
+  `controller.getSchedule`)
+- **AND** no in-memory active-run row currently exists for that connector
+- **THEN** the projection's `last_started_at`, `last_finished_at`,
+  `last_successful_at`, and `last_error_code` fields SHALL reflect the
+  durable `scheduler_run_history` (and `scheduler_last_run_times`) records
+  for that connector when they exist
+- **AND** the projection's `next_due_at` field SHALL be the projected next
+  dispatch instant computed from the persisted last-run timestamp plus the
+  configured interval whenever the persisted last-run anchor exists and the
+  schedule is enabled
+- **AND** a persisted schedule with neither an active run nor any persisted
+  history SHALL retain null last-run/next-due fields so consumers can still
+  identify genuinely never-fired schedules
+
+### Requirement: Browser-surface substrate SHALL be isolated from reference-owned runtime integrations
+
+The reference implementation SHALL consume backend-agnostic remote-surface lease/state-machine substrate from a private internal package. That package SHALL own remote-surface types, browser-surface lease state transitions, capacity policy, fencing tokens, queue ordering, restart reconciliation policy, and backend allocator interfaces. The package SHALL NOT import reference implementation, server, Docker, dashboard, or connector modules.
+
+Reference-owned code SHALL continue to own persistence adapters, spine and run events, connector launch integration, Docker Compose wiring, and allocator sidecar process implementation.
+
+#### Scenario: Reference runtime acquires a browser-surface lease
+
+- **WHEN** reference controller code needs browser-surface lease policy
+- **THEN** it SHALL use the package-backed substrate implementation
+- **AND** reference-specific storage, event emission, and connector launch env assembly SHALL remain outside the package
+
+#### Scenario: Dynamic allocator work adds backend lifecycle support
+
+- **WHEN** dynamic n.eko allocation adds allocator lifecycle behavior
+- **THEN** allocator contracts MAY be defined in the substrate package
+- **AND** Docker Engine access, Compose wiring, and the allocator sidecar process SHALL remain reference-owned
+
+#### Scenario: Package dependency boundaries are checked
+
+- **WHEN** `packages/remote-surface` is inspected
+- **THEN** it SHALL NOT import from `reference-implementation`, server modules, Docker implementation code, `apps/web`, or connector modules
+
+### Requirement: n.eko browser surfaces SHALL be leased before connector launch
+
+When a connector run requires an n.eko-backed browser surface, the reference implementation SHALL acquire or queue a browser-surface lease before spawning the connector child process. The connector SHALL receive the selected surface through controller-owned launch metadata rather than discovering an arbitrary unmanaged browser surface as the production path.
+
+#### Scenario: A connector is configured for managed n.eko
+
+- **WHEN** reference configuration declares a connector id as requiring managed n.eko
+- **THEN** each run for that connector SHALL request a browser-surface lease before connector spawn
+- **AND** the reference SHALL fail fast on invalid managed n.eko capacity or static-profile configuration rather than silently falling back to unmanaged browser launch
+
+#### Scenario: A connector is not configured for managed n.eko
+
+- **WHEN** a connector is not declared as requiring managed n.eko
+- **THEN** the reference MAY use the existing local browser launch or development remote-CDP override paths
+- **AND** the connector SHALL NOT be placed into browser-surface queueing solely because n.eko support exists
+
+#### Scenario: A compatible surface is available
+
+- **WHEN** a connector run requires n.eko and a ready idle surface with a compatible profile key is available
+- **THEN** the reference SHALL lease that surface before spawning the connector process
+- **AND** the connector process SHALL receive lease-scoped browser metadata including a remote CDP URL
+- **AND** the run SHALL NOT use an unrelated browser profile or surface
+
+#### Scenario: Capacity is available but no surface exists
+
+- **WHEN** a connector run requires n.eko, no compatible ready surface exists, and the active n.eko surface count is below the configured cap
+- **THEN** the reference MAY start or allocate a compatible n.eko surface before connector launch
+- **AND** the run SHALL remain in a surface-starting or waiting state until the surface is ready and leased
+
+#### Scenario: The surface cap is full
+
+- **WHEN** a connector run requires n.eko and the configured active-surface cap is already full
+- **THEN** the reference SHALL queue the run before connector launch with an operator-visible waiting state
+- **AND** the reference SHALL NOT spawn the connector child process until a compatible surface is leased
+- **AND** the reference SHALL NOT silently fall back to headless, local, or shared-profile browser launch
+
+#### Scenario: A queued run has not been promoted
+
+- **WHEN** a connector run is waiting for a browser surface before connector spawn
+- **THEN** the reference SHALL represent it as a queued launch request or pending browser-surface lease
+- **AND** the reference SHALL NOT persist it in the active-run registry used for spawned connector children
+- **AND** the reference SHALL NOT create active child-process state, active interaction state, a streaming nonce, or a `run.started` event
+
+#### Scenario: A legacy remote-CDP override exists for a managed run
+
+- **WHEN** a connector run requires managed n.eko and no lease-scoped CDP URL has been issued
+- **THEN** the connector browser launch SHALL fail closed with runtime-resource classification
+- **AND** it SHALL NOT satisfy the managed requirement by using `PDPP_<PROFILE>_REMOTE_CDP_URL`, headless launch, or local launch
+
+### Requirement: n.eko browser-surface leasing SHALL be atomic and fenced
+
+The reference implementation SHALL enforce browser-surface cap, lease ownership, queued-run uniqueness, and release behavior atomically so concurrent run starts cannot over-allocate n.eko surfaces or corrupt profile isolation.
+
+#### Scenario: Concurrent runs request the final available surface
+
+- **WHEN** two managed n.eko runs concurrently request browser-surface capacity and only one compatible surface slot is available
+- **THEN** exactly one run SHALL receive or start a leased surface
+- **AND** the other run SHALL remain queued or deferred according to policy
+- **AND** the configured active-surface cap SHALL NOT be exceeded
+
+#### Scenario: A surface is already leased
+
+- **WHEN** a browser surface has a non-terminal leased row
+- **THEN** the reference SHALL NOT issue a second active lease for that same surface
+- **AND** any waiting run SHALL be queued, deferred, or rejected according to profile compatibility and wait policy
+
+#### Scenario: A run already has a pending lease
+
+- **WHEN** a run id already has a non-terminal browser-surface lease
+- **THEN** the reference SHALL NOT create a duplicate non-terminal lease for the same run
+- **AND** a duplicate launch request for the same connector/profile SHALL return or reference the existing pending run rather than enqueue unbounded duplicate work
+
+#### Scenario: A stale release arrives after a newer lease
+
+- **WHEN** a release request uses an old lease id or fencing token for a surface that has since been leased again
+- **THEN** the reference SHALL ignore or reject the stale release
+- **AND** it SHALL NOT release the newer lease or unblock another queued run from stale state
+
+### Requirement: n.eko surface queueing SHALL preserve operator clarity
+
+The reference implementation SHALL expose queued, leased, released, deferred, expired, and cancelled browser-surface lease states through reference-only run/operator artifacts so the owner can distinguish resource backpressure from connector failure.
+
+#### Scenario: A queued run is inspected
+
+- **WHEN** the owner inspects a run waiting for an n.eko surface
+- **THEN** the reference SHALL show browser-surface status such as queued, starting, leased, deferred, expired, or cancelled
+- **AND** active-run status SHALL remain reserved for spawned connector children
+- **AND** the status SHALL NOT be reported as a connector authentication failure, protocol failure, or invisible hang
+
+#### Scenario: A queued run times out
+
+- **WHEN** a queued browser-surface run exceeds the configured wait policy
+- **THEN** the reference SHALL mark the run or lease as deferred with retry metadata and runtime-resource classification
+- **AND** the failure SHALL be classified as runtime resource backpressure rather than as connector output failure
+
+#### Scenario: An owner cancels a queued run
+
+- **WHEN** the owner cancels a run that is waiting for a browser surface
+- **THEN** the reference SHALL mark the browser-surface lease as cancelled
+- **AND** it SHALL NOT spawn the connector after cancellation
+
+#### Scenario: Browser-surface capacity becomes available
+
+- **WHEN** a leased surface is released and compatible queued runs exist
+- **THEN** the reference SHALL select the next run by priority class and FIFO order
+- **AND** it SHALL promote the selected queued run through the normal active-run spawn path
+- **AND** it SHALL emit browser-surface lease events before any connector `run.started` event
+
+### Requirement: n.eko surface leases SHALL preserve profile isolation
+
+The reference implementation SHALL associate each n.eko surface with a stable profile key and SHALL NOT share a live browser surface across incompatible profile keys. The profile key MAY initially be connector-scoped, but the architecture SHALL leave room for account-scoped profile keys.
+
+#### Scenario: Two connectors require browser surfaces
+
+- **WHEN** two connector runs have different profile keys
+- **THEN** the reference SHALL NOT reuse the same live n.eko browser surface for both runs
+- **AND** any queueing decision SHALL preserve the profile boundary rather than trading it for throughput
+
+#### Scenario: Static single-surface mode receives an incompatible profile key
+
+- **WHEN** the first tranche static n.eko mode is configured with one fixed profile key
+- **AND** a managed run requests a different profile key
+- **THEN** the reference SHALL defer or reject the run with runtime-resource classification
+- **AND** it SHALL NOT wait forever, reprofile the static surface, or reuse the incompatible profile
+
+#### Scenario: Multi-account support is added later
+
+- **WHEN** the reference gains multiple accounts for one browser-backed connector
+- **THEN** the browser-surface lease model SHALL support account-distinct profile keys without requiring a new browser-surface concept
+
+### Requirement: n.eko surface leases SHALL reconcile after restart
+
+The reference implementation SHALL persist enough browser-surface lease state to reconcile queued, starting, and leased runs after reference restart without deleting browser profile state.
+
+#### Scenario: A leased run is not active after restart
+
+- **WHEN** the reference starts and finds a persisted leased browser surface whose run is no longer active
+- **THEN** the reference SHALL release the stale lease if the surface is healthy, or expire it if the surface is missing
+- **AND** it SHALL preserve the associated browser profile volume or directory
+
+#### Scenario: A surface is missing after restart
+
+- **WHEN** the reference starts and finds a persisted lease whose n.eko surface is no longer live or healthy
+- **THEN** the reference SHALL mark a missing-surface lease expired and an unhealthy-surface lease surface-failed with runtime-resource classification
+- **AND** it SHALL free capacity for future runs
+
+#### Scenario: A queued run is recovered after restart
+
+- **WHEN** the reference starts and finds a queued browser-surface run that has not expired or been cancelled
+- **THEN** the reference SHALL keep it queued if it is within wait policy, defer it if it exceeded wait policy, or defer it if static profile compatibility cannot ever satisfy it
+- **AND** it SHALL NOT report it as an already-running connector child
+
+#### Scenario: Reconciliation runs before new launches
+
+- **WHEN** the reference process boots with persisted browser-surface leases
+- **THEN** it SHALL reconcile those leases after storage initialization and before routes or schedules can start new connector runs
+- **AND** queued-but-not-started runs SHALL NOT be classified as abandoned active connector runs
+
+### Requirement: Remote-surface package exports SHALL define an OSS-spinnable boundary
+
+The reference implementation SHALL define `@pdpp/remote-surface` package exports around host-neutral remote-surface concepts before moving full streaming architecture code into the package. Exported APIs SHALL be organized by protocol, server broker, client viewer/controllers, backend adapters, diagnostics, leases, and test utilities rather than by PDPP route names or dashboard file structure.
+
+#### Scenario: Package exports are introduced
+
+- **WHEN** implementation adds full streaming architecture exports to `@pdpp/remote-surface`
+- **THEN** the exports SHALL provide stable destinations for protocol schemas, server broker interfaces, client controllers, backend adapters, diagnostics, leases, and testing fakes
+- **AND** new generic streaming code SHALL NOT be added to reference-only modules when a package export destination already exists
+
+#### Scenario: Package documentation is inspected
+
+- **WHEN** the package README or API docs describe the remote-surface architecture
+- **THEN** they SHALL describe host-neutral remote-surface concepts and implemented package exports
+- **AND** they SHALL NOT claim implemented controllers are scaffold-only or require PDPP `_ref` routes, run timelines, owner auth, connector registration, or Docker lifecycle as package concepts
+
+### Requirement: Remote-surface streaming primitives SHALL be package-owned and host-adapted
+
+The reference implementation SHALL extract backend-neutral remote-surface streaming primitives into `@pdpp/remote-surface` before treating the architecture as OSS-spinnable. The package SHALL own generic protocol shapes, session broker interfaces, client viewer interfaces, backend adapter interfaces, input/viewport/clipboard channel shapes, diagnostics schema, and allocator/session seams. The reference implementation SHALL remain the host adapter for PDPP-specific routes, run timelines, auth, persistence, and connector handoff.
+
+#### Scenario: A host creates a remote-surface session
+
+- **WHEN** reference owner auth has authorized a stream mint request for a pending run interaction
+- **THEN** the reference SHALL map that authorized request into a package remote-surface session creation call
+- **AND** the package session descriptor SHALL use generic remote-surface identity and capability fields
+- **AND** PDPP `run_id`, `interaction_id`, owner auth, spine event names, and `_ref` route paths SHALL remain host-owned metadata and routing concerns
+
+#### Scenario: The in-memory session broker is extracted
+
+- **WHEN** the package provides a default in-memory session broker
+- **THEN** it SHALL preserve token minting, idempotency replay, attach and authorize semantics, expiry, revocation, and invalidation behavior through package conformance tests
+- **AND** hosts SHALL remain able to supply a durable store or host-specific persistence adapter
+
+#### Scenario: A browser client opens a stream
+
+- **WHEN** the dashboard opens a stream through reference `_ref` routes
+- **THEN** the reference SHALL adapt the request to package attach, authorize, event-channel, input-channel, viewport-channel, clipboard-channel, and diagnostics primitives
+- **AND** the browser-visible descriptor SHALL expose only scoped remote-surface capabilities and token-scoped proxy/session information
+- **AND** it SHALL NOT expose raw CDP WebSocket URLs, allocator credentials, Docker hostnames, or connector-owned backend lifecycle authority
+
+#### Scenario: Package dependency boundaries are checked
+
+- **WHEN** `packages/remote-surface` is inspected
+- **THEN** it SHALL NOT import from `reference-implementation`, `apps/web`, `packages/polyfill-connectors`, Docker implementation code, or server route modules
+
+### Requirement: Remote-surface client behavior SHALL be reusable outside the dashboard
+
+The package SHALL expose client APIs for mounting and unmounting a viewer, dispatching pointer/keyboard/text/clipboard input, managing mobile keyboard and IME behavior, reporting viewport and layout changes, enforcing clipboard capability policy, and subscribing to telemetry. Dashboard React components, owner-facing copy, URL resolution, route actions, and styling SHALL remain outside the package.
+
+#### Scenario: The dashboard mounts a n.eko-backed viewer
+
+- **WHEN** the dashboard receives a n.eko-capable stream descriptor
+- **THEN** it SHALL mount the viewer through the package client API
+- **AND** n.eko client implementation details SHALL remain behind the package adapter boundary
+- **AND** dashboard code SHALL remain responsible only for React lifecycle, layout, owner messaging, and route-specific URL resolution
+
+#### Scenario: Mobile input requires IME handling
+
+- **WHEN** a mobile owner focuses a remote text field and enters text through a software keyboard or IME
+- **THEN** package-owned client controllers SHALL translate keyboard, composition, and text-commit behavior into backend-neutral remote-surface input operations
+- **AND** dashboard-only handlers SHALL NOT be the only implementation of IME, text commit, or keysym behavior
+
+#### Scenario: Clipboard access is constrained
+
+- **WHEN** a viewer copies from or pastes into the remote browser
+- **THEN** the package client API SHALL model clipboard capabilities and explicit fallback paths
+- **AND** host and dashboard code MAY decide how to present prompts or manual fallback UI
+- **AND** clipboard contents SHALL NOT be written to diagnostics by default
+
+### Requirement: Backend adapters SHALL hide backend authority behind capabilities
+
+The package SHALL expose backend adapter interfaces that normalize n.eko, CDP fallback, and future remote-surface backends behind capability declarations. Backend-specific authority such as raw CDP targets, n.eko upstream origins, allocator credentials, Docker resources, or browser automation control SHALL remain server-side or host-owned unless explicitly represented as a safe scoped capability.
+
+#### Scenario: n.eko is selected for an owner-operated browser session
+
+- **WHEN** a package broker or host adapter selects a n.eko backend
+- **THEN** the client-visible configuration SHALL route through token-scoped same-origin proxy/session information
+- **AND** n.eko upstream origins and sidecar credentials SHALL be constrained by host-approved allowlists
+
+#### Scenario: CDP fallback is selected
+
+- **WHEN** a CDP-backed stream is used for fallback, debug, or automation-friendly sessions
+- **THEN** raw CDP HTTP and WebSocket URLs SHALL remain server-side
+- **AND** browser clients SHALL interact only with package event/input/viewport/clipboard channels exposed by the host adapter
+
+#### Scenario: A future backend is added
+
+- **WHEN** a CDP/VNC/Kasm-like backend is added later
+- **THEN** it SHALL implement the package backend adapter interface and capability model
+- **AND** it SHALL NOT require dashboard or connector code to learn backend-specific lifecycle authority
+
+### Requirement: Dynamic n.eko allocation SHALL consume package seams without owning streaming extraction
+
+Dynamic n.eko allocation SHALL depend on package-owned lease, allocator, session, target descriptor, and diagnostics seams. Docker Engine access, Compose wiring, allocator sidecar implementation, image pins, labels, networks, profile storage, readiness probes, and operator configuration SHALL remain reference-owned unless a later OpenSpec change extracts a backend allocator package.
+
+#### Scenario: Dynamic allocation creates a surface
+
+- **WHEN** dynamic mode ensures or starts a n.eko browser surface
+- **THEN** it SHALL produce package-compatible lease/session/target descriptors for the reference streaming host adapter
+- **AND** the connector SHALL receive only lease-scoped browser metadata needed for its run
+- **AND** Docker lifecycle authority SHALL NOT be granted to connector code or browser clients
+
+#### Scenario: Dynamic allocation work proceeds before full streaming extraction
+
+- **WHEN** `add-dynamic-neko-surface-allocation` is implemented before this full streaming extraction is complete
+- **THEN** it SHALL consume the existing package lease substrate and define only the minimal package-compatible streaming descriptors it needs
+- **AND** it SHALL NOT absorb server broker, dashboard viewer, clipboard, keyboard, telemetry, or generic backend adapter extraction into the dynamic allocation tranche
+
+#### Scenario: A backend allocator package is considered later
+
+- **WHEN** the project decides Docker-backed dynamic allocation should become independently reusable
+- **THEN** that decision SHALL be proposed as a separate OpenSpec change
+- **AND** it SHALL NOT be implied by extracting `@pdpp/remote-surface`
+
+### Requirement: Remote-surface extraction SHALL preserve behavioral parity by tranche
+
+Each remote-surface extraction tranche SHALL include package conformance tests, reference parity tests, and import-boundary checks before it is marked complete. The reference SHALL preserve current `_ref` route behavior and dashboard owner UX until package-backed replacements are proven equivalent.
+
+#### Scenario: Protocol parsing moves into the package
+
+- **WHEN** event, frame, input, viewport, clipboard, target, or diagnostics parsing moves from reference or dashboard code into `@pdpp/remote-surface`
+- **THEN** package tests SHALL include fixture cases generated from the current reference/dashboard payload shapes
+- **AND** reference tests SHALL prove the existing route or viewer behavior still accepts and emits the same externally visible payloads
+
+#### Scenario: Client viewer policy moves into the package
+
+- **WHEN** viewport classification, geometry, clipboard policy, media-settle, visual-quality, keyboard, IME, or pointer policy moves into `@pdpp/remote-surface`
+- **THEN** package tests SHALL preserve the current focused behavior tests
+- **AND** dashboard code SHALL remain responsible for React lifecycle, route URL resolution, product copy, styling, and owner-specific affordances
+
+#### Scenario: An extraction tranche completes
+
+- **WHEN** an implementation tranche is reported complete
+- **THEN** the report SHALL include an import-boundary sweep showing the package does not import reference, dashboard, connector, Docker, or server-route modules
+- **AND** it SHALL identify any compatibility shim left in the reference implementation
+
+### Requirement: Dynamic n.eko surfaces SHALL be allocated behind the lease boundary
+
+The reference implementation SHALL allocate dynamic n.eko browser surfaces through a controller-owned allocator boundary when configured for dynamic managed n.eko mode. Connectors SHALL receive only lease-scoped browser metadata and SHALL NOT create, select, or stop n.eko containers directly.
+
+#### Scenario: Dynamic mode has capacity
+
+- **WHEN** a managed n.eko connector run requests a profile key with no compatible ready idle surface
+- **AND** the active n.eko surface count is below the configured cap
+- **THEN** the reference SHALL create or ensure a dynamic surface for that profile key before connector launch
+- **AND** the connector child SHALL NOT be spawned until the dynamic surface is ready and leased
+
+#### Scenario: Dynamic mode is not configured correctly
+
+- **WHEN** managed n.eko dynamic mode is enabled without allocator configuration, valid capacity, profile storage policy, or stream proxy configuration
+- **THEN** reference startup SHALL fail fast with a runtime configuration error
+- **AND** managed connectors SHALL NOT silently fall back to static, local, headless, or unmanaged remote-CDP browser launch
+
+#### Scenario: Connector code runs with a dynamic surface
+
+- **WHEN** a dynamic n.eko surface is leased for a connector run
+- **THEN** the connector process SHALL receive lease-scoped surface metadata including the lease id, surface id, profile key, remote CDP URL, and stream base URL
+- **AND** the connector SHALL NOT receive Docker lifecycle authority as part of the browser binding
+
+### Requirement: Dynamic n.eko surfaces SHALL preserve browser profile isolation
+
+The reference implementation SHALL associate each dynamic n.eko surface with persistent profile storage derived from the lease profile key. A live dynamic surface SHALL NOT be shared across incompatible profile keys.
+
+#### Scenario: Two managed connectors use different profile keys
+
+- **WHEN** two managed n.eko connector runs request different profile keys
+- **THEN** the reference SHALL allocate or reuse separate dynamic surfaces for those profile keys
+- **AND** it SHALL NOT satisfy either run by sharing the other run's live browser profile
+
+#### Scenario: A dynamic surface becomes idle
+
+- **WHEN** a dynamic n.eko surface has no active lease
+- **THEN** the reference MAY keep the surface warm until idle TTL expires
+- **AND** idle cleanup SHALL stop the container without deleting the persistent profile storage
+
+#### Scenario: Docker resources are named
+
+- **WHEN** the allocator creates containers, volumes, or directories for a profile key
+- **THEN** it SHALL derive resource names from a sanitized or hashed representation
+- **AND** it SHALL NOT embed raw connector URLs, account identifiers, or owner data directly in Docker resource names
+
+### Requirement: Dynamic n.eko lease promotion SHALL be readiness gated
+
+The reference implementation SHALL classify a dynamic n.eko surface as leaseable only after container/network, n.eko HTTP, CDP, and browser readiness checks pass. Stream descriptor authorization SHALL remain server-side, and authenticated stream readiness SHALL be verified by the interaction adapter when an interaction starts.
+
+#### Scenario: Surface startup is in progress
+
+- **WHEN** a dynamic n.eko surface has been requested but readiness checks have not passed
+- **THEN** the corresponding lease SHALL remain in a pre-spawn starting or waiting browser-surface state
+- **AND** the reference SHALL NOT emit `run.started` for that connector run
+
+#### Scenario: Readiness succeeds
+
+- **WHEN** the allocator reports that container/network, n.eko HTTP, CDP, and browser readiness checks have passed
+- **THEN** the reference SHALL mark the lease `leased`
+- **AND** it SHALL emit browser-surface lease events before spawning the connector child
+
+#### Scenario: Readiness fails
+
+- **WHEN** a dynamic surface fails startup or readiness checks before connector launch
+- **THEN** the reference SHALL mark the lease as `surface_failed` or `deferred` with runtime-resource classification
+- **AND** it SHALL NOT report the failure as connector authentication failure, connector protocol failure, or connector output failure
+
+### Requirement: Dynamic n.eko capacity SHALL include starting and idle surfaces
+
+The reference implementation SHALL enforce the configured active n.eko surface cap across starting, ready idle, leased, and unhealthy dynamic surfaces until those surfaces are stopped or reconciled out of the active set.
+
+#### Scenario: A surface is starting
+
+- **WHEN** a dynamic surface container has been requested but is not yet ready
+- **THEN** it SHALL count against the configured active-surface cap
+- **AND** another run SHALL NOT over-allocate capacity by ignoring the starting surface
+
+#### Scenario: Capacity is full with idle surfaces
+
+- **WHEN** the configured active-surface cap is full because of ready idle dynamic surfaces
+- **THEN** the reference MAY stop idle surfaces according to idle TTL policy
+- **AND** runs that still cannot obtain compatible capacity SHALL remain queued or deferred according to wait policy
+
+#### Scenario: Capacity becomes available
+
+- **WHEN** a dynamic surface is released, stopped after idle TTL, or reconciled as expired
+- **THEN** the reference SHALL run the browser-surface queue pump
+- **AND** queued runs SHALL be promoted by priority class and FIFO order only after compatible capacity is available
+
+### Requirement: Dynamic n.eko surfaces SHALL reconcile after restart
+
+The reference implementation SHALL reconcile persisted browser-surface leases and surface rows with allocator/container state after reference restart and before accepting new managed n.eko launches.
+
+#### Scenario: A live healthy surface exists after restart
+
+- **WHEN** the reference starts and finds a live healthy dynamic n.eko container for a persisted surface
+- **THEN** it SHALL retain that surface if it is under cap and profile-compatible
+- **AND** it SHALL release stale leases whose connector run is no longer active without deleting profile storage
+
+#### Scenario: A starting surface exists after restart
+
+- **WHEN** the reference starts and finds a persisted `starting_surface` lease
+- **THEN** it SHALL resume readiness reconciliation if the allocator still has the corresponding container
+- **AND** it SHALL fail or defer the lease with runtime-resource classification if the container is missing or unhealthy
+
+#### Scenario: A dynamic container is missing after restart
+
+- **WHEN** the reference starts and a persisted non-terminal lease references a missing dynamic container
+- **THEN** it SHALL mark the lease expired or surface-failed according to policy
+- **AND** it SHALL preserve the profile volume or directory for future runs
+
+### Requirement: Dynamic n.eko allocation SHALL be constrained to reference-owned resources
+
+The reference implementation SHALL restrict dynamic allocator operations to reference-owned n.eko containers, networks, and profile volumes identified by explicit configuration and labels.
+
+#### Scenario: The allocator lists containers
+
+- **WHEN** the allocator discovers existing Docker containers or volumes
+- **THEN** it SHALL manage only resources carrying the expected reference-owned labels
+- **AND** it SHALL ignore or reject operations against unlabeled or foreign resources
+
+#### Scenario: The n.eko image is selected
+
+- **WHEN** dynamic mode starts an n.eko container
+- **THEN** it SHALL use the configured pinned image or locally built tagged image
+- **AND** it SHALL NOT pull or run an arbitrary image name supplied by connector code or run input
+
+#### Scenario: A stream descriptor is produced
+
+- **WHEN** the allocator returns stream metadata for a dynamic surface
+- **THEN** the descriptor SHALL route through reference-approved proxy or WebRTC configuration
+- **AND** it SHALL NOT expose arbitrary allocator/container hostnames to the owner-facing client
+
+### Requirement: Reference AS/RS semantics SHALL be operation-owned
+
+The reference implementation SHALL define AS, RS, and `_ref` behavior through canonical operation implementations that can be mounted by multiple hosts. HTTP frameworks, website route handlers, tests, and sandbox surfaces SHALL call those operations rather than reimplementing their semantics.
+
+#### Scenario: Same operation mounted by multiple hosts
+
+- **WHEN** the same reference operation is exposed by the native local server and by a sandbox route host
+- **THEN** both hosts SHALL execute the same operation implementation
+- **AND** host-specific code SHALL be limited to request adaptation, response adaptation, origin resolution, and environment profile selection
+
+#### Scenario: Host attempts to reimplement reference behavior
+
+- **WHEN** a host or UI surface constructs an AS/RS response that corresponds to a canonical reference operation
+- **THEN** the change SHALL be rejected unless it is explicitly marked as a fixture-only test helper and cannot be reached as a public reference surface
+
+### Requirement: Environment profiles SHALL compose dependencies, not fork behavior
+
+The reference implementation SHALL model local, Docker, sandbox, and test environments as profiles that provide concrete dependencies to the same reference operations. Profiles SHALL NOT define alternate AS/RS semantics.
+
+#### Scenario: Sandbox fixture profile
+
+- **WHEN** the sandbox exposes `/sandbox/v1/**`, `/sandbox/_ref/**`, or `/sandbox/.well-known/**`
+- **THEN** those routes SHALL mount reference operations using a sandbox fixture profile
+- **AND** the sandbox fixture profile SHALL provide deterministic storage, deterministic clock/ids, fixture search indexes, and disabled or scripted connector execution
+
+### Requirement: Storage and retrieval contracts SHALL be capability-specific
+
+Storage and search abstractions used by reference operations SHALL be named around PDPP capabilities and obligations. Generic repository or table-shaped abstractions SHALL NOT be introduced as operation dependencies.
+
+#### Scenario: Record listing abstraction
+
+- **WHEN** `rs.records.list` needs data access
+- **THEN** it SHALL depend on a record-capability contract such as `RecordStore.listGrantedRecords`
+- **AND** it SHALL NOT depend on a generic table repository, raw SQLite handle, raw Postgres pool, or query-builder instance
+
+#### Scenario: Retrieval abstraction
+
+- **WHEN** lexical, semantic, or hybrid retrieval is implemented through an adapter
+- **THEN** the adapter contract SHALL preserve retrieval-mode-specific score semantics, index identity, filtering, freshness state, and fallback behavior
+- **AND** operation code SHALL NOT collapse those modes into an ambiguous generic search provider
+
+### Requirement: Paginated reference contracts SHALL use explicit cursor semantics
+
+Reference-runtime contracts SHALL NOT depend on implicit SQLite `rowid` behavior. Any paginated capability method SHALL define an explicit stable tiebreaker and SHALL treat cursors as opaque adapter-owned tokens.
+
+#### Scenario: Adapter without implicit rowid
+
+- **WHEN** a reference operation is backed by an adapter that does not expose SQLite `rowid`
+- **THEN** the operation SHALL still paginate deterministically using the capability contract's explicit ordering and tiebreaker
+- **AND** operation code SHALL NOT inspect or construct database-specific cursor internals
+
+### Requirement: Record storage contracts SHALL own ordering and version semantics
+
+Record storage contracts SHALL define cursor-field comparison semantics, missing-value bucket semantics, and per-stream version allocation. These semantics SHALL NOT be inherited accidentally from a database engine's JSON extraction, collation, or single-writer behavior.
+
+#### Scenario: Record cursor field is database JSON
+
+- **WHEN** an adapter stores record data as JSON or JSONB
+- **THEN** `RecordStore` SHALL preserve the manifest-declared cursor ordering and missing-value behavior regardless of the database's native JSON value affinity
+- **AND** unsupported cursor comparison modes SHALL fail or fall back explicitly rather than silently changing page order
+
+#### Scenario: Concurrent record ingest
+
+- **WHEN** two records are ingested for the same `(connector_id, stream)`
+- **THEN** the adapter SHALL allocate monotonically increasing versions in the same atomic unit that writes the live record and change-log row
+- **AND** the reference operation SHALL not rely on SQLite's single-writer behavior for correctness
+
+### Requirement: Retrieval contracts SHALL disclose backend identity
+
+Lexical and semantic retrieval contracts SHALL expose backend identity and score semantics needed for truthful capability advertisement. Retrieval adapters SHALL NOT hide tokenizer, ranker, vector-index, distance, model, or recall-determinism differences behind a generic search interface.
+
+#### Scenario: Lexical backend changes
+
+- **WHEN** lexical retrieval is backed by an engine other than SQLite FTS5
+- **THEN** the capability advertisement and result scores SHALL disclose the backend's score direction and implementation-relative semantics
+- **AND** drift detection SHALL account for tokenizer or ranker identity when that identity affects indexed content or ranking
+
+#### Scenario: Semantic backend is approximate
+
+- **WHEN** semantic retrieval is backed by an approximate vector index
+- **THEN** the capability advertisement SHALL disclose index kind and recall determinism
+- **AND** the adapter SHALL NOT present approximate recall as exact flat-index behavior
 
