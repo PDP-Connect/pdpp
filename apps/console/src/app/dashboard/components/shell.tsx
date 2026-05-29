@@ -98,7 +98,7 @@ export function DashboardShell({
             <SidebarContent active={active} mode={mode} routes={routes} />
           </MobileDrawer>
         </MobileDrawerProvider>
-        <CommandPalette basePath={routes.basePath} />
+        <CommandPalette basePath={routes.basePath} mode={mode} />
       </CommandPaletteProvider>
     </div>
   );

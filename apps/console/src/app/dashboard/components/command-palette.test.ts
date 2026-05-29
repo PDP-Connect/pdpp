@@ -16,7 +16,7 @@ const PALETTE_USES_CONTEXT = /const palette = useCommandPalette\(\)[\s\S]*if \(!
 const SHELL_IMPORTS_PROVIDER = /import \{ CommandPalette, CommandPaletteProvider, CommandPaletteTrigger \}/;
 const SHELL_PROVIDER_WRAP =
   /<CommandPaletteProvider>[\s\S]*<Topbar overviewHref=\{routes\.section\.overview\} \/>[\s\S]*<CommandPalette [\s\S]*<\/CommandPaletteProvider>/;
-const PALETTE_USES_REGISTRY = /import \{ listDashboardCommands \} from "\.\.\/lib\/actions\.ts"/;
+const PALETTE_USES_REGISTRY = /import \{ listDashboardCommands.*\} from "\.\.\/lib\/actions\.ts"/;
 
 test("command palette uses React context, not a module-level mutable opener", async () => {
   const src = await readFile(COMMAND_PALETTE_FILE, "utf8");
@@ -38,24 +38,106 @@ test("command palette sources commands from the actions registry, not a hard-cod
   assert.match(src, PALETTE_USES_REGISTRY);
 });
 
-test("actions registry exposes quick-owner-token pointing to /dashboard/deployment/tokens", () => {
-  const all = listDashboardCommands();
+// ── live mode ────────────────────────────────────────────────────────────────
+
+test("actions registry exposes quick-owner-token in live mode pointing to /dashboard/deployment/tokens", () => {
+  const all = listDashboardCommands({ basePath: "/dashboard", mode: "live" });
   const ownerToken = all.find((c) => c.id === "quick-owner-token");
-  assert.ok(ownerToken, "quick-owner-token must exist in the registry");
+  assert.ok(ownerToken, "quick-owner-token must exist in live mode");
   assert.equal(ownerToken.href, "/dashboard/deployment/tokens");
   assert.equal(ownerToken.section, "Quick action");
 });
 
-test("owner token is discoverable via keyword search for 'token'", () => {
-  const results = matchDashboardCommands("token");
+test("owner token is discoverable via keyword search for 'token' in live mode", () => {
+  const results = matchDashboardCommands("token", { basePath: "/dashboard", mode: "live" });
   const ids = results.map((c) => c.id);
   assert.ok(ids.includes("quick-owner-token"), `quick-owner-token must match 'token' query; got: ${ids.join(", ")}`);
 });
 
 test("owner token copy uses operator framing, not MCP client framing", () => {
-  const all = listDashboardCommands();
+  const all = listDashboardCommands({ basePath: "/dashboard", mode: "live" });
   const ownerToken = all.find((c) => c.id === "quick-owner-token");
   assert.ok(ownerToken);
   const copy = `${ownerToken.title} ${ownerToken.description}`.toLowerCase();
   assert.ok(!copy.includes("mcp client"), "copy must not imply ordinary MCP clients need owner tokens");
+});
+
+test("Device exporters nav command is present in live mode", () => {
+  const all = listDashboardCommands({ basePath: "/dashboard", mode: "live" });
+  const deviceExporters = all.find((c) => c.id === "nav-device-exporters");
+  assert.ok(deviceExporters, "nav-device-exporters must exist in live mode");
+  assert.equal(deviceExporters.href, "/dashboard/device-exporters");
+});
+
+test("Event subscriptions nav command is present in live mode", () => {
+  const all = listDashboardCommands({ basePath: "/dashboard", mode: "live" });
+  const eventSubs = all.find((c) => c.id === "nav-event-subscriptions");
+  assert.ok(eventSubs, "nav-event-subscriptions must exist in live mode");
+  assert.equal(eventSubs.href, "/dashboard/event-subscriptions");
+});
+
+test("Schedules nav command is present in live mode", () => {
+  const all = listDashboardCommands({ basePath: "/dashboard", mode: "live" });
+  const schedules = all.find((c) => c.id === "nav-schedules");
+  assert.ok(schedules, "nav-schedules must exist");
+  assert.equal(schedules.href, "/dashboard/schedules");
+});
+
+test("Deployment nav command is present in live mode", () => {
+  const all = listDashboardCommands({ basePath: "/dashboard", mode: "live" });
+  const deployment = all.find((c) => c.id === "nav-deployment");
+  assert.ok(deployment, "nav-deployment must exist");
+  assert.equal(deployment.href, "/dashboard/deployment");
+});
+
+// ── mock-owner / sandbox mode ────────────────────────────────────────────────
+
+test("quick-owner-token is absent in mock-owner mode", () => {
+  const all = listDashboardCommands({ basePath: "/sandbox", mode: "mock-owner" });
+  const ownerToken = all.find((c) => c.id === "quick-owner-token");
+  assert.equal(ownerToken, undefined, "quick-owner-token must not appear in mock-owner/sandbox mode");
+});
+
+test("no /dashboard/deployment/tokens href leaks into sandbox commands", () => {
+  const all = listDashboardCommands({ basePath: "/sandbox", mode: "mock-owner" });
+  const leaked = all.filter((c) => c.href.includes("/dashboard/"));
+  assert.equal(
+    leaked.length,
+    0,
+    `sandbox commands must not contain /dashboard/ hrefs; found: ${leaked.map((c) => c.href).join(", ")}`,
+  );
+});
+
+test("Device exporters is absent in mock-owner mode", () => {
+  const all = listDashboardCommands({ basePath: "/sandbox", mode: "mock-owner" });
+  const deviceExporters = all.find((c) => c.id === "nav-device-exporters");
+  assert.equal(deviceExporters, undefined, "nav-device-exporters must not appear in mock-owner mode");
+});
+
+test("Event subscriptions is absent in mock-owner mode", () => {
+  const all = listDashboardCommands({ basePath: "/sandbox", mode: "mock-owner" });
+  const eventSubs = all.find((c) => c.id === "nav-event-subscriptions");
+  assert.equal(eventSubs, undefined, "nav-event-subscriptions must not appear in mock-owner mode");
+});
+
+test("sandbox commands use /sandbox/ base path", () => {
+  const all = listDashboardCommands({ basePath: "/sandbox", mode: "mock-owner" });
+  const nonSandbox = all.filter((c) => !c.href.startsWith("/sandbox"));
+  assert.equal(
+    nonSandbox.length,
+    0,
+    `all sandbox commands must start with /sandbox/; offenders: ${nonSandbox.map((c) => c.href).join(", ")}`,
+  );
+});
+
+// ── base path correctness ────────────────────────────────────────────────────
+
+test("live mode commands use the supplied basePath, not a hard-coded /dashboard", () => {
+  const all = listDashboardCommands({ basePath: "/custom", mode: "live" });
+  const wrongPath = all.filter((c) => c.href.startsWith("/dashboard"));
+  assert.equal(
+    wrongPath.length,
+    0,
+    `commands must use caller-supplied basePath; found hard-coded /dashboard in: ${wrongPath.map((c) => c.href).join(", ")}`,
+  );
 });

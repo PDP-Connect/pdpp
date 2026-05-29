@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { createContext, type ReactNode, useContext, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button.tsx";
 import { Input } from "@/components/ui/input.tsx";
-import { listDashboardCommands } from "../lib/actions.ts";
+import { listDashboardCommands, type DashboardMode } from "../lib/actions.ts";
 
 interface CommandPaletteContextValue {
   close: () => void;
@@ -68,14 +68,16 @@ export function CommandPaletteTrigger() {
 
 export function CommandPalette({
   basePath = "/dashboard",
+  mode = "live",
 }: {
   basePath?: string;
+  mode?: DashboardMode;
 } = {}) {
   const router = useRouter();
   const palette = useCommandPalette();
   const [query, setQuery] = useState("");
   const inputRef = useRef<HTMLInputElement | null>(null);
-  const allCommands = listDashboardCommands();
+  const allCommands = listDashboardCommands({ basePath, mode });
   const navCommands = allCommands.filter((c) => c.section === "Navigate");
   const actionCommands = allCommands.filter((c) => c.section === "Quick action");
 
