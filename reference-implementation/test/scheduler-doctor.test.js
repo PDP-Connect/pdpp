@@ -10,6 +10,8 @@ import { spawn } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { canonicalConnectorKey } from '../server/connector-key.js';
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROBE_PATH = join(__dirname, '..', 'scripts', 'scheduler-doctor.mjs');
 
@@ -431,7 +433,10 @@ test('scheduler-doctor reads a real /_ref/schedules from a live reference server
     assert.equal(summary.total, 1, 'one persisted schedule');
     assert.equal(summary.enabled, 1);
     assert.equal(summary.automatic, 1, 'spotify is background-safe; would_fire is true');
-    assert.equal(summary.schedules[0].connector_id, spotifyManifest.connector_id);
+    assert.equal(
+      summary.schedules[0].connector_id,
+      canonicalConnectorKey(spotifyManifest.connector_id),
+    );
   } finally {
     server.schedulerManager?.stop?.();
     server.asServer.closeAllConnections();
@@ -458,6 +463,11 @@ test('controller.listSchedules projects persisted history when no active run is 
   const spotifyManifest = JSON.parse(
     readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'),
   );
+  // Records, schedules, and history are keyed by the canonical connector key
+  // (the controller/ingest path canonicalizes the manifest's URL-shaped
+  // connector_id). Store-direct seeds below must use the same canonical key,
+  // and projected rows surface it. See canonicalize-connector-keys.
+  const canonicalSpotifyId = canonicalConnectorKey(spotifyManifest.connector_id);
   const ownerPassword = 'scheduler-doctor-test-pw-2';
 
   const server = await startServer({
@@ -494,8 +504,8 @@ test('controller.listSchedules projects persisted history when no active run is 
     const olderFailedCompletedAt = new Date(Date.now() - 180_000).toISOString();
     await Promise.resolve(
       store.appendRunHistory({
-        connectorId: spotifyManifest.connector_id,
-        source: { kind: 'connector', id: spotifyManifest.connector_id },
+        connectorId: canonicalSpotifyId,
+        source: { kind: 'connector', id: canonicalSpotifyId },
         status: 'failed',
         recordsEmitted: 0,
         reportedRecordsEmitted: 0,
@@ -513,8 +523,8 @@ test('controller.listSchedules projects persisted history when no active run is 
     );
     await Promise.resolve(
       store.appendRunHistory({
-        connectorId: spotifyManifest.connector_id,
-        source: { kind: 'connector', id: spotifyManifest.connector_id },
+        connectorId: canonicalSpotifyId,
+        source: { kind: 'connector', id: canonicalSpotifyId },
         status: 'succeeded',
         recordsEmitted: 7,
         reportedRecordsEmitted: 7,
@@ -532,7 +542,7 @@ test('controller.listSchedules projects persisted history when no active run is 
     );
     await Promise.resolve(
       store.upsertLastRunTime(
-        spotifyManifest.connector_id,
+        canonicalSpotifyId,
         Date.parse(completedAt),
         new Date().toISOString(),
       ),
@@ -541,7 +551,7 @@ test('controller.listSchedules projects persisted history when no active run is 
     const schedules = await server.controller.listSchedules();
     assert.equal(schedules.length, 1);
     const spotify = schedules[0];
-    assert.equal(spotify.connector_id, spotifyManifest.connector_id);
+    assert.equal(spotify.connector_id, canonicalSpotifyId);
     assert.equal(spotify.active_run_id, null, 'no in-memory active run');
     assert.equal(spotify.last_started_at, startedAt, 'projected from history row');
     assert.equal(spotify.last_finished_at, completedAt, 'projected from history row');
@@ -550,7 +560,7 @@ test('controller.listSchedules projects persisted history when no active run is 
     assert.equal(spotify.next_due_at, new Date(Date.parse(completedAt) + 3600_000).toISOString());
 
     // `getSchedule` (single-row read) must surface the same projection.
-    const single = await server.controller.getSchedule(spotifyManifest.connector_id);
+    const single = await server.controller.getSchedule(canonicalSpotifyId);
     assert.ok(single, 'single-row getSchedule succeeds');
     assert.equal(single.last_started_at, startedAt);
     assert.equal(single.last_finished_at, completedAt);
@@ -606,6 +616,11 @@ test('controller.listSchedules suppresses stale error code and next_due_at when 
   const redditManifest = JSON.parse(
     readFileSync(join(POLYFILL_MANIFESTS_DIR, 'reddit.json'), 'utf8'),
   );
+  // Schedule rows and history are keyed by the canonical connector key. The
+  // store-direct seeds below bypass the controller, so they must use the
+  // canonical key themselves to match what listSchedules/getSchedule read.
+  // See canonicalize-connector-keys.
+  const canonicalRedditId = canonicalConnectorKey(redditManifest.connector_id);
   const ownerPassword = 'scheduler-doctor-reddit-gate-pw';
 
   const server = await startServer({
@@ -633,7 +648,7 @@ test('controller.listSchedules suppresses stale error code and next_due_at when 
     const now = new Date().toISOString();
     await Promise.resolve(
       store.createSchedule({
-        connector_id: redditManifest.connector_id,
+        connector_id: canonicalRedditId,
         interval_seconds: 1800,
         jitter_seconds: 0,
         enabled: true,
@@ -652,8 +667,8 @@ test('controller.listSchedules suppresses stale error code and next_due_at when 
     const skipCompletedAt = new Date(Date.now() - 60_000).toISOString();
     await Promise.resolve(
       store.appendRunHistory({
-        connectorId: redditManifest.connector_id,
-        source: { kind: 'connector', id: redditManifest.connector_id },
+        connectorId: canonicalRedditId,
+        source: { kind: 'connector', id: canonicalRedditId },
         status: 'failed',
         recordsEmitted: 0,
         reportedRecordsEmitted: 0,
@@ -671,8 +686,8 @@ test('controller.listSchedules suppresses stale error code and next_due_at when 
     );
     await Promise.resolve(
       store.appendRunHistory({
-        connectorId: redditManifest.connector_id,
-        source: { kind: 'connector', id: redditManifest.connector_id },
+        connectorId: canonicalRedditId,
+        source: { kind: 'connector', id: canonicalRedditId },
         status: 'skipped',
         recordsEmitted: 0,
         reportedRecordsEmitted: null,
@@ -691,7 +706,7 @@ test('controller.listSchedules suppresses stale error code and next_due_at when 
     );
     await Promise.resolve(
       store.upsertLastRunTime(
-        redditManifest.connector_id,
+        canonicalRedditId,
         Date.parse(skipCompletedAt),
         new Date().toISOString(),
       ),
@@ -701,7 +716,7 @@ test('controller.listSchedules suppresses stale error code and next_due_at when 
     assert.equal(schedules.length, 1, 'reddit schedule row is listed');
     const reddit = schedules[0];
 
-    assert.equal(reddit.connector_id, redditManifest.connector_id);
+    assert.equal(reddit.connector_id, canonicalRedditId);
     assert.equal(reddit.enabled, true, 'persisted operator intent is preserved');
     assert.match(
       reddit.ineligibility_reason ?? '',
@@ -735,7 +750,7 @@ test('controller.listSchedules suppresses stale error code and next_due_at when 
     assert.equal(reddit.last_successful_at, null);
 
     // Single-row read must agree.
-    const single = await server.controller.getSchedule(redditManifest.connector_id);
+    const single = await server.controller.getSchedule(canonicalRedditId);
     assert.ok(single);
     assert.equal(single.last_error_code, null);
     assert.equal(single.next_due_at, null);
@@ -779,6 +794,9 @@ test('controller.listSchedules projects last failure code from history when no a
   const spotifyManifest = JSON.parse(
     readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'),
   );
+  // Store-direct history seeds must use the canonical connector key — the
+  // controller projects history under it. See canonicalize-connector-keys.
+  const canonicalSpotifyId = canonicalConnectorKey(spotifyManifest.connector_id);
   const ownerPassword = 'scheduler-doctor-test-pw-3';
 
   const server = await startServer({
@@ -811,8 +829,8 @@ test('controller.listSchedules projects last failure code from history when no a
       const olderCompletedAt = new Date(Date.now() - (360_000 - i * 120_000)).toISOString();
       await Promise.resolve(
         store.appendRunHistory({
-          connectorId: spotifyManifest.connector_id,
-          source: { kind: 'connector', id: spotifyManifest.connector_id },
+          connectorId: canonicalSpotifyId,
+          source: { kind: 'connector', id: canonicalSpotifyId },
           status: 'failed',
           recordsEmitted: 0,
           reportedRecordsEmitted: 0,
@@ -831,8 +849,8 @@ test('controller.listSchedules projects last failure code from history when no a
     }
     await Promise.resolve(
       store.appendRunHistory({
-        connectorId: spotifyManifest.connector_id,
-        source: { kind: 'connector', id: spotifyManifest.connector_id },
+        connectorId: canonicalSpotifyId,
+        source: { kind: 'connector', id: canonicalSpotifyId },
         status: 'failed',
         recordsEmitted: 0,
         reportedRecordsEmitted: 0,
@@ -850,7 +868,7 @@ test('controller.listSchedules projects last failure code from history when no a
     );
     await Promise.resolve(
       store.upsertLastRunTime(
-        spotifyManifest.connector_id,
+        canonicalSpotifyId,
         Date.parse(completedAt),
         new Date().toISOString(),
       ),
@@ -894,6 +912,9 @@ test('controller.listSchedules does not expose raw scheduler error messages as e
   const spotifyManifest = JSON.parse(
     readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'),
   );
+  // Store-direct history seeds must use the canonical connector key — the
+  // controller projects history under it. See canonicalize-connector-keys.
+  const canonicalSpotifyId = canonicalConnectorKey(spotifyManifest.connector_id);
   const ownerPassword = 'scheduler-doctor-redaction-pw';
   const secret = 'secret-token-should-not-leak';
 
@@ -922,8 +943,8 @@ test('controller.listSchedules does not expose raw scheduler error messages as e
     const completedAt = new Date(Date.now() - 60_000).toISOString();
     await Promise.resolve(
       getDefaultSchedulerStore().appendRunHistory({
-        connectorId: spotifyManifest.connector_id,
-        source: { kind: 'connector', id: spotifyManifest.connector_id },
+        connectorId: canonicalSpotifyId,
+        source: { kind: 'connector', id: canonicalSpotifyId },
         status: 'failed',
         recordsEmitted: 0,
         reportedRecordsEmitted: 0,
@@ -942,7 +963,7 @@ test('controller.listSchedules does not expose raw scheduler error messages as e
     );
     await Promise.resolve(
       getDefaultSchedulerStore().upsertLastRunTime(
-        spotifyManifest.connector_id,
+        canonicalSpotifyId,
         Date.parse(completedAt),
         new Date().toISOString(),
       ),

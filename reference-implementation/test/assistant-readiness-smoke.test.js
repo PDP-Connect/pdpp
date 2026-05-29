@@ -293,8 +293,13 @@ test('assistant smoke: in-memory fallback activates for stale DB cursor_field dr
     // when the cursor is missing on some records. (Full stale-DB simulation
     // is covered by the reconcile tests.)
     const manifest = {
+      // Custom (non-first-party) manifest: connector_id must be a bare slug
+      // that matches connector_key. The registry URL belongs in manifest_uri,
+      // not connector_id. See canonicalize-connector-keys (connector_id ==
+      // connector_key invariant enforced at registration + ingest).
       protocol_version: '0.1.0',
-      connector_id: 'https://registry.pdpp.test/connectors/fallback-smoke',
+      connector_id: 'fallback-smoke',
+      connector_key: 'fallback-smoke',
       version: '1.0.0',
       display_name: 'Fallback smoke',
       runtime_requirements: { bindings: { network: { required: true } } },

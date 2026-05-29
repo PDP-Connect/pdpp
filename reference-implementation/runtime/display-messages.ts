@@ -88,6 +88,7 @@ export const DISPLAY_MESSAGES: Record<string, string> = {
   qfx_parse_failed: "We couldn't read the transactions file",
   records_not_found: "We didn't find any records to import",
   row_exception: "Something went wrong reading one of the rows",
+  schema_validation_failed: "Some data didn't match the expected format and was skipped",
   scrape_failed: "We couldn't read the page contents",
   selector_drift: "The page layout changed and we couldn't find what we needed",
   selectors_pending: "Support for this part of the connector isn't complete yet",

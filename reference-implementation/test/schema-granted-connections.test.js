@@ -35,7 +35,7 @@ import { createSqliteConnectorInstanceStore } from '../server/stores/connector-i
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from '../server/owner-auth.ts';
 import { startServer } from '../server/index.js';
 
-const CONNECTOR_ID = 'https://test.pdpp.org/connectors/schema-granted-connections';
+const CONNECTOR_ID = 'schema-granted-connections';
 const STREAM = 'messages';
 
 const INSTANCE_A = 'cin_schema_account_a';

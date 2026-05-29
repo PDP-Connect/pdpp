@@ -53,6 +53,7 @@ import {
 } from '../server/search-semantic.js';
 import { startServer } from '../server/index.js';
 import { getDb } from '../server/db.js';
+import { canonicalConnectorKeyFromManifest } from '../server/connector-key.js';
 
 // ─── harness ────────────────────────────────────────────────────────────────
 
@@ -1704,6 +1705,14 @@ test('shipped gmail manifest contributes semantic coverage after reconcile witho
       const asUrl = `http://localhost:${server.asPort}`;
       const rsUrl = `http://localhost:${server.rsPort}`;
       const connectorId = shipped.connector_id;
+      // The server canonicalizes the first-party registry URL
+      // (`https://registry.pdpp.org/connectors/gmail`) to its short key
+      // (`gmail`) at the manifest boundary, so semantic hits are emitted
+      // under the canonical key — not the raw URL. Filter by the canonical
+      // key (falling back to the raw value for custom manifests) to compare
+      // hit.connector_id against what the runtime actually emits.
+      const canonicalConnectorId =
+        canonicalConnectorKeyFromManifest(shipped) ?? shipped.connector_id;
 
       // (1) Register the gmail manifest WITHOUT semantic_fields. Represents
       // the pre-operational-semantic world where a real DB was populated
@@ -1765,7 +1774,7 @@ test('shipped gmail manifest contributes semantic coverage after reconcile witho
         { headers: { Authorization: `Bearer ${ownerToken}` } },
       );
       const baselineGmailHits = (baselineBody.data || []).filter(
-        (h) => h.connector_id === connectorId,
+        (h) => h.connector_id === canonicalConnectorId,
       );
       assert.deepEqual(
         baselineGmailHits.map((h) => h.record_key),
@@ -1791,7 +1800,7 @@ test('shipped gmail manifest contributes semantic coverage after reconcile witho
         { headers: { Authorization: `Bearer ${ownerToken}` } },
       );
       const afterGmailHits = (afterBody.data || []).filter(
-        (h) => h.connector_id === connectorId,
+        (h) => h.connector_id === canonicalConnectorId,
       );
       assert.ok(
         afterGmailHits.some((h) => h.record_key === 'm1'),

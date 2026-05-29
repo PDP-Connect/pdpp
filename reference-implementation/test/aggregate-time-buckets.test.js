@@ -29,7 +29,7 @@ import { registerConnector } from '../server/auth.js';
 import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from '../server/owner-auth.ts';
 
-const CONNECTOR_ID = 'https://test.pdpp.org/connectors/agg-time-buckets';
+const CONNECTOR_ID = 'agg-time-buckets';
 const STREAM = 'events';
 const INSTANCE = 'cin_agg_time_buckets';
 
