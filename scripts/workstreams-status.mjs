@@ -209,14 +209,15 @@ for (const lane of wrapperLanes) {
     // Normalize both to digits-only to compare across the two date formats used by the wrapper
     // (started_at: "20260529T033943Z", ended_at: "2026-05-29T03:39:43Z").
     const normalizeTs = (s) => (s ?? "").replace(/\D/g, "").slice(0, 14);
-    const stale = !isWrapperLaneProcessRunning(lane)
+    const processRunning = isWrapperLaneProcessRunning(lane);
+    const stale = !processRunning
       && lane.startedAt
       && lane.endedAt
       && normalizeTs(lane.startedAt) === normalizeTs(lane.endedAt);
     if (stale) {
       risks.push(`WRAPPER-LANE stale-running (SIGKILL?) lane=${lane.lane} started=${lane.startedAt} — relaunch or mark superseded`);
-    } else {
-      risks.push(`WRAPPER-LANE still-running lane=${lane.lane} started=${lane.startedAt}`);
+    } else if (!processRunning) {
+      risks.push(`WRAPPER-LANE running-without-process lane=${lane.lane} started=${lane.startedAt} — inspect wrapper status and relaunch or mark superseded`);
     }
   }
   // "aborted" = process was killed before completing; surfaces in the Wrapper Lanes table but

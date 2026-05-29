@@ -232,6 +232,24 @@ try {
   fail("parked/corrupt: script threw", err.message);
 }
 
+// 9. A running lane with no wrapper process must still surface as an owner risk.
+try {
+  const out = runWithFixture({
+    lane: "ri-running-orphan",
+    status: "running",
+    report_state: "absent",
+    exit_code: -1,
+    transcript_bytes: -1,
+  });
+  if (!out.includes("running-without-process lane=ri-running-orphan")) {
+    fail("running/orphan: missing owner risk for running lane without process", out);
+  } else {
+    pass("running/orphan: owner risk emitted");
+  }
+} catch (err) {
+  fail("running/orphan: script threw", err.message);
+}
+
 // --- Summary ---
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) {
