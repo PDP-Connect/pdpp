@@ -13,6 +13,7 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button.tsx";
 import { Input } from "@/components/ui/input.tsx";
+import { formatConnectorKeyForDisplay } from "../../lib/connector-display.ts";
 import type { GrantSummary, RunSummary, TraceSummary } from "../../lib/ref-client.ts";
 import { PageHeader } from "../primitives.tsx";
 import type { Routes } from "./routes.ts";
@@ -104,7 +105,7 @@ export function SearchView({
               <Link className="block px-2 py-2 hover:bg-muted/50" href={routes.run(r.run_id)}>
                 <code className="pdpp-caption break-all font-medium">{r.run_id}</code>
                 <div className="pdpp-caption text-muted-foreground">
-                  {r.status} · {r.connector_id ?? "—"}
+                  {r.status} · {r.connector_id ? formatConnectorKeyForDisplay(r.connector_id) : "—"}
                 </div>
               </Link>
             )}

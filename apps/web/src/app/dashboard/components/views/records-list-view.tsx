@@ -15,6 +15,7 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { buttonVariants } from "@/components/ui/button.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
+import { formatConnectorKeyForDisplay, formatConnectorNameForDisplay } from "../../lib/connector-display.ts";
 import { shouldShowInPrimaryConnections } from "../../lib/records-list-classification.ts";
 import type { ConnectorOverview, ConnectorRunRef } from "../../lib/rs-client.ts";
 import { ConnectorRow } from "../../records/connector-row.tsx";
@@ -96,8 +97,16 @@ function labelConnections(overviews: ConnectorOverview[]): ConnectorOverview[] {
     if (!o) {
       continue;
     }
-    const typeName = o.connectorDisplayName ?? o.connector.name ?? o.connector.connector_id;
-    const displayName = o.connector.display_name ?? o.connector.name ?? o.connector.connector_id;
+    const typeName = formatConnectorNameForDisplay({
+      connectorId: o.connector.connector_id,
+      displayName: o.connectorDisplayName,
+      name: o.connector.name,
+    });
+    const displayName = formatConnectorNameForDisplay({
+      connectorId: o.connector.connector_id,
+      displayName: o.connector.display_name,
+      name: o.connector.name,
+    });
     if (displayName === typeName) {
       const key = o.connector.connector_id;
       const group = groups.get(key);
@@ -130,7 +139,11 @@ function labelConnections(overviews: ConnectorOverview[]): ConnectorOverview[] {
       if (!o) {
         continue;
       }
-      const typeName = o.connectorDisplayName ?? o.connector.name ?? o.connector.connector_id;
+      const typeName = formatConnectorNameForDisplay({
+        connectorId: o.connector.connector_id,
+        displayName: o.connectorDisplayName,
+        name: o.connector.name,
+      });
       result[idx] = { ...o, connectorDisplayName: `${typeName} · connection ${rank + 1}` };
     }
   }
@@ -300,7 +313,12 @@ export function RecordsListView({
 function ReadOnlyConnectorRow({ overview, routes }: { overview: ConnectorOverview; routes: Routes }) {
   const { connector, streamCount, totalRecords, streams, lastRun, lastSuccessfulRun } = overview;
   const detailHref = routes.connector(overviewRouteId(overview));
-  const displayName = connector.display_name ?? connector.name ?? connector.connector_id;
+  const displayName = formatConnectorNameForDisplay({
+    connectorId: connector.connector_id,
+    displayName: connector.display_name,
+    name: connector.name,
+  });
+  const connectorKey = formatConnectorKeyForDisplay(connector.connector_id);
   const displayedStreamCount = streamCount ?? streams.length;
   return (
     <li>
@@ -310,7 +328,7 @@ function ReadOnlyConnectorRow({ overview, routes }: { overview: ConnectorOvervie
       >
         <div className="min-w-0 flex-1">
           <span className="pdpp-body block font-medium text-foreground">{displayName}</span>
-          <span className="pdpp-caption block truncate font-mono text-muted-foreground">{connector.connector_id}</span>
+          <span className="pdpp-caption block truncate font-mono text-muted-foreground">{connectorKey}</span>
         </div>
         <div className="pdpp-caption flex shrink-0 flex-col gap-0.5 text-muted-foreground tabular-nums sm:items-end sm:text-right">
           <span>

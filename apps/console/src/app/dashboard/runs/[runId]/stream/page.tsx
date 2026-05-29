@@ -1,6 +1,7 @@
 import type { Viewport } from "next";
 import { notFound } from "next/navigation";
 import { ServerUnreachable } from "../../../components/shell.tsx";
+import { formatConnectorNameForDisplay } from "../../../lib/connector-display.ts";
 import { ReferenceServerUnreachableError } from "../../../lib/owner-token.ts";
 import {
   getRunTimeline,
@@ -42,16 +43,6 @@ function getConnectorIdFromTimeline(events: SpineEvent[]): string | null {
   return null;
 }
 
-function deriveConnectorSlug(connectorId: string): string {
-  try {
-    const url = new URL(connectorId);
-    const segments = url.pathname.split("/").filter(Boolean);
-    return segments.at(-1) ?? url.hostname;
-  } catch {
-    return connectorId;
-  }
-}
-
 async function resolveConnectorContext(connectorId: string | null): Promise<ConnectorContext | null> {
   if (!connectorId) {
     return null;
@@ -61,12 +52,16 @@ async function resolveConnectorContext(connectorId: string | null): Promise<Conn
     const match = summaries.data.find((c) => c.connector_id === connectorId);
     return {
       connectorId,
-      displayName: match?.display_name ?? deriveConnectorSlug(connectorId),
+      displayName: formatConnectorNameForDisplay({
+        connectorId,
+        displayName: match?.display_name,
+        name: match?.connector_display_name,
+      }),
     };
   } catch {
     return {
       connectorId,
-      displayName: deriveConnectorSlug(connectorId),
+      displayName: formatConnectorNameForDisplay({ connectorId }),
     };
   }
 }

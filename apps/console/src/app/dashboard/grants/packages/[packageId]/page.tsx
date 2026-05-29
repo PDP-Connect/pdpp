@@ -19,6 +19,7 @@ import { Button } from "@/components/ui/button.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
 import { DataList, PageHeader, Section, StatusBadge } from "../../../components/primitives.tsx";
 import { DashboardShell, ServerUnreachable } from "../../../components/shell.tsx";
+import { formatSourceWithConnectionForDisplay } from "../../../lib/connector-display.ts";
 import { ReferenceServerUnreachableError } from "../../../lib/owner-token.ts";
 import { type GrantPackageChild, getGrantPackage } from "../../../lib/ref-client.ts";
 import { revokePackageAction } from "./revoke-action.ts";
@@ -209,15 +210,5 @@ function ChildRow({ child }: { child: GrantPackageChild }) {
 
 function describeSource(source: GrantPackageChild["source"]): string {
   if (!source) return "source —";
-  const kind = source.kind ?? "connector";
-  const id =
-    typeof source.id === "string" && source.id.length > 0
-      ? source.id
-      : typeof source.connector_id === "string" && source.connector_id.length > 0
-        ? source.connector_id
-        : "—";
-  const connectionId = typeof source.connection_id === "string" && source.connection_id.length > 0
-    ? ` (connection ${source.connection_id})`
-    : "";
-  return `source ${kind}:${id}${connectionId}`;
+  return `source ${formatSourceWithConnectionForDisplay(source)}`;
 }

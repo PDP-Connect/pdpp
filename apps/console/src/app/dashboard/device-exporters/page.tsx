@@ -4,6 +4,7 @@ import { CopyButton } from "../components/copy-button.tsx";
 import { DataList, MetaPill, PageHeader, Section, StatusBadge } from "../components/primitives.tsx";
 import { DashboardShell, EmptyState, ServerUnreachable } from "../components/shell.tsx";
 import { formatSourceOutboxState } from "../lib/connection-evidence.ts";
+import { formatConnectorKeyForDisplay } from "../lib/connector-display.ts";
 import { getReferencePublicOrigin, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import {
   type DeviceExporter,
@@ -167,7 +168,7 @@ function SourceInstanceCard({ source }: { source: DeviceSourceInstance }) {
         <div className="min-w-0">
           <h3 className="pdpp-body truncate font-medium text-foreground">{sourceLabel(source)}</h3>
           <p className="pdpp-caption truncate text-muted-foreground">
-            {source.connector_id} / {source.local_binding_name}
+            {formatConnectorKeyForDisplay(source.connector_id)} / {source.local_binding_name}
           </p>
           {source.connector_instance_id ? (
             <p className="pdpp-caption mt-1 flex min-w-0 items-center gap-1 text-muted-foreground">

@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
+import { formatConnectorKeyForDisplay } from "../../lib/connector-display.ts";
 import type { DeploymentDiagnostics } from "../../lib/ref-client.ts";
 import { Callout, PageHeader, Section } from "../primitives.tsx";
 import { EmptyState } from "../shell.tsx";
@@ -106,7 +107,7 @@ function RuntimeCapabilitiesSection({ capabilities }: { capabilities: Deployment
           label="Bundled connector versions"
           value={connectorVersions.length === 0
             ? "—"
-            : connectorVersions.map(([id, v]) => `${id}@${v}`).join(", ")}
+            : connectorVersions.map(([id, v]) => `${formatConnectorKeyForDisplay(id)}@${v}`).join(", ")}
         />
       </dl>
     </Section>
@@ -204,9 +205,8 @@ function BackfillProgress({
     progress.records_total && progress.records_total > 0
       ? Math.min(100, Math.round((progress.records_scanned / progress.records_total) * 100))
       : null;
-  const streamLabel = progress.stream
-    ? `${shortConnectorName(progress.connector_id)} / ${progress.stream}`
-    : shortConnectorName(progress.connector_id);
+  const connectorKey = formatConnectorKeyForDisplay(progress.connector_id);
+  const streamLabel = progress.stream ? `${connectorKey} / ${progress.stream}` : connectorKey;
   const rate = recordsPerSecond(progress);
 
   return (
@@ -274,7 +274,7 @@ function ParticipationSection({
           <tbody>
             {participation.tuples.map((t) => (
               <tr className="border-border/60 border-t" key={`${t.connector_id}::${t.stream}::${t.field}`}>
-                <td className="px-2 py-1.5 font-mono text-xs">{t.connector_id}</td>
+                <td className="px-2 py-1.5 font-mono text-xs">{formatConnectorKeyForDisplay(t.connector_id)}</td>
                 <td className="px-2 py-1.5">{t.stream}</td>
                 <td className="px-2 py-1.5 font-mono text-xs">{t.field}</td>
                 <td className="px-2 py-1.5 text-muted-foreground text-xs">{t.provenance}</td>
@@ -308,7 +308,7 @@ function ManifestsSection({ manifests }: { manifests: DeploymentDiagnostics["man
           <tbody>
             {manifests.map((m) => (
               <tr className="border-border/60 border-t" key={m.connector_id}>
-                <td className="px-2 py-1.5 font-mono text-xs">{m.connector_id}</td>
+                <td className="px-2 py-1.5 font-mono text-xs">{formatConnectorKeyForDisplay(m.connector_id)}</td>
                 <td className="px-2 py-1.5">{m.display_name ?? "—"}</td>
                 <td className="px-2 py-1.5 text-muted-foreground text-xs">{m.provenance}</td>
                 <td className="px-2 py-1.5 tabular-nums">{m.semantic_stream_count}</td>
@@ -397,15 +397,6 @@ function formatLanguageBias(bias: DeploymentDiagnostics["semantic"]["backend"]["
     return "—";
   }
   return bias.note ? `${bias.primary} (${bias.note})` : bias.primary;
-}
-
-function shortConnectorName(connectorId: string): string {
-  try {
-    const url = new URL(connectorId);
-    return url.pathname.split("/").filter(Boolean).at(-1) ?? connectorId;
-  } catch {
-    return connectorId;
-  }
 }
 
 function formatEnvValue(entry: DeploymentDiagnostics["environment"][number]): string {

@@ -14,7 +14,8 @@ const LOAD_TIMELINE_RE = /\bloadTimeline\b/;
 const CONNECTOR_INSTANCE_ID_RE =
   /connectorInstanceId:\s*summary\.connector_instance_id\s*\?\?\s*summary\.connection_id/;
 const CONNECTION_ID_RE = /connectionId:\s*summary\.connection_id/;
-const CONNECTION_DISPLAY_RE = /connectionDisplayName:\s*summary\.display_name\s*\|\|/;
+const CONNECTION_DISPLAY_RE = /connectionDisplayName:\s*connectorSummaryDisplayName\(summary\)/;
+const CONNECTION_DISPLAY_HELPER_RE = /function connectorSummaryDisplayName\(summary: RefConnectorSummary\)/;
 
 const ASSEMBLER_IMPORT_RE = /from\s+["'][^"']*explore-data-assembler(?:\.ts)?["']/;
 const INLINE_FEED_LOADER_RE =
@@ -27,6 +28,7 @@ test("time-range explorer keeps connection identity instead of using connector-s
   assert.match(src, CONNECTOR_INSTANCE_ID_RE);
   assert.match(src, CONNECTION_ID_RE);
   assert.match(src, CONNECTION_DISPLAY_RE);
+  assert.match(src, CONNECTION_DISPLAY_HELPER_RE);
 });
 
 test("live explore page delegates to the shared assembler", async () => {

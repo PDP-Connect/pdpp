@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
+import { formatConnectorKeyForDisplay, formatConnectorNameForDisplay } from "../../lib/connector-display.ts";
 import type { RefConnectorSummary } from "../../lib/ref-client.ts";
 import { DataList, PageHeader, Section } from "../primitives.tsx";
 import { EmptyState } from "../shell.tsx";
@@ -62,14 +63,20 @@ export function SchedulesView({
 }
 
 export function ScheduleReadRow({ summary }: { summary: RefConnectorSummary }) {
-  const { connector_id, display_name, schedule, last_successful_run } = summary;
+  const { connector_id, connector_display_name, display_name, schedule, last_successful_run } = summary;
+  const displayName = formatConnectorNameForDisplay({
+    connectorId: connector_id,
+    displayName: display_name,
+    name: connector_display_name,
+  });
+  const connectorKey = formatConnectorKeyForDisplay(connector_id);
   return (
     <li>
       <div className="flex flex-col gap-1 px-3 py-3">
         <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
           <div className="min-w-0 flex-1">
-            <span className="pdpp-body font-medium text-foreground">{display_name || connector_id}</span>
-            <div className="pdpp-caption mt-0.5 truncate font-mono text-muted-foreground">{connector_id}</div>
+            <span className="pdpp-body font-medium text-foreground">{displayName}</span>
+            <div className="pdpp-caption mt-0.5 truncate font-mono text-muted-foreground">{connectorKey}</div>
           </div>
           {schedule && (
             <div className="pdpp-caption shrink-0 text-muted-foreground">

@@ -5,6 +5,7 @@ import { DataList, PageHeader, Section, StatusBadge } from "../components/primit
 import { DashboardShell, EmptyState, ServerUnreachable } from "../components/shell.tsx";
 import { type ListWithPeekParams, ListWithPeekView } from "../components/views/list-with-peek.tsx";
 import { dashboardRoutes } from "../components/views/routes.ts";
+import { formatSourceForDisplay } from "../lib/connector-display.ts";
 import { getOwnerLoginPath, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import {
   type GrantSummary,
@@ -181,7 +182,7 @@ function PendingApprovalRow({ approval }: { approval: PendingApproval }) {
         <div className="pdpp-caption mt-1 break-words text-muted-foreground">
           client {approval.client_id ?? "—"}
           {approval.grant_preview?.source
-            ? ` · source ${approval.grant_preview.source.kind}:${approval.grant_preview.source.id}`
+            ? ` · source ${formatSourceForDisplay(approval.grant_preview.source)}`
             : ""}
           {previewStreams.length ? ` · streams ${previewStreams.join(", ")}` : ""}
         </div>
@@ -222,7 +223,7 @@ function GrantRow({ grant, href, peeked }: { grant: GrantSummary; href: string; 
         <div className="pdpp-caption mt-1 text-muted-foreground">
           {grant.event_count} events
           {grant.client_id ? ` · client ${grant.client_id}` : ""}
-          {grant.source ? ` · source ${grant.source.kind}:${grant.source.id}` : ""}
+          {grant.source ? ` · source ${formatSourceForDisplay(grant.source)}` : ""}
         </div>
       </Link>
       {packageHref ? (

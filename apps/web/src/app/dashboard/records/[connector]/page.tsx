@@ -4,6 +4,7 @@ import { buttonVariants } from "@/components/ui/button.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
 import { DataList, PageHeader, Section, StatusBadge } from "../../components/primitives.tsx";
 import { DashboardShell, ServerUnreachable } from "../../components/shell.tsx";
+import { formatConnectorKeyForDisplay, formatConnectorNameForDisplay } from "../../lib/connector-display.ts";
 import { ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
 import {
   type DeviceSourceInstance,
@@ -150,7 +151,11 @@ export default async function ConnectorPage({ params }: { params: Promise<{ conn
   // Prefer the connection's owner-meaningful `display_name` so an owner
   // rename via PATCH /_ref/connections/:id surfaces on the detail title.
   // Falls back to the connector-type label, then the connector id.
-  const displayName = summary.display_name ?? manifest.display_name ?? manifest.name ?? connectorId;
+  const displayName = formatConnectorNameForDisplay({
+    connectorId,
+    displayName: summary.display_name ?? manifest.display_name,
+    name: manifest.name,
+  });
   const running = overview?.isRunning ?? false;
   // Source instances surface the device(s) that fed this connection. For
   // filesystem-class collectors (claude_code, codex), the same connector
@@ -313,7 +318,7 @@ function ConnectionIdentityLine({
       {connectionId === connectorId ? null : (
         <>
           {" · "}
-          <span>Type: {connectorId}</span>
+          <span>Type: {formatConnectorKeyForDisplay(connectorId)}</span>
         </>
       )}
       {providerId ? (

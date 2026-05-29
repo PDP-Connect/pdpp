@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useState, useTransition } from "react";
 import { Button } from "@/components/ui/button.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
+import { formatConnectorKeyForDisplay, formatConnectorNameForDisplay } from "../lib/connector-display.ts";
 import type { RefConnectorSummary, RefSchedule } from "../lib/ref-client.ts";
 import { deleteScheduleAction, pauseScheduleAction, resumeScheduleAction, upsertScheduleAction } from "./actions.ts";
 
@@ -159,7 +160,12 @@ export function ScheduleRow({ summary, runsHref }: ScheduleRowProps) {
 
   const schedule = summary.schedule;
   const policy = summary.refresh_policy;
-  const displayName = summary.display_name || summary.connector_id;
+  const displayName = formatConnectorNameForDisplay({
+    connectorId: summary.connector_id,
+    displayName: summary.display_name,
+    name: summary.connector_display_name,
+  });
+  const connectorKey = formatConnectorKeyForDisplay(summary.connector_id);
   const recordsHref = recordsHrefForSummary(summary);
   const activeRunId = schedule?.active_run_id;
   const needsHuman = schedule?.human_attention_needed ?? false;
@@ -182,7 +188,7 @@ export function ScheduleRow({ summary, runsHref }: ScheduleRowProps) {
             <Link className="pdpp-body font-medium text-foreground hover:underline" href={recordsHref}>
               {displayName}
             </Link>
-            <div className="pdpp-caption mt-0.5 truncate font-mono text-muted-foreground">{summary.connector_id}</div>
+            <div className="pdpp-caption mt-0.5 truncate font-mono text-muted-foreground">{connectorKey}</div>
           </div>
 
           {/* Status + action buttons */}

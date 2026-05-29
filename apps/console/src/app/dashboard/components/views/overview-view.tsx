@@ -8,6 +8,7 @@
 
 import Link from "next/link";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
+import { formatSourceForDisplay } from "../../lib/connector-display.ts";
 import type { DatasetSummary, GrantSummary, RunSummary, TraceSummary } from "../../lib/ref-client.ts";
 import { OverviewHero } from "../overview-hero.tsx";
 import { DataList, PageHeader, Section, StatusBadge } from "../primitives.tsx";
@@ -189,7 +190,7 @@ function FailedOverviewLists({
                   <div className="pdpp-caption mt-1 flex flex-wrap items-center gap-2">
                     <StatusBadge status={r.status} />
                     <span className="text-muted-foreground">
-                      {r.failure_reason ?? (r.source ? `${r.source.kind}:${r.source.id}` : "—")}
+                      {r.failure_reason ?? (r.source ? formatSourceForDisplay(r.source) : "—")}
                     </span>
                   </div>
                 </Link>
@@ -222,7 +223,7 @@ export function RecentActivityOverview({ data, routes }: { data: RecentActivityO
         ) : (
           <DataList>
             {data.recentDecisions.map((g) => {
-              const providerSuffix = g.source ? ` · ${g.source.kind}:${g.source.id}` : "";
+              const providerSuffix = g.source ? ` · ${formatSourceForDisplay(g.source)}` : "";
               return (
                 <li key={g.grant_id}>
                   <Link
@@ -272,7 +273,7 @@ export function RecentActivityOverview({ data, routes }: { data: RecentActivityO
                 >
                   <code className="break-all font-medium font-mono text-foreground">{r.run_id}</code>
                   <span className="min-w-0 truncate text-muted-foreground">
-                    {r.source ? `${r.source.kind}:${r.source.id}` : "—"}
+                    {r.source ? formatSourceForDisplay(r.source) : "—"}
                     {r.failure_reason ? ` · ${r.failure_reason}` : ""}
                   </span>
                   <span className="pdpp-caption flex items-center gap-2 justify-self-end">

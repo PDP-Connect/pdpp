@@ -13,6 +13,7 @@ import Link from "next/link";
 import { Fragment } from "react";
 import { buttonVariants } from "@/components/ui/button.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
+import { formatConnectorKeyForDisplay } from "../../lib/connector-display.ts";
 import {
   computeDefaultColumns,
   deriveAllColumns,
@@ -67,6 +68,7 @@ export function StreamRecordsView({
   const prevHref = trail.length ? hrefFor(trail.slice(0, -1)) : null;
   const nextHref = page.next_cursor ? hrefFor([...trail, page.next_cursor]) : null;
   const recordHref = (id: string) => routes.record(connectorId, streamName, id);
+  const connectorLabel = formatConnectorKeyForDisplay(connectorId);
 
   return (
     <>
@@ -93,7 +95,7 @@ export function StreamRecordsView({
         }
         breadcrumbs={[
           { label: "Connections", href: routes.section.records },
-          { label: connectorId, href: routes.connector(connectorId) },
+          { label: connectorLabel, href: routes.connector(connectorId) },
           { label: streamName },
         ]}
         count={`page ${trail.length + 1} · ${page.data.length} records`}

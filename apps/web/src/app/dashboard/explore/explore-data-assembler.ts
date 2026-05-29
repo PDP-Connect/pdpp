@@ -18,6 +18,7 @@ import {
   parseExplorerPeekParam,
   type RecordsExplorerData,
 } from "@/app/dashboard/components/views/records-explorer-view.tsx";
+import { formatConnectorNameForDisplay } from "@/app/dashboard/lib/connector-display.ts";
 import type { DashboardDataSource } from "@/app/dashboard/lib/data-source.ts";
 import { classifyRecordKind } from "@/app/dashboard/lib/record-kind.ts";
 import { buildRecordPreview } from "@/app/dashboard/lib/record-preview.ts";
@@ -70,9 +71,17 @@ function toConnectionFacet(summary: RefConnectorSummary): ExplorerConnectionFace
   return {
     connectionId: summary.connection_id,
     connectorId: summary.connector_id,
-    displayName: summary.display_name || summary.connector_display_name || summary.connector_id,
+    displayName: connectorSummaryDisplayName(summary),
     streams: [...(summary.streams ?? [])].sort(),
   };
+}
+
+function connectorSummaryDisplayName(summary: RefConnectorSummary): string {
+  return formatConnectorNameForDisplay({
+    connectorId: summary.connector_id,
+    displayName: summary.display_name,
+    name: summary.connector_display_name,
+  });
 }
 
 function summaryByConnectionId(summaries: RefConnectorSummary[]): Map<string, RefConnectorSummary> {
@@ -170,7 +179,7 @@ async function loadEmptyQueryFeed(
                 return {
                   connectorId: summary.connector_id,
                   connectionId: summary.connection_id,
-                  connectionDisplayName: summary.display_name || summary.connector_display_name || summary.connector_id,
+                  connectionDisplayName: connectorSummaryDisplayName(summary),
                   stream: streamName,
                   recordId: record.id,
                   emittedAt: record.emitted_at,
@@ -187,7 +196,7 @@ async function loadEmptyQueryFeed(
               ok: false,
               failure: {
                 code: "partial_fan_in",
-                message: `${summary.display_name || summary.connector_display_name || summary.connector_id} · ${streamName}: ${describeError(err)}`,
+                message: `${connectorSummaryDisplayName(summary)} · ${streamName}: ${describeError(err)}`,
               },
             })
           )
@@ -243,7 +252,7 @@ function toTimeRangeEntry({
   return {
     connectorId: summary.connector_id,
     connectionId: summary.connection_id,
-    connectionDisplayName: summary.display_name || summary.connector_display_name || summary.connector_id,
+    connectionDisplayName: connectorSummaryDisplayName(summary),
     stream: streamName,
     recordId,
     emittedAt,
@@ -314,7 +323,7 @@ async function loadTimeRangeFeed(
               ok: false,
               failure: {
                 code: "partial_fan_in",
-                message: `${summary.display_name || summary.connector_display_name || summary.connector_id} · ${streamName}: ${describeError(err)}`,
+                message: `${connectorSummaryDisplayName(summary)} · ${streamName}: ${describeError(err)}`,
               },
             })
           )
@@ -557,9 +566,7 @@ async function buildPeek(
     return {
       connectorId: parsed.connectorId,
       connectionId: connection?.connection_id ?? null,
-      connectionDisplayName: connection
-        ? connection.display_name || connection.connector_display_name || connection.connector_id
-        : null,
+      connectionDisplayName: connection ? connectorSummaryDisplayName(connection) : null,
       stream: parsed.stream,
       recordId: parsed.recordId,
       emittedAt: record.emitted_at,
@@ -571,9 +578,7 @@ async function buildPeek(
     return {
       connectorId: parsed.connectorId,
       connectionId: connection?.connection_id ?? null,
-      connectionDisplayName: connection
-        ? connection.display_name || connection.connector_display_name || connection.connector_id
-        : null,
+      connectionDisplayName: connection ? connectorSummaryDisplayName(connection) : null,
       stream: parsed.stream,
       recordId: parsed.recordId,
       emittedAt: "",

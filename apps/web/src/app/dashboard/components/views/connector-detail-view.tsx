@@ -11,6 +11,7 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { buttonVariants } from "@/components/ui/button.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
+import { formatConnectorKeyForDisplay, formatConnectorNameForDisplay } from "../../lib/connector-display.ts";
 import type { RunSummary } from "../../lib/ref-client.ts";
 import type { ConnectorManifest, ConnectorOverview, StreamSummary } from "../../lib/rs-client.ts";
 import { DataList, PageHeader, Section, StatusBadge } from "../primitives.tsx";
@@ -35,7 +36,12 @@ export function ConnectorDetailView({
 }) {
   const connectorId = manifest.connector_id;
   const totalRecords = streams.reduce((sum, s) => sum + s.record_count, 0);
-  const displayName = manifest.display_name ?? manifest.name ?? connectorId;
+  const displayName = formatConnectorNameForDisplay({
+    connectorId,
+    displayName: manifest.display_name,
+    name: manifest.name,
+  });
+  const connectorKey = formatConnectorKeyForDisplay(connectorId);
   const running = overview?.isRunning ?? false;
   return (
     <>
@@ -63,7 +69,7 @@ export function ConnectorDetailView({
         count={`${totalRecords.toLocaleString()} records · ${streams.length} stream${streams.length === 1 ? "" : "s"}`}
         description={
           <>
-            <code className="font-mono text-xs">{connectorId}</code>
+            <code className="font-mono text-xs">{connectorKey}</code>
             {manifest.provider_id ? (
               <>
                 {" · "}

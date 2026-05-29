@@ -15,6 +15,7 @@ import type { ReactNode } from "react";
 import { Button, buttonVariants } from "@/components/ui/button.tsx";
 import { Input } from "@/components/ui/input.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
+import { formatConnectorKeyForDisplay, formatConnectorNameForDisplay } from "../../lib/connector-display.ts";
 import type { RecordKind } from "../../lib/record-kind.ts";
 import type { RecordPreview } from "../../lib/record-preview.ts";
 import { defaultWindow } from "../../lib/timeline.ts";
@@ -174,7 +175,12 @@ function ExplorerMain({
     const conn = connections.find((c) => c.connectionId === id);
     filterItems.push({
       label: connectionLabel,
-      value: query ? (conn?.connectorId ?? id) : (conn?.displayName ?? id),
+      value: query
+        ? formatConnectorKeyForDisplay(conn?.connectorId ?? id)
+        : formatConnectorNameForDisplay({
+            connectorId: conn?.connectorId ?? id,
+            displayName: conn?.displayName,
+          }),
     });
   }
   for (const s of selectedStreams) {
@@ -430,6 +436,11 @@ function ConnectionFacets({
       <span className="pdpp-eyebrow text-muted-foreground">Connections</span>
       {connections.map((c) => {
         const isOn = selectedConnectionIds.includes(c.connectionId);
+        const displayName = formatConnectorNameForDisplay({
+          connectorId: c.connectorId,
+          displayName: c.displayName,
+        });
+        const connectorKey = formatConnectorKeyForDisplay(c.connectorId);
         const nextIds = isOn
           ? selectedConnectionIds.filter((id) => id !== c.connectionId)
           : [...selectedConnectionIds, c.connectionId];
@@ -450,10 +461,10 @@ function ConnectionFacets({
             }`}
             href={href}
             key={c.connectionId}
-            title={`${c.displayName} · ${c.connectorId} · ${c.connectionId}`}
+            title={`${displayName} · ${connectorKey} · ${c.connectionId}`}
           >
-            <span className="font-medium">{c.displayName}</span>
-            <span className="text-muted-foreground">{c.connectorId}</span>
+            <span className="font-medium">{displayName}</span>
+            <span className="text-muted-foreground">{connectorKey}</span>
           </Link>
         );
       })}
@@ -645,13 +656,18 @@ const KIND_RAIL_TONE: Record<RecordKind, string> = {
 // Card eyebrow: connector / stream / connection, shared across every kind so a
 // row stays attributable to its exact connection no matter how it renders.
 function CardEyebrow({ entry }: { entry: ExplorerFeedEntry }) {
+  const connectorKey = formatConnectorKeyForDisplay(entry.connectorId);
+  const connectionDisplayName = formatConnectorNameForDisplay({
+    connectorId: entry.connectorId,
+    displayName: entry.connectionDisplayName,
+  });
   return (
     <div className="pdpp-eyebrow flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-muted-foreground">
-      <span className="font-medium font-mono text-foreground/80">{entry.connectorId}</span>
+      <span className="font-medium font-mono text-foreground/80">{connectorKey}</span>
       <span className="font-mono">{entry.stream}</span>
       {entry.connectionDisplayName ? (
         <span className="truncate normal-case tracking-normal" title={entry.connectionId ?? ""}>
-          · {entry.connectionDisplayName}
+          · {connectionDisplayName}
         </span>
       ) : null}
     </div>
@@ -823,6 +839,11 @@ function ExplorerPeek({
   closeHref: string;
 }): ReactNode {
   const openHref = routes.record(peek.connectionId ?? peek.connectorId, peek.stream, peek.recordId);
+  const connectorKey = formatConnectorKeyForDisplay(peek.connectorId);
+  const connectionDisplayName = formatConnectorNameForDisplay({
+    connectorId: peek.connectorId,
+    displayName: peek.connectionDisplayName,
+  });
   return (
     <aside
       aria-label="Record peek"
@@ -831,11 +852,11 @@ function ExplorerPeek({
       <div className="pdpp-caption sticky top-0 flex items-center justify-between gap-2 border-border/80 border-b bg-muted/40 px-3 py-2 backdrop-blur">
         <div className="min-w-0">
           <span className="truncate font-medium font-mono">
-            {peek.connectorId} / {peek.stream}
+            {connectorKey} / {peek.stream}
           </span>
           {peek.connectionDisplayName ? (
             <span className="ml-1.5 text-muted-foreground normal-case tracking-normal">
-              · {peek.connectionDisplayName}
+              · {connectionDisplayName}
             </span>
           ) : null}
         </div>

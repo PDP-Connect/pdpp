@@ -16,6 +16,7 @@ import {
   resolveRecordCountDisplay,
   summarizeAxisChips,
 } from "../lib/connection-evidence.ts";
+import { formatConnectorNameForDisplay } from "../lib/connector-display.ts";
 import { formatNextAction } from "../lib/next-action.ts";
 import type { ConnectorOverview, ConnectorRunRef } from "../lib/rs-client.ts";
 import { connectorHasPartialCoverageHint, normalizeKnownGaps } from "../lib/run-gaps.ts";
@@ -131,8 +132,16 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
 
   const routeId = connectionId ?? connectorInstanceId ?? connector.connector_id;
   const detailHref = `/dashboard/records/${encodeURIComponent(routeId)}`;
-  const displayName = connector.display_name ?? connector.name ?? connector.connector_id;
-  const typeName = connectorDisplayName ?? connector.name ?? connector.connector_id;
+  const displayName = formatConnectorNameForDisplay({
+    connectorId: connector.connector_id,
+    displayName: connector.display_name,
+    name: connector.name,
+  });
+  const typeName = formatConnectorNameForDisplay({
+    connectorId: connector.connector_id,
+    displayName: connectorDisplayName,
+    name: connector.name,
+  });
   const displayedStreamCount = streamCount ?? streams.length;
   const nextAction = formatNextAction(connectionHealth?.next_action ?? null);
   const recordCount = resolveRecordCountDisplay(overview);

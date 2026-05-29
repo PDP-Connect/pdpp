@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
+import { formatConnectorKeyForDisplay } from "../lib/connector-display.ts";
 import type { DatasetSummary } from "../lib/ref-client.ts";
 
 /**
@@ -234,19 +235,22 @@ function BreadthRow({
   const extra = Math.max(totalConnectors - connectors.length, 0);
   return (
     <p className="pdpp-body mt-2 flex flex-wrap items-baseline gap-x-4 gap-y-1 text-muted-foreground">
-      {connectors.map((c, i) => (
-        <span className="inline-flex items-baseline gap-1.5" key={c.connector_id}>
-          <span
-            aria-hidden
-            className="inline-block h-1.5 w-1.5 rounded-full"
-            style={{ backgroundColor: identityColor(i) }}
-          />
-          <code className="pdpp-caption font-mono text-foreground" title={c.connector_id}>
-            {displayConnectorSlug(c.connector_id)}
-          </code>
-          <span className="tabular-nums">{formatInteger(c.record_count)}</span>
-        </span>
-      ))}
+      {connectors.map((c, i) => {
+        const connectorKey = formatConnectorKeyForDisplay(c.connector_id);
+        return (
+          <span className="inline-flex items-baseline gap-1.5" key={c.connector_id}>
+            <span
+              aria-hidden
+              className="inline-block h-1.5 w-1.5 rounded-full"
+              style={{ backgroundColor: identityColor(i) }}
+            />
+            <code className="pdpp-caption font-mono text-foreground" title={connectorKey}>
+              {connectorKey}
+            </code>
+            <span className="tabular-nums">{formatInteger(c.record_count)}</span>
+          </span>
+        );
+      })}
       {extra > 0 ? (
         <Link
           className="text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
@@ -277,10 +281,6 @@ function identityColor(index: number): string {
 
 function formatInteger(n: number): string {
   return Number.isFinite(n) ? n.toLocaleString("en-US") : "0";
-}
-
-function displayConnectorSlug(connectorId: string): string {
-  return connectorId;
 }
 
 /**

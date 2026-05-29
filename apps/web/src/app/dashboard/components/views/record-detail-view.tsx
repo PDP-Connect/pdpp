@@ -4,6 +4,7 @@
  */
 
 import { Timestamp } from "@/components/ui/timestamp.tsx";
+import { formatConnectorKeyForDisplay } from "../../lib/connector-display.ts";
 import type { StreamRecord } from "../../lib/rs-client.ts";
 import { PageHeader, Section } from "../primitives.tsx";
 import type { Routes } from "./routes.ts";
@@ -28,12 +29,13 @@ export function RecordDetailView({
     data: record.data,
   };
   const pretty = JSON.stringify(envelope, null, 2);
+  const connectorLabel = formatConnectorKeyForDisplay(connectorId);
   return (
     <>
       <PageHeader
         breadcrumbs={[
           { label: "Connections", href: routes.section.records },
-          { label: connectorId, href: routes.connector(connectorId) },
+          { label: connectorLabel, href: routes.connector(connectorId) },
           { label: streamName, href: routes.stream(connectorId, streamName) },
           { label: recordId },
         ]}
