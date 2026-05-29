@@ -71,4 +71,3 @@ Local-device exporter collection SHALL remain proposed until source-instance ide
 - **WHEN** the reference ships an experimental local-device exporter
 - **THEN** documentation SHALL label it as reference experimental
 - **AND** it SHALL NOT claim finalized PDPP protocol or Collection Profile status until this change is accepted and archived.
-

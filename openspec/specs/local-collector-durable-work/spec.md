@@ -111,4 +111,3 @@ The reference implementation SHALL expose local collector durable-work health fo
 
 - **WHEN** durable-work diagnostics are displayed outside the local device
 - **THEN** the reference implementation SHALL avoid leaking raw local secrets, auth files, browser cookies, or unredacted absolute local paths
-
