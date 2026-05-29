@@ -5,30 +5,13 @@ Define PDPP's experimental optional semantic retrieval extension: a discoverable
 ## Requirements
 ### Requirement: Semantic retrieval is an experimental, optional, advertised, named extension
 
-PDPP SHALL define a named optional extension `semantic-retrieval` that implementations MAY expose. The extension SHALL be explicitly marked as **experimental** and **unstable** in its capability advertisement: clients that depend on it MUST accept that breaking revisions are acceptable while the extension carries experimental status. The extension SHALL NOT be assumed by clients to exist on any server unless the server explicitly advertises it via the resource-server metadata surface defined below. Core PDPP SHALL NOT require this extension. The extension SHALL NOT be exposed silently as ambient reference behavior, and SHALL NOT be delivered through the lexical retrieval surface `GET /v1/search` or through any reference-only surface such as `/_ref/search`.
+`GET /v1/search/semantic` SHALL remain the semantic retrieval endpoint even when a server also advertises hybrid retrieval. Hybrid retrieval SHALL NOT silently alter semantic result ranking, filtering, scoring, model identity, or response shape.
 
-#### Scenario: A client encounters a server that does not advertise the extension
-- **WHEN** a client reads resource-server metadata and `capabilities.semantic_retrieval.supported` is absent or `false`
-- **THEN** the client SHALL NOT assume `GET /v1/search/semantic` is available
-- **AND** the server MAY return `404` or `not_found_error` if the endpoint is requested
+#### Scenario: Hybrid retrieval is also available
 
-#### Scenario: A client encounters a server that advertises the extension
-- **WHEN** resource-server metadata reports `capabilities.semantic_retrieval.supported: true` with `stability: "experimental"`
-- **THEN** the client MAY rely on `GET /v1/search/semantic` being available at the advertised `endpoint` path
-- **AND** the client SHALL treat the contract as unstable and SHALL NOT assume it will remain compatible across revisions
-- **AND** the client MAY rely on the `cross_stream`, `query_input`, `snippets`, `lexical_blending`, `model`, `dimensions`, `distance_metric`, `default_limit`, `max_limit`, and `index_state` fields when shaping requests
-
-#### Scenario: The extension is not silently delivered through another search surface
-- **WHEN** an implementation chooses to expose this extension
-- **THEN** the public surface SHALL be the advertised `/v1/search/semantic` endpoint
-- **AND** the implementation SHALL NOT advertise `/v1/search` (lexical retrieval), `/_ref/search`, or any other surface as the public semantic retrieval endpoint
-- **AND** `/v1/search` SHALL continue to operate as the lexical retrieval surface defined by the `lexical-retrieval` extension, unmodified by this extension
-
-#### Scenario: Lexical retrieval is unaffected by this extension
-- **WHEN** a server advertises both `capabilities.lexical_retrieval` and `capabilities.semantic_retrieval`
-- **THEN** the behavior, shape, and guarantees of `GET /v1/search` SHALL be identical to those defined by the `lexical-retrieval` extension
-- **AND** the presence of semantic retrieval SHALL NOT imply any change to the lexical retrieval contract
-- **AND** clients MAY choose to call either surface, both, or neither
+- **WHEN** a server advertises both semantic retrieval and hybrid retrieval
+- **THEN** `GET /v1/search/semantic` SHALL continue to behave as semantic retrieval
+- **AND** clients that want blended recall SHALL call the advertised hybrid endpoint.
 
 ### Requirement: The extension SHALL expose `GET /v1/search/semantic` with a text-query-only constrained surface
 
@@ -388,3 +371,4 @@ Semantic scores SHALL be computed only from fields visible under the active gran
 - **WHEN** a stream declares semantic fields that are outside the caller's grant projection
 - **THEN** those hidden fields SHALL NOT contribute to the returned score
 - **AND** the response SHALL NOT disclose hidden-field matches or snippets
+

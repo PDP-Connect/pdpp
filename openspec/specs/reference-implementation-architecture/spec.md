@@ -804,7 +804,7 @@ The reference implementation SHALL expose public aggregation only for one stream
 - **THEN** the reference SHALL reject the request unless a later accepted change defines cross-stream semantics
 
 ### Requirement: Public aggregations SHALL be manifest-declared
-The reference implementation SHALL evaluate only aggregation operations and fields declared by the stream manifest. Undeclared fields, non-scalar fields, arrays, objects, blobs, and high-cardinality fields that are not explicitly declared SHALL be rejected.
+The reference implementation SHALL evaluate only aggregation operations and fields declared by the stream manifest. Undeclared fields, non-scalar fields, arrays, objects, blobs, and high-cardinality fields that are not explicitly declared SHALL be rejected. The declarable operations are `count`, `sum`, `min`, `max`, `group_by` (scalar fields), `group_by_time` (date or date-time fields), and `count_distinct` (scalar fields). A `group_by_time` entry SHALL reference a declared field whose schema is a `string` with `format` `date` or `date-time` (or the nullable variant). A `count_distinct` entry SHALL reference a declared top-level scalar field.
 
 #### Scenario: Declared numeric sum is accepted
 - **WHEN** a stream declares a numeric field as summable
@@ -813,6 +813,15 @@ The reference implementation SHALL evaluate only aggregation operations and fiel
 
 #### Scenario: Undeclared field is rejected
 - **WHEN** a client requests an aggregation over a field absent from the stream's aggregation declaration
+- **THEN** the reference SHALL reject the request with a clear query error
+
+#### Scenario: Declared time-bucket field is accepted
+- **WHEN** a stream declares a date or date-time field under `query.aggregations.group_by_time`
+- **AND** the caller is authorized for that field
+- **THEN** the client MAY request a `group_by_time` aggregation over that field
+
+#### Scenario: Undeclared distinct field is rejected
+- **WHEN** a client requests `metric=count_distinct&field=<field>` and `<field>` is absent from `query.aggregations.count_distinct`
 - **THEN** the reference SHALL reject the request with a clear query error
 
 ### Requirement: Public aggregations SHALL reuse record-list filter semantics
@@ -824,13 +833,23 @@ Aggregation requests SHALL use the same exact and declared range filter validati
 - **THEN** the aggregation SHALL apply the same coercion and comparison semantics as record-list filtering
 
 ### Requirement: Grouped aggregation results SHALL be bounded and deterministic
-Grouped aggregation responses SHALL enforce a maximum bucket limit and deterministic ordering. If the request exceeds the allowed limit or requests grouping by an unsupported field, the reference SHALL reject it.
+Grouped aggregation responses SHALL enforce a maximum bucket limit and deterministic ordering. If the request exceeds the allowed limit or requests grouping by an unsupported field, the reference SHALL reject it. A request SHALL carry at most one grouping dimension: `group_by` and `group_by_time` SHALL NOT be combined. Scalar `group_by` results SHALL be ordered by count descending, then key ascending. `group_by_time` results SHALL be ordered by bucket start ascending, with the null/unparseable bucket sorted last.
 
 #### Scenario: Grouped count with limit
 - **WHEN** a client requests `group_by=<field>&limit=N`
 - **AND** `<field>` is declared groupable
 - **THEN** the response SHALL contain at most `N` group buckets
-- **AND** the ordering SHALL be documented and deterministic
+- **AND** the ordering SHALL be count descending, then key ascending
+
+#### Scenario: Two grouping dimensions are rejected
+- **WHEN** a client requests both `group_by` and `group_by_time` in one call
+- **THEN** the reference SHALL reject the request with an `invalid_request` query error
+
+#### Scenario: Time-bucket grouping returns an ascending series
+- **WHEN** a client requests `group_by_time=<date_field>&granularity=day`
+- **AND** `<date_field>` is declared time-bucketable and authorized
+- **THEN** the response SHALL contain at most `limit` buckets keyed by ISO bucket start
+- **AND** the buckets SHALL be ordered by bucket start ascending
 
 ### Requirement: The reference SHALL hydrate Gmail attachments as content-addressed blobs
 
@@ -1650,29 +1669,22 @@ The reference implementation SHALL serve bearer-scoped connector-discovery list 
 
 ### Requirement: `rs.streams.aggregate` SHALL be operation-owned
 
-The reference implementation SHALL serve stream-aggregate behavior through a canonical `rs.streams.aggregate` operation implementation that is independent of HTTP framework, sandbox UI, concrete database driver, and process environment.
+The reference implementation SHALL serve stream-aggregate behavior through a canonical `rs.streams.aggregate` operation implementation that is independent of HTTP framework, sandbox UI, concrete database driver, and process environment. The operation SHALL forward the time-bucket and distinct request parameters (`group_by_time`, `granularity`, `time_zone`, `metric=count_distinct`) to its aggregate-execution dependency unchanged, and its `query.received` data block SHALL retain `query_shape: 'stream_aggregate'` while additively carrying `group_by_time` and `granularity` alongside the existing `metric`, `field`, `group_by`, and `limit` fields.
 
 #### Scenario: Native stream aggregate route
-
 - **WHEN** the native reference server handles `GET /v1/streams/:stream/aggregate`
 - **THEN** it SHALL execute the canonical `rs.streams.aggregate` operation for aggregate semantics
-- **AND** route-specific code SHALL be limited to authentication, request/header adaptation, manifest/grant/storage-binding resolution, query/disclosure instrumentation, response writing, and capability dependency wiring
 
-#### Scenario: Operation dependency boundary
-
+#### Scenario: Operation depends on injected capabilities
 - **WHEN** the `rs.streams.aggregate` operation is implemented
 - **THEN** it SHALL depend on capability-shaped source-descriptor, request-validator, and aggregate-execution dependencies
-- **AND** it SHALL NOT import Fastify, Next, SQLite, Postgres, a raw SQL handle, a generic repository, sandbox modules, the Fastify host module (`server/index.js`), the records module (`server/records.js`), or `process` / `process.env`
 
 #### Scenario: Existing aggregate semantics are preserved
-
 - **WHEN** the native `GET /v1/streams/:stream/aggregate` route is migrated to the operation
-- **THEN** the public response SHALL remain byte-equivalent to the result of the previous native `aggregateRecords` call
+- **THEN** the public response SHALL preserve the previous semantic fields for requests that do not use the new parameters, while allowing additive response fields that are `null` or `false`
 - **AND** the `query.received` data block SHALL retain `query_shape: 'stream_aggregate'` together with the previously emitted `metric`, `field`, `group_by`, and `limit` fields parsed from the request query
 - **AND** the `disclosure.served` data block SHALL retain `query_shape: 'stream_aggregate'` together with `metric`, `field`, `group_by`, `filtered_record_count`, and `group_count` derived from the aggregate result
-- **AND** the owner-branch manifest-stream-not-found check SHALL continue to map to a `not_found` error
 - **AND** the request validator (`validateRequestedQueryFieldParams`) SHALL continue to run before the aggregate executes
-- **AND** request id, trace id, and source-descriptor selection SHALL remain equivalent to the previous native route behavior
 
 ### Requirement: `rs.records.list` SHALL be operation-owned
 
@@ -5159,4 +5171,426 @@ The repository SHALL maintain automated checks that prove `@pdpp/remote-surface`
 
 - **WHEN** maintainers perform release preparation for `@pdpp/remote-surface`
 - **THEN** polished README examples, cookbook documentation, final registry metadata, the `private: false` switch, and actual publication SHALL be handled as release-prep work rather than as prerequisites for this package-shape change
+
+### Requirement: Time-bucket aggregation SHALL use calendar `date_trunc` semantics with a UTC default zone
+The reference implementation SHALL support grouping a single-stream aggregation into time buckets over a declared date or date-time field via `group_by_time=<field>`. `granularity` SHALL be required when `group_by_time` is present and forbidden otherwise, and SHALL be one of `minute`, `hour`, `day`, `week`, `month`, `quarter`, `year`, computed with calendar-aware `date_trunc` semantics (weeks start Monday). An optional `time_zone` SHALL select the IANA zone used to compute bucket boundaries; when omitted the effective zone SHALL be `UTC`. The response SHALL echo the effective `time_zone`, the `group_by_time` field, and the `granularity`. Records whose time field is null or unparseable SHALL be collected into a single bucket with `key: null` and SHALL NOT be silently dropped.
+
+#### Scenario: Day buckets in the default zone
+- **WHEN** a client requests `group_by_time=<date_field>&granularity=day` without `time_zone`
+- **THEN** the response SHALL report `time_zone: "UTC"`, `granularity: "day"`, and `group_by_time: "<date_field>"`
+- **AND** each bucket key SHALL be the ISO start of a UTC day with the count of records in that day
+
+#### Scenario: Explicit time zone shifts bucket boundaries
+- **WHEN** a client requests `group_by_time=<date_field>&granularity=day&time_zone=America/New_York`
+- **THEN** the response SHALL report `time_zone: "America/New_York"`
+- **AND** bucket boundaries SHALL be computed in that zone
+
+#### Scenario: Missing or invalid granularity is rejected
+- **WHEN** a client requests `group_by_time=<date_field>` without `granularity`, or with a `granularity` outside the supported set, or supplies `granularity` without `group_by_time`
+- **THEN** the reference SHALL reject the request with an `invalid_request` query error
+
+#### Scenario: Null time values bucket explicitly
+- **WHEN** a `group_by_time` aggregation includes records whose time field is null or unparseable
+- **THEN** those records SHALL appear in a single bucket with `key: null`
+- **AND** they SHALL NOT be omitted from the response
+
+### Requirement: `count_distinct` SHALL count distinct non-null values exactly in the reference floor
+The reference implementation SHALL support a `count_distinct` metric that requires a manifest-declared, grant-authorized `field` and returns the number of distinct non-null values of that field across the filtered, grant-visible record set. Null values SHALL NOT be counted as a distinct value. The reference SHALL compute this exactly and SHALL report `approximate: false`. A future accelerated path MAY estimate the cardinality and SHALL then report `approximate: true`; capability metadata SHALL NOT advertise `count_distinct` as approximate on a server that computes it exactly.
+
+#### Scenario: Exact distinct over a declared field
+- **WHEN** a client requests `metric=count_distinct&field=<field>` and `<field>` is declared and granted
+- **THEN** the response `value` SHALL equal the number of distinct non-null values of `<field>` in the filtered set
+- **AND** the response SHALL report `approximate: false`
+
+#### Scenario: Null is not a distinct value
+- **WHEN** records include null values for `<field>`
+- **THEN** the null value SHALL NOT contribute to the `count_distinct` result
+
+### Requirement: The aggregate response SHALL carry additive time-bucket and distinct fields
+The public aggregation response SHALL include the additive fields `group_by_time`, `granularity`, `time_zone`, and `approximate`. For non-time, non-distinct aggregations these fields SHALL be `null`/`false` so existing response payloads remain compatible. `group_by_time` and `granularity` SHALL be populated only for time-bucket groupings; `time_zone` SHALL be the echoed effective zone for time-bucket groupings; `approximate` SHALL reflect whether the reported metric is an estimate.
+
+#### Scenario: Scalar aggregation omits time-bucket meaning
+- **WHEN** a client requests a `count`, `sum`, `min`, `max`, or scalar `group_by` aggregation
+- **THEN** `group_by_time` and `granularity` SHALL be `null`
+- **AND** `approximate` SHALL be `false`
+
+### Requirement: Aggregate capability discovery SHALL advertise time-bucket and distinct support
+`GET /v1/schema` and stream metadata SHALL advertise the new aggregation capabilities. The stream `query.aggregations` block SHALL surface `group_by_time` and `count_distinct` declared field lists. The per-field `aggregation` descriptor SHALL include `group_by_time` and `count_distinct` `{declared, usable}` flags consistent with the existing `sum`/`min`/`max`/`group_by` flags. Capability metadata SHALL NOT over-promise: a field is `usable` for a capability only when it is declared and authorized under the caller's grant.
+
+#### Scenario: Time-bucketable field advertises group_by_time
+- **WHEN** a caller reads stream metadata for a stream that declares a date field under `query.aggregations.group_by_time`
+- **AND** the caller is authorized for that field
+- **THEN** the field's `aggregation.group_by_time` SHALL report `declared: true, usable: true`
+
+#### Scenario: Undeclared distinct field advertises unusable
+- **WHEN** a field is not listed under `query.aggregations.count_distinct`
+- **THEN** the field's `aggregation.count_distinct` SHALL report `declared: false, usable: false`
+
+### Requirement: The MCP aggregate tool SHALL mirror the canonical aggregate contract
+The reference MCP server SHALL expose an `aggregate` tool that forwards `metric`, `field`, `group_by`, `group_by_time`, `granularity`, `time_zone`, `limit`, `filter`, and `connection_id` to `GET /v1/streams/{stream}/aggregate` and mirrors the resource server response body into `structuredContent`. The tool input schema SHALL encode the metric set (`count`, `sum`, `min`, `max`, `count_distinct`) and the granularity set, and SHALL document the single grouping dimension rule. The tool SHALL forward supported arguments verbatim and SHALL NOT silently drop an argument the resource server would reject, nor describe parameters the resource server does not support.
+
+#### Scenario: Tool forwards a time-bucket aggregation
+- **WHEN** an MCP client calls `aggregate` with `stream`, `metric=count`, `group_by_time`, and `granularity`
+- **THEN** the tool SHALL issue the corresponding `GET /v1/streams/{stream}/aggregate` request
+- **AND** the resource server aggregation body SHALL be returned in `structuredContent.data`
+
+#### Scenario: Tool preserves a resource server rejection
+- **WHEN** an MCP client calls `aggregate` with a request the resource server rejects (for example two grouping dimensions)
+- **THEN** the tool SHALL surface the resource server error envelope rather than silently succeeding
+
+### Requirement: The reference SHALL expose an owner/operator-only historical record-changes compaction tool
+
+The reference implementation SHALL provide an owner/operator-only operational tool that removes provably-redundant adjacent historical `record_changes` rows under a per-stream compaction policy that mirrors the connector's own no-op fingerprint definition. The tool is reference-implementation maintenance, not protocol behavior. It SHALL NOT affect PDPP Core semantics, public record reads, public `changes_since` responses, or grant enforcement.
+
+The tool SHALL be authorized by direct database access (`PDPP_DATABASE_URL` or `PDPP_TEST_POSTGRES_URL`). It SHALL NOT be exposed via an HTTP route, a scheduler, or any automatic background job.
+
+The tool SHALL maintain a registry of `(connector_id, stream)` compaction policies in code. Each policy SHALL declare the per-stream fingerprint definition (`excludeKeys` list, where an empty list means stable-stringify of the full `record_json`). The registry SHALL cover two policy families:
+
+- **Connector fingerprint mirror.** Gmail `threads`, Slack `workspace` (with `fetched_at` excluded from the fingerprint), Slack `users`, Slack `files`, and YNAB `payee_locations`. Each policy SHALL declare the same fingerprint definition the corresponding connector uses to suppress no-op emits.
+- **Exact stable-JSON identity for local-device connectors.** Codex (`messages`, `function_calls`, `sessions`, `skills`, `prompts`, `rules`) and Claude Code (`messages`, `attachments`, `sessions`, `skills`, `memory_notes`, `slash_commands`). Each policy SHALL declare an empty `excludeKeys` list. The policy is justified per-stream by verifying the `record_json` payload contains no `fetched_at`-style volatile field — adjacent versions with byte-identical canonical JSON are then strictly more conservative than the connector's own no-op-emit semantics could be.
+
+Registering a new policy SHALL be a code-review gate that either references a connector-side fingerprint already in production (family 1) or documents the per-stream proof that the record payload contains no volatile field that would force exact-JSON identity to over-classify (family 2).
+
+The tool SHALL default to dry-run mode. In dry-run mode, for each in-scope `(connector_instance_id, stream)` it SHALL report `scannedKeys`, `scannedVersions`, `removableVersions`, `retainedVersionsAfter`, and `estimatedRemovedBytes`, and SHALL NOT modify any row.
+
+The tool SHALL mutate rows only when invoked with an explicit `--apply` flag. With `--apply` it SHALL:
+
+- create a per-run backup table `compact_record_history_backup_<runId>` with the same column shape as `record_changes` plus a `compacted_at` column;
+- inside a single Postgres transaction per `(connector_instance_id, stream)` scope, INSERT every removable `record_changes` row into the backup table and DELETE those same rows from `record_changes`;
+- assert the inserted and deleted row counts match before commit and SHALL roll back and exit non-zero if they do not.
+
+The tool SHALL apply the following retention rule per `(connector_instance_id, stream, record_key)`:
+
+- never remove the current row's version (the version present in `records`);
+- never remove a tombstone (`deleted = TRUE`) row;
+- never remove a non-tombstone row whose immediately-prior surviving row is a tombstone, even if their fingerprints match (tombstones bound compaction);
+- never remove the first version for the key;
+- never remove the most recent prior version whose fingerprint differs from the current row's fingerprint;
+- remove a non-tombstone row whose immediately-prior surviving row is a non-tombstone with the same policy fingerprint and is not the current row.
+
+The tool SHALL NOT mutate, delete, or insert any row in `records`. The tool SHALL NOT mutate `version_counter`. The tool SHALL NOT cross `(connector_instance_id, stream, record_key)` boundaries when comparing fingerprints. The tool SHALL NOT operate on any `(connector_id, stream)` pair that is not present in the registered compaction policies.
+
+After a successful apply against a `(connector_instance_id, stream)` scope, the tool SHALL invalidate the retained-size projection for that scope so the existing rebuild path corrects retained-size accounting on the next pass.
+
+#### Scenario: Dry-run reports removable versions without mutating
+
+- **WHEN** the operator invokes the tool in dry-run mode for a `(connector_instance_id, stream)` scope containing a known-redundant series of adjacent same-fingerprint historical versions under a registered policy
+- **THEN** the tool SHALL print a summary line with a non-zero `removableVersions` count and a non-zero `estimatedRemovedBytes`
+- **AND** `record_changes`, `records`, `version_counter`, and the retained-size projection SHALL be byte-identical to their pre-invocation state
+
+#### Scenario: Apply removes only removable versions, atomically, with a backup
+
+- **WHEN** the operator invokes the tool with `--apply` against the same scope
+- **THEN** the tool SHALL create `compact_record_history_backup_<runId>` and SHALL INSERT every removable row into it before DELETE-ing those rows from `record_changes`, inside a single transaction
+- **AND** the surviving `record_changes` rows for each in-scope key SHALL be byte-identical to their pre-apply values
+- **AND** the current `records` row for each in-scope key SHALL be byte-identical to its pre-apply payload
+- **AND** `version_counter.max_version` for the scope SHALL be unchanged
+- **AND** the retained-size projection for the scope SHALL be marked dirty for rebuild
+
+#### Scenario: Tombstones bound compaction
+
+- **WHEN** a key's `record_changes` history contains a tombstone row between two same-fingerprint non-tombstone rows
+- **THEN** the tool SHALL NOT collapse the two non-tombstone rows into one
+- **AND** the tombstone row SHALL be retained
+
+#### Scenario: Unknown stream is refused
+
+- **WHEN** the operator invokes the tool against a `(connector_id, stream)` pair not in the registered compaction policies
+- **THEN** the tool SHALL exit non-zero before mutating any row
+- **AND** the message SHALL name the registered policies
+
+#### Scenario: Apply without database credentials is refused
+
+- **WHEN** the operator invokes the tool with `--apply` but `PDPP_DATABASE_URL` and `PDPP_TEST_POSTGRES_URL` are both unset
+- **THEN** the tool SHALL exit non-zero
+- **AND** SHALL NOT create a backup table or modify any row
+
+### Requirement: The reference AS SHALL support RFC 7592 client deletion for dynamic clients
+
+The reference AS SHALL expose `DELETE /oauth/register/{client_id}` to delete a dynamically-registered OAuth client. The endpoint SHALL be authenticated by the owner session cookie (the dashboard is the operator-facing caller; PDPP does not issue RFC 7592 registration access tokens). Deletion SHALL cascade-revoke every `grants` row tied to the deleted client and every owner self-export token row tied to the deleted client so that bearer tokens issued against it become inactive on subsequent introspect.
+
+#### Scenario: Owner deletes a client they registered
+
+- **WHEN** an operator with a valid owner session POSTs to `DELETE /oauth/register/{client_id}` for a `registration_mode = 'dynamic'` client whose `metadata.issuer_subject_id` matches the operator's session subject
+- **THEN** the AS SHALL revoke every grant where `client_id = {client_id}` via the existing `revokeGrant` codepath
+- **AND** SHALL revoke every owner self-export token where `client_id = {client_id}`
+- **AND** SHALL delete the `oauth_clients` row
+- **AND** SHALL emit a `client.deleted` spine event with the cascade summary
+- **AND** SHALL respond 204
+
+#### Scenario: Owner attempts to delete a different operator's client
+
+- **WHEN** an operator's owner session subject does not match the target client's `metadata.issuer_subject_id`
+- **THEN** the AS SHALL respond 403 `forbidden`
+- **AND** SHALL NOT delete the client or revoke any grants
+
+#### Scenario: Owner attempts to delete a pre-registered client
+
+- **WHEN** the target client's `registration_mode` is not `'dynamic'`
+- **THEN** the AS SHALL respond 403 `forbidden`
+- **AND** SHALL NOT delete the client or revoke any grants
+
+#### Scenario: Idempotent delete
+
+- **WHEN** the operator deletes the same `client_id` twice
+- **THEN** the second call SHALL respond 404 `not_found`
+- **AND** SHALL NOT 5xx
+
+#### Scenario: Bearers issued against a deleted client introspect as inactive
+
+- **WHEN** a bearer was issued via the device flow against a now-deleted dynamic client
+- **THEN** subsequent `POST /introspect` for that owner self-export bearer SHALL return `{ active: false, inactive_reason: 'token_revoked' }`
+
+#### Scenario: Grant-bound client bearers issued against a deleted client introspect as grant-revoked
+
+- **WHEN** a grant-bound client bearer was issued against a now-deleted dynamic client
+- **THEN** subsequent `POST /introspect` for that grant-bound bearer SHALL return `{ active: false, inactive_reason: 'grant_revoked' }`
+
+### Requirement: The reference AS SHALL stamp `issuer_subject_id` metadata on DCR registrations from owner-authed callers
+
+The reference AS SHALL stamp and persist `issuer_subject_id` on `POST /oauth/register` requests when the request carries a valid owner session cookie. The persisted value SHALL equal the requesting owner session's subject. The AS SHALL NOT trust a caller-supplied `issuer_subject_id`; anonymous DCR requests SHALL silently drop `issuer_subject_id` if present in the body.
+
+#### Scenario: Owner-authed DCR with issuer_subject_id
+
+- **WHEN** the dashboard POSTs `/oauth/register` with `{ client_name, token_endpoint_auth_method: 'none' }` while carrying a valid owner session cookie
+- **THEN** the AS SHALL persist `client_name` and AS-stamped `issuer_subject_id` on the new `oauth_clients` row
+- **AND** SHALL return the registered client metadata in the response
+
+#### Scenario: Anonymous DCR cannot set issuer_subject_id
+
+- **WHEN** an anonymous caller POSTs `/oauth/register` with `issuer_subject_id` in the body
+- **THEN** the AS SHALL register the client without persisting `issuer_subject_id`
+- **AND** the registered client SHALL NOT appear in any operator's `GET /_ref/clients?owner=true` listing
+
+### Requirement: The reference AS SHALL expose an operator-issued client listing under `/_ref/clients`
+
+The reference AS SHALL expose `GET /_ref/clients?owner=true`, owner-session-gated, returning the dynamic clients whose `metadata.issuer_subject_id` matches the requesting owner session's subject. Each list entry SHALL include `client_id`, `client_name`, `created_at`, and the count of currently-active bearer tokens tied to the client.
+
+#### Scenario: Operator lists their own dashboard-issued clients
+
+- **WHEN** an operator with a valid owner session GETs `/_ref/clients?owner=true`
+- **THEN** the AS SHALL return `{ object: 'list', data: [{ client_id, client_name, created_at, active_token_count }, ...] }`
+- **AND** the data SHALL contain only clients with `registration_mode = 'dynamic'` and `metadata.issuer_subject_id` equal to the operator's session subject
+- **AND** SHALL NOT include pre-registered clients (e.g. `pdpp-web-dashboard`, `cli_longview`)
+
+#### Scenario: Owner-session-gated
+
+- **WHEN** a caller GETs `/_ref/clients?owner=true` without a valid owner session
+- **THEN** the AS SHALL respond 401 `owner_session_required`
+
+### Requirement: Query capability discovery is self-service
+
+The reference RS SHALL expose a public schema/capability discovery surface that lets a bearer enumerate the queryable sources and streams visible to that bearer without relying on out-of-band connector IDs or prior stream knowledge.
+
+#### Scenario: Owner token discovers polyfill schemas
+
+- **WHEN** an owner-token caller requests the schema/capability discovery endpoint in polyfill mode
+- **THEN** the response SHALL include the owner-visible connectors and their streams
+- **AND** each stream entry SHALL include schema, query declarations, field capabilities, expansion capabilities, and freshness metadata where available
+- **AND** the caller SHALL NOT need to provide a `connector_id` to discover the connector IDs.
+
+#### Scenario: Client token discovers only grant scope
+
+- **WHEN** a client-token caller requests the schema/capability discovery endpoint
+- **THEN** the response SHALL include only the source and streams authorized by the grant
+- **AND** field capabilities SHALL mark unavailable operations consistently with the per-stream metadata endpoint.
+
+#### Scenario: Discovery uses the existing capability model
+
+- **WHEN** the discovery endpoint reports stream field or expansion capabilities
+- **THEN** those values SHALL be derived from the same manifest, grant, and metadata rules used by `GET /v1/streams/:stream`
+- **AND** the implementation SHALL NOT maintain a second independent field-capability source of truth.
+
+#### Scenario: Core documentation names schema discovery
+
+- **WHEN** a reader consults Core Section 8 for the Resource Server query surface
+- **THEN** the documentation SHALL name `GET /v1/schema` as the bearer-scoped schema and capability discovery endpoint
+- **AND** it SHALL describe the response envelope with `object: "schema"`, bearer scope, connectors, and stream metadata entries.
+
+### Requirement: Query affordance documentation is copy-pasteable
+
+The reference documentation SHALL provide working examples for the currently supported query affordances, including stream-scoped search filters, range-filtered record listing, aggregation calls, first `changes_since` sync, `expand[]`, and `blob_ref.fetch_url`.
+
+#### Scenario: A caller uses the wrong search filter spelling
+
+- **WHEN** a caller needs to filter search results to a stream
+- **THEN** the documentation SHALL show the supported `streams[]` request shape
+- **AND** it SHALL NOT imply that `filter[stream]` or `filter[connector_id]` are valid search filters.
+
+#### Scenario: A caller needs attachment bytes
+
+- **WHEN** a record includes a visible `data.blob_ref.fetch_url`
+- **THEN** the documentation SHALL describe that URL as the supported byte-fetch path
+- **AND** it SHALL NOT imply that attachment-specific content endpoints exist unless they are implemented and tested.
+
+#### Scenario: A caller discovers aggregate support
+
+- **WHEN** a caller reads Core Section 8 stream metadata and aggregate documentation
+- **THEN** the documentation SHALL describe `field_capabilities`, `expand_capabilities`, and `query.aggregations`
+- **AND** it SHALL describe `GET /v1/streams/{stream}/aggregate` with `metric`, `field`, `group_by`, and `filter[...]` parameters.
+
+#### Scenario: A caller bootstraps change tracking
+
+- **WHEN** a caller reads Core Section 8 incremental-sync documentation
+- **THEN** the documentation SHALL name `changes_since=beginning` as the initial-session bootstrap sentinel
+- **AND** it SHALL tell clients to persist the terminal page's `next_changes_since` for later sessions.
+
+#### Scenario: A caller starts from protected-resource metadata
+
+- **WHEN** a caller reads Core Section 8 discovery guidance
+- **THEN** the documentation SHALL describe `pdpp_discovery_hints` as the protected-resource metadata block that points to schema discovery, query base, aggregate templates, the change-tracking bootstrap sentinel, and blob indirection.
+
+#### Scenario: A caller lands on the superseded companion page
+
+- **WHEN** a reader opens the historical Data Query API companion page
+- **THEN** the page SHALL contain no independent normative endpoint contract
+- **AND** it SHALL redirect the reader to Core Section 8 as the authoritative Resource Server query interface.
+
+### Requirement: An unauthenticated discovery index points cold-start callers at the next hop
+
+The reference AS and RS SHALL expose an unauthenticated `GET /` JSON pointer that names the well-known endpoint, the running reference revision, and (on the RS) the schema endpoint and core query base. The pointer SHALL NOT duplicate the well-known capability document; it SHALL only direct the caller to it.
+
+#### Scenario: A cold-start caller probes the RS root
+
+- **WHEN** an unauthenticated caller requests `GET /` on the resource server
+- **THEN** the response SHALL be a 200 JSON document with `object: "pdpp_discovery_index"` and `role: "resource_server"`
+- **AND** the document SHALL include a `links.well_known` value pointing to `/.well-known/oauth-protected-resource`
+- **AND** the document SHALL include `links.schema` pointing to `/v1/schema`
+- **AND** the document SHALL include `links.core_query_base` pointing to `/v1`
+- **AND** the document SHALL include a `reference_revision` value matching the `PDPP-Reference-Revision` response header on the same server.
+
+#### Scenario: A cold-start caller probes the AS root
+
+- **WHEN** an unauthenticated caller requests `GET /` on the authorization server
+- **THEN** the response SHALL be a 200 JSON document with `object: "pdpp_discovery_index"` and `role: "authorization_server"`
+- **AND** the document SHALL include a `links.well_known_authorization_server` value pointing to `/.well-known/oauth-authorization-server`
+- **AND** the document SHALL include a `reference_revision` value matching the `PDPP-Reference-Revision` response header on the same server.
+
+#### Scenario: The discovery index is unauthenticated
+
+- **WHEN** the discovery index is requested without an `Authorization` header
+- **THEN** the server SHALL return the index document with status 200
+- **AND** the server SHALL NOT redirect to a login flow or return 401.
+
+### Requirement: Protected-resource metadata SHALL include explicit discovery hints
+
+The resource server's protected-resource metadata document SHALL include a `pdpp_discovery_hints` block that names the canonical first-call shapes a caller needs after reading the document. The block SHALL be derived from the same runtime state that drives capability advertisement so it cannot drift from live behavior.
+
+#### Scenario: Hints name the schema and query bases
+
+- **WHEN** a caller reads `/.well-known/oauth-protected-resource`
+- **THEN** the response SHALL include `pdpp_discovery_hints.schema_endpoint` equal to `/v1/schema`
+- **AND** `pdpp_discovery_hints.query_base` equal to `/v1`.
+
+#### Scenario: Hints name the search scoping shape
+
+- **WHEN** the lexical retrieval extension is advertised on the resource server
+- **THEN** `pdpp_discovery_hints.search.endpoint` SHALL equal `/v1/search`
+- **AND** `pdpp_discovery_hints.search.scope_param` SHALL equal `streams[]`
+- **AND** `pdpp_discovery_hints.search.filter_requires_single_stream` SHALL be `true` while the v1 single-stream constraint applies.
+
+#### Scenario: Hints name the aggregate path
+
+- **WHEN** a caller reads the protected-resource metadata
+- **THEN** `pdpp_discovery_hints.aggregate.endpoint_template` SHALL equal `/v1/streams/{stream}/aggregate`.
+
+#### Scenario: Hints name the bootstrap sentinel and blob indirection
+
+- **WHEN** a caller reads the protected-resource metadata
+- **THEN** `pdpp_discovery_hints.changes_since_bootstrap` SHALL equal `beginning`
+- **AND** `pdpp_discovery_hints.blob_indirection` SHALL equal `data.blob_ref.fetch_url`.
+
+#### Scenario: Hybrid pagination support is reported when hybrid is advertised
+
+- **WHEN** the hybrid retrieval extension is advertised on the resource server
+- **THEN** `pdpp_discovery_hints.hybrid_pagination_supported` SHALL match the live `capabilities.hybrid_retrieval.cursor_supported` value
+- **AND** when hybrid retrieval is not advertised, the field SHALL be omitted rather than set to a default.
+
+#### Scenario: Hints name the connector and stream metadata endpoints
+
+- **WHEN** a caller reads the protected-resource metadata
+- **THEN** `pdpp_discovery_hints.connectors_endpoint` SHALL equal `/v1/connectors`
+- **AND** `pdpp_discovery_hints.streams_endpoint_template` SHALL equal `/v1/streams/{stream}`.
+
+#### Scenario: Hints name the owner polyfill connector_id requirement
+
+- **WHEN** the resource server is configured without a native manifest (i.e. owner reads are scoped to polyfilled connectors)
+- **THEN** `pdpp_discovery_hints.owner_polyfill_requires_connector_id` SHALL be `true`
+- **AND** when the resource server is configured with a native manifest (single-source mode), the field SHALL be omitted rather than set to `false`.
+
+### Requirement: The discovery index links to the connector listing
+
+The unauthenticated `GET /` discovery index on the resource server SHALL include a `links.connectors` value pointing to the canonical connector-listing endpoint, so cold-start callers can discover connector identifiers without guessing.
+
+#### Scenario: A cold-start caller probes the RS root and discovers connectors
+
+- **WHEN** an unauthenticated caller requests `GET /` on the resource server
+- **THEN** the response SHALL include `links.connectors` equal to `/v1/connectors`.
+
+### Requirement: Malformed `changes_since` errors SHALL name legal forms
+
+When the resource server rejects a `changes_since` parameter as malformed, the error message SHALL name the two legal forms a caller can use: the `beginning` bootstrap sentinel and the `next_changes_since` cursor returned by a previous changes-feed response. This converts an opaque rejection into a self-teaching error that points the caller at the next valid call.
+
+#### Scenario: Caller passes a non-cursor literal value such as an ISO timestamp
+
+- **WHEN** a caller requests `GET /v1/streams/{stream}/records?changes_since=2024-01-01T00:00:00Z`
+- **THEN** the resource server SHALL return a 400 response with `error.code` `invalid_cursor`
+- **AND** the error message SHALL name `beginning` as the bootstrap sentinel
+- **AND** the error message SHALL name `next_changes_since` as the cursor source returned by a prior changes-feed response.
+
+### Requirement: Public CLI command surface SHALL use explicit namespaces
+The reference implementation SHALL treat `@pdpp/cli` as the single public owner
+of the `pdpp` binary. Public delegated-access commands and reference-operator
+diagnostic commands SHALL share one command tree with explicit namespaces rather
+than requiring two ambiguous `pdpp` installations.
+
+#### Scenario: A user installs the public CLI
+- **WHEN** a user installs or runs `@pdpp/cli`
+- **THEN** the installed `pdpp` command SHALL expose public delegated-access commands such as `connect`
+- **AND** reference-only diagnostic commands, if shipped, SHALL appear under an explicit reference namespace such as `pdpp ref ...`
+
+#### Scenario: A reference diagnostic command is advertised
+- **WHEN** docs, dashboard, or CLI help advertise a run, grant, or trace diagnostic command
+- **THEN** the command SHALL include the explicit reference namespace
+- **AND** it SHALL NOT use a top-level command shape that could be mistaken for a core PDPP protocol command
+
+#### Scenario: A repo-local compatibility alias remains
+- **WHEN** the repo-local reference wrapper preserves an old top-level operator alias
+- **THEN** that alias SHALL be treated as compatibility behavior
+- **AND** new public metadata, docs, and dashboard copy SHALL NOT advertise it
+
+### Requirement: Publishable reference CLI commands SHALL be dependency-bounded
+Reference/operator commands shipped in the public CLI package SHALL be limited
+to commands whose implementation can run outside this repository without
+importing reference-server internals, connector runtimes, Docker orchestration,
+databases, local fixture directories, or deployment-only assets.
+
+#### Scenario: A reference read command is moved into the public package
+- **WHEN** a command such as `pdpp ref run timeline`, `pdpp ref grant timeline`, or `pdpp ref trace show` is shipped in `@pdpp/cli`
+- **THEN** it SHALL call documented reference-designated HTTP routes
+- **AND** it SHALL NOT bypass the server with direct database reads or local filesystem assumptions
+
+#### Scenario: A command depends on local reference internals
+- **WHEN** a command depends on local seed fixtures, server runtime modules, Docker topology, connector runtime internals, or repository-only setup
+- **THEN** it SHALL remain repo-local or be excluded from public package help until a separate publishability review proves the boundary safe
+
+### Requirement: Reference CLI owner authentication SHALL be operator-safe
+The CLI SHALL support owner-session authentication for reference diagnostic
+commands without requiring agents or users to paste owner bearer tokens or print
+owner-session cookies into logs.
+
+#### Scenario: Owner auth is enabled
+- **WHEN** a caller runs a `pdpp ref ...` command against a reference deployment that requires owner auth
+- **THEN** the CLI SHALL send an owner-session cookie from an explicit option, environment variable, or project-local owner-session cache
+- **AND** it SHALL fail with an actionable login/session message when no valid owner session is available
+
+#### Scenario: Owner session is persisted
+- **WHEN** the CLI stores an owner session for reference-operator use
+- **THEN** it SHALL store the session in the project-local PDPP cache with secret file permissions
+- **AND** it SHALL NOT print the session cookie value in normal output
+
+#### Scenario: A command needs a public client token
+- **WHEN** a user runs public delegated-access commands such as `connect` or `token`
+- **THEN** the CLI SHALL continue to use scoped client credentials rather than owner sessions
+- **AND** the reference-operator owner-session mechanism SHALL NOT become the routine delegated-access fallback
 
