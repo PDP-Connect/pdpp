@@ -9,7 +9,6 @@ export interface SearchDisplayTimestamp {
   value: string;
 }
 
-const LOCAL_DEVICE_CONNECTOR_RE = /^local-device:([^:]+)(?::.*)?$/;
 const UNDERSCORE_RE = /_/g;
 
 export function searchTimestampMetadataKey(connectorId: string, stream: string): string {
@@ -21,32 +20,7 @@ export function lookupSearchTimestampMetadata(
   connectorId: string,
   stream: string
 ): SearchTimestampMetadata | null {
-  const direct = metadataByKey.get(searchTimestampMetadataKey(connectorId, stream));
-  if (direct) {
-    return direct;
-  }
-
-  const localDeviceMatch = LOCAL_DEVICE_CONNECTOR_RE.exec(connectorId);
-  if (!localDeviceMatch) {
-    return null;
-  }
-  let decodedConnectorId: string;
-  try {
-    decodedConnectorId = decodeURIComponent(localDeviceMatch[1] ?? "");
-  } catch {
-    return null;
-  }
-  const decodedDirect = metadataByKey.get(searchTimestampMetadataKey(decodedConnectorId, stream));
-  if (decodedDirect) {
-    return decodedDirect;
-  }
-  const registrySuffix = `/connectors/${decodedConnectorId}::${stream}`;
-  for (const [key, value] of metadataByKey) {
-    if (key.endsWith(registrySuffix)) {
-      return value;
-    }
-  }
-  return null;
+  return metadataByKey.get(searchTimestampMetadataKey(connectorId, stream)) ?? null;
 }
 
 function humanizeFieldName(field: string): string {

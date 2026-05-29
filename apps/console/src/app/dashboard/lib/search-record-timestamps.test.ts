@@ -34,14 +34,24 @@ test("pickSearchDisplayTimestamp falls back to emitted time when record time is 
   );
 });
 
-test("lookupSearchTimestampMetadata resolves local-device connector ids to registry manifests", () => {
+test("lookupSearchTimestampMetadata returns null when connector id is not in the map", () => {
   const metadata = new Map([
     [
-      searchTimestampMetadataKey("https://registry.pdpp.org/connectors/codex", "messages"),
+      searchTimestampMetadataKey("codex", "messages"),
       { consent_time_field: "timestamp", cursor_field: "timestamp" },
     ],
   ]);
-  assert.deepEqual(lookupSearchTimestampMetadata(metadata, "local-device:codex", "messages"), {
+  assert.equal(lookupSearchTimestampMetadata(metadata, "gmail", "messages"), null);
+});
+
+test("lookupSearchTimestampMetadata looks up by canonical connector key", () => {
+  const metadata = new Map([
+    [
+      searchTimestampMetadataKey("codex", "messages"),
+      { consent_time_field: "timestamp", cursor_field: "timestamp" },
+    ],
+  ]);
+  assert.deepEqual(lookupSearchTimestampMetadata(metadata, "codex", "messages"), {
     consent_time_field: "timestamp",
     cursor_field: "timestamp",
   });

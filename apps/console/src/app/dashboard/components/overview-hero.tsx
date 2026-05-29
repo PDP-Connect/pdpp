@@ -260,21 +260,8 @@ function formatInteger(n: number): string {
   return Number.isFinite(n) ? n.toLocaleString("en-US") : "0";
 }
 
-/**
- * Shorten a connector_id for compact display in the breadth row. PDPP
- * connector_ids are often URLs like
- * `https://registry.pdpp.org/connectors/slack`; displaying the full URL
- * swallows the row. Fall through to the raw id for non-URL connector ids.
- */
 function displayConnectorSlug(connectorId: string): string {
-  try {
-    const url = new URL(connectorId);
-    const segments = url.pathname.split("/").filter(Boolean);
-    const last = segments.at(-1);
-    return last || url.hostname;
-  } catch {
-    return connectorId;
-  }
+  return connectorId;
 }
 
 /**
