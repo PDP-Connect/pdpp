@@ -139,7 +139,7 @@ const AXIS_CHIP_RENDERS_DIMENSION = /chip\.dimension/;
 const AXIS_CHIP_RENDERS_VALUE = /chip\.value/;
 const AXIS_CHIP_SR_ONLY_LABEL = /<span className="sr-only">\{chip\.label\}<\/span>/;
 const AXIS_CHIP_VISUAL_SPANS_ARE_HIDDEN =
-  /<span aria-hidden className="opacity-60">\{chip\.dimension\}<\/span>[\s\S]*<span aria-hidden className="font-medium">\{chip\.value\}<\/span>/;
+  /<span aria-hidden className="opacity-60">\s*\{chip\.dimension\}\s*<\/span>[\s\S]*<span aria-hidden className="font-medium">\s*\{chip\.value\}\s*<\/span>/;
 test("AxisChipBadge renders chip.dimension and chip.value as separate elements", async () => {
   const src = await readFile(ROW_FILE, "utf8");
   const chipBadgeBlock = src.slice(src.indexOf("function AxisChipBadge"));
