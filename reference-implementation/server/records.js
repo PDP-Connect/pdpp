@@ -65,6 +65,7 @@ import {
   postgresQueryRecords,
 } from './postgres-records.js';
 import { isPostgresStorageBackend, postgresQuery } from './postgres-storage.js';
+import { canonicalConnectorKey } from './connector-key.js';
 import { getDefaultConnectorStateStore } from './stores/connector-state-store.ts';
 import { makeDefaultAccountConnectorInstanceId } from './stores/connector-instance-store.js';
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from './owner-auth.ts';
@@ -3439,7 +3440,19 @@ export async function resolveReadRequestBindings({
   streamName,
   nativeProviderStorage = false,
 }) {
-  const connectorId = storageBinding?.connector_id || null;
+  // Canonicalize the storage binding's connector_id at the shared admission
+  // boundary. A grant or owner storage binding may still carry the legacy
+  // URL-shaped connector id (e.g. https://registry.pdpp.org/connectors/gmail);
+  // connector_instances and records are keyed by the canonical key (`gmail`),
+  // so listActiveByConnector must look up under that same canonical key or it
+  // returns zero rows and the read fails connection_not_found. This mirrors
+  // getConnectorManifestRow, which already accepts the URL alias at the
+  // boundary and resolves canonically. See canonicalize-connector-keys
+  // Decision 1: storage bindings and grants key by connector_key.
+  const rawConnectorId = storageBinding?.connector_id || null;
+  const connectorId = rawConnectorId
+    ? canonicalConnectorKey(rawConnectorId) ?? rawConnectorId
+    : null;
   if (nativeProviderStorage && connectorId) {
     const { connectionId } = resolveRequestConnectionId(requestParams);
     if (connectionId) {

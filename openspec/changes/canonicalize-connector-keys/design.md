@@ -92,6 +92,24 @@ Active-path consequences (this is the slice that closes task 4.3 for local-devic
 - The live read path (`recordStorageConnectorIdForConnection`) and the device-scoped state read/write paths use the bare canonical key.
 - The legacy startup migration `local_device_connector_instances` relocates legacy `local-device:<id>:<source>` rows to the bare canonical key (canonicalizing the inner alias), not to a still-prefixed `local-device:<id>` form, so post-migration reads resolve under the same key the live ingest path writes.
 
+### 8. Read/admission resolves through the same canonical construction as ingest
+
+The write path already canonicalizes: the owner ingest route (`resolveOwnerConnectorNamespace`) and the device-exporter enroll path collapse a URL-shaped or legacy-alias `connector_id` to its `connector_key`, so `connector_instances`, `records`, and blob bindings are all keyed canonically. The read/admission path had not been made symmetric — a stale grant or owner read scope could still carry a URL-shaped `connector_id`, and admission enumerated active connections under that literal value. Because no instance is keyed by the URL, admission returned an empty binding set and the read failed `connection_not_found` (observed across `assistant-readiness-smoke`, `query-contract`, `connector-instance-admission-routes`, and grant-scoped blob reads).
+
+Decision: canonicalize the connector key at the read/admission construction boundaries, accepting a legacy URL alias at the edge and immediately resolving it to the canonical key — the same pattern `getConnectorManifestRow` already uses for manifest lookup. Concretely:
+
+- `resolveReadRequestBindings` (the shared admission resolver for owner reads, grant-scoped client reads, and search fan-in) canonicalizes `storageBinding.connector_id` before calling `listActiveByConnector`. This is the single boundary that fixes owner, client, and search admission at once.
+- `resolveOwnerReadScope` canonicalizes the owner-supplied `connector_id` once, so the owner read storage binding, source descriptor, and `connector_instances` namespace resolution all agree on the canonical key (the same fix the ingest path already had).
+- The `GET /v1/blobs/:blob_id` route canonicalizes the actor connector id before matching canonically-keyed blob bindings.
+- The reference-only `/_ref/connections` and `/_ref/connector-instances` list routes canonicalize the `connector_id` query filter before comparing against canonically-keyed instance rows.
+
+The canonicalization is conservative by construction: `canonicalConnectorKey` returns `null` for unknown/third-party URL shapes, and every call site uses `canonicalConnectorKey(x) ?? x`, so custom/third-party connector keys pass through unchanged and remain internally consistent (catalog, instance, and admission all apply the same identity function). Legacy aliases are accepted only at these boundaries and never become a parallel first-class path.
+
+Alternatives considered:
+
+- Canonicalize when the grant is minted (rewrite `grant_storage_binding.connector_id` at issue time): rejected for this slice because it would also require rewriting `grant.source.id` to keep the `grant.source.id === grant_storage_binding.connector_id` validator satisfied, changing durable grant storage shape. The admission-boundary canonicalization fixes the read symptom without re-opening grant storage semantics; a future grant-mint canonicalization can subsume it without contradicting this decision.
+- Fix each read route independently: rejected in favor of the shared `resolveReadRequestBindings` boundary, with the owner-scope, blob-route, and `/_ref` list canonicalizations added only where a route compares connector ids outside that resolver.
+
 ## Risks / Trade-offs
 
 - **Protocol/reference terminology drift** -> Mitigation: keep this OpenSpec scoped to reference capabilities and explicitly audit root spec docs before changing protocol language.

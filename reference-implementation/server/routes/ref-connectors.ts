@@ -103,6 +103,7 @@ interface OwnerNamespaceOptions {
 }
 
 export interface MountRefConnectorsContext {
+  canonicalConnectorKey(value: string | null | undefined): string | null;
   createRequestConnectorInstanceStore(): ConnectorInstanceStore;
   deleteSchedule(connectorId: string, options: { connectorInstanceId?: string | null }): Promise<boolean>;
   getConnectorDetail(connectorId: string): Promise<Record<string, unknown> | null>;
@@ -331,7 +332,15 @@ export function mountRefConnectionsList(app: AppLike, ctx: MountRefConnectorsCon
     async (req: RouteRequest, res: RouteResponse) => {
       try {
         const ownerSubjectId = ctx.getOwnerSubjectId(req);
-        const connectorId = ctx.resolveSingleConnectorIdQueryValue(req.query.connector_id);
+        const rawConnectorId = ctx.resolveSingleConnectorIdQueryValue(req.query.connector_id);
+        // Canonicalize the owner-supplied connector_id filter so a URL-shaped
+        // value (e.g. https://registry.pdpp.org/connectors/spotify) matches the
+        // canonical key the instances are stored under. Accept the legacy alias
+        // at the boundary, then compare canonically. See canonicalize-connector-keys
+        // Decision 1: connector instances bind to canonical keys only.
+        const connectorId = rawConnectorId
+          ? (ctx.canonicalConnectorKey(rawConnectorId) ?? rawConnectorId)
+          : rawConnectorId;
         const status = ctx.resolveSingleConnectorIdQueryValue(req.query.status);
         const store = ctx.createRequestConnectorInstanceStore();
         const instances = await store.listByOwner(ownerSubjectId);
@@ -361,7 +370,13 @@ export function mountRefConnectorInstancesList(app: AppLike, ctx: MountRefConnec
     async (req: RouteRequest, res: RouteResponse) => {
       try {
         const ownerSubjectId = ctx.getOwnerSubjectId(req);
-        const connectorId = ctx.resolveSingleConnectorIdQueryValue(req.query.connector_id);
+        const rawConnectorId = ctx.resolveSingleConnectorIdQueryValue(req.query.connector_id);
+        // Canonicalize the connector_id filter so URL-shaped or legacy-alias
+        // values match the canonical key instances are stored under. See
+        // canonicalize-connector-keys Decision 1.
+        const connectorId = rawConnectorId
+          ? (ctx.canonicalConnectorKey(rawConnectorId) ?? rawConnectorId)
+          : rawConnectorId;
         const status = ctx.resolveSingleConnectorIdQueryValue(req.query.status);
         const store = ctx.createRequestConnectorInstanceStore();
         const instances = await store.listByOwner(ownerSubjectId);

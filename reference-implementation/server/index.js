@@ -1395,13 +1395,22 @@ function resolveOwnerReadScope(req, opts = {}) {
     err.code = 'invalid_request';
     throw err;
   }
+  // Canonicalize the owner-supplied connector_id once, at the read-scope
+  // construction boundary, so the owner read storage binding carries the same
+  // canonical key the ingest path writes under (resolveOwnerConnectorNamespace
+  // canonicalizes at line ~1332). Without this, a URL-shaped connector_id like
+  // 'https://registry.pdpp.org/connectors/gmail' reaches connection admission
+  // verbatim, listActiveByConnector finds zero rows (they are keyed 'gmail'),
+  // and the read fails connection_not_found. The owner-facing source descriptor
+  // still reflects the canonical key. See canonicalize-connector-keys Decision 1.
+  const connectorKey = canonicalConnectorKey(connectorId) ?? connectorId;
 
   return {
     public_scope: 'polyfill',
     owner_subject_id: getOwnerTokenSubjectId(req),
-    source: { kind: 'connector', id: connectorId },
+    source: { kind: 'connector', id: connectorKey },
     storage_binding: {
-      connector_id: connectorId,
+      connector_id: connectorKey,
       connector_instance_id: resolveSingleConnectorIdQueryValue(req.query.connector_instance_id),
     },
   };
@@ -1641,7 +1650,9 @@ function buildOwnerQuerySourceDescriptor(req, opts = {}) {
   }
 
   const connectorId = resolveSingleConnectorIdQueryValue(req.query.connector_id);
-  return connectorId ? buildSourceDescriptor({ kind: 'connector', id: connectorId }) : null;
+  if (!connectorId) return null;
+  const connectorKey = canonicalConnectorKey(connectorId) ?? connectorId;
+  return buildSourceDescriptor({ kind: 'connector', id: connectorKey });
 }
 
 function buildOwnerReadGrant(streamName) {
@@ -4635,6 +4646,7 @@ function buildAsApp(opts = {}) {
     resolveOwnerConnectorNamespace,
     getOwnerSubjectId,
     resolveSingleConnectorIdQueryValue,
+    canonicalConnectorKey,
   };
 
   mountRefConnectorsList(app, refConnectorsContext);
@@ -7636,7 +7648,15 @@ function buildRsApp(opts = {}) {
         throw notFound;
       }
       const blobBindings = await blobStore.listBlobBindings(blobId);
-      const actorConnectorId = storageBinding?.connector_id ?? null;
+      // Blob bindings are stored under the canonical connector key at ingest.
+      // The grant/owner storage binding may still carry a legacy URL-shaped
+      // connector id, so canonicalize before matching binding.connector_id or
+      // the visibility scan never matches and the read fails blob_not_found.
+      // See canonicalize-connector-keys Decision 1.
+      const rawActorConnectorId = storageBinding?.connector_id ?? null;
+      const actorConnectorId = rawActorConnectorId
+        ? canonicalConnectorKey(rawActorConnectorId) ?? rawActorConnectorId
+        : null;
       const grantStreams = Array.isArray(tokenInfo.grant?.streams) ? tokenInfo.grant.streams : [];
       const ownerMode = tokenInfo.pdpp_token_kind === 'owner';
 

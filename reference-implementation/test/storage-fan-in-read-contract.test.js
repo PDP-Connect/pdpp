@@ -214,6 +214,123 @@ test('resolveReadRequestBindings forwards deprecated_alias_used warning when ali
   });
 });
 
+// ─── Canonical connector-key admission boundary ─────────────────────────────
+//
+// Regression guard for the grant/owner-read `connection_not_found` cluster:
+// a first-party connector registers under its URL-shaped manifest connector_id
+// (`https://registry.pdpp.org/connectors/<slug>`), which the catalog, the
+// connector_instances row, and the records rows all collapse to the canonical
+// key (`<slug>`) at write time. A grant or owner storage binding can still
+// carry the legacy URL form, so `resolveReadRequestBindings` MUST canonicalize
+// its storage-binding connector_id before listing active bindings, or
+// admission finds zero rows and the read fails connection_not_found.
+// See canonicalize-connector-keys Decision 1.
+
+const FIRST_PARTY_URL_CONNECTOR_ID = 'https://registry.pdpp.org/connectors/gmail';
+const FIRST_PARTY_CANONICAL_KEY = 'gmail';
+
+const firstPartyManifest = {
+  protocol_version: '0.1.0',
+  connector_id: FIRST_PARTY_URL_CONNECTOR_ID,
+  version: '1.0.0',
+  display_name: 'Gmail',
+  capabilities: { human_interaction: [] },
+  streams: [
+    {
+      name: STREAM,
+      primary_key: ['id'],
+      cursor_field: 'received_at',
+      consent_time_field: 'received_at',
+      schema: {
+        type: 'object',
+        required: ['id', 'subject', 'received_at'],
+        properties: {
+          id: { type: 'string' },
+          subject: { type: 'string' },
+          received_at: { type: 'string', format: 'date-time' },
+        },
+      },
+    },
+  ],
+};
+
+const FIRST_PARTY_INSTANCE = 'cin_gmail_default_account';
+
+async function withFirstPartyUrlConnectorDb(testFn) {
+  initDb();
+  try {
+    // Registering the URL-shaped manifest stores the catalog row under the
+    // canonical key. The live ingest route materializes the default-account
+    // connector_instances row under the canonical key (via
+    // resolveOwnerConnectorNamespace); mirror that post-ingest state here by
+    // seeding the instance and a record under the canonical key.
+    await registerConnector(firstPartyManifest);
+    const store = createSqliteConnectorInstanceStore();
+    const now = new Date().toISOString();
+    await store.upsert({
+      connectorInstanceId: FIRST_PARTY_INSTANCE,
+      ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
+      connectorId: FIRST_PARTY_CANONICAL_KEY,
+      displayName: 'Gmail',
+      status: 'active',
+      sourceKind: 'account',
+      sourceBindingKey: 'default_account',
+      sourceBinding: { account: 'default_account' },
+      createdAt: now,
+      updatedAt: now,
+    });
+    await ingestRecord(
+      { connector_id: FIRST_PARTY_CANONICAL_KEY, connector_instance_id: FIRST_PARTY_INSTANCE },
+      recordPayload('rec-1', 'Hello', '2026-05-18T12:00:00.000Z'),
+    );
+    await testFn();
+  } finally {
+    closeDb();
+  }
+}
+
+test('resolveReadRequestBindings canonicalizes a URL-shaped storage binding to the active canonical instance', async () => {
+  await withFirstPartyUrlConnectorDb(async () => {
+    // Storage binding still carries the legacy URL form (as a stale grant or
+    // owner scope would). Admission must resolve the canonical instance.
+    const { bindings } = await resolveReadRequestBindings({
+      ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
+      storageBinding: { connector_id: FIRST_PARTY_URL_CONNECTOR_ID },
+      grant: { streams: [{ name: STREAM }] },
+      requestParams: {},
+      streamName: STREAM,
+    });
+    assert.equal(bindings.length, 1, 'one active connection resolves under the canonical key');
+    assert.equal(bindings[0].connectorId, FIRST_PARTY_CANONICAL_KEY);
+    assert.ok(bindings[0].connectorInstanceId, 'a concrete connector_instance_id is bound');
+  });
+});
+
+test('resolveReadRequestBindings resolves identically for the URL alias and the bare canonical key', async () => {
+  await withFirstPartyUrlConnectorDb(async () => {
+    const viaUrl = await resolveReadRequestBindings({
+      ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
+      storageBinding: { connector_id: FIRST_PARTY_URL_CONNECTOR_ID },
+      grant: { streams: [{ name: STREAM }] },
+      requestParams: {},
+      streamName: STREAM,
+    });
+    const viaCanonical = await resolveReadRequestBindings({
+      ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
+      storageBinding: { connector_id: FIRST_PARTY_CANONICAL_KEY },
+      grant: { streams: [{ name: STREAM }] },
+      requestParams: {},
+      streamName: STREAM,
+    });
+    assert.ok(viaCanonical.bindings.length >= 1, 'canonical key resolves at least one binding');
+    assert.deepEqual(
+      viaUrl.bindings.map((b) => b.connectorInstanceId),
+      viaCanonical.bindings.map((b) => b.connectorInstanceId),
+      'URL alias and canonical key address the same connection set',
+    );
+  });
+});
+
 // ─── Records list fan-in ───────────────────────────────────────────────────
 
 test('queryRecordsAcrossBindings fans in records across two granted connections', async () => {

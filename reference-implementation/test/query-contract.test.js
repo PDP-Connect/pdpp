@@ -23,6 +23,7 @@ import { fileURLToPath } from 'node:url';
 
 import { startServer } from '../server/index.js';
 import { getDb } from '../server/db.js';
+import { canonicalConnectorKey } from '../server/connector-key.js';
 import { createTraceContext, emitSpineEvent } from '../lib/spine.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -166,11 +167,18 @@ function addTestRefreshPolicy(manifest, overrides = {}) {
 }
 
 async function emitSyntheticRun({
-  connectorId,
+  connectorId: rawConnectorId,
   runId,
   status,
   occurredAt,
 }) {
+  // The live runtime launches runs under the canonical connector key and emits
+  // run.* spine events with source.id = that canonical key. Freshness and
+  // connector-summary correlation query run history by the canonical key, so a
+  // synthetic run must use it too or it correlates to nothing. Canonicalize the
+  // (possibly URL-shaped) test connectorId here. See canonicalize-connector-keys
+  // Decision 1.
+  const connectorId = canonicalConnectorKey(rawConnectorId) ?? rawConnectorId;
   // Spine-layer stamping requirement (see docs/run-reconciliation-design-brief.md §3.3):
   // every run.started must carry boot_epoch+seq. Harness ran startServer
   // which initialized the singleton; read it once.
@@ -408,6 +416,10 @@ async function seedGmailExpansionFixture(rsUrl, ownerToken, connectorId) {
 
 test('connector discovery lists owner-visible polyfill connectors without connector_id', async () => {
   await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
+    // Discovery output uses the canonical operational connector key, not the
+    // manifest's URL-shaped connector_id (canonicalize-connector-keys
+    // Decisions 1 and 2: connector_key is operational, manifest_uri is metadata).
+    const canonicalConnectorId = canonicalConnectorKey(spotifyManifest.connector_id);
     const ownerToken = await issueOwnerToken(asUrl);
     const { status, body } = await fetchJson(`${rsUrl}/v1/connectors`, {
       headers: { 'Authorization': `Bearer ${ownerToken}` },
@@ -419,10 +431,10 @@ test('connector discovery lists owner-visible polyfill connectors without connec
 
     const connector = body.data[0];
     assert.equal(connector.object, 'connector');
-    assert.equal(connector.connector_id, spotifyManifest.connector_id);
+    assert.equal(connector.connector_id, canonicalConnectorId);
     assert.deepEqual(connector.source, {
       kind: 'connector',
-      id: spotifyManifest.connector_id,
+      id: canonicalConnectorId,
     });
     assert.deepEqual(
       connector.streams.map((stream) => stream.name).sort(),
@@ -436,7 +448,7 @@ test('connector discovery lists owner-visible polyfill connectors without connec
     assert.equal(topArtists.capabilities.stream_metadata, true);
     assert.equal(
       topArtists.capabilities.metadata_url,
-      `/v1/streams/top_artists?connector_id=${encodeURIComponent(spotifyManifest.connector_id)}`,
+      `/v1/streams/top_artists?connector_id=${encodeURIComponent(canonicalConnectorId)}`,
     );
     assert.equal(topArtists.capabilities.range_filters, true);
   });
@@ -490,16 +502,19 @@ test('schema discovery enumerates owner-visible polyfill connectors with full pe
     assert.deepEqual(body.bearer, { token_kind: 'owner', scope: 'owner' });
     assert.equal(body.connectors.length, 2);
 
+    // Schema discovery emits canonical operational keys, not manifest URLs.
+    const canonicalSpotifyId = canonicalConnectorKey(spotifyManifest.connector_id);
+    const canonicalGmailId = canonicalConnectorKey(gmailManifest.connector_id);
     const connectorIds = body.connectors.map((c) => c.connector_id).sort();
     assert.deepEqual(
       connectorIds,
-      [spotifyManifest.connector_id, gmailManifest.connector_id].sort(),
+      [canonicalSpotifyId, canonicalGmailId].sort(),
     );
 
-    const spotify = body.connectors.find((c) => c.connector_id === spotifyManifest.connector_id);
+    const spotify = body.connectors.find((c) => c.connector_id === canonicalSpotifyId);
     assert.deepEqual(spotify.source, {
       kind: 'connector',
-      id: spotifyManifest.connector_id,
+      id: canonicalSpotifyId,
     });
     assert.deepEqual(
       spotify.streams.map((s) => s.name).sort(),
@@ -517,7 +532,7 @@ test('schema discovery enumerates owner-visible polyfill connectors with full pe
     assert.equal(topArtists.freshness.status, 'unknown');
     assert.ok(Array.isArray(topArtists.expand_capabilities), 'expand_capabilities is an array');
 
-    const gmail = body.connectors.find((c) => c.connector_id === gmailManifest.connector_id);
+    const gmail = body.connectors.find((c) => c.connector_id === canonicalGmailId);
     const messages = gmail.streams.find((s) => s.name === 'messages');
     assert.equal(messages.field_capabilities.subject.lexical_search.usable, true);
     assert.ok(messages.expand_capabilities.some((entry) => entry.name === 'attachments'));
@@ -986,7 +1001,9 @@ test('schema discovery and stream list derive current freshness from connector r
       headers: { 'Authorization': `Bearer ${ownerToken}` },
     });
     assert.equal(schemaResp.status, 200);
-    const schemaConnector = schemaResp.body.connectors.find((row) => row.connector_id === connectorId);
+    // Schema discovery emits the canonical operational key.
+    const canonicalConnectorId = canonicalConnectorKey(connectorId) ?? connectorId;
+    const schemaConnector = schemaResp.body.connectors.find((row) => row.connector_id === canonicalConnectorId);
     const schemaStream = schemaConnector.streams.find((stream) => stream.name === 'top_artists');
     assert.equal(schemaStream.freshness.status, 'current');
     assert.equal(schemaStream.freshness.captured_at, runAt);
@@ -2239,13 +2256,20 @@ test('blob fetch injects fetch_url and requires blob_ref visibility under the gr
         },
       },
     ]);
+    // Records and blobs are stored under the canonical connector key (the
+    // ingest path canonicalizes the URL-shaped manifest connector_id). Seed
+    // this raw-SQL blob row — and resolve its connector_instance_id subquery —
+    // under that same canonical key, or the records subquery returns no row
+    // and connector_instance_id is NULL. See canonicalize-connector-keys
+    // Decision 1: blob bindings key by connector_key.
+    const canonicalId = canonicalConnectorKey(connectorId) ?? connectorId;
     getDb().prepare(`
       INSERT INTO blobs(blob_id, connector_id, connector_instance_id, stream, record_key, mime_type, size_bytes, sha256, data)
       VALUES(?, ?, (SELECT connector_instance_id FROM records WHERE connector_id = ? AND stream = ? AND record_key = ?), ?, ?, ?, ?, ?, ?)
     `).run(
       'blob_track_art',
-      connectorId,
-      connectorId,
+      canonicalId,
+      canonicalId,
       'saved_tracks',
       'track_blob',
       'saved_tracks',
