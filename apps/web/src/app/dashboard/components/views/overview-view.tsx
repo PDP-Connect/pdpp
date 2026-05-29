@@ -46,7 +46,7 @@ export function OverviewView({
   return (
     <>
       <PageHeader description={description} title="Overview" />
-      <OverviewHero recordsHref={routes.section.records} summary={data.summary} />
+      <OverviewHero exploreHref={routes.section.explore} recordsHref={routes.section.records} summary={data.summary} />
       <AttentionOverview
         data={{ actionNeeded: data.actionNeeded, failedRuns: data.failedRuns, failedTraces: data.failedTraces }}
         routes={routes}
@@ -257,6 +257,8 @@ export function RecentActivityOverview({ data, routes }: { data: RecentActivityO
             view all →
           </Link>
         }
+        description="Connector runs started in the last window."
+        title="Recent runs"
       >
         {data.recentRuns.length === 0 ? (
           <EmptyState title="No recent runs" />
@@ -295,7 +297,7 @@ export function RecentActivityPlaceholder() {
       <Section description="Issued, revoked, or denied in the last window." title="Recent grant decisions">
         <EmptyState title="Loading recent grant decisions" />
       </Section>
-      <Section title="Recent runs">
+      <Section description="Connector runs started in the last window." title="Recent runs">
         <EmptyState title="Loading recent runs" />
       </Section>
     </>
@@ -308,7 +310,7 @@ export function RecentActivityError() {
       <Section description="Issued, revoked, or denied in the last window." title="Recent grant decisions">
         <EmptyState hint="Refresh the dashboard to retry." title="Could not load recent grant decisions" />
       </Section>
-      <Section title="Recent runs">
+      <Section description="Connector runs started in the last window." title="Recent runs">
         <EmptyState hint="Refresh the dashboard to retry." title="Could not load recent runs" />
       </Section>
     </>

@@ -17,7 +17,15 @@ import type { DatasetSummary } from "../lib/ref-client.ts";
  * `GET /_ref/dataset/summary`. Degrades to an honest empty state when the
  * substrate holds no records yet.
  */
-export function OverviewHero({ summary, recordsHref }: { summary: DatasetSummary; recordsHref: string }) {
+export function OverviewHero({
+  summary,
+  recordsHref,
+  exploreHref,
+}: {
+  summary: DatasetSummary;
+  recordsHref: string;
+  exploreHref?: string;
+}) {
   const projection = getProjectionMetadata(summary);
   const status = getProjectionStatus(projection);
   if (summary.record_count === 0 && projection && !projection.computed_at && status !== "fresh") {
@@ -57,14 +65,25 @@ export function OverviewHero({ summary, recordsHref }: { summary: DatasetSummary
       {status ? <ProjectionStatusLine projection={projection} status={status} /> : null}
 
       <p className="pdpp-body mt-3 text-muted-foreground">
-        Each approved grant issues runs that write records into streams —{" "}
+        Each approved grant issues runs that write records into streams.{" "}
+        {exploreHref ? (
+          <>
+            <Link
+              className="text-muted-foreground decoration-muted-foreground/50 underline-offset-2 hover:text-foreground hover:underline"
+              href={exploreHref}
+            >
+              Explore records →
+            </Link>{" "}
+          </>
+        ) : null}
+        Every record is also readable through{" "}
         <Link
           className="text-muted-foreground decoration-muted-foreground/50 underline-offset-2 hover:text-foreground hover:underline"
           href={recordsHref}
         >
-          every record is inspectable
+          individual connections
         </Link>{" "}
-        through <code className="pdpp-caption font-mono">/v1/streams</code>.
+        or <code className="pdpp-caption font-mono">/v1/streams</code>.
       </p>
     </section>
   );

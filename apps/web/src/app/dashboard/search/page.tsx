@@ -4,7 +4,7 @@ import { DashboardShell, ServerUnreachable } from "../components/shell.tsx";
 import { dashboardRoutes } from "../components/views/routes.ts";
 import { type SearchData, SearchView } from "../components/views/search-view.tsx";
 import { ReferenceServerUnreachableError } from "../lib/owner-token.ts";
-import { type GrantSummary, refSearch, type RunSummary, type TraceSummary } from "../lib/ref-client.ts";
+import { type GrantSummary, type RunSummary, refSearch, type TraceSummary } from "../lib/ref-client.ts";
 import { verifyDashboardSession } from "../lib/verify-session.ts";
 
 export const dynamic = "force-dynamic";
@@ -67,11 +67,7 @@ async function loadSearchResult(query: string, jump: string | undefined): Promis
   }
 }
 
-export default async function SearchPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ q?: string; jump?: string }>;
-}) {
+export default async function SearchPage({ searchParams }: { searchParams: Promise<{ q?: string; jump?: string }> }) {
   const { q: qParam, jump } = await searchParams;
   const query = (qParam ?? "").trim();
 

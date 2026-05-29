@@ -345,7 +345,7 @@ export function RecordsExplorerView({ data, routes }: { data: RecordsExplorerDat
       <PageHeader
         breadcrumbs={[{ label: "Explore" }]}
         count={feedCountLabel(feed.length, fromSearch, truncated)}
-        description="Query across every owner-visible connection. Connection identity is preserved — two accounts of the same connector type stay distinct."
+        description="Browse and search records across every connected source. Two accounts of the same service stay distinct — nothing is collapsed."
         title="Explore"
       />
 
@@ -403,10 +403,10 @@ function lensLabel(lens: ExplorerLens): string {
     return "Time range";
   }
   if (lens === "search") {
-    return "Search";
+    return "Query";
   }
   if (lens === "search_with_ignored_time_window") {
-    return "Search · time window not applied to search";
+    return "Query · time window not applied to search";
   }
   return "Recent";
 }

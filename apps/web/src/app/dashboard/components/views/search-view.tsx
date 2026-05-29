@@ -61,9 +61,7 @@ export function SearchView({
       </form>
 
       {query ? null : (
-        <p className="text-muted-foreground text-xs">
-          {emptyHint ?? "Paste a trace, grant, or run id."}
-        </p>
+        <p className="text-muted-foreground text-xs">{emptyHint ?? "Paste a trace, grant, or run id."}</p>
       )}
 
       {query && data ? (
