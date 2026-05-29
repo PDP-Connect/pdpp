@@ -4072,7 +4072,7 @@
                                       "display_name": {
                                         "type": "string",
                                         "minLength": 1,
-                                        "description": "Owner-meaningful label for the connection. Never the storage-layer placeholder (`legacy`, `default_account`); falls back to `<connector> \u00b7 account N` when the owner has not renamed the connection."
+                                        "description": "Owner-meaningful label for the connection. Never the storage-layer placeholder (`legacy`, `default_account`); falls back to `<connector> · account N` when the owner has not renamed the connection."
                                       }
                                     },
                                     "required": [
@@ -4400,7 +4400,7 @@
                           "display_name": {
                             "type": "string",
                             "minLength": 1,
-                            "description": "Owner-meaningful label for the connection. Never the storage-layer placeholder (`legacy`, `default_account`); falls back to `<connector> \u00b7 account N` when the owner has not renamed the connection."
+                            "description": "Owner-meaningful label for the connection. Never the storage-layer placeholder (`legacy`, `default_account`); falls back to `<connector> · account N` when the owner has not renamed the connection."
                           },
                           "connector_instance_id": {
                             "type": "string",
@@ -5088,7 +5088,7 @@
                           "display_name": {
                             "type": "string",
                             "minLength": 1,
-                            "description": "Owner-meaningful label for the connection. Never the storage-layer placeholder (`legacy`, `default_account`); falls back to `<connector> \u00b7 account N` when the owner has not renamed the connection."
+                            "description": "Owner-meaningful label for the connection. Never the storage-layer placeholder (`legacy`, `default_account`); falls back to `<connector> · account N` when the owner has not renamed the connection."
                           }
                         },
                         "required": [
@@ -5480,7 +5480,7 @@
                           "display_name": {
                             "type": "string",
                             "minLength": 1,
-                            "description": "Owner-meaningful label for the connection. Never the storage-layer placeholder (`legacy`, `default_account`); falls back to `<connector> \u00b7 account N` when the owner has not renamed the connection."
+                            "description": "Owner-meaningful label for the connection. Never the storage-layer placeholder (`legacy`, `default_account`); falls back to `<connector> · account N` when the owner has not renamed the connection."
                           },
                           "connector_instance_id": {
                             "type": "string",
@@ -6332,7 +6332,7 @@
                     "display_name": {
                       "type": "string",
                       "minLength": 1,
-                      "description": "Owner-meaningful label for the connection. Never the storage-layer placeholder (`legacy`, `default_account`); falls back to `<connector> \u00b7 account N` when the owner has not renamed the connection."
+                      "description": "Owner-meaningful label for the connection. Never the storage-layer placeholder (`legacy`, `default_account`); falls back to `<connector> · account N` when the owner has not renamed the connection."
                     },
                     "connector_instance_id": {
                       "type": "string",
@@ -6567,7 +6567,7 @@
                               "display_name": {
                                 "type": "string",
                                 "minLength": 1,
-                                "description": "Owner-meaningful label for the connection. Never the storage-layer placeholder (`legacy`, `default_account`); falls back to `<connector> \u00b7 account N` when the owner has not renamed the connection."
+                                "description": "Owner-meaningful label for the connection. Never the storage-layer placeholder (`legacy`, `default_account`); falls back to `<connector> · account N` when the owner has not renamed the connection."
                               }
                             },
                             "required": [
@@ -6752,7 +6752,7 @@
                           "display_name": {
                             "type": "string",
                             "minLength": 1,
-                            "description": "Owner-meaningful label for the connection. Never the storage-layer placeholder (`legacy`, `default_account`); falls back to `<connector> \u00b7 account N` when the owner has not renamed the connection."
+                            "description": "Owner-meaningful label for the connection. Never the storage-layer placeholder (`legacy`, `default_account`); falls back to `<connector> · account N` when the owner has not renamed the connection."
                           },
                           "connector_instance_id": {
                             "type": "string",
@@ -7158,7 +7158,7 @@
                           "display_name": {
                             "type": "string",
                             "minLength": 1,
-                            "description": "Owner-meaningful label for the connection. Never the storage-layer placeholder (`legacy`, `default_account`); falls back to `<connector> \u00b7 account N` when the owner has not renamed the connection."
+                            "description": "Owner-meaningful label for the connection. Never the storage-layer placeholder (`legacy`, `default_account`); falls back to `<connector> · account N` when the owner has not renamed the connection."
                           },
                           "connector_instance_id": {
                             "type": "string",
@@ -7558,7 +7558,7 @@
                           "display_name": {
                             "type": "string",
                             "minLength": 1,
-                            "description": "Owner-meaningful label for the connection. Never the storage-layer placeholder (`legacy`, `default_account`); falls back to `<connector> \u00b7 account N` when the owner has not renamed the connection."
+                            "description": "Owner-meaningful label for the connection. Never the storage-layer placeholder (`legacy`, `default_account`); falls back to `<connector> · account N` when the owner has not renamed the connection."
                           },
                           "connector_instance_id": {
                             "type": "string",
@@ -8403,7 +8403,7 @@
                               "display_name": {
                                 "type": "string",
                                 "minLength": 1,
-                                "description": "Owner-meaningful label for the connection. Never the storage-layer placeholder (`legacy`, `default_account`); falls back to `<connector> \u00b7 account N` when the owner has not renamed the connection."
+                                "description": "Owner-meaningful label for the connection. Never the storage-layer placeholder (`legacy`, `default_account`); falls back to `<connector> · account N` when the owner has not renamed the connection."
                               }
                             },
                             "required": [
@@ -8627,6 +8627,50 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "Bearer token is authenticated but is not a client token for an active grant.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
           }
         }
       },
@@ -8799,6 +8843,50 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "Bearer token is authenticated but is not a client token for an active grant.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
           }
         }
       }
@@ -8930,6 +9018,50 @@
           },
           "401": {
             "description": "Bearer token missing or invalid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Bearer token is authenticated but is not a client token for an active grant.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9264,6 +9396,50 @@
               }
             }
           },
+          "403": {
+            "description": "Bearer token is authenticated but is not a client token for an active grant.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
           "404": {
             "description": "Subscription not found or not owned by the bearer",
             "content": {
@@ -9419,6 +9595,50 @@
               }
             }
           },
+          "403": {
+            "description": "Bearer token is authenticated but is not a client token for an active grant.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
           "404": {
             "description": "Subscription not found or not owned by the bearer",
             "content": {
@@ -9507,6 +9727,50 @@
           },
           "401": {
             "description": "Bearer token missing or invalid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Bearer token is authenticated but is not a client token for an active grant.",
             "content": {
               "application/json": {
                 "schema": {
