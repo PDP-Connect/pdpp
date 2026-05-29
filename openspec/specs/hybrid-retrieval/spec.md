@@ -58,4 +58,3 @@ If hybrid retrieval supports pagination, its cursors SHALL encode enough server-
 
 - **WHEN** a first-tranche implementation cannot provide snapshot-honest hybrid pagination
 - **THEN** it SHALL omit cursor support or reject cursor parameters rather than exposing misleading offset-only pagination.
-

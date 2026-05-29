@@ -234,4 +234,3 @@ Lexical scores SHALL be computed only from fields visible under the active grant
 - **WHEN** a record contains a lexical-search field outside the caller's grant projection
 - **THEN** the returned lexical score SHALL NOT include contribution from that hidden field
 - **AND** no score explanation SHALL disclose that hidden field
-

@@ -371,4 +371,3 @@ Semantic scores SHALL be computed only from fields visible under the active gran
 - **WHEN** a stream declares semantic fields that are outside the caller's grant projection
 - **THEN** those hidden fields SHALL NOT contribute to the returned score
 - **AND** the response SHALL NOT disclose hidden-field matches or snippets
-
