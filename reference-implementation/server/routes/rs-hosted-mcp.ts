@@ -95,13 +95,16 @@ export interface MountRsHostedMcpContext {
   handleStreamableHttpRequest(request: Request, options: McpServerOptions): Promise<Response>;
   /**
    * Trusted INTERNAL resource-server base URL for the adapter's own
-   * server-internal self-calls (the child `RsClient` fetch base). This is
-   * `referenceTopology.rsInternalUrl` (env `PDPP_RS_URL`, default
-   * `http://localhost:7663`) — a loopback/cluster address, NOT request-derived
-   * from `Host`/`X-Forwarded-*`. Used as the child fetch base only; the
-   * advertised `resource`, discovery metadata, and `mcpServerOptions.providerUrl`
-   * always stay the public origin. When null/undefined, self-calls fall back to
-   * the advertised public resource (current behavior preserved).
+   * server-internal self-calls (the child `RsClient` fetch base). Sourced
+   * EXPLICITLY from `opts.rsInternalUrl` or the operator's `PDPP_RS_URL`
+   * (see `startServer`) — a loopback/cluster address, NOT request-derived from
+   * `Host`/`X-Forwarded-*`. NOTE: it is intentionally NOT the bare
+   * `referenceTopology.rsInternalUrl` default (`http://localhost:7663`): that
+   * default is skipped so ephemeral-port test harnesses and deployments that
+   * do not set `PDPP_RS_URL` resolve this to null and fall back to the public
+   * resource (current behavior preserved). Used as the child fetch base only;
+   * the advertised `resource`, discovery metadata, and
+   * `mcpServerOptions.providerUrl` always stay the public origin.
    *
    * Spec: openspec/changes/route-hosted-mcp-adapter-self-calls-internally/
    */

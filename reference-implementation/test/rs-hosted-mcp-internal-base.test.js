@@ -9,10 +9,13 @@
 // `resolvePublicUrl(...)` (the public origin). A server-internal PATCH
 // self-call therefore hairpinned through the external edge that 405s PATCH,
 // so package-token `update_event_subscription` returned a typed `http_405`.
-// The fix passes the internal base (`referenceTopology.rsInternalUrl`, env
-// `PDPP_RS_URL`, default `http://localhost:7663`) to `createPackageRsClient`
-// as the child fetch base, falling back to the public resource when no
-// internal base is configured. Advertised identity stays public.
+// The fix passes the EXPLICITLY-configured internal base (`opts.rsInternalUrl`
+// or the operator's `PDPP_RS_URL`, plumbed by `startServer` — NOT the bare
+// `referenceTopology` default `http://localhost:7663`, which is intentionally
+// skipped) to `createPackageRsClient` as the child fetch base, falling back to
+// the public resource when no internal base is configured. Advertised identity
+// stays public. (`INTERNAL_BASE` below is an explicitly-configured value, as a
+// real deployment's `PDPP_RS_URL` would be.)
 //
 // This test drives `handleHostedMcp` through `mountRsHostedMcp` against a
 // hand-built fake app + context. It captures the `providerUrl` that reaches
