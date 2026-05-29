@@ -177,6 +177,28 @@ try {
   fail("recovered/parked: script threw", err.message);
 }
 
+// 7. Completed report-bearing lane whose branch no longer exists must NOT appear as a live risk.
+try {
+  const out = runWithFixture({
+    branch: "workstream/already-merged",
+    lane: "ri-completed-merged-lane",
+    status: "complete",
+    report_state: "present",
+    recovered: false,
+    exit_code: 0,
+    transcript_bytes: 127,
+  });
+  if (out.includes("thin-transcript")) {
+    fail("completed/merged: thin-transcript risk emitted for historical lane", out);
+  } else if (!out.includes("ri-completed-merged-lane")) {
+    fail("completed/merged: lane disappeared from wrapper inventory", out);
+  } else {
+    pass("completed/merged: no live risk, still visible in inventory");
+  }
+} catch (err) {
+  fail("completed/merged: script threw", err.message);
+}
+
 // --- Summary ---
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) {

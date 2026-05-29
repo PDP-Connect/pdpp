@@ -221,15 +221,18 @@ for (const lane of wrapperLanes) {
 
   // Thin transcript on completed/failed/recovered terminal statuses: Claude exited immediately
   // and the work is likely useless. Exclude "aborted" because a zero-byte
-  // transcript is normal there. Also exclude recovered report-only lanes whose
+  // transcript is normal there. Also exclude terminal report-bearing lanes whose
   // branch has already been removed: those are preserved historical evidence,
-  // not active owner work.
-  const terminalRecoveredHistorical =
-    lane.recovered && lane.reportState === "recovered" && lane.branch && !branchExists(lane.branch);
+  // not active owner work. The report and wrapper inventory remain visible.
+  const terminalHistoricalWithReport =
+    ["complete", "completed"].includes(lane.status) &&
+    ["present", "recovered"].includes(lane.reportState) &&
+    lane.branch &&
+    !branchExists(lane.branch);
   if (
     lane.status !== "running" &&
     lane.status !== "aborted" &&
-    !terminalRecoveredHistorical &&
+    !terminalHistoricalWithReport &&
     lane.transcriptBytes >= 0 &&
     lane.transcriptBytes < 200
   ) {
