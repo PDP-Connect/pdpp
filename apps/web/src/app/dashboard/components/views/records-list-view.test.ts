@@ -91,7 +91,7 @@ const LABEL_CONNECTIONS_APPLIED = /labelConnections\(overviews\)/;
 const ORDINAL_SUFFIX_PATTERN = /connection \$\{rank \+ 1\}/;
 const STABLE_SORT_BY_CONNECTION_ID = /connectionId\(a\)\.localeCompare\(connectionId\(b\)\)/;
 const NO_RAW_INSTANCE_ID_IN_DISPLAY =
-  /connectorInstanceId \? \(\s*<>\s*\{" "\}\s*·\s*<code.*?>\{connectorInstanceId\}/s;
+  /connectorInstanceId \? \(\s*<>\s*\{" "\}\s*·\s*<code[\s\S]*?>\{connectorInstanceId\}/;
 
 test("labelConnections helper is defined in the view module", async () => {
   const src = await readFile(VIEW_FILE, "utf8");

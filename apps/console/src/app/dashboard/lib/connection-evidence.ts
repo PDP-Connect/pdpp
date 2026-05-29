@@ -26,60 +26,84 @@ import type { ConnectorOverview, ConnectorRunRef } from "./rs-client.ts";
 export type EvidenceTone = "neutral" | "success" | "warning" | "danger";
 
 export interface AxisChip {
-  /** Short owner-facing label (e.g. "Coverage: gaps"). */
+  /** The axis name (e.g. "Coverage", "Freshness"). Rendered muted. */
+  dimension: string;
+  /** Short owner-facing label (e.g. "Coverage · gaps"). Kept for backward compat/tooltips. */
   label: string;
   /** Long-form hover/tooltip — describes what the chip means. */
   title: string;
   tone: EvidenceTone;
+  /** The axis state value (e.g. "gaps", "fresh"). Rendered prominent. */
+  value: string;
 }
 
 const COVERAGE_LABELS: Record<RefConnectionHealthSnapshot["axes"]["coverage"], AxisChip> = {
   complete: {
+    dimension: "Coverage",
+    value: "complete",
     label: "Coverage · complete",
     title: "All required streams have durable evidence of complete coverage.",
     tone: "success",
   },
   deferred: {
+    dimension: "Coverage",
+    value: "deferred",
     label: "Coverage · deferred",
     title: "The manifest intentionally defers this coverage; no detail collection is owed yet.",
     tone: "neutral",
   },
   partial: {
+    dimension: "Coverage",
+    value: "partial",
     label: "Coverage · partial",
     title: "Some required streams collected only partial data.",
     tone: "warning",
   },
   gaps: {
+    dimension: "Coverage",
+    value: "gaps",
     label: "Coverage · gaps",
     title: "Required coverage has known retryable or terminal gaps.",
     tone: "warning",
   },
   inventory_only: {
+    dimension: "Coverage",
+    value: "inventory only",
     label: "Coverage · inventory only",
     title: "The manifest only requires discovery/inventory evidence for this source.",
     tone: "neutral",
   },
   retryable_gap: {
+    dimension: "Coverage",
+    value: "retryable gap",
     label: "Coverage · retryable gap",
     title: "Required detail has a pending gap that should be retried.",
     tone: "warning",
   },
   terminal_gap: {
+    dimension: "Coverage",
+    value: "terminal gap",
     label: "Coverage · terminal gap",
     title: "Required detail has a known terminal gap until connector or source support changes.",
     tone: "danger",
   },
   unavailable: {
+    dimension: "Coverage",
+    value: "unavailable",
     label: "Coverage · unavailable",
     title: "The manifest accepts that this coverage is unavailable from the source.",
     tone: "neutral",
   },
   unknown: {
+    dimension: "Coverage",
+    value: "unknown",
     label: "Coverage · unknown",
     title: "No durable coverage evidence is available yet.",
     tone: "neutral",
   },
   unsupported: {
+    dimension: "Coverage",
+    value: "unsupported",
     label: "Coverage · unsupported",
     title: "The manifest accepts that this coverage is not supported by the source or connector.",
     tone: "neutral",
@@ -88,16 +112,22 @@ const COVERAGE_LABELS: Record<RefConnectionHealthSnapshot["axes"]["coverage"], A
 
 const FRESHNESS_LABELS: Record<RefConnectionHealthSnapshot["axes"]["freshness"], AxisChip> = {
   fresh: {
+    dimension: "Freshness",
+    value: "fresh",
     label: "Freshness · fresh",
     title: "The last successful run is within policy.",
     tone: "success",
   },
   stale: {
+    dimension: "Freshness",
+    value: "stale",
     label: "Freshness · stale",
     title: "The last successful run is outside the configured freshness window.",
     tone: "warning",
   },
   unknown: {
+    dimension: "Freshness",
+    value: "unknown",
     label: "Freshness · unknown",
     title: "Freshness cannot be derived from current evidence.",
     tone: "neutral",
@@ -106,21 +136,29 @@ const FRESHNESS_LABELS: Record<RefConnectionHealthSnapshot["axes"]["freshness"],
 
 const OUTBOX_LABELS: Record<RefConnectionHealthSnapshot["axes"]["outbox"], AxisChip> = {
   idle: {
+    dimension: "Outbox",
+    value: "idle",
     label: "Outbox · idle",
     title: "No retryable outbound work is pending.",
     tone: "success",
   },
   active: {
+    dimension: "Outbox",
+    value: "active",
     label: "Outbox · active",
     title: "Outbound work is making progress.",
     tone: "neutral",
   },
   stalled: {
+    dimension: "Outbox",
+    value: "stalled",
     label: "Outbox · stalled",
     title: "Retryable outbound work is stalled and not progressing.",
     tone: "danger",
   },
   unknown: {
+    dimension: "Outbox",
+    value: "unknown",
     label: "Outbox · unknown",
     title: "Outbox state cannot be read from durable evidence.",
     tone: "neutral",
@@ -130,16 +168,22 @@ const OUTBOX_LABELS: Record<RefConnectionHealthSnapshot["axes"]["outbox"], AxisC
 const ATTENTION_LABELS: Record<RefConnectionHealthSnapshot["axes"]["attention"], AxisChip | null> = {
   none: null,
   open: {
+    dimension: "Attention",
+    value: "open",
     label: "Attention · open",
     title: "Owner action is open.",
     tone: "warning",
   },
   acknowledged: {
+    dimension: "Attention",
+    value: "acknowledged",
     label: "Attention · acknowledged",
     title: "Owner action is acknowledged but not yet resolved.",
     tone: "warning",
   },
   in_progress: {
+    dimension: "Attention",
+    value: "in progress",
     label: "Attention · in progress",
     title: "Owner action is in progress.",
     tone: "warning",
@@ -174,6 +218,8 @@ export function formatAttentionAxis(
     return ATTENTION_LABELS[axis as RefConnectionHealthSnapshot["axes"]["attention"]];
   }
   return {
+    dimension: "Attention",
+    value: "unknown",
     label: "Attention · unknown",
     title: `Unknown attention axis "${axis}" from the reference server.`,
     tone: "neutral",
@@ -195,6 +241,8 @@ function formatKnownAxis<T extends string>(
   }
   return {
     ...fallbackChip,
+    dimension: labelPrefix,
+    value: "unknown",
     title: `Unknown ${labelPrefix.toLowerCase()} axis "${axis}" from the reference server.`,
   };
 }
@@ -420,21 +468,33 @@ export function formatSourceOutboxState(
 
   switch (state) {
     case "dead_letter":
-      return { label: "Outbox · dead-letter", title: counts, tone: "danger" };
+      return {
+        dimension: "Outbox",
+        value: "dead-letter",
+        label: "Outbox · dead-letter",
+        title: counts,
+        tone: "danger",
+      };
     case "stale":
-      return { label: "Outbox · stale lease", title: counts, tone: "danger" };
+      return {
+        dimension: "Outbox",
+        value: "stale lease",
+        label: "Outbox · stale lease",
+        title: counts,
+        tone: "danger",
+      };
     case "retrying":
-      return { label: "Outbox · retrying", title: counts, tone: "warning" };
+      return { dimension: "Outbox", value: "retrying", label: "Outbox · retrying", title: counts, tone: "warning" };
     case "pending":
-      return { label: "Outbox · pending", title: counts, tone: "neutral" };
+      return { dimension: "Outbox", value: "pending", label: "Outbox · pending", title: counts, tone: "neutral" };
     case "backlog":
-      return { label: "Outbox · backlog", title: counts, tone: "warning" };
+      return { dimension: "Outbox", value: "backlog", label: "Outbox · backlog", title: counts, tone: "warning" };
     case "drained":
-      return { label: "Outbox · drained", title: counts, tone: "success" };
+      return { dimension: "Outbox", value: "drained", label: "Outbox · drained", title: counts, tone: "success" };
     case "unknown":
-      return { label: "Outbox · unknown", title: counts, tone: "neutral" };
+      return { dimension: "Outbox", value: "unknown", label: "Outbox · unknown", title: counts, tone: "neutral" };
     default:
-      return { label: "Outbox · unknown", title: counts, tone: "neutral" };
+      return { dimension: "Outbox", value: "unknown", label: "Outbox · unknown", title: counts, tone: "neutral" };
   }
 }
 
