@@ -28,10 +28,17 @@ export type TimelineSubject = "grant" | "trace" | "run";
  */
 function exploreWindowFromEnvelope(envelope: TimelineEnvelope): { since: string; until: string } | null {
   const timestamps = envelope.events.map((e) => e.occurred_at).filter((t): t is string => Boolean(t));
-  if (timestamps.length === 0) return null;
+  if (timestamps.length === 0) {
+    return null;
+  }
   const sorted = timestamps.slice().sort();
-  const since = sorted[0]!.slice(0, 10);
-  const lastDay = sorted[sorted.length - 1]!.slice(0, 10);
+  const firstTimestamp = sorted[0];
+  const lastTimestamp = sorted.at(-1);
+  if (!(firstTimestamp && lastTimestamp)) {
+    return null;
+  }
+  const since = firstTimestamp.slice(0, 10);
+  const lastDay = lastTimestamp.slice(0, 10);
   // until is exclusive-end in the explorer; advance by one day so records from
   // the final event's date are included in the window.
   const untilMs = new Date(lastDay).getTime() + 24 * 60 * 60 * 1000;
@@ -109,7 +116,9 @@ export function TimelineDetailView({
           ? buildExplorerHref(routes, { since: exploreWindow.since, until: exploreWindow.until })
           : null;
         const hasPivots = pivots.length > 0;
-        if (!hasPivots && !exploreHref) return null;
+        if (!(hasPivots || exploreHref)) {
+          return null;
+        }
         return (
           <div className="mb-6 flex flex-wrap gap-2">
             {hasPivots
