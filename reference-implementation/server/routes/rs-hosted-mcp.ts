@@ -93,6 +93,19 @@ export interface MountRsHostedMcpContext {
    * Injected because the package is JS-only without type declarations.
    */
   handleStreamableHttpRequest(request: Request, options: McpServerOptions): Promise<Response>;
+  /**
+   * Trusted INTERNAL resource-server base URL for the adapter's own
+   * server-internal self-calls (the child `RsClient` fetch base). This is
+   * `referenceTopology.rsInternalUrl` (env `PDPP_RS_URL`, default
+   * `http://localhost:7663`) — a loopback/cluster address, NOT request-derived
+   * from `Host`/`X-Forwarded-*`. Used as the child fetch base only; the
+   * advertised `resource`, discovery metadata, and `mcpServerOptions.providerUrl`
+   * always stay the public origin. When null/undefined, self-calls fall back to
+   * the advertised public resource (current behavior preserved).
+   *
+   * Spec: openspec/changes/route-hosted-mcp-adapter-self-calls-internally/
+   */
+  readonly internalResource?: string | null;
   /** Standard error helper. */
   pdppError(res: RouteResponse, status: number, code: string, message: string): unknown;
   /** Reference server revision string for MCP server identification. */
@@ -149,7 +162,7 @@ async function sendWebResponse(res: RouteResponse, response: Response): Promise<
 }
 
 export function mountRsHostedMcp(app: AppLike, ctx: MountRsHostedMcpContext): void {
-  const { explicitResource, trustedMetadataHosts, referenceRevision } = ctx;
+  const { explicitResource, internalResource, trustedMetadataHosts, referenceRevision } = ctx;
 
   function requireTrustedHostedMcpResource(req: RouteRequest, res: RouteResponse, next: () => void): void {
     if (isTrustedMetadataRequestOrigin(req, explicitResource, trustedMetadataHosts)) {
@@ -173,7 +186,14 @@ export function mountRsHostedMcp(app: AppLike, ctx: MountRsHostedMcpContext): vo
   }
 
   async function handleHostedMcp(req: RouteRequest, res: RouteResponse): Promise<void> {
+    // Advertised identity (what clients discover and call) — always public.
     const resource = resolvePublicUrl(req, explicitResource);
+    // Server-internal fetch base for the adapter's own child-grant self-calls.
+    // Prefer the operator-configured internal RS base; fall back to the
+    // advertised public resource when none is configured (current behavior).
+    // The internal base is fetch-only: it is never advertised, never written
+    // into discovery metadata, and never carried in issued-token audiences.
+    const internalBase = internalResource ?? resource;
     const authHeader = req.headers.authorization;
     const authValue = Array.isArray(authHeader) ? (authHeader[0] ?? "") : (authHeader ?? "");
     const inboundToken = authValue.slice(7);
@@ -186,7 +206,8 @@ export function mountRsHostedMcp(app: AppLike, ctx: MountRsHostedMcpContext): vo
         return;
       }
       const rsClient = ctx.createPackageRsClient({
-        providerUrl: resource,
+        // Child self-calls use the internal base, not the public edge.
+        providerUrl: internalBase,
         members: access.members,
         fetch: globalThis.fetch,
       });

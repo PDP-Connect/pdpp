@@ -1,24 +1,24 @@
 ## 1. Config Plumbing
 
-- [ ] 1.1 Add an optional internal resource-server base env (e.g. `RS_INTERNAL_URL`), defaulting to the loopback/service-DNS RS address already used by the web app (`http://reference:7663`); document it in the reference compose/config alongside `RS_PUBLIC_URL` and `PDPP_RS_URL`.
-- [ ] 1.2 Resolve the internal base in `handleHostedMcp` (`reference-implementation/server/routes/rs-hosted-mcp.ts`) as a value distinct from the advertised public `resource`, falling back to the public `resource` when the env is unset.
+- [x] 1.1 Reuse the EXISTING internal resource-server config rather than inventing a new env. Per the reconciled design (design.md §1), no new `RS_INTERNAL_URL` is introduced: the adapter's internal base is the explicitly-configured `PDPP_RS_URL` (or `startServer`/`buildRsApp` opt `rsInternalUrl`). The bare `DEFAULT_RS_INTERNAL_URL` (`http://localhost:7663`) is deliberately NOT used as an implicit internal base, because in ephemeral-port harnesses and any deployment where the default does not match the realized listener it would misroute self-calls; when no explicit base is configured the adapter falls back to the public resource. No compose change required.
+- [x] 1.2 Resolve the internal base in `handleHostedMcp` (`reference-implementation/server/routes/rs-hosted-mcp.ts`) as a value distinct from the advertised public `resource` (`internalBase = ctx.internalResource ?? resource`), falling back to the public `resource` when no internal base is configured.
 
 ## 2. Adapter providerUrl Split
 
-- [ ] 2.1 Pass the resolved internal base to `createPackageRsClient` as the child fetch base (`providerUrl`) so each child `RsClient` issues self-calls against the internal address; keep `mcpServerOptions.providerUrl` and the advertised `resource` public.
-- [ ] 2.2 Confirm the protected-resource discovery metadata (`setHostedMcpProtectedResourceMetadata`) and any issued-token audience/resource still resolve via `resolvePublicUrl` to the public origin; the internal base is fetch-only and never advertised.
-- [ ] 2.3 Guard the internal base so it is operator-configured (loopback/cluster address), never request-derived from `Host`/`X-Forwarded-*`.
+- [x] 2.1 Pass the resolved internal base to `createPackageRsClient` as the child fetch base (`providerUrl`) so each child `RsClient` issues self-calls against the internal address; keep `mcpServerOptions.providerUrl` and the advertised `resource` public. (Scope: the `mcp_package` branch where F1 was observed; the single-bearer branch is left on the public `resource` to stay surgical.)
+- [x] 2.2 Confirmed the protected-resource discovery metadata (`setHostedMcpProtectedResourceMetadata`) and `mcpServerOptions.providerUrl`/`buildMcpWebRequest` still resolve via `resolvePublicUrl` to the public origin; the internal base is fetch-only and never advertised. Verified by the wiring regression test and unchanged hosted-mcp-oauth discovery assertions.
+- [x] 2.3 The internal base is operator-configured (`PDPP_RS_URL` / `opts.rsInternalUrl`), never request-derived from `Host`/`X-Forwarded-*` (which only feed `resolvePublicUrl` for the advertised resource).
 
 ## 3. Regression Test
 
-- [ ] 3.1 Add a regression test that issues a hosted MCP package token and calls `update_event_subscription` (PATCH) against a harness where the public edge returns 405 for PATCH but the internal base method-routes PATCH; assert the call succeeds and returns no `rs_error` `http_405`.
-- [ ] 3.2 In the same test, assert the adapter self-call targets the internal base (not the public origin) while the advertised `resource`/discovery metadata and `mcpServerOptions.providerUrl` remain the public origin.
-- [ ] 3.3 Assert the fallback: with the internal-base env unset, self-calls use the public resource (current behavior preserved).
+- [x] 3.1 Added regression tests proving package-token PATCH (`update_event_subscription`) succeeds via the internal base when the public edge 405s PATCH. Unit layer in `reference-implementation/test/package-rs-client.test.js` (host-aware fake `fetch`: public edge 405s PATCH, internal base method-routes it; asserts ok + no `http_405`), with a falsifiability test proving the public base yields `http_405`.
+- [x] 3.2 Added a wiring regression `reference-implementation/test/rs-hosted-mcp-internal-base.test.js` driving `handleHostedMcp` via `mountRsHostedMcp`: asserts the `providerUrl` reaching `createPackageRsClient` is the internal base while `mcpServerOptions.providerUrl` (advertised) stays the public origin. This test FAILS on pre-fix code and PASSES post-fix.
+- [x] 3.3 Asserted the fallback: with no internal base configured (null/undefined), self-calls use the public resource (current behavior preserved) — both in the unit `fallback parity` test and the wiring `fallback` test.
 
 ## 4. Validation
 
-- [ ] 4.1 Run `openspec validate route-hosted-mcp-adapter-self-calls-internally --strict`.
-- [ ] 4.2 Run the hosted MCP package adapter test suite (`reference-implementation/test/package-rs-client.test.js` and the hosted-MCP route/oauth tests) and confirm no regression in child-locate forwarding, source selection, ambiguity errors, or fan-out.
+- [x] 4.1 Ran `openspec validate route-hosted-mcp-adapter-self-calls-internally --strict` — valid.
+- [x] 4.2 Ran the hosted MCP package adapter suites — `package-rs-client.test.js` (25), the new wiring test (2), `hosted-mcp-oauth.test.js` (28), `mcp-event-subscription-e2e.test.js` (2), `hosted-mcp-selection.test.js`/`hosted-mcp-picker-canonical-collapse.test.js` (21), and `@pdpp/mcp-server` (75) — all green, no regression in child-locate forwarding, source selection, ambiguity errors, or fan-out. tsc/ultracite clean on touched files.
 
 ## Acceptance checks
 

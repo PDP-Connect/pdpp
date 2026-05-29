@@ -3319,6 +3319,14 @@ function buildRsApp(opts = {}) {
   const providerName = resolveProviderName(opts);
   const referenceRevision = resolveReferenceRevision(opts);
   const explicitResource = opts.rsPublicUrl || (!opts.ignoreAmbientPublicUrls ? process.env.RS_PUBLIC_URL : null);
+  // Trusted INTERNAL resource-server base for the hosted-MCP adapter's own
+  // child-grant self-calls, plumbed in via `opts.rsInternalUrl` from startServer
+  // (which sources it from the explicit `PDPP_RS_URL` / opt — no new env). It is
+  // an operator-configured loopback/cluster address, never request-derived. When
+  // absent the adapter falls back to the advertised public resource (current
+  // behavior). startServer intentionally does NOT pass the bare default here.
+  // Spec: openspec/changes/route-hosted-mcp-adapter-self-calls-internally/
+  const internalResource = opts.rsInternalUrl ?? null;
   const trustedMetadataHosts = opts.trustedMetadataHosts ?? (!opts.ignoreAmbientPublicUrls ? process.env.PDPP_TRUSTED_HOSTS : null);
 
   app.use((req, res, next) => {
@@ -3349,6 +3357,7 @@ function buildRsApp(opts = {}) {
   // same response envelope and headers.
   mountRsHostedMcp(app, {
     explicitResource,
+    internalResource,
     trustedMetadataHosts,
     referenceRevision,
     getGrantPackageAccess,
@@ -3760,6 +3769,20 @@ export async function startServer(opts = {}) {
     (!ignoreAmbientPublicUrls ? (process.env.AS_ISSUER || process.env.AS_PUBLIC_URL) : null) ||
     null;
   const configuredRsPublicUrl = referenceTopology.rsPublicUrl || null;
+  // Internal RS base for the hosted-MCP adapter's own child-grant self-calls
+  // (F1: avoid hairpinning PATCH self-calls through the public edge that 405s
+  // PATCH). Only honor an EXPLICITLY configured internal base — `opts.rsInternalUrl`
+  // or the operator's `PDPP_RS_URL` — because that is the only value known to
+  // point at the live RS. The bare `DEFAULT_RS_INTERNAL_URL` (localhost:7663) is
+  // deliberately NOT used as an implicit internal base: in ephemeral-port
+  // harnesses (rsPort:0) and any deployment where the default does not match the
+  // realized listener it would misroute self-calls. When no explicit internal
+  // base is configured the adapter falls back to the advertised public resource,
+  // preserving current behavior.
+  // Spec: openspec/changes/route-hosted-mcp-adapter-self-calls-internally/
+  const explicitRsInternalUrl =
+    opts.rsInternalUrl ??
+    (!ignoreAmbientPublicUrls ? (process.env.PDPP_RS_URL?.trim() || null) : null);
   const trustedMetadataHosts = opts.trustedMetadataHosts ?? process.env.PDPP_TRUSTED_HOSTS ?? null;
   const runtimeContext = {
     rsUrl: configuredRsPublicUrl || null,
@@ -3931,6 +3954,11 @@ export async function startServer(opts = {}) {
     asPublicUrl,
     asIssuer: configuredAsIssuer || asPublicUrl,
     rsPublicUrl: configuredRsPublicUrl,
+    // Explicitly-configured internal RS base for the hosted-MCP adapter's
+    // child-grant self-calls (null when only the bare default would apply, so
+    // the adapter falls back to the public resource). See explicitRsInternalUrl.
+    // Spec: openspec/changes/route-hosted-mcp-adapter-self-calls-internally/
+    rsInternalUrl: explicitRsInternalUrl,
     ignoreAmbientPublicUrls,
     trustedMetadataHosts,
     logger,

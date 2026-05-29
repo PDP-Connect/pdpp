@@ -60,8 +60,7 @@ function parseListFilters(
   canonicalConnectorKey: MountRefSpineCorrelationsContext["canonicalConnectorKey"]
 ): RefSpineCorrelationFilters {
   const rawConnectorId = query.connector_id;
-  const trimmedConnectorId =
-    typeof rawConnectorId === "string" && rawConnectorId.trim() ? rawConnectorId.trim() : null;
+  const trimmedConnectorId = typeof rawConnectorId === "string" && rawConnectorId.trim() ? rawConnectorId.trim() : null;
   // Canonicalize the owner-supplied connector_id filter so a URL-shaped value
   // (e.g. https://registry.pdpp.org/connectors/spotify) matches the canonical
   // key the spine stamps `source_id` under. Accept the legacy alias at the
