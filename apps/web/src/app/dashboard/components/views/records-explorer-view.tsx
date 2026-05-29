@@ -165,14 +165,17 @@ function ExplorerMain({
   routes: Routes;
   warnings: ExplorerWarning[];
 }) {
-  // In search mode we cannot enforce per-connection scope (public search
-  // does not yet accept `connection_id`), so the chip label is honest:
-  // it narrows by connector type for the underlying request.
-  const connectionLabel = query ? "connector (from connection)" : "connection";
+  // In search mode the public search endpoint narrows by connector type, not
+  // connection_id. Keep the chip label honest until the backend can enforce
+  // true connection-scoped search.
+  const connectionLabel = query ? "connector" : "connection";
   const filterItems: Array<{ label: string; value: string }> = [];
   for (const id of selectedConnectionIds) {
     const conn = connections.find((c) => c.connectionId === id);
-    filterItems.push({ label: connectionLabel, value: conn?.displayName ?? id });
+    filterItems.push({
+      label: connectionLabel,
+      value: query ? (conn?.connectorId ?? id) : (conn?.displayName ?? id),
+    });
   }
   for (const s of selectedStreams) {
     filterItems.push({ label: "stream", value: s });

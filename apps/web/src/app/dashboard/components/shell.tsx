@@ -221,7 +221,7 @@ function SandboxFooter() {
         Sandbox
       </div>
       <p className="pdpp-caption text-muted-foreground">
-        A reference profile for exploring PDPP grants, runs, traces, records, and discovery.
+        A reference profile for exploring PDPP grants, runs, traces, and records.
       </p>
       <ul className="pdpp-caption mt-3 flex flex-col gap-1 text-muted-foreground">
         <li>
