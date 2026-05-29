@@ -48,7 +48,7 @@ const TEST_FILES = [
 ];
 
 console.log(`[stream-mint-probe] running ${TEST_FILES.length} test files`);
-console.log(`[stream-mint-probe] fixture → ${FIXTURE_PATH}\n`);
+console.log(`[stream-mint-probe] fixture -> ${FIXTURE_PATH}\n`);
 
 let exitCode = 0;
 const results = [];
@@ -67,20 +67,20 @@ for (const file of TEST_FILES) {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    // Parse ℹ lines for counts
+    // Parse node:test summary lines for counts.
     for (const line of output.split('\n')) {
-      const passMatch = line.match(/^ℹ pass (\d+)/);
-      const failMatch = line.match(/^ℹ fail (\d+)/);
+      const passMatch = line.match(/^\u2139 pass (\d+)/);
+      const failMatch = line.match(/^\u2139 fail (\d+)/);
       if (passMatch) passed = parseInt(passMatch[1], 10);
       if (failMatch) failed = parseInt(failMatch[1], 10);
     }
     if (failed > 0) { status = 'fail'; exitCode = 1; }
-    console.log(`  ${status === 'pass' ? '✔' : '✖'} ${label}  (${passed}p/${failed}f in ${Date.now() - startMs}ms)`);
+    console.log(`  ${status === 'pass' ? 'PASS' : 'FAIL'} ${label}  (${passed}p/${failed}f in ${Date.now() - startMs}ms)`);
   } catch (err) {
     status = 'fail';
     exitCode = 1;
     output = err.stdout || err.message;
-    console.error(`  ✖ ${label}  ERROR: ${err.message.split('\n')[0]}`);
+    console.error(`  FAIL ${label}  ERROR: ${err.message.split('\n')[0]}`);
   }
 
   const record = {
