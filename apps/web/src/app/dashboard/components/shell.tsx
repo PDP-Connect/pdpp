@@ -44,12 +44,14 @@ const SCHEME_PREFIX_RE = /^https?:\/\//;
 function buildNav(routes: Routes, mode: ShellMode): NavItem[] {
   const nav: NavItem[] = [
     { href: routes.section.overview, label: "Overview", match: (a) => a === "overview" },
-    { href: routes.section.explore, label: "Explore", match: (a) => a === "explore" },
-    { href: routes.section.search, label: "Jump", match: (a) => a === "search" },
+    {
+      href: routes.section.explore,
+      label: "Explore",
+      match: (a) => a === "explore" || a === "search" || a === "records",
+    },
     { href: routes.section.traces, label: "Traces", match: (a) => a === "traces" },
     { href: routes.section.grants, label: "Grants", match: (a) => a === "grants" },
     { href: routes.section.runs, label: "Runs", match: (a) => a === "runs" },
-    { href: routes.section.records, label: "Connections", match: (a) => a === "records" },
     { href: routes.section.schedules, label: "Schedules", match: (a) => a === "schedules" },
     { href: routes.section.deployment, label: "Deployment", match: (a) => a === "deployment" },
   ];
@@ -140,7 +142,7 @@ function SidebarContent({ active, mode, routes }: { active: DashboardSection; mo
           })}
         </nav>
 
-        {active === "explore" || active === "search" ? <ExploreSubnav routes={routes} /> : null}
+        {active === "explore" || active === "search" || active === "records" ? <ExploreSubnav routes={routes} /> : null}
         {active === "grants" && mode === "live" ? <GrantsSubnav /> : null}
       </div>
 
@@ -152,10 +154,10 @@ function SidebarContent({ active, mode, routes }: { active: DashboardSection; mo
 function ExploreSubnav({ routes }: { routes: Routes }) {
   const items = [
     { href: routes.section.explore, label: "Records feed" },
-    { href: routes.section.search, label: "Jump to ID" },
-    { href: routes.section.records, label: "Manage connections" },
+    { href: routes.section.search, label: "Jump to artifact" },
+    { href: routes.section.records, label: "Connections" },
   ];
-  return <SidebarSubnav items={items} label="Explore workspace" />;
+  return <SidebarSubnav items={items} label="Explore" />;
 }
 
 function GrantsSubnav() {
