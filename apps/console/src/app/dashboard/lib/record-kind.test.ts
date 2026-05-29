@@ -65,3 +65,53 @@ test("label is a short eyebrow string matching the kind", () => {
   assert.equal(classifyRecordKind("tax_documents", null).label, "item");
   assert.equal(classifyRecordKind("xyz", null).label, "record");
 });
+
+// Manifest field name hints — used for search hits and other no-body paths.
+
+test("manifest fields: balance_cents promotes an opaque stream to money", () => {
+  assert.equal(
+    classifyRecordKind("accounts", null, ["id", "name", "type", "balance_cents"]).kind,
+    "money"
+  );
+});
+
+test("manifest fields: amount on an opaque stream promotes to money", () => {
+  assert.equal(classifyRecordKind("records", null, ["id", "amount", "merchant"]).kind, "money");
+});
+
+test("manifest fields: money signal overrides a non-money stream-name match", () => {
+  // 'statements' would be 'titled' by stream name alone; balance_cents wins.
+  assert.equal(classifyRecordKind("statements", null, ["id", "balance_cents"]).kind, "money");
+});
+
+test("manifest fields: title field promotes a generic stream to titled", () => {
+  assert.equal(classifyRecordKind("things", null, ["id", "title", "created_at"]).kind, "titled");
+});
+
+test("manifest fields: author+content pair promotes generic stream to message", () => {
+  assert.equal(classifyRecordKind("entries", null, ["id", "role", "content", "timestamp"]).kind, "message");
+});
+
+test("manifest fields: lone content field without author does not force message", () => {
+  assert.equal(classifyRecordKind("opaque", null, ["id", "content"]).kind, "generic");
+});
+
+test("manifest fields: record body takes precedence over manifest hints", () => {
+  // body has no kind signal; manifest says balance_cents; but body wins and
+  // the stream-name guess ('accounts' → generic) prevails over manifest hint.
+  // The body contains only opaque fields with no heuristic match.
+  assert.equal(
+    classifyRecordKind("accounts", { id: "1", type: "depository" }, ["id", "type", "balance_cents"]).kind,
+    "generic"
+  );
+});
+
+test("manifest fields: null manifest hints fall through to stream-name-only classification", () => {
+  assert.equal(classifyRecordKind("transactions", null, null).kind, "money");
+  assert.equal(classifyRecordKind("xyz", null, null).kind, "generic");
+});
+
+test("manifest fields: empty manifest hint array falls through to stream-name classification", () => {
+  assert.equal(classifyRecordKind("transactions", null, []).kind, "money");
+  assert.equal(classifyRecordKind("xyz", null, []).kind, "generic");
+});

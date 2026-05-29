@@ -343,6 +343,7 @@ async function loadSearchFeed(
   filteredSummaries: RefConnectorSummary[],
   filterStreams: ReadonlySet<string>,
   timestampMetadata: ReadonlyMap<string, SearchTimestampMetadata>,
+  manifestFieldNames: ReadonlyMap<string, readonly string[]>,
   selectedConnectionIds: ReadonlySet<string>
 ): Promise<FeedLoadResult> {
   const allowedConnectors = new Set(filteredSummaries.map((s) => s.connector_id));
@@ -399,7 +400,13 @@ async function loadSearchFeed(
       emittedAt: hit.emitted_at,
       displayAt: display.value,
       summary: hit.snippet?.text ?? `${hit.stream}/${hit.record_key}`,
-      kind: classifyRecordKind(hit.stream, null).kind,
+      // Search hits carry no record body. Use manifest field names as a
+      // heuristic fallback for kind classification on opaque stream names.
+      kind: classifyRecordKind(
+        hit.stream,
+        null,
+        manifestFieldNames.get(searchTimestampMetadataKey(hit.connector_id, hit.stream))
+      ).kind,
       retrievalMode: hit.retrieval_mode ?? (hybridUsed ? "hybrid" : "lexical"),
     };
   });
@@ -498,9 +505,19 @@ async function dispatchFeed(args: {
   filteredSummaries: RefConnectorSummary[];
   filterStreamSet: ReadonlySet<string>;
   timestampMetadata: ReadonlyMap<string, SearchTimestampMetadata>;
+  manifestFieldNames: ReadonlyMap<string, readonly string[]>;
   filterConnectionSet: ReadonlySet<string>;
 }): Promise<FeedDispatch> {
-  const { query, since, until, filteredSummaries, filterStreamSet, timestampMetadata, filterConnectionSet } = args;
+  const {
+    query,
+    since,
+    until,
+    filteredSummaries,
+    filterStreamSet,
+    timestampMetadata,
+    manifestFieldNames,
+    filterConnectionSet,
+  } = args;
   const hasTimeWindow = since !== "" || until !== "";
   if (query) {
     const feed = await loadSearchFeed(
@@ -508,6 +525,7 @@ async function dispatchFeed(args: {
       filteredSummaries,
       filterStreamSet,
       timestampMetadata,
+      manifestFieldNames,
       filterConnectionSet
     );
     return { feed, lens: hasTimeWindow ? "search_with_ignored_time_window" : "search" };
@@ -520,17 +538,29 @@ async function dispatchFeed(args: {
   return { feed, lens: "recent" };
 }
 
-async function buildTimestampMetadata(): Promise<Map<string, SearchTimestampMetadata>> {
-  const metadata = new Map<string, SearchTimestampMetadata>();
+interface ManifestMetadata {
+  timestampMetadata: Map<string, SearchTimestampMetadata>;
+  /** Field names from manifest schema.properties, keyed by connector::stream. */
+  manifestFieldNames: Map<string, readonly string[]>;
+}
+
+async function buildManifestMetadata(): Promise<ManifestMetadata> {
+  const timestampMetadata = new Map<string, SearchTimestampMetadata>();
+  const manifestFieldNames = new Map<string, readonly string[]>();
   for (const manifest of await listConnectorManifests()) {
     for (const stream of manifest.streams ?? []) {
-      metadata.set(searchTimestampMetadataKey(manifest.connector_id, stream.name), {
+      const key = searchTimestampMetadataKey(manifest.connector_id, stream.name);
+      timestampMetadata.set(key, {
         consent_time_field: typeof stream.consent_time_field === "string" ? stream.consent_time_field : null,
         cursor_field: typeof stream.cursor_field === "string" ? stream.cursor_field : null,
       });
+      const props = (stream as { schema?: { properties?: Record<string, unknown> } }).schema?.properties;
+      if (props && typeof props === "object") {
+        manifestFieldNames.set(key, Object.keys(props));
+      }
     }
   }
-  return metadata;
+  return { timestampMetadata, manifestFieldNames };
 }
 
 export interface ExplorerSearchParams {
@@ -570,7 +600,7 @@ export async function assembleExplorerData(
     filterConnectionSet.size > 0 ? summaries.filter((s) => filterConnectionSet.has(s.connection_id)) : summaries;
 
   const filterStreamSet = new Set(selectedStreams);
-  const timestampMetadata = await buildTimestampMetadata();
+  const { timestampMetadata, manifestFieldNames } = await buildManifestMetadata();
 
   const { feed: feedResult, lens } = await dispatchFeed({
     query,
@@ -579,6 +609,7 @@ export async function assembleExplorerData(
     filteredSummaries,
     filterStreamSet,
     timestampMetadata,
+    manifestFieldNames,
     filterConnectionSet,
   });
 

@@ -118,13 +118,40 @@ function classifyByWeakField(data: Record<string, unknown>): RecordKind | null {
  * the stream-name guess when the body is present; otherwise the stream name
  * alone decides, falling back to `generic`.
  */
-export function classifyRecordKind(stream: string, data: Record<string, unknown> | null): RecordKindDescriptor {
+/**
+ * `manifestFieldNames` is an optional list of field names taken from the
+ * connector manifest's `schema.properties` keys. When the record body is
+ * absent (search hits), manifest fields provide the same heuristic signals
+ * that the body's actual keys would provide — without any new network call.
+ * This improves kind tags for streams whose names are opaque (e.g.
+ * `accounts` carrying `balance_cents`). The manifest hint is:
+ *   - only consulted when `data` is null (body wins when present);
+ *   - treated as the same heuristic tier as body field names (not a
+ *     protocol claim), so the result stays presentation-only.
+ */
+export function classifyRecordKind(
+  stream: string,
+  data: Record<string, unknown> | null,
+  manifestFieldNames?: readonly string[] | null
+): RecordKindDescriptor {
   const byStream = classifyByStreamName(stream);
   // A strong (money) field signal overrides the stream-name guess; a weak
   // (title/message) field signal only fills in when the stream name itself
   // could not classify the row.
-  const strong = data ? classifyByStrongField(data) : null;
-  const weak = data ? classifyByWeakField(data) : null;
-  const kind = strong ?? byStream ?? weak ?? "generic";
+  if (data) {
+    const strong = classifyByStrongField(data);
+    const weak = classifyByWeakField(data);
+    const kind = strong ?? byStream ?? weak ?? "generic";
+    return { kind, label: KIND_LABELS[kind] };
+  }
+  // No body — try manifest fields as a fallback heuristic before giving up.
+  if (manifestFieldNames && manifestFieldNames.length > 0) {
+    const fakeFields = Object.fromEntries(manifestFieldNames.map((k) => [k, true]));
+    const strong = classifyByStrongField(fakeFields);
+    const weak = classifyByWeakField(fakeFields);
+    const kind = strong ?? byStream ?? weak ?? "generic";
+    return { kind, label: KIND_LABELS[kind] };
+  }
+  const kind = byStream ?? "generic";
   return { kind, label: KIND_LABELS[kind] };
 }
