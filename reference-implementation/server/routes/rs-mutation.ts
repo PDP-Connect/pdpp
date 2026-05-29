@@ -27,101 +27,99 @@
 // reaches back into the `buildRsApp` closure or speaks SQL directly.
 
 import {
-	executeCreateSubscription,
-	executeDeleteSubscription,
-	executeEnqueueTestEvent,
-	executeGetSubscription,
-	executeListSubscriptions,
-	executeUpdateSubscription,
+  type BearerActor,
+  executeCreateSubscription,
+  executeDeleteSubscription,
+  executeEnqueueTestEvent,
+  executeGetSubscription,
+  executeListSubscriptions,
+  executeUpdateSubscription,
 } from "../../operations/as-client-event-subscriptions/index.ts";
 import {
-	BlobsUploadInvalidRequestError,
-	BlobsUploadStreamNotFoundError,
-	executeBlobsUpload,
+  BlobsUploadInvalidRequestError,
+  BlobsUploadStreamNotFoundError,
+  executeBlobsUpload,
 } from "../../operations/rs-blobs-upload/index.ts";
 import { executeRsConnectorStateGet } from "../../operations/rs-connector-state-get/index.ts";
 import {
-	executeRsConnectorStatePut,
-	RsConnectorStatePutValidationError,
+  executeRsConnectorStatePut,
+  RsConnectorStatePutValidationError,
 } from "../../operations/rs-connector-state-put/index.ts";
 import {
-	executeRecordsDelete,
-	RecordsDeleteInvalidRequestError,
-	RecordsDeleteNotFoundError,
+  executeRecordsDelete,
+  RecordsDeleteInvalidRequestError,
+  RecordsDeleteNotFoundError,
 } from "../../operations/rs-records-delete/index.ts";
 import {
-	executeRecordsDeleteStream,
-	RecordsDeleteStreamInvalidRequestError,
-	RecordsDeleteStreamNotFoundError,
+  executeRecordsDeleteStream,
+  RecordsDeleteStreamInvalidRequestError,
+  RecordsDeleteStreamNotFoundError,
 } from "../../operations/rs-records-delete-stream/index.ts";
 import {
-	executeRecordsIngest,
-	RecordsIngestInvalidRequestError,
-	RecordsIngestNotFoundError,
+  executeRecordsIngest,
+  RecordsIngestInvalidRequestError,
+  RecordsIngestNotFoundError,
 } from "../../operations/rs-records-ingest/index.ts";
-import type { MiddlewareHandler, RouteArg } from "./_route-contract.ts";
+import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
 
 // Express-shaped surface, structurally typed to avoid pulling in the
 // transport's `.js` ambient types.
 
 interface RouteRequest {
-	readonly body?: unknown;
-	readonly headers: Readonly<Record<string, unknown>>;
-	readonly params: Readonly<Record<string, string>>;
-	readonly query: Readonly<Record<string, unknown>>;
-	tokenInfo?: TokenInfo | null;
+  readonly body?: unknown;
+  readonly headers: Readonly<Record<string, unknown>>;
+  readonly params: Readonly<Record<string, string>>;
+  readonly query: Readonly<Record<string, unknown>>;
+  tokenInfo?: TokenInfo | null;
 }
 
 interface RouteResponse {
-	end(): unknown;
-	json(body: unknown): unknown;
-	setHeader(name: string, value: string): unknown;
-	status(code: number): RouteResponse;
+  end(): unknown;
+  json(body: unknown): unknown;
+  setHeader(name: string, value: string): unknown;
+  status(code: number): RouteResponse;
 }
 
-type RouteHandler = (
-	req: RouteRequest,
-	res: RouteResponse,
-) => unknown | Promise<unknown>;
+type RouteHandler = (req: RouteRequest, res: RouteResponse) => unknown | Promise<unknown>;
 
 interface AppLike {
-	delete(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
-	get(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
-	patch(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
-	post(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
-	put(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
+  delete(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
+  get(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
+  patch(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
+  post(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
+  put(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
 }
 
 interface TokenInfo {
-	readonly client_id?: string | null;
-	readonly grant?: GrantLike | null;
-	readonly grant_id?: string | null;
-	readonly subject_id?: string | null;
-	readonly [key: string]: unknown;
+  readonly client_id?: string | null;
+  readonly grant?: GrantLike | null;
+  readonly grant_id?: string | null;
+  readonly subject_id?: string | null;
+  readonly [key: string]: unknown;
 }
 
 interface GrantStreamLike {
-	readonly name?: string | null;
-	readonly connection_id?: string | null;
-	readonly resources?: unknown;
-	readonly time_range?: unknown;
-	readonly [key: string]: unknown;
+  readonly connection_id?: string | null;
+  readonly name?: string | null;
+  readonly resources?: unknown;
+  readonly time_range?: unknown;
+  readonly [key: string]: unknown;
 }
 
 interface GrantLike {
-	readonly streams?: GrantStreamLike[] | null;
-	readonly [key: string]: unknown;
+  readonly streams?: GrantStreamLike[] | null;
+  readonly [key: string]: unknown;
 }
 
 interface ConnectorNamespaceLike {
-	readonly connectorId: string | null;
-	readonly connectorInstanceId: string | null;
-	readonly [key: string]: unknown;
+  readonly connectorId: string | null;
+  readonly connectorInstanceId: string | null;
+  readonly [key: string]: unknown;
 }
 
 interface StorageTargetLike {
-	readonly connector_id: string | null;
-	readonly connector_instance_id: string | null;
+  readonly connector_id: string | null;
+  readonly connector_instance_id: string | null;
 }
 
 // Mutation-context shape — mirrors the object produced by `buildMutationContext`
@@ -129,174 +127,143 @@ interface StorageTargetLike {
 // and `rejectState` overwrite `traceId`/`scenarioId` in-place, exactly as the
 // inline handlers did.
 interface MutationContext {
-	requestId: string;
-	actorType: string;
-	actorId: string | null;
-	traceId: string | null;
-	scenarioId: string | undefined;
-	connectorId: string | null | undefined;
-	connectorInstanceId?: string | null;
-	sourceDescriptor: unknown;
-	operation: string;
-	streamId: string | null;
-	requestedRecordId: string | null;
-	submittedRecordCount: number | null;
-	requestedEmitted: boolean;
+  actorId: string | null;
+  actorType: string;
+  connectorId: string | null | undefined;
+  connectorInstanceId?: string | null;
+  operation: string;
+  requestedEmitted: boolean;
+  requestedRecordId: string | null;
+  requestId: string;
+  scenarioId: string | undefined;
+  sourceDescriptor: unknown;
+  streamId: string | null;
+  submittedRecordCount: number | null;
+  traceId: string | null;
 }
 
 interface StateContext {
-	requestId: string;
-	actorType: string;
-	actorId: string | null;
-	traceId: string | null;
-	scenarioId: string | undefined;
-	grantId: string | null;
-	connectorId: string | null;
-	sourceDescriptor: unknown;
-	operation: string;
-	requestedStreams: string[] | null;
-	requestedEmitted: boolean;
+  actorId: string | null;
+  actorType: string;
+  connectorId: string | null;
+  grantId: string | null;
+  operation: string;
+  requestedEmitted: boolean;
+  requestedStreams: string[] | null;
+  requestId: string;
+  scenarioId: string | undefined;
+  sourceDescriptor: unknown;
+  traceId: string | null;
 }
 
 // Context injected by `buildRsApp` at the `mountRsMutation` call site. Every
 // capability the mutation routes need that is not directly importable.
 export interface MountRsMutationContext {
-	// Auth middleware
-	readonly requireToken: MiddlewareHandler;
-	readonly requireOwner: MiddlewareHandler;
-	readonly requireClient: MiddlewareHandler;
+  // Instrumentation context builders (closures in index.js)
+  readonly buildMutationContext: (
+    req: RouteRequest,
+    res: RouteResponse,
+    opts: {
+      connectorId: string | null;
+      connectorInstanceId?: string | null;
+      operation: string;
+      streamId: string | null;
+      requestedRecordId?: string | null;
+      submittedRecordCount?: number | null;
+    }
+  ) => MutationContext;
+  readonly buildStateContext: (
+    req: RouteRequest,
+    res: RouteResponse,
+    opts: {
+      connectorId: string;
+      grantId: string | null;
+      operation: string;
+      requestedStreams?: string[] | null;
+    }
+  ) => StateContext;
+  readonly deleteAllRecords: (target: StorageTargetLike, streamName: string) => Promise<unknown>;
+  readonly deleteRecord: (target: StorageTargetLike, streamName: string, recordId: string) => Promise<unknown>;
+  readonly emitMutationEvent: (
+    req: RouteRequest,
+    ctx: MutationContext,
+    eventType: string,
+    status: string,
+    data?: Record<string, unknown>
+  ) => Promise<void>;
+  readonly emitMutationRequested: (req: RouteRequest, ctx: MutationContext) => Promise<void>;
+  readonly emitStateEvent: (
+    req: RouteRequest,
+    ctx: StateContext,
+    eventType: string,
+    status: string,
+    data?: Record<string, unknown>
+  ) => Promise<void>;
+  readonly emitStateRequested: (req: RouteRequest, ctx: StateContext) => Promise<void>;
 
-	// Instrumentation context builders (closures in index.js)
-	readonly buildMutationContext: (
-		req: RouteRequest,
-		res: RouteResponse,
-		opts: {
-			connectorId: string | null;
-			connectorInstanceId?: string | null;
-			operation: string;
-			streamId: string | null;
-			requestedRecordId?: string | null;
-			submittedRecordCount?: number | null;
-		},
-	) => MutationContext;
-	readonly buildStateContext: (
-		req: RouteRequest,
-		res: RouteResponse,
-		opts: {
-			connectorId: string;
-			grantId: string | null;
-			operation: string;
-			requestedStreams?: string[] | null;
-		},
-	) => StateContext;
+  // Event-subscription capabilities
+  readonly getDefaultClientEventSubscriptionStore: () => unknown;
+  readonly getDefaultDeliveryWorker: () => { tick(): Promise<void> };
+  readonly getSyncState: (target: StorageTargetLike, args: unknown) => Promise<unknown>;
 
-	// Spine instrumentation helpers
-	readonly setReferenceTraceId: (
-		res: RouteResponse,
-		traceId: string | null,
-	) => void;
-	readonly emitMutationRequested: (
-		req: RouteRequest,
-		ctx: MutationContext,
-	) => Promise<void>;
-	readonly emitMutationEvent: (
-		req: RouteRequest,
-		ctx: MutationContext,
-		eventType: string,
-		status: string,
-		data?: Record<string, unknown>,
-	) => Promise<void>;
-	readonly rejectMutation: (
-		res: RouteResponse,
-		req: RouteRequest,
-		ctx: MutationContext,
-		err: Error & { code?: string; trace_id?: string; scenario_id?: string },
-	) => Promise<unknown>;
-	readonly emitStateRequested: (
-		req: RouteRequest,
-		ctx: StateContext,
-	) => Promise<void>;
-	readonly emitStateEvent: (
-		req: RouteRequest,
-		ctx: StateContext,
-		eventType: string,
-		status: string,
-		data?: Record<string, unknown>,
-	) => Promise<void>;
-	readonly rejectState: (
-		res: RouteResponse,
-		req: RouteRequest,
-		ctx: StateContext,
-		err: Error & { code?: string; trace_id?: string; scenario_id?: string },
-	) => Promise<unknown>;
+  // Capability: error handler for untyped errors
+  readonly handleError: (res: RouteResponse, err: unknown) => void;
+  readonly ingestRecord: (target: StorageTargetLike, record: unknown) => Promise<unknown>;
+  readonly pdppError: PdppErrorFn;
 
-	// Capability: resolve a connector manifest by id
-	readonly resolveRegisteredConnectorManifest: (
-		connectorId: string,
-	) => Promise<{ streams?: Array<{ name?: string | null }> | null }>;
+  // Capability: store a content-addressed blob (blobs upload route)
+  readonly persistContentAddressedBlob: (args: {
+    connectorId: string | null;
+    connectorInstanceId: string | null;
+    stream: string;
+    recordKey: string;
+    mimeType: string;
+    data: Buffer;
+  }) => Promise<unknown>;
+  readonly putSyncState: (target: StorageTargetLike, map: unknown, args: unknown) => Promise<unknown>;
+  readonly rejectMutation: (
+    res: RouteResponse,
+    req: RouteRequest,
+    ctx: MutationContext,
+    err: Error & { code?: string; trace_id?: string; scenario_id?: string }
+  ) => Promise<unknown>;
+  readonly rejectState: (
+    res: RouteResponse,
+    req: RouteRequest,
+    ctx: StateContext,
+    err: Error & { code?: string; trace_id?: string; scenario_id?: string }
+  ) => Promise<unknown>;
+  readonly requireClient: MiddlewareHandler;
+  readonly requireOwner: MiddlewareHandler;
+  // Auth middleware
+  readonly requireToken: MiddlewareHandler;
 
-	// Capability: resolve the owner's connector instance namespace for storage routing
-	readonly resolveOwnerConnectorNamespace: (
-		req: RouteRequest,
-		connectorId: string,
-		opts?: { connectorInstanceId?: string | null },
-	) => Promise<ConnectorNamespaceLike>;
+  // Capability: resolve grant-scoped state access
+  readonly resolveGrantScopedStateGrant: (connectorId: string, grantId: string) => Promise<unknown>;
 
-	// Capability: store a content-addressed blob (blobs upload route)
-	readonly persistContentAddressedBlob: (args: {
-		connectorId: string | null;
-		connectorInstanceId: string | null;
-		stream: string;
-		recordKey: string;
-		mimeType: string;
-		data: Buffer;
-	}) => Promise<unknown>;
+  // Capability: resolve the owner's connector instance namespace for storage routing
+  readonly resolveOwnerConnectorNamespace: (
+    req: RouteRequest,
+    connectorId: string,
+    opts?: { connectorInstanceId?: string | null }
+  ) => Promise<ConnectorNamespaceLike>;
 
-	// Capability: storage primitives for polyfill-mode mutations
-	readonly storageTargetForConnectorNamespace: (
-		namespace: ConnectorNamespaceLike,
-	) => StorageTargetLike;
-	readonly deleteAllRecords: (
-		target: StorageTargetLike,
-		streamName: string,
-	) => Promise<unknown>;
-	readonly deleteRecord: (
-		target: StorageTargetLike,
-		streamName: string,
-		recordId: string,
-	) => Promise<unknown>;
-	readonly ingestRecord: (
-		target: StorageTargetLike,
-		record: unknown,
-	) => Promise<unknown>;
-	readonly getSyncState: (
-		target: StorageTargetLike,
-		args: unknown,
-	) => Promise<unknown>;
-	readonly putSyncState: (
-		target: StorageTargetLike,
-		map: unknown,
-		args: unknown,
-	) => Promise<unknown>;
+  // Capability: resolve a connector manifest by id
+  readonly resolveRegisteredConnectorManifest: (
+    connectorId: string
+  ) => Promise<{ streams?: Array<{ name?: string | null }> | null }>;
 
-	// Capability: resolve grant-scoped state access
-	readonly resolveGrantScopedStateGrant: (
-		connectorId: string,
-		grantId: string,
-	) => Promise<unknown>;
+  // Capability: resolve a single connector_id query value
+  readonly resolveSingleConnectorIdQueryValue: (raw: unknown) => string | null;
 
-	// Capability: format the state response
-	readonly toPublicConnectorStateProjection: (state: unknown) => unknown;
+  // Spine instrumentation helpers
+  readonly setReferenceTraceId: (res: RouteResponse, traceId: string | null) => void;
 
-	// Capability: resolve a single connector_id query value
-	readonly resolveSingleConnectorIdQueryValue: (raw: unknown) => string | null;
+  // Capability: storage primitives for polyfill-mode mutations
+  readonly storageTargetForConnectorNamespace: (namespace: ConnectorNamespaceLike) => StorageTargetLike;
 
-	// Capability: error handler for untyped errors
-	readonly handleError: (res: RouteResponse, err: unknown) => void;
-
-	// Event-subscription capabilities
-	readonly getDefaultClientEventSubscriptionStore: () => unknown;
-	readonly getDefaultDeliveryWorker: () => { tick(): Promise<void> };
+  // Capability: format the state response
+  readonly toPublicConnectorStateProjection: (state: unknown) => unknown;
 }
 
 // POST /v1/blobs
@@ -308,103 +275,85 @@ export interface MountRsMutationContext {
 // envelope shaping locally. The host wires the existing
 // `persistContentAddressedBlob` capability, which preserves blob+binding
 // atomicity.
-export function mountRsBlobsUpload(
-	app: AppLike,
-	ctx: MountRsMutationContext,
-): void {
-	app.post(
-		"/v1/blobs",
-		{ contract: "uploadBlob" },
-		ctx.requireToken,
-		ctx.requireOwner,
-		async (req: RouteRequest, res: RouteResponse) => {
-			try {
-				let manifestCache: {
-					streams?: Array<{ name?: string | null }> | null;
-				} | null = null;
-				let storageNamespace: ConnectorNamespaceLike | null = null;
-				const dependencies = {
-					hasManifestStream: async (
-						connectorId: string,
-						streamName: string,
-					) => {
-						manifestCache =
-							await ctx.resolveRegisteredConnectorManifest(connectorId);
-						const visible = Boolean(
-							(manifestCache.streams || []).find(
-								(candidate) => candidate.name === streamName,
-							),
-						);
-						if (visible) {
-							storageNamespace = await ctx.resolveOwnerConnectorNamespace(
-								req,
-								connectorId,
-							);
-						}
-						return visible;
-					},
-					persistBlob: async ({
-						connectorId,
-						stream,
-						recordKey,
-						mimeType,
-						data,
-					}: {
-						connectorId: string;
-						stream: string;
-						recordKey: string;
-						mimeType: string;
-						data: unknown;
-					}) => {
-						const namespace =
-							storageNamespace ??
-							(await ctx.resolveOwnerConnectorNamespace(req, connectorId));
-						return ctx.persistContentAddressedBlob({
-							connectorId: namespace.connectorId,
-							connectorInstanceId: namespace.connectorInstanceId,
-							stream,
-							recordKey,
-							mimeType,
-							data: Buffer.isBuffer(data)
-								? (data as Buffer)
-								: Buffer.from(data as Uint8Array),
-						});
-					},
-				};
-				const operationInput = {
-					requestParams: {
-						connector_id: (req.query as Record<string, unknown>).connector_id,
-						stream: (req.query as Record<string, unknown>).stream,
-						record_key: (req.query as Record<string, unknown>).record_key,
-					},
-					contentType: (req.headers as Record<string, unknown>)["content-type"],
-					body: req.body,
-				};
-				let output: { envelope: unknown };
-				try {
-					output = await executeBlobsUpload(
-						operationInput as Parameters<typeof executeBlobsUpload>[0],
-						dependencies as unknown as Parameters<typeof executeBlobsUpload>[1],
-					);
-				} catch (opErr) {
-					if (
-						opErr instanceof BlobsUploadInvalidRequestError ||
-						opErr instanceof BlobsUploadStreamNotFoundError
-					) {
-						const mapped = new Error((opErr as Error).message) as Error & {
-							code?: string;
-						};
-						mapped.code = (opErr as { code?: string }).code;
-						throw mapped;
-					}
-					throw opErr;
-				}
-				res.json((output as { envelope: unknown }).envelope);
-			} catch (err) {
-				ctx.handleError(res, err);
-			}
-		},
-	);
+export function mountRsBlobsUpload(app: AppLike, ctx: MountRsMutationContext): void {
+  app.post(
+    "/v1/blobs",
+    { contract: "uploadBlob" },
+    ctx.requireToken,
+    ctx.requireOwner,
+    async (req: RouteRequest, res: RouteResponse) => {
+      try {
+        let manifestCache: {
+          streams?: Array<{ name?: string | null }> | null;
+        } | null = null;
+        let storageNamespace: ConnectorNamespaceLike | null = null;
+        const dependencies = {
+          hasManifestStream: async (connectorId: string, streamName: string) => {
+            manifestCache = await ctx.resolveRegisteredConnectorManifest(connectorId);
+            const visible = Boolean((manifestCache.streams || []).find((candidate) => candidate.name === streamName));
+            if (visible) {
+              storageNamespace = await ctx.resolveOwnerConnectorNamespace(req, connectorId);
+            }
+            return visible;
+          },
+          persistBlob: async ({
+            connectorId,
+            stream,
+            recordKey,
+            mimeType,
+            data,
+          }: {
+            connectorId: string;
+            stream: string;
+            recordKey: string;
+            mimeType: string;
+            data: unknown;
+          }) => {
+            const namespace = storageNamespace ?? (await ctx.resolveOwnerConnectorNamespace(req, connectorId));
+            return ctx.persistContentAddressedBlob({
+              connectorId: namespace.connectorId,
+              connectorInstanceId: namespace.connectorInstanceId,
+              stream,
+              recordKey,
+              mimeType,
+              data: Buffer.isBuffer(data) ? (data as Buffer) : Buffer.from(data as Uint8Array),
+            });
+          },
+        };
+        const operationInput = {
+          requestParams: {
+            connector_id: (req.query as Record<string, unknown>).connector_id,
+            stream: (req.query as Record<string, unknown>).stream,
+            record_key: (req.query as Record<string, unknown>).record_key,
+          },
+          contentType: (req.headers as Record<string, unknown>)["content-type"],
+          body: req.body,
+        };
+        let output: { envelope: unknown };
+        try {
+          output = await executeBlobsUpload(
+            operationInput as Parameters<typeof executeBlobsUpload>[0],
+            dependencies as unknown as Parameters<typeof executeBlobsUpload>[1]
+          );
+        } catch (opErr) {
+          if (opErr instanceof BlobsUploadInvalidRequestError || opErr instanceof BlobsUploadStreamNotFoundError) {
+            const mapped = new Error((opErr as Error).message) as Error & {
+              code?: string;
+            };
+            const errCode0 = (opErr as { code?: string }).code;
+            if (errCode0 !== undefined) {
+              mapped.code = errCode0;
+            }
+            throw mapped;
+          }
+          throw opErr;
+        }
+        return res.json((output as { envelope: unknown }).envelope);
+      } catch (err) {
+        return ctx.handleError(res, err);
+      }
+    }
+  );
 }
 
 // /v1/event-subscriptions cluster
@@ -417,245 +366,206 @@ export function mountRsBlobsUpload(
 // See: openspec/changes/add-client-event-subscriptions/
 
 function buildBearerActorFromTokenInfo(req: RouteRequest) {
-	const ti = (req.tokenInfo || {}) as TokenInfo;
-	const grant = (ti.grant || {}) as GrantLike;
-	const scope = {
-		source: (grant as unknown as Record<string, unknown>).source,
-		streams: Array.isArray(grant.streams)
-			? grant.streams.map((s: GrantStreamLike) => ({
-					name: s.name,
-					...(s.connection_id ? { connection_id: s.connection_id } : {}),
-					...(s.resources ? { resources: s.resources } : {}),
-					...(s.time_range ? { time_range: s.time_range } : {}),
-				}))
-			: [],
-	};
-	return {
-		clientId: ti.client_id || null,
-		grantId: ti.grant_id || null,
-		subjectId: ti.subject_id || null,
-		grantScope: scope,
-	};
+  const ti = (req.tokenInfo || {}) as TokenInfo;
+  const grant = (ti.grant || {}) as GrantLike;
+  const scope = {
+    source: (grant as unknown as Record<string, unknown>).source,
+    streams: Array.isArray(grant.streams)
+      ? grant.streams.map((s: GrantStreamLike) => ({
+          name: s.name,
+          ...(s.connection_id ? { connection_id: s.connection_id } : {}),
+          ...(s.resources ? { resources: s.resources } : {}),
+          ...(s.time_range ? { time_range: s.time_range } : {}),
+        }))
+      : [],
+  };
+  return {
+    clientId: ti.client_id || null,
+    grantId: ti.grant_id || null,
+    subjectId: ti.subject_id || null,
+    grantScope: scope,
+  };
 }
 
-function handleClientEventSubError(
-	ctx: MountRsMutationContext,
-	res: RouteResponse,
-	err: unknown,
-): unknown {
-	const e = err as {
-		name?: string;
-		status?: number;
-		code?: string;
-		message?: string;
-	};
-	if (e && e.name === "ClientEventSubscriptionError") {
-		// Re-use handleError because pdppError isn't injected directly; the
-		// host's handleError already maps coded errors to the canonical envelope.
-		// To match the exact inline shape (pdppError), we translate to a plain
-		// coded error that handleError understands — same outcome.
-		const mapped = new Error(e.message) as Error & {
-			code?: string;
-			httpStatus?: number;
-		};
-		mapped.code = e.code;
-		mapped.httpStatus = e.status || 400;
-		return ctx.handleError(res, mapped);
-	}
-	return ctx.handleError(res, err);
+function handleClientEventSubError(ctx: MountRsMutationContext, res: RouteResponse, err: unknown): unknown {
+  const e = err as {
+    name?: string;
+    status?: number;
+    code?: string;
+    message?: string;
+  };
+  if (e && e.name === "ClientEventSubscriptionError") {
+    return ctx.pdppError(res, e.status || 400, e.code || "invalid_request", e.message);
+  }
+  return ctx.handleError(res, err);
 }
 
-export function mountRsEventSubscriptions(
-	app: AppLike,
-	ctx: MountRsMutationContext,
-): void {
-	const clientEventSubsDeps = () => ({
-		store: ctx.getDefaultClientEventSubscriptionStore(),
-		nowIso: () => new Date().toISOString(),
-	});
+export function mountRsEventSubscriptions(app: AppLike, ctx: MountRsMutationContext): void {
+  const clientEventSubsDeps = () => ({
+    store: ctx.getDefaultClientEventSubscriptionStore(),
+    nowIso: () => new Date().toISOString(),
+  });
 
-	// POST /v1/event-subscriptions
-	app.post(
-		"/v1/event-subscriptions",
-		ctx.requireToken,
-		ctx.requireClient,
-		async (req: RouteRequest, res: RouteResponse) => {
-			try {
-				const actor = buildBearerActorFromTokenInfo(req);
-				if (!actor.clientId || !actor.grantId) {
-					const err = new Error(
-						"client subscription requires an active client grant",
-					) as Error & {
-						code?: string;
-						httpStatus?: number;
-					};
-					err.code = "grant_invalid";
-					err.httpStatus = 403;
-					return ctx.handleError(res, err);
-				}
-				const body = (
-					req.body && typeof req.body === "object" ? req.body : {}
-				) as Record<string, unknown>;
-				const filters =
-					body.filters && typeof body.filters === "object"
-						? body.filters
-						: undefined;
-				const out = await executeCreateSubscription(
-					{
-						actor,
-						callbackUrl:
-							typeof body.callback_url === "string" ? body.callback_url : "",
-						filters,
-					} as Parameters<typeof executeCreateSubscription>[0],
-					clientEventSubsDeps() as Parameters<
-						typeof executeCreateSubscription
-					>[1],
-				);
-				try {
-					await ctx.getDefaultDeliveryWorker().tick();
-				} catch {
-					/* ignored */
-				}
-				const o = out as {
-					subscriptionId: string;
-					secret: string;
-					status: unknown;
-					callbackUrl: string;
-					createdAt: string;
-				};
-				res.status(201).json({
-					subscription_id: o.subscriptionId,
-					secret: o.secret,
-					status: o.status,
-					callback_url: o.callbackUrl,
-					created_at: o.createdAt,
-				});
-			} catch (err) {
-				handleClientEventSubError(ctx, res, err);
-			}
-		},
-	);
+  // POST /v1/event-subscriptions
+  app.post(
+    "/v1/event-subscriptions",
+    ctx.requireToken,
+    ctx.requireClient,
+    async (req: RouteRequest, res: RouteResponse) => {
+      try {
+        const actor = buildBearerActorFromTokenInfo(req);
+        if (!(actor.clientId && actor.grantId)) {
+          return ctx.pdppError(res, 403, "grant_invalid", "client subscription requires an active client grant");
+        }
+        const narrowedActor: BearerActor = {
+          clientId: actor.clientId,
+          grantId: actor.grantId,
+          subjectId: actor.subjectId ?? "",
+          grantScope: actor.grantScope as unknown as BearerActor["grantScope"],
+        };
+        const body = (req.body && typeof req.body === "object" ? req.body : {}) as Record<string, unknown>;
+        const filters = body.filters && typeof body.filters === "object" ? body.filters : undefined;
+        const out = await executeCreateSubscription(
+          {
+            actor: narrowedActor,
+            callbackUrl: typeof body.callback_url === "string" ? body.callback_url : "",
+            filters,
+          } as Parameters<typeof executeCreateSubscription>[0],
+          clientEventSubsDeps() as Parameters<typeof executeCreateSubscription>[1]
+        );
+        try {
+          await ctx.getDefaultDeliveryWorker().tick();
+        } catch {
+          /* ignored */
+        }
+        const o = out as {
+          subscriptionId: string;
+          secret: string;
+          status: unknown;
+          callbackUrl: string;
+          createdAt: string;
+        };
+        return res.status(201).json({
+          subscription_id: o.subscriptionId,
+          secret: o.secret,
+          status: o.status,
+          callback_url: o.callbackUrl,
+          created_at: o.createdAt,
+        });
+      } catch (err) {
+        return handleClientEventSubError(ctx, res, err);
+      }
+    }
+  );
 
-	// GET /v1/event-subscriptions
-	app.get(
-		"/v1/event-subscriptions",
-		ctx.requireToken,
-		ctx.requireClient,
-		async (req: RouteRequest, res: RouteResponse) => {
-			try {
-				const actor = buildBearerActorFromTokenInfo(req);
-				const out = await executeListSubscriptions(
-					actor as Parameters<typeof executeListSubscriptions>[0],
-					clientEventSubsDeps() as Parameters<
-						typeof executeListSubscriptions
-					>[1],
-				);
-				res.json(out);
-			} catch (err) {
-				handleClientEventSubError(ctx, res, err);
-			}
-		},
-	);
+  // GET /v1/event-subscriptions
+  app.get(
+    "/v1/event-subscriptions",
+    ctx.requireToken,
+    ctx.requireClient,
+    async (req: RouteRequest, res: RouteResponse) => {
+      try {
+        const actor = buildBearerActorFromTokenInfo(req);
+        const out = await executeListSubscriptions(
+          actor as unknown as Parameters<typeof executeListSubscriptions>[0],
+          clientEventSubsDeps() as Parameters<typeof executeListSubscriptions>[1]
+        );
+        return res.json(out);
+      } catch (err) {
+        return handleClientEventSubError(ctx, res, err);
+      }
+    }
+  );
 
-	// GET /v1/event-subscriptions/:id
-	app.get(
-		"/v1/event-subscriptions/:id",
-		ctx.requireToken,
-		ctx.requireClient,
-		async (req: RouteRequest, res: RouteResponse) => {
-			try {
-				const actor = buildBearerActorFromTokenInfo(req);
-				const out = await executeGetSubscription(
-					actor as Parameters<typeof executeGetSubscription>[0],
-					req.params.id,
-					clientEventSubsDeps() as Parameters<typeof executeGetSubscription>[2],
-				);
-				res.json(out);
-			} catch (err) {
-				handleClientEventSubError(ctx, res, err);
-			}
-		},
-	);
+  // GET /v1/event-subscriptions/:id
+  app.get(
+    "/v1/event-subscriptions/:id",
+    ctx.requireToken,
+    ctx.requireClient,
+    async (req: RouteRequest, res: RouteResponse) => {
+      try {
+        const actor = buildBearerActorFromTokenInfo(req);
+        const out = await executeGetSubscription(
+          actor as unknown as Parameters<typeof executeGetSubscription>[0],
+          req.params.id ?? "",
+          clientEventSubsDeps() as Parameters<typeof executeGetSubscription>[2]
+        );
+        return res.json(out);
+      } catch (err) {
+        return handleClientEventSubError(ctx, res, err);
+      }
+    }
+  );
 
-	// PATCH /v1/event-subscriptions/:id
-	app.patch(
-		"/v1/event-subscriptions/:id",
-		ctx.requireToken,
-		ctx.requireClient,
-		async (req: RouteRequest, res: RouteResponse) => {
-			try {
-				const actor = buildBearerActorFromTokenInfo(req);
-				const body = (req.body || {}) as Record<string, unknown>;
-				const out = await executeUpdateSubscription(
-					actor as Parameters<typeof executeUpdateSubscription>[0],
-					req.params.id,
-					{
-						...(typeof body.enabled === "boolean"
-							? { enabled: body.enabled }
-							: {}),
-						...(body.rotate_secret === true ? { rotateSecret: true } : {}),
-					} as Parameters<typeof executeUpdateSubscription>[2],
-					clientEventSubsDeps() as Parameters<
-						typeof executeUpdateSubscription
-					>[3],
-				);
-				res.json(out);
-			} catch (err) {
-				handleClientEventSubError(ctx, res, err);
-			}
-		},
-	);
+  // PATCH /v1/event-subscriptions/:id
+  app.patch(
+    "/v1/event-subscriptions/:id",
+    ctx.requireToken,
+    ctx.requireClient,
+    async (req: RouteRequest, res: RouteResponse) => {
+      try {
+        const actor = buildBearerActorFromTokenInfo(req);
+        const body = (req.body || {}) as Record<string, unknown>;
+        const out = await executeUpdateSubscription(
+          actor as unknown as Parameters<typeof executeUpdateSubscription>[0],
+          req.params.id ?? "",
+          {
+            ...(typeof body.enabled === "boolean" ? { enabled: body.enabled } : {}),
+            ...(body.rotate_secret === true ? { rotateSecret: true } : {}),
+          } as Parameters<typeof executeUpdateSubscription>[2],
+          clientEventSubsDeps() as Parameters<typeof executeUpdateSubscription>[3]
+        );
+        return res.json(out);
+      } catch (err) {
+        return handleClientEventSubError(ctx, res, err);
+      }
+    }
+  );
 
-	// DELETE /v1/event-subscriptions/:id
-	app.delete(
-		"/v1/event-subscriptions/:id",
-		ctx.requireToken,
-		ctx.requireClient,
-		async (req: RouteRequest, res: RouteResponse) => {
-			try {
-				const actor = buildBearerActorFromTokenInfo(req);
-				await executeDeleteSubscription(
-					actor as Parameters<typeof executeDeleteSubscription>[0],
-					req.params.id,
-					clientEventSubsDeps() as Parameters<
-						typeof executeDeleteSubscription
-					>[2],
-				);
-				res.status(204).end();
-			} catch (err) {
-				handleClientEventSubError(ctx, res, err);
-			}
-		},
-	);
+  // DELETE /v1/event-subscriptions/:id
+  app.delete(
+    "/v1/event-subscriptions/:id",
+    ctx.requireToken,
+    ctx.requireClient,
+    async (req: RouteRequest, res: RouteResponse) => {
+      try {
+        const actor = buildBearerActorFromTokenInfo(req);
+        await executeDeleteSubscription(
+          actor as unknown as Parameters<typeof executeDeleteSubscription>[0],
+          req.params.id ?? "",
+          clientEventSubsDeps() as Parameters<typeof executeDeleteSubscription>[2]
+        );
+        return res.status(204).end();
+      } catch (err) {
+        return handleClientEventSubError(ctx, res, err);
+      }
+    }
+  );
 
-	// POST /v1/event-subscriptions/:id/test-event
-	app.post(
-		"/v1/event-subscriptions/:id/test-event",
-		ctx.requireToken,
-		ctx.requireClient,
-		async (req: RouteRequest, res: RouteResponse) => {
-			try {
-				const actor = buildBearerActorFromTokenInfo(req);
-				const out = await executeEnqueueTestEvent(
-					actor as Parameters<typeof executeEnqueueTestEvent>[0],
-					req.params.id,
-					clientEventSubsDeps() as Parameters<
-						typeof executeEnqueueTestEvent
-					>[2],
-				);
-				try {
-					await ctx.getDefaultDeliveryWorker().tick();
-				} catch {
-					/* ignored */
-				}
-				res
-					.status(202)
-					.json({ event_id: (out as { eventId: string }).eventId });
-			} catch (err) {
-				handleClientEventSubError(ctx, res, err);
-			}
-		},
-	);
+  // POST /v1/event-subscriptions/:id/test-event
+  app.post(
+    "/v1/event-subscriptions/:id/test-event",
+    ctx.requireToken,
+    ctx.requireClient,
+    async (req: RouteRequest, res: RouteResponse) => {
+      try {
+        const actor = buildBearerActorFromTokenInfo(req);
+        const out = await executeEnqueueTestEvent(
+          actor as unknown as Parameters<typeof executeEnqueueTestEvent>[0],
+          req.params.id ?? "",
+          clientEventSubsDeps() as Parameters<typeof executeEnqueueTestEvent>[2]
+        );
+        try {
+          await ctx.getDefaultDeliveryWorker().tick();
+        } catch {
+          /* ignored */
+        }
+        return res.status(202).json({ event_id: (out as { eventId: string }).eventId });
+      } catch (err) {
+        return handleClientEventSubError(ctx, res, err);
+      }
+    }
+  );
 }
 
 // DELETE /v1/streams/:stream/records (polyfill mode only)
@@ -666,115 +576,90 @@ export function mountRsEventSubscriptions(
 // instrumentation dispatch, and response writing. It MUST NOT recompute the
 // connector_id presence rule, manifest visibility, or the
 // `{ deleted_record_count }` event payload locally.
-export function mountRsRecordsDeleteStream(
-	app: AppLike,
-	ctx: MountRsMutationContext,
-): void {
-	app.delete(
-		"/v1/streams/:stream/records",
-		ctx.requireToken,
-		ctx.requireOwner,
-		async (req: RouteRequest, res: RouteResponse) => {
-			const connectorId = ctx.resolveSingleConnectorIdQueryValue(
-				req.query.connector_id,
-			);
-			const connectorInstanceId = ctx.resolveSingleConnectorIdQueryValue(
-				req.query.connector_instance_id,
-			);
-			const mutationContext = ctx.buildMutationContext(req, res, {
-				connectorId,
-				connectorInstanceId,
-				operation: "delete_stream_records",
-				streamId: req.params.stream,
-			});
-			try {
-				let storageNamespace: ConnectorNamespaceLike | null = null;
-				const dependencies = {
-					hasManifestStream: async (cid: string, streamName: string) => {
-						const manifest = await ctx.resolveRegisteredConnectorManifest(cid);
-						const visible = Boolean(
-							(manifest.streams || []).find(
-								(stream) => stream.name === streamName,
-							),
-						);
-						if (visible) {
-							storageNamespace = await ctx.resolveOwnerConnectorNamespace(
-								req,
-								cid,
-								{
-									connectorInstanceId,
-								},
-							);
-						}
-						return visible;
-					},
-					deleteAllRecords: async (cid: string, streamName: string) => {
-						const namespace =
-							storageNamespace ??
-							(await ctx.resolveOwnerConnectorNamespace(req, cid, {
-								connectorInstanceId,
-							}));
-						return ctx.deleteAllRecords(
-							ctx.storageTargetForConnectorNamespace(namespace),
-							streamName,
-						);
-					},
-				};
-				let output: { deletedRecordCount: number };
-				try {
-					// Validate inputs before emitting `mutation.requested` to mirror
-					// the previous native ordering: invalid_request short-circuits via
-					// rejectMutation, which itself emits the requested event for parity.
-					if (!connectorId) {
-						throw new RecordsDeleteStreamInvalidRequestError(
-							"connector_id must be a single non-empty string",
-						);
-					}
-					ctx.setReferenceTraceId(res, mutationContext.traceId);
-					await ctx.emitMutationRequested(req, mutationContext);
-					output = (await executeRecordsDeleteStream(
-						{ connectorId, streamName: req.params.stream },
-						dependencies as unknown as Parameters<
-							typeof executeRecordsDeleteStream
-						>[1],
-					)) as { deletedRecordCount: number };
-				} catch (opErr) {
-					if (
-						opErr instanceof RecordsDeleteStreamInvalidRequestError ||
-						opErr instanceof RecordsDeleteStreamNotFoundError
-					) {
-						const mapped = new Error((opErr as Error).message) as Error & {
-							code?: string;
-						};
-						mapped.code = (opErr as { code?: string }).code;
-						return await ctx.rejectMutation(res, req, mutationContext, mapped);
-					}
-					throw opErr;
-				}
-				await ctx.emitMutationEvent(
-					req,
-					mutationContext,
-					"mutation.completed",
-					"succeeded",
-					{
-						deleted_record_count: output.deletedRecordCount,
-					},
-				);
-				res.status(204).end();
-			} catch (err) {
-				return await ctx.rejectMutation(
-					res,
-					req,
-					mutationContext,
-					err as Error & {
-						code?: string;
-						trace_id?: string;
-						scenario_id?: string;
-					},
-				);
-			}
-		},
-	);
+export function mountRsRecordsDeleteStream(app: AppLike, ctx: MountRsMutationContext): void {
+  app.delete(
+    "/v1/streams/:stream/records",
+    ctx.requireToken,
+    ctx.requireOwner,
+    async (req: RouteRequest, res: RouteResponse) => {
+      const connectorId = ctx.resolveSingleConnectorIdQueryValue(req.query.connector_id);
+      const connectorInstanceId = ctx.resolveSingleConnectorIdQueryValue(req.query.connector_instance_id);
+      const mutationContext = ctx.buildMutationContext(req, res, {
+        connectorId,
+        connectorInstanceId,
+        operation: "delete_stream_records",
+        streamId: req.params.stream ?? null,
+      });
+      try {
+        let storageNamespace: ConnectorNamespaceLike | null = null;
+        const dependencies = {
+          hasManifestStream: async (cid: string, streamName: string) => {
+            const manifest = await ctx.resolveRegisteredConnectorManifest(cid);
+            const visible = Boolean((manifest.streams || []).find((stream) => stream.name === streamName));
+            if (visible) {
+              storageNamespace = await ctx.resolveOwnerConnectorNamespace(req, cid, {
+                connectorInstanceId,
+              });
+            }
+            return visible;
+          },
+          deleteAllRecords: async (cid: string, streamName: string) => {
+            const namespace =
+              storageNamespace ??
+              (await ctx.resolveOwnerConnectorNamespace(req, cid, {
+                connectorInstanceId,
+              }));
+            return ctx.deleteAllRecords(ctx.storageTargetForConnectorNamespace(namespace), streamName);
+          },
+        };
+        let output: { deletedRecordCount: number };
+        try {
+          // Validate inputs before emitting `mutation.requested` to mirror
+          // the previous native ordering: invalid_request short-circuits via
+          // rejectMutation, which itself emits the requested event for parity.
+          if (!connectorId) {
+            throw new RecordsDeleteStreamInvalidRequestError("connector_id must be a single non-empty string");
+          }
+          ctx.setReferenceTraceId(res, mutationContext.traceId);
+          await ctx.emitMutationRequested(req, mutationContext);
+          output = (await executeRecordsDeleteStream(
+            { connectorId, streamName: req.params.stream ?? "" },
+            dependencies as unknown as Parameters<typeof executeRecordsDeleteStream>[1]
+          )) as { deletedRecordCount: number };
+        } catch (opErr) {
+          if (
+            opErr instanceof RecordsDeleteStreamInvalidRequestError ||
+            opErr instanceof RecordsDeleteStreamNotFoundError
+          ) {
+            const mapped = new Error((opErr as Error).message) as Error & {
+              code?: string;
+            };
+            const errCode1 = (opErr as { code?: string }).code;
+            if (errCode1 !== undefined) {
+              mapped.code = errCode1;
+            }
+            return await ctx.rejectMutation(res, req, mutationContext, mapped);
+          }
+          throw opErr;
+        }
+        await ctx.emitMutationEvent(req, mutationContext, "mutation.completed", "succeeded", {
+          deleted_record_count: output.deletedRecordCount,
+        });
+        return res.status(204).end();
+      } catch (err) {
+        return await ctx.rejectMutation(
+          res,
+          req,
+          mutationContext,
+          err as Error & {
+            code?: string;
+            trace_id?: string;
+            scenario_id?: string;
+          }
+        );
+      }
+    }
+  );
 }
 
 // DELETE /v1/streams/:stream/records/:id (polyfill mode only, owner-authenticated)
@@ -782,123 +667,90 @@ export function mountRsRecordsDeleteStream(
 // Single-delete semantics live in the canonical `rs.records.delete` operation
 // (operations/rs-records-delete). The host adapter owns auth, mutation-context
 // wiring, trace id setup, instrumentation dispatch, and response writing.
-export function mountRsRecordsDelete(
-	app: AppLike,
-	ctx: MountRsMutationContext,
-): void {
-	app.delete(
-		"/v1/streams/:stream/records/:id",
-		ctx.requireToken,
-		ctx.requireOwner,
-		async (req: RouteRequest, res: RouteResponse) => {
-			const connectorId = ctx.resolveSingleConnectorIdQueryValue(
-				req.query.connector_id,
-			);
-			const connectorInstanceId = ctx.resolveSingleConnectorIdQueryValue(
-				req.query.connector_instance_id,
-			);
-			const requestedRecordId = decodeURIComponent(req.params.id);
-			const mutationContext = ctx.buildMutationContext(req, res, {
-				connectorId,
-				connectorInstanceId,
-				operation: "delete_record",
-				streamId: req.params.stream,
-				requestedRecordId,
-			});
-			try {
-				let storageNamespace: ConnectorNamespaceLike | null = null;
-				const dependencies = {
-					hasManifestStream: async (cid: string, streamName: string) => {
-						const manifest = await ctx.resolveRegisteredConnectorManifest(cid);
-						const visible = Boolean(
-							(manifest.streams || []).find(
-								(stream) => stream.name === streamName,
-							),
-						);
-						if (visible) {
-							storageNamespace = await ctx.resolveOwnerConnectorNamespace(
-								req,
-								cid,
-								{
-									connectorInstanceId,
-								},
-							);
-						}
-						return visible;
-					},
-					deleteRecord: async (
-						cid: string,
-						streamName: string,
-						recordId: string,
-					) => {
-						const namespace =
-							storageNamespace ??
-							(await ctx.resolveOwnerConnectorNamespace(req, cid, {
-								connectorInstanceId,
-							}));
-						return ctx.deleteRecord(
-							ctx.storageTargetForConnectorNamespace(namespace),
-							streamName,
-							recordId,
-						);
-					},
-				};
-				let output: { deletedRecordCount: number };
-				try {
-					if (!connectorId) {
-						throw new RecordsDeleteInvalidRequestError(
-							"connector_id must be a single non-empty string",
-						);
-					}
-					ctx.setReferenceTraceId(res, mutationContext.traceId);
-					await ctx.emitMutationRequested(req, mutationContext);
-					output = (await executeRecordsDelete(
-						{
-							connectorId,
-							streamName: req.params.stream,
-							recordId: requestedRecordId,
-						},
-						dependencies as unknown as Parameters<
-							typeof executeRecordsDelete
-						>[1],
-					)) as { deletedRecordCount: number };
-				} catch (opErr) {
-					if (
-						opErr instanceof RecordsDeleteInvalidRequestError ||
-						opErr instanceof RecordsDeleteNotFoundError
-					) {
-						const mapped = new Error((opErr as Error).message) as Error & {
-							code?: string;
-						};
-						mapped.code = (opErr as { code?: string }).code;
-						return await ctx.rejectMutation(res, req, mutationContext, mapped);
-					}
-					throw opErr;
-				}
-				await ctx.emitMutationEvent(
-					req,
-					mutationContext,
-					"mutation.completed",
-					"succeeded",
-					{
-						deleted_record_count: output.deletedRecordCount,
-					},
-				);
-				res.status(204).end();
-			} catch (err) {
-				return await ctx.rejectMutation(
-					res,
-					req,
-					mutationContext,
-					err as Error & {
-						code?: string;
-						trace_id?: string;
-						scenario_id?: string;
-					},
-				);
-			}
-		},
-	);
+export function mountRsRecordsDelete(app: AppLike, ctx: MountRsMutationContext): void {
+  app.delete(
+    "/v1/streams/:stream/records/:id",
+    ctx.requireToken,
+    ctx.requireOwner,
+    async (req: RouteRequest, res: RouteResponse) => {
+      const connectorId = ctx.resolveSingleConnectorIdQueryValue(req.query.connector_id);
+      const connectorInstanceId = ctx.resolveSingleConnectorIdQueryValue(req.query.connector_instance_id);
+      const requestedRecordId = decodeURIComponent(req.params.id ?? "");
+      const mutationContext = ctx.buildMutationContext(req, res, {
+        connectorId,
+        connectorInstanceId,
+        operation: "delete_record",
+        streamId: req.params.stream ?? null,
+        requestedRecordId,
+      });
+      try {
+        let storageNamespace: ConnectorNamespaceLike | null = null;
+        const dependencies = {
+          hasManifestStream: async (cid: string, streamName: string) => {
+            const manifest = await ctx.resolveRegisteredConnectorManifest(cid);
+            const visible = Boolean((manifest.streams || []).find((stream) => stream.name === streamName));
+            if (visible) {
+              storageNamespace = await ctx.resolveOwnerConnectorNamespace(req, cid, {
+                connectorInstanceId,
+              });
+            }
+            return visible;
+          },
+          deleteRecord: async (cid: string, streamName: string, recordId: string) => {
+            const namespace =
+              storageNamespace ??
+              (await ctx.resolveOwnerConnectorNamespace(req, cid, {
+                connectorInstanceId,
+              }));
+            return ctx.deleteRecord(ctx.storageTargetForConnectorNamespace(namespace), streamName, recordId);
+          },
+        };
+        let output: { deletedRecordCount: number };
+        try {
+          if (!connectorId) {
+            throw new RecordsDeleteInvalidRequestError("connector_id must be a single non-empty string");
+          }
+          ctx.setReferenceTraceId(res, mutationContext.traceId);
+          await ctx.emitMutationRequested(req, mutationContext);
+          output = (await executeRecordsDelete(
+            {
+              connectorId,
+              streamName: req.params.stream ?? "",
+              recordId: requestedRecordId,
+            },
+            dependencies as unknown as Parameters<typeof executeRecordsDelete>[1]
+          )) as { deletedRecordCount: number };
+        } catch (opErr) {
+          if (opErr instanceof RecordsDeleteInvalidRequestError || opErr instanceof RecordsDeleteNotFoundError) {
+            const mapped = new Error((opErr as Error).message) as Error & {
+              code?: string;
+            };
+            const errCode2 = (opErr as { code?: string }).code;
+            if (errCode2 !== undefined) {
+              mapped.code = errCode2;
+            }
+            return await ctx.rejectMutation(res, req, mutationContext, mapped);
+          }
+          throw opErr;
+        }
+        await ctx.emitMutationEvent(req, mutationContext, "mutation.completed", "succeeded", {
+          deleted_record_count: output.deletedRecordCount,
+        });
+        return res.status(204).end();
+      } catch (err) {
+        return await ctx.rejectMutation(
+          res,
+          req,
+          mutationContext,
+          err as Error & {
+            code?: string;
+            trace_id?: string;
+            scenario_id?: string;
+          }
+        );
+      }
+    }
+  );
 }
 
 // POST /v1/ingest/:stream (Collection Profile, polyfill mode only, owner-authenticated)
@@ -909,139 +761,100 @@ export function mountRsRecordsDelete(
 // response writing. It MUST NOT recompute line splitting, connector_id
 // presence, manifest visibility, JSON parse handling, the
 // accepted/rejected counters, or the response envelope locally.
-export function mountRsRecordsIngest(
-	app: AppLike,
-	ctx: MountRsMutationContext,
-): void {
-	app.post(
-		"/v1/ingest/:stream",
-		ctx.requireToken,
-		ctx.requireOwner,
-		async (req: RouteRequest, res: RouteResponse) => {
-			const connectorId = ctx.resolveSingleConnectorIdQueryValue(
-				req.query.connector_id,
-			);
-			const connectorInstanceId = ctx.resolveSingleConnectorIdQueryValue(
-				req.query.connector_instance_id,
-			);
-			// parseLines is imported inside executeRecordsIngest; the line-count for
-			// the mutation context must be computed here using the same parser.
-			// Index.js imported `parseLines as parseIngestLines` from the operation
-			// module and called it here. We replicate that call with the same body arg.
-			const rawBody = typeof req.body === "string" ? req.body : "";
-			// Inline line-count: split on newlines, filter empty — mirrors parseLines.
-			const lineCount = rawBody
-				.split("\n")
-				.filter((l: string) => l.trim().length > 0).length;
-			const mutationContext = ctx.buildMutationContext(req, res, {
-				connectorId,
-				connectorInstanceId,
-				operation: "ingest_records",
-				streamId: req.params.stream,
-				submittedRecordCount: lineCount,
-			});
-			try {
-				let storageNamespace: ConnectorNamespaceLike | null = null;
-				const dependencies = {
-					hasManifestStream: async (cid: string, streamName: string) => {
-						const manifest = await ctx.resolveRegisteredConnectorManifest(cid);
-						const visible = Boolean(
-							(manifest.streams || []).find(
-								(stream) => stream.name === streamName,
-							),
-						);
-						if (visible) {
-							storageNamespace = await ctx.resolveOwnerConnectorNamespace(
-								req,
-								cid,
-								{
-									connectorInstanceId,
-								},
-							);
-						}
-						return visible;
-					},
-					ingestRecord: async (
-						cid: string,
-						cin: string | null,
-						record: unknown,
-					) => {
-						const namespace =
-							storageNamespace ??
-							(await ctx.resolveOwnerConnectorNamespace(req, cid, {
-								connectorInstanceId: cin,
-							}));
-						return ctx.ingestRecord(
-							ctx.storageTargetForConnectorNamespace(namespace),
-							record,
-						);
-					},
-				};
-				let output: {
-					envelope: {
-						records_accepted: number;
-						records_rejected: number;
-						errors: unknown[];
-					};
-				};
-				try {
-					if (!connectorId) {
-						throw new RecordsIngestInvalidRequestError(
-							"connector_id must be a single non-empty string",
-						);
-					}
-					ctx.setReferenceTraceId(res, mutationContext.traceId);
-					await ctx.emitMutationRequested(req, mutationContext);
-					output = (await executeRecordsIngest(
-						{
-							connectorId,
-							connectorInstanceId,
-							streamName: req.params.stream,
-							body: rawBody,
-						},
-						dependencies as unknown as Parameters<
-							typeof executeRecordsIngest
-						>[1],
-					)) as typeof output;
-				} catch (opErr) {
-					if (
-						opErr instanceof RecordsIngestInvalidRequestError ||
-						opErr instanceof RecordsIngestNotFoundError
-					) {
-						const mapped = new Error((opErr as Error).message) as Error & {
-							code?: string;
-						};
-						mapped.code = (opErr as { code?: string }).code;
-						return await ctx.rejectMutation(res, req, mutationContext, mapped);
-					}
-					throw opErr;
-				}
-				await ctx.emitMutationEvent(
-					req,
-					mutationContext,
-					"mutation.completed",
-					"succeeded",
-					{
-						records_accepted: output.envelope.records_accepted,
-						records_rejected: output.envelope.records_rejected,
-						error_count: output.envelope.errors.length,
-					},
-				);
-				res.json(output.envelope);
-			} catch (err) {
-				return await ctx.rejectMutation(
-					res,
-					req,
-					mutationContext,
-					err as Error & {
-						code?: string;
-						trace_id?: string;
-						scenario_id?: string;
-					},
-				);
-			}
-		},
-	);
+export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext): void {
+  app.post("/v1/ingest/:stream", ctx.requireToken, ctx.requireOwner, async (req: RouteRequest, res: RouteResponse) => {
+    const connectorId = ctx.resolveSingleConnectorIdQueryValue(req.query.connector_id);
+    const connectorInstanceId = ctx.resolveSingleConnectorIdQueryValue(req.query.connector_instance_id);
+    // parseLines is imported inside executeRecordsIngest; the line-count for
+    // the mutation context must be computed here using the same parser.
+    // Index.js imported `parseLines as parseIngestLines` from the operation
+    // module and called it here. We replicate that call with the same body arg.
+    const rawBody = typeof req.body === "string" ? req.body : "";
+    // Inline line-count: split on newlines, filter empty — mirrors parseLines.
+    const lineCount = rawBody.split("\n").filter((l: string) => l.trim().length > 0).length;
+    const mutationContext = ctx.buildMutationContext(req, res, {
+      connectorId,
+      connectorInstanceId,
+      operation: "ingest_records",
+      streamId: req.params.stream ?? null,
+      submittedRecordCount: lineCount,
+    });
+    try {
+      let storageNamespace: ConnectorNamespaceLike | null = null;
+      const dependencies = {
+        hasManifestStream: async (cid: string, streamName: string) => {
+          const manifest = await ctx.resolveRegisteredConnectorManifest(cid);
+          const visible = Boolean((manifest.streams || []).find((stream) => stream.name === streamName));
+          if (visible) {
+            storageNamespace = await ctx.resolveOwnerConnectorNamespace(req, cid, {
+              connectorInstanceId,
+            });
+          }
+          return visible;
+        },
+        ingestRecord: async (cid: string, cin: string | null, record: unknown) => {
+          const namespace =
+            storageNamespace ??
+            (await ctx.resolveOwnerConnectorNamespace(req, cid, {
+              connectorInstanceId: cin,
+            }));
+          return ctx.ingestRecord(ctx.storageTargetForConnectorNamespace(namespace), record);
+        },
+      };
+      let output: {
+        envelope: {
+          records_accepted: number;
+          records_rejected: number;
+          errors: unknown[];
+        };
+      };
+      try {
+        if (!connectorId) {
+          throw new RecordsIngestInvalidRequestError("connector_id must be a single non-empty string");
+        }
+        ctx.setReferenceTraceId(res, mutationContext.traceId);
+        await ctx.emitMutationRequested(req, mutationContext);
+        output = (await executeRecordsIngest(
+          {
+            connectorId,
+            connectorInstanceId,
+            streamName: req.params.stream ?? "",
+            body: rawBody,
+          },
+          dependencies as unknown as Parameters<typeof executeRecordsIngest>[1]
+        )) as unknown as typeof output;
+      } catch (opErr) {
+        if (opErr instanceof RecordsIngestInvalidRequestError || opErr instanceof RecordsIngestNotFoundError) {
+          const mapped = new Error((opErr as Error).message) as Error & {
+            code?: string;
+          };
+          const errCode3 = (opErr as { code?: string }).code;
+          if (errCode3 !== undefined) {
+            mapped.code = errCode3;
+          }
+          return await ctx.rejectMutation(res, req, mutationContext, mapped);
+        }
+        throw opErr;
+      }
+      await ctx.emitMutationEvent(req, mutationContext, "mutation.completed", "succeeded", {
+        records_accepted: output.envelope.records_accepted,
+        records_rejected: output.envelope.records_rejected,
+        error_count: output.envelope.errors.length,
+      });
+      return res.json(output.envelope);
+    } catch (err) {
+      return await ctx.rejectMutation(
+        res,
+        req,
+        mutationContext,
+        err as Error & {
+          code?: string;
+          trace_id?: string;
+          scenario_id?: string;
+        }
+      );
+    }
+  });
 }
 
 // GET /v1/state/:connectorId (Collection Profile, polyfill mode only, owner-authenticated)
@@ -1051,89 +864,65 @@ export function mountRsRecordsIngest(
 // operation. The host adapter wires auth, request id / trace id,
 // instrumentation events, the manifest resolver, the grant-scope resolver,
 // and the response writing.
-export function mountRsConnectorStateGet(
-	app: AppLike,
-	ctx: MountRsMutationContext,
-): void {
-	app.get(
-		"/v1/state/:connectorId",
-		ctx.requireToken,
-		ctx.requireOwner,
-		async (req: RouteRequest, res: RouteResponse) => {
-			const connectorId = decodeURIComponent(req.params.connectorId);
-			const grantId =
-				typeof req.query.grant_id === "string" ? req.query.grant_id : null;
-			const stateContext = ctx.buildStateContext(req, res, {
-				connectorId,
-				grantId,
-				operation: "read",
-			});
-			try {
-				let storageNamespace: ConnectorNamespaceLike | null = null;
-				const { state } = (await executeRsConnectorStateGet(
-					{ connectorId, grantId },
-					{
-						resolveRegisteredConnectorManifest: async (id: string) => {
-							const manifest = await ctx.resolveRegisteredConnectorManifest(id);
-							storageNamespace = await ctx.resolveOwnerConnectorNamespace(
-								req,
-								id,
-							);
-							return manifest;
-						},
-						resolveGrantScope: (id: string, gid: string) =>
-							ctx.resolveGrantScopedStateGrant(id, gid),
-						onGrantResolved: async (
-							grantScope: { traceId?: string; scenarioId?: string } | null,
-						) => {
-							if (grantScope?.traceId) {
-								stateContext.traceId = grantScope.traceId;
-								stateContext.scenarioId = grantScope.scenarioId;
-							}
-							ctx.setReferenceTraceId(res, stateContext.traceId);
-							await ctx.emitStateRequested(req, stateContext);
-						},
-						getSyncState: async (id: string, args: unknown) => {
-							const namespace =
-								storageNamespace ??
-								(await ctx.resolveOwnerConnectorNamespace(req, id));
-							return ctx.getSyncState(
-								ctx.storageTargetForConnectorNamespace(namespace),
-								args,
-							);
-						},
-					} as unknown as Parameters<typeof executeRsConnectorStateGet>[1],
-				)) as {
-					state: {
-						state?: Record<string, unknown>;
-						updated_at?: string | null;
-					} | null;
-				};
-				await ctx.emitStateEvent(
-					req,
-					stateContext,
-					"state.served",
-					"succeeded",
-					{
-						visible_streams: Object.keys(state?.state || {}),
-						updated_at: state?.updated_at || null,
-					},
-				);
-				res.json(ctx.toPublicConnectorStateProjection(state));
-			} catch (err) {
-				return await ctx.rejectState(
-					res,
-					req,
-					stateContext,
-					err as Error & {
-						code?: string;
-						trace_id?: string;
-						scenario_id?: string;
-					},
-				);
-			}
-		},
-	);
+export function mountRsConnectorStateGet(app: AppLike, ctx: MountRsMutationContext): void {
+  app.get(
+    "/v1/state/:connectorId",
+    ctx.requireToken,
+    ctx.requireOwner,
+    async (req: RouteRequest, res: RouteResponse) => {
+      const connectorId = decodeURIComponent(req.params.connectorId ?? "");
+      const grantId = typeof req.query.grant_id === "string" ? req.query.grant_id : null;
+      const stateContext = ctx.buildStateContext(req, res, {
+        connectorId,
+        grantId,
+        operation: "read",
+      });
+      try {
+        let storageNamespace: ConnectorNamespaceLike | null = null;
+        const { state } = (await executeRsConnectorStateGet({ connectorId, grantId }, {
+          resolveRegisteredConnectorManifest: async (id: string) => {
+            const manifest = await ctx.resolveRegisteredConnectorManifest(id);
+            storageNamespace = await ctx.resolveOwnerConnectorNamespace(req, id);
+            return manifest;
+          },
+          resolveGrantScope: (id: string, gid: string) => ctx.resolveGrantScopedStateGrant(id, gid),
+          onGrantResolved: async (grantScope: { traceId?: string; scenarioId?: string } | null) => {
+            if (grantScope?.traceId) {
+              stateContext.traceId = grantScope.traceId;
+              stateContext.scenarioId = grantScope.scenarioId;
+            }
+            ctx.setReferenceTraceId(res, stateContext.traceId);
+            await ctx.emitStateRequested(req, stateContext);
+          },
+          getSyncState: async (id: string, args: unknown) => {
+            const namespace = storageNamespace ?? (await ctx.resolveOwnerConnectorNamespace(req, id));
+            return ctx.getSyncState(ctx.storageTargetForConnectorNamespace(namespace), args);
+          },
+        } as unknown as Parameters<typeof executeRsConnectorStateGet>[1])) as {
+          state: {
+            state?: Record<string, unknown>;
+            updated_at?: string | null;
+          } | null;
+        };
+        await ctx.emitStateEvent(req, stateContext, "state.served", "succeeded", {
+          visible_streams: Object.keys(state?.state || {}),
+          updated_at: state?.updated_at || null,
+        });
+        return res.json(ctx.toPublicConnectorStateProjection(state));
+      } catch (err) {
+        return await ctx.rejectState(
+          res,
+          req,
+          stateContext,
+          err as Error & {
+            code?: string;
+            trace_id?: string;
+            scenario_id?: string;
+          }
+        );
+      }
+    }
+  );
 }
 
 // PUT /v1/state/:connectorId (Collection Profile, polyfill mode only, owner-authenticated)
@@ -1142,109 +931,85 @@ export function mountRsConnectorStateGet(
 // the storage call shape, and the typed validation errors live in the canonical
 // `rs.connector-state.put` operation. The host adapter translates the typed
 // validation error into the existing PDPP error envelope shape.
-export function mountRsConnectorStatePut(
-	app: AppLike,
-	ctx: MountRsMutationContext,
-): void {
-	app.put(
-		"/v1/state/:connectorId",
-		ctx.requireToken,
-		ctx.requireOwner,
-		async (req: RouteRequest, res: RouteResponse) => {
-			const connectorId = decodeURIComponent(req.params.connectorId);
-			const grantId =
-				typeof req.query.grant_id === "string" ? req.query.grant_id : null;
-			const body = req.body as Record<string, unknown> | null | undefined;
-			const stateMap =
-				body?.state &&
-				typeof body.state === "object" &&
-				!Array.isArray(body.state)
-					? (body.state as Record<string, unknown>)
-					: {};
-			const requestedStreams = Object.keys(stateMap);
-			const stateContext = ctx.buildStateContext(req, res, {
-				connectorId,
-				grantId,
-				operation: "write",
-				requestedStreams,
-			});
-			try {
-				let storageNamespace: ConnectorNamespaceLike | null = null;
-				const { state } = (await executeRsConnectorStatePut(
-					{ connectorId, grantId, stateMap },
-					{
-						resolveRegisteredConnectorManifest: async (id: string) => {
-							const manifest = await ctx.resolveRegisteredConnectorManifest(id);
-							storageNamespace = await ctx.resolveOwnerConnectorNamespace(
-								req,
-								id,
-							);
-							return manifest;
-						},
-						resolveGrantScope: (id: string, gid: string) =>
-							ctx.resolveGrantScopedStateGrant(id, gid),
-						onGrantResolved: async (
-							grantScope: { traceId?: string; scenarioId?: string } | null,
-						) => {
-							if (grantScope?.traceId) {
-								stateContext.traceId = grantScope.traceId;
-								stateContext.scenarioId = grantScope.scenarioId;
-							}
-							ctx.setReferenceTraceId(res, stateContext.traceId);
-							await ctx.emitStateRequested(req, stateContext);
-						},
-						putSyncState: async (id: string, map: unknown, args: unknown) => {
-							const namespace =
-								storageNamespace ??
-								(await ctx.resolveOwnerConnectorNamespace(req, id));
-							return ctx.putSyncState(
-								ctx.storageTargetForConnectorNamespace(namespace),
-								map,
-								args,
-							);
-						},
-					} as unknown as Parameters<typeof executeRsConnectorStatePut>[1],
-				)) as {
-					state: {
-						state?: Record<string, unknown>;
-						updated_at?: string | null;
-					} | null;
-				};
-				await ctx.emitStateEvent(
-					req,
-					stateContext,
-					"state.updated",
-					"succeeded",
-					{
-						persisted_streams: Object.keys(state?.state || {}),
-						updated_at: state?.updated_at || null,
-					},
-				);
-				res.json(ctx.toPublicConnectorStateProjection(state));
-			} catch (err) {
-				if (err instanceof RsConnectorStatePutValidationError) {
-					// Translate the operation-typed validation error into the plain
-					// `Error` shape `rejectState` already understands so the public
-					// error envelope and `state.rejected` event remain unchanged.
-					const translated = new Error((err as Error).message) as Error & {
-						code?: string;
-					};
-					translated.code = (err as { code?: string }).code;
-					return await ctx.rejectState(res, req, stateContext, translated);
-				}
-				return await ctx.rejectState(
-					res,
-					req,
-					stateContext,
-					err as Error & {
-						code?: string;
-						trace_id?: string;
-						scenario_id?: string;
-					},
-				);
-			}
-		},
-	);
+export function mountRsConnectorStatePut(app: AppLike, ctx: MountRsMutationContext): void {
+  app.put(
+    "/v1/state/:connectorId",
+    ctx.requireToken,
+    ctx.requireOwner,
+    async (req: RouteRequest, res: RouteResponse) => {
+      const connectorId = decodeURIComponent(req.params.connectorId ?? "");
+      const grantId = typeof req.query.grant_id === "string" ? req.query.grant_id : null;
+      const body = req.body as Record<string, unknown> | null | undefined;
+      const stateMap =
+        body?.state && typeof body.state === "object" && !Array.isArray(body.state)
+          ? (body.state as Record<string, unknown>)
+          : {};
+      const requestedStreams = Object.keys(stateMap);
+      const stateContext = ctx.buildStateContext(req, res, {
+        connectorId,
+        grantId,
+        operation: "write",
+        requestedStreams,
+      });
+      try {
+        let storageNamespace: ConnectorNamespaceLike | null = null;
+        const { state } = (await executeRsConnectorStatePut({ connectorId, grantId, stateMap }, {
+          resolveRegisteredConnectorManifest: async (id: string) => {
+            const manifest = await ctx.resolveRegisteredConnectorManifest(id);
+            storageNamespace = await ctx.resolveOwnerConnectorNamespace(req, id);
+            return manifest;
+          },
+          resolveGrantScope: (id: string, gid: string) => ctx.resolveGrantScopedStateGrant(id, gid),
+          onGrantResolved: async (grantScope: { traceId?: string; scenarioId?: string } | null) => {
+            if (grantScope?.traceId) {
+              stateContext.traceId = grantScope.traceId;
+              stateContext.scenarioId = grantScope.scenarioId;
+            }
+            ctx.setReferenceTraceId(res, stateContext.traceId);
+            await ctx.emitStateRequested(req, stateContext);
+          },
+          putSyncState: async (id: string, map: unknown, args: unknown) => {
+            const namespace = storageNamespace ?? (await ctx.resolveOwnerConnectorNamespace(req, id));
+            return ctx.putSyncState(ctx.storageTargetForConnectorNamespace(namespace), map, args);
+          },
+        } as unknown as Parameters<typeof executeRsConnectorStatePut>[1])) as {
+          state: {
+            state?: Record<string, unknown>;
+            updated_at?: string | null;
+          } | null;
+        };
+        await ctx.emitStateEvent(req, stateContext, "state.updated", "succeeded", {
+          persisted_streams: Object.keys(state?.state || {}),
+          updated_at: state?.updated_at || null,
+        });
+        return res.json(ctx.toPublicConnectorStateProjection(state));
+      } catch (err) {
+        if (err instanceof RsConnectorStatePutValidationError) {
+          // Translate the operation-typed validation error into the plain
+          // `Error` shape `rejectState` already understands so the public
+          // error envelope and `state.rejected` event remain unchanged.
+          const translated = new Error((err as Error).message) as Error & {
+            code?: string;
+          };
+          const translatedCode = (err as { code?: string }).code;
+          if (translatedCode !== undefined) {
+            translated.code = translatedCode;
+          }
+          return await ctx.rejectState(res, req, stateContext, translated);
+        }
+        return await ctx.rejectState(
+          res,
+          req,
+          stateContext,
+          err as Error & {
+            code?: string;
+            trace_id?: string;
+            scenario_id?: string;
+          }
+        );
+      }
+    }
+  );
 }
 
 // Aggregator: mounts the polyfill-mode RS mutation routes (called when !nativeMode).
@@ -1264,13 +1029,10 @@ export function mountRsConnectorStatePut(
 // `mountRsEventSubscriptions` and `mountRsBlobsUpload` are called separately
 // from `buildRsApp` to preserve the original route registration order. This
 // function mounts only the !nativeMode polyfill routes.
-export function mountRsMutation(
-	app: AppLike,
-	ctx: MountRsMutationContext,
-): void {
-	mountRsRecordsDeleteStream(app, ctx);
-	mountRsRecordsDelete(app, ctx);
-	mountRsRecordsIngest(app, ctx);
-	mountRsConnectorStateGet(app, ctx);
-	mountRsConnectorStatePut(app, ctx);
+export function mountRsMutation(app: AppLike, ctx: MountRsMutationContext): void {
+  mountRsRecordsDeleteStream(app, ctx);
+  mountRsRecordsDelete(app, ctx);
+  mountRsRecordsIngest(app, ctx);
+  mountRsConnectorStateGet(app, ctx);
+  mountRsConnectorStatePut(app, ctx);
 }

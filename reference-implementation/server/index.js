@@ -5011,6 +5011,7 @@ function buildRsApp(opts = {}) {
     requireToken,
     requireOwner,
     requireClient,
+    pdppError,
     buildMutationContext,
     buildStateContext,
     setReferenceTraceId,
