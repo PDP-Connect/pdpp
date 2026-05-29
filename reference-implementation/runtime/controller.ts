@@ -2218,6 +2218,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
   }
 
   async function getSchedule(connectorId: string, options: ConnectorInstanceOptions = {}): Promise<ScheduleApi | null> {
+    connectorId = canonicalConnectorKey(connectorId) ?? connectorId;
     const connectorInstanceId = options.connectorInstanceId || connectorId;
     const directSchedule = await getScheduleRecord(connectorInstanceId);
     let schedule = directSchedule;
@@ -2252,6 +2253,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     input: ConnectorSchedulePatch,
     options: ConnectorInstanceOptions = {}
   ): Promise<ScheduleUpsertResult> {
+    connectorId = canonicalConnectorKey(connectorId) ?? connectorId;
     const connectorInstanceId = options.connectorInstanceId || connectorId;
     const now = nowIso();
     const validated = validateScheduleInput(input);
@@ -2298,6 +2300,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
     enabled: boolean,
     options: ConnectorInstanceOptions = {}
   ): Promise<ScheduleApi | null> {
+    connectorId = canonicalConnectorKey(connectorId) ?? connectorId;
     const connectorInstanceId = options.connectorInstanceId || connectorId;
     const existing = await getScheduleRecord(connectorInstanceId);
     if (!existing) {
@@ -2326,6 +2329,7 @@ export function createController(opts: ControllerOptions = {}): Controller {
   }
 
   async function deleteSchedule(connectorId: string, options: ConnectorInstanceOptions = {}): Promise<boolean> {
+    connectorId = canonicalConnectorKey(connectorId) ?? connectorId;
     const connectorInstanceId = options.connectorInstanceId || connectorId;
     const existing = await getScheduleRecord(connectorInstanceId);
     if (!existing) {
