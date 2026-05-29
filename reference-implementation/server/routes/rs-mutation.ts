@@ -40,6 +40,7 @@ import {
   BlobsUploadStreamNotFoundError,
   executeBlobsUpload,
 } from "../../operations/rs-blobs-upload/index.ts";
+import type { SubscriptionScope, SubscriptionScopeStream } from "../../operations/rs-client-event-derive/index.ts";
 import { executeRsConnectorStateGet } from "../../operations/rs-connector-state-get/index.ts";
 import {
   executeRsConnectorStatePut,
@@ -101,12 +102,13 @@ interface TokenInfo {
 interface GrantStreamLike {
   readonly connection_id?: string | null;
   readonly name?: string | null;
-  readonly resources?: unknown;
-  readonly time_range?: unknown;
+  readonly resources?: readonly string[] | null;
+  readonly time_range?: SubscriptionScopeStream["time_range"] | null;
   readonly [key: string]: unknown;
 }
 
 interface GrantLike {
+  readonly source?: SubscriptionScope["source"] | null;
   readonly streams?: GrantStreamLike[] | null;
   readonly [key: string]: unknown;
 }
@@ -365,26 +367,43 @@ export function mountRsBlobsUpload(app: AppLike, ctx: MountRsMutationContext): v
 //
 // See: openspec/changes/add-client-event-subscriptions/
 
-function buildBearerActorFromTokenInfo(req: RouteRequest) {
-  const ti = (req.tokenInfo || {}) as TokenInfo;
-  const grant = (ti.grant || {}) as GrantLike;
-  const scope = {
-    source: (grant as unknown as Record<string, unknown>).source,
+function buildGrantScope(grant: GrantLike): SubscriptionScope {
+  return {
+    ...(grant.source ? { source: grant.source } : {}),
     streams: Array.isArray(grant.streams)
-      ? grant.streams.map((s: GrantStreamLike) => ({
-          name: s.name,
-          ...(s.connection_id ? { connection_id: s.connection_id } : {}),
-          ...(s.resources ? { resources: s.resources } : {}),
-          ...(s.time_range ? { time_range: s.time_range } : {}),
-        }))
+      ? grant.streams.flatMap((s: GrantStreamLike): SubscriptionScopeStream[] => {
+          if (!s.name) {
+            return [];
+          }
+          return [
+            {
+              name: s.name,
+              ...(s.connection_id ? { connection_id: s.connection_id } : {}),
+              ...(Array.isArray(s.resources) ? { resources: s.resources } : {}),
+              ...(s.time_range ? { time_range: s.time_range } : {}),
+            },
+          ];
+        })
       : [],
   };
+}
+
+function buildBearerActorFromTokenInfo(req: RouteRequest): BearerActor | null {
+  const ti = (req.tokenInfo || {}) as TokenInfo;
+  const grant = (ti.grant || {}) as GrantLike;
+  if (!(ti.client_id && ti.grant_id)) {
+    return null;
+  }
   return {
-    clientId: ti.client_id || null,
-    grantId: ti.grant_id || null,
-    subjectId: ti.subject_id || null,
-    grantScope: scope,
+    clientId: ti.client_id,
+    grantId: ti.grant_id,
+    subjectId: ti.subject_id ?? "",
+    grantScope: buildGrantScope(grant),
   };
+}
+
+function rejectMissingClientGrant(ctx: MountRsMutationContext, res: RouteResponse): unknown {
+  return ctx.pdppError(res, 403, "grant_invalid", "client subscription requires an active client grant");
 }
 
 function handleClientEventSubError(ctx: MountRsMutationContext, res: RouteResponse, err: unknown): unknown {
@@ -414,20 +433,14 @@ export function mountRsEventSubscriptions(app: AppLike, ctx: MountRsMutationCont
     async (req: RouteRequest, res: RouteResponse) => {
       try {
         const actor = buildBearerActorFromTokenInfo(req);
-        if (!(actor.clientId && actor.grantId)) {
-          return ctx.pdppError(res, 403, "grant_invalid", "client subscription requires an active client grant");
+        if (!actor) {
+          return rejectMissingClientGrant(ctx, res);
         }
-        const narrowedActor: BearerActor = {
-          clientId: actor.clientId,
-          grantId: actor.grantId,
-          subjectId: actor.subjectId ?? "",
-          grantScope: actor.grantScope as unknown as BearerActor["grantScope"],
-        };
         const body = (req.body && typeof req.body === "object" ? req.body : {}) as Record<string, unknown>;
         const filters = body.filters && typeof body.filters === "object" ? body.filters : undefined;
         const out = await executeCreateSubscription(
           {
-            actor: narrowedActor,
+            actor,
             callbackUrl: typeof body.callback_url === "string" ? body.callback_url : "",
             filters,
           } as Parameters<typeof executeCreateSubscription>[0],
@@ -466,8 +479,11 @@ export function mountRsEventSubscriptions(app: AppLike, ctx: MountRsMutationCont
     async (req: RouteRequest, res: RouteResponse) => {
       try {
         const actor = buildBearerActorFromTokenInfo(req);
+        if (!actor) {
+          return rejectMissingClientGrant(ctx, res);
+        }
         const out = await executeListSubscriptions(
-          actor as unknown as Parameters<typeof executeListSubscriptions>[0],
+          actor,
           clientEventSubsDeps() as Parameters<typeof executeListSubscriptions>[1]
         );
         return res.json(out);
@@ -485,8 +501,11 @@ export function mountRsEventSubscriptions(app: AppLike, ctx: MountRsMutationCont
     async (req: RouteRequest, res: RouteResponse) => {
       try {
         const actor = buildBearerActorFromTokenInfo(req);
+        if (!actor) {
+          return rejectMissingClientGrant(ctx, res);
+        }
         const out = await executeGetSubscription(
-          actor as unknown as Parameters<typeof executeGetSubscription>[0],
+          actor,
           req.params.id ?? "",
           clientEventSubsDeps() as Parameters<typeof executeGetSubscription>[2]
         );
@@ -505,9 +524,12 @@ export function mountRsEventSubscriptions(app: AppLike, ctx: MountRsMutationCont
     async (req: RouteRequest, res: RouteResponse) => {
       try {
         const actor = buildBearerActorFromTokenInfo(req);
+        if (!actor) {
+          return rejectMissingClientGrant(ctx, res);
+        }
         const body = (req.body || {}) as Record<string, unknown>;
         const out = await executeUpdateSubscription(
-          actor as unknown as Parameters<typeof executeUpdateSubscription>[0],
+          actor,
           req.params.id ?? "",
           {
             ...(typeof body.enabled === "boolean" ? { enabled: body.enabled } : {}),
@@ -530,8 +552,11 @@ export function mountRsEventSubscriptions(app: AppLike, ctx: MountRsMutationCont
     async (req: RouteRequest, res: RouteResponse) => {
       try {
         const actor = buildBearerActorFromTokenInfo(req);
+        if (!actor) {
+          return rejectMissingClientGrant(ctx, res);
+        }
         await executeDeleteSubscription(
-          actor as unknown as Parameters<typeof executeDeleteSubscription>[0],
+          actor,
           req.params.id ?? "",
           clientEventSubsDeps() as Parameters<typeof executeDeleteSubscription>[2]
         );
@@ -550,8 +575,11 @@ export function mountRsEventSubscriptions(app: AppLike, ctx: MountRsMutationCont
     async (req: RouteRequest, res: RouteResponse) => {
       try {
         const actor = buildBearerActorFromTokenInfo(req);
+        if (!actor) {
+          return rejectMissingClientGrant(ctx, res);
+        }
         const out = await executeEnqueueTestEvent(
-          actor as unknown as Parameters<typeof executeEnqueueTestEvent>[0],
+          actor,
           req.params.id ?? "",
           clientEventSubsDeps() as Parameters<typeof executeEnqueueTestEvent>[2]
         );
