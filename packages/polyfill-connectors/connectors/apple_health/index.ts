@@ -22,6 +22,7 @@ import {
   isBeforeCursor,
   parseAttrs,
 } from "./parsers.ts";
+import { validateRecord } from "./schemas.ts";
 import type { AppleHealthAttrs, AppleHealthState, StreamParseArgs } from "./types.ts";
 
 // Streaming buffer size — 64 KB balances memory and syscalls on large exports.
@@ -127,6 +128,7 @@ function handleWorkout(
 
 runConnector({
   name: "apple_health",
+  validateRecord,
   async collect({ state, requested, emit, emitRecord, progress }) {
     const dir = process.env.APPLE_HEALTH_EXPORT_DIR || join(homedir(), ".pdpp/imports/apple_health");
     const path = resolveExportPath(dir);

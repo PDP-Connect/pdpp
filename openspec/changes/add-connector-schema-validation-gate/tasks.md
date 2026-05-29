@@ -52,6 +52,22 @@
   real emit is shape-checked rather than silently trusted. pocket is DEPRECATED
   (API gone) but schematized so the gate measures it and a future file-based
   re-import variant is guarded.)
-- [ ] Lane C: author schemas for the lower-risk connectors; remove entries.
+- [x] Lane C: author schemas for the lower-risk connectors; remove entries.
+  (All six wire `validateRecord` from a sibling `schemas.ts`; allowlist entries
+  removed; the allowlist is now EMPTY — gate green at 31 validated, 0
+  allowlisted, 0 unexplained. Each connector has a focused `schemas.test.ts`.
+  ical and apple_health are emit-shape-derived from their parser record builders
+  (buildEventRecord / buildHealthRecord / buildWorkoutRecord) — ical accepts all
+  three parseIcsDate date forms and the attendee array; apple_health covers the
+  numeric-value and category `value_raw` record variants and float-capable
+  workout metrics. heb, meta, doordash, and wholefoods are browser scaffolds that
+  do not yet emit a RECORD, so their schemas follow the manifest stream contract
+  — loom/Lane-B precedent — and the first real emit is shape-checked rather than
+  silently trusted. The allowlist module + honesty gate are KEPT (not deleted) so
+  the bidirectional guard keeps running: a connector that loses its
+  validateRecord wiring fails the build, and any future schemaless connector must
+  make a deliberate, justified entry. Free-form text uses pdppSafeText; ids/dates
+  use regex validators; opaque USDA `nutrition` objects are `z.record(string,
+  unknown)` — the only non-precise field, and genuinely opaque per the manifest.)
 - [ ] Lane D: migrate Codex to the shared fingerprint cursor (independent of this
   gate).

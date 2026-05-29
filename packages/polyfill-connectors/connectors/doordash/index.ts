@@ -14,12 +14,14 @@ import {
   politeDelay,
   runConnector,
 } from "../../src/connector-runtime.ts";
+import { validateRecord } from "./schemas.ts";
 
 const SESSION_COOKIE = /^(session_id|dd_login|_cfuvid)$/;
 
 runConnector({
   name: "doordash",
   browser: {},
+  validateRecord,
   async probeSession({ context }: ProbeSessionArgs): Promise<boolean> {
     const cookies = await context.cookies("https://www.doordash.com/");
     return cookies.some((c) => SESSION_COOKIE.test(c.name) && Boolean(c.value));
