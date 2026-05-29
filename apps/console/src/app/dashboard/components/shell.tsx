@@ -148,6 +148,7 @@ function SidebarContent({ active, mode, routes }: { active: DashboardSection; mo
 
         {active === "explore" || active === "search" ? <ExploreSubnav routes={routes} /> : null}
         {active === "grants" && mode === "live" ? <GrantsSubnav /> : null}
+        {active === "deployment" && mode === "live" ? <DeploymentSubnav routes={routes} /> : null}
       </div>
 
       {mode === "mock-owner" ? <SandboxFooter /> : <EnvFooter />}
@@ -174,6 +175,16 @@ function GrantsSubnav() {
     { href: "/dashboard/grants/request", label: "Grant request" },
   ];
   return <SidebarSubnav items={items} label="Grants workspace" />;
+}
+
+function DeploymentSubnav({ routes }: { routes: Routes }) {
+  // Owner tokens are for the operator and trusted local agents only — not
+  // ordinary MCP clients. Never render this subnav in mock-owner mode.
+  const items = [
+    { href: routes.section.deployment, label: "Deployment overview" },
+    { href: routes.section.deploymentTokens, label: "Owner tokens" },
+  ];
+  return <SidebarSubnav items={items} label="Deployment" />;
 }
 
 function SidebarSubnav({ label, items }: { label: string; items: Array<{ href: string; label: string }> }) {
