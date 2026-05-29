@@ -445,3 +445,60 @@ test('unknown event subscription returns adapter not_found without touching reco
   assert.equal(out.status, 404);
   assert.equal(out.error.code, 'not_found');
 });
+
+// Spec: openspec/changes/canonicalize-connector-keys/specs/agent-consent-bundling/spec.md
+// available_connections entries MUST include grant_id, connector_key, connection_id (not connector_id).
+// These are regression tests for task 5.3.
+
+test('ambiguous_connection error envelope includes grant_id and connector_key (not connector_id)', async () => {
+  const fetch = makeRouter(async () => jsonResponse(500, {}));
+  const rs = createPackageRsClient({ providerUrl: PROVIDER, members: [memberA(), memberB()], fetch });
+  const out = await rs.getJson('/v1/streams/repos/records', { query: { limit: 10 } });
+  assert.equal(out.error.code, 'ambiguous_connection');
+  const conns = out.error.available_connections;
+  assert.equal(conns.length, 2);
+  for (const entry of conns) {
+    assert.ok('grant_id' in entry, 'available_connections entry must carry grant_id');
+    assert.ok('connector_key' in entry, 'available_connections entry must carry connector_key (not connector_id)');
+    assert.ok('connection_id' in entry, 'available_connections entry must carry connection_id');
+    assert.ok(!('connector_id' in entry), 'available_connections entry must NOT advertise connector_id');
+  }
+  assert.equal(conns[0].grant_id, 'grant_A');
+  assert.equal(conns[0].connector_key, 'github');
+  assert.equal(conns[0].connection_id, 'gh_main');
+  assert.equal(conns[1].grant_id, 'grant_B');
+  assert.equal(conns[1].connector_key, 'slack');
+  assert.equal(conns[1].connection_id, 'slack_main');
+});
+
+test('not_found error envelope includes grant_id and connector_key for event subscription create', async () => {
+  const fetch = makeRouter(async () => jsonResponse(500, {}));
+  const rs = createPackageRsClient({ providerUrl: PROVIDER, members: [memberA(), memberB()], fetch });
+  const out = await rs.postJson('/v1/event-subscriptions', {
+    body: { callback_url: 'https://x/y', connection_id: 'unknown_conn' },
+  });
+  assert.equal(out.ok, false);
+  assert.equal(out.status, 404);
+  assert.equal(out.error.code, 'not_found');
+  const conns = out.error.available_connections;
+  assert.equal(conns.length, 2);
+  for (const entry of conns) {
+    assert.ok('grant_id' in entry, 'not_found envelope must carry grant_id per member');
+    assert.ok('connector_key' in entry, 'not_found envelope must carry connector_key (not connector_id)');
+    assert.ok(!('connector_id' in entry), 'not_found envelope must NOT advertise connector_id');
+  }
+});
+
+test('create_event_subscription ambiguous envelope carries connector_key and grant_id', async () => {
+  const fetch = makeRouter(async () => jsonResponse(500, {}));
+  const rs = createPackageRsClient({ providerUrl: PROVIDER, members: [memberA(), memberB()], fetch });
+  const out = await rs.postJson('/v1/event-subscriptions', { body: { callback_url: 'https://x/y' } });
+  assert.equal(out.error.code, 'ambiguous_connection');
+  const conns = out.error.available_connections;
+  assert.equal(conns.length, 2);
+  for (const entry of conns) {
+    assert.ok('grant_id' in entry);
+    assert.ok('connector_key' in entry);
+    assert.ok(!('connector_id' in entry));
+  }
+});

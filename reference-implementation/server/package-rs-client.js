@@ -313,7 +313,7 @@ function stripConnectionId(query) {
 function memberSourceTag(member) {
   return {
     grant_id: member.grant_id,
-    connector_id: member.source?.id ?? null,
+    connector_key: member.source?.id ?? null,
     connection_id: member.connection_id ?? null,
     ...(member.source?.display_name ? { display_name: member.source.display_name } : {}),
   };
@@ -321,7 +321,8 @@ function memberSourceTag(member) {
 
 function availableConnectionsList(children) {
   return children.map(({ member }) => ({
-    connector_id: member.source?.id ?? null,
+    grant_id: member.grant_id,
+    connector_key: member.source?.id ?? null,
     connection_id: member.connection_id ?? null,
     ...(member.source?.display_name ? { display_name: member.source.display_name } : {}),
   }));
