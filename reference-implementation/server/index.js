@@ -2852,6 +2852,8 @@ function buildAsApp(opts = {}) {
           connectorId,
           connectionId: null,
           label: connectorLabel,
+          connectorTypeLabel: connectorLabel,
+          connectionName: null,
           meta: streamCount
             ? `${connectorMetaToken} · ${streamCount} streams · no configured connection`
             : `${connectorMetaToken} · no configured connection`,
@@ -2868,6 +2870,8 @@ function buildAsApp(opts = {}) {
           connectorId,
           connectionId,
           label: displayName ? `${connectorLabel} — ${displayName}` : connectorLabel,
+          connectorTypeLabel: connectorLabel,
+          connectionName: displayName || null,
           meta: streamCount
             ? `${connectorMetaToken} · ${streamCount} streams`
             : connectorMetaToken,
@@ -2926,7 +2930,9 @@ function buildAsApp(opts = {}) {
               <label class="hosted-ui-option">
                 <input type="checkbox" name="selection" value="${hostedEscape(row.formValue)}" />
                 <span class="hosted-ui-option-body">
-                  <span class="hosted-ui-option-title">${hostedEscape(row.label)}</span>
+                  <span class="hosted-ui-option-title">
+                    <span class="hosted-ui-connector-type">${hostedEscape(row.connectorTypeLabel)}</span>${row.connectionName ? `<span class="hosted-ui-connection-name">${hostedEscape(row.connectionName)}</span>` : ''}
+                  </span>
                   <span class="hosted-ui-option-meta">${hostedEscape(row.meta)}</span>
                 </span>
               </label>

@@ -2169,3 +2169,76 @@ test('sourceMetadata.display_name uses human-readable connection name, not raw c
     await closeServer(server);
   }
 });
+
+test('picker renders connector type and connection name as distinct semantic elements', async () => {
+  // Acceptance target: the picker must make it clear that "Claude Code" is the
+  // connector *type* and "peregrine Claude Code" is the *connection name* —
+  // not two competing ontologies. The HTML must carry separate elements with
+  // class="hosted-ui-connector-type" and class="hosted-ui-connection-name"
+  // so they can be styled and machine-read as distinct concepts.
+  const server = await startOpenTestServer();
+  const asUrl = `http://localhost:${server.asPort}`;
+
+  try {
+    const spotify = await registerSpotify(asUrl);
+
+    // Seed a named connection so the picker renders a connection row.
+    const instanceId = 'cin_test_type_vs_connection';
+    const connectionDisplayName = 'My Work Spotify';
+    const store = createSqliteConnectorInstanceStore();
+    const now = new Date().toISOString();
+    await store.upsert({
+      connectorInstanceId: instanceId,
+      ownerSubjectId: 'owner_local',
+      connectorId: spotify.connector_id,
+      displayName: connectionDisplayName,
+      status: 'active',
+      sourceKind: 'account',
+      sourceBindingKey: 'work@example.com',
+      sourceBinding: { account: 'work@example.com' },
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const client = await registerAuthCodeClient(asUrl);
+    const verifier = randomBytes(32).toString('base64url');
+    const authorizeUrl = new URL(`${asUrl}/oauth/authorize`);
+    authorizeUrl.searchParams.set('client_id', client.client_id);
+    authorizeUrl.searchParams.set('redirect_uri', 'https://client.example/callback');
+    authorizeUrl.searchParams.set('response_type', 'code');
+    authorizeUrl.searchParams.set('state', 'type-vs-connection-test');
+    authorizeUrl.searchParams.set('code_challenge', pkceChallenge(verifier));
+    authorizeUrl.searchParams.set('code_challenge_method', 'S256');
+
+    const resp = await fetch(authorizeUrl);
+    assert.equal(resp.status, 200);
+    const html = await resp.text();
+
+    // The connector type (Spotify display name) must appear in a dedicated element.
+    assert.match(
+      html,
+      /class="hosted-ui-connector-type"[^>]*>[^<]*Spotify/,
+      'connector type label must be in a hosted-ui-connector-type element',
+    );
+
+    // The connection name must appear in a dedicated element — distinct from
+    // the connector type element so type and instance are never ambiguous.
+    assert.match(
+      html,
+      /class="hosted-ui-connection-name"[^>]*>[^<]*My Work Spotify/,
+      'connection name must be in a hosted-ui-connection-name element separate from the connector type',
+    );
+
+    // The connector type element and the connection name element MUST NOT be
+    // the same element — the whole point is that they are distinguished.
+    const connectorTypePattern = /class="hosted-ui-connector-type"[^>]*>([^<]*)<\/span>/g;
+    for (const match of html.matchAll(connectorTypePattern)) {
+      assert.ok(
+        !match[1].includes(connectionDisplayName),
+        'connector type element MUST NOT contain the connection name — they must be separate elements',
+      );
+    }
+  } finally {
+    await closeServer(server);
+  }
+});

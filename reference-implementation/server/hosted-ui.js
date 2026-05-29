@@ -351,6 +351,26 @@ code, pre, kbd, samp { font-family: var(--font-mono); }
   font-weight: 600;
   line-height: 1.35;
   color: var(--foreground);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 0.35rem;
+}
+
+.hosted-ui-connector-type {
+  color: var(--foreground);
+}
+
+.hosted-ui-connection-name {
+  font-weight: 400;
+  font-size: 0.875rem;
+  color: var(--muted-foreground);
+}
+
+.hosted-ui-connection-name::before {
+  content: '·';
+  margin-right: 0.35rem;
+  color: var(--muted-foreground);
 }
 
 .hosted-ui-option-meta {
