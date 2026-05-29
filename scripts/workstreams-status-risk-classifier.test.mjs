@@ -35,7 +35,7 @@ function fail(label, detail) {
  * containing a single lane with the given status.json fields.
  * Returns stdout as a string.
  */
-function runWithFixture(statusData) {
+function runWithFixture(statusData, options = {}) {
   const tmp = mkdtempSync(join(tmpdir(), "ws-status-test-"));
   try {
     // Fake git repo so the script can parse worktrees / branch status.
@@ -47,10 +47,20 @@ function runWithFixture(statusData) {
     const artifactDir = join(tmp, "tmp", "workstreams", "claude-wrapper", lane, ts);
     mkdirSync(artifactDir, { recursive: true });
 
-    writeFileSync(
-      join(artifactDir, "status.json"),
-      JSON.stringify({ lane, started_at: ts, ended_at: "2026-01-01T00:30:00Z", ...statusData })
-    );
+    if (options.parked) {
+      const parkedDir = join(tmp, "tmp", "workstreams", "parked", lane);
+      mkdirSync(parkedDir, { recursive: true });
+      writeFileSync(join(parkedDir, "status.txt"), "parked by owner\n");
+    }
+
+    if (options.corruptStatus) {
+      writeFileSync(join(artifactDir, "status.json"), "");
+    } else {
+      writeFileSync(
+        join(artifactDir, "status.json"),
+        JSON.stringify({ lane, started_at: ts, ended_at: "2026-01-01T00:30:00Z", ...statusData })
+      );
+    }
 
     // workstreams-status.mjs resolves repoRoot via git; we must run from the fake repo.
     return execFileSync("node", [statusScript, "--no-fail"], {
@@ -197,6 +207,29 @@ try {
   }
 } catch (err) {
   fail("completed/merged: script threw", err.message);
+}
+
+// 8. Explicitly parked failed lane with corrupt status must remain visible but stop blocking owner status.
+try {
+  const out = runWithFixture(
+    {
+      lane: "ri-parked-corrupt-lane",
+      status: "failed",
+      report_state: "absent",
+      exit_code: 1,
+      transcript_bytes: 0,
+    },
+    { corruptStatus: true, parked: true }
+  );
+  if (out.includes("WRAPPER-LANE failed lane=ri-parked-corrupt-lane")) {
+    fail("parked/corrupt: failed wrapper risk emitted for parked historical lane", out);
+  } else if (!out.includes("ri-parked-corrupt-lane") || !out.includes("parked=true")) {
+    fail("parked/corrupt: lane disappeared or missing parked marker", out);
+  } else {
+    pass("parked/corrupt: no live risk, still visible as parked inventory");
+  }
+} catch (err) {
+  fail("parked/corrupt: script threw", err.message);
 }
 
 // --- Summary ---

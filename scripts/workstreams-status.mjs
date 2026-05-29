@@ -7,6 +7,7 @@ const repoRoot = exec("git", ["rev-parse", "--show-toplevel"], { cwd: process.cw
 const commonGitDir = resolve(repoRoot, exec("git", ["rev-parse", "--git-common-dir"], { cwd: repoRoot }).trim());
 const tmpReportsDir = join(repoRoot, "tmp", "workstreams");
 const wrapperDir = join(tmpReportsDir, "claude-wrapper");
+const parkedDir = join(tmpReportsDir, "parked");
 const hubDir = join(commonGitDir, "workstreams");
 
 const now = Date.now();
@@ -196,9 +197,12 @@ for (const blocker of blockerFiles) {
   risks.push(`BLOCKER pending ${blocker.rel} (${blocker.ageHours}h old)`);
 }
 for (const lane of wrapperLanes) {
+  const parkedWrapperLane = isParkedWrapperLane(lane);
   if (lane.status === "failed") {
-    const txNote = lane.transcriptBytes >= 0 ? ` transcript_bytes=${lane.transcriptBytes}` : "";
-    risks.push(`WRAPPER-LANE failed lane=${lane.lane} run=${lane.startedAt} report_state=${lane.reportState}${txNote}`);
+    if (!parkedWrapperLane) {
+      const txNote = lane.transcriptBytes >= 0 ? ` transcript_bytes=${lane.transcriptBytes}` : "";
+      risks.push(`WRAPPER-LANE failed lane=${lane.lane} run=${lane.startedAt} report_state=${lane.reportState}${txNote}`);
+    }
   } else if (lane.status === "running") {
     // Stale "running": started_at === ended_at means the process was SIGKILLed before the final
     // write_status call could update the seed (both timestamps come from the same initial write).
@@ -233,6 +237,7 @@ for (const lane of wrapperLanes) {
     lane.status !== "running" &&
     lane.status !== "aborted" &&
     !terminalHistoricalWithReport &&
+    !parkedWrapperLane &&
     lane.transcriptBytes >= 0 &&
     lane.transcriptBytes < 200
   ) {
@@ -331,9 +336,10 @@ printSection(
     ? []
     : wrapperLanes.map((lane) => {
         const recovered = lane.recovered ? " recovered=true" : "";
+        const parked = isParkedWrapperLane(lane) ? " parked=true" : "";
         const branch = lane.branch ? ` branch=${lane.branch}` : "";
         const txBytes = lane.transcriptBytes >= 0 ? ` transcript_bytes=${lane.transcriptBytes}` : "";
-        return `- [${lane.status}] lane=${lane.lane}${branch} run=${lane.startedAt} report=${lane.reportState}${txBytes}${recovered}`;
+        return `- [${lane.status}] lane=${lane.lane}${branch} run=${lane.startedAt} report=${lane.reportState}${txBytes}${recovered}${parked}`;
       })
 );
 
@@ -409,6 +415,11 @@ function isWrapperLaneProcessRunning(lane) {
     if (lane.artifactDir && line.includes(lane.artifactDir)) return true;
     return lane.lane && line.includes(`--lane ${lane.lane}`);
   });
+}
+
+function isParkedWrapperLane(lane) {
+  if (!lane?.lane) return false;
+  return existsSync(join(parkedDir, lane.lane));
 }
 
 // Scan tmp/workstreams/claude-wrapper/<lane>/<ts>/status.json.
