@@ -1,6 +1,8 @@
 {
   "protocol_version": "0.1.0",
   "connector_id": "https://registry.pdpp.org/connectors/chatgpt",
+  "connector_key": "chatgpt",
+  "manifest_uri": "https://registry.pdpp.org/connectors/chatgpt",
   "version": "0.1.0",
   "display_name": "ChatGPT",
   "runtime_requirements": {

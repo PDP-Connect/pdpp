@@ -1,6 +1,8 @@
 {
   "protocol_version": "0.1.0",
   "connector_id": "https://registry.pdpp.org/connectors/meta",
+  "connector_key": "meta",
+  "manifest_uri": "https://registry.pdpp.org/connectors/meta",
   "version": "0.1.0",
   "display_name": "Instagram (Meta)",
   "runtime_requirements": {

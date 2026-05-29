@@ -568,7 +568,7 @@ test('as.introspect strips grant_storage_binding from public envelope', async ()
 
 // ─── as.polyfill.connector.register / detail ────────────────────────────
 
-test('as.polyfill.connector.register rejects body without connector_id', async () => {
+test('as.polyfill.connector.register rejects body without connector_key or connector_id', async () => {
   const outcome = await executeAsPolyfillConnectorRegister(
     { manifest: { name: 'x' } },
     { registerConnector: () => assert.fail('not reached') },
@@ -578,13 +578,14 @@ test('as.polyfill.connector.register rejects body without connector_id', async (
   assert.equal(outcome.errorCode, 'invalid_request');
 });
 
-test('as.polyfill.connector.register echoes connector_id on 201', async () => {
+test('as.polyfill.connector.register echoes registered connector key on 201', async () => {
   let captured;
   const outcome = await executeAsPolyfillConnectorRegister(
     { manifest: { connector_id: 'github', name: 'GitHub' } },
     {
       registerConnector: (m) => {
         captured = m;
+        return 'github';
       },
     },
   );
@@ -592,7 +593,36 @@ test('as.polyfill.connector.register echoes connector_id on 201', async () => {
   assert.deepEqual(outcome, {
     outcome: 'success',
     status: 201,
-    envelope: { connector_id: 'github' },
+    envelope: { connector_id: 'github', connector_key: 'github' },
+  });
+});
+
+test('as.polyfill.connector.register accepts connector_key identity', async () => {
+  let captured;
+  const outcome = await executeAsPolyfillConnectorRegister(
+    {
+      manifest: {
+        connector_key: 'custom-source',
+        manifest_uri: 'https://example.test/manifests/custom-source',
+        name: 'Custom Source',
+      },
+    },
+    {
+      registerConnector: (m) => {
+        captured = m;
+        return 'custom-source';
+      },
+    },
+  );
+  assert.deepEqual(captured, {
+    connector_key: 'custom-source',
+    manifest_uri: 'https://example.test/manifests/custom-source',
+    name: 'Custom Source',
+  });
+  assert.deepEqual(outcome, {
+    outcome: 'success',
+    status: 201,
+    envelope: { connector_id: 'custom-source', connector_key: 'custom-source' },
   });
 });
 

@@ -1,6 +1,8 @@
 {
   "protocol_version": "0.1.0",
   "connector_id": "https://registry.pdpp.org/connectors/ical",
+  "connector_key": "ical",
+  "manifest_uri": "https://registry.pdpp.org/connectors/ical",
   "version": "0.1.0",
   "display_name": "Calendar (iCal)",
   "runtime_requirements": {

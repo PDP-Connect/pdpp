@@ -1,6 +1,8 @@
 {
   "protocol_version": "0.1.0",
   "connector_id": "https://registry.pdpp.org/connectors/google-takeout",
+  "connector_key": "google-takeout",
+  "manifest_uri": "https://registry.pdpp.org/connectors/google-takeout",
   "version": "0.1.0",
   "display_name": "Google Takeout",
   "runtime_requirements": {

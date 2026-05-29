@@ -1,6 +1,8 @@
 {
   "protocol_version": "0.1.0",
   "connector_id": "https://registry.pdpp.org/connectors/ynab",
+  "connector_key": "ynab",
+  "manifest_uri": "https://registry.pdpp.org/connectors/ynab",
   "version": "0.3.0",
   "display_name": "YNAB",
   "runtime_requirements": {

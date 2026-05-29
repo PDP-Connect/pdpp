@@ -21,6 +21,7 @@ import {
   connectorKeyFromRegistryUrl,
   firstPartyConnectorKeys,
   isInternalConnectorId,
+  isConnectorKey,
   isLegacyLocalAlias,
   isRegistryUrlConnectorId,
   legacyLocalAliasMap,
@@ -107,6 +108,17 @@ test('canonicalConnectorKey accepts URL-shaped first-party ids', () => {
   }
 });
 
+test('isConnectorKey accepts operational keys and rejects URLs', () => {
+  assert.equal(isConnectorKey('gmail'), true);
+  assert.equal(isConnectorKey('claude-code'), true);
+  assert.equal(isConnectorKey('northstar_hr_native'), true);
+  assert.equal(isConnectorKey(`${REGISTRY_PREFIX}gmail`), false);
+  assert.equal(isConnectorKey(''), false);
+  assert.equal(isConnectorKey('  '), false);
+  assert.equal(isConnectorKey('bad/key'), false);
+  assert.equal(isConnectorKey(null), false);
+});
+
 test('canonicalConnectorKey fails closed on unknown URLs and arbitrary strings', () => {
   // The reference must NOT silently promote an unknown registry URL into
   // a canonical first-party key — custom connectors have to declare their
@@ -145,6 +157,28 @@ test('canonicalConnectorKeyFromManifest reads polyfill-style top-level connector
     streams: [],
   };
   assert.equal(canonicalConnectorKeyFromManifest(manifest), 'gmail');
+});
+
+test('canonicalConnectorKeyFromManifest prefers explicit connector_key', () => {
+  const manifest = {
+    connector_key: 'custom-source',
+    manifest_uri: 'https://example.test/manifests/custom-source',
+    connector_id: `${REGISTRY_PREFIX}gmail`,
+    display_name: 'Custom Source',
+    streams: [],
+  };
+  assert.equal(canonicalConnectorKeyFromManifest(manifest), 'custom-source');
+});
+
+test('canonicalConnectorKeyFromManifest rejects invalid explicit connector_key', () => {
+  assert.equal(
+    canonicalConnectorKeyFromManifest({
+      connector_key: `${REGISTRY_PREFIX}gmail`,
+      manifest_uri: `${REGISTRY_PREFIX}gmail`,
+      streams: [],
+    }),
+    null,
+  );
 });
 
 test('canonicalConnectorKeyFromManifest falls back to storage_binding.connector_id', () => {
@@ -189,6 +223,11 @@ function readShippedConnectorKeys(dir) {
     } catch {
       continue;
     }
+    const explicitKey = typeof manifest.connector_key === 'string' ? manifest.connector_key.trim() : '';
+    if (explicitKey) {
+      keys.add(explicitKey);
+      continue;
+    }
     const topLevel = typeof manifest.connector_id === 'string' ? manifest.connector_id.trim() : '';
     if (topLevel.startsWith(REGISTRY_PREFIX)) {
       let tail = topLevel.slice(REGISTRY_PREFIX.length);
@@ -205,6 +244,35 @@ function readShippedConnectorKeys(dir) {
   }
   return keys;
 }
+
+function readRegistryBackedManifests(dir) {
+  const manifests = [];
+  for (const name of readdirSync(dir)) {
+    if (!name.endsWith('.json')) continue;
+    const raw = readFileSync(join(dir, name), 'utf8');
+    let manifest;
+    try {
+      manifest = JSON.parse(raw);
+    } catch {
+      continue;
+    }
+    const connectorId = typeof manifest.connector_id === 'string' ? manifest.connector_id.trim() : '';
+    if (!connectorId.startsWith(REGISTRY_PREFIX)) continue;
+    manifests.push({ name, manifest, connectorId });
+  }
+  return manifests;
+}
+
+test('registry-backed first-party manifests declare connector_key and manifest_uri', () => {
+  for (const dir of [POLYFILL_MANIFESTS_DIR, REFERENCE_MANIFESTS_DIR]) {
+    for (const { name, manifest, connectorId } of readRegistryBackedManifests(dir)) {
+      const key = connectorKeyFromRegistryUrl(connectorId);
+      assert.ok(key, `${name} must use a known first-party registry URI`);
+      assert.equal(manifest.connector_key, key, `${name} must declare canonical connector_key`);
+      assert.equal(manifest.manifest_uri, connectorId, `${name} must preserve registry URI as manifest_uri`);
+    }
+  }
+});
 
 test('allowlist covers every shipped polyfill-connectors manifest', () => {
   const shipped = readShippedConnectorKeys(POLYFILL_MANIFESTS_DIR);

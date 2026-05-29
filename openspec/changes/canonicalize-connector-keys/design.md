@@ -126,6 +126,12 @@ Root `spec-core.md` and `spec-collection-profile.md` still define protocol/Colle
 
 Any root rename from URI-shaped `connector_id` to `connector_key`, or any protocol-level split between `connector_id`, `connector_key`, and `manifest_uri`, requires a separate protocol-spec change with its own compatibility and conformance story. In this tranche, reference docs may describe `connector_key` as the reference implementation's operational connector type key and root URI-shaped `connector_id` examples as protocol/manifest identity, not as the active reference storage key.
 
+### 11. Manifest identity changes are additive until runtime cleanup finishes
+
+The first manifest tranche introduces `connector_key` and `manifest_uri` on registry-backed first-party manifests while retaining top-level `connector_id` for compatibility. This avoids breaking connector packages, fixture readers, local-collector code, and tests that still read `manifest.connector_id` before tasks 4.3, 4.6, and 6.x remove the compatibility field from active paths.
+
+Registration and lookup are already keyed by `connector_key`: `POST /connectors` accepts either `connector_key` or the legacy `connector_id`, normalizes storage rows under the connector key, persists `connector_key`, preserves the registry URI as `manifest_uri`, and still writes `connector_id` in the stored manifest as a compatibility alias with the canonical key value. Custom connector manifests can now declare an explicit slug-like `connector_key` plus `manifest_uri` without fabricating a URL-shaped `connector_id`.
+
 ## Risks / Trade-offs
 
 - **Protocol/reference terminology drift** -> Mitigation: keep this OpenSpec scoped to reference capabilities and explicitly audit root spec docs before changing protocol language.

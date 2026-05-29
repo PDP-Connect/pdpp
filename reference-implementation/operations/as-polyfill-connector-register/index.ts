@@ -2,7 +2,7 @@
  * Canonical `as.polyfill.connector.register` operation.
  *
  * Owns the polyfill-only connector-registration semantics for `POST
- * /connectors`: manifest presence + connector_id presence validation, the
+ * /connectors`: manifest presence + connector identity validation, the
  * call into `registerConnector`, and the success-envelope shape.
  *
  * The host adapter owns Express plumbing, native-mode toggle (route is
@@ -25,7 +25,7 @@ export interface AsPolyfillConnectorRegisterDependencies {
 export interface AsPolyfillConnectorRegisterSuccessOutcome {
   readonly outcome: "success";
   readonly status: 201;
-  readonly envelope: { readonly connector_id: string };
+  readonly envelope: { readonly connector_id: string; readonly connector_key: string };
 }
 
 export interface AsPolyfillConnectorRegisterFailureOutcome {
@@ -44,22 +44,24 @@ export async function executeAsPolyfillConnectorRegister(
   deps: AsPolyfillConnectorRegisterDependencies,
 ): Promise<AsPolyfillConnectorRegisterOutcome> {
   const manifest = input.manifest;
-  const connectorId =
+  const connectorKey =
     manifest && typeof manifest === "object" && !Array.isArray(manifest)
-      ? (manifest as Record<string, unknown>).connector_id
+      ? ((manifest as Record<string, unknown>).connector_key
+        ?? (manifest as Record<string, unknown>).connector_id)
       : undefined;
-  if (typeof connectorId !== "string" || !connectorId) {
+  if (typeof connectorKey !== "string" || !connectorKey) {
     return {
       outcome: "failure",
       status: 400,
       errorCode: "invalid_request",
-      errorMessage: "Missing connector_id",
+      errorMessage: "Missing connector_key or connector_id",
     };
   }
-  await deps.registerConnector(manifest as Record<string, unknown>);
+  const registered = await deps.registerConnector(manifest as Record<string, unknown>);
+  const registeredKey = typeof registered === "string" && registered ? registered : connectorKey;
   return {
     outcome: "success",
     status: 201,
-    envelope: { connector_id: connectorId },
+    envelope: { connector_id: registeredKey, connector_key: registeredKey },
   };
 }

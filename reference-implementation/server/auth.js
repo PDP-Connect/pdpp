@@ -25,6 +25,7 @@ import {
 import {
   canonicalConnectorKey,
   canonicalConnectorKeyFromManifest,
+  isConnectorKey,
 } from './connector-key.js';
 import {
   listActiveBindingsForGrant,
@@ -2091,8 +2092,27 @@ function validateStreamAvailabilityDeclaration(stream, code) {
 }
 
 function validateConnectorManifest(manifest = {}, code = 'invalid_request', opts = {}) {
-  if (!isNonEmptyString(manifest.connector_id)) {
-    throw invalidConnectorManifest('connector_id is required', code);
+  const hasConnectorId = isNonEmptyString(manifest.connector_id);
+  const hasConnectorKey = isNonEmptyString(manifest.connector_key);
+  if (!(hasConnectorId || hasConnectorKey)) {
+    throw invalidConnectorManifest('connector_key or connector_id is required', code);
+  }
+  if (hasConnectorKey && !isConnectorKey(manifest.connector_key)) {
+    throw invalidConnectorManifest('connector_key must be a non-empty slug-like key, not a URL', code);
+  }
+  if (hasConnectorId && hasConnectorKey) {
+    const connectorId = manifest.connector_id.trim();
+    const connectorKey = manifest.connector_key.trim();
+    const canonicalFromConnectorId = canonicalConnectorKey(manifest.connector_id);
+    if (canonicalFromConnectorId && canonicalFromConnectorId !== connectorKey) {
+      throw invalidConnectorManifest('connector_key must match the canonical key for connector_id', code);
+    }
+    if (!canonicalFromConnectorId && connectorId !== connectorKey) {
+      throw invalidConnectorManifest(
+        'connector_id must match connector_key; use manifest_uri for registry or document provenance',
+        code,
+      );
+    }
   }
   if (isNonEmptyString(manifest.provider_id)) {
     throw invalidConnectorManifest('Connector registry only accepts connector manifests; provider_id is not allowed', code);
@@ -2367,15 +2387,16 @@ export async function registerConnector(manifest) {
 
 function normalizeConnectorManifestForStorage(manifest) {
   const connectorId = canonicalConnectorKeyFromManifest(manifest) ?? manifest.connector_id;
-  if (connectorId === manifest.connector_id) {
-    return { connectorId, storedManifest: manifest };
-  }
   const storedManifest = {
     ...cloneJson(manifest),
+    connector_key: connectorId,
     connector_id: connectorId,
   };
-  if (!storedManifest.manifest_uri) {
-    storedManifest.manifest_uri = manifest.connector_id;
+  if (!storedManifest.manifest_uri && isNonEmptyString(manifest.connector_id)) {
+    const originalConnectorId = manifest.connector_id.trim();
+    if (originalConnectorId !== connectorId) {
+      storedManifest.manifest_uri = originalConnectorId;
+    }
   }
   return { connectorId, storedManifest };
 }

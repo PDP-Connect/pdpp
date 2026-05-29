@@ -1,6 +1,8 @@
 {
   "protocol_version": "0.1.0",
   "connector_id": "https://registry.pdpp.org/connectors/loom",
+  "connector_key": "loom",
+  "manifest_uri": "https://registry.pdpp.org/connectors/loom",
   "version": "0.1.0",
   "display_name": "Loom",
   "runtime_requirements": {

@@ -1,6 +1,8 @@
 {
   "protocol_version": "0.1.0",
   "connector_id": "https://registry.pdpp.org/connectors/heb",
+  "connector_key": "heb",
+  "manifest_uri": "https://registry.pdpp.org/connectors/heb",
   "version": "0.1.0",
   "display_name": "H-E-B",
   "runtime_requirements": {

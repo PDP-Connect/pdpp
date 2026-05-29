@@ -110,6 +110,7 @@ const LEGACY_LOCAL_ALIASES = Object.freeze({
 });
 
 const LEGACY_LOCAL_ALIAS_SET = new Set(Object.keys(LEGACY_LOCAL_ALIASES));
+const CONNECTOR_KEY_PATTERN = /^[a-z0-9][a-z0-9._-]*$/;
 
 function trimOrNull(value) {
   if (typeof value !== 'string') return null;
@@ -178,23 +179,38 @@ export function canonicalConnectorKey(value) {
 }
 
 /**
- * Derive the canonical connector key from a parsed connector manifest
- * object. Reads top-level `connector_id` first (polyfill-style manifest),
- * then falls back to `storage_binding.connector_id` (native-style
- * reference manifest). Returns `null` if neither yields a key the
- * allowlist recognizes.
+ * True iff `value` is a syntactically valid operational connector key.
+ * Custom connectors may use keys outside the first-party allowlist, but keys
+ * must stay short/path-safe and must not be registry/document URLs.
  *
- * Callers that need to accept *custom* (non-first-party) manifests SHALL
- * NOT use this helper to fabricate a key — they should read an explicit
- * `connector_key` from the manifest once that field is introduced. Until
- * then, a custom manifest that does not match any known shape returns
- * `null`, and the caller is responsible for failing closed.
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+export function isConnectorKey(value) {
+  const trimmed = trimOrNull(value);
+  if (!trimmed) return false;
+  return CONNECTOR_KEY_PATTERN.test(trimmed) && !isRegistryUrlConnectorId(trimmed);
+}
+
+/**
+ * Derive the canonical connector key from a parsed connector manifest
+ * object. Reads explicit top-level `connector_key` first, then falls back
+ * to top-level `connector_id` (legacy polyfill-style manifest), then
+ * `storage_binding.connector_id` (native-style reference manifest). Returns
+ * `null` if no accepted identity field yields a key.
+ *
+ * Custom manifests are accepted only through explicit `connector_key`; URL
+ * or arbitrary-string `connector_id` values still fail closed unless they are
+ * in the first-party/native/legacy allowlists above.
  *
  * @param {unknown} manifest
  * @returns {string | null}
  */
 export function canonicalConnectorKeyFromManifest(manifest) {
   if (!manifest || typeof manifest !== 'object') return null;
+  if (isConnectorKey(manifest.connector_key)) {
+    return manifest.connector_key.trim();
+  }
   const topLevel = canonicalConnectorKey(manifest.connector_id);
   if (topLevel) return topLevel;
   const storageBinding = manifest.storage_binding;

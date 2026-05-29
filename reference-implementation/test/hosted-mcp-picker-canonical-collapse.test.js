@@ -27,7 +27,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { closeDb, initDb } from '../server/db.js';
-import { listRegisteredConnectorIds, registerConnector } from '../server/auth.js';
+import { getConnectorManifest, listRegisteredConnectorIds, registerConnector } from '../server/auth.js';
 import { canonicalConnectorKeyFromManifest } from '../server/connector-key.js';
 
 function claudeCodeManifest(connectorId, displayName) {
@@ -107,6 +107,65 @@ test('alias registered before its canonical id still collapses to one canonical 
       'exactly one canonical claude-code row regardless of registration order',
     );
     assert.ok(!ids.includes('claude_code'), 'legacy snake_case alias must not survive as a separate row');
+  } finally {
+    closeDb();
+  }
+});
+
+test('registerConnector accepts connector_key plus manifest_uri manifests', async () => {
+  initDb();
+  try {
+    const manifest = {
+      protocol_version: '0.1.0',
+      connector_key: 'custom-source',
+      manifest_uri: 'https://example.test/manifests/custom-source',
+      version: '1.0.0',
+      display_name: 'Custom Source',
+      capabilities: { human_interaction: [] },
+      streams: [
+        {
+          name: 'items',
+          primary_key: ['id'],
+          cursor_field: 'updated_at',
+          consent_time_field: 'updated_at',
+          schema: {
+            type: 'object',
+            required: ['id', 'updated_at'],
+            properties: {
+              id: { type: 'string' },
+              updated_at: { type: 'string', format: 'date-time' },
+            },
+          },
+          query: {},
+          selection: { fields: { mode: 'explicit' } },
+        },
+      ],
+    };
+
+    const registeredId = await registerConnector(manifest);
+    assert.equal(registeredId, 'custom-source');
+    assert.deepEqual(await listRegisteredConnectorIds(), ['custom-source']);
+
+    const storedManifest = await getConnectorManifest('custom-source');
+    assert.equal(storedManifest.connector_id, 'custom-source');
+    assert.equal(storedManifest.connector_key, 'custom-source');
+    assert.equal(storedManifest.manifest_uri, 'https://example.test/manifests/custom-source');
+  } finally {
+    closeDb();
+  }
+});
+
+test('registerConnector rejects mismatched connector_key and connector_id', async () => {
+  initDb();
+  try {
+    const mismatched = {
+      ...claudeCodeManifest('github', 'Mismatched'),
+      connector_key: 'slack',
+    };
+    await assert.rejects(
+      () => registerConnector(mismatched),
+      /connector_key must match|connector_id must match/,
+    );
   } finally {
     closeDb();
   }
