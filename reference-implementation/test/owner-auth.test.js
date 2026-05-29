@@ -9,7 +9,8 @@ import {
   initiateOwnerDeviceAuthorization,
   getOwnerDeviceAuthorizationByUserCode,
 } from '../server/auth.js';
-import { getDb } from '../server/db.js';
+import { canonicalConnectorKey } from '../server/connector-key.js';
+import { closeDb, getDb } from '../server/db.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, '..');
@@ -22,8 +23,21 @@ const TEST_PASSWORD = 'placeholder-test-password';
 const CUSTOM_SUBJECT_ID = 'owner_testing_custom';
 
 async function closeServer(server) {
+  server.schedulerManager?.stop?.();
+  server.abortStartupBackfill?.('test shutdown');
   server.asServer.closeAllConnections();
   server.rsServer.closeAllConnections();
+  const backfillDone = server.startupBackfillDone
+    ? new Promise((resolve) => {
+        const timer = setTimeout(resolve, 2000);
+        Promise.resolve(server.startupBackfillDone)
+          .catch(() => {})
+          .finally(() => {
+            clearTimeout(timer);
+            resolve();
+          });
+      })
+    : Promise.resolve();
   const closeWithTimeout = (srv) => new Promise((resolve) => {
     let settled = false;
     const timer = setTimeout(() => {
@@ -41,7 +55,12 @@ async function closeServer(server) {
   await Promise.allSettled([
     closeWithTimeout(server.asServer),
     closeWithTimeout(server.rsServer),
+    backfillDone,
+    server.controller?.drainActiveRuns
+      ? server.controller.drainActiveRuns(1000).catch(() => {})
+      : Promise.resolve(),
   ]);
+  closeDb();
 }
 
 async function withServer(opts, fn) {
@@ -564,7 +583,8 @@ test('owner-auth placeholder: enabled — _ref reads and mutations both require 
       },
     );
     assert.equal(authenticatedMutation.status, 200);
-    assert.equal(authenticatedMutation.body.connector_id, connectorId);
+    // Schedule writes canonicalize URL-shaped connector ids to short keys.
+    assert.equal(authenticatedMutation.body.connector_id, canonicalConnectorKey(connectorId));
     assert.equal(authenticatedMutation.body.interval_seconds, 300);
   });
 });
