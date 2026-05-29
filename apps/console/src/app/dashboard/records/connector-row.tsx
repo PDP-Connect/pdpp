@@ -452,6 +452,8 @@ function ConnectionHealthStatus({
     content
   );
 
+  // RunningBadge surfaces a scheduler-run elapsed-time counter; the headline
+  // pill stays focused on the derived connection verdict.
   if (running || health.badges.syncing) {
     return (
       <span className="inline-flex items-center gap-2">
@@ -508,11 +510,20 @@ function connectionHealthTextClass(tone: "success" | "danger" | "neutral" | "run
 function AxisChipBadge({ chip }: { chip: AxisChip }) {
   return (
     <span
-      className={`pdpp-caption inline-flex items-center gap-1 px-2 py-0.5 ${axisChipClass(chip.tone)}`}
+      className={`pdpp-caption inline-flex items-center gap-0 px-2 py-0.5 ${axisChipClass(chip.tone)}`}
       data-axis-tone={chip.tone}
       title={chip.title}
     >
-      {chip.label}
+      <span className="sr-only">{chip.label}</span>
+      <span aria-hidden className="opacity-60">
+        {chip.dimension}
+      </span>
+      <span aria-hidden className="mx-1 opacity-40">
+        ·
+      </span>
+      <span aria-hidden className="font-medium">
+        {chip.value}
+      </span>
     </span>
   );
 }

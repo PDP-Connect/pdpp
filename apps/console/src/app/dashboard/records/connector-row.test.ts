@@ -127,6 +127,38 @@ test("null next_action surfaces no CTA at all", () => {
   assert.equal(formatNextAction(null), null);
 });
 
+// ─── AxisChipBadge dimension/value rendering ─────────────────────────────
+//
+// The chip must render dimension (muted) and value (prominent) as
+// distinct elements, not collapse them into the opaque `label` string.
+// This structural assertion verifies the split rendering is present in
+// source and that a screen-reader-only label still carries the full
+// `chip.label` so screen readers see both together.
+
+const AXIS_CHIP_RENDERS_DIMENSION = /chip\.dimension/;
+const AXIS_CHIP_RENDERS_VALUE = /chip\.value/;
+const AXIS_CHIP_SR_ONLY_LABEL = /<span className="sr-only">\{chip\.label\}<\/span>/;
+const AXIS_CHIP_VISUAL_SPANS_ARE_HIDDEN =
+  /<span aria-hidden className="opacity-60">\s*\{chip\.dimension\}\s*<\/span>[\s\S]*<span aria-hidden className="font-medium">\s*\{chip\.value\}\s*<\/span>/;
+test("AxisChipBadge renders chip.dimension and chip.value as separate elements", async () => {
+  const src = await readFile(ROW_FILE, "utf8");
+  const chipBadgeBlock = src.slice(src.indexOf("function AxisChipBadge"));
+  assert.match(chipBadgeBlock, AXIS_CHIP_RENDERS_DIMENSION);
+  assert.match(chipBadgeBlock, AXIS_CHIP_RENDERS_VALUE);
+});
+
+test("AxisChipBadge uses sr-only chip.label for accessible text", async () => {
+  const src = await readFile(ROW_FILE, "utf8");
+  const chipBadgeBlock = src.slice(src.indexOf("function AxisChipBadge"));
+  assert.match(chipBadgeBlock, AXIS_CHIP_SR_ONLY_LABEL);
+});
+
+test("AxisChipBadge hides visual dimension and value from assistive text", async () => {
+  const src = await readFile(ROW_FILE, "utf8");
+  const chipBadgeBlock = src.slice(src.indexOf("function AxisChipBadge"), src.indexOf("function axisChipClass"));
+  assert.match(chipBadgeBlock, AXIS_CHIP_VISUAL_SPANS_ARE_HIDDEN);
+});
+
 // ─── 6.1 / 6.5 wiring assertions ───────────────────────────────────────
 //
 // The row must consume the pure helpers from `connection-evidence.ts`
@@ -174,6 +206,12 @@ test("connector-row freshness line refuses to render content when evidence colle
 });
 
 // ─── local-device operator-ideal assertions ──────────────────────────────
+//
+// The pill vocabulary lives in `lib/connection-evidence.ts` so it can be
+// tested directly without a JSX harness. These structural assertions
+// verify that the row consumes the shared helper and threads the
+// evidence it needs (local-device progress, in particular) without
+// reintroducing an inline vocabulary table.
 
 const FRESHNESS_DEVICE_BOTH = /data-testid="freshness-device-both"/;
 const LAST_CHECKED_LABEL = /last checked:/;
@@ -187,16 +225,11 @@ const USES_SHARED_STATUS_HELPER = /deriveConnectionStatusDisplay\(\{/;
 const PASSES_LOCAL_DEVICE_PROGRESS = /localDeviceProgress=\{overview\.localDeviceProgress \?\? null\}/;
 
 test("connector-row delegates pill rendering to the shared deriveConnectionStatusDisplay helper", async () => {
-  // The row must NOT recomplect the spine's evidence model in JSX —
-  // health verdict vs activity vs readiness must come from the shared
-  // helper so the same vocabulary holds across surfaces and tests.
   const src = await readFile(ROW_FILE, "utf8");
   assert.match(src, USES_SHARED_STATUS_HELPER);
 });
 
 test("connector-row threads local-device progress into the connection pill", async () => {
-  // The pill needs localDeviceProgress to distinguish a passive idle
-  // collector from one that is currently receiving push-mode ingest.
   const src = await readFile(ROW_FILE, "utf8");
   assert.match(src, PASSES_LOCAL_DEVICE_PROGRESS);
 });
@@ -209,9 +242,6 @@ test("connector-row freshness line shows both last-checked and last-ingest when 
 });
 
 test("connector-row no longer carries an inline connectionHealthDisplay vocabulary table", async () => {
-  // Pill vocabulary moved to lib/connection-evidence.ts so it can be
-  // tested directly. Reintroducing an inline copy would silently
-  // contradict the shared helper used by CLI/API projections.
   const src = await readFile(ROW_FILE, "utf8");
   assert.equal(src.includes("function connectionHealthDisplay"), false);
 });
