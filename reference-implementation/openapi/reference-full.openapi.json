@@ -33,6 +33,10 @@
     {
       "name": "runs",
       "description": "Run and schedule control"
+    },
+    {
+      "name": "event-subscriptions",
+      "description": "Client event-subscription management (RI extension; CloudEvents 1.0 + Standard Webhooks delivery)"
     }
   ],
   "paths": {
@@ -4080,7 +4084,7 @@
                                       "display_name": {
                                         "type": "string",
                                         "minLength": 1,
-                                        "description": "Owner-meaningful label for the connection. Never the storage-layer placeholder (`legacy`, `default_account`); falls back to `<connector> · account N` when the owner has not renamed the connection."
+                                        "description": "Owner-meaningful label for the connection. Never the storage-layer placeholder (`legacy`, `default_account`); falls back to `<connector> \u00b7 account N` when the owner has not renamed the connection."
                                       }
                                     },
                                     "required": [
@@ -4408,7 +4412,7 @@
                           "display_name": {
                             "type": "string",
                             "minLength": 1,
-                            "description": "Owner-meaningful label for the connection. Never the storage-layer placeholder (`legacy`, `default_account`); falls back to `<connector> · account N` when the owner has not renamed the connection."
+                            "description": "Owner-meaningful label for the connection. Never the storage-layer placeholder (`legacy`, `default_account`); falls back to `<connector> \u00b7 account N` when the owner has not renamed the connection."
                           },
                           "connector_instance_id": {
                             "type": "string",
@@ -5096,7 +5100,7 @@
                           "display_name": {
                             "type": "string",
                             "minLength": 1,
-                            "description": "Owner-meaningful label for the connection. Never the storage-layer placeholder (`legacy`, `default_account`); falls back to `<connector> · account N` when the owner has not renamed the connection."
+                            "description": "Owner-meaningful label for the connection. Never the storage-layer placeholder (`legacy`, `default_account`); falls back to `<connector> \u00b7 account N` when the owner has not renamed the connection."
                           }
                         },
                         "required": [
@@ -5488,7 +5492,7 @@
                           "display_name": {
                             "type": "string",
                             "minLength": 1,
-                            "description": "Owner-meaningful label for the connection. Never the storage-layer placeholder (`legacy`, `default_account`); falls back to `<connector> · account N` when the owner has not renamed the connection."
+                            "description": "Owner-meaningful label for the connection. Never the storage-layer placeholder (`legacy`, `default_account`); falls back to `<connector> \u00b7 account N` when the owner has not renamed the connection."
                           },
                           "connector_instance_id": {
                             "type": "string",
@@ -6340,7 +6344,7 @@
                     "display_name": {
                       "type": "string",
                       "minLength": 1,
-                      "description": "Owner-meaningful label for the connection. Never the storage-layer placeholder (`legacy`, `default_account`); falls back to `<connector> · account N` when the owner has not renamed the connection."
+                      "description": "Owner-meaningful label for the connection. Never the storage-layer placeholder (`legacy`, `default_account`); falls back to `<connector> \u00b7 account N` when the owner has not renamed the connection."
                     },
                     "connector_instance_id": {
                       "type": "string",
@@ -6575,7 +6579,7 @@
                               "display_name": {
                                 "type": "string",
                                 "minLength": 1,
-                                "description": "Owner-meaningful label for the connection. Never the storage-layer placeholder (`legacy`, `default_account`); falls back to `<connector> · account N` when the owner has not renamed the connection."
+                                "description": "Owner-meaningful label for the connection. Never the storage-layer placeholder (`legacy`, `default_account`); falls back to `<connector> \u00b7 account N` when the owner has not renamed the connection."
                               }
                             },
                             "required": [
@@ -6760,7 +6764,7 @@
                           "display_name": {
                             "type": "string",
                             "minLength": 1,
-                            "description": "Owner-meaningful label for the connection. Never the storage-layer placeholder (`legacy`, `default_account`); falls back to `<connector> · account N` when the owner has not renamed the connection."
+                            "description": "Owner-meaningful label for the connection. Never the storage-layer placeholder (`legacy`, `default_account`); falls back to `<connector> \u00b7 account N` when the owner has not renamed the connection."
                           },
                           "connector_instance_id": {
                             "type": "string",
@@ -7166,7 +7170,7 @@
                           "display_name": {
                             "type": "string",
                             "minLength": 1,
-                            "description": "Owner-meaningful label for the connection. Never the storage-layer placeholder (`legacy`, `default_account`); falls back to `<connector> · account N` when the owner has not renamed the connection."
+                            "description": "Owner-meaningful label for the connection. Never the storage-layer placeholder (`legacy`, `default_account`); falls back to `<connector> \u00b7 account N` when the owner has not renamed the connection."
                           },
                           "connector_instance_id": {
                             "type": "string",
@@ -7566,7 +7570,7 @@
                           "display_name": {
                             "type": "string",
                             "minLength": 1,
-                            "description": "Owner-meaningful label for the connection. Never the storage-layer placeholder (`legacy`, `default_account`); falls back to `<connector> · account N` when the owner has not renamed the connection."
+                            "description": "Owner-meaningful label for the connection. Never the storage-layer placeholder (`legacy`, `default_account`); falls back to `<connector> \u00b7 account N` when the owner has not renamed the connection."
                           },
                           "connector_instance_id": {
                             "type": "string",
@@ -8411,7 +8415,7 @@
                               "display_name": {
                                 "type": "string",
                                 "minLength": 1,
-                                "description": "Owner-meaningful label for the connection. Never the storage-layer placeholder (`legacy`, `default_account`); falls back to `<connector> · account N` when the owner has not renamed the connection."
+                                "description": "Owner-meaningful label for the connection. Never the storage-layer placeholder (`legacy`, `default_account`); falls back to `<connector> \u00b7 account N` when the owner has not renamed the connection."
                               }
                             },
                             "required": [
@@ -19561,6 +19565,1995 @@
           },
           "409": {
             "description": "Conflict (e.g. run_already_active)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/event-subscriptions": {
+      "post": {
+        "operationId": "createEventSubscription",
+        "tags": [
+          "event-subscriptions"
+        ],
+        "summary": "Create a client event subscription. Immediately enqueues a `pdpp.subscription.verify` event to the callback URL. The subscription stays in `pending_verification` until the receiver echoes the `challenge` value. Returns the per-subscription HMAC signing secret (`whsec_*`) once; it cannot be retrieved again.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "callback_url": {
+                    "type": "string",
+                    "format": "uri",
+                    "maxLength": 2048,
+                    "description": "HTTPS endpoint that will receive CloudEvents 1.0 structured-mode JSON POST requests signed with Standard Webhooks headers. `http://localhost` is accepted for development."
+                  },
+                  "filters": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "streams": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "description": "Subset of grant-scoped stream names to subscribe to. Omit to subscribe to all streams in the grant."
+                      }
+                    }
+                  }
+                },
+                "required": [
+                  "callback_url"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Subscription created. The `secret` field is the Standard Webhooks signing key (`whsec_<base64>`) and is returned only on creation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "subscription_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "secret": {
+                      "type": "string",
+                      "description": "Standard Webhooks HMAC signing secret (`whsec_<base64>`). Store securely; returned only on creation and on secret rotation."
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "pending_verification",
+                        "active",
+                        "disabled",
+                        "disabled_failure",
+                        "disabled_revoked",
+                        "deleted"
+                      ]
+                    },
+                    "callback_url": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "created_at": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "required": [
+                    "subscription_id",
+                    "secret",
+                    "status",
+                    "callback_url",
+                    "created_at"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token missing or invalid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "operationId": "listEventSubscriptions",
+        "tags": [
+          "event-subscriptions"
+        ],
+        "summary": "List all non-deleted event subscriptions for the bearer's `(client_id, grant_id)` pair.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "subscription_id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "grant_id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "client_id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "callback_url": {
+                            "type": "string",
+                            "format": "uri"
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "pending_verification",
+                              "active",
+                              "disabled",
+                              "disabled_failure",
+                              "disabled_revoked",
+                              "deleted"
+                            ]
+                          },
+                          "scope": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "streams": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "name": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    "connection_id": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "name"
+                                  ]
+                                }
+                              },
+                              "filters": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {
+                                  "streams": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    }
+                                  }
+                                }
+                              }
+                            },
+                            "required": [
+                              "streams"
+                            ]
+                          },
+                          "created_at": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "updated_at": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "disabled_reason": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "subscription_id",
+                          "grant_id",
+                          "client_id",
+                          "callback_url",
+                          "status",
+                          "scope",
+                          "created_at",
+                          "updated_at",
+                          "disabled_reason"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "data"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token missing or invalid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/event-subscriptions/{subscription_id}": {
+      "get": {
+        "operationId": "getEventSubscription",
+        "tags": [
+          "event-subscriptions"
+        ],
+        "summary": "Get a single event subscription owned by the bearer.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "subscription_id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "subscription_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "grant_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "client_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "callback_url": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "pending_verification",
+                        "active",
+                        "disabled",
+                        "disabled_failure",
+                        "disabled_revoked",
+                        "deleted"
+                      ]
+                    },
+                    "scope": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "streams": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "name": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "connection_id": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "name"
+                            ]
+                          }
+                        },
+                        "filters": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "streams": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "minLength": 1
+                              }
+                            }
+                          }
+                        }
+                      },
+                      "required": [
+                        "streams"
+                      ]
+                    },
+                    "created_at": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "updated_at": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "disabled_reason": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "subscription_id",
+                    "grant_id",
+                    "client_id",
+                    "callback_url",
+                    "status",
+                    "scope",
+                    "created_at",
+                    "updated_at",
+                    "disabled_reason"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token missing or invalid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Subscription not found or not owned by the bearer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "operationId": "updateEventSubscription",
+        "tags": [
+          "event-subscriptions"
+        ],
+        "summary": "Toggle delivery (`enabled`) or rotate the signing secret (`rotate_secret`).",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "subscription_id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "rotate_secret": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated subscription. `secret` is only present when `rotate_secret` was `true`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "subscription": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "subscription_id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "grant_id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "client_id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "callback_url": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "pending_verification",
+                            "active",
+                            "disabled",
+                            "disabled_failure",
+                            "disabled_revoked",
+                            "deleted"
+                          ]
+                        },
+                        "scope": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "streams": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {
+                                  "name": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "connection_id": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "name"
+                                ]
+                              }
+                            },
+                            "filters": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "properties": {
+                                "streams": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                }
+                              }
+                            }
+                          },
+                          "required": [
+                            "streams"
+                          ]
+                        },
+                        "created_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "updated_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "disabled_reason": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "subscription_id",
+                        "grant_id",
+                        "client_id",
+                        "callback_url",
+                        "status",
+                        "scope",
+                        "created_at",
+                        "updated_at",
+                        "disabled_reason"
+                      ]
+                    },
+                    "secret": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "subscription"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid update",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token missing or invalid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Subscription not found or not owned by the bearer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "State conflict (e.g. re-enabling a `disabled_revoked` subscription)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteEventSubscription",
+        "tags": [
+          "event-subscriptions"
+        ],
+        "summary": "Delete an event subscription. Queued undelivered events are dropped.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "subscription_id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Subscription deleted."
+          },
+          "401": {
+            "description": "Bearer token missing or invalid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Subscription not found or not owned by the bearer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/event-subscriptions/{subscription_id}/test-event": {
+      "post": {
+        "operationId": "sendTestEvent",
+        "tags": [
+          "event-subscriptions"
+        ],
+        "summary": "Enqueue a `pdpp.subscription.test` event for asynchronous delivery. Accepted for `active` and `pending_verification` subscriptions.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "subscription_id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Test event accepted for delivery.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "event_id": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "event_id"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token missing or invalid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Subscription not found or not owned by the bearer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Subscription is not in a state that accepts test events (must be `active` or `pending_verification`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/_ref/event-subscriptions": {
+      "get": {
+        "operationId": "refListEventSubscriptions",
+        "tags": [
+          "event-subscriptions",
+          "reference"
+        ],
+        "summary": "Operator oversight: list all client event subscriptions. Filter by `client_id`, `grant_id`, or `status`. Secrets are never returned on `/_ref` routes.",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          {
+            "in": "query",
+            "name": "grant_id",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "pending_verification",
+                "active",
+                "disabled",
+                "disabled_failure",
+                "disabled_revoked",
+                "deleted"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "object": {
+                      "const": "list"
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "subscription_id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "client_id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "grant_id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "pending_verification",
+                              "active",
+                              "disabled",
+                              "disabled_failure",
+                              "disabled_revoked",
+                              "deleted"
+                            ]
+                          },
+                          "disabled_reason": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "callback_host": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "created_at": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "updated_at": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "disabled_at": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "format": "date-time"
+                          },
+                          "pending_queue_count": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "final_failure_count": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "last_attempted_at": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "format": "date-time"
+                          },
+                          "last_attempt_ok": {
+                            "type": [
+                              "boolean",
+                              "null"
+                            ]
+                          },
+                          "last_attempt_status_code": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "subscription_id",
+                          "client_id",
+                          "grant_id",
+                          "status",
+                          "disabled_reason",
+                          "callback_host",
+                          "created_at",
+                          "updated_at",
+                          "disabled_at",
+                          "pending_queue_count",
+                          "final_failure_count",
+                          "last_attempted_at",
+                          "last_attempt_ok",
+                          "last_attempt_status_code"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "object",
+                    "data"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/_ref/event-subscriptions/{subscription_id}": {
+      "get": {
+        "operationId": "refGetEventSubscription",
+        "tags": [
+          "event-subscriptions",
+          "reference"
+        ],
+        "summary": "Operator oversight: get a single subscription with delivery attempt history.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "subscription_id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "subscription_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "client_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "grant_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "subject_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "pending_verification",
+                        "active",
+                        "disabled",
+                        "disabled_failure",
+                        "disabled_revoked",
+                        "deleted"
+                      ]
+                    },
+                    "disabled_reason": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "callback_url": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "callback_host": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "scope": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "streams": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "name": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "connection_id": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "name"
+                            ]
+                          }
+                        },
+                        "filters": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "streams": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "minLength": 1
+                              }
+                            }
+                          }
+                        }
+                      },
+                      "required": [
+                        "streams"
+                      ]
+                    },
+                    "created_at": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "updated_at": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "disabled_at": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "date-time"
+                    },
+                    "pending_queue_count": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "final_failure_count": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "last_attempted_at": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "date-time"
+                    },
+                    "last_attempt_ok": {
+                      "type": [
+                        "boolean",
+                        "null"
+                      ]
+                    },
+                    "last_attempt_status_code": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "recent_attempts": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "attempt_id": {
+                            "type": "integer"
+                          },
+                          "queue_id": {
+                            "type": "integer"
+                          },
+                          "event_id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "event_type": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "attempted_at": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "status_code": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ]
+                          },
+                          "ok": {
+                            "type": "boolean"
+                          },
+                          "latency_ms": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ]
+                          },
+                          "error": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "response_snippet": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "attempt_id",
+                          "queue_id",
+                          "event_id",
+                          "event_type",
+                          "attempted_at",
+                          "ok"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "subscription_id",
+                    "client_id",
+                    "grant_id",
+                    "subject_id",
+                    "status",
+                    "disabled_reason",
+                    "callback_url",
+                    "callback_host",
+                    "scope",
+                    "created_at",
+                    "updated_at",
+                    "disabled_at",
+                    "pending_queue_count",
+                    "final_failure_count",
+                    "last_attempted_at",
+                    "last_attempt_ok",
+                    "last_attempt_status_code",
+                    "recent_attempts"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Subscription not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/_ref/event-subscriptions/{subscription_id}/disable": {
+      "post": {
+        "operationId": "refDisableEventSubscription",
+        "tags": [
+          "event-subscriptions",
+          "reference"
+        ],
+        "summary": "Operator safety valve: forcibly disable a subscription. Accepts an optional `reason` string. Secrets are never returned.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "subscription_id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Subscription after disabling.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "subscription_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "client_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "grant_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "subject_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "pending_verification",
+                        "active",
+                        "disabled",
+                        "disabled_failure",
+                        "disabled_revoked",
+                        "deleted"
+                      ]
+                    },
+                    "disabled_reason": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "callback_url": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "callback_host": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "scope": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "streams": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "name": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "connection_id": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "name"
+                            ]
+                          }
+                        },
+                        "filters": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "streams": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "minLength": 1
+                              }
+                            }
+                          }
+                        }
+                      },
+                      "required": [
+                        "streams"
+                      ]
+                    },
+                    "created_at": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "updated_at": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "disabled_at": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "date-time"
+                    },
+                    "pending_queue_count": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "final_failure_count": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "last_attempted_at": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "format": "date-time"
+                    },
+                    "last_attempt_ok": {
+                      "type": [
+                        "boolean",
+                        "null"
+                      ]
+                    },
+                    "last_attempt_status_code": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "recent_attempts": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "attempt_id": {
+                            "type": "integer"
+                          },
+                          "queue_id": {
+                            "type": "integer"
+                          },
+                          "event_id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "event_type": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "attempted_at": {
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "status_code": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ]
+                          },
+                          "ok": {
+                            "type": "boolean"
+                          },
+                          "latency_ms": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ]
+                          },
+                          "error": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "response_snippet": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "attempt_id",
+                          "queue_id",
+                          "event_id",
+                          "event_type",
+                          "attempted_at",
+                          "ok"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "subscription_id",
+                    "client_id",
+                    "grant_id",
+                    "subject_id",
+                    "status",
+                    "disabled_reason",
+                    "callback_url",
+                    "callback_host",
+                    "scope",
+                    "created_at",
+                    "updated_at",
+                    "disabled_at",
+                    "pending_queue_count",
+                    "final_failure_count",
+                    "last_attempted_at",
+                    "last_attempt_ok",
+                    "last_attempt_status_code",
+                    "recent_attempts"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$id": "pdpp/common/PdppError",
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "type": {
+                          "type": "string"
+                        },
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "param": {
+                          "type": "string"
+                        },
+                        "request_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "code",
+                        "message",
+                        "request_id"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Subscription not found",
             "content": {
               "application/json": {
                 "schema": {
