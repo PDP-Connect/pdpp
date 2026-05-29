@@ -4,7 +4,7 @@ Status: captured
 Owner: reference implementation owner
 Created: 2026-05-28
 Updated: 2026-05-28
-Related: openspec/changes/archive/2026-05-28-add-dashboard-records-explorer/design.md, apps/web/src/app/dashboard/lib/record-kind.ts, apps/web/src/app/dashboard/lib/timeline-summaries.ts, docs/voice-and-framing.md
+Related: openspec/changes/archive/2026-05-28-add-dashboard-records-explorer/design.md, apps/web/src/app/dashboard/lib/record-kind.ts, apps/web/src/app/dashboard/lib/record-preview.ts, apps/web/src/app/dashboard/lib/timeline-summaries.ts, docs/voice-and-framing.md
 
 ## Question
 
@@ -41,13 +41,19 @@ This lane closed the visual gap without a backend change:
   is stream-name-only and degrades to `generic`. A strong money-field signal
   (`*_cents`, `amount`) overrides a weak stream-name guess; a title/message
   field only promotes an otherwise-unclassifiable stream.
-- The Explorer row renders a small kind tag (`money`, `message`, `event`,
-  `item`) in the existing eyebrow idiom; `generic` renders no tag so the common
-  case stays quiet.
+- The Explorer row renders a type-aware card with a small left-rail accent and
+  a kind-specific body when the record body is already in hand: money rows can
+  lead with amount + merchant, message rows with author + body, event rows with
+  time + title, and titled rows with a primary title. Search hits and
+  unclassifiable rows fall back to the existing one-line summary.
 - `timeline-summaries.ts` broadened its money/title fallback so money and
   titled rows surface their identifying fields (amount + merchant, document
   kind, provider name) instead of a timestamp. This also improves the shared
   timeline and search summaries by construction.
+- `record-preview.ts` is the presentation-only seam for these cards. It reads
+  only the record body that the recency/time-range feed already fetched, writes
+  nothing back, and degrades to absent whenever it cannot extract a useful
+  preview.
 
 `kind` is presentation metadata only. It is never written back, never sent to
 the resource server, and never treated as a manifest field. It is the same
@@ -86,14 +92,16 @@ Keep the heuristic `record-kind.ts` as the operator-console interim. It is
 robust by construction (derives from stream/field signals, generalizes to
 unknown connectors, degrades to `generic`) and adds no backend surface.
 
-Promote a typed-manifest-stream-schema change to OpenSpec when type-aware cards,
-type facets, or grant-scoped field projection become a prioritized tranche.
-Scope it as: declare `streams[].schema.fields[]` with a `type` enum on the
-manifest, expose it through the `_ref` manifest surface and the canonical read
-contract's capability discovery, and migrate `record-kind.ts` consumers to the
-declared type with the heuristic as a fallback for connectors that have not yet
-declared a schema. Align the live `ConnectorManifest` type with the schema the
-sandbox demo manifests already use.
+Promote a typed-manifest-stream-schema change to OpenSpec when the Explorer
+needs declared field types, type facets, photo/blob cards, grant-scoped field
+projection, or any card behavior that cannot be derived from a body the feed
+already holds. Scope it as: declare `streams[].schema.fields[]` with a `type`
+enum on the manifest, expose it through the `_ref` manifest surface and the
+canonical read contract's capability discovery, and migrate `record-kind.ts` /
+`record-preview.ts` consumers to the declared type with the heuristic as a
+fallback for connectors that have not yet declared a schema. Align the live
+`ConnectorManifest` type with the schema the sandbox demo manifests already
+use.
 
 ## Promotion Trigger
 
@@ -102,10 +110,12 @@ Promote to OpenSpec before implementing any of:
 - a `type` (or equivalent) field on manifest stream-field declarations;
 - exposing per-field types through `_ref` or the public read contract;
 - type-aware record cards, type-based facets, or grant-scoped field projection
-  in any Explorer surface that relies on declared (not inferred) field types.
+  in any Explorer surface that relies on declared (not inferred) field types or
+  requires fetching new fields/relations solely for presentation.
 
-The heuristic kind tag shipped in this lane is explicitly NOT a promotion
-trigger: it invents no contract noun and reads only data the feed already has.
+The heuristic kind/card preview shipped in this lane is explicitly NOT a
+promotion trigger: it invents no contract noun and reads only data the feed
+already has.
 
 ## Decision Log
 
@@ -117,3 +127,9 @@ trigger: it invents no contract noun and reads only data the feed already has.
   the `type`/`semantic_class` shape the live manifest type lacks. Left as
   `captured` pending owner prioritization; not promoted to OpenSpec in this lane
   because no contract was changed.
+- 2026-05-29: Extended the same presentation-only seam from kind tags into
+  structured card previews for recency/time-range rows in `apps/web` and
+  `apps/console`. The live and sandbox Explorer still use only existing read
+  responses; search hits still fall back to snippets. This remains below the
+  OpenSpec promotion threshold until declared field schemas, type facets,
+  relation fetches, or new read capabilities are introduced.

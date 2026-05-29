@@ -43,6 +43,7 @@ import {
 import { dashboardRoutes } from "../components/views/routes.ts";
 import { getOwnerToken, getRsInternalUrl, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import { classifyRecordKind } from "../lib/record-kind.ts";
+import { buildRecordPreview } from "../lib/record-preview.ts";
 import { listConnectorSummaries, type RefConnectorSummary } from "../lib/ref-client.ts";
 import {
   getRecord,
@@ -186,6 +187,7 @@ function toTimeRangeEntry({
   if (ms === null || !isWithinWindow(ms, sinceMs, untilMs)) {
     return null;
   }
+  const kind = classifyRecordKind(streamName, data).kind;
   return {
     connectorId: summary.connector_id,
     connectionId: summary.connection_id,
@@ -195,7 +197,8 @@ function toTimeRangeEntry({
     emittedAt: record.emitted_at,
     displayAt: new Date(ms).toISOString(),
     summary: summarize(summary.connector_id, streamName, data),
-    kind: classifyRecordKind(streamName, data).kind,
+    kind,
+    preview: buildRecordPreview(kind, data) ?? undefined,
   };
 }
 
@@ -227,12 +230,13 @@ async function loadEmptyQueryFeed(
             (page): StreamFetchResult => ({
               ok: true,
               entries: page.data.map((record) => {
-                const data = record.data && typeof record.data === "object" ? record.data : {};
+                const data = recordData(record);
                 const display = pickSearchDisplayTimestamp({
-                  data: data as Record<string, unknown>,
+                  data,
                   emittedAt: record.emitted_at,
                   metadata: lookupSearchTimestampMetadata(timestampMetadata, summary.connector_id, streamName),
                 });
+                const kind = classifyRecordKind(streamName, data).kind;
                 const entry: ExplorerFeedEntry = {
                   connectorId: summary.connector_id,
                   connectionId: summary.connection_id,
@@ -241,8 +245,9 @@ async function loadEmptyQueryFeed(
                   recordId: record.id,
                   emittedAt: record.emitted_at,
                   displayAt: display.value,
-                  summary: summarize(summary.connector_id, streamName, data as Record<string, unknown>),
-                  kind: classifyRecordKind(streamName, data as Record<string, unknown>).kind,
+                  summary: summarize(summary.connector_id, streamName, data),
+                  kind,
+                  preview: buildRecordPreview(kind, data) ?? undefined,
                 };
                 return entry;
               }),

@@ -20,6 +20,7 @@ import {
 } from "@/app/dashboard/components/views/records-explorer-view.tsx";
 import type { DashboardDataSource } from "@/app/dashboard/lib/data-source.ts";
 import { classifyRecordKind } from "@/app/dashboard/lib/record-kind.ts";
+import { buildRecordPreview } from "@/app/dashboard/lib/record-preview.ts";
 import type { RefConnectorSummary } from "@/app/dashboard/lib/ref-client.ts";
 import {
   lookupSearchTimestampMetadata,
@@ -165,6 +166,7 @@ async function loadEmptyQueryFeed(
                   emittedAt: record.emitted_at,
                   metadata: lookupSearchTimestampMetadata(timestampMetadata, summary.connector_id, streamName),
                 });
+                const kind = classifyRecordKind(streamName, data).kind;
                 return {
                   connectorId: summary.connector_id,
                   connectionId: summary.connection_id,
@@ -174,7 +176,8 @@ async function loadEmptyQueryFeed(
                   emittedAt: record.emitted_at,
                   displayAt: display.value,
                   summary: summarize(summary.connector_id, streamName, data),
-                  kind: classifyRecordKind(streamName, data).kind,
+                  kind,
+                  preview: buildRecordPreview(kind, data) ?? undefined,
                 };
               }),
             })
@@ -236,6 +239,7 @@ function toTimeRangeEntry({
   if (ms === null || !isWithinWindow(ms, sinceMs, untilMs)) {
     return null;
   }
+  const kind = classifyRecordKind(streamName, data).kind;
   return {
     connectorId: summary.connector_id,
     connectionId: summary.connection_id,
@@ -245,7 +249,8 @@ function toTimeRangeEntry({
     emittedAt,
     displayAt: new Date(ms).toISOString(),
     summary: summarize(summary.connector_id, streamName, data),
-    kind: classifyRecordKind(streamName, data).kind,
+    kind,
+    preview: buildRecordPreview(kind, data) ?? undefined,
   };
 }
 

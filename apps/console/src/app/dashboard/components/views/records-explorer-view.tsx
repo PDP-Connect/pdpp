@@ -16,8 +16,9 @@ import { Button, buttonVariants } from "@/components/ui/button.tsx";
 import { Input } from "@/components/ui/input.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
 import type { RecordKind } from "../../lib/record-kind.ts";
+import type { RecordPreview } from "../../lib/record-preview.ts";
 import { defaultWindow } from "../../lib/timeline.ts";
-import { Callout, DataList, FilterSummary, PageHeader, Section, SplitLayout, Toolbar } from "../primitives.tsx";
+import { Callout, FilterSummary, PageHeader, Section, SplitLayout, Toolbar } from "../primitives.tsx";
 import type { Routes } from "./routes.ts";
 
 /** Active feed lens. URL state (q + since/until) is the source of truth. */
@@ -48,6 +49,13 @@ export interface ExplorerFeedEntry {
    * `record-kind.ts`. Defaults to `generic` when omitted.
    */
   kind?: RecordKind;
+  /**
+   * Kind-specific structured preview pulled from the record body, present only
+   * for lenses that hold the body (recency / time-range). Drives the type-aware
+   * card layout; absent for search hits, which fall back to the `summary` line.
+   * Presentation metadata only — see `record-preview.ts`.
+   */
+  preview?: RecordPreview;
   recordId: string;
   /** Present when the entry came from a search hit, drives the badge. */
   retrievalMode?: "lexical" | "semantic" | "hybrid";
@@ -337,7 +345,7 @@ export function RecordsExplorerView({ data, routes }: { data: RecordsExplorerDat
       <PageHeader
         breadcrumbs={[{ label: "Explore" }]}
         count={feedCountLabel(feed.length, fromSearch, truncated)}
-        description="Browse and search all retained records across every connected source."
+        description="Query across every owner-visible connection. Connection identity is preserved — two accounts of the same connector type stay distinct."
         title="Explore"
       />
 
@@ -398,7 +406,7 @@ function lensLabel(lens: ExplorerLens): string {
     return "Search";
   }
   if (lens === "search_with_ignored_time_window") {
-    return "Search (time window ignored)";
+    return "Search · time window not applied to search";
   }
   return "Recent";
 }
@@ -548,12 +556,12 @@ function ExplorerMain({
                     {group.entries.length.toLocaleString()}
                   </span>
                 </header>
-                <DataList>
+                <ul className="flex flex-col gap-2">
                   {group.entries.map((entry) => {
                     const key = explorerPeekParam(entry);
                     return (
                       <li key={key}>
-                        <ExplorerRow
+                        <ExplorerCard
                           entry={entry}
                           peekHref={buildExplorerHref(routes, {
                             query,
@@ -573,7 +581,7 @@ function ExplorerMain({
                       </li>
                     );
                   })}
-                </DataList>
+                </ul>
               </section>
             ))}
           </div>
@@ -602,7 +610,7 @@ function emptyFeedMessage(lens: ExplorerLens): string {
   if (lens === "time_range") {
     return "No time-anchored records in this window. Try widening the range, clearing chips, or loading more data.";
   }
-  return "No records yet. Run a connector to collect data.";
+  return "No retained records yet on any visible connection.";
 }
 
 function TimeWindowForm({
@@ -906,41 +914,151 @@ function ActivityStrip({
   );
 }
 
-// Kind tag tones. Subtle washes only - the tag is a skim aid, not a status.
-// `generic` renders no tag (nothing to disambiguate), keeping the common case
-// quiet and reserving visual weight for the type-distinct rows.
-const KIND_TAG_LABELS: Record<RecordKind, string> = {
-  message: "message",
-  money: "money",
-  event: "event",
-  titled: "item",
-  generic: "",
+// Per-kind left-rail accent. The temperature system from the designer's
+// Explorer: message rows read "human" (copper), event rows read "protocol"
+// (blue), money rows read "value" (success green). `titled` and `generic`
+// stay neutral so visual weight is reserved for the type-distinct kinds.
+// These map onto the same brand tokens the rest of the dashboard uses; no new
+// color is introduced.
+const KIND_RAIL_TONE: Record<RecordKind, string> = {
+  message: "before:bg-[color:var(--human)]",
+  money: "before:bg-[color:var(--success)]",
+  event: "before:bg-primary",
+  titled: "before:bg-border",
+  generic: "before:bg-border",
 };
 
-const KIND_TAG_TONE: Record<RecordKind, string> = {
-  message: "border-[color:var(--human)]/25 bg-[color:var(--human-wash)] text-foreground",
-  money: "border-[color:var(--success)]/30 bg-[color:var(--success-wash)] text-foreground",
-  event: "border-primary/25 bg-primary/5 text-foreground",
-  titled: "border-border/80 bg-muted/40 text-muted-foreground",
-  generic: "",
-};
+// Card eyebrow: connector / stream / connection, shared across every kind so a
+// row stays attributable to its exact connection no matter how it renders.
+function CardEyebrow({ entry }: { entry: ExplorerFeedEntry }) {
+  return (
+    <div className="pdpp-eyebrow flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-muted-foreground">
+      <span className="font-medium font-mono text-foreground/80">{entry.connectorId}</span>
+      <span className="font-mono">{entry.stream}</span>
+      {entry.connectionDisplayName ? (
+        <span className="truncate normal-case tracking-normal" title={entry.connectionId ?? ""}>
+          · {entry.connectionDisplayName}
+        </span>
+      ) : null}
+    </div>
+  );
+}
 
-function KindTag({ kind }: { kind: RecordKind | undefined }) {
-  const k = kind ?? "generic";
-  const label = KIND_TAG_LABELS[k];
-  if (!label) {
+function RetrievalBadge({ entry }: { entry: ExplorerFeedEntry }) {
+  if (entry.retrievalMode !== "semantic" && entry.retrievalMode !== "hybrid") {
     return null;
   }
   return (
     <span
-      className={`pdpp-eyebrow inline-flex shrink-0 items-center rounded-[3px] border px-1.5 py-0.5 ${KIND_TAG_TONE[k]}`}
+      className="ml-2 inline-flex items-baseline gap-1 rounded border border-border px-1.5 py-0.5 align-baseline text-[10px] text-muted-foreground uppercase tracking-wide"
+      title={
+        entry.retrievalMode === "hybrid"
+          ? "Found by hybrid retrieval (experimental)."
+          : "Found by semantic retrieval (experimental)."
+      }
     >
-      {label}
+      {entry.retrievalMode}
     </span>
   );
 }
 
-function ExplorerRow({
+function SummaryBody({ entry }: { entry: ExplorerFeedEntry }) {
+  return (
+    <p className="break-words text-foreground text-sm">
+      {entry.summary}
+      <RetrievalBadge entry={entry} />
+    </p>
+  );
+}
+
+function MoneyBody({ preview }: { preview: RecordPreview }) {
+  if (!(preview.amount || preview.title)) {
+    return null;
+  }
+  return (
+    <div className="flex items-baseline justify-between gap-3">
+      <div className="min-w-0">
+        {preview.title ? <p className="truncate font-medium text-foreground text-sm">{preview.title}</p> : null}
+        {preview.body ? <p className="pdpp-caption truncate text-muted-foreground">{preview.body}</p> : null}
+      </div>
+      {preview.amount ? (
+        <span
+          className={`shrink-0 font-mono text-base tabular-nums ${
+            preview.amountPositive ? "text-[color:var(--success)]" : "text-foreground"
+          }`}
+        >
+          {preview.amount}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+function MessageBody({ preview }: { preview: RecordPreview }) {
+  if (!(preview.author || preview.body || preview.title)) {
+    return null;
+  }
+  return (
+    <div className="min-w-0">
+      {preview.author ? <span className="font-medium text-foreground text-sm">{preview.author}</span> : null}
+      {preview.title ? <p className="truncate font-medium text-foreground text-sm">{preview.title}</p> : null}
+      {preview.body ? (
+        <p className="mt-0.5 line-clamp-2 text-muted-foreground text-sm leading-snug">{preview.body}</p>
+      ) : null}
+    </div>
+  );
+}
+
+function EventBody({ preview }: { preview: RecordPreview }) {
+  if (!(preview.title || preview.eventTime)) {
+    return null;
+  }
+  return (
+    <div className="min-w-0">
+      {preview.eventTime ? (
+        <span className="font-medium font-mono text-primary text-sm tabular-nums">{preview.eventTime}</span>
+      ) : null}
+      {preview.title ? <p className="truncate font-medium text-foreground text-sm">{preview.title}</p> : null}
+      {preview.body ? <p className="pdpp-caption truncate text-muted-foreground">{preview.body}</p> : null}
+    </div>
+  );
+}
+
+function TitledBody({ preview }: { preview: RecordPreview }) {
+  if (!preview.title) {
+    return null;
+  }
+  return (
+    <div className="min-w-0">
+      <p className="truncate font-medium text-foreground text-sm">{preview.title}</p>
+      {preview.body ? (
+        <p className="mt-0.5 line-clamp-2 text-muted-foreground text-sm leading-snug">{preview.body}</p>
+      ) : null}
+    </div>
+  );
+}
+
+const PREVIEW_BODY_BY_KIND: Record<RecordKind, (preview: RecordPreview) => ReactNode> = {
+  event: (preview) => <EventBody preview={preview} />,
+  generic: () => null,
+  message: (preview) => <MessageBody preview={preview} />,
+  money: (preview) => <MoneyBody preview={preview} />,
+  titled: (preview) => <TitledBody preview={preview} />,
+};
+
+/**
+ * Kind-specific card body. Renders the structured preview when present (a
+ * money row leads with its amount, a message row with author + body, an event
+ * row with its time), and falls back to the one-line summary otherwise. The
+ * fallback path is what every search hit and every unclassified record uses,
+ * so the feed never over-promises a shape it could not extract.
+ */
+function CardBody({ entry }: { entry: ExplorerFeedEntry }) {
+  const body = entry.preview ? PREVIEW_BODY_BY_KIND[entry.preview.kind](entry.preview) : null;
+  return body ?? <SummaryBody entry={entry} />;
+}
+
+function ExplorerCard({
   entry,
   peekHref,
   recordHref,
@@ -951,45 +1069,32 @@ function ExplorerRow({
   recordHref: string;
   selected: boolean;
 }) {
+  const kind = entry.kind ?? "generic";
+  // A 3px left rail in the kind's temperature. `before:` pseudo-element keeps
+  // the rail flush with the rounded card edge without an extra wrapper.
+  const rail = `relative overflow-hidden rounded-lg border before:absolute before:inset-y-0 before:left-0 before:w-[3px] before:content-[''] ${KIND_RAIL_TONE[kind]}`;
+  const surface = selected
+    ? "border-foreground/30 bg-muted/50"
+    : "border-border/70 bg-card hover:border-border hover:bg-muted/20";
   return (
-    <div
-      className={`grid gap-1 px-3 py-2.5 transition-colors sm:grid-cols-[11rem_minmax(0,14rem)_1fr_auto] sm:items-baseline sm:gap-4 ${
-        selected ? "bg-muted/50" : "hover:bg-muted/30"
-      }`}
-    >
-      <Link className="pdpp-caption whitespace-nowrap text-muted-foreground" href={peekHref}>
-        <Timestamp value={entry.displayAt} />
-      </Link>
-      <Link className="pdpp-caption flex items-baseline gap-2 whitespace-nowrap" href={peekHref}>
-        <KindTag kind={entry.kind} />
-        <span className="truncate font-medium font-mono text-foreground">{entry.connectorId}</span>
-        <span className="truncate font-mono text-muted-foreground">{entry.stream}</span>
-      </Link>
-      <Link className="pdpp-caption break-words" href={peekHref}>
-        {entry.summary}
-        {entry.retrievalMode === "semantic" || entry.retrievalMode === "hybrid" ? (
-          <span
-            className="ml-2 inline-flex items-baseline gap-1 rounded border border-border px-1.5 py-0.5 align-baseline text-[10px] text-muted-foreground uppercase tracking-wide"
-            title={
-              entry.retrievalMode === "hybrid"
-                ? "Found by hybrid retrieval (experimental)."
-                : "Found by semantic retrieval (experimental)."
-            }
-          >
-            {entry.retrievalMode}
+    <div className={`${rail} ${surface} transition-colors`}>
+      <Link className="block py-2.5 pr-3 pl-4" href={peekHref}>
+        <div className="mb-1 flex items-baseline justify-between gap-3">
+          <CardEyebrow entry={entry} />
+          <span className="pdpp-caption shrink-0 whitespace-nowrap text-muted-foreground tabular-nums">
+            <Timestamp value={entry.displayAt} />
           </span>
-        ) : null}
+        </div>
+        <CardBody entry={entry} />
       </Link>
-      <span className="pdpp-caption flex shrink-0 items-baseline gap-3 whitespace-nowrap text-muted-foreground">
-        {entry.connectionDisplayName ? (
-          <span className="truncate" title={entry.connectionId ?? ""}>
-            {entry.connectionDisplayName}
-          </span>
-        ) : null}
-        <Link className="underline-offset-2 hover:text-foreground hover:underline" href={recordHref}>
+      <div className="flex justify-end border-border/50 border-t px-4 py-1">
+        <Link
+          className="pdpp-caption text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+          href={recordHref}
+        >
           open →
         </Link>
-      </span>
+      </div>
     </div>
   );
 }
