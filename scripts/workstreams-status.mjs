@@ -205,7 +205,10 @@ for (const lane of wrapperLanes) {
     // Normalize both to digits-only to compare across the two date formats used by the wrapper
     // (started_at: "20260529T033943Z", ended_at: "2026-05-29T03:39:43Z").
     const normalizeTs = (s) => (s ?? "").replace(/\D/g, "").slice(0, 14);
-    const stale = lane.startedAt && lane.endedAt && normalizeTs(lane.startedAt) === normalizeTs(lane.endedAt);
+    const stale = !isWrapperLaneProcessRunning(lane)
+      && lane.startedAt
+      && lane.endedAt
+      && normalizeTs(lane.startedAt) === normalizeTs(lane.endedAt);
     if (stale) {
       risks.push(`WRAPPER-LANE stale-running (SIGKILL?) lane=${lane.lane} started=${lane.startedAt} — relaunch or mark superseded`);
     } else {
@@ -375,6 +378,16 @@ function classifyOpenSpecChanges(names) {
 function formatOpenSpecLine(entry) {
   const ratio = `[${String(entry.done).padStart(2, " ")}/${String(entry.total).padStart(2, " ")}]`;
   return `- ${ratio} ${entry.name}`;
+}
+
+function isWrapperLaneProcessRunning(lane) {
+  const processList = exec("ps", ["-eo", "pid=,args="], { allowFail: true });
+  if (!processList) return false;
+  return processList.split("\n").some((line) => {
+    if (!line || line.includes("workstreams-status.mjs")) return false;
+    if (lane.artifactDir && line.includes(lane.artifactDir)) return true;
+    return lane.lane && line.includes(`--lane ${lane.lane}`);
+  });
 }
 
 // Scan tmp/workstreams/claude-wrapper/<lane>/<ts>/status.json.
