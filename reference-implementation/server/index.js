@@ -398,7 +398,6 @@ import {
   buildHostedMcpAuthorizationDetailsForConnector,
   HOSTED_MCP_PICKER_DEFAULT_ACCESS_MODE,
   HOSTED_MCP_PICKER_SUPPORTED_ACCESS_MODES,
-  listHostedMcpPickerRows,
   parseAuthorizeAuthorizationDetails,
   renderHostedMcpSourceSelection,
   renderPendingConsentNotFoundHtml,
@@ -2560,8 +2559,8 @@ function buildAsApp(opts = {}) {
   // buildHostedMcpAuthorizationDetailsForConnector,
   // buildHostedMcpAuthorizationDetailForConnector,
   // HOSTED_MCP_PICKER_DEFAULT_ACCESS_MODE,
-  // HOSTED_MCP_PICKER_SUPPORTED_ACCESS_MODES,
-  // listHostedMcpPickerRows, and renderHostedMcpSourceSelection extracted to
+  // HOSTED_MCP_PICKER_SUPPORTED_ACCESS_MODES, and
+  // renderHostedMcpSourceSelection extracted to
   // `server/routes/as-consent-ui-helpers.ts` per OpenSpec change
   // `split-reference-server-by-route-family`. Imports at top of file.
 

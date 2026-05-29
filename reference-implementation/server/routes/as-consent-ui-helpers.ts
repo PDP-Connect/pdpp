@@ -12,7 +12,7 @@
 //   test/security-consent-risk-disclosure.test.js
 //   test/security-consent-token-handoff.test.js
 
-// ─── Hosted-UI rendering surface (injected to avoid importing .js directly) ──
+// Hosted-UI rendering surface (injected to avoid importing .js directly).
 
 export interface ConsentUiRenderer {
   escapeHtml(input: unknown): string;
@@ -32,7 +32,7 @@ export interface ConsentUiRenderer {
   renderSurface(opts: { surface?: string; ariaLabel?: string; children: string }): string;
 }
 
-// ─── Picker data capabilities (injected; async store reads) ──────────────────
+// Picker data capabilities (injected; async store reads).
 
 export interface ConsentPickerCapabilities {
   canonicalConnectorKey(connectorId: string): string | null;
@@ -63,7 +63,7 @@ export interface ConsentPickerBinding {
   [key: string]: unknown;
 }
 
-// ─── Picker row shape ────────────────────────────────────────────────────────
+// Picker row shape.
 
 export interface HostedMcpPickerRow {
   connectionId: string | null;
@@ -75,7 +75,7 @@ export interface HostedMcpPickerRow {
   streams: Array<{ name: string; description: string | null }>;
 }
 
-// ─── Authorization-details constants ─────────────────────────────────────────
+// Authorization-details constants.
 
 export const HOSTED_MCP_PICKER_PURPOSE_CODE = "https://pdpp.org/purpose/personal_ai_assistant";
 export const HOSTED_MCP_PICKER_PURPOSE_DESCRIPTION =
@@ -83,7 +83,7 @@ export const HOSTED_MCP_PICKER_PURPOSE_DESCRIPTION =
 export const HOSTED_MCP_PICKER_DEFAULT_ACCESS_MODE = "continuous";
 export const HOSTED_MCP_PICKER_SUPPORTED_ACCESS_MODES: ReadonlySet<string> = new Set(["single_use", "continuous"]);
 
-// ─── Input normalization helpers ─────────────────────────────────────────────
+// Input normalization helpers.
 
 type OAuthError = Error & { code?: string };
 
@@ -186,7 +186,7 @@ export function validateAuthorizePkce({ responseType, codeChallenge, codeChallen
   }
 }
 
-// ─── Authorization-details builders ──────────────────────────────────────────
+// Authorization-details builders.
 
 /**
  * Builds a single-entry `authorization_details` array for a connector-backed
@@ -243,7 +243,7 @@ export function buildHostedMcpAuthorizationDetailForConnector(
   };
 }
 
-// ─── Picker data builder ─────────────────────────────────────────────────────
+// Picker data builder.
 
 /**
  * Fetches the hosted MCP picker rows for the given owner. One row per
@@ -321,7 +321,7 @@ export async function listHostedMcpPickerRows(
   return rows;
 }
 
-// ─── Consent page renderers ───────────────────────────────────────────────────
+// Consent page renderers.
 
 /**
  * Renders the "consent request expired / not found" page for GET /consent
@@ -534,7 +534,7 @@ export function renderPendingGrantConsentHtml(
   });
 }
 
-// ─── MCP picker HTML renderer ─────────────────────────────────────────────────
+// MCP picker HTML renderer.
 
 interface AuthorizeQueryParams {
   client_id?: unknown;
