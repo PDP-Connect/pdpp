@@ -34,7 +34,10 @@ export type {
 export {
   buildExplorerHref,
   computeActivityStripCells,
+  emptyFeedMessage,
   explorerPeekParam,
+  feedCountLabel,
+  feedDescription,
   feedSectionTitle,
   groupFeedByDay,
   isoDayFromMs,
@@ -53,7 +56,10 @@ import type {
 import {
   buildExplorerHref,
   computeActivityStripCells,
+  emptyFeedMessage,
   explorerPeekParam,
+  feedCountLabel,
+  feedDescription,
   feedSectionTitle,
   groupFeedByDay,
   isoDayFromMs,
@@ -129,30 +135,6 @@ export function RecordsExplorerView({ data, routes }: { data: RecordsExplorerDat
   );
 }
 
-function feedCountLabel(count: number, fromSearch: boolean, truncated: boolean): string {
-  const verb = fromSearch ? "matches" : "records";
-  const suffix = truncated ? "+" : "";
-  return `${count.toLocaleString()}${suffix} ${verb}`;
-}
-
-function feedDescription(lens: ExplorerLens, hybridUsed: boolean): string {
-  if (lens === "time_range") {
-    return "Time-anchored across every stream that declares a consent-time field, sorted by the owner's data time. Streams without a declared time field are excluded.";
-  }
-  if (lens === "search_with_ignored_time_window") {
-    if (hybridUsed) {
-      return "Hybrid retrieval (lexical + semantic). The time window in the URL is not applied to search — clear the query to fall back to the time-range lens.";
-    }
-    return "Lexical retrieval. The time window in the URL is not applied to search — clear the query to fall back to the time-range lens.";
-  }
-  if (lens === "search") {
-    if (hybridUsed) {
-      return "Hybrid retrieval (lexical + semantic), deduplicated by record key. Public search results do not yet carry connection identity, so rows are scoped to the connector unless exactly one connection of that type is configured.";
-    }
-    return "Lexical retrieval. Results match record text under the owner token. Public search results do not yet carry connection identity, so rows are scoped to the connector unless exactly one connection of that type is configured.";
-  }
-  return "Recent across every visible connection. Submit a query, or pick a date window, to narrow further.";
-}
 
 function ExplorerMain({
   query,
@@ -312,15 +294,6 @@ function ExplorerMain({
   );
 }
 
-function emptyFeedMessage(lens: ExplorerLens): string {
-  if (lens === "search" || lens === "search_with_ignored_time_window") {
-    return "No records match this query. Try different terms, or clear the query to browse recent records.";
-  }
-  if (lens === "time_range") {
-    return "No time-anchored records in this window. Widen the range, clear connection or stream chips, or run a connector to collect more data.";
-  }
-  return "No records yet on any visible connection. Run a connector to start collecting.";
-}
 
 function ExplorerControls({
   exploreHref,

@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const PAGE_FILE = `${HERE}page.tsx`;
+const NEXT_CONFIG_FILE = fileURLToPath(new URL("../../../../next.config.mjs", import.meta.url));
+
 const LOAD_TIMELINE_RE = /\bloadTimeline\b/;
 const CONNECTOR_INSTANCE_ID_RE =
   /connectorInstanceId:\s*summary\.connector_instance_id\s*\?\?\s*summary\.connection_id/;
@@ -18,4 +20,10 @@ test("time-range explorer keeps connection identity instead of using connector-s
   assert.match(src, CONNECTOR_INSTANCE_ID_RE);
   assert.match(src, CONNECTION_ID_RE);
   assert.match(src, CONNECTION_DISPLAY_RE);
+});
+
+test("next.config.mjs has a top-level /explore redirect to /dashboard/explore", async () => {
+  const src = await readFile(NEXT_CONFIG_FILE, "utf8");
+  assert.match(src, /source:\s*['"]\/explore['"]/, "must have /explore source redirect");
+  assert.match(src, /destination:\s*['"]\/dashboard\/explore['"]/, "must redirect to /dashboard/explore");
 });

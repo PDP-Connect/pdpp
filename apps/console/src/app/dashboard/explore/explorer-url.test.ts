@@ -3,8 +3,12 @@ import { test } from "node:test";
 import {
   buildExplorerHref,
   computeActivityStripCells,
+  emptyFeedMessage,
   type ExplorerFeedEntry,
+  type ExplorerLens,
   explorerPeekParam,
+  feedCountLabel,
+  feedDescription,
   feedSectionTitle,
   groupFeedByDay,
   parseExplorerPeekParam,
@@ -268,4 +272,47 @@ test("feedSectionTitle returns lens-appropriate section headings", () => {
   assert.equal(feedSectionTitle("time_range"), "Records in range");
   assert.equal(feedSectionTitle("search"), "Search results");
   assert.equal(feedSectionTitle("search_with_ignored_time_window"), "Search results");
+});
+
+const ALL_LENSES: ExplorerLens[] = ["recent", "search", "time_range", "search_with_ignored_time_window"];
+
+test("emptyFeedMessage returns a non-empty string for every defined lens", () => {
+  for (const lens of ALL_LENSES) {
+    const msg = emptyFeedMessage(lens);
+    assert.ok(msg.length > 0, `emptyFeedMessage("${lens}") returned empty string`);
+  }
+});
+
+test("emptyFeedMessage returns distinct copy for each lens family", () => {
+  assert.notEqual(emptyFeedMessage("recent"), emptyFeedMessage("search"));
+  assert.notEqual(emptyFeedMessage("recent"), emptyFeedMessage("time_range"));
+  assert.equal(emptyFeedMessage("search"), emptyFeedMessage("search_with_ignored_time_window"));
+});
+
+test("feedDescription returns a non-empty string for every lens × hybridUsed combination", () => {
+  for (const lens of ALL_LENSES) {
+    for (const hybrid of [true, false]) {
+      const desc = feedDescription(lens, hybrid);
+      assert.ok(desc.length > 0, `feedDescription("${lens}", ${hybrid}) returned empty string`);
+    }
+  }
+});
+
+test("feedDescription distinguishes hybrid from lexical for search lenses", () => {
+  assert.notEqual(feedDescription("search", true), feedDescription("search", false));
+  assert.notEqual(
+    feedDescription("search_with_ignored_time_window", true),
+    feedDescription("search_with_ignored_time_window", false)
+  );
+  // hybridUsed is irrelevant for non-search lenses
+  assert.equal(feedDescription("recent", true), feedDescription("recent", false));
+  assert.equal(feedDescription("time_range", true), feedDescription("time_range", false));
+});
+
+test("feedCountLabel formats counts with locale separators", () => {
+  assert.equal(feedCountLabel(0, false, false), "0 records");
+  assert.equal(feedCountLabel(1, false, false), "1 records");
+  assert.equal(feedCountLabel(50, false, true), "50+ records");
+  assert.equal(feedCountLabel(12, true, false), "12 matches");
+  assert.equal(feedCountLabel(7, true, true), "7+ matches");
 });
