@@ -149,8 +149,9 @@ Records SHALL be serialized as NDJSON and passed to the existing record-ingest o
 
 #### Scenario: A signed run-trigger callback is accepted and automation policy permits the run
 - **WHEN** an authenticated source callback carries `{ "action": "schedule_run" }` and the automation policy resolves `allowed_to_start: true`
-- **THEN** the reference SHALL record a scheduler input with `trigger_kind: "webhook"` for the connector bound to that `sourceId`
+- **THEN** the reference SHALL request a connector refresh with `trigger_kind: "webhook"` for the connector bound to that `sourceId`
 - **AND** the webhook handler SHALL NOT start the connector run outside the shared automation policy model
+- **AND** when the runtime controller is unavailable, the reference SHALL fall back to signaling the scheduler's last-run-time record instead of dropping the request
 
 #### Scenario: Automation policy blocks the run
 - **WHEN** an authenticated source callback carries `{ "action": "schedule_run" }` but the automation policy resolves `allowed_to_start: false`

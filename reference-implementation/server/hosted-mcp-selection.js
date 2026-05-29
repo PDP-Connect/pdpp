@@ -100,6 +100,22 @@ export function parseHostedMcpSelection(raw) {
   return { connectorId, connectionId };
 }
 
+function normalizeSubmittedValues(rawValues) {
+  if (Array.isArray(rawValues)) {
+    return rawValues;
+  }
+  if (typeof rawValues === 'string') {
+    return [rawValues];
+  }
+  if (rawValues && typeof rawValues === 'object') {
+    // qs yields a numeric-keyed object, not an array, when repeated params
+    // exceed its arrayLimit. Hosted MCP forms can legitimately exceed that
+    // with per-stream checkboxes.
+    return Object.values(rawValues);
+  }
+  return [];
+}
+
 /**
  * Parse zero or more submitted selection values, deduplicating by
  * (connector_id, connection_id).
@@ -113,9 +129,7 @@ export function parseHostedMcpSelection(raw) {
  * @returns {Array<{ connectorId: string, connectionId: string | null }>}
  */
 export function parseHostedMcpSelections(rawValues) {
-  const values = Array.isArray(rawValues)
-    ? rawValues
-    : (typeof rawValues === 'string' ? [rawValues] : []);
+  const values = normalizeSubmittedValues(rawValues);
   const seen = new Set();
   const out = [];
   for (const raw of values) {
@@ -191,9 +205,7 @@ export function parseHostedMcpStreamSelection(raw) {
  * }}
  */
 export function parseHostedMcpStreamSelections(rawValues) {
-  const values = Array.isArray(rawValues)
-    ? rawValues
-    : (typeof rawValues === 'string' ? [rawValues] : []);
+  const values = normalizeSubmittedValues(rawValues);
   const seenEntries = new Set();
   const entries = [];
   const bySource = new Map();

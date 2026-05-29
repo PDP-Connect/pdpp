@@ -76,6 +76,16 @@ test('accepts both string and array form values, dedupes by content', () => {
   ]);
 });
 
+test('accepts numeric-keyed object form values from qs arrayLimit overflow', () => {
+  const a = encodeHostedMcpSelection({ connectorId: 'slack', connectionId: null });
+  const b = encodeHostedMcpSelection({ connectorId: 'gmail', connectionId: 'conn_a' });
+
+  assert.deepEqual(parseHostedMcpSelections({ 0: a, 1: b, 2: a }), [
+    { connectorId: 'slack', connectionId: null },
+    { connectorId: 'gmail', connectionId: 'conn_a' },
+  ]);
+});
+
 test('dedupes two distinct encodings of the same tuple', () => {
   // Two payloads with different key orderings encode to different base64url
   // strings but represent the same (connector, connection). The deduper
@@ -205,6 +215,29 @@ test('stream selections parse into entries and a per-source set keyed by hostedM
   const slackKey = hostedMcpSourceKey({ connectorId: 'slack', connectionId: null });
   assert.deepEqual([...bySource.get(gmailKey)].sort(), ['messages', 'threads']);
   assert.deepEqual([...bySource.get(slackKey)], ['channels']);
+});
+
+test('stream selections accept numeric-keyed object form values from qs arrayLimit overflow', () => {
+  const gmailMessages = encodeHostedMcpStreamSelection({
+    connectorId: 'gmail',
+    connectionId: 'conn_a',
+    streamName: 'messages',
+  });
+  const gmailThreads = encodeHostedMcpStreamSelection({
+    connectorId: 'gmail',
+    connectionId: 'conn_a',
+    streamName: 'threads',
+  });
+
+  const { entries, bySource } = parseHostedMcpStreamSelections({
+    0: gmailMessages,
+    1: gmailThreads,
+    2: gmailMessages,
+  });
+
+  assert.equal(entries.length, 2);
+  const gmailKey = hostedMcpSourceKey({ connectorId: 'gmail', connectionId: 'conn_a' });
+  assert.deepEqual([...bySource.get(gmailKey)].sort(), ['messages', 'threads']);
 });
 
 test('stream selections return empty containers for missing or non-iterable inputs', () => {
