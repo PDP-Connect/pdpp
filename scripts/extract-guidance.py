@@ -24,6 +24,9 @@ Options:
   --limit N           Stop after N candidate items (0 = unlimited)
   --category CAT      Filter by category (can repeat)
   --min-confidence N  Minimum confidence score 0-100 (default: 40)
+  --cwd-filter PATH   Only include sessions whose cwd contains PATH
+  --owner-only        Only include top-level CLI sessions (source == "cli")
+  --pdpp              Shortcut: --cwd-filter /pdpp --owner-only
   --redact            Mask tokens, UUIDs, bearer values
   --help              Show this message
 
@@ -114,6 +117,36 @@ def iter_session_file(path: Path) -> Iterator[dict]:
                 yield json.loads(line)
             except json.JSONDecodeError:
                 continue
+
+
+def read_session_meta(path: Path) -> dict:
+    """Read only the session_meta line from a JSONL file (fast, stops early)."""
+    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+                if obj.get("type") == "session_meta":
+                    return obj.get("payload", {})
+            except json.JSONDecodeError:
+                continue
+    return {}
+
+
+def session_matches_filters(path: Path, cwd_filter: str | None, owner_only: bool) -> bool:
+    """Return True if this session file passes the cwd/owner filters."""
+    if not cwd_filter and not owner_only:
+        return True
+    meta = read_session_meta(path)
+    if cwd_filter and cwd_filter not in (meta.get("cwd") or ""):
+        return False
+    if owner_only:
+        source = meta.get("source", "")
+        if isinstance(source, dict) or (isinstance(source, str) and source != "cli"):
+            return False
+    return True
 
 
 def extract_user_texts(path: Path) -> list[tuple[int, str, str | None]]:
@@ -224,19 +257,26 @@ def redact(text: str) -> tuple[str, bool]:
 # File discovery
 # ---------------------------------------------------------------------------
 
-def discover_session_files(roots: list[Path], since: datetime | None) -> list[Path]:
-    """Recursively find all .jsonl files under roots, optionally filtered by mtime."""
+def discover_session_files(
+    roots: list[Path],
+    since: datetime | None,
+    cwd_filter: str | None = None,
+    owner_only: bool = False,
+) -> list[Path]:
+    """Recursively find all .jsonl files under roots, optionally filtered by mtime and session metadata."""
     found = []
     for root in roots:
         if root.is_file() and root.suffix == ".jsonl":
-            found.append(root)
+            if session_matches_filters(root, cwd_filter, owner_only):
+                found.append(root)
         elif root.is_dir():
             for p in sorted(root.rglob("*.jsonl")):
                 if since:
                     mtime = datetime.fromtimestamp(p.stat().st_mtime, tz=timezone.utc)
                     if mtime < since:
                         continue
-                found.append(p)
+                if session_matches_filters(p, cwd_filter, owner_only):
+                    found.append(p)
     return found
 
 
@@ -367,6 +407,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--category", "-c", action="append", dest="categories", metavar="CAT",
                    help=f"Filter category (choices: {', '.join(CATEGORIES)})")
     p.add_argument("--min-confidence", type=int, default=40, metavar="N")
+    p.add_argument("--cwd-filter", metavar="PATH", help="Only sessions whose cwd contains PATH")
+    p.add_argument("--owner-only", action="store_true", help="Only top-level CLI sessions (source=cli)")
+    p.add_argument("--pdpp", action="store_true", help="Shortcut: --cwd-filter /pdpp --owner-only")
     p.add_argument("--redact", action="store_true", help="Redact tokens, UUIDs, bearer values")
     return p.parse_args()
 
@@ -382,8 +425,21 @@ def main() -> None:
 
     category_filter = set(args.categories) if args.categories else None
 
+    cwd_filter: str | None = None
+    owner_only: bool = False
+    if args.pdpp:
+        cwd_filter = "/pdpp"
+        owner_only = True
+    else:
+        cwd_filter = args.cwd_filter
+        owner_only = args.owner_only
+
     print(f"[INFO] Discovering session files in: {[str(r) for r in roots]}", file=sys.stderr)
-    session_files = discover_session_files(roots, since)
+    if cwd_filter:
+        print(f"[INFO] Filtering by cwd containing: {cwd_filter}", file=sys.stderr)
+    if owner_only:
+        print(f"[INFO] Owner-only mode: skipping subagent sessions", file=sys.stderr)
+    session_files = discover_session_files(roots, since, cwd_filter=cwd_filter, owner_only=owner_only)
     print(f"[INFO] Found {len(session_files)} session file(s)", file=sys.stderr)
 
     all_items: list[dict] = []
