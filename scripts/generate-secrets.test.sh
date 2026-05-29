@@ -3,7 +3,7 @@
 # Tests for scripts/generate-secrets.sh
 #
 # Verifies:
-#   1. stdout mode: all four variables present, non-empty, non-example values.
+#   1. stdout mode: all generated variables present, non-empty, non-example values.
 #   2. --write mode: patches a copy of .env.docker.example correctly.
 #   3. Idempotence: a second --write run does not change already-set values.
 #   4. No-overwrite: existing non-empty values are preserved.

@@ -279,7 +279,7 @@ The quickstart Lane B is documented but has not been walked through by an owner 
 
 ### Risk 2 — `generate-secrets.sh` portability
 
-`openssl rand` and `npx web-push` are both available on standard Linux and macOS. RunPod CPU Pods run Ubuntu. The script should include a fallback for environments without `npx` (generate VAPID keys via Python or openssl-based arithmetic as a fallback). Risk is low for the target audience.
+The script currently uses Node.js `node:crypto`, which is already required by repo-local development and CI workflows. That keeps the helper portable across standard Linux, macOS, and RunPod CPU Pods without adding `openssl`, `npx web-push`, or Python as new setup dependencies. Risk is low for the target audience as long as the quickstart continues to require Node before invoking repo scripts.
 
 ### Risk 3 — Phase 2 and connection-identity noun settling
 
