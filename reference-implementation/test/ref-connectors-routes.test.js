@@ -17,6 +17,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { canonicalConnectorKeyFromManifest } from '../server/connector-key.js';
+import { getDb } from '../server/db.js';
 import { startServer } from '../server/index.js';
 import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
 
@@ -325,5 +326,95 @@ test('DELETE /_ref/connections/:connectorInstanceId/schedule returns 404 when no
     );
     assert.equal(status, 404);
     assert.equal(body?.error?.code, 'not_found');
+  });
+});
+
+// ─── Source-identity boundary: canonical key on the wire ─────────────────
+//
+// These tests pin the invariant that `/_ref/connections` and
+// `/_ref/connections/:id` MUST NOT expose URL-shaped connector_id values
+// in their responses even when the storage row carries a registry URL (a
+// pre-migration state). The `projectRefConnection` function canonicalizes
+// via `ctx.canonicalConnectorKey` at the response boundary so downstream
+// consumers (dashboard, MCP tools, clients) never see URL-shaped IDs.
+
+const SPOTIFY_URL_ID = 'https://registry.pdpp.org/connectors/spotify';
+const PRE_MIGRATION_INSTANCE_ID = 'cin_spotify_pre_migration';
+
+function seedSpotifyInstanceWithUrlId() {
+  // Bypass the normalizing store to simulate a pre-migration row that carries
+  // a URL-shaped connector_id. The connectors FK must be satisfied first, so
+  // we INSERT OR IGNORE a raw connectors row under the URL id before inserting
+  // the instance. In production this situation arises when the migration has
+  // not yet run; the projection boundary must canonicalize regardless.
+  const db = getDb();
+  db.prepare(
+    'INSERT OR IGNORE INTO connectors(connector_id, manifest, created_at) VALUES (?, ?, ?)',
+  ).run(SPOTIFY_URL_ID, JSON.stringify({ connector_id: SPOTIFY_URL_ID }), NOW);
+  db.prepare(
+    `INSERT OR IGNORE INTO connector_instances(
+      connector_instance_id, owner_subject_id, connector_id, display_name,
+      status, source_kind, source_binding_key, source_binding_json, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, 'active', 'account', 'acct_pre', '{}', ?, ?)`,
+  ).run(PRE_MIGRATION_INSTANCE_ID, OWNER_SUBJECT_ID, SPOTIFY_URL_ID, 'Spotify pre-migration', NOW, NOW);
+}
+
+test('GET /_ref/connections projects canonical connector_key even when storage row carries a URL-shaped connector_id', async () => {
+  await withServer(async ({ asUrl }) => {
+    // Register Spotify so the connector row exists (required by the FK and
+    // namespace resolver). The manifest carries the URL connector_id;
+    // registerConnector normalizes it to the canonical key. The instance
+    // is then seeded with the raw URL id to simulate a pre-migration row.
+    await registerSpotifyManifest(asUrl);
+    seedSpotifyInstanceWithUrlId();
+
+    const { status, body } = await fetchJson(`${asUrl}/_ref/connections`);
+    assert.equal(status, 200);
+    const row = body.data.find((r) => r.connector_instance_id === PRE_MIGRATION_INSTANCE_ID);
+    assert.ok(row, 'pre-migration instance must appear in list');
+    assert.equal(
+      row.connector_id,
+      'spotify',
+      'URL-shaped connector_id must be projected as the canonical short key',
+    );
+    assert.ok(
+      !row.connector_id.startsWith('https://'),
+      'connector_id MUST NOT start with https:// on the wire',
+    );
+  });
+});
+
+test('GET /_ref/connections/:id projects canonical connector_key for pre-migration URL-id instance', async () => {
+  await withServer(async ({ asUrl }) => {
+    await registerSpotifyManifest(asUrl);
+    seedSpotifyInstanceWithUrlId();
+
+    const { status, body } = await fetchJson(
+      `${asUrl}/_ref/connections/${PRE_MIGRATION_INSTANCE_ID}`,
+    );
+    assert.equal(status, 200);
+    assert.equal(body.object, 'ref_connection');
+    assert.equal(
+      body.connector_id,
+      'spotify',
+      'URL-shaped connector_id must be projected as the canonical short key on detail',
+    );
+  });
+});
+
+test('GET /_ref/connector-instances projects canonical connector_key for pre-migration URL-id instance', async () => {
+  await withServer(async ({ asUrl }) => {
+    await registerSpotifyManifest(asUrl);
+    seedSpotifyInstanceWithUrlId();
+
+    const { status, body } = await fetchJson(`${asUrl}/_ref/connector-instances`);
+    assert.equal(status, 200);
+    const row = body.data.find((r) => r.connector_instance_id === PRE_MIGRATION_INSTANCE_ID);
+    assert.ok(row, 'pre-migration instance must appear in connector-instances list');
+    assert.equal(
+      row.connector_id,
+      'spotify',
+      'URL-shaped connector_id must be projected as the canonical short key on connector-instances list',
+    );
   });
 });

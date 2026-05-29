@@ -165,14 +165,18 @@ function resolveRefConnectionNamespace(
 // Moved from the `buildAsApp` closure in `server/index.js`. Owner-facing
 // projection of a connector instance; the second argument lets list and
 // PATCH callers attach the matching schedule from a pre-fetched map.
+// The third argument canonicalizes connector_id at the response boundary
+// so URL-shaped registry IDs never appear in owner-facing API responses
+// even if the storage row pre-dates the canonical-key migration.
 function projectRefConnection(
   instance: ConnectorInstanceRow,
-  schedulesByInstanceId: ReadonlyMap<string, unknown> = new Map()
+  schedulesByInstanceId: ReadonlyMap<string, unknown> = new Map(),
+  canonicalizeConnectorId: (id: string) => string | null = (id) => id
 ): Record<string, unknown> {
   return {
     object: "ref_connection",
     connector_instance_id: instance.connectorInstanceId,
-    connector_id: instance.connectorId,
+    connector_id: canonicalizeConnectorId(instance.connectorId) ?? instance.connectorId,
     display_name: instance.displayName,
     status: instance.status,
     source_kind: instance.sourceKind,
@@ -207,7 +211,7 @@ async function sendRefConnectionDetail(
   // implementation did the same, so the deprecated alias route keeps
   // returning a projection rather than 404'ing.
   const source = instance ?? (namespace as unknown as ConnectorInstanceRow);
-  res.json(projectRefConnection(source, schedulesByInstanceId));
+  res.json(projectRefConnection(source, schedulesByInstanceId, (id) => ctx.canonicalConnectorKey(id)));
 }
 
 // ─── Catalog list / detail ──────────────────────────────────────────────
@@ -353,7 +357,7 @@ export function mountRefConnectionsList(app: AppLike, ctx: MountRefConnectorsCon
         const data = instances
           .filter((instance) => !connectorId || instance.connectorId === connectorId)
           .filter((instance) => !status || instance.status === status)
-          .map((instance) => projectRefConnection(instance, schedulesByInstanceId));
+          .map((instance) => projectRefConnection(instance, schedulesByInstanceId, (id) => ctx.canonicalConnectorKey(id)));
         res.json({ object: "list", data });
       } catch (err) {
         ctx.handleError(res, err);
@@ -383,7 +387,7 @@ export function mountRefConnectorInstancesList(app: AppLike, ctx: MountRefConnec
         const data = instances
           .filter((instance) => !connectorId || instance.connectorId === connectorId)
           .filter((instance) => !status || instance.status === status)
-          .map((instance) => projectRefConnection(instance));
+          .map((instance) => projectRefConnection(instance, new Map(), (id) => ctx.canonicalConnectorKey(id)));
         res.json({ object: "list", data });
       } catch (err) {
         ctx.handleError(res, err);
@@ -463,7 +467,8 @@ export function mountRefConnectionSetDisplayName(app: AppLike, ctx: MountRefConn
         res.json(
           projectRefConnection(
             updated,
-            new Map<string, unknown>(schedule ? [[updated.connectorInstanceId, schedule]] : [])
+            new Map<string, unknown>(schedule ? [[updated.connectorInstanceId, schedule]] : []),
+            (id) => ctx.canonicalConnectorKey(id)
           )
         );
       } catch (err) {
