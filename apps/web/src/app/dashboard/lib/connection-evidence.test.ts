@@ -616,6 +616,66 @@ test("deriveConnectionStatusDisplay: needs_attention surfaces dominant condition
   assert.equal(out.title.toLowerCase().includes("one-time passcode"), true);
 });
 
+// ─── AxisChip dimension/value separation ─────────────────────────────────
+//
+// The chip model exposes explicit `dimension` (axis name) and `value`
+// (axis state) fields so the UI can render them with distinct visual
+// weight. These tests pin that they are never collapsed back into an
+// opaque `label`-only shape and that the separator · in `label` stays
+// consistent with dimension + value.
+
+test("AxisChip has dimension and value fields distinct from label", () => {
+  const chip = formatCoverageAxis("complete");
+  assert.equal(chip.dimension, "Coverage");
+  assert.equal(chip.value, "complete");
+  assert.equal(chip.label, "Coverage · complete");
+});
+
+test("AxisChip dimension and value concatenate to match label", () => {
+  for (const axis of ["complete", "partial", "gaps", "unknown", "deferred"] as const) {
+    const chip = formatCoverageAxis(axis);
+    assert.equal(`${chip.dimension} · ${chip.value}`, chip.label, `label mismatch for coverage=${axis}`);
+  }
+  for (const axis of ["fresh", "stale", "unknown"] as const) {
+    const chip = formatFreshnessAxis(axis);
+    assert.equal(`${chip.dimension} · ${chip.value}`, chip.label, `label mismatch for freshness=${axis}`);
+  }
+  for (const axis of ["idle", "active", "stalled", "unknown"] as const) {
+    const chip = formatOutboxAxis(axis);
+    assert.equal(`${chip.dimension} · ${chip.value}`, chip.label, `label mismatch for outbox=${axis}`);
+  }
+});
+
+test("formatSourceOutboxState chip has dimension and value consistent with label", () => {
+  const chip = formatSourceOutboxState({ outbox_state: "dead_letter", outbox_diagnostics: null });
+  assert.equal(chip.dimension, "Outbox");
+  assert.equal(chip.value, "dead-letter");
+  assert.equal(chip.label, "Outbox · dead-letter");
+});
+
+test("axis chips from summarizeAxisChips all carry dimension and value", () => {
+  const chips = summarizeAxisChips(
+    snapshot({ axes: { coverage: "complete", freshness: "fresh", attention: "open", outbox: "idle" } }).axes
+  );
+  for (const chip of chips) {
+    assert.ok(chip.dimension.length > 0, `missing dimension on chip: ${chip.label}`);
+    assert.ok(chip.value.length > 0, `missing value on chip: ${chip.label}`);
+  }
+});
+
+test("novel axis values from runtime degrade to dimension='X' value='unknown' not opaque label", () => {
+  const chips = summarizeAxisChips({
+    attention: "none",
+    coverage: "future_gap",
+    freshness: undefined,
+    outbox: "future_outbox",
+  } as unknown as RefConnectionHealthSnapshot["axes"]);
+  for (const chip of chips) {
+    assert.equal(chip.value, "unknown", `expected value='unknown' for novel axis, got '${chip.value}'`);
+    assert.ok(chip.dimension.length > 0, `missing dimension for novel axis chip`);
+  }
+});
+
 test("deriveConnectionStatusDisplay: unknown projection lists unknown reasons in the tooltip", () => {
   const out = deriveConnectionStatusDisplay({
     hasDurableProgress: true,
