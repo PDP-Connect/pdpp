@@ -398,7 +398,6 @@ function feedDescription(lens: ExplorerLens, hybridUsed: boolean): string {
   return "Recent across every visible connection. Submit a query, or pick a date window, to narrow further.";
 }
 
-
 function ExplorerMain({
   query,
   connections,
@@ -643,21 +642,14 @@ function ExplorerControls({
             until: u,
           });
           return (
-            <Link
-              className="underline-offset-2 hover:text-foreground hover:underline"
-              href={href}
-              key={d}
-            >
+            <Link className="underline-offset-2 hover:text-foreground hover:underline" href={href} key={d}>
               {d}d
             </Link>
           );
         })}
         <span className="ml-auto">
-          <Link
-            className="underline-offset-2 hover:text-foreground hover:underline"
-            href={routes.section.search}
-          >
-            Jump to ID →
+          <Link className="underline-offset-2 hover:text-foreground hover:underline" href={routes.section.search}>
+            Jump to ID
           </Link>
         </span>
       </div>
