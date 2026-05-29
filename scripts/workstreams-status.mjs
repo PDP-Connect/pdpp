@@ -6,6 +6,7 @@ import { join, relative, resolve } from "node:path";
 const repoRoot = exec("git", ["rev-parse", "--show-toplevel"], { cwd: process.cwd() }).trim();
 const commonGitDir = resolve(repoRoot, exec("git", ["rev-parse", "--git-common-dir"], { cwd: repoRoot }).trim());
 const tmpReportsDir = join(repoRoot, "tmp", "workstreams");
+const wrapperDir = join(tmpReportsDir, "claude-wrapper");
 const hubDir = join(commonGitDir, "workstreams");
 
 const now = Date.now();
@@ -152,7 +153,10 @@ const worktrees = parseWorktrees().map((worktree) => ({
 }));
 const tmuxPanes = parseTmuxPanes();
 const claudePanes = tmuxPanes.filter((pane) => pane.command === "claude");
-const reportFiles = listFiles(tmpReportsDir).filter((file) => file.endsWith(".md")).map(fileInfo);
+const reportFiles = listFiles(tmpReportsDir)
+  .filter((file) => file.endsWith(".md"))
+  .filter((file) => !file.startsWith(`${wrapperDir}/`))
+  .map(fileInfo);
 const recentReports = reportFiles.filter((report) => now - report.mtimeMs < 3 * DAY_MS);
 const mergeQueueFiles = listFiles(join(hubDir, "merge-queue")).filter((file) => file.endsWith(".md")).map(fileInfo);
 const blockerFiles = listFiles(join(hubDir, "blockers")).filter((file) => file.endsWith(".md")).map(fileInfo);
@@ -164,7 +168,7 @@ const openSpecChanges = listFiles(join(repoRoot, "openspec", "changes"))
   .sort();
 
 const openSpecBuckets = classifyOpenSpecChanges(openSpecChanges);
-const wrapperLanes = loadWrapperLanes(join(repoRoot, "tmp", "workstreams", "claude-wrapper"));
+const wrapperLanes = loadWrapperLanes(wrapperDir);
 
 const risks = [];
 
