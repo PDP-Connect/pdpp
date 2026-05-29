@@ -170,11 +170,18 @@ const openSpecChanges = listFiles(join(repoRoot, "openspec", "changes"))
 
 const openSpecBuckets = classifyOpenSpecChanges(openSpecChanges);
 const wrapperLanes = loadWrapperLanes(wrapperDir);
+const activeWrapperBranches = new Set(
+  wrapperLanes
+    .filter((lane) => lane.status === "running" && isWrapperLaneProcessRunning(lane))
+    .map((lane) => lane.branch)
+    .filter(Boolean)
+);
 
 const risks = [];
 
 for (const worktree of worktrees) {
-  if (worktree.status.dirty.length > 0) {
+  const dirtyOwnedByActiveWorker = activeWrapperBranches.has(worktree.branch);
+  if (worktree.status.dirty.length > 0 && !dirtyOwnedByActiveWorker) {
     risks.push(`DIRTY worktree ${labelWorktree(worktree)} has ${worktree.status.dirty.length} changed paths`);
   }
   if (worktree.status.ahead > 0) {
