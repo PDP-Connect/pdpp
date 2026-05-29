@@ -14,9 +14,30 @@ import { pdppCliNoInstallCommand } from "@/lib/pdpp-cli-command.ts";
 import type { TimelineEnvelope } from "../../lib/ref-client.ts";
 import { PageHeader, Section } from "../primitives.tsx";
 import { TimelineView } from "../timeline-view.tsx";
+import { buildExplorerHref } from "./records-explorer-view.tsx";
 import type { Routes } from "./routes.ts";
 
 export type TimelineSubject = "grant" | "trace" | "run";
+
+/**
+ * Derives a yyyy-mm-dd date window from the first and last event's occurred_at.
+ * Returns null when no events are present or timestamps are missing.
+ * Gap: does not carry connection identity — Explore will show all records in
+ * the window across all connections. A future slice can thread connection_id
+ * once the timeline envelope exposes it.
+ */
+function exploreWindowFromEnvelope(envelope: TimelineEnvelope): { since: string; until: string } | null {
+  const timestamps = envelope.events.map((e) => e.occurred_at).filter((t): t is string => Boolean(t));
+  if (timestamps.length === 0) return null;
+  const sorted = timestamps.slice().sort();
+  const since = sorted[0]!.slice(0, 10);
+  const lastDay = sorted[sorted.length - 1]!.slice(0, 10);
+  // until is exclusive-end in the explorer; advance by one day so records from
+  // the final event's date are included in the window.
+  const untilMs = new Date(lastDay).getTime() + 24 * 60 * 60 * 1000;
+  const until = new Date(untilMs).toISOString().slice(0, 10);
+  return { since, until };
+}
 
 interface PivotKind {
   ids: string[];
@@ -82,21 +103,39 @@ export function TimelineDetailView({
         title={<code className="font-mono">{id}</code>}
       />
 
-      {pivots.length > 0 ? (
-        <div className="mb-6 flex flex-wrap gap-2">
-          {pivots.flatMap((p) =>
-            p.ids.map((pivotId) => (
+      {(() => {
+        const exploreWindow = exploreWindowFromEnvelope(envelope);
+        const exploreHref = exploreWindow
+          ? buildExplorerHref(routes, { since: exploreWindow.since, until: exploreWindow.until })
+          : null;
+        const hasPivots = pivots.length > 0;
+        if (!hasPivots && !exploreHref) return null;
+        return (
+          <div className="mb-6 flex flex-wrap gap-2">
+            {hasPivots
+              ? pivots.flatMap((p) =>
+                  p.ids.map((pivotId) => (
+                    <Link
+                      className="pdpp-caption inline-flex items-center rounded-md border border-border px-2.5 py-1 hover:bg-muted/60"
+                      href={pivotHref(p.kind, pivotId)}
+                      key={`${p.kind}:${pivotId}`}
+                    >
+                      {p.kind} <code className="ml-1 font-mono">{pivotId}</code> →
+                    </Link>
+                  ))
+                )
+              : null}
+            {exploreHref ? (
               <Link
                 className="pdpp-caption inline-flex items-center rounded-md border border-border px-2.5 py-1 hover:bg-muted/60"
-                href={pivotHref(p.kind, pivotId)}
-                key={`${p.kind}:${pivotId}`}
+                href={exploreHref}
               >
-                {p.kind} <code className="ml-1 font-mono">{pivotId}</code> →
+                View records in Explore →
               </Link>
-            ))
-          )}
-        </div>
-      ) : null}
+            ) : null}
+          </div>
+        );
+      })()}
 
       {beforeTimeline}
 
