@@ -253,6 +253,7 @@ invoke_claude_main() {
   local exit_code=0
   (
     cd "$worktree_abs"
+    printf '%s' "$main_prompt" | \
     claude \
       --print \
       --model "$model" \
@@ -260,8 +261,7 @@ invoke_claude_main() {
       --setting-sources user \
       --strict-mcp-config \
       --mcp-config "$mcp_config" \
-      --dangerously-skip-permissions \
-      "$main_prompt"
+      --dangerously-skip-permissions
   ) >"$output_file" 2>&1 || exit_code=$?
   return "$exit_code"
 }
@@ -272,6 +272,7 @@ invoke_claude_recovery() {
   local exit_code=0
   (
     cd "$worktree_abs"
+    printf '%s' "$prompt" | \
     claude \
       --print \
       --model "$model" \
@@ -280,8 +281,7 @@ invoke_claude_recovery() {
       --strict-mcp-config \
       --mcp-config "$mcp_config" \
       --dangerously-skip-permissions \
-      --disallowedTools "Edit" "MultiEdit" "Write(!$report_abs)" "NotebookEdit" \
-      "$prompt"
+      --disallowedTools "Edit" "MultiEdit" "Write(!$report_abs)" "NotebookEdit"
   ) >"$output_file" 2>&1 || exit_code=$?
   return "$exit_code"
 }
