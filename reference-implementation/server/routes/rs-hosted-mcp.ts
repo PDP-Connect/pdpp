@@ -84,6 +84,13 @@ export interface MountRsHostedMcpContext {
     members: readonly GrantPackageMember[];
     fetch: typeof globalThis.fetch;
   }): unknown;
+  /**
+   * `createRsClient` from `./package-rs-client.js` — builds one single-bearer
+   * RsClient against a chosen fetch base. Injected for the same JS-only reason.
+   * Used for the standalone (`client`-token) path so its self-calls can use the
+   * internal RS base too (parity with the package path's child clients).
+   */
+  createRsClient(options: { providerUrl: string; accessToken: string; fetch: typeof globalThis.fetch }): unknown;
   /** Resolved RS public URL (or null; adapter derives it per-request). */
   readonly explicitResource: string | null | undefined;
   /** From auth.js: resolve active grant-package members for a package token. */
@@ -224,9 +231,21 @@ export function mountRsHostedMcp(app: AppLike, ctx: MountRsHostedMcpContext): vo
       res.setHeader("x-pdpp-grant-package-id", req.tokenInfo.grant_package_id as string);
       res.setHeader("x-pdpp-grant-package-member-count", String(access.members.length));
     } else {
+      // Standalone (`client`-token) path: build the single-bearer RsClient
+      // against the internal base so its self-calls (incl. PATCH
+      // update_event_subscription) avoid the public-edge hairpin too — parity
+      // with the package path's child clients. The advertised `providerUrl`
+      // stays the public `resource` (display/provenance only; all fetches go
+      // through the injected rsClient). When no internal base is configured,
+      // internalBase === resource, so this is a no-op vs prior behavior.
+      const rsClient = ctx.createRsClient({
+        providerUrl: internalBase,
+        accessToken: inboundToken,
+        fetch: globalThis.fetch,
+      });
       mcpServerOptions = {
         providerUrl: resource,
-        accessToken: inboundToken,
+        rsClient,
         fetch: globalThis.fetch,
         serverName: "pdpp-reference-mcp",
         serverVersion: referenceRevision,

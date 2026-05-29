@@ -1,8 +1,8 @@
 ## ADDED Requirements
 
-### Requirement: Hosted MCP package adapter SHALL forward self-calls to a configured internal resource-server base
+### Requirement: Hosted MCP adapter SHALL forward self-calls to a configured internal resource-server base
 
-The hosted MCP package adapter SHALL forward its child-grant self-calls to a configured internal resource-server base URL when one is present, and SHALL fall back to the advertised public resource when no internal base is configured. The advertised `resource`, the protected-resource discovery metadata, and the MCP server's advertised `providerUrl` SHALL continue to resolve to the public origin; the internal base SHALL be used only as the adapter's server-internal fetch base and SHALL NOT be advertised, written into issued-token audience/resource, or returned in discovery responses. The internal base SHALL be operator-configured to a trusted loopback or internal cluster/service-DNS address and SHALL NOT be derived from request headers. Each self-call SHALL still be authorized only by an active child grant and SHALL remain subject to per-child resource-server enforcement.
+The hosted MCP adapter SHALL forward its grant-scoped self-calls to a configured internal resource-server base URL when one is present, and SHALL fall back to the advertised public resource when no internal base is configured. This applies to BOTH hosted MCP token paths: the **package** path (the per-member child `RsClient` fan-out for an `mcp_package` token) and the **standalone** path (the single-bearer `RsClient` for a `client` token). The advertised `resource`, the protected-resource discovery metadata, and the MCP server's advertised `providerUrl` SHALL continue to resolve to the public origin; the internal base SHALL be used only as the adapter's server-internal fetch base and SHALL NOT be advertised, written into issued-token audience/resource, or returned in discovery responses. The internal base SHALL be operator-configured to a trusted loopback or internal cluster/service-DNS address and SHALL NOT be derived from request headers. Each self-call SHALL still be authorized only by its active grant bearer (the child grant's bearer for a package token; the single grant's bearer for a `client` token) and SHALL remain subject to per-grant resource-server enforcement.
 
 #### Scenario: Package-token update recovers from a public-edge method block
 
@@ -10,6 +10,14 @@ The hosted MCP package adapter SHALL forward its child-grant self-calls to a con
 - **AND** the public edge fronting the advertised resource rejects the PATCH method with HTTP 405 while the configured internal resource-server base method-routes PATCH
 - **THEN** the adapter SHALL forward the self-call to the internal base and the update SHALL succeed
 - **AND** the call SHALL NOT return an `rs_error` with code `http_405`.
+
+#### Scenario: Standalone client-token update also recovers from a public-edge method block
+
+- **WHEN** a standalone hosted MCP `client` token (not a package token) calls `update_event_subscription` (a `PATCH /v1/event-subscriptions/:id` self-call)
+- **AND** the public edge rejects PATCH with HTTP 405 while the configured internal base method-routes PATCH
+- **THEN** the adapter SHALL build the single-bearer `RsClient` against the internal base and the update SHALL succeed
+- **AND** the call SHALL NOT return an `rs_error` with code `http_405`
+- **AND** the advertised `providerUrl` SHALL remain the public origin.
 
 #### Scenario: Advertised metadata stays public
 

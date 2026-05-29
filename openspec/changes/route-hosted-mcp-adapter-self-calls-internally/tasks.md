@@ -5,14 +5,15 @@
 
 ## 2. Adapter providerUrl Split
 
-- [x] 2.1 Pass the resolved internal base to `createPackageRsClient` as the child fetch base (`providerUrl`) so each child `RsClient` issues self-calls against the internal address; keep `mcpServerOptions.providerUrl` and the advertised `resource` public. (Scope: the `mcp_package` branch where F1 was observed; the single-bearer branch is left on the public `resource` to stay surgical.)
+- [x] 2.1 Pass the resolved internal base to `createPackageRsClient` as the child fetch base (`providerUrl`) so each child `RsClient` issues self-calls against the internal address; keep `mcpServerOptions.providerUrl` and the advertised `resource` public.
+- [x] 2.1b Apply the same internal-base preference to the STANDALONE (`client`-token) branch: build the single-bearer `RsClient` via the injected `ctx.createRsClient({ providerUrl: internalBase, accessToken })` (new `createRsClient` factory in `server/package-rs-client.js`, wired through `index.js`) and pass it as `mcpServerOptions.rsClient`, keeping `mcpServerOptions.providerUrl` the public `resource` (display/provenance only — all fetches go through the injected client). So a `client`-token `update_event_subscription` PATCH also avoids the public-edge 405. Falls back to the public resource when no internal base is configured.
 - [x] 2.2 Confirmed the protected-resource discovery metadata (`setHostedMcpProtectedResourceMetadata`) and `mcpServerOptions.providerUrl`/`buildMcpWebRequest` still resolve via `resolvePublicUrl` to the public origin; the internal base is fetch-only and never advertised. Verified by the wiring regression test and unchanged hosted-mcp-oauth discovery assertions.
 - [x] 2.3 The internal base is operator-configured (`PDPP_RS_URL` / `opts.rsInternalUrl`), never request-derived from `Host`/`X-Forwarded-*` (which only feed `resolvePublicUrl` for the advertised resource).
 
 ## 3. Regression Test
 
 - [x] 3.1 Added regression tests proving package-token PATCH (`update_event_subscription`) succeeds via the internal base when the public edge 405s PATCH. Unit layer in `reference-implementation/test/package-rs-client.test.js` (host-aware fake `fetch`: public edge 405s PATCH, internal base method-routes it; asserts ok + no `http_405`), with a falsifiability test proving the public base yields `http_405`.
-- [x] 3.2 Added a wiring regression `reference-implementation/test/rs-hosted-mcp-internal-base.test.js` driving `handleHostedMcp` via `mountRsHostedMcp`: asserts the `providerUrl` reaching `createPackageRsClient` is the internal base while `mcpServerOptions.providerUrl` (advertised) stays the public origin. This test FAILS on pre-fix code and PASSES post-fix.
+- [x] 3.2 Added a wiring regression `reference-implementation/test/rs-hosted-mcp-internal-base.test.js` driving `handleHostedMcp` via `mountRsHostedMcp` (4 cases): asserts the `providerUrl` reaching `createPackageRsClient` (package path) AND `createRsClient` (standalone `client`-token path) is the internal base while `mcpServerOptions.providerUrl` (advertised) stays the public origin, plus fallback-to-public for both paths when no internal base is configured. The package and single-grant cases each FAIL on pre-fix code and PASS post-fix (proven by fault injection).
 - [x] 3.3 Asserted the fallback: with no internal base configured (null/undefined), self-calls use the public resource (current behavior preserved) — both in the unit `fallback parity` test and the wiring `fallback` test.
 
 ## 4. Validation

@@ -64,6 +64,23 @@ function makePackageRequest() {
   };
 }
 
+// Single-grant (`client`-token) request — exercises the `else` branch.
+function makeClientRequest() {
+  return {
+    protocol: 'https',
+    get(name) {
+      const lc = name.toLowerCase();
+      if (lc === 'host') return 'pdpp.test';
+      return undefined;
+    },
+    headers: { authorization: 'Bearer client_inbound_token', host: 'pdpp.test' },
+    method: 'POST',
+    path: '/mcp',
+    raw: { url: '/mcp' },
+    tokenInfo: { pdpp_token_kind: 'client', grant_id: 'grant_single' },
+  };
+}
+
 function makeFakeResponse() {
   return {
     locals: {},
@@ -85,7 +102,7 @@ function makeFakeResponse() {
 // receives, and whose `handleStreamableHttpRequest` records the providerUrl it
 // is advertised. `internalResource` is the fix's injected internal base.
 function makeContext({ internalResource }) {
-  const seen = { childProviderUrl: null, advertisedProviderUrl: null };
+  const seen = { childProviderUrl: null, advertisedProviderUrl: null, singleGrantProviderUrl: null };
   return {
     seen,
     ctx: {
@@ -105,6 +122,10 @@ function makeContext({ internalResource }) {
         seen.childProviderUrl = providerUrl;
         return { __fakePackageRsClient: true };
       },
+      createRsClient({ providerUrl }) {
+        seen.singleGrantProviderUrl = providerUrl;
+        return { __fakeRsClient: true };
+      },
       async handleStreamableHttpRequest(_request, options) {
         seen.advertisedProviderUrl = options.providerUrl;
         return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
@@ -118,7 +139,7 @@ function makeContext({ internalResource }) {
   };
 }
 
-async function driveHandler({ internalResource }) {
+async function driveHandler({ internalResource, makeRequest = makePackageRequest }) {
   const app = makeFakeApp();
   const { ctx, seen } = makeContext({ internalResource });
   mountRsHostedMcp(app, ctx);
@@ -126,7 +147,7 @@ async function driveHandler({ internalResource }) {
   const chain = app.routes['post /mcp'];
   const handler = chain[chain.length - 1];
   const res = makeFakeResponse();
-  await handler(makePackageRequest(), res);
+  await handler(makeRequest(), res);
   return seen;
 }
 
@@ -145,4 +166,22 @@ test('F1 wiring fallback: with no internal base configured, child self-calls fal
 
   const seenUndef = await driveHandler({ internalResource: undefined });
   assert.equal(seenUndef.childProviderUrl, PUBLIC_RESOURCE, 'fallback: undefined internal base also yields the public resource');
+});
+
+test('F1 wiring (single-grant): client-token self-calls use the internal base; advertised stays public', async () => {
+  const seen = await driveHandler({ internalResource: INTERNAL_BASE, makeRequest: makeClientRequest });
+  // The single-bearer RsClient's fetch base is the INTERNAL base (the
+  // single-grant extension — parity with the package path), so a client-token
+  // PATCH update_event_subscription avoids the public-edge 405 too.
+  assert.equal(seen.singleGrantProviderUrl, INTERNAL_BASE, 'single-grant RsClient fetch base must be the internal RS base');
+  // Advertised providerUrl on the MCP server stays the PUBLIC origin.
+  assert.equal(seen.advertisedProviderUrl, PUBLIC_RESOURCE, 'advertised providerUrl must remain the public origin (single-grant)');
+  // The package-only recorder was not touched on the client path.
+  assert.equal(seen.childProviderUrl, null, 'package createPackageRsClient must not be invoked for a client token');
+});
+
+test('F1 wiring (single-grant) fallback: no internal base → client self-calls use the public resource', async () => {
+  const seen = await driveHandler({ internalResource: null, makeRequest: makeClientRequest });
+  assert.equal(seen.singleGrantProviderUrl, PUBLIC_RESOURCE, 'fallback: single-grant base is the public resource when internal base is unset');
+  assert.equal(seen.advertisedProviderUrl, PUBLIC_RESOURCE, 'advertised providerUrl remains public in the single-grant fallback');
 });

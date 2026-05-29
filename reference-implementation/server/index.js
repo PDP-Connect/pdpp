@@ -205,7 +205,7 @@ import {
   DEFAULT_PRE_REGISTERED_PUBLIC_CLIENTS,
 } from './reference-local-defaults.ts';
 import { handleStreamableHttpRequest } from '@pdpp/mcp-server/server';
-import { createPackageRsClient } from './package-rs-client.js';
+import { createPackageRsClient, createRsClient } from './package-rs-client.js';
 import {
   resolveReferenceRevision,
   setReferenceRevisionHeader,
@@ -3363,6 +3363,7 @@ function buildRsApp(opts = {}) {
     getGrantPackageAccess,
     handleStreamableHttpRequest,
     createPackageRsClient,
+    createRsClient,
     requireToken,
     requireClientOrMcpPackage,
     pdppError,

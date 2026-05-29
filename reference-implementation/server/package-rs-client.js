@@ -36,6 +36,24 @@ import { RsClient } from '../../packages/mcp-server/src/rs-client.js';
 const PACKAGE_INTROSPECTION_PATH = null;
 
 /**
+ * Build one single-bearer RsClient. Thin factory so the hosted-MCP route
+ * adapter can construct a single-grant (`client`-token) RsClient against a
+ * chosen fetch base (e.g. the internal RS base for self-calls) without
+ * importing `@pdpp/mcp-server` internals directly. Mirrors how
+ * `createPackageRsClient` builds each child client.
+ *
+ * @param {object} args
+ * @param {string} args.providerUrl   — fetch base for HTTP self-calls.
+ * @param {string} args.accessToken   — the single grant bearer.
+ * @param {Function} [args.fetch]
+ * @param {string}  [args.userAgent]
+ */
+export function createRsClient({ providerUrl, accessToken, fetch = globalThis.fetch, userAgent }) {
+  if (!providerUrl) throw new TypeError('createRsClient requires providerUrl');
+  return new RsClient({ providerUrl, accessToken, fetch, userAgent });
+}
+
+/**
  * Build one PackageRsClient.
  *
  * @param {object} args

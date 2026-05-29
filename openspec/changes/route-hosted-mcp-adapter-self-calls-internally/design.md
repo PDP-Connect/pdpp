@@ -23,9 +23,8 @@ This is the construction error: the advertised identity (what clients should cal
 **Non-Goals:**
 
 - Do not change the reverse proxy. An edge that allows PATCH is an acceptable independent stopgap, not a prerequisite or a dependency of this change.
-- Do not change token kinds, OAuth/discovery flows, child-locate semantics, source selection, ambiguity errors, or per-child enforcement.
-- Do not change the standalone (non-package) hosted MCP token path's contract; the same internal-base preference may be applied to it for consistency, but its advertised metadata also stays public.
-- Do not introduce internal-base routing anywhere the advertised public origin is the contract (discovery, resource metadata, issued token audiences).
+- Do not change token kinds, OAuth/discovery flows, child-locate semantics, source selection, ambiguity errors, or per-grant enforcement.
+- Do not introduce internal-base routing anywhere the advertised public origin is the contract (discovery, resource metadata, issued token audiences). The standalone (`client`-token) hosted MCP path now ALSO uses the internal base for its single-bearer self-calls (same internal-base preference as the package path), but its advertised metadata likewise stays public. (Updated: an earlier revision scoped this change to the package adapter only and listed the standalone path as a Non-Goal "may be applied for consistency"; that consistency extension is now part of this change — see the standalone scenario in the spec delta and the single-grant wiring test.)
 
 ## Decisions
 
@@ -58,7 +57,7 @@ The configured internal base SHALL be a trusted, server-controlled address: loop
 - **Misconfiguration points the internal base at the public edge** → still hairpins and can still hit the PATCH 405. Mitigation: default to the known internal service address; document that the internal base must be a private/loopback address; the regression test asserts self-calls hit the internal base, not the public origin.
 - **Internal base diverges from the live RS (wrong host/port)** → self-calls fail to connect. Mitigation: default to the same `reference:7663` the web app already uses; treat a connect failure as a typed RS error like any other, and keep the public fallback for unset config.
 - **Drift between advertised and internal identity confuses future readers** → Mitigation: spec and design state explicitly that advertised identity is public and the internal base is fetch-only; the two values are named distinctly at the call site.
-- **Standalone (non-package) token path left inconsistent** → Mitigation: this change scopes the requirement to the package adapter (where F1 was observed); applying the same internal-base preference to the standalone path is allowed and consistent, but advertised metadata stays public in both.
+- **Standalone (non-package) token path** → Resolved: this change now applies the same internal-base preference to the standalone (`client`-token) path's single-bearer `RsClient` as well as the package path's child clients, so a `client`-token `update_event_subscription` PATCH avoids the public-edge 405 too. Advertised metadata stays public in both paths.
 
 ## Non-Goals
 
