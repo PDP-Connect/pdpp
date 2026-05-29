@@ -19,6 +19,7 @@
 import Database from 'better-sqlite3';
 import { createHash } from 'node:crypto';
 import * as sqliteVec from 'sqlite-vec';
+import { canonicalConnectorKey } from './connector-key.js';
 
 const DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 30_000;
 const LEGACY_SYNC_STATE_OWNER_SUBJECT_ID = 'owner_local';
@@ -1611,6 +1612,7 @@ function migrateLocalDeviceConnectorInstances(raw, opts = {}) {
     const updateSourceInstance = raw.prepare(
       `UPDATE device_source_instances
           SET connector_instance_id = ?,
+              connector_id = ?,
               updated_at = ?
         WHERE device_id = ?
           AND source_instance_id = ?`
@@ -1626,7 +1628,13 @@ function migrateLocalDeviceConnectorInstances(raw, opts = {}) {
         source_instance_id: row.source_instance_id,
       };
       const bindingKey = sourceBindingKey(sourceBinding);
-      const newConnectorId = localDeviceConnectorId(row.connector_id);
+      // Relocate legacy `local-device:<id>:<source>` rows to the bare canonical
+      // connector key — the same key the live ingest/read paths use — rather
+      // than to a still-prefixed `local-device:<id>` form. Connection isolation
+      // is carried by connector_instance_id. See canonicalize-connector-keys
+      // design Decision 7.
+      const connectorKey = canonicalConnectorKey(row.connector_id) ?? row.connector_id;
+      const newConnectorId = connectorKey;
       const oldConnectorId = legacyLocalDeviceConnectorId(row.connector_id, row.source_instance_id);
       const legacyRows = legacyInstanceRows.all(
         oldConnectorId,
@@ -1653,7 +1661,7 @@ function migrateLocalDeviceConnectorInstances(raw, opts = {}) {
         ? row.connector_instance_id.trim()
         : null;
       const legacyInstanceId = legacyInstanceIds[0] || null;
-      const existingBinding = getExistingInstanceByBinding.get(row.owner_subject_id, row.connector_id, bindingKey);
+      const existingBinding = getExistingInstanceByBinding.get(row.owner_subject_id, connectorKey, bindingKey);
       const existingBindingInstanceId = existingBinding?.connector_instance_id || null;
       if (currentInstanceId && existingBindingInstanceId && existingBindingInstanceId !== currentInstanceId) {
         throw new Error(
@@ -1668,22 +1676,22 @@ function migrateLocalDeviceConnectorInstances(raw, opts = {}) {
       const resolvedInstanceId = currentInstanceId
         || existingBindingInstanceId
         || legacyInstanceId
-        || connectorInstanceId(row.owner_subject_id, row.connector_id, 'local_device', bindingKey);
+        || connectorInstanceId(row.owner_subject_id, connectorKey, 'local_device', bindingKey);
       const createdAt = row.created_at || now;
       const updatedAt = row.updated_at || now;
       const displayName = row.display_name || row.local_binding_id || row.connector_id;
       const status = row.status === 'revoked' ? 'revoked' : 'active';
       const manifest = stableJson({
-        connector_id: row.connector_id,
+        connector_id: connectorKey,
         display_name: displayName,
         streams: [],
       });
 
-      upsertConnector.run(row.connector_id, manifest, createdAt);
+      upsertConnector.run(connectorKey, manifest, createdAt);
       upsertInstance.run(
         resolvedInstanceId,
         row.owner_subject_id,
-        row.connector_id,
+        connectorKey,
         displayName,
         status,
         bindingKey,
@@ -1692,8 +1700,8 @@ function migrateLocalDeviceConnectorInstances(raw, opts = {}) {
         updatedAt,
         status === 'revoked' ? (row.revoked_at ?? updatedAt) : null,
       );
-      if (currentInstanceId !== resolvedInstanceId) {
-        updateSourceInstance.run(resolvedInstanceId, updatedAt, row.device_id, row.source_instance_id);
+      if (currentInstanceId !== resolvedInstanceId || row.connector_id !== connectorKey) {
+        updateSourceInstance.run(resolvedInstanceId, connectorKey, updatedAt, row.device_id, row.source_instance_id);
         backfilledRows += 1;
       }
 

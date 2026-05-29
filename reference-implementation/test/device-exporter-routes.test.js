@@ -88,8 +88,12 @@ function makeBatch(device, batchId, value) {
   };
 }
 
+// Local-device records are stored under the bare canonical connector key,
+// the same key API/browser records use; connection isolation is carried by
+// connector_instance_id, not a `local-device:` storage prefix. See
+// canonicalize-connector-keys design Decision 7.
 function internalStorageConnectorId(connectorId) {
-  return `local-device:${encodeURIComponent(connectorId)}`;
+  return connectorId;
 }
 
 test('device exporter routes enroll, heartbeat, ingest idempotently, isolate source instances, and revoke', async () => {
@@ -287,12 +291,23 @@ test('device exporter enrollment keeps connector type display names separate fro
     );
     assert.equal(enrollResp.status, 201);
 
+    // The owner may enroll with the legacy snake_case alias (`claude_code`),
+    // but the catalog row, instance row, and storage key are canonicalized to
+    // `claude-code` so the connector type has one identity. The enroll
+    // response echoes the canonical key. See canonicalize-connector-keys
+    // design Decision 7.
+    assert.equal(enrollResp.body.connector_id, 'claude-code');
+    const legacyAliasRow = getDb()
+      .prepare('SELECT 1 FROM connectors WHERE connector_id = ?')
+      .get('claude_code');
+    assert.equal(legacyAliasRow, undefined, 'legacy alias MUST NOT be registered as a connector row');
+
     const connectorRow = getDb()
       .prepare('SELECT manifest FROM connectors WHERE connector_id = ?')
-      .get('claude_code');
+      .get('claude-code');
     assert.ok(connectorRow);
     const connectorManifest = JSON.parse(connectorRow.manifest);
-    assert.equal(connectorManifest.connector_id, 'claude_code');
+    assert.equal(connectorManifest.connector_id, 'claude-code');
     assert.equal(connectorManifest.display_name, 'Claude Code');
     assert.ok(connectorManifest.streams.some((stream) => stream.name === 'sessions'));
 

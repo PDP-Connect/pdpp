@@ -638,13 +638,31 @@ function referenceLocalDeviceStorageTarget(connectorId, connectorInstanceId) {
   };
 }
 
+// True when two connector ids name the same connector type after
+// canonicalization. The device source instance now stores the canonical key,
+// but a collector may still send the legacy alias (`claude_code`) it enrolled
+// with, so device-route connector_id checks compare canonically rather than by
+// raw string equality. See canonicalize-connector-keys design Decision 7.
+function sameConnectorType(a, b) {
+  if (a === b) return true;
+  const ka = canonicalConnectorKey(a) ?? a;
+  const kb = canonicalConnectorKey(b) ?? b;
+  return ka === kb;
+}
+
+// Keyed by canonical connector_key. The local-collector manifest files
+// retain their historical snake_case filenames (`claude_code.json`), but the
+// catalog row, the connector_instances row, and the record storage target all
+// use the canonical key (`claude-code`, `codex`) so a legacy-alias enroll
+// cannot fork the connector type away from its canonical identity.
 const REFERENCE_LOCAL_CONNECTOR_CATALOG_MANIFESTS = new Map([
-  ['claude_code', { entryName: 'claude_code.json', displayName: 'Claude Code' }],
+  ['claude-code', { entryName: 'claude_code.json', displayName: 'Claude Code' }],
   ['codex', { entryName: 'codex.json', displayName: 'OpenAI Codex CLI' }],
 ]);
 
 function readReferenceLocalConnectorCatalogManifest(connectorId) {
-  const local = REFERENCE_LOCAL_CONNECTOR_CATALOG_MANIFESTS.get(connectorId);
+  const connectorKey = canonicalConnectorKey(connectorId) ?? connectorId;
+  const local = REFERENCE_LOCAL_CONNECTOR_CATALOG_MANIFESTS.get(connectorKey);
   if (!local) return null;
   try {
     const raw = readFileSync(
@@ -654,12 +672,12 @@ function readReferenceLocalConnectorCatalogManifest(connectorId) {
     const manifest = JSON.parse(raw);
     return {
       ...manifest,
-      connector_id: connectorId,
+      connector_id: connectorKey,
       display_name: manifest.display_name || local.displayName,
     };
   } catch {
     return {
-      connector_id: connectorId,
+      connector_id: connectorKey,
       display_name: local.displayName,
       streams: [],
     };
@@ -2781,7 +2799,7 @@ function buildAsApp(opts = {}) {
         instance
         && instance.status === 'active'
         && instance.ownerSubjectId === ownerSubjectId
-        && instance.connectorId === sourceInstance.connectorId
+        && sameConnectorType(instance.connectorId, sourceInstance.connectorId)
       ) {
         return instance;
       }
@@ -2790,7 +2808,7 @@ function buildAsApp(opts = {}) {
     const identity = deviceExporterSourceBindingIdentity(sourceInstance.localBindingId);
     const instance = await store.getByBinding({
       ownerSubjectId,
-      connectorId: sourceInstance.connectorId,
+      connectorId: canonicalConnectorKey(sourceInstance.connectorId) ?? sourceInstance.connectorId,
       sourceKind: 'local_device',
       sourceBindingKey: makeConnectorInstanceSourceBindingKey(identity),
     });
@@ -4871,7 +4889,16 @@ function buildAsApp(opts = {}) {
         tokenHash: hashDeviceSecret(deviceToken),
         createdAt: now.toISOString(),
       });
-      await ensureReferenceConnectorCatalogEntry(enrollment.connectorId, enrollment.displayName || displayName);
+      // Canonicalize the owner-supplied connector id once, at the enroll
+      // boundary, so the catalog connectors row, the connector_instances
+      // row, the device_source_instances row, and the record storage target
+      // all agree on one canonical key. Without this, a legacy-alias enroll
+      // (`claude_code`) registers the catalog under the canonical key
+      // (`claude-code`) while the instance/source rows reference the raw
+      // alias, producing a foreign-key failure. See canonicalize-connector-keys
+      // design Decision 7.
+      const enrollConnectorKey = canonicalConnectorKey(enrollment.connectorId) ?? enrollment.connectorId;
+      await ensureReferenceConnectorCatalogEntry(enrollConnectorKey, enrollment.displayName || displayName);
       // The identity used to hash source_binding_key is intentionally
       // narrower than the source_binding payload we store for debugging:
       // device_id and source_instance_id are minted fresh per enroll, so
@@ -4882,7 +4909,7 @@ function buildAsApp(opts = {}) {
       const sourceBindingIdentity = deviceExporterSourceBindingIdentity(enrollment.localBindingId);
       const connectorInstance = await createRequestConnectorInstanceStore().upsert({
         ownerSubjectId: enrollment.ownerSubjectId,
-        connectorId: enrollment.connectorId,
+        connectorId: enrollConnectorKey,
         displayName,
         status: 'active',
         sourceKind: 'local_device',
@@ -4899,7 +4926,7 @@ function buildAsApp(opts = {}) {
       await deviceExporterStore.upsertSourceInstance({
         sourceInstanceId,
         deviceId,
-        connectorId: enrollment.connectorId,
+        connectorId: enrollConnectorKey,
         connectorInstanceId: connectorInstance.connectorInstanceId,
         localBindingId: enrollment.localBindingId,
         displayName: enrollment.displayName,
@@ -4926,7 +4953,11 @@ function buildAsApp(opts = {}) {
         // connector_instance_id resolved from that binding.
         source_instance_id: sourceInstanceId,
         device_token: deviceToken,
-        connector_id: enrollment.connectorId,
+        // Echo the canonical connector key so the collector adopts the same
+        // identity the server persists. Subsequent ingest/heartbeat/state
+        // calls are matched canonically, so a collector still sending the
+        // legacy alias is also accepted (see resolveAuthorizedDeviceSource).
+        connector_id: enrollConnectorKey,
         local_binding_name: enrollment.localBindingId,
       });
     } catch (err) {
@@ -5046,7 +5077,7 @@ function buildAsApp(opts = {}) {
       const authorized = await resolveAuthorizedDeviceSource(req, res, deviceId, sourceInstanceId);
       if (!authorized) return;
       const { sourceInstance, connectorInstance } = authorized;
-      if (sourceInstance.connectorId !== connectorId) {
+      if (!sameConnectorType(sourceInstance.connectorId, connectorId)) {
         return pdppError(res, 400, 'invalid_request', 'connector_id does not match source_instance_id', 'connector_id');
       }
 
@@ -5217,7 +5248,7 @@ function buildAsApp(opts = {}) {
           return pdppError(res, 400, 'invalid_request', 'body source_instance_id must match path sourceInstanceId', 'source_instance_id');
         }
         const connectorId = requireNonEmptyString(body.connector_id, 'connector_id');
-        if (connectorId !== sourceInstance.connectorId) {
+        if (!sameConnectorType(sourceInstance.connectorId, connectorId)) {
           return pdppError(res, 400, 'invalid_request', 'connector_id does not match source_instance_id', 'connector_id');
         }
         const reason = requireNonEmptyString(body.reason, 'reason');
@@ -5338,7 +5369,7 @@ function buildAsApp(opts = {}) {
           return pdppError(res, 400, 'invalid_request', 'body source_instance_id must match path sourceInstanceId', 'source_instance_id');
         }
         const connectorId = requireNonEmptyString(body.connector_id, 'connector_id');
-        if (connectorId !== sourceInstance.connectorId) {
+        if (!sameConnectorType(sourceInstance.connectorId, connectorId)) {
           return pdppError(res, 400, 'invalid_request', 'connector_id does not match source_instance_id', 'connector_id');
         }
         const reason = requireNonEmptyString(body.reason, 'reason');

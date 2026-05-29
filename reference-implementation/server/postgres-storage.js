@@ -9,6 +9,7 @@
 
 import pg from 'pg';
 import { createHash } from 'node:crypto';
+import { canonicalConnectorKey } from './connector-key.js';
 
 const { Pool } = pg;
 
@@ -1503,7 +1504,12 @@ async function migratePostgresLocalDeviceConnectorInstances(client) {
         source_instance_id: row.source_instance_id,
       };
       const sourceBindingKey = makeConnectorInstanceSourceBindingKey(sourceBinding);
-      const newConnectorId = localDeviceConnectorId(row.connector_id);
+      // Relocate legacy `local-device:<id>:<source>` rows to the bare canonical
+      // connector key, mirroring the SQLite migration and the live ingest/read
+      // paths. Connection isolation is carried by connector_instance_id. See
+      // canonicalize-connector-keys design Decision 7.
+      const connectorKey = canonicalConnectorKey(row.connector_id) ?? row.connector_id;
+      const newConnectorId = connectorKey;
       const oldConnectorId = legacyLocalDeviceConnectorId(row.connector_id, row.source_instance_id);
 
       const legacyIds = await client.query(
@@ -1538,7 +1544,7 @@ async function migratePostgresLocalDeviceConnectorInstances(client) {
             AND source_kind = 'local_device'
             AND source_binding_key = $3
           LIMIT 1`,
-        [row.owner_subject_id, row.connector_id, sourceBindingKey],
+        [row.owner_subject_id, connectorKey, sourceBindingKey],
       );
       const existingBindingInstanceId = existingBinding.rows[0]?.connector_instance_id || null;
       const legacyInstanceId = legacyIds.rows[0]?.connector_instance_id || null;
@@ -1552,11 +1558,11 @@ async function migratePostgresLocalDeviceConnectorInstances(client) {
       const connectorInstanceId = row.connector_instance_id
         || existingBindingInstanceId
         || legacyInstanceId
-        || makeConnectorInstanceId(row.owner_subject_id, row.connector_id, 'local_device', sourceBindingKey);
+        || makeConnectorInstanceId(row.owner_subject_id, connectorKey, 'local_device', sourceBindingKey);
       const now = new Date().toISOString();
       const manifest = {
-        connector_id: row.connector_id,
-        display_name: row.display_name || row.connector_id,
+        connector_id: connectorKey,
+        display_name: row.display_name || connectorKey,
         streams: [],
       };
 
@@ -1564,7 +1570,7 @@ async function migratePostgresLocalDeviceConnectorInstances(client) {
         `INSERT INTO connectors(connector_id, manifest, created_at)
          VALUES($1, $2::jsonb, $3)
          ON CONFLICT(connector_id) DO NOTHING`,
-        [row.connector_id, JSON.stringify(manifest), row.created_at || now],
+        [connectorKey, JSON.stringify(manifest), row.created_at || now],
       );
 
       await client.query(
@@ -1586,7 +1592,7 @@ async function migratePostgresLocalDeviceConnectorInstances(client) {
         [
           connectorInstanceId,
           row.owner_subject_id,
-          row.connector_id,
+          connectorKey,
           row.display_name,
           row.status === 'revoked' ? 'revoked' : 'active',
           sourceBindingKey,
@@ -1600,9 +1606,10 @@ async function migratePostgresLocalDeviceConnectorInstances(client) {
       await client.query(
         `UPDATE device_source_instances
             SET connector_instance_id = $1,
-                updated_at = CASE WHEN updated_at > $2 THEN updated_at ELSE $2 END
-          WHERE device_id = $3 AND source_instance_id = $4`,
-        [connectorInstanceId, now, row.device_id, row.source_instance_id],
+                connector_id = $2,
+                updated_at = CASE WHEN updated_at > $3 THEN updated_at ELSE $3 END
+          WHERE device_id = $4 AND source_instance_id = $5`,
+        [connectorInstanceId, connectorKey, now, row.device_id, row.source_instance_id],
       );
 
       for (const table of [

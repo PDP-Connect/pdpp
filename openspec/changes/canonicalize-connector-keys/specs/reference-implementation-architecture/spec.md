@@ -16,6 +16,13 @@ The reference implementation SHALL use canonical `connector_key` values for conn
 - **THEN** the URL or hint SHALL carry the canonical connector key and the concrete `connection_id` when needed
 - **AND** it SHALL NOT rely on URL-shaped connector ids to hydrate the record.
 
+#### Scenario: Local-device exporter persists records and state
+
+- **WHEN** a local-device exporter enrolls, ingests record batches, or writes device-scoped sync state for a connector type whose owner-supplied id is a legacy alias such as `claude_code`
+- **THEN** the catalog `connectors` row, the `connector_instances` row, the `device_source_instances` row, and the persisted record/state/version/blob rows SHALL all use the bare canonical `connector_key` (e.g. `claude-code`)
+- **AND** the persisted connector type field SHALL NOT carry a `local-device:` storage-namespace prefix
+- **AND** isolation between a local-device connection and an account connection for the same connector type SHALL be carried by `connector_instance_id`, not by a storage-key prefix.
+
 ### Requirement: Reference forms SHALL NOT delimiter-parse connector identifiers
 
 Reference forms and route handlers SHALL use structured, validated, or opaque identifiers for connector and connection selections. They SHALL NOT parse concatenated raw connector identifiers with delimiters that may appear inside registry URLs or future custom ids.

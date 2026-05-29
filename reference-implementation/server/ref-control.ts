@@ -680,9 +680,11 @@ function getConnectorInstanceStore() {
 }
 
 function recordStorageConnectorIdForConnection(instance: ConnectorInstanceRow): string {
-  if (instance.sourceKind === "local_device") {
-    return `local-device:${encodeURIComponent(instance.connectorId)}`;
-  }
+  // Local-device records are stored under the bare canonical connector key,
+  // the same key API/browser records use; connection isolation is carried by
+  // connector_instance_id, not a `local-device:` storage prefix. The record
+  // projection scopes by connectorInstanceId, so this value is only a
+  // fallback identity. See canonicalize-connector-keys design Decision 7.
   return instance.connectorId;
 }
 

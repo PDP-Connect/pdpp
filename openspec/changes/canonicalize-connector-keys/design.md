@@ -70,6 +70,28 @@ Legacy rows are migrated, quarantined for owner review only if they cannot be ma
 
 Reference docs and examples should teach `connector_key` for the reference implementation. Root protocol docs that still use URI-shaped `connector_id` examples are audited and either updated in the same tranche if the change is reference-only wording, or captured as a separate protocol-spec change if the root PDPP contract itself needs renaming.
 
+### 7. Local-device records use the bare `connector_key`; the `local-device:` storage prefix is legacy
+
+Local-device exporter records, sync state, record changes, version counters, and blob bindings SHALL be stored under the bare canonical `connector_key` (e.g. `codex`, `claude-code`), the same operational key used by API- and browser-collected records for the same connector type. Connection-level disambiguation between a local-device connection and an account connection for the same connector type is carried entirely by `connector_instance_id`, not by a storage-key namespace prefix.
+
+The historical `local-device:<connector_key>[:<source_instance_id>]` storage prefix is migration-only. It is not a first-class storage form: the canonical-key migration writer (`scripts/canonical-connector-keys/`) already collapses `local-device:claude_code` and `local-device:claude_code:cin_…` to the bare canonical key `claude-code`, and Decision 1 requires the bare key for "storage bindings, source bindings for connector-backed sources, …".
+
+Why `connector_instance_id` is sufficient and the prefix is redundant:
+
+- The owner-dashboard record projection (`ref-control.ts::getConnectorRecordProjection`) and the public read path scope record reads by `connector_instance_id` when one is available, which is always true for an enrolled local-device connection. The storage-key argument is not consulted on that branch, so the prefix never participates in read isolation.
+- A local-device connection and an account connection for the same connector type already mint distinct `connector_instance_id` values, so device records cannot collide with owner-auth `/v1/state` or `/v1/records` rows for the same connector type. The prefix was a second, redundant isolation mechanism for an isolation that `connector_instance_id` already provides.
+
+Alternatives considered:
+
+- Keep `local-device:<connector_key>` as the durable storage form: rejected. It contradicts the migration writer's already-shipped collapse behavior and Decision 1, reintroduces a per-source storage namespace the connector-instance model replaced, and keeps two competing keys for the same records (the exact drift this change exists to remove).
+- Revert the bare-key ingest write path (commit `4f59323b`) back to the prefix: rejected for the same reasons; it would re-complect record-storage identity with a legacy marker.
+
+Active-path consequences (this is the slice that closes task 4.3 for local-device storage):
+
+- The device-exporter enroll path canonicalizes the owner-supplied `connector_id` once, at the boundary, so the catalog `connectors` row, the `connector_instances` row, the `device_source_instances` row, and the record storage target all agree on one canonical key. This removes the `claude_code`→`claude-code` foreign-key failure where the catalog was registered canonically while the instance referenced the raw alias.
+- The live read path (`recordStorageConnectorIdForConnection`) and the device-scoped state read/write paths use the bare canonical key.
+- The legacy startup migration `local_device_connector_instances` relocates legacy `local-device:<id>:<source>` rows to the bare canonical key (canonicalizing the inner alias), not to a still-prefixed `local-device:<id>` form, so post-migration reads resolve under the same key the live ingest path writes.
+
 ## Risks / Trade-offs
 
 - **Protocol/reference terminology drift** -> Mitigation: keep this OpenSpec scoped to reference capabilities and explicitly audit root spec docs before changing protocol language.

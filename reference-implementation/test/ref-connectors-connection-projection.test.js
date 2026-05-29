@@ -159,7 +159,11 @@ test('reference connector summaries project local-device storage records under p
   seedConnector();
   await seedInstances();
 
-  const storageConnectorId = `local-device:${encodeURIComponent(CONNECTOR_ID)}`;
+  // Local-device records are stored under the bare connector key (the live
+  // ingest path writes `recordStorageConnectorIdForConnection(instance)` ===
+  // instance.connectorId), with connection isolation carried by
+  // connector_instance_id. See canonicalize-connector-keys design Decision 7.
+  const storageConnectorId = CONNECTOR_ID;
   seedRecord({
     connectorId: storageConnectorId,
     connectorInstanceId: WORK_INSTANCE_ID,
