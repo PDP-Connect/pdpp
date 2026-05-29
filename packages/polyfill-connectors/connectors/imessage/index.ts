@@ -15,6 +15,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { runConnector } from "../../src/connector-runtime.ts";
+import { validateRecord } from "./schemas.ts";
 
 interface MessageRow {
   cache_has_attachments: number | null;
@@ -50,6 +51,7 @@ function appleDateToIso(raw: number | null | undefined): string | null {
 
 runConnector({
   name: "imessage",
+  validateRecord,
   async collect({ state, requested, emit, emitRecord, progress }) {
     const dbPath = process.env.IMESSAGE_DB_PATH || join(homedir(), "Library/Messages/chat.db");
     if (!existsSync(dbPath)) {

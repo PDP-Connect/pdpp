@@ -26,6 +26,7 @@ import {
   locationTimestampMs,
   readJsonIf,
 } from "./parsers.ts";
+import { validateRecord } from "./schemas.ts";
 import type {
   GoogleTakeoutState,
   LocationFile,
@@ -172,6 +173,7 @@ async function collectSearchHistory(
 
 runConnector({
   name: "google_takeout",
+  validateRecord,
   async collect(ctx) {
     const importDir = process.env.GOOGLE_TAKEOUT_DIR || join(homedir(), ".pdpp/imports/google_takeout");
     const typedState = ctx.state as GoogleTakeoutState;

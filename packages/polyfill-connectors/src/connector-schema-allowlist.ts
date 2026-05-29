@@ -27,13 +27,9 @@
 export type SchemalessJustification = string;
 
 export const SCHEMALESS_CONNECTOR_ALLOWLIST: Readonly<Record<string, SchemalessJustification>> = Object.freeze({
-  // Lane A — higher risk: archive-import / complex offline parsing. Shape drift
-  // is most likely and hardest to detect here; schemas are the priority.
-  google_takeout: "Lane A: schemas.ts not yet authored (archive/export parse).",
-  twitter_archive: "Lane A: schemas.ts not yet authored (archive/export parse).",
-  whatsapp: "Lane A: schemas.ts not yet authored (archive/export parse).",
-  imessage: "Lane A: schemas.ts not yet authored (local DB parse).",
-  loom: "Lane A: schemas.ts not yet authored (export parse).",
+  // Lane A — COMPLETE (2026-05-28): google_takeout, twitter_archive, whatsapp,
+  // imessage, and loom now wire emit-time validateRecord (connectors/<name>/
+  // schemas.ts). Their entries were removed per the shrink-only invariant.
 
   // Lane B — medium risk: well-structured API responses, but no emit-side gate
   // catches unexpected field changes.

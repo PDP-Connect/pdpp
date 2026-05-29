@@ -29,6 +29,7 @@ import {
   unwrapDmMessage,
   unwrapTweetEntry,
 } from "./parsers.ts";
+import { validateRecord } from "./schemas.ts";
 import type { StreamState } from "./types.ts";
 
 async function readJsArchive(path: string): Promise<unknown[] | null> {
@@ -160,6 +161,7 @@ async function runDirectMessagesStream(ctx: DmsContext): Promise<void> {
 
 runConnector({
   name: "twitter_archive",
+  validateRecord,
   async collect({ state, requested, emit, emitRecord }) {
     const importDir = process.env.TWITTER_ARCHIVE_DIR || join(homedir(), ".pdpp/imports/twitter_archive");
     const typedState = state as Record<string, StreamState | undefined>;

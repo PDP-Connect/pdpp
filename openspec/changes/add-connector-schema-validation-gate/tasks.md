@@ -35,8 +35,13 @@
 
 ## Deferred follow-up (separate lanes, measured by this gate)
 
-- [ ] Lane A: author `schemas.ts` for `google_takeout`, `twitter_archive`,
-  `whatsapp`, `imessage`, `loom`; remove their allowlist entries.
+- [x] Lane A: author `schemas.ts` for `google_takeout`, `twitter_archive`,
+  `whatsapp`, `imessage`, `loom`; remove their allowlist entries. (All five wire
+  `validateRecord` from a sibling `schemas.ts`; allowlist entries removed; gate
+  green at 16 validated, 15 allowlisted, 0 unexplained. Each connector has a
+  focused `schemas.test.ts` proving the schema accepts representative emitted
+  records — parser-derived for google_takeout/twitter_archive, emit-literal for
+  whatsapp/imessage, manifest-contract for loom which does not yet emit.)
 - [ ] Lane B: author schemas for the medium-risk API connectors; remove entries.
 - [ ] Lane C: author schemas for the lower-risk connectors; remove entries.
 - [ ] Lane D: migrate Codex to the shared fingerprint cursor (independent of this
