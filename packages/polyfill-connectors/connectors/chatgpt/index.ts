@@ -719,6 +719,7 @@ export async function runMemoriesStream(deps: StreamDeps): Promise<void> {
       stream: "memories",
       reason: "http_error",
       message: `memories fetch http ${res.status}`,
+      diagnostics: { http_status: res.status },
     });
     return;
   }
@@ -765,6 +766,7 @@ export async function runCustomInstructionsStream(deps: StreamDeps): Promise<voi
       stream: "custom_instructions",
       reason: "http_error",
       message: `user_system_messages http ${res.status}`,
+      diagnostics: { http_status: res.status },
     });
     return;
   }
@@ -801,8 +803,9 @@ export async function processConversationDetail(
     deps.emit({
       type: "SKIP_RESULT",
       stream: "messages",
-      reason: "http_error",
+      reason: detail.status === 200 ? "missing_mapping" : "http_error",
       message: `conversation ${c.id} http ${detail.status}`,
+      diagnostics: { http_status: detail.status, conversation_id: c.id },
     });
     // Fall back to list-only conversation record.
     await emitConversation(c, null);
@@ -854,6 +857,7 @@ export async function runCustomGptsStream(deps: StreamDeps): Promise<void> {
         stream: "custom_gpts",
         reason: "http_error",
         message: `gizmos/mine http ${res.status}`,
+        diagnostics: { http_status: res.status },
       });
       anyError = true;
       break;
@@ -910,6 +914,7 @@ export async function runSharedConversationsStream(deps: StreamDeps): Promise<vo
         stream: "shared_conversations",
         reason: "http_error",
         message: `shared_conversations http ${res.status}`,
+        diagnostics: { http_status: res.status },
       });
       sawError = true;
       break;
@@ -969,6 +974,7 @@ async function listConversationsSinceCursor(
         stream: "conversations",
         reason: "http_error",
         message: `conversations list http ${res.status}`,
+        diagnostics: { http_status: res.status },
       });
       break;
     }
