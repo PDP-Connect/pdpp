@@ -1,19 +1,19 @@
 // HTTP adapters for the AS OAuth route family.
 //
 // Behaviour-preserving extraction from `server/index.js` per the OpenSpec
-// change `split-reference-server-by-route-family` (§6). Each `mount...`
+// change `split-reference-server-by-route-family` section 6. Each `mount...`
 // function registers one route at the same point in registration order where
 // `server/index.js` previously registered it inline. Auth posture, request-id
-// / trace-id wiring, response-envelope shape, status codes, and error→HTTP
+// / trace-id wiring, response-envelope shape, status codes, and error-to-HTTP
 // mapping are all unchanged.
 //
 // This first slice covers the three machine-to-machine routes whose handlers
 // delegate entirely to operations with no inline HTML and no closure-local
 // state (`agentConnectAttempts`, `consentStore`):
 //
-//   POST /oauth/device_authorization — RFC 8628 device-code initiation
-//   POST /oauth/token                — RFC 6749 / RFC 8628 token exchange
-//   POST /introspect                 — RFC 7662 token introspection
+//   POST /oauth/device_authorization - RFC 8628 device-code initiation
+//   POST /oauth/token                - RFC 6749 / RFC 8628 token exchange
+//   POST /introspect                 - RFC 7662 token introspection
 //
 // Remaining AS OAuth routes (DCR, authorize, consent, device UI, agent-connect)
 // carry significant closure-local state and HTML-rendering dependencies;
@@ -63,7 +63,7 @@ function bodyString(value: unknown): string | null | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-// ─── POST /oauth/device_authorization ───────────────────────────────────────
+// POST /oauth/device_authorization
 
 export interface MountAsDeviceAuthorizationContext {
   /**
@@ -124,7 +124,7 @@ export function mountAsDeviceAuthorization(app: AppLike, ctx: MountAsDeviceAutho
   );
 }
 
-// ─── POST /oauth/token ───────────────────────────────────────────────────────
+// POST /oauth/token
 
 export interface MountAsTokenContext {
   /**
@@ -222,7 +222,7 @@ async function handleRefreshTokenExchange(
 
 export function mountAsToken(app: AppLike, ctx: MountAsTokenContext): void {
   // Device-code token-exchange semantics (grant-type allowlist, store
-  // call, RFC 8628 client-fault → 400 mapping, trace_context propagation)
+  // call, RFC 8628 client-fault to 400 mapping, trace_context propagation)
   // live in the canonical `as.device.token.exchange` operation
   // (operations/as-device-token-exchange). The authorization_code and
   // refresh_token branches delegate to `auth.js` capabilities injected
@@ -268,7 +268,7 @@ export function mountAsToken(app: AppLike, ctx: MountAsTokenContext): void {
   app.post("/oauth/token", { contract: "exchangeOwnerDeviceToken" } as RouteArg<RouteHandler>, handler);
 }
 
-// ─── POST /introspect ────────────────────────────────────────────────────────
+// POST /introspect
 
 export interface MountAsIntrospectContext {
   /**

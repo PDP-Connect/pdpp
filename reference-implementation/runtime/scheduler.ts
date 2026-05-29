@@ -23,8 +23,8 @@ import { access } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import type { SchedulerRunHistoryRecord, SchedulerStore } from "../server/stores/scheduler-store.ts";
 import { canonicalConnectorKey } from "../server/connector-key.js";
+import type { SchedulerRunHistoryRecord, SchedulerStore } from "../server/stores/scheduler-store.ts";
 import { runConnector } from "./index.js";
 import {
   type AutomationRefreshPolicy,
