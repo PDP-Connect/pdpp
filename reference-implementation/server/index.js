@@ -278,7 +278,6 @@ import { executeAsIntrospect } from '../operations/as-introspect/index.ts';
 import { executeAsParCreate } from '../operations/as-par-create/index.ts';
 import { executeAsConsentDecision } from '../operations/as-consent-decision/index.ts';
 import { executeAsConsentExchange } from '../operations/as-consent-exchange/index.ts';
-import { executeAsGrantRevoke } from '../operations/as-grant-revoke/index.ts';
 import {
   mountAsAuthorizationServerMetadata,
   mountAsRoot,
@@ -389,6 +388,10 @@ import {
   mountAsAgentConnect,
   mountAsAgentConnectToken,
 } from './routes/as-agent-connect.ts';
+import {
+  buildApplyGrantRevokeSideEffects,
+  mountAsGrantRevoke,
+} from './routes/as-grant-revoke.ts';
 
 const AS_PORT = parseInt(process.env.AS_PORT || '7662');
 const RS_PORT = parseInt(process.env.RS_PORT || '7663');
@@ -1241,64 +1244,6 @@ function requireClientOrMcpPackage(req, res, next) {
   next();
 }
 
-// Auth gate for `POST /grants/:grantId/revoke`. Accepts:
-//   - any owner bearer whose token row is real and not token-level-revoked or
-//     token-level-expired. (A still-good owner bearer SHALL be able to revoke
-//     any grant. We do not require introspection's `active === true` because
-//     owner tokens have no grant binding to invalidate.)
-//   - a client bearer whose token row is real, not token-level-revoked or
-//     token-level-expired, and whose row's `grant_id` matches the URL
-//     `:grantId`. We deliberately allow `grant_invalid`/`grant_revoked`/
-//     `grant_expired` introspection here because the bearer string itself is
-//     authentic and the legitimate use of a client token whose grant is
-//     malformed-or-expired-or-already-revoked is to revoke the grant the
-//     client holds.
-// Anything else fails before any state mutation. See spec at
-// openspec/changes/harden-reference-auth-surfaces/specs/
-//   reference-implementation-architecture/spec.md
-async function requireRevokeAuth(req, res, next) {
-  const auth = req.headers.authorization;
-  if (!auth || !auth.startsWith('Bearer ')) {
-    return pdppError(res, 401, 'authentication_error', 'Missing Bearer token');
-  }
-  const token = auth.slice(7);
-  let info;
-  try {
-    info = await introspect(token);
-  } catch {
-    return pdppError(res, 401, 'authentication_error', 'Invalid or expired token');
-  }
-  // No introspection row at all (unknown bearer) → 401.
-  if (!info || (info.active === false && !info.inactive_reason)) {
-    return pdppError(res, 401, 'authentication_error', 'Invalid or expired token');
-  }
-  // Token-level inactive reasons (the token itself, not the grant, is bad).
-  // We reject these because the bearer's authenticity is in question.
-  const tokenLevelInactive = new Set(['token_revoked', 'token_expired']);
-  if (info.active === false && tokenLevelInactive.has(info.inactive_reason)) {
-    return pdppError(res, 401, 'authentication_error', 'Invalid or expired token');
-  }
-  // Token kind: owner tokens have no grant binding so introspection
-  // signals their kind via `pdpp_token_kind`. Inactive owner introspection
-  // (`token_revoked` / `token_expired`) is already handled above. If the
-  // active introspection lacks `pdpp_token_kind`, treat as not-permitted.
-  const grantId = req.params.grantId;
-  if (info.pdpp_token_kind === 'owner') {
-    req.tokenInfo = info;
-    return next();
-  }
-  // Client bearer path: accept iff the row's grant_id matches the URL.
-  // `grant_id` is populated even on inactive client introspections that
-  // carry a grant-state inactive_reason.
-  if (info.pdpp_token_kind === 'client' || (info.active === false && info.grant_id)) {
-    if (info.grant_id && info.grant_id === grantId) {
-      req.tokenInfo = info;
-      return next();
-    }
-    return pdppError(res, 403, 'permission_error', 'Client token is not bound to this grant');
-  }
-  return pdppError(res, 403, 'permission_error', 'Token kind not permitted to revoke');
-}
 
 function resolveNativeStorageBinding(opts = {}) {
   const nativeManifest = resolveNativeManifest(opts);
@@ -4443,40 +4388,25 @@ function buildAsApp(opts = {}) {
   });
 
 
-  // Grant-revocation envelope semantics live in the canonical
-  // `as.grant.revoke` operation (operations/as-grant-revoke). The host
-  // adapter owns Express plumbing, owner/client revoke authorization
-  // (`requireRevokeAuth`), request-id ensure, error mapping via
-  // `handleError`, and response writing.
-  app.post('/grants/:grantId/revoke', { contract: 'revokeGrant' }, requireRevokeAuth, async (req, res) => {
-    try {
-      const requestId = ensureRequestId(res);
-      const output = await executeAsGrantRevoke(
-        { grantId: req.params.grantId, requestId },
-        { revokeGrant },
-      );
-      if (output.traceId) {
-        setReferenceTraceId(res, output.traceId);
-      }
-      // Apply client-event-subscription grant-revoke side effects after the
-      // grant row has transitioned. Failures here MUST NOT leak through to
-      // the revoke envelope or retroactively undo the revocation.
-      try {
-        await executeApplyGrantRevoke(req.params.grantId, {
-          store: getDefaultClientEventSubscriptionStore(),
-          nowIso: () => new Date().toISOString(),
-        });
-        // Fire-and-forget tick so the grant.revoked envelope can ship without
-        // waiting for the periodic worker.
-        getDefaultDeliveryWorker().tick().catch(() => { /* surfaced via attempt log */ });
-      } catch (hookErr) {
-        opts.logger?.warn?.({ err: String(hookErr?.message ?? hookErr) }, 'client-event-subscriptions: revoke hook failed');
-      }
-      res.json(output.envelope);
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
+  // Grant-revocation route extracted to `server/routes/as-grant-revoke.ts`
+  // per OpenSpec change `split-reference-server-by-route-family` (§6 continuation).
+  // Behaviour-preserving: same `requireRevokeAuth` posture, same operation delegation,
+  // same side-effect hook (client-event-subscription rows + delivery tick),
+  // same response envelope, same error mapping.
+  const asGrantRevokeContext = {
+    ensureRequestId,
+    revokeGrant,
+    introspect,
+    applyGrantRevokeSideEffects: buildApplyGrantRevokeSideEffects({
+      getStore: getDefaultClientEventSubscriptionStore,
+      getDeliveryWorker: getDefaultDeliveryWorker,
+    }),
+    pdppError,
+    handleError,
+    setReferenceTraceId,
+    logger: opts.logger,
+  };
+  mountAsGrantRevoke(app, asGrantRevokeContext);
 
   // Client event subscriptions are mounted on the RESOURCE SERVER under
   // `/v1/event-subscriptions` (see buildRsApp). They are the same kind of

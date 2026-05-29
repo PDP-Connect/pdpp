@@ -232,6 +232,22 @@ unchanged.
 - [x] 5.2 `server/routes/web-push.ts` — `_ref/web-push/*` (5 routes). Landed: five per-route mount fns (`mountRefWebPushConfig`, `mountRefWebPushListSubscriptions`, `mountRefWebPushCreateSubscription`, `mountRefWebPushDeleteSubscription`, `mountRefWebPushTest`). Behaviour-preserving; covered by `test/web-push-notifications.test.js` (36/37 pass, 1 pre-existing skip).
 - [x] 5.3 `server/routes/source-webhooks.ts` — `POST /_ref/source-webhooks/:sourceId`. Landed: single `mountRefSourceWebhooks` adapter. Behaviour-preserving (same HMAC posture, same 200/202 status codes, same `SourceWebhookError` mapping). Covered by `test/ref-source-webhook-route.test.js` (3/3 pass) and `test/ref-source-webhook-ingest-operation.test.js` (7/7 pass). Section §7.3 acceptance for this sub-family also met.
 - [ ] 5.4 `server/routes/remote-surface.ts` — any non-streaming neko/browser-surface routes still in `index.js`.
+- [x] 5.5 `server/routes/as-grant-revoke.ts` — `POST /grants/:grantId/revoke` plus `requireRevokeAuth` middleware.
+  - [x] Single route (`POST /grants/:grantId/revoke`) extracted to `server/routes/as-grant-revoke.ts` with
+    `mountAsGrantRevoke` and helper `buildApplyGrantRevokeSideEffects`. The inline `requireRevokeAuth`
+    middleware (previously defined at module scope in `index.js`) is encapsulated inside the module as
+    `buildRequireRevokeAuth` since it has no other callers. Auth decision logic extracted to
+    `resolveRevokeAuthDecision` to stay within the Biome cognitive-complexity budget.
+    Behaviour-preserving: same owner/client token auth posture, same grant-state inactive allowance for
+    `client` bearers, same post-revoke client-event-subscription side effects, same fire-and-forget
+    delivery tick, same response envelope `{revoked: true}`, same error mapping. Host capabilities
+    (`ensureRequestId`, `revokeGrant`, `introspect`, `applyGrantRevokeSideEffects`, `pdppError`,
+    `handleError`, `setReferenceTraceId`, `logger`) injected via `MountAsGrantRevokeContext`.
+    `executeAsGrantRevoke` import removed from `server/index.js` (sole call site moved to adapter).
+    `requireRevokeAuth` function deleted from `server/index.js` (dead after move).
+    `server/index.js` shrank by ~70 net LOC. Covered by `test/security-auth-surfaces.test.js` (10/10,
+    including all 5 revoke-auth tests). `pnpm --dir reference-implementation run verify` passes;
+    `openspec validate split-reference-server-by-route-family --strict` passes.
 
 ## 6. AS OAuth (owner-approval gated)
 
