@@ -12,8 +12,9 @@ export class CredentialError extends Error {
 /**
  * Load a scoped PDPP client credential from the `pdpp connect` cache.
  *
- * Owner credentials are refused by default; the adapter is read-only over the RS using a
- * grant-scoped bearer token. The env-derived `PDPP_OWNER_TOKEN` is never consulted.
+ * Owner credentials are refused by default; the adapter uses a grant-scoped bearer
+ * token for PDPP reads and event-subscription management. The env-derived
+ * `PDPP_OWNER_TOKEN` is never consulted.
  */
 export async function loadScopedCredential(providerUrl, options = {}) {
   if (!providerUrl) {

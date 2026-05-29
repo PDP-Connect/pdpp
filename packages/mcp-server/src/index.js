@@ -11,9 +11,9 @@ Environment:
   PDPP_CACHE_ROOT        Default for --cache-root (defaults to .pdpp)
   PDPP_MCP_SERVER_NAME   Default for --server-name
 
-The adapter is read-only over the provider's resource server. It will refuse to use
-owner credentials and exits non-zero if no scoped grant token is cached for the
-provider. Run \`pdpp connect <provider-url>\` first.
+The adapter uses a grant-scoped client token for PDPP read tools and event-subscription
+management. It refuses owner credentials and exits non-zero if no scoped grant token is
+cached for the provider. Run \`pdpp connect <provider-url>\` first.
 
 stdout is reserved for MCP protocol messages. Diagnostics go to stderr.
 `;
@@ -106,10 +106,10 @@ export function parseOptions(argv, env) {
   }
 
   if (env.PDPP_OWNER_TOKEN || env.PDPP_OWNER_SESSION_COOKIE) {
-    // The adapter is read-only over scoped grants. Refuse to operate when an owner
-    // credential is in the environment even though we never consult it — exposing the
-    // owner-mode self-export surface through MCP is exactly the privilege-escalation
-    // footgun the design forbids.
+    // Refuse to operate when an owner credential is in the environment even though
+    // we never consult it. Event-subscription writes still use scoped client grants;
+    // exposing the owner-mode self-export surface through MCP is the footgun the
+    // design forbids.
     throw new OptionParseError(
       'Refusing to start: owner credentials (PDPP_OWNER_TOKEN / PDPP_OWNER_SESSION_COOKIE) are present in the environment. Unset them before running the MCP adapter.',
       77

@@ -11,9 +11,10 @@ export const DEFAULT_SERVER_VERSION = '0.0.0';
 /**
  * Build an MCP server wired to a PDPP resource server through the supplied scoped token.
  *
- * The server registers read-only tools and one resource template. It does not
- * auto-connect to a transport — callers pass the transport explicitly so that tests
- * can use the in-memory pair and CLI use can pass StdioServerTransport.
+ * The server registers PDPP read tools, event-subscription management tools, and one
+ * resource template. It does not auto-connect to a transport — callers pass the
+ * transport explicitly so tests can use the in-memory pair and CLI use can pass
+ * StdioServerTransport.
  */
 export function createPdppMcpServer({
   providerUrl,

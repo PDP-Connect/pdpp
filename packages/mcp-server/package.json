@@ -1,7 +1,7 @@
 {
   "name": "@pdpp/mcp-server",
   "version": "0.0.0",
-  "description": "Local stdio MCP adapter for read-only, grant-scoped access to a PDPP resource server.",
+  "description": "Local stdio MCP adapter for grant-scoped PDPP reads and event-subscription management.",
   "type": "module",
   "private": true,
   "bin": {
