@@ -355,6 +355,8 @@ Compute a single-stream grant-safe aggregation. Supports count, numeric sum, num
 - `filter` — object
 - `connector_id` — string
 - `subject_id` — string
+- `connection_id` — string · Canonical public identifier for a connection (one owner-configured account/device/profile). Prefer this over the deprecated `connector_instance_id` alias.
+- `connector_instance_id` — string · Deprecated wire alias for `connection_id`. Emitted alongside `connection_id` during the migration window. New clients SHOULD ignore this field and read `connection_id` instead.
 
 ### Path parameters
 

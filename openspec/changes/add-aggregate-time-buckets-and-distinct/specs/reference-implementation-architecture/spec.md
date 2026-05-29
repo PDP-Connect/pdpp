@@ -56,7 +56,7 @@ The reference implementation SHALL serve stream-aggregate behavior through a can
 
 #### Scenario: Existing aggregate semantics are preserved
 - **WHEN** the native `GET /v1/streams/:stream/aggregate` route is migrated to the operation
-- **THEN** the public response SHALL remain byte-equivalent to the result of the previous native `aggregateRecords` call for requests that do not use the new parameters
+- **THEN** the public response SHALL preserve the previous semantic fields for requests that do not use the new parameters, while allowing additive response fields that are `null` or `false`
 - **AND** the `query.received` data block SHALL retain `query_shape: 'stream_aggregate'` together with the previously emitted `metric`, `field`, `group_by`, and `limit` fields parsed from the request query
 - **AND** the `disclosure.served` data block SHALL retain `query_shape: 'stream_aggregate'` together with `metric`, `field`, `group_by`, `filtered_record_count`, and `group_count` derived from the aggregate result
 - **AND** the request validator (`validateRequestedQueryFieldParams`) SHALL continue to run before the aggregate executes

@@ -3139,9 +3139,9 @@ export async function getRecordAcrossBindings(bindings, stream, recordId, grant,
 /**
  * Fan-in records aggregate across multiple bindings.
  *
- * The reference only implements `metric=count` today; the union of counts
- * across bindings is honest because each binding produces an independent
- * grant-bounded count over the same shared stream namespace.
+ * The reference computes each binding with the same aggregate semantic floor
+ * and only merges operations that are mathematically composable across
+ * disjoint connection partitions.
  */
 export async function aggregateRecordsAcrossBindings(bindings, stream, grant, requestParams, manifest, opts = {}) {
   ensureBindingsOrThrow(bindings, { connectorId: bindings?.[0]?.connectorId });
@@ -3183,62 +3183,111 @@ export async function aggregateRecordsAcrossBindings(bindings, stream, grant, re
 
   const isTimeBucket = typeof requestParams.group_by_time === 'string'
     && requestParams.group_by_time.trim() !== '';
+  const isScalarGroup = typeof requestParams.group_by === 'string'
+    && requestParams.group_by.trim() !== '';
+  const metric = requestParams.metric || 'count';
+  const manifestStream = manifest?.streams?.find((entry) => entry.name === stream);
+  const aggregateFieldSchema = requestParams.field && manifestStream
+    ? getFieldSchema(manifestStream, requestParams.field)
+    : null;
 
-  let total = 0;
+  let value = metric === 'sum' || metric === 'count' ? 0 : null;
+  let filteredRecordCount = 0;
+  let bestComparable = null;
   let meta = null;
-  // Merge group_by_time buckets across disjoint bindings: counts in the same
-  // bucket key are additive because each binding sees a disjoint record set.
-  const mergedTimeBuckets = new Map();
+  let responseShape = null;
+  // Merge grouped buckets across disjoint bindings: counts in the same bucket
+  // key are additive because each binding sees a disjoint record set.
+  const mergedBuckets = new Map();
   let mergedLimit = null;
-  let mergedGroupByTime = null;
-  let mergedGranularity = null;
-  let mergedTimeZone = null;
   for (const binding of bindings) {
     const target = buildBindingStorageTarget(binding.connectorId, binding.connectorInstanceId);
     const result = await aggregateRecords(target, stream, grant, perBindingParams, manifest);
-    total += Number(result?.value || 0);
+    if (!responseShape) {
+      responseShape = {
+        metric: result.metric,
+        field: result.field ?? null,
+        group_by: result.group_by ?? null,
+        group_by_time: result.group_by_time ?? null,
+        granularity: result.granularity ?? null,
+        time_zone: result.time_zone ?? null,
+        approximate: result.approximate === true,
+      };
+    }
+    filteredRecordCount += Number(result?.filtered_record_count || 0);
     meta = mergeMetaWarnings(meta, result?.meta);
-    if (isTimeBucket && Array.isArray(result?.groups)) {
+    if ((isScalarGroup || isTimeBucket) && Array.isArray(result?.groups)) {
       mergedLimit = result.limit ?? mergedLimit;
-      mergedGroupByTime = result.group_by_time ?? mergedGroupByTime;
-      mergedGranularity = result.granularity ?? mergedGranularity;
-      mergedTimeZone = result.time_zone ?? mergedTimeZone;
       for (const bucket of result.groups) {
-        const mapKey = bucket.key == null ? '__null__' : bucket.key;
-        const entry = mergedTimeBuckets.get(mapKey) || { key: bucket.key, count: 0 };
+        const mapKey = JSON.stringify(bucket.key ?? null);
+        const entry = mergedBuckets.get(mapKey) || { key: bucket.key ?? null, count: 0 };
         entry.count += Number(bucket.count || 0);
-        mergedTimeBuckets.set(mapKey, entry);
+        mergedBuckets.set(mapKey, entry);
+      }
+      continue;
+    }
+    if (metric === 'sum' || metric === 'count') {
+      value += Number(result?.value || 0);
+      continue;
+    }
+    if (metric === 'min' || metric === 'max') {
+      const comparable = coerceComparableValue(result?.value, aggregateFieldSchema);
+      if (comparable == null) continue;
+      const shouldReplace = bestComparable == null
+        || (metric === 'min' ? comparable < bestComparable : comparable > bestComparable);
+      if (shouldReplace) {
+        bestComparable = comparable;
+        value = result.value;
       }
     }
   }
   for (const w of extraWarnings) meta = appendUniqueWarning(meta, w);
 
-  if (isTimeBucket) {
-    const response = {
-      object: 'aggregation',
-      metric: requestParams.metric || 'count',
-      group_by_time: mergedGroupByTime,
-      granularity: mergedGranularity,
-      time_zone: mergedTimeZone,
-      approximate: false,
-      groups: [...mergedTimeBuckets.values()]
+  responseShape ||= {
+    metric,
+    field: requestParams.field ?? null,
+    group_by: requestParams.group_by ?? null,
+    group_by_time: requestParams.group_by_time ?? null,
+    granularity: requestParams.granularity ?? null,
+    time_zone: null,
+    approximate: false,
+  };
+
+  const response = {
+    object: 'aggregation',
+    stream,
+    metric: responseShape.metric,
+    field: responseShape.field,
+    group_by: responseShape.group_by,
+    group_by_time: responseShape.group_by_time,
+    granularity: responseShape.granularity,
+    time_zone: responseShape.time_zone,
+    approximate: responseShape.approximate,
+    filtered_record_count: filteredRecordCount,
+  };
+
+  if (isScalarGroup || isTimeBucket) {
+    const groupedResponse = {
+      ...response,
+      groups: [...mergedBuckets.values()]
         .sort((left, right) => {
+          if (isScalarGroup) {
+            const countCmp = right.count - left.count;
+            if (countCmp !== 0) return countCmp;
+            return JSON.stringify(left.key).localeCompare(JSON.stringify(right.key));
+          }
           if (left.key == null) return right.key == null ? 0 : 1;
           if (right.key == null) return -1;
           return left.key < right.key ? -1 : left.key > right.key ? 1 : 0;
         })
         .slice(0, mergedLimit ?? undefined),
     };
-    if (mergedLimit != null) response.limit = mergedLimit;
-    if (meta && Object.keys(meta).length) response.meta = meta;
-    return response;
+    if (mergedLimit != null) groupedResponse.limit = mergedLimit;
+    if (meta && Object.keys(meta).length) groupedResponse.meta = meta;
+    return groupedResponse;
   }
 
-  const response = {
-    object: 'aggregation',
-    metric: requestParams.metric || 'count',
-    value: total,
-  };
+  response.value = value;
   if (meta && Object.keys(meta).length) response.meta = meta;
   return response;
 }

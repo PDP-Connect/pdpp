@@ -72,7 +72,12 @@ const baseManifest = {
         },
       },
       query: {
-        aggregations: { count: true },
+        aggregations: {
+          count: true,
+          group_by: ['subject'],
+          group_by_time: ['received_at'],
+          count_distinct: ['subject'],
+        },
       },
     },
   ],
@@ -349,8 +354,89 @@ test('aggregateRecordsAcrossBindings sums counts across granted connections', as
       baseManifest,
     );
     assert.equal(response.object, 'aggregation');
+    assert.equal(response.stream, STREAM);
     assert.equal(response.metric, 'count');
+    assert.equal(response.field, null);
+    assert.equal(response.group_by, null);
+    assert.equal(response.group_by_time, null);
+    assert.equal(response.granularity, null);
+    assert.equal(response.time_zone, null);
+    assert.equal(response.approximate, false);
+    assert.equal(response.filtered_record_count, 4);
     assert.equal(response.value, 4);
+  });
+});
+
+test('aggregateRecordsAcrossBindings merges scalar group_by buckets across granted connections', async () => {
+  await withDualConnectionDb(async () => {
+    await ingestRecord(target(INSTANCE_B), recordPayload('rec-b-2', 'A first', '2026-05-18T12:04:00.000Z'));
+    const { bindings } = await resolveFanInBindings({
+      ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
+      connectorId: CONNECTOR_ID,
+    });
+    const response = await aggregateRecordsAcrossBindings(
+      bindings,
+      STREAM,
+      grant,
+      { metric: 'count', group_by: 'subject', limit: '10' },
+      baseManifest,
+    );
+    assert.equal(response.object, 'aggregation');
+    assert.equal(response.stream, STREAM);
+    assert.equal(response.metric, 'count');
+    assert.equal(response.group_by, 'subject');
+    assert.equal(response.filtered_record_count, 5);
+    assert.equal(response.limit, 10);
+    assert.deepEqual(response.groups, [
+      { key: 'A first', count: 2 },
+      { key: 'A shared', count: 1 },
+      { key: 'B first', count: 1 },
+      { key: 'B shared', count: 1 },
+    ]);
+  });
+});
+
+test('aggregateRecordsAcrossBindings merges group_by_time buckets across granted connections', async () => {
+  await withDualConnectionDb(async () => {
+    const { bindings } = await resolveFanInBindings({
+      ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
+      connectorId: CONNECTOR_ID,
+    });
+    const response = await aggregateRecordsAcrossBindings(
+      bindings,
+      STREAM,
+      grant,
+      { metric: 'count', group_by_time: 'received_at', granularity: 'day' },
+      baseManifest,
+    );
+    assert.equal(response.object, 'aggregation');
+    assert.equal(response.stream, STREAM);
+    assert.equal(response.metric, 'count');
+    assert.equal(response.group_by_time, 'received_at');
+    assert.equal(response.granularity, 'day');
+    assert.equal(response.time_zone, 'UTC');
+    assert.equal(response.filtered_record_count, 4);
+    assert.deepEqual(response.groups, [{ key: '2026-05-18', count: 4 }]);
+  });
+});
+
+test('aggregateRecordsAcrossBindings rejects exact count_distinct across multiple connections', async () => {
+  await withDualConnectionDb(async () => {
+    const { bindings } = await resolveFanInBindings({
+      ownerSubjectId: OWNER_AUTH_DEFAULT_SUBJECT_ID,
+      connectorId: CONNECTOR_ID,
+    });
+    await assert.rejects(
+      () => aggregateRecordsAcrossBindings(
+        bindings,
+        STREAM,
+        grant,
+        { metric: 'count_distinct', field: 'subject' },
+        baseManifest,
+      ),
+      (err) => err.code === 'invalid_request'
+        && /scope with connection_id/.test(err.message),
+    );
   });
 });
 

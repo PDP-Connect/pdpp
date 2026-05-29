@@ -195,6 +195,8 @@ const AggregateQuerySchema = {
     filter: { type: "object" },
     connector_id: { type: "string" },
     subject_id: { type: "string" },
+    connection_id: ConnectionIdSchema,
+    connector_instance_id: ConnectorInstanceIdAliasSchema,
   },
   required: ["metric"],
 };
