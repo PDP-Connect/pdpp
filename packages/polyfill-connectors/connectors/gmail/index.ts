@@ -31,6 +31,7 @@ import {
   type ListResponse,
   type MailboxObject,
 } from "imapflow";
+import { flushAndExitAfterRuntimeAck } from "../../src/connector-exit.ts";
 import { type FingerprintCursor, openFingerprintCursor } from "../../src/fingerprint-cursor.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
 import { stringifyForJsonl } from "../../src/safe-emit.ts";
@@ -87,7 +88,6 @@ const RETRYABLE_ERROR_RE = /ECONN|ETIMEDOUT|fetch failed|EPIPE|timeout/i;
 const FETCH_HEADER_BATCH_PROGRESS = 1000;
 const SNIPPET_FETCH_MAX_BYTES = 4096;
 const ERROR_MSG_TAIL = 400;
-const FLUSH_HARD_TIMEOUT_MS = 3000;
 const DEFAULT_CRED_TIMEOUT_S = 1800;
 const DEFAULT_GMAIL_CONNECTOR_ID = "https://registry.pdpp.org/connectors/gmail";
 const HYDRATION_ERROR_MAX_CHARS = 240;
@@ -154,24 +154,8 @@ function emit(msg: EmittedMessage): Promise<void> {
   });
 }
 
-// Drain stdout, then wait for the runtime to close our stdin (its
-// consumption-complete signal) before exiting. This closes the race
-// where we exit while buffered stdout bytes are still in transit.
 function flushAndExit(code: number): void {
-  const doExit = (): void => {
-    if (process.stdin.readableEnded) {
-      process.exit(code);
-    } else {
-      process.stdin.once("end", () => process.exit(code));
-      setTimeout(() => process.exit(code), FLUSH_HARD_TIMEOUT_MS).unref();
-    }
-  };
-  if (process.stdout.writableLength > 0) {
-    process.stdout.once("drain", doExit);
-    setTimeout(() => process.exit(code), FLUSH_HARD_TIMEOUT_MS).unref();
-  } else {
-    doExit();
-  }
+  flushAndExitAfterRuntimeAck(code);
 }
 
 function fail(m: string, retryable = false): void {

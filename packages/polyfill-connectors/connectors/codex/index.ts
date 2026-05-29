@@ -41,6 +41,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface as createFileReader, createInterface } from "node:readline";
 import { DatabaseSync } from "node:sqlite";
+import { flushAndExitAfterRuntimeAck } from "../../src/connector-exit.ts";
 import type { EmittedMessage, RecordData, StreamScope } from "../../src/connector-runtime-protocol.ts";
 import { type CarryForwardCursor, openCarryForwardCursor } from "../../src/fingerprint-cursor.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
@@ -105,20 +106,7 @@ async function waitForEmitDrain(): Promise<void> {
 }
 
 const flushAndExit = (code: number): void => {
-  const doExit = (): void => {
-    if (process.stdin.readableEnded) {
-      process.exit(code);
-    } else {
-      process.stdin.once("end", () => process.exit(code));
-      setTimeout(() => process.exit(code), 3000).unref();
-    }
-  };
-  if (process.stdout.writableLength > 0) {
-    process.stdout.once("drain", doExit);
-    setTimeout(() => process.exit(code), 3000).unref();
-  } else {
-    doExit();
-  }
+  flushAndExitAfterRuntimeAck(code);
 };
 const fail = (m: string, r = false): void => {
   emit({

@@ -44,6 +44,7 @@ import type { Browser, BrowserContext, CDPSession, Page } from "playwright";
 
 import { type AuthConfig, resolveAuth } from "./auth.ts";
 import { manualAction, prepareBrowserInteractionTarget } from "./browser-handoff.ts";
+import { flushAndExitAfterRuntimeAck } from "./connector-exit.ts";
 import type {
   AssistanceCompletionStatus,
   AssistanceRequest,
@@ -310,23 +311,7 @@ export function runConnector(config: RunConnectorConfig): void {
   }
 
   const flushAndExit = (code: number): void => {
-    const doExit = (): void => {
-      // Wait for the runtime to close our stdin (its consumption-complete
-      // signal) before exiting. This closes the race where we exit while
-      // buffered stdout bytes are still in transit through the kernel pipe.
-      if (process.stdin.readableEnded) {
-        process.exit(code);
-      } else {
-        process.stdin.once("end", () => process.exit(code));
-        setTimeout(() => process.exit(code), 3000).unref();
-      }
-    };
-    if (process.stdout.writableLength > 0) {
-      process.stdout.once("drain", doExit);
-      setTimeout(() => process.exit(code), 3000).unref();
-    } else {
-      doExit();
-    }
+    flushAndExitAfterRuntimeAck(code);
   };
 
   let observedCounters: { totalEmitted: number; totalSkipped: number } | null = null;
