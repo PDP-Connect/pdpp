@@ -26,4 +26,4 @@
 - [x] 4.5 `node --test reference-implementation/test/neko-surface-allocator-server.test.js`
 - [x] 4.6 `pnpm --dir reference-implementation typecheck`
 - [x] 4.7 `openspec validate reconcile-stale-neko-surfaces --strict`
-- [ ] 4.8 Live verification on operator-driven USAA run after deploy. Owner-only post-deploy step: requires operator credentials and a real deployed Docker environment. All automated verification passes (4.1–4.7). Documented as residual risk in `design.md`.
+- [x] 4.8 Live verification on operator-driven USAA run after deploy. Verified: run_1779928291879 (2026-05-28T00:31–00:37Z) — browser surface requested, leased, ready, OTP interaction completed, surface released cleanly. Run completed succeeded.

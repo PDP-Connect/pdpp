@@ -20,21 +20,19 @@ route level (`getRetainedSizeDatasetSummaryProjection` is the projection
 source in Postgres mode; raw aggregates remain only as the rebuild
 recovery path).
 
-- [ ] 2.1 Add Postgres tables/indexes for the dataset-summary global and
-  per-stream projection rows with the same freshness/rebuild metadata as the
-  SQLite projection.
-  → Deferred. Postgres dashboard summary reads from `retained_size_*`
-    via `getRetainedSizeDatasetSummaryProjection`. A second parallel
-    Postgres projection would be duplicate work for the same dashboard
-    surface. Promotion is out of scope for this closeout; revisit if a
-    second read surface needs the `dataset_summary` shape specifically.
-- [ ] 2.2 Add backend-neutral dataset-summary projection functions that dispatch
-  to SQLite or Postgres by active backend.
-  → Deferred with 2.1. Backend-neutrality is currently enforced at the
-    route boundary in `server/index.js` (the host adapter selects the
-    SQLite or Postgres source). The dataset-summary read-model module
-    stays SQLite-only by design + boundary guard (3.1).
-- [ ] 2.3 Wire record, record-change, blob, dirty-extrema, rebuild, and
+- [x] 2.1 Record deferral decision: a parallel Postgres `dataset_summary_*`
+  projection would duplicate the existing `retained_size_*` projection path.
+  Documented in this tasks file. Revisit if a second read surface needs
+  `dataset_summary` shape specifically.
+- [ ] 2.1 (residual) Add Postgres tables/indexes for the dataset-summary global
+  and per-stream projection rows if a second read surface requires them.
+- [x] 2.2 Record deferral decision: backend-neutrality for dataset-summary
+  read-model is enforced at the route boundary (`server/index.js`); the
+  read-model module is SQLite-only by design with the boundary guard added in
+  3.1. Documented in this tasks file; deferred with 2.1.
+- [ ] 2.2 (residual) Add backend-neutral dataset-summary projection functions
+  if/when the route-level dispatch is no longer sufficient.
+- [x] 2.3 Wire record, record-change, blob, dirty-extrema, rebuild, and
   reconcile paths to the active backend's projection.
   → Already true via the retained-size projection in Postgres mode:
     `applyRetainedSizeRecordDelta` and `applyRetainedSizeBlobDelta`
@@ -72,14 +70,14 @@ recovery path).
     seeds a deliberately wrong SQLite `dataset_summary_projection` row,
     initializes Postgres, and asserts every guarded entry point throws
     `storage_backend_mismatch`. Gates on `PDPP_TEST_POSTGRES_URL`.
-- [ ] 3.3 Update deployment diagnostics to surface whether Postgres mode still
-  has classified local SQLite compatibility state.
-  → Deferred. `/_ref/deployment` already exposes `storage_backend`
-    (`lib/controller-boot.ts:106`). The SQLite classification table is
-    captured in
-    `design-notes/postgres-runtime-boundary-sqlite-classification-2026-05-28.md`;
-    promoting it into a runtime diagnostic surface is a follow-on
-    if/when an operator-facing summary view is needed.
+- [x] 3.3 Record deferral decision: deployment diagnostics already expose
+  `storage_backend` via `/_ref/deployment` (`lib/controller-boot.ts:106`); the
+  SQLite classification table is in
+  `design-notes/postgres-runtime-boundary-sqlite-classification-2026-05-28.md`.
+  Promoting it into a runtime diagnostic surface is a follow-on if/when an
+  operator-facing summary view is needed.
+- [ ] 3.3 (residual) Update deployment diagnostics to surface the SQLite
+  compatibility classification table as an operator-facing runtime summary.
 
 ## 4. Validation
 
