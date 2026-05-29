@@ -72,6 +72,19 @@ const nextConfig = {
         destination: '/dashboard/explore',
         permanent: false,
       },
+      // Top-level /explore alias for the operator Explore canvas.
+      // The console app is the Docker/reference-server surface, so this must
+      // live here as well as in apps/web.
+      {
+        source: '/explore',
+        destination: '/dashboard/explore',
+        permanent: false,
+      },
+      {
+        source: '/explore/:rest*',
+        destination: '/dashboard/explore/:rest*',
+        permanent: false,
+      },
       // Bare connector-style paths from the pre-v1 dashboard map to Records.
       // Excludes reserved top-level sections so they don't get caught.
       {
