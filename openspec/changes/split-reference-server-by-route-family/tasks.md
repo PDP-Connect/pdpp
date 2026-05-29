@@ -235,8 +235,10 @@ unchanged.
 
 ## 6. AS OAuth (owner-approval gated)
 
-- [ ] 6.1 STOP-AND-REPORT before extracting. The auth-coupled surface is the highest-risk family; owner must approve the slice (one file vs split) before any move.
-- [ ] 6.2 If approved: `server/routes/as-oauth.ts` — `oauth/register`, `oauth/par`, `oauth/authorize`, `oauth/token`, `oauth/device_authorization`, `device/approve`, `device/deny`, `introspect`, `consent`, `consent/approve`, `consent/deny`, `consent/exchange`, `grants/:grantId/revoke`, `agent-connect`.
+- [x] 6.1 STOP-AND-REPORT before extracting. The auth-coupled surface is the highest-risk family; owner must approve the slice (one file vs split) before any move.
+  - Slice decision: started with the three pure-operation-delegating, HTML-free, no-closure-state routes: `POST /oauth/device_authorization`, `POST /oauth/token`, `POST /introspect`. These are safe to move without touching `consentStore`, `agentConnectAttempts`, or HTML rendering. Remaining 15 routes deferred to a second owner-approved slice (see residual risks in branch report).
+- [x] 6.2 First sub-slice landed: `server/routes/as-oauth.ts` exporting `mountAsDeviceAuthorization`, `mountAsToken`, `mountAsIntrospect`. `server/index.js` shrank from 5933→5851 LOC (−82 net). Verified: pnpm verify clean, 73/73 targeted tests pass.
+- [ ] 6.3 Second sub-slice (pending owner approval): remaining 15 routes — `oauth/register`, `oauth/par`, `oauth/authorize`, `oauth/authorize/mcp-package`, `device`, `device/approve`, `device/deny`, `consent`, `consent/approve`, `consent/deny`, `consent/exchange`, `grants/:grantId/revoke`, `agent-connect`, `agent-connect/:id/token`, `connectors`/`connectors/:id` (polyfill-only). These share closure-local state and require a `MountAsOAuthContext` with 20+ injected capabilities.
 
 ## 7. Validation
 
