@@ -377,6 +377,11 @@ import {
   mountRsEventSubscriptions,
   mountRsMutation,
 } from './routes/rs-mutation.ts';
+import {
+  mountAsDeviceAuthorization,
+  mountAsIntrospect,
+  mountAsToken,
+} from './routes/as-oauth.ts';
 
 const AS_PORT = parseInt(process.env.AS_PORT || '7662');
 const RS_PORT = parseInt(process.env.RS_PORT || '7663');
@@ -3623,109 +3628,30 @@ function buildAsApp(opts = {}) {
     },
   );
 
-  // Device-authorization initiation semantics (client_id presence
-  // validation, store call, trace_context-stripped public envelope) live
-  // in the canonical `as.device.authorization.init` operation
-  // (operations/as-device-authorization-init).
-  app.post('/oauth/device_authorization', { contract: 'startOwnerDeviceAuthorization' }, async (req, res) => {
-    const explicitBaseUrl = opts.asPublicUrl || (!opts.ignoreAmbientPublicUrls ? process.env.AS_PUBLIC_URL : null);
-    const outcome = await executeAsDeviceAuthInit(
-      {
-        clientId: req.body?.client_id,
-        baseUrl: resolvePublicUrl(req, explicitBaseUrl),
-      },
-      {
-        initiate: (clientId, opts2) => ownerDeviceAuthStore.initiate(clientId, opts2),
-      },
-    );
-    if (outcome.outcome === 'success') {
-      if (outcome.traceContext?.request_id) {
-        res.setHeader('Request-Id', outcome.traceContext.request_id);
-      }
-      if (outcome.traceContext?.trace_id) {
-        setReferenceTraceId(res, outcome.traceContext.trace_id);
-      }
-      return res.status(outcome.status).json(outcome.publicResult);
-    }
-    if (outcome.requestId) {
-      res.setHeader('Request-Id', outcome.requestId);
-    }
-    if (outcome.traceId) {
-      setReferenceTraceId(res, outcome.traceId);
-    }
-    oauthError(res, outcome.status, outcome.errorCode, outcome.errorMessage);
-  });
+  // POST /oauth/device_authorization and POST /oauth/token extracted to
+  // `server/routes/as-oauth.ts` per OpenSpec change
+  // `split-reference-server-by-route-family` (§6). Behaviour-preserving:
+  // same contract metadata, same auth posture (none — public endpoints),
+  // same trace-id header wiring, same response envelopes, same status codes.
+  const asDeviceAuthContext = {
+    resolveBaseUrl: (req) => {
+      const explicitBaseUrl = opts.asPublicUrl || (!opts.ignoreAmbientPublicUrls ? process.env.AS_PUBLIC_URL : null);
+      return resolvePublicUrl(req, explicitBaseUrl);
+    },
+    initiateDeviceAuth: (clientId, opts2) => ownerDeviceAuthStore.initiate(clientId, opts2),
+    setReferenceTraceId,
+    oauthError,
+  };
+  mountAsDeviceAuthorization(app, asDeviceAuthContext);
 
-  // Device-code token-exchange semantics (grant-type allowlist, store
-  // call, RFC 8628 client-fault → 400 mapping, trace_context propagation)
-  // live in the canonical `as.device.token.exchange` operation
-  // (operations/as-device-token-exchange).
-  app.post('/oauth/token', { contract: 'exchangeOwnerDeviceToken' }, async (req, res) => {
-    if (req.body?.grant_type === 'authorization_code') {
-      try {
-        const token = await exchangeOAuthAuthorizationCode({
-          code: req.body?.code,
-          clientId: req.body?.client_id,
-          redirectUri: req.body?.redirect_uri,
-          codeVerifier: req.body?.code_verifier,
-        });
-        return res.json({
-          access_token: token.access_token,
-          token_type: token.token_type,
-          ...(token.refresh_token ? { refresh_token: token.refresh_token } : {}),
-          ...(token.grant_package_id
-            ? { grant_package_id: token.grant_package_id }
-            : { grant_id: token.grant_id }),
-        });
-      } catch (err) {
-        return oauthError(res, 400, err.code || 'invalid_grant', err.message || 'Authorization code exchange failed');
-      }
-    }
-    if (req.body?.grant_type === 'refresh_token') {
-      try {
-        const token = await exchangeOAuthRefreshToken({
-          refreshToken: req.body?.refresh_token,
-          clientId: req.body?.client_id,
-        });
-        return res.json({
-          access_token: token.access_token,
-          token_type: token.token_type,
-          refresh_token: token.refresh_token,
-          ...(token.grant_package_id
-            ? { grant_package_id: token.grant_package_id }
-            : { grant_id: token.grant_id }),
-        });
-      } catch (err) {
-        return oauthError(res, 400, err.code || 'invalid_grant', err.message || 'Refresh token exchange failed');
-      }
-    }
-    const outcome = await executeAsDeviceTokenExchange(
-      {
-        grantType: req.body?.grant_type,
-        clientId: req.body?.client_id,
-        deviceCode: req.body?.device_code,
-      },
-      {
-        exchangeDeviceCode: (args) => ownerDeviceAuthStore.exchangeDeviceCode(args),
-      },
-    );
-    if (outcome.outcome === 'success') {
-      if (outcome.traceContext?.request_id) {
-        res.setHeader('Request-Id', outcome.traceContext.request_id);
-      }
-      if (outcome.traceContext?.trace_id) {
-        setReferenceTraceId(res, outcome.traceContext.trace_id);
-      }
-      return res.status(outcome.status).json(outcome.publicResult);
-    }
-    if (outcome.requestId) {
-      res.setHeader('Request-Id', outcome.requestId);
-    }
-    if (outcome.traceId) {
-      setReferenceTraceId(res, outcome.traceId);
-    }
-    oauthError(res, outcome.status, outcome.errorCode, outcome.errorMessage);
-  });
+  const asTokenContext = {
+    exchangeOAuthAuthorizationCode,
+    exchangeOAuthRefreshToken,
+    exchangeDeviceCode: (args) => ownerDeviceAuthStore.exchangeDeviceCode(args),
+    setReferenceTraceId,
+    oauthError,
+  };
+  mountAsToken(app, asTokenContext);
 
   app.get('/device', ownerAuth.requireOwnerSession, async (req, res) => {
     const userCode = typeof req.query.user_code === 'string' ? req.query.user_code : '';
@@ -3891,19 +3817,11 @@ function buildAsApp(opts = {}) {
     oauthError(res, outcome.status, outcome.errorCode, outcome.errorMessage);
   });
 
-  // RFC 7662-style token introspection with PDPP extensions. Token-presence
-  // validation and the AS-internal `grant_storage_binding` redaction live
-  // in the canonical `as.introspect` operation (operations/as-introspect).
-  app.post('/introspect', { contract: 'introspectToken' }, async (req, res) => {
-    const outcome = await executeAsIntrospect(
-      { token: req.body?.token },
-      { introspect },
-    );
-    if (outcome.outcome === 'success') {
-      return res.json(outcome.publicInfo);
-    }
-    pdppError(res, outcome.status, outcome.errorCode, outcome.errorMessage);
-  });
+  // POST /introspect extracted to `server/routes/as-oauth.ts` per OpenSpec
+  // change `split-reference-server-by-route-family` (§6). Behaviour-preserving:
+  // same contract metadata, same auth posture (none — public endpoint),
+  // same response envelope, same status codes.
+  mountAsIntrospect(app, { introspect, pdppError });
 
   // Spine correlation list / timeline / search routes delegate envelope
   // assembly to canonical operation modules. Timeline and search remain
