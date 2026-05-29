@@ -475,7 +475,7 @@ test('connector discovery scopes client tokens to the granted source and streams
     assert.equal(body.data.length, 1);
 
     const connector = body.data[0];
-    assert.equal(connector.connector_id, spotifyManifest.connector_id);
+    assert.equal(connector.connector_id, canonicalConnectorKey(spotifyManifest.connector_id));
     assert.deepEqual(connector.streams.map((stream) => stream.name), ['top_artists']);
     assert.equal(connector.stream_count, 1);
     assert.equal(connector.streams[0].capabilities.records, true);
@@ -564,7 +564,7 @@ test('schema discovery scopes a client token to its grant source and streams', a
     assert.ok(body.bearer.grant_id, 'grant_id surfaces on bearer projection');
     assert.equal(body.connectors.length, 1);
     const connector = body.connectors[0];
-    assert.equal(connector.connector_id, spotifyManifest.connector_id);
+    assert.equal(connector.connector_id, canonicalConnectorKey(spotifyManifest.connector_id));
     assert.deepEqual(connector.streams.map((s) => s.name), ['top_artists']);
     assert.equal(connector.stream_count, 1);
 
