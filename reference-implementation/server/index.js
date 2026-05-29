@@ -374,6 +374,11 @@ import {
   mountRefConnectorsList,
 } from './routes/ref-connectors.ts';
 import { mountRsBlobRead, mountRsReadQueries } from './routes/rs-read.ts';
+import {
+  mountRsBlobsUpload,
+  mountRsEventSubscriptions,
+  mountRsMutation,
+} from './routes/rs-mutation.ts';
 
 const AS_PORT = parseInt(process.env.AS_PORT || '7662');
 const RS_PORT = parseInt(process.env.RS_PORT || '7663');
@@ -4999,146 +5004,46 @@ function buildRsApp(opts = {}) {
   app.post('/mcp', requireTrustedHostedMcpResource, setHostedMcpProtectedResourceMetadata, requireToken, requireClientOrMcpPackage, handleHostedMcp);
   app.delete('/mcp', requireTrustedHostedMcpResource, setHostedMcpProtectedResourceMetadata, requireToken, requireClientOrMcpPackage, handleHostedMcp);
 
-  // ────────────────────────────────────────────────────────────────────────
-  // /v1/event-subscriptions — outbound client event subscriptions (RI extension)
-  // ────────────────────────────────────────────────────────────────────────
-  // Same auth shape as the other /v1 client reads: client bearer required;
-  // the persisted subscription stores the bearer's (client_id, grant_id,
-  // subject_id) so subsequent operations refuse bearers whose grant does
-  // not match. Advertised in `/.well-known/oauth-protected-resource` as a
-  // `client_event_subscriptions` capability — reference implementation
-  // extension, NOT Core PDPP.
-  //
-  // See:
-  //   openspec/changes/add-client-event-subscriptions/
-  function buildBearerActorFromTokenInfo(req) {
-    const ti = req.tokenInfo || {};
-    const grant = ti.grant || {};
-    const scope = {
-      source: grant.source,
-      streams: Array.isArray(grant.streams)
-        ? grant.streams.map((s) => ({
-            name: s.name,
-            ...(s.connection_id ? { connection_id: s.connection_id } : {}),
-            ...(s.resources ? { resources: s.resources } : {}),
-            ...(s.time_range ? { time_range: s.time_range } : {}),
-          }))
-        : [],
-    };
-    return {
-      clientId: ti.client_id || null,
-      grantId: ti.grant_id || null,
-      subjectId: ti.subject_id || null,
-      grantScope: scope,
-    };
-  }
-  const clientEventSubsDeps = () => ({
-    store: getDefaultClientEventSubscriptionStore(),
-    nowIso: () => new Date().toISOString(),
-  });
-  function handleClientEventSubError(res, err) {
-    if (err && err.name === 'ClientEventSubscriptionError') {
-      return pdppError(res, err.status || 400, err.code, err.message);
-    }
-    return handleError(res, err);
-  }
+  // Build rsMutationContext here so both mountRsEventSubscriptions (registered
+  // before mountRsReadQueries) and mountRsBlobsUpload / mountRsMutation
+  // (registered after) share the same context object.
+  const rsMutationContext = {
+    requireToken,
+    requireOwner,
+    requireClient,
+    buildMutationContext,
+    buildStateContext,
+    setReferenceTraceId,
+    emitMutationRequested,
+    emitMutationEvent,
+    rejectMutation,
+    emitStateRequested,
+    emitStateEvent,
+    rejectState,
+    resolveRegisteredConnectorManifest,
+    resolveOwnerConnectorNamespace,
+    persistContentAddressedBlob,
+    storageTargetForConnectorNamespace,
+    deleteAllRecords,
+    deleteRecord,
+    ingestRecord: (target, record) => ingestRecord(target, record),
+    getSyncState,
+    putSyncState,
+    resolveGrantScopedStateGrant,
+    toPublicConnectorStateProjection,
+    resolveSingleConnectorIdQueryValue,
+    handleError,
+    getDefaultClientEventSubscriptionStore,
+    getDefaultDeliveryWorker,
+  };
 
-  app.post('/v1/event-subscriptions', requireToken, requireClient, async (req, res) => {
-    try {
-      const actor = buildBearerActorFromTokenInfo(req);
-      if (!actor.clientId || !actor.grantId) {
-        return pdppError(res, 403, 'grant_invalid', 'client subscription requires an active client grant');
-      }
-      const filters =
-        req.body && typeof req.body === 'object' && req.body.filters && typeof req.body.filters === 'object'
-          ? req.body.filters
-          : undefined;
-      const out = await executeCreateSubscription(
-        {
-          actor,
-          callbackUrl: typeof req.body?.callback_url === 'string' ? req.body.callback_url : '',
-          filters,
-        },
-        clientEventSubsDeps(),
-      );
-      // Best-effort: fire the verification tick once so the handshake is
-      // visible to tests without waiting for the timer.
-      try {
-        await getDefaultDeliveryWorker().tick();
-      } catch { /* ignored */ }
-      res.status(201).json({
-        subscription_id: out.subscriptionId,
-        secret: out.secret,
-        status: out.status,
-        callback_url: out.callbackUrl,
-        created_at: out.createdAt,
-      });
-    } catch (err) {
-      handleClientEventSubError(res, err);
-    }
-  });
-
-  app.get('/v1/event-subscriptions', requireToken, requireClient, async (req, res) => {
-    try {
-      const actor = buildBearerActorFromTokenInfo(req);
-      const out = await executeListSubscriptions(actor, clientEventSubsDeps());
-      res.json(out);
-    } catch (err) {
-      handleClientEventSubError(res, err);
-    }
-  });
-
-  app.get('/v1/event-subscriptions/:id', requireToken, requireClient, async (req, res) => {
-    try {
-      const actor = buildBearerActorFromTokenInfo(req);
-      const out = await executeGetSubscription(actor, req.params.id, clientEventSubsDeps());
-      res.json(out);
-    } catch (err) {
-      handleClientEventSubError(res, err);
-    }
-  });
-
-  app.patch('/v1/event-subscriptions/:id', requireToken, requireClient, async (req, res) => {
-    try {
-      const actor = buildBearerActorFromTokenInfo(req);
-      const body = req.body || {};
-      const out = await executeUpdateSubscription(
-        actor,
-        req.params.id,
-        {
-          ...(typeof body.enabled === 'boolean' ? { enabled: body.enabled } : {}),
-          ...(body.rotate_secret === true ? { rotateSecret: true } : {}),
-        },
-        clientEventSubsDeps(),
-      );
-      res.json(out);
-    } catch (err) {
-      handleClientEventSubError(res, err);
-    }
-  });
-
-  app.delete('/v1/event-subscriptions/:id', requireToken, requireClient, async (req, res) => {
-    try {
-      const actor = buildBearerActorFromTokenInfo(req);
-      await executeDeleteSubscription(actor, req.params.id, clientEventSubsDeps());
-      res.status(204).end();
-    } catch (err) {
-      handleClientEventSubError(res, err);
-    }
-  });
-
-  app.post('/v1/event-subscriptions/:id/test-event', requireToken, requireClient, async (req, res) => {
-    try {
-      const actor = buildBearerActorFromTokenInfo(req);
-      const out = await executeEnqueueTestEvent(actor, req.params.id, clientEventSubsDeps());
-      try {
-        await getDefaultDeliveryWorker().tick();
-      } catch { /* ignored */ }
-      res.status(202).json({ event_id: out.eventId });
-    } catch (err) {
-      handleClientEventSubError(res, err);
-    }
-  });
+  // /v1/event-subscriptions cluster is mounted via `server/routes/rs-mutation.ts`
+  // per OpenSpec change `split-reference-server-by-route-family` (§4).
+  // Behaviour-preserving extraction: same auth posture (`requireClient`), same
+  // middleware order, same response envelopes, same status codes.
+  // Registered here — before the hosted-UI CSS and mountRsReadQueries — to
+  // preserve the original route registration order.
+  mountRsEventSubscriptions(app, rsMutationContext);
 
   // Shared hosted-UI stylesheet, mounted on the RS app so the browser-friendly
   // RS root landing (see below) can load styles from its own origin without
@@ -5284,69 +5189,13 @@ function buildRsApp(opts = {}) {
   };
   mountRsReadQueries(app, rsReadContext);
 
-  // POST /v1/blobs
-  // Blob-upload semantics live in the canonical `rs.blobs.upload` operation
-  // (operations/rs-blobs-upload). This route is a Fastify host adapter:
-  // it owns auth, request id, response writing, and concrete capability
-  // wiring. It MUST NOT recompute query/Content-Type validation, manifest
-  // visibility, or response envelope shaping locally. The host wires the
-  // existing `persistContentAddressedBlob` capability, which preserves
-  // blob+binding atomicity.
-  app.post('/v1/blobs', { contract: 'uploadBlob' }, requireToken, requireOwner, async (req, res) => {
-    try {
-      let manifestCache = null;
-      let storageNamespace = null;
-      const dependencies = {
-        hasManifestStream: async (connectorId, streamName) => {
-          manifestCache = await resolveRegisteredConnectorManifest(connectorId);
-          const visible = Boolean(
-            (manifestCache.streams || []).find((candidate) => candidate.name === streamName),
-          );
-          if (visible) {
-            storageNamespace = await resolveOwnerConnectorNamespace(req, connectorId);
-          }
-          return visible;
-        },
-        persistBlob: async ({ connectorId, stream, recordKey, mimeType, data }) => {
-          const namespace = storageNamespace ?? await resolveOwnerConnectorNamespace(req, connectorId);
-          return persistContentAddressedBlob({
-            connectorId: namespace.connectorId,
-            connectorInstanceId: namespace.connectorInstanceId,
-            stream,
-            recordKey,
-            mimeType,
-            data: Buffer.isBuffer(data) ? data : Buffer.from(data),
-          });
-        },
-      };
-      const operationInput = {
-        requestParams: {
-          connector_id: req.query.connector_id,
-          stream: req.query.stream,
-          record_key: req.query.record_key,
-        },
-        contentType: req.headers['content-type'],
-        body: req.body,
-      };
-      let output;
-      try {
-        output = await executeBlobsUpload(operationInput, dependencies);
-      } catch (opErr) {
-        if (
-          opErr instanceof BlobsUploadInvalidRequestError
-          || opErr instanceof BlobsUploadStreamNotFoundError
-        ) {
-          const mapped = new Error(opErr.message);
-          mapped.code = opErr.code;
-          throw mapped;
-        }
-        throw opErr;
-      }
-      res.json(output.envelope);
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
+  // POST /v1/blobs is mounted via `server/routes/rs-mutation.ts` per OpenSpec
+  // change `split-reference-server-by-route-family` (§4). Behaviour-preserving
+  // extraction: same auth posture (`requireOwner`), same request-id / trace-id
+  // wiring, same response envelope, same status codes.
+  // Registered immediately after mountRsReadQueries, before mountRsBlobRead,
+  // to preserve the original route registration order.
+  mountRsBlobsUpload(app, rsMutationContext);
 
   // GET /v1/blobs/:blob_id is mounted via `server/routes/rs-read.ts` (§3),
   // registered here — immediately after `POST /v1/blobs` — to preserve the
@@ -5354,153 +5203,6 @@ function buildRsApp(opts = {}) {
   mountRsBlobRead(app, rsReadContext);
 
   if (!nativeMode) {
-    // DELETE /v1/streams/:stream/records (owner-authenticated reference reset for polyfill mode)
-    // Bulk-delete semantics live in the canonical `rs.records.delete_stream`
-    // operation (operations/rs-records-delete-stream). This route is a
-    // Fastify host adapter: it owns auth, mutation-context wiring, trace
-    // id setup, instrumentation dispatch, and response writing. It MUST NOT
-    // recompute the connector_id presence rule, manifest visibility, or the
-    // `{ deleted_record_count }` event payload locally.
-    app.delete('/v1/streams/:stream/records', requireToken, requireOwner, async (req, res) => {
-      const connectorId = resolveSingleConnectorIdQueryValue(req.query.connector_id);
-      const connectorInstanceId = resolveSingleConnectorIdQueryValue(req.query.connector_instance_id);
-      const mutationContext = buildMutationContext(req, res, {
-        connectorId,
-        connectorInstanceId,
-        operation: 'delete_stream_records',
-        streamId: req.params.stream,
-      });
-      try {
-        let storageNamespace = null;
-        const dependencies = {
-          hasManifestStream: async (cid, streamName) => {
-            const manifest = await resolveRegisteredConnectorManifest(cid);
-            const visible = Boolean(
-              (manifest.streams || []).find((stream) => stream.name === streamName),
-            );
-            if (visible) {
-              storageNamespace = await resolveOwnerConnectorNamespace(req, cid, { connectorInstanceId });
-            }
-            return visible;
-          },
-          deleteAllRecords: async (cid, streamName) => {
-            const namespace = storageNamespace ?? await resolveOwnerConnectorNamespace(req, cid, {
-              connectorInstanceId,
-            });
-            return deleteAllRecords(storageTargetForConnectorNamespace(namespace), streamName);
-          },
-        };
-        let output;
-        try {
-          // Validate inputs before emitting `mutation.requested` to mirror
-          // the previous native ordering: invalid_request short-circuits via
-          // rejectMutation, which itself emits the requested event for parity.
-          if (!connectorId) {
-            throw new RecordsDeleteStreamInvalidRequestError(
-              'connector_id must be a single non-empty string',
-            );
-          }
-          setReferenceTraceId(res, mutationContext.traceId);
-          await emitMutationRequested(req, mutationContext);
-          output = await executeRecordsDeleteStream(
-            { connectorId, streamName: req.params.stream },
-            dependencies,
-          );
-        } catch (opErr) {
-          if (
-            opErr instanceof RecordsDeleteStreamInvalidRequestError
-            || opErr instanceof RecordsDeleteStreamNotFoundError
-          ) {
-            const mapped = new Error(opErr.message);
-            mapped.code = opErr.code;
-            return await rejectMutation(res, req, mutationContext, mapped);
-          }
-          throw opErr;
-        }
-        await emitMutationEvent(req, mutationContext, 'mutation.completed', 'succeeded', {
-          deleted_record_count: output.deletedRecordCount,
-        });
-        res.status(204).end();
-      } catch (err) {
-        return await rejectMutation(res, req, mutationContext, err);
-      }
-    });
-
-    // DELETE /v1/streams/:stream/records/:id (owner-authenticated)
-    // Single-delete semantics live in the canonical `rs.records.delete`
-    // operation (operations/rs-records-delete). This route is a Fastify
-    // host adapter: it owns auth, mutation-context wiring, trace id setup,
-    // instrumentation dispatch, and response writing. It MUST NOT recompute
-    // the connector_id presence rule, manifest visibility, or the
-    // `{ deleted_record_count }` event payload locally.
-    app.delete('/v1/streams/:stream/records/:id', requireToken, requireOwner, async (req, res) => {
-      const connectorId = resolveSingleConnectorIdQueryValue(req.query.connector_id);
-      const connectorInstanceId = resolveSingleConnectorIdQueryValue(req.query.connector_instance_id);
-      const requestedRecordId = decodeURIComponent(req.params.id);
-      const mutationContext = buildMutationContext(req, res, {
-        connectorId,
-        connectorInstanceId,
-        operation: 'delete_record',
-        streamId: req.params.stream,
-        requestedRecordId,
-      });
-      try {
-        let storageNamespace = null;
-        const dependencies = {
-          hasManifestStream: async (cid, streamName) => {
-            const manifest = await resolveRegisteredConnectorManifest(cid);
-            const visible = Boolean(
-              (manifest.streams || []).find((stream) => stream.name === streamName),
-            );
-            if (visible) {
-              storageNamespace = await resolveOwnerConnectorNamespace(req, cid, { connectorInstanceId });
-            }
-            return visible;
-          },
-          deleteRecord: async (cid, streamName, recordId) => {
-            const namespace = storageNamespace ?? await resolveOwnerConnectorNamespace(req, cid, {
-              connectorInstanceId,
-            });
-            return deleteRecord(storageTargetForConnectorNamespace(namespace), streamName, recordId);
-          },
-        };
-        let output;
-        try {
-          if (!connectorId) {
-            throw new RecordsDeleteInvalidRequestError(
-              'connector_id must be a single non-empty string',
-            );
-          }
-          setReferenceTraceId(res, mutationContext.traceId);
-          await emitMutationRequested(req, mutationContext);
-          output = await executeRecordsDelete(
-            {
-              connectorId,
-              streamName: req.params.stream,
-              recordId: requestedRecordId,
-            },
-            dependencies,
-          );
-        } catch (opErr) {
-          if (
-            opErr instanceof RecordsDeleteInvalidRequestError
-            || opErr instanceof RecordsDeleteNotFoundError
-          ) {
-            const mapped = new Error(opErr.message);
-            mapped.code = opErr.code;
-            return await rejectMutation(res, req, mutationContext, mapped);
-          }
-          throw opErr;
-        }
-        await emitMutationEvent(req, mutationContext, 'mutation.completed', 'succeeded', {
-          deleted_record_count: output.deletedRecordCount,
-        });
-        res.status(204).end();
-      } catch (err) {
-        return await rejectMutation(res, req, mutationContext, err);
-      }
-    });
-
     // Reference-only signed source-webhook ingress is mounted via
     // `server/routes/source-webhooks.ts` per OpenSpec change
     // `split-reference-server-by-route-family` (§5.3). Behaviour-preserving
@@ -5519,198 +5221,13 @@ function buildRsApp(opts = {}) {
       resolveRegisteredConnectorManifest,
     });
 
-    // POST /v1/ingest/:stream (Collection Profile, owner-authenticated)
-    // Ingest semantics live in the canonical `rs.records.ingest` operation
-    // (operations/rs-records-ingest). This route is a Fastify host adapter:
-    // it owns auth, mutation-context wiring, trace id setup, instrumentation
-    // dispatch, and response writing. It MUST NOT recompute line splitting,
-    // connector_id presence, manifest visibility, JSON parse handling, the
-    // accepted/rejected counters, or the response envelope locally. Per-record
-    // durable atomicity remains in the underlying `ingestRecord` capability.
-    app.post('/v1/ingest/:stream', requireToken, requireOwner, async (req, res) => {
-      const connectorId = resolveSingleConnectorIdQueryValue(req.query.connector_id);
-      const connectorInstanceId = resolveSingleConnectorIdQueryValue(req.query.connector_instance_id);
-      const lines = parseIngestLines(typeof req.body === 'string' ? req.body : '');
-      const mutationContext = buildMutationContext(req, res, {
-        connectorId,
-        connectorInstanceId,
-        operation: 'ingest_records',
-        streamId: req.params.stream,
-        submittedRecordCount: lines.length,
-      });
-      try {
-        let storageNamespace = null;
-        const dependencies = {
-          hasManifestStream: async (cid, streamName) => {
-            const manifest = await resolveRegisteredConnectorManifest(cid);
-            const visible = Boolean(
-              (manifest.streams || []).find((stream) => stream.name === streamName),
-            );
-            if (visible) {
-              storageNamespace = await resolveOwnerConnectorNamespace(req, cid, { connectorInstanceId });
-            }
-            return visible;
-          },
-          ingestRecord: async (cid, cin, record) => {
-            const namespace = storageNamespace ?? await resolveOwnerConnectorNamespace(req, cid, {
-              connectorInstanceId: cin,
-            });
-            return ingestRecord(storageTargetForConnectorNamespace(namespace), record);
-          },
-        };
-        let output;
-        try {
-          if (!connectorId) {
-            throw new RecordsIngestInvalidRequestError(
-              'connector_id must be a single non-empty string',
-            );
-          }
-          setReferenceTraceId(res, mutationContext.traceId);
-          await emitMutationRequested(req, mutationContext);
-          output = await executeRecordsIngest(
-            {
-              connectorId,
-              connectorInstanceId,
-              streamName: req.params.stream,
-              body: typeof req.body === 'string' ? req.body : '',
-            },
-            dependencies,
-          );
-        } catch (opErr) {
-          if (
-            opErr instanceof RecordsIngestInvalidRequestError
-            || opErr instanceof RecordsIngestNotFoundError
-          ) {
-            const mapped = new Error(opErr.message);
-            mapped.code = opErr.code;
-            return await rejectMutation(res, req, mutationContext, mapped);
-          }
-          throw opErr;
-        }
-        await emitMutationEvent(req, mutationContext, 'mutation.completed', 'succeeded', {
-          records_accepted: output.envelope.records_accepted,
-          records_rejected: output.envelope.records_rejected,
-          error_count: output.envelope.errors.length,
-        });
-        res.json(output.envelope);
-      } catch (err) {
-        return await rejectMutation(res, req, mutationContext, err);
-      }
-    });
-
-    // GET /v1/state/:connectorId (Collection Profile, owner-authenticated)
-    // Validation order, the storage call shape, and the
-    // grant-scope-driven `allowedStreams` semantics live in the canonical
-    // `rs.connector-state.get` operation. The host adapter wires auth,
-    // request id / trace id, instrumentation events
-    // (`state.requested`, `state.served`, `state.rejected`), the manifest
-    // resolver, the grant-scope resolver, and the response writing.
-    app.get('/v1/state/:connectorId', requireToken, requireOwner, async (req, res) => {
-      const connectorId = decodeURIComponent(req.params.connectorId);
-      const grantId = typeof req.query.grant_id === 'string' ? req.query.grant_id : null;
-      const stateContext = buildStateContext(req, res, {
-        connectorId,
-        grantId,
-        operation: 'read',
-      });
-      try {
-        let storageNamespace = null;
-        const { state } = await executeRsConnectorStateGet(
-          { connectorId, grantId },
-          {
-            resolveRegisteredConnectorManifest: async (id) => {
-              const manifest = await resolveRegisteredConnectorManifest(id);
-              storageNamespace = await resolveOwnerConnectorNamespace(req, id);
-              return manifest;
-            },
-            resolveGrantScope: (id, gid) => resolveGrantScopedStateGrant(id, gid),
-            onGrantResolved: async (grantScope) => {
-              if (grantScope?.traceId) {
-                stateContext.traceId = grantScope.traceId;
-                stateContext.scenarioId = grantScope.scenarioId;
-              }
-              setReferenceTraceId(res, stateContext.traceId);
-              await emitStateRequested(req, stateContext);
-            },
-            getSyncState: async (id, args) => {
-              const namespace = storageNamespace ?? await resolveOwnerConnectorNamespace(req, id);
-              return getSyncState(storageTargetForConnectorNamespace(namespace), args);
-            },
-          },
-        );
-        await emitStateEvent(req, stateContext, 'state.served', 'succeeded', {
-          visible_streams: Object.keys(state?.state || {}),
-          updated_at: state?.updated_at || null,
-        });
-        res.json(toPublicConnectorStateProjection(state));
-      } catch (err) {
-        return await rejectState(res, req, stateContext, err);
-      }
-    });
-
-    // PUT /v1/state/:connectorId (Collection Profile, owner-authenticated)
-    // Validation order (manifest stream membership, grant-scope membership),
-    // the storage call shape, and the typed validation errors live in the
-    // canonical `rs.connector-state.put` operation. The host adapter
-    // translates the typed validation error into the existing PDPP error
-    // envelope shape.
-    app.put('/v1/state/:connectorId', requireToken, requireOwner, async (req, res) => {
-      const connectorId = decodeURIComponent(req.params.connectorId);
-      const grantId = typeof req.query.grant_id === 'string' ? req.query.grant_id : null;
-      const stateMap = (
-        req.body?.state
-        && typeof req.body.state === 'object'
-        && !Array.isArray(req.body.state)
-      ) ? req.body.state : {};
-      const requestedStreams = Object.keys(stateMap);
-      const stateContext = buildStateContext(req, res, {
-        connectorId,
-        grantId,
-        operation: 'write',
-        requestedStreams,
-      });
-      try {
-        let storageNamespace = null;
-        const { state } = await executeRsConnectorStatePut(
-          { connectorId, grantId, stateMap },
-          {
-            resolveRegisteredConnectorManifest: async (id) => {
-              const manifest = await resolveRegisteredConnectorManifest(id);
-              storageNamespace = await resolveOwnerConnectorNamespace(req, id);
-              return manifest;
-            },
-            resolveGrantScope: (id, gid) => resolveGrantScopedStateGrant(id, gid),
-            onGrantResolved: async (grantScope) => {
-              if (grantScope?.traceId) {
-                stateContext.traceId = grantScope.traceId;
-                stateContext.scenarioId = grantScope.scenarioId;
-              }
-              setReferenceTraceId(res, stateContext.traceId);
-              await emitStateRequested(req, stateContext);
-            },
-            putSyncState: async (id, map, args) => {
-              const namespace = storageNamespace ?? await resolveOwnerConnectorNamespace(req, id);
-              return putSyncState(storageTargetForConnectorNamespace(namespace), map, args);
-            },
-          },
-        );
-        await emitStateEvent(req, stateContext, 'state.updated', 'succeeded', {
-          persisted_streams: Object.keys(state?.state || {}),
-          updated_at: state?.updated_at || null,
-        });
-        res.json(toPublicConnectorStateProjection(state));
-      } catch (err) {
-        if (err instanceof RsConnectorStatePutValidationError) {
-          // Translate the operation-typed validation error into the plain
-          // `Error` shape `rejectState` already understands so the public
-          // error envelope and `state.rejected` event remain unchanged.
-          const translated = new Error(err.message);
-          translated.code = err.code;
-          return await rejectState(res, req, stateContext, translated);
-        }
-        return await rejectState(res, req, stateContext, err);
-      }
-    });
+    // DELETE /v1/streams/:stream/records, DELETE /v1/streams/:stream/records/:id,
+    // POST /v1/ingest/:stream, GET /v1/state/:connectorId, PUT /v1/state/:connectorId
+    // are mounted via `server/routes/rs-mutation.ts` per OpenSpec change
+    // `split-reference-server-by-route-family` (§4). Behaviour-preserving extraction:
+    // same auth posture, same middleware order, same response envelopes, same status
+    // codes, same spine event emission. Only registered in polyfill mode (!nativeMode).
+    mountRsMutation(app, rsMutationContext);
   }
 
   return app;

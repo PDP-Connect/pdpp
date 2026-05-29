@@ -181,11 +181,46 @@ unchanged.
 
 ## 4. RS mutation family (conditional on §1–§3 passing)
 
-- [ ] 4.1 Create `reference-implementation/server/routes/rs-mutation.ts` exporting `mountRsMutation(app, ctx)`.
-- [ ] 4.2 Move `POST /v1/blobs`, `DELETE /v1/streams/:stream/records`, `DELETE /v1/streams/:stream/records/:id`, `POST /v1/ingest/:stream`, `GET /v1/state/:connectorId`, `PUT /v1/state/:connectorId`.
-- [ ] 4.3 Move the `/v1/event-subscriptions` cluster (6 routes) into the same file unless diff size requires a sibling adapter.
-- [ ] 4.4 Update `buildRsApp` to call `mountRsMutation`; delete the moved blocks.
-- [ ] 4.5 Acceptance: targeted RS mutation/ingest/event-subscription tests pass; `pnpm --dir reference-implementation run verify` passes.
+- [x] 4.1 Create `reference-implementation/server/routes/rs-mutation.ts` exporting
+  `mountRsBlobsUpload`, `mountRsEventSubscriptions`, and `mountRsMutation`. (Decision: three
+  separate mount functions to preserve original registration order: event-subscriptions mount
+  before `mountRsReadQueries`; blob upload mounts after; polyfill-mode DELETEs/ingest/state
+  mount inside `if (!nativeMode)` after `mountRsBlobRead` and `mountRefSourceWebhooks`.)
+- [x] 4.2 Moved `POST /v1/blobs`, `DELETE /v1/streams/:stream/records`,
+  `DELETE /v1/streams/:stream/records/:id`, `POST /v1/ingest/:stream`,
+  `GET /v1/state/:connectorId`, `PUT /v1/state/:connectorId`. Behaviour-preserving:
+  same `requireToken`/`requireOwner` auth, same mutation-context wiring, same trace-id setup,
+  same spine event emission (`mutation.requested`, `mutation.completed`, `mutation.rejected`,
+  `state.requested`, `state.served`, `state.updated`, `state.rejected`), same response
+  envelopes and status codes (204 for deletes, 200 JSON for ingest/state), same
+  `RsConnectorStatePutValidationError` translation, same `if (!nativeMode)` gate for
+  DELETEs/ingest/state.
+- [x] 4.3 Moved the `/v1/event-subscriptions` cluster (6 routes: POST, GET list, GET detail,
+  PATCH, DELETE, POST test-event) into `rs-mutation.ts` as `mountRsEventSubscriptions`.
+  Behaviour-preserving: same `requireClient` auth, same `buildBearerActorFromTokenInfo` wiring,
+  same `ClientEventSubscriptionError` mapping, same best-effort delivery `.tick()` calls.
+- [x] 4.4 Updated `buildRsApp` in `server/index.js`: built `rsMutationContext`,
+  call `mountRsEventSubscriptions(app, rsMutationContext)` at the event-subscriptions mount
+  point (before hosted-UI CSS), `mountRsBlobsUpload(app, rsMutationContext)` after
+  `mountRsReadQueries`, and `mountRsMutation(app, rsMutationContext)` inside `if (!nativeMode)`
+  after `mountRefSourceWebhooks`; deleted the moved inline blocks.
+  `server/index.js` shrank 6564 → 6283 LOC (−281 net for this tranche).
+- [x] 4.5 Acceptance: targeted RS mutation/ingest/event-subscription tests pass;
+  `tsc --noEmit` passes (0 errors); `biome check` passes (0 errors after auto-fix); openspec
+  validate passes. Tests: `rs-blobs-upload-{boundary,operation}` (6+6=12/12),
+  `rs-records-delete-{boundary,operation}` (4+7=11/11),
+  `rs-records-delete-stream-{boundary,operation}` (4+7=11/11),
+  `rs-records-ingest-{boundary,operation}` (4+7=11/11),
+  `rs-connector-state-get-{boundary,operation}` (3+7=10/10),
+  `rs-connector-state-put-{boundary,operation}` (3+7=10/10),
+  `client-event-subscriptions-e2e` (4/4),
+  `ref-client-event-subscriptions-routes` (2/2),
+  `as-client-event-subscriptions-operation` (12/12),
+  `records-delete-atomicity` (5/5), `records-ingest-atomicity` (6/6),
+  `grant-scoped-state-postgres-routing` (1 skip — postgres not available, expected),
+  `blob-store-route-regression` (10/10),
+  `record-mutation-conformance` (1/1),
+  `pdpp` integration (114/114).
 
 ## 5. Smaller families (each its own commit, after §1–§4)
 
