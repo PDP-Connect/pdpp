@@ -317,6 +317,20 @@ import {
 } from './routes/web-push.ts';
 import { mountRefSourceWebhooks } from './routes/source-webhooks.ts';
 import {
+  mountRefDeviceExporterDiagnostics,
+  mountRefDeviceExporterEnroll,
+  mountRefDeviceExporterEnrollmentCodes,
+  mountRefDeviceExporterHeartbeat,
+  mountRefDeviceExporterIngestBatches,
+  mountRefDeviceExporterLocalCollectorGaps,
+  mountRefDeviceExporterLocalCollectorGapsRecovered,
+  mountRefDeviceExporterRevoke,
+  mountRefDeviceExporterSourceInstanceStateGet,
+  mountRefDeviceExporterSourceInstanceStatePut,
+  mountRefDeviceExporterSourceInstances,
+  mountRefDeviceExportersList,
+} from './routes/ref-device-exporters.ts';
+import {
   mountRefDevPlaygroundSession,
   mountRefRunInteraction,
 } from './routes/run-interaction.ts';
@@ -4741,642 +4755,50 @@ function buildAsApp(opts = {}) {
 
   mountRefDeployment(app, refAdminContext);
 
-  app.post('/_ref/device-exporters/enrollment-codes', { contract: 'refCreateDeviceExporterEnrollmentCode' }, ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const body = req.body || {};
-      const connectorId = requireNonEmptyString(body.connector_id, 'connector_id');
-      const localBindingId = requireNonEmptyString(body.local_binding_name, 'local_binding_name');
-      const now = new Date();
-      const expiresInSeconds = Number.isInteger(body.expires_in_seconds)
-        ? body.expires_in_seconds
-        : 15 * 60;
-      if (expiresInSeconds < 60 || expiresInSeconds > 86_400) {
-        return pdppError(res, 400, 'invalid_request', 'expires_in_seconds must be between 60 and 86400', 'expires_in_seconds');
-      }
-      const enrollmentCode = generateReferenceSecret('lde', 18);
-      const expiresAt = new Date(now.getTime() + expiresInSeconds * 1000).toISOString();
-      await deviceExporterStore.createEnrollmentCode({
-        enrollmentCodeId: generateSpineId('denroll'),
-        codeHash: hashDeviceSecret(enrollmentCode),
-        ownerSubjectId: getOwnerSubjectId(req),
-        connectorId,
-        localBindingId,
-        displayName: typeof body.display_name === 'string' && body.display_name.trim() ? body.display_name.trim() : null,
-        createdAt: now.toISOString(),
-        expiresAt,
-      });
-      res.status(201).json({
-        object: 'device_exporter_enrollment_code',
-        enrollment_code: enrollmentCode,
-        expires_at: expiresAt,
-        connector_id: connectorId,
-        local_binding_name: localBindingId,
-      });
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  app.post('/_ref/device-exporters/enroll', { contract: 'refExchangeDeviceExporterEnrollmentCode' }, async (req, res) => {
-    try {
-      // Refuse to mint a device-scoped credential for a collector whose
-      // protocol version this server cannot accept. The 409 must precede any
-      // store write (no device row, no credential, no source instance) so a
-      // rejected enroll cannot leak partial state.
-      if (enforceCollectorProtocolVersion(req, res)) {
-        return;
-      }
-      const body = req.body || {};
-      const enrollmentCode = requireNonEmptyString(body.enrollment_code, 'enrollment_code');
-      const enrollment = await deviceExporterStore.findEnrollmentByCodeHash(hashDeviceSecret(enrollmentCode));
-      const now = new Date();
-      if (!enrollment || enrollment.status !== 'pending') {
-        return pdppError(res, 400, 'invalid_request', 'Enrollment code is invalid or already used', 'enrollment_code');
-      }
-      if (Date.parse(enrollment.expiresAt) <= now.getTime()) {
-        await deviceExporterStore.revokeEnrollmentCode(enrollment.enrollmentCodeId, now.toISOString());
-        return pdppError(res, 410, 'invalid_request', 'Enrollment code has expired', 'enrollment_code');
-      }
-
-      const collectorProtocolVersion = readCollectorProtocolHeader(req.headers);
-
-      const deviceId = generateSpineId('dexp');
-      const credentialId = generateSpineId('dcred');
-      const sourceInstanceId = generateSpineId('dsrc');
-      const deviceToken = generateReferenceSecret('ldt', 32);
-      const displayName = typeof body.device_label === 'string' && body.device_label.trim()
-        ? body.device_label.trim()
-        : (enrollment.displayName || enrollment.localBindingId);
-
-      await deviceExporterStore.createDevice({
-        deviceId,
-        ownerSubjectId: enrollment.ownerSubjectId,
-        displayName,
-        collectorProtocolVersion,
-        createdAt: now.toISOString(),
-        updatedAt: now.toISOString(),
-      });
-      await deviceExporterStore.createCredential({
-        credentialId,
-        deviceId,
-        tokenHash: hashDeviceSecret(deviceToken),
-        createdAt: now.toISOString(),
-      });
-      // Canonicalize the owner-supplied connector id once, at the enroll
-      // boundary, so the catalog connectors row, the connector_instances
-      // row, the device_source_instances row, and the record storage target
-      // all agree on one canonical key. Without this, a legacy-alias enroll
-      // (`claude_code`) registers the catalog under the canonical key
-      // (`claude-code`) while the instance/source rows reference the raw
-      // alias, producing a foreign-key failure. See canonicalize-connector-keys
-      // design Decision 7.
-      const enrollConnectorKey = canonicalConnectorKey(enrollment.connectorId) ?? enrollment.connectorId;
-      await ensureReferenceConnectorCatalogEntry(enrollConnectorKey, enrollment.displayName || displayName);
-      // The identity used to hash source_binding_key is intentionally
-      // narrower than the source_binding payload we store for debugging:
-      // device_id and source_instance_id are minted fresh per enroll, so
-      // hashing them would fork a new connector_instances row on every
-      // re-enrollment. Keying on (owner, connector_id, local_device,
-      // local_binding_name) lets a re-enrollment for the same owner-chosen
-      // binding upsert into the existing row instead.
-      const sourceBindingIdentity = deviceExporterSourceBindingIdentity(enrollment.localBindingId);
-      const connectorInstance = await createRequestConnectorInstanceStore().upsert({
-        ownerSubjectId: enrollment.ownerSubjectId,
-        connectorId: enrollConnectorKey,
-        displayName,
-        status: 'active',
-        sourceKind: 'local_device',
-        sourceBindingKey: makeConnectorInstanceSourceBindingKey(sourceBindingIdentity),
-        sourceBinding: {
-          kind: 'local_device',
-          device_id: deviceId,
-          local_binding_name: enrollment.localBindingId,
-          source_instance_id: sourceInstanceId,
-        },
-        createdAt: now.toISOString(),
-        updatedAt: now.toISOString(),
-      });
-      await deviceExporterStore.upsertSourceInstance({
-        sourceInstanceId,
-        deviceId,
-        connectorId: enrollConnectorKey,
-        connectorInstanceId: connectorInstance.connectorInstanceId,
-        localBindingId: enrollment.localBindingId,
-        displayName: enrollment.displayName,
-        createdAt: now.toISOString(),
-        updatedAt: now.toISOString(),
-      });
-      const consumed = await deviceExporterStore.consumeEnrollmentCode(enrollment.enrollmentCodeId, deviceId, now.toISOString());
-      if (!consumed) {
-        await deviceExporterStore.revokeDevice(deviceId, now.toISOString());
-        await createRequestConnectorInstanceStore().updateStatus(connectorInstance.connectorInstanceId, {
-          status: 'revoked',
-          updatedAt: now.toISOString(),
-          revokedAt: now.toISOString(),
-        });
-        return pdppError(res, 409, 'invalid_request', 'Enrollment code was consumed by another device', 'enrollment_code');
-      }
-
-      res.status(201).json({
-        object: 'device_exporter_enrollment',
-        device_id: deviceId,
-        connector_instance_id: connectorInstance.connectorInstanceId,
-        // Compatibility: collectors still persist source_instance_id as their
-        // device-binding selector. Server-side trust is now the active
-        // connector_instance_id resolved from that binding.
-        source_instance_id: sourceInstanceId,
-        device_token: deviceToken,
-        // Echo the canonical connector key so the collector adopts the same
-        // identity the server persists. Subsequent ingest/heartbeat/state
-        // calls are matched canonically, so a collector still sending the
-        // legacy alias is also accepted (see resolveAuthorizedDeviceSource).
-        connector_id: enrollConnectorKey,
-        local_binding_name: enrollment.localBindingId,
-      });
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  app.get('/_ref/device-exporters', { contract: 'refListDeviceExporters' }, ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      res.json({ object: 'list', data: await buildDeviceExporterDiagnostics(getOwnerSubjectId(req)) });
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  app.get('/_ref/device-exporters/source-instances', { contract: 'refListDeviceExporterSourceInstances' }, ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const diagnostics = await buildDeviceExporterDiagnostics(getOwnerSubjectId(req));
-      const requestedDeviceId = typeof req.query.device_id === 'string' && req.query.device_id.trim()
-        ? req.query.device_id.trim()
-        : null;
-      const requestedConnectorInstanceId =
-        typeof req.query.connector_instance_id === 'string' && req.query.connector_instance_id.trim()
-          ? req.query.connector_instance_id.trim()
-          : null;
-      const data = diagnostics
-        .flatMap((device) => device.source_instances)
-        .filter((source) => !requestedDeviceId || source.device_id === requestedDeviceId)
-        .filter(
-          (source) =>
-            !requestedConnectorInstanceId || source.connector_instance_id === requestedConnectorInstanceId,
-        );
-      res.json({ object: 'list', data });
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  app.get('/_ref/device-exporters/diagnostics', { contract: 'refListDeviceExporterDiagnostics' }, ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      res.json({ object: 'list', data: await buildDeviceExporterDiagnostics(getOwnerSubjectId(req)) });
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  app.post('/_ref/device-exporters/:deviceId/revoke', { contract: 'refRevokeDeviceExporter' }, ownerAuth.requireOwnerSession, async (req, res) => {
-    try {
-      const deviceId = decodeURIComponent(req.params.deviceId);
-      const device = await deviceExporterStore.getDevice(deviceId);
-      if (!device || device.ownerSubjectId !== getOwnerSubjectId(req)) {
-        return pdppError(res, 404, 'not_found', 'Device exporter not found');
-      }
-      const revokedAt = new Date().toISOString();
-      await deviceExporterStore.revokeDevice(deviceId, revokedAt);
-      res.json({ object: 'device_exporter_revocation', device_id: deviceId, revoked_at: revokedAt });
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  app.post('/_ref/device-exporters/:deviceId/heartbeat', { contract: 'refHeartbeatDeviceExporter' }, requireDeviceExporterCredential, async (req, res) => {
-    try {
-      const deviceId = decodeURIComponent(req.params.deviceId);
-      if (deviceId !== req.deviceExporter.deviceId) {
-        return pdppError(res, 403, 'permission_error', 'Device credential is not valid for this device');
-      }
-      const body = req.body || {};
-      const receivedAt = new Date().toISOString();
-      await deviceExporterStore.markDeviceHeartbeat(deviceId, {
-        receivedAt,
-        agentVersion: typeof body.agent_version === 'string' ? body.agent_version : null,
-        lastError: sanitizeDeviceExporterDiagnostic(body.last_error),
-      });
-      for (const source of normalizeHeartbeatSourceInstances(body)) {
-        const sourceInstanceId = requireNonEmptyString(source.source_instance_id, 'source_instance_id');
-        const authorized = await resolveAuthorizedDeviceSource(req, res, deviceId, sourceInstanceId);
-        if (!authorized) return;
-        await deviceExporterStore.markSourceInstanceHeartbeat(deviceId, sourceInstanceId, {
-          receivedAt,
-          lastError: sanitizeDeviceExporterDiagnostic(source.last_error),
-          status: typeof source.status === 'string' ? source.status : null,
-          recordsPending:
-            typeof source.records_pending === 'number' ? source.records_pending : null,
-          outboxDiagnostics: source.outbox ?? null,
-        });
-      }
-      res.json({
-        object: 'device_exporter_heartbeat',
-        device_id: deviceId,
-        received_at: receivedAt,
-        status: 'accepted',
-      });
-    } catch (err) {
-      handleError(res, err);
-    }
-  });
-
-  app.post('/_ref/device-exporters/:deviceId/ingest-batches', { contract: 'refIngestDeviceExporterBatch' }, requireDeviceExporterCredential, async (req, res) => {
-    try {
-      const deviceId = decodeURIComponent(req.params.deviceId);
-      if (deviceId !== req.deviceExporter.deviceId) {
-        return pdppError(res, 403, 'permission_error', 'Device credential is not valid for this device');
-      }
-      const body = req.body || {};
-      const bodyDeviceId = requireNonEmptyString(body.device_id, 'device_id');
-      if (bodyDeviceId !== deviceId) {
-        return pdppError(res, 400, 'invalid_request', 'body device_id must match path deviceId', 'device_id');
-      }
-      const sourceInstanceId = requireNonEmptyString(body.source_instance_id, 'source_instance_id');
-      const batchId = requireNonEmptyString(body.batch_id, 'batch_id');
-      const bodyHash = requireNonEmptyString(body.body_hash, 'body_hash');
-      const connectorId = requireNonEmptyString(body.connector_id, 'connector_id');
-      if (!Number.isInteger(body.batch_seq) || body.batch_seq < 0) {
-        return pdppError(res, 400, 'invalid_request', 'batch_seq must be a non-negative integer', 'batch_seq');
-      }
-      const authorized = await resolveAuthorizedDeviceSource(req, res, deviceId, sourceInstanceId);
-      if (!authorized) return;
-      const { sourceInstance, connectorInstance } = authorized;
-      if (!sameConnectorType(sourceInstance.connectorId, connectorId)) {
-        return pdppError(res, 400, 'invalid_request', 'connector_id does not match source_instance_id', 'connector_id');
-      }
-
-      const records = normalizeDeviceIngestRecords(body);
-      const existing = await deviceExporterStore.getBatchOutcome(deviceId, batchId);
-      if (existing) {
-        if (existing.bodyHash !== bodyHash) {
-          return pdppError(res, 409, 'device_batch_conflict', `Device ingest batch '${batchId}' already exists with a different body hash`);
-        }
-        return res.status(200).json({
-          object: 'device_ingest_batch_result',
-          device_id: deviceId,
-          connector_instance_id: connectorInstance.connectorInstanceId,
-          source_instance_id: sourceInstanceId,
-          batch_id: batchId,
-          body_hash: bodyHash,
-          status: 'replayed',
-          accepted_record_count: existing.response?.accepted_record_count ?? records.length,
-          rejected_record_count: existing.response?.rejected_record_count ?? 0,
-        });
-      }
-
-      const storageTarget = referenceLocalDeviceStorageTarget(connectorId, connectorInstance.connectorInstanceId);
-      for (const record of records) {
-        await ingestRecord(storageTarget, record);
-      }
-      const response = {
-        object: 'device_ingest_batch_result',
-        device_id: deviceId,
-        connector_instance_id: connectorInstance.connectorInstanceId,
-        source_instance_id: sourceInstanceId,
-        batch_id: batchId,
-        body_hash: bodyHash,
-        status: 'accepted',
-        accepted_record_count: records.length,
-        rejected_record_count: 0,
-      };
-      await deviceExporterStore.recordBatchOutcome({
-        deviceId,
-        batchId,
-        bodyHash,
-        sourceInstanceId,
-        status: 'accepted',
-        httpStatus: 201,
-        response,
-        createdAt: new Date().toISOString(),
-      });
-      res.status(201).json(response);
-    } catch (err) {
-      if (err instanceof DeviceBatchConflictError) {
-        return pdppError(res, 409, 'device_batch_conflict', err.message);
-      }
-      handleError(res, err);
-    }
-  });
-
-  // GET /_ref/device-exporters/:deviceId/source-instances/:sourceInstanceId/state
-  // Device-scoped local collector state read. Reference-only; not part of the
-  // public PDPP contract. State is stored under the same internal storage
-  // storage target used by device ingest (`referenceLocalDeviceStorageTarget`)
-  // so device state rows are scoped by the authorized connector instance and
-  // never collide with owner-auth /v1/state rows for the public connector id.
-  // `source_instance_id` remains in the route as the legacy device-binding
-  // selector. See OpenSpec `design-local-collector-state-sync`.
-  app.get(
-    '/_ref/device-exporters/:deviceId/source-instances/:sourceInstanceId/state',
-    { contract: 'refGetDeviceExporterSourceInstanceState' },
+  // `/_ref/device-exporters` route family extracted to
+  // `server/routes/ref-device-exporters.ts` per
+  // `split-reference-server-by-route-family` §2.6. The host wires
+  // device-exporter store, connector instance store, gap store, sync
+  // state, record ingest, catalog entry, and credential/protocol
+  // enforcement; the adapter owns all route logic.
+  const refDeviceExportersContext = {
+    requireOwnerSession: ownerAuth.requireOwnerSession,
     requireDeviceExporterCredential,
-    async (req, res) => {
-      try {
-        const deviceId = decodeURIComponent(req.params.deviceId);
-        if (deviceId !== req.deviceExporter.deviceId) {
-          return pdppError(res, 403, 'permission_error', 'Device credential is not valid for this device');
-        }
-        const sourceInstanceId = decodeURIComponent(req.params.sourceInstanceId);
-        const authorized = await resolveAuthorizedDeviceSource(req, res, deviceId, sourceInstanceId, { notFoundStatus: 404 });
-        if (!authorized) return;
-        const { sourceInstance, connectorInstance } = authorized;
-        const storageTarget = referenceLocalDeviceStorageTarget(
-          sourceInstance.connectorId,
-          connectorInstance.connectorInstanceId,
-        );
-        const projection = await getSyncState(storageTarget, { grantId: null });
-        res.json({
-          object: 'device_source_instance_state',
-          device_id: deviceId,
-          connector_instance_id: connectorInstance.connectorInstanceId,
-          source_instance_id: sourceInstanceId,
-          state: projection.state ?? {},
-          updated_at: projection.updated_at ?? null,
-        });
-      } catch (err) {
-        handleError(res, err);
-      }
-    },
-  );
+    pdppError,
+    handleError,
+    getOwnerSubjectId,
+    enforceCollectorProtocolVersion,
+    acceptedCollectorProtocolVersions,
+    readCollectorProtocolHeader,
+    generateSpineId,
+    generateReferenceSecret,
+    hashDeviceSecret,
+    sanitizeDeviceExporterDiagnostic,
+    sanitizeLocalCollectorGapDetails,
+    canonicalConnectorKey,
+    makeConnectorInstanceSourceBindingKey,
+    deviceExporterStore,
+    createRequestConnectorInstanceStore,
+    getDefaultConnectorDetailGapStore,
+    ensureReferenceConnectorCatalogEntry,
+    ingestRecord,
+    getSyncState,
+    putSyncState,
+    DeviceBatchConflictError,
+  };
 
-  // PUT /_ref/device-exporters/:deviceId/source-instances/:sourceInstanceId/state
-  // Device-scoped local collector state write. Body shape: { state: { [stream]: cursor } }.
-  // Last-write-wins per stream; full replacement of all streams is NOT performed
-  // because the underlying ConnectorStateStore is stream-keyed merge.
-  app.put(
-    '/_ref/device-exporters/:deviceId/source-instances/:sourceInstanceId/state',
-    { contract: 'refPutDeviceExporterSourceInstanceState' },
-    requireDeviceExporterCredential,
-    async (req, res) => {
-      try {
-        const deviceId = decodeURIComponent(req.params.deviceId);
-        if (deviceId !== req.deviceExporter.deviceId) {
-          return pdppError(res, 403, 'permission_error', 'Device credential is not valid for this device');
-        }
-        const sourceInstanceId = decodeURIComponent(req.params.sourceInstanceId);
-        const authorized = await resolveAuthorizedDeviceSource(req, res, deviceId, sourceInstanceId, { notFoundStatus: 404 });
-        if (!authorized) return;
-        const { sourceInstance, connectorInstance } = authorized;
-        const stateMap = optionalObject(req.body?.state);
-        if (!stateMap) {
-          return pdppError(res, 400, 'invalid_request', 'state body must be an object map of streams to cursors', 'state');
-        }
-        const storageTarget = referenceLocalDeviceStorageTarget(
-          sourceInstance.connectorId,
-          connectorInstance.connectorInstanceId,
-        );
-        const projection = await putSyncState(storageTarget, stateMap, { grantId: null });
-        res.json({
-          object: 'device_source_instance_state',
-          device_id: deviceId,
-          connector_instance_id: connectorInstance.connectorInstanceId,
-          source_instance_id: sourceInstanceId,
-          state: projection.state ?? {},
-          updated_at: projection.updated_at ?? null,
-        });
-      } catch (err) {
-        handleError(res, err);
-      }
-    },
-  );
-
-  // POST /_ref/device-exporters/:deviceId/source-instances/:sourceInstanceId/local-collector-gaps
-  // Device-scoped acknowledgement route for `gap` outbox rows produced by
-  // the local collector runner (queue-depth deferrals, connector child
-  // crashes, etc.). Reuses the existing `connector_detail_gaps` storage
-  // because that table already models retryable pending evidence keyed by
-  // (connector_id, connector_instance_id, stream, ...). The local
-  // collector does not always know a real connector stream, so the route
-  // namespaces gaps under a synthetic `local-collector/<reason>` stream
-  // while still binding the source to the enrolled device source
-  // instance. `connector_id` and `connector_instance_id` are derived
-  // server-side from the authorized source instance; the client's
-  // `connector_id` must match. Reference-only; not part of PDPP Core.
-  app.post(
-    '/_ref/device-exporters/:deviceId/source-instances/:sourceInstanceId/local-collector-gaps',
-    requireDeviceExporterCredential,
-    async (req, res) => {
-      try {
-        const deviceId = decodeURIComponent(req.params.deviceId);
-        if (deviceId !== req.deviceExporter.deviceId) {
-          return pdppError(res, 403, 'permission_error', 'Device credential is not valid for this device');
-        }
-        const sourceInstanceId = decodeURIComponent(req.params.sourceInstanceId);
-        const authorized = await resolveAuthorizedDeviceSource(req, res, deviceId, sourceInstanceId, { notFoundStatus: 404 });
-        if (!authorized) return;
-        const { sourceInstance, connectorInstance } = authorized;
-
-        const body = req.body || {};
-        const bodySourceInstanceId = requireNonEmptyString(body.source_instance_id, 'source_instance_id');
-        if (bodySourceInstanceId !== sourceInstanceId) {
-          return pdppError(res, 400, 'invalid_request', 'body source_instance_id must match path sourceInstanceId', 'source_instance_id');
-        }
-        const connectorId = requireNonEmptyString(body.connector_id, 'connector_id');
-        if (!sameConnectorType(sourceInstance.connectorId, connectorId)) {
-          return pdppError(res, 400, 'invalid_request', 'connector_id does not match source_instance_id', 'connector_id');
-        }
-        const reason = requireNonEmptyString(body.reason, 'reason');
-        if (reason !== 'policy_budget' && reason !== 'connector_child_failure') {
-          return pdppError(res, 400, 'invalid_request', 'reason must be one of: policy_budget, connector_child_failure', 'reason');
-        }
-        const firstSeenAt = requireNonEmptyString(body.first_seen_at, 'first_seen_at');
-        if (Number.isNaN(Date.parse(firstSeenAt))) {
-          return pdppError(res, 400, 'invalid_request', 'first_seen_at must be an ISO timestamp', 'first_seen_at');
-        }
-        if (typeof body.retryable !== 'boolean') {
-          return pdppError(res, 400, 'invalid_request', 'retryable must be a boolean', 'retryable');
-        }
-        if (!Number.isFinite(body.next_attempt_backoff_ms) || body.next_attempt_backoff_ms < 0) {
-          return pdppError(res, 400, 'invalid_request', 'next_attempt_backoff_ms must be a non-negative number', 'next_attempt_backoff_ms');
-        }
-
-        const streamName = typeof body.stream === 'string' && body.stream.trim()
-          ? body.stream.trim()
-          : null;
-        const streamBoundary = typeof body.stream_boundary === 'string' && body.stream_boundary.trim()
-          ? body.stream_boundary.trim()
-          : null;
-        const firstSeenRunId = typeof body.first_seen_run_id === 'string' && body.first_seen_run_id.trim()
-          ? body.first_seen_run_id.trim()
-          : null;
-        const lastRunId = typeof body.last_run_id === 'string' && body.last_run_id.trim()
-          ? body.last_run_id.trim()
-          : firstSeenRunId;
-        const details = sanitizeLocalCollectorGapDetails(body.details);
-
-        // Use a synthetic stream namespace so a local-collector gap can
-        // never collide with real connector-data streams that share the
-        // same connector_instance_id. The optional client-supplied stream
-        // is preserved inside `detail_locator_json` for diagnostics.
-        const syntheticStream = streamName
-          ? `local-collector/${reason}/${streamName}`
-          : `local-collector/${reason}`;
-
-        const detailLocator = {
-          kind: 'local_collector_gap',
-          reason,
-          ...(streamName ? { stream: streamName } : {}),
-          ...(streamBoundary ? { stream_boundary: streamBoundary } : {}),
-        };
-        const source = {
-          kind: 'local_device',
-          device_id: deviceId,
-          source_instance_id: sourceInstanceId,
-        };
-        const lastError = {
-          first_seen_at: firstSeenAt,
-          next_attempt_backoff_ms: body.next_attempt_backoff_ms,
-          ...(details ? { details } : {}),
-        };
-
-        const store = getDefaultConnectorDetailGapStore();
-        const gap = await store.upsertPendingGap({
-          connectorId,
-          connectorInstanceId: connectorInstance.connectorInstanceId,
-          stream: syntheticStream,
-          source,
-          detailLocator,
-          reason,
-          lastError,
-          ...(firstSeenRunId ? { discoveredRunId: firstSeenRunId } : {}),
-          ...(lastRunId ? { lastRunId } : {}),
-        });
-
-        res.status(201).json({
-          object: 'device_local_collector_gap',
-          device_id: deviceId,
-          connector_id: connectorId,
-          connector_instance_id: connectorInstance.connectorInstanceId,
-          source_instance_id: sourceInstanceId,
-          gap_id: gap.gap_id,
-          stream: syntheticStream,
-          reason,
-          retryable: body.retryable,
-          status: gap.status,
-          attempt_count: gap.attempt_count,
-          first_seen_at: firstSeenAt,
-          first_seen_run_id: firstSeenRunId,
-          last_run_id: gap.last_run_id ?? lastRunId,
-          updated_at: gap.updated_at,
-        });
-      } catch (err) {
-        if (err && err.code === 'invalid_request') {
-          return pdppError(res, 400, 'invalid_request', err.message, err.param || null);
-        }
-        handleError(res, err);
-      }
-    },
-  );
-
-  // POST /_ref/device-exporters/:deviceId/source-instances/:sourceInstanceId/local-collector-gaps/recovered
-  // Marks a previously reported local-collector gap as recovered once a later
-  // clean local run has drained its blocking work and can safely stop
-  // degrading connection coverage. The device still cannot choose connector
-  // instance identity: the route derives it from the enrolled source binding.
-  app.post(
-    '/_ref/device-exporters/:deviceId/source-instances/:sourceInstanceId/local-collector-gaps/recovered',
-    requireDeviceExporterCredential,
-    async (req, res) => {
-      try {
-        const deviceId = decodeURIComponent(req.params.deviceId);
-        if (deviceId !== req.deviceExporter.deviceId) {
-          return pdppError(res, 403, 'permission_error', 'Device credential is not valid for this device');
-        }
-        const sourceInstanceId = decodeURIComponent(req.params.sourceInstanceId);
-        const authorized = await resolveAuthorizedDeviceSource(req, res, deviceId, sourceInstanceId, { notFoundStatus: 404 });
-        if (!authorized) return;
-        const { sourceInstance, connectorInstance } = authorized;
-
-        const body = req.body || {};
-        const bodySourceInstanceId = requireNonEmptyString(body.source_instance_id, 'source_instance_id');
-        if (bodySourceInstanceId !== sourceInstanceId) {
-          return pdppError(res, 400, 'invalid_request', 'body source_instance_id must match path sourceInstanceId', 'source_instance_id');
-        }
-        const connectorId = requireNonEmptyString(body.connector_id, 'connector_id');
-        if (!sameConnectorType(sourceInstance.connectorId, connectorId)) {
-          return pdppError(res, 400, 'invalid_request', 'connector_id does not match source_instance_id', 'connector_id');
-        }
-        const reason = requireNonEmptyString(body.reason, 'reason');
-        if (reason !== 'policy_budget' && reason !== 'connector_child_failure') {
-          return pdppError(res, 400, 'invalid_request', 'reason must be one of: policy_budget, connector_child_failure', 'reason');
-        }
-
-        const streamName = typeof body.stream === 'string' && body.stream.trim()
-          ? body.stream.trim()
-          : null;
-        const streamBoundary = typeof body.stream_boundary === 'string' && body.stream_boundary.trim()
-          ? body.stream_boundary.trim()
-          : null;
-        const recoveredRunId = typeof body.recovered_run_id === 'string' && body.recovered_run_id.trim()
-          ? body.recovered_run_id.trim()
-          : null;
-        const syntheticStream = streamName
-          ? `local-collector/${reason}/${streamName}`
-          : `local-collector/${reason}`;
-        const detailLocator = {
-          kind: 'local_collector_gap',
-          reason,
-          ...(streamName ? { stream: streamName } : {}),
-          ...(streamBoundary ? { stream_boundary: streamBoundary } : {}),
-        };
-        const source = {
-          kind: 'local_device',
-          device_id: deviceId,
-          source_instance_id: sourceInstanceId,
-        };
-
-        const store = getDefaultConnectorDetailGapStore();
-        const gap = await store.upsertPendingGap({
-          connectorId,
-          connectorInstanceId: connectorInstance.connectorInstanceId,
-          stream: syntheticStream,
-          source,
-          detailLocator,
-          reason,
-          lastError: {
-            recovered_by: 'local_collector',
-            recovered_at: new Date().toISOString(),
-          },
-          ...(recoveredRunId ? { discoveredRunId: recoveredRunId, lastRunId: recoveredRunId } : {}),
-        });
-        const recovered = await store.markGapStatus(gap.gap_id, 'recovered', {
-          ...(recoveredRunId ? { runId: recoveredRunId } : {}),
-        });
-
-        res.status(200).json({
-          object: 'device_local_collector_gap',
-          device_id: deviceId,
-          connector_id: connectorId,
-          connector_instance_id: connectorInstance.connectorInstanceId,
-          source_instance_id: sourceInstanceId,
-          gap_id: recovered.gap_id,
-          stream: syntheticStream,
-          reason,
-          retryable: false,
-          status: recovered.status,
-          attempt_count: recovered.attempt_count,
-          first_seen_at: null,
-          first_seen_run_id: recovered.discovered_run_id ?? null,
-          last_run_id: recovered.last_run_id ?? recoveredRunId,
-          updated_at: recovered.updated_at,
-        });
-      } catch (err) {
-        if (err && err.code === 'invalid_request') {
-          return pdppError(res, 400, 'invalid_request', err.message, err.param || null);
-        }
-        handleError(res, err);
-      }
-    },
-  );
+  mountRefDeviceExporterEnrollmentCodes(app, refDeviceExportersContext);
+  mountRefDeviceExporterEnroll(app, refDeviceExportersContext);
+  mountRefDeviceExportersList(app, refDeviceExportersContext);
+  mountRefDeviceExporterSourceInstances(app, refDeviceExportersContext);
+  mountRefDeviceExporterDiagnostics(app, refDeviceExportersContext);
+  mountRefDeviceExporterRevoke(app, refDeviceExportersContext);
+  mountRefDeviceExporterHeartbeat(app, refDeviceExportersContext);
+  mountRefDeviceExporterIngestBatches(app, refDeviceExportersContext);
+  mountRefDeviceExporterSourceInstanceStateGet(app, refDeviceExportersContext);
+  mountRefDeviceExporterSourceInstanceStatePut(app, refDeviceExportersContext);
+  mountRefDeviceExporterLocalCollectorGaps(app, refDeviceExportersContext);
+  mountRefDeviceExporterLocalCollectorGapsRecovered(app, refDeviceExportersContext);
 
   mountRefClients(app, refAdminContext);
 

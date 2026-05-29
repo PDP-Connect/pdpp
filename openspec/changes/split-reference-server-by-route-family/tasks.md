@@ -92,7 +92,23 @@ unchanged.
     capabilities. Covered by `test/ref-admin-routes.test.js` (7/7) and all pre-existing
     operation-level tests (47/47 — approvals, clients, deployment, records-timeline,
     schedules boundary + operation suites).
-- [ ] 2.6 Move `_ref` device-exporters routes (enrollment-codes/enroll, list, source-instances, diagnostics, revoke, heartbeat, ingest-batches, source-instance state/local-collector-gaps).
+- [x] 2.6 Move `_ref` device-exporters routes (enrollment-codes/enroll, list, source-instances, diagnostics, revoke, heartbeat, ingest-batches, source-instance state/local-collector-gaps).
+  - [x] All 12 routes extracted to `server/routes/ref-device-exporters.ts` with per-route `mount...` fns:
+    `mountRefDeviceExporterEnrollmentCodes`, `mountRefDeviceExporterEnroll`,
+    `mountRefDeviceExportersList`, `mountRefDeviceExporterSourceInstances`,
+    `mountRefDeviceExporterDiagnostics`, `mountRefDeviceExporterRevoke`,
+    `mountRefDeviceExporterHeartbeat`, `mountRefDeviceExporterIngestBatches`,
+    `mountRefDeviceExporterSourceInstanceStateGet`, `mountRefDeviceExporterSourceInstanceStatePut`,
+    `mountRefDeviceExporterLocalCollectorGaps`, `mountRefDeviceExporterLocalCollectorGapsRecovered`.
+    Behaviour-preserving: same owner-session and device-credential posture, same collector-protocol
+    enforcement, same contract metadata, same response envelopes, status codes, error mapping.
+    Module-level helpers (`buildDeviceExporterDiagnostics`, `resolveAuthorizedDeviceSource`,
+    `normalizeHeartbeatSourceInstances`, `normalizeDeviceIngestRecords`, `deriveSourceInstanceOutboxState`,
+    `referenceLocalDeviceStorageTarget`, `sameConnectorType`, `deviceExporterSourceBindingIdentity`,
+    `optionalObject`, `requireNonEmptyString`) move into the adapter; all infrastructure (stores, sync
+    state, record ingest, gap store, canonical key) is host-injected via `refDeviceExportersContext`.
+    `pnpm --dir reference-implementation run verify` passes; `openspec validate
+    split-reference-server-by-route-family --strict` passes; 21/21 targeted tests pass.
 - [~] 2.7 Update `buildAsApp` in `server/index.js` to call each
   sub-family's mount function at the same point in route registration;
   delete the moved blocks. (Partial: 2.2 list endpoints wired via
@@ -100,14 +116,17 @@ unchanged.
   via `refSpineTimelinesContext`; 2.3 dataset endpoints wired via
   `refDatasetContext`; 2.4 connectors / connections /
   connector-instances wired via `refConnectorsContext`; 2.5 admin
-  routes wired via `refAdminContext`; remaining sub-families pending.)
+  routes wired via `refAdminContext`; 2.6 device-exporters wired via
+  `refDeviceExportersContext`; remaining
+  sub-families pending.)
 - [~] 2.8 Acceptance: targeted tests under `reference-implementation/test/` (ref-control, dataset summary, device exporter, web push, schedules) pass; `pnpm --dir reference-implementation run verify` passes.
   - [x] Tests covering 2.2 list endpoints pass: `node --test test/control-plane.test.js` (21/21), `node --test test/ref-read-owner-gate.test.js` (3/3), `node --test test/ref-spine-correlations-list-{boundary,operation}.test.js` (10/10).
   - [x] Tests covering 2.2 detail/timeline endpoints pass: `node --test test/control-plane.test.js`, `node --test test/ref-read-owner-gate.test.js`, `node --test test/ref-spine-events-page-{boundary,operation}.test.js`.
   - [x] Tests covering 2.3 dataset routes pass: `node --test test/ref-dataset-routes.test.js` (10/10), `test/ref-read-owner-gate.test.js` (3/3), `test/ref-dataset-summary-operation.test.js`, `test/ref-dataset-summary-streams-operation.test.js`.
   - [x] Tests covering 2.4 connectors / connections / connector-instances routes pass: `node --test test/ref-connectors-routes.test.js` (17/17), `test/connector-instance-admission-routes.test.js` (7/7), `test/ref-control-connection-scope.test.js`, `test/ref-connectors-list-{boundary,operation}.test.js`, `test/ref-connectors-detail-{boundary,operation}.test.js`, `test/ref-connectors-connection-projection.test.js`, `test/ref-connector-schedule-get-{boundary,operation}.test.js`, `test/connector-instances-acceptance.test.js`, `test/control-plane.test.js` (all green, 126 total).
   - [x] Tests covering 2.5 admin routes pass: `node --test test/ref-admin-routes.test.js` (7/7), `test/ref-approvals-list-{boundary,operation}.test.js`, `test/ref-clients-list-{boundary,operation}.test.js`, `test/ref-deployment-{boundary,operation}.test.js`, `test/ref-records-timeline-{boundary,operation}.test.js`, `test/ref-schedules-list-{boundary,operation}.test.js` (all green, 54 total).
-  - [ ] Remaining sub-family acceptance still gated by §§2.6–2.7 landing.
+  - [x] Tests covering 2.6 device-exporters routes pass: `pnpm test -- test/device-exporter-routes.test.js test/device-exporter-state-routes.test.js` (21/21, 0 fail).
+  - [ ] Remaining sub-family acceptance still gated by §2.7 landing.
 
 ## 3. RS read family
 
