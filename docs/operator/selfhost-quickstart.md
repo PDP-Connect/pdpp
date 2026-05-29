@@ -221,9 +221,9 @@ Before you start, know what RunPod gives you for this workload:
 - **`/workspace` is the persistent volume.** Container disk is scratch; put
   everything you want to survive a Pod restart on `/workspace`.
 
-A first-class RunPod Hub `hub.json` + `tests.json` template is the next slice;
-see [Deferred](#deferred) below. This lane uses the existing compose stack on
-a single Pod, reachable via the proxy URL.
+A first-class RunPod Pod template with a `pdpp-all-in-one` image is the next
+slice; see [Deferred](#deferred) below. This lane uses the existing compose
+stack on a single Pod, reachable via the proxy URL.
 
 ### 1. Create a CPU Pod
 

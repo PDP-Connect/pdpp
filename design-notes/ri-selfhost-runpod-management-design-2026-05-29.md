@@ -209,10 +209,10 @@ These are pre-flight tooling fixes. They can ship alongside Phase 1 or immediate
 |---|---|---|
 | `scripts/generate-secrets.sh` | Auto-generates `PDPP_OWNER_PASSWORD` and VAPID keys via Node.js crypto; writes to `.env.docker`; never overwrites existing values. `SESSION_SECRET` is not generated here — owner-session signing currently derives key material from `PDPP_OWNER_PASSWORD` in `owner-session.ts`; a standalone session secret is deferred until an auth design explicitly requires it. | Follow-up commit under `add-selfhost-onboarding-slvp` or standalone fix |
 | Cloudflare Tunnel quickstart addition | Add "no domain, no open ports" sub-section to Lane A in `selfhost-quickstart.md` with a Compose snippet adding `cloudflared` service | Doc-only; no OpenSpec required |
-| RunPod Hub → Pod template rename | Update the "deferred RunPod Hub template" framing in `selfhost-runpod-onboarding-slvp-2026-05-27.md` and this note | Doc-only; design note update |
+| RunPod Pod template rename | Update the deferred RunPod packaging framing in `selfhost-runpod-onboarding-slvp-2026-05-27.md` and this note | Doc-only; design note update |
 
 **Acceptance check for Phase 1.5:**
-- `./scripts/generate-secrets.sh` on a fresh clone produces a `.env.docker` with non-empty, non-example values for `PDPP_OWNER_PASSWORD`, `VAPID_PUBLIC_KEY`, and `VAPID_PRIVATE_KEY`.
+- `./scripts/generate-secrets.sh` on a fresh clone produces a `.env.docker` with non-empty, non-example values for `PDPP_OWNER_PASSWORD`, `PDPP_WEB_PUSH_VAPID_PUBLIC_KEY`, and `PDPP_WEB_PUSH_VAPID_PRIVATE_KEY`.
 - Running the script twice does not overwrite existing values.
 - `selfhost-quickstart.md` Lane A includes a Cloudflare Tunnel option with an explicit Compose snippet.
 

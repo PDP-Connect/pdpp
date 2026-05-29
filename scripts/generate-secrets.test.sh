@@ -56,9 +56,9 @@ done
 ENV_FILE="$TMP_DIR/.env.docker"
 cp "$EXAMPLE" "$ENV_FILE"
 
-# Patch the file path argument by using --out then manually running --write on our copy.
-# The script's --write hardcodes ".env.docker"; run from TMP_DIR.
-(cd "$TMP_DIR" && bash "$SCRIPT" --write)
+# The script's --write hardcodes ".env.docker"; run from TMP_DIR and
+# suppress the operator password banner so test logs never contain secrets.
+(cd "$TMP_DIR" && bash "$SCRIPT" --write > write.log)
 
 for var in PDPP_OWNER_PASSWORD PDPP_WEB_PUSH_VAPID_PUBLIC_KEY PDPP_WEB_PUSH_VAPID_PRIVATE_KEY; do
   val="$(get_var "$ENV_FILE" "$var")"
@@ -75,7 +75,7 @@ PASS_VAL_PASSWORD="$(get_var "$ENV_FILE" PDPP_OWNER_PASSWORD)"
 PASS_VAL_VAPID_PUB="$(get_var "$ENV_FILE" PDPP_WEB_PUSH_VAPID_PUBLIC_KEY)"
 PASS_VAL_VAPID_PRV="$(get_var "$ENV_FILE" PDPP_WEB_PUSH_VAPID_PRIVATE_KEY)"
 
-(cd "$TMP_DIR" && bash "$SCRIPT" --write)
+(cd "$TMP_DIR" && bash "$SCRIPT" --write > write-second.log)
 
 for var_pair in \
   "PDPP_OWNER_PASSWORD:$PASS_VAL_PASSWORD" \
@@ -99,7 +99,7 @@ cp "$EXAMPLE" "$ENV_FILE2"
 # Pre-set PDPP_OWNER_PASSWORD to a sentinel value; VAPID keys left empty.
 sed -i 's/^PDPP_OWNER_PASSWORD=.*/PDPP_OWNER_PASSWORD=sentinel-password/' "$ENV_FILE2"
 
-(cd "$TMP_DIR" && cp "$ENV_FILE2" .env.docker && bash "$SCRIPT" --write && cp .env.docker "$ENV_FILE2")
+(cd "$TMP_DIR" && cp "$ENV_FILE2" .env.docker && bash "$SCRIPT" --write > write-nooverwrite.log && cp .env.docker "$ENV_FILE2")
 
 actual_pw="$(get_var "$ENV_FILE2" PDPP_OWNER_PASSWORD)"
 vapid_pub="$(get_var "$ENV_FILE2" PDPP_WEB_PUSH_VAPID_PUBLIC_KEY)"
