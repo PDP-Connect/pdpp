@@ -384,6 +384,11 @@ import {
   mountAsPolyfillConnectorDetail,
   mountAsPolyfillConnectorRegister,
 } from './routes/as-polyfill-connectors.ts';
+import {
+  createAgentConnectAttemptStore,
+  mountAsAgentConnect,
+  mountAsAgentConnectToken,
+} from './routes/as-agent-connect.ts';
 
 const AS_PORT = parseInt(process.env.AS_PORT || '7662');
 const RS_PORT = parseInt(process.env.RS_PORT || '7663');
@@ -2738,28 +2743,11 @@ function buildAsApp(opts = {}) {
     return { deviceCode, pending };
   }
 
-  const agentConnectAttempts = new Map();
-
-  function pruneAgentConnectAttempts(now = Date.now()) {
-    for (const [id, attempt] of agentConnectAttempts) {
-      if (attempt.status !== 'pending' || attempt.expiresAt <= now) {
-        agentConnectAttempts.delete(id);
-      }
-    }
-  }
-
-  function publicAgentConnectAttempt(attempt) {
-    return {
-      id: attempt.id,
-      object: 'agent_connect_attempt',
-      status: attempt.status,
-      approval_url: attempt.approvalUrl,
-      poll_url: attempt.tokenUrl,
-      token_url: attempt.tokenUrl,
-      expires_in: Math.max(Math.ceil((attempt.expiresAt - Date.now()) / 1000), 0),
-      interval: attempt.interval,
-    };
-  }
+  // agent-connect attempt state — shared between the two agent-connect HTTP
+  // routes and the consent approve/deny handlers. Extracted to
+  // `server/routes/as-agent-connect.ts` per OpenSpec change
+  // `split-reference-server-by-route-family`.
+  const agentConnectAttemptStore = createAgentConnectAttemptStore();
 
   function parseAuthorizeAuthorizationDetails(query) {
     const raw = query?.authorization_details;
@@ -3075,144 +3063,64 @@ function buildAsApp(opts = {}) {
     });
   }
 
-  function completeAgentConnectAttempt(requestUri, outcome) {
-    for (const attempt of agentConnectAttempts.values()) {
-      if (attempt.requestUri !== requestUri || attempt.status !== 'pending') continue;
-      attempt.status = outcome.status;
-      attempt.completedAt = new Date().toISOString();
-      if (outcome.status === 'approved') {
-        attempt.token = outcome.token;
-        attempt.grant = outcome.grant;
-        attempt.grantId = outcome.grant?.grant_id || outcome.grantId || null;
-      }
-    }
-  }
-
-  function failAgentConnectAttempt(requestUri, status) {
-    completeAgentConnectAttempt(requestUri, { status });
-  }
-
-  function buildAgentConnectError(status) {
-    if (status === 'denied') {
-      return { error: 'access_denied', error_description: 'Owner denied the scoped access request' };
-    }
-    if (status === 'expired') {
-      return { error: 'expired_token', error_description: 'The agent-connect request expired before approval' };
-    }
-    return { error: 'authorization_pending', error_description: 'Owner approval is still pending' };
-  }
-
-  // Narrow hosted completion handoff for CLI `connect`: the CLI first stages a
-  // normal PAR request, then registers that request_uri here to receive a
-  // polling handle. Owner approval still happens through the existing consent
-  // page, but the bearer is returned only to the caller holding the polling
-  // code, never rendered into the owner browser.
-  app.post('/agent-connect', async (req, res) => {
-    try {
-      const explicitBaseUrl = opts.asPublicUrl || (!opts.ignoreAmbientPublicUrls ? process.env.AS_PUBLIC_URL : null);
-      const baseUrl = resolvePublicUrl(req, explicitBaseUrl);
-      let requestUri = typeof req.body?.request_uri === 'string' ? req.body.request_uri : null;
-      let clientId = typeof req.body?.client_id === 'string' ? req.body.client_id : null;
-      if (!requestUri) {
-        const nativeManifest = resolveNativeManifest(opts);
-        if (!nativeManifest?.provider_id || !nativeManifest?.storage_binding?.connector_id) {
-          return pdppError(
-            res,
-            400,
-            'invalid_request',
-            'request_uri is required unless the reference provider is running with a native manifest',
-          );
-        }
-        const clientName = typeof req.body?.client_name === 'string' && req.body.client_name.trim()
-          ? req.body.client_name.trim()
-          : 'PDPP CLI';
-        clientId = clientId || PDPP_CLI_DEFAULT_CLIENT_ID;
-        const staged = await consentStore.initiateGrant(
-          {
-            client_id: clientId,
-            client_display: { name: clientName },
-            authorization_details: [
-              {
-                type: 'https://pdpp.org/data-access',
-                source: { kind: 'provider_native', id: nativeManifest.provider_id },
-                purpose_code: 'https://pdpp.org/purpose/personal_assistant',
-                purpose_description: 'Delegate scoped personal data access to a local PDPP CLI client.',
-                access_mode: 'single_use',
-                streams: [{ name: '*' }],
-              },
-            ],
-          },
-          { baseUrl, nativeManifest },
-        );
-        requestUri = staged.request_uri;
-      }
-      if (!requestUri) return pdppError(res, 400, 'invalid_request', 'request_uri is required');
+  // POST /agent-connect and POST /agent-connect/:attemptId/token extracted to
+  // `server/routes/as-agent-connect.ts` per OpenSpec change
+  // `split-reference-server-by-route-family`. Behaviour-preserving: same auth
+  // posture (none), same status codes, same error envelopes.
+  mountAsAgentConnect(app, {
+    agentConnectAttemptStore,
+    agentConnectTtlMs: opts.agentConnectTtlMs || AGENT_CONNECT_TTL_MS,
+    handleError,
+    pdppError,
+    async getPendingGrantFromRequestUri(requestUri) {
       const { pending } = await getPendingGrantFromRequestUri(requestUri);
-      if (!pending) return pdppError(res, 400, 'expired_token', 'Pending grant request is unknown or expired');
-      if (clientId && pending.request?.client?.client_id !== clientId) {
-        return pdppError(res, 403, 'invalid_client', 'client_id does not match pending request');
+      if (!pending) return null;
+      const pendingClientId = pending.request?.client?.client_id || null;
+      return { pendingClientId };
+    },
+    async initiateNativeGrant({ baseUrl, clientId, clientName }) {
+      const nativeManifest = resolveNativeManifest(opts);
+      if (!nativeManifest?.provider_id || !nativeManifest?.storage_binding?.connector_id) {
+        return null;
       }
-
-      pruneAgentConnectAttempts();
-      const id = `agc_${randomBytes(16).toString('hex')}`;
-      const pollingCode = `agc_poll_${randomBytes(32).toString('hex')}`;
-      const tokenUrl = `${baseUrl}/agent-connect/${encodeURIComponent(id)}/token`;
-      const approvalUrl = new URL(`${baseUrl}/consent`);
-      approvalUrl.searchParams.set('request_uri', requestUri);
-      const attempt = {
-        id,
-        pollingCode,
-        requestUri,
-        clientId: pending.request?.client?.client_id || clientId || null,
-        status: 'pending',
-        createdAt: new Date().toISOString(),
-        expiresAt: Date.now() + (opts.agentConnectTtlMs || AGENT_CONNECT_TTL_MS),
-        interval: 2,
-        approvalUrl: approvalUrl.toString(),
-        tokenUrl,
-      };
-      agentConnectAttempts.set(id, attempt);
-      res.status(201).json({
-        ...publicAgentConnectAttempt(attempt),
-        polling_code: pollingCode,
-      });
-    } catch (err) {
-      handleError(res, err);
-    }
+      return consentStore.initiateGrant(
+        {
+          client_id: clientId,
+          client_display: { name: clientName },
+          authorization_details: [
+            {
+              type: 'https://pdpp.org/data-access',
+              source: { kind: 'provider_native', id: nativeManifest.provider_id },
+              purpose_code: 'https://pdpp.org/purpose/personal_assistant',
+              purpose_description: 'Delegate scoped personal data access to a local PDPP CLI client.',
+              access_mode: 'single_use',
+              streams: [{ name: '*' }],
+            },
+          ],
+        },
+        { baseUrl, nativeManifest },
+      );
+    },
+    resolveBaseUrl: (req) => {
+      const explicitBaseUrl = opts.asPublicUrl || (!opts.ignoreAmbientPublicUrls ? process.env.AS_PUBLIC_URL : null);
+      return resolvePublicUrl(req, explicitBaseUrl);
+    },
+    pdppCliDefaultClientId: PDPP_CLI_DEFAULT_CLIENT_ID,
+    generateAttemptId: () => `agc_${randomBytes(16).toString('hex')}`,
+    generatePollingCode: () => `agc_poll_${randomBytes(32).toString('hex')}`,
+    buildTokenUrl: (baseUrl, id) => `${baseUrl}/agent-connect/${encodeURIComponent(id)}/token`,
+    buildApprovalUrl: (baseUrl, requestUri) => {
+      const u = new URL(`${baseUrl}/consent`);
+      u.searchParams.set('request_uri', requestUri);
+      return u.toString();
+    },
+    now: () => Date.now(),
   });
 
-  app.post('/agent-connect/:attemptId/token', async (req, res) => {
-    try {
-      const attempt = agentConnectAttempts.get(req.params.attemptId);
-      const pollingCode = typeof req.body?.polling_code === 'string' ? req.body.polling_code : null;
-      if (!attempt || pollingCode !== attempt.pollingCode) {
-        return pdppError(res, 401, 'invalid_grant', 'Unknown agent-connect polling handle');
-      }
-      if (attempt.status === 'pending' && attempt.expiresAt <= Date.now()) {
-        attempt.status = 'expired';
-      }
-      if (attempt.status === 'pending') {
-        return res.status(202).json({
-          status: 'pending',
-          ...buildAgentConnectError('pending'),
-          interval: attempt.interval,
-        });
-      }
-      if (attempt.status !== 'approved') {
-        const error = buildAgentConnectError(attempt.status);
-        agentConnectAttempts.delete(attempt.id);
-        return pdppError(res, attempt.status === 'denied' ? 403 : 400, error.error, error.error_description);
-      }
-      agentConnectAttempts.delete(attempt.id);
-      res.json({
-        access_token: attempt.token,
-        token_type: 'Bearer',
-        grant_id: attempt.grantId,
-        grant: attempt.grant,
-      });
-    } catch (err) {
-      handleError(res, err);
-    }
+  mountAsAgentConnectToken(app, {
+    agentConnectAttemptStore,
+    handleError,
+    pdppError,
   });
 
   // AS `/.well-known/oauth-authorization-server` is mounted via
@@ -4410,7 +4318,7 @@ function buildAsApp(opts = {}) {
         }
         return res.redirect(302, redirectUrl.toString());
       }
-      completeAgentConnectAttempt(approvedRequestUri, {
+      agentConnectAttemptStore.complete(approvedRequestUri, {
         status: 'approved',
         token,
         grant,
@@ -4489,7 +4397,7 @@ function buildAsApp(opts = {}) {
       if (outcome.traceContext?.trace_id) {
         setReferenceTraceId(res, outcome.traceContext.trace_id);
       }
-      failAgentConnectAttempt(req.body?.request_uri || req.query?.request_uri, 'denied');
+      agentConnectAttemptStore.fail(req.body?.request_uri || req.query?.request_uri, 'denied');
       res.send(renderHostedDocument({
         title: `${providerName} — Access denied`,
         providerName,
