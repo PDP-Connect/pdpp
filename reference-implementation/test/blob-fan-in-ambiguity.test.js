@@ -27,7 +27,7 @@ import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from '../server/owner-auth.ts';
 
 import { startServer } from '../server/index.js';
 
-const CONNECTOR_ID = 'https://test.pdpp.org/connectors/blob-fan-in';
+const CONNECTOR_ID = 'blob-fan-in';
 const STREAM_A = 'photos';
 const STREAM_B = 'videos';
 const INSTANCE_A = 'cin_blob_account_a';

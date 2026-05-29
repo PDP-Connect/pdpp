@@ -27,7 +27,7 @@ import { buildSemanticSearchPlanForGrant } from '../server/search-semantic.js';
 import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from '../server/owner-auth.ts';
 
-const CONNECTOR_ID = 'https://test.pdpp.org/connectors/search-fan-in';
+const CONNECTOR_ID = 'search-fan-in';
 const STREAM = 'messages';
 const ALERTS_STREAM = 'alerts';
 const INSTANCE_A = 'cin_search_fanin_account_a';

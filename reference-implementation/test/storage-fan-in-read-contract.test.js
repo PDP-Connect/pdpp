@@ -44,7 +44,7 @@ import {
 import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from '../server/owner-auth.ts';
 
-const CONNECTOR_ID = 'https://test.pdpp.org/connectors/storage-fan-in';
+const CONNECTOR_ID = 'storage-fan-in';
 const STREAM = 'messages';
 
 const INSTANCE_A = 'cin_fanin_account_a';

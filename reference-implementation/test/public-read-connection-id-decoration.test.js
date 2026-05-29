@@ -26,7 +26,7 @@ import { registerConnector } from '../server/auth.js';
 import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
 import { OWNER_AUTH_DEFAULT_SUBJECT_ID } from '../server/owner-auth.ts';
 
-const CONNECTOR_ID = 'https://test.pdpp.org/connectors/connection-id-decoration';
+const CONNECTOR_ID = 'connection-id-decoration';
 const INSTANCE_ID = 'cin_test_decoration_main';
 const STREAM = 'messages';
 

@@ -71,7 +71,7 @@ async function closeServer(server) {
 // manifest beyond what they explicitly install.
 const REDDITISH_MANIFEST_A = {
   protocol_version: '0.1.0',
-  connector_id: 'https://test.pdpp.org/connectors/redditish-a',
+  connector_id: 'redditish-a',
   version: '1.0.0',
   display_name: 'Redditish A',
   capabilities: { human_interaction: ['credentials'] },
@@ -144,7 +144,7 @@ const REDDITISH_MANIFEST_A = {
 
 const REDDITISH_MANIFEST_B = {
   protocol_version: '0.1.0',
-  connector_id: 'https://test.pdpp.org/connectors/redditish-b',
+  connector_id: 'redditish-b',
   version: '1.0.0',
   display_name: 'Redditish B',
   capabilities: { human_interaction: ['credentials'] },
@@ -958,7 +958,7 @@ test('pre-existing records become searchable after lexical_fields are declared (
   // A v1 connector manifest WITHOUT lexical_fields. Same connector_id,
   // schema, and primary_key as the eventual v2 — only the query.search
   // block differs.
-  const CONNECTOR_ID = 'https://test.pdpp.org/connectors/late-bloomer';
+  const CONNECTOR_ID = 'late-bloomer';
   const baseStream = (overrides = {}) => ({
     name: 'posts',
     semantics: 'append_only',
@@ -1113,7 +1113,7 @@ test('manifest update that swaps lexical_fields (same cardinality) rebuilds the 
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
 
-  const CONNECTOR_ID = 'https://test.pdpp.org/connectors/field-swap';
+  const CONNECTOR_ID = 'field-swap';
   const baseStream = (overrides = {}) => ({
     name: 'posts',
     semantics: 'append_only',

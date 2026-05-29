@@ -7,7 +7,7 @@ import { registerConnector } from '../server/auth.js';
 import { lexicalIndexBackfillForManifest } from '../server/search.js';
 import { buildSemanticSearchPlanForGrant } from '../server/search-semantic.js';
 
-const CONNECTOR_ID = 'https://test.pdpp.org/connectors/instance-records';
+const CONNECTOR_ID = 'instance-records';
 const WORK_INSTANCE_ID = 'cin_test_records_work';
 const PERSONAL_INSTANCE_ID = 'cin_test_records_personal';
 const STREAM = 'messages';

@@ -150,6 +150,18 @@ function cloneJson(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+// Give a cloned manifest a unique canonical connector_key so multiple
+// validation-error cases register under distinct identities without colliding.
+// Post-canonicalization the operational identity is connector_key (a slug);
+// the legacy URL-shaped connector_id and manifest_uri provenance are dropped so
+// the manifest validates and the intended stream-level validation runs.
+function setUniqueConnectorKey(manifest, key) {
+  manifest.connector_key = key;
+  delete manifest.connector_id;
+  delete manifest.manifest_uri;
+  return manifest;
+}
+
 function readGmailManifest() {
   return JSON.parse(readFileSync(join(POLYFILL_MANIFESTS_DIR, 'gmail.json'), 'utf8'));
 }
@@ -2051,7 +2063,10 @@ test('slack message expansion rejects requests missing the child grant', async (
 test('connector manifest validation rejects unsafe query.expand declarations', async () => {
   await withHarness(async ({ asUrl, spotifyManifest }) => {
     const missingRelationship = cloneJson(spotifyManifest);
-    missingRelationship.connector_id = `${spotifyManifest.connector_id}#missing-expand-relation`;
+    // Give each case a unique canonical connector_key (not a URL#suffix) so the
+    // manifest is uniquely identified AND passes connector-key validation,
+    // letting the intended query.expand validation run. See canonicalize-connector-keys.
+    setUniqueConnectorKey(missingRelationship, 'spotify-missing-expand-relation');
     missingRelationship.streams.find((stream) => stream.name === 'saved_tracks').query.expand = [
       { name: 'missing_relation', default_limit: 1, max_limit: 2 },
     ];
@@ -2061,7 +2076,7 @@ test('connector manifest validation rejects unsafe query.expand declarations', a
     assert.match(missingRelationshipResp.body.error.message, /query\.expand entry 'missing_relation' must match/);
 
     const missingForeignKey = cloneJson(spotifyManifest);
-    missingForeignKey.connector_id = `${spotifyManifest.connector_id}#missing-child-foreign-key`;
+    setUniqueConnectorKey(missingForeignKey, 'spotify-missing-child-foreign-key');
     missingForeignKey.streams.find((stream) => stream.name === 'saved_tracks').relationships[0].foreign_key = 'missing_track_id';
 
     const missingForeignKeyResp = await registerConnectorManifest(asUrl, missingForeignKey);
@@ -2069,7 +2084,7 @@ test('connector manifest validation rejects unsafe query.expand declarations', a
     assert.match(missingForeignKeyResp.body.error.message, /foreign_key 'missing_track_id' must be a top-level property/);
 
     const invalidLimits = cloneJson(spotifyManifest);
-    invalidLimits.connector_id = `${spotifyManifest.connector_id}#invalid-expand-limit`;
+    setUniqueConnectorKey(invalidLimits, 'spotify-invalid-expand-limit');
     invalidLimits.streams.find((stream) => stream.name === 'saved_tracks').query.expand[0].default_limit = 5;
     invalidLimits.streams.find((stream) => stream.name === 'saved_tracks').query.expand[0].max_limit = 2;
 
@@ -2082,12 +2097,12 @@ test('connector manifest validation rejects unsafe query.expand declarations', a
 test('connector manifest validation accepts gmail attachment blob_ref and rejects malformed declarations', async () => {
   await withHarness(async ({ asUrl }) => {
     const gmailManifest = readGmailManifest();
-    gmailManifest.connector_id = `${gmailManifest.connector_id}#blob-ref-valid`;
+    setUniqueConnectorKey(gmailManifest, 'gmail-blob-ref-valid');
     const valid = await registerConnectorManifest(asUrl, gmailManifest);
     assert.equal(valid.status, 201);
 
     const missingBlobId = cloneJson(gmailManifest);
-    missingBlobId.connector_id = `${gmailManifest.connector_id}#missing-blob-id`;
+    setUniqueConnectorKey(missingBlobId, 'gmail-missing-blob-id');
     const attachmentStream = missingBlobId.streams.find((stream) => stream.name === 'attachments');
     delete attachmentStream.schema.properties.blob_ref.properties.blob_id;
 
@@ -2096,7 +2111,7 @@ test('connector manifest validation accepts gmail attachment blob_ref and reject
     assert.match(missingBlobIdResp.body.error.message, /blob_ref\.blob_id must be type string/);
 
     const notObject = cloneJson(gmailManifest);
-    notObject.connector_id = `${gmailManifest.connector_id}#blob-ref-not-object`;
+    setUniqueConnectorKey(notObject, 'gmail-blob-ref-not-object');
     const notObjectAttachmentStream = notObject.streams.find((stream) => stream.name === 'attachments');
     notObjectAttachmentStream.schema.properties.blob_ref = { type: 'string' };
 
