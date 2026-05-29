@@ -163,7 +163,6 @@ import {
   resolveDefaultConnectorPath,
 } from '../runtime/controller.ts';
 import { projectRunAutomationPolicy } from '../runtime/run-automation-policy.ts';
-import { redactStderrTail } from '../runtime/stderr-redact.js';
 import { createScheduler } from '../runtime/scheduler.ts';
 import { getDefaultSchedulerStore } from './stores/scheduler-store.ts';
 import { getDefaultSourceWebhookEventStore } from './stores/source-webhook-event-store.ts';
@@ -406,6 +405,10 @@ import {
   requireRegisteredRedirectUri,
   validateAuthorizePkce,
 } from './routes/as-consent-ui-helpers.ts';
+import {
+  sanitizeDeviceExporterDiagnostic,
+  sanitizeLocalCollectorGapDetails,
+} from './routes/ref-device-exporter-sanitize.ts';
 
 const AS_PORT = parseInt(process.env.AS_PORT || '7662');
 const RS_PORT = parseInt(process.env.RS_PORT || '7663');
@@ -616,52 +619,6 @@ function hashDeviceSecret(value) {
 
 function generateReferenceSecret(prefix, bytes = 24) {
   return `${prefix}_${randomBytes(bytes).toString('base64url')}`;
-}
-
-function sanitizeLocalCollectorGapDetails(value) {
-  if (typeof value !== 'string' || !value.trim()) return null;
-  const redacted = redactStderrTail(value).text.replace(/\s+/g, ' ').trim();
-  if (!redacted) return null;
-  return redacted.length <= 300 ? redacted : `${redacted.slice(0, 299)}…`;
-}
-
-const SENSITIVE_DIAGNOSTIC_KEY_RE = /\b(authorization|bearer|token|password|passwd|cookie|secret|otp|api[_-]?key)\b/i;
-
-function sanitizeDeviceExporterDiagnostic(value, depth = 0) {
-  if (value == null) return null;
-  if (typeof value === 'string') {
-    return sanitizeDeviceExporterDiagnosticText(value);
-  }
-  if (typeof value === 'number' || typeof value === 'boolean') {
-    return value;
-  }
-  if (Array.isArray(value)) {
-    if (depth >= 4) return '[REDACTED_DEPTH]';
-    return value.slice(0, 20).map((item) => sanitizeDeviceExporterDiagnostic(item, depth + 1));
-  }
-  if (typeof value === 'object') {
-    if (depth >= 4) return '[REDACTED_DEPTH]';
-    const out = {};
-    for (const [key, child] of Object.entries(value)) {
-      if (SENSITIVE_DIAGNOSTIC_KEY_RE.test(key)) {
-        out[key] = '[REDACTED]';
-        continue;
-      }
-      out[key] = sanitizeDeviceExporterDiagnostic(child, depth + 1);
-    }
-    return out;
-  }
-  return null;
-}
-
-function sanitizeDeviceExporterDiagnosticText(value) {
-  let redacted = redactStderrTail(value).text;
-  redacted = redacted.replace(/(?:^|[\s"'=(:])(?:\/home|\/Users|\/root)\/[^\s"',)]+/g, (match) => {
-    const prefix = match.startsWith('/') ? '' : match[0];
-    return `${prefix}[REDACTED_PATH]`;
-  });
-  redacted = redacted.replace(/\b[A-Za-z]:\\Users\\[^\s"',)]+/g, '[REDACTED_PATH]');
-  return redacted.replace(/\s+/g, ' ').trim();
 }
 
 // Keyed by canonical connector_key. The local-collector manifest files
