@@ -2567,6 +2567,32 @@ function buildAsApp(opts = {}) {
   const runTargetRegistry = opts.runTargetRegistry || createRunTargetRegistry({ logger: opts.streamingLogger });
   runTargetRegistry.attachRoutes(app, requireDeviceExporterCredential);
 
+  // Branded, recoverable page for a `/consent` link whose pending-consent
+  // row no longer exists (expired, already decided, or minted on another
+  // instance). Mirrors the hosted-document shell the live consent page uses
+  // so the owner gets a clear next step instead of a bare 404 string.
+  function renderPendingConsentNotFoundHtml() {
+    return renderHostedDocument({
+      title: `${providerName} — Consent request expired`,
+      providerName,
+      body: [
+        renderPageIntro({
+          eyebrow: 'Data access request',
+          title: 'This consent request is no longer available',
+        }),
+        renderSurface({
+          surface: 'human',
+          ariaLabel: 'Consent request expired',
+          children: renderResultState({
+            tone: 'neutral',
+            title: 'Link expired or already used',
+            body: 'This approval link has expired, was already approved or denied, or was created on a different session. Return to the app that asked for access and start the request again to get a fresh link.',
+          }),
+        }),
+      ].join('\n'),
+    });
+  }
+
   function renderPendingGrantConsentHtml(pending, requestUri, csrfToken) {
     const request = pending.request;
     const client = request.client || {};
@@ -4558,7 +4584,17 @@ function buildAsApp(opts = {}) {
       const requestUri = typeof req.query.request_uri === 'string' ? req.query.request_uri : null;
       if (!requestUri) return pdppError(res, 400, 'invalid_request', 'request_uri is required');
       const { pending } = await getPendingGrantFromRequestUri(requestUri);
-      if (!pending) return res.status(404).send('Not found');
+      if (!pending) {
+        // The request_uri parsed but no live pending-consent row backs it:
+        // the link expired, was already approved/denied, or was minted on a
+        // different instance (e.g. before a restart with a fresh store). A
+        // bare "Not found" string was indistinguishable from a routing 404
+        // and gave the owner no recovery path. Render a branded, recoverable
+        // hosted page that tells them to restart the request from the app.
+        // Status stays 404: the addressed pending grant genuinely does not
+        // exist on this instance.
+        return res.status(404).send(renderPendingConsentNotFoundHtml());
+      }
       const csrfToken = ownerAuth.ensureCsrfToken(req, res);
       res.send(renderPendingGrantConsentHtml(pending, requestUri, csrfToken));
     } catch (err) {

@@ -1717,3 +1717,129 @@ test('hosted MCP child-grant grant.issued spine event records access_mode, strea
     await closeServer(server);
   }
 });
+
+// --- Consent-flow repair regression tests ---------------------------------
+//
+// These lock the behavior of the GET surfaces an owner's browser actually
+// hits, which are not otherwise exercised end-to-end:
+//   - GET /oauth/authorize/mcp-package (the path from the production symptom
+//     report) has no GET route; it MUST 404 cleanly and MUST NOT surface the
+//     legacy "Unknown connector: https" parser error.
+//   - GET /oauth/authorize?connector_id=<URL-shaped first-party id> MUST
+//     resolve via canonical mapping and stage a pending grant, never leak the
+//     URL into an "Unknown connector" branch.
+//   - GET /consent?request_uri=<urn> MUST render the consent page for a live
+//     pending grant, and MUST return a recoverable, branded 404 (not a bare
+//     "Not found" string) when the pending grant is expired/unknown.
+
+function buildAuthorizeGetUrl({ asUrl, client, extra = {} }) {
+  const url = new URL(`${asUrl}/oauth/authorize`);
+  url.searchParams.set('client_id', client.client_id);
+  url.searchParams.set('redirect_uri', 'https://client.example/callback');
+  url.searchParams.set('response_type', 'code');
+  url.searchParams.set('code_challenge', pkceChallenge(randomBytes(32).toString('base64url')));
+  url.searchParams.set('code_challenge_method', 'S256');
+  for (const [k, v] of Object.entries(extra)) url.searchParams.set(k, v);
+  return url;
+}
+
+test('GET /oauth/authorize/mcp-package 404s cleanly and never leaks "Unknown connector: https"', async () => {
+  const server = await startOpenTestServer();
+  const asUrl = `http://localhost:${server.asPort}`;
+  try {
+    await registerSpotify(asUrl);
+    const resp = await fetch(`${asUrl}/oauth/authorize/mcp-package`, { redirect: 'manual' });
+    assert.equal(resp.status, 404, 'mcp-package has no GET route; the picker submits via POST');
+    const text = await resp.text();
+    assert.equal(
+      text.toLowerCase().includes('unknown connector'),
+      false,
+      'GET to the package endpoint MUST NOT reach the "Unknown connector" branch',
+    );
+    assert.equal(
+      text.toLowerCase().includes('"https"') || /unknown connector: https/i.test(text),
+      false,
+      'GET to the package endpoint MUST NOT leak a truncated "https" connector id',
+    );
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('GET /oauth/authorize?connector_id=<URL-shaped id> resolves canonically without leaking "https"', async () => {
+  const server = await startOpenTestServer();
+  const asUrl = `http://localhost:${server.asPort}`;
+  try {
+    await registerSpotify(asUrl);
+    const client = await registerAuthCodeClient(asUrl);
+    const url = buildAuthorizeGetUrl({
+      asUrl,
+      client,
+      extra: { connector_id: 'https://registry.pdpp.org/connectors/spotify' },
+    });
+    const resp = await fetch(url, { redirect: 'manual' });
+    // A URL-shaped first-party connector id must canonicalize and stage a
+    // pending grant (302 to /consent), not collapse to "Unknown connector".
+    assert.equal(resp.status, 302, 'URL-shaped connector_id should stage a pending grant and redirect');
+    const location = resp.headers.get('location') || '';
+    assert.ok(location.includes('/consent?request_uri='), 'redirect must target the consent page');
+    assert.ok(
+      location.includes('urn%3Apdpp%3Apending-consent%3A') || location.includes('urn:pdpp:pending-consent:'),
+      'redirect must carry a pending-consent request_uri',
+    );
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('GET /consent renders the consent page for a freshly staged pending grant', async () => {
+  const server = await startOpenTestServer();
+  const asUrl = `http://localhost:${server.asPort}`;
+  try {
+    await registerSpotify(asUrl);
+    const client = await registerAuthCodeClient(asUrl);
+    // Stage a pending grant via the canonical short key path.
+    const authorizeResp = await fetch(
+      buildAuthorizeGetUrl({ asUrl, client, extra: { connector_id: 'spotify' } }),
+      { redirect: 'manual' },
+    );
+    assert.equal(authorizeResp.status, 302);
+    const consentUrl = new URL(authorizeResp.headers.get('location'), asUrl);
+    const requestUri = consentUrl.searchParams.get('request_uri');
+    assert.ok(requestUri && requestUri.startsWith('urn:pdpp:pending-consent:'));
+
+    const consentResp = await fetch(consentUrl, { redirect: 'manual' });
+    assert.equal(consentResp.status, 200, 'a live pending-consent request_uri must render the consent page');
+    const html = await consentResp.text();
+    assert.ok(html.includes('<!DOCTYPE html>'), 'consent page is a full hosted document');
+    assert.ok(
+      /action="\/consent\/approve"/.test(html),
+      'consent page must offer the approve action bound to this request_uri',
+    );
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('GET /consent returns a recoverable, branded 404 for an expired or unknown request_uri', async () => {
+  const server = await startOpenTestServer();
+  const asUrl = `http://localhost:${server.asPort}`;
+  try {
+    // Well-formed pending-consent URN that addresses no live row (expired,
+    // already decided, or minted on another instance).
+    const bogus = `${asUrl}/consent?request_uri=${encodeURIComponent('urn:pdpp:pending-consent:dc_does_not_exist')}`;
+    const resp = await fetch(bogus, { redirect: 'manual' });
+    assert.equal(resp.status, 404, 'an unknown pending grant genuinely does not exist on this instance');
+    const text = await resp.text();
+    // The defect this repairs: a bare "Not found" string. The page must now
+    // be a branded hosted document that tells the owner how to recover.
+    assert.ok(text.includes('<!DOCTYPE html>'), 'expired-consent response must be a branded hosted page, not a bare string');
+    assert.notEqual(text.trim(), 'Not found', 'must not return the legacy bare "Not found" body');
+    assert.ok(
+      /expired|already (approved|used)|start the request again/i.test(text),
+      'expired-consent page must explain how to recover (restart the request)',
+    );
+  } finally {
+    await closeServer(server);
+  }
+});
