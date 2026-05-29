@@ -148,6 +148,55 @@ test('5.1 description points callers to /v1/schema as the capability source', as
   await server.close();
 });
 
+test('5.1 descriptions prefer connection_id and connector_key source identity', async () => {
+  const { fetch } = recordingFetch();
+  const { client, server } = await connectClient(fetch);
+
+  const tools = await client.listTools();
+  const byName = Object.fromEntries(tools.tools.map((tool) => [tool.name, tool]));
+  for (const name of [
+    'schema',
+    'list_streams',
+    'query_records',
+    'aggregate',
+    'search',
+    'fetch',
+    'fetch_blob',
+    'create_event_subscription',
+  ]) {
+    assert.match(
+      byName[name].description,
+      /connection_id/,
+      `${name} must prefer connection_id for source selection`,
+    );
+    assert.match(
+      byName[name].description,
+      /connector_key/,
+      `${name} must describe canonical connector_key metadata`,
+    );
+    assert.doesNotMatch(
+      byName[name].description,
+      /https:\/\/registry\.pdpp\.org/,
+      `${name} must not advertise registry URLs as connector identity`,
+    );
+  }
+
+  const queryInput = byName.query_records.inputSchema.properties;
+  assert.match(
+    queryInput.connection_id.description,
+    /available_connections.*connector_key.*connection_id/s,
+    'connection_id schema guidance must point clients from typed errors to connector_key-tagged candidates',
+  );
+  assert.match(
+    queryInput.connector_instance_id.description,
+    /Deprecated.*connection_id/s,
+    'connector_instance_id schema guidance must clearly demote the legacy alias',
+  );
+
+  await client.close();
+  await server.close();
+});
+
 test('5.2 every read tool declares an outputSchema for structuredContent', async () => {
   const { fetch } = recordingFetch();
   const { client, server } = await connectClient(fetch);

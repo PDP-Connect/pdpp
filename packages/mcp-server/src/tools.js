@@ -58,7 +58,7 @@ const SUPPORTED_AGGREGATE_QUERY_KEYS = new Set([
 ]);
 
 const CONNECTION_ID_DESCRIPTION =
-  'Optional connection_id from a prior list_streams response. Omit to fan in across every connection your grant authorizes for the named stream; pass it to scope the call to one account/device/profile. Required to recover from a typed `ambiguous_connection` (409) error returned by `fetch` or `fetch_blob` — the error envelope lists the candidate `available_connections` and instructs you to retry with `connection_id`. Granted connection identities are advertised by `GET /v1/schema`.';
+  'Optional connection_id from a prior list_streams response or typed `available_connections` error envelope. Omit to fan in across every connection your grant authorizes for the named stream; pass it to scope the call to one account/device/profile. Required to recover from a typed `ambiguous_connection` (409) error returned by `fetch`, `fetch_blob`, or package-token event-subscription creation — the error envelope lists candidate `available_connections` entries with `grant_id`, `connector_key`, `connection_id`, and optional `display_name`, and instructs you to retry with `connection_id`. Granted connection identities and canonical connector-type metadata are advertised by `GET /v1/schema`.';
 
 const CONNECTOR_INSTANCE_ID_DESCRIPTION =
   'Deprecated wire alias for `connection_id`. Accepted only for pre-migration compatibility — new clients SHOULD pass `connection_id` instead and ignore this field on the response.';
@@ -100,7 +100,7 @@ const ConnectionIdInputShape = {
 // lives at `GET /v1/schema` and in the OpenAPI artifacts published by the
 // reference-contract package.
 const CANONICAL_SCHEMA_HINT =
-  'Per-stream filter operators, expandable relations, projection support, search modes, and count support are advertised by `GET /v1/schema`. Consult it before constructing filter, sort, expand, fields, or count arguments.';
+  'Per-stream filter operators, expandable relations, projection support, search modes, count support, granted `connection_id` values, and canonical `connector_key` metadata are advertised by `GET /v1/schema`. Consult it before constructing filter, sort, expand, fields, count, or source-disambiguation arguments.';
 
 // outputSchema describes the MCP wrapper around the RS response body. We do
 // NOT bake the RS body shape into the outputSchema because the canonical
@@ -111,7 +111,7 @@ const READ_OUTPUT_SCHEMA_SHAPE = {
   data: z
     .union([z.record(z.string(), z.unknown()), z.array(z.unknown())])
     .describe(
-      'Canonical RS response body. Follows the public read envelope advertised by `GET /v1/schema` plus operation-specific extensions.',
+      'Canonical RS response body. Follows the public read envelope advertised by `GET /v1/schema` plus operation-specific extensions; source metadata uses canonical `connector_key` and concrete `connection_id` values when present.',
     ),
   provider_url: z.string().describe('RS base URL the MCP server was configured with.'),
   request_id: z.string().nullable().describe('RS x-request-id when present.'),
@@ -221,7 +221,7 @@ export function buildTools({ rs, providerUrl }) {
       name: 'schema',
       title: 'Get PDPP schema',
       description:
-        'Return the grant-scoped PDPP schema document from `GET /v1/schema`. This is the canonical capability source: streams, per-field filter operators (`field_capabilities`), expandable relations (`expand_capabilities`), projection support, search modes, pagination support, count support, and granted connection identities (`connection_id`, `display_name`). Call this first to discover what filter, sort, expand, fields, or count arguments are valid before issuing other tools. Read-only.',
+        'Return the grant-scoped PDPP schema document from `GET /v1/schema`. This is the canonical capability source: streams, canonical connector-type metadata (`connector_key`), per-field filter operators (`field_capabilities`), expandable relations (`expand_capabilities`), projection support, search modes, pagination support, count support, and granted connection identities (`connection_id`, `display_name`). Call this first to discover what filter, sort, expand, fields, count, or connection-disambiguation arguments are valid before issuing other tools. Read-only.',
       annotations: READ_ONLY_ANNOTATIONS,
       inputSchema: EMPTY_TOOL_INPUT_SCHEMA,
       outputSchema: z.object(READ_OUTPUT_SCHEMA_SHAPE),
@@ -234,7 +234,7 @@ export function buildTools({ rs, providerUrl }) {
       name: 'list_streams',
       title: 'List PDPP streams',
       description:
-        'List streams the configured scoped grant can read via `GET /v1/streams`. Multi-connection deployments emit one entry per `(stream, connection_id)`; each entry carries `connection_id` and `display_name`. Pass `connection_id` to restrict to a single connection. ' +
+        'List streams the configured scoped grant can read via `GET /v1/streams`. Multi-connection deployments emit one entry per `(stream, connection_id)`; package-source metadata uses canonical `connector_key` for connector type and each entry carries `connection_id` plus `display_name` when available. Pass `connection_id` to restrict to a single connection. ' +
         CANONICAL_SCHEMA_HINT +
         ' Read-only.',
       annotations: READ_ONLY_ANNOTATIONS,
@@ -250,7 +250,7 @@ export function buildTools({ rs, providerUrl }) {
       name: 'query_records',
       title: 'Query PDPP records',
       description:
-        'Query records in a stream via `GET /v1/streams/{stream}/records`. Forwards canonical public read args verbatim — MCP does not silently drop a parameter the RS would reject. Omitting `connection_id` on a multi-connection grant fans in across granted connections; each record carries `connection_id` for attribution. ' +
+        'Query records in a stream via `GET /v1/streams/{stream}/records`. Forwards canonical public read args verbatim — MCP does not silently drop a parameter the RS would reject. Omitting `connection_id` on a multi-connection grant fans in across granted connections; records carry `connection_id` for attribution and package-source metadata uses canonical `connector_key` for connector type. ' +
         CANONICAL_SCHEMA_HINT +
         ' Read-only.',
       annotations: READ_ONLY_ANNOTATIONS,
@@ -347,7 +347,7 @@ export function buildTools({ rs, providerUrl }) {
       name: 'search',
       title: 'Search PDPP records',
       description:
-        'Search records via `GET /v1/search` (lexical), `/v1/search/semantic`, or `/v1/search/hybrid` per the `mode` argument. Returns the RS search envelope plus ChatGPT-compatible flattened `results`. Hits carry `connection_id` and `display_name`; pass `connection_id` to scope, omit to fan in. Per-mode pagination, filter, and capability support are advertised by `GET /v1/schema` and the protected-resource metadata `capabilities` block — hybrid mode does not currently support cursors. If the deployment does not advertise search, the RS error envelope is preserved in the tool result. Read-only.',
+        'Search records via `GET /v1/search` (lexical), `/v1/search/semantic`, or `/v1/search/hybrid` per the `mode` argument. Returns the RS search envelope plus ChatGPT-compatible flattened `results`. Hits carry `connection_id` and `display_name`; package-source metadata uses canonical `connector_key` for connector type. Pass `connection_id` to scope, omit to fan in. Per-mode pagination, filter, and capability support are advertised by `GET /v1/schema` and the protected-resource metadata `capabilities` block — hybrid mode does not currently support cursors. If the deployment does not advertise search, the RS error envelope is preserved in the tool result. Read-only.',
       annotations: READ_ONLY_ANNOTATIONS,
       inputSchema: z
         .object({
@@ -380,7 +380,7 @@ export function buildTools({ rs, providerUrl }) {
       name: 'fetch',
       title: 'Fetch PDPP search result',
       description:
-        'Fetch a single ChatGPT-compatible document by a result id returned from `search`. The default id format is `stream:record_id` and is read through `GET /v1/streams/{stream}/records/{record_id}`. When the identifier resolves to more than one connection under your grant and `connection_id` is omitted, the RS returns a typed `ambiguous_connection` (409) error listing `available_connections`; retry with the chosen `connection_id`. Read-only.',
+        'Fetch a single ChatGPT-compatible document by a result id returned from `search`. The default id format is `stream:record_id` and is read through `GET /v1/streams/{stream}/records/{record_id}`. When the identifier resolves to more than one connection under your grant and `connection_id` is omitted, the RS returns a typed `ambiguous_connection` (409) error listing `available_connections` entries with `grant_id`, canonical `connector_key`, `connection_id`, and optional `display_name`; retry with the chosen `connection_id`. Read-only.',
       annotations: READ_ONLY_ANNOTATIONS,
       inputSchema: z
         .object({
@@ -422,7 +422,7 @@ export function buildTools({ rs, providerUrl }) {
       name: 'create_event_subscription',
       title: 'Create event subscription',
       description:
-        'Create an outbound event subscription via `POST /v1/event-subscriptions` using the configured scoped client bearer. Persists a `(grant_id, client_id, subject_id)`-bound subscription on the RS and returns the per-subscription `whsec_`-prefixed delivery secret exactly once (rotate via `update_event_subscription`). Under a hosted MCP package token covering multiple sources, pass `connection_id` so the new subscription binds to exactly one child grant; the adapter rejects ambiguous calls with a typed `ambiguous_connection` (409).' +
+        'Create an outbound event subscription via `POST /v1/event-subscriptions` using the configured scoped client bearer. Persists a `(grant_id, client_id, subject_id)`-bound subscription on the RS and returns the per-subscription `whsec_`-prefixed delivery secret exactly once (rotate via `update_event_subscription`). Under a hosted MCP package token covering multiple sources, pass `connection_id` so the new subscription binds to exactly one child grant; the adapter rejects ambiguous calls with a typed `ambiguous_connection` (409) whose `available_connections` entries include `grant_id`, canonical `connector_key`, `connection_id`, and optional `display_name`.' +
         SUBSCRIPTION_TOOL_FOOTER,
       annotations: SUBSCRIPTION_WRITE_ANNOTATIONS,
       inputSchema: z
@@ -551,7 +551,7 @@ export function buildTools({ rs, providerUrl }) {
       name: 'fetch_blob',
       title: 'Fetch PDPP blob',
       description:
-        'Fetch a blob referenced by a prior authorized record via `GET /v1/blobs/{blob_id}` using the configured scoped token. Returns base64 bytes and the RS-reported mime type. When the blob identifier resolves to more than one connection under your grant and `connection_id` is omitted, the RS returns a typed `ambiguous_connection` (409) error listing `available_connections`; retry with the chosen `connection_id`. Read-only.',
+        'Fetch a blob referenced by a prior authorized record via `GET /v1/blobs/{blob_id}` using the configured scoped token. Returns base64 bytes and the RS-reported mime type. When the blob identifier resolves to more than one connection under your grant and `connection_id` is omitted, the RS returns a typed `ambiguous_connection` (409) error listing `available_connections` entries with `grant_id`, canonical `connector_key`, `connection_id`, and optional `display_name`; retry with the chosen `connection_id`. Read-only.',
       annotations: READ_ONLY_ANNOTATIONS,
       inputSchema: z
         .object({
