@@ -384,6 +384,19 @@ test('GET /_ref/connections projects canonical connector_key even when storage r
   });
 });
 
+test('GET /_ref/connections canonical connector_id filter matches pre-migration URL-id instance', async () => {
+  await withServer(async ({ asUrl }) => {
+    await registerSpotifyManifest(asUrl);
+    seedSpotifyInstanceWithUrlId();
+
+    const { status, body } = await fetchJson(`${asUrl}/_ref/connections?connector_id=spotify`);
+    assert.equal(status, 200);
+    const row = body.data.find((r) => r.connector_instance_id === PRE_MIGRATION_INSTANCE_ID);
+    assert.ok(row, 'canonical connector_id filter must match pre-migration instance');
+    assert.equal(row.connector_id, 'spotify');
+  });
+});
+
 test('GET /_ref/connections/:id projects canonical connector_key for pre-migration URL-id instance', async () => {
   await withServer(async ({ asUrl }) => {
     await registerSpotifyManifest(asUrl);
@@ -416,5 +429,18 @@ test('GET /_ref/connector-instances projects canonical connector_key for pre-mig
       'spotify',
       'URL-shaped connector_id must be projected as the canonical short key on connector-instances list',
     );
+  });
+});
+
+test('GET /_ref/connector-instances canonical connector_id filter matches pre-migration URL-id instance', async () => {
+  await withServer(async ({ asUrl }) => {
+    await registerSpotifyManifest(asUrl);
+    seedSpotifyInstanceWithUrlId();
+
+    const { status, body } = await fetchJson(`${asUrl}/_ref/connector-instances?connector_id=spotify`);
+    assert.equal(status, 200);
+    const row = body.data.find((r) => r.connector_instance_id === PRE_MIGRATION_INSTANCE_ID);
+    assert.ok(row, 'canonical connector_id filter must match pre-migration instance');
+    assert.equal(row.connector_id, 'spotify');
   });
 });

@@ -188,6 +188,17 @@ function projectRefConnection(
   };
 }
 
+function connectorIdMatchesFilter(
+  ctx: MountRefConnectorsContext,
+  instance: ConnectorInstanceRow,
+  connectorId: string | null
+): boolean {
+  if (!connectorId) {
+    return true;
+  }
+  return (ctx.canonicalConnectorKey(instance.connectorId) ?? instance.connectorId) === connectorId;
+}
+
 // Moved from the `buildAsApp` closure in `server/index.js`. Both the
 // canonical `/_ref/connections/:id` route and the legacy
 // `/_ref/connector-instances/:id` alias delegate here; behaviour
@@ -355,7 +366,7 @@ export function mountRefConnectionsList(app: AppLike, ctx: MountRefConnectorsCon
             .map((schedule) => [schedule.connector_instance_id as string, schedule])
         );
         const data = instances
-          .filter((instance) => !connectorId || instance.connectorId === connectorId)
+          .filter((instance) => connectorIdMatchesFilter(ctx, instance, connectorId))
           .filter((instance) => !status || instance.status === status)
           .map((instance) => projectRefConnection(instance, schedulesByInstanceId, (id) => ctx.canonicalConnectorKey(id)));
         res.json({ object: "list", data });
@@ -385,7 +396,7 @@ export function mountRefConnectorInstancesList(app: AppLike, ctx: MountRefConnec
         const store = ctx.createRequestConnectorInstanceStore();
         const instances = await store.listByOwner(ownerSubjectId);
         const data = instances
-          .filter((instance) => !connectorId || instance.connectorId === connectorId)
+          .filter((instance) => connectorIdMatchesFilter(ctx, instance, connectorId))
           .filter((instance) => !status || instance.status === status)
           .map((instance) => projectRefConnection(instance, new Map(), (id) => ctx.canonicalConnectorKey(id)));
         res.json({ object: "list", data });
