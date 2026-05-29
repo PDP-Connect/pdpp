@@ -350,6 +350,18 @@ test("runMemoriesStream: empty requested scope — caller guards; direct call em
   assert.equal(states.length, 1, "STATE still fires so the stream cursor advances");
 });
 
+test("runMemoriesStream: 500 → SKIP_RESULT('http_error') with status diagnostics", async () => {
+  const { deps, emitted, messages } = makeHarness({
+    fetchQueue: [{ status: 500, json: null }],
+  });
+  await runMemoriesStream(deps);
+  assert.equal(emitted.length, 0);
+  const skip = messages.find((m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT");
+  assert.ok(skip);
+  assert.equal(skip.reason, "http_error");
+  assert.deepEqual(skip.diagnostics, { http_status: 500 });
+});
+
 // ─── Invariant 4: null-enrichment fallback ───────────────────────────────
 
 test("processConversationDetail: detail.status=404 — still emits conversation (list-only) + SKIP on messages", async () => {
@@ -378,6 +390,7 @@ test("processConversationDetail: detail.status=404 — still emits conversation 
   assert.equal(skip.stream, "messages", "detail failure is charged to the messages stream");
   assert.equal(skip.reason, "http_error");
   assert.match(skip.message, /convo-abc http 404/, "message carries the conversation id + http status");
+  assert.deepEqual(skip.diagnostics, { http_status: 404, conversation_id: "convo-abc" });
 });
 
 test("processConversationDetail: detail=200 with missing mapping — list-only fallback + SKIP on messages", async () => {
@@ -390,6 +403,8 @@ test("processConversationDetail: detail=200 with missing mapping — list-only f
   assert.equal(emitted.filter((r) => r.stream === "messages").length, 0);
   const skip = messages.find((m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT");
   assert.ok(skip, "missing mapping must SKIP messages");
+  assert.equal(skip.reason, "missing_mapping");
+  assert.deepEqual(skip.diagnostics, { http_status: 200, conversation_id: "convo-abc" });
 });
 
 test("runConversationsAndMessagesStreams: unsafe message text is shape-skipped without mid-run cursor advance", async () => {
@@ -1192,6 +1207,7 @@ test("runCustomInstructionsStream: 500 → SKIP_RESULT('http_error'), no record"
   const skip = messages.find((m): m is Extract<EmittedMessage, { type: "SKIP_RESULT" }> => m.type === "SKIP_RESULT");
   assert.ok(skip);
   assert.equal(skip.reason, "http_error", "non-200 non-404/403 uses the generic http_error bucket");
+  assert.deepEqual(skip.diagnostics, { http_status: 500 });
 });
 
 test("runCustomGptsStream: paginates gizmos/mine and emits STATE when complete", async () => {
