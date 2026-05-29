@@ -328,9 +328,8 @@ function boundGapStringList(values) {
 /**
  * Walk a connector-authored diagnostics object, applying secret-redaction
  * to every string leaf and bounding nested array length / object depth.
- * Returns the bounded projection, or a sentinel object if the input is
- * not a plain object, exceeds the depth/list cap, or exceeds the total
- * JSON byte cap.
+ * Returns the bounded projection, null for non-object top-level values, or a
+ * sentinel object if the input exceeds the depth/list cap or total JSON byte cap.
  *
  * Used to propagate `SKIP_RESULT.diagnostics` to the run.stream_skipped
  * spine event without leaking secrets or unbounded payloads. See
@@ -868,9 +867,6 @@ function validateSkipResultMessage(msg, scopeByStream) {
   validateOptionalScopedStream(msg.stream, 'SKIP_RESULT', scopeByStream);
   requireOptionalNonEmptyString(msg.reason, 'SKIP_RESULT.reason');
   requireOptionalNonEmptyString(msg.message, 'SKIP_RESULT.message');
-  if (msg.diagnostics != null && Array.isArray(msg.diagnostics)) {
-    throw new Error('Connector emitted invalid SKIP_RESULT.diagnostics: expected object, not array');
-  }
   if (msg.recovery_hint != null) {
     const validRecoveryHint =
       (typeof msg.recovery_hint === 'string' && RECOVERY_ACTIONS.has(msg.recovery_hint))

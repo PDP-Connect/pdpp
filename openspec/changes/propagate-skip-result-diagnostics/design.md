@@ -6,7 +6,7 @@ The sibling change `persist-connector-failure-diagnostics` solved the analogous 
 
 ## Decision
 
-1. **Validate the field as a bounded object.** Reject arrays and non-object scalars at the protocol boundary so that the runtime can promise a predictable shape downstream. Booleans, numbers, strings, and `null` are dropped (not rejected) — the connector is free to emit them, but they are not propagated.
+1. **Validate the field as a bounded object.** Propagate only object-shaped diagnostics so that downstream owner surfaces receive a predictable shape. Arrays and non-object scalars are dropped from persistence without rejecting the `SKIP_RESULT` message — the connector is free to emit them, but they are not propagated.
 2. **Reuse the existing redaction policy.** `boundGapString` already redacts the tokens the runtime considers sensitive (`bearer`, `token`, `password`, `passwd`, `cookie`, `secret`, `otp`, 6-digit OTP numbers). The new helper SHALL walk a connector-authored diagnostics object recursively and apply `boundGapString` to every string leaf; non-strings (number, boolean, null) pass through unchanged. Nested arrays are preserved up to a fixed element cap; nested objects are preserved up to a fixed depth.
 3. **Bound the total JSON byte size.** The persisted shape SHALL be capped (target: 8 KiB JSON when stringified). On overflow, surface `{ truncated: true, original_keys: [...], reason: "size_overflow" }` instead of the original object. This keeps downstream spine-event payloads bounded.
 4. **Attach to both surfaces.** Forward the bounded diagnostics on `run.stream_skipped.data.diagnostics` (spine event payload) and on the `known_gap` (so the diagnostic survives into the run's terminal `known_gaps` block and dashboard surfaces).

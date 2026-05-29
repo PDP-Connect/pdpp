@@ -2365,56 +2365,25 @@ rl.on('line', (line) => {
   });
 
   await t.test('runtime drops non-object SKIP_RESULT.diagnostics without rejecting the message', async () => {
-    const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
-    const { asPort, rsPort } = server;
-    const { ownerToken, connectorId } = await setupConnector(server, asPort);
-    const asUrl = `http://localhost:${asPort}`;
+    for (const diagnostics of ['oops', [1, 2, 3], 123]) {
+      const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+      const { asPort, rsPort } = server;
+      const { ownerToken, connectorId } = await setupConnector(server, asPort);
+      const asUrl = `http://localhost:${asPort}`;
 
-    // diagnostics is a scalar string — the runtime should drop it from the
-    // persisted payload, not reject the SKIP_RESULT envelope.
-    const { connectorPath, cleanup } = createTestConnector([
-      { type: 'SKIP_RESULT', stream: 'items', reason: 'export_no_download', message: 'scalar diag', diagnostics: 'oops' },
-      { type: 'DONE', status: 'succeeded', records_emitted: 0 },
-    ]);
+      const { connectorPath, cleanup } = createTestConnector([
+        {
+          type: 'SKIP_RESULT',
+          stream: 'items',
+          reason: 'export_no_download',
+          message: 'non-object diag',
+          diagnostics,
+        },
+        { type: 'DONE', status: 'succeeded', records_emitted: 0 },
+      ]);
 
-    try {
-      const result = await runConnector({
-        connectorPath,
-        connectorId,
-        ownerToken,
-        manifest: MINIMAL_MANIFEST,
-        state: null,
-        collectionMode: 'full_refresh',
-        persistState: true,
-        rsUrl: `http://localhost:${rsPort}`,
-        onInteraction: async () => ({}),
-      });
-
-      assert.equal(result.status, 'succeeded');
-      const { body: runTimeline } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(result.run_id)}/timeline`);
-      const skippedEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.stream_skipped');
-      assert.ok(skippedEvent, 'SKIP_RESULT with scalar diagnostics still propagates');
-      assert.equal(skippedEvent.data.diagnostics, undefined, 'scalar diagnostics is dropped from spine payload');
-      assert.equal(skippedEvent.data.known_gap.diagnostics, undefined, 'scalar diagnostics is dropped from known gap');
-    } finally {
-      cleanup();
-      await closeServer(server);
-    }
-  });
-
-  await t.test('runtime rejects SKIP_RESULT.diagnostics that is an array as a protocol violation', async () => {
-    const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
-    const { asPort, rsPort } = server;
-    const { ownerToken, connectorId } = await setupConnector(server, asPort);
-
-    const { connectorPath, cleanup } = createTestConnector([
-      { type: 'SKIP_RESULT', stream: 'items', reason: 'export_no_download', message: 'array diag', diagnostics: [1, 2, 3] },
-      { type: 'DONE', status: 'succeeded', records_emitted: 0 },
-    ]);
-
-    try {
-      await assert.rejects(
-        runConnector({
+      try {
+        const result = await runConnector({
           connectorPath,
           connectorId,
           ownerToken,
@@ -2424,12 +2393,18 @@ rl.on('line', (line) => {
           persistState: true,
           rsUrl: `http://localhost:${rsPort}`,
           onInteraction: async () => ({}),
-        }),
-        /invalid SKIP_RESULT\.diagnostics/i,
-      );
-    } finally {
-      cleanup();
-      await closeServer(server);
+        });
+
+        assert.equal(result.status, 'succeeded');
+        const { body: runTimeline } = await fetchJson(`${asUrl}/_ref/runs/${encodeURIComponent(result.run_id)}/timeline`);
+        const skippedEvent = (runTimeline.data || []).find((event) => event.event_type === 'run.stream_skipped');
+        assert.ok(skippedEvent, 'SKIP_RESULT with non-object diagnostics still propagates');
+        assert.equal(skippedEvent.data.diagnostics, undefined, 'non-object diagnostics is dropped from spine payload');
+        assert.equal(skippedEvent.data.known_gap.diagnostics, undefined, 'non-object diagnostics is dropped from known gap');
+      } finally {
+        cleanup();
+        await closeServer(server);
+      }
     }
   });
 
