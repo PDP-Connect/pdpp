@@ -17,9 +17,13 @@
 // without `.d.ts` declarations, so they cannot be imported directly from a
 // strict-mode `.ts` file.
 
-import { isTrustedMetadataRequestOrigin, type ResolvePublicUrlRequest, resolvePublicUrl } from "../metadata.ts";
+import {
+  isTrustedMetadataRequestOrigin,
+  protectedResourceMetadataUrlForResource,
+  type ResolvePublicUrlRequest,
+  resolvePublicUrl,
+} from "../metadata.ts";
 
-const PROTECTED_RESOURCE_METADATA_PATH = "/.well-known/oauth-protected-resource";
 const PROTECTED_RESOURCE_METADATA_URL_LOCAL = "protectedResourceMetadataUrl";
 
 interface RouteRequest extends ResolvePublicUrlRequest {
@@ -27,10 +31,11 @@ interface RouteRequest extends ResolvePublicUrlRequest {
   readonly headers: Readonly<Record<string, string | string[] | undefined>>;
   readonly method: string;
   readonly path?: string;
-  // biome-ignore lint/suspicious/noExplicitAny: raw Fastify/Express req
-  readonly raw?: any;
-  // biome-ignore lint/suspicious/noExplicitAny: set by requireToken middleware
-  readonly tokenInfo?: any;
+  readonly raw?: { readonly url?: string };
+  readonly tokenInfo?: {
+    readonly grant_package_id?: string;
+    readonly pdpp_token_kind?: string;
+  };
   readonly url?: string;
 }
 
@@ -39,8 +44,7 @@ interface RouteResponse {
   locals: Record<string, unknown>;
   send(body: unknown): void;
   setHeader(name: string, value: string): void;
-  // biome-ignore lint/suspicious/noExplicitAny: framework response chain
-  status(code: number): any;
+  status(code: number): RouteResponse;
 }
 
 type Middleware = (req: RouteRequest, res: RouteResponse, next: () => void) => void;
@@ -61,13 +65,14 @@ export interface GrantPackageAccess {
   readonly members: readonly GrantPackageMember[];
 }
 
-/** Opaque MCP server options object. Shape owned by @pdpp/mcp-server. */
-// biome-ignore lint/suspicious/noExplicitAny: @pdpp/mcp-server is JS-only
-type McpServerOptions = any;
-
-/** Opaque RS client created by createPackageRsClient. */
-// biome-ignore lint/suspicious/noExplicitAny: @pdpp/mcp-server is JS-only
-type PackageRsClient = any;
+interface McpServerOptions {
+  readonly accessToken?: string;
+  readonly fetch: typeof globalThis.fetch;
+  readonly providerUrl: string;
+  readonly rsClient?: unknown;
+  readonly serverName: string;
+  readonly serverVersion: string;
+}
 
 export interface MountRsHostedMcpContext {
   /**
@@ -78,7 +83,7 @@ export interface MountRsHostedMcpContext {
     providerUrl: string;
     members: readonly GrantPackageMember[];
     fetch: typeof globalThis.fetch;
-  }): PackageRsClient;
+  }): unknown;
   /** Resolved RS public URL (or null; adapter derives it per-request). */
   readonly explicitResource: string | null | undefined;
   /** From auth.js: resolve active grant-package members for a package token. */
@@ -100,18 +105,8 @@ export interface MountRsHostedMcpContext {
   readonly trustedMetadataHosts: string | null | undefined;
 }
 
-function protectedResourceMetadataUrlForResource(resource: string): string {
-  const parsed = new URL(resource);
-  const resourcePath = parsed.pathname === "/" ? "" : parsed.pathname;
-  return `${parsed.origin}${PROTECTED_RESOURCE_METADATA_PATH}${resourcePath}${parsed.search}`;
-}
-
 function buildMcpWebRequest(req: RouteRequest, resource: string): Request {
-  const url = new URL(
-    // biome-ignore lint/suspicious/noExplicitAny: raw framework req
-    (req.raw as any)?.url ?? req.url ?? req.path ?? "/mcp",
-    resource
-  );
+  const url = new URL(req.raw?.url ?? req.url ?? req.path ?? "/mcp", resource);
   const headers = new Headers();
   for (const [name, value] of Object.entries(req.headers)) {
     if (Array.isArray(value)) {

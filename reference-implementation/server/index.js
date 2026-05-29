@@ -24,6 +24,7 @@ import {
   buildSemanticRetrievalCapability,
   isLocalOrPrivateRequestOrigin,
   isTrustedMetadataRequestOrigin,
+  protectedResourceMetadataUrlForResource,
   resolvePublicUrl,
   resolveSiblingPublicUrl,
   shouldUseDirectRequestOrigin,
@@ -404,7 +405,6 @@ const PDPP_DCR_INITIAL_ACCESS_TOKENS = (process.env.PDPP_DCR_INITIAL_ACCESS_TOKE
   .map((value) => value.trim())
   .filter(Boolean);
 const PDPP_REFERENCE_TRACE_ID_HEADER = 'PDPP-Reference-Trace-Id';
-const PROTECTED_RESOURCE_METADATA_PATH = '/.well-known/oauth-protected-resource';
 const PROTECTED_RESOURCE_METADATA_URL_LOCAL = 'protectedResourceMetadataUrl';
 const PROTECTED_RESOURCE_METADATA_NEXT_STEP =
   'Fetch error.resource_metadata, then follow pdpp_agent_discovery.cli when token completion is available; otherwise request a scoped client grant without using an owner bearer token.';
@@ -567,12 +567,6 @@ function rejectUntrustedMetadataHost(req, res, explicitUrl, trustedHosts, option
 
 function httpQuotedString(value) {
   return String(value).replace(/["\\]/g, '\\$&');
-}
-
-function protectedResourceMetadataUrlForResource(resource) {
-  const parsed = new URL(resource);
-  const resourcePath = parsed.pathname === '/' ? '' : parsed.pathname;
-  return `${parsed.origin}${PROTECTED_RESOURCE_METADATA_PATH}${resourcePath}${parsed.search}`;
 }
 
 function resolveTrustedProtectedResourceMetadataUrl(req, explicitResource, trustedHosts) {

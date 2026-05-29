@@ -223,6 +223,12 @@ export function resolvePublicUrl(req: ResolvePublicUrlRequest, explicitUrl?: str
   return resolveRequestPublicUrl(req);
 }
 
+export function protectedResourceMetadataUrlForResource(resource: string): string {
+  const parsed = new URL(resource);
+  const resourcePath = parsed.pathname === "/" ? "" : parsed.pathname;
+  return `${parsed.origin}/.well-known/oauth-protected-resource${resourcePath}${parsed.search}`;
+}
+
 export function shouldUseDirectRequestOrigin(req: ResolvePublicUrlRequest, explicitUrl?: string | null): boolean {
   if (!explicitUrl || forwardedPublicOrigin(req)) {
     return false;
