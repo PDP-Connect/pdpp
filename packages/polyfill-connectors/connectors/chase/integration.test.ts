@@ -558,6 +558,7 @@ test("runCurrentActivity: multiple filtered accounts → ambiguous_multi_account
   assert.ok(skip, "expected SKIP_RESULT for current_activity in multi-account case");
   assert.equal(skip.reason, "ambiguous_multi_account_overview");
   assert.match(skip.message, /multiple accounts/i);
+  assert.equal((skip.diagnostics as { account_count: number } | undefined)?.account_count, 2);
   // STATE still emits so the run records that current_activity was visited.
   const state = messages.find((m) => m.type === "STATE" && m.stream === "current_activity");
   assert.ok(state);
@@ -608,5 +609,9 @@ test("runCurrentActivity: single account + broken-surface HTML → selectors_pen
     skip.message,
     /account activity DOM/i,
     "the misleading 'Chase account activity DOM' wording must be gone"
+  );
+  assert.equal(
+    (skip.diagnostics as { account_name: string } | undefined)?.account_name,
+    "Sapphire Preferred (...9241)"
   );
 });

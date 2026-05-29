@@ -1167,6 +1167,7 @@ async function processAccountDownload(
       stream: "transactions",
       reason: "qfx_download_failed",
       message: `${account.name}: ${result.error}`,
+      diagnostics: { error: result.error, account_name: account.name },
     });
     return;
   }
@@ -1180,6 +1181,11 @@ async function processAccountDownload(
       stream: "transactions",
       reason: "qfx_parse_failed",
       message: `${account.name}: ${truncate(errMessage(err), ERROR_MESSAGE_SLICE_LONG)}`,
+      diagnostics: {
+        error_class: err instanceof Error ? err.constructor.name : "unknown",
+        message: truncate(errMessage(err), ERROR_MESSAGE_SLICE_LONG),
+        qfx_path: result.qfxPath,
+      },
     });
     return;
   }
@@ -1270,6 +1276,7 @@ export async function runCurrentActivity(
       reason: "ambiguous_multi_account_overview",
       message:
         "Chase dashboard overview aggregates recent activity across multiple accounts and provides no per-row account attribution; current_activity collection requires a per-account activity surface (not yet wired)",
+      diagnostics: { account_count: filteredAccounts.length },
     });
     await deps.emit({
       type: "STATE",
@@ -1300,6 +1307,7 @@ export async function runCurrentActivity(
       stream: "current_activity",
       reason: "selectors_pending",
       message: `${account.name}: no parseable MDS activity rows (tr.mds-activity-table__row[data-values]) found in the Chase dashboard overview DOM; either the dashboard rendered without the recent-activity table or the row markup has drifted — see captured fixture for this run`,
+      diagnostics: { account_name: account.name },
     });
   } else {
     await deps.emit({
@@ -1352,6 +1360,7 @@ async function processStatementRow(
         stream: "statements",
         reason: "pdf_download_failed",
         message: `${row.title}: ${dlResult.error}`,
+        diagnostics: { error: dlResult.error, title: row.title, account_id: accountId },
       });
       // Still emit the index row so the owner has a record the statement
       // exists, just without hydrated bytes.
@@ -1376,6 +1385,11 @@ async function processStatementRow(
       stream: "statements",
       reason: "row_exception",
       message: `${row.title}: ${truncate(errMessage(rowErr), ERROR_MESSAGE_SLICE_LONG)}`,
+      diagnostics: {
+        error_class: rowErr instanceof Error ? rowErr.constructor.name : "unknown",
+        message: truncate(errMessage(rowErr), ERROR_MESSAGE_SLICE_LONG),
+        title: row.title,
+      },
     });
   }
 }
@@ -1430,6 +1444,10 @@ async function runStatements(
       stream: "statements",
       reason: "statements_scrape_failed",
       message: truncate(errMessage(err), ERROR_MESSAGE_SLICE_MAX),
+      diagnostics: {
+        error_class: err instanceof Error ? err.constructor.name : "unknown",
+        message: truncate(errMessage(err), ERROR_MESSAGE_SLICE_MAX),
+      },
     });
   }
 }
