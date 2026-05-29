@@ -45,8 +45,8 @@ const SCHEME_PREFIX_RE = /^https?:\/\//;
 function buildNav(routes: Routes, mode: ShellMode): NavItem[] {
   const nav: NavItem[] = [
     { href: routes.section.overview, label: "Overview", match: (a) => a === "overview" },
-    { href: routes.section.search, label: "Jump", match: (a) => a === "search" },
     { href: routes.section.explore, label: "Explore", match: (a) => a === "explore" },
+    { href: routes.section.search, label: "Jump", match: (a) => a === "search" },
     { href: routes.section.traces, label: "Traces", match: (a) => a === "traces" },
     { href: routes.section.grants, label: "Grants", match: (a) => a === "grants" },
     { href: routes.section.runs, label: "Runs", match: (a) => a === "runs" },

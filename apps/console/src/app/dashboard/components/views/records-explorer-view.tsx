@@ -337,7 +337,7 @@ export function RecordsExplorerView({ data, routes }: { data: RecordsExplorerDat
       <PageHeader
         breadcrumbs={[{ label: "Explore" }]}
         count={feedCountLabel(feed.length, fromSearch, truncated)}
-        description="Query across every owner-visible connection. Connection identity is preserved — two accounts of the same connector type stay distinct."
+        description="Browse and search all retained records across every connected source."
         title="Explore"
       />
 
@@ -398,7 +398,7 @@ function lensLabel(lens: ExplorerLens): string {
     return "Search";
   }
   if (lens === "search_with_ignored_time_window") {
-    return "Search · time window not applied to search";
+    return "Search (time window ignored)";
   }
   return "Recent";
 }
@@ -602,7 +602,7 @@ function emptyFeedMessage(lens: ExplorerLens): string {
   if (lens === "time_range") {
     return "No time-anchored records in this window. Try widening the range, clearing chips, or loading more data.";
   }
-  return "No retained records yet on any visible connection.";
+  return "No records yet. Run a connector to collect data.";
 }
 
 function TimeWindowForm({

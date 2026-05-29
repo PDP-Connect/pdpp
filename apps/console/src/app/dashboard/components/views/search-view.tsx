@@ -56,7 +56,7 @@ export function SearchView({
           className="self-start rounded border border-border px-3 py-2 hover:bg-muted/50 sm:self-auto"
           type="submit"
         >
-          jump
+          Go
         </button>
       </form>
 
