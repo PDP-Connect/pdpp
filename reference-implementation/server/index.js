@@ -393,6 +393,20 @@ import { mountAsDcr } from './routes/as-dcr.ts';
 import { mountAsPar } from './routes/as-par.ts';
 import { mountAsDeviceUi } from './routes/as-device-ui.ts';
 import { mountRsHostedMcp } from './routes/rs-hosted-mcp.ts';
+import {
+  buildHostedMcpAuthorizationDetailForConnector,
+  buildHostedMcpAuthorizationDetailsForConnector,
+  HOSTED_MCP_PICKER_DEFAULT_ACCESS_MODE,
+  HOSTED_MCP_PICKER_SUPPORTED_ACCESS_MODES,
+  listHostedMcpPickerRows,
+  parseAuthorizeAuthorizationDetails,
+  renderHostedMcpSourceSelection,
+  renderPendingConsentNotFoundHtml,
+  renderPendingGrantConsentHtml,
+  requireAuthorizeString,
+  requireRegisteredRedirectUri,
+  validateAuthorizePkce,
+} from './routes/as-consent-ui-helpers.ts';
 
 const AS_PORT = parseInt(process.env.AS_PORT || '7662');
 const RS_PORT = parseInt(process.env.RS_PORT || '7663');
@@ -2522,158 +2536,11 @@ function buildAsApp(opts = {}) {
   const runTargetRegistry = opts.runTargetRegistry || createRunTargetRegistry({ logger: opts.streamingLogger });
   runTargetRegistry.attachRoutes(app, requireDeviceExporterCredential);
 
-  // Branded, recoverable page for a `/consent` link whose pending-consent
-  // row no longer exists (expired, already decided, or minted on another
-  // instance). Mirrors the hosted-document shell the live consent page uses
-  // so the owner gets a clear next step instead of a bare 404 string.
-  function renderPendingConsentNotFoundHtml() {
-    return renderHostedDocument({
-      title: `${providerName} — Consent request expired`,
-      providerName,
-      body: [
-        renderPageIntro({
-          eyebrow: 'Data access request',
-          title: 'This consent request is no longer available',
-        }),
-        renderSurface({
-          surface: 'human',
-          ariaLabel: 'Consent request expired',
-          children: renderResultState({
-            tone: 'neutral',
-            title: 'Link expired or already used',
-            body: 'This approval link has expired, was already approved or denied, or was created on a different session. Return to the app that asked for access and start the request again to get a fresh link.',
-          }),
-        }),
-      ].join('\n'),
-    });
-  }
-
-  function renderPendingGrantConsentHtml(pending, requestUri, csrfToken) {
-    const request = pending.request;
-    const client = request.client || {};
-    const selection = request.selection || {};
-    const sourceBinding = request.source_binding;
-    const clientName = client.client_display?.name || client.client_id || 'Client application';
-    const sourceLabel = sourceBinding?.id || 'this source';
-    const sourceFactLabel = sourceBinding?.kind === 'provider_native' ? 'Provider' : 'Connector';
-
-    const requestedStreams = Array.isArray(selection.streams) ? selection.streams : [];
-    const isWildcardRequest = requestedStreams.length === 1 && requestedStreams[0]?.name === '*';
-    const manifestStreamNames = Array.isArray(pending.manifestStreamNames)
-      ? pending.manifestStreamNames
-      : null;
-
-    let streamsBlock;
-    if (isWildcardRequest) {
-      // The owner must see effective scope, not the protocol shorthand `*`.
-      const resolvedNames = manifestStreamNames && manifestStreamNames.length > 0
-        ? manifestStreamNames
-        : null;
-      const countSummary = resolvedNames
-        ? `All streams for ${sourceLabel} (${resolvedNames.length}) are in scope.`
-        : `All streams for ${sourceLabel} are in scope.`;
-      const resolvedList = resolvedNames
-        ? `<ul class="hosted-ui-streams">${
-            resolvedNames
-              .map((name) => `<li><span class="hosted-ui-stream-name">${hostedEscape(name)}</span></li>`)
-              .join('')
-          }</ul>`
-        : '';
-      streamsBlock = `
-      <div>
-        <span class="pdpp-title">Streams requested</span>
-        <div class="hosted-ui-warning" role="note">
-          <span class="hosted-ui-warning-title">All streams</span>
-          <span class="hosted-ui-warning-body">${hostedEscape(countSummary)}</span>
-        </div>
-        ${resolvedList}
-      </div>`;
-    } else {
-      const streamItems = requestedStreams
-        .map((s) => {
-          const fragments = [
-            s.time_range ? `since ${s.time_range.since || 'any'}` : null,
-            s.fields ? `fields: ${s.fields.join(', ')}` : null,
-            s.view ? `view: ${s.view}` : null,
-            s.necessity === 'optional' ? 'optional' : null,
-          ].filter(Boolean);
-          const meta = fragments.length
-            ? ` <span class="hosted-ui-stream-meta">${hostedEscape(fragments.join(' · '))}</span>`
-            : '';
-          return `<li><span class="hosted-ui-stream-name">${hostedEscape(s.name)}</span>${meta}</li>`;
-        })
-        .join('');
-      streamsBlock = `
-      <div>
-        <span class="pdpp-title">Streams requested</span>
-        <ul class="hosted-ui-streams">${streamItems}</ul>
-      </div>`;
-    }
-
-    const isContinuous = selection.access_mode === 'continuous';
-    const hasRetentionBound = Boolean(selection.retention?.max_duration);
-
-    let continuousBlock = '';
-    if (isContinuous) {
-      const continuousBody = hasRetentionBound
-        ? 'This is long-lived access — the client may keep reading until the grant is revoked or its retention bound is reached.'
-        : 'This is long-lived access with no explicit expiry. The client may keep reading until you revoke the grant.';
-      continuousBlock = `
-      <div class="hosted-ui-warning" role="note">
-        <span class="hosted-ui-warning-title">Continuous access</span>
-        <span class="hosted-ui-warning-body">${hostedEscape(continuousBody)}</span>
-      </div>`;
-    }
-
-    const facts = renderKeyValueList([
-      { label: 'Requesting app', value: clientName },
-      sourceBinding?.id ? { label: sourceFactLabel, value: sourceBinding.id } : null,
-      { label: 'Purpose', value: selection.purpose_description || selection.purpose_code },
-      { label: 'Access mode', value: selection.access_mode },
-      selection.retention
-        ? { label: 'Retention', value: `${selection.retention.on_expiry} after ${selection.retention.max_duration}` }
-        : null,
-    ].filter(Boolean));
-
-    const codeBlock = pending.userCode
-      ? `<div><span class="pdpp-eyebrow">Verification code</span><div class="hosted-ui-code">${hostedEscape(pending.userCode)}</div></div>`
-      : '';
-
-    const csrfHidden = csrfToken
-      ? [{ name: ownerAuth.csrfFieldName, value: csrfToken }]
-      : [];
-    const actions = renderActionRow([
-      {
-        label: 'Allow access',
-        variant: 'primary',
-        method: 'POST',
-        action: '/consent/approve',
-        hidden: [...csrfHidden, { name: 'request_uri', value: requestUri }],
-      },
-      {
-        label: 'Deny',
-        variant: 'danger',
-        method: 'POST',
-        action: '/consent/deny',
-        hidden: [...csrfHidden, { name: 'request_uri', value: requestUri }],
-      },
-    ]);
-
-    const body = [
-      renderPageIntro({
-        eyebrow: 'Data access request',
-        title: `${clientName} wants access to your data`,
-        lede: 'Review what this app is asking for. Your server will only release what you allow here.',
-      }),
-      renderSurface({ surface: 'human', children: [codeBlock, facts, streamsBlock, continuousBlock, actions].filter(Boolean).join('\n'), ariaLabel: 'Consent request' }),
-    ].join('\n');
-
-    return renderHostedDocument({
-      title: `${providerName} — Consent request`,
-      providerName,
-      body,
-    });
-  }
+  // renderPendingConsentNotFoundHtml, renderPendingGrantConsentHtml, and
+  // renderHostedMcpSourceSelection extracted to
+  // `server/routes/as-consent-ui-helpers.ts` per OpenSpec change
+  // `split-reference-server-by-route-family`. Call sites below pass the
+  // required context arguments explicitly.
 
   async function getPendingGrantFromRequestUri(requestUri) {
     const deviceCode = consentStore.parseRequestUri(requestUri);
@@ -2688,327 +2555,15 @@ function buildAsApp(opts = {}) {
   // `split-reference-server-by-route-family`.
   const agentConnectAttemptStore = createAgentConnectAttemptStore();
 
-  function parseAuthorizeAuthorizationDetails(query) {
-    const raw = query?.authorization_details;
-    if (raw == null || raw === '') return null;
-    if (Array.isArray(raw)) return raw;
-    if (typeof raw === 'object') return raw;
-    if (typeof raw !== 'string') {
-      const err = new Error('authorization_details must be JSON');
-      err.code = 'invalid_request';
-      throw err;
-    }
-    try {
-      const parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed)) {
-        const err = new Error('authorization_details must decode to an array');
-        err.code = 'invalid_request';
-        throw err;
-      }
-      return parsed;
-    } catch (err) {
-      err.code = err.code || 'invalid_request';
-      throw err;
-    }
-  }
-
-  function requireAuthorizeString(query, name) {
-    const value = query?.[name];
-    if (typeof value !== 'string' || !value.trim()) {
-      const err = new Error(`${name} is required`);
-      err.code = 'invalid_request';
-      throw err;
-    }
-    return value.trim();
-  }
-
-  function requireRegisteredRedirectUri(client, redirectUri) {
-    const redirectUris = Array.isArray(client?.metadata?.redirect_uris)
-      ? client.metadata.redirect_uris
-      : [];
-    if (!redirectUris.includes(redirectUri)) {
-      const err = new Error('redirect_uri does not match a registered redirect URI');
-      err.code = 'invalid_request';
-      throw err;
-    }
-  }
-
-  function validateAuthorizePkce({ responseType, codeChallenge, codeChallengeMethod }) {
-    if (responseType !== 'code') {
-      const err = new Error('response_type must be code');
-      err.code = 'unsupported_response_type';
-      throw err;
-    }
-    if (codeChallengeMethod !== 'S256') {
-      const err = new Error('code_challenge_method must be S256');
-      err.code = 'invalid_request';
-      throw err;
-    }
-    if (typeof codeChallenge !== 'string' || codeChallenge.length < 43 || codeChallenge.length > 128) {
-      const err = new Error('code_challenge must be 43-128 characters');
-      err.code = 'invalid_request';
-      throw err;
-    }
-  }
-
-  function buildHostedMcpAuthorizationDetailsForConnector(connectorId) {
-    return [
-      {
-        type: 'https://pdpp.org/data-access',
-        source: { kind: 'connector', id: connectorId },
-        purpose_code: 'https://pdpp.org/purpose/personal_ai_assistant',
-        purpose_description: 'Allow this MCP client to read selected personal data through PDPP.',
-        access_mode: 'continuous',
-        streams: [{ name: '*' }],
-      },
-    ];
-  }
-
-  // Hosted MCP picker policy — what the owner is approving when they check
-  // a row in the multi-source picker. The picker exposes owner control over
-  // the streams subset (per-source) and the package access mode (one radio
-  // for every source in the package). The picker intentionally does NOT
-  // emit a `retention` field on the child grants: `spec-core.md` defines
-  // `retention` as `{ max_duration, on_expiry }`, and the generic hosted
-  // MCP ceremony does not have a per-source machine-readable retention
-  // commitment to encode. Absence means "no machine-readable retention
-  // bound" — see openspec/changes/design-fast-broad-agent-consent/.
-  const HOSTED_MCP_PICKER_PURPOSE_CODE = 'https://pdpp.org/purpose/personal_ai_assistant';
-  const HOSTED_MCP_PICKER_PURPOSE_DESCRIPTION = 'Allow this MCP client to read selected personal data through PDPP.';
-  const HOSTED_MCP_PICKER_DEFAULT_ACCESS_MODE = 'continuous';
-  const HOSTED_MCP_PICKER_SUPPORTED_ACCESS_MODES = new Set(['single_use', 'continuous']);
-
-  // Build one source-bounded authorization_details entry for a hosted MCP
-  // package. `streamNames` is the owner-approved subset of stream names for
-  // this source. Passing `null` (or omitting the argument) preserves the
-  // legacy default of `[{ name: '*' }]` for callers — including the
-  // `connector_id=` shortcut on `/oauth/authorize/mcp-package` — that have
-  // not yet been wired through the per-stream picker. When `streamNames` is
-  // provided, it MUST be a non-empty array of names that the picker has
-  // already validated against the connector manifest; callers SHOULD pass
-  // `null` instead of an empty array because the AS rejects empty
-  // `streams[]` arrays in `normalizePendingGrantRequest`.
-  // `accessMode` is the picker-resolved package access mode applied to
-  // every entry in the package; passing `null` or an unknown value falls
-  // back to the spec-default `continuous`. Callers SHOULD validate the
-  // submitted value against `HOSTED_MCP_PICKER_SUPPORTED_ACCESS_MODES`
-  // before calling this helper so the AS can return a typed
-  // `invalid_request` error rather than silently widening an unknown mode.
-  function buildHostedMcpAuthorizationDetailForConnector(connectorId, streamNames = null, accessMode = null) {
-    let streams;
-    if (Array.isArray(streamNames) && streamNames.length > 0) {
-      streams = streamNames.map((name) => ({ name }));
-    } else {
-      streams = [{ name: '*' }];
-    }
-    const resolvedAccessMode = HOSTED_MCP_PICKER_SUPPORTED_ACCESS_MODES.has(accessMode)
-      ? accessMode
-      : HOSTED_MCP_PICKER_DEFAULT_ACCESS_MODE;
-    return {
-      type: 'https://pdpp.org/data-access',
-      source: { kind: 'connector', id: connectorId },
-      purpose_code: HOSTED_MCP_PICKER_PURPOSE_CODE,
-      purpose_description: HOSTED_MCP_PICKER_PURPOSE_DESCRIPTION,
-      access_mode: resolvedAccessMode,
-      streams,
-    };
-  }
-
-  async function listHostedMcpPickerRows(ownerSubjectId = 'owner_local') {
-    const connectorIds = await listRegisteredConnectorIds();
-    const rows = [];
-    for (const connectorId of connectorIds) {
-      // Skip test/stub/internal connectors — they are never owner-configured
-      // sources and must not appear in the consent picker.
-      if (isInternalConnectorId(connectorId)) continue;
-      const manifest = await getConnectorManifest(connectorId).catch(() => null);
-      if (!manifest) continue;
-      const connectorLabel = manifest.display_name || manifest.name || connectorId;
-      // Display token for the meta sub-line. Prefer the canonical short
-      // connector key (`gmail`, `claude-code`) so the picker does not leak
-      // URL-shaped first-party connector ids
-      // (`https://registry.pdpp.org/connectors/...`) into owner-facing
-      // copy. For unknown / custom third-party connectors the helper
-      // returns `null`; we fall back to the original id so the row still
-      // carries a stable identifier the operator can grep for.
-      const connectorMetaToken = canonicalConnectorKey(connectorId) ?? connectorId;
-      const manifestStreams = Array.isArray(manifest.streams) ? manifest.streams : [];
-      const streamCount = manifestStreams.length;
-      // Snapshot the stream list so each row can render an independent
-      // per-stream checkbox. The picker defaults every checkbox to
-      // checked; deselecting one narrows that source's child grant.
-      const streamSummaries = manifestStreams.map((stream) => ({
-        name: stream.name,
-        description: typeof stream.description === 'string' ? stream.description : null,
-      }));
-      const connections = await listActiveBindingsForGrant({ ownerSubjectId, connectorId }).catch(() => []);
-      if (connections.length === 0) {
-        // Connector with no configured connection — show the connector
-        // itself; child grant will not pin a connection_id. The selection
-        // value is an opaque base64url(JSON) payload so URL-shaped connector
-        // ids cannot collide with any wrapping delimiter on the wire.
-        rows.push({
-          formValue: encodeHostedMcpSelection({ connectorId, connectionId: null }),
-          connectorId,
-          connectionId: null,
-          connectorTypeLabel: connectorLabel,
-          connectionName: null,
-          meta: streamCount
-            ? `${connectorMetaToken} · ${streamCount} streams · no configured connection`
-            : `${connectorMetaToken} · no configured connection`,
-          streams: streamSummaries,
-        });
-        continue;
-      }
-      for (const conn of connections) {
-        const projected = projectBindingForWire(conn);
-        const displayName = projected?.display_name;
-        const connectionId = projected?.connection_id || conn.connectorInstanceId;
-        rows.push({
-          formValue: encodeHostedMcpSelection({ connectorId, connectionId }),
-          connectorId,
-          connectionId,
-          connectorTypeLabel: connectorLabel,
-          connectionName: displayName || null,
-          meta: streamCount
-            ? `${connectorMetaToken} · ${streamCount} streams`
-            : connectorMetaToken,
-          streams: streamSummaries,
-        });
-      }
-    }
-    rows.sort((a, b) => {
-      const typeOrder = a.connectorTypeLabel.localeCompare(b.connectorTypeLabel);
-      if (typeOrder !== 0) return typeOrder;
-      return (a.connectionName || '').localeCompare(b.connectionName || '');
-    });
-    return rows;
-  }
-
-  async function renderHostedMcpSourceSelection(req, query, csrfToken) {
-    const ownerSubjectId = req?.ownerAuth?.subjectId || 'owner_local';
-    const rows = await listHostedMcpPickerRows(ownerSubjectId);
-
-    const hidden = ['client_id', 'redirect_uri', 'response_type', 'scope', 'state', 'code_challenge', 'code_challenge_method']
-      .map((name) => {
-        const value = query?.[name];
-        if (typeof value !== 'string') return '';
-        return `<input type="hidden" name="${hostedEscape(name)}" value="${hostedEscape(value)}" />`;
-      })
-      .join('\n');
-
-    const renderRowStreams = (row) => {
-      if (!Array.isArray(row.streams) || row.streams.length === 0) {
-        return '<p class="hosted-ui-option-streams-empty">This connector manifest declares no streams.</p>';
-      }
-      const items = row.streams
-        .map((stream) => {
-          const streamFormValue = encodeHostedMcpStreamSelection({
-            connectorId: row.connectorId,
-            connectionId: row.connectionId,
-            streamName: stream.name,
-          });
-          const description = stream.description
-            ? `<span class="hosted-ui-stream-meta">${hostedEscape(stream.description)}</span>`
-            : '';
-          return `
-            <label class="hosted-ui-stream-option">
-              <input type="checkbox" name="stream" value="${hostedEscape(streamFormValue)}" checked />
-              <span class="hosted-ui-stream-option-body">
-                <span class="hosted-ui-stream-name">${hostedEscape(stream.name)}</span>
-                ${description}
-              </span>
-            </label>
-          `;
-        })
-        .join('\n');
-      return `<div class="hosted-ui-option-streams">${items}</div>`;
-    };
-
-    const options = rows.length
-      ? rows.map((row) => `
-          <fieldset class="hosted-ui-option-source">
-            <legend class="hosted-ui-option-source-legend">
-              <label class="hosted-ui-option">
-                <input type="checkbox" name="selection" value="${hostedEscape(row.formValue)}" />
-                <span class="hosted-ui-option-body">
-                  <span class="hosted-ui-option-title">
-                    <span class="hosted-ui-connector-type">${hostedEscape(row.connectorTypeLabel)}</span>${row.connectionName ? `<span class="hosted-ui-connection-name">${hostedEscape(row.connectionName)}</span>` : ''}
-                  </span>
-                  <span class="hosted-ui-option-meta">${hostedEscape(row.meta)}</span>
-                </span>
-              </label>
-            </legend>
-            ${renderRowStreams(row)}
-          </fieldset>
-        `).join('\n')
-      : '<p class="pdpp-body">No connector manifests are registered on this reference server.</p>';
-
-    const submit = rows.length
-      ? '<button type="submit" class="hosted-ui-button" data-variant="primary">Approve selected sources</button>'
-      : '';
-
-    // Cumulative-risk disclosure: this picker is reference-experimental
-    // multi-source consent. Surface what the owner is approving so the
-    // path of least resistance is not "approve everything in silence."
-    // See openspec/changes/design-fast-broad-agent-consent/.
-    const riskCopy = rows.length
-      ? `<p class="pdpp-body"><strong>Reference-experimental multi-source consent.</strong> Each checked source issues one independent, source-bounded PDPP grant. Within a source you can uncheck individual streams to narrow what the MCP client may read; an unchecked stream is excluded from the issued child grant. This ceremony does not encode a machine-readable retention bound on the issued grants; how long fetched results are kept is governed by the MCP client's own policy and any external agreements you have with that client.</p>`
-      : '';
-
-    // Package-level access-mode control. One radio group, applied to every
-    // child grant issued by the ceremony. Default is `continuous` to
-    // preserve the prior baseline; selecting `single_use` narrows every
-    // child grant to one consumption + expiry on use. Mixed access modes
-    // across sources in one package are out of scope — see
-    // openspec/changes/design-fast-broad-agent-consent/specs/agent-consent-bundling/spec.md.
-    const accessModeControl = rows.length
-      ? `
-        <fieldset class="hosted-ui-access-mode">
-          <legend class="hosted-ui-access-mode-legend">Access mode</legend>
-          <label class="hosted-ui-access-mode-option">
-            <input type="radio" name="access_mode" value="continuous" checked />
-            <span class="hosted-ui-access-mode-body">
-              <span class="hosted-ui-access-mode-label">Continuous access (default)</span>
-              <span class="hosted-ui-access-mode-meta">The MCP client may keep reading until you revoke this grant.</span>
-            </span>
-          </label>
-          <label class="hosted-ui-access-mode-option">
-            <input type="radio" name="access_mode" value="single_use" />
-            <span class="hosted-ui-access-mode-body">
-              <span class="hosted-ui-access-mode-label">Single use</span>
-              <span class="hosted-ui-access-mode-meta">The MCP client may read once. The grant expires on first use.</span>
-            </span>
-          </label>
-        </fieldset>
-      `
-      : '';
-
-    return renderHostedDocument({
-      title: `${providerName} — Choose MCP sources`,
-      providerName,
-      body: [
-        renderPageIntro({
-          eyebrow: 'MCP authorization',
-          title: 'Choose what this MCP client can read',
-          lede: 'Select one or more sources to authorize for this MCP connection. The MCP endpoint remains read-only and grant-scoped.',
-        }),
-        renderSurface({
-          surface: 'human',
-          children: `
-            ${riskCopy}
-            <form method="POST" action="/oauth/authorize/mcp-package">
-              <input type="hidden" name="_csrf" value="${hostedEscape(csrfToken)}" />
-              ${hidden}
-              <div class="hosted-ui-option-group">${options}</div>
-              ${accessModeControl}
-              ${submit}
-            </form>
-          `,
-        }),
-      ].join('\n'),
-    });
-  }
+  // parseAuthorizeAuthorizationDetails, requireAuthorizeString,
+  // requireRegisteredRedirectUri, validateAuthorizePkce,
+  // buildHostedMcpAuthorizationDetailsForConnector,
+  // buildHostedMcpAuthorizationDetailForConnector,
+  // HOSTED_MCP_PICKER_DEFAULT_ACCESS_MODE,
+  // HOSTED_MCP_PICKER_SUPPORTED_ACCESS_MODES,
+  // listHostedMcpPickerRows, and renderHostedMcpSourceSelection extracted to
+  // `server/routes/as-consent-ui-helpers.ts` per OpenSpec change
+  // `split-reference-server-by-route-family`. Imports at top of file.
 
   // POST /agent-connect and POST /agent-connect/:attemptId/token extracted to
   // `server/routes/as-agent-connect.ts` per OpenSpec change
@@ -3110,6 +2665,30 @@ function buildAsApp(opts = {}) {
     deleteRegisteredClient,
   });
 
+  // Injected context objects for the consent/authorize UI helpers extracted to
+  // `server/routes/as-consent-ui-helpers.ts`. These are built once per
+  // buildAsApp call and shared across the consent + authorize route handlers.
+  const consentUi = {
+    escapeHtml: hostedEscape,
+    renderActionRow,
+    renderHostedDocument,
+    renderKeyValueList,
+    renderPageIntro,
+    renderResultState,
+    renderSurface,
+  };
+  const consentPickerCaps = {
+    listRegisteredConnectorIds,
+    getConnectorManifest,
+    listActiveBindingsForGrant,
+    projectBindingForWire,
+    isInternalConnectorId,
+    canonicalConnectorKey,
+    encodeHostedMcpSelection,
+    encodeHostedMcpStreamSelection,
+    hostedMcpSourceKey,
+  };
+
   app.get('/oauth/authorize', ownerAuth.requireOwnerSession, async (req, res) => {
     try {
       const clientId = requireAuthorizeString(req.query, 'client_id');
@@ -3138,7 +2717,8 @@ function buildAsApp(opts = {}) {
         : null;
       if (!authorizationDetails && !selectedConnectorId) {
         const csrfToken = ownerAuth.ensureCsrfToken(req, res);
-        return res.send(await renderHostedMcpSourceSelection(req, req.query, csrfToken));
+        const ownerSubjectId = req?.ownerAuth?.subjectId || 'owner_local';
+        return res.send(await renderHostedMcpSourceSelection(ownerSubjectId, req.query, csrfToken, providerName, consentPickerCaps, consentUi));
       }
 
       const details = authorizationDetails || buildHostedMcpAuthorizationDetailsForConnector(selectedConnectorId);
@@ -3957,10 +3537,10 @@ function buildAsApp(opts = {}) {
         // hosted page that tells them to restart the request from the app.
         // Status stays 404: the addressed pending grant genuinely does not
         // exist on this instance.
-        return res.status(404).send(renderPendingConsentNotFoundHtml());
+        return res.status(404).send(renderPendingConsentNotFoundHtml(providerName, consentUi));
       }
       const csrfToken = ownerAuth.ensureCsrfToken(req, res);
-      res.send(renderPendingGrantConsentHtml(pending, requestUri, csrfToken));
+      res.send(renderPendingGrantConsentHtml(pending, requestUri, csrfToken, ownerAuth.csrfFieldName, providerName, consentUi));
     } catch (err) {
       handleError(res, err);
     }
