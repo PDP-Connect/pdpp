@@ -197,12 +197,28 @@ for (const blocker of blockerFiles) {
 }
 for (const lane of wrapperLanes) {
   if (lane.status === "failed") {
-    risks.push(`WRAPPER-LANE failed lane=${lane.lane} run=${lane.startedAt} report_state=${lane.reportState}`);
+    const txNote = lane.transcriptBytes >= 0 ? ` transcript_bytes=${lane.transcriptBytes}` : "";
+    risks.push(`WRAPPER-LANE failed lane=${lane.lane} run=${lane.startedAt} report_state=${lane.reportState}${txNote}`);
   } else if (lane.status === "running") {
-    risks.push(`WRAPPER-LANE still-running lane=${lane.lane} started=${lane.startedAt}`);
+    // Stale "running": started_at === ended_at means the process was SIGKILLed before the final
+    // write_status call could update the seed (both timestamps come from the same initial write).
+    // Normalize both to digits-only to compare across the two date formats used by the wrapper
+    // (started_at: "20260529T033943Z", ended_at: "2026-05-29T03:39:43Z").
+    const normalizeTs = (s) => (s ?? "").replace(/\D/g, "").slice(0, 14);
+    const stale = lane.startedAt && lane.endedAt && normalizeTs(lane.startedAt) === normalizeTs(lane.endedAt);
+    if (stale) {
+      risks.push(`WRAPPER-LANE stale-running (SIGKILL?) lane=${lane.lane} started=${lane.startedAt} — relaunch or mark superseded`);
+    } else {
+      risks.push(`WRAPPER-LANE still-running lane=${lane.lane} started=${lane.startedAt}`);
+    }
   }
   // "aborted" = process was killed before completing; surfaces in the Wrapper Lanes table but
   // is historical evidence, not a live risk requiring owner action.
+
+  // Thin transcript on any terminal status: Claude exited immediately and the work is likely useless.
+  if (lane.status !== "running" && lane.transcriptBytes >= 0 && lane.transcriptBytes < 200) {
+    risks.push(`WRAPPER-LANE thin-transcript lane=${lane.lane} transcript_bytes=${lane.transcriptBytes} — Claude may not have run; check: cat ${lane.transcriptFile || lane.artifactDir + "/transcript.log"}`);
+  }
 }
 
 console.log("# PDPP Workstreams Status");
@@ -297,7 +313,8 @@ printSection(
     : wrapperLanes.map((lane) => {
         const recovered = lane.recovered ? " recovered=true" : "";
         const branch = lane.branch ? ` branch=${lane.branch}` : "";
-        return `- [${lane.status}] lane=${lane.lane}${branch} run=${lane.startedAt} report=${lane.reportState}${recovered}`;
+        const txBytes = lane.transcriptBytes >= 0 ? ` transcript_bytes=${lane.transcriptBytes}` : "";
+        return `- [${lane.status}] lane=${lane.lane}${branch} run=${lane.startedAt} report=${lane.reportState}${txBytes}${recovered}`;
       })
 );
 
@@ -388,6 +405,9 @@ function loadWrapperLanes(wrapperDir) {
         startedAt: data.started_at ?? latestRun,
         endedAt: data.ended_at ?? "",
         exitCode: data.exit_code ?? -1,
+        transcriptBytes: data.transcript_bytes ?? -1,
+        artifactDir: data.artifact_dir ?? "",
+        transcriptFile: data.transcript_file ?? "",
       });
     } catch {
       // Corrupt status.json — surface as a failed lane.
@@ -400,6 +420,9 @@ function loadWrapperLanes(wrapperDir) {
         startedAt: latestRun,
         endedAt: "",
         exitCode: -1,
+        transcriptBytes: -1,
+        artifactDir: "",
+        transcriptFile: "",
       });
     }
   }

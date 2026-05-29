@@ -196,8 +196,16 @@ write_status() {
   local report_state="$2"
   local recovered="$3"
   local exit_code="$4"
-  local head_after
+  local head_after transcript_bytes
   head_after="$(git -C "$worktree_abs" rev-parse HEAD 2>/dev/null || echo "unknown")"
+  # transcript_bytes: size of the primary transcript (-1 when the file doesn't exist yet).
+  # A near-zero value means Claude exited almost immediately and the run is likely useless.
+  if [[ -f "$transcript" ]]; then
+    transcript_bytes="$(wc -c <"$transcript" 2>/dev/null || echo "-1")"
+  else
+    transcript_bytes="-1"
+  fi
+  transcript_bytes="${transcript_bytes//[[:space:]]/}"
   jq -n \
     --arg lane "$lane" \
     --arg worktree "$worktree_abs" \
@@ -215,6 +223,7 @@ write_status() {
     --arg model "$model" \
     --argjson recovered "$recovered" \
     --argjson exit_code "$exit_code" \
+    --argjson transcript_bytes "$transcript_bytes" \
     '{
        lane: $lane,
        worktree: $worktree,
@@ -231,6 +240,7 @@ write_status() {
        report_state: $report_state,
        recovered: $recovered,
        exit_code: $exit_code,
+       transcript_bytes: $transcript_bytes,
        model: $model
      }' >"$status_json"
 }
@@ -265,6 +275,25 @@ thinking_block_replay_error() {
   local file="$1"
   [[ -f "$file" ]] \
     && grep -q '`thinking` or `redacted_thinking` blocks in the latest assistant message cannot be modified' "$file"
+}
+
+# Returns 0 (true) when the transcript looks like an immediate execution failure
+# that is likely transient: the file is under 100 bytes and contains a known
+# error marker, or the file is completely empty despite the process exiting non-zero.
+transient_execution_error() {
+  local file="$1"
+  local ec="$2"
+  [[ $ec -eq 0 ]] && return 1
+  local sz=0
+  [[ -f "$file" ]] && sz=$(wc -c <"$file" 2>/dev/null | tr -d ' ')
+  [[ -z "$sz" ]] && sz=0
+  # Empty transcript on non-zero exit is almost always a process-level failure.
+  [[ $sz -eq 0 ]] && return 0
+  # Short transcript containing "Execution error" is a known CLI crash pattern.
+  if [[ $sz -lt 200 ]]; then
+    grep -q 'Execution error' "$file" 2>/dev/null && return 0
+  fi
+  return 1
 }
 
 invoke_claude_main() {
@@ -346,6 +375,22 @@ if [[ $main_exit -ne 0 ]] && thinking_block_replay_error "$transcript"; then
     printf '\n--- retry transcript (%s) ---\n' "$retry_transcript"
     cat "$retry_transcript"
   } >>"$transcript"
+fi
+
+# Bounded retry for transient execution failures (empty transcript or known
+# "Execution error" crash pattern). One attempt only; if the retry also fails
+# instantly the likely cause is a config/env problem, not a transient fault.
+transient_retry_transcript="$artifact_dir/transcript-transient-retry-1.log"
+if [[ $main_exit -ne 0 ]] && ! report_present && transient_execution_error "$transcript" "$main_exit"; then
+  echo "claude-workstream: transient execution error detected — retrying once" >&2
+  prev_exit=$main_exit
+  main_exit=0
+  invoke_claude_main "$transient_retry_transcript" || main_exit=$?
+  {
+    printf '\n--- transient-retry transcript (prev_exit=%s) ---\n' "$prev_exit"
+    cat "$transient_retry_transcript"
+  } >>"$transcript"
+  echo "claude-workstream: transient retry exit=$main_exit" >&2
 fi
 
 git -C "$worktree_abs" status --short >"$git_after" 2>&1 || true
