@@ -2930,8 +2930,8 @@ function buildAsApp(opts = {}) {
           connectionId,
           label: displayName ? `${connectorLabel} — ${displayName}` : connectorLabel,
           meta: streamCount
-            ? `${connectorMetaToken} · ${streamCount} streams · ${connectionId}`
-            : `${connectorMetaToken} · ${connectionId}`,
+            ? `${connectorMetaToken} · ${streamCount} streams`
+            : connectorMetaToken,
           streams: streamSummaries,
         });
       }
