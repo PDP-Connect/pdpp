@@ -1,0 +1,604 @@
+/**
+ * Explorer data assembly for /dashboard/explore.
+ *
+ * Extracted from page.tsx so the inline feed loaders (loadEmptyQueryFeed,
+ * loadTimeRangeFeed, loadSearchFeed) are not duplicated if a second surface
+ * ever needs them, and so the invariant test can verify the page delegates
+ * here by import rather than containing the loaders itself.
+ *
+ * Calls rs-client functions directly (no sandbox adapter needed in the
+ * operator console — the console has no mock-owner surface).
+ *
+ * No protocol semantics live here — this module only drives the read methods
+ * already declared in rs-client.ts.
+ */
+import {
+  type ExplorerConnectionFacet,
+  type ExplorerFeedEntry,
+  type ExplorerLens,
+  type ExplorerPeekData,
+  type ExplorerWarning,
+  parseExplorerPeekParam,
+  type RecordsExplorerData,
+} from "@/app/dashboard/components/views/records-explorer-view.tsx";
+import { classifyRecordKind } from "@/app/dashboard/lib/record-kind.ts";
+import { buildRecordPreview } from "@/app/dashboard/lib/record-preview.ts";
+import { listConnectorSummaries, type RefConnectorSummary } from "@/app/dashboard/lib/ref-client.ts";
+import {
+  getRecord,
+  isHybridRetrievalAdvertised,
+  listConnectorManifests,
+  queryRecords,
+  type SearchResultHit,
+  searchRecordsHybrid,
+  searchRecordsLexical,
+  type StreamRecord,
+} from "@/app/dashboard/lib/rs-client.ts";
+import {
+  lookupSearchTimestampMetadata,
+  pickSearchDisplayTimestamp,
+  type SearchTimestampMetadata,
+  searchTimestampMetadataKey,
+} from "@/app/dashboard/lib/search-record-timestamps.ts";
+import { summarize } from "@/app/dashboard/lib/timeline-summaries.ts";
+import { buildPeekReadUrl } from "./peek-read-url.ts";
+import { attributeSearchHit, shouldIncludeSearchHit } from "./search-hit-attribution.ts";
+
+// Empty-query fan-out caps. Keeps the recency feed cheap on instances
+// with many connections; the user is expected to submit a query to
+// narrow further. Search-driven mode is unaffected.
+const MAX_FEED_CONNECTIONS = 12;
+const MAX_FEED_STREAMS_PER_CONNECTION = 4;
+const MAX_FEED_RECORDS_PER_STREAM = 8;
+const FEED_TOTAL_CAP = 50;
+const TIME_RANGE_RECORDS_PER_STREAM = 50;
+const TIME_RANGE_TOTAL_CAP = 500;
+const SEARCH_PAGE_LIMIT = 25;
+
+function uniqueStrings(values: Array<string | null | undefined>): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const v of values) {
+    if (typeof v !== "string" || v.length === 0 || seen.has(v)) {
+      continue;
+    }
+    seen.add(v);
+    out.push(v);
+  }
+  return out;
+}
+
+function asStringArray(value: string | string[] | undefined): string[] {
+  if (Array.isArray(value)) {
+    return value.filter((v): v is string => typeof v === "string" && v.length > 0);
+  }
+  if (typeof value === "string" && value.length > 0) {
+    return [value];
+  }
+  return [];
+}
+
+function toConnectionFacet(summary: RefConnectorSummary): ExplorerConnectionFacet {
+  return {
+    connectionId: summary.connection_id,
+    connectorId: summary.connector_id,
+    displayName: summary.display_name || summary.connector_display_name || summary.connector_id,
+    streams: [...(summary.streams ?? [])].sort(),
+  };
+}
+
+function summaryByConnectionId(summaries: RefConnectorSummary[]): Map<string, RefConnectorSummary> {
+  const map = new Map<string, RefConnectorSummary>();
+  for (const s of summaries) {
+    map.set(s.connection_id, s);
+  }
+  return map;
+}
+
+function isValidIsoDate(value: string): boolean {
+  if (!value) {
+    return false;
+  }
+  return !Number.isNaN(Date.parse(value));
+}
+
+function describeError(err: unknown): string {
+  if (err instanceof Error) {
+    return err.message;
+  }
+  return String(err);
+}
+
+function parseRecordTimestamp(raw: unknown): number | null {
+  if (raw === null || raw === undefined) {
+    return null;
+  }
+  if (typeof raw === "number") {
+    const ms = raw > 1e12 ? raw : raw * 1000;
+    return Number.isFinite(ms) ? ms : null;
+  }
+  if (typeof raw !== "string") {
+    return null;
+  }
+  const ms = Date.parse(raw);
+  return Number.isNaN(ms) ? null : ms;
+}
+
+function isWithinWindow(ms: number, sinceMs: number | null, untilMs: number | null): boolean {
+  if (sinceMs !== null && ms < sinceMs) {
+    return false;
+  }
+  return !(untilMs !== null && ms >= untilMs);
+}
+
+function recordData(record: StreamRecord): Record<string, unknown> {
+  return record.data && typeof record.data === "object" ? (record.data as Record<string, unknown>) : {};
+}
+
+interface FeedLoadResult {
+  entries: ExplorerFeedEntry[];
+  fromSearch: boolean;
+  hybridUsed: boolean;
+  truncated: boolean;
+  warnings: ExplorerWarning[];
+}
+
+function toTimeRangeEntry({
+  consentTimeField,
+  record,
+  sinceMs,
+  streamName,
+  summary,
+  untilMs,
+}: {
+  consentTimeField: string;
+  record: StreamRecord;
+  sinceMs: number | null;
+  streamName: string;
+  summary: RefConnectorSummary;
+  untilMs: number | null;
+}): ExplorerFeedEntry | null {
+  const data = recordData(record);
+  const ms = parseRecordTimestamp(data[consentTimeField]);
+  if (ms === null || !isWithinWindow(ms, sinceMs, untilMs)) {
+    return null;
+  }
+  const kind = classifyRecordKind(streamName, data).kind;
+  return {
+    connectorId: summary.connector_id,
+    connectionId: summary.connection_id,
+    connectionDisplayName: summary.display_name || summary.connector_display_name || summary.connector_id,
+    stream: streamName,
+    recordId: record.id,
+    emittedAt: record.emitted_at,
+    displayAt: new Date(ms).toISOString(),
+    summary: summarize(summary.connector_id, streamName, data),
+    kind,
+    preview: buildRecordPreview(kind, data) ?? undefined,
+  };
+}
+
+async function loadEmptyQueryFeed(
+  filteredSummaries: RefConnectorSummary[],
+  timestampMetadata: ReadonlyMap<string, SearchTimestampMetadata>,
+  filterStreams: ReadonlySet<string>
+): Promise<FeedLoadResult> {
+  // Bounded fan-out: pick the top-N most-recent connections, then for each
+  // walk a small set of streams in declaration order.
+  const connections = filteredSummaries.slice(0, MAX_FEED_CONNECTIONS);
+
+  type StreamFetchResult = { ok: true; entries: ExplorerFeedEntry[] } | { ok: false; failure: ExplorerWarning };
+
+  const fetches: Promise<StreamFetchResult>[] = [];
+  for (const summary of connections) {
+    const streams = (summary.streams ?? [])
+      .filter((s) => filterStreams.size === 0 || filterStreams.has(s))
+      .slice(0, MAX_FEED_STREAMS_PER_CONNECTION);
+    for (const streamName of streams) {
+      fetches.push(
+        queryRecords(summary.connector_id, streamName, {
+          connectorInstanceId: summary.connector_instance_id ?? summary.connection_id,
+          limit: MAX_FEED_RECORDS_PER_STREAM,
+          order: "desc",
+        })
+          .then(
+            (page): StreamFetchResult => ({
+              ok: true,
+              entries: page.data.map((record) => {
+                const data = recordData(record);
+                const display = pickSearchDisplayTimestamp({
+                  data,
+                  emittedAt: record.emitted_at,
+                  metadata: lookupSearchTimestampMetadata(timestampMetadata, summary.connector_id, streamName),
+                });
+                const kind = classifyRecordKind(streamName, data).kind;
+                const entry: ExplorerFeedEntry = {
+                  connectorId: summary.connector_id,
+                  connectionId: summary.connection_id,
+                  connectionDisplayName: summary.display_name || summary.connector_display_name || summary.connector_id,
+                  stream: streamName,
+                  recordId: record.id,
+                  emittedAt: record.emitted_at,
+                  displayAt: display.value,
+                  summary: summarize(summary.connector_id, streamName, data),
+                  kind,
+                  preview: buildRecordPreview(kind, data) ?? undefined,
+                };
+                return entry;
+              }),
+            })
+          )
+          .catch(
+            (err): StreamFetchResult => ({
+              ok: false,
+              failure: {
+                code: "partial_fan_in",
+                message: `${summary.display_name || summary.connector_display_name || summary.connector_id} · ${streamName}: ${describeError(err)}`,
+              },
+            })
+          )
+      );
+    }
+  }
+
+  const results = await Promise.all(fetches);
+  const flat: ExplorerFeedEntry[] = [];
+  const warnings: ExplorerWarning[] = [];
+  for (const r of results) {
+    if (r.ok) {
+      flat.push(...r.entries);
+    } else {
+      warnings.push(r.failure);
+    }
+  }
+  flat.sort((a, b) => (Date.parse(b.displayAt) || 0) - (Date.parse(a.displayAt) || 0));
+  const truncated = flat.length > FEED_TOTAL_CAP;
+  return {
+    entries: flat.slice(0, FEED_TOTAL_CAP),
+    fromSearch: false,
+    hybridUsed: false,
+    truncated,
+    warnings,
+  };
+}
+
+async function loadTimeRangeFeed(
+  since: string,
+  until: string,
+  filteredSummaries: RefConnectorSummary[],
+  timestampMetadata: ReadonlyMap<string, SearchTimestampMetadata>,
+  filterStreams: ReadonlySet<string>
+): Promise<FeedLoadResult> {
+  // Time-anchored cross-stream feed. Connection-first so row attribution stays exact.
+  const sinceMs = since ? Date.parse(since) : null;
+  const untilMs = until ? Date.parse(until) : null;
+
+  type StreamFetchResult = { ok: true; entries: ExplorerFeedEntry[] } | { ok: false; failure: ExplorerWarning };
+  const fetches: Promise<StreamFetchResult>[] = [];
+
+  for (const summary of filteredSummaries) {
+    const streams = (summary.streams ?? []).filter((streamName) => {
+      if (filterStreams.size > 0 && !filterStreams.has(streamName)) {
+        return false;
+      }
+      const metadata = lookupSearchTimestampMetadata(timestampMetadata, summary.connector_id, streamName);
+      return typeof metadata?.consent_time_field === "string" && metadata.consent_time_field.length > 0;
+    });
+    for (const streamName of streams) {
+      const metadata = lookupSearchTimestampMetadata(timestampMetadata, summary.connector_id, streamName);
+      const consentTimeField = metadata?.consent_time_field;
+      if (!(typeof consentTimeField === "string" && consentTimeField.length > 0)) {
+        continue;
+      }
+      fetches.push(
+        queryRecords(summary.connector_id, streamName, {
+          connectorInstanceId: summary.connector_instance_id ?? summary.connection_id,
+          limit: TIME_RANGE_RECORDS_PER_STREAM,
+          order: "desc",
+        })
+          .then(
+            (page): StreamFetchResult => ({
+              ok: true,
+              entries: page.data
+                .map((record) => toTimeRangeEntry({ consentTimeField, record, sinceMs, streamName, summary, untilMs }))
+                .filter((entry): entry is ExplorerFeedEntry => entry !== null),
+            })
+          )
+          .catch(
+            (err): StreamFetchResult => ({
+              ok: false,
+              failure: {
+                code: "partial_fan_in",
+                message: `${summary.display_name || summary.connector_display_name || summary.connector_id} · ${streamName}: ${describeError(err)}`,
+              },
+            })
+          )
+      );
+    }
+  }
+
+  const results = await Promise.all(fetches);
+  const entries: ExplorerFeedEntry[] = [];
+  const warnings: ExplorerWarning[] = [];
+  for (const result of results) {
+    if (result.ok) {
+      entries.push(...result.entries);
+    } else {
+      warnings.push(result.failure);
+    }
+  }
+  entries.sort((a, b) => (Date.parse(b.displayAt) || 0) - (Date.parse(a.displayAt) || 0));
+  const truncated = entries.length > TIME_RANGE_TOTAL_CAP;
+  return {
+    entries: entries.slice(0, TIME_RANGE_TOTAL_CAP),
+    fromSearch: false,
+    hybridUsed: false,
+    truncated,
+    warnings,
+  };
+}
+
+async function loadSearchFeed(
+  query: string,
+  filteredSummaries: RefConnectorSummary[],
+  filterStreams: ReadonlySet<string>,
+  timestampMetadata: ReadonlyMap<string, SearchTimestampMetadata>,
+  selectedConnectionIds: ReadonlySet<string>
+): Promise<FeedLoadResult> {
+  const allowedConnectors = new Set(filteredSummaries.map((s) => s.connector_id));
+  const allowedConnectionIds = new Set<string>();
+  for (const s of filteredSummaries) {
+    allowedConnectionIds.add(s.connection_id);
+    if (s.connector_instance_id) {
+      allowedConnectionIds.add(s.connector_instance_id);
+    }
+  }
+  const enforceConnectionFilter = selectedConnectionIds.size > 0;
+  const hybridAdvertised = await isHybridRetrievalAdvertised();
+
+  const warnings: ExplorerWarning[] = [];
+  let hits: SearchResultHit[] = [];
+  let hybridUsed = false;
+  if (hybridAdvertised) {
+    try {
+      const page = await searchRecordsHybrid(query, { limit: SEARCH_PAGE_LIMIT });
+      hits = page.data;
+      hybridUsed = true;
+    } catch (err) {
+      warnings.push({
+        code: "hybrid_unavailable",
+        message: `Hybrid retrieval was advertised but failed; fell back to lexical. ${describeError(err)}`,
+      });
+    }
+  }
+  if (!hybridUsed) {
+    const page = await searchRecordsLexical(query, { limit: SEARCH_PAGE_LIMIT });
+    hits = page.data;
+  }
+
+  const filtered = hits.filter((h) => {
+    if (filterStreams.size > 0 && !filterStreams.has(h.stream)) {
+      return false;
+    }
+    return shouldIncludeSearchHit(h, { allowedConnectors, allowedConnectionIds, enforceConnectionFilter });
+  });
+
+  const entries: ExplorerFeedEntry[] = filtered.map((hit) => {
+    const display = pickSearchDisplayTimestamp({
+      data: null,
+      emittedAt: hit.emitted_at,
+      metadata: lookupSearchTimestampMetadata(timestampMetadata, hit.connector_id, hit.stream),
+    });
+    const attribution = attributeSearchHit(hit, filteredSummaries);
+    return {
+      connectorId: hit.connector_id,
+      connectionId: attribution.connectionId,
+      connectionDisplayName: attribution.connectionDisplayName,
+      stream: hit.stream,
+      recordId: hit.record_key,
+      emittedAt: hit.emitted_at,
+      displayAt: display.value,
+      summary: hit.snippet?.text ?? `${hit.stream}/${hit.record_key}`,
+      kind: classifyRecordKind(hit.stream, null).kind,
+      retrievalMode: hit.retrieval_mode ?? (hybridUsed ? "hybrid" : "lexical"),
+    };
+  });
+
+  return { entries, fromSearch: true, hybridUsed, truncated: false, warnings };
+}
+
+function resolvePeekConnection(
+  parsed: { connectorId: string; connectionId: string | null },
+  byConnectionId: ReadonlyMap<string, RefConnectorSummary>
+): RefConnectorSummary | null {
+  if (parsed.connectionId) {
+    const direct = byConnectionId.get(parsed.connectionId);
+    if (direct) {
+      return direct;
+    }
+    for (const summary of byConnectionId.values()) {
+      if (summary.connector_instance_id === parsed.connectionId) {
+        return summary;
+      }
+    }
+    return null;
+  }
+  const matches: RefConnectorSummary[] = [];
+  for (const summary of byConnectionId.values()) {
+    if (summary.connector_id === parsed.connectorId) {
+      matches.push(summary);
+    }
+  }
+  return matches.length === 1 ? (matches[0] ?? null) : null;
+}
+
+async function buildPeek(
+  raw: string | undefined,
+  byConnectionId: ReadonlyMap<string, RefConnectorSummary>,
+  rsBaseUrl: string
+): Promise<ExplorerPeekData | null> {
+  const parsed = parseExplorerPeekParam(raw);
+  if (!parsed) {
+    return null;
+  }
+  const connection = resolvePeekConnection(parsed, byConnectionId);
+  const connectorInstanceId = connection?.connector_instance_id ?? connection?.connection_id ?? null;
+
+  const readUrl = buildPeekReadUrl({
+    rsBaseUrl,
+    connectorId: parsed.connectorId,
+    stream: parsed.stream,
+    recordId: parsed.recordId,
+    connectorInstanceId,
+  });
+
+  try {
+    const record = await getRecord(parsed.connectorId, parsed.stream, parsed.recordId, {
+      connectorInstanceId,
+    });
+    return {
+      connectorId: parsed.connectorId,
+      connectionId: connection?.connection_id ?? null,
+      stream: parsed.stream,
+      recordId: parsed.recordId,
+      emittedAt: record.emitted_at,
+      readUrl,
+      bodyJson: JSON.stringify(record.data, null, 2),
+      error: null,
+    };
+  } catch (err) {
+    return {
+      connectorId: parsed.connectorId,
+      connectionId: connection?.connection_id ?? null,
+      stream: parsed.stream,
+      recordId: parsed.recordId,
+      emittedAt: "",
+      readUrl,
+      bodyJson: null,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+interface FeedDispatch {
+  feed: FeedLoadResult;
+  lens: ExplorerLens;
+}
+
+async function dispatchFeed(args: {
+  query: string;
+  since: string;
+  until: string;
+  filteredSummaries: RefConnectorSummary[];
+  filterStreamSet: ReadonlySet<string>;
+  timestampMetadata: ReadonlyMap<string, SearchTimestampMetadata>;
+  filterConnectionSet: ReadonlySet<string>;
+}): Promise<FeedDispatch> {
+  const { query, since, until, filteredSummaries, filterStreamSet, timestampMetadata, filterConnectionSet } = args;
+  const hasTimeWindow = since !== "" || until !== "";
+  if (query) {
+    const feed = await loadSearchFeed(
+      query,
+      filteredSummaries,
+      filterStreamSet,
+      timestampMetadata,
+      filterConnectionSet
+    );
+    return { feed, lens: hasTimeWindow ? "search_with_ignored_time_window" : "search" };
+  }
+  if (hasTimeWindow) {
+    const feed = await loadTimeRangeFeed(since, until, filteredSummaries, timestampMetadata, filterStreamSet);
+    return { feed, lens: "time_range" };
+  }
+  const feed = await loadEmptyQueryFeed(filteredSummaries, timestampMetadata, filterStreamSet);
+  return { feed, lens: "recent" };
+}
+
+async function buildTimestampMetadata(): Promise<Map<string, SearchTimestampMetadata>> {
+  const metadata = new Map<string, SearchTimestampMetadata>();
+  for (const manifest of await listConnectorManifests()) {
+    for (const stream of manifest.streams ?? []) {
+      metadata.set(searchTimestampMetadataKey(manifest.connector_id, stream.name), {
+        consent_time_field: typeof stream.consent_time_field === "string" ? stream.consent_time_field : null,
+        cursor_field: typeof stream.cursor_field === "string" ? stream.cursor_field : null,
+      });
+    }
+  }
+  return metadata;
+}
+
+export interface ExplorerSearchParams {
+  connection?: string | string[];
+  peek?: string;
+  q?: string;
+  since?: string;
+  stream?: string | string[];
+  until?: string;
+}
+
+/**
+ * Assemble RecordsExplorerData from search params.
+ *
+ * The live explore page calls this with the RS internal URL; peek and feed
+ * logic is not duplicated in page.tsx.
+ */
+export async function assembleExplorerData(
+  params: ExplorerSearchParams,
+  rsBaseUrl: string
+): Promise<RecordsExplorerData> {
+  const query = (params.q ?? "").trim();
+  const selectedConnectionIds = uniqueStrings(asStringArray(params.connection));
+  const selectedStreams = uniqueStrings(asStringArray(params.stream));
+  const rawSince = (params.since ?? "").trim();
+  const rawUntil = (params.until ?? "").trim();
+  const since = isValidIsoDate(rawSince) ? rawSince : "";
+  const until = isValidIsoDate(rawUntil) ? rawUntil : "";
+
+  const response = await listConnectorSummaries();
+  const summaries = response.data;
+
+  const connections = summaries.map(toConnectionFacet).sort((a, b) => a.displayName.localeCompare(b.displayName));
+
+  const filterConnectionSet = new Set(selectedConnectionIds);
+  const filteredSummaries =
+    filterConnectionSet.size > 0 ? summaries.filter((s) => filterConnectionSet.has(s.connection_id)) : summaries;
+
+  const filterStreamSet = new Set(selectedStreams);
+  const timestampMetadata = await buildTimestampMetadata();
+
+  const { feed: feedResult, lens } = await dispatchFeed({
+    query,
+    since,
+    until,
+    filteredSummaries,
+    filterStreamSet,
+    timestampMetadata,
+    filterConnectionSet,
+  });
+
+  const peek = await buildPeek(params.peek, summaryByConnectionId(summaries), rsBaseUrl);
+
+  const warnings: ExplorerWarning[] = [...feedResult.warnings];
+  if (peek?.error) {
+    warnings.push({
+      code: "peek_unreachable",
+      message: `Peek read failed for ${peek.connectorId}/${peek.stream}/${peek.recordId}: ${peek.error}`,
+    });
+  }
+
+  return {
+    query,
+    connections,
+    selectedConnectionIds,
+    selectedStreams,
+    since,
+    until,
+    lens,
+    fromSearch: feedResult.fromSearch,
+    hybridUsed: feedResult.hybridUsed,
+    feed: feedResult.entries,
+    truncated: feedResult.truncated,
+    peek,
+    warnings,
+  };
+}
