@@ -38,7 +38,7 @@ test("command palette sources commands from the actions registry, not a hard-cod
   assert.match(src, PALETTE_USES_REGISTRY);
 });
 
-// ── live mode ────────────────────────────────────────────────────────────────
+// live mode
 
 test("actions registry exposes quick-owner-token in live mode pointing to /dashboard/deployment/tokens", () => {
   const all = listDashboardCommands({ basePath: "/dashboard", mode: "live" });
@@ -90,7 +90,7 @@ test("Deployment nav command is present in live mode", () => {
   assert.equal(deployment.href, "/dashboard/deployment");
 });
 
-// ── mock-owner / sandbox mode ────────────────────────────────────────────────
+// mock-owner / sandbox mode
 
 test("quick-owner-token is absent in mock-owner mode", () => {
   const all = listDashboardCommands({ basePath: "/sandbox", mode: "mock-owner" });
@@ -130,7 +130,7 @@ test("sandbox commands use /sandbox/ base path", () => {
   );
 });
 
-// ── base path correctness ────────────────────────────────────────────────────
+// base path correctness
 
 test("live mode commands use the supplied basePath, not a hard-coded /dashboard", () => {
   const all = listDashboardCommands({ basePath: "/custom", mode: "live" });
