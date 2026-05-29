@@ -198,6 +198,20 @@ const nextConfig = {
         destination: '/dashboard/explore',
         permanent: false,
       },
+      // Top-level /explore alias for the dashboard Explore canvas.
+      // Lets operators and docs share a clean /explore URL without a
+      // session requirement at the redirect layer; the dashboard page
+      // enforces auth after the redirect.
+      {
+        source: '/explore',
+        destination: '/dashboard/explore',
+        permanent: false,
+      },
+      {
+        source: '/explore/:rest*',
+        destination: '/dashboard/explore/:rest*',
+        permanent: false,
+      },
       // Bare connector-style paths from the pre-v1 dashboard map to Records.
       // Excludes reserved top-level sections so they don't get caught.
       {

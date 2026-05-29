@@ -7,6 +7,8 @@ const HERE = fileURLToPath(new URL(".", import.meta.url));
 const ASSEMBLER_FILE = `${HERE}explore-data-assembler.ts`;
 const LIVE_PAGE_FILE = `${HERE}page.tsx`;
 const SANDBOX_PAGE_FILE = fileURLToPath(new URL("../../sandbox/explore/page.tsx", import.meta.url));
+const NEXT_CONFIG_FILE = fileURLToPath(new URL("../../../../next.config.mjs", import.meta.url));
+const CHROME_FILE = fileURLToPath(new URL("../../../../../../packages/pdpp-brand/chrome.ts", import.meta.url));
 
 const LOAD_TIMELINE_RE = /\bloadTimeline\b/;
 const CONNECTOR_INSTANCE_ID_RE =
@@ -37,4 +39,16 @@ test("sandbox explore page delegates to the shared assembler", async () => {
   const src = await readFile(SANDBOX_PAGE_FILE, "utf8");
   assert.match(src, ASSEMBLER_IMPORT_RE, "sandbox page must import explore-data-assembler");
   assert.doesNotMatch(src, INLINE_FEED_LOADER_RE, "sandbox page must not define inline feed loader functions");
+});
+
+test("next.config.mjs has a top-level /explore redirect to /dashboard/explore", async () => {
+  const src = await readFile(NEXT_CONFIG_FILE, "utf8");
+  assert.match(src, /source:\s*['"]\/explore['"]/, "must have /explore source redirect");
+  assert.match(src, /destination:\s*['"]\/dashboard\/explore['"]/, "must redirect to /dashboard/explore");
+});
+
+test("chrome.ts siteNav includes a Dashboard entry pointing at /dashboard", async () => {
+  const src = await readFile(CHROME_FILE, "utf8");
+  assert.match(src, /text:\s*["']Dashboard["']/, "siteNav must include Dashboard entry");
+  assert.match(src, /link:\s*["']\/dashboard["']/, "Dashboard entry must link to /dashboard");
 });

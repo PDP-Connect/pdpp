@@ -140,12 +140,22 @@ function SidebarContent({ active, mode, routes }: { active: DashboardSection; mo
           })}
         </nav>
 
+        {active === "explore" || active === "search" ? <ExploreSubnav routes={routes} /> : null}
         {active === "grants" && mode === "live" ? <GrantsSubnav /> : null}
       </div>
 
       {mode === "mock-owner" ? <SandboxFooter /> : <EnvFooter />}
     </div>
   );
+}
+
+function ExploreSubnav({ routes }: { routes: Routes }) {
+  const items = [
+    { href: routes.section.explore, label: "Browse records" },
+    { href: routes.section.search, label: "Jump to ID" },
+    { href: routes.section.records, label: "Connections" },
+  ];
+  return <SidebarSubnav items={items} label="Explore" />;
 }
 
 function GrantsSubnav() {
