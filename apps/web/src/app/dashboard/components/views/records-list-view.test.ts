@@ -77,3 +77,44 @@ test("running count includes health projection syncing badge", async () => {
   // isRunning, so the count must include both signals.
   assert.match(src, SYNCING_BADGE_RE);
 });
+
+// ─── SLVP ordinal-label fallback ──────────────────────────────────────────
+//
+// When a user has multiple connections of the same connector type that are
+// all unnamed (display_name equals the connector type name), simply removing
+// the raw connectorInstanceId leaves them visually indistinguishable. The
+// `labelConnections` helper assigns deterministic ordinal subtitles in that
+// case so owner-facing rows remain distinguishable without exposing raw IDs.
+
+const LABEL_CONNECTIONS_DEF = /function labelConnections\(/;
+const LABEL_CONNECTIONS_APPLIED = /labelConnections\(overviews\)/;
+const ORDINAL_SUFFIX_PATTERN = /connection \$\{rank \+ 1\}/;
+const STABLE_SORT_BY_CONNECTION_ID = /connectionId\(a\)\.localeCompare\(connectionId\(b\)\)/;
+const NO_RAW_INSTANCE_ID_IN_DISPLAY =
+  /connectorInstanceId \? \(\s*<>\s*\{" "\}\s*·\s*<code.*?>\{connectorInstanceId\}/s;
+
+test("labelConnections helper is defined in the view module", async () => {
+  const src = await readFile(VIEW_FILE, "utf8");
+  assert.match(src, LABEL_CONNECTIONS_DEF);
+});
+
+test("labelConnections is applied to overviews before rendering", async () => {
+  const src = await readFile(VIEW_FILE, "utf8");
+  assert.match(src, LABEL_CONNECTIONS_APPLIED);
+});
+
+test("labelConnections assigns ordinal subtitles for unnamed same-type groups", async () => {
+  const src = await readFile(VIEW_FILE, "utf8");
+  assert.match(src, ORDINAL_SUFFIX_PATTERN);
+});
+
+test("labelConnections sorts ordinals stably by connection ID", async () => {
+  const src = await readFile(VIEW_FILE, "utf8");
+  assert.match(src, STABLE_SORT_BY_CONNECTION_ID);
+});
+
+test("records-list-view does not render raw connectorInstanceId in the caption", async () => {
+  const src = await readFile(VIEW_FILE, "utf8");
+  // The view must never surface the raw `cin_*` ID as a visible label.
+  assert.equal(NO_RAW_INSTANCE_ID_IN_DISPLAY.test(src), false);
+});

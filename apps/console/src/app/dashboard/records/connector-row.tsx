@@ -160,12 +160,6 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
             <span className="pdpp-body font-medium text-foreground group-hover:underline">{displayName}</span>
             <span className="pdpp-caption truncate text-muted-foreground">
               {typeName}
-              {connectorInstanceId ? (
-                <>
-                  {" "}
-                  · <code className="font-mono">{connectorInstanceId}</code>
-                </>
-              ) : null}
             </span>
           </Link>
         </div>

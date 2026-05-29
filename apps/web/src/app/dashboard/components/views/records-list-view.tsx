@@ -74,6 +74,69 @@ function overviewRouteId(o: ConnectorOverview): string {
   return o.connectionId ?? o.connectorInstanceId ?? o.connector.connector_id;
 }
 
+/**
+ * Assigns ordinal subtitles to unnamed connections that share a connector
+ * type. When a user has two Gmail connections but neither has a custom name,
+ * both rows would show "Gmail" for both the headline and the subtitle — making
+ * them indistinguishable after the raw connectorInstanceId was removed.
+ *
+ * For each connector type with ≥2 unnamed members, this mutates
+ * `connectorDisplayName` to "<TypeName> · connection N" (1-based, sorted
+ * stably by connection ID so the ordinal is deterministic across renders).
+ * Single unnamed connections and any connection that already has a distinct
+ * display name are left untouched.
+ */
+function labelConnections(overviews: ConnectorOverview[]): ConnectorOverview[] {
+  // Group indices by connector_id where the connection is "unnamed"
+  // (display_name equals the connector type name, meaning the RI returned no
+  // owner-set label).
+  const groups = new Map<string, number[]>();
+  for (let i = 0; i < overviews.length; i++) {
+    const o = overviews[i];
+    if (!o) {
+      continue;
+    }
+    const typeName = o.connectorDisplayName ?? o.connector.name ?? o.connector.connector_id;
+    const displayName = o.connector.display_name ?? o.connector.name ?? o.connector.connector_id;
+    if (displayName === typeName) {
+      const key = o.connector.connector_id;
+      const group = groups.get(key);
+      if (group) {
+        group.push(i);
+      } else {
+        groups.set(key, [i]);
+      }
+    }
+  }
+
+  // Only act on groups with multiple unnamed connections.
+  const result = overviews.slice();
+  for (const [, indices] of groups) {
+    if (indices.length < 2) {
+      continue;
+    }
+    // Stable sort by connection ID so ordinals are deterministic.
+    const connectionId = (idx: number): string => {
+      const o = overviews[idx];
+      return (o?.connectionId ?? o?.connectorInstanceId ?? o?.connector.connector_id) || "";
+    };
+    const sorted = indices.slice().sort((a, b) => connectionId(a).localeCompare(connectionId(b)));
+    for (let rank = 0; rank < sorted.length; rank++) {
+      const idx = sorted[rank];
+      if (idx === undefined) {
+        continue;
+      }
+      const o = overviews[idx];
+      if (!o) {
+        continue;
+      }
+      const typeName = o.connectorDisplayName ?? o.connector.name ?? o.connector.connector_id;
+      result[idx] = { ...o, connectorDisplayName: `${typeName} · connection ${rank + 1}` };
+    }
+  }
+  return result;
+}
+
 export function RecordsListView({
   overviews,
   routes,
@@ -105,8 +168,9 @@ export function RecordsListView({
    */
   now?: number;
 }) {
-  const withData = overviews.filter(shouldShowInPrimaryConnections);
-  const empty = overviews.filter((o) => !shouldShowInPrimaryConnections(o));
+  const labeled = labelConnections(overviews);
+  const withData = labeled.filter(shouldShowInPrimaryConnections);
+  const empty = labeled.filter((o) => !shouldShowInPrimaryConnections(o));
   const sorted = [...withData].sort((a, b) => {
     const [ak, at, an] = connectorSortKey(a);
     const [bk, bt, bn] = connectorSortKey(b);
