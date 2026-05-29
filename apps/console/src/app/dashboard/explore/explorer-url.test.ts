@@ -8,7 +8,7 @@ import {
   feedSectionTitle,
   groupFeedByDay,
   parseExplorerPeekParam,
-} from "../components/views/records-explorer-view.tsx";
+} from "../components/views/explorer-utils.ts";
 import { dashboardRoutes } from "../components/views/routes.ts";
 
 const NO_CONNECTION_TOKEN = "~";
