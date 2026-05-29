@@ -3,10 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import type {
-  MessageStructureObject,
-  // biome-ignore lint/correctness/noUnresolvedImports: imapflow is declared in package.json; Biome's resolver doesn't see it here
-} from "imapflow";
+import type { MessageStructureObject } from "imapflow";
 import {
   addressListToArray,
   bigintToCursor,

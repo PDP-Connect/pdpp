@@ -6,7 +6,6 @@
  */
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-// biome-ignore lint/correctness/noUnresolvedImports: better-sqlite3 is declared in package.json; tsc resolves it correctly
 import Database from "better-sqlite3";
 
 interface CountRow {

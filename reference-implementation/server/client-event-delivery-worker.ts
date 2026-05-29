@@ -96,8 +96,8 @@ export function createDeliveryWorker(opts: DeliveryWorkerOptions = {}): Delivery
         payloadJson: row.payload_json,
         attemptCount: row.attempt_count,
         callbackUrl: row.callback_url,
-        secret: (row as unknown as { secret_text: string }).secret_text,
-        verificationChallenge: (row as unknown as { verification_challenge: string | null }).verification_challenge,
+        secret: row.secret_text,
+        verificationChallenge: row.verification_challenge,
       },
       deliveryDeps
     );
