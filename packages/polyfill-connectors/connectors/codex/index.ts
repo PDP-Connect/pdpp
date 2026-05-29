@@ -42,6 +42,7 @@ import { join } from "node:path";
 import { createInterface as createFileReader, createInterface } from "node:readline";
 import { DatabaseSync } from "node:sqlite";
 import type { EmittedMessage, RecordData, StreamScope } from "../../src/connector-runtime-protocol.ts";
+import { type CarryForwardCursor, openCarryForwardCursor } from "../../src/fingerprint-cursor.ts";
 import { isMainModule } from "../../src/is-main-module.ts";
 import {
   buildLocalSourceInventory,
@@ -738,30 +739,31 @@ export function flushPendingCalls(state: RolloutParseState, deps: LineEmitDeps):
 // ─── Sessions pass (I/O-free) ───────────────────────────────────────────
 
 export interface EmitSessionsFromMapsArgs {
+  /**
+   * Shared carry-forward cursor over the per-thread `ThreadFingerprint`.
+   * This run's emitted sessions `note` a fresh fingerprint, and skipped
+   * sessions carry their prior fingerprint forward unchanged (the cursor
+   * seeds its next map from the prior). The caller serializes
+   * `cursor.toState()` into the next `sessions` STATE cursor so the chain
+   * stays intact across runs.
+   *
+   * The cursor owns two behaviors the connector relies on:
+   *   1. Lossy-overwrite repair: `cursor.prior(id)` supplies the prior
+   *      counts when this run did NOT parse the session's rollout file, so
+   *      a state_5-only update doesn't clobber a real `message_count` with
+   *      `null` (see `buildThreadSessionRecord` / `makeThreadFingerprint`).
+   *   2. Churn reduction: `shouldReemitThreadSession` skips emitting a
+   *      thread entirely when none of (a) rollout parsed this run,
+   *      (b) thread.updated_at moved, (c) the session id is new. No emit =
+   *      no new history version. The cursor still carries the fingerprint
+   *      forward so the next run can gate against it.
+   *
+   * Omitted by callers that don't need the cursor (e.g. unit tests pinning
+   * the legacy emit-everything contract); in that case every thread emits
+   * and no fingerprints are tracked.
+   */
+  cursor?: CarryForwardCursor<ThreadFingerprint>;
   emitRecord: (stream: string, data: RecordData) => void;
-  /**
-   * Per-thread fingerprint sink: this run's emitted sessions write a
-   * fresh fingerprint here, and skipped sessions carry their prior
-   * fingerprint forward unchanged. The caller wires this into the next
-   * STATE cursor so the chain stays intact across runs.
-   *
-   * Omitted by callers that don't need the new cursor (e.g. unit tests
-   * pinning the legacy emit-everything contract).
-   */
-  fingerprintSink?: Map<string, ThreadFingerprint>;
-  /**
-   * Prior per-thread fingerprints from the last run's `sessions` STATE
-   * cursor. Used for two things:
-   *   1. Lossy-overwrite repair: when this run did NOT parse the session's
-   *      rollout file, fall back to the prior fingerprint's counts instead
-   *      of clobbering a real `message_count` with `null`.
-   *   2. Churn reduction: skip emitting a thread session entirely when
-   *      none of (a) rollout parsed this run, (b) thread.updated_at moved,
-   *      (c) the session id is new. No emit = no new history version.
-   *
-   * Omitted on the first run (no prior cursor).
-   */
-  priorFingerprints?: Map<string, ThreadFingerprint>;
   rolloutAggregates: Map<string, RolloutAggregate>;
   threadsMap: Map<string, ThreadRow>;
 }
@@ -843,20 +845,17 @@ export function emitSessionsFromMaps({
   threadsMap,
   rolloutAggregates,
   emitRecord,
-  priorFingerprints,
-  fingerprintSink,
+  cursor,
 }: EmitSessionsFromMapsArgs): void {
   const emittedSessionIds = new Set<string>();
   for (const [id, t] of threadsMap) {
     emittedSessionIds.add(id);
     const agg = rolloutAggregates.get(id);
-    const prior = priorFingerprints?.get(id);
+    const prior = cursor?.prior(id);
     if (shouldReemitThreadSession(t, agg, prior)) {
       emitRecord("sessions", buildThreadSessionRecord(id, t, agg, prior));
     }
-    if (fingerprintSink) {
-      fingerprintSink.set(id, makeThreadFingerprint(t, agg, prior));
-    }
+    cursor?.note(id, makeThreadFingerprint(t, agg, prior));
   }
   for (const [id, agg] of rolloutAggregates) {
     if (emittedSessionIds.has(id)) {
@@ -993,20 +992,13 @@ async function scanRollouts(args: ScanRolloutsArgs): Promise<ScanRolloutsResult>
 // ─── Session emission ───────────────────────────────────────────────────
 
 interface EmitSessionsArgs {
+  cursor: CarryForwardCursor<ThreadFingerprint>;
   emitRecord: (stream: string, data: RecordData) => void;
-  fingerprintSink: Map<string, ThreadFingerprint>;
-  priorFingerprints: Map<string, ThreadFingerprint>;
   rolloutAggregates: Map<string, RolloutAggregate>;
   stateDbPath: string;
 }
 
-function emitSessions({
-  stateDbPath,
-  rolloutAggregates,
-  emitRecord,
-  priorFingerprints,
-  fingerprintSink,
-}: EmitSessionsArgs): void {
+function emitSessions({ stateDbPath, rolloutAggregates, emitRecord, cursor }: EmitSessionsArgs): void {
   // Sessions: prefer state_5.sqlite#threads; fall back to rollout-derived
   // fields only when state_5 doesn't have the session. Session PK stays the
   // thread/session id — the same UUID is used by both sources. The I/O-free
@@ -1017,8 +1009,7 @@ function emitSessions({
     threadsMap: threadsById,
     rolloutAggregates,
     emitRecord,
-    priorFingerprints,
-    fingerprintSink,
+    cursor,
   });
 }
 
@@ -1145,7 +1136,7 @@ interface EmitStateCursorsArgs {
   nowIso: () => string;
   requested: Map<string, StreamScope>;
   sessionsSourceMtimeMs: number;
-  threadFingerprints: Map<string, ThreadFingerprint>;
+  threadFingerprints: CarryForwardCursor<ThreadFingerprint>;
 }
 
 function emitStateCursors({
@@ -1156,17 +1147,13 @@ function emitStateCursors({
   threadFingerprints,
 }: EmitStateCursorsArgs): void {
   if (requested.has("sessions")) {
-    const thread_fingerprints: Record<string, ThreadFingerprint> = {};
-    for (const [id, fp] of threadFingerprints) {
-      thread_fingerprints[id] = fp;
-    }
     emit({
       type: "STATE",
       stream: "sessions",
       cursor: {
         fetched_at: nowIso(),
         source_mtime_ms: sessionsSourceMtimeMs,
-        thread_fingerprints,
+        thread_fingerprints: threadFingerprints.toState(),
       },
     });
   }
@@ -1378,11 +1365,12 @@ async function main(): Promise<void> {
   // Prior per-thread fingerprints (from last STATE cursor) gate which
   // thread sessions actually need to re-emit, and provide the count
   // fallback that prevents `message_count: null` overwrites when this
-  // run didn't parse the matching rollout file. The sink starts as the
-  // prior map so threads we deliberately don't re-emit carry their
-  // fingerprints forward unchanged.
-  const priorThreadFingerprints = readPriorThreadFingerprints(startMsg);
-  const threadFingerprints = new Map<string, ThreadFingerprint>(priorThreadFingerprints);
+  // run didn't parse the matching rollout file. The shared carry-forward
+  // cursor seeds its next map from the prior map (via openCarryForwardCursor),
+  // so threads we deliberately don't re-emit carry their fingerprints
+  // forward unchanged. The connector-specific decode + tolerant coercion of
+  // the structured `ThreadFingerprint` shape stays in readPriorThreadFingerprints.
+  const threadFingerprints = openCarryForwardCursor<ThreadFingerprint>(readPriorThreadFingerprints(startMsg));
 
   await emitLocalInventoryStreams({ codexHome: dirs.codexHome, requested, emitRecord });
 
@@ -1408,8 +1396,7 @@ async function main(): Promise<void> {
       stateDbPath: dirs.stateDbPath,
       rolloutAggregates,
       emitRecord,
-      priorFingerprints: priorThreadFingerprints,
-      fingerprintSink: threadFingerprints,
+      cursor: threadFingerprints,
     });
     await waitForEmitDrain();
   }

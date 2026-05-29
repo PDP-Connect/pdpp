@@ -13,7 +13,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { openFingerprintCursor, recordFingerprint } from "./fingerprint-cursor.ts";
+import { openCarryForwardCursor, openFingerprintCursor, recordFingerprint } from "./fingerprint-cursor.ts";
 
 // ─── recordFingerprint ──────────────────────────────────────────────────
 
@@ -196,4 +196,54 @@ test("toState: empty cursor produces an empty object", () => {
   const cursor = openFingerprintCursor(undefined);
   assert.deepEqual(cursor.toState(), {});
   assert.equal(cursor.size(), 0);
+});
+
+// ─── Generic carry-forward cursor (the shared lifecycle layer) ──────────
+//
+// `openFingerprintCursor` is the `T = string` specialization over this
+// lifecycle. Codex uses it directly with a structured `T`. These tests pin
+// the lifecycle independent of any fingerprint payload: seed-from-prior,
+// note-records-seen, prune-stale, serialize, and the prior/next split.
+
+interface Fp {
+  count: number;
+  updated_at: number;
+}
+
+test("openCarryForwardCursor: seeds next map from prior so an un-noted id carries forward", () => {
+  const prior = new Map<string, Fp>([["a", { updated_at: 1, count: 5 }]]);
+  const cursor = openCarryForwardCursor<Fp>(prior);
+  // Never note "a" this run — it must survive in toState (carry-forward).
+  assert.deepEqual(cursor.toState().a, { updated_at: 1, count: 5 });
+  assert.equal(cursor.size(), 1);
+});
+
+test("openCarryForwardCursor: prior() reports the prior value; note() does not change it", () => {
+  const prior = new Map<string, Fp>([["a", { updated_at: 1, count: 5 }]]);
+  const cursor = openCarryForwardCursor<Fp>(prior);
+  cursor.note("a", { updated_at: 2, count: 9 });
+  assert.deepEqual(cursor.prior("a"), { updated_at: 1, count: 5 }, "prior is the prior run's value");
+  assert.deepEqual(cursor.toState().a, { updated_at: 2, count: 9 }, "toState reflects this run's note");
+  assert.equal(cursor.prior("missing"), undefined);
+});
+
+test("openCarryForwardCursor: pruneStale drops un-noted ids, keeps noted ones", () => {
+  const prior = new Map<string, Fp>([
+    ["a", { updated_at: 1, count: 5 }],
+    ["b", { updated_at: 1, count: 6 }],
+  ]);
+  const cursor = openCarryForwardCursor<Fp>(prior);
+  cursor.note("a", { updated_at: 1, count: 5 });
+  // Pre-prune both carried; post-prune only the noted id survives.
+  assert.equal(cursor.size(), 2);
+  cursor.pruneStale();
+  assert.deepEqual(cursor.toState(), { a: { updated_at: 1, count: 5 } });
+});
+
+test("openCarryForwardCursor: empty prior → first run notes seed the map", () => {
+  const cursor = openCarryForwardCursor<Fp>(new Map());
+  assert.equal(cursor.size(), 0);
+  cursor.note("a", { updated_at: 1, count: 5 });
+  assert.equal(cursor.size(), 1);
+  assert.deepEqual(cursor.toState().a, { updated_at: 1, count: 5 });
 });

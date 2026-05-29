@@ -33,6 +33,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { RecordData, StreamScope } from "../../src/connector-runtime.ts";
+import { type CarryForwardCursor, openCarryForwardCursor } from "../../src/fingerprint-cursor.ts";
 import { type EmittedRecord, makeRecordingEmit } from "../../src/test-harness.ts";
 import {
   emitSessionsFromMaps,
@@ -353,6 +354,13 @@ function makeThreadRow(id: string, overrides: Partial<ThreadRow> = {}): ThreadRo
   };
 }
 
+/** Open a shared carry-forward cursor seeded with the given prior
+ *  fingerprints — mirrors how main() seeds the cursor from the decoded
+ *  prior STATE map. An empty seed models the first run. */
+function makeCursor(priorEntries: readonly [string, ThreadFingerprint][] = []): CarryForwardCursor<ThreadFingerprint> {
+  return openCarryForwardCursor<ThreadFingerprint>(new Map<string, ThreadFingerprint>(priorEntries));
+}
+
 function makeAggregate(overrides: Partial<RolloutAggregate> = {}): RolloutAggregate {
   return {
     meta: { timestamp: "2026-04-22T00:00:00Z" },
@@ -459,23 +467,21 @@ test("emitSessionsFromMaps: unchanged thread with no aggregate — SKIPS emit bu
   const { deps, emitted } = makeHarness();
   const threadsMap = new Map<string, ThreadRow>([["sess-stable", makeThreadRow("sess-stable")]]);
   const aggs = new Map<string, RolloutAggregate>();
-  const priorFingerprints = new Map<string, ThreadFingerprint>([
+  const cursor = makeCursor([
     ["sess-stable", { updated_at: 1_700_000_010, message_count: 42, function_call_count: 7 }],
   ]);
-  const fingerprintSink = new Map<string, ThreadFingerprint>(priorFingerprints);
 
   emitSessionsFromMaps({
     threadsMap,
     rolloutAggregates: aggs,
     emitRecord: deps.emitRecord,
-    priorFingerprints,
-    fingerprintSink,
+    cursor,
   });
 
   const sessions = emitted.filter((r) => r.stream === "sessions");
   assert.equal(sessions.length, 0, "no churn — unchanged thread skipped");
   assert.deepEqual(
-    fingerprintSink.get("sess-stable"),
+    cursor.toState()["sess-stable"],
     { updated_at: 1_700_000_010, message_count: 42, function_call_count: 7 },
     "fingerprint preserved verbatim for next-run gating"
   );
@@ -491,17 +497,15 @@ test("emitSessionsFromMaps: thread WITH prior counts but no fresh aggregate — 
     ["sess-touched", makeThreadRow("sess-touched", { updated_at: 1_700_000_999 /* moved forward */ })],
   ]);
   const aggs = new Map<string, RolloutAggregate>();
-  const priorFingerprints = new Map<string, ThreadFingerprint>([
+  const cursor = makeCursor([
     ["sess-touched", { updated_at: 1_700_000_010, message_count: 42, function_call_count: 7 }],
   ]);
-  const fingerprintSink = new Map<string, ThreadFingerprint>(priorFingerprints);
 
   emitSessionsFromMaps({
     threadsMap,
     rolloutAggregates: aggs,
     emitRecord: deps.emitRecord,
-    priorFingerprints,
-    fingerprintSink,
+    cursor,
   });
 
   const sessions = emitted.filter((r) => r.stream === "sessions");
@@ -509,7 +513,7 @@ test("emitSessionsFromMaps: thread WITH prior counts but no fresh aggregate — 
   assert.equal(sessions[0]?.data.message_count, 42, "prior count preserved, not null");
   assert.equal(sessions[0]?.data.function_call_count, 7, "prior count preserved, not null");
   // Fingerprint advances updated_at but keeps the counts (still no fresh aggregate).
-  assert.deepEqual(fingerprintSink.get("sess-touched"), {
+  assert.deepEqual(cursor.toState()["sess-touched"], {
     updated_at: 1_700_000_999,
     message_count: 42,
     function_call_count: 7,
@@ -524,24 +528,22 @@ test("emitSessionsFromMaps: fresh aggregate beats prior fingerprint counts (real
   const aggs = new Map<string, RolloutAggregate>([
     ["sess-active", makeAggregate({ messageCount: 99, functionCallCount: 11 })],
   ]);
-  const priorFingerprints = new Map<string, ThreadFingerprint>([
+  const cursor = makeCursor([
     ["sess-active", { updated_at: 1_700_000_010, message_count: 42, function_call_count: 7 }],
   ]);
-  const fingerprintSink = new Map<string, ThreadFingerprint>(priorFingerprints);
 
   emitSessionsFromMaps({
     threadsMap,
     rolloutAggregates: aggs,
     emitRecord: deps.emitRecord,
-    priorFingerprints,
-    fingerprintSink,
+    cursor,
   });
 
   const sessions = emitted.filter((r) => r.stream === "sessions");
   assert.equal(sessions.length, 1);
   assert.equal(sessions[0]?.data.message_count, 99, "aggregate wins over fingerprint");
   assert.equal(sessions[0]?.data.function_call_count, 11);
-  assert.deepEqual(fingerprintSink.get("sess-active"), {
+  assert.deepEqual(cursor.toState()["sess-active"], {
     updated_at: 1_700_000_010,
     message_count: 99,
     function_call_count: 11,
@@ -558,20 +560,79 @@ test("emitSessionsFromMaps: first run (no prior fingerprints) — emits everythi
     ["sess-2", makeThreadRow("sess-2")],
   ]);
   const aggs = new Map<string, RolloutAggregate>([["sess-1", makeAggregate()]]);
-  const fingerprintSink = new Map<string, ThreadFingerprint>();
+  const cursor = makeCursor();
 
   emitSessionsFromMaps({
     threadsMap,
     rolloutAggregates: aggs,
     emitRecord: deps.emitRecord,
-    fingerprintSink,
+    cursor,
   });
 
   const sessions = emitted.filter((r) => r.stream === "sessions");
   assert.equal(sessions.length, 2, "no prior = emit everything");
-  assert.equal(fingerprintSink.size, 2, "fingerprints captured for next-run gating");
-  assert.equal(fingerprintSink.get("sess-1")?.message_count, 5, "aggregate count captured");
-  assert.equal(fingerprintSink.get("sess-2")?.message_count, null, "no-aggregate thread fingerprint has null count");
+  assert.equal(cursor.size(), 2, "fingerprints captured for next-run gating");
+  assert.equal(cursor.toState()["sess-1"]?.message_count, 5, "aggregate count captured");
+  assert.equal(cursor.toState()["sess-2"]?.message_count, null, "no-aggregate thread fingerprint has null count");
+});
+
+// ─── Invariant 9b: shared-cursor STATE round-trip preserves the no-churn gate ──
+//
+// The migration to the shared `openCarryForwardCursor` must serialize a
+// next-run map that, after the real `sessions` STATE round-trip
+// (toState() → cursor.thread_fingerprints → readPriorThreadFingerprints),
+// reconstructs the SAME prior fingerprints — so run N+1 makes byte-identical
+// skip/emit decisions to the hand-rolled implementation. This pins that the
+// shared boundary did not change cross-run churn behavior.
+
+test("shared cursor STATE round-trip: run 2 skips the unchanged thread (no renewed churn)", () => {
+  // Run 1: first run, no prior. A stable thread (no aggregate) and an
+  // active thread (with aggregate) both emit and seed the cursor.
+  const run1 = makeHarness();
+  const threadsMap = new Map<string, ThreadRow>([
+    ["sess-stable", makeThreadRow("sess-stable", { updated_at: 1_700_000_010 })],
+    ["sess-active", makeThreadRow("sess-active", { updated_at: 1_700_000_010 })],
+  ]);
+  const cursor1 = makeCursor();
+  emitSessionsFromMaps({
+    threadsMap,
+    rolloutAggregates: new Map([["sess-active", makeAggregate({ messageCount: 12, functionCallCount: 3 })]]),
+    emitRecord: run1.deps.emitRecord,
+    cursor: cursor1,
+  });
+  assert.equal(run1.emitted.filter((r) => r.stream === "sessions").length, 2, "run 1 emits both");
+
+  // Serialize into the real `sessions` STATE shape and decode it back —
+  // exactly the path main() + readPriorThreadFingerprints take.
+  const priorState: StartMessage = {
+    type: "START",
+    state: { sessions: { thread_fingerprints: cursor1.toState() } },
+  };
+  const decoded = readPriorThreadFingerprints(priorState);
+  const cursor2 = openCarryForwardCursor<ThreadFingerprint>(decoded);
+
+  // Run 2: state_5 mtime moved (some OTHER thread changed) but neither of
+  // these threads' updated_at advanced and neither rollout was parsed.
+  const run2 = makeHarness();
+  emitSessionsFromMaps({
+    threadsMap,
+    rolloutAggregates: new Map(),
+    emitRecord: run2.deps.emitRecord,
+    cursor: cursor2,
+  });
+
+  assert.equal(
+    run2.emitted.filter((r) => r.stream === "sessions").length,
+    0,
+    "run 2 emits nothing — both threads unchanged, no renewed version churn"
+  );
+  // Counts survive the round-trip — the active thread keeps its real counts
+  // even though run 2 had no fresh aggregate (lossy-null-overwrite repair).
+  assert.deepEqual(
+    cursor2.toState()["sess-active"],
+    { updated_at: 1_700_000_010, message_count: 12, function_call_count: 3 },
+    "round-tripped counts preserved across the no-emit run"
+  );
 });
 
 // ─── Invariant 10: forked rollouts — only the FIRST session_meta wins ──────

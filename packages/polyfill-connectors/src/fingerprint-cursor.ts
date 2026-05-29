@@ -27,6 +27,91 @@
 import { createHash } from "node:crypto";
 import type { RecordData } from "./connector-runtime-protocol.ts";
 
+// ─── Carry-forward lifecycle (shared construction boundary) ──────────────
+//
+// The four converging connectors split into two layers:
+//
+//   1. A change-detection rule + fingerprint payload that is connector-owned.
+//      Most connectors hash the emitted record (`openFingerprintCursor`).
+//      Codex instead keeps a structured per-thread fingerprint
+//      (`{updated_at, message_count, function_call_count}`) and gates on the
+//      state_5 `updated_at` watermark while carrying derived counts forward.
+//
+//   2. A run lifecycle that is identical across all of them: seed the
+//      next-run map from the prior cursor (so a record skipped this run
+//      survives into the next STATE write), record every observed id in a
+//      seen-set, optionally prune ids the source stopped returning, and
+//      serialize the next map for STATE.
+//
+// `openCarryForwardCursor<T>` owns layer 2 over an arbitrary fingerprint
+// type `T`. `openFingerprintCursor` is the `T = string` (hashed-record)
+// specialization built on top of it. Codex consumes the generic cursor with
+// `T = ThreadFingerprint`, so Slack/Gmail/YNAB and Codex now share one
+// construction boundary instead of two hand-rolled lifecycles.
+
+export interface CarryForwardCursor<T> {
+  /** Record this id's fingerprint into the next-run map and the seen-set.
+   *  Carry-forward and prune both depend on every observed id passing
+   *  through here, even when the connector decides not to emit the record. */
+  note(id: string, value: T): void;
+  /** Prior cursor value for this id, if any. Connector change-detection
+   *  rules and derived-field-preservation policies read this. The value is
+   *  the prior run's serialized fingerprint, never the one `note` recorded
+   *  this run. */
+  prior(id: string): T | undefined;
+  /** Drop ids from the next map that were not `note`d this run. Idempotent.
+   *  Only valid on full-scan streams: a partial scan has no business
+   *  pruning ids it never looked at. If `note` was called zero times this
+   *  run, every prior id is dropped — the correct outcome for a requested
+   *  full-scan stream that returned zero records. */
+  pruneStale(): void;
+  /** Number of ids in the next map. */
+  size(): number;
+  /** Serializable next-run map for STATE. */
+  toState(): Record<string, T>;
+}
+
+/** Open a typed carry-forward cursor seeded from a pre-decoded prior map.
+ *
+ *  Unlike `openFingerprintCursor`, this does not decode a STATE shape or
+ *  compute fingerprints — the caller owns both, because the fingerprint
+ *  type and its on-disk shape are connector-specific. The cursor only owns
+ *  the seed/seen/prune/serialize lifecycle.
+ *
+ *  The next map is seeded by copying the prior map, so a record the caller
+ *  declines to `note` this run still surfaces in `toState()`. */
+export function openCarryForwardCursor<T>(prior: ReadonlyMap<string, T>): CarryForwardCursor<T> {
+  const next = new Map<string, T>(prior);
+  const seen = new Set<string>();
+
+  return {
+    prior(id: string): T | undefined {
+      return prior.get(id);
+    },
+    note(id: string, value: T): void {
+      next.set(id, value);
+      seen.add(id);
+    },
+    pruneStale(): void {
+      for (const id of next.keys()) {
+        if (!seen.has(id)) {
+          next.delete(id);
+        }
+      }
+    },
+    size(): number {
+      return next.size;
+    },
+    toState(): Record<string, T> {
+      const out: Record<string, T> = {};
+      for (const [id, value] of next) {
+        out[id] = value;
+      }
+      return out;
+    },
+  };
+}
+
 export interface FingerprintCursorOptions {
   /** Fields that appear in the emitted record but must NOT participate in
    *  change detection. Typically run-clock fields like `fetched_at` whose
@@ -110,8 +195,10 @@ export function recordFingerprint(record: Record<string, unknown>, excludeKeys: 
 export function openFingerprintCursor(priorState: unknown, options: FingerprintCursorOptions = {}): FingerprintCursor {
   const excludeKeys = options.excludeFromFingerprint ?? [];
   const prior = options.priorFingerprints ?? decodePriorFingerprints(priorState);
-  const next = new Map<string, string>(prior);
-  const seen = new Set<string>();
+  // The hashed-record specialization is layer 1 (compute the fingerprint,
+  // compare against prior) over the shared `T = string` carry-forward
+  // lifecycle (layer 2).
+  const cursor = openCarryForwardCursor<string>(prior);
 
   return {
     shouldEmit(data: RecordData): boolean {
@@ -124,29 +211,20 @@ export function openFingerprintCursor(priorState: unknown, options: FingerprintC
         return true;
       }
       const fingerprint = recordFingerprint(data as Record<string, unknown>, excludeKeys);
-      next.set(id, fingerprint);
-      seen.add(id);
-      return prior.get(id) !== fingerprint;
+      cursor.note(id, fingerprint);
+      return cursor.prior(id) !== fingerprint;
     },
     priorFingerprint(id: string): string | undefined {
-      return prior.get(id);
+      return cursor.prior(id);
     },
     pruneStale(): void {
-      for (const id of next.keys()) {
-        if (!seen.has(id)) {
-          next.delete(id);
-        }
-      }
+      cursor.pruneStale();
     },
     toState(): Record<string, string> {
-      const out: Record<string, string> = {};
-      for (const [id, fingerprint] of next) {
-        out[id] = fingerprint;
-      }
-      return out;
+      return cursor.toState();
     },
     size(): number {
-      return next.size;
+      return cursor.size();
     },
   };
 }
