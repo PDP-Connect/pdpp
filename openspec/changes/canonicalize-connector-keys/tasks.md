@@ -7,8 +7,8 @@
 ## 2. OpenSpec And Contract Alignment
 
 - [x] 2.1 Validate this OpenSpec change with `openspec validate canonicalize-connector-keys --strict`. (Tranche 1: validated clean after adding canonical connector-key helpers and hosted MCP picker meta cleanup.)
-- [ ] 2.2 Cross-check `expose-connection-identity-on-public-read`, `agent-consent-bundling`, and MCP adapter specs for contradictory `connector_id`/`connector_key` wording.
-- [ ] 2.3 Decide whether any root `spec-core.md` or `spec-collection-profile.md` language must change in this tranche or whether it requires a separate protocol-spec change.
+- [x] 2.2 Cross-check `expose-connection-identity-on-public-read`, `agent-consent-bundling`, and MCP adapter specs for contradictory `connector_id`/`connector_key` wording. (2026-05-29 audit recorded in design Decision 9: public-read owns `connection_id` plus deprecated `connector_instance_id`, this change owns connector type `connector_key`, and the agent-consent/MCP deltas supersede older neutral/connector-id wording without contradiction.)
+- [x] 2.3 Decide whether any root `spec-core.md` or `spec-collection-profile.md` language must change in this tranche or whether it requires a separate protocol-spec change. (Decision recorded in design Decision 10: root protocol/Collection Profile URI-shaped `connector_id` language remains unchanged in this reference-implementation tranche; any root rename or protocol split requires a separate protocol-spec change.)
 
 ## 3. Migration
 

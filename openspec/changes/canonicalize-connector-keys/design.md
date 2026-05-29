@@ -110,6 +110,22 @@ Alternatives considered:
 - Canonicalize when the grant is minted (rewrite `grant_storage_binding.connector_id` at issue time): rejected for this slice because it would also require rewriting `grant.source.id` to keep the `grant.source.id === grant_storage_binding.connector_id` validator satisfied, changing durable grant storage shape. The admission-boundary canonicalization fixes the read symptom without re-opening grant storage semantics; a future grant-mint canonicalization can subsume it without contradicting this decision.
 - Fix each read route independently: rejected in favor of the shared `resolveReadRequestBindings` boundary, with the owner-scope, blob-route, and `/_ref` list canonicalizations added only where a route compares connector ids outside that resolver.
 
+### 9. Cross-change specs agree on the identity layers
+
+Audit result on 2026-05-29: the active `expose-connection-identity-on-public-read`, `agent-consent-bundling`, and `mcp-adapter` specs do not require a contradictory connector type identity model.
+
+- `expose-connection-identity-on-public-read` owns the public read noun `connection_id` and the deprecated wire alias `connector_instance_id`; it does not define connector type identity or require URL-shaped connector ids as an MCP/source selector.
+- The durable `agent-consent-bundling` spec still has older "canonical connector id" wording only in the requirement this change modifies. This change's delta replaces that hosted MCP connection-presentation requirement with canonical `connector_key`, selected `connection_id`, and typed package-member identity.
+- The durable `mcp-adapter` spec is connector-type neutral. This change's delta adds the missing MCP requirement that tool descriptions and structured output advertise canonical `connector_key` and `connection_id`, not URL-shaped connector ids or `connector_instance_id` as the preferred selector.
+
+No additional spec delta is needed for task 2.2. The remaining apparent overlap is intentional layering: `connection_id` identifies a configured account/device/profile, while `connector_key` identifies the connector implementation type.
+
+### 10. Root protocol specs stay out of this reference tranche
+
+Root `spec-core.md` and `spec-collection-profile.md` still define protocol/Collection Profile `connector_id` as a fully qualified URI in examples, stream identity, manifest identity, and state endpoints. This change SHALL NOT edit those root specs because its proposal scopes the work to reference-implementation operational identity.
+
+Any root rename from URI-shaped `connector_id` to `connector_key`, or any protocol-level split between `connector_id`, `connector_key`, and `manifest_uri`, requires a separate protocol-spec change with its own compatibility and conformance story. In this tranche, reference docs may describe `connector_key` as the reference implementation's operational connector type key and root URI-shaped `connector_id` examples as protocol/manifest identity, not as the active reference storage key.
+
 ## Risks / Trade-offs
 
 - **Protocol/reference terminology drift** -> Mitigation: keep this OpenSpec scoped to reference capabilities and explicitly audit root spec docs before changing protocol language.
