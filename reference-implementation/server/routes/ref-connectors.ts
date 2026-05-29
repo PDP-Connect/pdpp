@@ -368,7 +368,9 @@ export function mountRefConnectionsList(app: AppLike, ctx: MountRefConnectorsCon
         const data = instances
           .filter((instance) => connectorIdMatchesFilter(ctx, instance, connectorId))
           .filter((instance) => !status || instance.status === status)
-          .map((instance) => projectRefConnection(instance, schedulesByInstanceId, (id) => ctx.canonicalConnectorKey(id)));
+          .map((instance) =>
+            projectRefConnection(instance, schedulesByInstanceId, (id) => ctx.canonicalConnectorKey(id))
+          );
         res.json({ object: "list", data });
       } catch (err) {
         ctx.handleError(res, err);
