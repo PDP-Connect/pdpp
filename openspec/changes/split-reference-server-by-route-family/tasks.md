@@ -130,11 +130,54 @@ unchanged.
 
 ## 3. RS read family
 
-- [ ] 3.1 Create `reference-implementation/server/routes/rs-read.ts` exporting `mountRsRead(app, ctx)`.
-- [ ] 3.2 Move `/v1/connectors`, `/v1/schema`, `/v1/streams`, `/v1/streams/:stream`, `/v1/streams/:stream/aggregate`, `/v1/streams/:stream/records`, `/v1/streams/:stream/records/:id`, `/v1/blobs/:blob_id`.
-- [ ] 3.3 Move `/v1/search`, `/v1/search/semantic`, `/v1/search/hybrid` routes.
-- [ ] 3.4 Update `buildRsApp` in `server/index.js` to call `mountRsRead` at the same point in route registration; delete the moved blocks.
-- [ ] 3.5 Acceptance: targeted RS read-path tests pass; `pnpm --dir reference-implementation run verify` passes.
+- [x] 3.1 Create `reference-implementation/server/routes/rs-read.ts`. Landed as
+  per-route mount fns following the established `mount...(app, ctx)` pattern
+  (`mountRsConnectors`, `mountRsSchema`, `mountRsStreamsList`,
+  `mountRsStreamDetail`, `mountRsStreamAggregate`, `mountRsRecordsList`,
+  `mountRsRecordDetail`, `mountRsSearchLexical`, `mountRsSearchSemantic`,
+  `mountRsSearchHybrid`, `mountRsBlobRead`) plus an aggregator
+  `mountRsReadQueries(app, ctx)` that mounts the contiguous read+search block
+  in original registration order. The blob-read route mounts separately
+  (`mountRsBlobRead`) because in `server/index.js` it is registered *after* the
+  `POST /v1/blobs` mutation route (§4); the host call site preserves that
+  position. Host capabilities are injected via `MountRsReadContext`; the
+  `rs.*` operations and their `*VisibilityError`/`BlobsReadNotFoundError`
+  classes are imported directly.
+- [x] 3.2 Moved `/v1/connectors`, `/v1/schema`, `/v1/streams`,
+  `/v1/streams/:stream`, `/v1/streams/:stream/aggregate`,
+  `/v1/streams/:stream/records`, `/v1/streams/:stream/records/:id`,
+  `/v1/blobs/:blob_id`. Behaviour-preserving: same `requireToken` auth posture,
+  same request-id / trace-id wiring, same owner-vs-client source/manifest/grant
+  resolution, same `query.received` / `disclosure.served` spine emission, same
+  envelopes, status codes, blob-ref decoration, blob ambiguity / P1–P3 fixes,
+  and error→`rejectQuery` mapping.
+- [x] 3.3 Moved `/v1/search`, `/v1/search/semantic`, `/v1/search/hybrid`. The
+  registration-time gating for semantic (embedding backend configured) and
+  hybrid (both lexical and semantic active) is preserved exactly — evaluated
+  inside the mount fns against `ctx.getSemanticBackend()` and the `opts` flags,
+  matching the prior inline `if (...) { app.get(...) }` guards.
+- [x] 3.4 Updated `buildRsApp` in `server/index.js`: built `rsReadContext`,
+  call `mountRsReadQueries(app, rsReadContext)` at the read-block mount point
+  and `mountRsBlobRead(app, rsReadContext)` immediately after `POST /v1/blobs`;
+  deleted the moved inline blocks. `server/index.js` shrank 8003 → 6528 LOC.
+- [x] 3.5 Acceptance: targeted RS read-path tests pass and
+  `pnpm --dir reference-implementation run verify` passes (typecheck + Ultracite
+  lint, 53 files, 0 errors). Tests: `node --test` over
+  `rs-records-detail-boundary`, `rs-records-list-boundary`,
+  `rs-schema-get-boundary`, `rs-streams-detail-boundary`,
+  `rs-search-lexical-boundary`, `canonical-read-envelope-conformance`,
+  `query-contract`, `route-contract-validation`,
+  `public-read-deprecated-alias-warning` (101/101);
+  `rs-search-{lexical,semantic,hybrid}-{operation,fan-in}`,
+  `rs-schema-get-operation`, `lexical-retrieval`, `hybrid-retrieval`,
+  `blob-fan-in-ambiguity`, `blob-store-route-regression`,
+  `records-{cursor-fallback,nullable-cursor,nullable-filters}`,
+  `polyfill-range-filters`, `aggregate-time-buckets` (163/163);
+  `pdpp` integration (114/114);
+  `lexical-retrieval-conformance`, `record-read-conformance`,
+  `blob-store-conformance`, `disclosure-spine-conformance`,
+  `collection-profile`, `event-spine`, `provider-metadata`,
+  `rs-discovery-index-operation` (224/224).
 
 ## 4. RS mutation family (conditional on §1–§3 passing)
 
