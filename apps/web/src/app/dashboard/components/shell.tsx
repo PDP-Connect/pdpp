@@ -142,7 +142,9 @@ function SidebarContent({ active, mode, routes }: { active: DashboardSection; mo
           })}
         </nav>
 
-        {active === "explore" || active === "search" || active === "records" ? <ExploreSubnav routes={routes} /> : null}
+        {active === "explore" || active === "search" || active === "records" ? (
+          <ExploreSubnav active={active} routes={routes} />
+        ) : null}
         {active === "grants" && mode === "live" ? <GrantsSubnav /> : null}
       </div>
 
@@ -151,13 +153,13 @@ function SidebarContent({ active, mode, routes }: { active: DashboardSection; mo
   );
 }
 
-function ExploreSubnav({ routes }: { routes: Routes }) {
-  const items = [
-    { href: routes.section.explore, label: "Records feed" },
-    { href: routes.section.search, label: "Jump to artifact" },
-    { href: routes.section.records, label: "Connections" },
+function ExploreSubnav({ routes, active }: { routes: Routes; active: DashboardSection }) {
+  const items: Array<{ href: string; label: string; section: DashboardSection }> = [
+    { href: routes.section.explore, label: "Records feed", section: "explore" },
+    { href: routes.section.search, label: "Jump to artifact", section: "search" },
+    { href: routes.section.records, label: "Connections", section: "records" },
   ];
-  return <SidebarSubnav items={items} label="Explore" />;
+  return <SidebarSubnav activeSection={active} items={items} label="Explore" />;
 }
 
 function GrantsSubnav() {
@@ -171,20 +173,37 @@ function GrantsSubnav() {
   return <SidebarSubnav items={items} label="Grants workspace" />;
 }
 
-function SidebarSubnav({ label, items }: { label: string; items: Array<{ href: string; label: string }> }) {
+function SidebarSubnav({
+  label,
+  items,
+  activeSection,
+}: {
+  label: string;
+  items: Array<{ href: string; label: string; section?: DashboardSection }>;
+  activeSection?: DashboardSection;
+}) {
   return (
     <div className="mt-5 border-border/80 border-t pt-4">
       <div className="pdpp-eyebrow mb-2 px-2.5">{label}</div>
       <nav aria-label={label} className="flex flex-col gap-0.5">
-        {items.map((item) => (
-          <Link
-            className="pdpp-caption rounded-md px-2.5 py-1 text-muted-foreground hover:bg-muted/60 hover:text-foreground"
-            href={item.href}
-            key={item.href}
-          >
-            {item.label}
-          </Link>
-        ))}
+        {items.map((item) => {
+          const isActive = activeSection !== undefined && item.section !== undefined && item.section === activeSection;
+          return (
+            <Link
+              aria-current={isActive ? "page" : undefined}
+              className={[
+                "pdpp-caption rounded-md px-2.5 py-1 transition-colors",
+                isActive
+                  ? "bg-muted/60 font-medium text-foreground"
+                  : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+              ].join(" ")}
+              href={item.href}
+              key={item.href}
+            >
+              {item.label}
+            </Link>
+          );
+        })}
       </nav>
     </div>
   );
