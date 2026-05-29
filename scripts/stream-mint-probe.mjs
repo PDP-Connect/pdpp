@@ -3,7 +3,7 @@
  *
  * Deterministic, OTP-free probe for the run-interaction streaming path.
  * Runs the authoritative streaming test suite and captures output to
- * tmp/stream-debug/<date>-probe.jsonl so failures are debuggable without
+ * tmp/workstreams/stream-debug/<timestamp>-probe.jsonl so failures are debuggable without
  * a live connector or owner interaction.
  *
  * Usage:
@@ -33,8 +33,8 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..');
-const DEBUG_DIR = join(REPO_ROOT, 'tmp', 'stream-debug');
-const NOW = new Date().toISOString().slice(0, 10);
+const DEBUG_DIR = join(REPO_ROOT, 'tmp', 'workstreams', 'stream-debug');
+const NOW = new Date().toISOString().replace(/[:.]/g, '-');
 const FIXTURE_PATH = join(DEBUG_DIR, `${NOW}-stream-mint-probe.jsonl`);
 
 mkdirSync(DEBUG_DIR, { recursive: true });
