@@ -191,6 +191,14 @@ emit({ type: 'RECORD', stream, key: data.id, data, emitted_at: nowIso() });
 
 You can't run a new connector against a new user's account ahead of time. Shape assertions replace that test. If the connector works on your account AND its shape assertions are tight, you have high confidence it will either work correctly on another account or fail visibly — not produce garbage.
 
+### This is a build-time invariant, not a suggestion
+
+`validateRecord` is _optional in the `runConnector` type signature_ — the runtime stays zod-free so the framework can execute a zero-dependency connector. But authoring policy is stricter than the type: **a connector whose manifest declares any stream must wire `validateRecord`, or be listed on the schemaless allowlist with a justification.**
+
+This is enforced by `src/connector-schema-validation-honesty.test.ts` (the same test family as the browser/external-tool manifest-honesty checks), which runs in `pnpm test` / CI. A connector that declares manifest streams, omits `validateRecord`, and is not allowlisted fails the build by name.
+
+The allowlist lives in `src/connector-schema-allowlist.ts` as connector → justification, and may only shrink: if you add a `schemas.ts` to an allowlisted connector, the gate forces you to delete its entry. Adding an allowlist entry is a deliberate, reviewed escape hatch — the default for a new connector is to validate. (See OpenSpec `polyfill-runtime` and `tmp/workstreams/ri-connector-schema-green-prep-audit-report.md`.)
+
 ---
 
 ## 4. Naming and schema discipline
@@ -526,7 +534,7 @@ When committing a pilot fixture, commit only `fixtures/<connector>/scrubbed/<run
 
 Before a new connector is considered usable by another user:
 - [ ] Runs end-to-end on at least one owner account (the author's).
-- [ ] Emits shape-check assertions for every field that can go wrong.
+- [ ] Wires `validateRecord` (shape-check assertions for every field that can go wrong) — **enforced at build time** by `connector-schema-validation-honesty.test.ts`. A stream-declaring connector that omits this must be on the `connector-schema-allowlist.ts` allowlist with a justification.
 - [ ] Declares all streams in manifest, even nullable ones.
 - [ ] Has a SKIP_RESULT path for selector drift (list page returning zero records is a drift signal, not a "no data" signal).
 - [ ] Documents locale / account-type assumptions in the connector's header comment.
