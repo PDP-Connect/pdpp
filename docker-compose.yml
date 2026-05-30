@@ -15,6 +15,10 @@ services:
       PDPP_TRUSTED_HOSTS: ${PDPP_TRUSTED_HOSTS:-}
       AS_PUBLIC_URL: ${AS_PUBLIC_URL:-}
       RS_PUBLIC_URL: ${RS_PUBLIC_URL:-}
+      # Explicit internal RS base for server-internal hosted-MCP self-calls.
+      # Keep this distinct from RS_PUBLIC_URL so the adapter does not hairpin
+      # PATCH/GET/POST/DELETE self-calls through the public reverse proxy.
+      PDPP_RS_URL: ${PDPP_RS_URL:-http://127.0.0.1:7663}
       AS_ISSUER: ${AS_ISSUER:-}
       PDPP_WEB_BASE_URL: ${PDPP_WEB_BASE_URL:-}
       PDPP_DB_PATH: ${PDPP_DB_PATH:-/var/lib/pdpp/pdpp.sqlite}

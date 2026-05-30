@@ -84,7 +84,7 @@ wait_healthy() {
 }
 
 verify_reference_env() {
-  local env_output managed mode cap allocator base_url cdp_url static_profile
+  local env_output managed mode cap allocator base_url cdp_url static_profile rs_url rs_public_url
   env_output="$("${COMPOSE[@]}" exec -T reference sh -lc 'printf "%s\n" \
     "managed=${PDPP_NEKO_MANAGED_CONNECTORS:-}" \
     "mode=${PDPP_NEKO_SURFACE_MODE:-}" \
@@ -92,7 +92,9 @@ verify_reference_env() {
     "allocator=${PDPP_NEKO_ALLOCATOR_URL:-}" \
     "base=${PDPP_NEKO_BASE_URL:-}" \
     "cdp=${PDPP_NEKO_CDP_HTTP_URL:-}" \
-    "static_profile=${PDPP_NEKO_STATIC_PROFILE_KEY:-}"')"
+    "static_profile=${PDPP_NEKO_STATIC_PROFILE_KEY:-}" \
+    "rs_url=${PDPP_RS_URL:-}" \
+    "rs_public_url=${RS_PUBLIC_URL:-}"')"
 
   managed="$(printf '%s\n' "$env_output" | sed -n 's/^managed=//p')"
   mode="$(printf '%s\n' "$env_output" | sed -n 's/^mode=//p')"
@@ -101,6 +103,8 @@ verify_reference_env() {
   base_url="$(printf '%s\n' "$env_output" | sed -n 's/^base=//p')"
   cdp_url="$(printf '%s\n' "$env_output" | sed -n 's/^cdp=//p')"
   static_profile="$(printf '%s\n' "$env_output" | sed -n 's/^static_profile=//p')"
+  rs_url="$(printf '%s\n' "$env_output" | sed -n 's/^rs_url=//p')"
+  rs_public_url="$(printf '%s\n' "$env_output" | sed -n 's/^rs_public_url=//p')"
 
   [[ -n "$managed" ]] || fail "reference is missing PDPP_NEKO_MANAGED_CONNECTORS; did you omit docker-compose.neko.yml?"
   [[ "$managed" == *"https://registry.pdpp.org/connectors/chatgpt"* ]] \
@@ -119,6 +123,8 @@ verify_reference_env() {
   [[ -z "$base_url" ]] || fail "dynamic mode must leave PDPP_NEKO_BASE_URL empty"
   [[ -z "$cdp_url" ]] || fail "dynamic mode must leave PDPP_NEKO_CDP_HTTP_URL empty"
   [[ -z "$static_profile" ]] || fail "dynamic mode must leave PDPP_NEKO_STATIC_PROFILE_KEY empty"
+  [[ -n "$rs_url" ]] || fail "reference is missing PDPP_RS_URL; hosted-MCP self-calls would hairpin through RS_PUBLIC_URL"
+  [[ -z "$rs_public_url" || "$rs_url" != "$rs_public_url" ]] || fail "PDPP_RS_URL must be internal and distinct from RS_PUBLIC_URL"
 
   "${COMPOSE[@]}" exec -T reference node -e '
     const url = process.env.PDPP_NEKO_ALLOCATOR_URL;
