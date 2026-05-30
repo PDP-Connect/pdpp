@@ -19,7 +19,7 @@
 ## 4. Validation
 
 - [x] 4.1 Ran `openspec validate route-hosted-mcp-adapter-self-calls-internally --strict` — valid.
-- [x] 4.2 Ran the hosted MCP package adapter suites — `package-rs-client.test.js` (25), the new wiring test (2), `hosted-mcp-oauth.test.js` (28), `mcp-event-subscription-e2e.test.js` (2), `hosted-mcp-selection.test.js`/`hosted-mcp-picker-canonical-collapse.test.js` (21), and `@pdpp/mcp-server` (75) — all green, no regression in child-locate forwarding, source selection, ambiguity errors, or fan-out. tsc/ultracite clean on touched files.
+- [x] 4.2 Ran the hosted MCP package adapter suites — `package-rs-client.test.js` (25), the new wiring test (4), `hosted-mcp-oauth.test.js` (28), `mcp-event-subscription-e2e.test.js` (2), `hosted-mcp-selection.test.js`/`hosted-mcp-picker-canonical-collapse.test.js` (21), and `@pdpp/mcp-server` (75) — all green, no regression in child-locate forwarding, source selection, ambiguity errors, or fan-out. tsc/ultracite clean on touched files.
 
 ## Acceptance checks
 
