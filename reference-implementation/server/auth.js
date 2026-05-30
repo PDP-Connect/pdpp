@@ -1622,12 +1622,12 @@ export async function listOwnerIssuedClients(subjectId) {
  * - Refuses non-dynamic clients (protects pre-registered seeds).
  * - Refuses if the acting subject doesn't match the registered
  *   `metadata.issuer_subject_id` (stops cross-operator deletes).
- * - Cascade-revokes every active grant tied to the client via the existing
- *   `revokeGrant` codepath so spine events fire.
+ * - Cascade-revokes every active grant and hosted-MCP grant package tied to
+ *   the client via the existing revoke codepaths so spine events fire.
  * - Idempotent on subsequent calls (returns `not_found`).
  *
- * Returns `{ revokedGrantIds: string[] }` on success. Throws an error with
- * a `code` of `not_found` | `forbidden` otherwise.
+ * Returns revoked grant/package/token counts on success. Throws an error
+ * with a `code` of `not_found` | `forbidden` otherwise.
  */
 export async function deleteRegisteredClient(clientId, { actingSubjectId, requestId, traceId } = {}) {
   if (!clientId) {
@@ -1653,6 +1653,21 @@ export async function deleteRegisteredClient(clientId, { actingSubjectId, reques
     err.code = 'forbidden';
     throw err;
   }
+
+  // Package refresh tokens are package-bound, not child-grant-bound. Capture
+  // active packages before child grants are revoked so client deletion cannot
+  // leave refreshable hosted-MCP packages behind.
+  const packageRows = isPostgresStorageBackend()
+    ? (await postgresQuery(
+        `SELECT package_id
+         FROM grant_packages
+         WHERE client_id = $1 AND status = 'active'
+         ORDER BY created_at ASC`,
+        [clientId],
+      )).rows
+    : allowUnboundedReadAcknowledged(referenceQueries.authGrantPackagesListAll, [])
+        .filter((row) => row.client_id === clientId && row.status === 'active')
+        .map((row) => ({ package_id: row.package_id }));
 
   // Cascade-revoke any client-token grants tied to this client. Owner self-
   // export tokens (via the device flow) live in `tokens` directly with
@@ -1680,6 +1695,19 @@ export async function deleteRegisteredClient(clientId, { actingSubjectId, reques
       // propagates and aborts the delete (we'd rather leave the client
       // row in place than lie about cascade completeness).
       if (err?.code === 'grant_invalid' || err?.code === 'not_found') {
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  const revokedPackageIds = [];
+  for (const row of packageRows) {
+    try {
+      await revokeGrantPackage(row.package_id, { request_id: requestId, trace_id: traceId });
+      revokedPackageIds.push(row.package_id);
+    } catch (err) {
+      if (err?.code === 'already_revoked' || err?.code === 'not_found') {
         continue;
       }
       throw err;
@@ -1716,11 +1744,12 @@ export async function deleteRegisteredClient(clientId, { actingSubjectId, reques
     data: {
       registration_mode: 'dynamic',
       revoked_grant_count: revokedGrantIds.length,
+      revoked_package_count: revokedPackageIds.length,
       revoked_owner_token_count: revokedOwnerTokenCount,
     },
   });
 
-  return { revokedGrantIds, revokedOwnerTokenCount };
+  return { revokedGrantIds, revokedPackageIds, revokedOwnerTokenCount };
 }
 
 export async function registerDynamicClient(input = {}, extraMetadata = {}) {
