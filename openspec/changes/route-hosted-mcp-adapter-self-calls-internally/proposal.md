@@ -10,7 +10,7 @@ The archived `2026-05-28-add-hosted-mcp-grant-packages` change specs child-locat
 
 ## What Changes
 
-- The hosted MCP package adapter SHALL prefer a configured internal resource-server base URL for its child-grant self-calls (locate/get/list/create/update/delete/test-event and record/blob/stream/search/schema fan-out), falling back to the advertised public resource when no internal base is configured.
+- The hosted MCP adapter SHALL prefer a configured internal resource-server base URL for its grant-scoped self-calls, falling back to the advertised public resource when no internal base is configured. This applies to BOTH token paths: the **package** path (the per-member child `RsClient` fan-out — locate/get/list/create/update/delete/test-event and record/blob/stream/search/schema fan-out) and the **standalone** path (the single-bearer `RsClient` for a `client` token).
 - The advertised `resource`, protected-resource discovery metadata, and the MCP server's advertised `providerUrl` SHALL continue to use the public origin. Only the adapter's internal fetch base changes.
 - No change to token kinds, OAuth/discovery flows, child-locate semantics, source selection, ambiguity errors, or the per-child enforcement model.
 
@@ -18,12 +18,12 @@ The archived `2026-05-28-add-hosted-mcp-grant-packages` change specs child-locat
 
 ### Modified
 
-- `agent-consent-bundling`: the hosted MCP package adapter SHALL forward child-grant self-calls to a configured internal resource-server base URL when present, falling back to the advertised public resource; advertised resource/discovery metadata remains the public origin.
+- `agent-consent-bundling`: the hosted MCP adapter SHALL forward its grant-scoped self-calls (both the package path's per-child clients AND the standalone `client`-token path's single-bearer client) to a configured internal resource-server base URL when present, falling back to the advertised public resource; advertised resource/discovery metadata remains the public origin.
 
 ## Impact
 
 - Config: **no new env.** Reuses the existing explicit `PDPP_RS_URL` → `referenceTopology.rsInternalUrl` (and `opts.rsInternalUrl`) internal resource-server address the web app already targets. The internal base is honored only when explicitly configured; when it is not (e.g. default/test setups that bind the RS to an ephemeral port), the adapter falls back to the public resource and behavior is unchanged. See design Decision 1.
-- Code: `handleHostedMcp` / `createPackageRsClient` split the advertised public `resource` from the adapter's internal fetch base. The advertised `providerUrl` on `mcpServerOptions` stays public.
+- Code: `handleHostedMcp` splits the advertised public `resource` from the adapter's internal fetch base for both branches — the package branch via `createPackageRsClient` and the standalone branch via the new `createRsClient` single-bearer factory. The advertised `providerUrl` on `mcpServerOptions` stays public in both.
 - No change to the public contract: discovery metadata, token kinds (`client`, `mcp_package`), child-locate forwarding, and per-child enforcement are unchanged.
 - No reverse-proxy change is required by this change (an edge that allows PATCH is an acceptable independent stopgap, not a dependency).
 - Requires a regression test proving package-token `update_event_subscription` succeeds via the internal base even when the public edge blocks PATCH.
