@@ -143,7 +143,7 @@ function SidebarContent({ active, mode, routes }: { active: DashboardSection; mo
         </nav>
 
         {active === "explore" || active === "search" || active === "records" ? (
-          <ExploreSubnav active={active} routes={routes} />
+          <ExploreSubnav active={active} mode={mode} routes={routes} />
         ) : null}
         {active === "grants" && mode === "live" ? <GrantsSubnav /> : null}
       </div>
@@ -153,12 +153,14 @@ function SidebarContent({ active, mode, routes }: { active: DashboardSection; mo
   );
 }
 
-function ExploreSubnav({ routes, active }: { routes: Routes; active: DashboardSection }) {
+function ExploreSubnav({ routes, active, mode }: { routes: Routes; active: DashboardSection; mode: ShellMode }) {
   const items: Array<{ href: string; label: string; section: DashboardSection }> = [
     { href: routes.section.explore, label: "Records feed", section: "explore" },
     { href: routes.section.search, label: "Jump to artifact", section: "search" },
-    { href: routes.section.records, label: "Connections", section: "records" },
   ];
+  if (mode === "live") {
+    items.push({ href: routes.section.records, label: "Connections", section: "records" });
+  }
   return <SidebarSubnav activeSection={active} items={items} label="Explore" />;
 }
 

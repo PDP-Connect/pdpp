@@ -19,6 +19,8 @@
  *     clearly illustrative base domain so the visitor sees what a live
  *     instance would issue, without implying a real RS is reachable here.
  */
+
+import { Callout } from "@/app/dashboard/components/primitives.tsx";
 import { DashboardShell } from "@/app/dashboard/components/shell.tsx";
 import { buildExplorerHref, RecordsExplorerView } from "@/app/dashboard/components/views/records-explorer-view.tsx";
 import { sandboxRoutes } from "@/app/dashboard/components/views/routes.ts";
@@ -48,6 +50,11 @@ export default async function SandboxExplorePage({
 
   return (
     <DashboardShell active="explore" mode="mock-owner">
+      <Callout
+        className="mb-5"
+        description="This view is a seeded sandbox specimen: records are fictional and deterministic, and peek read URLs use rs.pdpp.example to illustrate the live Resource Server shape without implying a reachable owner instance."
+        title="Sandbox specimen"
+      />
       <RecordsExplorerView data={data} routes={sandboxRoutes} />
       {/* Anchor for `buildExplorerHref` smoke during typecheck. */}
       <span aria-hidden className="hidden" data-explorer-href={buildExplorerHref(sandboxRoutes, {})} />

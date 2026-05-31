@@ -35,10 +35,10 @@ the single end-to-end journey in section 6.
 
 ## 5. Information architecture and sandbox parity
 
-- [ ] 5.1 Confirm/finish Explore as the single records canvas (recency / time-window / query lenses), Timeline reachable as an Explore time-window lens, `/dashboard/search` reserved for spine artifact jumps with free-text record queries routed to Explore.
-- [ ] 5.2 Ensure navigation labels do not present two surfaces that do the same job under different names; update subnav/nav chrome accordingly.
-- [ ] 5.3 Confirm `/sandbox/explore` renders the same explorer view through the sandbox data source with deterministic fictional data and no owner token; retired sandbox records routes redirect to `/sandbox/explore`.
-- [ ] 5.4 Label sandbox-only divergences (illustrative read URLs, seeded data) as specimens. Extend `page.invariants.test.ts` drift tests across live, console, and sandbox.
+- [x] 5.1 Confirm/finish Explore as the single records canvas (recency / time-window / query lenses), Timeline reachable as an Explore time-window lens, `/dashboard/search` reserved for spine artifact jumps with free-text record queries routed to Explore. (`RecordsExplorerView` owns recency, stream, query, date-window, and peek lenses; live/console/sandbox search pages already redirect free-text to Explore while keeping exact spine-artifact jumps; retired timeline routes continue to redirect to Explore.)
+- [x] 5.2 Ensure navigation labels do not present two surfaces that do the same job under different names; update subnav/nav chrome accordingly. (Web and console primary nav now present one Explore surface for records/search/timeline work; duplicate primary Jump/Connections entries were removed from the console shell and sandbox's retired records shortcut is omitted from its command-palette shortcuts.)
+- [x] 5.3 Confirm `/sandbox/explore` renders the same explorer view through the sandbox data source with deterministic fictional data and no owner token; retired sandbox records routes redirect to `/sandbox/explore`. (`/sandbox/explore` uses the shared Explorer view through `createSandboxDashboardDataSource`; `/sandbox/records*` pages now server-redirect into `/sandbox/explore`, preserving connector/stream/peek filters.)
+- [x] 5.4 Label sandbox-only divergences (illustrative read URLs, seeded data) as specimens. Extend `page.invariants.test.ts` drift tests across live, console, and sandbox. (`/sandbox/explore` now labels the fixture as a seeded sandbox specimen with illustrative `rs.pdpp.example` read URLs; web/console/sandbox invariants and command-palette/static IA tests cover the drift boundaries.)
 
 ## 6. Acceptance checks
 

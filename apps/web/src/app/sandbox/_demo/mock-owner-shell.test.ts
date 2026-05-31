@@ -35,15 +35,16 @@ const COMMAND_PALETTE_OVERVIEW_RE =
   /<CommandPalette\s+basePath=\{routes\.basePath\}\s+overviewHref=\{routes\.section\.overview\}\s*\/>/;
 const SITE_HEADER_RE = /SiteHeader|currentLabel=["']Sandbox["']/;
 const FORCE_DYNAMIC_RE = /export\s+const\s+dynamic\s*=\s*["']force-dynamic["']/;
+const REDIRECT_IMPORT_RE = /import\s+\{\s*redirect\s*\}\s+from\s+["']next\/navigation["']/;
+const SANDBOX_EXPLORE_REDIRECT_RE =
+  /redirect\(\s*(?:sandboxExploreRedirectHref\(|`\/sandbox\/explore|\(["']\/sandbox\/explore)/;
+const SANDBOX_EXPLORE_HELPER_RE = /sandboxExploreRedirectHref/;
+const EXPLORER_PEEK_PARAM_RE = /explorerPeekParam/;
 
 const PRIMARY_DASHBOARD_PAGES = [
   "page.tsx",
   "overview/page.tsx",
   "explore/page.tsx",
-  "records/page.tsx",
-  "records/[connector]/page.tsx",
-  "records/[connector]/[stream]/page.tsx",
-  "records/[connector]/[stream]/[recordKey]/page.tsx",
   "search/page.tsx",
   "grants/page.tsx",
   "grants/[grantId]/page.tsx",
@@ -53,6 +54,14 @@ const PRIMARY_DASHBOARD_PAGES = [
   "traces/[traceId]/page.tsx",
   "schedules/page.tsx",
   "deployment/page.tsx",
+];
+
+const RETIRED_SANDBOX_RECORDS_PAGES = [
+  "records/page.tsx",
+  "records/[connector]/page.tsx",
+  "records/[connector]/[stream]/page.tsx",
+  "records/[connector]/[stream]/[recordKey]/page.tsx",
+  "records/timeline/page.tsx",
 ];
 
 /**
@@ -95,7 +104,7 @@ const EDUCATIONAL_PAGES = ["api-examples/page.tsx", "walkthrough/page.tsx"];
  * mock-owner visitor into the live operator surface (broken auth, broken
  * data binding, and the visitor stops being inside the sandbox).
  */
-const ALL_SANDBOX_PAGES = [...PRIMARY_DASHBOARD_PAGES, ...EDUCATIONAL_PAGES];
+const ALL_SANDBOX_PAGES = [...PRIMARY_DASHBOARD_PAGES, ...RETIRED_SANDBOX_RECORDS_PAGES, ...EDUCATIONAL_PAGES];
 
 const DASHBOARD_ROUTES_IMPORT_RE = /\bdashboardRoutes\b/;
 // URL literal heuristic: a string/template that starts with `/dashboard`
@@ -147,6 +156,31 @@ test("primary /sandbox dashboard pages do NOT use the educational sandbox shell"
     offenders,
     [],
     `primary sandbox dashboard pages must not import the educational shell:\n${offenders.join("\n")}`
+  );
+});
+
+test("retired sandbox records pages redirect into the single Explore canvas", async () => {
+  const offenders: string[] = [];
+  for (const rel of RETIRED_SANDBOX_RECORDS_PAGES) {
+    const full = join(SANDBOX_DIR, rel);
+    const src = await readFile(full, "utf8");
+    if (!REDIRECT_IMPORT_RE.test(src)) {
+      offenders.push(`${rel}: missing redirect import`);
+    }
+    if (!SANDBOX_EXPLORE_REDIRECT_RE.test(src)) {
+      offenders.push(`${rel}: does not redirect to /sandbox/explore`);
+    }
+    if (DASHBOARD_SHELL_IMPORT_RE.test(src)) {
+      offenders.push(`${rel}: must not render DashboardShell after retirement`);
+    }
+  }
+  const helper = await readFile(join(SANDBOX_DIR, "records", "explore-redirect.ts"), "utf8");
+  assert.match(helper, SANDBOX_EXPLORE_HELPER_RE, "records redirect helper must be named for grepability");
+  assert.match(helper, EXPLORER_PEEK_PARAM_RE, "record-detail redirects must preserve peek identity");
+  assert.deepEqual(
+    offenders,
+    [],
+    `retired sandbox records routes must redirect into /sandbox/explore:\n${offenders.join("\n")}`
   );
 });
 

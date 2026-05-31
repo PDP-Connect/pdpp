@@ -45,12 +45,14 @@ const SCHEME_PREFIX_RE = /^https?:\/\//;
 function buildNav(routes: Routes, mode: ShellMode): NavItem[] {
   const nav: NavItem[] = [
     { href: routes.section.overview, label: "Overview", match: (a) => a === "overview" },
-    { href: routes.section.explore, label: "Explore", match: (a) => a === "explore" },
-    { href: routes.section.search, label: "Jump", match: (a) => a === "search" },
+    {
+      href: routes.section.explore,
+      label: "Explore",
+      match: (a) => a === "explore" || a === "search" || a === "records",
+    },
     { href: routes.section.traces, label: "Traces", match: (a) => a === "traces" },
     { href: routes.section.grants, label: "Grants", match: (a) => a === "grants" },
     { href: routes.section.runs, label: "Runs", match: (a) => a === "runs" },
-    { href: routes.section.records, label: "Connections", match: (a) => a === "records" },
     { href: routes.section.schedules, label: "Schedules", match: (a) => a === "schedules" },
     { href: routes.section.deployment, label: "Deployment", match: (a) => a === "deployment" },
   ];
@@ -146,7 +148,9 @@ function SidebarContent({ active, mode, routes }: { active: DashboardSection; mo
           })}
         </nav>
 
-        {active === "explore" || active === "search" ? <ExploreSubnav routes={routes} /> : null}
+        {active === "explore" || active === "search" || active === "records" ? (
+          <ExploreSubnav active={active} mode={mode} routes={routes} />
+        ) : null}
         {active === "grants" && mode === "live" ? <GrantsSubnav /> : null}
         {active === "deployment" && mode === "live" ? <DeploymentSubnav routes={routes} /> : null}
       </div>
@@ -156,13 +160,15 @@ function SidebarContent({ active, mode, routes }: { active: DashboardSection; mo
   );
 }
 
-function ExploreSubnav({ routes }: { routes: Routes }) {
-  const items = [
-    { href: routes.section.explore, label: "Records feed" },
-    { href: routes.section.search, label: "Jump to ID" },
-    { href: routes.section.records, label: "Manage connections" },
+function ExploreSubnav({ active, mode, routes }: { active: DashboardSection; mode: ShellMode; routes: Routes }) {
+  const items: Array<{ href: string; label: string; section: DashboardSection }> = [
+    { href: routes.section.explore, label: "Records feed", section: "explore" },
+    { href: routes.section.search, label: "Jump to artifact", section: "search" },
   ];
-  return <SidebarSubnav items={items} label="Explore workspace" />;
+  if (mode === "live") {
+    items.push({ href: routes.section.records, label: "Connections", section: "records" });
+  }
+  return <SidebarSubnav activeSection={active} items={items} label="Explore workspace" />;
 }
 
 function GrantsSubnav() {
@@ -187,20 +193,37 @@ function DeploymentSubnav({ routes }: { routes: Routes }) {
   return <SidebarSubnav items={items} label="Deployment" />;
 }
 
-function SidebarSubnav({ label, items }: { label: string; items: Array<{ href: string; label: string }> }) {
+function SidebarSubnav({
+  activeSection,
+  label,
+  items,
+}: {
+  activeSection?: DashboardSection;
+  label: string;
+  items: Array<{ href: string; label: string; section?: DashboardSection }>;
+}) {
   return (
     <div className="mt-5 border-border/80 border-t pt-4">
       <div className="pdpp-eyebrow mb-2 px-2.5">{label}</div>
       <nav aria-label={label} className="flex flex-col gap-0.5">
-        {items.map((item) => (
-          <Link
-            className="pdpp-caption rounded-md px-2.5 py-1 text-muted-foreground hover:bg-muted/60 hover:text-foreground"
-            href={item.href}
-            key={item.href}
-          >
-            {item.label}
-          </Link>
-        ))}
+        {items.map((item) => {
+          const isActive = activeSection !== undefined && item.section !== undefined && item.section === activeSection;
+          return (
+            <Link
+              aria-current={isActive ? "page" : undefined}
+              className={[
+                "pdpp-caption rounded-md px-2.5 py-1 transition-colors",
+                isActive
+                  ? "bg-muted/60 font-medium text-foreground"
+                  : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+              ].join(" ")}
+              href={item.href}
+              key={item.href}
+            >
+              {item.label}
+            </Link>
+          );
+        })}
       </nav>
     </div>
   );

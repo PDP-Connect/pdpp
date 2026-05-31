@@ -17,6 +17,14 @@ const SHELL_IMPORTS_PROVIDER = /import \{ CommandPalette, CommandPaletteProvider
 const SHELL_PROVIDER_WRAP =
   /<CommandPaletteProvider>[\s\S]*<Topbar overviewHref=\{routes\.section\.overview\} \/>[\s\S]*<CommandPalette [\s\S]*<\/CommandPaletteProvider>/;
 const PALETTE_USES_REGISTRY = /import \{ listDashboardCommands.*\} from "\.\.\/lib\/actions\.ts"/;
+const EXPLORE_PRIMARY_GROUP_RE =
+  /label:\s*["']Explore["'][\s\S]*a === ["']explore["'] \|\| a === ["']search["'] \|\| a === ["']records["']/;
+const PRIMARY_JUMP_NAV_RE = /label:\s*["']Jump["']/;
+const PRIMARY_CONNECTIONS_NAV_RE = /\{\s*href:\s*routes\.section\.records,\s*label:\s*["']Connections["']/;
+
+function buildNavSource(src: string): string {
+  return src.slice(src.indexOf("function buildNav"), src.indexOf("function resolveRoutes"));
+}
 
 test("command palette uses React context, not a module-level mutable opener", async () => {
   const src = await readFile(COMMAND_PALETTE_FILE, "utf8");
@@ -31,6 +39,18 @@ test("dashboard shell wraps the topbar trigger and palette in the same provider"
   const src = await readFile(SHELL_FILE, "utf8");
   assert.match(src, SHELL_IMPORTS_PROVIDER);
   assert.match(src, SHELL_PROVIDER_WRAP);
+});
+
+test("primary shell navigation groups records and artifact jump under Explore", async () => {
+  const src = await readFile(SHELL_FILE, "utf8");
+  const primaryNav = buildNavSource(src);
+  assert.match(primaryNav, EXPLORE_PRIMARY_GROUP_RE);
+  assert.doesNotMatch(primaryNav, PRIMARY_JUMP_NAV_RE, "Jump belongs in the Explore subnav, not primary navigation");
+  assert.doesNotMatch(
+    primaryNav,
+    PRIMARY_CONNECTIONS_NAV_RE,
+    "Connections belongs in the Explore subnav, not primary navigation"
+  );
 });
 
 test("command palette sources commands from the actions registry, not a hard-coded list", async () => {
@@ -104,7 +124,7 @@ test("no /dashboard/deployment/tokens href leaks into sandbox commands", () => {
   assert.equal(
     leaked.length,
     0,
-    `sandbox commands must not contain /dashboard/ hrefs; found: ${leaked.map((c) => c.href).join(", ")}`,
+    `sandbox commands must not contain /dashboard/ hrefs; found: ${leaked.map((c) => c.href).join(", ")}`
   );
 });
 
@@ -126,7 +146,7 @@ test("sandbox commands use /sandbox/ base path", () => {
   assert.equal(
     nonSandbox.length,
     0,
-    `all sandbox commands must start with /sandbox/; offenders: ${nonSandbox.map((c) => c.href).join(", ")}`,
+    `all sandbox commands must start with /sandbox/; offenders: ${nonSandbox.map((c) => c.href).join(", ")}`
   );
 });
 
@@ -138,6 +158,6 @@ test("live mode commands use the supplied basePath, not a hard-coded /dashboard"
   assert.equal(
     wrongPath.length,
     0,
-    `commands must use caller-supplied basePath; found hard-coded /dashboard in: ${wrongPath.map((c) => c.href).join(", ")}`,
+    `commands must use caller-supplied basePath; found hard-coded /dashboard in: ${wrongPath.map((c) => c.href).join(", ")}`
   );
 });
