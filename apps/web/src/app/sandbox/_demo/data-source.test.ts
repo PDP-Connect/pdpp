@@ -88,6 +88,29 @@ test("a declared currency_minor_units field dispatches a money card via classify
   );
 });
 
+test("sandbox stream metadata includes withheld-field and blob fixtures for Explorer honesty", async () => {
+  const visits = await ds.getStreamMetadata("northwind_health_demo", "clinical_visits");
+  const visitCaps = visits.field_capabilities ?? {};
+  assert.equal(visitCaps.summary?.granted, false);
+  assert.equal(visitCaps.summary?.type, "string");
+
+  const taxDocs = await ds.getStreamMetadata("acme_payroll_demo", "tax_documents");
+  const taxCaps = taxDocs.field_capabilities ?? {};
+  assert.equal(taxCaps.blob_ref?.granted, true);
+  assert.equal(taxCaps.blob_ref?.type, "blob");
+});
+
+test("sandbox queryRecords can return exact window metadata and blob_ref records", async () => {
+  const page = await ds.queryRecords("acme_payroll_demo", "tax_documents", { window: "exact" });
+  assert.equal(page.meta?.window?.total, 1);
+  assert.equal(page.meta?.window?.earliest_at, "2026-01-31T00:00:00.000Z");
+  assert.equal(page.meta?.window?.latest_at, "2026-01-31T00:00:00.000Z");
+  assert.equal(
+    (page.data[0]?.data.blob_ref as { fetch_url?: string } | undefined)?.fetch_url,
+    "/v1/blobs/blob_sb_taxdoc_2025_w2"
+  );
+});
+
 test("getConnectorOverview returns ConnectorOverview with last+last-successful run", async () => {
   const manifests = await ds.listConnectorManifests();
   const acme = manifests.find((m) => m.connector_id === "acme_payroll_demo");

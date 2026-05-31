@@ -63,6 +63,7 @@ test("live data source binds every DashboardDataSource method", async () => {
     "listConnectorSummaries",
     "listConnectorManifests",
     "listStreams",
+    "getStreamMetadata",
     "getConnectorOverview",
     "queryRecords",
     "getRecord",

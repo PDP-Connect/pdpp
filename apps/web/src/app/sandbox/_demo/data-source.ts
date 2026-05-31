@@ -45,6 +45,7 @@ import type {
   RecordsPage,
   SearchResultHit,
   SearchResultPage,
+  StreamMetadata,
   StreamRecord,
   StreamSummary,
 } from "@/app/dashboard/lib/rs-client.ts";
@@ -235,7 +236,9 @@ function buildConnectorManifest(connectorId: string): ConnectorManifest {
       // exposes — closing the live/sandbox asymmetry. The JSON Schema `type`
       // stays a string so field-name fallback readers are unaffected.
       schema: {
-        properties: Object.fromEntries(s.fields.map((f) => [f.name, { type: "string", x_pdpp_type: f.type }])),
+        properties: Object.fromEntries(
+          s.fields.map((f) => [f.name, { type: f.type === "blob" ? "object" : "string", x_pdpp_type: f.type }])
+        ),
       },
     })),
   };
@@ -260,6 +263,62 @@ function recordToStreamRecord(record: DemoRecord): StreamRecord {
     stream: record.stream,
     emitted_at: record.ingested_at,
     data: { ...record.fields },
+  };
+}
+
+function buildSandboxStreamMetadata(connectorId: string, streamKey: string): StreamMetadata {
+  const stream = streamsForConnector(connectorId).find((s) => s.key === streamKey);
+  if (!stream) {
+    return { object: "stream_metadata", name: streamKey, field_capabilities: {} };
+  }
+  return {
+    object: "stream_metadata",
+    name: stream.key,
+    field_capabilities: Object.fromEntries(
+      stream.fields.map((field) => {
+        // Deterministic projection fixture for Explorer honesty tests: the
+        // sandbox still carries seeded owner data, but active metadata says the
+        // visit summary is outside the active projection, so the Explorer must
+        // render the field as withheld instead of showing the value.
+        const granted = !(stream.key === "clinical_visits" && field.name === "summary");
+        return [
+          field.name,
+          {
+            type: field.type,
+            schema: { type: field.type === "blob" ? "object" : "string" },
+            granted,
+            usable: granted,
+          },
+        ];
+      })
+    ),
+  };
+}
+
+function parseRecordWindowTime(value: unknown): string | null {
+  if (typeof value !== "string" && typeof value !== "number") {
+    return null;
+  }
+  const ms = Date.parse(String(value));
+  return Number.isNaN(ms) ? null : new Date(ms).toISOString();
+}
+
+function sandboxWindowMeta(connectorId: string, streamKey: string): RecordsPage["meta"] {
+  const stream = streamsForConnector(connectorId).find((s) => s.key === streamKey);
+  if (!stream) {
+    return;
+  }
+  const times = streamRecords(streamKey)
+    .filter((record) => record.connector_id === connectorId)
+    .map((record) => parseRecordWindowTime(record.fields[stream.consent_time_field]))
+    .filter((value): value is string => value !== null)
+    .sort();
+  return {
+    window: {
+      total: streamRecords(streamKey).filter((record) => record.connector_id === connectorId).length,
+      earliest_at: times[0] ?? null,
+      latest_at: times.at(-1) ?? null,
+    },
   };
 }
 
@@ -519,6 +578,10 @@ export const sandboxDashboardDataSource: DashboardDataSource = {
     return streamsForConnector(connectorId).map((s) => buildStreamSummary(s.key));
   },
 
+  async getStreamMetadata(connectorId: string, stream: string): Promise<StreamMetadata> {
+    return buildSandboxStreamMetadata(connectorId, stream);
+  },
+
   async getConnectorOverview(connector: ConnectorManifest): Promise<ConnectorOverview> {
     const streams = await this.listStreams(connector.connector_id);
     const lastRun = connectorRunRef(connectorRecentRunIds(connector.connector_id)[0]);
@@ -539,7 +602,13 @@ export const sandboxDashboardDataSource: DashboardDataSource = {
   async queryRecords(
     connectorId: string,
     stream: string,
-    opts: { connectorInstanceId?: string | null; limit?: number; cursor?: string; order?: "asc" | "desc" } = {}
+    opts: {
+      connectorInstanceId?: string | null;
+      cursor?: string;
+      limit?: number;
+      order?: "asc" | "desc";
+      window?: "exact" | "none";
+    } = {}
   ): Promise<RecordsPage> {
     const built = buildRecordsList({
       connector_id: connectorId,
@@ -558,6 +627,7 @@ export const sandboxDashboardDataSource: DashboardDataSource = {
       object: "list",
       data: records,
       has_more: built.has_more,
+      ...(opts.window === "exact" ? { meta: sandboxWindowMeta(connectorId, stream) } : {}),
       ...(built.next_cursor ? { next_cursor: built.next_cursor } : {}),
     };
   },

@@ -24,6 +24,8 @@ export interface ExplorerConnectionFacet {
 }
 
 export interface ExplorerFeedEntry {
+  /** Grant-aware blob link/unavailable marker, present only when declared by stream metadata. */
+  blobAffordance?: ExplorerBlobAffordance;
   connectionDisplayName: string | null;
   connectionId: string | null;
   connectorId: string;
@@ -55,17 +57,45 @@ export interface ExplorerFeedEntry {
 export interface ExplorerPeekData {
   /** Pretty-printed JSON body. `null` when the record could not be read. */
   bodyJson: string | null;
-  connectionId: string | null;
   /** Human-readable connection label; falls back to `null` when identity is not resolved. */
   connectionDisplayName: string | null;
+  connectionId: string | null;
   connectorId: string;
   emittedAt: string;
   /** Error message when the body could not be fetched. */
   error: string | null;
+  /** Field-by-field rendering model; preferred over raw JSON when available. */
+  fields: ExplorerPeekField[];
   /** Full GET URL the dashboard issued to read this record. */
   readUrl: string;
   recordId: string;
   stream: string;
+}
+
+export interface ExplorerFieldCapability {
+  granted: boolean;
+  name: string;
+  type?: string;
+}
+
+export interface ExplorerBlobAffordance {
+  fieldName: string;
+  href?: string;
+  reason?: string;
+  state: "available" | "unavailable";
+}
+
+export interface ExplorerPeekField {
+  blobAffordance?: ExplorerBlobAffordance;
+  name: string;
+  state: "visible" | "withheld";
+  type?: string;
+  valueJson: string | null;
+}
+
+export interface ExplorerActivitySummary {
+  source: "exact_window" | "bounded_sample";
+  text: string;
 }
 
 export interface ExplorerWarning {
@@ -75,6 +105,8 @@ export interface ExplorerWarning {
 }
 
 export interface RecordsExplorerData {
+  /** Honest caption for activity/corpus summaries. Never synthesized as full-corpus from a bounded sample. */
+  activitySummary: ExplorerActivitySummary | null;
   /** Always present, sorted by display name. */
   connections: ExplorerConnectionFacet[];
   feed: ExplorerFeedEntry[];
@@ -258,6 +290,117 @@ export function computeActivityStripCells(
     });
   }
   return cells;
+}
+
+function stableFieldNames(data: Record<string, unknown>, capabilities: readonly ExplorerFieldCapability[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const cap of capabilities) {
+    if (!seen.has(cap.name)) {
+      seen.add(cap.name);
+      out.push(cap.name);
+    }
+  }
+  for (const name of Object.keys(data)) {
+    if (!seen.has(name)) {
+      seen.add(name);
+      out.push(name);
+    }
+  }
+  return out;
+}
+
+function capabilityByName(capabilities: readonly ExplorerFieldCapability[]): Map<string, ExplorerFieldCapability> {
+  return new Map(capabilities.map((cap) => [cap.name, cap]));
+}
+
+function prettyFieldValue(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  return JSON.stringify(value, null, 2);
+}
+
+function parseBlobRef(value: unknown): { href: string | null } | null {
+  if (!(value && typeof value === "object") || Array.isArray(value)) {
+    return null;
+  }
+  const record = value as { blob_id?: unknown; fetch_url?: unknown };
+  if (typeof record.fetch_url === "string" && record.fetch_url.length > 0) {
+    return { href: record.fetch_url };
+  }
+  if (typeof record.blob_id === "string" && record.blob_id.length > 0) {
+    return { href: `/v1/blobs/${encodeURIComponent(record.blob_id)}` };
+  }
+  return null;
+}
+
+export function buildBlobAffordance(
+  data: Record<string, unknown>,
+  capabilities: readonly ExplorerFieldCapability[]
+): ExplorerBlobAffordance | null {
+  const blobField = capabilities.find((cap) => cap.type?.toLowerCase() === "blob");
+  if (!blobField) {
+    return null;
+  }
+  if (!blobField.granted) {
+    return {
+      fieldName: blobField.name,
+      reason: "Blob unavailable under active projection.",
+      state: "unavailable",
+    };
+  }
+  const parsed = parseBlobRef(data[blobField.name]);
+  if (!parsed?.href) {
+    return null;
+  }
+  return {
+    fieldName: blobField.name,
+    href: parsed.href,
+    state: "available",
+  };
+}
+
+export function buildPeekFields(
+  data: Record<string, unknown>,
+  capabilities: readonly ExplorerFieldCapability[]
+): ExplorerPeekField[] {
+  const caps = capabilityByName(capabilities);
+  const blob = buildBlobAffordance(data, capabilities);
+  const fields: ExplorerPeekField[] = [];
+  for (const name of stableFieldNames(data, capabilities)) {
+    const cap = caps.get(name);
+    const type = cap?.type;
+    if (cap && !cap.granted) {
+      fields.push({
+        blobAffordance: blob?.fieldName === name ? blob : undefined,
+        name,
+        state: "withheld",
+        type,
+        valueJson: null,
+      });
+      continue;
+    }
+    if (!Object.hasOwn(data, name)) {
+      continue;
+    }
+    fields.push({
+      blobAffordance: blob?.fieldName === name ? blob : undefined,
+      name,
+      state: "visible",
+      type,
+      valueJson: prettyFieldValue(data[name]),
+    });
+  }
+  return fields;
+}
+
+export function exactWindowSummaryText(window: { earliestAt: string | null; latestAt: string | null; total: number }) {
+  const count = window.total.toLocaleString();
+  if (window.earliestAt && window.latestAt) {
+    return `exact for loaded streams: ${count} records from ${window.earliestAt.slice(0, 10)} to ${window.latestAt.slice(0, 10)}`;
+  }
+  return `exact for loaded streams: ${count} records`;
 }
 
 export function buildExplorerHref(

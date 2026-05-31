@@ -25,18 +25,25 @@ import type { Routes } from "./routes.ts";
 
 export type {
   ExplorerActivityCell,
+  ExplorerActivitySummary,
+  ExplorerBlobAffordance,
   ExplorerConnectionFacet,
   ExplorerFeedDayGroup,
   ExplorerFeedEntry,
+  ExplorerFieldCapability,
   ExplorerLens,
   ExplorerPeekData,
   ExplorerWarning,
   RecordsExplorerData,
 } from "./explorer-utils.ts";
+// biome-ignore lint/performance/noBarrelFile: This view preserves the historical import seam while helpers live in a framework-free module.
 export {
+  buildBlobAffordance,
   buildExplorerHref,
+  buildPeekFields,
   computeActivityStripCells,
   emptyFeedMessage,
+  exactWindowSummaryText,
   explorerPeekParam,
   feedCountLabel,
   feedDescription,
@@ -48,6 +55,8 @@ export {
 
 import type {
   ExplorerActivityCell,
+  ExplorerActivitySummary,
+  ExplorerBlobAffordance,
   ExplorerConnectionFacet,
   ExplorerFeedEntry,
   ExplorerLens,
@@ -69,6 +78,11 @@ import {
 
 const MS_PER_DAY = 86_400_000;
 
+interface ExplorerFilterItem {
+  label: string;
+  value: string;
+}
+
 export function RecordsExplorerView({ data, routes }: { data: RecordsExplorerData; routes: Routes }) {
   const {
     query,
@@ -78,6 +92,7 @@ export function RecordsExplorerView({ data, routes }: { data: RecordsExplorerDat
     since,
     until,
     feed,
+    activitySummary,
     peek,
     fromSearch,
     hybridUsed,
@@ -88,6 +103,7 @@ export function RecordsExplorerView({ data, routes }: { data: RecordsExplorerDat
 
   const main = (
     <ExplorerMain
+      activitySummary={activitySummary}
       connections={connections}
       feed={feed}
       hybridUsed={hybridUsed}
@@ -137,6 +153,50 @@ export function RecordsExplorerView({ data, routes }: { data: RecordsExplorerDat
   );
 }
 
+function buildExplorerFilterItems({
+  connections,
+  query,
+  selectedConnectionIds,
+  selectedStreams,
+  since,
+  until,
+}: {
+  connections: ExplorerConnectionFacet[];
+  query: string;
+  selectedConnectionIds: string[];
+  selectedStreams: string[];
+  since: string;
+  until: string;
+}): ExplorerFilterItem[] {
+  // In search mode we cannot enforce per-connection scope (public search
+  // does not yet accept `connection_id`), so the chip label is honest:
+  // it narrows by connector type for the underlying request.
+  const connectionLabel = query ? "connector (from connection)" : "connection";
+  const filterItems: ExplorerFilterItem[] = [];
+  for (const id of selectedConnectionIds) {
+    const conn = connections.find((c) => c.connectionId === id);
+    filterItems.push({
+      label: connectionLabel,
+      value: query
+        ? formatConnectorKeyForDisplay(conn?.connectorId ?? id)
+        : formatConnectorNameForDisplay({
+            connectorId: conn?.connectorId ?? id,
+            displayName: conn?.displayName,
+          }),
+    });
+  }
+  for (const stream of selectedStreams) {
+    filterItems.push({ label: "stream", value: stream });
+  }
+  if (since) {
+    filterItems.push({ label: "since", value: since });
+  }
+  if (until) {
+    filterItems.push({ label: "until", value: until });
+  }
+  return filterItems;
+}
+
 function ExplorerMain({
   query,
   connections,
@@ -145,6 +205,7 @@ function ExplorerMain({
   since,
   until,
   feed,
+  activitySummary,
   hybridUsed,
   lens,
   truncated,
@@ -159,6 +220,7 @@ function ExplorerMain({
   since: string;
   until: string;
   feed: ExplorerFeedEntry[];
+  activitySummary: ExplorerActivitySummary | null;
   hybridUsed: boolean;
   lens: ExplorerLens;
   truncated: boolean;
@@ -166,32 +228,14 @@ function ExplorerMain({
   routes: Routes;
   warnings: ExplorerWarning[];
 }) {
-  // In search mode we cannot enforce per-connection scope (public search
-  // does not yet accept `connection_id`), so the chip label is honest:
-  // it narrows by connector type for the underlying request.
-  const connectionLabel = query ? "connector (from connection)" : "connection";
-  const filterItems: Array<{ label: string; value: string }> = [];
-  for (const id of selectedConnectionIds) {
-    const conn = connections.find((c) => c.connectionId === id);
-    filterItems.push({
-      label: connectionLabel,
-      value: query
-        ? formatConnectorKeyForDisplay(conn?.connectorId ?? id)
-        : formatConnectorNameForDisplay({
-            connectorId: conn?.connectorId ?? id,
-            displayName: conn?.displayName,
-          }),
-    });
-  }
-  for (const s of selectedStreams) {
-    filterItems.push({ label: "stream", value: s });
-  }
-  if (since) {
-    filterItems.push({ label: "since", value: since });
-  }
-  if (until) {
-    filterItems.push({ label: "until", value: until });
-  }
+  const filterItems = buildExplorerFilterItems({
+    connections,
+    query,
+    selectedConnectionIds,
+    selectedStreams,
+    since,
+    until,
+  });
 
   const resetHref = filterItems.length > 0 || query ? buildExplorerHref(routes, {}) : undefined;
   const exploreHref = routes.section.explore;
@@ -232,6 +276,8 @@ function ExplorerMain({
 
       <ExplorerWarnings warnings={warnings} />
 
+      {activitySummary?.source === "exact_window" ? <CorpusSummary summary={activitySummary} /> : null}
+
       {lens === "recent" && feed.length > 0 ? (
         <ActivityStrip
           cells={computeActivityStripCells(feed)}
@@ -244,62 +290,18 @@ function ExplorerMain({
       ) : null}
 
       <Section description={feedDescription(lens, hybridUsed)} title={feedSectionTitle(lens)}>
-        {feed.length === 0 ? (
-          connections.length === 0 ? (
-            <EmptyState
-              hint={
-                <span>
-                  No connectors are configured yet.{" "}
-                  <Link className="underline underline-offset-2 hover:text-foreground" href={routes.section.records}>
-                    Add a connection →
-                  </Link>
-                </span>
-              }
-              title="No connections"
-            />
-          ) : (
-            <EmptyState hint={emptyFeedMessage(lens)} title="No records" />
-          )
-        ) : (
-          <div className="flex flex-col gap-5">
-            {groupFeedByDay(feed).map((group) => (
-              <section aria-label={group.label} key={`${group.day || "undated"}:${group.entries[0]?.recordId ?? ""}`}>
-                <header className="mb-1.5 flex items-baseline justify-between gap-3 border-border/60 border-b pb-1">
-                  <h3 className="pdpp-eyebrow text-muted-foreground">{group.label}</h3>
-                  <span className="pdpp-caption text-muted-foreground tabular-nums">
-                    {group.entries.length.toLocaleString()}
-                  </span>
-                </header>
-                <ul className="flex flex-col gap-2">
-                  {group.entries.map((entry) => {
-                    const key = explorerPeekParam(entry);
-                    return (
-                      <li key={key}>
-                        <ExplorerCard
-                          entry={entry}
-                          peekHref={buildExplorerHref(routes, {
-                            query,
-                            connectionIds: selectedConnectionIds,
-                            streams: selectedStreams,
-                            since,
-                            until,
-                            peek: key,
-                          })}
-                          recordHref={routes.record(
-                            entry.connectionId ?? entry.connectorId,
-                            entry.stream,
-                            entry.recordId
-                          )}
-                          selected={peekId === key}
-                        />
-                      </li>
-                    );
-                  })}
-                </ul>
-              </section>
-            ))}
-          </div>
-        )}
+        <ExplorerFeedContent
+          connections={connections}
+          feed={feed}
+          lens={lens}
+          peekId={peekId}
+          query={query}
+          routes={routes}
+          selectedConnectionIds={selectedConnectionIds}
+          selectedStreams={selectedStreams}
+          since={since}
+          until={until}
+        />
         {truncated && lens === "recent" ? (
           <p className="pdpp-caption mt-3 text-muted-foreground italic">
             Showing the most recent {feed.length.toLocaleString()} records across visible connections. Submit a query or
@@ -315,6 +317,97 @@ function ExplorerMain({
       </Section>
     </>
   );
+}
+
+function ExplorerFeedContent({
+  connections,
+  feed,
+  lens,
+  peekId,
+  query,
+  routes,
+  selectedConnectionIds,
+  selectedStreams,
+  since,
+  until,
+}: {
+  connections: ExplorerConnectionFacet[];
+  feed: ExplorerFeedEntry[];
+  lens: ExplorerLens;
+  peekId: string | null;
+  query: string;
+  routes: Routes;
+  selectedConnectionIds: string[];
+  selectedStreams: string[];
+  since: string;
+  until: string;
+}) {
+  if (feed.length === 0) {
+    return <ExplorerEmptyFeed connections={connections} lens={lens} routes={routes} />;
+  }
+  return (
+    <div className="flex flex-col gap-5">
+      {groupFeedByDay(feed).map((group) => (
+        <section aria-label={group.label} key={`${group.day || "undated"}:${group.entries[0]?.recordId ?? ""}`}>
+          <header className="mb-1.5 flex items-baseline justify-between gap-3 border-border/60 border-b pb-1">
+            <h3 className="pdpp-eyebrow text-muted-foreground">{group.label}</h3>
+            <span className="pdpp-caption text-muted-foreground tabular-nums">
+              {group.entries.length.toLocaleString()}
+            </span>
+          </header>
+          <ul className="flex flex-col gap-2">
+            {group.entries.map((entry) => {
+              const key = explorerPeekParam(entry);
+              return (
+                <li key={key}>
+                  <ExplorerCard
+                    entry={entry}
+                    peekHref={buildExplorerHref(routes, {
+                      query,
+                      connectionIds: selectedConnectionIds,
+                      streams: selectedStreams,
+                      since,
+                      until,
+                      peek: key,
+                    })}
+                    recordHref={routes.record(entry.connectionId ?? entry.connectorId, entry.stream, entry.recordId)}
+                    selected={peekId === key}
+                  />
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      ))}
+    </div>
+  );
+}
+
+function ExplorerEmptyFeed({
+  connections,
+  lens,
+  routes,
+}: {
+  connections: ExplorerConnectionFacet[];
+  lens: ExplorerLens;
+  routes: Routes;
+}) {
+  if (connections.length === 0) {
+    return (
+      <EmptyState
+        hint={
+          <span>
+            No connectors are configured yet.{" "}
+            <Link className="underline underline-offset-2 hover:text-foreground" href={routes.section.records}>
+              Add a connection →
+            </Link>
+          </span>
+        }
+        title="No connections"
+      />
+    );
+  }
+  return <EmptyState hint={emptyFeedMessage(lens)} title="No records" />;
 }
 
 function ExplorerControls({
@@ -559,6 +652,15 @@ function ExplorerWarnings({ warnings }: { warnings: ExplorerWarning[] }) {
   );
 }
 
+function CorpusSummary({ summary }: { summary: ExplorerActivitySummary }) {
+  return (
+    <div className="pdpp-caption mb-4 rounded border border-border/80 bg-muted/30 px-3 py-2 text-muted-foreground">
+      <span className="pdpp-eyebrow mr-2 text-foreground">Loaded stream window</span>
+      <span>{summary.text}</span>
+    </div>
+  );
+}
+
 // Server-deterministic day label for the strip tooltip. Locale-pinned, UTC.
 const ACTIVITY_CELL_LABEL_FMT = new Intl.DateTimeFormat("en-US", {
   weekday: "short",
@@ -635,6 +737,27 @@ function ActivityStrip({
         })}
       </div>
     </section>
+  );
+}
+
+function BlobAffordance({ affordance }: { affordance: ExplorerBlobAffordance }) {
+  if (affordance.state === "unavailable") {
+    return (
+      <span className="pdpp-caption inline-flex items-center rounded-full border border-border/80 px-2 py-0.5 text-muted-foreground">
+        {affordance.reason ?? "Blob unavailable under active projection."}
+      </span>
+    );
+  }
+  if (!affordance.href) {
+    return null;
+  }
+  return (
+    <a
+      className="pdpp-caption inline-flex items-center rounded-full border border-border/80 px-2 py-0.5 font-mono text-primary underline-offset-2 hover:underline"
+      href={affordance.href}
+    >
+      Open blob →
+    </a>
   );
 }
 
@@ -820,6 +943,11 @@ function ExplorerCard({
         </div>
         <CardBody entry={entry} />
       </Link>
+      {entry.blobAffordance ? (
+        <div className="border-border/50 border-t px-4 py-1.5">
+          <BlobAffordance affordance={entry.blobAffordance} />
+        </div>
+      ) : null}
       <div className="flex justify-end border-border/50 border-t px-4 py-1">
         <Link
           className="pdpp-caption text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
@@ -898,6 +1026,36 @@ function ExplorerPeek({
 function PeekBody({ peek }: { peek: ExplorerPeekData }) {
   if (peek.error) {
     return <p className="text-destructive">{peek.error}</p>;
+  }
+  if (peek.fields.length > 0) {
+    return (
+      <dl className="divide-y divide-border/70 rounded border border-border/80">
+        {peek.fields.map((field) => (
+          <div className="grid gap-1 px-2 py-2 sm:grid-cols-[minmax(8rem,12rem)_1fr]" key={field.name}>
+            <dt className="min-w-0">
+              <code className="break-all font-mono text-foreground">{field.name}</code>
+              {field.type ? (
+                <span className="ml-1.5 rounded bg-muted px-1 py-0.5 text-muted-foreground">{field.type}</span>
+              ) : null}
+            </dt>
+            <dd className="min-w-0">
+              {field.state === "withheld" ? (
+                <span className="text-muted-foreground italic">withheld by active projection</span>
+              ) : (
+                <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-foreground">
+                  {field.valueJson}
+                </pre>
+              )}
+              {field.blobAffordance ? (
+                <div className="mt-1.5">
+                  <BlobAffordance affordance={field.blobAffordance} />
+                </div>
+              ) : null}
+            </dd>
+          </div>
+        ))}
+      </dl>
+    );
   }
   if (peek.bodyJson) {
     return <pre className="max-h-[40vh] overflow-auto rounded bg-muted p-2 font-mono">{peek.bodyJson}</pre>;

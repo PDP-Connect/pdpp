@@ -953,6 +953,9 @@ function liveTypeFor(t: DemoStreamDef["fields"][number]["type"]): string {
   if (t === "currency_minor_units") {
     return "integer";
   }
+  if (t === "blob") {
+    return "object";
+  }
   return t;
 }
 

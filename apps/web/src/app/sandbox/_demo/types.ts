@@ -13,7 +13,7 @@ export interface DemoFieldDef {
   readonly name: string;
   /** Coarse semantic class label, mirroring the spec's three-class trust model. */
   readonly semantic_class: "common" | "sensitive" | "identifying";
-  readonly type: "string" | "number" | "boolean" | "timestamp" | "currency_minor_units";
+  readonly type: "string" | "number" | "boolean" | "timestamp" | "currency_minor_units" | "blob";
 }
 
 export interface DemoStreamDef {

@@ -146,6 +146,12 @@ export const DEMO_STREAMS: readonly DemoStreamDef[] = [
         semantic_class: "common",
         description: "When the document was issued.",
       },
+      {
+        name: "blob_ref",
+        type: "blob",
+        semantic_class: "sensitive",
+        description: "Reference to the simulated document bytes exposed through the blob read path.",
+      },
     ],
   },
   {
@@ -257,6 +263,12 @@ export const DEMO_RECORDS: readonly DemoRecord[] = [
       document_kind: "W2",
       issuer: "Northwind Studios (simulated)",
       issued_at: "2026-01-31T00:00:00Z",
+      blob_ref: {
+        blob_id: "blob_sb_taxdoc_2025_w2",
+        content_type: "application/pdf",
+        fetch_url: "/v1/blobs/blob_sb_taxdoc_2025_w2",
+        size_bytes: 184_320,
+      },
     },
   },
   {

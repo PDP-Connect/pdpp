@@ -12,13 +12,9 @@
  */
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import type {
-  RefConnectionHealthSnapshot,
-  RefLocalDeviceProgress,
-  RefRetainedBytesBreakdown,
-} from "./ref-client.ts";
 import { getOwnerToken, getRsInternalUrl, ReferenceServerUnreachableError } from "./owner-token.ts";
 import { type CanonicalReadWarning, extractReadWarnings } from "./read-envelope.ts";
+import type { RefConnectionHealthSnapshot, RefLocalDeviceProgress, RefRetainedBytesBreakdown } from "./ref-client.ts";
 import { verifyDashboardSession } from "./verify-session.ts";
 
 export interface StreamSummary {
@@ -45,9 +41,19 @@ export interface StreamRecord {
   warnings: CanonicalReadWarning[];
 }
 
+export interface RecordsWindowMeta {
+  earliest_at: string | null;
+  latest_at: string | null;
+  total: number;
+}
+
 export interface RecordsPage {
   data: StreamRecord[];
   has_more: boolean;
+  meta?: {
+    window?: RecordsWindowMeta;
+    [k: string]: unknown;
+  };
   next_cursor?: string;
   object: "list";
   /**
@@ -56,6 +62,21 @@ export interface RecordsPage {
    * Consumers MUST render warnings out-of-band without dropping the data.
    */
   warnings: CanonicalReadWarning[];
+}
+
+export interface FieldCapability {
+  granted?: boolean;
+  schema?: Record<string, unknown>;
+  type?: string;
+  usable?: boolean;
+  [k: string]: unknown;
+}
+
+export interface StreamMetadata {
+  field_capabilities?: Record<string, FieldCapability>;
+  name: string;
+  object?: "stream_metadata" | string;
+  [k: string]: unknown;
 }
 
 export interface ConnectorManifest {
@@ -116,17 +137,23 @@ export async function getStreamMetadata(
   connectorId: string,
   stream: string,
   opts: ConnectionReadOptions = {}
-): Promise<Record<string, unknown>> {
+): Promise<StreamMetadata> {
   return (await authedFetch(`/v1/streams/${encodeURIComponent(stream)}`, {
     connector_id: connectorId,
     connector_instance_id: opts.connectorInstanceId,
-  })) as Record<string, unknown>;
+  })) as StreamMetadata;
 }
 
 export async function queryRecords(
   connectorId: string,
   stream: string,
-  opts: { connectorInstanceId?: string | null; limit?: number; cursor?: string; order?: "asc" | "desc" } = {}
+  opts: {
+    connectorInstanceId?: string | null;
+    cursor?: string;
+    limit?: number;
+    order?: "asc" | "desc";
+    window?: "exact" | "none";
+  } = {}
 ): Promise<RecordsPage> {
   const body = (await authedFetch(`/v1/streams/${encodeURIComponent(stream)}/records`, {
     connector_id: connectorId,
@@ -134,6 +161,7 @@ export async function queryRecords(
     limit: opts.limit ?? 50,
     cursor: opts.cursor,
     order: opts.order,
+    window: opts.window,
   })) as RecordsPage;
   const data = Array.isArray(body.data) ? body.data : [];
   // Single-record envelopes still wear the legacy `{ object: 'record', id, stream, data, emitted_at }`
@@ -166,13 +194,10 @@ export async function getRecord(
   recordId: string,
   opts: ConnectionReadOptions = {}
 ): Promise<StreamRecord> {
-  const body = (await authedFetch(
-    `/v1/streams/${encodeURIComponent(stream)}/records/${encodeURIComponent(recordId)}`,
-    {
-      connector_id: connectorId,
-      connector_instance_id: opts.connectorInstanceId,
-    }
-  )) as StreamRecord;
+  const body = (await authedFetch(`/v1/streams/${encodeURIComponent(stream)}/records/${encodeURIComponent(recordId)}`, {
+    connector_id: connectorId,
+    connector_instance_id: opts.connectorInstanceId,
+  })) as StreamRecord;
   return {
     ...body,
     warnings: extractReadWarnings(body),
@@ -462,8 +487,8 @@ export interface ConnectorOverview {
   retainedBytes?: RefRetainedBytesBreakdown | null;
   streamCount?: number;
   streams: StreamSummary[];
-  totalRetainedBytes?: number | null;
   totalRecords: number;
+  totalRetainedBytes?: number | null;
 }
 
 /** Thin projection of RunSummary fields the dashboard index needs.

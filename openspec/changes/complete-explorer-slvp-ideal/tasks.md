@@ -28,10 +28,10 @@ the single end-to-end journey in section 6.
 
 ## 4. Explorer honesty: grant projection and blob affordances
 
-- [ ] 4.1 Consume the existing `field_capabilities` grant-usability signal so fields reported unusable under the active metadata render as withheld, not silently omitted — without introducing client-grant chrome on the owner-token Explorer.
-- [ ] 4.2 Render a grant-aware preview/download affordance for records whose stream declares a `blob` field type and that carry a `blob_ref`, reading only through the existing blob read path; represent out-of-projection blobs as unavailable.
-- [ ] 4.3 Source corpus/activity summaries from `meta.window` when present; otherwise omit or label as derived from the bounded recency sample. Never compute a full-corpus figure by unbounded fan-out.
-- [ ] 4.4 Add unit/invariant tests for withheld-field representation, blob affordance gating, and the bounded-summary honesty rule.
+- [x] 4.1 Consume the existing `field_capabilities` grant-usability signal so fields reported unusable under the active metadata render as withheld, not silently omitted — without introducing client-grant chrome on the owner-token Explorer. (`getStreamMetadata` is now part of the live/sandbox dashboard data-source seam; recency/time-range/peek loaders consume `field_capabilities` and render unusable fields as withheld in the field-level peek model, without adding client-grant chrome to owner-token Explorer.)
+- [x] 4.2 Render a grant-aware preview/download affordance for records whose stream declares a `blob` field type and that carry a `blob_ref`, reading only through the existing blob read path; represent out-of-projection blobs as unavailable. (`buildBlobAffordance` gates on declared `type: "blob"` plus active grant usability, links only the existing `blob_ref.fetch_url`/`/v1/blobs/{blob_id}` path, and marks projected-out blobs unavailable; the sandbox includes a deterministic `tax_documents.blob_ref` fixture.)
+- [x] 4.3 Source corpus/activity summaries from `meta.window` when present; otherwise omit or label as derived from the bounded recency sample. Never compute a full-corpus figure by unbounded fan-out. (Recency and time-window list calls request `window=exact`; a separate "Loaded stream window" corpus caption renders only when all successful stream reads returned exact window metadata, while the activity strip remains explicitly derived from the bounded visible feed.)
+- [x] 4.4 Add unit/invariant tests for withheld-field representation, blob affordance gating, and the bounded-summary honesty rule. (Added `explorer-utils.test.ts` in `apps/web` and `apps/console`, extended dashboard data-source invariants, and extended sandbox fixture tests for withheld fields, blob refs, and exact window metadata; focused checks green.)
 
 ## 5. Information architecture and sandbox parity
 

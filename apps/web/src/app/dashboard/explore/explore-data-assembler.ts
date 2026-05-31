@@ -10,11 +10,15 @@
  * already declared on DashboardDataSource.
  */
 import {
+  buildBlobAffordance,
+  buildPeekFields,
   type ExplorerConnectionFacet,
   type ExplorerFeedEntry,
+  type ExplorerFieldCapability,
   type ExplorerLens,
   type ExplorerPeekData,
   type ExplorerWarning,
+  exactWindowSummaryText,
   parseExplorerPeekParam,
   type RecordsExplorerData,
 } from "@/app/dashboard/components/views/records-explorer-view.tsx";
@@ -23,6 +27,7 @@ import type { DashboardDataSource } from "@/app/dashboard/lib/data-source.ts";
 import { classifyRecordKind, type DeclaredFieldTypes } from "@/app/dashboard/lib/record-kind.ts";
 import { buildRecordPreview } from "@/app/dashboard/lib/record-preview.ts";
 import type { RefConnectorSummary } from "@/app/dashboard/lib/ref-client.ts";
+import type { RecordsWindowMeta, StreamMetadata } from "@/app/dashboard/lib/rs-client.ts";
 import {
   lookupSearchTimestampMetadata,
   pickSearchDisplayTimestamp,
@@ -134,16 +139,132 @@ function recordData(data: unknown): Record<string, unknown> {
 
 interface FeedLoadResult {
   entries: ExplorerFeedEntry[];
+  exactWindowComplete: boolean;
+  exactWindows: RecordsWindowMeta[];
   fromSearch: boolean;
   hybridUsed: boolean;
   truncated: boolean;
   warnings: ExplorerWarning[];
 }
 
+interface StreamUiMetadata {
+  declaredFieldTypes?: DeclaredFieldTypes;
+  fieldCapabilities: ExplorerFieldCapability[];
+  fieldNames?: readonly string[];
+}
+
+function fieldCapabilitiesFromMetadata(metadata: StreamMetadata | null): ExplorerFieldCapability[] {
+  const raw = metadata?.field_capabilities;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return [];
+  }
+  return Object.entries(raw).map(([name, cap]) => {
+    const type = typeof cap?.type === "string" && cap.type.length > 0 ? cap.type : undefined;
+    const granted = cap?.granted !== false && cap?.usable !== false;
+    return {
+      name,
+      granted,
+      ...(type ? { type } : {}),
+    };
+  });
+}
+
+function declaredTypesFromCapabilities(
+  capabilities: readonly ExplorerFieldCapability[]
+): DeclaredFieldTypes | undefined {
+  const entries = capabilities.flatMap((cap) => (cap.type ? [[cap.name, cap.type] as const] : []));
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
+function metadataFieldNames(capabilities: readonly ExplorerFieldCapability[]): readonly string[] | undefined {
+  return capabilities.length > 0 ? capabilities.map((cap) => cap.name) : undefined;
+}
+
+async function loadStreamUiMetadata(
+  dataSource: DashboardDataSource,
+  summary: RefConnectorSummary,
+  streamName: string,
+  fallbackDeclaredTypes: DeclaredFieldTypes | undefined,
+  fallbackFieldNames: readonly string[] | undefined
+): Promise<{ metadata: StreamUiMetadata; warning: ExplorerWarning | null }> {
+  try {
+    const metadata = await dataSource.getStreamMetadata(summary.connector_id, streamName, {
+      connectorInstanceId: summary.connector_instance_id ?? summary.connection_id,
+    });
+    const fieldCapabilities = fieldCapabilitiesFromMetadata(metadata);
+    return {
+      metadata: {
+        declaredFieldTypes: declaredTypesFromCapabilities(fieldCapabilities) ?? fallbackDeclaredTypes,
+        fieldCapabilities,
+        fieldNames: metadataFieldNames(fieldCapabilities) ?? fallbackFieldNames,
+      },
+      warning: null,
+    };
+  } catch (err) {
+    return {
+      metadata: {
+        declaredFieldTypes: fallbackDeclaredTypes,
+        fieldCapabilities: [],
+        fieldNames: fallbackFieldNames,
+      },
+      warning: {
+        code: "search_meta_warning",
+        message: `${connectorSummaryDisplayName(summary)} · ${streamName}: stream metadata unavailable; grant projection and blob affordances may be incomplete. ${describeError(err)}`,
+      },
+    };
+  }
+}
+
+function exactWindowFromPage(page: { meta?: { window?: RecordsWindowMeta } }): RecordsWindowMeta | null {
+  const w = page.meta?.window;
+  return typeof w?.total === "number" ? w : null;
+}
+
+function mergedExactWindow(
+  windows: readonly RecordsWindowMeta[]
+): { earliestAt: string | null; latestAt: string | null; total: number } | null {
+  if (windows.length === 0) {
+    return null;
+  }
+  const earliest =
+    windows
+      .map((w) => w.earliest_at)
+      .filter((value): value is string => typeof value === "string" && value.length > 0)
+      .sort()[0] ?? null;
+  const latest =
+    windows
+      .map((w) => w.latest_at)
+      .filter((value): value is string => typeof value === "string" && value.length > 0)
+      .sort()
+      .at(-1) ?? null;
+  return {
+    earliestAt: earliest,
+    latestAt: latest,
+    total: windows.reduce((sum, w) => sum + w.total, 0),
+  };
+}
+
+function activitySummaryForFeed(feed: FeedLoadResult): RecordsExplorerData["activitySummary"] {
+  if (feed.exactWindowComplete) {
+    const merged = mergedExactWindow(feed.exactWindows);
+    if (merged) {
+      return {
+        source: "exact_window",
+        text: exactWindowSummaryText(merged),
+      };
+    }
+  }
+  return {
+    source: "bounded_sample",
+    text: `from the most recent ${feed.entries.length.toLocaleString()} records`,
+  };
+}
+
 async function loadEmptyQueryFeed(
   filteredSummaries: RefConnectorSummary[],
   timestampMetadata: ReadonlyMap<string, SearchTimestampMetadata>,
   declaredFieldTypes: ReadonlyMap<string, DeclaredFieldTypes>,
+  manifestFieldNames: ReadonlyMap<string, readonly string[]>,
   filterStreams: ReadonlySet<string>,
   dataSource: DashboardDataSource
 ): Promise<FeedLoadResult> {
@@ -151,7 +272,14 @@ async function loadEmptyQueryFeed(
   // walk a small set of streams in declaration order.
   const connections = filteredSummaries.slice(0, MAX_FEED_CONNECTIONS);
 
-  type StreamFetchResult = { ok: true; entries: ExplorerFeedEntry[] } | { ok: false; failure: ExplorerWarning };
+  type StreamFetchResult =
+    | {
+        ok: true;
+        entries: ExplorerFeedEntry[];
+        exactWindow: RecordsWindowMeta | null;
+        warning: ExplorerWarning | null;
+      }
+    | { ok: false; failure: ExplorerWarning };
 
   const fetches: Promise<StreamFetchResult>[] = [];
   for (const summary of connections) {
@@ -160,61 +288,76 @@ async function loadEmptyQueryFeed(
       .slice(0, MAX_FEED_STREAMS_PER_CONNECTION);
     for (const streamName of streams) {
       fetches.push(
-        dataSource
-          .queryRecords(summary.connector_id, streamName, {
+        (async (): Promise<StreamFetchResult> => {
+          const metaKey = searchTimestampMetadataKey(summary.connector_id, streamName);
+          const { metadata, warning } = await loadStreamUiMetadata(
+            dataSource,
+            summary,
+            streamName,
+            declaredFieldTypes.get(metaKey),
+            manifestFieldNames.get(metaKey)
+          );
+          const page = await dataSource.queryRecords(summary.connector_id, streamName, {
             connectorInstanceId: summary.connector_instance_id ?? summary.connection_id,
             limit: MAX_FEED_RECORDS_PER_STREAM,
             order: "desc",
+            window: "exact",
+          });
+          return {
+            ok: true,
+            entries: page.data.map((record) => {
+              const data = recordData(record.data);
+              const display = pickSearchDisplayTimestamp({
+                data,
+                emittedAt: record.emitted_at,
+                metadata: lookupSearchTimestampMetadata(timestampMetadata, summary.connector_id, streamName),
+              });
+              const kind = classifyRecordKind(streamName, data, metadata.declaredFieldTypes).kind;
+              return {
+                blobAffordance: buildBlobAffordance(data, metadata.fieldCapabilities) ?? undefined,
+                connectorId: summary.connector_id,
+                connectionId: summary.connection_id,
+                connectionDisplayName: connectorSummaryDisplayName(summary),
+                stream: streamName,
+                recordId: record.id,
+                emittedAt: record.emitted_at,
+                displayAt: display.value,
+                summary: summarize(summary.connector_id, streamName, data),
+                kind,
+                preview: buildRecordPreview(kind, data) ?? undefined,
+              };
+            }),
+            exactWindow: exactWindowFromPage(page),
+            warning,
+          };
+        })().catch(
+          (err): StreamFetchResult => ({
+            ok: false,
+            failure: {
+              code: "partial_fan_in",
+              message: `${connectorSummaryDisplayName(summary)} · ${streamName}: ${describeError(err)}`,
+            },
           })
-          .then(
-            (page): StreamFetchResult => ({
-              ok: true,
-              entries: page.data.map((record) => {
-                const data = recordData(record.data);
-                const display = pickSearchDisplayTimestamp({
-                  data,
-                  emittedAt: record.emitted_at,
-                  metadata: lookupSearchTimestampMetadata(timestampMetadata, summary.connector_id, streamName),
-                });
-                const kind = classifyRecordKind(
-                  streamName,
-                  data,
-                  declaredFieldTypes.get(searchTimestampMetadataKey(summary.connector_id, streamName))
-                ).kind;
-                return {
-                  connectorId: summary.connector_id,
-                  connectionId: summary.connection_id,
-                  connectionDisplayName: connectorSummaryDisplayName(summary),
-                  stream: streamName,
-                  recordId: record.id,
-                  emittedAt: record.emitted_at,
-                  displayAt: display.value,
-                  summary: summarize(summary.connector_id, streamName, data),
-                  kind,
-                  preview: buildRecordPreview(kind, data) ?? undefined,
-                };
-              }),
-            })
-          )
-          .catch(
-            (err): StreamFetchResult => ({
-              ok: false,
-              failure: {
-                code: "partial_fan_in",
-                message: `${connectorSummaryDisplayName(summary)} · ${streamName}: ${describeError(err)}`,
-              },
-            })
-          )
+        )
       );
     }
   }
 
   const results = await Promise.all(fetches);
   const flat: ExplorerFeedEntry[] = [];
+  const exactWindows: RecordsWindowMeta[] = [];
   const warnings: ExplorerWarning[] = [];
+  let okCount = 0;
   for (const r of results) {
     if (r.ok) {
+      okCount += 1;
       flat.push(...r.entries);
+      if (r.exactWindow) {
+        exactWindows.push(r.exactWindow);
+      }
+      if (r.warning) {
+        warnings.push(r.warning);
+      }
     } else {
       warnings.push(r.failure);
     }
@@ -223,8 +366,10 @@ async function loadEmptyQueryFeed(
   const truncated = flat.length > FEED_TOTAL_CAP;
   return {
     entries: flat.slice(0, FEED_TOTAL_CAP),
+    exactWindowComplete: okCount > 0 && exactWindows.length === okCount,
     fromSearch: false,
     hybridUsed: false,
+    exactWindows,
     truncated,
     warnings,
   };
@@ -234,6 +379,7 @@ function toTimeRangeEntry({
   consentTimeField,
   data,
   declaredFieldTypes,
+  fieldCapabilities,
   emittedAt,
   recordId,
   sinceMs,
@@ -244,6 +390,7 @@ function toTimeRangeEntry({
   consentTimeField: string;
   data: Record<string, unknown>;
   declaredFieldTypes: DeclaredFieldTypes | undefined;
+  fieldCapabilities: readonly ExplorerFieldCapability[];
   emittedAt: string;
   recordId: string;
   sinceMs: number | null;
@@ -257,6 +404,7 @@ function toTimeRangeEntry({
   }
   const kind = classifyRecordKind(streamName, data, declaredFieldTypes).kind;
   return {
+    blobAffordance: buildBlobAffordance(data, fieldCapabilities) ?? undefined,
     connectorId: summary.connector_id,
     connectionId: summary.connection_id,
     connectionDisplayName: connectorSummaryDisplayName(summary),
@@ -270,12 +418,32 @@ function toTimeRangeEntry({
   };
 }
 
+function timeRangeStreamTargets(
+  summary: RefConnectorSummary,
+  timestampMetadata: ReadonlyMap<string, SearchTimestampMetadata>,
+  filterStreams: ReadonlySet<string>
+): Array<{ consentTimeField: string; streamName: string }> {
+  const targets: Array<{ consentTimeField: string; streamName: string }> = [];
+  for (const streamName of summary.streams ?? []) {
+    if (filterStreams.size > 0 && !filterStreams.has(streamName)) {
+      continue;
+    }
+    const metadata = lookupSearchTimestampMetadata(timestampMetadata, summary.connector_id, streamName);
+    const consentTimeField = metadata?.consent_time_field;
+    if (typeof consentTimeField === "string" && consentTimeField.length > 0) {
+      targets.push({ consentTimeField, streamName });
+    }
+  }
+  return targets;
+}
+
 async function loadTimeRangeFeed(
   since: string,
   until: string,
   filteredSummaries: RefConnectorSummary[],
   timestampMetadata: ReadonlyMap<string, SearchTimestampMetadata>,
   declaredFieldTypes: ReadonlyMap<string, DeclaredFieldTypes>,
+  manifestFieldNames: ReadonlyMap<string, readonly string[]>,
   filterStreams: ReadonlySet<string>,
   dataSource: DashboardDataSource
 ): Promise<FeedLoadResult> {
@@ -283,71 +451,83 @@ async function loadTimeRangeFeed(
   const sinceMs = since ? Date.parse(since) : null;
   const untilMs = until ? Date.parse(until) : null;
 
-  type StreamFetchResult = { ok: true; entries: ExplorerFeedEntry[] } | { ok: false; failure: ExplorerWarning };
+  type StreamFetchResult =
+    | {
+        ok: true;
+        entries: ExplorerFeedEntry[];
+        exactWindow: RecordsWindowMeta | null;
+        warning: ExplorerWarning | null;
+      }
+    | { ok: false; failure: ExplorerWarning };
   const fetches: Promise<StreamFetchResult>[] = [];
 
   for (const summary of filteredSummaries) {
-    const streams = (summary.streams ?? []).filter((streamName) => {
-      if (filterStreams.size > 0 && !filterStreams.has(streamName)) {
-        return false;
-      }
-      const metadata = lookupSearchTimestampMetadata(timestampMetadata, summary.connector_id, streamName);
-      return typeof metadata?.consent_time_field === "string" && metadata.consent_time_field.length > 0;
-    });
-    for (const streamName of streams) {
-      const metadata = lookupSearchTimestampMetadata(timestampMetadata, summary.connector_id, streamName);
-      const consentTimeField = metadata?.consent_time_field;
-      if (!(typeof consentTimeField === "string" && consentTimeField.length > 0)) {
-        continue;
-      }
+    for (const { consentTimeField, streamName } of timeRangeStreamTargets(summary, timestampMetadata, filterStreams)) {
       fetches.push(
-        dataSource
-          .queryRecords(summary.connector_id, streamName, {
+        (async (): Promise<StreamFetchResult> => {
+          const metaKey = searchTimestampMetadataKey(summary.connector_id, streamName);
+          const { metadata, warning } = await loadStreamUiMetadata(
+            dataSource,
+            summary,
+            streamName,
+            declaredFieldTypes.get(metaKey),
+            manifestFieldNames.get(metaKey)
+          );
+          const page = await dataSource.queryRecords(summary.connector_id, streamName, {
             connectorInstanceId: summary.connector_instance_id ?? summary.connection_id,
             limit: TIME_RANGE_RECORDS_PER_STREAM,
             order: "desc",
+            window: "exact",
+          });
+          return {
+            ok: true,
+            entries: page.data
+              .map((record) =>
+                toTimeRangeEntry({
+                  consentTimeField,
+                  data: recordData(record.data),
+                  declaredFieldTypes: metadata.declaredFieldTypes,
+                  fieldCapabilities: metadata.fieldCapabilities,
+                  emittedAt: record.emitted_at,
+                  recordId: record.id,
+                  sinceMs,
+                  streamName,
+                  summary,
+                  untilMs,
+                })
+              )
+              .filter((entry): entry is ExplorerFeedEntry => entry !== null),
+            exactWindow: exactWindowFromPage(page),
+            warning,
+          };
+        })().catch(
+          (err): StreamFetchResult => ({
+            ok: false,
+            failure: {
+              code: "partial_fan_in",
+              message: `${connectorSummaryDisplayName(summary)} · ${streamName}: ${describeError(err)}`,
+            },
           })
-          .then(
-            (page): StreamFetchResult => ({
-              ok: true,
-              entries: page.data
-                .map((record) =>
-                  toTimeRangeEntry({
-                    consentTimeField,
-                    data: recordData(record.data),
-                    declaredFieldTypes: declaredFieldTypes.get(
-                      searchTimestampMetadataKey(summary.connector_id, streamName)
-                    ),
-                    emittedAt: record.emitted_at,
-                    recordId: record.id,
-                    sinceMs,
-                    streamName,
-                    summary,
-                    untilMs,
-                  })
-                )
-                .filter((entry): entry is ExplorerFeedEntry => entry !== null),
-            })
-          )
-          .catch(
-            (err): StreamFetchResult => ({
-              ok: false,
-              failure: {
-                code: "partial_fan_in",
-                message: `${connectorSummaryDisplayName(summary)} · ${streamName}: ${describeError(err)}`,
-              },
-            })
-          )
+        )
       );
     }
   }
 
   const results = await Promise.all(fetches);
   const entries: ExplorerFeedEntry[] = [];
+  const exactWindows: RecordsWindowMeta[] = [];
   const warnings: ExplorerWarning[] = [];
+  let okCount = 0;
   for (const result of results) {
     if (result.ok) {
+      okCount += 1;
       entries.push(...result.entries);
+      if (result.exactWindow) {
+        exactWindows.push(result.exactWindow);
+      }
+      if (result.warning) {
+        warnings.push(result.warning);
+      }
     } else {
       warnings.push(result.failure);
     }
@@ -356,8 +536,10 @@ async function loadTimeRangeFeed(
   const truncated = entries.length > TIME_RANGE_TOTAL_CAP;
   return {
     entries: entries.slice(0, TIME_RANGE_TOTAL_CAP),
+    exactWindowComplete: okCount > 0 && exactWindows.length === okCount,
     fromSearch: false,
     hybridUsed: false,
+    exactWindows,
     truncated,
     warnings,
   };
@@ -442,7 +624,15 @@ async function loadSearchFeed(
     };
   });
 
-  return { entries, fromSearch: true, hybridUsed, truncated: false, warnings };
+  return {
+    entries,
+    exactWindowComplete: false,
+    exactWindows: [],
+    fromSearch: true,
+    hybridUsed,
+    truncated: false,
+    warnings,
+  };
 }
 
 interface FeedDispatch {
@@ -495,6 +685,7 @@ async function dispatchFeed(args: {
       filteredSummaries,
       timestampMetadata,
       declaredFieldTypes,
+      manifestFieldNames,
       filterStreamSet,
       dataSource
     );
@@ -504,6 +695,7 @@ async function dispatchFeed(args: {
     filteredSummaries,
     timestampMetadata,
     declaredFieldTypes,
+    manifestFieldNames,
     filterStreamSet,
     dataSource
   );
@@ -674,7 +866,16 @@ async function buildPeek(
     const record = await dataSource.getRecord(parsed.connectorId, parsed.stream, parsed.recordId, {
       connectorInstanceId,
     });
+    const data = recordData(record.data);
+    let fieldCapabilities: ExplorerFieldCapability[] = [];
+    try {
+      const metadata = await dataSource.getStreamMetadata(parsed.connectorId, parsed.stream, { connectorInstanceId });
+      fieldCapabilities = fieldCapabilitiesFromMetadata(metadata);
+    } catch {
+      fieldCapabilities = [];
+    }
     return {
+      fields: buildPeekFields(data, fieldCapabilities),
       connectorId: parsed.connectorId,
       connectionId: connection?.connection_id ?? null,
       connectionDisplayName: connection ? connectorSummaryDisplayName(connection) : null,
@@ -682,11 +883,12 @@ async function buildPeek(
       recordId: parsed.recordId,
       emittedAt: record.emitted_at,
       readUrl,
-      bodyJson: JSON.stringify(record.data, null, 2),
+      bodyJson: JSON.stringify(data, null, 2),
       error: null,
     };
   } catch (err) {
     return {
+      fields: [],
       connectorId: parsed.connectorId,
       connectionId: connection?.connection_id ?? null,
       connectionDisplayName: connection ? connectorSummaryDisplayName(connection) : null,
@@ -765,6 +967,7 @@ export async function assembleExplorerData(
   }
 
   return {
+    activitySummary: feedResult.fromSearch ? null : activitySummaryForFeed(feedResult),
     query,
     connections,
     selectedConnectionIds,

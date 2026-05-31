@@ -47,6 +47,7 @@ import {
   type ConnectorOverview,
   getConnectorOverview,
   getRecord,
+  getStreamMetadata,
   isHybridRetrievalAdvertised,
   isSemanticRetrievalAdvertised,
   listConnectorManifests,
@@ -54,6 +55,7 @@ import {
   queryRecords,
   type RecordsPage,
   type SearchResultPage,
+  type StreamMetadata,
   type StreamRecord,
   type StreamSummary,
   searchRecordsHybrid,
@@ -74,6 +76,11 @@ export interface DashboardDataSource {
     opts?: { connectorInstanceId?: string | null }
   ): Promise<StreamRecord>;
   getRunTimeline(runId: string): Promise<TimelineEnvelope | null>;
+  getStreamMetadata(
+    connectorId: string,
+    stream: string,
+    opts?: { connectorInstanceId?: string | null }
+  ): Promise<StreamMetadata>;
   getTraceTimeline(traceId: string): Promise<TimelineEnvelope | null>;
   isHybridRetrievalAdvertised(): Promise<boolean>;
   isSemanticRetrievalAdvertised(): Promise<boolean>;
@@ -90,7 +97,13 @@ export interface DashboardDataSource {
   queryRecords(
     connectorId: string,
     stream: string,
-    opts?: { connectorInstanceId?: string | null; limit?: number; cursor?: string; order?: "asc" | "desc" }
+    opts?: {
+      connectorInstanceId?: string | null;
+      cursor?: string;
+      limit?: number;
+      order?: "asc" | "desc";
+      window?: "exact" | "none";
+    }
   ): Promise<RecordsPage>;
   // ── Search ─────────────────────────────────────────────────────────────
   refSearch(query: string): Promise<{
@@ -121,6 +134,7 @@ export const liveDashboardDataSource: DashboardDataSource = {
   listConnectorSummaries,
   listConnectorManifests,
   listStreams,
+  getStreamMetadata,
   getConnectorOverview,
   queryRecords,
   getRecord,
