@@ -23,6 +23,7 @@
     "docker:stream-smoke": "node scripts/manual-action-stream-smoke.mjs",
     "agent-skill:check": "node scripts/sync-agent-skill.mjs --check",
     "agent-skill:sync": "node scripts/sync-agent-skill.mjs --write",
+    "agent-skill:boundary-check": "node --test scripts/agent-skill-boundary.test.mjs",
     "spec:check": "node scripts/spec-check.mjs",
     "stream-debug:summary": "node scripts/stream-debug-summary.mjs",
     "workstreams:status": "node scripts/workstreams-status.mjs",
