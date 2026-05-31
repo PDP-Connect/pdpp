@@ -12,14 +12,14 @@
  * Usage:
  *
  *   node scripts/event-subscription-test-receiver.mjs [--port N] [--host HOST]
- *       [--secret whsec_…] [--insecure]
+ *       [--secret whsec_…] [--secret-file PATH] [--insecure]
  *
  * The receiver does not register the subscription for you. Create the
  * subscription from your client (the MCP adapter's create_event_subscription
  * tool, or a direct POST /v1/event-subscriptions) with `callback_url`
  * pointing at this receiver's `/webhook` path. Capture the `secret`
- * returned by the create call and set it as WEBHOOK_SECRET (or pass
- * --secret) before the deployment delivers the verify event.
+ * returned by the create call and set it as WEBHOOK_SECRET, pass --secret,
+ * or write it into --secret-file before the deployment delivers the verify event.
  *
  * Receiver intentionally has no persistent storage and no retry logic. It
  * is a verifier, not a substitute for a real callback host.
@@ -34,6 +34,7 @@
  */
 
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 
 const DEFAULT_PORT = 8765;
@@ -41,7 +42,13 @@ const DEFAULT_HOST = "127.0.0.1";
 const SIGNATURE_TOLERANCE_SECONDS = 5 * 60;
 
 function parseArgs(argv) {
-  const out = { host: DEFAULT_HOST, port: DEFAULT_PORT, secret: process.env.WEBHOOK_SECRET ?? null, insecure: false };
+  const out = {
+    host: DEFAULT_HOST,
+    port: DEFAULT_PORT,
+    secret: process.env.WEBHOOK_SECRET ?? null,
+    secretFile: process.env.WEBHOOK_SECRET_FILE ?? null,
+    insecure: false,
+  };
   for (let i = 2; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--port") {
@@ -56,6 +63,11 @@ function parseArgs(argv) {
       }
     } else if (arg === "--secret") {
       out.secret = argv[++i] ?? null;
+    } else if (arg === "--secret-file") {
+      out.secretFile = argv[++i] ?? null;
+      if (!out.secretFile) {
+        die("invalid --secret-file value: empty");
+      }
     } else if (arg === "--insecure") {
       out.insecure = true;
     } else if (arg === "--help" || arg === "-h") {
@@ -64,6 +76,9 @@ function parseArgs(argv) {
     } else {
       die(`unknown argument: ${arg}`);
     }
+  }
+  if (out.secret && out.secretFile) {
+    die("use either --secret/WEBHOOK_SECRET or --secret-file/WEBHOOK_SECRET_FILE, not both");
   }
   return out;
 }
@@ -74,13 +89,17 @@ function printUsage() {
       "Local test receiver for PDPP client event subscriptions.",
       "",
       "Usage:",
-      "  node scripts/event-subscription-test-receiver.mjs [--port N] [--host HOST] [--secret whsec_…] [--insecure]",
+      "  node scripts/event-subscription-test-receiver.mjs [--port N] [--host HOST] [--secret whsec_…] [--secret-file PATH] [--insecure]",
       "",
       "Flags:",
       "  --port N        Listen port (default 8765).",
       "  --host HOST     Bind address (default 127.0.0.1). Use 0.0.0.0 only behind a trusted TLS proxy.",
       "  --secret SECRET Per-subscription secret returned by POST /v1/event-subscriptions.",
       "                  May also be set via the WEBHOOK_SECRET environment variable.",
+      "  --secret-file PATH",
+      "                  Read the per-subscription secret from this file on each delivery.",
+      "                  May also be set via WEBHOOK_SECRET_FILE. Useful when the secret",
+      "                  is returned after the receiver has already started.",
       "  --insecure      Skip signature verification. For one-off envelope inspection only.",
       "",
     ].join("\n"),
@@ -153,14 +172,34 @@ function handleVerifyEvent(envelope) {
   return JSON.stringify({ challenge });
 }
 
+function readSecretFile(path) {
+  try {
+    const value = readFileSync(path, "utf8").trim();
+    return value || null;
+  } catch (err) {
+    if (err?.code === "ENOENT") {
+      return null;
+    }
+    process.stderr.write(`[${timestamp()}] could not read secret file ${path}: ${err?.message ?? err}\n`);
+    return null;
+  }
+}
+
+function resolveSecret(args) {
+  if (args.secretFile) {
+    return readSecretFile(args.secretFile);
+  }
+  return args.secret;
+}
+
 async function main() {
   const args = parseArgs(process.argv);
-  let secret = args.secret;
-  if (!args.insecure && !secret) {
+  const initialSecret = resolveSecret(args);
+  if (!args.insecure && !initialSecret) {
     process.stderr.write(
       [
         "warning: no secret configured.",
-        "  Set WEBHOOK_SECRET or pass --secret <whsec_…> before the deployment delivers events.",
+        "  Set WEBHOOK_SECRET, pass --secret <whsec_…>, or write the value into --secret-file before delivery.",
         "  Until then, the receiver will reject every signed delivery as `no_secret_configured`.",
         "",
       ].join("\n"),
@@ -169,8 +208,9 @@ async function main() {
 
   const server = createServer(async (req, res) => {
     if (req.method === "GET" && (req.url === "/" || req.url === "/health")) {
+      const healthSecret = resolveSecret(args);
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ ok: true, host: args.host, listening: args.port, has_secret: Boolean(secret) }));
+      res.end(JSON.stringify({ ok: true, host: args.host, listening: args.port, has_secret: Boolean(healthSecret) }));
       return;
     }
     if (req.method !== "POST" || req.url !== "/webhook") {
@@ -194,6 +234,7 @@ async function main() {
     }
 
     if (!args.insecure) {
+      const secret = resolveSecret(args);
       if (!secret) {
         process.stderr.write(`[${timestamp()}] rejecting delivery webhook-id=${eventId}: no_secret_configured\n`);
         res.writeHead(401, { "content-type": "text/plain" });
@@ -248,7 +289,7 @@ async function main() {
         `PDPP event-subscription test receiver listening on http://${callbackHost}:${args.port}/webhook`,
         `  bind:     ${args.host}:${args.port}`,
         `  health:   http://${callbackHost}:${args.port}/health`,
-        `  secret:   ${args.insecure ? "(--insecure; verification skipped)" : secret ? "configured" : "NOT SET — pass --secret or WEBHOOK_SECRET"}`,
+        `  secret:   ${args.insecure ? "(--insecure; verification skipped)" : initialSecret ? "configured" : args.secretFile ? `waiting for ${args.secretFile}` : "NOT SET — pass --secret, --secret-file, or WEBHOOK_SECRET"}`,
         "",
         "Create a subscription with callback_url=http://" +
           callbackHost +

@@ -114,6 +114,32 @@ curl -sS -X POST \
 # 5. The receiver prints the `pdpp.subscription.test` envelope. Done.
 ```
 
+For public HTTPS proof where the client returns the `whsec_...` secret only
+after the receiver has already started, prefer a local secret file over
+`--insecure`:
+
+```sh
+secret_file="${TMPDIR:-/tmp}/pdpp-webhook-secret"
+: > "$secret_file"
+chmod 600 "$secret_file"
+node scripts/event-subscription-test-receiver.mjs \
+  --host 0.0.0.0 \
+  --port 8765 \
+  --secret-file "$secret_file"
+```
+
+In a second terminal, after `create_event_subscription` returns its one-time
+secret, write the secret to the same path without echoing it into the transcript:
+
+```sh
+printf '%s\n' "$WEBHOOK_SECRET" > "${TMPDIR:-/tmp}/pdpp-webhook-secret"
+unset WEBHOOK_SECRET
+```
+
+The receiver reads `--secret-file` on each delivery. If the first verification
+attempt arrives before the file is populated, the resource server will retry the
+delivery according to its advertised retry schedule.
+
 ### Receiver flags
 
 ```
@@ -122,6 +148,9 @@ curl -sS -X POST \
                   a trusted TLS proxy.
 --secret <SECRET> Per-subscription secret returned by POST /v1/event-subscriptions.
                   May also be set with `WEBHOOK_SECRET`.
+--secret-file <PATH>
+                  Read the per-subscription secret from this file on each
+                  delivery. May also be set with `WEBHOOK_SECRET_FILE`.
 --insecure        Skip signature verification. Useful only when you want
                   to inspect envelopes without configuring the secret yet.
                   Never combine with a production callback URL.
@@ -141,7 +170,7 @@ If the TLS proxy runs on another host, bind the receiver on an interface that
 proxy can reach:
 
 ```sh
-WEBHOOK_SECRET="whsec_..." node scripts/event-subscription-test-receiver.mjs --host 0.0.0.0 --port 8765
+WEBHOOK_SECRET_FILE="$secret_file" node scripts/event-subscription-test-receiver.mjs --host 0.0.0.0 --port 8765
 ```
 
 ## CLI surface

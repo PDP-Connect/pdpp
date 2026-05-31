@@ -13,6 +13,9 @@
 import { spawn } from "node:child_process";
 import { createHmac } from "node:crypto";
 import { once } from "node:events";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -42,8 +45,10 @@ async function pickFreePort() {
   });
 }
 
-async function startReceiver(port, secret, { host } = {}) {
-  const args = [RECEIVER, "--port", String(port), "--secret", secret];
+async function startReceiver(port, secret, { host, extraArgs = [] } = {}) {
+  const args = [RECEIVER, "--port", String(port)];
+  if (secret) args.push("--secret", secret);
+  args.push(...extraArgs);
   if (host) args.push("--host", host);
   const proc = spawn("node", args, {
     env: { ...process.env },
@@ -158,6 +163,48 @@ test("event-subscription-test-receiver: wrong-secret delivery is rejected", asyn
     assert.equal(res.status, 401);
   } finally {
     await stopReceiver(proc);
+  }
+});
+
+test("event-subscription-test-receiver: --secret-file is read at delivery time", async () => {
+  const port = await pickFreePort();
+  const dir = await mkdtemp(join(tmpdir(), "pdpp-event-receiver-"));
+  const secretPath = join(dir, "webhook-secret");
+  const proc = await startReceiver(port, null, { extraArgs: ["--secret-file", secretPath] });
+  try {
+    let health = await fetch(`http://127.0.0.1:${port}/health`);
+    assert.equal(health.status, 200);
+    assert.equal((await health.json()).has_secret, false);
+
+    await writeFile(secretPath, `${SECRET}\n`, { mode: 0o600 });
+
+    health = await fetch(`http://127.0.0.1:${port}/health`);
+    assert.equal(health.status, 200);
+    assert.equal((await health.json()).has_secret, true);
+
+    const eventId = "evt_test_verify_secret_file";
+    const ts = Math.floor(Date.now() / 1000);
+    const body = JSON.stringify({
+      specversion: "1.0",
+      type: "pdpp.subscription.verify",
+      id: eventId,
+      data: { challenge: "challenge-from-secret-file", subscription_id: "sub_secret_file" },
+    });
+    const res = await fetch(`http://127.0.0.1:${port}/webhook`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/cloudevents+json; charset=utf-8",
+        "webhook-id": eventId,
+        "webhook-timestamp": String(ts),
+        "webhook-signature": sign(SECRET, eventId, ts, body),
+      },
+      body,
+    });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).challenge, "challenge-from-secret-file");
+  } finally {
+    await stopReceiver(proc);
+    await rm(dir, { recursive: true, force: true });
   }
 });
 
