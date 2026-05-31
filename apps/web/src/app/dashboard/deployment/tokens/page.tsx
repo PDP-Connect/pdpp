@@ -6,7 +6,7 @@ import { CopyButton } from "../../components/copy-button.tsx";
 import { Callout, PageHeader } from "../../components/primitives.tsx";
 import { DashboardShell, ServerUnreachable } from "../../components/shell.tsx";
 import { buildOwnerBootstrapExamples, getOwnerBootstrapFlow } from "../../lib/operator-bootstrap.ts";
-import { ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
+import { getReferencePublicOrigin, ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
 import { listOwnerIssuedClients, type OwnerIssuedClient } from "../../lib/ref-client.ts";
 import { introspectOwnerTokenFlowAction, issueOwnerTokenAction, revokeOwnerTokenAction } from "./actions.ts";
 
@@ -22,10 +22,11 @@ interface Params {
 type FlowState = NonNullable<ReturnType<typeof getOwnerBootstrapFlow>>;
 type FlowExamples = NonNullable<Awaited<ReturnType<typeof buildOwnerBootstrapExamples>>>;
 type ReproduceFormat = "curl" | "cli";
+const DAISY_OWNER_AGENT_CREDENTIAL_PATH = "~/applications/daisy/.pi/agent/pdpp-owner-agent.json";
 
 function InlineError({ prefix, message }: { message: string; prefix: string }) {
   return (
-    <div className="pdpp-caption mb-6 rounded-md border border-destructive/30 border-l-4 border-l-destructive/60 bg-destructive/5 px-4 py-2.5">
+    <div className="pdpp-caption mb-6 rounded-md border border-destructive/30 bg-destructive/5 px-4 py-2.5">
       <span className="font-medium text-destructive">{prefix}:</span> <span>{message}</span>
     </div>
   );
@@ -39,6 +40,53 @@ function CodeBlock({ children }: { children: string }) {
   );
 }
 
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
+function OwnerAgentOnboardingCard({ entrypoint }: { entrypoint: string }) {
+  const command = [
+    "pdpp owner-agent onboard",
+    shellQuote(entrypoint),
+    "--credential-file",
+    shellQuote(DAISY_OWNER_AGENT_CREDENTIAL_PATH),
+    "--client-name",
+    shellQuote("Daisy"),
+  ].join(" ");
+  return (
+    <section
+      className="mb-6 rounded-md border border-[color:var(--human)]/30 bg-[color:var(--human-wash)]/30 p-5"
+      data-surface="human"
+    >
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        <div className="min-w-0 max-w-3xl">
+          <p className="pdpp-eyebrow text-[color:var(--human)]">Recommended owner-agent path</p>
+          <h2 className="pdpp-title mt-1 text-foreground">Let the local agent complete onboarding</h2>
+          <p className="pdpp-caption mt-2 text-muted-foreground">
+            Use this for Daisy or another trusted local agent. The agent starts from the public entrypoint, opens the
+            browser approval flow, and writes the owner credential directly to its local state. No bearer needs to be
+            pasted into chat or copied out of the dashboard.
+          </p>
+        </div>
+        <Link className={buttonVariants({ variant: "outline", size: "sm" })} href="/dashboard/deployment">
+          Review deployment metadata
+        </Link>
+      </div>
+      <div className="mt-4 flex items-start gap-2">
+        <div className="min-w-0 flex-1">
+          <CodeBlock>{command}</CodeBlock>
+        </div>
+        <CopyButton ariaLabel="Copy owner-agent onboarding command" value={command} />
+      </div>
+      <p className="pdpp-caption mt-3 text-muted-foreground">
+        Daisy reads <code className="font-mono">{DAISY_OWNER_AGENT_CREDENTIAL_PATH}</code>, uses the top-level{" "}
+        <code className="font-mono">access_token</code> for owner-level REST reads, and should not send it to{" "}
+        <code className="font-mono">/mcp</code>.
+      </p>
+    </section>
+  );
+}
+
 /**
  * Single card that holds both the issuance form and the issued-token result.
  * SLVP convention (GitHub/Stripe/Vercel/Linear) — operator's eye stays on one
@@ -46,14 +94,21 @@ function CodeBlock({ children }: { children: string }) {
  */
 function IssueCard({ flow }: { flow: FlowState | null }) {
   return (
-    <div className="rounded-md border border-border p-5" data-surface="human">
+    <div className="rounded-md border border-border/80 p-5" data-surface="human">
+      <div className="mb-4">
+        <p className="pdpp-eyebrow">Manual/debug bearer</p>
+        <p className="pdpp-caption mt-1 text-muted-foreground">
+          Use this fallback for debugging a script you control or inspecting the wire flow. For Daisy, prefer the
+          owner-agent command above so the credential lands in the right local file.
+        </p>
+      </div>
       <form action={issueOwnerTokenAction} className="flex flex-col gap-3 sm:flex-row sm:items-end">
         <label className="flex min-w-0 flex-1 flex-col gap-1" htmlFor="token-name">
-          <span className="pdpp-eyebrow">Token name</span>
-          <Input defaultValue="" id="token-name" name="name" placeholder="e.g. local-cli" type="text" />
+          <span className="pdpp-eyebrow">Debug credential name</span>
+          <Input defaultValue="" id="token-name" name="name" placeholder="e.g. local-debug" type="text" />
         </label>
-        <Button size="sm" type="submit">
-          Issue token
+        <Button size="sm" type="submit" variant="outline">
+          Issue debug bearer
         </Button>
       </form>
 
@@ -74,8 +129,9 @@ function IssueCard({ flow }: { flow: FlowState | null }) {
             <CopyButton ariaLabel="Copy bearer token" value={flow.token} />
           </div>
           <p className="pdpp-caption mt-2 text-muted-foreground">
-            Copy this bearer now — the dashboard does not store it. Send as{" "}
-            <code className="font-mono">Authorization: Bearer …</code> to <code className="font-mono">/v1/*</code>.
+            Manual bearer issued. Copy it now if you are debugging a local script — the dashboard does not store it.
+            Send as <code className="font-mono">Authorization: Bearer …</code> to{" "}
+            <code className="font-mono">/v1/*</code>.
           </p>
         </div>
       ) : null}
@@ -194,7 +250,7 @@ function ReproduceBlock({ examples, format }: { examples: FlowExamples; format: 
 
 function InlineNotice({ message }: { message: string }) {
   return (
-    <div className="pdpp-caption mb-6 rounded-md border border-border border-l-4 border-l-foreground/40 bg-muted/40 px-4 py-2.5 text-foreground">
+    <div className="pdpp-caption mb-6 rounded-md border border-border bg-muted/40 px-4 py-2.5 text-foreground">
       {message}
     </div>
   );
@@ -211,7 +267,7 @@ function OwnerScopeCallout() {
   return (
     <Callout className="mb-6" surface="human" title="Use this for operator and trusted-agent access only">
       <p className="pdpp-caption text-muted-foreground">
-        Tokens issued here are owner bearers — they grant the operator's full read access to{" "}
+        Owner-agent credentials are owner bearers — they grant the operator's full read access to{" "}
         <code className="font-mono">/v1/*</code>. Use them for the operator themselves, for CLI tools and scripts you
         wrote, and for trusted local agents that run on your behalf.
       </p>
@@ -240,10 +296,10 @@ function TokensListSection({
   return (
     <div className="rounded-md border border-border" data-surface="human">
       <div className="border-border/70 border-b px-5 py-3">
-        <h2 className="pdpp-eyebrow">Your tokens</h2>
+        <h2 className="pdpp-eyebrow">Owner credentials</h2>
         <p className="pdpp-caption mt-0.5 text-muted-foreground">
-          One row per dashboard-issued credential. Revoke deletes the OAuth client (RFC 7592) and cascade-revokes its
-          bearer.
+          One row per approved owner-agent or manual credential. Revoke deletes the OAuth client (RFC 7592) and
+          cascade-revokes its bearer.
         </p>
       </div>
       <ul className="divide-y divide-border/70">
@@ -294,7 +350,7 @@ function FlowInspector({
   return (
     <details className="rounded-md border border-border bg-card/30">
       <summary className="cursor-pointer select-none px-4 py-3 font-medium text-sm">
-        Show device-flow details
+        Show manual bearer wire details
         <span className="pdpp-caption ml-2 text-muted-foreground">
           (real RFC 8628 wire — inspect, debug, or replay outside the dashboard)
         </span>
@@ -333,6 +389,7 @@ export default async function DeploymentTokensPage({ searchParams }: { searchPar
   const error = params.error ?? null;
   const notice = params.notice ?? null;
   const format: ReproduceFormat = params.reproduce === "cli" ? "cli" : "curl";
+  const entrypoint = await getReferencePublicOrigin();
 
   let tokens: OwnerIssuedClient[] = [];
   try {
@@ -359,9 +416,11 @@ export default async function DeploymentTokensPage({ searchParams }: { searchPar
           </Link>
         }
         breadcrumbs={[{ label: "Deployment", href: "/dashboard/deployment" }, { label: "Tokens" }]}
-        description="Owner bearers for the operator and trusted local agents that run on the operator's behalf. Not the path for ordinary MCP clients."
-        title="Tokens"
+        description="Set up trusted local owner automation without pasting bearer material. Manual owner bearers stay available below for debugging."
+        title="Owner-agent access"
       />
+
+      <OwnerAgentOnboardingCard entrypoint={entrypoint} />
 
       <OwnerScopeCallout />
 
