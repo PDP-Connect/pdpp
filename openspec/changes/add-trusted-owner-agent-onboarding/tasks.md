@@ -26,10 +26,10 @@
 
 ## 5. Token-Efficient Local Agent Guidance
 
-- [ ] 5.1 Add owner-agent guidance separate from `pdpp-data-access` that teaches metadata-first discovery, schema/stream inspection, `connection_id`, cursors, `changes_since`, pagination, declared filters, field projection, and blob-by-reference reads.
-- [ ] 5.2 Add a Daisy-focused runbook that starts from an entrypoint URL, completes approval, stores the local credential, performs initial sync, then performs incremental sync.
-- [ ] 5.3 Document the callback decision: use event subscriptions only with a durable valid-TLS HTTPS receiver; otherwise use cursor polling with backoff.
-- [ ] 5.4 Add a guard or doc check that ordinary grant-scoped agent guidance still does not recommend owner bearers as the default path.
+- [x] 5.1 Add owner-agent guidance separate from `pdpp-data-access` that teaches metadata-first discovery, schema/stream inspection, `connection_id`, cursors, `changes_since`, pagination, declared filters, field projection, and blob-by-reference reads.
+- [x] 5.2 Add a Daisy-focused runbook that starts from an entrypoint URL, completes approval, stores the local credential, performs initial sync, then performs incremental sync.
+- [x] 5.3 Document the callback decision: use event subscriptions only with a durable valid-TLS HTTPS receiver; otherwise use cursor polling with backoff.
+- [x] 5.4 Add a guard or doc check that ordinary grant-scoped agent guidance still does not recommend owner bearers as the default path.
 
 ## 6. Acceptance Checks
 

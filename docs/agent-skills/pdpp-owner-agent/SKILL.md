@@ -104,13 +104,17 @@ for low-level debugging; it is not the onboarding path for this profile.
 ### 3. Store the credential locally, read it at call time
 
 The credential lands in the operator's local credential target with restrictive file
-permissions (mode `0600`, in a directory the operator controls — for Daisy this is under
-`~/applications/daisy`; confirm the exact path with the operator rather than guessing).
+permissions. For Daisy, the first supported target is:
+
+`~/applications/daisy/.pi/agent/pdpp-owner-agent.json`
+
+The file is JSON and contains the bearer as `access_token`; it must be written with mode
+`0600`.
 
 Read it only at the moment of a call, and never echo it:
 
 ```bash
-TOKEN="$(<owner credential read command, per local target>)"
+TOKEN="$(jq -r '.access_token' "$HOME/applications/daisy/.pi/agent/pdpp-owner-agent.json")"
 curl -fsS "$RS_URL/v1/schema" -H "Authorization: Bearer $TOKEN" | jq .
 unset TOKEN
 ```

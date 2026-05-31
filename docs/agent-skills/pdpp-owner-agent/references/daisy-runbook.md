@@ -9,8 +9,8 @@ Conventions used below:
 
 - `$ENTRYPOINT` — the operator's reference instance origin (what the operator hands Daisy).
 - `$RS_URL`, `$AS_URL` — resolved from discovery, not assumed.
-- `read-owner-cred` — a stand-in for whatever command reads the local owner credential
-  target. Confirm the real command/path with the operator; do not hard-code a guess.
+- `read-owner-cred` — read `access_token` from
+  `~/applications/daisy/.pi/agent/pdpp-owner-agent.json` without printing it.
 
 Never print the bearer at any step. Status output is non-secret metadata only.
 
@@ -60,13 +60,15 @@ stop, do not retry silently.
 
 ## Step 3 — Store and verify the local credential
 
-The approved flow writes the owner credential to the operator's local credential target
-with mode `0600` in a directory the operator controls. For Daisy that lives under
-`~/applications/daisy`; confirm the exact filename/path with the operator rather than
-assuming. Verify by reading it at call time and hitting schema — without echoing the token:
+The approved flow writes the owner credential to:
+
+`~/applications/daisy/.pi/agent/pdpp-owner-agent.json`
+
+The file is JSON, mode `0600`, and contains the bearer as `access_token`. Verify by
+reading it at call time and hitting schema — without echoing the token:
 
 ```bash
-TOKEN="$(read-owner-cred)"
+TOKEN="$(jq -r '.access_token' "$HOME/applications/daisy/.pi/agent/pdpp-owner-agent.json")"
 curl -fsS "$RS_URL/v1/schema" -H "Authorization: Bearer $TOKEN" | jq '.connectors[].name'
 unset TOKEN
 ```
@@ -77,7 +79,7 @@ expiry, revocation handle. Never the bearer.
 Confirm the boundary holds (this should fail, and that is correct):
 
 ```bash
-TOKEN="$(read-owner-cred)"
+TOKEN="$(jq -r '.access_token' "$HOME/applications/daisy/.pi/agent/pdpp-owner-agent.json")"
 curl -s -o /dev/null -w '%{http_code}\n' "$RS_URL/mcp" -H "Authorization: Bearer $TOKEN"
 unset TOKEN
 # Expect a rejection. /mcp is the grant-scoped client transport, not owner-agent REST.
@@ -89,7 +91,7 @@ unset TOKEN
 2. Enumerate streams and connections:
 
    ```bash
-   TOKEN="$(read-owner-cred)"
+   TOKEN="$(jq -r '.access_token' "$HOME/applications/daisy/.pi/agent/pdpp-owner-agent.json")"
    curl -fsS "$RS_URL/v1/streams" -H "Authorization: Bearer $TOKEN" | jq .
    unset TOKEN
    ```
@@ -107,7 +109,7 @@ following `blob_ref.fetch_url`.
 On every refresh, do not rescan. For each stream/connection, resume from the stored cursor:
 
 ```bash
-TOKEN="$(read-owner-cred)"
+TOKEN="$(jq -r '.access_token' "$HOME/applications/daisy/.pi/agent/pdpp-owner-agent.json")"
 curl -fsS "$RS_URL/v1/streams/<stream>/records?changes_since=<stored-cursor>&limit=200&order=asc" \
   -H "Authorization: Bearer $TOKEN" | jq .
 unset TOKEN

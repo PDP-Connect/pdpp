@@ -3,7 +3,7 @@
 This is the deeper reference for keeping a trusted local owner agent's view of all
 current and future owner data token-efficient. Read `SKILL.md` and
 `daisy-runbook.md` first. Everything here assumes a valid owner-level bearer read at
-call time and never echoed.
+call time from `~/applications/daisy/.pi/agent/pdpp-owner-agent.json` and never echoed.
 
 The owner-agent profile reuses the same `/v1/*` read shapes as the grant-scoped
 `pdpp-data-access` skill; the difference is the credential and the goal (a durable,
@@ -92,7 +92,7 @@ If you are unsure whether your receiver qualifies, you do not qualify — poll.
 For each `(stream, connection_id)` with a stored cursor:
 
 ```bash
-TOKEN="$(read-owner-cred)"
+TOKEN="$(jq -r '.access_token' "$HOME/applications/daisy/.pi/agent/pdpp-owner-agent.json")"
 curl -fsS \
   "$RS_URL/v1/streams/<stream>/records?changes_since=<stored-cursor>&limit=200&order=asc" \
   -H "Authorization: Bearer $TOKEN" | jq '{records: .records, next: .cursor}'
