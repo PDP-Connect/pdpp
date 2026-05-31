@@ -178,6 +178,14 @@ The hosted MCP picker emits no `retention` field on the `authorization_details[]
 
 Owner-narrowable retention remains future work. A future tranche that wants to add a retention preset control to the picker should (a) define a fixed list of Core-shaped `{ max_duration, on_expiry }` presets that the picker offers, then (b) wire those into the picker form and the spine event. Until that lands, the picker stays silent on retention rather than fabricating a non-Core shape.
 
+## Accepted Behavior — Existing Hosted MCP Picker UX
+
+The existing hosted MCP picker remains a reference-experimental ceremony that issues independent source-bounded child grants. It does not change `/oauth/par`, does not create cross-source grant objects, and does not approve multi-entry PDPP Core semantics.
+
+Within that boundary, the owner-facing picker is source-first rather than stream-first. Source sections render collapsed by default. Stream checkboxes are unchecked and disabled until the owner selects the parent source. Selecting the parent source enables and selects that source's streams; clearing the parent source clears and disables its streams. Form submissions that contain only orphan stream values are ignored server-side, and a submission with no selected source re-renders the hosted HTML validation page instead of returning a raw JSON error page.
+
+This repair is deliberately narrower than the full Option B design. It makes the current package picker usable and less misleading for external agents, but it does not add sensitivity classification, package risk scoring, permission sets, or approve-all behavior for mixed high-risk bundles.
+
 ## Residual Risks
 
 - **No per-source access-mode mixing.** The access-mode narrowing tranche applies one `access_mode` to every child grant in a package. A future owner who wants `single_use` for one source and `continuous` for another must run two separate ceremonies. That asymmetry is consistent with the streams-narrowing tranche treating one source per row, but it limits how surgical a single ceremony can be. Mixed-access packages are deferred until the per-source progressive-disclosure work in §3 of `tasks.md` is decided.
