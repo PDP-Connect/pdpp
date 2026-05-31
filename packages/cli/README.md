@@ -5,13 +5,29 @@ Command-line tools for PDPP providers.
 ## Status
 
 This package is the public npm home for the `pdpp` command. The beta CLI
-supports three command namespaces:
+supports four command namespaces:
 
 - **`pdpp connect <provider-url>`** — delegated access: discovers provider
   metadata, self-registers a public client when the AS advertises dynamic
   registration, asks the owner to approve scoped access in the browser, and
   stores scoped client credentials in the project-local `.pdpp/` cache without
   asking for an owner bearer token.
+
+- **`pdpp owner-agent <onboard|status|revoke>`** — trusted owner-agent
+  onboarding for a local agent that acts as the operator (for example Daisy).
+  This is owner-level local automation, deliberately separate from the default
+  grant-scoped `pdpp connect` path; ordinary agents should not use it.
+  `onboard <entrypoint-url>` discovers the `pdpp_owner_agent_onboarding`
+  advisory block (falling back to the RFC 8628 device-authorization shape in
+  authorization-server metadata), runs browser-mediated owner approval, and
+  writes the issued credential to a local file with `0600` permissions. The
+  bearer is never printed; only the verification URL, code, and non-secret
+  status are shown. Pass `--credential-file` to target Daisy's first supported
+  path `~/applications/daisy/.pi/agent/pdpp-owner-agent.json`; otherwise the
+  credential defaults to `~/.pdpp/owner-agents/<host>.json`. `status`
+  introspects the stored credential and `revoke` deletes its dynamically
+  registered client via RFC 7592. Owner-agent bearers are REST/control-plane
+  credentials; `/mcp` rejects them.
 
 - **`pdpp collector <advertise|enroll|run>`** — operator surface for the
   local collector runner. Pairs a host the operator controls (Claude Code or

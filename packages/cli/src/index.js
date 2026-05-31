@@ -11,6 +11,7 @@ import { runRefTrace } from './ref/commands/trace.js';
 import { runRefLogin } from './ref/commands/login.js';
 import { runRefConnectors } from './ref/commands/connectors.js';
 import { runRefEventSubscriptions } from './ref/commands/event-subscriptions.js';
+import { runOwnerAgent } from './owner-agent/command.js';
 import { PdppCliError, PdppUsageError } from './ref/errors.js';
 
 const HELP = `PDPP CLI
@@ -23,6 +24,11 @@ Usage:
 
 Agent access:
   ${createPdppCliCommand()}
+
+Trusted owner agent (owner-level local automation, not the default agent path):
+  ${PDPP_CLI_BIN_NAME} owner-agent onboard <entrypoint-url> [--credential-file <path>] [--client-id <id>]
+  ${PDPP_CLI_BIN_NAME} owner-agent status [--credential-file <path>] [--entrypoint <url>]
+  ${PDPP_CLI_BIN_NAME} owner-agent revoke [--credential-file <path>] [--entrypoint <url>]
 
 Local collector (pair a host you control with a reference deployment):
   ${PDPP_CLI_BIN_NAME} collector advertise
@@ -108,6 +114,10 @@ export async function runCli(argv, io = { stdout: process.stdout, stderr: proces
 
   if (command === 'collector') {
     return await runCollector(rest, io);
+  }
+
+  if (command === 'owner-agent') {
+    return await runOwnerAgent(rest, io);
   }
 
   if (command === 'ref') {
