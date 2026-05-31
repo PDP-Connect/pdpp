@@ -101,6 +101,32 @@ export const CountMetaSchema: JsonSchema = {
   required: ["kind"],
 };
 
+// ----- Envelope: bounded window aggregate -----
+
+// Optional bounded aggregate metadata for a record-list read. Additive and
+// opt-in via the `window=exact` query parameter; omitted entirely when not
+// requested or not cheaply computable (never estimated). `total` is always
+// present when `window` is present. `earliest_at` / `latest_at` are the
+// logical-time (`consent_time_field`) bounds of the filtered, grant-scoped
+// corpus before pagination; they are present together or both omitted (an
+// empty corpus, an undeclared `consent_time_field`, or an all-unparseable
+// corpus yields `total` with no timestamps).
+//
+// Spec: openspec/changes/complete-explorer-slvp-ideal/specs/
+//       reference-implementation-architecture/spec.md
+//       (#"The record-list read MAY expose bounded window aggregate metadata").
+export const WindowMetaSchema: JsonSchema = {
+  $id: "pdpp/canonical/WindowMeta",
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    total: { type: "integer", minimum: 0 },
+    earliest_at: { type: "string", format: "date-time" },
+    latest_at: { type: "string", format: "date-time" },
+  },
+  required: ["total"],
+};
+
 // ----- Envelope: warnings -----
 
 // The initial structured warning code set. Closed by design: new codes
@@ -159,6 +185,7 @@ export const MetaSchema: JsonSchema = {
   additionalProperties: false,
   properties: {
     count: CountMetaSchema,
+    window: WindowMetaSchema,
     warnings: { type: "array", items: WarningSchema },
   },
 };

@@ -18,6 +18,7 @@ import {
   ErrorObjectSchema,
   FreshnessSchema,
   ListEnvelopeSchema,
+  MetaSchema,
   OAuthErrorSchema,
   OrderSchema,
   UriSchema,
@@ -158,6 +159,11 @@ const ListRecordsQuerySchema = {
     subject_id: { type: "string" },
     connection_id: ConnectionIdSchema,
     connector_instance_id: ConnectorInstanceIdAliasSchema,
+    // Bounded-window opt-in. `exact` ⇒ the server MAY return `meta.window`
+    // (`total` + logical `earliest_at`/`latest_at`) over the filtered,
+    // grant-scoped corpus; absent / `none` ⇒ omitted. Not supported with
+    // `changes_since`. Spec: complete-explorer-slvp-ideal.
+    window: { type: "string", enum: ["none", "exact"] },
   },
 };
 
@@ -897,6 +903,14 @@ const RecordsListResponseSchema = {
     url: { type: "string" },
     next_changes_since: { type: "string" },
     freshness: FreshnessSchema,
+    // Canonical envelope meta block: opt-in `count`, opt-in bounded `window`
+    // (`total` + logical `earliest_at`/`latest_at`), and structured
+    // `warnings`. Declared explicitly so the additive `meta.window` shape is
+    // part of the published contract rather than riding unvalidated on
+    // `additionalProperties: true`. Spec:
+    //   openspec/changes/complete-explorer-slvp-ideal/specs/
+    //   reference-implementation-architecture/spec.md.
+    meta: MetaSchema,
   },
   required: ["object", "data", "has_more"],
 };

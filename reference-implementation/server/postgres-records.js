@@ -84,9 +84,37 @@ function validateCountKind(value) {
   }
 }
 
+// Canonical `window` opt-in vocabulary, mirrored from records.js's
+// `SUPPORTED_WINDOW_KINDS` (see the one-way-dependency note above). The
+// Postgres list path validates the `window` value with the same strict
+// discipline as the SQLite path, but does NOT yet compute `meta.window`:
+// an honest bounded window over the logical `consent_time_field` requires a
+// JSON-extract min/max scan whose timestamp-parse semantics match the SQLite
+// reference's `new Date(...)` parse. Until that parity scan lands, the
+// Postgres path omits `meta.window` rather than substituting ingest time —
+// consumers treat the absence as "not available" per the spec.
+//
+// Spec: openspec/changes/complete-explorer-slvp-ideal/specs/
+//       reference-implementation-architecture/spec.md
+//       (#"The record-list read MAY expose bounded window aggregate metadata").
+const SUPPORTED_WINDOW_KINDS_PG = new Set(['none', 'exact']);
+
+/**
+ * Validate the requested window grade against the canonical `none|exact`
+ * vocabulary. Empty / absent / `none` passes through (the server omits
+ * `meta.window`); any other value is a typed invalid-query error. Mirrors the
+ * SQLite path's `validateWindowKind`.
+ */
+function validateWindowKind(value) {
+  if (value == null || value === '') return;
+  if (typeof value !== 'string' || !SUPPORTED_WINDOW_KINDS_PG.has(value)) {
+    throw invalidQueryError(`window must be one of: ${[...SUPPORTED_WINDOW_KINDS_PG].join(', ')}`);
+  }
+}
+
 function rejectListOnlyParamsForChangesFeed(requestParams) {
   const unsupported = [];
-  for (const key of ['sort', 'count', 'order']) {
+  for (const key of ['sort', 'count', 'order', 'window']) {
     if (requestParams[key] != null && requestParams[key] !== '') unsupported.push(key);
   }
   if (!unsupported.length) return;
@@ -777,6 +805,11 @@ export async function postgresQueryRecords(storageTarget, stream, grant, request
   //       reference-implementation-architecture/spec.md
   //       (#"Sort", #"Counts").
   validateCountKind(requestParams.count);
+  // Validate the `window` opt-in with the same strict discipline as `count`.
+  // The Postgres path does not yet emit `meta.window` (see
+  // SUPPORTED_WINDOW_KINDS_PG); a valid `window=exact` is accepted and the
+  // window is omitted, never estimated.
+  validateWindowKind(requestParams.window);
   const resolvedSort = validateCanonicalSort(requestParams.sort, manifestStream);
   const orderDirection = resolveListOrder(requestParams.order, resolvedSort);
   const order = orderDirection === 'ASC' ? 'asc' : 'desc';

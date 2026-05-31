@@ -445,12 +445,23 @@ const SUPPORTED_RECORD_QUERY_PARAMS = new Set([
   'sort',
   'subject_id',
   'view',
+  'window',
 ]);
 
 // Canonical graded-count vocabulary. Spec:
 //   openspec/changes/canonicalize-public-read-contract design.md ("Counts")
 //   reference-contract `CountKindSchema`
 const SUPPORTED_COUNT_KINDS = new Set(['none', 'estimated', 'exact']);
+
+// Canonical bounded-window opt-in vocabulary. `meta.window` is opt-in via the
+// `window` query parameter, mirroring the `count` opt-in discipline: absence,
+// empty, or `none` omits `meta.window`; `exact` requests the bounded aggregate
+// over the filtered, grant-scoped corpus. Any other value is a typed
+// invalid-query error. Spec:
+//   openspec/changes/complete-explorer-slvp-ideal/specs/
+//   reference-implementation-architecture/spec.md
+//   (#"The record-list read MAY expose bounded window aggregate metadata")
+const SUPPORTED_WINDOW_KINDS = new Set(['none', 'exact']);
 const SUPPORTED_AGGREGATE_QUERY_PARAMS = new Set([
   'connection_id',
   'connector_id',
@@ -781,6 +792,7 @@ function validateTopLevelQueryParams(requestParams, manifestStream = null) {
   }
   validateConnectionAlias(requestParams);
   validateCountKind(requestParams.count);
+  validateWindowKind(requestParams.window);
   return validateCanonicalSort(requestParams.sort, manifestStream);
 }
 
@@ -799,9 +811,26 @@ function validateCountKind(value) {
   }
 }
 
+/**
+ * Validate the requested `window` grade against the canonical
+ * `none|exact` vocabulary. Absent / empty / `none` values pass through; the
+ * server omits `meta.window` for those. `exact` requests the bounded
+ * aggregate. Any other value is a typed invalid-query error, mirroring the
+ * strict-validation discipline used for `count`. Spec:
+ *   openspec/changes/complete-explorer-slvp-ideal/specs/
+ *   reference-implementation-architecture/spec.md
+ *   (#"The record-list read MAY expose bounded window aggregate metadata").
+ */
+function validateWindowKind(value) {
+  if (value == null || value === '') return;
+  if (typeof value !== 'string' || !SUPPORTED_WINDOW_KINDS.has(value)) {
+    throw invalidQueryError(`window must be one of: ${[...SUPPORTED_WINDOW_KINDS].join(', ')}`);
+  }
+}
+
 function rejectListOnlyParamsForChangesFeed(requestParams) {
   const unsupported = [];
-  for (const key of ['sort', 'count', 'order']) {
+  for (const key of ['sort', 'count', 'order', 'window']) {
     if (requestParams[key] != null && requestParams[key] !== '') unsupported.push(key);
   }
   if (!unsupported.length) return;
@@ -2141,6 +2170,23 @@ export async function queryRecords(storageTarget, stream, grant, requestParams =
     }
   }
 
+  // `meta.window` is the bounded corpus aggregate (total + logical min/max).
+  // Like `meta.count` it is opt-in and page-independent: it reflects the whole
+  // filtered, grant-scoped result set, so `limit=1` still reports full bounds.
+  // It is intentionally NOT emitted on the `changes_since` branch above (a
+  // delta feed has no meaningful corpus window).
+  const windowOutcome = computeRecordWindow({
+    requestParams,
+    connectorInstanceId,
+    stream,
+    effective,
+    compiledFilters,
+    consentTimeField,
+  });
+  if (windowOutcome) {
+    response.meta = mergeMetaWindow(response.meta, windowOutcome);
+  }
+
   attachRequestWarningsToResponse(response, requestWarnings);
 
   return response;
@@ -2225,6 +2271,94 @@ function mergeMetaCount(existingMeta, count) {
     : {};
   base.count = count;
   return base;
+}
+
+/**
+ * Merge a `meta.window` payload into an existing response.meta, preserving
+ * `count`, `warnings`, and any other meta members. Returns the new meta
+ * object.
+ */
+function mergeMetaWindow(existingMeta, window) {
+  const base = existingMeta && typeof existingMeta === 'object' && !Array.isArray(existingMeta)
+    ? { ...existingMeta }
+    : {};
+  base.window = window;
+  return base;
+}
+
+/**
+ * Compute the bounded `meta.window` aggregate for a records list response,
+ * when the request opted in via `window=exact`.
+ *
+ * The window describes the *whole filtered, grant-scoped corpus* — not the
+ * paginated page — so `limit=1` still reports the full bounds. It reuses the
+ * exact visible-row scan `countVisibleRecordsForStream` uses (same grant
+ * resources, time-range, and compiled filters), so the two surfaces stay in
+ * lock-step and we never duplicate grant/filter semantics on a divergent path.
+ *
+ * Timestamp source is the stream's logical `consent_time_field` — the same
+ * field `passesTimeRange` filters on — never the storage ingest `emitted_at`.
+ *
+ * Honest-omission rules (never estimate; see spec scenario "Window metadata is
+ * omitted rather than estimated"):
+ *   - `window` absent / empty / `none`: return `null` (callers omit
+ *     `meta.window`).
+ *   - empty filtered corpus: `{ total: 0 }` with no timestamps.
+ *   - stream declares no `consent_time_field`: `{ total: N }` with no
+ *     timestamps (do NOT substitute `emitted_at`).
+ *   - rows whose `consent_time_field` value is missing/unparseable are
+ *     excluded from min/max; if every visible row lacks a parseable value,
+ *     emit `{ total: N }` with no timestamps.
+ *   - `earliest_at` and `latest_at` are emitted together or both omitted.
+ *
+ * Spec: openspec/changes/complete-explorer-slvp-ideal/specs/
+ *       reference-implementation-architecture/spec.md.
+ */
+function computeRecordWindow({ requestParams, connectorInstanceId, stream, effective, compiledFilters, consentTimeField }) {
+  const requested = typeof requestParams.window === 'string' ? requestParams.window : null;
+  if (!requested || requested === 'none') return null;
+
+  if (isPostgresStorageBackend()) {
+    // The Postgres list path runs entirely through postgres-records.js, which
+    // owns its own (currently omitted) window computation. Guard here so a
+    // SQLite-only helper never silently returns a zero window under Postgres.
+    return null;
+  }
+
+  const rows = iterate(
+    referenceQueries.recordsAggregateIterateStreamRecordsForAggregation,
+    [connectorInstanceId, stream],
+  );
+
+  let total = 0;
+  let earliestMs = null;
+  let latestMs = null;
+
+  for (const row of rows) {
+    const rawData = JSON.parse(row.record_json);
+    if (effective.resources && !effective.resources.includes(row.record_key)) continue;
+    if (effective.timeRange && consentTimeField && !passesTimeRange(rawData, effective.timeRange, consentTimeField)) continue;
+    if (compiledFilters.length && !passesRequestFilters(rawData, compiledFilters)) continue;
+
+    total += 1;
+
+    if (!consentTimeField) continue;
+    const value = rawData[consentTimeField];
+    if (value == null || value === '') continue;
+    const ms = new Date(value).getTime();
+    if (Number.isNaN(ms)) continue;
+    if (earliestMs == null || ms < earliestMs) earliestMs = ms;
+    if (latestMs == null || ms > latestMs) latestMs = ms;
+  }
+
+  const window = { total };
+  if (earliestMs != null && latestMs != null) {
+    // Normalize to ISO 8601 UTC via the same `new Date(...)` parse the
+    // time-range filter uses; `earliest_at`/`latest_at` are emitted together.
+    window.earliest_at = new Date(earliestMs).toISOString();
+    window.latest_at = new Date(latestMs).toISOString();
+  }
+  return window;
 }
 
 /**
@@ -3008,6 +3142,20 @@ export async function queryRecordsAcrossBindings(bindings, stream, grant, reques
   let countAllExact = !!requestedCount && requestedCount !== 'none';
   let countSum = 0;
 
+  // For meta.window fan-in: merge only when every binding produced a window.
+  // `total` sums; `earliest_at` is the global min; `latest_at` is the global
+  // max. If any binding cannot produce a window, the merged window is omitted
+  // (all-or-omit), mirroring the count fan-in honesty rule. A binding whose
+  // window carries only `total` (no timestamps) collapses the merged
+  // timestamps too: we can still sum totals, but we cannot honestly claim
+  // bounds the binding did not report.
+  const requestedWindow = typeof requestParams?.window === 'string' ? requestParams.window : null;
+  let windowAllPresent = !!requestedWindow && requestedWindow !== 'none';
+  let windowTotalSum = 0;
+  let windowEarliestMs = null;
+  let windowLatestMs = null;
+  let windowBoundsAllPresent = true;
+
   for (const binding of bindings) {
     const target = buildBindingStorageTarget(binding.connectorId, binding.connectorInstanceId);
     const result = await queryRecords(target, stream, grant, perBindingParams, manifest);
@@ -3020,6 +3168,27 @@ export async function queryRecordsAcrossBindings(bindings, stream, grant, reques
         countSum += Number(c.value);
       } else {
         countAllExact = false;
+      }
+    }
+    if (windowAllPresent) {
+      const w = result?.meta?.window;
+      if (w && Number.isFinite(Number(w.total))) {
+        windowTotalSum += Number(w.total);
+        const hasBounds = typeof w.earliest_at === 'string' && typeof w.latest_at === 'string';
+        if (hasBounds) {
+          const e = new Date(w.earliest_at).getTime();
+          const l = new Date(w.latest_at).getTime();
+          if (Number.isNaN(e) || Number.isNaN(l)) {
+            windowBoundsAllPresent = false;
+          } else {
+            if (windowEarliestMs == null || e < windowEarliestMs) windowEarliestMs = e;
+            if (windowLatestMs == null || l > windowLatestMs) windowLatestMs = l;
+          }
+        } else {
+          windowBoundsAllPresent = false;
+        }
+      } else {
+        windowAllPresent = false;
       }
     }
   }
@@ -3054,6 +3223,19 @@ export async function queryRecordsAcrossBindings(bindings, stream, grant, reques
           'Requested count grade could not be produced as a single value across multiple connections. Retry with `connection_id` to receive an exact per-connection count.',
       });
     }
+  }
+
+  // Honest meta.window under fan-in: merge only all-present windows. `total`
+  // sums; bounds are the global min/max, and are emitted only when every
+  // binding reported them. If any binding omits its window, the merged window
+  // is omitted entirely (no warning — absence already means "not available").
+  if (requestedWindow && requestedWindow !== 'none' && windowAllPresent) {
+    const mergedWindow = { total: windowTotalSum };
+    if (windowBoundsAllPresent && windowEarliestMs != null && windowLatestMs != null) {
+      mergedWindow.earliest_at = new Date(windowEarliestMs).toISOString();
+      mergedWindow.latest_at = new Date(windowLatestMs).toISOString();
+    }
+    meta = { ...(meta || {}), window: mergedWindow };
   }
 
   // P3: resolver-supplied warnings (e.g. deprecated_alias_used) are
