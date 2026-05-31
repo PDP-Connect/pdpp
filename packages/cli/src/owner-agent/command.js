@@ -8,13 +8,15 @@
 //   status [--credential-file <path>] [--entrypoint <url>]
 //       Introspect the stored credential and print only non-secret status.
 //   revoke [--credential-file <path>] [--entrypoint <url>]
-//       Revoke the stored credential via RFC 7592 client delete.
+//       Revoke the stored credential via owner-session-gated RFC 7592 client
+//       delete. Uses the cached `pdpp ref login` owner session when present.
 //
 // This command is owner-level local automation, distinct from the grant-scoped
 // `pdpp connect` path. It must never present owner bearers as the default path
 // for ordinary agents or external MCP clients.
 
 import { parseArgs } from '../ref/args.js';
+import { ownerSessionHeaders } from '../ref/fetch.js';
 
 import { resolveCredentialFile, writeOwnerAgentCredential, buildCredentialRecord } from './credential-store.js';
 import { discoverOwnerAgentProfile, normalizeEntrypointUrl } from './discovery.js';
@@ -23,14 +25,16 @@ import { OwnerAgentError } from './errors.js';
 import { introspectOwnerAgentCredential, readCredentialRecord, revokeOwnerAgentCredential } from './lifecycle.js';
 
 const USAGE = `Trusted owner-agent onboarding (owner-level local automation):
-  pdpp owner-agent onboard <entrypoint-url> [--credential-file <path>] [--client-id <id>]
+  pdpp owner-agent onboard <entrypoint-url> [--credential-file <path>] [--client-id <id>] [--client-name <name>]
   pdpp owner-agent status [--credential-file <path>] [--entrypoint <url>]
-  pdpp owner-agent revoke [--credential-file <path>] [--entrypoint <url>]
+  pdpp owner-agent revoke [--credential-file <path>] [--entrypoint <url>] [--cache-root <dir>] [--owner-session <cookie>]
 
 Notes:
   This is a deliberate local-admin mode, not the default agent path. Ordinary
   agents should use grant-scoped access (pdpp connect). The issued bearer is
   written to a local file with 0600 permissions and is never printed.
+  Revocation uses the owner-session-gated dashboard/RFC 7592 path; run
+  "pdpp ref login <authorization-server>" first if no owner session is cached.
   Daisy's first supported target: ~/applications/daisy/.pi/agent/pdpp-owner-agent.json`;
 
 export async function runOwnerAgent(argv, io = {}, deps = {}) {
@@ -79,7 +83,19 @@ async function runOnboard(argv, { out }, deps) {
 
   const profile = await discoverOwnerAgentProfile(entrypoint, { fetch: fetchFn });
 
-  const clientId = typeof flags['client-id'] === 'string' ? flags['client-id'] : undefined;
+  const explicitClientId = typeof flags['client-id'] === 'string' ? flags['client-id'] : undefined;
+  const registeredClient = explicitClientId
+    ? { client_id: explicitClientId, client_name: null }
+    : await registerOwnerAgentClient({
+        fetchFn,
+        endpoint: profile.registrationEndpoint,
+        clientName:
+          typeof flags['client-name'] === 'string' && flags['client-name'].trim()
+            ? flags['client-name'].trim()
+            : 'PDPP trusted owner agent',
+      });
+  const clientId = registeredClient.client_id;
+  const registrationClientUri = buildRegistrationClientUri(profile, clientId);
   const device = await initiateDeviceAuthorization({
     fetchFn,
     endpoint: profile.deviceAuthorizationEndpoint,
@@ -113,6 +129,7 @@ async function runOnboard(argv, { out }, deps) {
     clientId,
     introspectionEndpoint: profile.introspectionEndpoint,
     registrationEndpoint: profile.registrationEndpoint,
+    registrationClientUri,
     createdAt: new Date(now()).toISOString(),
   });
 
@@ -126,12 +143,15 @@ async function runOnboard(argv, { out }, deps) {
   // Non-secret status only. Never print credential.access_token.
   out.write(`Owner-agent credential stored at ${targetPath} (mode 0600)\n`);
   out.write(`  token kind: ${record.pdpp_token_kind}\n`);
+  if (record.client_id) {
+    out.write(`  client id: ${record.client_id}\n`);
+  }
   out.write(`  resource: ${record.resource}\n`);
-  if (record.credential.expires_at) {
-    out.write(`  expires: ${record.credential.expires_at}\n`);
+  if (record.expires_at) {
+    out.write(`  expires: ${record.expires_at}\n`);
   }
   if (record.registration_client_uri) {
-    out.write('  revocation: RFC 7592 client delete handle stored\n');
+    out.write('  revocation: owner-session-gated RFC 7592 client delete handle stored\n');
   }
   out.write('Note: /mcp rejects owner bearers; this credential is for owner-level REST/control-plane use.\n');
   return 0;
@@ -150,9 +170,14 @@ async function runStatus(argv, { out }, deps) {
 }
 
 async function runRevoke(argv, { out }, deps) {
-  const { record, targetPath } = await loadRecord(argv, deps);
+  const { record, targetPath, flags } = await loadRecord(argv, deps);
   const fetchFn = deps.fetch ?? globalThis.fetch;
-  const result = await revokeOwnerAgentCredential({ fetchFn, record });
+  const ownerSession = ownerSessionHeaders({
+    ownerSession: flags['owner-session'] || '',
+    referenceUrl: record.authorization_server,
+    cacheRoot: flags['cache-root'],
+  }).Cookie;
+  const result = await revokeOwnerAgentCredential({ fetchFn, record, ownerSessionCookie: ownerSession });
   out.write(
     result.already_absent
       ? `Owner-agent credential already absent at the authorization server (${targetPath}).\n`
@@ -171,7 +196,62 @@ async function loadRecord(argv, deps) {
     home: deps.home,
   });
   const record = await readCredentialRecord(targetPath);
-  return { record, targetPath };
+  return { record, targetPath, flags };
 }
 
 export { USAGE as OWNER_AGENT_USAGE };
+
+async function registerOwnerAgentClient({ fetchFn, endpoint, clientName }) {
+  if (!endpoint) {
+    throw new OwnerAgentError(
+      'registration_unavailable',
+      'Owner-agent onboarding requires a registration_endpoint, or pass --client-id for an existing public client.'
+    );
+  }
+  let response;
+  try {
+    response = await fetchFn(endpoint, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        client_name: clientName,
+        token_endpoint_auth_method: 'none',
+      }),
+    });
+  } catch (error) {
+    throw new OwnerAgentError('registration_failed', `Dynamic client registration failed: ${error.message}.`);
+  }
+  let json = null;
+  try {
+    json = await response.json();
+  } catch {
+    json = null;
+  }
+  if (!response.ok) {
+    const code = json?.error?.code ?? json?.error ?? `http_${response.status}`;
+    throw new OwnerAgentError('registration_failed', `Dynamic client registration failed (${code}).`);
+  }
+  if (!json?.client_id) {
+    throw new OwnerAgentError('registration_invalid', 'Dynamic client registration response did not include client_id.');
+  }
+  return json;
+}
+
+function buildRegistrationClientUri(profile, clientId) {
+  if (!(profile && clientId)) {
+    return null;
+  }
+  if (profile.revocationPathTemplate) {
+    return profile.revocationPathTemplate.replace('{client_id}', encodeURIComponent(clientId));
+  }
+  if (profile.registrationEndpoint) {
+    const base = profile.registrationEndpoint.endsWith('/')
+      ? profile.registrationEndpoint
+      : `${profile.registrationEndpoint}/`;
+    return `${base}${encodeURIComponent(clientId)}`;
+  }
+  return null;
+}

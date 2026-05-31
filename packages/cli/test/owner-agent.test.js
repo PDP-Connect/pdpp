@@ -65,16 +65,18 @@ const ADVISORY_METADATA = {
   resource: 'https://ref.test',
   authorization_servers: ['https://ref.test'],
   pdpp_owner_agent_onboarding: {
-    profile: 'trusted-owner-agent',
+    profile: 'trusted_owner_agent',
     authorization_server: 'https://ref.test',
     device_authorization_endpoint: 'https://ref.test/oauth/device_authorization',
     token_endpoint: 'https://ref.test/oauth/token',
-    introspection_endpoint: 'https://ref.test/oauth/introspect',
+    introspection_endpoint: 'https://ref.test/introspect',
     registration_endpoint: 'https://ref.test/oauth/register',
-    owner_approval_url: 'https://ref.test/owner/approve',
+    revocation_path_template: 'https://ref.test/oauth/register/{client_id}',
+    owner_approval_url: 'https://ref.test/dashboard',
     schema_endpoint: 'https://ref.test/v1/schema',
     streams_endpoint: 'https://ref.test/v1/streams',
-    mcp_rejects_owner_bearer: true,
+    event_subscriptions_endpoint: 'https://ref.test/v1/event-subscriptions',
+    mcp_owner_bearer_rejected: true,
   },
 };
 
@@ -113,7 +115,8 @@ test('discoverOwnerAgentProfile reads the advisory block', async () => {
   assert.equal(profile.advisory, true);
   assert.equal(profile.deviceAuthorizationEndpoint, 'https://ref.test/oauth/device_authorization');
   assert.equal(profile.tokenEndpoint, 'https://ref.test/oauth/token');
-  assert.equal(profile.introspectionEndpoint, 'https://ref.test/oauth/introspect');
+  assert.equal(profile.introspectionEndpoint, 'https://ref.test/introspect');
+  assert.equal(profile.revocationPathTemplate, 'https://ref.test/oauth/register/{client_id}');
 });
 
 test('discoverOwnerAgentProfile falls back to AS metadata RFC 8628 shape', async () => {
@@ -161,12 +164,60 @@ function onboardFetch({ tokenSequence }) {
     { method: 'GET', match: '/.well-known/oauth-protected-resource', body: ADVISORY_METADATA },
     {
       method: 'POST',
+      match: '/oauth/register',
+      handler: ({ opts }) => {
+        const body = JSON.parse(opts.body);
+        assert.equal(body.token_endpoint_auth_method, 'none');
+        assert.ok(body.client_name);
+        return jsonResponse(201, {
+          client_id: 'client-9',
+          client_name: body.client_name,
+          token_endpoint_auth_method: 'none',
+        });
+      },
+    },
+    {
+      method: 'POST',
+      match: '/oauth/device_authorization',
+      handler: ({ opts }) => {
+        const body = new URLSearchParams(opts.body);
+        assert.equal(body.get('client_id'), 'client-9');
+        return jsonResponse(200, {
+          device_code: 'dev-code-123',
+          user_code: 'WXYZ-1234',
+          verification_uri: 'https://ref.test/device',
+          verification_uri_complete: 'https://ref.test/device?user_code=WXYZ-1234',
+          interval: 1,
+          expires_in: 300,
+        });
+      },
+    },
+    {
+      method: 'POST',
+      match: '/oauth/token',
+      handler: ({ opts }) => {
+        const body = new URLSearchParams(opts.body);
+        assert.equal(body.get('client_id'), 'client-9');
+        const next = tokenSequence[Math.min(tokenCall, tokenSequence.length - 1)];
+        tokenCall += 1;
+        return jsonResponse(next.status, next.body);
+      },
+    },
+  ]);
+}
+
+function onboardFetchWithExplicitClient({ tokenSequence }) {
+  let tokenCall = 0;
+  return makeFetch([
+    { method: 'GET', match: '/.well-known/oauth-protected-resource', body: ADVISORY_METADATA },
+    {
+      method: 'POST',
       match: '/oauth/device_authorization',
       body: {
         device_code: 'dev-code-123',
         user_code: 'WXYZ-1234',
-        verification_uri: 'https://ref.test/owner/approve',
-        verification_uri_complete: 'https://ref.test/owner/approve?code=WXYZ-1234',
+        verification_uri: 'https://ref.test/device',
+        verification_uri_complete: 'https://ref.test/device?user_code=WXYZ-1234',
         interval: 1,
         expires_in: 300,
       },
@@ -195,8 +246,6 @@ test('onboard writes credential to 0600 file and never prints the bearer', async
             access_token: SECRET,
             token_type: 'Bearer',
             expires_in: 3600,
-            registration_client_uri: 'https://ref.test/oauth/register/client-9',
-            registration_access_token: REG_TOKEN,
           },
         },
       ],
@@ -215,7 +264,7 @@ test('onboard writes credential to 0600 file and never prints the bearer', async
     assert.doesNotMatch(captured.stdout, new RegExp(REG_TOKEN));
 
     // verification URL + code printed (non-secret)
-    assert.match(captured.stdout, /owner\/approve/);
+    assert.match(captured.stdout, /\/device/);
     assert.match(captured.stdout, /WXYZ-1234/);
     assert.match(captured.stdout, /\/mcp rejects owner bearers/i);
 
@@ -224,9 +273,33 @@ test('onboard writes credential to 0600 file and never prints the bearer', async
     assert.equal(statSync(target).mode & 0o777, 0o600);
 
     const record = JSON.parse(readFileSync(target, 'utf8'));
+    assert.equal(record.access_token, SECRET);
     assert.equal(record.credential.access_token, SECRET);
+    assert.equal(record.profile, 'trusted_owner_agent');
     assert.equal(record.pdpp_token_kind, 'owner');
-    assert.equal(record.registration_access_token, REG_TOKEN);
+    assert.equal(record.client_id, 'client-9');
+    assert.equal(record.registration_client_uri, 'https://ref.test/oauth/register/client-9');
+    assert.equal(record.registration_access_token, undefined);
+  });
+});
+
+test('onboard honors explicit --client-id without registering a new client', async () => {
+  await withTmpHome(async (home) => {
+    const captured = capture();
+    const fetch = onboardFetchWithExplicitClient({
+      tokenSequence: [{ status: 200, body: { access_token: SECRET, token_type: 'Bearer', expires_in: 3600 } }],
+    });
+
+    const code = await runOwnerAgent(
+      ['onboard', 'https://ref.test', '--client-id', 'client-9'],
+      captured.io,
+      { fetch, home, sleep: async () => {}, now: () => 1_000_000 },
+    );
+    assert.equal(code, 0);
+    const target = resolveCredentialFile({ resource: 'https://ref.test', home });
+    const record = JSON.parse(readFileSync(target, 'utf8'));
+    assert.equal(record.client_id, 'client-9');
+    assert.equal(record.registration_client_uri, 'https://ref.test/oauth/register/client-9');
   });
 });
 
@@ -294,12 +367,15 @@ async function seedCredential(home, overrides = {}) {
   const target = resolveCredentialFile({ resource: 'https://ref.test', home });
   await mkdir(join(home, DEFAULT_OWNER_AGENT_DIR), { recursive: true });
   const record = {
-    profile: 'trusted-owner-agent',
+    profile: 'trusted_owner_agent',
     pdpp_token_kind: 'owner',
     resource: 'https://ref.test',
-    introspection_endpoint: 'https://ref.test/oauth/introspect',
+    authorization_server: 'https://ref.test',
+    client_id: 'client-9',
+    introspection_endpoint: 'https://ref.test/introspect',
     registration_client_uri: 'https://ref.test/oauth/register/client-9',
-    registration_access_token: REG_TOKEN,
+    access_token: SECRET,
+    token_type: 'Bearer',
     credential: { access_token: SECRET, token_type: 'Bearer' },
     ...overrides,
   };
@@ -315,7 +391,7 @@ test('status introspects the stored credential without printing the bearer', asy
     const fetch = makeFetch([
       {
         method: 'POST',
-        match: '/oauth/introspect',
+        match: '/introspect',
         handler: ({ opts }) => {
           introspectAuth = opts.headers?.Authorization ?? null;
           return jsonResponse(200, { active: true, pdpp_token_kind: 'owner', sub: 'owner_local', client_id: 'client-9', exp: 9999999999 });
@@ -336,7 +412,7 @@ test('status returns nonzero when token is inactive (revoked)', async () => {
     await seedCredential(home);
     const captured = capture();
     const fetch = makeFetch([
-      { method: 'POST', match: '/oauth/introspect', body: { active: false } },
+      { method: 'POST', match: '/introspect', body: { active: false } },
     ]);
     const code = await runOwnerAgent(['status', '--entrypoint', 'https://ref.test'], captured.io, { fetch, home });
     assert.equal(code, 1);
@@ -359,31 +435,48 @@ test('revoke deletes the dynamically registered client', async () => {
   await withTmpHome(async (home) => {
     await seedCredential(home);
     const captured = capture();
-    let deleteAuth = null;
+    let deleteCookie = null;
     const fetch = makeFetch([
       {
         method: 'DELETE',
         match: '/oauth/register/client-9',
         handler: ({ opts }) => {
-          deleteAuth = opts.headers?.Authorization ?? null;
+          deleteCookie = opts.headers?.Cookie ?? null;
           return { ok: true, status: 204, json: async () => ({}) };
         },
       },
     ]);
-    const code = await runOwnerAgent(['revoke', '--entrypoint', 'https://ref.test'], captured.io, { fetch, home });
+    const code = await runOwnerAgent(
+      ['revoke', '--entrypoint', 'https://ref.test', '--owner-session', 'owner-session-value'],
+      captured.io,
+      { fetch, home },
+    );
     assert.equal(code, 0);
     assert.match(captured.stdout, /revoked/i);
-    assert.equal(deleteAuth, `Bearer ${REG_TOKEN}`);
+    assert.equal(deleteCookie, 'pdpp_owner_session=owner-session-value');
   });
 });
 
 test('revoke without an RFC 7592 handle reports revocation_unavailable', async () => {
   await withTmpHome(async (home) => {
-    await seedCredential(home, { registration_client_uri: null, registration_access_token: null });
+    await seedCredential(home, { registration_client_uri: null });
     const captured = capture();
     const code = await runOwnerAgent(['revoke', '--entrypoint', 'https://ref.test'], captured.io, { fetch: async () => { throw new Error('nope'); }, home });
     assert.notEqual(code, 0);
     assert.match(captured.stderr, /no RFC 7592 registration handle/i);
+  });
+});
+
+test('revoke without an owner session reports owner_session_required', async () => {
+  await withTmpHome(async (home) => {
+    await seedCredential(home);
+    const captured = capture();
+    const code = await runOwnerAgent(['revoke', '--entrypoint', 'https://ref.test'], captured.io, {
+      fetch: async () => { throw new Error('nope'); },
+      home,
+    });
+    assert.equal(code, 5);
+    assert.match(captured.stderr, /owner session/i);
   });
 });
 
@@ -394,7 +487,11 @@ test('revoke treats 404 as already absent', async () => {
     const fetch = makeFetch([
       { method: 'DELETE', match: '/oauth/register/client-9', status: 404, body: {} },
     ]);
-    const code = await runOwnerAgent(['revoke', '--entrypoint', 'https://ref.test'], captured.io, { fetch, home });
+    const code = await runOwnerAgent(
+      ['revoke', '--entrypoint', 'https://ref.test', '--owner-session', 'pdpp_owner_session=owner-session-value'],
+      captured.io,
+      { fetch, home },
+    );
     assert.equal(code, 0);
     assert.match(captured.stdout, /already absent/i);
   });

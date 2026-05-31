@@ -142,9 +142,11 @@ function buildProfile({ resource, authorizationServerUrl, onboarding, authorizat
   const approvalUrl = resolveEndpoint(onboarding?.owner_approval_url ?? onboarding?.approval_url, base);
   const schemaEndpoint = resolveEndpoint(onboarding?.schema_endpoint, resource);
   const streamsEndpoint = resolveEndpoint(onboarding?.streams_endpoint, resource);
+  const revocationPathTemplate =
+    typeof onboarding?.revocation_path_template === 'string' ? onboarding.revocation_path_template : null;
 
   return {
-    profile: onboarding?.profile ?? 'trusted-owner-agent',
+    profile: onboarding?.profile ?? 'trusted_owner_agent',
     advisory: Boolean(onboarding),
     resource,
     authorizationServer: issuer,
@@ -152,10 +154,11 @@ function buildProfile({ resource, authorizationServerUrl, onboarding, authorizat
     tokenEndpoint,
     introspectionEndpoint,
     registrationEndpoint,
+    revocationPathTemplate,
     approvalUrl,
     schemaEndpoint,
     streamsEndpoint,
-    mcpRejectsOwnerBearer: onboarding?.mcp_rejects_owner_bearer ?? true,
+    mcpRejectsOwnerBearer: onboarding?.mcp_owner_bearer_rejected ?? onboarding?.mcp_rejects_owner_bearer ?? true,
   };
 }
 
@@ -216,6 +219,7 @@ async function getJsonOptional(fetchFn, url) {
  * @property {string|null} tokenEndpoint
  * @property {string|null} introspectionEndpoint
  * @property {string|null} registrationEndpoint
+ * @property {string|null} revocationPathTemplate
  * @property {string|null} approvalUrl
  * @property {string|null} schemaEndpoint
  * @property {string|null} streamsEndpoint

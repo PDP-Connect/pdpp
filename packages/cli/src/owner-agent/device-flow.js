@@ -74,7 +74,6 @@ export async function pollForOwnerAgentToken({
         expires_at: expiresAt(json.expires_in, now),
         scope: json.scope ?? null,
         registration_client_uri: json.registration_client_uri ?? null,
-        registration_access_token: json.registration_access_token ?? null,
       };
     }
 

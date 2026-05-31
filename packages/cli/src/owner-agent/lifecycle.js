@@ -16,7 +16,7 @@ export async function introspectOwnerAgentCredential({ fetchFn, record }) {
   if (!record?.introspection_endpoint) {
     throw new OwnerAgentError('introspection_unavailable', 'Stored credential has no introspection endpoint.');
   }
-  const token = record?.credential?.access_token;
+  const token = getOwnerAgentAccessToken(record);
   if (!token) {
     throw new OwnerAgentError('credential_invalid', 'Stored credential is missing an access token.');
   }
@@ -56,25 +56,31 @@ export async function introspectOwnerAgentCredential({ fetchFn, record }) {
 }
 
 /**
- * Revoke an owner-agent credential via RFC 7592 client delete. Requires that
- * the credential was bound to a dynamically registered client carrying a
- * `registration_client_uri` and `registration_access_token`.
+ * Revoke an owner-agent credential via RFC 7592 client delete. The reference
+ * implementation authenticates this route with the owner session for the
+ * approving owner, not with a registration access token.
  */
-export async function revokeOwnerAgentCredential({ fetchFn, record }) {
+export async function revokeOwnerAgentCredential({ fetchFn, record, ownerSessionCookie }) {
   const uri = record?.registration_client_uri;
-  const regToken = record?.registration_access_token;
-  if (!uri || !regToken) {
+  if (!uri) {
     throw new OwnerAgentError(
       'revocation_unavailable',
-      'Stored credential has no RFC 7592 registration handle (registration_client_uri/registration_access_token). ' +
+      'Stored credential has no RFC 7592 registration handle (registration_client_uri). ' +
         'Revoke it from the owner dashboard instead.'
+    );
+  }
+  if (!ownerSessionCookie) {
+    throw new OwnerAgentError(
+      'owner_session_required',
+      'Revocation requires an owner session. Run `pdpp ref login <authorization-server>` first, or set PDPP_OWNER_SESSION_COOKIE.',
+      5
     );
   }
   let response;
   try {
     response = await fetchFn(uri, {
       method: 'DELETE',
-      headers: { Authorization: `Bearer ${regToken}`, Accept: 'application/json' },
+      headers: { Cookie: normalizeOwnerSessionCookie(ownerSessionCookie), Accept: 'application/json' },
     });
   } catch (error) {
     throw new OwnerAgentError('request_failed', `Revocation request failed: ${error.message}.`);
@@ -93,6 +99,10 @@ export async function revokeOwnerAgentCredential({ fetchFn, record }) {
   throw new OwnerAgentError('revocation_failed', `Revocation failed with HTTP ${response.status}.`);
 }
 
+export function getOwnerAgentAccessToken(record) {
+  return record?.access_token ?? record?.credential?.access_token ?? null;
+}
+
 export async function readCredentialRecord(targetPath) {
   let raw;
   try {
@@ -108,4 +118,9 @@ export async function readCredentialRecord(targetPath) {
   } catch {
     throw new OwnerAgentError('credential_invalid', `Owner-agent credential at ${targetPath} is not valid JSON.`);
   }
+}
+
+function normalizeOwnerSessionCookie(value) {
+  const raw = String(value || '').trim();
+  return raw.includes('=') ? raw : `pdpp_owner_session=${raw}`;
 }

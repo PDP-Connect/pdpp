@@ -24,10 +24,12 @@ supports four command namespaces:
   bearer is never printed; only the verification URL, code, and non-secret
   status are shown. Pass `--credential-file` to target Daisy's first supported
   path `~/applications/daisy/.pi/agent/pdpp-owner-agent.json`; otherwise the
-  credential defaults to `~/.pdpp/owner-agents/<host>.json`. `status`
-  introspects the stored credential and `revoke` deletes its dynamically
-  registered client via RFC 7592. Owner-agent bearers are REST/control-plane
-  credentials; `/mcp` rejects them.
+  credential defaults to `~/.pdpp/owner-agents/<host>.json` and stores the
+  bearer as top-level `access_token` for local agents. `status` introspects the
+  stored credential. `revoke` deletes its dynamically registered client via the
+  owner-session-gated RFC 7592 dashboard path; run `pdpp ref login
+  <authorization-server>` first or provide `PDPP_OWNER_SESSION_COOKIE`.
+  Owner-agent bearers are REST/control-plane credentials; `/mcp` rejects them.
 
 - **`pdpp collector <advertise|enroll|run>`** — operator surface for the
   local collector runner. Pairs a host the operator controls (Claude Code or

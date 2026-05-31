@@ -70,25 +70,36 @@ export function buildCredentialRecord({
   clientId,
   introspectionEndpoint,
   registrationEndpoint,
+  registrationClientUri,
   createdAt,
 }) {
+  const tokenType = credential.token_type ?? 'Bearer';
+  const expiresAt = credential.expires_at ?? null;
+  const scope = credential.scope ?? null;
   return {
-    profile: 'trusted-owner-agent',
+    profile: 'trusted_owner_agent',
     pdpp_token_kind: 'owner',
     resource,
     authorization_server: authorizationServer ?? null,
     client_id: clientId ?? null,
     introspection_endpoint: introspectionEndpoint ?? null,
     // RFC 7592 client-delete revocation handle, when the credential was bound
-    // to a dynamically registered client.
-    registration_client_uri: credential.registration_client_uri ?? null,
-    registration_access_token: credential.registration_access_token ?? null,
+    // to a dynamically registered client. The reference implementation gates
+    // DELETE with an owner session, not a registration access token.
+    registration_client_uri: registrationClientUri ?? credential.registration_client_uri ?? null,
     registration_endpoint: registrationEndpoint ?? null,
+    access_token: credential.access_token,
+    token_type: tokenType,
+    expires_at: expiresAt,
+    scope,
+    // Backward-compatible nested credential block for callers that adopted the
+    // first CLI preview. Daisy and the owner-agent runbook read the top-level
+    // access_token.
     credential: {
       access_token: credential.access_token,
-      token_type: credential.token_type ?? 'Bearer',
-      expires_at: credential.expires_at ?? null,
-      scope: credential.scope ?? null,
+      token_type: tokenType,
+      expires_at: expiresAt,
+      scope,
     },
     created_at: createdAt,
   };
