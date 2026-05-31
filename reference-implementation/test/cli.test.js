@@ -6591,18 +6591,27 @@ rl.on('line', (line) => {
   });
 
 
-  await t.test('owner streams fails honestly without --connector-id against a polyfill RS', async () => {
+  await t.test('owner streams works without --connector-id against a polyfill RS', async () => {
     await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
       const ownerToken = await issueOwnerToken(asUrl, 'cli_owner');
       await seedSpotify(rsUrl, spotifyManifest, ownerToken);
 
-      const result = await runCliExpectFailure(
+      const result = await runCli(
         ['owner', 'streams', '--rs-url', rsUrl, '--format', 'json'],
         { PDPP_OWNER_TOKEN: ownerToken },
       );
 
-      assert.notEqual(result.exitCode, 0);
-      assert.match(result.stderr, /connector_id must be a single non-empty string for polyfill owner access/);
+      assert.equal(result.json.object, 'list');
+      assert.ok(Array.isArray(result.json.data));
+      assert.ok(result.json.data.some((stream) =>
+        stream.name === 'top_artists' && stream.connector_id === SPOTIFY_CONNECTOR_KEY
+      ));
+      assert.ok(result.json.data.some((stream) =>
+        stream.name === 'saved_tracks' && stream.connector_id === SPOTIFY_CONNECTOR_KEY
+      ));
+      assert.ok(result.json.request_id?.startsWith('req_'));
+      assert.ok(typeof result.json.reference_trace_id === 'string' && result.json.reference_trace_id.length > 0);
+      assert.equal(result.stderr, '');
     });
   });
 

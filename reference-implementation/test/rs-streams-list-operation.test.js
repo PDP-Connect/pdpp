@@ -139,6 +139,30 @@ test('rs.streams.list preserves connection identity fields populated by the host
   }
 });
 
+test('rs.streams.list supports owner-wide catalogs with no single source descriptor', async () => {
+  const summaries = [
+    {
+      object: 'stream',
+      name: 'attachments',
+      record_count: 1,
+      last_updated: '2026-05-31T00:00:00Z',
+      connector_id: 'gmail',
+      source: { kind: 'connector', id: 'gmail' },
+    },
+  ];
+
+  const result = await executeStreamsList(
+    { actor: { kind: 'owner', subject_id: 'owner_1' } },
+    {
+      listSummaries: () => Promise.resolve(summaries),
+      getSourceDescriptor: () => null,
+    },
+  );
+
+  assert.equal(result.sourceDescriptor, null);
+  assert.deepEqual(result.streams, summaries);
+});
+
 test('rs.streams.list accepts an optional connection_id input without altering passthrough semantics', async () => {
   // The operation does not enforce the filter — that lives in the host
   // adapter's `listSummaries` wiring. But the field MUST flow through

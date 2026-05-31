@@ -809,12 +809,108 @@ export function mountRsSchema(app: AppLike, ctx: MountRsReadContext): void {
 
 // The owner/client branch of `/v1/streams` builds the operation input and
 // dependencies; extracted to module-level helpers so the route handler stays
-// under the cognitive-complexity bar. Behaviour is identical to the previous
-// inline branches.
+// under the cognitive-complexity bar.
 interface StreamsListPlan {
   dependencies: Record<string, unknown>;
   operationInput: Record<string, unknown>;
   streamListFreshnessEvidence: unknown;
+}
+
+function hasExplicitOwnerConnectorScope(query: Readonly<Record<string, unknown>>): boolean {
+  return Object.hasOwn(query || {}, "connector_id");
+}
+
+function buildOwnerReadGrantForManifest(manifest: ManifestLike): GrantLike {
+  return {
+    streams: (manifest?.streams || [])
+      .map((stream) => (typeof stream?.name === "string" && stream.name ? { name: stream.name } : null))
+      .filter(Boolean) as GrantStreamLike[],
+  };
+}
+
+function buildPolyfillOwnerScope(ctx: MountRsReadContext, req: RouteRequest, connectorId: string): OwnerScopeLike {
+  const connectorKey = ctx.canonicalConnectorKey(connectorId) ?? connectorId;
+  return {
+    public_scope: "polyfill",
+    owner_subject_id: ctx.getOwnerTokenSubjectId(req),
+    source: { kind: "connector", id: connectorKey },
+    storage_binding: { connector_id: connectorKey },
+  };
+}
+
+async function listOwnerStreamsForConnector(
+  ctx: MountRsReadContext,
+  req: RouteRequest,
+  connectorId: string
+): Promise<Record<string, unknown>[]> {
+  const requestParams = (req.query as Record<string, unknown>) || {};
+  const ownerSubjectId = ctx.getOwnerTokenSubjectId(req);
+  const ownerScope = buildPolyfillOwnerScope(ctx, req, connectorId);
+  const ownerResolved = await ctx.resolveOwnerManifestFromScope(ownerScope, ctx.opts);
+  const source = ctx.buildSourceDescriptor(ownerScope.source);
+  const grant = buildOwnerReadGrantForManifest(ownerResolved.manifest);
+  const firstStream = Array.isArray(grant.streams) ? grant.streams[0]?.name : null;
+  const { bindings, warnings: resolverWarnings } = await ctx.resolveReadRequestBindings({
+    ownerSubjectId,
+    storageBinding: ownerResolved.storageBinding,
+    grant,
+    requestParams,
+    streamName: firstStream ?? null,
+    nativeProviderStorage: false,
+  });
+  req._pdpp_resolver_warnings = [...(req._pdpp_resolver_warnings || []), ...(resolverWarnings || [])];
+  const summaries = await ctx.listStreamsAcrossBindings(bindings, grant, ownerResolved.manifest, {
+    resolveBindingsForStream: async (streamGrant: GrantStreamLike) => {
+      const { bindings: streamBindings } = await ctx.resolveReadRequestBindings({
+        ownerSubjectId,
+        storageBinding: ownerResolved.storageBinding,
+        grant,
+        requestParams,
+        streamName: streamGrant?.name || null,
+        nativeProviderStorage: false,
+      });
+      return streamBindings;
+    },
+  });
+  return summaries.map((summary) => ({
+    ...summary,
+    connector_id: connectorId,
+    source,
+  }));
+}
+
+async function listOwnerStreamsAcrossRegisteredConnectors(
+  ctx: MountRsReadContext,
+  req: RouteRequest
+): Promise<Record<string, unknown>[]> {
+  const connectorIds = await ctx.listRegisteredConnectorIds();
+  const requestedConnectionId = resolveRequestConnectionId(req.query);
+  const skippedConnectionErrors: Error[] = [];
+  const streamsByConnector = await Promise.all(
+    connectorIds.map(async (connectorId) => {
+      try {
+        return await listOwnerStreamsForConnector(ctx, req, connectorId);
+      } catch (err) {
+        if (
+          requestedConnectionId &&
+          err instanceof Error &&
+          (err as Error & { code?: string }).code === "connection_not_found"
+        ) {
+          skippedConnectionErrors.push(err);
+          return [];
+        }
+        throw err;
+      }
+    })
+  );
+  if (
+    requestedConnectionId &&
+    skippedConnectionErrors.length > 0 &&
+    skippedConnectionErrors.length === connectorIds.length
+  ) {
+    throw skippedConnectionErrors[0];
+  }
+  return streamsByConnector.flat();
 }
 
 async function buildStreamsListOwnerPlan(
@@ -823,6 +919,23 @@ async function buildStreamsListOwnerPlan(
   queryContext: QueryContext,
   tokenInfo: TokenInfo
 ): Promise<StreamsListPlan> {
+  const nativeManifest = ctx.resolveNativeManifest(ctx.opts);
+  const nativeStorageBinding = ctx.resolveNativeStorageBinding(ctx.opts);
+  if (!((nativeManifest && nativeStorageBinding) || hasExplicitOwnerConnectorScope(req.query))) {
+    queryContext.sourceDescriptor = null;
+    return {
+      operationInput: {
+        actor: { kind: "owner", subject_id: tokenInfo.subject_id || null },
+        connection_id: resolveRequestConnectionId(req.query),
+      },
+      dependencies: {
+        getSourceDescriptor: () => null,
+        listSummaries: async () => listOwnerStreamsAcrossRegisteredConnectors(ctx, req),
+      },
+      streamListFreshnessEvidence: null,
+    };
+  }
+
   const ownerScope = ctx.resolveOwnerReadScope(req, ctx.opts);
   // Set source before manifest resolution so malformed connector failures
   // remain attributable in query.received/query.rejected.

@@ -15,6 +15,12 @@
  *   fixture helpers backed by `_demo/dataset.ts`.
  */
 
+export interface StreamsListSourceDescriptor {
+  kind: "connector" | "provider_native";
+  id: string;
+  [extra: string]: unknown;
+}
+
 export interface StreamSummary {
   /** Always the literal "stream" — matches the live RS list-item shape. */
   object: "stream";
@@ -47,12 +53,14 @@ export interface StreamSummary {
    * continue reading.
    */
   connector_instance_id?: string;
-}
-
-export interface StreamsListSourceDescriptor {
-  kind: "connector" | "provider_native";
-  id: string;
-  [extra: string]: unknown;
+  /**
+   * Connector identity for owner-wide polyfill stream catalogs where there
+   * is no single request-level source descriptor. Omitted for single-source
+   * calls whose `sourceDescriptor` already identifies the source.
+   */
+  connector_id?: string;
+  /** Per-entry source descriptor for owner-wide polyfill stream catalogs. */
+  source?: StreamsListSourceDescriptor;
 }
 
 export type StreamsListActor =
@@ -78,7 +86,7 @@ export interface StreamsListDependencies {
    * compute this once and hand it to the operation so dependency
    * implementations stay narrow.
    */
-  getSourceDescriptor(): StreamsListSourceDescriptor;
+  getSourceDescriptor(): StreamsListSourceDescriptor | null;
 }
 
 export interface StreamsListInput {
@@ -100,7 +108,7 @@ export interface StreamsListOutput {
   /** Canonical list of stream summaries; envelope shape is host-owned. */
   streams: StreamSummary[];
   /** Echoed for instrumentation parity with the native route. */
-  sourceDescriptor: StreamsListSourceDescriptor;
+  sourceDescriptor: StreamsListSourceDescriptor | null;
   /**
    * `query.received`-shaped data block. Hosts pass this through to the
    * disclosure spine; the operation populates the conserved fields.

@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 import { startServer } from '../server/index.js';
 import { ingestRecord } from '../server/records.js';
+import { canonicalConnectorKey } from '../server/connector-key.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, '..');
@@ -69,6 +70,18 @@ function loadGmailManifest() {
     'polyfill-connectors',
     'manifests',
     'gmail.json',
+  );
+  return JSON.parse(readFileSync(path, 'utf8'));
+}
+
+function loadSpotifyManifest() {
+  const path = join(
+    REFERENCE_IMPL_DIR,
+    '..',
+    'packages',
+    'polyfill-connectors',
+    'manifests',
+    'spotify.json',
   );
   return JSON.parse(readFileSync(path, 'utf8'));
 }
@@ -204,6 +217,29 @@ test('trusted owner-agent bearer reaches connector-scoped blob read surface', as
       { headers: authHeaders },
     );
     assert.equal(streams.status, 200);
+
+    const ownerWideStreams = await fetchJson(`${rsUrl}/v1/streams`, { headers: authHeaders });
+    assert.equal(ownerWideStreams.status, 200);
+    const attachmentsStream = ownerWideStreams.body.data.find((stream) => stream.name === 'attachments');
+    assert.ok(attachmentsStream, 'owner-wide stream discovery should include polyfill connector streams');
+    assert.equal(attachmentsStream.connector_id, canonicalConnectorKey(manifest.connector_id));
+    assert.deepEqual(attachmentsStream.source, {
+      kind: 'connector',
+      id: canonicalConnectorKey(manifest.connector_id),
+    });
+    assert.equal(typeof attachmentsStream.connection_id, 'string');
+    assert.equal(attachmentsStream.connector_instance_id, attachmentsStream.connection_id);
+
+    const spotifyManifest = loadSpotifyManifest();
+    await registerConnector(asUrl, spotifyManifest);
+    const connectionFilteredStreams = await fetchJson(
+      `${rsUrl}/v1/streams?connection_id=${encodeURIComponent(attachmentsStream.connection_id)}`,
+      { headers: authHeaders },
+    );
+    assert.equal(connectionFilteredStreams.status, 200);
+    assert.ok(connectionFilteredStreams.body.data.some((stream) => stream.name === 'attachments'));
+    assert.ok(!connectionFilteredStreams.body.data.some((stream) => stream.connector_id === canonicalConnectorKey(spotifyManifest.connector_id)));
+    assert.ok(connectionFilteredStreams.body.data.every((stream) => stream.connection_id === attachmentsStream.connection_id));
 
     const streamMetadata = await fetchJson(
       `${rsUrl}/v1/streams/attachments?connector_id=${encodeURIComponent(manifest.connector_id)}`,
