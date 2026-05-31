@@ -72,6 +72,7 @@ export interface HostedMcpPickerRow {
   connectorTypeLabel: string;
   formValue: string;
   meta: string;
+  sourceKey: string;
   streams: Array<{ name: string; description: string | null }>;
 }
 
@@ -259,8 +260,8 @@ async function buildConnectorPickerRows(
   if (!manifest) {
     return [];
   }
-  const connectorLabel = manifest.display_name || manifest.name || connectorId;
-  const connectorMetaToken = caps.canonicalConnectorKey(connectorId) ?? connectorId;
+  const connectorMetaToken = ownerFacingConnectorKey(connectorId, caps);
+  const connectorLabel = ownerFacingConnectorLabel(manifest.display_name || manifest.name, connectorMetaToken);
   const manifestStreams = Array.isArray(manifest.streams) ? manifest.streams : [];
   const streamCount = manifestStreams.length;
   const streamSummaries = manifestStreams.map((stream) => ({
@@ -276,9 +277,13 @@ async function buildConnectorPickerRows(
         connectionId: null,
         connectorTypeLabel: connectorLabel,
         connectionName: null,
-        meta: streamCount
-          ? `${connectorMetaToken} · ${streamCount} streams · no configured connection`
-          : `${connectorMetaToken} · no configured connection`,
+        meta: buildPickerRowMeta({
+          connectorLabel,
+          connectorKey: connectorMetaToken,
+          streamCount,
+          suffix: "no configured connection",
+        }),
+        sourceKey: caps.hostedMcpSourceKey({ connectorId, connectionId: null }),
         streams: streamSummaries,
       },
     ];
@@ -293,10 +298,77 @@ async function buildConnectorPickerRows(
       connectionId: connectionId ?? null,
       connectorTypeLabel: connectorLabel,
       connectionName: displayName ?? null,
-      meta: streamCount ? `${connectorMetaToken} · ${streamCount} streams` : connectorMetaToken,
+      meta: buildPickerRowMeta({ connectorLabel, connectorKey: connectorMetaToken, streamCount }),
+      sourceKey: caps.hostedMcpSourceKey({ connectorId, connectionId: connectionId ?? null }),
       streams: streamSummaries,
     };
   });
+}
+
+function ownerFacingConnectorKey(connectorId: string, caps: ConsentPickerCapabilities): string {
+  const canonical = caps.canonicalConnectorKey(connectorId);
+  if (canonical) {
+    return canonical;
+  }
+  try {
+    const url = new URL(connectorId);
+    const lastPathToken = url.pathname
+      .split("/")
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .at(-1);
+    return lastPathToken || url.hostname || connectorId;
+  } catch {
+    return connectorId;
+  }
+}
+
+function ownerFacingConnectorLabel(label: string | null | undefined, fallbackKey: string): string {
+  const trimmed = typeof label === "string" ? label.trim() : "";
+  if (!trimmed) {
+    return fallbackKey;
+  }
+  try {
+    const url = new URL(trimmed);
+    return (
+      url.pathname
+        .split("/")
+        .map((part) => part.trim())
+        .filter(Boolean)
+        .at(-1) || fallbackKey
+    );
+  } catch {
+    return trimmed;
+  }
+}
+
+function normalizeConnectorLabel(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/g, "-");
+}
+
+function buildPickerRowMeta({
+  connectorLabel,
+  connectorKey,
+  streamCount,
+  suffix,
+}: {
+  connectorLabel: string;
+  connectorKey: string;
+  streamCount: number;
+  suffix?: string;
+}): string {
+  const parts: string[] = [];
+  if (normalizeConnectorLabel(connectorLabel) !== normalizeConnectorLabel(connectorKey)) {
+    parts.push(connectorKey);
+  }
+  parts.push(streamCount === 1 ? "1 stream" : `${streamCount} streams`);
+  if (suffix) {
+    parts.push(suffix);
+  }
+  return parts.join(" · ");
 }
 
 export async function listHostedMcpPickerRows(
@@ -557,7 +629,8 @@ export async function renderHostedMcpSourceSelection(
   csrfToken: string,
   providerName: string,
   caps: ConsentPickerCapabilities,
-  ui: ConsentUiRenderer
+  ui: ConsentUiRenderer,
+  opts: { validationError?: string | null } = {}
 ): Promise<string> {
   const rows = await listHostedMcpPickerRows(caps, ownerSubjectId);
 
@@ -595,7 +668,7 @@ export async function renderHostedMcpSourceSelection(
           : "";
         return `
             <label class="hosted-ui-stream-option">
-              <input type="checkbox" name="stream" value="${ui.escapeHtml(streamFormValue)}" checked />
+              <input type="checkbox" name="stream" value="${ui.escapeHtml(streamFormValue)}" data-hosted-mcp-stream-checkbox data-source-key="${ui.escapeHtml(row.sourceKey)}" disabled />
               <span class="hosted-ui-stream-option-body">
                 <span class="hosted-ui-stream-name">${ui.escapeHtml(stream.name)}</span>
                 ${description}
@@ -604,60 +677,245 @@ export async function renderHostedMcpSourceSelection(
           `;
       })
       .join("\n");
-    return `<div class="hosted-ui-option-streams">${items}</div>`;
+    return `<div class="hosted-ui-option-streams" data-hosted-mcp-streams data-streams-enabled="false" aria-disabled="true">${items}</div>`;
   };
 
   const options = rows.length
     ? rows
-        .map(
-          (row) => `
-          <fieldset class="hosted-ui-option-source">
-            <legend class="hosted-ui-option-source-legend">
+        .map((row, index) => {
+          const summaryId = `hosted-mcp-source-summary-${index}`;
+          const sourceKey = ui.escapeHtml(row.sourceKey);
+          return `
+          <details class="hosted-ui-option-source" data-hosted-mcp-source data-source-key="${sourceKey}" data-source-selected="false">
+            <summary class="hosted-ui-option-source-legend hosted-ui-option-summary">
               <label class="hosted-ui-option">
-                <input type="checkbox" name="selection" value="${ui.escapeHtml(row.formValue)}" />
+                <input type="checkbox" name="selection" value="${ui.escapeHtml(row.formValue)}" data-hosted-mcp-source-checkbox data-source-key="${sourceKey}" aria-describedby="${summaryId}" />
                 <span class="hosted-ui-option-body">
                   <span class="hosted-ui-option-title">
                     <span class="hosted-ui-connector-type">${ui.escapeHtml(row.connectorTypeLabel)}</span>${row.connectionName ? `<span class="hosted-ui-connection-name">${ui.escapeHtml(row.connectionName)}</span>` : ""}
                   </span>
-                  <span class="hosted-ui-option-meta">${ui.escapeHtml(row.meta)}</span>
+                  <span class="hosted-ui-option-meta" id="${summaryId}">${ui.escapeHtml(row.meta)}</span>
                 </span>
               </label>
-            </legend>
+            </summary>
+            <div class="hosted-ui-option-stream-controls">
+              <p class="hosted-ui-option-streams-help">Select this source, then keep all streams or narrow the list.</p>
+              <div class="hosted-ui-actions hosted-ui-stream-actions" aria-label="Stream bulk controls for ${ui.escapeHtml(row.connectorTypeLabel)}">
+                <button type="button" class="hosted-ui-button" data-hosted-mcp-select-streams>Select all streams</button>
+                <button type="button" class="hosted-ui-button" data-hosted-mcp-clear-streams>Clear streams</button>
+              </div>
+            </div>
             ${renderRowStreams(row)}
-          </fieldset>
-        `
-        )
+          </details>
+        `;
+        })
         .join("\n")
     : '<p class="pdpp-body">No connector manifests are registered on this reference server.</p>';
 
   const submit = rows.length
-    ? '<button type="submit" class="hosted-ui-button" data-variant="primary">Approve selected sources</button>'
+    ? '<button type="submit" class="hosted-ui-button" data-variant="primary">Authorize selected sources</button>'
     : "";
 
   const riskCopy = rows.length
-    ? `<p class="pdpp-body"><strong>Reference-experimental multi-source consent.</strong> Each checked source issues one independent, source-bounded PDPP grant. Within a source you can uncheck individual streams to narrow what the MCP client may read; an unchecked stream is excluded from the issued child grant. This ceremony does not encode a machine-readable retention bound on the issued grants; how long fetched results are kept is governed by the MCP client's own policy and any external agreements you have with that client.</p>`
+    ? `<p class="pdpp-body"><strong>Reference-experimental setup.</strong> Choose the sources this MCP client may read. Each selected source creates its own revocable PDPP grant; unchecked sources and their streams are ignored. Open a source to review or narrow streams. This ceremony does not encode a machine-readable retention bound on the issued grants; how long fetched results are kept is governed by the MCP client's own policy and any external agreements you have with that client.</p>`
+    : "";
+
+  const validationError = typeof opts.validationError === "string" ? opts.validationError.trim() : "";
+  const validationBanner = rows.length
+    ? `<div class="hosted-ui-error hosted-ui-picker-error" role="alert" data-hosted-mcp-picker-error data-default-message="Select at least one source before approving. Stream choices inside unchecked sources are ignored."${validationError ? "" : " hidden"}>${ui.escapeHtml(validationError)}</div>`
+    : "";
+
+  const bulkControls = rows.length
+    ? `
+        <div class="hosted-ui-actions hosted-ui-picker-toolbar" aria-label="Source bulk controls">
+          <button type="button" class="hosted-ui-button" data-hosted-mcp-select-sources>Select all sources</button>
+          <button type="button" class="hosted-ui-button" data-hosted-mcp-clear-sources>Clear sources</button>
+        </div>
+      `
     : "";
 
   const accessModeControl = rows.length
     ? `
         <fieldset class="hosted-ui-access-mode">
-          <legend class="hosted-ui-access-mode-legend">Access mode</legend>
+          <legend class="hosted-ui-access-mode-legend">How long access lasts</legend>
           <label class="hosted-ui-access-mode-option">
             <input type="radio" name="access_mode" value="continuous" checked />
             <span class="hosted-ui-access-mode-body">
-              <span class="hosted-ui-access-mode-label">Continuous access (default)</span>
+              <span class="hosted-ui-access-mode-label">Continuous until revoked (default)</span>
               <span class="hosted-ui-access-mode-meta">The MCP client may keep reading until you revoke this grant.</span>
             </span>
           </label>
           <label class="hosted-ui-access-mode-option">
             <input type="radio" name="access_mode" value="single_use" />
             <span class="hosted-ui-access-mode-body">
-              <span class="hosted-ui-access-mode-label">Single use</span>
+              <span class="hosted-ui-access-mode-label">One read, then expire</span>
               <span class="hosted-ui-access-mode-meta">The MCP client may read once. The grant expires on first use.</span>
             </span>
           </label>
         </fieldset>
       `
+    : "";
+
+  const pickerBehaviorStyles = rows.length
+    ? `<style>
+.hosted-ui-option-summary {
+  list-style: none;
+}
+.hosted-ui-option-summary::-webkit-details-marker {
+  display: none;
+}
+.hosted-ui-option-summary::after {
+  content: "Review streams";
+  display: block;
+  padding: 0 0.25rem 0.5rem 2rem;
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+}
+.hosted-ui-option-source[open] > .hosted-ui-option-summary::after {
+  content: "Hide streams";
+}
+.hosted-ui-picker-toolbar,
+.hosted-ui-stream-actions {
+  margin: 0.75rem 0;
+}
+.hosted-ui-picker-toolbar .hosted-ui-button,
+.hosted-ui-stream-actions .hosted-ui-button {
+  padding: 0.425rem 0.75rem;
+  font-size: 0.8125rem;
+}
+.hosted-ui-option-stream-controls {
+  padding: 0 0.25rem 0 1.75rem;
+}
+.hosted-ui-option-streams-help {
+  margin: 0.25rem 0 0.5rem;
+  color: var(--muted-foreground);
+  font-size: 0.8125rem;
+}
+.hosted-ui-option-source[data-source-selected="false"] .hosted-ui-option-streams,
+.hosted-ui-option-source[data-source-selected="false"] .hosted-ui-option-stream-controls {
+  opacity: 0.55;
+}
+.hosted-ui-picker-error {
+  margin: 0 0 1rem;
+}
+</style>`
+    : "";
+
+  const pickerBehaviorScript = rows.length
+    ? `<script>
+(() => {
+  const form = document.querySelector("[data-hosted-mcp-picker-form]");
+  if (!form) return;
+  const error = form.querySelector("[data-hosted-mcp-picker-error]");
+  const sources = Array.from(form.querySelectorAll("[data-hosted-mcp-source]"));
+  const sourceBoxes = () => Array.from(form.querySelectorAll("[data-hosted-mcp-source-checkbox]"));
+  const streamsFor = (source) => Array.from(source.querySelectorAll("[data-hosted-mcp-stream-checkbox]"));
+  const setError = (message) => {
+    if (!error) return;
+    if (message) {
+      error.textContent = message;
+      error.hidden = false;
+    } else {
+      error.textContent = "";
+      error.hidden = true;
+    }
+  };
+  const syncSource = (source) => {
+    const sourceBox = source.querySelector("[data-hosted-mcp-source-checkbox]");
+    if (!sourceBox) return;
+    const selected = Boolean(sourceBox.checked);
+    source.dataset.sourceSelected = selected ? "true" : "false";
+    const streamBoxes = streamsFor(source);
+    if (!selected) {
+      for (const streamBox of streamBoxes) {
+        streamBox.checked = false;
+      }
+    } else if (streamBoxes.length > 0 && !streamBoxes.some((streamBox) => streamBox.checked)) {
+      for (const streamBox of streamBoxes) {
+        streamBox.checked = true;
+      }
+    }
+    const streamGroup = source.querySelector("[data-hosted-mcp-streams]");
+    if (streamGroup) {
+      streamGroup.dataset.streamsEnabled = selected ? "true" : "false";
+      streamGroup.setAttribute("aria-disabled", selected ? "false" : "true");
+    }
+    for (const streamBox of streamBoxes) {
+      streamBox.disabled = !selected;
+    }
+    if (selected) {
+      source.open = true;
+    }
+  };
+  for (const source of sources) {
+    const sourceBox = source.querySelector("[data-hosted-mcp-source-checkbox]");
+    if (!sourceBox) continue;
+    sourceBox.addEventListener("change", () => {
+      syncSource(source);
+      setError("");
+    });
+    for (const streamBox of streamsFor(source)) {
+      streamBox.addEventListener("change", () => {
+        if (streamBox.checked && !sourceBox.checked) {
+          sourceBox.checked = true;
+        }
+        if (!streamsFor(source).some((item) => item.checked)) {
+          sourceBox.checked = false;
+        }
+        syncSource(source);
+        setError("");
+      });
+    }
+    source.querySelector("[data-hosted-mcp-select-streams]")?.addEventListener("click", () => {
+      for (const streamBox of streamsFor(source)) {
+        streamBox.checked = true;
+      }
+      sourceBox.checked = true;
+      syncSource(source);
+      setError("");
+    });
+    source.querySelector("[data-hosted-mcp-clear-streams]")?.addEventListener("click", () => {
+      for (const streamBox of streamsFor(source)) {
+        streamBox.checked = false;
+      }
+      sourceBox.checked = false;
+      syncSource(source);
+      setError("");
+    });
+  }
+  form.querySelector("[data-hosted-mcp-select-sources]")?.addEventListener("click", () => {
+    for (const source of sources) {
+      const sourceBox = source.querySelector("[data-hosted-mcp-source-checkbox]");
+      if (!sourceBox) continue;
+      sourceBox.checked = true;
+      for (const streamBox of streamsFor(source)) {
+        streamBox.checked = true;
+      }
+      syncSource(source);
+    }
+    setError("");
+  });
+  form.querySelector("[data-hosted-mcp-clear-sources]")?.addEventListener("click", () => {
+    for (const source of sources) {
+      const sourceBox = source.querySelector("[data-hosted-mcp-source-checkbox]");
+      if (sourceBox) {
+        sourceBox.checked = false;
+      }
+      syncSource(source);
+    }
+    setError("");
+  });
+  form.addEventListener("submit", (event) => {
+    if (!sourceBoxes().some((sourceBox) => sourceBox.checked)) {
+      event.preventDefault();
+      setError(error?.dataset.defaultMessage || "Select at least one source before approving.");
+    }
+  });
+  for (const source of sources) {
+    syncSource(source);
+  }
+})();
+</script>`
     : "";
 
   return ui.renderHostedDocument({
@@ -672,14 +930,18 @@ export async function renderHostedMcpSourceSelection(
       ui.renderSurface({
         surface: "human",
         children: `
+            ${pickerBehaviorStyles}
             ${riskCopy}
-            <form method="POST" action="/oauth/authorize/mcp-package">
+            <form method="POST" action="/oauth/authorize/mcp-package" data-hosted-mcp-picker-form>
               <input type="hidden" name="_csrf" value="${ui.escapeHtml(csrfToken)}" />
               ${hidden}
+              ${validationBanner}
+              ${bulkControls}
               <div class="hosted-ui-option-group">${options}</div>
               ${accessModeControl}
               ${submit}
             </form>
+            ${pickerBehaviorScript}
           `,
       }),
     ].join("\n"),

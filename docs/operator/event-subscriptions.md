@@ -118,9 +118,10 @@ curl -sS -X POST \
 
 ```
 --port <N>        Listen port (default 8765).
---secret <hex>    Override the secret to verify against. By default the
-                  receiver reads the secret from `WEBHOOK_SECRET` env var
-                  on the first verify event and remembers it.
+--host <HOST>     Bind address (default 127.0.0.1). Use 0.0.0.0 only behind
+                  a trusted TLS proxy.
+--secret <SECRET> Per-subscription secret returned by POST /v1/event-subscriptions.
+                  May also be set with `WEBHOOK_SECRET`.
 --insecure        Skip signature verification. Useful only when you want
                   to inspect envelopes without configuring the secret yet.
                   Never combine with a production callback URL.
@@ -135,6 +136,13 @@ The reference deployment accepts `http://localhost` callback URLs only in
 development. Production deployments will reject the receiver's URL unless you
 expose it over HTTPS — use `cloudflared`, an SSH tunnel, or any reverse
 proxy that terminates TLS in front of port 8765.
+
+If the TLS proxy runs on another host, bind the receiver on an interface that
+proxy can reach:
+
+```sh
+WEBHOOK_SECRET="whsec_..." node scripts/event-subscription-test-receiver.mjs --host 0.0.0.0 --port 8765
+```
 
 ## CLI surface
 

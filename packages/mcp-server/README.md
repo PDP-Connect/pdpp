@@ -82,6 +82,12 @@ ChatGPT-compatible `structuredContent.results[]` entries with `id`, `title`, and
 `fetch` accepts result ids in `stream:record_id` form and returns `id`, `title`, `text`,
 `url`, and `metadata`.
 
+Discovery tools (`schema`, `list_streams`) preserve the full RS body in
+`structuredContent.data` and also include concise parseable text with stream names,
+`connection_id`, `connector_key`, display labels, and schema field-capability essentials
+so MCP clients whose models read only `content[]` can still choose streams, fields, and
+connection scopes.
+
 ### Side-effectful tools (event-subscription management)
 
 These tools manage outbound event subscriptions on the configured PDPP instance via the

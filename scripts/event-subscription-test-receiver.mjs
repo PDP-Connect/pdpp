@@ -11,7 +11,7 @@
  *
  * Usage:
  *
- *   node scripts/event-subscription-test-receiver.mjs [--port N]
+ *   node scripts/event-subscription-test-receiver.mjs [--port N] [--host HOST]
  *       [--secret whsec_…] [--insecure]
  *
  * The receiver does not register the subscription for you. Create the
@@ -37,16 +37,22 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 
 const DEFAULT_PORT = 8765;
+const DEFAULT_HOST = "127.0.0.1";
 const SIGNATURE_TOLERANCE_SECONDS = 5 * 60;
 
 function parseArgs(argv) {
-  const out = { port: DEFAULT_PORT, secret: process.env.WEBHOOK_SECRET ?? null, insecure: false };
+  const out = { host: DEFAULT_HOST, port: DEFAULT_PORT, secret: process.env.WEBHOOK_SECRET ?? null, insecure: false };
   for (let i = 2; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--port") {
       out.port = Number.parseInt(argv[++i] ?? "", 10);
       if (!Number.isInteger(out.port) || out.port <= 0 || out.port > 65535) {
         die(`invalid --port value: ${argv[i]}`);
+      }
+    } else if (arg === "--host") {
+      out.host = argv[++i] ?? "";
+      if (out.host.trim() === "") {
+        die("invalid --host value: empty");
       }
     } else if (arg === "--secret") {
       out.secret = argv[++i] ?? null;
@@ -68,10 +74,11 @@ function printUsage() {
       "Local test receiver for PDPP client event subscriptions.",
       "",
       "Usage:",
-      "  node scripts/event-subscription-test-receiver.mjs [--port N] [--secret whsec_…] [--insecure]",
+      "  node scripts/event-subscription-test-receiver.mjs [--port N] [--host HOST] [--secret whsec_…] [--insecure]",
       "",
       "Flags:",
       "  --port N        Listen port (default 8765).",
+      "  --host HOST     Bind address (default 127.0.0.1). Use 0.0.0.0 only behind a trusted TLS proxy.",
       "  --secret SECRET Per-subscription secret returned by POST /v1/event-subscriptions.",
       "                  May also be set via the WEBHOOK_SECRET environment variable.",
       "  --insecure      Skip signature verification. For one-off envelope inspection only.",
@@ -163,7 +170,7 @@ async function main() {
   const server = createServer(async (req, res) => {
     if (req.method === "GET" && (req.url === "/" || req.url === "/health")) {
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ ok: true, listening: args.port, has_secret: Boolean(secret) }));
+      res.end(JSON.stringify({ ok: true, host: args.host, listening: args.port, has_secret: Boolean(secret) }));
       return;
     }
     if (req.method !== "POST" || req.url !== "/webhook") {
@@ -234,14 +241,18 @@ async function main() {
     res.end();
   });
 
-  server.listen(args.port, "127.0.0.1", () => {
+  server.listen(args.port, args.host, () => {
+    const callbackHost = args.host === "0.0.0.0" || args.host === "::" ? "<this-host>" : args.host;
     process.stdout.write(
       [
-        `PDPP event-subscription test receiver listening on http://127.0.0.1:${args.port}/webhook`,
-        `  health:   http://127.0.0.1:${args.port}/health`,
+        `PDPP event-subscription test receiver listening on http://${callbackHost}:${args.port}/webhook`,
+        `  bind:     ${args.host}:${args.port}`,
+        `  health:   http://${callbackHost}:${args.port}/health`,
         `  secret:   ${args.insecure ? "(--insecure; verification skipped)" : secret ? "configured" : "NOT SET — pass --secret or WEBHOOK_SECRET"}`,
         "",
-        "Create a subscription with callback_url=http://localhost:" +
+        "Create a subscription with callback_url=http://" +
+          callbackHost +
+          ":" +
           args.port +
           "/webhook from your client to drive the verification handshake.",
         "",

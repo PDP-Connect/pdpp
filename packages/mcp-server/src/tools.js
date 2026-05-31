@@ -210,6 +210,10 @@ const SUBSCRIPTION_DELETE_ANNOTATIONS = {
   openWorldHint: false,
 };
 
+const DISCOVERY_STREAM_SUMMARY_LIMIT = 50;
+const DISCOVERY_FIELD_SUMMARY_LIMIT = 16;
+const DISCOVERY_CONNECTION_SUMMARY_LIMIT = 8;
+
 /**
  * Build the static tool definitions. Descriptions are constant — they are never derived
  * from manifest, stream, or record data. RS payloads are returned as data; nothing is
@@ -738,6 +742,12 @@ function toFetchToolResult(response, providerUrl, requestedId) {
 }
 
 function summarizeBody(body, label) {
+  if (label === 'PDPP schema') {
+    return summarizeSchemaDiscovery(body, label);
+  }
+  if (label === 'PDPP streams') {
+    return summarizeStreamsDiscovery(body, label);
+  }
   if (Array.isArray(body)) {
     return `${label}: ${body.length} item(s). See structuredContent.data for the canonical envelope.`;
   }
@@ -756,6 +766,327 @@ function summarizeBody(body, label) {
     return `${label}: see structuredContent.data for the canonical envelope.`;
   }
   return `${label}: see structuredContent.data for the canonical envelope.`;
+}
+
+function summarizeStreamsDiscovery(body, label) {
+  const streams = extractListRows(body);
+  if (streams.length === 0) {
+    return `${label}: 0 stream(s)`;
+  }
+
+  const lines = streams
+    .slice(0, DISCOVERY_STREAM_SUMMARY_LIMIT)
+    .map((stream) => formatStreamListSummary(stream));
+  if (streams.length > DISCOVERY_STREAM_SUMMARY_LIMIT) {
+    lines.push(`more_streams=${streams.length - DISCOVERY_STREAM_SUMMARY_LIMIT}`);
+  }
+  return `${label}: ${streams.length} stream(s)\n${lines.join('\n')}`;
+}
+
+function summarizeSchemaDiscovery(body, label) {
+  const schema = unwrapSchemaBody(body);
+  const streamRefs = extractSchemaStreamRefs(schema);
+  const connectorCount = extractSchemaConnectors(schema).length || numberValue(schema?.connector_count) || 0;
+
+  if (streamRefs.length === 0) {
+    const streamNames = extractSchemaStreamNames(schema);
+    if (streamNames.length > 0) {
+      return `${label}: connectors=${connectorCount} streams=${streamNames.length}\n${streamNames
+        .slice(0, DISCOVERY_STREAM_SUMMARY_LIMIT)
+        .map((name) => `stream name=${formatScalar(name)}`)
+        .join('\n')}`;
+    }
+    return `${label}: connectors=${connectorCount} streams=0`;
+  }
+
+  const lines = streamRefs
+    .slice(0, DISCOVERY_STREAM_SUMMARY_LIMIT)
+    .map(({ stream, connector }) => formatSchemaStreamSummary(stream, connector));
+  if (streamRefs.length > DISCOVERY_STREAM_SUMMARY_LIMIT) {
+    lines.push(`more_streams=${streamRefs.length - DISCOVERY_STREAM_SUMMARY_LIMIT}`);
+  }
+  return `${label}: connectors=${connectorCount} streams=${streamRefs.length}\n${lines.join('\n')}`;
+}
+
+function extractListRows(body) {
+  if (Array.isArray(body)) return body;
+  if (!body || typeof body !== 'object') return [];
+  if (Array.isArray(body.data)) return body.data;
+  if (Array.isArray(body.streams)) return body.streams;
+  if (body.data && typeof body.data === 'object' && Array.isArray(body.data.streams)) {
+    return body.data.streams;
+  }
+  return [];
+}
+
+function unwrapSchemaBody(body) {
+  if (!body || typeof body !== 'object') return {};
+  if (body.data && typeof body.data === 'object' && !Array.isArray(body.data)) {
+    const data = body.data;
+    if (
+      Array.isArray(data.connectors) ||
+      Array.isArray(data.streams) ||
+      Array.isArray(data.granted_connections) ||
+      data.object === 'schema'
+    ) {
+      return data;
+    }
+  }
+  return body;
+}
+
+function extractSchemaConnectors(schema) {
+  return Array.isArray(schema?.connectors) ? schema.connectors.filter((item) => item && typeof item === 'object') : [];
+}
+
+function extractSchemaStreamRefs(schema) {
+  const connectors = extractSchemaConnectors(schema);
+  if (connectors.length > 0) {
+    return connectors.flatMap((connector) => {
+      const streams = Array.isArray(connector.streams) ? connector.streams : [];
+      return streams.map((stream) => ({ stream, connector }));
+    });
+  }
+  const streams = Array.isArray(schema?.streams) ? schema.streams : [];
+  return streams
+    .filter((stream) => stream && typeof stream === 'object')
+    .map((stream) => ({ stream, connector: null }));
+}
+
+function extractSchemaStreamNames(schema) {
+  const streams = Array.isArray(schema?.streams) ? schema.streams : [];
+  return streams
+    .map((stream) => streamName(stream))
+    .filter(Boolean);
+}
+
+function formatStreamListSummary(stream) {
+  const source = objectValue(stream?.source);
+  const name = streamName(stream) || 'unknown';
+  const connectionId = firstString(
+    stream?.connection_id,
+    stream?.connector_instance_id,
+    source?.connection_id,
+  );
+  const connectorKey = connectorKeyFor(stream, null);
+  const displayName = firstString(
+    stream?.display_name,
+    stream?.connection_display_name,
+    source?.display_name,
+    stream?.connector_display_name,
+  );
+  const parts = [
+    `stream name=${formatScalar(name)}`,
+    `connection_id=${formatScalar(connectionId)}`,
+    `connector_key=${formatScalar(connectorKey)}`,
+    `display_name=${formatScalar(displayName)}`,
+  ];
+  const recordCount = numberValue(stream?.record_count);
+  if (recordCount !== null) {
+    parts.push(`record_count=${recordCount}`);
+  }
+  return parts.join(' ');
+}
+
+function formatSchemaStreamSummary(stream, connector) {
+  const name = streamName(stream) || 'unknown';
+  const connectorKey = connectorKeyFor(stream, connector);
+  const displayName = displayNameFor(stream, connector);
+  const connections = grantedConnectionsFor(stream);
+  const parts = [
+    `stream name=${formatScalar(name)}`,
+    `connector_key=${formatScalar(connectorKey)}`,
+    `display_name=${formatScalar(displayName)}`,
+    `connections=${formatConnections(connections)}`,
+    `fields=${formatFieldCapabilities(stream?.field_capabilities)}`,
+  ];
+  return parts.join(' ');
+}
+
+function streamName(stream) {
+  if (typeof stream === 'string' && stream.length > 0) return stream;
+  return firstString(stream?.name, stream?.stream, stream?.stream_name, stream?.streamName);
+}
+
+function connectorKeyFor(stream, connector) {
+  const streamSource = objectValue(stream?.source);
+  const connectorSource = objectValue(connector?.source);
+  return firstString(
+    stream?.connector_key,
+    stream?.connector_id,
+    streamSource?.connector_key,
+    streamSource?.connector_id,
+    streamSource?.id,
+    connector?.connector_key,
+    connector?.connector_id,
+    connectorSource?.connector_key,
+    connectorSource?.connector_id,
+    connectorSource?.id,
+  );
+}
+
+function displayNameFor(stream, connector) {
+  const streamSource = objectValue(stream?.source);
+  const connectorSource = objectValue(connector?.source);
+  return firstString(
+    stream?.display_name,
+    stream?.connection_display_name,
+    streamSource?.display_name,
+    connector?.display_name,
+    connectorSource?.display_name,
+    connector?.connector_display_name,
+    stream?.connector_display_name,
+  );
+}
+
+function grantedConnectionsFor(stream) {
+  const explicit = Array.isArray(stream?.granted_connections) ? stream.granted_connections : [];
+  if (explicit.length > 0) {
+    return explicit.filter((connection) => connection && typeof connection === 'object');
+  }
+
+  const source = objectValue(stream?.source);
+  const connectionId = firstString(stream?.connection_id, stream?.connector_instance_id, source?.connection_id);
+  if (!connectionId) return [];
+  return [
+    {
+      connection_id: connectionId,
+      display_name: firstString(stream?.display_name, source?.display_name),
+      connector_key: connectorKeyFor(stream, null),
+    },
+  ];
+}
+
+function formatConnections(connections) {
+  if (!connections || connections.length === 0) return 'none';
+  const rendered = connections
+    .slice(0, DISCOVERY_CONNECTION_SUMMARY_LIMIT)
+    .map((connection) => {
+      const id = firstString(connection?.connection_id, connection?.connector_instance_id);
+      const displayName = firstString(connection?.display_name, connection?.name);
+      const connectorKey = firstString(connection?.connector_key, connection?.connector_id, objectValue(connection?.source)?.connector_key);
+      const parts = [`connection_id:${formatInlineValue(id)}`];
+      if (displayName) parts.push(`display_name:${formatInlineValue(displayName)}`);
+      if (connectorKey) parts.push(`connector_key:${formatInlineValue(connectorKey)}`);
+      return `{${parts.join(',')}}`;
+    });
+  if (connections.length > DISCOVERY_CONNECTION_SUMMARY_LIMIT) {
+    rendered.push(`more:${connections.length - DISCOVERY_CONNECTION_SUMMARY_LIMIT}`);
+  }
+  return rendered.join('|');
+}
+
+function formatFieldCapabilities(fieldCapabilities) {
+  const entries = fieldCapabilityEntries(fieldCapabilities);
+  if (entries.length === 0) return 'none';
+
+  const rendered = entries
+    .slice(0, DISCOVERY_FIELD_SUMMARY_LIMIT)
+    .map(([field, capabilities]) => `${formatFieldName(field)}[${formatFieldCapabilityFlags(capabilities)}]`);
+  if (entries.length > DISCOVERY_FIELD_SUMMARY_LIMIT) {
+    rendered.push(`more:${entries.length - DISCOVERY_FIELD_SUMMARY_LIMIT}`);
+  }
+  return rendered.join(';');
+}
+
+function fieldCapabilityEntries(fieldCapabilities) {
+  if (!fieldCapabilities || typeof fieldCapabilities !== 'object') return [];
+  if (Array.isArray(fieldCapabilities)) {
+    return fieldCapabilities
+      .map((entry) => {
+        const name = firstString(entry?.name, entry?.field, entry?.path);
+        return name ? [name, entry] : null;
+      })
+      .filter(Boolean);
+  }
+  return Object.entries(fieldCapabilities);
+}
+
+function formatFieldCapabilityFlags(capabilities) {
+  if (!capabilities || typeof capabilities !== 'object') return 'declared';
+  const flags = [];
+  const schema = objectValue(capabilities.schema);
+  const type = firstString(capabilities.type, schemaType(schema));
+  if (type) flags.push(`type=${formatInlineValue(type)}`);
+  if (typeof capabilities.granted === 'boolean') {
+    flags.push(`granted=${capabilities.granted}`);
+  }
+  addCapabilityFlag(flags, 'exact', capabilities.exact_filter);
+  addRangeCapabilityFlag(flags, capabilities.range_filter);
+  addCapabilityFlag(flags, 'lexical', capabilities.lexical_search);
+  addCapabilityFlag(flags, 'semantic', capabilities.semantic_search);
+  addAggregationCapabilityFlags(flags, capabilities.aggregation);
+  return flags.length > 0 ? flags.join(',') : 'declared';
+}
+
+function addCapabilityFlag(flags, name, capability) {
+  if (!capability || typeof capability !== 'object') return;
+  if (capability.usable === true) {
+    flags.push(name);
+  } else if (capability.declared === true && capability.usable === false) {
+    flags.push(`${name}=unusable${reasonSuffix(capability.reason)}`);
+  }
+}
+
+function addRangeCapabilityFlag(flags, capability) {
+  if (!capability || typeof capability !== 'object') return;
+  const operators = Array.isArray(capability.operators) && capability.operators.length > 0
+    ? capability.operators.join('|')
+    : null;
+  if (capability.usable === true) {
+    flags.push(operators ? `range=${formatInlineValue(operators)}` : 'range');
+  } else if (capability.declared === true && capability.usable === false) {
+    flags.push(`range=unusable${reasonSuffix(capability.reason)}`);
+  }
+}
+
+function addAggregationCapabilityFlags(flags, aggregation) {
+  if (!aggregation || typeof aggregation !== 'object') return;
+  const usable = Object.entries(aggregation)
+    .filter(([, capability]) => capability && typeof capability === 'object' && capability.usable === true)
+    .map(([name]) => name);
+  if (usable.length > 0) {
+    flags.push(`agg=${formatInlineValue(usable.join('|'))}`);
+  }
+}
+
+function reasonSuffix(reason) {
+  return typeof reason === 'string' && reason.length > 0 ? `:${reason}` : '';
+}
+
+function schemaType(schema) {
+  if (!schema || typeof schema !== 'object') return undefined;
+  if (typeof schema.type === 'string') return schema.type;
+  if (Array.isArray(schema.type)) return schema.type.filter((item) => typeof item === 'string').join('|') || undefined;
+  return undefined;
+}
+
+function objectValue(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+}
+
+function firstString(...values) {
+  for (const value of values) {
+    if (typeof value === 'string' && value.length > 0) return value;
+  }
+  return undefined;
+}
+
+function numberValue(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function formatScalar(value) {
+  return value === undefined || value === null ? 'null' : JSON.stringify(String(value));
+}
+
+function formatInlineValue(value) {
+  if (value === undefined || value === null) return 'null';
+  return String(value).replace(/[;,\[\]{}]/g, '_').replace(/\s+/g, '_');
+}
+
+function formatFieldName(value) {
+  return String(value).replace(/[;,\[\]{}]/g, '_');
 }
 
 function summarizeSearch(body, results) {

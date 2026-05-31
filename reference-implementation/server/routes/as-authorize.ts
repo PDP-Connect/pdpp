@@ -46,6 +46,7 @@ interface RouteRequest {
 interface RouteResponse {
   redirect(status: number, url: string): unknown;
   send(body: string): unknown;
+  status(status: number): RouteResponse;
 }
 
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => Promise<unknown>;
@@ -393,6 +394,59 @@ function resolvePackageAccessMode(rawAccessMode: string): string | null {
   return rawAccessMode;
 }
 
+function hasSubmittedSelectionInput(raw: unknown): boolean {
+  if (typeof raw === "string") {
+    return raw.trim().length > 0;
+  }
+  if (Array.isArray(raw)) {
+    return raw.some((value) => hasSubmittedSelectionInput(value));
+  }
+  if (raw && typeof raw === "object") {
+    return Object.values(raw as Record<string, unknown>).some((value) => hasSubmittedSelectionInput(value));
+  }
+  return false;
+}
+
+async function renderHostedMcpPickerValidationPage(
+  req: RouteRequest,
+  res: RouteResponse,
+  ctx: Pick<MountAsAuthorizeContext, "consentPickerCaps" | "consentUi" | "ensureCsrfToken" | "providerName">,
+  message: string
+): Promise<unknown> {
+  const ownerSubjectId = req?.ownerAuth?.subjectId || "owner_local";
+  const csrfToken = ctx.ensureCsrfToken(req, res);
+  const html = await renderHostedMcpSourceSelection(
+    ownerSubjectId,
+    req.body || {},
+    csrfToken,
+    ctx.providerName,
+    ctx.consentPickerCaps,
+    ctx.consentUi,
+    { validationError: message }
+  );
+  return res.status(400).send(html);
+}
+
+function rejectMissingHostedMcpSelection(
+  req: RouteRequest,
+  res: RouteResponse,
+  ctx: Pick<
+    MountAsAuthorizeContext,
+    "consentPickerCaps" | "consentUi" | "ensureCsrfToken" | "oauthError" | "providerName"
+  >,
+  rawSelection: unknown
+): Promise<unknown> | unknown {
+  if (hasSubmittedSelectionInput(rawSelection)) {
+    return ctx.oauthError(res, 400, "invalid_request", "At least one source must be selected");
+  }
+  return renderHostedMcpPickerValidationPage(
+    req,
+    res,
+    ctx,
+    "Select at least one source before approving. Stream choices inside unchecked sources are ignored."
+  );
+}
+
 // Builds the package grant and issues the auth code redirect.
 // Extracted to reduce cognitive complexity of the POST handler.
 async function buildPackageAndRedirect(
@@ -549,7 +603,7 @@ export function mountAsAuthorize(app: AppLike, ctx: MountAsAuthorizeContext): vo
 
         const selections = ctx.selectionParsers.parseHostedMcpSelections(body.selection);
         if (selections.length === 0) {
-          return ctx.oauthError(res, 400, "invalid_request", "At least one source must be selected");
+          return rejectMissingHostedMcpSelection(req, res, ctx, body.selection);
         }
 
         // Per-source stream subsets submitted by the picker. Each entry is a

@@ -42,8 +42,10 @@ async function pickFreePort() {
   });
 }
 
-async function startReceiver(port, secret) {
-  const proc = spawn("node", [RECEIVER, "--port", String(port), "--secret", secret], {
+async function startReceiver(port, secret, { host } = {}) {
+  const args = [RECEIVER, "--port", String(port), "--secret", secret];
+  if (host) args.push("--host", host);
+  const proc = spawn("node", args, {
     env: { ...process.env },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -77,8 +79,24 @@ test("event-subscription-test-receiver: /health reports listening", async () => 
     assert.equal(res.status, 200);
     const body = await res.json();
     assert.equal(body.ok, true);
+    assert.equal(body.host, "127.0.0.1");
     assert.equal(body.listening, port);
     assert.equal(body.has_secret, true);
+  } finally {
+    await stopReceiver(proc);
+  }
+});
+
+test("event-subscription-test-receiver: --host controls bind address", async () => {
+  const port = await pickFreePort();
+  const proc = await startReceiver(port, SECRET, { host: "0.0.0.0" });
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/health`);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.ok, true);
+    assert.equal(body.host, "0.0.0.0");
+    assert.equal(body.listening, port);
   } finally {
     await stopReceiver(proc);
   }

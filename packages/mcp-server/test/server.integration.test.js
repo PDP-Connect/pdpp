@@ -98,6 +98,114 @@ function makeFakeRs() {
   return { fetch, calls };
 }
 
+function makeDiscoveryFakeRs() {
+  const fieldCapability = ({
+    type,
+    granted = true,
+    exact = false,
+    rangeOps = null,
+    lexical = false,
+    semantic = false,
+    aggregations = [],
+  }) => ({
+    ...(type ? { type } : {}),
+    schema: { type: type === 'timestamp' ? 'string' : type || 'string' },
+    granted,
+    exact_filter: { declared: exact, usable: exact && granted },
+    range_filter: rangeOps
+      ? { declared: true, usable: granted, operators: rangeOps }
+      : { declared: false, usable: false },
+    lexical_search: { declared: lexical, usable: lexical && granted },
+    semantic_search: { declared: semantic, usable: semantic && granted },
+    aggregation: Object.fromEntries(
+      ['sum', 'min', 'max', 'group_by', 'group_by_time', 'count_distinct'].map((name) => [
+        name,
+        { declared: aggregations.includes(name), usable: granted && aggregations.includes(name) },
+      ]),
+    ),
+  });
+
+  const SCHEMA = {
+    data: {
+      object: 'schema',
+      connector_count: 1,
+      stream_count: 1,
+      connectors: [
+        {
+          object: 'connector',
+          connector_id: 'claude-code',
+          source: { kind: 'connector', id: 'claude-code', display_name: 'Claude Code' },
+          stream_count: 1,
+          streams: [
+            {
+              object: 'stream_metadata',
+              name: 'conversations',
+              granted_connections: [{ connection_id: 'conn_work', display_name: 'Work Claude' }],
+              field_capabilities: {
+                id: fieldCapability({ type: 'string', exact: true }),
+                created_at: fieldCapability({
+                  type: 'timestamp',
+                  rangeOps: ['gte', 'lt'],
+                  aggregations: ['group_by_time'],
+                }),
+                title: fieldCapability({ type: 'text', lexical: true, semantic: true }),
+              },
+              expand_capabilities: [],
+            },
+          ],
+        },
+      ],
+    },
+  };
+  const STREAMS = {
+    object: 'list',
+    data: [
+      {
+        object: 'stream',
+        name: 'conversations',
+        record_count: 12,
+        connection_id: 'conn_work',
+        display_name: 'Work Claude',
+        source: {
+          grant_id: 'grant_pkg_1',
+          connector_key: 'claude-code',
+          connection_id: 'conn_work',
+          display_name: 'Work Claude',
+        },
+      },
+      {
+        object: 'stream',
+        name: 'messages',
+        record_count: 5,
+        connection_id: 'conn_personal',
+        display_name: 'Personal Claude',
+        source: {
+          grant_id: 'grant_pkg_2',
+          connector_key: 'claude-code',
+          connection_id: 'conn_personal',
+          display_name: 'Personal Claude',
+        },
+      },
+    ],
+  };
+
+  const fetch = async (urlInput) => {
+    const url = new URL(urlInput.toString());
+    if (url.pathname === '/v1/schema') {
+      return jsonResponse(SCHEMA);
+    }
+    if (url.pathname === '/v1/streams') {
+      return jsonResponse(STREAMS);
+    }
+    return new Response(JSON.stringify({ error: { type: 'not_found', code: 'not_found', message: url.pathname } }), {
+      status: 404,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+
+  return { fetch, schemaBody: SCHEMA, streamsBody: STREAMS };
+}
+
 function jsonResponse(body, init = {}) {
   return new Response(JSON.stringify(body), {
     status: 200,
@@ -178,6 +286,36 @@ test('schema tool returns RS schema verbatim under the scoped token', async () =
   const schemaCall = calls.find((call) => call.url.endsWith('/v1/schema'));
   assert.ok(schemaCall, 'must hit /v1/schema');
   assert.equal(schemaCall.auth, 'Bearer scoped-token');
+
+  await client.close();
+  await server.close();
+});
+
+test('discovery tools include parseable stream and schema facts in text content', async () => {
+  const { fetch, schemaBody, streamsBody } = makeDiscoveryFakeRs();
+  const { client, server } = await connectClient(fetch);
+
+  const schemaResult = await client.callTool({ name: 'schema', arguments: {} });
+  assert.equal(schemaResult.isError, undefined);
+  assert.deepEqual(schemaResult.structuredContent.data, schemaBody);
+  const schemaText = schemaResult.content[0].text;
+  assert.match(schemaText, /PDPP schema: connectors=1 streams=1/);
+  assert.match(schemaText, /stream name="conversations"/);
+  assert.match(schemaText, /connector_key="claude-code"/);
+  assert.match(schemaText, /display_name="Claude Code"/);
+  assert.match(schemaText, /connections=\{connection_id:conn_work,display_name:Work_Claude\}/);
+  assert.match(schemaText, /id\[type=string,granted=true,exact\]/);
+  assert.match(schemaText, /created_at\[type=timestamp,granted=true,range=gte\|lt,agg=group_by_time\]/);
+  assert.doesNotMatch(schemaText, /See structuredContent\.data/);
+
+  const streamsResult = await client.callTool({ name: 'list_streams', arguments: {} });
+  assert.equal(streamsResult.isError, undefined);
+  assert.deepEqual(streamsResult.structuredContent.data, streamsBody);
+  const streamsText = streamsResult.content[0].text;
+  assert.match(streamsText, /PDPP streams: 2 stream\(s\)/);
+  assert.match(streamsText, /stream name="conversations" connection_id="conn_work" connector_key="claude-code" display_name="Work Claude" record_count=12/);
+  assert.match(streamsText, /stream name="messages" connection_id="conn_personal" connector_key="claude-code" display_name="Personal Claude" record_count=5/);
+  assert.doesNotMatch(streamsText, /See structuredContent\.data/);
 
   await client.close();
   await server.close();
