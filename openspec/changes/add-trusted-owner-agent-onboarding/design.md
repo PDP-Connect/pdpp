@@ -126,9 +126,15 @@ Rationale: "all current and future data" is only practical if the agent learns i
 2. Add or adapt a local owner-agent runbook/skill so Daisy can follow the flow from an entrypoint URL.
 3. Add tests that owner-agent metadata is present only when the deployment can support owner-token onboarding.
 4. Add smoke tests proving owner bearer REST access still works and `/mcp` still rejects owner bearers.
-5. Add a live Daisy/local-agent acceptance run once metadata, docs, and non-printing token handoff are implemented.
+5. Add an executable Daisy-equivalent local-agent smoke once metadata, docs, and non-printing token handoff are implemented.
 
 Rollback is straightforward for the first tranche: remove the metadata advisory block and docs/runbook. Existing owner-token issuance and `/mcp` rejection behavior remain unchanged.
+
+## Acceptance Closeout
+
+The implementation now has a local reference-stack smoke in `packages/cli/test/owner-agent-reference-smoke.test.js` that starts from the RS entrypoint URL, discovers `pdpp_owner_agent_onboarding`, dynamically registers a public owner-agent client, runs device approval through an owner session, writes the Daisy-style credential file at `applications/daisy/.pi/agent/pdpp-owner-agent.json` with mode `0600`, introspects the credential without printing bearer material, reads `/v1/schema`, `/v1/streams`, and records as an owner, confirms `/mcp` rejects the owner bearer, then revokes the dynamic client and verifies the credential is inactive.
+
+No owner/live-only implementation residual remains for this change. Running the real Daisy process against `pdpp.vivid.fish` is still useful operator validation, but the acceptance contract for Daisy is the file/API contract proven by the Daisy-equivalent smoke and the runbook.
 
 ## Open Questions
 
