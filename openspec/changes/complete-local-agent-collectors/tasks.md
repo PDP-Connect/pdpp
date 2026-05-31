@@ -21,16 +21,16 @@
 
 ## 4. Stream Implementation
 
-- [ ] 4.1 Add Claude `file_history` collection with bounded scanning, stable ids, checkpointing, and fixture tests.
-- [ ] 4.2 Remove or hide Claude `context_mode` from the general connector surface; if discovered locally, account for it only through safe diagnostics or a future explicit opt-in source.
-- [ ] 4.3 Add Claude debug, downloads, cache, backup, and config inventory streams according to the privacy classification.
-- [ ] 4.4 Add Codex `history`, `session_index`, and reviewed `shell_snapshots` handling with fixture tests; keep Codex `memories` and `context_mode` out of the general connector surface unless a later review approves them.
-- [ ] 4.5 Add Codex `logs`, config, and cache inventory/redacted streams according to the privacy classification.
+- [x] 4.1 Add Claude `file_history` collection with bounded scanning, stable ids, checkpointing, and fixture tests. (`CLAUDE_CODE_KNOWN_LOCAL_STORES` declares `file_history` as `inventory_only`; `emitLocalInventoryStreams` emits stable `file_history:<sha256(claude_code:relpath)>` metadata records for the directory and bounded immediate entries without payload; inventory streams rebuild per run by design. Proven by `connectors/claude_code/source-preflight.test.ts` and `connectors/claude_code/source-inventory.fixture.test.ts`.)
+- [x] 4.2 Remove or hide Claude `context_mode` from the general connector surface; if discovered locally, account for it only through safe diagnostics or a future explicit opt-in source. (`context_mode` is `stream: null` in `CLAUDE_CODE_KNOWN_LOCAL_STORES`, absent from `manifests/claude_code.json`, and covered by `source-preflight.test.ts` as diagnostics-only with no STATE or RECORD payload.)
+- [x] 4.3 Add Claude debug, downloads, cache, backup, and config inventory streams according to the privacy classification. (`cache_inventory`, `backup_inventory`, and `config_inventory` are inventory-only; `debug_artifacts` and `downloads` are deferred metadata with no payload content. Fixture tests assert synthetic debug/download/cache/backup/config/auth/context-mode sentinels never appear in connector output.)
+- [x] 4.4 Add Codex `history`, `session_index`, and reviewed `shell_snapshots` handling with fixture tests; keep Codex `memories` and `context_mode` out of the general connector surface unless a later review approves them. (`CODEX_KNOWN_LOCAL_STORES` maps the three approved streams to inventory-only metadata and maps `memories`/`context_mode` to diagnostics-only `stream: null`; manifest and source-preflight tests prove they are not consentable/requestable streams.)
+- [x] 4.5 Add Codex `logs`, config, and cache inventory/redacted streams according to the privacy classification. (`logs` is a deferred metadata stream; `config_inventory` and `cache_inventory` are inventory-only. Fixture tests assert log/config/cache/auth sentinels never appear as payload.)
 
 ## 5. Diagnostics And Validation
 
-- [ ] 5.1 Emit a safe coverage diagnostic for every full local Claude Code and Codex run showing collected, inventory-only, excluded, deferred, missing, and unsupported stores.
+- [x] 5.1 Emit a safe coverage diagnostic for every full local Claude Code and Codex run showing collected, inventory-only, excluded, deferred, missing, and unsupported stores. (`coverage_diagnostics` is declared in both manifests, emitted from `buildLocalSourceInventory` when requested, and now included in the unscoped `@pdpp/local-collector run --connector claude_code|codex` defaults so standard full local runs request it automatically. Explicit `--streams` callers still opt into the exact stream list they pass.)
 - [ ] 5.2 Make scheduler/run success distinguish declared-stream success from completeness status.
 - [ ] 5.3 Add dashboard or `_ref` diagnostics that expose local completeness without leaking raw local paths or secrets.
-- [ ] 5.4 Run `openspec validate complete-local-agent-collectors --strict`.
-- [ ] 5.5 Run relevant connector tests, source-preflight tests, scheduler tests, and multi-device ingest tests.
+- [x] 5.4 Run `openspec validate complete-local-agent-collectors --strict`. (Passed 2026-05-31 after Section 4/5 reconciliation.)
+- [x] 5.5 Run relevant connector tests, source-preflight tests, scheduler tests, and multi-device ingest tests. (Passed 2026-05-31: local source-inventory/source-preflight + collector-runner CLI defaults 28/28; polyfill collector-runner/local-device/scheduler tests 72/72; reference device-exporter + connector-instance admission suites 30/30.)
