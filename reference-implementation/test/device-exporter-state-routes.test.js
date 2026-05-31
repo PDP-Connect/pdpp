@@ -351,6 +351,65 @@ test('startup migrates legacy local-device source namespaces to connector-instan
   }
 });
 
+test('startup migration fails clearly when a legacy local-device source maps to more than one connector instance', async () => {
+  // complete-local-agent-collectors task 3.3 + spec scenario "Existing
+  // single-device state is migrated → connector-only compatibility operations
+  // SHALL fail clearly if more than one matching instance exists."
+  //
+  // The deterministic backfill (`migrateLocalDeviceConnectorInstances`) can
+  // safely re-home a legacy `local-device:<id>:<source>` namespace into one
+  // canonical connector instance ONLY when the legacy rows agree on a single
+  // connector_instance_id (or the device_source_instances row already records
+  // one). If the device source row has no connector_instance_id AND the legacy
+  // rows disagree, re-homing them into a single instance would silently merge
+  // two distinct collection histories. The migration MUST refuse rather than
+  // guess — this proves it does.
+  const dir = await mkdtemp(join(tmpdir(), 'pdpp-local-device-ambiguous-'));
+  const dbPath = join(dir, 'pdpp.sqlite');
+  const sourceInstanceId = 'src_ambiguous_legacy';
+  const oldConnectorId = legacyLocalDeviceConnectorId('claude_code', sourceInstanceId);
+  try {
+    initDb(dbPath, { quiet: true });
+    const db = getDb();
+    const now = '2026-05-01T00:00:00.000Z';
+    db.prepare(
+      `INSERT INTO device_exporters(device_id, owner_subject_id, display_name, status, created_at, updated_at)
+       VALUES(?, ?, ?, 'active', ?, ?)`,
+    ).run('dev_ambiguous', 'owner_ref', 'Ambiguous Laptop', now, now);
+    // device_source_instances.connector_instance_id is NULL — the pre-contract
+    // shape that forces the migration to derive identity from the legacy rows.
+    db.prepare(
+      `INSERT INTO device_source_instances(source_instance_id, device_id, connector_id, connector_instance_id, local_binding_id, display_name, status, created_at, updated_at)
+       VALUES(?, ?, ?, NULL, ?, ?, 'active', ?, ?)`,
+    ).run(sourceInstanceId, 'dev_ambiguous', 'claude_code', 'laptop-a', 'Legacy Claude Code', now, now);
+    // Two legacy state rows under the same local-device namespace but DIFFERENT
+    // connector_instance_ids: the migration cannot pick one without losing data.
+    db.prepare(
+      `INSERT INTO connector_state(connector_id, connector_instance_id, stream, state_json, updated_at)
+       VALUES(?, ?, 'messages', ?, ?)`,
+    ).run(oldConnectorId, 'cin_legacy_one', JSON.stringify({ cursor: 'one' }), now);
+    db.prepare(
+      `INSERT INTO connector_state(connector_id, connector_instance_id, stream, state_json, updated_at)
+       VALUES(?, ?, 'sessions', ?, ?)`,
+    ).run(oldConnectorId, 'cin_legacy_two', JSON.stringify({ cursor: 'two' }), now);
+    closeDb();
+
+    assert.throws(
+      () => initDb(dbPath, { quiet: true }),
+      (err) =>
+        err instanceof Error &&
+        /Cannot migrate local-device source_instance_id/.test(err.message) &&
+        /multiple connector_instance_ids/.test(err.message) &&
+        err.message.includes('cin_legacy_one') &&
+        err.message.includes('cin_legacy_two'),
+      'startup migration must refuse an ambiguous legacy local-device namespace rather than silently merge it',
+    );
+  } finally {
+    closeDb();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('Owner-token bearer is rejected by the device state routes', async () => {
   await withServer(async ({ asUrl }) => {
     const device = await enrollDevice(asUrl, 'laptop-a');

@@ -281,6 +281,101 @@ test('two claude-code source homes ingest the same connector-local key without o
   });
 });
 
+async function putSourceInstanceState(asUrl, device, state) {
+  return fetch(
+    `${asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/source-instances/${encodeURIComponent(device.source_instance_id)}/state`,
+    {
+      method: 'PUT',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json', ...authHeaders(device.device_token) },
+      body: JSON.stringify({ state }),
+    },
+  ).then(async (resp) => ({ body: await resp.json(), status: resp.status }));
+}
+
+async function getSourceInstanceState(asUrl, device, tokenOverride) {
+  return fetch(
+    `${asUrl}/_ref/device-exporters/${encodeURIComponent(device.device_id)}/source-instances/${encodeURIComponent(device.source_instance_id)}/state`,
+    { headers: { Accept: 'application/json', ...authHeaders(tokenOverride ?? device.device_token) } },
+  ).then(async (resp) => ({ body: await resp.json(), status: resp.status }));
+}
+
+test('two source homes keep collector state/checkpoints isolated by connector instance', async () => {
+  // complete-local-agent-collectors tasks 3.1 (state gate) + 3.2 (checkpoint
+  // namespace). Two source homes of the same connector type legitimately use
+  // identical connector-local stream cursor keys (e.g. both track a `sessions`
+  // checkpoint). The device state PUT/GET routes resolve the authorized
+  // connector instance from (device, source_instance) and persist under the
+  // `(connector_instance_id, stream)` namespace, so one home's checkpoint can
+  // never read or clobber the other's even though the connector-local stream
+  // keys collide. This proves the state/checkpoint half of the connector-
+  // instance gate that the records path already proves for ingest.
+  await withServer(async ({ asUrl }) => {
+    const homeA = await enrollDevice(asUrl, 'laptop-state-a', 'claude-code');
+    const homeB = await enrollDevice(asUrl, 'desktop-state-b', 'claude-code');
+    assert.notEqual(homeA.connector_instance_id, homeB.connector_instance_id);
+
+    // Both homes start with empty state — neither can see the other before
+    // either has written anything.
+    const emptyA = await getSourceInstanceState(asUrl, homeA);
+    assert.equal(emptyA.status, 200);
+    assert.deepEqual(emptyA.body.state, {});
+    assert.equal(emptyA.body.connector_instance_id, homeA.connector_instance_id);
+
+    // Each home checkpoints the SAME connector-local stream cursor keys with
+    // its own values.
+    const putA = await putSourceInstanceState(asUrl, homeA, {
+      sessions: 'cursor-A-2026-05-31',
+      skills: 'skills-cursor-A',
+    });
+    assert.equal(putA.status, 200, JSON.stringify(putA.body));
+    assert.equal(putA.body.connector_instance_id, homeA.connector_instance_id);
+    assert.equal(putA.body.state.sessions, 'cursor-A-2026-05-31');
+
+    const putB = await putSourceInstanceState(asUrl, homeB, {
+      sessions: 'cursor-B-2026-05-31',
+      skills: 'skills-cursor-B',
+    });
+    assert.equal(putB.status, 200, JSON.stringify(putB.body));
+    assert.equal(putB.body.connector_instance_id, homeB.connector_instance_id);
+    assert.equal(putB.body.state.sessions, 'cursor-B-2026-05-31');
+
+    // Reading each home back returns only that home's checkpoints — no bleed
+    // across the shared connector type / shared stream keys.
+    const readA = await getSourceInstanceState(asUrl, homeA);
+    assert.equal(readA.body.state.sessions, 'cursor-A-2026-05-31');
+    assert.equal(readA.body.state.skills, 'skills-cursor-A');
+    const readB = await getSourceInstanceState(asUrl, homeB);
+    assert.equal(readB.body.state.sessions, 'cursor-B-2026-05-31');
+    assert.equal(readB.body.state.skills, 'skills-cursor-B');
+
+    // Storage is namespaced by connector_instance_id, not connector_id: two
+    // rows for the same (connector_id, stream) survive side by side.
+    const sessionRows = getDb()
+      .prepare(
+        `SELECT connector_instance_id, state_json
+           FROM connector_state
+          WHERE connector_id = ? AND stream = ?
+          ORDER BY connector_instance_id`,
+      )
+      .all('claude-code', 'sessions');
+    assert.equal(sessionRows.length, 2, 'both source homes must persist their own sessions checkpoint');
+    assert.deepEqual(
+      new Map(sessionRows.map((row) => [row.connector_instance_id, JSON.parse(row.state_json)])),
+      new Map([
+        [homeA.connector_instance_id, 'cursor-A-2026-05-31'],
+        [homeB.connector_instance_id, 'cursor-B-2026-05-31'],
+      ]),
+      'neither source home may overwrite the other\'s checkpoint',
+    );
+
+    // A device credential is scoped to its own device: home A's token cannot
+    // read home B's source-instance state.
+    const crossDevice = await getSourceInstanceState(asUrl, homeB, homeA.device_token);
+    assert.equal(crossDevice.status, 403);
+    assert.equal(crossDevice.body.error.code, 'permission_error');
+  });
+});
+
 test('re-enrolling the same connector + local_binding_name resumes one stable connector_instance', async () => {
   // Regression: source_binding_key for local-device instances used to
   // include the per-enrollment device_id and source_instance_id, so a
