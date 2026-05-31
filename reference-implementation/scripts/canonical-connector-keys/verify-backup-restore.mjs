@@ -161,7 +161,7 @@ async function main() {
          JOIN connector_instances ci ON ci.connector_instance_id = r.connector_instance_id
         WHERE r.connector_id = ci.connector_id`);
     // After migration both sides agree on canonical key for gmail/codex/spotify.
-    check(`records join instances on agreeing canonical connector_id (>=4)`, hydrated >= 4, `joined=${hydrated}`);
+    check(`all 4 records join instances on agreeing canonical connector_id`, hydrated === 4, `joined=${hydrated}`);
     // Record payload still readable & unchanged.
     const subj = await scalar(pool,
       `SELECT record_json->>'subject' FROM records WHERE connector_id='gmail' AND record_key='msg_1'`);

@@ -49,7 +49,8 @@ fixture mutation.
 8. `cli.mjs write --apply` against the restored DB.
 9. `verify-backup-restore.mjs` asserts the §3.4 invariants.
 10. `cli.mjs write --apply` a second time — proves idempotency (no rewrites).
-11. Drops both disposable databases.
+11. `cli.mjs write --apply --include-backup-tables` — proves backup-tier rows are rewritten only under explicit opt-in.
+12. Drops both disposable databases.
 
 Database admin + dump/restore run **inside the container** so the DB
 password never reaches host logs. The migration CLI and verifier run on
@@ -79,6 +80,7 @@ Last full run: **38/38 verification checks + idempotency passed**.
 - records hydrate under the canonical key and join their instances; record
   payloads, version counters, blob bindings intact;
 - backup-tier tables left untouched by default;
+- backup-tier tables rewritten only when `--include-backup-tables` is explicitly passed;
 - the migration is idempotent.
 
 **Does NOT prove** (residual for a real operator-backup run):

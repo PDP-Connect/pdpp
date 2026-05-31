@@ -64,6 +64,18 @@ DUMP_FILE="cck-seed.dump"   # path inside the container's /tmp
 
 log() { printf '\n=== %s ===\n' "$*"; }
 
+require_pg_identifier() {
+  if [[ ! "$2" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+    echo "$1 must be a simple PostgreSQL identifier, got: $2" >&2
+    exit 1
+  fi
+}
+
+require_pg_identifier LIVE_DB "$LIVE_DB"
+require_pg_identifier SEED_DB "$SEED_DB"
+require_pg_identifier RESTORED_DB "$RESTORED_DB"
+require_pg_identifier PG_USER "$PG_USER"
+
 # Password is read into a variable and never echoed.
 PGPW="$(docker inspect "$PG_CONTAINER" --format '{{range .Config.Env}}{{println .}}{{end}}' \
   | sed -n 's/^POSTGRES_PASSWORD=//p')"
@@ -125,7 +137,7 @@ log "6. restore backup into fresh $RESTORED_DB"
 docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -c "DROP DATABASE IF EXISTS $RESTORED_DB WITH (FORCE);"
 docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d postgres -c "CREATE DATABASE $RESTORED_DB;"
 docker exec "$PG_CONTAINER" sh -c \
-  "pg_restore -U $PG_USER -d $RESTORED_DB --no-owner --no-privileges /tmp/$DUMP_FILE" 2>&1 | tail -3 || true
+  "pg_restore -U $PG_USER -d $RESTORED_DB --no-owner --no-privileges /tmp/$DUMP_FILE" 2>&1 | tail -3
 echo "restore complete"
 
 # ----------------------------------------------------------------------
@@ -156,5 +168,29 @@ log "10. idempotency: write --apply a SECOND time (plan must be empty)"
       if (cols!==0 || jsonb!==0) { console.error("NOT IDEMPOTENT: second run rewrote rows"); process.exit(1); }
       console.log("PASS idempotent: second run rewrote nothing");
     });'
+
+log "11. backup-tier opt-in rewrites backup table only when explicitly requested"
+( cd "$RI_DIR" && PDPP_STORAGE_BACKEND=postgres PDPP_DATABASE_URL="$HOST_URL" \
+  node scripts/canonical-connector-keys/cli.mjs write --apply --include-backup-tables --json ) \
+  | node -e '
+    let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
+      const r=JSON.parse(s);
+      const result=r.applied?.applied ?? r.applied;
+      const backupColumns=(result?.columns??[]).filter((c)=>c.table==="backup_20260601_seed_records");
+      const rewrote=backupColumns.some((c)=>
+        c.oldValue==="https://registry.pdpp.org/connectors/gmail" &&
+        c.newValue==="gmail" &&
+        c.actualRows===1
+      );
+      console.log(`backup-tier column rewrites: ${backupColumns.length}`);
+      if (!rewrote) { console.error("backup-tier opt-in did not rewrite expected row"); process.exit(1); }
+      console.log("PASS backup-tier opt-in rewrite");
+    });'
+backup_after="$(docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d "$RESTORED_DB" -tAc \
+  "SELECT connector_id FROM backup_20260601_seed_records WHERE id=1;")"
+if [ "$backup_after" != "gmail" ]; then
+  echo "backup-tier opt-in verification failed: expected gmail, got $backup_after" >&2
+  exit 1
+fi
 
 log "ALL §3.4 STEPS PASSED"
