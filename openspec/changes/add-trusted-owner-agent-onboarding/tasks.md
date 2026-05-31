@@ -6,10 +6,10 @@
 
 ## 2. Discovery Metadata
 
-- [ ] 2.1 Extend the reference-contract metadata schemas to allow a `pdpp_owner_agent_onboarding` advisory block with owner-agent profile, approval, token, schema, query, revocation, and event-subscription links.
-- [ ] 2.2 Emit the owner-agent advisory block from `GET /` and `GET /.well-known/oauth-protected-resource` only when owner-agent onboarding is safely configured.
-- [ ] 2.3 Preserve forwarded-origin safety: owner-agent metadata must use the caller-visible public origin and omit the block rather than advertising an untrusted host.
-- [ ] 2.4 Add metadata tests covering present, omitted, and forwarded-origin cases.
+- [x] 2.1 Extend the reference-contract metadata schemas to allow a `pdpp_owner_agent_onboarding` advisory block with owner-agent profile, approval, token, schema, query, revocation, and event-subscription links.
+- [x] 2.2 Emit the owner-agent advisory block from `GET /` and `GET /.well-known/oauth-protected-resource` only when owner-agent onboarding is safely configured.
+- [x] 2.3 Preserve forwarded-origin safety: owner-agent metadata must use the caller-visible public origin and omit the block rather than advertising an untrusted host.
+- [x] 2.4 Add metadata tests covering present, omitted, and forwarded-origin cases.
 
 ## 3. Approval And Credential Handoff
 
