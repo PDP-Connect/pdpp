@@ -119,9 +119,10 @@ test('WarningSchema accepts well-formed structured warnings', () => {
       code: 'source_skipped_not_applicable',
       message: 'spotify did not contribute to `messages`',
       detail: { connector_id: 'spotify' },
+      param: 'connection_id',
       connection_id: 'cin_abc',
     },
-    'with detail and connection_id',
+    'with detail, param, and connection_id',
   );
   assertInvalid(validate, { code: 'count_downgraded' }, 'missing message');
   assertInvalid(

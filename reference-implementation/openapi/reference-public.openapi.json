@@ -5623,6 +5623,9 @@
                                 "type": "object",
                                 "additionalProperties": true
                               },
+                              "param": {
+                                "type": "string"
+                              },
                               "field": {
                                 "type": "string"
                               },

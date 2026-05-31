@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { listOperations, validateRequest } from '../src/index.ts';
+import { listOperations, validateRequest, validateResponse } from '../src/index.ts';
 import { generateDocs } from '../src/docs/generate.js';
 import { generateOpenApi } from '../src/openapi/index.js';
 import { publicManifests } from '../src/public/index.ts';
@@ -72,6 +72,28 @@ test('request validators accept the shipped public flow shapes', () => {
   });
   assert.equal(introspectionRequest.ok, false);
   assert.ok(introspectionRequest.errors.some((error) => error.where === 'body'));
+});
+
+test('listRecords response validator accepts runtime warning parameters', () => {
+  const result = validateResponse('listRecords', {
+    status: 200,
+    body: {
+      object: 'list',
+      has_more: false,
+      data: [],
+      meta: {
+        warnings: [
+          {
+            code: 'deprecated_alias_used',
+            message: 'connector_instance_id is deprecated; use connection_id',
+            param: 'connector_instance_id',
+          },
+        ],
+      },
+    },
+  });
+
+  assert.deepEqual(result, { ok: true, skipped: false });
 });
 
 test('OpenAPI and docs generation include the auth/control routes alongside records', () => {

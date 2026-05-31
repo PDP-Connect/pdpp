@@ -20,9 +20,7 @@
 // runtime behavior, and doesn't smuggle `any` or `as unknown as` into
 // the surface.
 import { createRequire } from "node:module";
-// biome-ignore lint/correctness/noUnresolvedImports: ajv is declared in package.json; Biome's resolver doesn't follow its CJS conditional exports
 import type { Ajv as AjvClass, AnySchema, ErrorObject, Plugin, ValidateFunction } from "ajv";
-// biome-ignore lint/correctness/noUnresolvedImports: ajv-formats is declared in package.json; Biome's resolver doesn't follow its CJS conditional exports
 import type { FormatsPluginOptions } from "ajv-formats";
 import type { JsonSchema, RouteManifest } from "./common/index.ts";
 // The public / reference modules are still JS; their arrays structurally
@@ -130,10 +128,16 @@ const OPAQUE_BODY_CONTENT_TYPES = new Set(["application/octet-stream", "applicat
 
 function shouldCompileBodyValidator(manifest: RouteManifest): boolean {
   const body = manifest.request?.body;
-  if (!body) return false;
-  if (!body.schema) return false;
+  if (!body) {
+    return false;
+  }
+  if (!body.schema) {
+    return false;
+  }
   const contentType = body.contentType?.toLowerCase();
-  if (contentType && OPAQUE_BODY_CONTENT_TYPES.has(contentType)) return false;
+  if (contentType && OPAQUE_BODY_CONTENT_TYPES.has(contentType)) {
+    return false;
+  }
   return true;
 }
 

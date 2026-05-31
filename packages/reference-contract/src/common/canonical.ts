@@ -165,6 +165,10 @@ export const WarningSchema: JsonSchema = {
     // Runtime is responsible for documenting per-code shapes; the wire
     // contract here just guarantees the envelope.
     detail: { type: "object", additionalProperties: true },
+    // Request parameter responsible for the warning, when applicable. Existing
+    // read-path warnings use this for deprecated aliases, fan-in pagination,
+    // and count downgrades.
+    param: { type: "string" },
     // When the warning relates to a single field, the owning field path.
     field: { type: "string" },
     // When the warning relates to a particular connection, the
