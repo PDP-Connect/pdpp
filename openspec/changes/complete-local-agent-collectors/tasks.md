@@ -14,10 +14,10 @@
 
 ## 3. Connector Instances And Multi-Device
 
-- [ ] 3.1 Bind each local source home to a connector instance before accepting new local collector records, state, blobs, diagnostics, or schedules.
-- [ ] 3.2 Namespace local record ids and checkpoints by connector instance so two devices cannot collide on skills, prompts, rules, sessions, or local filenames.
-- [ ] 3.3 Add migration for existing single-device Claude Code and Codex state into one connector instance per owner, connector type, and source home.
-- [ ] 3.4 Add tests proving two Claude or two Codex source homes can ingest the same connector-local keys without overwriting each other.
+- [ ] 3.1 Bind each local source home to a connector instance before accepting new local collector records, state, blobs, diagnostics, or schedules. (PARTIAL — device-exporter enroll mints a `source_instance_id`+`connector_instance_id` per source home, and the local-device exporter is now connector-agnostic so Claude Code records bind through the same envelope path as Codex. Remaining: prove or implement the same connector-instance gate for any local state/checkpoint, blob, diagnostic, schedule, and active-run lease paths before checking this box.)
+- [ ] 3.2 Namespace local record ids and checkpoints by connector instance so two devices cannot collide on skills, prompts, rules, sessions, or local filenames. (PARTIAL — records persist under `UNIQUE(connector_instance_id, stream, record_key)`, and the envelope carries `device_id`+`source_instance_id` alongside the non-unique connector-local `record_key`. Remaining: prove or implement checkpoint/state identity under the same connector-instance namespace before checking this box.)
+- [ ] 3.3 Add migration for existing single-device Claude Code and Codex state into one connector instance per owner, connector type, and source home. (PARTIAL — compatibility path exists: re-enrolling the same `(owner, connector, local_binding_name)` resumes one stable `connector_instance_id` rather than forking, proven by `device-exporter-routes.test.js` "re-enrolling … resumes one stable connector_instance". A backfill that re-homes pre-existing single-device records emitted before the connector-instance contract is not yet implemented; left as residual.)
+- [x] 3.4 Add tests proving two Claude or two Codex source homes can ingest the same connector-local keys without overwriting each other. (Codex: `device-exporter-routes.test.js` two-device `same-key` test. Claude Code: new `device-exporter-routes.test.js` canonical `claude-code` route+storage test, plus connector+envelope-level `packages/polyfill-connectors/connectors/claude_code/multidevice-binding.fixture.test.ts` proving both fixture homes emit the identical `skills:demo-skill` key yet stay isolated per source instance.)
 
 ## 4. Stream Implementation
 

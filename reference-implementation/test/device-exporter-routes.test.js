@@ -46,9 +46,9 @@ async function postJson(url, body, headers = {}) {
   return { body: parsed, status: resp.status };
 }
 
-async function enrollDevice(asUrl, localBindingName) {
+async function enrollDevice(asUrl, localBindingName, connectorId = 'codex') {
   const codeResp = await postJson(`${asUrl}/_ref/device-exporters/enrollment-codes`, {
-    connector_id: 'codex',
+    connector_id: connectorId,
     local_binding_name: localBindingName,
   });
   assert.equal(codeResp.status, 201);
@@ -206,6 +206,78 @@ test('device exporter routes enroll, heartbeat, ingest idempotently, isolate sou
       authHeaders(first.device_token),
     );
     assert.equal(revokedHeartbeat.status, 401);
+  });
+});
+
+test('two claude-code source homes ingest the same connector-local key without overwriting each other', async () => {
+  // complete-local-agent-collectors task 3.4 (Claude Code half). Two Claude
+  // Code source homes for the same owner legitimately share connector-local
+  // record keys (e.g. a skill named `demo-skill` → record key
+  // `skills:demo-skill`). Each source home enrolls under its own
+  // local_binding_name, resolving to a distinct connector_instance_id, so the
+  // store's (connector_instance_id, stream, record_key) unique key keeps both
+  // rows. The connector_id is canonicalized to `claude-code` on enrollment.
+  await withServer(async ({ asUrl }) => {
+    const homeA = await enrollDevice(asUrl, 'laptop-claude-a', 'claude-code');
+    const homeB = await enrollDevice(asUrl, 'desktop-claude-b', 'claude-code');
+    assert.equal(homeA.connector_id, 'claude-code');
+    assert.equal(homeB.connector_id, 'claude-code');
+    assert.notEqual(homeA.source_instance_id, homeB.source_instance_id);
+    assert.notEqual(homeA.connector_instance_id, homeB.connector_instance_id);
+
+    // Both homes ingest a record under the identical connector-local key
+    // `skills:demo-skill`, mirroring what the Claude Code connector emits for
+    // a skill of the same name present on both machines.
+    const makeSkillBatch = (device, batchId, body) => ({
+      batch_id: batchId,
+      batch_seq: 1,
+      body_hash: `hash-${batchId}`,
+      connector_id: device.connector_id,
+      device_id: device.device_id,
+      records: [
+        {
+          data: { id: 'skills:demo-skill', name: 'Demo Skill', content: body },
+          emitted_at: '2026-05-31T12:00:00.000Z',
+          record_key: 'skills:demo-skill',
+          stream: 'skills',
+        },
+      ],
+      source_instance_id: device.source_instance_id,
+    });
+
+    const ingestA = await postJson(
+      `${asUrl}/_ref/device-exporters/${encodeURIComponent(homeA.device_id)}/ingest-batches`,
+      makeSkillBatch(homeA, 'claude-batch-a', 'Device A skill body'),
+      authHeaders(homeA.device_token),
+    );
+    assert.equal(ingestA.status, 201);
+    assert.equal(ingestA.body.connector_instance_id, homeA.connector_instance_id);
+
+    const ingestB = await postJson(
+      `${asUrl}/_ref/device-exporters/${encodeURIComponent(homeB.device_id)}/ingest-batches`,
+      makeSkillBatch(homeB, 'claude-batch-b', 'Device B skill body'),
+      authHeaders(homeB.device_token),
+    );
+    assert.equal(ingestB.status, 201);
+    assert.equal(ingestB.body.connector_instance_id, homeB.connector_instance_id);
+
+    // Both source homes' records coexist under the canonical claude-code
+    // storage key, keyed apart by connector_instance_id.
+    const rows = getDb().prepare(
+      `SELECT connector_instance_id, record_json
+         FROM records
+        WHERE connector_id = ? AND stream = ? AND record_key = ?
+        ORDER BY connector_instance_id`,
+    ).all('claude-code', 'skills', 'skills:demo-skill');
+    assert.equal(rows.length, 2, 'both source homes must persist their own skills:demo-skill row');
+    assert.deepEqual(
+      new Map(rows.map((row) => [row.connector_instance_id, JSON.parse(row.record_json).content])),
+      new Map([
+        [homeA.connector_instance_id, 'Device A skill body'],
+        [homeB.connector_instance_id, 'Device B skill body'],
+      ]),
+      'neither source home may overwrite the other',
+    );
   });
 });
 

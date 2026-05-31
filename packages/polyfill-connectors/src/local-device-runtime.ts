@@ -13,9 +13,57 @@ import {
 import { LocalDeviceQueue, type LocalDeviceQueueItem } from "./local-device-queue.ts";
 
 export const CODEX_CONNECTOR_ID = "codex";
+export const CLAUDE_CODE_CONNECTOR_ID = "claude-code";
 export const DEFAULT_CODEX_STREAMS = ["sessions", "messages", "function_calls", "rules", "prompts", "skills"] as const;
+export const DEFAULT_CLAUDE_CODE_STREAMS = [
+  "sessions",
+  "messages",
+  "attachments",
+  "memory_notes",
+  "skills",
+  "slash_commands",
+] as const;
 const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const REPO_ROOT = join(PACKAGE_ROOT, "..", "..");
+
+/**
+ * Per-connector wiring for the local-device exporter. The device-envelope
+ * export path (enroll → spawn connector → wrap RECORDs in
+ * {device_id, source_instance_id, record_key} envelopes → ingest) is
+ * connector-agnostic; this table is the only connector-specific part.
+ *
+ * The default child command is `tsx <entrypoint>`; the connector itself owns
+ * its source-home resolution from env (CODEX_HOME, CLAUDE_CODE_HOME, …), so
+ * binding a source home to a connector instance is a matter of running the
+ * exporter once per (source_instance_id, source-home env) pair.
+ */
+export interface LocalDeviceConnectorProfile {
+  readonly connectorId: string;
+  readonly defaultStreams: readonly string[];
+  readonly entrypoint: string;
+}
+
+export const LOCAL_DEVICE_CONNECTOR_PROFILES: Readonly<Record<string, LocalDeviceConnectorProfile>> = {
+  [CODEX_CONNECTOR_ID]: {
+    connectorId: CODEX_CONNECTOR_ID,
+    defaultStreams: DEFAULT_CODEX_STREAMS,
+    entrypoint: "connectors/codex/index.ts",
+  },
+  [CLAUDE_CODE_CONNECTOR_ID]: {
+    connectorId: CLAUDE_CODE_CONNECTOR_ID,
+    defaultStreams: DEFAULT_CLAUDE_CODE_STREAMS,
+    entrypoint: "connectors/claude_code/index.ts",
+  },
+};
+
+export function resolveLocalDeviceConnectorProfile(connectorId: string): LocalDeviceConnectorProfile {
+  const profile = LOCAL_DEVICE_CONNECTOR_PROFILES[connectorId];
+  if (!profile) {
+    const known = Object.keys(LOCAL_DEVICE_CONNECTOR_PROFILES).join(", ");
+    throw new Error(`unsupported local-device connector "${connectorId}" (known: ${known})`);
+  }
+  return profile;
+}
 
 export interface LocalDeviceEnrollmentConfig {
   baseUrl: string;
@@ -26,9 +74,24 @@ export interface LocalDeviceEnrollmentConfig {
 export interface LocalDeviceRuntimeConfig {
   baseUrl: string;
   batchSize?: number;
+  /** @deprecated use connectorArgs */
   codexArgs?: string[];
+  /** @deprecated use connectorCommand */
   codexCommand?: string;
+  /** @deprecated use connectorEnv */
   codexEnv?: NodeJS.ProcessEnv;
+  /** Override the child args (defaults to the profile entrypoint). */
+  connectorArgs?: string[];
+  /** Override the child command (defaults to `tsx`). */
+  connectorCommand?: string;
+  /** Connector child env (e.g. CLAUDE_CODE_HOME / CODEX_HOME source-home binding). */
+  connectorEnv?: NodeJS.ProcessEnv;
+  /**
+   * Connector to export. Defaults to {@link CODEX_CONNECTOR_ID} for backward
+   * compatibility with the original Codex-only exporter. Claude Code source
+   * homes export through this same path via {@link CLAUDE_CODE_CONNECTOR_ID}.
+   */
+  connectorId?: string;
   deviceId: string;
   deviceToken: string;
   queuePath: string;
@@ -51,7 +114,18 @@ export async function enrollLocalDevice(config: LocalDeviceEnrollmentConfig): Pr
   });
 }
 
-export async function runCodexLocalDeviceExporter(config: LocalDeviceRuntimeConfig): Promise<LocalDeviceRuntimeResult> {
+/**
+ * Run the local-device exporter for any supported connector. Binds the given
+ * source home (carried in `connectorEnv`) to `sourceInstanceId`: every RECORD
+ * the connector emits is wrapped in an envelope tagged with that
+ * source-instance + device identity before it is queued and ingested, so two
+ * source homes that share connector-local record keys never collide — the
+ * reference store keys records by `(connector_instance_id, stream,
+ * record_key)`, and each enrolled source home resolves to a distinct
+ * connector instance.
+ */
+export async function runLocalDeviceExporter(config: LocalDeviceRuntimeConfig): Promise<LocalDeviceRuntimeResult> {
+  const profile = resolveLocalDeviceConnectorProfile(config.connectorId ?? CODEX_CONNECTOR_ID);
   const batchSize = config.batchSize ?? 100;
   const queue = new LocalDeviceQueue({ path: config.queuePath });
   const client = new LocalDeviceClient({
@@ -61,13 +135,13 @@ export async function runCodexLocalDeviceExporter(config: LocalDeviceRuntimeConf
   });
 
   await client.heartbeat({
-    connector_id: CODEX_CONNECTOR_ID,
+    connector_id: profile.connectorId,
     records_pending: (await queue.list()).filter((item) => item.status !== "sent").length,
     source_instance_id: config.sourceInstanceId,
     status: "starting",
   });
 
-  const messages = await collectCodexMessages(config);
+  const messages = await collectConnectorMessages(profile, config);
   const records = messages.filter((msg): msg is Extract<EmittedMessage, { type: "RECORD" }> => msg.type === "RECORD");
   const done =
     messages.findLast((msg): msg is Extract<EmittedMessage, { type: "DONE" }> => msg.type === "DONE") ?? null;
@@ -81,7 +155,7 @@ export async function runCodexLocalDeviceExporter(config: LocalDeviceRuntimeConf
       buildLocalDeviceRecordEnvelope({
         batchId,
         batchSeq,
-        connectorId: CODEX_CONNECTOR_ID,
+        connectorId: profile.connectorId,
         deviceId: config.deviceId,
         record,
         sourceInstanceId: config.sourceInstanceId,
@@ -95,7 +169,7 @@ export async function runCodexLocalDeviceExporter(config: LocalDeviceRuntimeConf
 
   const sentBatches = await drainLocalDeviceQueue({ client, queue });
   await client.heartbeat({
-    connector_id: CODEX_CONNECTOR_ID,
+    connector_id: profile.connectorId,
     records_pending: (await queue.list()).filter((item) => item.status !== "sent").length,
     source_instance_id: config.sourceInstanceId,
     status: "healthy",
@@ -104,27 +178,39 @@ export async function runCodexLocalDeviceExporter(config: LocalDeviceRuntimeConf
   return { done, enqueuedBatches, recordsQueued, sentBatches };
 }
 
-export function buildCodexStartMessage(streams: readonly string[] = DEFAULT_CODEX_STREAMS): StartMessage {
+/** @deprecated use {@link runLocalDeviceExporter}; retained for back-compat. */
+export function runCodexLocalDeviceExporter(config: LocalDeviceRuntimeConfig): Promise<LocalDeviceRuntimeResult> {
+  return runLocalDeviceExporter({ ...config, connectorId: config.connectorId ?? CODEX_CONNECTOR_ID });
+}
+
+export function buildLocalDeviceStartMessage(streams: readonly string[]): StartMessage {
   return {
     scope: { streams: streams.map((name): StreamScope => ({ name })) },
     type: "START",
   };
 }
 
+/** @deprecated use {@link buildLocalDeviceStartMessage}. */
+export function buildCodexStartMessage(streams: readonly string[] = DEFAULT_CODEX_STREAMS): StartMessage {
+  return buildLocalDeviceStartMessage(streams);
+}
+
 export function transformRecordsToLocalDeviceEnvelopes(input: {
   batchId: string;
   batchSeq: number;
+  connectorId?: string;
   deviceId: string;
   messages: readonly EmittedMessage[];
   sourceInstanceId: string;
 }): LocalDeviceRecordEnvelope[] {
+  const connectorId = input.connectorId ?? CODEX_CONNECTOR_ID;
   return input.messages
     .filter((msg): msg is Extract<EmittedMessage, { type: "RECORD" }> => msg.type === "RECORD")
     .map((record) =>
       buildLocalDeviceRecordEnvelope({
         batchId: input.batchId,
         batchSeq: input.batchSeq,
-        connectorId: CODEX_CONNECTOR_ID,
+        connectorId,
         deviceId: input.deviceId,
         record,
         sourceInstanceId: input.sourceInstanceId,
@@ -177,8 +263,12 @@ async function sendQueueItem(
   });
 }
 
-async function collectCodexMessages(config: LocalDeviceRuntimeConfig): Promise<EmittedMessage[]> {
-  const child = spawnCodex(config);
+async function collectConnectorMessages(
+  profile: LocalDeviceConnectorProfile,
+  config: LocalDeviceRuntimeConfig
+): Promise<EmittedMessage[]> {
+  const streams = config.streams ?? profile.defaultStreams;
+  const child = spawnConnector(profile, config);
   const messages: EmittedMessage[] = [];
   const stderr: Buffer[] = [];
   const exitPromise = new Promise<number | null>((resolve, reject) => {
@@ -199,26 +289,35 @@ async function collectCodexMessages(config: LocalDeviceRuntimeConfig): Promise<E
     // is accepted. Preserve the child error/exit diagnostic.
   });
   child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
-  child.stdin.end(`${JSON.stringify(buildCodexStartMessage(config.streams))}\n`);
+  child.stdin.end(`${JSON.stringify(buildLocalDeviceStartMessage(streams))}\n`);
 
   let exitCode: number | null;
   try {
     [exitCode] = await Promise.all([exitPromise, outputPromise]);
   } catch (error) {
     throw new Error(
-      `codex connector failed to start or stream output: ${error instanceof Error ? error.message : String(error)}`
+      `${profile.connectorId} connector failed to start or stream output: ${
+        error instanceof Error ? error.message : String(error)
+      }`
     );
   }
   if (exitCode !== 0) {
-    throw new Error(`codex connector exited ${exitCode}: ${Buffer.concat(stderr).toString("utf8").trim()}`);
+    throw new Error(
+      `${profile.connectorId} connector exited ${exitCode}: ${Buffer.concat(stderr).toString("utf8").trim()}`
+    );
   }
   return messages;
 }
 
-function spawnCodex(config: LocalDeviceRuntimeConfig): ChildProcessWithoutNullStreams {
-  const env = { ...process.env, ...config.codexEnv };
+function spawnConnector(
+  profile: LocalDeviceConnectorProfile,
+  config: LocalDeviceRuntimeConfig
+): ChildProcessWithoutNullStreams {
+  const env = { ...process.env, ...config.codexEnv, ...config.connectorEnv };
   env.PATH = buildLocalDeviceChildPath(env.PATH);
-  return spawn(config.codexCommand ?? "tsx", config.codexArgs ?? ["connectors/codex/index.ts"], {
+  const command = config.connectorCommand ?? config.codexCommand ?? "tsx";
+  const args = config.connectorArgs ?? config.codexArgs ?? [profile.entrypoint];
+  return spawn(command, args, {
     cwd: PACKAGE_ROOT,
     env,
   });
