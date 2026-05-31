@@ -216,9 +216,10 @@ export class BrowserSurfaceLeaseManager {
             return token;
         });
         const filteredSurfaceIds = new Set();
+        const initialNonTerminalLeaseIds = new Set((options.initialLeases ?? []).map((lease) => lease.lease_id));
         for (const surface of options.initialSurfaces ?? []) {
             if (this.#isCompatibleInitialSurface(surface)) {
-                this.#surfaces.set(surface.surface_id, surface);
+                this.#surfaces.set(surface.surface_id, this.#detachStaleInitialSurfaceLease(surface, initialNonTerminalLeaseIds));
             }
             else {
                 filteredSurfaceIds.add(surface.surface_id);
@@ -545,7 +546,8 @@ export class BrowserSurfaceLeaseManager {
             }
         }
         this.#surfaces.delete(surfaceId);
-        return { surface, ...(failedLease ? { lease: failedLease } : {}) };
+        const { active_lease_id: _activeLeaseId, ...detachedSurface } = surface;
+        return { surface: detachedSurface, ...(failedLease ? { lease: failedLease } : {}) };
     }
     /**
      * Reconcile in-memory surfaces against the allocator's live view. Called at
@@ -828,6 +830,13 @@ export class BrowserSurfaceLeaseManager {
             return surface.surface_id === "neko-static";
         }
         return surface.surface_id !== "neko-static";
+    }
+    #detachStaleInitialSurfaceLease(surface, nonTerminalLeaseIds) {
+        if (!surface.active_lease_id || nonTerminalLeaseIds.has(surface.active_lease_id)) {
+            return surface;
+        }
+        const { active_lease_id: _activeLeaseId, ...detachedSurface } = surface;
+        return detachedSurface;
     }
     #activeSurfaceCount() {
         return [...this.#surfaces.values()].filter((surface) => surface.backend === "neko" && surface.health !== "stopping").length;
