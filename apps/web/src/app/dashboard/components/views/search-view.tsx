@@ -41,7 +41,7 @@ export function SearchView({
     <>
       <PageHeader
         breadcrumbs={[{ label: "Explore", href: routes.section.explore }, { label: "Jump" }]}
-        count={artifactCount !== null ? `${artifactCount} artifact${artifactCount === 1 ? "" : "s"}` : undefined}
+        count={artifactCount === null ? undefined : `${artifactCount} artifact${artifactCount === 1 ? "" : "s"}`}
         description="Paste a trace, grant, or run id to jump directly to it. For record content search, use Explore."
         title="Jump to artifact"
       />

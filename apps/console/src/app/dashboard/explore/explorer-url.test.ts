@@ -3,9 +3,9 @@ import { test } from "node:test";
 import {
   buildExplorerHref,
   computeActivityStripCells,
-  emptyFeedMessage,
   type ExplorerFeedEntry,
   type ExplorerLens,
+  emptyFeedMessage,
   explorerPeekParam,
   feedCountLabel,
   feedDescription,
