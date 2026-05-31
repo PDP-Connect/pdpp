@@ -1,14 +1,14 @@
 ## 1. Contract And Inventory
 
 - [x] 1.1 Add Claude Code and Codex source-inventory modules that classify every known local store under the configured source home.
-- [ ] 1.2 Add fixture directories covering declared streams, missing stores, unknown stores, auth-adjacent files, cache files, logs, backups, and multi-device source homes.
+- [x] 1.2 Add fixture directories covering declared streams, missing stores, unknown stores, auth-adjacent files, cache files, logs, backups, and multi-device source homes. (see `packages/polyfill-connectors/fixtures/{claude_code,codex}/source-home/`)
 - [x] 1.3 Add manifest stream declarations for approved collectible streams and coverage diagnostics without enabling risky payload collection by default.
 - [x] 1.4 Document stream contracts, record ids, redaction rules, checkpoint behavior, and blob behavior for each approved stream. (see `design-notes/stream-contracts.md`)
 
 ## 2. Privacy And Security
 
 - [x] 2.1 Implement classification defaults: auth-adjacent files excluded, raw cache/config/backups inventory-only, logs/debug/downloads deferred or redacted until approved.
-- [ ] 2.2 Add redaction tests for any stream that emits log, debug, config, or shell content.
+- [x] 2.2 Add redaction tests for any stream that emits log, debug, config, or shell content. (current approved contract keeps risky stores inventory-only/deferred/excluded; `source-inventory.fixture.test.ts` asserts planted sentinels never emit)
 - [x] 2.3 Add negative tests proving token files, installation identifiers, browser cookies, and raw credential material are not emitted as records or blobs.
 - [x] 2.4 Add owner/operator copy explaining why excluded and inventory-only stores do not count as missing collection failures. (see `docs/operator/local-collector-runbook.md` §"Coverage and excluded stores")
 
