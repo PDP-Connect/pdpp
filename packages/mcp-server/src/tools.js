@@ -58,7 +58,7 @@ const SUPPORTED_AGGREGATE_QUERY_KEYS = new Set([
 ]);
 
 const CONNECTION_ID_DESCRIPTION =
-  'Optional connection_id from a prior list_streams response or typed `available_connections` error envelope. Omit to fan in across every connection your grant authorizes for the named stream; pass it to scope the call to one account/device/profile. Required to recover from a typed `ambiguous_connection` (409) error returned by `fetch`, `fetch_blob`, or package-token event-subscription creation — the error envelope lists candidate `available_connections` entries with `grant_id`, `connector_key`, `connection_id`, and optional `display_name`, and instructs you to retry with `connection_id`. Granted connection identities and canonical connector-type metadata are advertised by `GET /v1/schema`.';
+  'Optional connection_id from a prior list_streams response or typed `available_connections` error envelope. Omit to fan in across every connection your grant authorizes for the named stream; pass it to scope the call to one account/device/profile. Required to recover from a typed `ambiguous_connection` (409) error returned by `fetch`, `fetch_blob`, or package-token event-subscription creation — the error envelope lists candidate `available_connections` entries with current-authorization `grant_id`, `connector_key`, `connection_id`, and optional `display_name`, and instructs you to retry with `connection_id`. Persist `connection_id`, not `grant_id`, for source disambiguation across reconnects or reauthorization; `grant_id` identifies the current grant and can change when the owner reconnects. Granted connection identities and canonical connector-type metadata are advertised by `GET /v1/schema`.';
 
 const CONNECTOR_INSTANCE_ID_DESCRIPTION =
   'Deprecated wire alias for `connection_id`. Accepted only for pre-migration compatibility — new clients SHOULD pass `connection_id` instead and ignore this field on the response.';
@@ -384,7 +384,7 @@ export function buildTools({ rs, providerUrl }) {
       name: 'fetch',
       title: 'Fetch PDPP search result',
       description:
-        'Fetch a single ChatGPT-compatible document by a result id returned from `search`. The default id format is `stream:record_id` and is read through `GET /v1/streams/{stream}/records/{record_id}`. When the identifier resolves to more than one connection under your grant and `connection_id` is omitted, the RS returns a typed `ambiguous_connection` (409) error listing `available_connections` entries with `grant_id`, canonical `connector_key`, `connection_id`, and optional `display_name`; retry with the chosen `connection_id`. Read-only.',
+        'Fetch a single ChatGPT-compatible document by a result id returned from `search`. The default id format is `stream:record_id` and is read through `GET /v1/streams/{stream}/records/{record_id}`. When the identifier resolves to more than one connection under your grant and `connection_id` is omitted, the RS returns a typed `ambiguous_connection` (409) error listing `available_connections` entries with current-authorization `grant_id`, canonical `connector_key`, `connection_id`, and optional `display_name`; retry with the chosen `connection_id`. Persist `connection_id`, not `grant_id`, across reconnects. Read-only.',
       annotations: READ_ONLY_ANNOTATIONS,
       inputSchema: z
         .object({
@@ -426,7 +426,7 @@ export function buildTools({ rs, providerUrl }) {
       name: 'create_event_subscription',
       title: 'Create event subscription',
       description:
-        'Create an outbound event subscription via `POST /v1/event-subscriptions` using the configured scoped client bearer. Persists a `(grant_id, client_id, subject_id)`-bound subscription on the RS and returns the per-subscription `whsec_`-prefixed delivery secret exactly once (rotate via `update_event_subscription`). Under a hosted MCP package token covering multiple sources, pass `connection_id` so the new subscription binds to exactly one child grant; the adapter rejects ambiguous calls with a typed `ambiguous_connection` (409) whose `available_connections` entries include `grant_id`, canonical `connector_key`, `connection_id`, and optional `display_name`.' +
+        'Create an outbound event subscription via `POST /v1/event-subscriptions` using the configured scoped client bearer. Persists a `(grant_id, client_id, subject_id)`-bound subscription on the RS and returns the per-subscription `whsec_`-prefixed delivery secret exactly once (rotate via `update_event_subscription`). Under a hosted MCP package token covering multiple sources, pass `connection_id` so the new subscription binds to exactly one child grant; the adapter rejects ambiguous calls with a typed `ambiguous_connection` (409) whose `available_connections` entries include current-authorization `grant_id`, canonical `connector_key`, `connection_id`, and optional `display_name`. Persist the returned `subscription_id` for subscription management and `connection_id` for source disambiguation; do not persist `grant_id` as a reconnect-stable source identifier.' +
         SUBSCRIPTION_TOOL_FOOTER,
       annotations: SUBSCRIPTION_WRITE_ANNOTATIONS,
       inputSchema: z
@@ -555,7 +555,7 @@ export function buildTools({ rs, providerUrl }) {
       name: 'fetch_blob',
       title: 'Fetch PDPP blob',
       description:
-        'Fetch a blob referenced by a prior authorized record via `GET /v1/blobs/{blob_id}` using the configured scoped token. Returns base64 bytes and the RS-reported mime type. When the blob identifier resolves to more than one connection under your grant and `connection_id` is omitted, the RS returns a typed `ambiguous_connection` (409) error listing `available_connections` entries with `grant_id`, canonical `connector_key`, `connection_id`, and optional `display_name`; retry with the chosen `connection_id`. Read-only.',
+        'Fetch a blob referenced by a prior authorized record via `GET /v1/blobs/{blob_id}` using the configured scoped token. Returns base64 bytes and the RS-reported mime type. When the blob identifier resolves to more than one connection under your grant and `connection_id` is omitted, the RS returns a typed `ambiguous_connection` (409) error listing `available_connections` entries with current-authorization `grant_id`, canonical `connector_key`, `connection_id`, and optional `display_name`; retry with the chosen `connection_id`. Persist `connection_id`, not `grant_id`, across reconnects. Read-only.',
       annotations: READ_ONLY_ANNOTATIONS,
       inputSchema: z
         .object({

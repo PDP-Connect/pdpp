@@ -93,6 +93,12 @@ text content includes a bounded preview of returned records. This keeps agents t
 only reason over MCP `content[]` from seeing only a count summary while preserving
 `structuredContent` as the canonical machine-readable result.
 
+When a response or typed `ambiguous_connection` error includes both `connection_id` and
+`grant_id`, use `connection_id` as the stable data-source selector. `grant_id` identifies
+the current authorization grant and can change when the owner reconnects or re-authorizes
+the client. Persist `subscription_id` for event-subscription management; do not persist
+`grant_id` as a reconnect-stable source identifier.
+
 ### Side-effectful tools (event-subscription management)
 
 These tools manage outbound event subscriptions on the configured PDPP instance via the
