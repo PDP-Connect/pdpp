@@ -275,6 +275,30 @@ test('create_event_subscription forwards POST with scoped bearer and JSON body',
   }
 });
 
+test('create_event_subscription surfaces the one-time secret verbatim in tool text', async () => {
+  const { fetch } = makeFakeRs();
+  const { client, server } = await connectClient(fetch);
+  try {
+    const result = await client.callTool({
+      name: 'create_event_subscription',
+      arguments: { callback_url: 'https://example.test/hook' },
+    });
+    assert.equal(result.isError, undefined);
+    const text = result.content[0].text;
+    // The literal secret must appear so a chat agent that cannot read
+    // structuredContent can still relay it to the receiver.
+    assert.match(text, /one_time_secret=whsec_dGVzdHNlY3JldA==/);
+    // And the text must say it is returned once and should be stored now.
+    assert.match(text, /returned once/);
+    assert.match(text, /store it/);
+    // Structured envelope stays canonical.
+    assert.equal(result.structuredContent.data.secret, 'whsec_dGVzdHNlY3JldA==');
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
 test('create_event_subscription forwards optional filters.streams body field', async () => {
   const { fetch, calls } = makeFakeRs();
   const { client, server } = await connectClient(fetch);
@@ -399,6 +423,14 @@ test('update_event_subscription forwards PATCH with enabled and rotate_secret', 
     assert.deepEqual(call.body, { enabled: false, rotate_secret: true });
     assert.equal(result.structuredContent.data.subscription.status, 'disabled');
     assert.ok(result.structuredContent.data.secret.startsWith('whsec_'));
+    // Rotation returns a fresh secret nested beside the `subscription`
+    // projection; the literal rotated value must reach the tool text.
+    const text = result.content[0].text;
+    assert.match(text, /one_time_secret=whsec_bmV3c2VjcmV0/);
+    assert.match(text, /returned once/);
+    // The nested subscription_id/status are still surfaced for context.
+    assert.match(text, /subscription_id=sub_abc123/);
+    assert.match(text, /status=disabled/);
   } finally {
     await client.close();
     await server.close();
@@ -415,6 +447,41 @@ test('update_event_subscription omits unset fields from body', async () => {
     });
     const call = calls.find((c) => c.pathname === '/v1/event-subscriptions/sub_abc123' && c.method === 'PATCH');
     assert.deepEqual(call.body, { enabled: true });
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
+test('non-secret subscription responses never invent a whsec_ placeholder in tool text', async () => {
+  const { fetch } = makeFakeRs();
+  const { client, server } = await connectClient(fetch);
+  try {
+    const results = [
+      await client.callTool({ name: 'list_event_subscriptions', arguments: {} }),
+      await client.callTool({
+        name: 'get_event_subscription',
+        arguments: { subscription_id: 'sub_abc123' },
+      }),
+      // Non-rotating update: RS returns no `secret`, so neither should the text.
+      await client.callTool({
+        name: 'update_event_subscription',
+        arguments: { subscription_id: 'sub_abc123', enabled: true },
+      }),
+      await client.callTool({
+        name: 'send_test_event',
+        arguments: { subscription_id: 'sub_abc123' },
+      }),
+      await client.callTool({
+        name: 'delete_event_subscription',
+        arguments: { subscription_id: 'sub_abc123' },
+      }),
+    ];
+    for (const r of results) {
+      assert.equal(r.isError, undefined);
+      assert.doesNotMatch(r.content[0].text, /whsec_/, 'must not expose a secret placeholder');
+      assert.doesNotMatch(r.content[0].text, /one_time_secret/, 'must not claim a one-time secret');
+    }
   } finally {
     await client.close();
     await server.close();

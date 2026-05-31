@@ -1331,15 +1331,33 @@ function toEventSubDiscoveryResult(response, providerUrl) {
   };
 }
 
+// The one-time delivery secret can arrive at the top level (create) or, on
+// rotate, alongside a nested `subscription` projection (PATCH). Either way the
+// RS returns it exactly once and never again on read, so the MCP text MUST
+// carry the literal value: chat agents that cannot inspect `structuredContent`
+// have no other way to capture it. The structured envelope remains canonical.
 function summarizeEventSubBody(response, label) {
   if (response.status === 204) {
     return `${label}: 204 No Content. Subscription removed; subsequent reads will return 404.`;
   }
   const body = response.body;
   if (body && typeof body === 'object') {
-    if (typeof body.subscription_id === 'string') {
-      const secret = typeof body.secret === 'string' ? ' Secret returned once — capture from structuredContent.data.secret.' : '';
-      return `${label}: subscription_id=${body.subscription_id} status=${body.status ?? 'unknown'}.${secret} See structuredContent.data for the full body.`;
+    const subscription = body.subscription && typeof body.subscription === 'object' ? body.subscription : null;
+    const subscriptionId = firstString(body.subscription_id, subscription?.subscription_id);
+    const status = firstString(body.status, subscription?.status);
+    const oneTimeSecret = typeof body.secret === 'string' ? body.secret : null;
+    if (subscriptionId || oneTimeSecret) {
+      const parts = [];
+      if (subscriptionId) parts.push(`subscription_id=${subscriptionId}`);
+      if (status) parts.push(`status=${status}`);
+      const head = parts.length > 0 ? `${label}: ${parts.join(' ')}.` : `${label}:`;
+      if (oneTimeSecret) {
+        // Compact, unmistakable line an agent can read and relay verbatim. The
+        // secret is returned once — the receiver must store it now to verify
+        // future signatures.
+        return `${head} one_time_secret=${oneTimeSecret} (returned once — store it on the receiver now to verify delivery signatures; not retrievable later). See structuredContent.data for the full body.`;
+      }
+      return `${head} See structuredContent.data for the full body.`;
     }
     if (typeof body.event_id === 'string') {
       return `${label}: enqueued event_id=${body.event_id}. Delivery occurs out-of-band; check your callback receiver.`;
