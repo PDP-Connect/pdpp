@@ -165,7 +165,7 @@ function queryCookbook() {
     '',
     '## Logical cursor pagination',
     '',
-    'Records are sorted by `(cursor_field, primary_key)`. Null cursor values sort after present values. Cursors are opaque — clients must not parse or construct them.',
+    'Records are sorted by `(cursor_field, primary_key)`. Null cursor values sort after present values. Cursors are opaque — clients must not parse or construct them. Cursors are direction-bound: follow a page cursor with the same `order` value that produced it. To change direction, restart pagination without a cursor; the reference rejects order-mismatched cursors as `invalid_cursor`.',
     '',
     '```http',
     'GET /v1/streams/top_artists/records?order=asc&limit=50',
