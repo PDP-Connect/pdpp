@@ -7,10 +7,10 @@ the single end-to-end journey in section 6.
 
 ## 1. Read-contract: declared field type
 
-- [ ] 1.1 Align the live reference `ConnectorManifest` stream-field type to accept an optional declared presentation `type`, matching the shape the sandbox demo manifests already encode (`type`/`semantic_class`).
-- [ ] 1.2 Surface the declared `type` on each `field_capabilities` entry returned by `GET /v1/streams/<stream>`; omit it when the manifest does not declare it.
-- [ ] 1.3 Regenerate and verify `@pdpp/reference-contract` so the `field_capabilities` entry carries the optional `type` without changing filter/grant/retrieval semantics.
-- [ ] 1.4 Add reference-server tests: declared-type field surfaces `type`; undeclared field omits it; declared `type` does not alter exact-filter, range, lexical/semantic, or grant usability.
+- [x] 1.1 Align the live reference `ConnectorManifest` stream-field type to accept an optional declared presentation `type`, matching the shape the sandbox demo manifests already encode (`type`/`semantic_class`). (Live manifest field-schema type `ManifestFieldSchema` in `reference-implementation/server/ref-control.ts` now declares optional `x_pdpp_type`; the key disambiguates from JSON-schema `type` already taken by `schema.properties[field].type`.)
+- [x] 1.2 Surface the declared `type` on each `field_capabilities` entry returned by `GET /v1/streams/<stream>`; omit it when the manifest does not declare it. (`buildFieldCapabilities` in `reference-implementation/server/index.js` reads `schema.properties[field].x_pdpp_type` and emits `type` only when it is a non-empty string.)
+- [ ] 1.3 Regenerate and verify `@pdpp/reference-contract` so the `field_capabilities` entry carries the optional `type` without changing filter/grant/retrieval semantics. (Schema fragment added to `packages/reference-contract/src/public/index.ts`; contract `typecheck` + `test` (47) pass and the regenerated `getStreamMetadata` OpenAPI carries optional `type` outside `required`. Full `check:generated` / committing regenerated artifacts is BLOCKED on a pre-existing artifact-staleness failure on `main@945f16c0` — the committed OpenAPI contains `event-subscriptions` routes absent from the contract source, so any regeneration deletes them. Owner must resolve that out-of-lane staleness before refreshing artifacts.)
+- [x] 1.4 Add reference-server tests: declared-type field surfaces `type`; undeclared field omits it; declared `type` does not alter exact-filter, range, lexical/semantic, or grant usability. (`reference-implementation/test/rs-streams-field-declared-type.test.js`, 4 tests, all pass.)
 
 ## 2. Read-contract: bounded window metadata
 

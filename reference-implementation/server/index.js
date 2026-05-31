@@ -1842,7 +1842,20 @@ function buildFieldCapabilities(manifestStream, streamGrant = null) {
     Object.entries(properties).map(([field, schema]) => {
       const granted = !grantedFields || grantedFields.has(field);
       const rangeOperators = Array.isArray(rangeFilters[field]) ? rangeFilters[field] : null;
+      // Optional declared presentation type, sourced from the manifest's
+      // per-field schema (`schema.properties[field].x_pdpp_type`). Surfaced as
+      // an additive `type` on the field_capabilities entry purely as a
+      // presentation/dispatch hint; it does not influence any filter, search,
+      // aggregation, grant, or retrieval decision below. Omitted entirely when
+      // the manifest does not declare a non-empty string, so an undeclared
+      // field yields the current shape. See:
+      //   openspec/changes/complete-explorer-slvp-ideal
+      const declaredType =
+        schema && typeof schema === 'object' && typeof schema.x_pdpp_type === 'string' && schema.x_pdpp_type.length > 0
+          ? schema.x_pdpp_type
+          : null;
       return [field, {
+        ...(declaredType ? { type: declaredType } : {}),
         schema,
         granted,
         exact_filter: buildFieldCapabilityFlag({

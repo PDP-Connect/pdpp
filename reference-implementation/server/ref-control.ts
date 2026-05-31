@@ -48,7 +48,34 @@ import { getDefaultDeviceExporterStore } from "./stores/device-exporter-store.js
 
 // ─── Shared domain types ────────────────────────────────────────────────────
 
+/**
+ * Per-field JSON-Schema declaration carried in a stream manifest's
+ * `schema.properties`. The reference accepts an optional `x_pdpp_type`
+ * presentation hint here (for example `currency`, `timestamp`, `person`,
+ * `blob`, `text`), mirroring the typed field shape the sandbox demo manifests
+ * already encode. It is additive and optional: a manifest that omits it
+ * produces the current shape, and it is surfaced read-only as
+ * `field_capabilities[field].type` purely as a presentation/dispatch hint —
+ * it does not change filter, search, aggregation, grant, or retrieval
+ * semantics, and it is never client-writable or grantable. See:
+ *   openspec/changes/complete-explorer-slvp-ideal
+ */
+interface ManifestFieldSchema {
+  type?: string | string[];
+  format?: string;
+  description?: string;
+  /** Optional declared presentation type. Absent means "not declared". */
+  x_pdpp_type?: string;
+  [extension: string]: unknown;
+}
+
 interface ManifestStream extends ManifestStreamLike {
+  schema?: {
+    type?: string;
+    properties?: Record<string, ManifestFieldSchema>;
+    required?: string[];
+    [extension: string]: unknown;
+  };
   /**
    * Accepted-coverage policy for the stream. Default (absent) means
    * `collect`: the connector intends to collect this stream and any

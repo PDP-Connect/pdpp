@@ -1063,6 +1063,16 @@ const StreamMetadataResponseSchema = {
         type: "object",
         additionalProperties: false,
         properties: {
+          // Optional declared presentation type sourced from the stream
+          // manifest (`schema.properties[field].x_pdpp_type`). Additive and
+          // optional: omitted when the manifest does not declare it, and a
+          // consumer SHALL treat the absence as "not declared". This is a
+          // presentation/dispatch hint for reference surfaces only — it does
+          // NOT change exact/range filter support, lexical/semantic
+          // participation, aggregation, grant usability, or any retrieval
+          // semantics, and it is never client-writable or grantable. See:
+          //   openspec/changes/complete-explorer-slvp-ideal
+          type: { type: "string", minLength: 1 },
           schema: { type: "object", additionalProperties: true },
           granted: { type: "boolean" },
           exact_filter: CapabilityFlagSchema,
