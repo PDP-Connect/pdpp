@@ -654,7 +654,7 @@ export async function renderHostedMcpSourceSelection(
 
   const renderRowStreams = (row: HostedMcpPickerRow): string => {
     if (!Array.isArray(row.streams) || row.streams.length === 0) {
-      return '<p class="hosted-ui-option-streams-empty">This connector manifest declares no streams.</p>';
+      return '<p class="hosted-ui-option-streams-empty">This source does not list any streams yet.</p>';
     }
     const items = row.streams
       .map((stream) => {
@@ -699,7 +699,7 @@ export async function renderHostedMcpSourceSelection(
               </label>
             </summary>
             <div class="hosted-ui-option-stream-controls">
-              <p class="hosted-ui-option-streams-help">Select this source, then choose one or more streams. Use all streams only when the assistant needs the whole source.</p>
+              <p class="hosted-ui-option-streams-help">Select this source, then choose the streams the app may read. Use all streams only when you want to grant the whole source.</p>
               <div class="hosted-ui-actions hosted-ui-stream-actions" aria-label="Stream bulk controls for ${ui.escapeHtml(row.connectorTypeLabel)}">
                 <button type="button" class="hosted-ui-button" data-hosted-mcp-select-streams>Use all streams</button>
                 <button type="button" class="hosted-ui-button" data-hosted-mcp-clear-streams>Clear this source</button>
@@ -710,14 +710,14 @@ export async function renderHostedMcpSourceSelection(
         `;
         })
         .join("\n")
-    : '<p class="pdpp-body">No connector manifests are registered on this reference server.</p>';
+    : '<p class="pdpp-body">No sources are available on this server yet.</p>';
 
   const submit = rows.length
     ? '<button type="submit" class="hosted-ui-button" data-variant="primary">Approve selected data</button>'
     : "";
 
   const riskCopy = rows.length
-    ? `<p class="pdpp-body"><strong>Choose deliberately.</strong> Pick the sources this assistant may read, then choose the streams inside each source. Each source becomes its own revocable PDPP grant. This setup does not encode a machine-readable retention bound; retention of fetched results is governed by the client and any agreement you have with it.</p>`
+    ? `<p class="pdpp-body"><strong>Choose only what this app needs.</strong> Start with a source, then pick the specific streams it may read. Each approved source can be revoked later. This page does not set a retention limit for data the app saves after it reads from your server; review the app's own terms before approving.</p>`
     : "";
 
   const validationError = typeof opts.validationError === "string" ? opts.validationError.trim() : "";
@@ -742,7 +742,7 @@ export async function renderHostedMcpSourceSelection(
             <input type="radio" name="access_mode" value="continuous" checked />
             <span class="hosted-ui-access-mode-body">
               <span class="hosted-ui-access-mode-label">Keep access until I revoke it</span>
-              <span class="hosted-ui-access-mode-meta">Best for assistants that need to stay up to date.</span>
+              <span class="hosted-ui-access-mode-meta">Best for apps that need to stay up to date.</span>
             </span>
           </label>
           <label class="hosted-ui-access-mode-option">
@@ -928,13 +928,13 @@ export async function renderHostedMcpSourceSelection(
     : "";
 
   return ui.renderHostedDocument({
-    title: `${providerName} — Choose MCP sources`,
+    title: `${providerName} — Choose data sources`,
     providerName,
     body: [
       ui.renderPageIntro({
-        eyebrow: "MCP authorization",
-        title: "Choose the data this assistant can read",
-        lede: "Pick sources, then choose the streams inside each one. Unselected sources stay private, and every approval remains revocable.",
+        eyebrow: "Data access request",
+        title: "Choose what this app can read",
+        lede: "Select the sources and streams this app may use. Anything you leave unchecked stays private, and you can revoke approved access later.",
       }),
       ui.renderSurface({
         surface: "human",

@@ -585,7 +585,7 @@ test('hosted MCP source selection uses hosted-ui option styles', async () => {
     const resp = await fetch(authorizeUrl);
     assert.equal(resp.status, 200);
     const html = await resp.text();
-    assert.match(html, /Choose the data this assistant can read/);
+    assert.match(html, /Choose what this app can read/);
     assert.match(html, /class="hosted-ui-option-group"/);
     assert.match(html, /class="hosted-ui-option"/);
     assert.match(html, /<details class="hosted-ui-option-source"[^>]*>/);
@@ -616,8 +616,8 @@ test('hosted MCP source selection uses hosted-ui option styles', async () => {
     assert.match(html, /spotify/, 'picker meta copy should show canonical key `spotify`');
     assert.match(
       html,
-      /Choose deliberately/,
-      'picker copy should present the flow as an owner-facing setup, not a technical demo',
+      /Choose only what this app needs/,
+      'picker copy should present the flow as an owner-facing setup',
     );
 
     const cssResp = await fetch(`${asUrl}/__pdpp/hosted-ui.css`);
@@ -1393,7 +1393,7 @@ test('hosted MCP picker renders collapsed source summaries with per-stream contr
 
     // Owner-facing copy should make the source-first, stream-narrowing model
     // clear without registry URLs or demo-only phrasing.
-    assert.match(html, /choose the streams inside each source/i, 'picker copy should explain stream narrowing');
+    assert.match(html, /pick the specific streams/i, 'picker copy should explain stream narrowing');
     assert.match(html, /Use all streams/i, 'picker should make whole-source approval explicit');
     assert.match(html, /Use all sources and streams/i, 'picker should make global bulk approval explicit');
     assert.match(html, /Clear all/i, 'picker should offer a clear global reset affordance');
@@ -1580,7 +1580,7 @@ test('POST /oauth/authorize/mcp-package renders picker error when a selected sou
     const resp = await exchangePackageCode({ asUrl, client, params });
     assert.equal(resp.status, 400);
     const html = await resp.text();
-    assert.match(html, /Choose the data this assistant can read/);
+    assert.match(html, /Choose what this app can read/);
     assert.match(html, /Choose at least one stream for/i);
     assert.match(html, /data-hosted-mcp-picker-error/);
   } finally {
@@ -1669,7 +1669,7 @@ test('POST /oauth/authorize/mcp-package renders picker error when streams are su
     assert.match(resp.headers.get('content-type') || '', /text\/html/);
     const html = await resp.text();
 
-    assert.match(html, /Choose the data this assistant can read/);
+    assert.match(html, /Choose what this app can read/);
     assert.match(html, /data-hosted-mcp-picker-error/);
     assert.match(html, /Select at least one source and one stream inside each selected source before approving/);
     assert.equal(
@@ -1751,9 +1751,8 @@ test('POST /oauth/authorize/mcp-package ignores stream entries whose source was 
 // child grant in the package. The picker:
 //   - renders both options with `continuous` pre-selected so the no-action
 //     default preserves prior behavior;
-//   - the picker copy is honest that the ceremony does NOT encode a
-//     machine-readable retention bound on the issued grants (so the picker
-//     does not mislabel a non-Core retention shape as a retention policy);
+//   - the picker copy is honest that the page does NOT set a retention limit
+//     for data the app saves after reading from the owner's server;
 //   - submitting `access_mode=single_use` narrows every child grant in the
 //     package to single_use without any other change to the form;
 //   - submitting `access_mode=continuous` (or omitting the field) keeps every
@@ -1763,10 +1762,10 @@ test('POST /oauth/authorize/mcp-package ignores stream entries whose source was 
 //   - `grant.issued` spine events for every child grant record the resolved
 //     access mode, stream names, and an explicit `retention: null` so the
 //     operator dashboard can tell narrowed grants from wildcard ones without
-//     re-deriving the picker submission and can see that no machine-readable
-//     retention bound was encoded.
+//     re-deriving the picker submission and can see that no retention limit
+//     was encoded.
 
-test('hosted MCP picker renders an access-mode radio with continuous default and surfaces that retention is not encoded', async () => {
+test('hosted MCP picker renders an access-mode radio with continuous default and surfaces the retention caveat', async () => {
   const server = await startOpenTestServer();
   const asUrl = `http://localhost:${server.asPort}`;
 
@@ -1804,10 +1803,8 @@ test('hosted MCP picker renders an access-mode radio with continuous default and
     // Retention copy honesty: the picker must not promise an
     // owner-narrowable retention knob, must not advertise the
     // off-spec `client_policy` classification, and must say plainly
-    // that no machine-readable retention bound is encoded in this
-    // ceremony. spec-core.md defines retention as `{ max_duration,
-    // on_expiry }`; the generic hosted MCP picker has no per-source
-    // commitment to encode, so absence is the honest answer.
+    // that the page does not set a retention limit for data saved by
+    // the app after it reads from the owner's server.
     assert.ok(
       !html.includes('client-policy retention'),
       'picker must not assert the legacy client-policy phrase',
@@ -1818,8 +1815,8 @@ test('hosted MCP picker renders an access-mode radio with continuous default and
     );
     assert.match(
       html,
-      /does not encode a machine-readable retention bound/i,
-      'picker should tell the owner that retention is not encoded by this ceremony',
+      /does not set a retention limit/i,
+      'picker should tell the owner that this page does not set the app retention limit',
     );
   } finally {
     await closeServer(server);
