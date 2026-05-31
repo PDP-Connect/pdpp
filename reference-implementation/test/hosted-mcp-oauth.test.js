@@ -616,7 +616,7 @@ test('hosted MCP source selection uses hosted-ui option styles', async () => {
     assert.match(html, /spotify/, 'picker meta copy should show canonical key `spotify`');
     assert.match(
       html,
-      /Choose only what this app needs/,
+      /Share only what this app needs/,
       'picker copy should present the flow as an owner-facing setup',
     );
 
@@ -1406,13 +1406,31 @@ test('hosted MCP picker renders collapsed source summaries with per-stream contr
     // Owner-facing copy should make the stream-derived source model
     // clear without registry URLs or demo-only phrasing.
     assert.match(html, /pick the specific streams/i, 'picker copy should explain stream narrowing');
-    assert.match(html, /Source checkboxes follow stream choices/i, 'picker copy should explain derived source state');
-    assert.match(html, /Stream choices set the grant/i, 'per-source copy should make stream selection authoritative');
+    assert.match(
+      html,
+      /A source is shared only when at least one of its streams is checked/i,
+      'picker copy should explain derived source state',
+    );
+    assert.match(
+      html,
+      /Each stream you check is granted on its own/i,
+      'per-source copy should make stream selection authoritative',
+    );
+    assert.match(
+      html,
+      /Check one to share just that stream/i,
+      'per-source copy should make single-stream grants discoverable',
+    );
     assert.match(html, /sourceBox\.checked = selected/, 'picker JS should derive source checked state from streams');
     assert.match(html, /sourceBox\.indeterminate = partiallySelected/, 'picker JS should expose subset stream grants');
-    assert.match(html, /Use all streams/i, 'picker should make whole-source approval explicit');
-    assert.match(html, /Use all sources and streams/i, 'picker should make global bulk approval explicit');
+    assert.match(html, /Select every stream/i, 'picker should make whole-source approval explicit');
+    assert.match(html, /data-hosted-mcp-select-sources/, 'picker should make global bulk approval explicit');
+    assert.match(html, /Select all/i, 'picker should offer a global select-all affordance');
     assert.match(html, /Clear all/i, 'picker should offer a clear global reset affordance');
+    assert.match(html, /data-hosted-mcp-expand-all/, 'picker should offer an explicit expand-all disclosure control');
+    assert.match(html, /data-hosted-mcp-collapse-all/, 'picker should offer an explicit collapse-all disclosure control');
+    assert.match(html, />Expand all</i, 'expand-all control should be owner-labelled');
+    assert.match(html, />Collapse all</i, 'collapse-all control should be owner-labelled');
   } finally {
     await closeServer(server);
   }

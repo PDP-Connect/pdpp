@@ -281,7 +281,6 @@ async function buildConnectorPickerRows(
           connectorLabel,
           connectorKey: connectorMetaToken,
           streamCount,
-          suffix: "no configured connection",
         }),
         sourceKey: caps.hostedMcpSourceKey({ connectorId, connectionId: null }),
         streams: streamSummaries,
@@ -361,14 +360,39 @@ function buildPickerRowMeta({
   suffix?: string;
 }): string {
   const parts: string[] = [];
+  parts.push(streamCount === 1 ? "1 stream available" : `${streamCount} streams available`);
+  // Only surface the technical connector key when the owner-facing label does
+  // not already carry it, so we never repeat the same identity twice.
   if (normalizeConnectorLabel(connectorLabel) !== normalizeConnectorLabel(connectorKey)) {
     parts.push(connectorKey);
   }
-  parts.push(streamCount === 1 ? "1 stream" : `${streamCount} streams`);
   if (suffix) {
     parts.push(suffix);
   }
   return parts.join(" · ");
+}
+
+// A short, owner-readable preview of the streams a collapsed source holds, so
+// the owner can tell a one-stream grant is possible without opening the row.
+// Names are the manifest stream names; we cap the list to keep the summary
+// scannable and append a "+N more" tail when truncated.
+function buildStreamPreview(
+  streams: Array<{ name: string; description: string | null }> | null | undefined
+): string {
+  if (!Array.isArray(streams) || streams.length === 0) {
+    return "";
+  }
+  const names = streams.map((stream) => stream.name).filter((name) => typeof name === "string" && name);
+  if (names.length === 0) {
+    return "";
+  }
+  const MAX_SHOWN = 4;
+  if (names.length <= MAX_SHOWN) {
+    return names.join(", ");
+  }
+  const shown = names.slice(0, MAX_SHOWN);
+  const remaining = names.length - shown.length;
+  return `${shown.join(", ")} +${remaining} more`;
 }
 
 export async function listHostedMcpPickerRows(
@@ -687,6 +711,10 @@ export async function renderHostedMcpSourceSelection(
           const sourceKey = ui.escapeHtml(row.sourceKey);
           const sourceDisabled = !Array.isArray(row.streams) || row.streams.length === 0;
           const sourceDisabledAttrs = sourceDisabled ? ' disabled aria-disabled="true"' : "";
+          const streamPreview = buildStreamPreview(row.streams);
+          const previewBlock = streamPreview
+            ? `<span class="hosted-ui-option-preview">${ui.escapeHtml(streamPreview)}</span>`
+            : "";
           return `
           <details class="hosted-ui-option-source" data-hosted-mcp-source data-source-key="${sourceKey}" data-source-selected="false">
             <summary class="hosted-ui-option-source-legend hosted-ui-option-summary">
@@ -696,14 +724,15 @@ export async function renderHostedMcpSourceSelection(
                   <span class="hosted-ui-option-title">
                     <span class="hosted-ui-connector-type">${ui.escapeHtml(row.connectorTypeLabel)}</span>${row.connectionName ? `<span class="hosted-ui-connection-name">${ui.escapeHtml(row.connectionName)}</span>` : ""}
                   </span>
+                  ${previewBlock}
                   <span class="hosted-ui-option-meta" id="${summaryId}">${ui.escapeHtml(row.meta)}</span>
                 </span>
               </label>
             </summary>
             <div class="hosted-ui-option-stream-controls">
-              <p class="hosted-ui-option-streams-help">Stream choices set the grant. Use the source checkbox to select or clear all streams, or open the row to choose a subset.</p>
-              <div class="hosted-ui-actions hosted-ui-stream-actions" aria-label="Stream bulk controls for ${ui.escapeHtml(row.connectorTypeLabel)}">
-                <button type="button" class="hosted-ui-button" data-hosted-mcp-select-streams>Use all streams</button>
+              <p class="hosted-ui-option-streams-help">Each stream you check is granted on its own. Check one to share just that stream, or use the buttons below to share the whole source.</p>
+              <div class="hosted-ui-actions hosted-ui-stream-actions" aria-label="Stream controls for ${ui.escapeHtml(row.connectorTypeLabel)}">
+                <button type="button" class="hosted-ui-button" data-hosted-mcp-select-streams>Select every stream</button>
                 <button type="button" class="hosted-ui-button" data-hosted-mcp-clear-streams>Clear this source</button>
               </div>
             </div>
@@ -719,7 +748,7 @@ export async function renderHostedMcpSourceSelection(
     : "";
 
   const riskCopy = rows.length
-    ? `<p class="pdpp-body"><strong>Choose only what this app needs.</strong> Pick the specific streams it may read. Source checkboxes follow stream choices, and each approved source can be revoked later. This page does not set a retention limit for data the app saves after it reads from your server; review the app's own terms before approving.</p>`
+    ? `<p class="pdpp-body"><strong>Share only what this app needs.</strong> Pick the specific streams it may read — you can grant a single stream or a whole source. A source is shared only when at least one of its streams is checked, and you can revoke any approved source later. This page does not set a retention limit for data the app keeps after reading from your server; review the app's own terms before approving.</p>`
     : "";
 
   const validationError = typeof opts.validationError === "string" ? opts.validationError.trim() : "";
@@ -730,8 +759,11 @@ export async function renderHostedMcpSourceSelection(
   const bulkControls = rows.length
     ? `
         <div class="hosted-ui-actions hosted-ui-picker-toolbar" aria-label="Source bulk controls">
-          <button type="button" class="hosted-ui-button" data-hosted-mcp-select-sources>Use all sources and streams</button>
+          <button type="button" class="hosted-ui-button" data-hosted-mcp-select-sources>Select all</button>
           <button type="button" class="hosted-ui-button" data-hosted-mcp-clear-sources>Clear all</button>
+          <span class="hosted-ui-toolbar-divider" aria-hidden="true"></span>
+          <button type="button" class="hosted-ui-button" data-hosted-mcp-expand-all>Expand all</button>
+          <button type="button" class="hosted-ui-button" data-hosted-mcp-collapse-all>Collapse all</button>
         </div>
       `
     : "";
@@ -767,7 +799,7 @@ export async function renderHostedMcpSourceSelection(
   display: none;
 }
 .hosted-ui-option-summary::after {
-  content: "Review streams";
+  content: "Choose streams";
   display: block;
   padding: 0 0.25rem 0.5rem 2rem;
   color: var(--muted-foreground);
@@ -775,6 +807,20 @@ export async function renderHostedMcpSourceSelection(
 }
 .hosted-ui-option-source[open] > .hosted-ui-option-summary::after {
   content: "Hide streams";
+}
+.hosted-ui-toolbar-divider {
+  width: 1px;
+  align-self: stretch;
+  background: var(--border);
+  margin: 0.125rem 0.25rem;
+}
+.hosted-ui-option-preview {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  line-height: 1.45;
+  color: var(--muted-foreground);
+  overflow-wrap: anywhere;
 }
 .hosted-ui-picker-toolbar,
 .hosted-ui-stream-actions {
@@ -892,9 +938,18 @@ export async function renderHostedMcpSourceSelection(
         streamBox.checked = false;
       }
       syncSource(source);
-      source.open = false;
     }
     setError("");
+  });
+  form.querySelector("[data-hosted-mcp-expand-all]")?.addEventListener("click", () => {
+    for (const source of sources) {
+      source.open = true;
+    }
+  });
+  form.querySelector("[data-hosted-mcp-collapse-all]")?.addEventListener("click", () => {
+    for (const source of sources) {
+      source.open = false;
+    }
   });
   form.addEventListener("submit", (event) => {
     for (const source of sources) {
