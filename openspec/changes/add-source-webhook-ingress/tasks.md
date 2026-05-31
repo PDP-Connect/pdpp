@@ -27,7 +27,7 @@ Created: 2026-05-28
 - [x] Run `openspec validate add-source-webhook-ingress --strict`
 - [x] Run `openspec validate --all --strict`
 - [x] Owner review of spec delta against code
-- [ ] Archive after owner approves
+- [x] Owner archive-readiness review recorded. Actual archive remains pending explicit owner archive action per repo workflow.
 
 ## Deferred (not in this tranche)
 

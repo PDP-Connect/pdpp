@@ -42,7 +42,7 @@ test("CLI run --connector gmail uses bundled defaults so operators don't need --
   assert.equal(spec.streamsToBackfill, undefined);
 });
 
-test("CLI --backfill-streams reaches the connector as START.streamsToBackfill (START wire only; resumable loop requires future STATE plumbing)", () => {
+test("CLI --backfill-streams reaches the connector as START.streamsToBackfill", () => {
   const options = parseArgs([
     "run",
     "--base-url",
@@ -66,8 +66,8 @@ test("CLI --backfill-streams reaches the connector as START.streamsToBackfill (S
   // in collectConnectorMessages — emitting a START line that the
   // Gmail connector reads and routes into runAllMailPasses, which
   // honors streamsToBackfill to walk a bounded historical UID window.
-  // The subprocess's STATE emit is now persisted/replayed by future
-  // runs through `runCollectorConnector` per OpenSpec
+  // The subprocess's STATE emit is persisted/replayed by future runs through
+  // `runCollectorConnector` per OpenSpec
   // `design-local-collector-state-sync`.
   const start = buildCollectorStartMessage(spec.streams, spec.streamsToBackfill);
   assert.deepEqual(start.streamsToBackfill, ["attachments"]);

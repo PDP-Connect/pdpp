@@ -41,6 +41,12 @@ services:
       USAA_PASSWORD: ${USAA_PASSWORD:-}
       GOOGLE_APP_PASSWORD_PDPP: ${GOOGLE_APP_PASSWORD_PDPP:-}
       GMAIL_APP_PASSWORD: ${GMAIL_APP_PASSWORD:-}
+      # Gmail attachment hydration/backfill uploads bytes through the
+      # reference blob API. Operators mint this token from the deployment-token
+      # surface and supply it only for connector runs that need blob upload.
+      PDPP_OWNER_TOKEN: ${PDPP_OWNER_TOKEN:-}
+      PDPP_GMAIL_MAX_ATTACHMENT_BYTES: ${PDPP_GMAIL_MAX_ATTACHMENT_BYTES:-}
+      PDPP_GMAIL_ATTACHMENT_BACKFILL_WINDOW_UIDS: ${PDPP_GMAIL_ATTACHMENT_BACKFILL_WINDOW_UIDS:-}
       CHATGPT_USERNAME: ${CHATGPT_USERNAME:-}
       CHATGPT_PASSWORD: ${CHATGPT_PASSWORD:-}
       PDPP_CHATGPT_SIDE_EFFECT_PROBE: ${PDPP_CHATGPT_SIDE_EFFECT_PROBE:-}

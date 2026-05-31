@@ -157,10 +157,13 @@ list object with `data[]` and `has_more`. Missing `has_one` children return
 `null`; missing `has_many` children return an empty list.
 
 The first-party Gmail manifest enables `messages -> message_bodies` and
-`messages -> attachments`. Gmail attachment expansion is metadata-only in this
-slice: it does not expose bytes, `blob_ref`, extracted PDF/docx text, or blob
-fetch access. Reverse/belongs-to expansion such as `messages -> thread` remains
-deferred; clients can still query directly by the relevant foreign key.
+`messages -> attachments`. Attachment expansion is grant-safe and field-scoped:
+when the child `attachments` grant includes a hydrated `blob_ref`, the resource
+server decorates it with `blob_ref.fetch_url`, and bytes are fetched only through
+`GET /v1/blobs/{blob_id}` under the same grant. Metadata-only attachment records
+continue to expose no bytes and no fabricated blob reference. Reverse/belongs-to
+expansion such as `messages -> thread` remains deferred; clients can still query
+directly by the relevant foreign key.
 
 ### Filtered retrieval
 

@@ -25,7 +25,7 @@ of the docket, not a replacement for OpenSpec task ownership.
 
 | Priority | Item | Current owner reading |
 |---:|---|---|
-| 0 | Explorer design SLVP ideal | Highest direct product priority. The current Explorer work is not accepted as the SLVP ideal. |
+| 0 | Explorer design SLVP ideal | Highest direct product priority. The Explorer SLVP implementation is owner-accepted and complete-awaiting-archive; further Explorer work should be new scope, not hidden acceptance debt. |
 | 1 | RI acceptance target | Hosted MCP external-client acceptance, multi-connection package grant, canonical connector identifiers, and Daisy owner-token behavior remain the core acceptance target. |
 | 2 | Owner tracking and accountability | The RI owner must maintain accurate scope, own worker/delegate output, keep rollback safety, and not rely on stale memory or worker claims. |
 | 3 | External-client and live proof gaps | Real external Claude/client proof and valid HTTPS callback delivery remain open live gates. |
@@ -50,7 +50,7 @@ of the docket, not a replacement for OpenSpec task ownership.
 
 | Item | Status | Authority / evidence | Next action | Acceptance criterion |
 |---|---|---|---|---|
-| Local `main` ahead of `origin/main` | `owner-decision-gated` | `pnpm workstreams:status` reports `main` ahead by 19. | Decide whether to push the accepted RI-owner commits or hold local. | Remote branch contains the accepted commits, or the reason for holding is recorded. |
+| Local `main` ahead of `origin/main` | `owner-decision-gated` | `pnpm workstreams:status` reports `main` ahead of upstream. | Decide whether to push the accepted RI-owner commits or hold local. | Remote branch contains the accepted commits, or the reason for holding is recorded. |
 | Delegate acceptance branch | `needs-verification` | `workstream/ri-owner-delegate-acceptance-target` exists and is ahead by 17, but its commits are merged into local `main`. | Confirm no unmerged commits, then delete or park the branch/worktree. | `pnpm workstreams:status` no longer reports a misleading ahead branch, or it is explicitly parked. |
 | Current operational ledger | `operational` | `tmp/workstreams/ri-owner-current-state.md`. | Keep updated after merge, deploy, archive, park, or live-gate decisions. | A resumed owner can identify current branches, deployment revision, evidence, and stop condition without chat memory. |
 
@@ -68,44 +68,47 @@ of the docket, not a replacement for OpenSpec task ownership.
 
 | Change | Progress | Status | Next action |
 |---|---:|---|---|
-| `complete-local-agent-collectors` | 6/22 | `active-openspec` | Continue after connection-first identity and collector state questions are settled. |
+| `complete-local-agent-collectors` | 6/22 | `active-openspec` | Continue connection-first identity, multi-device collision tests, local store coverage, and dashboard completeness now that state sync is complete-awaiting-archive. |
 | `split-public-site-and-operator-console` | 15/36 | `active-openspec` | Continue surface separation without hosted-service framing drift. |
 | `design-fast-broad-agent-consent` | 17/36 | `active-openspec` | Reconcile with current package-grant and owner-token behavior before more UI work. |
-| `add-gmail-attachment-backfill` | 22/28 | `owner-live-gated` | Bundle live Gmail/Docker acceptance with next owner live session; trivial docs cleanup can be handled separately. |
+| `add-gmail-attachment-backfill` | 27/28 | `owner-live-gated` | Bundle live Gmail/Docker acceptance with next owner live session; no-human Docker env/docs and reference query/blob proof are closed. |
 | `expose-connection-identity-on-public-read` | 50/60 | `active-openspec` | Finish remaining identity/read-surface tasks, then verify MCP gateway and Explorer consumers. |
 | `canonicalize-connector-keys` | 22/26 | `owner-live-gated` | Finish live DB backup/migration validation and real Claude/ChatGPT client flows; reconcile deployed state in tasks. |
 | `split-reference-server-by-route-family` | 47/54 | `active-openspec` | Complete remaining route extraction and final validation/stat checks. |
 | `add-connector-adaptive-lanes` | 29/33 | `needs-verification` | Verify max-concurrency decision and remaining acceptance evidence before dispatch. |
 | `republish-remote-surface-as-opendatalabs` | 37/42 | `active-openspec` | Continue package/release readiness only after current acceptance gates are stable. |
 | `add-chase-current-activity-stream` | 12/13 | `owner-live-gated` | Live owner investigation for stable transaction identity and pending-to-posted behavior. |
-| `define-run-assistance-state-contract` | 24/26 | `active-openspec` | Close remaining contract/tests after current run-assistance surfaces are verified. |
-| `propagate-skip-result-diagnostics` | 13/14 | `owner-live-gated` | Run a live USAA path with propagation enabled and inspect persisted timeline evidence. |
+| `define-run-assistance-state-contract` | 26/26 | `complete-awaiting-archive` | Archive after owner accepts that the two Docker live flows are residual post-deploy evidence, not implementation blockers. |
+| `propagate-skip-result-diagnostics` | 14/14 | `complete-awaiting-archive` | Archive after owner accepts that live USAA root-cause proof is residual post-deploy evidence. |
 | `design-host-browser-bridge-for-docker` | 28/30 | `active-openspec` | Finish design closure or explicitly defer host-bridge implementation. |
 | `add-run-interaction-streaming-companion` | 85/90 | `active-openspec` | Close remaining companion/streaming tasks after live UX verification. |
-| `add-source-webhook-ingress` | 18/19 | `active-openspec` | Close the final task, then re-validate and archive if no runtime/code delta remains. |
-| `design-local-collector-state-sync` | 35/36 | `active-openspec` | Close the final design task or promote the remaining decision. |
+| `add-source-webhook-ingress` | 19/19 | `complete-awaiting-archive` | Archive after owner accepts the spec-only/code-audit evidence. |
+| `design-local-collector-state-sync` | 36/36 | `complete-awaiting-archive` | Archive after owner accepts that manual device-side replay is residual pre-broad-rollout evidence. |
 | `add-reddit-pilot-real-shape-fixture` | 0/20 | `future-roadmap` | Do not start until higher acceptance and connector-green lanes are stable. |
+| `complete-explorer-slvp-ideal` | 25/25 | `complete-awaiting-archive` | Archive after owner accepts the archive-readiness report. |
 | `narrow-search-to-spine-jump` | 18/18 | `complete-awaiting-archive` | Re-validate and archive. |
 | `route-hosted-mcp-adapter-self-calls-internally` | 11/11 | `complete-awaiting-archive` | Archive after owner accepts live F1 evidence. |
 
 ## Explorer, Search, and Timeline
 
-Explorer is not SLVP-complete. The landed work closed safe UI/IA slices, but the
-ideal Explorer depends on read-contract and manifest capabilities that are not
-fully present yet.
+Explorer is SLVP-complete for the accepted owner target as of `e1d6b604`. The
+contract prerequisites that previously blocked type-aware cards and honest
+window language are implemented, validated, and browser-proven. The active
+OpenSpec change is complete-awaiting-archive; any later Explorer ambitions
+should be opened as new scoped work.
 
 | Item | Status | Authority / evidence | Next action | Acceptance criterion |
 |---|---|---|---|---|
-| Typed manifest stream schemas | `owner-decision-gated` | `design-notes/explorer-record-kind-and-typed-manifest-2026-05-28.md`; Explorer worker reports. | Promote or attach to the relevant active OpenSpec change before implementation. | Explorer can render field types without static fallback tables. |
-| Photo/blob cards | `owner-decision-gated` | Gmail/blob reports and Explorer fidelity reports. | Implement after typed `blob` manifest support and `fetch_blob` UX rules are settled. | Blob-backed records show safe previews/download affordances with grant-aware access. |
-| Type facets and schema dispatch | `owner-decision-gated` | Explorer field capability reports. | Build on typed manifest schema work. | Facets come from manifest/read metadata, not hard-coded stream assumptions. |
-| Grant-scoped field projection in Explorer | `owner-decision-gated` | Field capability cards report. | Wire Explorer to owner/grant context explicitly. | Fields hidden by grant projection are represented honestly, not silently omitted. |
-| Connection-scoped search | `active-openspec` | Explorer product closeout reports; `expose-connection-identity-on-public-read`. | Add or finish `connection_id` scoping in search paths. | Searching within one connection cannot leak or mix sibling connections. |
-| Aggregate/window metadata | `needs-verification` | Explorer closure reports; read-contract aggregation status. | Decide whether to extend record list metadata or rely on aggregate endpoints. | Explorer can show bounded activity and corpus summaries without expensive full scans. |
-| Search/Explore/Timeline IA unification | `needs-verification` | Explorer unified IA reports. | Decide the product shape, then update routes and navigation. | Search, Explore, and Timeline have one coherent owner mental model. |
-| `/dashboard/records/*` route retirement | `needs-verification` | Explorer closure reports. | Spec or implement a route rename to connection-oriented URLs. | No primary dashboard IA is record-centric where connection-centric language is intended. |
-| Sandbox Explorer parity | `needs-verification` | Explorer unified IA report noted `/sandbox/explore` gap. | Decide whether sandbox parity is required for acceptance or only docs/demo polish. | Sandbox routes either exist with mock data or are intentionally absent and not linked. |
-| Live browser UAT | `owner-live-gated` | Explorer reports explicitly did not perform final browser UAT. | Run real browser acceptance after the above product shape is settled. | Owner can complete the target journey without hidden route, layout, or copy regressions. |
+| Typed manifest stream schemas | `complete-awaiting-archive` | `complete-explorer-slvp-ideal`; `field_capabilities[field].type` merged and generated artifacts current. | Archive with the Explorer change. | Explorer renders declared field types with heuristic fallback only when declarations are absent. |
+| Photo/blob cards | `complete-awaiting-archive` | `complete-explorer-slvp-ideal`; final sandbox browser UAT proved blob affordance/read-path honesty. | Archive with the Explorer change. | Blob-backed records show safe read affordances only when declared usable. |
+| Type facets and schema dispatch | `complete-awaiting-archive` | `complete-explorer-slvp-ideal`; typed card dispatch tests and browser UAT passed. | Archive with the Explorer change. | Facets/cards derive from read metadata rather than static stream assumptions. |
+| Grant-scoped field projection in Explorer | `complete-awaiting-archive` | `complete-explorer-slvp-ideal`; withheld-field rendering proved in sandbox UAT. | Archive with the Explorer change. | Fields hidden by projection are represented honestly, not silently omitted. |
+| Connection-scoped search | `active-openspec` | `expose-connection-identity-on-public-read` remains open. Explorer now consumes connection chips/links. | Finish remaining identity/read-surface tasks in that change. | Searching within one connection cannot leak or mix sibling connections. |
+| Aggregate/window metadata | `complete-awaiting-archive` | `complete-explorer-slvp-ideal`; `window=exact` contract/runtime slice and live browser language passed. | Archive with the Explorer change. | Explorer can show bounded activity/window summaries without claiming full scans. |
+| Search/Explore/Timeline IA unification | `complete-awaiting-archive` | `complete-explorer-slvp-ideal` plus `narrow-search-to-spine-jump`. | Archive both completed changes after owner review. | Search/Jump, Explore, and Timeline have one coherent owner mental model. |
+| `/dashboard/records/*` route retirement | `future-roadmap` | Explicitly out of scope for `complete-explorer-slvp-ideal`. | Do not treat as hidden Explorer acceptance debt; open a new change only if route semantics become priority. | No primary dashboard IA is record-centric where connection-centric language is intended. |
+| Sandbox Explorer parity | `complete-awaiting-archive` | `complete-explorer-slvp-ideal`; `/sandbox/explore` web browser UAT passed with seeded specimen labels. | Archive with the Explorer change. | Sandbox route exists with labeled mock data and intentional live/sandbox divergence. |
+| Live browser UAT | `complete-awaiting-archive` | `tmp/workstreams/explorer-live-uat-final-clean*.png`; `tmp/workstreams/explorer-sandbox-uat-final-web-*.png`. | Archive after owner accepts archive-readiness report. | Owner can complete the target journey without hidden route, layout, or copy regressions. |
 
 ## Gemini and guidance-ledger reconciliation
 
@@ -119,7 +122,7 @@ items were mostly stale relative to code shipped later.
 | Outbound webhook envelope standards | `false-positive` | `tmp/workstreams/ri-gemini-item-webhook-standards.md`; archived standards-alignment change. | Mark stale ledger rows resolved. |
 | Read-contract aggregation/faceting | `false-positive` | `tmp/workstreams/ri-gemini-item-read-aggregation.md`; archived aggregation changes. | No new aggregation OpenSpec from Gemini. |
 | MCP server behavior/spec coverage | `false-positive` | `tmp/workstreams/ri-gemini-item-mcp-server-package.md`; `openspec/specs/mcp-adapter/spec.md`. | No behavior work. Publishing remains separate and parked. |
-| Gmail `blob_ref` / attachments | `owner-live-gated` | `tmp/workstreams/ri-gemini-item-gmail-attachment.md`; `add-gmail-attachment-backfill`. | Live Gmail/Docker acceptance. |
+| Gmail `blob_ref` / attachments | `owner-live-gated` | `tmp/workstreams/ri-gemini-item-gmail-attachment.md`; `add-gmail-attachment-backfill` at 27/28. | Live Gmail/Docker acceptance; no-human Docker env/docs and local query/blob proof are closed. |
 | `expand[]` / `expand_limit` footgun | `needs-verification` | `tmp/workstreams/ri-guidance-ledger-reconciliation-v1-report.md`. | Re-check current helper/schema behavior before dismissing or patching. |
 | SQLite-bound naming under Postgres mode | `needs-verification` | Guidance reconciliation action table. | Search current code and decide whether this is a one-commit cleanup. |
 | Cursor direction documentation | `needs-verification` | Guidance reconciliation action table. | Verify current read-contract docs; add a short note only if still absent. |
@@ -135,12 +138,12 @@ items were mostly stale relative to code shipped later.
 
 | Item | Status | Authority / evidence | Next action | Acceptance criterion |
 |---|---|---|---|---|
-| Gmail historical attachment backfill | `owner-live-gated` | `add-gmail-attachment-backfill`; Gemini reconciliation. | Run live Gmail + Docker acceptance or record exact blocker. | Historical Gmail attachment records expose usable `blob_ref` and fetch path after backfill. |
+| Gmail historical attachment backfill | `owner-live-gated` | `add-gmail-attachment-backfill`; Gemini reconciliation; focused Gmail/query/blob tests. | Run live Gmail + Docker acceptance with owner credentials and an owner token. | Historical Gmail attachment records expose usable `blob_ref` and fetch path after backfill. |
 | Chase current activity stream | `owner-live-gated` | `add-chase-current-activity-stream`. | Live investigation of DOM/network identity and pending-to-posted lifecycle. | Current activity records preserve stable identity or explicitly model uncertainty. |
-| USAA skip diagnostics | `owner-live-gated` | `propagate-skip-result-diagnostics`. | Run live USAA path and inspect persisted timeline. | Skip result records the real root cause without false success. |
+| USAA skip diagnostics | `complete-awaiting-archive` | `propagate-skip-result-diagnostics` complete; live USAA run recorded as residual post-deploy proof. | Archive after owner accepts residual-risk handling; still bundle live USAA proof into a later owner run if credentials are available. | Skip result records bounded diagnostics without false success; live source-specific usefulness remains post-deploy evidence. |
 | Connector adaptive lanes | `needs-verification` | `add-connector-adaptive-lanes`; guidance evidence gap. | Verify remaining concurrency decision and validation tasks. | Connector runner adapts lanes without overclaiming throughput or hiding backpressure. |
 | Connector-green readiness | `future-roadmap` | Connector-green worker reports. | Convert read-only readiness findings into bounded OpenSpec or task lanes. | Each advertised connector has honest maturity, fixture/test coverage, and live evidence where required. |
-| Local agent collectors | `active-openspec` | `complete-local-agent-collectors`. | Continue after identity and state-sync dependencies are clear. | Local collectors run under explicit connection/device/state semantics. |
+| Local agent collectors | `active-openspec` | `complete-local-agent-collectors`; `design-local-collector-state-sync` is complete-awaiting-archive. | Continue identity, multi-device collision, local store, and completeness-diagnostics work. | Local collectors run under explicit connection/device/state semantics. |
 | Reddit pilot real-shape fixture | `future-roadmap` | `add-reddit-pilot-real-shape-fixture`. | Do not start until higher-priority live connector gates are closed. | Fixture reflects real shape without collecting or exposing unnecessary owner data. |
 
 ## Platform, release, and self-host lanes
