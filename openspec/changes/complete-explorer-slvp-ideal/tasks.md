@@ -23,12 +23,12 @@ the single end-to-end journey in section 6.
 
 - [ ] 3.1 Consume the declared `field_capabilities[].type` in `record-kind.ts` / `record-preview.ts`, dispatching cards from the declared type when present.
 - [ ] 3.2 Keep the presentation-only heuristic as the explicit fallback for streams without a declared type and for search hits without a body; degrade to a generic card rather than guessing.
-- [ ] 3.3 Apply the `.impeccable` card direction: thin left-rail accent keyed to record kind (copper for human/message/person, cool blue for protocol/money/system), lead with the identifying fact, monospace for protocol data.
+- [ ] 3.3 Apply the `.impeccable` card direction: use a true hairline rule, inline kind marker, or surface tint keyed to record kind (copper for human/message/person, cool blue for protocol/money/system), lead with the identifying fact, monospace for protocol data, and avoid decorative side-stripe card treatments.
 - [ ] 3.4 Mirror the changes into `apps/console`. Add/extend unit tests proving declared-type dispatch and heuristic fallback against fixtures.
 
 ## 4. Explorer honesty: grant projection and blob affordances
 
-- [ ] 4.1 Consume the existing `field_capabilities` grant-usability signal so fields projected out under the active token render as withheld, not silently omitted — without introducing client-grant chrome.
+- [ ] 4.1 Consume the existing `field_capabilities` grant-usability signal so fields reported unusable under the active metadata render as withheld, not silently omitted — without introducing client-grant chrome on the owner-token Explorer.
 - [ ] 4.2 Render a grant-aware preview/download affordance for records whose stream declares a `blob` field type and that carry a `blob_ref`, reading only through the existing blob read path; represent out-of-projection blobs as unavailable.
 - [ ] 4.3 Source corpus/activity summaries from `meta.window` when present; otherwise omit or label as derived from the bounded recency sample. Never compute a full-corpus figure by unbounded fan-out.
 - [ ] 4.4 Add unit/invariant tests for withheld-field representation, blob affordance gating, and the bounded-summary honesty rule.
