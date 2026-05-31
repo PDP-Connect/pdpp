@@ -22,7 +22,7 @@ import {
   type RecordsExplorerData,
 } from "@/app/dashboard/components/views/records-explorer-view.tsx";
 import { formatConnectorNameForDisplay } from "@/app/dashboard/lib/connector-display.ts";
-import { classifyRecordKind } from "@/app/dashboard/lib/record-kind.ts";
+import { classifyRecordKind, type DeclaredFieldTypes } from "@/app/dashboard/lib/record-kind.ts";
 import { buildRecordPreview } from "@/app/dashboard/lib/record-preview.ts";
 import { listConnectorSummaries, type RefConnectorSummary } from "@/app/dashboard/lib/ref-client.ts";
 import {
@@ -31,9 +31,9 @@ import {
   listConnectorManifests,
   queryRecords,
   type SearchResultHit,
+  type StreamRecord,
   searchRecordsHybrid,
   searchRecordsLexical,
-  type StreamRecord,
 } from "@/app/dashboard/lib/rs-client.ts";
 import {
   lookupSearchTimestampMetadata,
@@ -154,6 +154,7 @@ interface FeedLoadResult {
 
 function toTimeRangeEntry({
   consentTimeField,
+  declaredFieldTypes,
   record,
   sinceMs,
   streamName,
@@ -161,6 +162,7 @@ function toTimeRangeEntry({
   untilMs,
 }: {
   consentTimeField: string;
+  declaredFieldTypes: DeclaredFieldTypes | undefined;
   record: StreamRecord;
   sinceMs: number | null;
   streamName: string;
@@ -172,7 +174,7 @@ function toTimeRangeEntry({
   if (ms === null || !isWithinWindow(ms, sinceMs, untilMs)) {
     return null;
   }
-  const kind = classifyRecordKind(streamName, data).kind;
+  const kind = classifyRecordKind(streamName, data, declaredFieldTypes).kind;
   return {
     connectorId: summary.connector_id,
     connectionId: summary.connection_id,
@@ -190,6 +192,7 @@ function toTimeRangeEntry({
 async function loadEmptyQueryFeed(
   filteredSummaries: RefConnectorSummary[],
   timestampMetadata: ReadonlyMap<string, SearchTimestampMetadata>,
+  declaredFieldTypes: ReadonlyMap<string, DeclaredFieldTypes>,
   filterStreams: ReadonlySet<string>
 ): Promise<FeedLoadResult> {
   // Bounded fan-out: pick the top-N most-recent connections, then for each
@@ -220,7 +223,11 @@ async function loadEmptyQueryFeed(
                   emittedAt: record.emitted_at,
                   metadata: lookupSearchTimestampMetadata(timestampMetadata, summary.connector_id, streamName),
                 });
-                const kind = classifyRecordKind(streamName, data).kind;
+                const kind = classifyRecordKind(
+                  streamName,
+                  data,
+                  declaredFieldTypes.get(searchTimestampMetadataKey(summary.connector_id, streamName))
+                ).kind;
                 const entry: ExplorerFeedEntry = {
                   connectorId: summary.connector_id,
                   connectionId: summary.connection_id,
@@ -276,6 +283,7 @@ async function loadTimeRangeFeed(
   until: string,
   filteredSummaries: RefConnectorSummary[],
   timestampMetadata: ReadonlyMap<string, SearchTimestampMetadata>,
+  declaredFieldTypes: ReadonlyMap<string, DeclaredFieldTypes>,
   filterStreams: ReadonlySet<string>
 ): Promise<FeedLoadResult> {
   // Time-anchored cross-stream feed. Connection-first so row attribution stays exact.
@@ -309,7 +317,19 @@ async function loadTimeRangeFeed(
             (page): StreamFetchResult => ({
               ok: true,
               entries: page.data
-                .map((record) => toTimeRangeEntry({ consentTimeField, record, sinceMs, streamName, summary, untilMs }))
+                .map((record) =>
+                  toTimeRangeEntry({
+                    consentTimeField,
+                    declaredFieldTypes: declaredFieldTypes.get(
+                      searchTimestampMetadataKey(summary.connector_id, streamName)
+                    ),
+                    record,
+                    sinceMs,
+                    streamName,
+                    summary,
+                    untilMs,
+                  })
+                )
                 .filter((entry): entry is ExplorerFeedEntry => entry !== null),
             })
           )
@@ -353,6 +373,7 @@ async function loadSearchFeed(
   filterStreams: ReadonlySet<string>,
   timestampMetadata: ReadonlyMap<string, SearchTimestampMetadata>,
   manifestFieldNames: ReadonlyMap<string, readonly string[]>,
+  declaredFieldTypes: ReadonlyMap<string, DeclaredFieldTypes>,
   selectedConnectionIds: ReadonlySet<string>
 ): Promise<FeedLoadResult> {
   const allowedConnectors = new Set(filteredSummaries.map((s) => s.connector_id));
@@ -400,6 +421,12 @@ async function loadSearchFeed(
       metadata: lookupSearchTimestampMetadata(timestampMetadata, hit.connector_id, hit.stream),
     });
     const attribution = attributeSearchHit(hit, filteredSummaries);
+    // Search hits carry no record body. Declared field types (when the
+    // manifest declares them) are the preferred kind signal; otherwise manifest
+    // field names are the heuristic fallback for opaque stream names. Either
+    // way only a kind *tag* is derived here — no precise card is built, because
+    // buildRecordPreview is gated on an actual record body below.
+    const metaKey = searchTimestampMetadataKey(hit.connector_id, hit.stream);
     return {
       connectorId: hit.connector_id,
       connectionId: attribution.connectionId,
@@ -409,13 +436,7 @@ async function loadSearchFeed(
       emittedAt: hit.emitted_at,
       displayAt: display.value,
       summary: hit.snippet?.text ?? `${hit.stream}/${hit.record_key}`,
-      // Search hits carry no record body. Use manifest field names as a
-      // heuristic fallback for kind classification on opaque stream names.
-      kind: classifyRecordKind(
-        hit.stream,
-        null,
-        manifestFieldNames.get(searchTimestampMetadataKey(hit.connector_id, hit.stream))
-      ).kind,
+      kind: classifyRecordKind(hit.stream, null, declaredFieldTypes.get(metaKey), manifestFieldNames.get(metaKey)).kind,
       retrievalMode: hit.retrieval_mode ?? (hybridUsed ? "hybrid" : "lexical"),
     };
   });
@@ -511,6 +532,7 @@ async function dispatchFeed(args: {
   filterStreamSet: ReadonlySet<string>;
   timestampMetadata: ReadonlyMap<string, SearchTimestampMetadata>;
   manifestFieldNames: ReadonlyMap<string, readonly string[]>;
+  declaredFieldTypes: ReadonlyMap<string, DeclaredFieldTypes>;
   filterConnectionSet: ReadonlySet<string>;
 }): Promise<FeedDispatch> {
   const {
@@ -521,6 +543,7 @@ async function dispatchFeed(args: {
     filterStreamSet,
     timestampMetadata,
     manifestFieldNames,
+    declaredFieldTypes,
     filterConnectionSet,
   } = args;
   const hasTimeWindow = since !== "" || until !== "";
@@ -531,41 +554,135 @@ async function dispatchFeed(args: {
       filterStreamSet,
       timestampMetadata,
       manifestFieldNames,
+      declaredFieldTypes,
       filterConnectionSet
     );
     return { feed, lens: hasTimeWindow ? "search_with_ignored_time_window" : "search" };
   }
   if (hasTimeWindow) {
-    const feed = await loadTimeRangeFeed(since, until, filteredSummaries, timestampMetadata, filterStreamSet);
+    const feed = await loadTimeRangeFeed(
+      since,
+      until,
+      filteredSummaries,
+      timestampMetadata,
+      declaredFieldTypes,
+      filterStreamSet
+    );
     return { feed, lens: "time_range" };
   }
-  const feed = await loadEmptyQueryFeed(filteredSummaries, timestampMetadata, filterStreamSet);
+  const feed = await loadEmptyQueryFeed(filteredSummaries, timestampMetadata, declaredFieldTypes, filterStreamSet);
   return { feed, lens: "recent" };
 }
 
 interface ManifestMetadata {
-  timestampMetadata: Map<string, SearchTimestampMetadata>;
+  /**
+   * Declared presentation field types (field name → declared `type`), keyed by
+   * connector::stream. Mirrors the read-contract's `field_capabilities[].type`:
+   * sourced from `schema.properties[field].x_pdpp_type` or sandbox-shaped
+   * `fields[]` / `schema.fields[]` declarations. Only populated for streams
+   * whose manifest declares at least one type. Consumed read-only as the
+   * preferred card-dispatch signal; never alters filter/grant/retrieval.
+   */
+  declaredFieldTypes: Map<string, DeclaredFieldTypes>;
   /** Field names from manifest schema.properties, keyed by connector::stream. */
   manifestFieldNames: Map<string, readonly string[]>;
+  timestampMetadata: Map<string, SearchTimestampMetadata>;
+}
+
+interface ManifestStream {
+  consent_time_field?: unknown;
+  cursor_field?: unknown;
+  fields?: unknown;
+  name: string;
+  schema?: { properties?: Record<string, unknown>; fields?: unknown };
+}
+
+/** A non-empty trimmed string, or null. */
+function trimmedString(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+/**
+ * Collect declared types from sandbox-shaped `{ name, type }` declarations
+ * (`fields[]` / `schema.fields[]`). First declaration of a field name wins;
+ * the JSON Schema extension (collected separately) overrides afterwards.
+ */
+function collectFieldDeclarations(declarations: unknown, out: Record<string, string>): void {
+  if (!Array.isArray(declarations)) {
+    return;
+  }
+  for (const decl of declarations) {
+    if (!(decl && typeof decl === "object")) {
+      continue;
+    }
+    const name = trimmedString((decl as { name?: unknown }).name);
+    const type = trimmedString((decl as { type?: unknown }).type);
+    if (name && type && !(name in out)) {
+      out[name] = type;
+    }
+  }
+}
+
+/** Collect declared types from `schema.properties[field].x_pdpp_type`. */
+function collectSchemaExtensionTypes(props: Record<string, unknown> | undefined, out: Record<string, string>): void {
+  if (!(props && typeof props === "object")) {
+    return;
+  }
+  for (const [field, schema] of Object.entries(props)) {
+    if (!(schema && typeof schema === "object")) {
+      continue;
+    }
+    const type = trimmedString((schema as { x_pdpp_type?: unknown }).x_pdpp_type);
+    if (type) {
+      out[field] = type;
+    }
+  }
+}
+
+/**
+ * Extract a stream's declared presentation field types from its manifest, the
+ * same way the reference server's `buildFieldCapabilities` does:
+ *   1. a sandbox-shaped declaration in `fields[]` or `schema.fields[]`
+ *      (`{ name, type }`), then
+ *   2. `schema.properties[field].x_pdpp_type` (JSON Schema extension), which
+ *      takes precedence per field.
+ * Returns null when the stream declares no presentation type, so the assembler
+ * keeps the current (heuristic) shape for un-annotated manifests.
+ */
+function extractDeclaredFieldTypes(stream: ManifestStream): DeclaredFieldTypes | null {
+  const out: Record<string, string> = {};
+  collectFieldDeclarations(stream.fields, out);
+  collectFieldDeclarations(stream.schema?.fields, out);
+  collectSchemaExtensionTypes(stream.schema?.properties, out);
+  return Object.keys(out).length > 0 ? out : null;
 }
 
 async function buildManifestMetadata(): Promise<ManifestMetadata> {
   const timestampMetadata = new Map<string, SearchTimestampMetadata>();
   const manifestFieldNames = new Map<string, readonly string[]>();
+  const declaredFieldTypes = new Map<string, DeclaredFieldTypes>();
   for (const manifest of await listConnectorManifests()) {
-    for (const stream of manifest.streams ?? []) {
+    for (const stream of (manifest.streams ?? []) as ManifestStream[]) {
       const key = searchTimestampMetadataKey(manifest.connector_id, stream.name);
       timestampMetadata.set(key, {
         consent_time_field: typeof stream.consent_time_field === "string" ? stream.consent_time_field : null,
         cursor_field: typeof stream.cursor_field === "string" ? stream.cursor_field : null,
       });
-      const props = (stream as { schema?: { properties?: Record<string, unknown> } }).schema?.properties;
+      const props = stream.schema?.properties;
       if (props && typeof props === "object") {
         manifestFieldNames.set(key, Object.keys(props));
       }
+      const declared = extractDeclaredFieldTypes(stream);
+      if (declared) {
+        declaredFieldTypes.set(key, declared);
+      }
     }
   }
-  return { timestampMetadata, manifestFieldNames };
+  return { timestampMetadata, manifestFieldNames, declaredFieldTypes };
 }
 
 export interface ExplorerSearchParams {
@@ -605,7 +722,7 @@ export async function assembleExplorerData(
     filterConnectionSet.size > 0 ? summaries.filter((s) => filterConnectionSet.has(s.connection_id)) : summaries;
 
   const filterStreamSet = new Set(selectedStreams);
-  const { timestampMetadata, manifestFieldNames } = await buildManifestMetadata();
+  const { timestampMetadata, manifestFieldNames, declaredFieldTypes } = await buildManifestMetadata();
 
   const { feed: feedResult, lens } = await dispatchFeed({
     query,
@@ -615,6 +732,7 @@ export async function assembleExplorerData(
     filterStreamSet,
     timestampMetadata,
     manifestFieldNames,
+    declaredFieldTypes,
     filterConnectionSet,
   });
 

@@ -19,9 +19,10 @@ import { formatConnectorKeyForDisplay, formatConnectorNameForDisplay } from "../
 import type { RecordKind } from "../../lib/record-kind.ts";
 import type { RecordPreview } from "../../lib/record-preview.ts";
 import { defaultWindow } from "../../lib/timeline.ts";
-import { EmptyState } from "../shell.tsx";
 import { Callout, FilterSummary, PageHeader, Section, SplitLayout } from "../primitives.tsx";
+import { EmptyState } from "../shell.tsx";
 import type { Routes } from "./routes.ts";
+
 export type {
   ExplorerActivityCell,
   ExplorerConnectionFacet,
@@ -44,10 +45,10 @@ export {
   isoDayFromMs,
   parseExplorerPeekParam,
 } from "./explorer-utils.ts";
+
 import type {
   ExplorerActivityCell,
   ExplorerConnectionFacet,
-  ExplorerFeedDayGroup,
   ExplorerFeedEntry,
   ExplorerLens,
   ExplorerPeekData,
@@ -135,7 +136,6 @@ export function RecordsExplorerView({ data, routes }: { data: RecordsExplorerDat
     </>
   );
 }
-
 
 function ExplorerMain({
   query,
@@ -316,7 +316,6 @@ function ExplorerMain({
     </>
   );
 }
-
 
 function ExplorerControls({
   exploreHref,
@@ -639,15 +638,16 @@ function ActivityStrip({
   );
 }
 
-// Per-kind left-rail accent. The temperature system from the designer's
-// Explorer: message rows read "human" (copper), event rows read "protocol"
-// (blue), money rows read "value" (success green). `titled` and `generic`
-// stay neutral so visual weight is reserved for the type-distinct kinds.
-// These map onto the same brand tokens the rest of the dashboard uses; no new
-// color is introduced.
-const KIND_RAIL_TONE: Record<RecordKind, string> = {
+// Per-kind hairline rule tone — the brand's temperature duality (`.impeccable`
+// §3.3): copper (`--human`) for human/message/person surfaces, cool blue
+// (`--primary`) for protocol / money / system surfaces. `titled` and `generic`
+// stay neutral so visual weight is reserved for the type-distinct kinds. These
+// map onto the same brand tokens the rest of the dashboard uses; no new color
+// is introduced. The marker is a true 1px hairline (see ExplorerCard), never a
+// decorative side-stripe.
+const KIND_RULE_TONE: Record<RecordKind, string> = {
   message: "before:bg-[color:var(--human)]",
-  money: "before:bg-[color:var(--success)]",
+  money: "before:bg-primary",
   event: "before:bg-primary",
   titled: "before:bg-border",
   generic: "before:bg-border",
@@ -800,14 +800,17 @@ function ExplorerCard({
   selected: boolean;
 }) {
   const kind = entry.kind ?? "generic";
-  // A 3px left rail in the kind's temperature. `before:` pseudo-element keeps
-  // the rail flush with the rounded card edge without an extra wrapper.
-  const rail = `relative overflow-hidden rounded-lg border before:absolute before:inset-y-0 before:left-0 before:w-[3px] before:content-[''] ${KIND_RAIL_TONE[kind]}`;
+  // A true 1px hairline rule on the leading edge, tinted to the kind's
+  // temperature (copper for human/message, cool blue for protocol/money/event).
+  // The `before:` pseudo-element keeps the hairline flush with the rounded card
+  // edge without an extra wrapper. Intentionally 1px — a restrained kind marker,
+  // not a decorative side-stripe.
+  const rule = `relative overflow-hidden rounded-lg border before:absolute before:inset-y-0 before:left-0 before:w-px before:content-[''] ${KIND_RULE_TONE[kind]}`;
   const surface = selected
     ? "border-foreground/30 bg-muted/50"
     : "border-border/70 bg-card hover:border-border hover:bg-muted/20";
   return (
-    <div className={`${rail} ${surface} transition-colors`}>
+    <div className={`${rule} ${surface} transition-colors`}>
       <Link className="block py-2.5 pr-3 pl-4" href={peekHref}>
         <div className="mb-1 flex items-baseline justify-between gap-3">
           <CardEyebrow entry={entry} />
@@ -855,9 +858,7 @@ function ExplorerPeek({
             {connectorKey} / {peek.stream}
           </span>
           {peek.connectionDisplayName ? (
-            <span className="ml-1.5 text-muted-foreground normal-case tracking-normal">
-              · {connectionDisplayName}
-            </span>
+            <span className="ml-1.5 text-muted-foreground normal-case tracking-normal">· {connectionDisplayName}</span>
           ) : null}
         </div>
         <div className="flex items-center gap-3 whitespace-nowrap">

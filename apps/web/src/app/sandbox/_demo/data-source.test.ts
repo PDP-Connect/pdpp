@@ -15,6 +15,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { executeRefDatasetSummary } from "pdpp-reference-implementation/operations/ref-dataset-summary";
+import { classifyRecordKind } from "@/app/dashboard/lib/record-kind.ts";
 import { sandboxDashboardDataSource as ds } from "./data-source.ts";
 import { createSandboxRefDatasetSummaryDependencies } from "./operations-fixtures.ts";
 
@@ -46,6 +47,45 @@ test("listConnectorManifests returns dashboard-shaped manifests", async () => {
       assert.equal(typeof s.name, "string");
     }
   }
+});
+
+test("sandbox manifests carry declared field types on the x_pdpp_type schema extension", async () => {
+  // The sandbox demo fields declare a presentation type (timestamp,
+  // currency_minor_units, …). The dashboard-shaped manifest must surface that
+  // type via the read-contract carrier (`schema.properties[field].x_pdpp_type`)
+  // so the Explorer dispatches typed cards from a declared type — closing the
+  // live/sandbox asymmetry. This is what the explore assembler consumes.
+  const manifests = await ds.listConnectorManifests();
+  let sawCurrencyMinorUnits = false;
+  let sawTimestamp = false;
+  for (const m of manifests) {
+    for (const s of m.streams ?? []) {
+      const props = (s as { schema?: { properties?: Record<string, { x_pdpp_type?: unknown }> } }).schema?.properties;
+      if (!props) {
+        continue;
+      }
+      for (const decl of Object.values(props)) {
+        if (decl.x_pdpp_type === "currency_minor_units") {
+          sawCurrencyMinorUnits = true;
+        }
+        if (decl.x_pdpp_type === "timestamp") {
+          sawTimestamp = true;
+        }
+      }
+    }
+  }
+  assert.ok(sawCurrencyMinorUnits, "expected at least one currency_minor_units declared field in the demo manifests");
+  assert.ok(sawTimestamp, "expected at least one timestamp declared field in the demo manifests");
+});
+
+test("a declared currency_minor_units field dispatches a money card via classifyRecordKind", () => {
+  // End-to-end shape of the typed dispatch: the declared type the sandbox
+  // manifest carries (consumed by the explore assembler) wins over the
+  // stream-name / body heuristic. 'inbox' would read message-ish by name.
+  assert.equal(
+    classifyRecordKind("inbox", { gross_pay_cents: 612_500 }, { gross_pay_cents: "currency_minor_units" }).kind,
+    "money"
+  );
 });
 
 test("getConnectorOverview returns ConnectorOverview with last+last-successful run", async () => {

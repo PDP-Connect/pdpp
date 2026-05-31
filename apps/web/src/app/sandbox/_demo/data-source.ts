@@ -228,8 +228,14 @@ function buildConnectorManifest(connectorId: string): ConnectorManifest {
       name: s.key,
       consent_time_field: s.consent_time_field,
       preview_fields: s.fields.slice(0, 4).map((f) => f.name),
+      // The demo fields carry a declared presentation type (timestamp,
+      // currency_minor_units, …). Surface it on the JSON Schema extension
+      // (`x_pdpp_type`) so the Explorer dispatches typed cards from a declared
+      // type — the same `field_capabilities[].type` the live read contract
+      // exposes — closing the live/sandbox asymmetry. The JSON Schema `type`
+      // stays a string so field-name fallback readers are unaffected.
       schema: {
-        properties: Object.fromEntries(s.fields.map((f) => [f.name, { type: f.type }])),
+        properties: Object.fromEntries(s.fields.map((f) => [f.name, { type: "string", x_pdpp_type: f.type }])),
       },
     })),
   };
