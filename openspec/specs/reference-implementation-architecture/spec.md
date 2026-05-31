@@ -188,14 +188,19 @@ The reference implementation SHALL keep the Collection boundary explicit across 
 - **WHEN** behavior concerns scheduling, retry, credential storage, webhook adaptation, batch import, or multi-connector coordination
 - **THEN** it SHALL be treated as runtime/orchestrator behavior unless and until a concrete interoperability need justifies a new profile
 
-#### Scenario: Durable local collector work is classified
-- **WHEN** behavior concerns local collector outbox storage, local work-unit leasing, stale-lease recovery, drain-before-scan ordering, host-native service lifecycle, resource budgets, or connection-scoped local durable-work diagnostics
-- **THEN** it SHALL be treated as reference runtime/orchestrator behavior unless and until a concrete interoperability need justifies Collection Profile promotion
-- **AND** the reference SHALL NOT describe those local durable-work mechanics as PDPP Core resource-server requirements
-
 #### Scenario: The reference makes an optimistic collection choice before the spec is fully frozen
 - **WHEN** the reference implementation enforces a strong Collection Profile behavior before the PDPP spec is fully settled
 - **THEN** that behavior SHALL be labeled as either an interoperability requirement to be pushed into the Collection Profile spec or as a reference-only choice that does not yet claim normative status
+
+#### Scenario: Run assistance semantics are classified
+- **WHEN** behavior concerns the shape of owner assistance during a bounded connector run, including whether the owner must act elsewhere, provide a value, operate an attachment, or wait for retry
+- **THEN** the reference SHALL label the behavior as reference-run-assistance semantics unless and until the Collection Profile explicitly adopts it
+- **AND** candidate Collection Profile semantics SHALL be limited to connector-neutral assistance axes, lifecycle, and safety rules rather than reference dashboard implementation details
+
+#### Scenario: Browser surface assistance remains an attachment
+- **WHEN** behavior concerns CDP, Playwright, n.eko, WebRTC, stream-token minting, or pointer/keyboard/clipboard control
+- **THEN** the reference SHALL treat that behavior as browser-surface attachment implementation
+- **AND** it SHALL NOT imply that all owner assistance requires or provides a browser surface
 
 ### Requirement: Open design questions stay explicit
 The reference implementation SHALL keep unresolved design questions explicit in OpenSpec whenever implementation work materially narrows the plausible design space without fully settling the normative PDPP answer.
@@ -2825,7 +2830,7 @@ The reference dashboard SHALL relabel the Records subnav header to `Connections`
 
 ### Requirement: Reference dashboard exposes a records explorer surface
 
-The reference dashboard SHALL expose an owner-only records-explorer surface at `/dashboard/explore` (with the legacy `/dashboard/records/explorer` URL preserved by redirect) that browses owner-visible records through existing public PDPP and existing `_ref` read endpoints, without introducing new RS or `_ref` endpoints.
+The reference dashboard SHALL expose an owner-only records-explorer surface at `/dashboard/explore` (with the legacy `/dashboard/records/explorer` URL preserved by redirect) that browses owner-visible records through existing public PDPP and existing `_ref` read endpoints, without introducing new RS or `_ref` endpoints. The explorer SHALL render type-aware record cards dispatched from declared field types when present, falling back to a presentation-only heuristic otherwise, and SHALL present Search, Explore, and Timeline as one coherent owner mental model. The explorer SHALL NOT claim any backend behavior that the public read contract or the active token does not support.
 
 #### Scenario: The explorer reads through the existing RS contract
 - **WHEN** the records explorer renders results
@@ -2904,6 +2909,40 @@ The reference dashboard SHALL expose an owner-only records-explorer surface at `
 - **THEN** the explorer SHALL fall back to lexical retrieval so the owner still gets results
 - **AND** the page SHALL surface a structured warning naming the downgrade and the underlying error
 - **AND** the warning SHALL NOT be silently swallowed
+
+#### Scenario: Record cards dispatch from declared field types when present
+- **WHEN** the explorer renders a row whose record body is in hand (the recency or time-range lens) AND the stream's `field_capabilities` carry a declared presentation `type` for the row's fields
+- **THEN** the card SHALL dispatch its layout from the declared `type` (for example a `currency` field renders a money card, a `person` field renders an author, a `timestamp` field renders an event time)
+- **AND** the card SHALL NOT invent a field shape the declared `type` does not assert
+
+#### Scenario: Record cards fall back to the heuristic when types are absent
+- **WHEN** the explorer renders a row whose stream exposes no declared presentation `type` (a connector that has not yet declared a typed schema) OR whose record body is not in hand (a search hit that carries only a snippet)
+- **THEN** the card SHALL fall back to the presentation-only `record-kind` heuristic and the one-line summary
+- **AND** the fallback SHALL NOT be presented as a declared type, and SHALL degrade to a generic card rather than guessing a precise shape
+
+#### Scenario: Field projection is represented honestly under the active token
+- **WHEN** the explorer renders fields for a stream whose `field_capabilities` mark one or more fields as not usable under the active token's grant projection
+- **THEN** the explorer SHALL represent the projected-out fields honestly (for example as withheld) rather than silently omitting them as though they did not exist
+- **AND** the explorer SHALL NOT thereby imply a client-scoped grant on the owner-token surface
+
+#### Scenario: Blob-backed records show grant-aware preview affordances
+- **WHEN** the explorer renders a record whose stream declares a `blob` field type AND the record carries a `blob_ref`
+- **THEN** the card MAY show a preview or download affordance that reads only through the existing blob read path
+- **AND** the affordance SHALL respect the active token's grant: a blob outside the token's projection SHALL be represented as unavailable rather than fetched
+- **AND** the explorer SHALL NOT introduce a new RS or `_ref` blob route to render the affordance
+
+#### Scenario: Corpus and activity summaries are bounded and honest
+- **WHEN** the explorer renders a corpus or activity summary (for example "spans N years" or an activity strip)
+- **THEN** it SHALL source the summary from declared aggregate metadata (`meta.window`) when the read provides it
+- **AND** when no aggregate metadata is available, the explorer SHALL either omit the summary or label it as derived from the bounded recency sample rather than claiming a full-corpus figure
+- **AND** the explorer SHALL NOT compute a full-corpus summary by an unbounded per-stream fan-out scan
+
+#### Scenario: Search, Explore, and Timeline form one coherent model
+- **WHEN** an operator navigates between record browsing, free-text query, time-window browsing, and spine artifact lookup
+- **THEN** Explore SHALL be the single records canvas hosting the recency, time-window, and query lenses
+- **AND** Timeline SHALL be reachable as an Explore lens (a time window), not as a competing top-level records surface
+- **AND** `/dashboard/search` SHALL be reserved for spine artifact jumps (trace, grant, run by id) and SHALL route free-text record queries to Explore
+- **AND** the navigation labels SHALL NOT present two surfaces that do the same job under different names
 
 ### Requirement: Reference dashboard exposes Explore as a top-level operator-console route
 
@@ -4413,43 +4452,147 @@ Runtime route-contract validation SHALL live in the transport/HTTP adapter layer
 
 ### Requirement: Source webhook ingress is reference-only and source-authenticated
 
-The reference implementation SHALL expose source webhook ingress only as reference-runtime behavior. It SHALL NOT advertise source webhooks as core PDPP support, SHALL NOT add event-driven grant semantics, and SHALL NOT accept source callbacks authenticated with owner bearer tokens, client grant tokens, or local collector device credentials.
+The reference implementation SHALL expose source webhook ingress only as reference-runtime behavior at `POST /_ref/source-webhooks/:sourceId` on the RS application only. It SHALL NOT register the ingress route on the AS application. It SHALL NOT advertise source webhooks as core PDPP support, SHALL NOT add event-driven grant semantics, and SHALL NOT accept source callbacks authenticated with owner bearer tokens, client grant tokens, or local collector device credentials.
+
+The ingress route SHALL NOT appear in `/.well-known/oauth-protected-resource`, `/.well-known/oauth-authorization-server`, or any other public PDPP metadata endpoint.
+
+When no per-source HMAC secret is configured for a given `sourceId`, the reference SHALL return HTTP 404 with error code `unknown_source`. The endpoint is active only for source ids present in the operator-configured secret map (`PDPP_SOURCE_WEBHOOK_SECRETS`).
 
 #### Scenario: A source callback reaches the reference ingress endpoint
-- **WHEN** a caller posts a source webhook callback to the reference endpoint
-- **THEN** the reference SHALL authenticate the callback with a source-specific credential before processing the body
+- **WHEN** a caller posts a source webhook callback to `POST /_ref/source-webhooks/:sourceId`
+- **THEN** the reference SHALL authenticate the callback with the per-source HMAC credential before processing the body
 - **AND** the reference SHALL reject missing, malformed, stale, or invalid signatures before mutating records or scheduler state
 
 #### Scenario: Metadata is requested
-- **WHEN** a client reads public PDPP metadata
+- **WHEN** a client reads public PDPP metadata from `/.well-known/oauth-protected-resource` or `/.well-known/oauth-authorization-server`
 - **THEN** the reference SHALL NOT advertise the reference source webhook endpoint as a public PDPP capability
+
+#### Scenario: Owner or client session credentials are presented
+- **WHEN** a caller posts to `POST /_ref/source-webhooks/:sourceId` with a valid owner-session cookie, owner bearer token, or client grant bearer token
+- **THEN** the reference SHALL NOT use those credentials to authenticate the webhook callback
+- **AND** the reference SHALL authenticate only via the `PDPP-Webhook-Signature` header against the configured per-source HMAC secret
+
+#### Scenario: The source is not configured
+- **WHEN** the request identifies all required source-webhook headers
+- **AND** no per-source HMAC secret is configured for the given `sourceId`
+- **THEN** the reference SHALL return HTTP 404 with error code `unknown_source` before performing any signature or timestamp check
+
+### Requirement: Source webhook ingress uses a PDPP-specific signed envelope
+
+The reference implementation SHALL authenticate source webhook callbacks using three required request headers with a defined signing scheme.
+
+Required headers:
+
+| Header | Format | Purpose |
+|---|---|---|
+| `PDPP-Webhook-Timestamp` | Decimal integer string of Unix epoch seconds | Replay-protection timestamp |
+| `PDPP-Webhook-Event-Id` | Non-empty opaque string | Idempotency key component |
+| `PDPP-Webhook-Signature` | `sha256=<lowercase-hex>` | HMAC-SHA256 authenticity |
+
+The signed material SHALL be `"${timestamp}.${body}"` where `timestamp` is the value of the `PDPP-Webhook-Timestamp` header and `body` is the raw UTF-8 request body. The expected signature SHALL be `sha256=` followed by the lowercase hex encoding of `HMAC-SHA256(secret, signed_material)` where `secret` is the per-source HMAC secret. Signature comparison SHALL use a timing-safe equality check.
+
+HTTP header names are case-insensitive. The header names above are the canonical documentation casing; adapters MAY receive or normalize them in lowercase.
+
+These header names are intentionally PDPP-prefixed rather than the Standard Webhooks v1 names (`webhook-id`, `webhook-timestamp`, `webhook-signature`). Standard Webhooks v1 is the right choice for the outbound client-event-subscription delivery direction (where the reference is the sender). Source webhook ingress is the receiver direction: the reference accepts callbacks from source platforms with their own signing schemes, and standardizing inbound header names would require every source platform to adopt PDPP header names. PDPP-prefixed names correctly signal that this is a reference-specific adapter contract, not a PDPP Core protocol surface.
+
+#### Scenario: All required headers are present and signature matches
+- **WHEN** a caller posts a request with valid `PDPP-Webhook-Timestamp`, `PDPP-Webhook-Event-Id`, and `PDPP-Webhook-Signature` headers
+- **AND** the signature matches `sha256=hex(HMAC-SHA256(secret, "${timestamp}.${body}"))` using the configured per-source secret
+- **AND** the timestamp is within the accepted tolerance window
+- **THEN** the reference SHALL proceed to idempotency checking and payload processing
+
+#### Scenario: A required header is absent or blank
+- **WHEN** any of `PDPP-Webhook-Timestamp`, `PDPP-Webhook-Event-Id`, or `PDPP-Webhook-Signature` is absent or blank
+- **THEN** the reference SHALL reject the request with HTTP 401 before processing the body
+- **AND** the error code SHALL identify which header is missing (`missing_timestamp`, `missing_event_id`, or `missing_signature`)
+
+#### Scenario: The signature does not match
+- **WHEN** the `PDPP-Webhook-Signature` header is present but does not match the expected HMAC for the given body, timestamp, and per-source secret
+- **THEN** the reference SHALL reject the request with HTTP 401 and error code `invalid_signature`
+
+### Requirement: Source webhook ingress enforces a timestamp tolerance window
+
+The reference implementation SHALL reject callbacks whose `PDPP-Webhook-Timestamp` value, when interpreted as Unix epoch seconds, differs from the server's current wall-clock time by more than 300 seconds (5 minutes). Timestamp rejection SHALL occur after required-header validation and per-source secret resolution, and before signature verification.
+
+#### Scenario: The timestamp is within the tolerance window
+- **WHEN** `abs(server_time_seconds - timestamp_seconds) <= 300`
+- **THEN** the reference SHALL proceed to HMAC signature verification
+
+#### Scenario: The timestamp is outside the tolerance window
+- **WHEN** `abs(server_time_seconds - timestamp_seconds) > 300`
+- **THEN** the reference SHALL reject the request with HTTP 401 and error code `stale_timestamp`
+- **AND** the reference SHALL NOT perform HMAC signature verification or body parsing for that request
 
 ### Requirement: Source webhook ingress prevents replay before mutation
 
-The reference implementation SHALL persist an idempotency decision for each accepted source webhook event before applying record mutations or scheduler signals. The idempotency key SHALL be bound to the source id and event id.
+The reference implementation SHALL persist an idempotency decision for each accepted source webhook event before applying record mutations or scheduler signals. The idempotency key SHALL be the composite `(source_id, event_id)` where `event_id` is the value of the `PDPP-Webhook-Event-Id` header. The persistence layer SHALL enforce a `UNIQUE(source_id, event_id)` constraint so that concurrent or retried deliveries of the same event are serialized at the storage layer.
+
+#### Scenario: A new event is received
+- **WHEN** the `(sourceId, eventId)` pair has not been previously accepted
+- **THEN** the reference SHALL insert an idempotency record before executing ingest or scheduler operations
+- **AND** record mutations or scheduler signals SHALL execute only after the idempotency record is durably committed
 
 #### Scenario: A duplicate source event is received
-- **WHEN** a source webhook event with a previously accepted source id and event id is received again
-- **THEN** the reference SHALL return an idempotent duplicate outcome
+- **WHEN** a source webhook event with a previously accepted `(sourceId, eventId)` pair is received again
+- **THEN** the reference SHALL return HTTP 202 with `{ "accepted": true, "duplicate": true, "source_id": "...", "event_id": "..." }`
 - **AND** the reference SHALL NOT reapply record mutations or scheduler signals for that event
 
-### Requirement: Source webhook record pushes use existing ingest semantics
+### Requirement: Source webhook ingress error codes and HTTP statuses are enumerated
 
-Accepted source webhook record pushes SHALL be normalized into the existing record ingest path for the matching connector/source stream. The webhook path SHALL NOT bypass stream lookup, record validation, tombstone behavior, versioning, indexing, or grant-visible query behavior.
+The reference implementation SHALL return the following error codes and HTTP status codes for authentication, replay, and payload failures at the source webhook ingress endpoint:
+
+| Error code | HTTP status | Trigger condition |
+|---|---|---|
+| `missing_event_id` | 401 | `PDPP-Webhook-Event-Id` header absent or blank |
+| `missing_timestamp` | 401 | `PDPP-Webhook-Timestamp` header absent or blank |
+| `missing_signature` | 401 | `PDPP-Webhook-Signature` header absent or blank |
+| `unknown_source` | 404 | No HMAC secret configured for the given `sourceId` |
+| `stale_timestamp` | 401 | Timestamp is outside the +/-5-minute tolerance window |
+| `invalid_signature` | 401 | HMAC-SHA256 mismatch |
+| `invalid_payload` | 400 | Body is not a JSON object, `action` value is not recognized, or required fields for the stated `action` are missing |
+
+All error responses SHALL use the reference's standard PDPP error envelope. Auth and replay failures SHALL return 401 rather than 403 to avoid revealing credential presence to unauthenticated callers. The `unknown_source` 404 is intentional: a wrong `sourceId` in the URL is a diagnosable operator misconfiguration, and source ids are not secret.
+
+#### Scenario: An auth or replay failure is returned
+- **WHEN** a webhook callback fails for any authentication or replay reason
+- **THEN** the HTTP response SHALL use the error code and HTTP status from the table above
+- **AND** the response body SHALL use the reference's standard PDPP error envelope
+
+#### Scenario: A payload error is returned
+- **WHEN** the callback passes authentication and replay checks but the body is malformed, unrecognized, or missing required fields
+- **THEN** the reference SHALL return HTTP 400 with error code `invalid_payload`
+
+### Requirement: Source webhook ingress supports two payload action values
+
+The reference implementation SHALL accept source webhook payloads with one of two `action` values: `ingest_records` and `schedule_run`. Any other `action` value SHALL cause the reference to return HTTP 400 with error code `invalid_payload`.
+
+**`action: "ingest_records"`** - push records into the reference's existing record-ingest path. Required additional fields:
+- `stream` - non-empty string identifying the target stream declared in the connector manifest.
+- `records` - array of record objects to ingest.
+
+Records SHALL be serialized as NDJSON and passed to the existing record-ingest operation (`rs.records.ingest`). The webhook path SHALL NOT bypass stream lookup, record validation, tombstone behavior, versioning, indexing, or grant-visible query behavior.
+
+**`action: "schedule_run"`** - request a connector refresh. No additional fields are required. The request SHALL be classified through the shared automation policy model with `trigger_kind: "webhook"`. The run SHALL be started only if the automation policy resolves `allowed_to_start: true`. If the runtime controller is unavailable, the reference SHALL fall back to signaling the scheduler's last-run-time record.
 
 #### Scenario: A signed record-push callback is accepted
-- **WHEN** an authenticated source callback carries records for a declared stream
-- **THEN** the reference SHALL process those records through the existing record-ingest operation for that connector/source and stream
-- **AND** the response SHALL report accepted and rejected record counts from that operation
+- **WHEN** an authenticated source callback carries `{ "action": "ingest_records", "stream": "<name>", "records": [ ... ] }`
+- **THEN** the reference SHALL process those records through the existing `rs.records.ingest` operation for the connector bound to that `sourceId`
+- **AND** the response SHALL include `records_accepted` and `records_rejected` counts from that operation
 
-### Requirement: Source webhook run triggers are scheduler input only
+#### Scenario: `ingest_records` is missing required fields
+- **WHEN** an authenticated source callback carries `"action": "ingest_records"` but `stream` is absent or blank, or `records` is not an array
+- **THEN** the reference SHALL return HTTP 400 with error code `invalid_payload`
 
-Accepted source webhook run-trigger callbacks SHALL be treated as scheduler input. They SHALL NOT directly execute connector runs or bypass scheduler-owned non-overlap, backoff, rate-limit, owner-attention, or diagnostics behavior.
+#### Scenario: A signed run-trigger callback is accepted and automation policy permits the run
+- **WHEN** an authenticated source callback carries `{ "action": "schedule_run" }` and the automation policy resolves `allowed_to_start: true`
+- **THEN** the reference SHALL request a connector refresh with `trigger_kind: "webhook"` for the connector bound to that `sourceId`
+- **AND** the webhook handler SHALL NOT start the connector run outside the shared automation policy model
+- **AND** when the runtime controller is unavailable, the reference SHALL fall back to signaling the scheduler's last-run-time record instead of dropping the request
 
-#### Scenario: A signed run-trigger callback is accepted
-- **WHEN** an authenticated source callback requests a connector/source refresh
-- **THEN** the reference SHALL record a scheduler input signal for that connector/source
-- **AND** the webhook handler SHALL NOT start the connector run inline
+#### Scenario: Automation policy blocks the run
+- **WHEN** an authenticated source callback carries `{ "action": "schedule_run" }` but the automation policy resolves `allowed_to_start: false`
+- **THEN** the reference SHALL return HTTP 200 with `{ "action": "schedule_run", "run": null, "automation_policy": { ... } }`
+- **AND** the automation policy result SHALL be included in the response body for operator diagnostics
 
 ### Requirement: Reference control-plane reads and mutations require owner session when enabled
 The reference implementation SHALL require the placeholder owner session on reference-only `_ref` read and mutation routes when owner auth is enabled. When owner auth is disabled, the reference implementation SHALL preserve the current open local-dev behavior for those routes.
@@ -7154,3 +7297,266 @@ When `ensureSurface` finds an existing reference-owned n.eko container that is n
 - **THEN** it SHALL stop the underlying container but SHALL NOT remove it
 - **AND** a subsequent `ensureSurface` call for the same surface SHALL be allowed to replace the stopped container according to the stale-carcass rule above
 
+### Requirement: Gmail attachment backfill is explicit and gap-aware
+
+The reference implementation SHALL provide an explicit Gmail attachment backfill path for historical mail that is independent of the normal `messages` stream cursor. The implementation SHALL NOT claim complete Gmail attachment hydration merely because new-message sync hydrates attachments.
+
+#### Scenario: Attachment hydration is enabled after message state advanced
+
+- **WHEN** Gmail `messages.all_mail.uidnext` has advanced past historical messages that contain attachments
+- **AND** an operator requests Gmail attachment backfill
+- **THEN** the reference SHALL revisit the historical All Mail UID range needed for the `attachments` stream without rewinding the normal `messages` cursor
+- **AND** it SHALL emit attachment records with populated `blob_ref` for bytes that Gmail still makes accessible
+
+#### Scenario: Attachment backfill is interrupted
+
+- **WHEN** a Gmail attachment backfill run stops before completing the historical UID range
+- **THEN** the reference SHALL preserve enough `attachments` stream state to resume from the last durably completed window
+- **AND** it SHALL NOT mark an unprocessed UID range as complete
+
+#### Scenario: Attachment bytes cannot be fetched
+
+- **WHEN** a historical Gmail attachment is inaccessible, too large, malformed, throttled, or otherwise cannot be hydrated
+- **THEN** the reference SHALL preserve a metadata attachment record with a truthful `hydration_status`
+- **AND** any diagnostic field or timeline summary SHALL be bounded and SHALL NOT include attachment bytes, source credentials, or secret download material
+
+### Requirement: Gmail attachment blob persistence is idempotent
+
+Gmail attachment hydration and backfill SHALL persist bytes through the existing content-addressed blob substrate. Reprocessing an already hydrated attachment SHALL preserve stable record identity and SHALL NOT duplicate blob bytes.
+
+#### Scenario: Historical attachment is backfilled twice
+
+- **WHEN** the same historical Gmail attachment bytes are processed by two attachment backfill runs
+- **THEN** the emitted attachment record id SHALL remain stable
+- **AND** the `blob_ref.blob_id` SHALL remain the same content-addressed blob id
+- **AND** the blob store SHALL preserve at most one byte payload for that blob id while allowing idempotent record bindings
+
+#### Scenario: Incremental and backfill hydration overlap
+
+- **WHEN** a Gmail attachment is hydrated during normal incremental sync and later appears in an attachment backfill window
+- **THEN** the later backfill SHALL treat the existing hydrated blob as already satisfied or re-emit the same stable blob reference
+- **AND** it SHALL NOT create a conflicting attachment record for the same Gmail message part
+
+### Requirement: Gmail attachment hydration preflight and coverage are operator-visible
+
+The reference Docker path SHALL make Gmail attachment hydration prerequisites and coverage gaps visible before reporting success.
+
+#### Scenario: Blob upload configuration is missing
+
+- **WHEN** Gmail attachment hydration or backfill is requested in Docker without required blob upload configuration such as `PDPP_RS_URL` and `PDPP_OWNER_TOKEN`
+- **THEN** the reference SHALL fail preflight with an actionable error before doing mailbox work
+- **AND** it SHALL NOT report the Gmail run as complete attachment hydration
+
+#### Scenario: Gmail attachment backfill completes with partial gaps
+
+- **WHEN** a Gmail attachment backfill run completes with some attachments not hydrated
+- **THEN** the run output or reference-only run timeline SHALL expose a non-secret gap summary that distinguishes hydrated, too large, failed, unavailable or skipped, and remaining historical gap counts
+- **AND** it SHALL NOT include an `already_hydrated` count unless existing blob or record state is measured directly
+- **AND** the summary SHALL be sufficient for an operator to know that "all mail" is not fully byte-hydrated
+
+#### Scenario: Docker proof validates historical rehydration
+
+- **WHEN** the documented Docker acceptance path is run with Gmail credentials and a historical attachment-bearing message
+- **THEN** the reference SHALL demonstrate that the historical attachment can be discovered through Gmail records, expanded through `expand=attachments`, and fetched through the grant-visible `blob_ref.fetch_url`
+- **AND** if the proof cannot run because env or credentials are missing, it SHALL report the exact missing prerequisite instead of producing a false-success result
+
+### Requirement: Stream metadata field capabilities SHALL carry an optional declared presentation type
+
+The reference implementation SHALL allow each `field_capabilities` entry on stream metadata to carry an optional declared presentation `type` (for example `currency`, `timestamp`, `person`, `blob`, `text`) sourced from the stream manifest. The `type` is additive and optional: a manifest that does not declare it SHALL produce a `field_capabilities` entry with no `type`, and consumers SHALL treat an absent `type` as "not declared." This declared `type` is a presentation/dispatch hint for reference surfaces; it is not a Core protocol field and SHALL NOT change grant, projection, filter, or retrieval semantics.
+
+#### Scenario: A manifest declares a typed field
+- **WHEN** a stream manifest declares a presentation `type` for a top-level field
+- **AND** an owner or client token requests `GET /v1/streams/<stream>`
+- **THEN** the field's `field_capabilities` entry SHALL include that declared `type`
+- **AND** the live manifest type SHALL accept the same typed field shape the sandbox demo manifests already encode
+
+#### Scenario: An undeclared field omits the type
+- **WHEN** a stream manifest does not declare a presentation `type` for a field
+- **THEN** the field's `field_capabilities` entry SHALL omit `type`
+- **AND** a consumer SHALL treat the absence as "not declared" and fall back to its own heuristic, never inventing a type
+
+#### Scenario: The declared type does not alter query or grant semantics
+- **WHEN** the declared presentation `type` is present on a field
+- **THEN** exact-filter support, range operators, lexical/semantic participation, and grant usability for that field SHALL be unchanged from a field without a declared `type`
+- **AND** the `type` SHALL NOT be writable by a client, SHALL NOT appear in selection requests, and SHALL NOT be treated as a grantable capability
+
+### Requirement: The record-list read MAY expose bounded window aggregate metadata
+
+The reference record-list read (`GET /v1/streams/:stream/records`) MAY include an optional `meta.window` object carrying bounded aggregate metadata for the addressed read — `total`, `earliest_at`, and `latest_at` — computed under the same grant projection and the same exact/declared range-filter validation as the records themselves. When present, `meta.window` SHALL describe the filtered, grant-scoped corpus, not the unfiltered stream. When the read cannot compute the aggregate cheaply or the contract does not provide it, `meta.window` SHALL be omitted rather than estimated.
+
+#### Scenario: A record-list read includes window metadata
+- **WHEN** a client reads `GET /v1/streams/<stream>/records` and the resource server can compute the bounded aggregate under the request's grant and filters
+- **THEN** the response MAY include `meta.window` with `total`, `earliest_at`, and `latest_at`
+- **AND** those figures SHALL reflect the same grant projection and the same range-filter validation applied to the returned records
+
+#### Scenario: Window metadata is omitted rather than estimated
+- **WHEN** the resource server cannot compute the bounded aggregate cheaply or does not implement `meta.window`
+- **THEN** the response SHALL omit `meta.window`
+- **AND** a consumer SHALL treat the absence as "not available" and SHALL NOT synthesize a full-corpus figure from a bounded sample
+
+### Requirement: The sandbox SHALL expose the records explorer at parity with the live surface
+
+The reference sandbox SHALL expose the records explorer at `/sandbox/explore`, rendering the same explorer view through the sandbox (mock-backed) data source. Any divergence between the sandbox and live explorer SHALL be intentional and visibly labeled — never an accidental gap — and the sandbox SHALL remain clearly distinct from live operation per the surface topology.
+
+#### Scenario: Sandbox explore renders the same view through mock data
+- **WHEN** a visitor opens `/sandbox/explore`
+- **THEN** the page SHALL render the same records-explorer view as `/dashboard/explore`, sourced from the sandbox data source with deterministic fictional data
+- **AND** the page SHALL NOT require an owner token, collect real credentials, or read from a live resource server
+
+#### Scenario: Sandbox-only divergences are labeled, not hidden
+- **WHEN** the sandbox explorer shows something the live explorer cannot (for example an illustrative read URL or seeded records)
+- **THEN** that divergence SHALL be visibly labeled as a sandbox specimen
+- **AND** the sandbox SHALL NOT present a capability as live behavior, and a retired sandbox records route SHALL redirect to `/sandbox/explore` rather than 404 or render a stale surface
+
+### Requirement: Local collector runs replay prior connector state through START
+
+The reference implementation SHALL load any prior persisted state for a local collector run before spawning the connector child, and SHALL pass it through the existing `StartMessage.state` field. State load SHALL use the device-scoped credential, scoped by `(deviceId, sourceInstanceId)`.
+
+#### Scenario: A local collector starts with prior state
+
+- **WHEN** the local collector runner spawns a connector child for a device-scoped source instance that has previously persisted state
+- **THEN** the runner SHALL fetch that state with its device-scoped credential
+- **AND** it SHALL set `StartMessage.state` to the fetched state map before writing `START` to the child
+- **AND** the child SHALL NOT need to read state from any other surface
+
+#### Scenario: A local collector starts with no prior state
+
+- **WHEN** the local collector runner spawns a connector child for a source instance with no persisted state
+- **THEN** the server SHALL respond to the state read with an empty map
+- **AND** the runner SHALL omit `state` from the `START` message
+- **AND** the child SHALL behave as if this is a first run
+
+#### Scenario: State read fails
+
+- **WHEN** the local collector runner cannot read prior state because of a network, credential, or server error
+- **THEN** the runner SHALL NOT spawn the connector child
+- **AND** it SHALL emit a heartbeat with `status: "blocked"` indicating a state-read failure
+- **AND** it SHALL exit non-zero
+
+### Requirement: Local collectors persist emitted STATE after records are durably accepted
+
+The reference implementation SHALL persist emitted `STATE` messages from a local collector child only after the records that justify that state are durably accepted by the server.
+
+#### Scenario: All record batches are accepted in a pass
+
+- **WHEN** a local collector child emits `RECORD` messages and one or more `STATE` messages, and all enqueued record batches drain successfully via the existing device ingest path
+- **THEN** the collector runner SHALL flush the accumulated `STATE` map to the device-scoped state endpoint once
+- **AND** the persisted state SHALL be the per-stream last-wins projection of the emitted `STATE` messages during that pass
+
+#### Scenario: Some record batches fail to drain in a pass
+
+- **WHEN** a local collector child emits `RECORD` and `STATE` messages but the queue still contains unsent record batches at end-of-pass
+- **THEN** the runner SHALL NOT advance persisted state for any stream in that pass
+- **AND** the previously persisted state SHALL remain authoritative
+
+#### Scenario: A STATE write fails after records were accepted
+
+- **WHEN** record batches drain successfully but the state `PUT` fails
+- **THEN** the runner SHALL surface that failure in its heartbeat
+- **AND** the next run SHALL re-emit records that the previous pass already considered consumed
+- **AND** ingest idempotency SHALL absorb the duplicates without doubling records in storage
+
+#### Scenario: STATE arrives for an out-of-scope stream
+
+- **WHEN** a local collector child emits `STATE` for a stream that was not in `START.scope.streams`
+- **THEN** the runner SHALL drop that `STATE` message
+- **AND** it SHALL emit a runtime warning identifying the offending stream
+
+### Requirement: Local collector state is device-scoped, source-instance-isolated, and reference-only
+
+The reference implementation SHALL expose local collector state read and write through the device-exporter authority, scoped by `(deviceId, sourceInstanceId)`. Owner-token and client-token routes SHALL NOT accept device credentials, and the device-scoped state route SHALL NOT accept owner or client credentials.
+
+#### Scenario: A device reads or writes its own source-instance state
+
+- **WHEN** a local collector presents a valid device-scoped credential to `GET /_ref/device-exporters/:deviceId/source-instances/:sourceInstanceId/state` or `PUT /_ref/device-exporters/:deviceId/source-instances/:sourceInstanceId/state`, with a path `deviceId` matching the credential and a registered `sourceInstanceId`
+- **THEN** the reference implementation SHALL serve or persist the state map keyed under the same internal storage connector id used for device record ingest for that source instance
+- **AND** that state SHALL NOT collide with state persisted under the public connector id for owner-authenticated runs of the same connector
+
+#### Scenario: Cross-device or cross-credential request
+
+- **WHEN** a caller presents a device-scoped credential to a state route for a different device's id, an unknown source instance, or presents an owner or client bearer token to the device-scoped state route
+- **THEN** the reference implementation SHALL reject the request without revealing state
+
+#### Scenario: Owner-authenticated state route is unaffected
+
+- **WHEN** an owner or client interacts with the existing `GET /v1/state/:connectorId` route or `PUT /v1/state/:connectorId` route
+- **THEN** that route SHALL continue to operate keyed by `(connectorId, grantId)` with owner authentication
+- **AND** it SHALL NOT serve or accept device-scoped state rows
+
+### Requirement: SKIP_RESULT diagnostics SHALL propagate to the run timeline as bounded owner evidence
+
+When a connector emits a `SKIP_RESULT` message that carries a `diagnostics` value, the reference runtime SHALL forward a bounded, redacted projection of that value to the `run.stream_skipped` spine event payload and to the corresponding `known_gap` entry. The runtime SHALL apply the same secret-redaction policy it uses for other connector-authored gap strings, and SHALL bound nested string length, nested array length, nested object depth, and total JSON size before persistence.
+
+The propagated diagnostic SHALL be treated as connector-authored, untrusted evidence. It SHALL be visible only on owner/control-plane surfaces and SHALL NOT be exposed through grant-scoped `/v1` data, search, schema, or blob APIs.
+
+#### Scenario: Connector emits SKIP_RESULT with a structured diagnostics object
+
+- **WHEN** a connector emits `SKIP_RESULT` whose `diagnostics` is a JSON object describing the failure (for example, `{ phase, diag: { url, title }, artifact: { candidates: [...] }, error }`)
+- **THEN** the persisted `run.stream_skipped` event SHALL include `data.diagnostics` containing the bounded, redacted projection of that object
+- **AND** the corresponding `known_gap` SHALL include a `diagnostics` field with the same bounded payload.
+
+#### Scenario: SKIP_RESULT diagnostics contains a secret-like value
+
+- **WHEN** a string leaf in the connector-authored diagnostics matches the reference runtime's secret-redaction policy (for example `password=…`, `token=…`, a six-digit OTP)
+- **THEN** the persisted projection SHALL contain the redacted replacement rather than the original value.
+
+#### Scenario: SKIP_RESULT diagnostics exceeds the size cap
+
+- **WHEN** a connector emits `SKIP_RESULT.diagnostics` whose bounded JSON projection exceeds the runtime's diagnostic size cap
+- **THEN** the persisted projection SHALL be replaced with a sentinel object `{ "truncated": true, "reason": "size_overflow" }` (or an equivalent shape that signals truncation)
+- **AND** the rest of the `SKIP_RESULT` (stream, reason, message, recovery hint, known gap) SHALL still propagate normally.
+
+#### Scenario: SKIP_RESULT diagnostics is not an object
+
+- **WHEN** a connector emits `SKIP_RESULT` whose `diagnostics` value is an array, string, number, or boolean
+- **THEN** the runtime SHALL drop the `diagnostics` field from the persisted payload
+- **AND** SHALL NOT reject the `SKIP_RESULT` message for that reason.
+
+#### Scenario: Client-token read cannot access SKIP_RESULT diagnostics
+
+- **WHEN** a grant-scoped client token reads records, search results, schema, blobs, or other `/v1` resources within its grant
+- **THEN** `SKIP_RESULT.diagnostics` projections from run timelines SHALL NOT be included in the response
+- **AND** the client SHALL NOT receive a URL or object identifier that grants access to those diagnostics.
+
+### Requirement: HTTP route handlers SHALL be organized by route family
+The reference implementation SHALL decompose its HTTP route handlers into per-family adapter modules under `reference-implementation/server/routes/<family>.ts`. Each family adapter SHALL be a TypeScript module that registers a coherent set of routes (e.g. root and discovery, `_ref` operations, RS reads, RS mutations, AS OAuth, run interaction, web push, source webhooks, remote surface). The reference SHALL NOT keep all HTTP route handlers in a single composition module.
+
+#### Scenario: Route adapters live beside other server-only wiring
+- **WHEN** an HTTP route family is extracted from `reference-implementation/server/index.js`
+- **THEN** its adapter module SHALL be placed at `reference-implementation/server/routes/<family>.ts`
+- **AND** the adapter SHALL be a TypeScript module participating in the existing reference-implementation Biome `includes` and `tsconfig.json` `include` globs
+
+#### Scenario: The composition root retains capability wiring
+- **WHEN** a family adapter is mounted into the AS or RS Express-shaped app
+- **THEN** `reference-implementation/server/index.js` SHALL remain the composition root that owns `buildAsApp`, `buildRsApp`, capability construction, store factories, controller wiring, and `app.use(...)` global middleware
+- **AND** the composition root SHALL call the family adapter's mount function at the same point in the route-registration order as the previous inline registration
+
+### Requirement: Route-family extractions SHALL preserve observable behaviour
+A route-family extraction SHALL preserve every protocol-observable property of the moved routes: middleware order, owner-session and client-bearer authentication posture, request-id and trace-id propagation, response headers (including `Request-Id`, `Reference-Revision`, `PDPP-Version`, and the AS clickjacking defenses `X-Frame-Options` and `Content-Security-Policy: frame-ancestors 'none'`), content negotiation on the AS and RS root, response envelope shape, status codes, and spine event emission.
+
+#### Scenario: Middleware order is preserved
+- **WHEN** a family adapter registers a route that previously took ordered route-level middleware
+- **THEN** the same middleware SHALL run in the same order before the route's handler
+- **AND** the transport's contract-validation pre-handler (when the route's contract operation id is on the request-validation allowlist) SHALL continue to run after route-level middleware and before the handler
+
+#### Scenario: Response envelope and status codes are unchanged
+- **WHEN** a family adapter responds to a moved route
+- **THEN** the response status code, headers, and envelope shape SHALL match the pre-extraction behaviour byte-for-byte for successful and well-known failure cases
+
+#### Scenario: Content-negotiated root remains correct
+- **WHEN** an AS or RS root (`/`) handler is moved into `server/routes/root-and-discovery.ts`
+- **THEN** browser-shaped requests SHALL receive the existing operator/admin landing HTML
+- **AND** JSON-shaped requests SHALL receive the existing discovery envelope from `executeAsDiscoveryIndex` (AS) or `executeRsDiscoveryIndex` (RS)
+
+### Requirement: Route-family adapters SHALL NOT introduce a new layer abstraction
+Route-family extractions SHALL be mechanical adapter splits over the existing operations boundary at `reference-implementation/operations/*`. They SHALL NOT introduce a router, controller, service object, repository, or domain-driven aggregate layer beyond what already exists.
+
+#### Scenario: An adapter calls an operation directly
+- **WHEN** a family adapter handles a route that previously delegated to `operations/<op>`
+- **THEN** the adapter SHALL continue to call that operation directly, with the same capability arguments and the same store/controller bindings
+- **AND** the adapter SHALL NOT wrap the operation in an additional indirection layer
+
+#### Scenario: An adapter avoids new abstractions even when convenient
+- **WHEN** more than one family adapter would benefit from a small helper (e.g. resolving the owner subject id from a request)
+- **THEN** that helper SHALL be either a local function inside the family adapter or an exported helper from an existing module (`owner-auth.ts`, `ref-record-utils.ts`, etc.)
+- **AND** the change SHALL NOT introduce a new global mount-context type unless multiple family adapters demonstrably need the same wide context bundle
