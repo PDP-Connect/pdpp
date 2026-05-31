@@ -659,6 +659,28 @@ test("selectAttachmentBackfillFetchRange: historical range is bounded and indepe
   );
 });
 
+test("selectAttachmentBackfillFetchRange: interrupted windows replay until the durable cursor advances", () => {
+  const session = {
+    attachmentBackfill: { backfilled_through_uid: 100, uidvalidity: 123 },
+    maxWindowUids: 50,
+    priorUidnext: 251,
+  };
+  assert.equal(selectAttachmentBackfillFetchRange(session), "101:150");
+
+  // If a run crashes before its STATE is persisted, the durable cursor is
+  // unchanged and the same bounded window is retried. Attachment records are
+  // idempotent/content-addressed, so replay is safer than skipping ahead.
+  assert.equal(selectAttachmentBackfillFetchRange(session), "101:150");
+
+  assert.equal(
+    selectAttachmentBackfillFetchRange({
+      ...session,
+      attachmentBackfill: { backfilled_through_uid: 150, uidvalidity: 123 },
+    }),
+    "151:200"
+  );
+});
+
 test("resolveAttachmentBackfillWindowUids: env override must be a positive integer", () => {
   assert.equal(resolveAttachmentBackfillWindowUids({}), DEFAULT_ATTACHMENT_BACKFILL_WINDOW_UIDS);
   assert.equal(resolveAttachmentBackfillWindowUids({ PDPP_GMAIL_ATTACHMENT_BACKFILL_WINDOW_UIDS: "1" }), 1);
@@ -877,10 +899,9 @@ test("emitMessagesPass: progress includes count and total when metadata count is
 // `attachments` record. These tests pin that mode without IMAP: a
 // "historical" UID below priorUidnext is fed through the same code path
 // and we verify hydration, idempotency, and summary accounting.
-// Scope note: this asserts per-UID behavior and summary shape; it does
-// not exercise window selection, cursor advancement, or replay across
-// invocations (those require either an IMAP double or collector-runner
-// STATE plumbing, which is out of scope for this branch).
+// Scope note: this asserts per-UID behavior and summary shape. Window
+// selection is pinned above; cross-invocation replay of the Gmail-shaped
+// cursor is pinned in src/collector-runner.test.ts.
 
 test("backfill mode: historical UID below priorUidnext hydrates attachment bytes in attachment-only mode", async () => {
   const historicalPayload = Buffer.from("ancient invoice bytes");

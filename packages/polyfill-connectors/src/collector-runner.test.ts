@@ -647,6 +647,104 @@ test("two-pass replay regression: a second runCollectorConnector call receives t
   }
 });
 
+test("Gmail attachment backfill cursor replays from durable STATE after restart", async () => {
+  // Models the historical Gmail attachment backfill cursor specifically:
+  // the connector stores attachments.all_mail.backfilled_through_uid after
+  // a bounded UID window drains. On restart, the next START.state must carry
+  // that nested cursor so Gmail resumes at the next window instead of
+  // rescanning from zero or skipping unpersisted UIDs.
+  const harness = await startCollectorHarness({ priorState: {} });
+  try {
+    const queuePath = await tempQueuePath();
+    const fixture = await writeFixtureConnector({
+      script: `
+        let buf = "";
+        await new Promise((r) => process.stdin.on("data", (c) => {
+          buf += c;
+          if (buf.includes("\\n")) r();
+        }));
+        const start = JSON.parse(buf.split("\\n")[0]);
+        const prior = start.state?.attachments?.all_mail?.backfilled_through_uid ?? 0;
+        const next = prior + 50;
+        process.stdout.write(JSON.stringify({
+          type: "RECORD",
+          stream: "attachments",
+          key: "uid-window-" + next,
+          data: { id: "uid-window-" + next, observed_prior_uid: prior },
+          emitted_at: new Date().toISOString(),
+        }) + "\\n");
+        process.stdout.write(JSON.stringify({
+          type: "STATE",
+          stream: "attachments",
+          cursor: {
+            all_mail: {
+              uidvalidity: 123,
+              backfilled_through_uid: next,
+              completed_at: null,
+            },
+          },
+        }) + "\\n");
+        process.stdout.write(JSON.stringify({
+          type: "DONE",
+          status: "succeeded",
+          records_emitted: 1,
+        }) + "\\n");
+      `,
+    });
+
+    const baseConfig = {
+      baseUrl: harness.url,
+      connector: {
+        args: [fixture],
+        command: "node",
+        connector_id: "gmail-fixture-attachment-backfill",
+        runtime_requirements: { bindings: {} },
+        streams: ["attachments"],
+      } as const,
+      deviceId: "device-1",
+      deviceToken: "device-token",
+      queuePath,
+      sourceInstanceId: "src-1",
+    };
+
+    const pass1 = await runCollectorConnector(baseConfig);
+    assert.deepEqual(pass1.priorState, {});
+    assert.deepEqual(pass1.flushedState, {
+      attachments: {
+        all_mail: {
+          backfilled_through_uid: 50,
+          completed_at: null,
+          uidvalidity: 123,
+        },
+      },
+    });
+    assert.equal(harness.ingestedBatches[0]?.records?.[0]?.data?.observed_prior_uid, 0);
+
+    const pass2 = await runCollectorConnector(baseConfig);
+    assert.deepEqual(pass2.priorState, {
+      attachments: {
+        all_mail: {
+          backfilled_through_uid: 50,
+          completed_at: null,
+          uidvalidity: 123,
+        },
+      },
+    });
+    assert.deepEqual(pass2.flushedState, {
+      attachments: {
+        all_mail: {
+          backfilled_through_uid: 100,
+          completed_at: null,
+          uidvalidity: 123,
+        },
+      },
+    });
+    assert.equal(harness.ingestedBatches[1]?.records?.[0]?.data?.observed_prior_uid, 50);
+  } finally {
+    await harness.close();
+  }
+});
+
 test("runCollectorConnector drains durable checkpoint work before reading prior state", async () => {
   const harness = await startCollectorHarness({
     priorState: { messages: { cursor: "m-prior" } },

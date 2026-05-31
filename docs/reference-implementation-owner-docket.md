@@ -71,7 +71,7 @@ of the docket, not a replacement for OpenSpec task ownership.
 | `complete-local-agent-collectors` | 6/22 | `active-openspec` | Continue connection-first identity, multi-device collision tests, local store coverage, and dashboard completeness now that state sync is complete-awaiting-archive. |
 | `split-public-site-and-operator-console` | 15/36 | `active-openspec` | Continue surface separation without hosted-service framing drift. |
 | `design-fast-broad-agent-consent` | 17/36 | `active-openspec` | Reconcile with current package-grant and owner-token behavior before more UI work. |
-| `add-gmail-attachment-backfill` | 27/28 | `owner-live-gated` | Bundle live Gmail/Docker acceptance with next owner live session; no-human Docker env/docs and reference query/blob proof are closed. |
+| `add-gmail-attachment-backfill` | 28/28 | `complete-awaiting-archive` | Archive after owner accepts that live Gmail/Docker proof is residual owner-only evidence. |
 | `expose-connection-identity-on-public-read` | 50/60 | `active-openspec` | Finish remaining identity/read-surface tasks, then verify MCP gateway and Explorer consumers. |
 | `canonicalize-connector-keys` | 22/26 | `owner-live-gated` | Finish live DB backup/migration validation and real Claude/ChatGPT client flows; reconcile deployed state in tasks. |
 | `split-reference-server-by-route-family` | 47/54 | `active-openspec` | Complete remaining route extraction and final validation/stat checks. |
@@ -122,7 +122,7 @@ items were mostly stale relative to code shipped later.
 | Outbound webhook envelope standards | `false-positive` | `tmp/workstreams/ri-gemini-item-webhook-standards.md`; archived standards-alignment change. | Mark stale ledger rows resolved. |
 | Read-contract aggregation/faceting | `false-positive` | `tmp/workstreams/ri-gemini-item-read-aggregation.md`; archived aggregation changes. | No new aggregation OpenSpec from Gemini. |
 | MCP server behavior/spec coverage | `false-positive` | `tmp/workstreams/ri-gemini-item-mcp-server-package.md`; `openspec/specs/mcp-adapter/spec.md`. | No behavior work. Publishing remains separate and parked. |
-| Gmail `blob_ref` / attachments | `owner-live-gated` | `tmp/workstreams/ri-gemini-item-gmail-attachment.md`; `add-gmail-attachment-backfill` at 27/28. | Live Gmail/Docker acceptance; no-human Docker env/docs and local query/blob proof are closed. |
+| Gmail `blob_ref` / attachments | `complete-awaiting-archive` | `tmp/workstreams/ri-gemini-item-gmail-attachment.md`; `add-gmail-attachment-backfill` at 28/28. | Archive after owner accepts residual live-Gmail posture, or run live Gmail first if deployment proof is required before archive. |
 | `expand[]` / `expand_limit` footgun | `needs-verification` | `tmp/workstreams/ri-guidance-ledger-reconciliation-v1-report.md`. | Re-check current helper/schema behavior before dismissing or patching. |
 | SQLite-bound naming under Postgres mode | `needs-verification` | Guidance reconciliation action table. | Search current code and decide whether this is a one-commit cleanup. |
 | Cursor direction documentation | `needs-verification` | Guidance reconciliation action table. | Verify current read-contract docs; add a short note only if still absent. |
@@ -138,7 +138,7 @@ items were mostly stale relative to code shipped later.
 
 | Item | Status | Authority / evidence | Next action | Acceptance criterion |
 |---|---|---|---|---|
-| Gmail historical attachment backfill | `owner-live-gated` | `add-gmail-attachment-backfill`; Gemini reconciliation; focused Gmail/query/blob tests. | Run live Gmail + Docker acceptance with owner credentials and an owner token. | Historical Gmail attachment records expose usable `blob_ref` and fetch path after backfill. |
+| Gmail historical attachment backfill | `complete-awaiting-archive` | `add-gmail-attachment-backfill`; Gemini reconciliation; focused Gmail/query/blob/state-replay tests. | Archive with residual live Gmail/Docker acceptance recorded, or run live Gmail first if owner wants deployment proof before archive. | Historical Gmail attachment records expose usable `blob_ref` and fetch path after backfill; live Gmail remains a residual owner-only confirmation. |
 | Chase current activity stream | `owner-live-gated` | `add-chase-current-activity-stream`. | Live investigation of DOM/network identity and pending-to-posted lifecycle. | Current activity records preserve stable identity or explicitly model uncertainty. |
 | USAA skip diagnostics | `complete-awaiting-archive` | `propagate-skip-result-diagnostics` complete; live USAA run recorded as residual post-deploy proof. | Archive after owner accepts residual-risk handling; still bundle live USAA proof into a later owner run if credentials are available. | Skip result records bounded diagnostics without false success; live source-specific usefulness remains post-deploy evidence. |
 | Connector adaptive lanes | `needs-verification` | `add-connector-adaptive-lanes`; guidance evidence gap. | Verify remaining concurrency decision and validation tasks. | Connector runner adapts lanes without overclaiming throughput or hiding backpressure. |
