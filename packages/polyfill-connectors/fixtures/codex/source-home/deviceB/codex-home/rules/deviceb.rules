@@ -1,0 +1,2 @@
+# Synthetic Codex rules fixture on device B
+allow read /home/user
