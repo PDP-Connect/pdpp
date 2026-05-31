@@ -25,12 +25,13 @@
 > - threaded resolver-level `deprecated_alias_used` warnings through the
 >   multi-binding fan-in helpers and the streams-list / blob routes (P3).
 >
-> The remaining `**DEFERRED**` markers below are scoped to **external
-> coordination** (hosted MCP gateway, out-of-repo) and **broad UI work**
+> The remaining `**DEFERRED**` markers below are scoped to **broad UI work**
 > (multi-connection consent-card visual regression, per-connection
-> grant-request UI) that requires React testing infra not currently
-> configured in `apps/web`. The contract is connection-honest end-to-end
-> on the reference implementation and the regression suites
+> grant-request UI, and dashboard rename controls) that requires React testing
+> infra not currently configured in `apps/web`. The hosted MCP coordination
+> residual is closed by the in-repo MCP server and the owner's 2026-05-31 external
+> Claude run. The contract is connection-honest end-to-end on the reference
+> implementation and the regression suites
 > `reference-implementation/test/storage-fan-in-read-contract.test.js`
 > (29 tests, all green),
 > `reference-implementation/test/blob-fan-in-ambiguity.test.js`
@@ -83,12 +84,12 @@
 - [ ] **DEFERRED** — Add dashboard UI to edit `display_name` from the connection row. (UI tranche; backend mutation + grant evaluation are in place. Today the dashboard surfaces `display_name` read-only; an inline rename control is the safe next slice.)
 - [x] Ship the mutation before any read-contract change relies on `display_name` being meaningful. Mutation now ships in-band with the fan-in tranche; the renamed label propagates to subsequent records-list responses, covered by `renamed display_name surfaces on the next records-list fan-in response` in `storage-fan-in-read-contract.test.js`.
 
-## 7. MCP Gateway Coordination (External)
+## 7. MCP Gateway Coordination
 
-- [ ] **DEFERRED** — File an issue/PR in the hosted MCP gateway repo to accept `connection_id` as the optional argument on `list_streams`, `query_records`, `search`, `fetch`, `fetch_blob`, `schema`, `aggregate_records`.
-- [ ] **DEFERRED** — Update gateway tool descriptions to advertise `connection_id` and `display_name` so LLM consumers know to pass and surface them.
-- [ ] **DEFERRED** — Propagate the typed `ambiguous_connection` read-path error (with `available_connections`) through MCP error semantics.
-- [ ] **DEFERRED** — Confirm the gateway carries `connector_instance_id` only as a deprecated alias for migration compatibility, not as the advertised noun.
+- [x] Accept `connection_id` as the optional argument on `list_streams`, `query_records`, `search`, `fetch`, `fetch_blob`, `schema`, and `aggregate_records`. The hosted MCP surface now uses the in-repo `packages/mcp-server`; `connection-id-forwarding.test.js` proves the server forwards canonical `connection_id` and deprecated `connector_instance_id` verbatim for every relevant tool, and the owner's external Claude run on 2026-05-31 proved retry with a Slack `connection_id` succeeds against the live deployment.
+- [x] Update MCP tool descriptions to advertise `connection_id` and `display_name` so LLM consumers know to pass and surface them. `packages/mcp-server/src/tools.js` descriptions now point clients from schema/list-streams discovery and typed ambiguity errors to `connection_id`, `display_name`, and canonical `connector_key`; `canonical-mirror.test.js` and `server.integration.test.js` pin those descriptions and text envelopes.
+- [x] Propagate the typed `ambiguous_connection` read-path error, including `available_connections`, through MCP error semantics. `connection-id-forwarding.test.js` covers `fetch` and `fetch_blob` surfacing the structured error and retrying with `connection_id`; the owner's external Claude run additionally proved the live hosted package token returns `available_connections` with `grant_id`, `connector_key`, `connection_id`, `display_name`, and `retry_with: "connection_id"`.
+- [x] Confirm the gateway carries `connector_instance_id` only as a deprecated alias for migration compatibility, not as the advertised noun. MCP tool descriptions prefer `connection_id`, describe `connector_instance_id` as deprecated, and the live Claude run confirmed `connection_id` is the stable selector while `grant_id` can rotate across reconnects. Follow-up docs in `packages/mcp-server/README.md` explicitly instruct agents to persist `connection_id`, not `grant_id`, for source disambiguation.
 - [x] In-repo validation SHALL NOT block on this external item. (Confirmed: `pnpm exec openspec validate --all --strict` and `pnpm --filter @pdpp/reference-contract run verify` pass without gateway coordination.)
 - [x] **In-repo MCP server (`packages/mcp-server`) forwards `connection_id` and `connector_instance_id` verbatim** on every relevant tool (`list_streams`, `query_records`, `search`, `fetch`, `fetch_blob`); tool descriptions advertise the new field and the `ambiguous_connection` recover-and-retry flow. New `connection-id-forwarding.test.js` end-to-end-tests this through the real MCP SDK against a recording fake RS.
 
