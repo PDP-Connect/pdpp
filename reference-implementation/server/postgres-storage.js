@@ -1061,8 +1061,6 @@ export async function bootstrapPostgresSchema() {
         ON client_event_subscriptions(client_id, status);
       CREATE INDEX IF NOT EXISTS idx_pg_client_event_subscriptions_grant
         ON client_event_subscriptions(grant_id);
-      CREATE INDEX IF NOT EXISTS idx_pg_client_event_subscriptions_authority
-        ON client_event_subscriptions(authority_kind, subject_id, client_id, status);
 
       CREATE TABLE IF NOT EXISTS client_event_queue (
         queue_id        BIGSERIAL PRIMARY KEY,
