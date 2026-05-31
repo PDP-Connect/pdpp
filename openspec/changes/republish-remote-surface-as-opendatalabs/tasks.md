@@ -46,8 +46,8 @@
 
 ## 5. Release-Policy Wiring (worker lane, gated on `standardize-pdpp-package-publishing`)
 
-- [ ] 5.1 After `standardize-pdpp-package-publishing` lands, add `@opendatalabs/remote-surface` to `scripts/check-package-release-policy.mjs` so it is gated by the same `0.0.0` / OIDC / provenance rules as the rest of the publishable packages.
-- [ ] 5.2 Add a CI step (or extend the existing one) that runs `pnpm --filter @opendatalabs/remote-surface verify` against every PR.
+- [ ] 5.1 After `standardize-pdpp-package-publishing` lands and the owner approves public publication for `@opendatalabs/remote-surface`, add it to `scripts/check-package-release-policy.mjs` so it is gated by the same `0.0.0` / OIDC / provenance rules as the rest of the publishable packages. (2026-05-31 re-audit: the current policy is intentionally `@pdpp/*`-scoped and explicitly keeps `@opendatalabs/remote-surface` private; the checker already fails closed if this private package declares `publishConfig` or flips `private:false` without being made publishable. Generalizing the checker is a release-management owner decision, not worker-safe tail work.)
+- [x] 5.2 Add a CI step (or extend the existing one) that runs `pnpm --filter @opendatalabs/remote-surface verify` against every PR. (`.github/workflows/remote-surface.yml` runs `pnpm --filter @opendatalabs/remote-surface run verify` on pull requests and pushes touching `packages/remote-surface/**`, `pnpm-lock.yaml`, or the workflow. This matches the repo's path-scoped package CI convention used by `polyfill-connectors.yml` and `reference-implementation.yml`.)
 
 ## 6. Acceptance Checks (local automation)
 
