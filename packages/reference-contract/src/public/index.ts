@@ -1064,14 +1064,14 @@ const StreamMetadataResponseSchema = {
         additionalProperties: false,
         properties: {
           // Optional declared presentation type sourced from the stream
-          // manifest (`schema.properties[field].x_pdpp_type`). Additive and
-          // optional: omitted when the manifest does not declare it, and a
+          // manifest. Implementations may declare it as a JSON Schema
+          // extension (`schema.properties[field].x_pdpp_type`) or through the
+          // sandbox-shaped field declaration array (`fields[]` or
+          // `schema.fields[]` with `{ name, type, semantic_class }`). Additive
+          // and optional: omitted when the manifest does not declare it, and a
           // consumer SHALL treat the absence as "not declared". This is a
-          // presentation/dispatch hint for reference surfaces only — it does
-          // NOT change exact/range filter support, lexical/semantic
-          // participation, aggregation, grant usability, or any retrieval
-          // semantics, and it is never client-writable or grantable. See:
-          //   openspec/changes/complete-explorer-slvp-ideal
+          // presentation/dispatch hint only; it is never client-writable or
+          // grantable.
           type: { type: "string", minLength: 1 },
           schema: { type: "object", additionalProperties: true },
           granted: { type: "boolean" },

@@ -50,10 +50,10 @@ import { getDefaultDeviceExporterStore } from "./stores/device-exporter-store.js
 
 /**
  * Per-field JSON-Schema declaration carried in a stream manifest's
- * `schema.properties`. The reference accepts an optional `x_pdpp_type`
- * presentation hint here (for example `currency`, `timestamp`, `person`,
- * `blob`, `text`), mirroring the typed field shape the sandbox demo manifests
- * already encode. It is additive and optional: a manifest that omits it
+ * `schema.properties`. The reference accepts an optional JSON-Schema extension
+ * `x_pdpp_type` here (for example `currency`, `timestamp`, `person`, `blob`,
+ * `text`) and also accepts the sandbox-shaped field declaration array below.
+ * It is additive and optional: a manifest that omits both carriers
  * produces the current shape, and it is surfaced read-only as
  * `field_capabilities[field].type` purely as a presentation/dispatch hint —
  * it does not change filter, search, aggregation, grant, or retrieval
@@ -69,10 +69,27 @@ interface ManifestFieldSchema {
   [extension: string]: unknown;
 }
 
+/**
+ * Sandbox-shaped per-field declaration. This mirrors the demo manifests'
+ * `{ name, type, semantic_class }` shape while keeping JSON Schema field
+ * validation in `schema.properties`.
+ */
+interface ManifestFieldDeclaration {
+  name: string;
+  type: string;
+  semantic_class?: string;
+  description?: string;
+  [extension: string]: unknown;
+}
+
 interface ManifestStream extends ManifestStreamLike {
+  /** Sandbox-shaped typed field declarations already used by demo streams. */
+  fields?: ManifestFieldDeclaration[];
   schema?: {
     type?: string;
     properties?: Record<string, ManifestFieldSchema>;
+    /** Schema-adjacent form for the same typed field declaration shape. */
+    fields?: ManifestFieldDeclaration[];
     required?: string[];
     [extension: string]: unknown;
   };

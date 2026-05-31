@@ -1830,6 +1830,24 @@ function buildFieldAggregationCapabilities(aggregations, field, granted) {
 
 function buildFieldCapabilities(manifestStream, streamGrant = null) {
   const properties = manifestStream?.schema?.properties || {};
+  const fieldDeclarations = new Map();
+  for (const declarations of [manifestStream?.fields, manifestStream?.schema?.fields]) {
+    if (!Array.isArray(declarations)) {
+      continue;
+    }
+    for (const declaration of declarations) {
+      if (
+        declaration
+        && typeof declaration === 'object'
+        && typeof declaration.name === 'string'
+        && declaration.name.trim().length > 0
+        && typeof declaration.type === 'string'
+        && declaration.type.trim().length > 0
+      ) {
+        fieldDeclarations.set(declaration.name, declaration.type.trim());
+      }
+    }
+  }
   const grantedFields = Array.isArray(streamGrant?.fields) && streamGrant.fields.length > 0
     ? new Set(streamGrant.fields)
     : null;
@@ -1842,18 +1860,19 @@ function buildFieldCapabilities(manifestStream, streamGrant = null) {
     Object.entries(properties).map(([field, schema]) => {
       const granted = !grantedFields || grantedFields.has(field);
       const rangeOperators = Array.isArray(rangeFilters[field]) ? rangeFilters[field] : null;
-      // Optional declared presentation type, sourced from the manifest's
-      // per-field schema (`schema.properties[field].x_pdpp_type`). Surfaced as
-      // an additive `type` on the field_capabilities entry purely as a
-      // presentation/dispatch hint; it does not influence any filter, search,
-      // aggregation, grant, or retrieval decision below. Omitted entirely when
-      // the manifest does not declare a non-empty string, so an undeclared
-      // field yields the current shape. See:
-      //   openspec/changes/complete-explorer-slvp-ideal
+      // Optional declared presentation type, sourced either from the JSON
+      // Schema extension (`schema.properties[field].x_pdpp_type`) or from a
+      // sandbox-shaped field declaration (`fields[]` or `schema.fields[]`,
+      // with `{ name, type, semantic_class }`). Surfaced as an additive `type`
+      // on the field_capabilities entry only; it does not influence any filter,
+      // search, aggregation, grant, or retrieval decision below.
       const declaredType =
-        schema && typeof schema === 'object' && typeof schema.x_pdpp_type === 'string' && schema.x_pdpp_type.length > 0
-          ? schema.x_pdpp_type
-          : null;
+        schema
+        && typeof schema === 'object'
+        && typeof schema.x_pdpp_type === 'string'
+        && schema.x_pdpp_type.trim().length > 0
+          ? schema.x_pdpp_type.trim()
+          : fieldDeclarations.get(field) || null;
       return [field, {
         ...(declaredType ? { type: declaredType } : {}),
         schema,

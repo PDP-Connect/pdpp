@@ -3,13 +3,15 @@
  *
  * Section 1 of `openspec/changes/complete-explorer-slvp-ideal/tasks.md`.
  *
- * The reference allows each stream-manifest field schema to carry an optional
- * `x_pdpp_type` presentation hint (mirroring the typed field shape the sandbox
- * demo manifests already encode). The reference surfaces it read-only as
- * `field_capabilities[field].type`. This suite proves the contract end-to-end
- * over the live HTTP `GET /v1/streams/:stream` path:
+ * The reference allows each stream-manifest field to carry an optional
+ * presentation type either as a JSON Schema extension
+ * (`schema.properties[field].x_pdpp_type`) or as a sandbox-shaped `fields[]`
+ * declaration (`{ name, type, semantic_class }`). The
+ * reference surfaces it read-only as `field_capabilities[field].type`. This
+ * suite proves the contract end-to-end over the live HTTP
+ * `GET /v1/streams/:stream` path:
  *
- *   - a field whose manifest schema declares `x_pdpp_type` surfaces `type`;
+ *   - both declaration carriers surface `field_capabilities[field].type`;
  *   - a field whose manifest schema omits it surfaces no `type` key at all
  *     (the absence is honest — never `null`, never invented);
  *   - the declared `type` does NOT alter exact-filter, range-filter,
@@ -31,12 +33,14 @@ const STREAM = 'transactions';
 
 const TEST_DCR_INITIAL_ACCESS_TOKEN = 'pdpp-reference-test-initial-access-token';
 
-// A manifest whose `transactions` stream declares a presentation `type` on
-// some fields (`amount_cents` -> currency, `posted_at` -> timestamp,
-// `merchant` -> person) and deliberately omits it on others (`memo`, `id`).
-// `amount_cents` and `count_minor` share an identical JSON-schema/range/lexical
-// declaration; only `amount_cents` declares `x_pdpp_type`. That pairing lets us
-// assert the declared type changes nothing but the `type` key.
+// A manifest whose `transactions` stream declares a presentation `type` through
+// both accepted carriers: `amount_cents` uses the JSON Schema extension
+// `x_pdpp_type`, while `posted_at` and `merchant` use the sandbox-shaped
+// `fields[]` declarations. Other fields (`memo`, `id`) deliberately omit
+// a declared presentation type. `amount_cents` and `count_minor` share an
+// identical JSON-schema/range/lexical declaration; only `amount_cents` declares
+// `x_pdpp_type`. That pairing lets us assert the declared type changes nothing
+// but the `type` key.
 const baseManifest = {
   protocol_version: '0.1.0',
   connector_id: CONNECTOR_ID,
@@ -60,16 +64,31 @@ const baseManifest = {
           // Same shape as amount_cents but WITHOUT a declared type — the
           // capability-flag control field.
           count_minor: { type: 'integer' },
-          posted_at: { type: 'string', format: 'date-time', x_pdpp_type: 'timestamp' },
-          merchant: { type: 'string', x_pdpp_type: 'person' },
+          posted_at: { type: 'string', format: 'date-time' },
+          merchant: { type: 'string' },
           // No declared type.
           memo: { type: 'string' },
         },
       },
+      fields: [
+        {
+          name: 'posted_at',
+          type: 'timestamp',
+          semantic_class: 'common',
+          description: 'When the transaction posted.',
+        },
+        {
+          name: 'merchant',
+          type: 'string',
+          semantic_class: 'identifying',
+          description: 'Merchant display name.',
+        },
+      ],
       query: {
         // Both integer fields declare identical range operators; merchant +
         // memo both participate in lexical/semantic identically. The only
-        // manifest difference within each pair is `x_pdpp_type`.
+        // integer pair differs only by `x_pdpp_type`; text pair differs only
+        // by the `fields[]` declaration.
         range_filters: {
           amount_cents: ['gte', 'lte'],
           count_minor: ['gte', 'lte'],
@@ -195,14 +214,14 @@ async function readStreamMetadata(rsUrl, token) {
 
 // ─── Declared type surfaces ────────────────────────────────────────────────
 
-test('declared x_pdpp_type fields surface field_capabilities[].type', async () => {
+test('declared field types surface from x_pdpp_type and sandbox-shaped fields[]', async () => {
   await withHttpHarness(async ({ asUrl, rsUrl }) => {
     const ownerToken = await issueOwnerToken(asUrl);
     const fc = await readStreamMetadata(rsUrl, ownerToken);
 
     assert.equal(fc.amount_cents.type, 'currency');
     assert.equal(fc.posted_at.type, 'timestamp');
-    assert.equal(fc.merchant.type, 'person');
+    assert.equal(fc.merchant.type, 'string');
   });
 });
 
@@ -262,10 +281,11 @@ test('declared type does not alter exact/range/lexical/semantic/grant flags', as
     assert.equal(fc.amount_cents.range_filter.declared, true);
     assert.deepEqual(fc.amount_cents.range_filter.operators, ['gte', 'lte']);
 
-    // merchant (declared person) vs memo (undeclared) — identical lexical +
-    // semantic participation; only `type` (and the schema echo) differ.
+    // merchant (declared through sandbox-shaped fields[]) vs memo
+    // (undeclared) — identical lexical + semantic participation; only the
+    // additive capability `type` differs.
     const merchant = { ...fc.merchant };
-    assert.equal(merchant.type, 'person');
+    assert.equal(merchant.type, 'string');
     delete merchant.type;
     delete merchant.schema;
     const memo = { ...fc.memo };
@@ -275,7 +295,7 @@ test('declared type does not alter exact/range/lexical/semantic/grant flags', as
       memo,
       'declared-type lexical/semantic field must match its undeclared twin',
     );
-    assert.deepEqual(fc.merchant.schema, { type: 'string', x_pdpp_type: 'person' });
+    assert.deepEqual(fc.merchant.schema, { type: 'string' });
     assert.deepEqual(fc.memo.schema, { type: 'string' });
     assert.equal(fc.merchant.lexical_search.declared, true);
     assert.equal(fc.merchant.semantic_search.declared, true);
@@ -309,7 +329,7 @@ test('declared type does not alter grant usability under a client token', async 
     // not rescue grant usability — granted is false, just like undeclared
     // ungranted fields.
     if (fc.merchant) {
-      assert.equal(fc.merchant.type, 'person');
+      assert.equal(fc.merchant.type, 'string');
       assert.equal(fc.merchant.granted, false);
       assert.equal(fc.merchant.exact_filter.usable, false);
     }
