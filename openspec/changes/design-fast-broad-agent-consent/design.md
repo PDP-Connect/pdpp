@@ -124,7 +124,7 @@ Reference PAR behavior remains intentionally one-entry-only:
 
 Consent presentation for maximal single-source grants is legible but not enough for mixed-source batching:
 
-- Wildcard streams render as an "All streams" warning and expand to manifest stream names when available (`reference-implementation/server/index.js`).
+- Wildcard streams render as an "All streams" warning and expand to manifest stream names when available (`reference-implementation/server/routes/as-consent-ui-helpers.ts`).
 - Continuous access renders a warning; when no retention bound is present, the owner sees that the client may keep reading until revocation.
 - Per-stream fields, views, time ranges, and optionality render in the stream list when provided.
 - There is no risk scoring, sensitivity classification, package summary, or second confirmation for "continuous + all streams + no retention + no field projection"; that is acceptable for the one-source current flow but insufficient for Option B.
@@ -133,7 +133,7 @@ Dashboard grant surfaces are per-grant today:
 
 - `/dashboard/grants` lists individual grant summaries with status, client id, source, event count, and a peekable timeline (`apps/web/src/app/dashboard/grants/page.tsx`).
 - `/dashboard/grants/[grantId]` shows a single grant timeline (`apps/web/src/app/dashboard/grants/[grantId]/page.tsx`).
-- `POST /grants/:grantId/revoke` remains per-grant and accepts owner or same-grant client auth (`reference-implementation/server/index.js`).
+- `POST /grants/:grantId/revoke` remains per-grant and accepts owner or same-grant client auth (`reference-implementation/server/routes/as-grant-revoke.ts`).
 - Package/session grouping could be added as display metadata without weakening revocation, but a "revoke package" affordance must dispatch one revoke per child grant and surface partial failures.
 
 Agent guidance mostly resists broad shortcuts:

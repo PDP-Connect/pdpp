@@ -26,7 +26,7 @@ of the docket, not a replacement for OpenSpec task ownership.
 | Priority | Item | Current owner reading |
 |---:|---|---|
 | 0 | Explorer design SLVP ideal | Highest direct product priority. The Explorer SLVP implementation is owner-accepted and archived; further Explorer work should be new scope, not hidden acceptance debt. |
-| 1 | RI acceptance target | Hosted MCP external-client acceptance, multi-connection package grant, canonical connector identifiers, and Daisy owner-token behavior remain the core acceptance target. |
+| 1 | RI acceptance target | Hosted MCP external-client acceptance, multi-connection package grant, canonical connector identifiers, Daisy owner-token behavior, and trusted local owner-agent onboarding remain the core acceptance target. |
 | 2 | Owner tracking and accountability | The RI owner must maintain accurate scope, own worker/delegate output, keep rollback safety, and not rely on stale memory or worker claims. |
 | 3 | External-client and live proof gaps | Real external Claude/client proof and valid HTTPS callback delivery remain open live gates. |
 | 4 | Self-host/operator readiness | This is directly important after the acceptance/live-proof gates, not merely a distant roadmap item. |
@@ -63,6 +63,7 @@ of the docket, not a replacement for OpenSpec task ownership.
 | Multi-connection package disambiguation | `owner-live-gated` | Live probe proved typed `ambiguous_connection` with `connection_id`; task file still calls for real client coverage. | Include in external Claude/ChatGPT acceptance run. | Multi-connection package grant forces `connection_id` disambiguation and succeeds after retry. |
 | Event-subscription HTTPS callback delivery | `owner-live-gated` | Probe skipped callback verification and `send_test` because no valid reachable TLS callback URL was available. | Provide or stand up a reachable HTTPS callback URL, then verify create -> verify -> active -> delivery. | Delivery receives CloudEvents 1.0 structured body and Standard Webhooks v1 signature at the callback. |
 | Daisy-style owner-token REST access | `owner-live-gated` | RI owner probe proved owner token issue/introspect/use/revoke, `/v1/*` owner reads, `/_ref/*` owner-session scoping, and `/mcp` owner-bearer rejection. | If Daisy itself is the consumer, give it an owner token through the deployment-token flow and exercise the needed REST calls. Do not route owner access through MCP. | Daisy-style automation can use an owner token for owner-level REST/read/admin testing where bearer auth is supported, while `/mcp` remains grant-scoped and rejects owner bearers. |
+| Daisy trusted owner-agent onboarding | `active-openspec` | `add-trusted-owner-agent-onboarding` is 0/23 and validates strictly. | Implement metadata discovery, browser-mediated approval, non-printing credential handoff, token-efficient sync guidance, and Daisy-equivalent smoke. | Daisy can start from an entrypoint URL, learn the owner-agent path, obtain owner-approved local credentials without route guessing or bearer paste, and use REST efficiently for current and future data. |
 | Hosted MCP internal forwarding F1 | `resolved` | `route-hosted-mcp-adapter-self-calls-internally` archived 2026-05-31; live deployment re-proved update via internal RS base. | No implementation action. Re-verify only after deploy or proxy changes. | Hosted MCP package-adapter self-calls use the internal RS base instead of hairpinning PATCH through the public origin. |
 
 ## OpenSpec docket
@@ -72,6 +73,7 @@ of the docket, not a replacement for OpenSpec task ownership.
 | `complete-local-agent-collectors` | 6/22 | `active-openspec` | Continue connection-first identity, multi-device collision tests, local store coverage, and dashboard completeness now that state sync is archived. |
 | `split-public-site-and-operator-console` | 15/36 | `active-openspec` | Continue surface separation without hosted-service framing drift. |
 | `design-fast-broad-agent-consent` | 17/36 | `active-openspec` | Reconcile with current package-grant and owner-token behavior before more UI work. |
+| `add-trusted-owner-agent-onboarding` | 0/23 | `active-openspec` | Implement the Daisy/local owner-agent profile: discovery metadata, browser-mediated approval, REST-only owner credential boundary, and efficient-sync runbook. |
 | `add-gmail-attachment-backfill` | 28/28 | `resolved` | Archived 2026-05-31. Live Gmail/Docker proof remains residual owner-only connector evidence, not open implementation scope. |
 | `expose-connection-identity-on-public-read` | 51/60 | `active-openspec` | Remaining items are the UI test-infra-gated consent/dashboard tranche and out-of-repo hosted MCP gateway coordination. |
 | `canonicalize-connector-keys` | 24/28 | `owner-live-gated` | No-human runtime/storage/trace tails are closed. Remaining work is live DB backup/migration validation, local deploy proof, and real Claude/ChatGPT/Daisy acceptance flows. |
