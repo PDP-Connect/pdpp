@@ -158,5 +158,7 @@ function formatNotificationHint(state: NonNullable<RefNextAction["notification_s
     case "pending":
     case null:
       return null;
+    default:
+      return null;
   }
 }

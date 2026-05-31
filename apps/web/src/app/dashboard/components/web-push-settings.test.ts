@@ -49,6 +49,10 @@ const DIAGNOSTICS_SETUP_STEP_DEVICE_PATTERN = /Open the right device/;
 const DIAGNOSTICS_SETUP_STEP_PERMISSION_PATTERN = /Allow notifications/;
 const DIAGNOSTICS_SETUP_STEP_SUBSCRIBE_PATTERN = /Subscribe this device/;
 const DIAGNOSTICS_SETUP_STEP_TEST_PATTERN = /Send a test/;
+const DIAGNOSTICS_PWA_NOT_ENOUGH_PATTERN = /A PWA install is not enough/;
+const DIAGNOSTICS_DEVICE_SUBSCRIBED_PATTERN = /This device is subscribed/;
+const DIAGNOSTICS_SERVER_MISSING_SUBSCRIPTION_PATTERN = /server does not recognize it/;
+const DIAGNOSTICS_DEVICE_DISPLAY_CONFIRMATION_PATTERN = /Only the device can confirm whether it displayed/;
 const DIAGNOSTICS_ENABLE_DEVICE_BUTTON_PATTERN = />\s*Enable this device\s*</;
 const DIAGNOSTICS_DISABLE_DEVICE_BUTTON_PATTERN = />\s*Disable this device\s*</;
 const DIAGNOSTICS_TEST_PUSH_PATTERN = /fetch\("\/_ref\/web-push\/test"/;
@@ -200,10 +204,10 @@ test("dashboard Web Push setup explains install, permission, subscription, and t
   assert.match(src, DIAGNOSTICS_SETUP_STEP_PERMISSION_PATTERN);
   assert.match(src, DIAGNOSTICS_SETUP_STEP_SUBSCRIBE_PATTERN);
   assert.match(src, DIAGNOSTICS_SETUP_STEP_TEST_PATTERN);
-  assert.match(src, /A PWA install is not enough/);
-  assert.match(src, /This device is subscribed/);
-  assert.match(src, /server does not recognize it/);
-  assert.match(src, /Only the device can confirm whether it displayed/);
+  assert.match(src, DIAGNOSTICS_PWA_NOT_ENOUGH_PATTERN);
+  assert.match(src, DIAGNOSTICS_DEVICE_SUBSCRIBED_PATTERN);
+  assert.match(src, DIAGNOSTICS_SERVER_MISSING_SUBSCRIPTION_PATTERN);
+  assert.match(src, DIAGNOSTICS_DEVICE_DISPLAY_CONFIRMATION_PATTERN);
 });
 
 test("dashboard exposes diagnostic checklist covering every web push precondition", async () => {

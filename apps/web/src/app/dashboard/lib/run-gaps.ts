@@ -171,7 +171,7 @@ function optionalStringField<Key extends "message" | "stream">(key: Key, value: 
   return normalized ? ({ [key]: normalized } as Partial<Pick<KnownGap, Key>>) : {};
 }
 
-function optionalSeverityField(value: unknown): Pick<KnownGap, "severity"> | {} {
+function optionalSeverityField(value: unknown): Partial<Pick<KnownGap, "severity">> {
   if (value === "actionable" || value === "informational" || value === "recoverable" || value === "transient") {
     return { severity: value };
   }

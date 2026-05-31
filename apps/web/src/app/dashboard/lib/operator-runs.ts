@@ -130,15 +130,15 @@ async function postScheduleMutationAt(path: string, fallback: string) {
   return body;
 }
 
-export async function runConnectorNow(connectorId: string) {
+export function runConnectorNow(connectorId: string) {
   return runNowAt(connectorControlPath(connectorId, "/run"));
 }
 
-export async function runConnectionNow(connectionId: string) {
+export function runConnectionNow(connectionId: string) {
   return runNowAt(connectionControlPath(connectionId, "/run"));
 }
 
-export async function saveConnectorSchedule(
+export function saveConnectorSchedule(
   connectorId: string,
   input: {
     every: string;
@@ -149,7 +149,7 @@ export async function saveConnectorSchedule(
   return saveScheduleAt(connectorControlPath(connectorId, "/schedule"), input);
 }
 
-export async function saveConnectionSchedule(
+export function saveConnectionSchedule(
   connectionId: string,
   input: {
     every: string;
@@ -160,19 +160,19 @@ export async function saveConnectionSchedule(
   return saveScheduleAt(connectionControlPath(connectionId, "/schedule"), input);
 }
 
-export async function pauseConnectorSchedule(connectorId: string) {
+export function pauseConnectorSchedule(connectorId: string) {
   return postScheduleMutationAt(connectorControlPath(connectorId, "/schedule/pause"), "schedule pause failed");
 }
 
-export async function pauseConnectionSchedule(connectionId: string) {
+export function pauseConnectionSchedule(connectionId: string) {
   return postScheduleMutationAt(connectionControlPath(connectionId, "/schedule/pause"), "schedule pause failed");
 }
 
-export async function resumeConnectorSchedule(connectorId: string) {
+export function resumeConnectorSchedule(connectorId: string) {
   return postScheduleMutationAt(connectorControlPath(connectorId, "/schedule/resume"), "schedule resume failed");
 }
 
-export async function resumeConnectionSchedule(connectionId: string) {
+export function resumeConnectionSchedule(connectionId: string) {
   return postScheduleMutationAt(connectionControlPath(connectionId, "/schedule/resume"), "schedule resume failed");
 }
 

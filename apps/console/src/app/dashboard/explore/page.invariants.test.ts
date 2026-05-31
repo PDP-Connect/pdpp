@@ -18,6 +18,8 @@ const CONNECTION_DISPLAY_HELPER_RE = /function connectorSummaryDisplayName\(summ
 const ASSEMBLER_IMPORT_RE = /from\s+["'][^"']*explore-data-assembler(?:\.ts)?["']/;
 const INLINE_FEED_LOADER_RE =
   /\bfunction\s+loadEmptyQueryFeed\b|\bfunction\s+loadTimeRangeFeed\b|\bfunction\s+loadSearchFeed\b/;
+const EXPLORE_REDIRECT_SOURCE_RE = /source:\s*['"]\/explore['"]/;
+const EXPLORE_REDIRECT_DESTINATION_RE = /destination:\s*['"]\/dashboard\/explore['"]/;
 
 test("time-range explorer keeps connection identity instead of using connector-scoped timeline rows", async () => {
   const src = await readFile(ASSEMBLER_FILE, "utf8");
@@ -37,6 +39,6 @@ test("live explore page delegates to the shared assembler", async () => {
 
 test("next.config.mjs has a top-level /explore redirect to /dashboard/explore", async () => {
   const src = await readFile(NEXT_CONFIG_FILE, "utf8");
-  assert.match(src, /source:\s*['"]\/explore['"]/, "must have /explore source redirect");
-  assert.match(src, /destination:\s*['"]\/dashboard\/explore['"]/, "must redirect to /dashboard/explore");
+  assert.match(src, EXPLORE_REDIRECT_SOURCE_RE, "must have /explore source redirect");
+  assert.match(src, EXPLORE_REDIRECT_DESTINATION_RE, "must redirect to /dashboard/explore");
 });

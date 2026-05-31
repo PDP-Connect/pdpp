@@ -16,6 +16,9 @@ const HERE = fileURLToPath(new URL(".", import.meta.url));
 const PAGE_FILE = `${HERE}page.tsx`;
 
 const SANDBOX_RECORD_SEARCH_RE = /\bds\.searchRecords[A-Za-z]*\b/;
+const SANDBOX_EXPLORE_EXPLICIT_REDIRECT_RE = /redirect\(`\/sandbox\/explore\?q=\$\{encodeURIComponent\(query\)\}`\)/;
+const SANDBOX_EXPLORE_ROUTE_REDIRECT_RE =
+  /redirect\(`\$\{sandboxRoutes\.section\.explore\}\?q=\$\{encodeURIComponent\(query\)\}`\)/;
 
 test("the sandbox search page does not call ds.searchRecords* methods", async () => {
   const src = await readFile(PAGE_FILE, "utf8");
@@ -28,10 +31,8 @@ test("the sandbox search page does not call ds.searchRecords* methods", async ()
 
 test("the sandbox search page redirects free-text submits to /sandbox/explore", async () => {
   const src = await readFile(PAGE_FILE, "utf8");
-  const explicit = /redirect\(`\/sandbox\/explore\?q=\$\{encodeURIComponent\(query\)\}`\)/;
-  const viaRoutes = /redirect\(`\$\{sandboxRoutes\.section\.explore\}\?q=\$\{encodeURIComponent\(query\)\}`\)/;
   assert.ok(
-    explicit.test(src) || viaRoutes.test(src),
+    SANDBOX_EXPLORE_EXPLICIT_REDIRECT_RE.test(src) || SANDBOX_EXPLORE_ROUTE_REDIRECT_RE.test(src),
     "sandbox/search/page.tsx must redirect free-text submits to /sandbox/explore"
   );
 });

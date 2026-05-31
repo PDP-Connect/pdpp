@@ -1,5 +1,9 @@
 import type { CanonicalReadWarning } from "../lib/read-envelope.ts";
 
+function warningKey(warning: CanonicalReadWarning): string {
+  return [warning.code, warning.dropped_parameter ?? "", warning.message ?? ""].join(":");
+}
+
 /**
  * Out-of-band surface for canonical `meta.warnings`. Renders nothing when
  * empty so callers can pass it through unconditionally. We never drop data
@@ -24,8 +28,8 @@ export function WarningsBanner({ warnings }: { warnings: CanonicalReadWarning[] 
         {warnings.length === 1 ? "Read warning" : `${warnings.length} read warnings`}
       </p>
       <ul className="pdpp-caption space-y-0.5">
-        {warnings.map((w, i) => (
-          <li className="text-foreground" key={`${w.code}:${i}`}>
+        {warnings.map((w) => (
+          <li className="text-foreground" key={warningKey(w)}>
             <code className="font-mono text-amber-700 dark:text-amber-300">{w.code}</code>
             {w.dropped_parameter ? (
               <>

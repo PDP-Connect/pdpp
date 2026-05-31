@@ -16,8 +16,6 @@ import {
 } from "./deployment-readiness-rows.ts";
 import { Section } from "./primitives.tsx";
 
-export { extractReadinessInputs } from "./deployment-readiness-rows.ts";
-
 // Self-host onboarding SLVP readiness panel. Presents existing diagnostic
 // state as a small, opinionated "can I share this MCP URL?" checklist.
 //
@@ -134,6 +132,12 @@ function verdictPresentation(verdict: Verdict): { label: string; body: string; t
         toneClass: "border-destructive/30 bg-destructive/5 text-destructive",
       };
     case "unknown":
+      return {
+        label: "Some checks still running",
+        body: "Browser-side probes have not returned yet.",
+        toneClass: "border-border/80 bg-muted/40 text-foreground",
+      };
+    default:
       return {
         label: "Some checks still running",
         body: "Browser-side probes have not returned yet.",

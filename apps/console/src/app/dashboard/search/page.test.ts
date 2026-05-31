@@ -16,6 +16,11 @@ const RS_CLIENT_IMPORT_RE = /from\s+["'][^"']*\brs-client(?:\.ts)?["']/;
 const RETRIEVAL_NOTICE_RE = /\b(?:RetrievalNotice|buildRetrievalNotice|RetrievalDebug)\b/;
 const WARNINGS_BANNER_RE = /\b(?:WarningsBanner|dedupeWarnings)\b/;
 const RECORD_HITS_RE = /\bhits:\s*/;
+const EXPLORE_REDIRECT_LITERAL_RE = /redirect\(`\/dashboard\/explore\?q=\$\{encodeURIComponent\(query\)\}`\)/;
+const EXPLORE_REDIRECT_ROUTES_RE =
+  /redirect\(`\$\{dashboardRoutes\.section\.explore\}\?q=\$\{encodeURIComponent\(query\)\}`\)/;
+const SPINE_EXACT_RESULT_RE = /spineResult\.exact/;
+const EXACT_JUMP_OPT_OUT_RE = /jump\s*!==\s*["']0["']/;
 
 test("the console search page does not import the rs-client record-search helpers", async () => {
   const src = await readFile(PAGE_FILE, "utf8");
@@ -40,10 +45,8 @@ test("the console search page does not render retrieval notice or record-result 
 
 test("the console search page redirects free-text submits to Explore", async () => {
   const src = await readFile(PAGE_FILE, "utf8");
-  const explicit = /redirect\(`\/dashboard\/explore\?q=\$\{encodeURIComponent\(query\)\}`\)/;
-  const viaRoutes = /redirect\(`\$\{dashboardRoutes\.section\.explore\}\?q=\$\{encodeURIComponent\(query\)\}`\)/;
   assert.ok(
-    explicit.test(src) || viaRoutes.test(src),
+    EXPLORE_REDIRECT_LITERAL_RE.test(src) || EXPLORE_REDIRECT_ROUTES_RE.test(src),
     "search/page.tsx must call redirect() to /dashboard/explore?q=<query> on free-text submit"
   );
 });
@@ -52,8 +55,8 @@ test("the console search page preserves exact-id jump redirects", async () => {
   const src = await readFile(PAGE_FILE, "utf8");
   assert.match(
     src,
-    /spineResult\.exact/,
+    SPINE_EXACT_RESULT_RE,
     "search/page.tsx must keep the exact-id branch that powers trace/grant/run deep links"
   );
-  assert.match(src, /jump\s*!==\s*["']0["']/, "search/page.tsx must keep the jump=0 opt-out for exact-id redirects");
+  assert.match(src, EXACT_JUMP_OPT_OUT_RE, "search/page.tsx must keep the jump=0 opt-out for exact-id redirects");
 });

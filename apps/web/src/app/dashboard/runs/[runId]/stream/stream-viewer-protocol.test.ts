@@ -10,7 +10,7 @@ import {
   parsePopupOpenedMessage,
   parseStreamErrorMessage,
   parseUrlChangedMessage,
-} from "./stream-viewer-protocol.ts";
+} from "@opendatalabs/remote-surface/protocol";
 
 test("parseAttachedMessage validates scope and viewport shape", () => {
   assert.deepEqual(

@@ -663,6 +663,12 @@ export function deriveConnectionStatusDisplay(input: {
             : "Projection evidence is incomplete.",
         tone: "neutral",
       };
+    default:
+      return {
+        label: "Unknown",
+        title: "Projection evidence is incomplete.",
+        tone: "neutral",
+      };
   }
 }
 

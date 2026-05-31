@@ -26,14 +26,23 @@ import {
   classifyClipboardBrowser,
   clipboardLengthBucket,
   createMobileKeyboardResizeState,
+  createStreamViewerControlState,
   decideClipboardPolicy,
   type LocalViewportSample,
+  localSurfaceCanDisplayPresentation,
   type NekoMediaSettleTarget,
   NekoSurfaceAdapter,
   nekoMediaSettleTarget,
   nekoMediaSettleTargetsMatch,
+  nextPresentationKeyboardHoldUntilMs,
+  nextPresentationOrientationHoldUntilMs,
   pointToStreamViewport,
+  reduceStreamViewerControl,
+  type StreamViewerCommand,
   type StreamViewportInfo,
+  shouldDebouncePresentationViewportUpdate,
+  shouldHoldPresentationViewportForKeyboard,
+  stablePresentationContainerRect,
   streamViewportInfosMatch,
   toNekoNativeViewportInfo,
   type ViewportObservation,
@@ -42,6 +51,22 @@ import {
   viewportInfoFromPayload,
   viewportPayloadsAreEquivalent,
 } from "@opendatalabs/remote-surface/client";
+import {
+  classifyVisualQualityIssues,
+  computePixelFitTelemetry,
+  computeStreamCaptureTargetForContext,
+} from "@opendatalabs/remote-surface/diagnostics";
+import {
+  parseAttachedMessage,
+  parseBackendReadyMessage,
+  parseClipboardMessage,
+  parseFrameMessage,
+  parseKeyboardFocusMessage,
+  parsePopupClosedMessage,
+  parsePopupOpenedMessage,
+  parseStreamErrorMessage,
+  parseUrlChangedMessage,
+} from "@opendatalabs/remote-surface/protocol";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { type FormEvent, type RefObject, useCallback, useEffect, useRef, useState, useTransition } from "react";
@@ -73,34 +98,7 @@ import {
   createPlaygroundSeenRegistry,
   type PlaygroundSeenRegistry,
 } from "./playground-event-dedupe.ts";
-import {
-  createStreamViewerControlState,
-  localSurfaceCanDisplayPresentation,
-  nextPresentationKeyboardHoldUntilMs,
-  nextPresentationOrientationHoldUntilMs,
-  reduceStreamViewerControl,
-  type StreamViewerCommand,
-  shouldDebouncePresentationViewportUpdate,
-  shouldHoldPresentationViewportForKeyboard,
-  stablePresentationContainerRect,
-} from "./stream-viewer-control.ts";
-import {
-  parseAttachedMessage,
-  parseBackendReadyMessage,
-  parseClipboardMessage,
-  parseFrameMessage,
-  parseKeyboardFocusMessage,
-  parsePopupClosedMessage,
-  parsePopupOpenedMessage,
-  parseStreamErrorMessage,
-  parseUrlChangedMessage,
-} from "./stream-viewer-protocol.ts";
-import {
-  classifyVisualQualityIssues,
-  computePixelFitTelemetry,
-  computeStreamCaptureTargetForContext,
-  sampleVideoSharpnessTelemetry,
-} from "./stream-visual-quality.ts";
+import { sampleVideoSharpnessTelemetry } from "./stream-visual-quality.ts";
 import { STREAMING_UNAVAILABLE_TAG } from "./streaming-protocol.ts";
 
 interface ConnectorContext {
@@ -297,6 +295,16 @@ const STREAM_DEBUG_VISUAL_QUALITY_MS = 1000;
 
 type StreamDebugPayload = Record<string, unknown>;
 type StreamDebugLogger = (type: string, payload?: StreamDebugPayload) => void;
+type KeyboardFocusPayload = Extract<ReturnType<typeof parseKeyboardFocusMessage>, { ok: true }>["value"];
+
+interface RemoteKeyboardFocusContext {
+  keyboardBlurTimeoutRef: { current: ReturnType<typeof setTimeout> | null };
+  logDebug: StreamDebugLogger;
+  presentationKeyboardFocusedRef: { current: boolean };
+  presentationKeyboardHoldUntilRef: { current: number };
+  setRemoteInputSensitive: (sensitive: boolean) => void;
+  surfaceAdapterRef: { current: NekoSurfaceAdapter | null };
+}
 
 interface StreamDebugEventRecord {
   at: string;
@@ -330,6 +338,84 @@ function classifyMintError(err: unknown): ConnectionStatus {
     cause: "network",
     troubleMessage: "Couldn't reach the browser stream.",
   };
+}
+
+function applyRemoteKeyboardFocus(payload: KeyboardFocusPayload, context: RemoteKeyboardFocusContext): void {
+  if (payload.focused) {
+    markRemoteKeyboardFocused(payload, context);
+    return;
+  }
+  scheduleRemoteKeyboardBlur(context);
+}
+
+function markRemoteKeyboardFocused(
+  payload: KeyboardFocusPayload,
+  {
+    keyboardBlurTimeoutRef,
+    logDebug,
+    presentationKeyboardFocusedRef,
+    presentationKeyboardHoldUntilRef,
+    setRemoteInputSensitive,
+    surfaceAdapterRef,
+  }: RemoteKeyboardFocusContext
+): void {
+  presentationKeyboardFocusedRef.current = true;
+  presentationKeyboardHoldUntilRef.current = nextPresentationKeyboardHoldUntilMs({
+    currentHoldUntilMs: presentationKeyboardHoldUntilRef.current,
+    holdMs: STREAM_VIEWER_POLICY.presentationKeyboardOpenHoldMs,
+    isKeyboardActive: true,
+    nowMs: Date.now(),
+  });
+  const inputType = payload.element?.inputType?.toLowerCase() ?? "";
+  setRemoteInputSensitive(inputType === "password");
+  if (keyboardBlurTimeoutRef.current) {
+    clearTimeout(keyboardBlurTimeoutRef.current);
+    keyboardBlurTimeoutRef.current = null;
+  }
+  updateAdapterRemoteInputFocus(surfaceAdapterRef.current, true, logDebug);
+}
+
+function scheduleRemoteKeyboardBlur({
+  keyboardBlurTimeoutRef,
+  logDebug,
+  presentationKeyboardFocusedRef,
+  presentationKeyboardHoldUntilRef,
+  setRemoteInputSensitive,
+  surfaceAdapterRef,
+}: RemoteKeyboardFocusContext): void {
+  if (keyboardBlurTimeoutRef.current) {
+    clearTimeout(keyboardBlurTimeoutRef.current);
+  }
+  keyboardBlurTimeoutRef.current = setTimeout(() => {
+    keyboardBlurTimeoutRef.current = null;
+    updateAdapterRemoteInputFocus(surfaceAdapterRef.current, false, logDebug);
+    setRemoteInputSensitive(false);
+  }, STREAM_VIEWER_POLICY.keyboardRemoteBlurGraceMs);
+  presentationKeyboardFocusedRef.current = false;
+  presentationKeyboardHoldUntilRef.current = Math.max(
+    presentationKeyboardHoldUntilRef.current,
+    Date.now() + STREAM_VIEWER_POLICY.presentationKeyboardCloseHoldMs
+  );
+}
+
+function updateAdapterRemoteInputFocus(
+  adapter: NekoSurfaceAdapter | null,
+  focused: boolean,
+  logDebug: StreamDebugLogger
+): void {
+  if (adapter?.getLifecycleState() !== "mounted") {
+    logDebug("neko.keyboard_focus.adapter_unavailable", {
+      focused,
+      state: adapter?.getLifecycleState() ?? null,
+    });
+    return;
+  }
+  adapter.setRemoteInputFocused(focused);
+  if (focused) {
+    adapter.focusTextInput();
+    return;
+  }
+  adapter.blurTextInput();
 }
 
 // ─── Stage-1 orientation surface (also hosts the Stage-2 overlay) ────────────
@@ -1987,54 +2073,14 @@ function StreamStage({
         if (!parsed.ok) {
           return;
         }
-        if (parsed.value.focused) {
-          presentationKeyboardFocusedRef.current = true;
-          presentationKeyboardHoldUntilRef.current = nextPresentationKeyboardHoldUntilMs({
-            currentHoldUntilMs: presentationKeyboardHoldUntilRef.current,
-            holdMs: STREAM_VIEWER_POLICY.presentationKeyboardOpenHoldMs,
-            isKeyboardActive: true,
-            nowMs: Date.now(),
-          });
-          const inputType = parsed.value.element?.inputType?.toLowerCase() ?? "";
-          setRemoteInputSensitive(inputType === "password");
-          if (keyboardBlurTimeoutRef.current) {
-            clearTimeout(keyboardBlurTimeoutRef.current);
-            keyboardBlurTimeoutRef.current = null;
-          }
-          const adapter = nekoSurfaceAdapterRef.current;
-          if (adapter?.getLifecycleState() === "mounted") {
-            adapter.setRemoteInputFocused(true);
-            adapter.focusTextInput();
-          } else {
-            logDebug("neko.keyboard_focus.adapter_unavailable", {
-              focused: true,
-              state: adapter?.getLifecycleState() ?? null,
-            });
-          }
-        } else {
-          if (keyboardBlurTimeoutRef.current) {
-            clearTimeout(keyboardBlurTimeoutRef.current);
-          }
-          keyboardBlurTimeoutRef.current = setTimeout(() => {
-            keyboardBlurTimeoutRef.current = null;
-            const adapter = nekoSurfaceAdapterRef.current;
-            if (adapter?.getLifecycleState() === "mounted") {
-              adapter.setRemoteInputFocused(false);
-              adapter.blurTextInput();
-            } else {
-              logDebug("neko.keyboard_focus.adapter_unavailable", {
-                focused: false,
-                state: adapter?.getLifecycleState() ?? null,
-              });
-            }
-            setRemoteInputSensitive(false);
-          }, STREAM_VIEWER_POLICY.keyboardRemoteBlurGraceMs);
-          presentationKeyboardFocusedRef.current = false;
-          presentationKeyboardHoldUntilRef.current = Math.max(
-            presentationKeyboardHoldUntilRef.current,
-            Date.now() + STREAM_VIEWER_POLICY.presentationKeyboardCloseHoldMs
-          );
-        }
+        applyRemoteKeyboardFocus(parsed.value, {
+          keyboardBlurTimeoutRef,
+          logDebug,
+          presentationKeyboardFocusedRef,
+          presentationKeyboardHoldUntilRef,
+          setRemoteInputSensitive,
+          surfaceAdapterRef: nekoSurfaceAdapterRef,
+        });
       });
       // The server emits a structured `error` event on `companion_start_failed`
       // (reference-implementation/server/streaming/routes.js:367) and then
@@ -2852,7 +2898,7 @@ function StreamStage({
       });
       return;
     }
-    void requestBrowserCopyFromSheet({
+    requestBrowserCopyFromSheet({
       logDebug,
       policy: clipboardPolicy,
       setCopyState: (state) => {
@@ -3076,6 +3122,48 @@ async function fetchNekoStatusBestEffort(statusPath: string): Promise<NekoStatus
       playgroundEvents: null,
       screen: null,
     };
+  }
+}
+
+async function drainRemotePlaygroundEvents({
+  cancelled,
+  logDebug,
+  seenRegistry,
+  statusPath,
+}: {
+  cancelled: () => boolean;
+  logDebug: StreamDebugLogger;
+  seenRegistry: PlaygroundSeenRegistry;
+  statusPath: string;
+}): Promise<boolean> {
+  if (cancelled()) {
+    return false;
+  }
+  const status = await fetchNekoStatusBestEffort(statusPath);
+  if (cancelled()) {
+    return false;
+  }
+  emitRemotePlaygroundEvents(status.playgroundEvents, seenRegistry, logDebug);
+  return !cancelled();
+}
+
+function emitRemotePlaygroundEvents(
+  entries: Record<string, unknown>[] | null,
+  seenRegistry: PlaygroundSeenRegistry,
+  logDebug: StreamDebugLogger
+): void {
+  if (!entries || entries.length === 0) {
+    return;
+  }
+  for (const entry of entries) {
+    if (claimPlaygroundEvent(seenRegistry, entry) === "duplicate") {
+      continue;
+    }
+    const type = typeof entry.type === "string" ? entry.type : "unknown";
+    logDebug(`playground.${type}`, {
+      ...entry,
+      source: "remote-debug-drain",
+    });
   }
 }
 
@@ -3754,26 +3842,13 @@ function NekoSurface({
     let pollTimer: ReturnType<typeof setTimeout> | null = null;
 
     const drainOnce = async () => {
-      if (cancelled) {
-        return;
-      }
-      const status = await fetchNekoStatusBestEffort(statusPath);
-      if (cancelled) {
-        return;
-      }
-      if (status.playgroundEvents && status.playgroundEvents.length > 0) {
-        for (const entry of status.playgroundEvents) {
-          if (claimPlaygroundEvent(playgroundSeenRef.current, entry) === "duplicate") {
-            continue;
-          }
-          const type = typeof entry.type === "string" ? entry.type : "unknown";
-          logDebug(`playground.${type}`, {
-            ...entry,
-            source: "remote-debug-drain",
-          });
-        }
-      }
-      if (!cancelled) {
+      const shouldContinue = await drainRemotePlaygroundEvents({
+        cancelled: () => cancelled,
+        logDebug,
+        seenRegistry: playgroundSeenRef.current,
+        statusPath,
+      });
+      if (shouldContinue) {
         pollTimer = setTimeout(drainOnce, STREAM_VIEWER_POLICY.nekoDebugDrainPollMs);
       }
     };
@@ -3956,10 +4031,18 @@ function BrowserSurface({
       config: { kind: "cdp" },
     });
     adapterRef.current = adapter;
-    void adapter.mount(node);
+    adapter.mount(node).catch((err) => {
+      logDebug("surface.cdp-frame.adapter_mount_error", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
     return () => {
       adapterRef.current = null;
-      void adapter.unmount();
+      adapter.unmount().catch((err) => {
+        logDebug("surface.cdp-frame.adapter_unmount_error", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
     };
   }, [containerRef, logDebug, sendCdpInput]);
 
@@ -4343,7 +4426,7 @@ function ClipboardSheet({
 
   const pasteFromDevice = () => readDeviceClipboardIntoSheet({ logDebug, policy, setLocalText, setPasteState });
   const sendToBrowser = () => {
-    void sendSheetTextToBrowser({
+    sendSheetTextToBrowser({
       localText,
       logDebug,
       policy,
@@ -4363,7 +4446,7 @@ function ClipboardSheet({
   };
   const copyToDevice = () => copySheetTextToDevice({ logDebug, policy, remoteClipboard, setCopyState });
   const requestBrowserCopy = () => {
-    void requestBrowserCopyFromSheet({
+    requestBrowserCopyFromSheet({
       logDebug,
       policy,
       setCopyState,
@@ -4770,6 +4853,14 @@ function StreamInteractionDock({
     submitInteraction();
   }
 
+  let submitLabel = "I'm done";
+  if (interactionKind === "otp") {
+    submitLabel = "Submit code";
+  }
+  if (isPending) {
+    submitLabel = "Continuing...";
+  }
+
   return (
     <div className="pdpp-stream-toast-zone" data-pdpp-stream-ui data-slot="interaction">
       <form
@@ -4796,7 +4887,7 @@ function StreamInteractionDock({
         ) : null}
         <div className="flex flex-wrap gap-2">
           <Button disabled={isPending} size="sm" type="submit">
-            {isPending ? "Continuing..." : interactionKind === "otp" ? "Submit code" : "I'm done"}
+            {submitLabel}
           </Button>
           {interactionKind === "otp" ? (
             <Button disabled={isPending} onClick={() => submitInteraction()} size="sm" type="button" variant="outline">

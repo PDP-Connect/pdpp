@@ -220,7 +220,7 @@ const RETAINED_BREAKDOWN = /data-testid="retained-bytes-breakdown"/;
 const RETAINED_CURRENT_LABEL = /current \$\{formatBytes\(currentBytes\)\}/;
 const RETAINED_HISTORY_LABEL = /history \$\{formatBytes\(historyBytes\)\}/;
 const RUN_ACTION_RECEIVES_CONNECTION_ID =
-  /runConnectorNowAction\(\s*connector\.connector_id,\s*connectionId \?\? connectorInstanceId \?\? null\s*\)/;
+  /runConnectorNowAction\(\s*connectorId,\s*connectionId \?\? connectorInstanceId \?\? null\s*\)/;
 const USES_SHARED_STATUS_HELPER = /deriveConnectionStatusDisplay\(\{/;
 const PASSES_LOCAL_DEVICE_PROGRESS = /localDeviceProgress=\{overview\.localDeviceProgress \?\? null\}/;
 

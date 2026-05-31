@@ -173,7 +173,7 @@ function optionalStringField<Key extends "message" | "stream">(key: Key, value: 
   return normalized ? ({ [key]: normalized } as Partial<Pick<KnownGap, Key>>) : {};
 }
 
-function optionalSeverityField(value: unknown): Pick<KnownGap, "severity"> | {} {
+function optionalSeverityField(value: unknown): Partial<Pick<KnownGap, "severity">> {
   if (value === "actionable" || value === "informational" || value === "recoverable" || value === "transient") {
     return { severity: value };
   }
@@ -190,7 +190,7 @@ function optionalObjectField<Key extends "recovery_hint" | "scope">(
   return { [key]: value } as Partial<Pick<KnownGap, Key>>;
 }
 
-function optionalDiagnosticsField(value: unknown): Pick<KnownGap, "diagnostics"> | {} {
+function optionalDiagnosticsField(value: unknown): Partial<Pick<KnownGap, "diagnostics">> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return {};
   }

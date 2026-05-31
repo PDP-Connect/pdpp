@@ -13,6 +13,7 @@ const HOP_BY_HOP_HEADERS = new Set([
   "transfer-encoding",
   "upgrade",
 ]);
+const TRAILING_COLON_RE = /:$/;
 
 interface CatchAllRouteContext {
   params: Promise<{
@@ -29,7 +30,7 @@ function referenceBaseUrl(target: ReferenceTarget): string {
 }
 
 function forwardedProto(request: Request, url: URL): string {
-  return request.headers.get("x-forwarded-proto") || url.protocol.replace(/:$/, "");
+  return request.headers.get("x-forwarded-proto") || url.protocol.replace(TRAILING_COLON_RE, "");
 }
 
 function buildProxyHeaders(request: Request, url: URL): Headers {

@@ -44,11 +44,7 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
     isRunning,
     lastRun,
     lastSuccessfulRun,
-    retainedBytes,
-    streamCount,
-    streams,
     totalRecords,
-    totalRetainedBytes,
   } = overview;
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -142,9 +138,7 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
     displayName: connectorDisplayName,
     name: connector.name,
   });
-  const displayedStreamCount = streamCount ?? streams.length;
   const nextAction = formatNextAction(connectionHealth?.next_action ?? null);
-  const recordCount = resolveRecordCountDisplay(overview);
   const axisChips = summarizeAxisChips(connectionHealth?.axes);
   const projectionFreshness = formatProjectionFreshness(connectionHealth);
   const dominantCondition = formatDominantCondition(connectionHealth);
@@ -172,36 +166,7 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
         </div>
 
         {/* Stats */}
-        <div className="pdpp-caption flex shrink-0 flex-col gap-0.5 text-muted-foreground tabular-nums sm:items-end sm:text-right">
-          <span>
-            {recordCount.label === null ? (
-              <span className="text-muted-foreground/70" data-testid="records-unavailable" title={recordCount.title}>
-                Records unavailable
-              </span>
-            ) : (
-              <span title={recordCount.title}>{recordCount.label} records</span>
-            )}{" "}
-            · {displayedStreamCount} stream
-            {displayedStreamCount === 1 ? "" : "s"}
-          </span>
-          <RetainedBytesLine retainedBytes={retainedBytes ?? null} totalRetainedBytes={totalRetainedBytes ?? null} />
-          <ConnectorFreshnessLine
-            hasError={Boolean(overview.error)}
-            lastRun={lastRun}
-            lastSuccessfulRun={lastSuccessfulRun}
-            localDeviceProgress={overview.localDeviceProgress ?? null}
-            totalRecords={totalRecords}
-          />
-          {hasPartialCoverageHint ? (
-            <Link
-              className="inline-flex items-center gap-1 text-[color:var(--warning)] underline-offset-2 hover:underline"
-              href={`${runsHref}/${encodeURIComponent(lastRun?.run_id ?? "")}`}
-              title="Latest run produced records but reported known source gaps"
-            >
-              Partial source coverage
-            </Link>
-          ) : null}
-        </div>
+        <ConnectorStats hasPartialCoverageHint={hasPartialCoverageHint} overview={overview} runsHref={runsHref} />
 
         {/* Status + action */}
         <div className="flex shrink-0 items-center gap-2">
@@ -225,22 +190,7 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
         </div>
       </div>
 
-      {axisChips.length > 0 ? (
-        <div className="mx-3 mb-2 flex flex-wrap items-center gap-1.5" data-testid="axis-chip-strip">
-          {axisChips.map((chip) => (
-            <AxisChipBadge chip={chip} key={chip.label} />
-          ))}
-          {durableProgress.unavailable ? (
-            <span
-              className="pdpp-caption inline-flex items-center gap-1 border border-muted-foreground/40 border-dashed px-2 py-0.5 text-muted-foreground"
-              data-testid="durable-progress-unavailable"
-              title="Last durable progress could not be derived from current evidence."
-            >
-              {durableProgress.label}
-            </span>
-          ) : null}
-        </div>
-      ) : null}
+      <AxisChipStrip axisChips={axisChips} durableProgress={durableProgress} />
 
       {projectionFreshness.unreliable ? (
         <div
@@ -257,20 +207,101 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
       {nextAction ? <NextActionPill detailHref={detailHref} formatted={nextAction} /> : null}
 
       {/* Toasts rendered inline so they don't obscure other rows. */}
-      {toast.kind === "none" ? null : (
-        <div
-          aria-live="polite"
-          className={
-            toast.kind === "error"
-              ? "pdpp-caption mx-3 mb-2 border-l-2 border-l-destructive bg-destructive/5 px-3 py-2 text-destructive"
-              : "pdpp-caption mx-3 mb-2 bg-muted/60 px-3 py-2 text-muted-foreground"
-          }
-          role="status"
-        >
-          {toast.kind === "already_running" ? "A sync for this connector is already in progress." : toast.message}
-        </div>
-      )}
+      <ConnectorRowToast toast={toast} />
     </li>
+  );
+}
+
+function ConnectorStats({
+  hasPartialCoverageHint,
+  overview,
+  runsHref,
+}: {
+  hasPartialCoverageHint: boolean;
+  overview: ConnectorOverview;
+  runsHref: string;
+}) {
+  const { lastRun, lastSuccessfulRun, retainedBytes, streamCount, streams, totalRecords, totalRetainedBytes } =
+    overview;
+  const displayedStreamCount = streamCount ?? streams.length;
+  const recordCount = resolveRecordCountDisplay(overview);
+  return (
+    <div className="pdpp-caption flex shrink-0 flex-col gap-0.5 text-muted-foreground tabular-nums sm:items-end sm:text-right">
+      <span>
+        {recordCount.label === null ? (
+          <span className="text-muted-foreground/70" data-testid="records-unavailable" title={recordCount.title}>
+            Records unavailable
+          </span>
+        ) : (
+          <span title={recordCount.title}>{recordCount.label} records</span>
+        )}{" "}
+        · {displayedStreamCount} stream
+        {displayedStreamCount === 1 ? "" : "s"}
+      </span>
+      <RetainedBytesLine retainedBytes={retainedBytes ?? null} totalRetainedBytes={totalRetainedBytes ?? null} />
+      <ConnectorFreshnessLine
+        hasError={Boolean(overview.error)}
+        lastRun={lastRun}
+        lastSuccessfulRun={lastSuccessfulRun}
+        localDeviceProgress={overview.localDeviceProgress ?? null}
+        totalRecords={totalRecords}
+      />
+      {hasPartialCoverageHint ? (
+        <Link
+          className="inline-flex items-center gap-1 text-[color:var(--warning)] underline-offset-2 hover:underline"
+          href={`${runsHref}/${encodeURIComponent(lastRun?.run_id ?? "")}`}
+          title="Latest run produced records but reported known source gaps"
+        >
+          Partial source coverage
+        </Link>
+      ) : null}
+    </div>
+  );
+}
+
+function AxisChipStrip({
+  axisChips,
+  durableProgress,
+}: {
+  axisChips: AxisChip[];
+  durableProgress: ReturnType<typeof formatLastDurableProgress>;
+}) {
+  if (axisChips.length === 0) {
+    return null;
+  }
+  return (
+    <div className="mx-3 mb-2 flex flex-wrap items-center gap-1.5" data-testid="axis-chip-strip">
+      {axisChips.map((chip) => (
+        <AxisChipBadge chip={chip} key={chip.label} />
+      ))}
+      {durableProgress.unavailable ? (
+        <span
+          className="pdpp-caption inline-flex items-center gap-1 border border-muted-foreground/40 border-dashed px-2 py-0.5 text-muted-foreground"
+          data-testid="durable-progress-unavailable"
+          title="Last durable progress could not be derived from current evidence."
+        >
+          {durableProgress.label}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+function ConnectorRowToast({ toast }: { toast: ToastState }) {
+  if (toast.kind === "none") {
+    return null;
+  }
+  const className =
+    toast.kind === "error"
+      ? "pdpp-caption mx-3 mb-2 border-l-2 border-l-destructive bg-destructive/5 px-3 py-2 text-destructive"
+      : "pdpp-caption mx-3 mb-2 bg-muted/60 px-3 py-2 text-muted-foreground";
+  const message =
+    toast.kind === "already_running" ? "A sync for this connector is already in progress." : toast.message;
+
+  return (
+    <div aria-live="polite" className={className} role="status">
+      {message}
+    </div>
   );
 }
 

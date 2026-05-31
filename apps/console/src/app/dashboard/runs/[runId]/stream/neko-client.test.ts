@@ -21,6 +21,43 @@ const PORTRAIT_LAYOUT: NekoViewportLayout = {
   viewportHeight: 867,
   viewportWidth: 448,
 };
+const WINDOW_TIMEOUT_CLICK_RE = /window\.setTimeout\([^)]*clickNekoAtPoint/;
+const NATIVE_TAP_ASSIST_RE = /native_tap_assist/;
+const NATIVE_TAP_OBSERVED_RE = /native_tap_observed/;
+const CONTROL_COORDINATE_SIZE_DIVISOR_RE = /controlCoordinateSize\.width\s*\/\s*rect\.width/;
+const NEKO_OVERLAY_GET_MOUSE_POS_RE = /nekoInstance\?\._overlay\?\.getMousePos/;
+const NEKO_CONTAINER_MIN_WIDTH_DELTA_RE = /NEKO_CONTAINER_OVERRIDE_MIN_WIDTH_DELTA_PX\s*=\s*\d+/;
+const CONTAINER_RECT_OVERRIDE_SKIPPED_RE = /container_rect_override\.skipped[\s\S]{0,200}height-only-delta/;
+const READ_TOUCH_TIME_VIEWPORT_FUNCTION_RE = /function readTouchTimeViewport\(/;
+const TOUCH_TIME_WINDOW_RE = /window:\s*\{/;
+const TOUCH_TIME_VISUAL_VIEWPORT_RE = /visualViewport:/;
+const TOUCH_TIME_DOCUMENT_ELEMENT_RE = /documentElement:/;
+const TOUCH_TIME_SCROLLING_RE = /scrolling:/;
+const TOUCH_TIME_ORIENTATION_RE = /orientation:/;
+const TOUCH_TIME_VISUAL_VIEWPORT_SCALE_RE =
+  /scale:\s*Number\.isFinite\(visualViewport\.scale\)\s*\?\s*visualViewport\.scale\s*:\s*null/;
+const POINTER_MAPPING_TOUCH_TIME_VIEWPORT_RE = /viewport:\s*readTouchTimeViewport\(\)/;
+const TOUCH_START_INTERACTION_SEQ_RE = /emitNekoDebug\(\s*"neko\.touch\.start",[\s\S]{0,400}interactionSeq/;
+const FALLBACK_TAP_INTERACTION_SEQ_RE =
+  /emitNekoDebug\(\s*"neko\.touch_scroll_bridge\.tap",[\s\S]{0,400}interactionSeq/;
+const NATIVE_TAP_OBSERVED_INTERACTION_SEQ_RE =
+  /emitNekoDebug\(\s*"neko\.touch_scroll_bridge\.native_tap_observed",[\s\S]{0,400}interactionSeq/;
+const ALTERNATIVE_MAPPINGS_RE = /alternativeMappings/;
+const ADAPTER_SEND_TEXT_RE =
+  /sendText\(text:\s*string\):\s*boolean\s*\{[\s\S]{0,120}return pasteTextIntoNeko\(text,\s*\{\s*focusKeyboardAfterPaste:\s*false\s*\}\);/;
+const ADAPTER_PASTE_TEXT_RE =
+  /pasteText\(text:\s*string\):\s*boolean\s*\{[\s\S]{0,80}return pasteTextIntoNeko\(text\);/;
+const PASTE_TEXT_NATIVE_RE =
+  /export function pasteTextIntoNeko\([\s\S]{0,180}\):\s*boolean[\s\S]{0,700}control\.paste\(text\);/;
+const FOCUS_AFTER_PASTE_RE =
+  /focusKeyboardAfterPaste[\s\S]{0,500}if \(focusKeyboardAfterPaste\) \{[\s\S]{0,80}focusNekoKeyboard\(\);/;
+const CLIPBOARD_SENT_RE = /neko\.clipboard_local_to_remote[\s\S]{0,300}phase:\s*"sent"/;
+const CLIPBOARD_SKIPPED_RE = /neko\.clipboard_local_to_remote[\s\S]{0,300}phase:\s*"skipped"/;
+const SOFT_KEYBOARD_ELEMENT_RE =
+  /function isPdppSoftKeyboardElement\(element: Element \| null\): boolean[\s\S]{0,160}\[data-pdpp-soft-keyboard="neko"\]/;
+const ACTIVE_SOFT_KEYBOARD_RE = /isPdppSoftKeyboardElement\(active\)/;
+const FOCUS_INTERVAL_NO_REFOCUS_RE =
+  /!\(isPdppUi \|\| isPdppSoftKeyboard \|\| hasUiTextSelection\(\)\)[\s\S]{0,80}textarea\.focus\(\)/;
 
 test("n.eko layout ignores stale landscape media dimensions during portrait rotation", () => {
   const selected = selectNekoMediaSizeForLayout(PORTRAIT_LAYOUT, {
@@ -237,17 +274,17 @@ test("n.eko native touch path does not schedule a delayed PDPP tap (no double-de
   //   window.setTimeout(() => { ...; clickNekoAtPoint(clientX, clientY); }, 120);
   assert.doesNotMatch(
     src,
-    /window\.setTimeout\([^)]*clickNekoAtPoint/,
+    WINDOW_TIMEOUT_CLICK_RE,
     "no setTimeout-scheduled clickNekoAtPoint call (would double-deliver after n.eko's native click)"
   );
   assert.doesNotMatch(
     src,
-    /native_tap_assist/,
+    NATIVE_TAP_ASSIST_RE,
     "no native_tap_assist telemetry event (the assist path itself is gone)"
   );
   // We DO still want a passive observation event so future regressions of
   // n.eko's native-click path are visible in telemetry.
-  assert.match(src, /native_tap_observed/, "native taps are observed in telemetry without being double-delivered");
+  assert.match(src, NATIVE_TAP_OBSERVED_RE, "native taps are observed in telemetry without being double-delivered");
 });
 
 test("n.eko getNekoControlPos prefers n.eko-authoritative coordinate basis (no PDPP CSS-viewport remap)", async () => {
@@ -267,13 +304,13 @@ test("n.eko getNekoControlPos prefers n.eko-authoritative coordinate basis (no P
   const fn = src.split("function getNekoControlPos(")[1]?.split("\nfunction ")[0] ?? "";
   assert.doesNotMatch(
     fn,
-    /controlCoordinateSize\.width\s*\/\s*rect\.width/,
+    CONTROL_COORDINATE_SIZE_DIVISOR_RE,
     "getNekoControlPos must not divide by controlCoordinateSize (CSS-derived) as a mapping basis"
   );
   // The first preference must be n.eko's own getMousePos.
   assert.match(
     fn,
-    /nekoInstance\?\._overlay\?\.getMousePos/,
+    NEKO_OVERLAY_GET_MOUSE_POS_RE,
     "getNekoControlPos prefers n.eko-authoritative getMousePos as first mapping"
   );
 });
@@ -293,12 +330,12 @@ test("n.eko containerRect override skips height-only deltas (keyboard / visualVi
   const src = await readFile(`${here}neko-client.ts`, "utf8");
   assert.match(
     src,
-    /NEKO_CONTAINER_OVERRIDE_MIN_WIDTH_DELTA_PX\s*=\s*\d+/,
+    NEKO_CONTAINER_MIN_WIDTH_DELTA_RE,
     "container-rect override has an explicit minimum-width-delta gate"
   );
   assert.match(
     src,
-    /container_rect_override\.skipped[\s\S]{0,200}height-only-delta/,
+    CONTAINER_RECT_OVERRIDE_SKIPPED_RE,
     "skipped overrides emit a diagnostic event with reason=height-only-delta"
   );
 });
@@ -390,25 +427,29 @@ test("n.eko touch-time pointer mapping captures viewport basis (window/visualVie
   // The dedicated reader must exist as a separately-named helper so
   // there is no path that emits `neko.touch.start` without also
   // capturing viewport state.
-  assert.match(src, /function readTouchTimeViewport\(/, "readTouchTimeViewport helper exists");
+  assert.match(src, READ_TOUCH_TIME_VIEWPORT_FUNCTION_RE, "readTouchTimeViewport helper exists");
   // The helper must emit each of the four basis surfaces.
   const fn = src.split("function readTouchTimeViewport(")[1]?.split("\nfunction ")[0] ?? "";
-  assert.match(fn, /window:\s*\{/, "readTouchTimeViewport reports window dims");
-  assert.match(fn, /visualViewport:/, "readTouchTimeViewport reports visualViewport (incl. offsetTop/scale)");
-  assert.match(fn, /documentElement:/, "readTouchTimeViewport reports documentElement clientWidth/clientHeight");
-  assert.match(fn, /scrolling:/, "readTouchTimeViewport reports scrollLeft/scrollTop");
-  assert.match(fn, /orientation:/, "readTouchTimeViewport reports orientation type/angle");
+  assert.match(fn, TOUCH_TIME_WINDOW_RE, "readTouchTimeViewport reports window dims");
   assert.match(
     fn,
-    /scale:\s*Number\.isFinite\(visualViewport\.scale\)\s*\?\s*visualViewport\.scale\s*:\s*null/,
-    "visualViewport.scale captured (catches pinch zoom mid-touch)"
+    TOUCH_TIME_VISUAL_VIEWPORT_RE,
+    "readTouchTimeViewport reports visualViewport (incl. offsetTop/scale)"
   );
+  assert.match(
+    fn,
+    TOUCH_TIME_DOCUMENT_ELEMENT_RE,
+    "readTouchTimeViewport reports documentElement clientWidth/clientHeight"
+  );
+  assert.match(fn, TOUCH_TIME_SCROLLING_RE, "readTouchTimeViewport reports scrollLeft/scrollTop");
+  assert.match(fn, TOUCH_TIME_ORIENTATION_RE, "readTouchTimeViewport reports orientation type/angle");
+  assert.match(fn, TOUCH_TIME_VISUAL_VIEWPORT_SCALE_RE, "visualViewport.scale captured (catches pinch zoom mid-touch)");
   // readNekoPointerMapping must include the viewport snapshot in its
   // returned record so every touch.start carries it.
   const mapFn = src.split("function readNekoPointerMapping(")[1]?.split("\nfunction ")[0] ?? "";
   assert.match(
     mapFn,
-    /viewport:\s*readTouchTimeViewport\(\)/,
+    POINTER_MAPPING_TOUCH_TIME_VIEWPORT_RE,
     "readNekoPointerMapping includes the touch-time viewport snapshot"
   );
 });
@@ -422,24 +463,12 @@ test("n.eko touch.start event captures the full local→remote mapping with an i
   const { fileURLToPath } = await import("node:url");
   const here = fileURLToPath(new URL(".", import.meta.url));
   const src = await readFile(`${here}neko-client.ts`, "utf8");
+  assert.match(src, TOUCH_START_INTERACTION_SEQ_RE, "neko.touch.start carries interactionSeq");
+  assert.match(src, FALLBACK_TAP_INTERACTION_SEQ_RE, "fallback tap carries interactionSeq");
+  assert.match(src, NATIVE_TAP_OBSERVED_INTERACTION_SEQ_RE, "native tap observed event carries interactionSeq");
   assert.match(
     src,
-    /emitNekoDebug\(\s*"neko\.touch\.start",[\s\S]{0,400}interactionSeq/,
-    "neko.touch.start carries interactionSeq"
-  );
-  assert.match(
-    src,
-    /emitNekoDebug\(\s*"neko\.touch_scroll_bridge\.tap",[\s\S]{0,400}interactionSeq/,
-    "fallback tap carries interactionSeq"
-  );
-  assert.match(
-    src,
-    /emitNekoDebug\(\s*"neko\.touch_scroll_bridge\.native_tap_observed",[\s\S]{0,400}interactionSeq/,
-    "native tap observed event carries interactionSeq"
-  );
-  assert.match(
-    src,
-    /alternativeMappings/,
+    ALTERNATIVE_MAPPINGS_RE,
     "pointer mapping snapshot exposes alternative basis candidates for anomaly correlation"
   );
 });
@@ -456,34 +485,18 @@ test("n.eko adapter text path preserves native paste result for telemetry", asyn
 
   assert.match(
     shim,
-    /sendText\(text:\s*string\):\s*boolean\s*\{[\s\S]{0,120}return pasteTextIntoNeko\(text,\s*\{\s*focusKeyboardAfterPaste:\s*false\s*\}\);/,
+    ADAPTER_SEND_TEXT_RE,
     "adapter sendText must return pasteTextIntoNeko's boolean result without refocusing the n.eko overlay"
   );
-  assert.match(
-    shim,
-    /pasteText\(text:\s*string\):\s*boolean\s*\{[\s\S]{0,80}return pasteTextIntoNeko\(text\);/,
-    "manual paste keeps pasteTextIntoNeko's default keyboard refocus behavior"
-  );
+  assert.match(shim, ADAPTER_PASTE_TEXT_RE, "manual paste keeps pasteTextIntoNeko's default keyboard refocus behavior");
   assert.match(
     client,
-    /export function pasteTextIntoNeko\([\s\S]{0,180}\):\s*boolean[\s\S]{0,700}control\.paste\(text\);/,
+    PASTE_TEXT_NATIVE_RE,
     "pasteTextIntoNeko must call nekoInstance.control.paste on the native path"
   );
-  assert.match(
-    client,
-    /focusKeyboardAfterPaste[\s\S]{0,500}if \(focusKeyboardAfterPaste\) \{[\s\S]{0,80}focusNekoKeyboard\(\);/,
-    "pasteTextIntoNeko refocuses the n.eko overlay only when requested"
-  );
-  assert.match(
-    client,
-    /neko\.clipboard_local_to_remote[\s\S]{0,300}phase:\s*"sent"/,
-    "successful native paste emits sent telemetry"
-  );
-  assert.match(
-    client,
-    /neko\.clipboard_local_to_remote[\s\S]{0,300}phase:\s*"skipped"/,
-    "failed native paste emits skipped telemetry"
-  );
+  assert.match(client, FOCUS_AFTER_PASTE_RE, "pasteTextIntoNeko refocuses the n.eko overlay only when requested");
+  assert.match(client, CLIPBOARD_SENT_RE, "successful native paste emits sent telemetry");
+  assert.match(client, CLIPBOARD_SKIPPED_RE, "failed native paste emits skipped telemetry");
 });
 
 test("n.eko focus interval does not steal focus from the PDPP soft-keyboard textarea", async () => {
@@ -492,20 +505,16 @@ test("n.eko focus interval does not steal focus from the PDPP soft-keyboard text
   const here = fileURLToPath(new URL(".", import.meta.url));
   const src = await readFile(`${here}neko-client.ts`, "utf8");
 
-  assert.match(
-    src,
-    /function isPdppSoftKeyboardElement\(element: Element \| null\): boolean[\s\S]{0,160}\[data-pdpp-soft-keyboard="neko"\]/,
-    "PDPP soft-keyboard textarea is recognized by data attribute"
-  );
+  assert.match(src, SOFT_KEYBOARD_ELEMENT_RE, "PDPP soft-keyboard textarea is recognized by data attribute");
   const focusInterval = src.split("focusInterval = setInterval(")[1]?.split("}, 2000);")[0] ?? "";
   assert.match(
     focusInterval,
-    /isPdppSoftKeyboardElement\(active\)/,
+    ACTIVE_SOFT_KEYBOARD_RE,
     "focus interval checks whether activeElement is the PDPP soft-keyboard textarea"
   );
   assert.match(
     focusInterval,
-    /!\(isPdppUi \|\| isPdppSoftKeyboard \|\| hasUiTextSelection\(\)\)[\s\S]{0,80}textarea\.focus\(\)/,
+    FOCUS_INTERVAL_NO_REFOCUS_RE,
     "focus interval does not refocus n.eko overlay while PDPP soft-keyboard textarea is active"
   );
 });

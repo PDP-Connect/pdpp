@@ -16,7 +16,7 @@ const PALETTE_USES_CONTEXT = /const palette = useCommandPalette\(\)[\s\S]*if \(!
 const SHELL_IMPORTS_PROVIDER = /import \{ CommandPalette, CommandPaletteProvider, CommandPaletteTrigger \}/;
 const SHELL_PROVIDER_WRAP =
   /<CommandPaletteProvider>[\s\S]*<Topbar overviewHref=\{routes\.section\.overview\} \/>[\s\S]*<CommandPalette [\s\S]*<\/CommandPaletteProvider>/;
-const PALETTE_USES_REGISTRY = /import \{ listDashboardCommands.*\} from "\.\.\/lib\/actions\.ts"/;
+const PALETTE_USES_REGISTRY = /import \{[^}]*\blistDashboardCommands\b[^}]*\} from "\.\.\/lib\/actions\.ts"/;
 const EXPLORE_PRIMARY_GROUP_RE =
   /label:\s*["']Explore["'][\s\S]*a === ["']explore["'] \|\| a === ["']search["'] \|\| a === ["']records["']/;
 const PRIMARY_JUMP_NAV_RE = /label:\s*["']Jump["']/;

@@ -19,7 +19,7 @@ const CLICKABLE_TOAST_RE = /<button|onClick|Copy to this device/;
 const POLICY_WRITE_GUARD_RE = /!currentClipboardPolicy\.canWriteLocalClipboard[\s\S]*reason: "write-unavailable"/;
 const WRITE_TEXT_RE = /navigator\.clipboard\.writeText\(text\)/;
 const NATIVE_PASTE_POLICY_GUARD_RE = /getClipboardPolicy: \(\) => clipboardPolicyRef\.current/;
-const PASSWORD_INPUT_RE = /inputType === "password"/;
+const PASSWORD_INPUT_RE = /inputType\?\.toLowerCase\(\) === "password"/;
 const MASKED_LOCAL_INPUT_RE = /remoteInputSensitive && !revealLocalText/;
 const MASKED_ATTRIBUTE_RE = /data-masked=\{localInputMasked \? "true" : "false"\}/;
 const SESSION_CLIPBOARD_CLEANUP_RE =

@@ -1,16 +1,3 @@
-export {
-  classifyVisualQualityIssues,
-  computePixelFitTelemetry,
-  computeSharpnessTelemetryFromLuma,
-  computeStreamCaptureTarget,
-  computeStreamCaptureTargetForContext,
-  type PixelFitInput,
-  type PixelFitTelemetry,
-  type SharpnessTelemetry,
-  type StreamCaptureTarget,
-  type StreamCaptureTargetContextInput,
-} from "@opendatalabs/remote-surface/diagnostics";
-
 import { computeSharpnessTelemetryFromLuma, type SharpnessTelemetry } from "@opendatalabs/remote-surface/diagnostics";
 
 const DEFAULT_SHARPNESS_SAMPLE_WIDTH = 160;

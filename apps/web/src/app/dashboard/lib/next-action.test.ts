@@ -4,6 +4,9 @@ import { formatNextAction, humanizeReasonCode } from "./next-action.ts";
 import type { RefNextAction } from "./ref-client.ts";
 
 const DETAILS_UNAVAILABLE = /Details unavailable/;
+const NOTIFICATION_SENT_PATTERN = /sent/i;
+const NOTIFICATION_FAILED_PATTERN = /failed/i;
+const NOTIFICATION_SUPPRESSED_PATTERN = /paused|suppress/i;
 
 function structuredAction(overrides: Partial<RefNextAction> = {}): RefNextAction {
   return {
@@ -123,7 +126,7 @@ test("formatNextAction emits no notification hint for pending state (default chr
 test("formatNextAction emits a confidence-positive hint for sent state", () => {
   const out = formatNextAction(structuredAction({ notification_state: "sent" }));
   assert.ok(out);
-  assert.match(out.notificationHint ?? "", /sent/i);
+  assert.match(out.notificationHint ?? "", NOTIFICATION_SENT_PATTERN);
 });
 
 test("formatNextAction emits an action-required hint for failed delivery — must remain visible", () => {
@@ -131,13 +134,13 @@ test("formatNextAction emits an action-required hint for failed delivery — mus
   // swallowed. The dashboard hint mirrors that contract.
   const out = formatNextAction(structuredAction({ notification_state: "failed" }));
   assert.ok(out);
-  assert.match(out.notificationHint ?? "", /failed/i);
+  assert.match(out.notificationHint ?? "", NOTIFICATION_FAILED_PATTERN);
 });
 
 test("formatNextAction emits a soft hint for suppressed state (quiet hours / no channel)", () => {
   const out = formatNextAction(structuredAction({ notification_state: "suppressed" }));
   assert.ok(out);
-  assert.match(out.notificationHint ?? "", /paused|suppress/i);
+  assert.match(out.notificationHint ?? "", NOTIFICATION_SUPPRESSED_PATTERN);
 });
 
 test("formatNextAction stays quiet when notification state is absent (schedule_fallback or older snapshots)", () => {

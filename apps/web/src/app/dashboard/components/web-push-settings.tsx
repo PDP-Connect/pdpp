@@ -284,21 +284,7 @@ function buildSetupSteps({
   matchesThisBrowser: boolean;
   testStatus: string | null;
 }): SetupStep[] {
-  const permissionState: DiagnosticState =
-    permission === "granted" ? "ok" : permission === "denied" ? "fail" : unavailable ? "fail" : "warn";
-  const subscriptionState: DiagnosticState = matchesThisBrowser
-    ? "ok"
-    : unavailable
-      ? "fail"
-      : endpoint
-        ? "warn"
-        : "warn";
-  const testState: DiagnosticState =
-    testStatus?.startsWith("Test notification sent") || testStatus?.startsWith("Test notification delivered")
-      ? "unknown"
-      : matchesThisBrowser
-        ? "unknown"
-        : "warn";
+  const testAccepted = isAcceptedWebPushTestStatus(testStatus);
 
   return [
     {
@@ -308,32 +294,100 @@ function buildSetupSteps({
     },
     {
       label: "Allow notifications",
-      state: permissionState,
-      detail:
-        permission === "granted"
-          ? "Browser permission is granted."
-          : permission === "denied"
-            ? "Browser or OS settings currently block notifications."
-            : "Tap Enable this device and approve the browser prompt.",
+      state: setupPermissionState({ permission, unavailable }),
+      detail: setupPermissionDetail(permission),
     },
     {
       label: "Subscribe this device",
-      state: subscriptionState,
-      detail: matchesThisBrowser
-        ? "The server recognizes this browser's push subscription."
-        : endpoint
-          ? "The browser has a local subscription, but the server needs it re-registered."
-          : "A PWA install is not enough; this step creates the push subscription.",
+      state: setupSubscriptionState({ matchesThisBrowser, unavailable }),
+      detail: setupSubscriptionDetail({ endpoint, matchesThisBrowser }),
     },
     {
       label: "Send a test",
-      state: testState,
-      detail:
-        testStatus?.startsWith("Test notification sent") || testStatus?.startsWith("Test notification delivered")
-          ? "The push provider accepted the test. Only the device can confirm whether it displayed."
-          : "Use Send test notification after this device is subscribed.",
+      state: setupTestState({ matchesThisBrowser, testAccepted }),
+      detail: testAccepted
+        ? "The push provider accepted the test. Only the device can confirm whether it displayed."
+        : "Use Send test notification after this device is subscribed.",
     },
   ];
+}
+
+function isAcceptedWebPushTestStatus(testStatus: string | null): boolean {
+  return (
+    testStatus?.startsWith("Test notification sent") === true ||
+    testStatus?.startsWith("Test notification delivered") === true
+  );
+}
+
+function setupPermissionState({
+  permission,
+  unavailable,
+}: {
+  permission: NotificationPermission | "unknown";
+  unavailable: string | null;
+}): DiagnosticState {
+  if (permission === "granted") {
+    return "ok";
+  }
+  if (permission === "denied" || unavailable) {
+    return "fail";
+  }
+  return "warn";
+}
+
+function setupPermissionDetail(permission: NotificationPermission | "unknown"): string {
+  if (permission === "granted") {
+    return "Browser permission is granted.";
+  }
+  if (permission === "denied") {
+    return "Browser or OS settings currently block notifications.";
+  }
+  return "Tap Enable this device and approve the browser prompt.";
+}
+
+function setupSubscriptionState({
+  matchesThisBrowser,
+  unavailable,
+}: {
+  matchesThisBrowser: boolean;
+  unavailable: string | null;
+}): DiagnosticState {
+  if (matchesThisBrowser) {
+    return "ok";
+  }
+  if (unavailable) {
+    return "fail";
+  }
+  return "warn";
+}
+
+function setupSubscriptionDetail({
+  endpoint,
+  matchesThisBrowser,
+}: {
+  endpoint: string | null;
+  matchesThisBrowser: boolean;
+}): string {
+  if (matchesThisBrowser) {
+    return "The server recognizes this browser's push subscription.";
+  }
+  if (endpoint) {
+    return "The browser has a local subscription, but the server needs it re-registered.";
+  }
+  return "A PWA install is not enough; this step creates the push subscription.";
+}
+
+function setupTestState({
+  matchesThisBrowser,
+  testAccepted,
+}: {
+  matchesThisBrowser: boolean;
+  testAccepted: boolean;
+}): DiagnosticState {
+  if (testAccepted || matchesThisBrowser) {
+    return "unknown";
+  }
+  return "warn";
 }
 
 function buildDiagnostics({

@@ -382,11 +382,7 @@ function readNekoPointerMapping(clientX: number, clientY: number): Record<string
   // divisor. Recording it lets us catch any future regression where the
   // CSS-derived coords would differ from the n.eko-authoritative ones.
   const controlCoordinateSize = currentNekoControlCoordinateSize();
-  const mappingBasis = nekoInstance?._overlay?.getMousePos
-    ? "neko-overlay-getMousePos"
-    : nekoInstance?.state?.screen?.size
-      ? "neko-screen-state"
-      : "media-intrinsic";
+  const mappingBasis = readNekoPointerMappingBasis();
   const screenState = screenStateSnapshot();
   const wrapperRect = wrapperEl?.getBoundingClientRect() ?? null;
   const overlayRect = overlay?.getBoundingClientRect() ?? null;
@@ -428,6 +424,16 @@ function readNekoPointerMapping(clientX: number, clientY: number): Record<string
     viewport: readTouchTimeViewport(),
     wrapper: rectSnapshot(wrapperEl),
   };
+}
+
+function readNekoPointerMappingBasis(): "media-intrinsic" | "neko-overlay-getMousePos" | "neko-screen-state" {
+  if (nekoInstance?._overlay?.getMousePos) {
+    return "neko-overlay-getMousePos";
+  }
+  if (nekoInstance?.state?.screen?.size) {
+    return "neko-screen-state";
+  }
+  return "media-intrinsic";
 }
 
 // Backwards-compatible internal wrapper. Existing callsites in

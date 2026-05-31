@@ -34,6 +34,77 @@ interface RowProps {
 
 type ToastState = { kind: "none" } | { kind: "already_running" } | { kind: "error"; message: string };
 
+function useConnectorSyncState({
+  connectionId,
+  connectorId,
+  connectorInstanceId,
+  isRunning,
+}: {
+  connectionId?: string;
+  connectorId: string;
+  connectorInstanceId?: string;
+  isRunning: boolean;
+}) {
+  const router = useRouter();
+  const [isPending, startTransition] = useTransition();
+  // Optimistic: if the user just clicked, treat as running until the next
+  // server refresh tells us otherwise. This avoids the awkward gap between
+  // action return and route revalidation.
+  const [optimisticRunning, setOptimisticRunning] = useState(false);
+  const [toast, setToast] = useState<ToastState>({ kind: "none" });
+
+  useEffect(() => {
+    if (optimisticRunning && isRunning) {
+      setOptimisticRunning(false);
+    }
+  }, [isRunning, optimisticRunning]);
+
+  const [optimisticStart, setOptimisticStart] = useState<number | null>(null);
+  useEffect(() => {
+    if (optimisticStart === null) {
+      setOptimisticStart(Date.now());
+    }
+  }, [optimisticStart]);
+
+  // Auto-clear non-error toasts after a few seconds.
+  useEffect(() => {
+    if (toast.kind === "none") {
+      return;
+    }
+    const id = setTimeout(() => setToast({ kind: "none" }), 5000);
+    return () => clearTimeout(id);
+  }, [toast]);
+
+  const handleSync = useCallback(() => {
+    setToast({ kind: "none" });
+    setOptimisticRunning(true);
+    startTransition(async () => {
+      const res: RunNowResult = await runConnectorNowAction(connectorId, connectionId ?? connectorInstanceId ?? null);
+      if (res.ok === true) {
+        // Success: leave optimistic running on; the next poll/refresh
+        // will flip to server-authoritative state.
+        router.refresh();
+        return;
+      }
+      setOptimisticRunning(false);
+      if (res.reason === "already_running") {
+        setToast({ kind: "already_running" });
+        router.refresh();
+        return;
+      }
+      setToast({ kind: "error", message: res.message });
+    });
+  }, [connectionId, connectorId, connectorInstanceId, router]);
+
+  return {
+    handleSync,
+    isPending,
+    optimisticStart,
+    running: isRunning || optimisticRunning,
+    toast,
+  };
+}
+
 export function ConnectorRow({ overview, runsHref }: RowProps) {
   const {
     connectionHealth,
@@ -50,85 +121,20 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
     totalRecords,
     totalRetainedBytes,
   } = overview;
-  const router = useRouter();
-  const [isPending, startTransition] = useTransition();
-  // Optimistic: if the user just clicked, treat as running until the next
-  // server refresh tells us otherwise. This avoids the awkward gap between
-  // action return and route revalidation.
-  const [optimisticRunning, setOptimisticRunning] = useState(false);
-  const [toast, setToast] = useState<ToastState>({ kind: "none" });
-  const running = isRunning || optimisticRunning;
+  const { handleSync, isPending, optimisticStart, running, toast } = useConnectorSyncState({
+    connectionId,
+    connectorId: connector.connector_id,
+    connectorInstanceId,
+    isRunning,
+  });
   const lastRunKnownGaps = normalizeKnownGaps(lastRun?.known_gaps);
   const hasPartialCoverageHint = connectorHasPartialCoverageHint({ lastRunKnownGaps, totalRecords });
-
-  // Clear the optimistic flag once server-side state agrees the run
-  // started (isRunning from props) or terminated (a new lastRun with
-  // a terminal status newer than the one we had).
-  useEffect(() => {
-    if (!optimisticRunning) {
-      return;
-    }
-    if (isRunning) {
-      setOptimisticRunning(false);
-    }
-  }, [isRunning, optimisticRunning]);
-
-  // When the user just optimistically started a run, we don't yet know
-  // the server-side started_at. Using the stale lastRun.first_at would
-  // produce nonsense like "Running · 3731m 45s" (i.e. the elapsed since
-  // the PREVIOUS run). Clamp to "now" for the optimistic window; once
-  // the server confirms the real active run, lastRun.first_at is the
-  // fresh run's timestamp and we use it.
-  //
-  // SSR-safe: we initialize `optimisticStart` lazily via an effect so the
-  // server render and first client render agree on `null`. The optimistic
-  // branch never fires during SSR (the user-click path that triggers it is
-  // client-only), so the visible behavior is unchanged.
-  const [optimisticStart, setOptimisticStart] = useState<number | null>(null);
-  useEffect(() => {
-    if (optimisticStart === null) {
-      setOptimisticStart(Date.now());
-    }
-  }, [optimisticStart]);
   let effectiveStartIso: string | undefined;
   if (isRunning && lastRun) {
     effectiveStartIso = lastRun.first_at;
   } else if (optimisticStart !== null) {
     effectiveStartIso = new Date(optimisticStart).toISOString();
   }
-
-  // Auto-clear non-error toasts after a few seconds.
-  useEffect(() => {
-    if (toast.kind === "none") {
-      return;
-    }
-    const id = setTimeout(() => setToast({ kind: "none" }), 5000);
-    return () => clearTimeout(id);
-  }, [toast]);
-
-  const handleSync = useCallback(() => {
-    setToast({ kind: "none" });
-    setOptimisticRunning(true);
-    startTransition(async () => {
-      const res: RunNowResult = await runConnectorNowAction(
-        connector.connector_id,
-        connectionId ?? connectorInstanceId ?? null
-      );
-      if (res.ok === true) {
-        // Success: leave optimistic running on; the next poll/refresh
-        // will flip to server-authoritative state.
-        router.refresh();
-        return;
-      }
-      setOptimisticRunning(false);
-      if (res.reason === "already_running") {
-        setToast({ kind: "already_running" });
-        router.refresh();
-        return;
-      }
-      setToast({ kind: "error", message: res.message });
-    });
-  }, [connectionId, connector.connector_id, connectorInstanceId, router]);
 
   const routeId = connectionId ?? connectorInstanceId ?? connector.connector_id;
   const detailHref = `/dashboard/records/${encodeURIComponent(routeId)}`;
@@ -171,37 +177,19 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
           </Link>
         </div>
 
-        {/* Stats */}
-        <div className="pdpp-caption flex shrink-0 flex-col gap-0.5 text-muted-foreground tabular-nums sm:items-end sm:text-right">
-          <span>
-            {recordCount.label === null ? (
-              <span className="text-muted-foreground/70" data-testid="records-unavailable" title={recordCount.title}>
-                Records unavailable
-              </span>
-            ) : (
-              <span title={recordCount.title}>{recordCount.label} records</span>
-            )}{" "}
-            · {displayedStreamCount} stream
-            {displayedStreamCount === 1 ? "" : "s"}
-          </span>
-          <RetainedBytesLine retainedBytes={retainedBytes ?? null} totalRetainedBytes={totalRetainedBytes ?? null} />
-          <ConnectorFreshnessLine
-            hasError={Boolean(overview.error)}
-            lastRun={lastRun}
-            lastSuccessfulRun={lastSuccessfulRun}
-            localDeviceProgress={overview.localDeviceProgress ?? null}
-            totalRecords={totalRecords}
-          />
-          {hasPartialCoverageHint ? (
-            <Link
-              className="inline-flex items-center gap-1 text-[color:var(--warning)] underline-offset-2 hover:underline"
-              href={`${runsHref}/${encodeURIComponent(lastRun?.run_id ?? "")}`}
-              title="Latest run produced records but reported known source gaps"
-            >
-              Partial source coverage
-            </Link>
-          ) : null}
-        </div>
+        <ConnectorStats
+          displayedStreamCount={displayedStreamCount}
+          hasError={Boolean(overview.error)}
+          hasPartialCoverageHint={hasPartialCoverageHint}
+          lastRun={lastRun}
+          lastSuccessfulRun={lastSuccessfulRun}
+          localDeviceProgress={overview.localDeviceProgress ?? null}
+          recordCount={recordCount}
+          retainedBytes={retainedBytes ?? null}
+          runsHref={runsHref}
+          totalRecords={totalRecords}
+          totalRetainedBytes={totalRetainedBytes ?? null}
+        />
 
         {/* Status + action */}
         <div className="flex shrink-0 items-center gap-2">
@@ -225,6 +213,97 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
         </div>
       </div>
 
+      <ConnectorRowEvidence
+        axisChips={axisChips}
+        detailHref={detailHref}
+        dominantCondition={dominantCondition}
+        durableProgress={durableProgress}
+        nextAction={nextAction}
+        projectionFreshness={projectionFreshness}
+        toast={toast}
+      />
+    </li>
+  );
+}
+
+function ConnectorStats({
+  displayedStreamCount,
+  hasError,
+  hasPartialCoverageHint,
+  lastRun,
+  lastSuccessfulRun,
+  localDeviceProgress,
+  recordCount,
+  retainedBytes,
+  runsHref,
+  totalRecords,
+  totalRetainedBytes,
+}: {
+  displayedStreamCount: number;
+  hasError: boolean;
+  hasPartialCoverageHint: boolean;
+  lastRun: ConnectorRunRef | null;
+  lastSuccessfulRun: ConnectorRunRef | null;
+  localDeviceProgress: ConnectorOverview["localDeviceProgress"];
+  recordCount: ReturnType<typeof resolveRecordCountDisplay>;
+  retainedBytes: ConnectorOverview["retainedBytes"] | null;
+  runsHref: string;
+  totalRecords: number;
+  totalRetainedBytes: number | null;
+}) {
+  return (
+    <div className="pdpp-caption flex shrink-0 flex-col gap-0.5 text-muted-foreground tabular-nums sm:items-end sm:text-right">
+      <span>
+        {recordCount.label === null ? (
+          <span className="text-muted-foreground/70" data-testid="records-unavailable" title={recordCount.title}>
+            Records unavailable
+          </span>
+        ) : (
+          <span title={recordCount.title}>{recordCount.label} records</span>
+        )}{" "}
+        · {displayedStreamCount} stream
+        {displayedStreamCount === 1 ? "" : "s"}
+      </span>
+      <RetainedBytesLine retainedBytes={retainedBytes} totalRetainedBytes={totalRetainedBytes} />
+      <ConnectorFreshnessLine
+        hasError={hasError}
+        lastRun={lastRun}
+        lastSuccessfulRun={lastSuccessfulRun}
+        localDeviceProgress={localDeviceProgress ?? null}
+        totalRecords={totalRecords}
+      />
+      {hasPartialCoverageHint ? (
+        <Link
+          className="inline-flex items-center gap-1 text-[color:var(--warning)] underline-offset-2 hover:underline"
+          href={`${runsHref}/${encodeURIComponent(lastRun?.run_id ?? "")}`}
+          title="Latest run produced records but reported known source gaps"
+        >
+          Partial source coverage
+        </Link>
+      ) : null}
+    </div>
+  );
+}
+
+function ConnectorRowEvidence({
+  axisChips,
+  detailHref,
+  dominantCondition,
+  durableProgress,
+  nextAction,
+  projectionFreshness,
+  toast,
+}: {
+  axisChips: AxisChip[];
+  detailHref: string;
+  dominantCondition: ReturnType<typeof formatDominantCondition>;
+  durableProgress: ReturnType<typeof formatLastDurableProgress>;
+  nextAction: ReturnType<typeof formatNextAction>;
+  projectionFreshness: ReturnType<typeof formatProjectionFreshness>;
+  toast: ToastState;
+}) {
+  return (
+    <>
       {axisChips.length > 0 ? (
         <div className="mx-3 mb-2 flex flex-wrap items-center gap-1.5" data-testid="axis-chip-strip">
           {axisChips.map((chip) => (
@@ -253,24 +332,26 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
       ) : null}
 
       {dominantCondition ? <DominantConditionNotice condition={dominantCondition} /> : null}
-
       {nextAction ? <NextActionPill detailHref={detailHref} formatted={nextAction} /> : null}
+      <ConnectorRowToast toast={toast} />
+    </>
+  );
+}
 
-      {/* Toasts rendered inline so they don't obscure other rows. */}
-      {toast.kind === "none" ? null : (
-        <div
-          aria-live="polite"
-          className={
-            toast.kind === "error"
-              ? "pdpp-caption mx-3 mb-2 border-l-2 border-l-destructive bg-destructive/5 px-3 py-2 text-destructive"
-              : "pdpp-caption mx-3 mb-2 bg-muted/60 px-3 py-2 text-muted-foreground"
-          }
-          role="status"
-        >
-          {toast.kind === "already_running" ? "A sync for this connector is already in progress." : toast.message}
-        </div>
-      )}
-    </li>
+function ConnectorRowToast({ toast }: { toast: ToastState }) {
+  if (toast.kind === "none") {
+    return null;
+  }
+  const className =
+    toast.kind === "error"
+      ? "pdpp-caption mx-3 mb-2 border-l-2 border-l-destructive bg-destructive/5 px-3 py-2 text-destructive"
+      : "pdpp-caption mx-3 mb-2 bg-muted/60 px-3 py-2 text-muted-foreground";
+  const message =
+    toast.kind === "already_running" ? "A sync for this connector is already in progress." : toast.message;
+  return (
+    <div aria-live="polite" className={className} role="status">
+      {message}
+    </div>
   );
 }
 

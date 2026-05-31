@@ -64,7 +64,7 @@ const NEKO_MEDIA_LAYOUT_EVENT_LISTENER_RE = /window\.addEventListener\(NEKO_MEDI
 const NEKO_MEDIA_REFRESH_EPOCH_DEP_RE =
   /mediaRefreshEpoch[\s\S]*?setMediaRefreshEpoch[\s\S]*?\[clientConfig, logDebug, mediaRefreshEpoch, onPresentationViewportReady, viewportInfo\]/;
 const NEKO_MEDIA_SETTLE_TARGET_MATCH_RE =
-  /nekoMediaSettleTarget,[\s\S]*nekoMediaSettleTargetsMatch,[\s\S]*from "@pdpp\/remote-surface\/client"/;
+  /nekoMediaSettleTarget,[\s\S]*nekoMediaSettleTargetsMatch,[\s\S]*from "@opendatalabs\/remote-surface\/client"/;
 const NEKO_MEDIA_REFRESH_DOES_NOT_RESET_READY_RE =
   /const targetChanged = !nekoMediaSettleTargetsMatch\(mediaSettleTargetRef\.current, target\)[\s\S]*if \(targetChanged\) \{[\s\S]*setMediaReady\(false\);[\s\S]*\} else \{[\s\S]*neko\.media\.settle\.refresh/;
 const NEKO_TARGET_CHANGE_PRESERVES_DISPLAYABLE_RE =
@@ -74,7 +74,7 @@ const NEKO_TARGET_CHANGE_RESETS_DISPLAYABLE_RE =
 const NEKO_WEBRTC_RECONNECT_CONFIG_RE =
   /NEKO_WEBRTC_RECONNECT_CONFIG[\s\S]*max_reconnects:\s*12[\s\S]*timeout_ms:\s*6000/;
 const NEKO_WEBRTC_RECONNECT_CONFIG_APPLIED_RE = /setReconnectorConfig\?\.\("webrtc",\s*NEKO_WEBRTC_RECONNECT_CONFIG\)/;
-const NEKO_NATIVE_VIEWPORT_INFO_RE = /toNekoNativeViewportInfo,[\s\S]*from "@pdpp\/remote-surface\/client"/;
+const NEKO_NATIVE_VIEWPORT_INFO_RE = /toNekoNativeViewportInfo,[\s\S]*from "@opendatalabs\/remote-surface\/client"/;
 const NEKO_SURFACE_NATIVE_VIEWPORT_INFO_RE =
   /const nekoViewportInfo = useStableNekoNativeViewportInfo\(\s*!!nekoSession,\s*viewportInfo\s*\)[\s\S]*viewportInfo=\{nekoViewportInfo\}/;
 const NEKO_STABLE_NATIVE_VIEWPORT_INFO_RE =
@@ -109,7 +109,7 @@ const VIEWER_DIRECT_NEKO_KEYBOARD_CALL_RE = /\b(?:setNekoRemoteInputFocused|focu
 const VIEWER_REMOTE_INPUT_FOCUS_VIA_ADAPTER_RE =
   /adapter\.setRemoteInputFocused\(true\)[\s\S]*adapter\.focusTextInput\(\)[\s\S]*adapter\.setRemoteInputFocused\(false\)[\s\S]*adapter\.blurTextInput\(\)/;
 const CDP_SURFACE_ADAPTER_IMPORT_RE =
-  /import \{ CdpSurfaceAdapter, NekoSurfaceAdapter \} from "@pdpp\/remote-surface\/client"/;
+  /CdpSurfaceAdapter,[\s\S]*NekoSurfaceAdapter,[\s\S]*from "@opendatalabs\/remote-surface\/client"/;
 const CDP_SURFACE_ADAPTER_WIRING_RE =
   /new CdpSurfaceAdapter\(\{[\s\S]*sendInput: sendCdpInput[\s\S]*getViewportInfo: \(\) => viewportInfoRef\.current[\s\S]*getFrameElement: \(\) => imgRef\.current[\s\S]*getSoftKeyboardElement: \(\) => softKeyboardInputRef\.current/;
 const VIEWER_DIRECT_CDP_KEYBOARD_POST_RE = /postInput\(\{[\s\S]*type: "keyboard"/;
@@ -118,6 +118,33 @@ const STREAM_SURFACE_RESOLUTION_POLL_PROP_RE = /pollForResolution\?: boolean/;
 const STREAM_SURFACE_RESOLUTION_POLL_GATE_RE =
   /if \(!pollForResolution\) \{\s*return;\s*\}[\s\S]*setInterval\(\(\) => router\.refresh\(\), RESOLUTION_POLL_MS\)/;
 const STREAM_PLAYGROUND_RESOLUTION_POLL_DISABLED_RE = /<StreamSurface[\s\S]*pollForResolution=\{false\}/;
+const SETTLING_DISPLAYABLE_BLOCK_RE = /if \(displayable && !mediaDisplayableRef\.current\) \{[\s\S]*?\n {8}\}/;
+const SET_MEDIA_READY_TRUE_RE = /setMediaReady\(true\)/;
+const ON_PRESENTATION_VIEWPORT_READY_RE = /onPresentationViewportReady\(/;
+const PLAYGROUND_SEEN_REF_RE =
+  /const playgroundSeenRef = useRef<PlaygroundSeenRegistry>\(createPlaygroundSeenRegistry\(\)\);/;
+const PLAYGROUND_DEDUPE_IMPORT_RE = /from "\.\/playground-event-dedupe\.ts"/;
+const EMIT_PLAYGROUND_EVENTS_CLAIMS_RE =
+  /function emitPlaygroundEvents[\s\S]+?claimPlaygroundEvent\(playgroundSeenRef\.current,/;
+const DEBUG_DRAIN_GATE_RE = /if \(!debugEnabled\) return;[\s\S]+?fetchNekoStatusBestEffort/;
+const DEBUG_DRAIN_DUPLICATE_RE = /claimPlaygroundEvent\(playgroundSeenRef\.current,[\s\S]+?===\s*"duplicate"/;
+const DEBUG_DRAIN_CADENCE_RE = /nekoDebugDrainPollMs:\s*250,/;
+const DEBUG_DRAIN_TIMEOUT_RE = /setTimeout\(drainOnce, STREAM_VIEWER_POLICY\.nekoDebugDrainPollMs\)/;
+const DEBUG_DRAIN_WRONG_CADENCE_RE = /setTimeout\(drainOnce, STREAM_VIEWER_POLICY\.nekoStatusPollMs\)/;
+const DEBUG_DRAIN_BLOCK_RE = /Debug-only drain[\s\S]+?\}, \[clientConfig\?\.statusPath, debugEnabled, logDebug\]\);/;
+const APPLY_SCREEN_CALL_RE = /applyScreen\(/;
+const APPLY_FALLBACK_CALL_RE = /applyFallback\(/;
+const FIRST_NEKO_LAYOUT_APPLIED_REF_RE = /firstNekoLayoutAppliedRef/;
+const REMOTE_STATUS_POLL_SOURCE_RE = /source:\s*"remote-status-poll"/;
+const REMOTE_DEBUG_DRAIN_SOURCE_RE = /source:\s*"remote-debug-drain"/;
+const NEKO_NATIVE_VIEWPORT_OPTIONS_RE =
+  /const NEKO_NATIVE_VIEWPORT_OPTIONS[\s\S]*deviceScaleFactor:\s*1[\s\S]*highDprCapture:\s*false/;
+const READ_STAGE_VIEWPORT_OPTIONS_RE =
+  /const readStageViewport = useCallback[\s\S]*nekoNativeViewportRef\.current \? NEKO_NATIVE_VIEWPORT_OPTIONS : \{\}/;
+const NEKO_BACKEND_READY_REMEASURE_RE =
+  /payload\.backend === "neko"[\s\S]*nekoNativeViewportRef\.current = true[\s\S]*requestViewportMeasureRef\.current\?\.\("neko-backend-ready"\)/;
+const READ_STAGE_VIEWPORT_POST_RE = /const viewport = readStageViewport\(width, height\)/;
+const READ_STAGE_VIEWPORT_RECT_RE = /const viewport = readStageViewport\(rect\.width, rect\.height\)/;
 
 test("mobile keyboard opens as an overlay only after remote editable focus is confirmed", async () => {
   const [viewerSrc, nekoClientSrc] = await Promise.all([
@@ -225,11 +252,10 @@ test("n.eko presentation waits for settled media before promoting a resized view
   assert.doesNotMatch(viewerSrc, NEKO_PRESENTATION_IMMEDIATE_POST_PROMOTION_RE);
   assert.doesNotMatch(viewerSrc, NEKO_PRESENTATION_DEGRADED_PROMOTE_RE);
   assert.doesNotMatch(viewerSrc, NEKO_PRESENTATION_EARLY_MEDIA_READY_RE);
-  const displayableBlock =
-    viewerSrc.match(/if \(displayable && !mediaDisplayableRef\.current\) \{[\s\S]*?\n {8}\}/)?.[0] ?? "";
+  const displayableBlock = viewerSrc.match(SETTLING_DISPLAYABLE_BLOCK_RE)?.[0] ?? "";
   assert.ok(displayableBlock.length > 0, "settling displayable block is identifiable");
-  assert.doesNotMatch(displayableBlock, /setMediaReady\(true\)/);
-  assert.doesNotMatch(displayableBlock, /onPresentationViewportReady\(/);
+  assert.doesNotMatch(displayableBlock, SET_MEDIA_READY_TRUE_RE);
+  assert.doesNotMatch(displayableBlock, ON_PRESENTATION_VIEWPORT_READY_RE);
 });
 
 test("n.eko WebRTC startup can recover after slow media attach or ICE retry", async () => {
@@ -282,65 +308,48 @@ test("stream viewer drains remote playground.* events when stream_debug=1, with 
   // helper module so they're testable without React state.
   assert.match(
     viewerSrc,
-    /const playgroundSeenRef = useRef<PlaygroundSeenRegistry>\(createPlaygroundSeenRegistry\(\)\);/,
+    PLAYGROUND_SEEN_REF_RE,
     "playgroundSeenRef declared at component scope using the pure helper module"
   );
-  assert.match(
-    viewerSrc,
-    /from "\.\/playground-event-dedupe\.ts"/,
-    "stream-viewer imports the dedupe helper from its own module"
-  );
+  assert.match(viewerSrc, PLAYGROUND_DEDUPE_IMPORT_RE, "stream-viewer imports the dedupe helper from its own module");
   // Both poll paths must claim events through the same helper. The
   // helper must compose seq with pageId so a remote page reload
   // (seq restart at 1) does not collide with already-seen keys.
-  assert.match(
-    viewerSrc,
-    /function emitPlaygroundEvents[\s\S]+?claimPlaygroundEvent\(playgroundSeenRef\.current,/,
-    "layout poll claims events through claimPlaygroundEvent"
-  );
+  assert.match(viewerSrc, EMIT_PLAYGROUND_EVENTS_CLAIMS_RE, "layout poll claims events through claimPlaygroundEvent");
   // The debug-drain useEffect must exist, gate on debugEnabled, reuse
   // fetchNekoStatusBestEffort, and use claimPlaygroundEvent for dedupe.
   assert.match(
     viewerSrc,
-    /if \(!debugEnabled\) return;[\s\S]+?fetchNekoStatusBestEffort/,
+    DEBUG_DRAIN_GATE_RE,
     "debug drain gated on debugEnabled and reuses fetchNekoStatusBestEffort"
   );
-  assert.match(
-    viewerSrc,
-    /claimPlaygroundEvent\(playgroundSeenRef\.current,[\s\S]+?===\s*"duplicate"/,
-    "debug drain rejects duplicates via claimPlaygroundEvent"
-  );
+  assert.match(viewerSrc, DEBUG_DRAIN_DUPLICATE_RE, "debug drain rejects duplicates via claimPlaygroundEvent");
   // The debug drain must NOT poll at the layout-poll cadence (50 ms);
   // a tighter cadence would perturb UX even though it's debug-only.
   // 250 ms is fast enough that a human-perceived tap reaches the
   // operator's JSONL well under a second.
   assert.match(
     viewerSrc,
-    /nekoDebugDrainPollMs:\s*250,/,
+    DEBUG_DRAIN_CADENCE_RE,
     "debug drain has a dedicated 250ms cadence (not the 50ms layout-poll cadence)"
   );
-  assert.match(
-    viewerSrc,
-    /setTimeout\(drainOnce, STREAM_VIEWER_POLICY\.nekoDebugDrainPollMs\)/,
-    "debug drain useEffect uses nekoDebugDrainPollMs"
-  );
+  assert.match(viewerSrc, DEBUG_DRAIN_TIMEOUT_RE, "debug drain useEffect uses nekoDebugDrainPollMs");
   assert.doesNotMatch(
     viewerSrc,
-    /setTimeout\(drainOnce, STREAM_VIEWER_POLICY\.nekoStatusPollMs\)/,
+    DEBUG_DRAIN_WRONG_CADENCE_RE,
     "debug drain useEffect must NOT reuse the 50ms layout-poll cadence"
   );
   // The debug-drain path must NOT call applyScreen / applyFallback /
   // mark firstNekoLayoutAppliedRef — it is observation-only.
-  const drainBlock =
-    viewerSrc.match(/Debug-only drain[\s\S]+?\}, \[clientConfig\?\.statusPath, debugEnabled, logDebug\]\);/)?.[0] ?? "";
+  const drainBlock = viewerSrc.match(DEBUG_DRAIN_BLOCK_RE)?.[0] ?? "";
   assert.ok(drainBlock.length > 0, "debug-drain useEffect block is identifiable");
-  assert.doesNotMatch(drainBlock, /applyScreen\(/, "debug drain must not call applyScreen");
-  assert.doesNotMatch(drainBlock, /applyFallback\(/, "debug drain must not call applyFallback");
-  assert.doesNotMatch(drainBlock, /firstNekoLayoutAppliedRef/, "debug drain must not mark first-layout flag");
+  assert.doesNotMatch(drainBlock, APPLY_SCREEN_CALL_RE, "debug drain must not call applyScreen");
+  assert.doesNotMatch(drainBlock, APPLY_FALLBACK_CALL_RE, "debug drain must not call applyFallback");
+  assert.doesNotMatch(drainBlock, FIRST_NEKO_LAYOUT_APPLIED_REF_RE, "debug drain must not mark first-layout flag");
   // Source field on emitted events must distinguish the two paths so
   // the operator can tell which poll surfaced a given event.
-  assert.match(viewerSrc, /source:\s*"remote-status-poll"/, "layout poll tags events as remote-status-poll");
-  assert.match(viewerSrc, /source:\s*"remote-debug-drain"/, "debug drain tags events as remote-debug-drain");
+  assert.match(viewerSrc, REMOTE_STATUS_POLL_SOURCE_RE, "layout poll tags events as remote-status-poll");
+  assert.match(viewerSrc, REMOTE_DEBUG_DRAIN_SOURCE_RE, "debug drain tags events as remote-debug-drain");
 });
 
 test("n.eko follow-up viewport posts use native one-to-one coordinates", async () => {
@@ -348,29 +357,21 @@ test("n.eko follow-up viewport posts use native one-to-one coordinates", async (
 
   assert.match(
     viewerSrc,
-    /const NEKO_NATIVE_VIEWPORT_OPTIONS[\s\S]*deviceScaleFactor:\s*1[\s\S]*highDprCapture:\s*false/,
+    NEKO_NATIVE_VIEWPORT_OPTIONS_RE,
     "n.eko viewport options force a CSS-pixel native coordinate space"
   );
   assert.match(
     viewerSrc,
-    /const readStageViewport = useCallback[\s\S]*nekoNativeViewportRef\.current \? NEKO_NATIVE_VIEWPORT_OPTIONS : \{\}/,
+    READ_STAGE_VIEWPORT_OPTIONS_RE,
     "stage viewport reads switch to n.eko native options after backend_ready"
   );
   assert.match(
     viewerSrc,
-    /payload\.backend === "neko"[\s\S]*nekoNativeViewportRef\.current = true[\s\S]*requestViewportMeasureRef\.current\?\.\("neko-backend-ready"\)/,
+    NEKO_BACKEND_READY_REMEASURE_RE,
     "n.eko backend_ready immediately remeasures/reposts using native viewport options"
   );
-  assert.match(
-    viewerSrc,
-    /const viewport = readStageViewport\(width, height\)/,
-    "viewport POST path uses readStageViewport"
-  );
-  assert.match(
-    viewerSrc,
-    /const viewport = readStageViewport\(rect\.width, rect\.height\)/,
-    "resize/presentation paths use readStageViewport"
-  );
+  assert.match(viewerSrc, READ_STAGE_VIEWPORT_POST_RE, "viewport POST path uses readStageViewport");
+  assert.match(viewerSrc, READ_STAGE_VIEWPORT_RECT_RE, "resize/presentation paths use readStageViewport");
 });
 
 test("stream pages ask the browser to overlay the keyboard instead of resizing the viewport", async () => {

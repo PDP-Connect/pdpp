@@ -32,6 +32,25 @@ export const dynamic = "force-dynamic";
 
 const RECENT_RUNS_LIMIT = 10;
 
+interface ConnectorPageModel {
+  connectionHealth: RefConnectionHealthSnapshot | null;
+  connectionId: string;
+  connectorId: string;
+  connectorInstanceId: string | null;
+  deviceLabels: string[];
+  displayName: string;
+  headerCount: string;
+  manifest: ConnectorManifest;
+  overview: ConnectorOverview;
+  recentRuns: RunSummary[];
+  schedule: RefSchedule | null;
+  scheduleError: string | null;
+  sourceInstances: DeviceSourceInstance[];
+  sourceInstancesError: string | null;
+  streams: StreamSummary[];
+  totalRecords: number;
+}
+
 function toConnectorRunRef(summary: RefConnectorRunSummary | null) {
   if (!summary) {
     return null;
@@ -77,63 +96,9 @@ export default async function ConnectorPage({ params }: { params: Promise<{ conn
   const { connector } = await params;
   const routeId = decodeURIComponent(connector);
 
-  let manifest: ConnectorManifest | undefined;
-  let summary: RefConnectorSummary | undefined;
-  let connectorId = routeId;
-  let connectionId = routeId;
-  let connectorInstanceId: string | null = null;
-  let streams: StreamSummary[];
-  let overview: ConnectorOverview | null = null;
-  let recentRuns: RunSummary[] = [];
-  let connectionHealth: RefConnectionHealthSnapshot | null = null;
-  let schedule: RefSchedule | null = null;
-  let scheduleError: string | null = null;
-  let sourceInstances: DeviceSourceInstance[] = [];
-  let sourceInstancesError: string | null = null;
+  let model: ConnectorPageModel;
   try {
-    const [resolvedSummary, manifests] = await Promise.all([
-      resolveConnectionForRecordsRoute(routeId),
-      listConnectorManifests(),
-    ]);
-    summary = resolvedSummary ?? undefined;
-    if (!summary) {
-      notFound();
-    }
-    connectorId = summary.connector_id;
-    connectionId = summary.connection_id;
-    connectorInstanceId = connectorInstanceIdForConnection(summary);
-    manifest =
-      manifests.find((m) => m.connector_id === connectorId) ??
-      ({
-        connector_id: connectorId,
-        display_name: summary.connector_display_name ?? summary.display_name,
-        name: summary.connector_display_name ?? summary.display_name,
-        streams: summary.streams.map((name) => ({ name })),
-      } satisfies ConnectorManifest);
-    streams = await listStreams(connectorId, { connectorInstanceId });
-    overview = toConnectorOverview(summary, streams);
-    const runsResp = await listRuns({ connector_id: connectorId, limit: RECENT_RUNS_LIMIT });
-    recentRuns = runsResp.data ?? [];
-
-    // Diagnostics evidence. Each branch is independently failable so a
-    // device-exporter outage cannot suppress schedule data, and vice
-    // versa. Failures surface as honest "unavailable" tooltips rather
-    // than silently zeroing the section.
-    const [scheduleResult, sourcesResult] = await Promise.allSettled([
-      getConnectorSchedule(connectorId, { connectorInstanceId: connectorInstanceId ?? undefined }),
-      listDeviceExporterSourceInstances({ connector_instance_id: connectorInstanceId ?? undefined }),
-    ]);
-    connectionHealth = summary.connection_health ?? null;
-    if (scheduleResult.status === "fulfilled") {
-      schedule = scheduleResult.value;
-    } else {
-      scheduleError = errorMessage(scheduleResult.reason);
-    }
-    if (sourcesResult.status === "fulfilled") {
-      sourceInstances = sourcesResult.value.data.filter((s) => s.connector_id === connectorId);
-    } else {
-      sourceInstancesError = errorMessage(sourcesResult.reason);
-    }
+    model = await loadConnectorPageModel(routeId);
   } catch (err) {
     if (err instanceof ReferenceServerUnreachableError) {
       return (
@@ -146,23 +111,119 @@ export default async function ConnectorPage({ params }: { params: Promise<{ conn
     throw err;
   }
 
+  return <ConnectorPageView model={model} />;
+}
+
+async function loadConnectorPageModel(routeId: string): Promise<ConnectorPageModel> {
+  const [summary, manifests] = await Promise.all([resolveConnectionForRecordsRoute(routeId), listConnectorManifests()]);
+  if (!summary) {
+    notFound();
+  }
+
+  const connectorId = summary.connector_id;
+  const connectionId = summary.connection_id;
+  const connectorInstanceId = connectorInstanceIdForConnection(summary);
+  const manifest =
+    manifests.find((m) => m.connector_id === connectorId) ??
+    ({
+      connector_id: connectorId,
+      display_name: summary.connector_display_name ?? summary.display_name,
+      name: summary.connector_display_name ?? summary.display_name,
+      streams: summary.streams.map((name) => ({ name })),
+    } satisfies ConnectorManifest);
+  const streams = await listStreams(connectorId, { connectorInstanceId });
+  const overview = toConnectorOverview(summary, streams);
+  const runsResp = await listRuns({ connector_id: connectorId, limit: RECENT_RUNS_LIMIT });
+  const recentRuns = runsResp.data ?? [];
+
+  const diagnostics = await loadConnectorDiagnostics(connectorId, connectorInstanceId);
   const totalRecords = streams.reduce((sum, s) => sum + s.record_count, 0);
   const displayName = formatConnectorNameForDisplay({
     connectorId,
     displayName: manifest.display_name,
     name: manifest.name,
   });
-  const running = overview?.isRunning ?? false;
   // Source instances surface the device(s) that fed this connection. For
   // filesystem-class collectors (claude_code, codex), the same connector
   // type can be active on multiple devices; without these labels, two
   // claude_code instances are visually indistinguishable.
-  const { deviceLabels, pendingOnDevices } = summarizeSourceInstancesForHeader(sourceInstances);
+  const { deviceLabels, pendingOnDevices } = summarizeSourceInstancesForHeader(diagnostics.sourceInstances);
   const headerCount = formatConnectorHeaderCount({
     pendingOnDevices,
     streamCount: streams.length,
     totalRecords,
   });
+
+  return {
+    connectionHealth: summary.connection_health ?? null,
+    connectionId,
+    connectorId,
+    connectorInstanceId,
+    deviceLabels,
+    displayName,
+    headerCount,
+    manifest,
+    overview,
+    recentRuns,
+    streams,
+    totalRecords,
+    ...diagnostics,
+  };
+}
+
+async function loadConnectorDiagnostics(
+  connectorId: string,
+  connectorInstanceId: string | null
+): Promise<{
+  schedule: RefSchedule | null;
+  scheduleError: string | null;
+  sourceInstances: DeviceSourceInstance[];
+  sourceInstancesError: string | null;
+}> {
+  let schedule: RefSchedule | null = null;
+  let scheduleError: string | null = null;
+  let sourceInstances: DeviceSourceInstance[] = [];
+  let sourceInstancesError: string | null = null;
+
+  // Diagnostics evidence. Each branch is independently failable so a
+  // device-exporter outage cannot suppress schedule data, and vice versa.
+  const [scheduleResult, sourcesResult] = await Promise.allSettled([
+    getConnectorSchedule(connectorId, { connectorInstanceId: connectorInstanceId ?? undefined }),
+    listDeviceExporterSourceInstances({ connector_instance_id: connectorInstanceId ?? undefined }),
+  ]);
+  if (scheduleResult.status === "fulfilled") {
+    schedule = scheduleResult.value;
+  } else {
+    scheduleError = errorMessage(scheduleResult.reason);
+  }
+  if (sourcesResult.status === "fulfilled") {
+    sourceInstances = sourcesResult.value.data.filter((s) => s.connector_id === connectorId);
+  } else {
+    sourceInstancesError = errorMessage(sourcesResult.reason);
+  }
+
+  return { schedule, scheduleError, sourceInstances, sourceInstancesError };
+}
+
+function ConnectorPageView({ model }: { model: ConnectorPageModel }) {
+  const {
+    connectionHealth,
+    connectionId,
+    connectorId,
+    connectorInstanceId,
+    deviceLabels,
+    displayName,
+    headerCount,
+    manifest,
+    overview,
+    recentRuns,
+    schedule,
+    scheduleError,
+    sourceInstances,
+    sourceInstancesError,
+    streams,
+  } = model;
+  const running = overview.isRunning;
 
   return (
     <DashboardShell active="records">

@@ -10,7 +10,7 @@ import {
   shouldDebouncePresentationViewportUpdate,
   shouldHoldPresentationViewportForKeyboard,
   stablePresentationContainerRect,
-} from "./stream-viewer-control.ts";
+} from "@opendatalabs/remote-surface/client";
 
 type ViewportObservedEvent = Extract<StreamViewerControlEvent, { type: "viewport.observed" }>;
 

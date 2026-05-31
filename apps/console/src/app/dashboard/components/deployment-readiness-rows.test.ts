@@ -31,6 +31,11 @@ const baseInputs: ServerInputs = {
   databasePath: "/data/pdpp.db",
 };
 
+const OWNER_PASSWORD_ENV_RE = /PDPP_OWNER_PASSWORD/;
+const REFERENCE_ORIGIN_ENV_RE = /PDPP_REFERENCE_ORIGIN/;
+const AS_ISSUER_ENV_RE = /AS_ISSUER/;
+const DOCKER_COMPOSE_PULL_RE = /docker compose pull/;
+
 // ─── Owner password gate ────────────────────────────────────────────────────
 
 test("ownerPasswordRow is ok when password is redacted", () => {
@@ -41,7 +46,7 @@ test("ownerPasswordRow is ok when password is redacted", () => {
 test("ownerPasswordRow is error when password is absent", () => {
   const row = ownerPasswordRow({ ...baseInputs, ownerPasswordProvenance: "absent" });
   assert.equal(row.status, "error");
-  assert.match(row.hint ?? "", /PDPP_OWNER_PASSWORD/);
+  assert.match(row.hint ?? "", OWNER_PASSWORD_ENV_RE);
 });
 
 // ─── Reference origin alignment ─────────────────────────────────────────────
@@ -64,7 +69,7 @@ test("referenceOriginRow is ok when configured matches browser origin", () => {
 test("referenceOriginRow is warn when configured mismatches browser origin", () => {
   const row = referenceOriginRow(baseInputs, "https://other.example.com");
   assert.equal(row.status, "warn");
-  assert.match(row.hint ?? "", /PDPP_REFERENCE_ORIGIN/);
+  assert.match(row.hint ?? "", REFERENCE_ORIGIN_ENV_RE);
 });
 
 test("referenceOriginRow ignores trailing slashes when comparing", () => {
@@ -138,7 +143,7 @@ test("refreshTokenRow is unknown while probe is loading", () => {
 test("refreshTokenRow is warn when well-known is unreachable", () => {
   const row = refreshTokenRow({ state: "unreachable" });
   assert.equal(row.status, "warn");
-  assert.match(row.hint ?? "", /AS_ISSUER/);
+  assert.match(row.hint ?? "", AS_ISSUER_ENV_RE);
 });
 
 test("refreshTokenRow is ok when refresh_token is advertised", () => {
@@ -148,7 +153,7 @@ test("refreshTokenRow is ok when refresh_token is advertised", () => {
 test("refreshTokenRow is error when refresh_token is missing", () => {
   const row = refreshTokenRow({ state: "loaded", refreshTokenSupported: false });
   assert.equal(row.status, "error");
-  assert.match(row.hint ?? "", /docker compose pull/);
+  assert.match(row.hint ?? "", DOCKER_COMPOSE_PULL_RE);
 });
 
 // ─── Overall verdict ────────────────────────────────────────────────────────
