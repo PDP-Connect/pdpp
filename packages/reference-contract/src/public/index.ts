@@ -598,6 +598,66 @@ const ProtectedResourceAgentDiscoverySchema = {
   required: ["advisory", "skill_name", "recommended_flow", "skill_catalog", "skill", "llms_txt", "llms_full_txt"],
 };
 
+// Advisory trusted-owner-agent onboarding block. Emitted on `GET /` and
+// `GET /.well-known/oauth-protected-resource` only when the deployment can
+// support owner-agent onboarding safely (a configured public/browser origin;
+// never advertised from a direct ephemeral test server even when ambient
+// public-origin env vars leak in). This is non-normative reference metadata,
+// NOT a PDPP Core requirement: it names the owner-level REST automation
+// profile and the surfaces a trusted local owner agent needs for onboarding
+// and ongoing sync, and it states that `/mcp` is not the owner-agent
+// transport. See:
+//   openspec/changes/add-trusted-owner-agent-onboarding/specs/reference-implementation-architecture/spec.md
+const ProtectedResourceOwnerAgentOnboardingSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    advisory: { const: true },
+    profile: { const: "trusted_owner_agent" },
+    // Plain-language reminder that this credential is owner-level local
+    // automation, not a grant-scoped external client.
+    warning: NonEmptyStringSchema,
+    // AS issuer + RS resource origins the agent should treat as authoritative.
+    authorization_server: UriSchema,
+    resource: UriSchema,
+    // Owner approval happens in a browser/dashboard context, not a token paste.
+    owner_approval_url: UriSchema,
+    // AS owner-credential bootstrap surfaces.
+    device_authorization_endpoint: UriSchema,
+    token_endpoint: UriSchema,
+    introspection_endpoint: UriSchema,
+    registration_endpoint: UriSchema,
+    // RFC 7592 client-delete handle for the issued owner-agent credential.
+    revocation_path_template: NonEmptyStringSchema,
+    // RS discovery + ongoing-sync surfaces.
+    schema_endpoint: UriSchema,
+    streams_endpoint: UriSchema,
+    query_base: UriSchema,
+    event_subscriptions_endpoint: UriSchema,
+    // The route boundary: owner bearers are REST/control-plane credentials and
+    // `/mcp` rejects them. Grant-scoped MCP remains the external-client path.
+    mcp_owner_bearer_rejected: { const: true },
+    pdpp_token_kind: { const: "owner" },
+  },
+  required: [
+    "advisory",
+    "profile",
+    "warning",
+    "authorization_server",
+    "resource",
+    "owner_approval_url",
+    "device_authorization_endpoint",
+    "token_endpoint",
+    "introspection_endpoint",
+    "revocation_path_template",
+    "schema_endpoint",
+    "streams_endpoint",
+    "query_base",
+    "mcp_owner_bearer_rejected",
+    "pdpp_token_kind",
+  ],
+};
+
 const ProtectedResourceMetadataSchema = {
   type: "object",
   additionalProperties: false,
@@ -624,6 +684,7 @@ const ProtectedResourceMetadataSchema = {
     pdpp_core_query_base: UriSchema,
     pdpp_discovery_hints: ProtectedResourceDiscoveryHintsSchema,
     pdpp_agent_discovery: ProtectedResourceAgentDiscoverySchema,
+    pdpp_owner_agent_onboarding: ProtectedResourceOwnerAgentOnboardingSchema,
     capabilities: ServerCapabilitiesSchema,
   },
   required: [
@@ -660,6 +721,11 @@ const DiscoveryIndexResponseSchema = {
       },
     },
     reference_revision: NonEmptyStringSchema,
+    // Advisory trusted-owner-agent onboarding pointer, emitted on the RS root
+    // only when owner-agent onboarding is safely configured. Same advisory
+    // block carried in protected-resource metadata, surfaced at the cold-start
+    // root so a local owner agent can derive the flow from the entrypoint URL.
+    pdpp_owner_agent_onboarding: ProtectedResourceOwnerAgentOnboardingSchema,
   },
   required: ["object", "role", "resource_name", "links", "reference_revision"],
 };

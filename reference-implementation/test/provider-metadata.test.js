@@ -225,6 +225,163 @@ test('composed mode env drives browser-facing metadata when explicit public urls
   }
 });
 
+// ─── Trusted owner-agent onboarding advisory block ──────────────────────────
+// openspec/changes/add-trusted-owner-agent-onboarding (tasks 2.1–2.4): the
+// advisory `pdpp_owner_agent_onboarding` block is emitted on `GET /` and
+// `GET /.well-known/oauth-protected-resource` ONLY when owner-agent onboarding
+// is safely configured (a resolved composed-mode public/browser origin), uses
+// the caller-visible trusted public origin for every URL, and is omitted (not
+// pointed at an untrusted host) otherwise.
+
+function assertOwnerAgentOnboardingBlock(block, { origin }) {
+  assert.ok(block, 'expected pdpp_owner_agent_onboarding block');
+  assert.equal(block.advisory, true);
+  assert.equal(block.profile, 'trusted_owner_agent');
+  assert.equal(typeof block.warning, 'string');
+  assert.ok(block.warning.length > 0, 'warning must be non-empty');
+  assert.equal(block.authorization_server, origin);
+  assert.equal(block.resource, origin);
+  assert.equal(block.owner_approval_url, `${origin}/dashboard`);
+  assert.equal(block.device_authorization_endpoint, `${origin}/oauth/device_authorization`);
+  assert.equal(block.token_endpoint, `${origin}/oauth/token`);
+  assert.equal(block.introspection_endpoint, `${origin}/introspect`);
+  assert.equal(block.registration_endpoint, `${origin}/oauth/register`);
+  assert.equal(block.revocation_path_template, `${origin}/oauth/register/{client_id}`);
+  assert.equal(block.schema_endpoint, `${origin}/v1/schema`);
+  assert.equal(block.streams_endpoint, `${origin}/v1/streams`);
+  assert.equal(block.query_base, `${origin}/v1`);
+  assert.equal(block.event_subscriptions_endpoint, `${origin}/v1/event-subscriptions`);
+  assert.equal(block.mcp_owner_bearer_rejected, true);
+  assert.equal(block.pdpp_token_kind, 'owner');
+}
+
+test('composed mode advertises the trusted owner-agent onboarding block on metadata and root', async () => {
+  const publicOrigin = 'http://localhost:3200';
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+    referenceMode: 'composed',
+    referenceOrigin: publicOrigin,
+  });
+  const rsUrl = `http://localhost:${server.rsPort}`;
+
+  try {
+    const protectedResource = await fetchJson(`${rsUrl}/.well-known/oauth-protected-resource`);
+    assert.equal(protectedResource.status, 200);
+    assertOwnerAgentOnboardingBlock(protectedResource.body.pdpp_owner_agent_onboarding, { origin: publicOrigin });
+
+    const root = await fetchJson(`${rsUrl}/`);
+    assert.equal(root.status, 200);
+    assert.equal(root.body.object, 'pdpp_discovery_index');
+    assertOwnerAgentOnboardingBlock(root.body.pdpp_owner_agent_onboarding, { origin: publicOrigin });
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('direct ephemeral servers omit owner-agent onboarding even when public-url env leaks in', async () => {
+  const previous = {
+    AS_PUBLIC_URL: process.env.AS_PUBLIC_URL,
+    AS_ISSUER: process.env.AS_ISSUER,
+    RS_PUBLIC_URL: process.env.RS_PUBLIC_URL,
+    PDPP_REFERENCE_MODE: process.env.PDPP_REFERENCE_MODE,
+    PDPP_REFERENCE_ORIGIN: process.env.PDPP_REFERENCE_ORIGIN,
+  };
+  // Leak hostile/public env exactly as a CI host might. The ephemeral
+  // (asPort:0/rsPort:0, no explicit public urls) server resolves to DIRECT
+  // mode and must NOT advertise owner-agent onboarding.
+  process.env.AS_PUBLIC_URL = 'https://wrong-as.example';
+  process.env.AS_ISSUER = 'https://wrong-issuer.example';
+  process.env.RS_PUBLIC_URL = 'https://wrong-rs.example';
+  process.env.PDPP_REFERENCE_ORIGIN = 'https://wrong-web.example';
+  delete process.env.PDPP_REFERENCE_MODE;
+
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+  });
+  const rsUrl = `http://localhost:${server.rsPort}`;
+
+  try {
+    const protectedResource = await fetchJson(`${rsUrl}/.well-known/oauth-protected-resource`);
+    assert.equal(protectedResource.status, 200);
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(protectedResource.body, 'pdpp_owner_agent_onboarding'),
+      false,
+      'direct ephemeral RS must not advertise owner-agent onboarding',
+    );
+
+    const root = await fetchJson(`${rsUrl}/`);
+    assert.equal(root.status, 200);
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(root.body, 'pdpp_owner_agent_onboarding'),
+      false,
+      'direct ephemeral RS root must not advertise owner-agent onboarding',
+    );
+  } finally {
+    await closeServer(server);
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});
+
+test('owner-agent onboarding rebases to the forwarded public origin and never names an untrusted host', async () => {
+  const trustedOrigin = 'https://peregrine-dev.example';
+  const localOrigin = 'http://localhost:3000';
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+    referenceMode: 'composed',
+    referenceOrigin: localOrigin,
+    asPublicUrl: localOrigin,
+    rsPublicUrl: localOrigin,
+    trustedMetadataHosts: ['peregrine-dev.example'],
+  });
+  const rsUrl = `http://localhost:${server.rsPort}`;
+
+  try {
+    // Trusted forwarded host: block is present and scoped to the trusted host.
+    const trusted = await fetchJson(`${rsUrl}/.well-known/oauth-protected-resource`, {
+      headers: { 'x-forwarded-host': 'peregrine-dev.example', 'x-forwarded-proto': 'https' },
+    });
+    assert.equal(trusted.status, 200);
+    assertOwnerAgentOnboardingBlock(trusted.body.pdpp_owner_agent_onboarding, { origin: trustedOrigin });
+
+    const trustedRoot = await fetchJson(`${rsUrl}/`, {
+      headers: { 'x-forwarded-host': 'peregrine-dev.example', 'x-forwarded-proto': 'https' },
+    });
+    assert.equal(trustedRoot.status, 200);
+    assertOwnerAgentOnboardingBlock(trustedRoot.body.pdpp_owner_agent_onboarding, { origin: trustedOrigin });
+
+    // Hostile forwarded host: the metadata route rejects rather than emitting a
+    // block that advertises the untrusted host.
+    const hostile = await fetchJson(`${rsUrl}/.well-known/oauth-protected-resource`, {
+      headers: { 'x-forwarded-host': 'evil.example', 'x-forwarded-proto': 'https' },
+    });
+    assert.equal(hostile.status, 421);
+    assert.equal(hostile.body.error.code, 'misdirected_request');
+
+    const hostileRoot = await fetchJson(`${rsUrl}/`, {
+      headers: { 'x-forwarded-host': 'evil.example', 'x-forwarded-proto': 'https' },
+    });
+    assert.equal(hostileRoot.status, 421);
+    assert.equal(hostileRoot.body.error.code, 'misdirected_request');
+  } finally {
+    await closeServer(server);
+  }
+});
+
 test('proxied composed metadata rebases localhost defaults to the forwarded public origin', async () => {
   const publicOrigin = 'https://peregrine-dev.example';
   const localOrigin = 'http://localhost:3000';

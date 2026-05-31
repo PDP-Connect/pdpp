@@ -100,6 +100,93 @@
                     "reference_revision": {
                       "type": "string",
                       "minLength": 1
+                    },
+                    "pdpp_owner_agent_onboarding": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "advisory": {
+                          "const": true
+                        },
+                        "profile": {
+                          "const": "trusted_owner_agent"
+                        },
+                        "warning": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "authorization_server": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "resource": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "owner_approval_url": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "device_authorization_endpoint": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "token_endpoint": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "introspection_endpoint": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "registration_endpoint": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "revocation_path_template": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "schema_endpoint": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "streams_endpoint": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "query_base": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "event_subscriptions_endpoint": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "mcp_owner_bearer_rejected": {
+                          "const": true
+                        },
+                        "pdpp_token_kind": {
+                          "const": "owner"
+                        }
+                      },
+                      "required": [
+                        "advisory",
+                        "profile",
+                        "warning",
+                        "authorization_server",
+                        "resource",
+                        "owner_approval_url",
+                        "device_authorization_endpoint",
+                        "token_endpoint",
+                        "introspection_endpoint",
+                        "revocation_path_template",
+                        "schema_endpoint",
+                        "streams_endpoint",
+                        "query_base",
+                        "mcp_owner_bearer_rejected",
+                        "pdpp_token_kind"
+                      ]
                     }
                   },
                   "required": [
@@ -429,6 +516,93 @@
                         "skill",
                         "llms_txt",
                         "llms_full_txt"
+                      ]
+                    },
+                    "pdpp_owner_agent_onboarding": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "advisory": {
+                          "const": true
+                        },
+                        "profile": {
+                          "const": "trusted_owner_agent"
+                        },
+                        "warning": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "authorization_server": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "resource": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "owner_approval_url": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "device_authorization_endpoint": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "token_endpoint": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "introspection_endpoint": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "registration_endpoint": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "revocation_path_template": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "schema_endpoint": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "streams_endpoint": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "query_base": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "event_subscriptions_endpoint": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "mcp_owner_bearer_rejected": {
+                          "const": true
+                        },
+                        "pdpp_token_kind": {
+                          "const": "owner"
+                        }
+                      },
+                      "required": [
+                        "advisory",
+                        "profile",
+                        "warning",
+                        "authorization_server",
+                        "resource",
+                        "owner_approval_url",
+                        "device_authorization_endpoint",
+                        "token_endpoint",
+                        "introspection_endpoint",
+                        "revocation_path_template",
+                        "schema_endpoint",
+                        "streams_endpoint",
+                        "query_base",
+                        "mcp_owner_bearer_rejected",
+                        "pdpp_token_kind"
                       ]
                     },
                     "capabilities": {
@@ -889,6 +1063,93 @@
                         "skill",
                         "llms_txt",
                         "llms_full_txt"
+                      ]
+                    },
+                    "pdpp_owner_agent_onboarding": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "advisory": {
+                          "const": true
+                        },
+                        "profile": {
+                          "const": "trusted_owner_agent"
+                        },
+                        "warning": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "authorization_server": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "resource": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "owner_approval_url": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "device_authorization_endpoint": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "token_endpoint": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "introspection_endpoint": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "registration_endpoint": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "revocation_path_template": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "schema_endpoint": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "streams_endpoint": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "query_base": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "event_subscriptions_endpoint": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "mcp_owner_bearer_rejected": {
+                          "const": true
+                        },
+                        "pdpp_token_kind": {
+                          "const": "owner"
+                        }
+                      },
+                      "required": [
+                        "advisory",
+                        "profile",
+                        "warning",
+                        "authorization_server",
+                        "resource",
+                        "owner_approval_url",
+                        "device_authorization_endpoint",
+                        "token_endpoint",
+                        "introspection_endpoint",
+                        "revocation_path_template",
+                        "schema_endpoint",
+                        "streams_endpoint",
+                        "query_base",
+                        "mcp_owner_bearer_rejected",
+                        "pdpp_token_kind"
                       ]
                     },
                     "capabilities": {

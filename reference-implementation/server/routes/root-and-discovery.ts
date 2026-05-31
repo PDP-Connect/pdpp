@@ -152,13 +152,36 @@ export function mountAsAuthorizationServerMetadata(app: AppLike, ctx: MountAsAut
 // ─── RS root (`GET /`) ──────────────────────────────────────────────────────
 
 export interface MountRsRootContext {
+  // Advisory owner-agent onboarding wiring. Mirrors the protected-resource
+  // handler: the root pointer surfaces the same advisory block so a local
+  // owner agent can derive the flow from the cold-start entrypoint. All three
+  // callbacks/values are the same host capabilities the protected-resource
+  // metadata route already uses, so the root and `.well-known` documents stay
+  // consistent and forwarded-origin-safe. See
+  // openspec/changes/add-trusted-owner-agent-onboarding.
+  agentDiscoveryOrigin: string | null;
+  asPort: number;
+  buildOwnerAgentOnboardingMetadata(args: { origin: string | null; resource: string; issuer: string }): unknown;
+  explicitResource: unknown;
   providerName: string;
   referenceRevision: string;
+  rejectUntrustedMetadataHost(
+    req: unknown,
+    res: unknown,
+    explicitUrl: unknown,
+    trustedHosts: unknown,
+    options?: unknown
+  ): boolean;
+  resolveExplicitIssuer(): string | null;
+  resolvePublicUrl(req: unknown, explicit: unknown): string;
+  resolveSiblingPublicUrl(req: unknown, origin: string): string;
   servedRootLandingIfBrowser(
     req: unknown,
     res: unknown,
     args: { role: "resource_server"; providerName: string; referenceRevision: string }
   ): boolean;
+  shouldUseDirectRequestOrigin(req: unknown, explicit: unknown): boolean;
+  trustedMetadataHosts: unknown;
 }
 
 export function mountRsRoot(app: AppLike, ctx: MountRsRootContext): void {
@@ -183,6 +206,37 @@ export function mountRsRoot(app: AppLike, ctx: MountRsRootContext): void {
       providerName: ctx.providerName,
       referenceRevision: ctx.referenceRevision,
     });
+    // Advisory owner-agent onboarding pointer. Only resolve host-derived URLs
+    // and reject untrusted hosts when an approval origin exists (composed
+    // mode); a direct/ephemeral root keeps the byte-for-byte JSON envelope
+    // without an owner-agent block and without the untrusted-host guard.
+    if (ctx.agentDiscoveryOrigin) {
+      if (ctx.rejectUntrustedMetadataHost(req, res, ctx.explicitResource, ctx.trustedMetadataHosts)) {
+        return;
+      }
+      const resource = ctx.resolvePublicUrl(req, ctx.explicitResource);
+      const explicitIssuer = ctx.resolveExplicitIssuer();
+      const fallbackIssuer = `${(req as RouteRequest).protocol}://${(req as RouteRequest).hostname}:${ctx.asPort}`;
+      const issuerUsesDirectRequestOrigin = ctx.shouldUseDirectRequestOrigin(req, explicitIssuer);
+      const issuerSource = issuerUsesDirectRequestOrigin ? fallbackIssuer : explicitIssuer || fallbackIssuer;
+      if (
+        ctx.rejectUntrustedMetadataHost(req, res, issuerSource, ctx.trustedMetadataHosts, {
+          forceHostDerived: issuerUsesDirectRequestOrigin || !explicitIssuer,
+        })
+      ) {
+        return;
+      }
+      const issuer = ctx.resolvePublicUrl(req, issuerSource);
+      const ownerAgentOnboarding = ctx.buildOwnerAgentOnboardingMetadata({
+        origin: ctx.resolveSiblingPublicUrl(req, ctx.agentDiscoveryOrigin),
+        resource,
+        issuer,
+      });
+      if (ownerAgentOnboarding) {
+        res.json({ ...envelope, pdpp_owner_agent_onboarding: ownerAgentOnboarding });
+        return;
+      }
+    }
     res.json(envelope);
   });
 }
@@ -197,6 +251,12 @@ export interface MountRsProtectedResourceMetadataContext {
     lexicalAvailable: true;
     semanticAvailable: true;
   }): RsProtectedResourceMetadataHybridCapability | null;
+  // Advisory trusted-owner-agent onboarding block. Returns `null` (omitting
+  // the block) when owner-agent onboarding is not safely configured — the host
+  // passes the resolved trusted public `resource`/`issuer` and the
+  // composed-mode approval `origin` (null in direct/ephemeral mode). See
+  // openspec/changes/add-trusted-owner-agent-onboarding.
+  buildOwnerAgentOnboardingMetadata(args: { origin: string | null; resource: string; issuer: string }): unknown;
   buildProtectedResourceMetadata(input: unknown): unknown;
   explicitResource: unknown;
   isHybridSuppressed(): boolean;
@@ -291,6 +351,16 @@ export function mountRsProtectedResourceMetadata(app: AppLike, ctx: MountRsProte
           ctx.agentDiscoveryOrigin ? ctx.resolveSiblingPublicUrl(req, ctx.agentDiscoveryOrigin) : null,
           { noOwnerToken: ctx.nativeMode }
         ),
+        // Advisory owner-agent onboarding block. The approval origin is the
+        // composed-mode browser origin rebased to the caller-visible trusted
+        // public host (null in direct/ephemeral mode → block omitted). The
+        // resource and issuer are the already-trusted, forwarded-origin-safe
+        // values resolved above, so the block can never name an untrusted host.
+        ownerAgentOnboarding: ctx.buildOwnerAgentOnboardingMetadata({
+          origin: ctx.agentDiscoveryOrigin ? ctx.resolveSiblingPublicUrl(req, ctx.agentDiscoveryOrigin) : null,
+          resource,
+          issuer,
+        }),
       })
     );
   });

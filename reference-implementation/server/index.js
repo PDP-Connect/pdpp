@@ -3302,6 +3302,50 @@ function buildAgentDiscoveryMetadata(origin, { noOwnerToken = true } = {}) {
   };
 }
 
+// Build the advisory `pdpp_owner_agent_onboarding` block for a trusted local
+// owner agent (e.g. Daisy). This is non-normative reference metadata — NOT a
+// PDPP Core requirement — that names the owner-level REST automation profile
+// and the surfaces needed to onboard and keep an incremental local view.
+//
+// Safe-emission gate: returns null unless an owner-approval `origin` is
+// resolved. The host passes the same composed-mode browser origin that gates
+// `pdpp_agent_discovery` (null in direct/ephemeral mode), so a direct
+// ephemeral test server never advertises owner-agent onboarding even when
+// ambient public-origin env vars leak in. Every URL is derived from the
+// caller-visible trusted `resource` (RS) and `issuer` (AS) the host already
+// resolved through the forwarded-origin/trusted-host machinery, so the block
+// is scoped to a trusted host or omitted — never an untrusted forwarded host.
+//
+// Spec: openspec/changes/add-trusted-owner-agent-onboarding/specs/reference-implementation-architecture/spec.md
+function buildOwnerAgentOnboardingMetadata({ origin, resource, issuer }) {
+  if (!(origin && resource && issuer)) {
+    return null;
+  }
+  const approvalBase = stripTrailingSlash(origin);
+  const rs = stripTrailingSlash(resource);
+  const as = stripTrailingSlash(issuer);
+  return {
+    advisory: true,
+    profile: 'trusted_owner_agent',
+    warning:
+      'Owner-level local automation. This profile yields an owner bearer that authorizes owner-visible REST/control-plane access — not a grant-scoped external client. Use grant-scoped MCP for ordinary third-party agents.',
+    authorization_server: as,
+    resource: rs,
+    owner_approval_url: `${approvalBase}/dashboard`,
+    device_authorization_endpoint: `${as}/oauth/device_authorization`,
+    token_endpoint: `${as}/oauth/token`,
+    introspection_endpoint: `${as}/introspect`,
+    registration_endpoint: `${as}/oauth/register`,
+    revocation_path_template: `${as}/oauth/register/{client_id}`,
+    schema_endpoint: `${rs}/v1/schema`,
+    streams_endpoint: `${rs}/v1/streams`,
+    query_base: `${rs}/v1`,
+    event_subscriptions_endpoint: `${rs}/v1/event-subscriptions`,
+    mcp_owner_bearer_rejected: true,
+    pdpp_token_kind: 'owner',
+  };
+}
+
 function buildRsApp(opts = {}) {
   const app = createApp({ logger: opts.logger });
   const nativeMode = !!resolveNativeManifest(opts);
@@ -3416,6 +3460,23 @@ function buildRsApp(opts = {}) {
     providerName,
     referenceRevision,
     servedRootLandingIfBrowser,
+    // Advisory owner-agent onboarding pointer on the RS root. Same host
+    // capabilities the protected-resource metadata route uses, so the root and
+    // `.well-known` documents stay consistent and forwarded-origin-safe. See
+    // openspec/changes/add-trusted-owner-agent-onboarding.
+    agentDiscoveryOrigin: opts.agentDiscoveryOrigin || null,
+    asPort: opts.asPort || AS_PORT,
+    buildOwnerAgentOnboardingMetadata,
+    explicitResource,
+    rejectUntrustedMetadataHost,
+    resolveExplicitIssuer: () =>
+      opts.asIssuer ||
+      opts.asPublicUrl ||
+      (!opts.ignoreAmbientPublicUrls ? (process.env.AS_ISSUER || process.env.AS_PUBLIC_URL) : null),
+    resolvePublicUrl,
+    resolveSiblingPublicUrl,
+    shouldUseDirectRequestOrigin,
+    trustedMetadataHosts,
   });
 
   // RS `/.well-known/oauth-protected-resource` and `/oauth-protected-resource/mcp`
@@ -3426,6 +3487,7 @@ function buildRsApp(opts = {}) {
     agentDiscoveryOrigin: opts.agentDiscoveryOrigin || null,
     asPort: opts.asPort || AS_PORT,
     buildAgentDiscoveryMetadata,
+    buildOwnerAgentOnboardingMetadata,
     buildDefaultHybridCapability: ({ lexicalAvailable, semanticAvailable }) =>
       buildHybridRetrievalCapability({ lexicalAvailable, semanticAvailable }),
     buildProtectedResourceMetadata,

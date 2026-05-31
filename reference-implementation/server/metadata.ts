@@ -360,11 +360,43 @@ export interface ProtectedResourceAgentDiscovery {
   skill_name: "pdpp-data-access";
 }
 
+// Advisory trusted-owner-agent onboarding block carried inside the
+// protected-resource metadata document and the RS cold-start root pointer.
+// Non-normative reference metadata: it names the owner-level REST automation
+// profile and the surfaces a trusted local owner agent needs to onboard and
+// keep an incremental local view. The host only emits it when owner-agent
+// onboarding is safely configured (a resolved public/browser origin); it is
+// never advertised from a direct ephemeral test server. Every URL is derived
+// from the caller-visible trusted public origin, so a forwarded-origin caller
+// either sees a block scoped to the trusted host or no block at all — never an
+// untrusted host. See:
+//   openspec/changes/add-trusted-owner-agent-onboarding/specs/reference-implementation-architecture/spec.md
+export interface ProtectedResourceOwnerAgentOnboarding {
+  advisory: true;
+  authorization_server: string;
+  device_authorization_endpoint: string;
+  event_subscriptions_endpoint?: string;
+  introspection_endpoint: string;
+  mcp_owner_bearer_rejected: true;
+  owner_approval_url: string;
+  pdpp_token_kind: "owner";
+  profile: "trusted_owner_agent";
+  query_base: string;
+  registration_endpoint?: string;
+  resource: string;
+  revocation_path_template: string;
+  schema_endpoint: string;
+  streams_endpoint: string;
+  token_endpoint: string;
+  warning: string;
+}
+
 export interface ProtectedResourceMetadataInput {
   agentDiscovery?: ProtectedResourceAgentDiscovery | null;
   authorizationServers: readonly string[];
   capabilities?: Record<string, unknown> | null;
   discoveryHints?: ProtectedResourceDiscoveryHints | null;
+  ownerAgentOnboarding?: ProtectedResourceOwnerAgentOnboarding | null;
   providerConnectVersion: string;
   queryBase: string;
   resource: string;
@@ -380,6 +412,7 @@ export interface ProtectedResourceMetadata {
   pdpp_agent_discovery?: ProtectedResourceAgentDiscovery;
   pdpp_core_query_base: string;
   pdpp_discovery_hints?: ProtectedResourceDiscoveryHints;
+  pdpp_owner_agent_onboarding?: ProtectedResourceOwnerAgentOnboarding;
   pdpp_provider_connect_version: string;
   pdpp_self_export_supported: boolean;
   pdpp_token_kinds_supported: readonly string[];
@@ -396,6 +429,7 @@ export function buildProtectedResourceMetadata({
   selfExportSupported,
   tokenKindsSupported,
   agentDiscovery,
+  ownerAgentOnboarding,
   capabilities,
   discoveryHints,
 }: ProtectedResourceMetadataInput): ProtectedResourceMetadata {
@@ -414,6 +448,9 @@ export function buildProtectedResourceMetadata({
   }
   if (agentDiscovery) {
     metadata.pdpp_agent_discovery = agentDiscovery;
+  }
+  if (ownerAgentOnboarding) {
+    metadata.pdpp_owner_agent_onboarding = ownerAgentOnboarding;
   }
   if (capabilities && typeof capabilities === "object" && Object.keys(capabilities).length > 0) {
     metadata.capabilities = capabilities;
