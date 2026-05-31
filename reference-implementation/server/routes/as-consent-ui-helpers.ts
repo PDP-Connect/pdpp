@@ -291,12 +291,17 @@ async function buildConnectorPickerRows(
     const projected = caps.projectBindingForWire(conn);
     const displayName = projected?.display_name;
     const connectionId = projected?.connection_id || conn.connectorInstanceId || null;
+    const connectionName = ownerFacingConnectionName(displayName, {
+      connectorId,
+      connectorLabel,
+      connectorKey: connectorMetaToken,
+    });
     return {
       formValue: caps.encodeHostedMcpSelection({ connectorId, connectionId: connectionId ?? null }),
       connectorId,
       connectionId: connectionId ?? null,
       connectorTypeLabel: connectorLabel,
-      connectionName: displayName ?? null,
+      connectionName,
       meta: buildPickerRowMeta({ connectorLabel, connectorKey: connectorMetaToken, streamCount }),
       sourceKey: caps.hostedMcpSourceKey({ connectorId, connectionId: connectionId ?? null }),
       streams: streamSummaries,
@@ -336,6 +341,35 @@ function ownerFacingConnectorLabel(label: string | null | undefined, fallbackKey
         .filter(Boolean)
         .at(-1) || fallbackKey
     );
+  } catch {
+    return trimmed;
+  }
+}
+
+function ownerFacingConnectionName(
+  displayName: string | null | undefined,
+  {
+    connectorId,
+    connectorLabel,
+    connectorKey,
+  }: { connectorId: string; connectorLabel: string; connectorKey: string }
+): string | null {
+  const trimmed = typeof displayName === "string" ? displayName.trim() : "";
+  if (!trimmed) {
+    return null;
+  }
+  const normalized = normalizeConnectorLabel(trimmed);
+  const redundantLabels = new Set(
+    [connectorId, connectorLabel, connectorKey, ownerFacingConnectorLabel(connectorId, connectorKey)]
+      .filter(Boolean)
+      .map((value) => normalizeConnectorLabel(value))
+  );
+  if (redundantLabels.has(normalized) || trimmed.startsWith("cin_")) {
+    return null;
+  }
+  try {
+    new URL(trimmed);
+    return null;
   } catch {
     return trimmed;
   }

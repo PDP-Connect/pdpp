@@ -106,6 +106,15 @@ function renderedHostedMcpPickerErrorText(html) {
   return match ? match[1] : '';
 }
 
+function visibleTextFromHtml(html) {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 async function issueOwnerToken(asUrl) {
   const clientId = 'cli_longview';
   const { body: device } = await fetchJson(`${asUrl}/oauth/device_authorization`, {
@@ -2591,6 +2600,61 @@ test('picker renders connector type and connection name as distinct semantic ele
         'connector type element MUST NOT contain the connection name — they must be separate elements',
       );
     }
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('picker hides URL-shaped default connection labels from owner-visible copy', async () => {
+  const server = await startOpenTestServer();
+  const asUrl = `http://localhost:${server.asPort}`;
+
+  try {
+    const spotify = await registerSpotify(asUrl);
+
+    // Production/default connector instances can carry the connector URI as a
+    // fallback display name. That value is useful as an identifier, but it is
+    // not owner-readable copy and must not be shown next to the connector type.
+    const store = createSqliteConnectorInstanceStore();
+    const now = new Date().toISOString();
+    await store.upsert({
+      connectorInstanceId: 'cin_test_url_label',
+      ownerSubjectId: 'owner_local',
+      connectorId: spotify.connector_id,
+      displayName: spotify.connector_id,
+      status: 'active',
+      sourceKind: 'account',
+      sourceBindingKey: 'default',
+      sourceBinding: { account: 'default' },
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const client = await registerAuthCodeClient(asUrl);
+    const verifier = randomBytes(32).toString('base64url');
+    const authorizeUrl = new URL(`${asUrl}/oauth/authorize`);
+    authorizeUrl.searchParams.set('client_id', client.client_id);
+    authorizeUrl.searchParams.set('redirect_uri', 'https://client.example/callback');
+    authorizeUrl.searchParams.set('response_type', 'code');
+    authorizeUrl.searchParams.set('state', 'url-label-test');
+    authorizeUrl.searchParams.set('code_challenge', pkceChallenge(verifier));
+    authorizeUrl.searchParams.set('code_challenge_method', 'S256');
+
+    const resp = await fetch(authorizeUrl);
+    assert.equal(resp.status, 200);
+    const html = await resp.text();
+    const visibleText = visibleTextFromHtml(html);
+
+    assert.doesNotMatch(
+      html,
+      /class="hosted-ui-connection-name"[^>]*>https:\/\/registry\.pdpp\.org\/connectors\/spotify/,
+      'URL-shaped connector ids must not render as connection-name copy',
+    );
+    assert.equal(
+      visibleText.includes('https://registry.pdpp.org/connectors/spotify'),
+      false,
+      'URL-shaped connector ids must not appear in owner-visible picker text',
+    );
   } finally {
     await closeServer(server);
   }
