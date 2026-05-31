@@ -126,7 +126,8 @@ unset TOKEN
 Decide once, per `sync.md`:
 
 - **Durable valid-TLS HTTPS receiver available** → optionally create event subscriptions
-  where advertised; on each `pdpp.records.changed` event, run Step 5 from the event's
+  with the registered owner-agent bearer where advertised; on each
+  `pdpp.records.changed` event, run Step 5 using the event's source identity and
   `changes_since` cursor.
 - **No durable receiver** (typical for a laptop-resident Daisy) → poll Step 5 on a backoff
   schedule plus periodic metadata refresh. Do not point a subscription at an unreachable

@@ -22,6 +22,7 @@ import { allowUnboundedReadAcknowledged, exec, getOne, referenceQueries } from "
 import type {
   ClientEventSubscriptionStore,
   QueuedEventForEnqueue,
+  SubscriptionAuthorityKind,
   SubscriptionRow,
   SubscriptionStatus,
 } from "../../operations/as-client-event-subscriptions/index.ts";
@@ -67,6 +68,7 @@ export function createSqliteClientEventSubscriptionStore(): ClientEventSubscript
     insertSubscription(row: SubscriptionRow): void {
       exec(referenceQueries.clientEventSubscriptionsInsertSubscription, [
         row.subscription_id,
+        row.authority_kind,
         row.grant_id,
         row.client_id,
         row.subject_id,
@@ -148,7 +150,8 @@ function pgPayloadJsonToText(value: unknown): string {
 function pgSubscriptionRow(raw: Record<string, unknown>): SubscriptionRow {
   return {
     subscription_id: String(raw.subscription_id),
-    grant_id: String(raw.grant_id),
+    authority_kind: (raw.authority_kind ?? "client_grant") as SubscriptionAuthorityKind,
+    grant_id: raw.grant_id === null || raw.grant_id === undefined ? null : String(raw.grant_id),
     client_id: String(raw.client_id),
     subject_id: String(raw.subject_id),
     callback_url: String(raw.callback_url),
@@ -173,13 +176,14 @@ export function createPostgresClientEventSubscriptionStore(): ClientEventSubscri
     async insertSubscription(row: SubscriptionRow): Promise<void> {
       await postgresQuery(
         `INSERT INTO client_event_subscriptions(
-           subscription_id, grant_id, client_id, subject_id, callback_url,
+           subscription_id, authority_kind, grant_id, client_id, subject_id, callback_url,
            secret_hash, secret_text, scope_json, status, verification_challenge,
            created_at, updated_at
          )
-         VALUES($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12)`,
+         VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13)`,
         [
           row.subscription_id,
+          row.authority_kind,
           row.grant_id,
           row.client_id,
           row.subject_id,
@@ -196,7 +200,7 @@ export function createPostgresClientEventSubscriptionStore(): ClientEventSubscri
     },
     async getSubscriptionById(id: string): Promise<SubscriptionRow | null> {
       const result = await postgresQuery(
-        `SELECT subscription_id, grant_id, client_id, subject_id, callback_url,
+        `SELECT subscription_id, authority_kind, grant_id, client_id, subject_id, callback_url,
                 secret_hash, secret_text, scope_json, status, verification_challenge,
                 created_at, updated_at, disabled_at, disabled_reason
            FROM client_event_subscriptions
@@ -210,7 +214,7 @@ export function createPostgresClientEventSubscriptionStore(): ClientEventSubscri
     },
     async listSubscriptionsByClient(clientId: string): Promise<SubscriptionRow[]> {
       const result = await postgresQuery(
-        `SELECT subscription_id, grant_id, client_id, subject_id, callback_url,
+        `SELECT subscription_id, authority_kind, grant_id, client_id, subject_id, callback_url,
                 secret_hash, secret_text, scope_json, status, verification_challenge,
                 created_at, updated_at, disabled_at, disabled_reason
            FROM client_event_subscriptions
@@ -222,7 +226,7 @@ export function createPostgresClientEventSubscriptionStore(): ClientEventSubscri
     },
     async listSubscriptionsByGrant(grantId: string): Promise<SubscriptionRow[]> {
       const result = await postgresQuery(
-        `SELECT subscription_id, grant_id, client_id, subject_id, callback_url,
+        `SELECT subscription_id, authority_kind, grant_id, client_id, subject_id, callback_url,
                 secret_hash, secret_text, scope_json, status, verification_challenge,
                 created_at, updated_at, disabled_at, disabled_reason
            FROM client_event_subscriptions
@@ -311,7 +315,7 @@ export function __resetClientEventSubscriptionStoreForTests(): void {
 export async function listActiveSubscriptions(): Promise<SubscriptionRow[]> {
   if (isPostgresStorageBackend()) {
     const result = await postgresQuery(
-      `SELECT subscription_id, grant_id, client_id, subject_id, callback_url,
+      `SELECT subscription_id, authority_kind, grant_id, client_id, subject_id, callback_url,
               secret_hash, secret_text, scope_json, status, verification_challenge,
               created_at, updated_at, disabled_at, disabled_reason
          FROM client_event_subscriptions
@@ -457,13 +461,14 @@ export interface ListAllSubscriptionsFilters {
 }
 
 export interface SubscriptionSummaryRow {
+  readonly authority_kind: SubscriptionAuthorityKind;
   readonly callback_url: string;
   readonly client_id: string;
   readonly created_at: string;
   readonly disabled_at: string | null;
   readonly disabled_reason: string | null;
   readonly final_failure_count: number;
-  readonly grant_id: string;
+  readonly grant_id: string | null;
   readonly last_attempt_ok: number | null;
   readonly last_attempt_status_code: number | null;
   readonly last_attempted_at: string | null;
@@ -494,7 +499,7 @@ export async function listAllSubscriptions(filters: ListAllSubscriptionsFilters 
   const status = filters.status ?? null;
   if (isPostgresStorageBackend()) {
     const result = await postgresQuery(
-      `SELECT subscription_id, grant_id, client_id, subject_id, callback_url,
+      `SELECT subscription_id, authority_kind, grant_id, client_id, subject_id, callback_url,
               secret_hash, secret_text, scope_json, status, verification_challenge,
               created_at, updated_at, disabled_at, disabled_reason
          FROM client_event_subscriptions
@@ -522,7 +527,8 @@ export async function listAllSubscriptions(filters: ListAllSubscriptionsFilters 
 function pgSummaryRow(raw: Record<string, unknown>): SubscriptionSummaryRow {
   return {
     subscription_id: String(raw.subscription_id),
-    grant_id: String(raw.grant_id),
+    authority_kind: (raw.authority_kind ?? "client_grant") as SubscriptionAuthorityKind,
+    grant_id: raw.grant_id === null || raw.grant_id === undefined ? null : String(raw.grant_id),
     client_id: String(raw.client_id),
     subject_id: String(raw.subject_id),
     callback_url: String(raw.callback_url),
@@ -550,6 +556,7 @@ export async function getSubscriptionSummary(subscriptionId: string): Promise<Su
   if (isPostgresStorageBackend()) {
     const result = await postgresQuery(
       `SELECT s.subscription_id,
+              s.authority_kind,
               s.grant_id,
               s.client_id,
               s.subject_id,

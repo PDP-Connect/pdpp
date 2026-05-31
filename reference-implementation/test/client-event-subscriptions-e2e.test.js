@@ -21,7 +21,14 @@ import {
   signEvent,
   verifySignatureHeader,
 } from '../operations/rs-client-event-deliver/index.ts';
+import {
+  deleteRegisteredClient,
+  introspect,
+  issueOwnerToken as issueOwnerTokenRecord,
+  registerDynamicClient,
+} from '../server/auth.js';
 import { startServer } from '../server/index.js';
+import { getSubscriptionSummary } from '../server/stores/client-event-subscription-store.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, '..');
@@ -43,8 +50,7 @@ async function fetchJson(url, opts = {}) {
   return { status: resp.status, body };
 }
 
-async function issueOwnerToken(asUrl) {
-  const clientId = 'cli_longview';
+async function issueOwnerDeviceToken(asUrl, clientId = 'cli_longview') {
   const device = (await fetchJson(`${asUrl}/oauth/device_authorization`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -206,7 +212,7 @@ test('client event subscriptions deliver signed hints end-to-end', async () => {
       201,
     );
 
-    const ownerToken = await issueOwnerToken(asUrl);
+    const ownerToken = await issueOwnerDeviceToken(asUrl);
     const clientToken = await approveClientGrant(asUrl, connectorId, 'top_artists');
 
     // Create subscription
@@ -343,7 +349,7 @@ test('grant revoke disables subscription and notifies client', async () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(spotifyManifest),
     });
-    const ownerToken = await issueOwnerToken(asUrl);
+    const ownerToken = await issueOwnerDeviceToken(asUrl);
     const clientToken = await approveClientGrant(asUrl, connectorId, 'top_artists');
 
     const create = await fetchJson(`${rsUrl}/v1/event-subscriptions`, {
@@ -386,6 +392,140 @@ test('grant revoke disables subscription and notifies client', async () => {
   }
 });
 
+test('trusted owner-agent event subscriptions deliver signed hints and are revoked with the registered client', async () => {
+  const server = await startServer({
+    quiet: true,
+    asPort: 0,
+    rsPort: 0,
+    dbPath: ':memory:',
+  });
+  const asUrl = `http://localhost:${server.asPort}`;
+  const rsUrl = `http://localhost:${server.rsPort}`;
+  const receiver = await startReceiver();
+
+  try {
+    const spotifyManifest = JSON.parse(
+      readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/spotify.json'), 'utf8'),
+    );
+    const connectorId = spotifyManifest.connector_id;
+    await fetch(`${asUrl}/connectors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(spotifyManifest),
+    });
+
+    const ownerSubjectId = 'e2e_owner';
+    const registered = await registerDynamicClient(
+      {
+        client_name: 'Daisy owner-agent event subscription e2e',
+        token_endpoint_auth_method: 'none',
+      },
+      { issuer_subject_id: ownerSubjectId },
+    );
+    const ownerToken = await issueOwnerDeviceToken(asUrl, registered.client_id);
+    const ownerInfo = await introspect(ownerToken);
+    assert.equal(ownerInfo.active, true);
+    assert.equal(ownerInfo.pdpp_token_kind, 'owner');
+    assert.equal(ownerInfo.client_id, registered.client_id);
+
+    const clientToken = await approveClientGrant(asUrl, connectorId, 'top_artists');
+
+    const createResp = await fetchJson(`${rsUrl}/v1/event-subscriptions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ownerToken}` },
+      body: JSON.stringify({ callback_url: receiver.url }),
+    });
+    assert.equal(createResp.status, 201);
+    const { subscription_id, secret } = createResp.body;
+    assert.ok(secret.startsWith('whsec_'));
+
+    const verifyEvent = await waitForReceiverEvent(
+      receiver,
+      (e) => e.payload?.type === 'pdpp.subscription.verify',
+    );
+    assert.equal(verifySignature(secret, verifyEvent.headers, verifyEvent.body), true);
+    await new Promise((r) => setTimeout(r, 25));
+
+    const ownerList = await fetchJson(`${rsUrl}/v1/event-subscriptions`, {
+      headers: { Authorization: `Bearer ${ownerToken}` },
+    });
+    assert.equal(ownerList.status, 200);
+    assert.equal(ownerList.body.data.length, 1);
+    assert.equal(ownerList.body.data[0].subscription_id, subscription_id);
+    assert.equal(ownerList.body.data[0].authority_kind, 'trusted_owner_agent');
+    assert.equal(ownerList.body.data[0].grant_id, null);
+
+    const clientCannotReadOwnerSub = await fetchJson(
+      `${rsUrl}/v1/event-subscriptions/${subscription_id}`,
+      { headers: { Authorization: `Bearer ${clientToken}` } },
+    );
+    assert.equal(clientCannotReadOwnerSub.status, 404);
+
+    const testResp = await fetchJson(
+      `${rsUrl}/v1/event-subscriptions/${subscription_id}/test-event`,
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${ownerToken}` },
+      },
+    );
+    assert.equal(testResp.status, 202);
+    const testHit = await waitForReceiverEvent(
+      receiver,
+      (e) => e.payload?.type === 'pdpp.subscription.test',
+    );
+    assert.equal(verifySignature(secret, testHit.headers, testHit.body), true);
+
+    const ingestResp = await fetch(
+      `${rsUrl}/v1/ingest/top_artists?connector_id=${encodeURIComponent(connectorId)}`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${ownerToken}`,
+          'Content-Type': 'application/x-ndjson',
+        },
+        body: JSON.stringify({
+          key: 'artist_owner_agent_1',
+          data: { id: 'artist_owner_agent_1', name: 'Owner Agent Artist' },
+          emitted_at: new Date().toISOString(),
+        }),
+      },
+    );
+    assert.equal(ingestResp.status, 200);
+
+    const recordsHit = await waitForReceiverEvent(
+      receiver,
+      (e) => e.payload?.type === 'pdpp.records.changed',
+    );
+    assert.equal(verifySignature(secret, recordsHit.headers, recordsHit.body), true);
+    assert.equal(recordsHit.payload.data.subscription_id, subscription_id);
+    assert.equal(recordsHit.payload.data.connector_id, 'spotify');
+    assert.equal(recordsHit.payload.data.stream, 'top_artists');
+    assert.equal(typeof recordsHit.payload.data.connection_id, 'string');
+    assert.ok(recordsHit.payload.data.changes_since);
+
+    const readResp = await fetchJson(
+      `${rsUrl}/v1/streams/top_artists/records?connector_id=${encodeURIComponent(recordsHit.payload.data.connector_id)}&connection_id=${encodeURIComponent(recordsHit.payload.data.connection_id)}&changes_since=${encodeURIComponent(recordsHit.payload.data.changes_since)}`,
+      { headers: { Authorization: `Bearer ${ownerToken}` } },
+    );
+    assert.equal(readResp.status, 200);
+    assert.ok(readResp.body.data.some((r) => r.id === 'artist_owner_agent_1' || r.data?.id === 'artist_owner_agent_1'));
+
+    const deleted = await deleteRegisteredClient(registered.client_id, {
+      actingSubjectId: ownerSubjectId,
+      requestId: 'req_owner_agent_sub_delete',
+      traceId: 'tr_owner_agent_sub_delete',
+    });
+    assert.equal(deleted.disabledSubscriptionCount, 1);
+    assert.equal((await introspect(ownerToken)).active, false);
+    const summary = await getSubscriptionSummary(subscription_id);
+    assert.equal(summary.status, 'disabled_revoked');
+    assert.equal(summary.disabled_reason, 'client_deleted');
+  } finally {
+    await receiver.close();
+    await closeServer(server);
+  }
+});
+
 test('discovery: RS protected-resource metadata advertises client_event_subscriptions', async () => {
   const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
   const rsUrl = `http://localhost:${server.rsPort}`;
@@ -397,6 +537,7 @@ test('discovery: RS protected-resource metadata advertises client_event_subscrip
     assert.equal(cap.supported, true);
     assert.equal(cap.stability, 'reference_extension');
     assert.equal(cap.endpoint, '/v1/event-subscriptions');
+    assert.deepEqual(cap.authority_kinds_supported, ['client_grant', 'trusted_owner_agent']);
     assert.equal(cap.transport, 'https_webhook');
     assert.equal(cap.signing.profile, 'standard-webhooks');
     assert.equal(cap.signing.algorithm, 'HMAC-SHA256');
@@ -436,7 +577,7 @@ test('discovery: RS protected-resource metadata advertises client_event_subscrip
   }
 });
 
-test('owner bearer cannot list a client subscription', async () => {
+test('registered owner bearer cannot see client-grant subscriptions', async () => {
   const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
   const asUrl = `http://localhost:${server.asPort}`;
   const rsUrl = `http://localhost:${server.rsPort}`;
@@ -450,19 +591,34 @@ test('owner bearer cannot list a client subscription', async () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(spotifyManifest),
     });
-    const ownerToken = await issueOwnerToken(asUrl);
+    const ownerToken = await issueOwnerDeviceToken(asUrl);
     const clientToken = await approveClientGrant(asUrl, spotifyManifest.connector_id, 'top_artists');
     await fetchJson(`${rsUrl}/v1/event-subscriptions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${clientToken}` },
       body: JSON.stringify({ callback_url: receiver.url }),
     });
+    const ownerListResp = await fetchJson(`${rsUrl}/v1/event-subscriptions`, {
+      headers: { Authorization: `Bearer ${ownerToken}` },
+    });
+    assert.equal(ownerListResp.status, 200);
+    assert.deepEqual(ownerListResp.body.data, []);
+  } finally {
+    await receiver.close();
+    await closeServer(server);
+  }
+});
+
+test('unregistered owner bearer cannot use event-subscription endpoints', async () => {
+  const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+  const rsUrl = `http://localhost:${server.rsPort}`;
+  try {
+    const ownerToken = await issueOwnerTokenRecord('e2e_owner');
     const ownerListResp = await fetch(`${rsUrl}/v1/event-subscriptions`, {
       headers: { Authorization: `Bearer ${ownerToken}` },
     });
     assert.equal(ownerListResp.status, 403);
   } finally {
-    await receiver.close();
     await closeServer(server);
   }
 });

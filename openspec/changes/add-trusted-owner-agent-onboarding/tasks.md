@@ -38,3 +38,11 @@
 - [x] 6.3 Run a local reference-stack smoke proving metadata discovery, owner-agent credential issuance, introspection, `/v1` owner reads, `/mcp` rejection, and revocation.
 - [x] 6.4 Run a Daisy or Daisy-equivalent local-agent smoke that starts from the entrypoint URL and reaches schema/stream discovery without manual route guessing.
 - [x] 6.5 Record any owner/live-only residuals in `design.md` before closeout instead of leaving pseudo-open implementation tasks.
+
+## 7. Owner-Agent Event Subscriptions
+
+- [x] 7.1 Update the event-subscription authority contract so registered owner-agent bearers can create owner-scoped subscriptions without weakening client-grant isolation.
+- [x] 7.2 Add SQLite/Postgres storage support for explicit subscription authority kind and client-delete subscription disablement.
+- [x] 7.3 Add local signed-delivery tests proving owner-agent create/list/get/test-event/records.changed and client-delete revocation.
+- [x] 7.4 Refresh operator and owner-agent documentation so the callback path is no longer described as client-grant-only.
+- [x] 7.5 Re-run OpenSpec and targeted reference/CLI validation.

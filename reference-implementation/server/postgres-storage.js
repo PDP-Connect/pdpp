@@ -1023,12 +1023,16 @@ export async function bootstrapPostgresSchema() {
       CREATE INDEX IF NOT EXISTS idx_pg_retained_size_top_rows_lookup
         ON retained_size_top_rows(scope, measure, total_retained_bytes DESC, rank ASC);
 
-      -- Outbound client event subscriptions (RI extension, grant-scoped).
+      -- Outbound event subscriptions (RI extension). Client subscriptions are
+      -- grant-scoped; trusted owner-agent subscriptions are owner-scoped.
       -- Mirrors the SQLite schema in db.js; the Postgres-backed store applies
       -- the same operation semantics over pg.
       CREATE TABLE IF NOT EXISTS client_event_subscriptions (
         subscription_id        TEXT PRIMARY KEY,
-        grant_id               TEXT NOT NULL,
+        authority_kind         TEXT NOT NULL DEFAULT 'client_grant' CHECK (
+          authority_kind IN ('client_grant', 'trusted_owner_agent')
+        ),
+        grant_id               TEXT,
         client_id              TEXT NOT NULL,
         subject_id             TEXT NOT NULL,
         callback_url           TEXT NOT NULL,
@@ -1047,12 +1051,18 @@ export async function bootstrapPostgresSchema() {
         created_at             TEXT NOT NULL,
         updated_at             TEXT NOT NULL,
         disabled_at            TEXT,
-        disabled_reason        TEXT
+        disabled_reason        TEXT,
+        CHECK (
+          (authority_kind = 'client_grant' AND grant_id IS NOT NULL)
+          OR (authority_kind = 'trusted_owner_agent' AND grant_id IS NULL)
+        )
       );
       CREATE INDEX IF NOT EXISTS idx_pg_client_event_subscriptions_client
         ON client_event_subscriptions(client_id, status);
       CREATE INDEX IF NOT EXISTS idx_pg_client_event_subscriptions_grant
         ON client_event_subscriptions(grant_id);
+      CREATE INDEX IF NOT EXISTS idx_pg_client_event_subscriptions_authority
+        ON client_event_subscriptions(authority_kind, subject_id, client_id, status);
 
       CREATE TABLE IF NOT EXISTS client_event_queue (
         queue_id        BIGSERIAL PRIMARY KEY,
@@ -1091,6 +1101,7 @@ export async function bootstrapPostgresSchema() {
     await migratePostgresConnectorDetailGapInstanceColumns(client);
     await migratePostgresSchedulerInstanceColumns(client);
     await migratePostgresRecordsBlobSearchInstanceColumns(client);
+    await migratePostgresClientEventSubscriptionAuthority(client);
     await migratePostgresLocalDeviceConnectorInstances(client);
     await migratePostgresLegacyConnectorInstancesToDefaultAccount(client);
   } finally {
@@ -1109,6 +1120,44 @@ async function hasPostgresColumn(client, table, column) {
     [table, column],
   );
   return result.rowCount > 0;
+}
+
+async function migratePostgresClientEventSubscriptionAuthority(client) {
+  await client.query(
+    `ALTER TABLE client_event_subscriptions
+       ADD COLUMN IF NOT EXISTS authority_kind TEXT NOT NULL DEFAULT 'client_grant'`,
+  );
+  await client.query(
+    `UPDATE client_event_subscriptions
+        SET authority_kind = 'client_grant'
+      WHERE authority_kind IS NULL`,
+  );
+  await client.query(`ALTER TABLE client_event_subscriptions ALTER COLUMN grant_id DROP NOT NULL`);
+  await client.query(
+    `ALTER TABLE client_event_subscriptions
+       DROP CONSTRAINT IF EXISTS client_event_subscriptions_authority_kind_check`,
+  );
+  await client.query(
+    `ALTER TABLE client_event_subscriptions
+       ADD CONSTRAINT client_event_subscriptions_authority_kind_check
+       CHECK (authority_kind IN ('client_grant', 'trusted_owner_agent'))`,
+  );
+  await client.query(
+    `ALTER TABLE client_event_subscriptions
+       DROP CONSTRAINT IF EXISTS client_event_subscriptions_authority_grant_check`,
+  );
+  await client.query(
+    `ALTER TABLE client_event_subscriptions
+       ADD CONSTRAINT client_event_subscriptions_authority_grant_check
+       CHECK (
+         (authority_kind = 'client_grant' AND grant_id IS NOT NULL)
+         OR (authority_kind = 'trusted_owner_agent' AND grant_id IS NULL)
+       )`,
+  );
+  await client.query(
+    `CREATE INDEX IF NOT EXISTS idx_pg_client_event_subscriptions_authority
+       ON client_event_subscriptions(authority_kind, subject_id, client_id, status)`,
+  );
 }
 
 function makeDefaultAccountConnectorInstanceId(ownerSubjectId, connectorId) {

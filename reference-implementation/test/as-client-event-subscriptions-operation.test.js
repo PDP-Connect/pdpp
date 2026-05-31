@@ -64,6 +64,7 @@ function makeInMemoryStore() {
 
 function actor(overrides = {}) {
   return {
+    authorityKind: 'client_grant',
     clientId: 'client_alpha',
     grantId: 'grant_1',
     subjectId: 'owner_local',

@@ -390,15 +390,16 @@ CREATE TABLE IF NOT EXISTS source_webhook_events (
   PRIMARY KEY(source_id, event_id)
 );
 
--- Outbound client event subscriptions (reference-only). Each subscription is
--- bound to a single client + grant. The persisted scope_json is a snapshot
--- of the grant stream selection at create time so derivation can refuse
--- events outside the original grant projection. secret_hash stores a
--- one-way digest of the per-subscription HMAC secret; the raw secret is
--- returned exactly once at create time.
+-- Outbound event subscriptions (reference-only). Each subscription is bound
+-- either to a single client + grant or to a trusted owner-agent client +
+-- owner subject. The persisted scope_json is an authority snapshot so
+-- derivation can refuse events outside the original disclosure authority.
+-- secret_hash stores a one-way digest of the per-subscription HMAC secret;
+-- the raw secret is returned exactly once at create time.
 CREATE TABLE IF NOT EXISTS client_event_subscriptions (
   subscription_id        TEXT PRIMARY KEY,
-  grant_id               TEXT NOT NULL,
+  authority_kind         TEXT NOT NULL DEFAULT 'client_grant',
+  grant_id               TEXT,
   client_id              TEXT NOT NULL,
   subject_id             TEXT NOT NULL,
   callback_url           TEXT NOT NULL,
@@ -418,13 +419,20 @@ CREATE TABLE IF NOT EXISTS client_event_subscriptions (
     'disabled_failure',
     'disabled_revoked',
     'deleted'
-  ))
+  )),
+  CHECK (authority_kind IN ('client_grant', 'trusted_owner_agent')),
+  CHECK (
+    (authority_kind = 'client_grant' AND grant_id IS NOT NULL)
+    OR (authority_kind = 'trusted_owner_agent' AND grant_id IS NULL)
+  )
 );
 
 CREATE INDEX IF NOT EXISTS idx_client_event_subscriptions_client
   ON client_event_subscriptions(client_id, status);
 CREATE INDEX IF NOT EXISTS idx_client_event_subscriptions_grant
   ON client_event_subscriptions(grant_id);
+CREATE INDEX IF NOT EXISTS idx_client_event_subscriptions_authority
+  ON client_event_subscriptions(authority_kind, subject_id, client_id, status);
 
 CREATE TABLE IF NOT EXISTS client_event_queue (
   queue_id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1330,6 +1338,87 @@ function tableColumns(raw, table) {
 
 function hasTableColumn(raw, table, column) {
   return tableColumns(raw, table).includes(column);
+}
+
+function migrateClientEventSubscriptionAuthority(raw) {
+  const cols = raw.prepare("PRAGMA table_info(client_event_subscriptions)").all();
+  const grantCol = cols.find((c) => c.name === 'grant_id');
+  const hasAuthorityKind = cols.some((c) => c.name === 'authority_kind');
+  if (hasAuthorityKind && grantCol && Number(grantCol.notnull) === 0) return;
+
+  const authorityExpr = hasAuthorityKind ? "authority_kind" : "'client_grant'";
+  raw.transaction(() => {
+    raw.exec(`
+DROP INDEX IF EXISTS idx_client_event_subscriptions_client;
+DROP INDEX IF EXISTS idx_client_event_subscriptions_grant;
+DROP INDEX IF EXISTS idx_client_event_subscriptions_authority;
+
+ALTER TABLE client_event_subscriptions RENAME TO client_event_subscriptions_old_authority;
+
+CREATE TABLE client_event_subscriptions (
+  subscription_id        TEXT PRIMARY KEY,
+  authority_kind         TEXT NOT NULL DEFAULT 'client_grant',
+  grant_id               TEXT,
+  client_id              TEXT NOT NULL,
+  subject_id             TEXT NOT NULL,
+  callback_url           TEXT NOT NULL,
+  secret_hash            TEXT NOT NULL,
+  secret_text            TEXT NOT NULL,
+  scope_json             TEXT NOT NULL,
+  status                 TEXT NOT NULL,
+  verification_challenge TEXT,
+  created_at             TEXT NOT NULL,
+  updated_at             TEXT NOT NULL,
+  disabled_at            TEXT,
+  disabled_reason        TEXT,
+  CHECK (status IN (
+    'pending_verification',
+    'active',
+    'disabled',
+    'disabled_failure',
+    'disabled_revoked',
+    'deleted'
+  )),
+  CHECK (authority_kind IN ('client_grant', 'trusted_owner_agent')),
+  CHECK (
+    (authority_kind = 'client_grant' AND grant_id IS NOT NULL)
+    OR (authority_kind = 'trusted_owner_agent' AND grant_id IS NULL)
+  )
+);
+
+INSERT INTO client_event_subscriptions(
+  subscription_id, authority_kind, grant_id, client_id, subject_id,
+  callback_url, secret_hash, secret_text, scope_json, status,
+  verification_challenge, created_at, updated_at, disabled_at, disabled_reason
+)
+SELECT
+  subscription_id,
+  ${authorityExpr},
+  grant_id,
+  client_id,
+  subject_id,
+  callback_url,
+  secret_hash,
+  secret_text,
+  scope_json,
+  status,
+  verification_challenge,
+  created_at,
+  updated_at,
+  disabled_at,
+  disabled_reason
+FROM client_event_subscriptions_old_authority;
+
+DROP TABLE client_event_subscriptions_old_authority;
+
+CREATE INDEX IF NOT EXISTS idx_client_event_subscriptions_client
+  ON client_event_subscriptions(client_id, status);
+CREATE INDEX IF NOT EXISTS idx_client_event_subscriptions_grant
+  ON client_event_subscriptions(grant_id);
+CREATE INDEX IF NOT EXISTS idx_client_event_subscriptions_authority
+  ON client_event_subscriptions(authority_kind, subject_id, client_id, status);
+`);
+  })();
 }
 
 function stableJson(value) {
@@ -2890,6 +2979,7 @@ CREATE INDEX IF NOT EXISTS idx_blob_bindings_record ON blob_bindings(connector_i
   runWithSqliteBusyRetrySync(() => migrateSchedulerInstanceColumns(raw));
   runWithSqliteBusyRetrySync(() => migrateLegacyConnectorInstancesToDefaultAccount(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateConnectorInstancesSourceKindCheck(raw, opts));
+  runWithSqliteBusyRetrySync(() => migrateClientEventSubscriptionAuthority(raw));
   raw.exec(
     `CREATE INDEX IF NOT EXISTS idx_spine_events_run_terminal
       ON spine_events(run_id, event_type, event_seq DESC)

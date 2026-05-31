@@ -4,6 +4,7 @@
 -- mirrors `claim-due-queue.sql` so the operator detail view never N+1s the
 -- attempt log when rendering the summary fields.
 SELECT s.subscription_id,
+       s.authority_kind,
        s.grant_id,
        s.client_id,
        s.subject_id,

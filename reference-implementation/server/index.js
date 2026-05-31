@@ -3257,9 +3257,9 @@ function buildAsApp(opts = {}) {
 
   // Client event subscriptions are mounted on the RESOURCE SERVER under
   // `/v1/event-subscriptions` (see buildRsApp). They are the same kind of
-  // client-facing surface as `/v1/streams/:s/records` — grant-scoped client
-  // bearer reads — and they are advertised in protected-resource metadata as
-  // an RI extension. The AS host no longer mounts a `_ref` alias for them.
+  // RI-extension surface as `/v1/streams/:s/records`: ordinary clients use
+  // grant-scoped bearers, while trusted owner agents use owner REST
+  // authority. The AS host no longer mounts a `_ref` alias for them.
 
   return app;
 }
@@ -3886,21 +3886,27 @@ export async function startServer(opts = {}) {
       const subs = await listActiveSubscriptions();
       if (subs.length === 0) return;
       const store = getDefaultClientEventSubscriptionStore();
+      const activeSubs = subs.filter((row) => row.status === 'active');
+      const changedInstanceOwner = activeSubs.some((row) => row.authority_kind === 'trusted_owner_agent')
+        ? (await createRequestConnectorInstanceStore().get(change.connectorInstanceId))?.ownerSubjectId ?? null
+        : null;
       const events = deriveClientEventsFromRecordChange(
         {
           connectorId: change.connectorId,
           connectorInstanceId: change.connectorInstanceId,
+          ownerSubjectId: changedInstanceOwner,
           connectionId: change.connectionId ?? null,
           stream: change.stream,
           version: Number(change.version) || 0,
           emittedAt: change.emittedAt,
         },
-        subs
-          .filter((row) => row.status === 'active')
+        activeSubs
           .map((row) => ({
             subscriptionId: row.subscription_id,
+            authorityKind: row.authority_kind,
             grantId: row.grant_id,
             clientId: row.client_id,
+            subjectId: row.subject_id,
             scope: JSON.parse(row.scope_json),
             status: 'active',
           })),

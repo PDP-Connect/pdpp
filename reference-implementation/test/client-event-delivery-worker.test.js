@@ -67,6 +67,7 @@ function deps(s) {
 
 function makeActor(overrides = {}) {
   return {
+    authorityKind: 'client_grant',
     clientId: 'worker_test_client',
     grantId: `grant_${Math.random().toString(36).slice(2)}`,
     subjectId: 'worker_test_owner',

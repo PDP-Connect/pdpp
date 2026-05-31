@@ -12,8 +12,9 @@ surface is documented in
 
 ## What event subscriptions are
 
-A client that holds a grant-scoped bearer can register an HTTPS webhook
-receiver against its grant. The reference resource server then delivers
+A grant-scoped client or a trusted owner agent with a registered owner bearer can
+register an HTTPS webhook receiver against its authority. The reference resource
+server then delivers
 [CloudEvents 1.0](https://cloudevents.io/) JSON envelopes signed per
 [Standard Webhooks](https://www.standardwebhooks.com) when:
 
@@ -30,7 +31,7 @@ advertised at `capabilities.client_event_subscriptions` on
 
 ## Who creates them
 
-The owner does not create subscriptions. They are a **client** affordance:
+Subscriptions are created by the holder of the disclosure authority:
 
 - An MCP-capable client (Claude, ChatGPT) creates a subscription via the MCP
   adapter's `create_event_subscription` tool. The adapter forwards
@@ -38,10 +39,15 @@ The owner does not create subscriptions. They are a **client** affordance:
   for read tools. See `packages/mcp-server/README.md` for the tool list.
 - A non-MCP client that holds the same scoped client bearer can call the
   REST endpoint directly with `POST /v1/event-subscriptions`.
+- A trusted local owner agent that holds a registered owner-agent bearer can
+  call the REST endpoint directly when it has a durable reachable HTTPS
+  callback receiver. Its subscription is owner-scoped, not grant-scoped, and
+  is disabled when that registered owner-agent client is deleted.
 
 The operator console exposes a **read-only** view plus one safety-valve
 disable. Subscriptions cannot be created, rotated, or replayed from the
-console on purpose — the bound client retains lifecycle authority.
+console on purpose — the bound client or trusted owner agent retains lifecycle
+authority.
 
 ## Operator console surface
 
@@ -52,14 +58,15 @@ The console mounts the subscription list at:
 ```
 
 The list shows every subscription on the deployment with `subscription_id`,
-bound `client_id` and `grant_id`, status (`active`, `pending_verification`,
-`disabled`, `disabled_failure`, `disabled_revoked`, `deleted`), callback host,
-pending queue count, and recent delivery attempts. Click a row to open a peek
-pane with the full callback URL, recent attempts (status code, latency,
-error), and the disable affordance.
+authority kind, bound `client_id`, grant id when present, status (`active`,
+`pending_verification`, `disabled`, `disabled_failure`, `disabled_revoked`,
+`deleted`), callback host, pending queue count, and recent delivery attempts.
+Click a row to open a peek pane with the full callback URL, recent attempts
+(status code, latency, error), and the disable affordance.
 
-Filter by `client_id`, `grant_id`, or `status` to narrow the list. The peek
-selection survives filter submits.
+Filter by `client_id`, `grant_id`, or `status` to narrow the list. Owner-agent
+subscriptions have no grant id, so omit the grant filter when looking for
+them. The peek selection survives filter submits.
 
 ### The operator disable affordance
 
@@ -71,12 +78,14 @@ The disable form is the only operator-side mutation. It posts to
 - Accepts an optional reason (max 256 bytes UTF-8) that lands in the
   subscription's `disabled_reason` field for audit.
 - Re-verifies the owner session before forwarding to the reference server.
-- Stops deliveries for that subscription. The bound grant stays active and
-  the client may re-enable via `PATCH /v1/event-subscriptions/{id} { enabled: true }`
-  unless the grant itself was revoked.
+- Stops deliveries for that subscription. The bound grant or owner-agent
+  credential stays active, and the authority holder may re-enable via
+  `PATCH /v1/event-subscriptions/{id} { enabled: true }` unless that authority
+  itself was revoked.
 
 There is no operator re-enable, rotate, or replay. Those remain on the bound
-client by design — the operator is a safety valve, not the lifecycle owner.
+client or trusted owner agent by design — the operator is a safety valve, not
+the lifecycle owner.
 
 ## Verifying delivery with a local test receiver
 
@@ -93,7 +102,8 @@ deployment can sign and deliver events before you point a real client at it.
 node scripts/event-subscription-test-receiver.mjs
 
 # 2. From a client that holds a scoped client bearer (for example the MCP
-#    adapter under `pdpp connect`), create a subscription pointing at the
+#    adapter under `pdpp connect`) or from a trusted owner agent that holds a
+#    registered owner-agent bearer, create a subscription pointing at the
 #    receiver. With the MCP adapter, this is the create_event_subscription
 #    tool. With raw REST:
 curl -sS -X POST \
@@ -188,6 +198,8 @@ session. It is the headless equivalent of the console list and peek/disable
 flow.
 
 Client-side subscription management lives on the MCP adapter, not the CLI.
+Trusted owner-agent subscription management lives in the local owner agent's
+REST workflow.
 The decision rationale is recorded in
 `openspec/changes/add-mcp-event-subscription-client-tools/design.md` §3:
 subscription management is naturally driven from the agent (MCP) or from the
@@ -207,11 +219,12 @@ human-typed terminal.
   the peek pane's `recent_attempts` for the status code and error string the
   delivery worker recorded.
 - **`disabled_failure`.** The delivery worker disabled the subscription after
-  repeated failures. The bound client can re-enable once the receiver is
-  healthy by sending `PATCH /v1/event-subscriptions/{id} { enabled: true }`.
-- **`disabled_revoked`.** The bound grant was revoked. The subscription is
-  not recoverable in place; the client must obtain a new grant and create a
-  new subscription.
+  repeated failures. The bound client or trusted owner agent can re-enable once
+  the receiver is healthy by sending `PATCH /v1/event-subscriptions/{id} { enabled: true }`.
+- **`disabled_revoked`.** The bound grant was revoked or the registered
+  owner-agent client was deleted. The subscription is not recoverable in place;
+  the authority holder must obtain a fresh grant or owner-agent credential and
+  create a new subscription.
 - **Public callback URL returns nothing / the TLS proxy is on another host.**
   When the receiver binds `0.0.0.0` behind a separate TLS proxy (for example
   `pdpp-events.vivid.fish` → Traefik on another LAN host → this workstation),
@@ -236,7 +249,7 @@ human-typed terminal.
 ## Related
 
 - `packages/mcp-server/README.md` — the MCP tool surface that creates and
-  manages subscriptions from a client.
+  manages subscriptions from a grant-scoped client.
 - `docs/operator/selfhost-quickstart.md` — fresh-operator path. The receiver
   script is one of the first things to point at a new deployment.
 - `openspec/changes/add-mcp-event-subscription-client-tools/` — the OpenSpec

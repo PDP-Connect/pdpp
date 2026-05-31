@@ -1750,6 +1750,7 @@ export async function deleteRegisteredClient(clientId, { actingSubjectId, reques
     ? await pgExec("UPDATE tokens SET revoked = TRUE WHERE client_id = $1 AND revoked = FALSE", [clientId])
     : exec(referenceQueries.authTokensRevokeByClientId, [clientId]);
   const revokedOwnerTokenCount = tokenRevoke?.changes ?? 0;
+  const disabledSubscriptionCount = await disableClientEventSubscriptionsForDeletedClient(clientId);
 
   if (isPostgresStorageBackend()) {
     await pgExec("DELETE FROM oauth_clients WHERE client_id = $1", [clientId]);
@@ -1775,10 +1776,66 @@ export async function deleteRegisteredClient(clientId, { actingSubjectId, reques
       revoked_grant_count: revokedGrantIds.length,
       revoked_package_count: revokedPackageIds.length,
       revoked_owner_token_count: revokedOwnerTokenCount,
+      disabled_subscription_count: disabledSubscriptionCount,
     },
   });
 
-  return { revokedGrantIds, revokedPackageIds, revokedOwnerTokenCount };
+  return { revokedGrantIds, revokedPackageIds, revokedOwnerTokenCount, disabledSubscriptionCount };
+}
+
+async function disableClientEventSubscriptionsForDeletedClient(clientId) {
+  const disabledAt = nowIso();
+  if (isPostgresStorageBackend()) {
+    const rows = (
+      await postgresQuery(
+        `SELECT subscription_id, status
+           FROM client_event_subscriptions
+          WHERE client_id = $1
+          ORDER BY created_at ASC`,
+        [clientId],
+      )
+    ).rows;
+    let affected = 0;
+    for (const row of rows) {
+      if (row.status === 'deleted' || row.status === 'disabled_revoked') continue;
+      await pgExec(
+        `UPDATE client_event_queue
+            SET status = 'dropped'
+          WHERE subscription_id = $1
+            AND status = 'pending'`,
+        [row.subscription_id],
+      );
+      await pgExec(
+        `UPDATE client_event_subscriptions
+            SET status = 'disabled_revoked',
+                updated_at = $1,
+                disabled_at = $1,
+                disabled_reason = 'client_deleted'
+          WHERE subscription_id = $2`,
+        [disabledAt, row.subscription_id],
+      );
+      affected += 1;
+    }
+    return affected;
+  }
+
+  const rows = allowUnboundedReadAcknowledged(referenceQueries.clientEventSubscriptionsListSubscriptionsByClient, [
+    clientId,
+  ]);
+  let affected = 0;
+  for (const row of rows) {
+    if (row.status === 'deleted' || row.status === 'disabled_revoked') continue;
+    exec(referenceQueries.clientEventSubscriptionsDropQueuedForSubscription, [row.subscription_id]);
+    exec(referenceQueries.clientEventSubscriptionsUpdateStatus, [
+      'disabled_revoked',
+      disabledAt,
+      disabledAt,
+      'client_deleted',
+      row.subscription_id,
+    ]);
+    affected += 1;
+  }
+  return affected;
 }
 
 export async function registerDynamicClient(input = {}, extraMetadata = {}) {

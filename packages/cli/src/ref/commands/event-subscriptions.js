@@ -16,8 +16,9 @@ import { resolveFormat, writeData, writeEnvelopeWarnings } from '../output.js';
 function projectListRow(row) {
   return {
     subscription_id: row.subscription_id,
+    authority: row.authority_kind || 'client_grant',
     client_id: row.client_id,
-    grant_id: row.grant_id,
+    grant_id: row.grant_id || '',
     status: row.status,
     callback_host: row.callback_host,
     disabled_reason: row.disabled_reason ?? '',
@@ -33,8 +34,9 @@ function projectListRow(row) {
 function projectDetail(detail) {
   return {
     subscription_id: detail.subscription_id,
+    authority: detail.authority_kind || 'client_grant',
     client_id: detail.client_id,
-    grant_id: detail.grant_id,
+    grant_id: detail.grant_id || '',
     status: detail.status,
     disabled_reason: detail.disabled_reason ?? '',
     callback_url: detail.callback_url,
@@ -142,7 +144,9 @@ export async function runRefEventSubscriptions(argv, io = {}, fetchImpl = global
         { headers },
         fetchImpl,
       );
-      err.write(`Subscription ${body.subscription_id} (client=${body.client_id}, grant=${body.grant_id}, status=${body.status})\n`);
+      const authority = body.authority_kind || 'client_grant';
+      const grant = body.grant_id || 'none';
+      err.write(`Subscription ${body.subscription_id} (authority=${authority}, client=${body.client_id}, grant=${grant}, status=${body.status})\n`);
       err.write(`Callback: ${body.callback_url}\n`);
       err.write(`Disable subscription? Type 'yes' to confirm: `);
       const answer = await readConfirmation(io);

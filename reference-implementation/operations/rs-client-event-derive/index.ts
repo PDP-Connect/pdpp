@@ -17,6 +17,8 @@
 export interface RecordChangeDescriptor {
   readonly connectorId: string;
   readonly connectorInstanceId: string;
+  /** Owner subject for the changed connector instance, when known. */
+  readonly ownerSubjectId?: string | null;
   readonly connectionId?: string | null;
   readonly stream: string;
   /** Monotonic per (connector_instance, stream) version from `record_changes`. */
@@ -41,8 +43,10 @@ export interface SubscriptionScope {
 
 export interface ActiveSubscription {
   readonly subscriptionId: string;
-  readonly grantId: string;
+  readonly authorityKind?: "client_grant" | "trusted_owner_agent";
+  readonly grantId: string | null;
   readonly clientId: string;
+  readonly subjectId?: string | null;
   readonly scope: SubscriptionScope;
   readonly status: "active";
 }
@@ -58,6 +62,7 @@ export interface DerivedEvent {
   readonly type: DerivedEventType;
   readonly occurredAt: string;
   readonly data: {
+    readonly connector_id?: string;
     readonly stream?: string;
     readonly connection_id?: string | null;
     readonly changes_since?: string;
@@ -66,13 +71,27 @@ export interface DerivedEvent {
   };
 }
 
+function findScopeStream(
+  scope: SubscriptionScope,
+  stream: string,
+): SubscriptionScopeStream | null {
+  return scope.streams.find((s) => s.name === stream) ?? scope.streams.find((s) => s.name === "*") ?? null;
+}
+
 function inGrantScope(scope: SubscriptionScope, stream: string, connectionId: string | null | undefined): boolean {
   const filterList = scope.filters?.streams;
   if (filterList && !filterList.includes(stream)) return false;
-  const match = scope.streams.find((s) => s.name === stream);
+  const match = findScopeStream(scope, stream);
   if (!match) return false;
   if (match.connection_id && connectionId && match.connection_id !== connectionId) return false;
   return true;
+}
+
+function subscriptionCanSeeChange(sub: ActiveSubscription, change: RecordChangeDescriptor): boolean {
+  if (sub.authorityKind === "trusted_owner_agent") {
+    if (!sub.subjectId || !change.ownerSubjectId || sub.subjectId !== change.ownerSubjectId) return false;
+  }
+  return inGrantScope(sub.scope, change.stream, change.connectionId ?? null);
 }
 
 function encodeChangesSinceCursor(version: number): string {
@@ -99,16 +118,18 @@ export function deriveClientEventsFromRecordChange(
   const out: DerivedEvent[] = [];
   for (const sub of subscriptions) {
     if (sub.status !== "active") continue;
-    if (!inGrantScope(sub.scope, change.stream, change.connectionId ?? null)) continue;
+    if (!subscriptionCanSeeChange(sub, change)) continue;
+    const scopeStream = findScopeStream(sub.scope, change.stream);
+    const includeConnectionId =
+      sub.authorityKind === "trusted_owner_agent" || scopeStream?.name === "*" || Boolean(scopeStream?.connection_id);
     out.push({
       subscriptionId: sub.subscriptionId,
       type: "pdpp.records.changed",
       occurredAt: change.emittedAt,
       data: {
+        ...(sub.authorityKind === "trusted_owner_agent" ? { connector_id: change.connectorId } : {}),
         stream: change.stream,
-        ...(sub.scope.streams.find((s) => s.name === change.stream)?.connection_id
-          ? { connection_id: change.connectionId ?? null }
-          : {}),
+        ...(includeConnectionId ? { connection_id: change.connectionId ?? null } : {}),
         changes_since: changeCursorBefore(change),
         change_count_hint: 1,
       },

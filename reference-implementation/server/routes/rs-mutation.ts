@@ -13,7 +13,7 @@
 //
 // Route registration order mirrors `buildRsApp` in `server/index.js`:
 //   1. POST /v1/blobs              — unconditional (always mounted)
-//   2. /v1/event-subscriptions/*   — unconditional (always mounted, requireClient)
+//   2. /v1/event-subscriptions/*   — unconditional (always mounted, client-grant or trusted-owner-agent bearer)
 //   3-7. Polyfill-mode mutations   — mounted only when !nativeMode:
 //        DELETE /v1/streams/:stream/records
 //        DELETE /v1/streams/:stream/records/:id
@@ -104,6 +104,7 @@ interface TokenInfo {
   readonly client_id?: string | null;
   readonly grant?: GrantLike | null;
   readonly grant_id?: string | null;
+  readonly pdpp_token_kind?: string | null;
   readonly subject_id?: string | null;
   readonly [key: string]: unknown;
 }
@@ -369,8 +370,10 @@ export function mountRsBlobsUpload(app: AppLike, ctx: MountRsMutationContext): v
 
 // /v1/event-subscriptions cluster
 //
-// Outbound client event subscriptions (RI extension). Same auth shape as the
-// other /v1 client reads: client bearer required. Advertised in
+// Outbound client/owner-agent event subscriptions (RI extension). Ordinary
+// client subscriptions remain grant-scoped; trusted owner-agent subscriptions
+// use owner REST authority and are isolated by `(client_id, subject_id)`.
+// Advertised in
 // `/.well-known/oauth-protected-resource` as a `client_event_subscriptions`
 // capability — reference implementation extension, NOT Core PDPP.
 //
@@ -400,19 +403,36 @@ function buildGrantScope(grant: GrantLike): SubscriptionScope {
 function buildBearerActorFromTokenInfo(req: RouteRequest): BearerActor | null {
   const ti = (req.tokenInfo || {}) as TokenInfo;
   const grant = (ti.grant || {}) as GrantLike;
-  if (!(ti.client_id && ti.grant_id)) {
-    return null;
+  if (ti.pdpp_token_kind === "client") {
+    if (!(ti.client_id && ti.grant_id)) {
+      return null;
+    }
+    return {
+      authorityKind: "client_grant",
+      clientId: ti.client_id,
+      grantId: ti.grant_id,
+      subjectId: ti.subject_id ?? "",
+      grantScope: buildGrantScope(grant),
+    };
   }
-  return {
-    clientId: ti.client_id,
-    grantId: ti.grant_id,
-    subjectId: ti.subject_id ?? "",
-    grantScope: buildGrantScope(grant),
-  };
+  if (ti.pdpp_token_kind === "owner") {
+    if (!(ti.client_id && ti.subject_id)) {
+      return null;
+    }
+    return {
+      authorityKind: "trusted_owner_agent",
+      clientId: ti.client_id,
+      grantId: null,
+      subjectId: ti.subject_id,
+      grantScope: { streams: [{ name: "*" }] },
+    };
+  }
+  return null;
 }
 
 function rejectMissingClientGrant(ctx: MountRsMutationContext, res: RouteResponse): unknown {
-  return ctx.pdppError(res, 403, "grant_invalid", "client subscription requires an active client grant");
+  const message = "event subscription requires an active client grant or a registered trusted owner-agent bearer";
+  return ctx.pdppError(res, 403, "grant_invalid", message);
 }
 
 function handleClientEventSubError(ctx: MountRsMutationContext, res: RouteResponse, err: unknown): unknown {
@@ -439,7 +459,6 @@ export function mountRsEventSubscriptions(app: AppLike, ctx: MountRsMutationCont
     "/v1/event-subscriptions",
     { contract: "createEventSubscription" } as RouteArg<RouteHandler>,
     ctx.requireToken,
-    ctx.requireClient,
     async (req: RouteRequest, res: RouteResponse) => {
       try {
         const actor = buildBearerActorFromTokenInfo(req);
@@ -486,7 +505,6 @@ export function mountRsEventSubscriptions(app: AppLike, ctx: MountRsMutationCont
     "/v1/event-subscriptions",
     { contract: "listEventSubscriptions" } as RouteArg<RouteHandler>,
     ctx.requireToken,
-    ctx.requireClient,
     async (req: RouteRequest, res: RouteResponse) => {
       try {
         const actor = buildBearerActorFromTokenInfo(req);
@@ -509,7 +527,6 @@ export function mountRsEventSubscriptions(app: AppLike, ctx: MountRsMutationCont
     "/v1/event-subscriptions/:subscription_id",
     { contract: "getEventSubscription" } as RouteArg<RouteHandler>,
     ctx.requireToken,
-    ctx.requireClient,
     async (req: RouteRequest, res: RouteResponse) => {
       try {
         const actor = buildBearerActorFromTokenInfo(req);
@@ -533,7 +550,6 @@ export function mountRsEventSubscriptions(app: AppLike, ctx: MountRsMutationCont
     "/v1/event-subscriptions/:subscription_id",
     { contract: "updateEventSubscription" } as RouteArg<RouteHandler>,
     ctx.requireToken,
-    ctx.requireClient,
     async (req: RouteRequest, res: RouteResponse) => {
       try {
         const actor = buildBearerActorFromTokenInfo(req);
@@ -562,7 +578,6 @@ export function mountRsEventSubscriptions(app: AppLike, ctx: MountRsMutationCont
     "/v1/event-subscriptions/:subscription_id",
     { contract: "deleteEventSubscription" } as RouteArg<RouteHandler>,
     ctx.requireToken,
-    ctx.requireClient,
     async (req: RouteRequest, res: RouteResponse) => {
       try {
         const actor = buildBearerActorFromTokenInfo(req);
@@ -586,7 +601,6 @@ export function mountRsEventSubscriptions(app: AppLike, ctx: MountRsMutationCont
     "/v1/event-subscriptions/:subscription_id/test-event",
     { contract: "sendTestEvent" } as RouteArg<RouteHandler>,
     ctx.requireToken,
-    ctx.requireClient,
     async (req: RouteRequest, res: RouteResponse) => {
       try {
         const actor = buildBearerActorFromTokenInfo(req);

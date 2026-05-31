@@ -32,6 +32,7 @@ import type {
   SubscriptionSummaryRow,
 } from "../../server/stores/client-event-subscription-store.ts";
 import type {
+  SubscriptionAuthorityKind,
   SubscriptionRow,
   SubscriptionStatus,
 } from "../as-client-event-subscriptions/index.ts";
@@ -44,8 +45,9 @@ export interface RefClientEventSubscriptionsListInput {
 
 export interface RefClientEventSubscriptionsListItem {
   readonly subscription_id: string;
+  readonly authority_kind: SubscriptionAuthorityKind;
   readonly client_id: string;
-  readonly grant_id: string;
+  readonly grant_id: string | null;
   readonly status: SubscriptionStatus;
   readonly disabled_reason: string | null;
   readonly callback_host: string;
@@ -124,6 +126,7 @@ export async function executeRefClientEventSubscriptionsList(
     if (!summary) continue;
     items.push({
       subscription_id: summary.subscription_id,
+      authority_kind: summary.authority_kind,
       client_id: summary.client_id,
       grant_id: summary.grant_id,
       status: summary.status,

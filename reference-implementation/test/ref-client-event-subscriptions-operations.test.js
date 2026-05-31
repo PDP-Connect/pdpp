@@ -79,6 +79,7 @@ function makeStore() {
       const last = subscriptionAttempts[subscriptionAttempts.length - 1] ?? null;
       return {
         subscription_id: row.subscription_id,
+        authority_kind: row.authority_kind,
         grant_id: row.grant_id,
         client_id: row.client_id,
         subject_id: row.subject_id,
@@ -121,6 +122,7 @@ function seedSubscription(store, overrides = {}) {
   const id = overrides.subscription_id ?? `sub_${Math.random().toString(36).slice(2, 10)}`;
   store.insertSubscription({
     subscription_id: id,
+    authority_kind: 'client_grant',
     grant_id: 'grant_1',
     client_id: 'client_alpha',
     subject_id: 'owner_local',

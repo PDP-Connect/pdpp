@@ -149,8 +149,9 @@ via event subscriptions. Choose based on whether you have a durable, reachable,
 valid-TLS HTTPS callback receiver:
 
 - **You have a durable valid-TLS HTTPS receiver** → you MAY create event subscriptions
-  where the reference advertises support, for low-latency notification. Event payloads
-  carry a `changes_since` cursor, never record bodies; fetch changed records via §4.
+  with the registered owner-agent bearer where the reference advertises support, for
+  low-latency notification. Event payloads carry source identity plus a `changes_since`
+  cursor, never record bodies; fetch changed records via §4.
 - **You do not** (most local agents, including a laptop-resident Daisy with no public
   callback) → **use cursor polling with backoff**, plus periodic schema refresh. Do not
   attempt callback delivery to an unreachable local endpoint.

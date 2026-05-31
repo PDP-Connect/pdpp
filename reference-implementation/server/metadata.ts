@@ -750,6 +750,7 @@ export interface ClientEventSubscriptionsCapabilityInput {
 }
 
 export interface ClientEventSubscriptionsCapability {
+  authority_kinds_supported: readonly ["client_grant", "trusted_owner_agent"];
   // Reject non-HTTPS callbacks except for development loopback.
   callback_url: {
     https_required: true;
@@ -835,6 +836,7 @@ export function buildClientEventSubscriptionsCapability({
     supported: true,
     stability: "reference_extension",
     endpoint,
+    authority_kinds_supported: ["client_grant", "trusted_owner_agent"] as const,
     scope: "reference_implementation",
     transport: "https_webhook",
     envelope: {

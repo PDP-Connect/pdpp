@@ -171,6 +171,7 @@ test('Postgres store factory is consistent with the resolver', {
     assert.equal(typeof resolved.insertSubscription, 'function');
     assert.ok(direct.insertSubscription({
       subscription_id: 'sub_pg_smoke',
+      authority_kind: 'client_grant',
       grant_id: 'g1',
       client_id: 'c1',
       subject_id: 's1',

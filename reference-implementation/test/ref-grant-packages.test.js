@@ -64,6 +64,11 @@ function assertNoSecretMaterial(value, path = '$') {
   }
 }
 
+function renderedHostedMcpStreamValues(html) {
+  return [...html.matchAll(/<input[^>]*name="stream"[^>]*value="([^"]+)"[^>]*data-hosted-mcp-stream-checkbox[^>]*>/g)]
+    .map((match) => match[1]);
+}
+
 async function closeServer(server) {
   server.asServer.closeAllConnections();
   server.rsServer.closeAllConnections();
@@ -152,13 +157,10 @@ async function completeMultiSourcePackageFlow({ asUrl, client, connectorIds }) {
   for (const id of connectorIds) {
     params.append('selection', encodeHostedMcpSelection({ connectorId: id, connectionId: null }));
   }
-  // Mirror the picker's pre-checked stream checkboxes; the AS now treats a
-  // selected source with zero stream form values as "owner deselected
-  // every stream for this source." See hosted-mcp-oauth.test.js for the
-  // narrowing matrix; this helper exercises the no-narrowing path.
-  const streamRegex = /name="stream" value="([^"]+)" checked/g;
-  for (const match of pickerHtml.matchAll(streamRegex)) {
-    params.append('stream', match[1]);
+  // Mirror explicit whole-source approval: submit every stream value for the
+  // selected sources. Narrowing cases construct their own form submissions.
+  for (const streamValue of renderedHostedMcpStreamValues(pickerHtml)) {
+    params.append('stream', streamValue);
   }
 
   const approveResp = await fetch(`${asUrl}/oauth/authorize/mcp-package`, {

@@ -10,6 +10,7 @@ import {
 } from '../operations/rs-client-event-derive/index.ts';
 
 const baseSub = {
+  authorityKind: 'client_grant',
   subscriptionId: 'sub_1',
   grantId: 'g_1',
   clientId: 'c_1',
@@ -45,6 +46,53 @@ test('derive emits records.changed when stream is in scope', () => {
     JSON.parse(Buffer.from(events[0].data.changes_since, 'base64').toString('utf8')),
     { kind: 'changes_since', version: 41, v: 41 },
   );
+});
+
+test('derive lets trusted owner-agent wildcard subscriptions see current and future owner streams', () => {
+  const sub = activeSub({
+    authorityKind: 'trusted_owner_agent',
+    grantId: null,
+    subjectId: 'owner_a',
+    scope: { streams: [{ name: '*' }] },
+  });
+  const events = deriveClientEventsFromRecordChange(
+    {
+      connectorId: 'spotify',
+      connectorInstanceId: 'cin_spotify',
+      ownerSubjectId: 'owner_a',
+      connectionId: 'cin_spotify',
+      stream: 'recent_tracks',
+      version: 8,
+      emittedAt: 'now',
+    },
+    [sub],
+  );
+  assert.equal(events.length, 1);
+  assert.equal(events[0].data.connector_id, 'spotify');
+  assert.equal(events[0].data.stream, 'recent_tracks');
+  assert.equal(events[0].data.connection_id, 'cin_spotify');
+});
+
+test('derive isolates trusted owner-agent wildcard subscriptions by owner subject', () => {
+  const sub = activeSub({
+    authorityKind: 'trusted_owner_agent',
+    grantId: null,
+    subjectId: 'owner_a',
+    scope: { streams: [{ name: '*' }] },
+  });
+  const events = deriveClientEventsFromRecordChange(
+    {
+      connectorId: 'spotify',
+      connectorInstanceId: 'cin_spotify',
+      ownerSubjectId: 'owner_b',
+      connectionId: 'cin_spotify',
+      stream: 'recent_tracks',
+      version: 8,
+      emittedAt: 'now',
+    },
+    [sub],
+  );
+  assert.equal(events.length, 0);
 });
 
 test('derive omits envelope for streams outside grant scope', () => {

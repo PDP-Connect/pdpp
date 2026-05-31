@@ -19,7 +19,7 @@ import type {
   SubscriptionSummaryRow,
 } from "../../server/stores/client-event-subscription-store.ts";
 import type { SubscriptionScope } from "../rs-client-event-derive/index.ts";
-import type { SubscriptionStatus } from "../as-client-event-subscriptions/index.ts";
+import type { SubscriptionAuthorityKind, SubscriptionStatus } from "../as-client-event-subscriptions/index.ts";
 
 export const REF_CLIENT_EVENT_SUBSCRIPTIONS_ATTEMPT_CAP = 25;
 
@@ -47,8 +47,9 @@ export interface RefClientEventSubscriptionAttempt {
 
 export interface RefClientEventSubscriptionDetail {
   readonly subscription_id: string;
+  readonly authority_kind: SubscriptionAuthorityKind;
   readonly client_id: string;
-  readonly grant_id: string;
+  readonly grant_id: string | null;
   readonly subject_id: string;
   readonly status: SubscriptionStatus;
   readonly disabled_reason: string | null;
@@ -108,6 +109,7 @@ export async function executeRefClientEventSubscriptionsGet(
   );
   return {
     subscription_id: summary.subscription_id,
+    authority_kind: summary.authority_kind,
     client_id: summary.client_id,
     grant_id: summary.grant_id,
     subject_id: summary.subject_id,

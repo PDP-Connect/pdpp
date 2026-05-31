@@ -67,10 +67,12 @@ valid-TLS HTTPS callback receiver** — not by preference.
 - The receiver is **durable and reachable from the reference server** — it stays up and is
   not behind NAT/localhost the server cannot reach.
 - The deployment **advertises** event-subscription support in its discovery metadata.
+- Your credential is a registered owner-agent bearer. If introspection does not return
+  `pdpp_token_kind: "owner"` and a `client_id`, use polling instead.
 
 When all hold, you MAY create subscriptions for low-latency notification. Event payloads
-carry a `changes_since` cursor and **never** record bodies — on each event, run an
-incremental sync (below) from that cursor.
+carry source identity plus a `changes_since` cursor and **never** record bodies — on each
+event, run an incremental sync (below) from that cursor.
 
 ### Otherwise, poll with backoff
 

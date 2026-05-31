@@ -99,7 +99,18 @@ Rationale: MCP tool sessions are client/grant artifacts. Allowing owner bearers 
 
 Alternative considered: add owner-mode MCP tools. Rejected for this change. If future owner-mode MCP is desired, it needs a separate design with a different tool namespace, explicit local-only assumptions, and a separate security review.
 
-### 5. Efficient local sync is part of onboarding, not an afterthought
+### 5. Event subscriptions use explicit authority kinds
+
+The initial implementation exposed the event-subscription endpoint in owner-agent metadata while the durable event-subscription contract still rejected owner bearers. That was a real mismatch for Daisy's target: a trusted local owner agent with a durable HTTPS receiver should be able to receive low-latency change hints without creating a second grant-scoped client credential.
+
+Decision: event subscriptions support two explicit authority kinds:
+
+- `client_grant`: the existing grant-scoped authority. Rows retain `grant_id`, `client_id`, and `subject_id`; matching semantics remain `(client_id, grant_id)`.
+- `trusted_owner_agent`: owner-level local automation authority. Rows retain `client_id` and `subject_id`, have no `grant_id`, and derive record-change hints only for connector instances owned by that subject.
+
+Owner-agent pushed events remain hints only. They carry `connector_id`, stream, `connection_id` where known, and `changes_since`; they do not carry record bodies. Registered-client deletion disables that client's owner-agent subscriptions and drops pending queue rows in the same cascade that revokes the owner token.
+
+### 6. Efficient local sync is part of onboarding, not an afterthought
 
 The owner-agent profile should require an agent runbook/skill section that tells Daisy to:
 

@@ -6,8 +6,8 @@
  * propagation, and response writing. The operation owns:
  *
  *  - input validation (callback URL shape, optional filters);
- *  - grant-scoped authorization (subscription must belong to the bearer's
- *    `(client_id, grant_id)`);
+ *  - authority-scoped authorization (subscription must belong to the bearer's
+ *    client-grant or trusted-owner-agent authority);
  *  - persistence via the injected store;
  *  - enqueueing a single `subscription.verify` event on create;
  *  - enqueueing a deterministic `subscription.test` event when requested;
@@ -37,17 +37,24 @@ export class ClientEventSubscriptionError extends Error {
   }
 }
 
+export type SubscriptionAuthorityKind = "client_grant" | "trusted_owner_agent";
+
 export interface BearerActor {
+  readonly authorityKind: SubscriptionAuthorityKind;
   readonly clientId: string;
-  readonly grantId: string;
+  readonly grantId: string | null;
   readonly subjectId: string;
-  /** Grant scope snapshot derived from the bearer's grant. */
+  /**
+   * Authority scope snapshot. Client actors inherit the grant stream
+   * projection; trusted-owner-agent actors use the owner-visible wildcard.
+   */
   readonly grantScope: SubscriptionScope;
 }
 
 export interface SubscriptionRow {
   readonly subscription_id: string;
-  readonly grant_id: string;
+  readonly authority_kind: SubscriptionAuthorityKind;
+  readonly grant_id: string | null;
   readonly client_id: string;
   readonly subject_id: string;
   readonly callback_url: string;
@@ -150,6 +157,9 @@ function validateCallbackUrl(raw: string): URL {
 function narrowScope(actor: BearerActor, filters: { streams?: ReadonlyArray<string> } | undefined): SubscriptionScope {
   const grantScope = actor.grantScope;
   if (!filters?.streams || filters.streams.length === 0) return grantScope;
+  if (actor.authorityKind === "trusted_owner_agent") {
+    return { ...grantScope, filters: { streams: [...new Set(filters.streams)] } };
+  }
   const grantNames = new Set(grantScope.streams.map((s) => s.name));
   const unauthorized = filters.streams.filter((n) => !grantNames.has(n));
   if (unauthorized.length) {
@@ -200,6 +210,7 @@ export async function executeCreateSubscription(
   const now = deps.nowIso();
   const row: SubscriptionRow = {
     subscription_id: subscriptionId,
+    authority_kind: input.actor.authorityKind,
     grant_id: input.actor.grantId,
     client_id: input.actor.clientId,
     subject_id: input.actor.subjectId,
@@ -306,7 +317,8 @@ async function enqueue(
 
 export interface ProjectedSubscription {
   readonly subscription_id: string;
-  readonly grant_id: string;
+  readonly authority_kind: SubscriptionAuthorityKind;
+  readonly grant_id: string | null;
   readonly client_id: string;
   readonly callback_url: string;
   readonly status: SubscriptionStatus;
@@ -319,6 +331,7 @@ export interface ProjectedSubscription {
 function projectRow(row: SubscriptionRow): ProjectedSubscription {
   return {
     subscription_id: row.subscription_id,
+    authority_kind: row.authority_kind,
     grant_id: row.grant_id,
     client_id: row.client_id,
     callback_url: row.callback_url,
@@ -392,7 +405,7 @@ export async function executeUpdateSubscription(
       } else if (row.status === "disabled_revoked") {
         throw new ClientEventSubscriptionError(
           "grant_revoked",
-          "subscription is bound to a revoked grant and cannot be re-enabled",
+          "subscription authority was revoked and cannot be re-enabled",
           409,
         );
       }
