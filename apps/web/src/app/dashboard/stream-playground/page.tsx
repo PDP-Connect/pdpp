@@ -67,8 +67,12 @@ async function getPlaygroundSession(
 ): Promise<PlaygroundSessionResponse> {
   const asUrl = getAsInternalUrl();
   const params = new URLSearchParams();
-  if (backend) params.set("backend", backend);
-  if (streamDebug) params.set("stream_debug", streamDebug);
+  if (backend) {
+    params.set("backend", backend);
+  }
+  if (streamDebug) {
+    params.set("stream_debug", streamDebug);
+  }
   const suffix = params.size > 0 ? `?${params.toString()}` : "";
   let response: Response;
   try {

@@ -18,7 +18,8 @@ const WEB_PUSH_SUSPENSE = /<Suspense fallback=\{null\}>[\s\S]*<WebPushSettingsSe
 const OLD_BLOCKING_OVERVIEW_LOAD = /await Promise\.all\(\[\s*loadOverview\(\)/;
 const SUMMARY_PLACEHOLDER_COPY = /Summarizing retained records/;
 const SUMMARY_ERROR_COPY = /Could not load retained-record summary/;
-const REBUILDING_ZERO_GUARD = /summary\.record_count === 0 && projection && !projection\.computed_at && status !== "fresh"/;
+const REBUILDING_ZERO_GUARD =
+  /summary\.record_count === 0 && projection && !projection\.computed_at && status !== "fresh"/;
 const REBUILDING_ZERO_PLACEHOLDER = /return <OverviewHeroPlaceholder \/>;/;
 const ZERO_RECORD_FALLBACK_COPY = /0 records|No records yet/;
 const DATASET_SUMMARY_INTERFACE = /export interface DatasetSummary \{/;

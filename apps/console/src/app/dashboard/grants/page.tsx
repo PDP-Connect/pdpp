@@ -181,9 +181,7 @@ function PendingApprovalRow({ approval }: { approval: PendingApproval }) {
         </div>
         <div className="pdpp-caption mt-1 break-words text-muted-foreground">
           client {approval.client_id ?? "—"}
-          {approval.grant_preview?.source
-            ? ` · source ${formatSourceForDisplay(approval.grant_preview.source)}`
-            : ""}
+          {approval.grant_preview?.source ? ` · source ${formatSourceForDisplay(approval.grant_preview.source)}` : ""}
           {previewStreams.length ? ` · streams ${previewStreams.join(", ")}` : ""}
         </div>
       </div>
@@ -207,8 +205,8 @@ function GrantRow({ grant, href, peeked }: { grant: GrantSummary; href: string; 
     : null;
   return (
     <div
-      className={`block px-3 py-2.5 transition-colors ${peeked ? "bg-muted" : "hover:bg-muted/40"}`}
       aria-current={peeked ? "true" : undefined}
+      className={`block px-3 py-2.5 transition-colors ${peeked ? "bg-muted" : "hover:bg-muted/40"}`}
     >
       <Link className="block" href={href} scroll={false}>
         <div className="flex flex-wrap items-baseline justify-between gap-2">

@@ -181,9 +181,7 @@ function PendingApprovalRow({ approval }: { approval: PendingApproval }) {
         </div>
         <div className="pdpp-caption mt-1 break-words text-muted-foreground">
           client {approval.client_id ?? "—"}
-          {approval.grant_preview?.source
-            ? ` · source ${formatSourceForDisplay(approval.grant_preview.source)}`
-            : ""}
+          {approval.grant_preview?.source ? ` · source ${formatSourceForDisplay(approval.grant_preview.source)}` : ""}
           {previewStreams.length ? ` · streams ${previewStreams.join(", ")}` : ""}
         </div>
       </div>

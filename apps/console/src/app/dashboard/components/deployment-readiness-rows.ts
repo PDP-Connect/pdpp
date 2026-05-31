@@ -11,21 +11,21 @@ export type ReadinessStatus = "ok" | "warn" | "error" | "info" | "unknown";
 
 export interface ReadinessRow {
   check: string;
-  status: ReadinessStatus;
   detail: string;
   hint?: string;
+  status: ReadinessStatus;
 }
 
 export interface ServerInputs {
+  databasePath: string;
+  embeddingBackendAvailable: boolean;
+  embeddingBackendConfigured: boolean;
+  embeddingDownloadAllowed: boolean | null;
+  embeddingModelCachePresent: boolean | null;
   ownerPasswordProvenance: "absent" | "present" | "redacted";
   referenceOriginConfigured: string | null;
-  embeddingBackendConfigured: boolean;
-  embeddingBackendAvailable: boolean;
-  embeddingModelCachePresent: boolean | null;
-  embeddingDownloadAllowed: boolean | null;
   vectorIndexKind: DeploymentDiagnostics["semantic"]["index"]["kind"];
   vectorIndexState: DeploymentDiagnostics["semantic"]["index"]["state"];
-  databasePath: string;
 }
 
 export type RefreshTokenProbe =
@@ -195,9 +195,15 @@ export function refreshTokenRow(probe: RefreshTokenProbe): ReadinessRow {
 }
 
 export function overallVerdict(rows: ReadinessRow[]): Verdict {
-  if (rows.some((r) => r.status === "error")) return "blocked";
-  if (rows.some((r) => r.status === "warn")) return "attention";
-  if (rows.some((r) => r.status === "unknown")) return "unknown";
+  if (rows.some((r) => r.status === "error")) {
+    return "blocked";
+  }
+  if (rows.some((r) => r.status === "warn")) {
+    return "attention";
+  }
+  if (rows.some((r) => r.status === "unknown")) {
+    return "unknown";
+  }
   return "ready";
 }
 

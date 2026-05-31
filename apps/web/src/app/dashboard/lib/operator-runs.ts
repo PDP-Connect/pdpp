@@ -161,19 +161,19 @@ export async function saveConnectionSchedule(
 }
 
 export async function pauseConnectorSchedule(connectorId: string) {
-  return postScheduleMutationAt(connectorControlPath(connectorId, "/schedule/pause"), `schedule pause failed`);
+  return postScheduleMutationAt(connectorControlPath(connectorId, "/schedule/pause"), "schedule pause failed");
 }
 
 export async function pauseConnectionSchedule(connectionId: string) {
-  return postScheduleMutationAt(connectionControlPath(connectionId, "/schedule/pause"), `schedule pause failed`);
+  return postScheduleMutationAt(connectionControlPath(connectionId, "/schedule/pause"), "schedule pause failed");
 }
 
 export async function resumeConnectorSchedule(connectorId: string) {
-  return postScheduleMutationAt(connectorControlPath(connectorId, "/schedule/resume"), `schedule resume failed`);
+  return postScheduleMutationAt(connectorControlPath(connectorId, "/schedule/resume"), "schedule resume failed");
 }
 
 export async function resumeConnectionSchedule(connectionId: string) {
-  return postScheduleMutationAt(connectionControlPath(connectionId, "/schedule/resume"), `schedule resume failed`);
+  return postScheduleMutationAt(connectionControlPath(connectionId, "/schedule/resume"), "schedule resume failed");
 }
 
 /**

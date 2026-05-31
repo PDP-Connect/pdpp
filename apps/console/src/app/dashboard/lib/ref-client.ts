@@ -328,10 +328,10 @@ export interface RefConnectorSummary {
   /** Top-level mirror of `connection_health.next_action`. */
   next_action: RefNextAction | null;
   refresh_policy?: RefreshPolicy | null;
-  schedule: RefSchedule | null;
-  streams: string[];
-  stream_count?: number;
   retained_bytes?: RefRetainedBytesBreakdown | null;
+  schedule: RefSchedule | null;
+  stream_count?: number;
+  streams: string[];
   total_records: number;
   total_retained_bytes?: number | null;
 }
@@ -353,10 +353,6 @@ export interface RefNextAction {
   action_target: string | null;
   attention_id: string | null;
   expires_at: string | null;
-  owner_action: "act_elsewhere" | "operate_attachment" | "provide_value" | null;
-  reason_code: string | null;
-  response_contract: "response_required" | "none" | null;
-  source: "none" | "schedule_fallback" | "structured";
   /**
    * Durable notification delivery state for the attention prompt
    * driving this CTA. `null` for schedule-fallback CTAs (the durable
@@ -367,6 +363,10 @@ export interface RefNextAction {
    * — notification failure is not permission to relaunch the run.
    */
   notification_state?: "acknowledged" | "failed" | "pending" | "sent" | "suppressed" | null;
+  owner_action: "act_elsewhere" | "operate_attachment" | "provide_value" | null;
+  reason_code: string | null;
+  response_contract: "response_required" | "none" | null;
+  source: "none" | "schedule_fallback" | "structured";
 }
 
 export type RefAttentionAxis = "acknowledged" | "in_progress" | "none" | "open";
@@ -397,18 +397,18 @@ export interface RefConnectionConditionRemediation {
 }
 
 export interface RefConnectionHealthCondition {
-  id: string;
-  type: string;
-  status: "false" | "true" | "unknown";
-  severity: "blocked" | "error" | "info" | "warning";
-  reason: string;
-  message: string;
-  origin: string;
-  observed_at: string | null;
-  expires_at: string | null;
   current?: boolean;
-  sensitivity: "owner" | "public" | "secret_redacted";
+  expires_at: string | null;
+  id: string;
+  message: string;
+  observed_at: string | null;
+  origin: string;
+  reason: string;
   remediation: RefConnectionConditionRemediation | null;
+  sensitivity: "owner" | "public" | "secret_redacted";
+  severity: "blocked" | "error" | "info" | "warning";
+  status: "false" | "true" | "unknown";
+  type: string;
 }
 
 export interface RefConnectionHealthSnapshot {
@@ -425,13 +425,13 @@ export interface RefConnectionHealthSnapshot {
   };
   conditions?: readonly RefConnectionHealthCondition[];
   dominant_condition_id?: string | null;
-  supporting_condition_ids?: readonly string[];
   last_success_at: string | null;
   /** Non-secret owner CTA, or null when no attention is required. */
   next_action: RefNextAction | null;
   next_attempt_at: string | null;
   reason_code: string | null;
   state: "blocked" | "cooling_off" | "degraded" | "healthy" | "idle" | "needs_attention" | "unknown";
+  supporting_condition_ids?: readonly string[];
   unknown_reasons: readonly string[];
 }
 
@@ -596,12 +596,9 @@ export async function listConnectorSummaries(): Promise<ListResponse<RefConnecto
   return (await refFetch("/_ref/connectors")) as ListResponse<RefConnectorSummary>;
 }
 
-export async function listRecordVersionStats(opts: {
-  connectorInstanceId?: string;
-  limit?: number;
-  risk?: RefRecordVersionRisk;
-  stream?: string;
-} = {}): Promise<RefRecordVersionStatsEnvelope> {
+export async function listRecordVersionStats(
+  opts: { connectorInstanceId?: string; limit?: number; risk?: RefRecordVersionRisk; stream?: string } = {}
+): Promise<RefRecordVersionStatsEnvelope> {
   return (await refFetch("/_ref/records/version-stats", {
     connector_instance_id: opts.connectorInstanceId,
     limit: opts.limit,
@@ -1067,48 +1064,48 @@ export async function disableClientEventSubscription(
  * this surface.
  */
 export interface GrantPackageSummary {
+  approved_at: string | null;
+  client_id: string;
+  created_at: string;
+  member_count: number;
   object: "grant_package_summary";
   package_id: string;
-  subject_id: string;
-  client_id: string;
-  status: string;
-  member_count: number;
-  created_at: string;
-  approved_at: string | null;
   revoked_at: string | null;
+  status: string;
+  subject_id: string;
 }
 
 export interface GrantPackageChild {
-  object: "grant_package_child";
+  added_at: string;
   grant_id: string;
   grant_status: string;
   member_status: string;
-  added_at: string;
+  object: "grant_package_child";
   revoked_at: string | null;
   source: { kind?: string; id?: string; connector_id?: string; connection_id?: string | null } | null;
 }
 
 export interface GrantPackageDetail {
+  approved_at: string | null;
+  children: GrantPackageChild[];
+  client_id: string;
+  created_at: string;
+  member_count: number;
   object: "grant_package";
   package_id: string;
-  subject_id: string;
-  client_id: string;
-  status: string;
-  member_count: number;
-  created_at: string;
-  approved_at: string | null;
   revoked_at: string | null;
-  trace_id: string | null;
   scenario_id: string | null;
-  children: GrantPackageChild[];
+  status: string;
+  subject_id: string;
+  trace_id: string | null;
 }
 
 export interface GrantPackageRevokeResult {
   object: "grant_package_revoke_result";
   package_id: string;
-  status: string;
   revoked_at: string;
   revoked_child_count: number;
+  status: string;
 }
 
 export async function listGrantPackages(): Promise<ListResponse<GrantPackageSummary>> {
@@ -1124,7 +1121,9 @@ export async function listGrantPackages(): Promise<ListResponse<GrantPackageSumm
  * without minting a dedicated lookup endpoint.
  */
 export async function lookupGrantPackageIdForGrant(grantId: string): Promise<string | null> {
-  if (!grantId) return null;
+  if (!grantId) {
+    return null;
+  }
   try {
     const page = await listGrants({ q: grantId, limit: 5 });
     for (const row of page.data) {
@@ -1140,9 +1139,7 @@ export async function lookupGrantPackageIdForGrant(grantId: string): Promise<str
 
 export async function getGrantPackage(packageId: string): Promise<GrantPackageDetail | null> {
   try {
-    return (await refFetch(
-      `/_ref/grant-packages/${encodeURIComponent(packageId)}`
-    )) as GrantPackageDetail;
+    return (await refFetch(`/_ref/grant-packages/${encodeURIComponent(packageId)}`)) as GrantPackageDetail;
   } catch (err) {
     if (err instanceof RefNotFoundError) {
       return null;

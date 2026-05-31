@@ -47,7 +47,16 @@ export function pdppLocalCollectorEnrollCommand(args: {
   code: string;
   deviceLabel?: string | null | undefined;
 }): string {
-  const parts = ["npx", "-y", localCollectorPackageSpecifier, "enroll", "--base-url", args.baseUrl, "--code", args.code];
+  const parts = [
+    "npx",
+    "-y",
+    localCollectorPackageSpecifier,
+    "enroll",
+    "--base-url",
+    args.baseUrl,
+    "--code",
+    args.code,
+  ];
   const label = args.deviceLabel?.trim();
   if (label) {
     parts.push("--device-label", JSON.stringify(label));

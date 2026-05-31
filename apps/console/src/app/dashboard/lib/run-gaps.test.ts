@@ -145,9 +145,7 @@ test("normalizeKnownGaps and formatRecoveryHint tolerate unknown payloads", () =
 
 test("normalizeKnownGaps propagates bounded SKIP_RESULT diagnostics object", () => {
   const diagnostics = { phase: "export_artifact_wait_failed", error: "download_empty", dialogs_open: 1 };
-  const [gap] = normalizeKnownGaps([
-    { kind: "skip_result", reason: "export_no_download", diagnostics },
-  ]);
+  const [gap] = normalizeKnownGaps([{ kind: "skip_result", reason: "export_no_download", diagnostics }]);
   assert.ok(gap);
   assert.deepEqual(gap.diagnostics, diagnostics);
 });

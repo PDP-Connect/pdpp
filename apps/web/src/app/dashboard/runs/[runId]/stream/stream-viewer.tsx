@@ -9,20 +9,44 @@
  * many times per second — Next.js <Image> would re-run optimization for each frame. */
 "use client";
 
+import {
+  assessNekoMediaSettle,
+  createNekoMediaSettleState,
+  type NekoMediaSettleSample,
+} from "@opendatalabs/remote-surface/backends/neko";
+import {
+  assessClipboardCapabilities,
+  assessMobileKeyboardViewportResize,
+  buildViewportPayload,
+  CdpSurfaceAdapter,
+  type ClipboardCapabilities,
+  type ClipboardDirectionPolicy,
+  type ClipboardHelperMode,
+  type ClipboardPolicyDecision,
+  classifyClipboardBrowser,
+  clipboardLengthBucket,
+  createMobileKeyboardResizeState,
+  decideClipboardPolicy,
+  type LocalViewportSample,
+  type NekoMediaSettleTarget,
+  NekoSurfaceAdapter,
+  nekoMediaSettleTarget,
+  nekoMediaSettleTargetsMatch,
+  pointToStreamViewport,
+  type StreamViewportInfo,
+  streamViewportInfosMatch,
+  toNekoNativeViewportInfo,
+  type ViewportObservation,
+  type ViewportPayload,
+  viewportCaptureSize,
+  viewportInfoFromPayload,
+  viewportPayloadsAreEquivalent,
+} from "@opendatalabs/remote-surface/client";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import {
-  type FormEvent,
-  type RefObject,
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  useTransition,
-} from "react";
+import { type FormEvent, type RefObject, useCallback, useEffect, useRef, useState, useTransition } from "react";
 import { PdppLogo } from "@/components/pdpp-logo.tsx";
 import { Button } from "@/components/ui/button.tsx";
-import { Input } from "@/components/ui/input.tsx";
 import {
   Dialog,
   DialogBackdrop,
@@ -31,66 +55,35 @@ import {
   DialogPortal,
   DialogTitle,
 } from "@/components/ui/dialog.tsx";
+import { Input } from "@/components/ui/input.tsx";
 import { dashboardRoutes } from "../../../components/views/routes.ts";
 import { submitRunInteractionAction } from "../actions.ts";
 import { type MintedStreamSession, mintStreamSessionAction } from "./actions.ts";
 import {
-  type NekoClientConfig,
   NEKO_MEDIA_LAYOUT_EVENT,
+  type NekoClientConfig,
   readNekoMediaSettleSample,
   setNekoPresentationViewportLayout,
   setNekoRemoteCopyFallback,
   setNekoViewportLayout,
 } from "./neko-client.ts";
-import { CdpSurfaceAdapter, NekoSurfaceAdapter } from "@opendatalabs/remote-surface/client";
 import { createNekoClientApi } from "./neko-client-api-shim.ts";
 import {
-  assessClipboardCapabilities,
-  type ClipboardCapabilities,
-  type ClipboardDirectionPolicy,
-  type ClipboardHelperMode,
-  type ClipboardPolicyDecision,
-  assessMobileKeyboardViewportResize,
-  buildViewportPayload,
-  classifyClipboardBrowser,
-  clipboardLengthBucket,
-  createMobileKeyboardResizeState,
-  decideClipboardPolicy,
-  type LocalViewportSample,
-  type NekoMediaSettleTarget,
-  pointToStreamViewport,
-  nekoMediaSettleTarget,
-  nekoMediaSettleTargetsMatch,
-  streamViewportInfosMatch,
-  toNekoNativeViewportInfo,
-  type ViewportPayload,
-  type ViewportObservation,
-  viewportPayloadsAreEquivalent,
-  viewportCaptureSize,
-  viewportInfoFromPayload,
-  type StreamViewportInfo,
-} from "@opendatalabs/remote-surface/client";
-import {
-  assessNekoMediaSettle,
-  createNekoMediaSettleState,
-  type NekoMediaSettleSample,
-} from "@opendatalabs/remote-surface/backends/neko";
+  claimPlaygroundEvent,
+  createPlaygroundSeenRegistry,
+  type PlaygroundSeenRegistry,
+} from "./playground-event-dedupe.ts";
 import {
   createStreamViewerControlState,
   localSurfaceCanDisplayPresentation,
   nextPresentationKeyboardHoldUntilMs,
   nextPresentationOrientationHoldUntilMs,
   reduceStreamViewerControl,
-  stablePresentationContainerRect,
   type StreamViewerCommand,
   shouldDebouncePresentationViewportUpdate,
   shouldHoldPresentationViewportForKeyboard,
+  stablePresentationContainerRect,
 } from "./stream-viewer-control.ts";
-import {
-  claimPlaygroundEvent,
-  createPlaygroundSeenRegistry,
-  type PlaygroundSeenRegistry,
-} from "./playground-event-dedupe.ts";
 import {
   parseAttachedMessage,
   parseBackendReadyMessage,
@@ -103,8 +96,8 @@ import {
   parseUrlChangedMessage,
 } from "./stream-viewer-protocol.ts";
 import {
-  computePixelFitTelemetry,
   classifyVisualQualityIssues,
+  computePixelFitTelemetry,
   computeStreamCaptureTargetForContext,
   sampleVideoSharpnessTelemetry,
 } from "./stream-visual-quality.ts";
@@ -148,7 +141,7 @@ interface NekoStatusSnapshot {
   pageMetricsMismatch: Record<string, unknown> | null;
   pageMetricsMismatchAfterReapply: Record<string, unknown> | null;
   /** Drained ring buffer of remote-page click/focus/scroll telemetry. */
-  playgroundEvents: Array<Record<string, unknown>> | null;
+  playgroundEvents: Record<string, unknown>[] | null;
   screen: { height: number; width: number } | null;
 }
 
@@ -1629,9 +1622,11 @@ function StreamStage({
     setContainerNode(node);
   }, []);
 
-  const readStageViewport = useCallback((width: number, height: number) => {
-    return readViewerViewport(width, height, nekoNativeViewportRef.current ? NEKO_NATIVE_VIEWPORT_OPTIONS : {});
-  }, []);
+  const readStageViewport = useCallback(
+    (width: number, height: number) =>
+      readViewerViewport(width, height, nekoNativeViewportRef.current ? NEKO_NATIVE_VIEWPORT_OPTIONS : {}),
+    []
+  );
 
   clipboardCapabilitiesRef.current = clipboardCapabilities;
   clipboardPolicyRef.current = clipboardPolicy;
@@ -2328,7 +2323,7 @@ function StreamStage({
         keyboardBlurTimeoutRef.current = null;
       }
     };
-  }, [attachStreamHandlers, interactionId, onStatus, runId]);
+  }, [attachStreamHandlers, interactionId, onStatus, runId, logDebug]);
 
   const applyStablePresentationViewport = useCallback((presentationViewport: StreamViewportInfo) => {
     stablePresentationViewportInfoRef.current = presentationViewport;
@@ -2941,8 +2936,7 @@ function StreamStage({
                   adapter.focusTextInput();
                 }
                 logDebug("neko.corner.keyboard", {
-                  adapterMounted:
-                    adapter?.getLifecycleState() === "mounted",
+                  adapterMounted: adapter?.getLifecycleState() === "mounted",
                   controllerTextareaFocused:
                     document.activeElement ===
                     containerRef.current?.querySelector<HTMLTextAreaElement>('[data-pdpp-soft-keyboard="neko"]'),
@@ -3030,7 +3024,7 @@ function readNekoStatusSnapshot(payload: unknown): NekoStatusSnapshot {
   // status response; surface them up so the viewer can correlate
   // remote-side click/focus/scroll events against local touch telemetry.
   let pageWithoutPlayground = page;
-  let playgroundEvents: Array<Record<string, unknown>> | null = null;
+  let playgroundEvents: Record<string, unknown>[] | null = null;
   if (page) {
     const rawPlaygroundEvents = page.playgroundEvents;
     if (Array.isArray(rawPlaygroundEvents) && rawPlaygroundEvents.length > 0) {
@@ -3292,7 +3286,7 @@ function NekoSurface({
         });
       }
     };
-  }, [logDebug, session.clientConfigPath]);
+  }, [logDebug, session.clientConfigPath, nekoSurfaceAdapterRef]);
 
   // Capture-phase pointer dispatch into the adapter. This is the wire
   // boundary the expert prescribed: pointer events become RemotePointerEvent
@@ -3306,11 +3300,8 @@ function NekoSurface({
       return;
     }
     const isCoarsePointer = () =>
-      typeof window.matchMedia === "function" &&
-      window.matchMedia("(pointer: coarse)").matches;
-    const markRemoteInputFocusedAfterMousePointerUp = (
-      source: "pointerup" | "document-mouseup",
-    ) => {
+      typeof window.matchMedia === "function" && window.matchMedia("(pointer: coarse)").matches;
+    const markRemoteInputFocusedAfterMousePointerUp = (source: "pointerup" | "document-mouseup") => {
       window.setTimeout(() => {
         const adapter = nekoSurfaceAdapterRef.current;
         if (!adapter || adapter.getLifecycleState() !== "mounted") {
@@ -3327,9 +3318,7 @@ function NekoSurface({
         });
       }, 0);
     };
-    const remoteTypeFor = (
-      type: string,
-    ): "pointerdown" | "pointermove" | "pointerup" | "pointercancel" | null => {
+    const remoteTypeFor = (type: string): "pointerdown" | "pointermove" | "pointerup" | "pointercancel" | null => {
       switch (type) {
         case "pointerdown":
           return "pointerdown";
@@ -3385,7 +3374,7 @@ function NekoSurface({
         return;
       }
       const target = event.target;
-      if (!(target instanceof Node) || !mountNode.contains(target)) {
+      if (!(target instanceof Node && mountNode.contains(target))) {
         return;
       }
       markRemoteInputFocusedAfterMousePointerUp("document-mouseup");
@@ -3403,7 +3392,7 @@ function NekoSurface({
       mountNode.removeEventListener("pointercancel", handler as EventListener, opts);
       document.removeEventListener("mouseup", mouseupFallback, opts);
     };
-  }, [logDebug]);
+  }, [logDebug, nekoSurfaceAdapterRef.current]);
 
   useEffect(() => {
     const viewport = presentationViewportInfo ?? viewportInfo;
@@ -3754,16 +3743,24 @@ function NekoSurface({
   // Debug-only drain of remote `playground.*` events after layout
   // polling stops. This is observation-only: it never applies layout.
   useEffect(() => {
-    if (!debugEnabled) return;
-    if (!clientConfig?.statusPath) return;
+    if (!debugEnabled) {
+      return;
+    }
+    if (!clientConfig?.statusPath) {
+      return;
+    }
     const statusPath = clientConfig.statusPath;
     let cancelled = false;
     let pollTimer: ReturnType<typeof setTimeout> | null = null;
 
     const drainOnce = async () => {
-      if (cancelled) return;
+      if (cancelled) {
+        return;
+      }
       const status = await fetchNekoStatusBestEffort(statusPath);
-      if (cancelled) return;
+      if (cancelled) {
+        return;
+      }
       if (status.playgroundEvents && status.playgroundEvents.length > 0) {
         for (const entry of status.playgroundEvents) {
           if (claimPlaygroundEvent(playgroundSeenRef.current, entry) === "duplicate") {
@@ -3949,7 +3946,10 @@ function BrowserSurface({
         onInputDebug: (event, payload) => {
           logDebug(event, {
             ...payload,
-            snapshot: event === "surface.cdp-frame.soft_keyboard.focus" ? readSurfaceDebugSnapshot(containerRef.current) : undefined,
+            snapshot:
+              event === "surface.cdp-frame.soft_keyboard.focus"
+                ? readSurfaceDebugSnapshot(containerRef.current)
+                : undefined,
           });
         },
       },
@@ -4771,7 +4771,7 @@ function StreamInteractionDock({
   }
 
   return (
-    <div className="pdpp-stream-toast-zone" data-slot="interaction" data-pdpp-stream-ui>
+    <div className="pdpp-stream-toast-zone" data-pdpp-stream-ui data-slot="interaction">
       <form
         aria-label="Complete this connector step"
         autoComplete="off"

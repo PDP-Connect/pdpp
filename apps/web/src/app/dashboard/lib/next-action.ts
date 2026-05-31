@@ -43,7 +43,6 @@ export interface FormattedNextAction {
    * combined with `owner_action`. Never the raw code on its own.
    */
   label: string;
-  variant: NextActionVariant;
   /**
    * Short non-secret hint about whether we have actually notified the
    * owner about this prompt. `null` means there is nothing the
@@ -54,6 +53,7 @@ export interface FormattedNextAction {
    * not permission to relaunch the run.
    */
   notificationHint: string | null;
+  variant: NextActionVariant;
 }
 
 /**

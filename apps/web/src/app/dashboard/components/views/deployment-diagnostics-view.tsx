@@ -83,8 +83,12 @@ function RuntimeCapabilitiesSection({ capabilities }: { capabilities: Deployment
       ? capabilities.accepted_collector_protocol_versions.join(", ")
       : "—";
   const observedProtocolLabel = (() => {
-    if (!pairing) return "—";
-    if (pairing.protocol_version === "legacy_unknown") return "unknown (pre-header)";
+    if (!pairing) {
+      return "—";
+    }
+    if (pairing.protocol_version === "legacy_unknown") {
+      return "unknown (pre-header)";
+    }
     return pairing.protocol_version ?? "—";
   })();
   const connectorVersions = pairing ? Object.entries(pairing.connector_versions) : [];
@@ -105,9 +109,11 @@ function RuntimeCapabilitiesSection({ capabilities }: { capabilities: Deployment
         <Field label="Paired runner version" value={pairing?.runner_version ?? "—"} />
         <Field
           label="Bundled connector versions"
-          value={connectorVersions.length === 0
-            ? "—"
-            : connectorVersions.map(([id, v]) => `${formatConnectorKeyForDisplay(id)}@${v}`).join(", ")}
+          value={
+            connectorVersions.length === 0
+              ? "—"
+              : connectorVersions.map(([id, v]) => `${formatConnectorKeyForDisplay(id)}@${v}`).join(", ")
+          }
         />
       </dl>
     </Section>

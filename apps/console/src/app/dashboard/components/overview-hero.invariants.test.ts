@@ -21,10 +21,7 @@ test("overview-hero does not contain registry.pdpp.org URL patterns", async () =
 
 test("overview-hero does not contain URL-parsing logic for connector_id display", async () => {
   const src = await readFile(SRC, "utf8");
-  assert.ok(
-    !src.includes("new URL(connectorId)"),
-    "canonical connector_id requires no URL parsing for display"
-  );
+  assert.ok(!src.includes("new URL(connectorId)"), "canonical connector_id requires no URL parsing for display");
 });
 
 test("overview-hero does not contain local-device prefix stripping", async () => {

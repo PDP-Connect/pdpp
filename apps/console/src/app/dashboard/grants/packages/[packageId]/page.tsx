@@ -12,8 +12,8 @@
  *       specs/reference-implementation-architecture/spec.md
  */
 
-import Link from "next/link";
 import type { Metadata } from "next";
+import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Button } from "@/components/ui/button.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
@@ -67,7 +67,7 @@ export default async function GrantPackageDetailPage({
 
   const isActive = pkg.status === "active";
   const childCount = pkg.children.length;
-  const subscriptionsHref = `/dashboard/event-subscriptions`;
+  const subscriptionsHref = "/dashboard/event-subscriptions";
 
   return (
     <DashboardShell active="grants">
@@ -86,9 +86,7 @@ export default async function GrantPackageDetailPage({
 
       {sp.revoked === "yes" ? (
         <div className="pdpp-caption mb-6 rounded-md border border-emerald-500/30 border-l-4 border-l-emerald-500/60 bg-emerald-500/5 px-4 py-2.5">
-          <span className="font-medium text-emerald-700 dark:text-emerald-400">
-            Package revoked.
-          </span>{" "}
+          <span className="font-medium text-emerald-700 dark:text-emerald-400">Package revoked.</span>{" "}
           <span>Every child grant has been cascaded to revoked. The package's MCP refresh token is invalidated.</span>
         </div>
       ) : null}
@@ -129,9 +127,7 @@ export default async function GrantPackageDetailPage({
       </Section>
 
       <Section
-        description={
-          childCount === 1 ? "1 source-bounded child grant." : `${childCount} source-bounded child grants.`
-        }
+        description={childCount === 1 ? "1 source-bounded child grant." : `${childCount} source-bounded child grants.`}
         title="Children"
       >
         {childCount === 0 ? (
@@ -165,8 +161,8 @@ export default async function GrantPackageDetailPage({
             <label className="pdpp-caption flex items-center gap-2 text-muted-foreground">
               <input name="confirm_revoke" type="checkbox" value="yes" />
               <span>
-                Confirm revoke of package <code className="font-mono">{pkg.package_id}</code> and all{" "}
-                {childCount} child grants.
+                Confirm revoke of package <code className="font-mono">{pkg.package_id}</code> and all {childCount} child
+                grants.
               </span>
             </label>
             <Button type="submit" variant="destructive">
@@ -209,6 +205,8 @@ function ChildRow({ child }: { child: GrantPackageChild }) {
 }
 
 function describeSource(source: GrantPackageChild["source"]): string {
-  if (!source) return "source —";
+  if (!source) {
+    return "source —";
+  }
   return `source ${formatSourceWithConnectionForDisplay(source)}`;
 }

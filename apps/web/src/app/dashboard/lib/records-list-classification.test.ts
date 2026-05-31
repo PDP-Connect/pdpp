@@ -1,9 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-  hasRecordsListProgress,
-  shouldShowInPrimaryConnections,
-} from "./records-list-classification.ts";
+import { hasRecordsListProgress, shouldShowInPrimaryConnections } from "./records-list-classification.ts";
 import type { ConnectorOverview, ConnectorRunRef } from "./rs-client.ts";
 
 function run(status: string): ConnectorRunRef {

@@ -171,7 +171,11 @@ function permissionRow(permission: NotificationPermission | "unknown"): Diagnost
     };
   }
   if (permission === "default") {
-    return { label, state: "warn", detail: "Permission has not been requested on this device - use Enable this device." };
+    return {
+      label,
+      state: "warn",
+      detail: "Permission has not been requested on this device - use Enable this device.",
+    };
   }
   return { label, state: "unknown", detail: "Notification API not available." };
 }
@@ -192,7 +196,8 @@ function browserSubscriptionRow(endpoint: string | null, matchesThisBrowser: boo
   return {
     label,
     state: "warn",
-    detail: "Browser has a subscription but the server does not list it for this owner - use Enable this device to re-register.",
+    detail:
+      "Browser has a subscription but the server does not list it for this owner - use Enable this device to re-register.",
   };
 }
 
@@ -281,7 +286,13 @@ function buildSetupSteps({
 }): SetupStep[] {
   const permissionState: DiagnosticState =
     permission === "granted" ? "ok" : permission === "denied" ? "fail" : unavailable ? "fail" : "warn";
-  const subscriptionState: DiagnosticState = matchesThisBrowser ? "ok" : unavailable ? "fail" : endpoint ? "warn" : "warn";
+  const subscriptionState: DiagnosticState = matchesThisBrowser
+    ? "ok"
+    : unavailable
+      ? "fail"
+      : endpoint
+        ? "warn"
+        : "warn";
   const testState: DiagnosticState =
     testStatus?.startsWith("Test notification sent") || testStatus?.startsWith("Test notification delivered")
       ? "unknown"

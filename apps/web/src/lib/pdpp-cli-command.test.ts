@@ -10,8 +10,8 @@ import { test } from "node:test";
 import {
   pdppCliCollectorEnrollCommand,
   pdppCliCollectorRunCommand,
-  pdppCliConnectCommandFor,
   pdppCliConnectCommand,
+  pdppCliConnectCommandFor,
   pdppCliInstallCommand,
   pdppCliMonorepoCommand,
   pdppCliNoInstallCommand,

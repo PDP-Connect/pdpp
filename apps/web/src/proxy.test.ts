@@ -26,8 +26,8 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isDashboardAuthRedirectEnabled } from "./proxy-policy.ts";
 import { redirectSandboxAliasPath, rewriteSandboxCanonicalPath } from "./proxy-paths.ts";
+import { isDashboardAuthRedirectEnabled } from "./proxy-policy.ts";
 
 test("rewriteSandboxCanonicalPath maps /sandbox/_ref/** onto /sandbox/ref/**", () => {
   assert.equal(rewriteSandboxCanonicalPath("/sandbox/_ref/grants"), "/sandbox/ref/grants");

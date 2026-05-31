@@ -390,7 +390,12 @@ function KnownGapsSection({
   skippedCount: number;
   summary: KnownGapSummary | null;
 }) {
-  if (coverageGaps.length === 0 && informationalGaps.length === 0 && protocolViolationCount === 0 && skippedCount === 0) {
+  if (
+    coverageGaps.length === 0 &&
+    informationalGaps.length === 0 &&
+    protocolViolationCount === 0 &&
+    skippedCount === 0
+  ) {
     return null;
   }
 

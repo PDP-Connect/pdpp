@@ -56,11 +56,15 @@ const DIAGNOSTICS_TEST_PUSH_METHOD_PATTERN = /method:\s*"POST"/;
 const DIAGNOSTICS_SEND_TEST_BUTTON_PATTERN = />\s*Send test notification\s*</;
 const DIAGNOSTICS_SEND_DISABLED_PATTERN = /disabled=\{busy \|\| !endpoint \|\| Boolean\(unavailable\)\}/;
 const DIAGNOSTICS_NO_SUBSCRIPTIONS_PATTERN = /No active subscriptions for this owner/;
-const WEB_PUSH_RESPONSE_ERROR_HELPER_PATTERN = /async function webPushResponseError\(response: Response, fallbackAction: string\)/;
+const WEB_PUSH_RESPONSE_ERROR_HELPER_PATTERN =
+  /async function webPushResponseError\(response: Response, fallbackAction: string\)/;
 const WEB_PUSH_RESPONSE_ERROR_MESSAGE_PATTERN = /body\.error\?\.message \|\| body\.message \|\| body\.error\?\.code/;
-const WEB_PUSH_SUBSCRIBE_STRUCTURED_ERROR_PATTERN = /throw await webPushResponseError\(response, "Subscription failed"\)/;
-const WEB_PUSH_TEST_STRUCTURED_ERROR_PATTERN = /throw await webPushResponseError\(response, "Test notification failed"\)/;
-const WEB_PUSH_UNSUBSCRIBE_STRUCTURED_ERROR_PATTERN = /throw await webPushResponseError\(response, "Unsubscribe failed"\)/;
+const WEB_PUSH_SUBSCRIBE_STRUCTURED_ERROR_PATTERN =
+  /throw await webPushResponseError\(response, "Subscription failed"\)/;
+const WEB_PUSH_TEST_STRUCTURED_ERROR_PATTERN =
+  /throw await webPushResponseError\(response, "Test notification failed"\)/;
+const WEB_PUSH_UNSUBSCRIBE_STRUCTURED_ERROR_PATTERN =
+  /throw await webPushResponseError\(response, "Unsubscribe failed"\)/;
 const SSR_SAFE_WINDOW_HELPER_DEF_PATTERN = /function hasWindowFeature\(/;
 const SSR_SAFE_NAVIGATOR_HELPER_DEF_PATTERN = /function hasNavigatorFeature\(/;
 const SSR_SAFE_WINDOW_HELPER_GUARD_PATTERN = /typeof window !== "undefined"/;
@@ -72,8 +76,7 @@ const SVG_CSS_COLOR_FUNCTION_PATTERN = /oklch\(|lab\(|lch\(|color\(/i;
 const SVG_BACKGROUND_PATTERN = /<rect[^>]+width="32"[^>]+height="32"[^>]+fill="#f8f6f0"/;
 const SVG_BRAND_COPPER_PATTERN = /fill="#a05533"/;
 const SVG_BRAND_BLUE_PATTERN = /fill="#2c73d9"/;
-const ENABLE_CLEARS_TEST_STATUS_PATTERN =
-  /async function enable\(\)[\s\S]*?setBusy\(true\);\s*setTestStatus\(null\);/;
+const ENABLE_CLEARS_TEST_STATUS_PATTERN = /async function enable\(\)[\s\S]*?setBusy\(true\);\s*setTestStatus\(null\);/;
 const DISABLE_CLEARS_TEST_STATUS_PATTERN =
   /async function disable\(\)[\s\S]*?setBusy\(true\);\s*setTestStatus\(null\);/;
 

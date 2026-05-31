@@ -4,19 +4,16 @@ import {
   detectNekoPointerMappingIssues,
   isNekoTouchPointInsideRect,
   isNekoTouchScrollIntent,
-  nekoTouchScrollStepsToControlDelta,
   NEKO_TOUCH_SCROLL_POLICY,
+  type NekoMediaSettleSample,
+  type NekoTouchScrollBridgeEnvironment,
+  type NekoViewportLayout,
+  nekoTouchScrollStepsToControlDelta,
   selectNekoMediaDisplayForLayout,
   selectNekoMediaSizeForLayout,
   selectNekoScreenStateSizeForLayout,
   shouldUseNekoTouchScrollBridge,
   takeNekoTouchScrollSteps,
-  type NekoMediaSizeSelection,
-  type NekoMediaSettleSample,
-  type NekoTouchPointRect,
-  type NekoTouchScrollBridgeEnvironment,
-  type NekoTouchScrollIntentInput,
-  type NekoViewportLayout,
 } from "@opendatalabs/remote-surface/backends/neko";
 
 export interface NekoClientConfig {
@@ -36,7 +33,6 @@ interface NekoInstance {
   $el?: Element;
   $mount?: (element: Element) => void;
   connect?: () => void;
-  controlling?: boolean;
   control?: {
     buttonDown?: (code: number, pos?: NekoControlPos) => void;
     buttonUp?: (code: number, pos?: NekoControlPos) => void;
@@ -55,18 +51,19 @@ interface NekoInstance {
     keyDown?: (keysym: number, pos?: NekoControlPos) => void;
     keyUp?: (keysym: number, pos?: NekoControlPos) => void;
   };
+  controlling?: boolean;
   cursorDrawFunction?: NekoCursorDrawFunction;
   events?: { on?: (name: string, handler: (...args: unknown[]) => void) => void };
   inactiveCursorDrawFunction?: NekoInactiveCursorDrawFunction;
   login?: (username: string, password: string) => Promise<void>;
   onResize?: () => void;
   play?: () => Promise<void>;
+  setCursorDrawFunction?: (fn: NekoCursorDrawFunction) => void;
+  setInactiveCursorDrawFunction?: (fn: NekoInactiveCursorDrawFunction) => void;
   setReconnectorConfig?: (
     type: "websocket" | "webrtc",
     config: { backoff_ms: number; max_reconnects: number; timeout_ms: number }
   ) => void;
-  setCursorDrawFunction?: (fn: NekoCursorDrawFunction) => void;
-  setInactiveCursorDrawFunction?: (fn: NekoInactiveCursorDrawFunction) => void;
   setTouchEnabled?: (enabled: boolean) => void;
   setUrl?: (url: string) => Promise<void>;
   state?: {
@@ -247,7 +244,8 @@ function currentNekoControlCoordinateSize(): { height: number; source: string; w
     viewportLayout &&
     viewportLayout.viewportWidth > 0 &&
     viewportLayout.viewportHeight > 0 &&
-    (viewportLayout.viewportWidth !== viewportLayout.screenWidth || viewportLayout.viewportHeight !== viewportLayout.screenHeight)
+    (viewportLayout.viewportWidth !== viewportLayout.screenWidth ||
+      viewportLayout.viewportHeight !== viewportLayout.screenHeight)
   ) {
     return {
       height: viewportLayout.viewportHeight,
@@ -295,18 +293,21 @@ function computeAlternativePointerMappings(
         y: Math.round((Number(screenSize.height) / overlayRect.height) * (clientY - overlayRect.top)),
       };
     }
-    if (
-      controlCoordinateSize &&
-      controlCoordinateSize.width > 0 &&
-      controlCoordinateSize.height > 0
-    ) {
+    if (controlCoordinateSize && controlCoordinateSize.width > 0 && controlCoordinateSize.height > 0) {
       candidates.cssViewportOverlay = {
         x: Math.round((controlCoordinateSize.width / overlayRect.width) * (clientX - overlayRect.left)),
         y: Math.round((controlCoordinateSize.height / overlayRect.height) * (clientY - overlayRect.top)),
       };
     }
   }
-  if (mediaRect && mediaRect.width > 0 && mediaRect.height > 0 && intrinsic && intrinsic.width > 0 && intrinsic.height > 0) {
+  if (
+    mediaRect &&
+    mediaRect.width > 0 &&
+    mediaRect.height > 0 &&
+    intrinsic &&
+    intrinsic.width > 0 &&
+    intrinsic.height > 0
+  ) {
     candidates.intrinsicMedia = {
       x: Math.round((intrinsic.width / mediaRect.width) * (clientX - mediaRect.left)),
       y: Math.round((intrinsic.height / mediaRect.height) * (clientY - mediaRect.top)),
@@ -327,10 +328,9 @@ function readTouchTimeViewport(): Record<string, unknown> | null {
     return null;
   }
   const visualViewport = typeof window.visualViewport === "object" ? window.visualViewport : null;
-  const orientationApi =
-    typeof screen !== "undefined" && screen && "orientation" in screen ? screen.orientation : null;
-  const docEl = typeof document !== "undefined" ? document.documentElement : null;
-  const scrolling = typeof document !== "undefined" ? document.scrollingElement : null;
+  const orientationApi = typeof screen !== "undefined" && screen && "orientation" in screen ? screen.orientation : null;
+  const docEl = typeof document === "undefined" ? null : document.documentElement;
+  const scrolling = typeof document === "undefined" ? null : document.scrollingElement;
   return {
     window: {
       innerWidth: window.innerWidth,
@@ -939,10 +939,7 @@ function stopMobileTextInputGuard(): void {
   mobileTextInputGuardAttempts = 0;
 }
 
-export function pasteTextIntoNeko(
-  text: string,
-  opts: { focusKeyboardAfterPaste?: boolean } = {},
-): boolean {
+export function pasteTextIntoNeko(text: string, opts: { focusKeyboardAfterPaste?: boolean } = {}): boolean {
   const focusKeyboardAfterPaste = opts.focusKeyboardAfterPaste ?? true;
   const control = nekoInstance?.control;
   if (!text || typeof control?.paste !== "function") {
@@ -2364,10 +2361,7 @@ export function getNekoPointerControlForAdapter(): NekoInstance["control"] | nul
   return nekoInstance?.control ?? null;
 }
 
-export function mapNekoPointerToRemoteForAdapter(
-  clientX: number,
-  clientY: number,
-): NekoControlPos | null {
+export function mapNekoPointerToRemoteForAdapter(clientX: number, clientY: number): NekoControlPos | null {
   return getNekoControlPos(clientX, clientY);
 }
 
@@ -2384,10 +2378,7 @@ export function dispatchNekoKeysymForAdapter(keysym: number): boolean {
     return true;
   }
   // Fallback: keyDown + keyUp pair if keyPress is missing on this build.
-  if (
-    typeof control?.keyDown === "function" &&
-    typeof control?.keyUp === "function"
-  ) {
+  if (typeof control?.keyDown === "function" && typeof control?.keyUp === "function") {
     control.keyDown(keysym);
     control.keyUp(keysym);
     return true;

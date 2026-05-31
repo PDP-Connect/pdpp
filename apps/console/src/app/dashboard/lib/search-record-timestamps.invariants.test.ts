@@ -21,8 +21,5 @@ test("search-record-timestamps does not contain registry URL suffix fallback", a
 
 test("search-record-timestamps does not contain local-device prefix parsing", async () => {
   const src = await readFile(SRC, "utf8");
-  assert.ok(
-    !src.includes("local-device:"),
-    "connector_id is canonical; local-device prefix parsing must not appear"
-  );
+  assert.ok(!src.includes("local-device:"), "connector_id is canonical; local-device prefix parsing must not appear");
 });

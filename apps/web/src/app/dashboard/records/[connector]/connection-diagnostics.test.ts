@@ -160,8 +160,7 @@ test("connector detail page mounts <ConnectionDiagnostics>", async () => {
 
 const PAGE_DERIVES_DEVICE_LABELS = /summarizeSourceInstancesForHeader/;
 const PAGE_RENDERS_DEVICE_LABELS_TESTID = /data-testid="records-device-labels"/;
-const PAGE_DERIVES_PENDING_ON_DEVICES =
-  /summarizeSourceInstancesForHeader[\s\S]{0,200}pendingOnDevices/;
+const PAGE_DERIVES_PENDING_ON_DEVICES = /summarizeSourceInstancesForHeader[\s\S]{0,200}pendingOnDevices/;
 const PAGE_RENDERS_PENDING_ON_DEVICES = /pending on devices/;
 
 test("connector detail page surfaces device labels for bound source instances", async () => {

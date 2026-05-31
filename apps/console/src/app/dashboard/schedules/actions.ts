@@ -32,7 +32,10 @@ export async function upsertScheduleAction(
   }
 }
 
-export async function pauseScheduleAction(connectorId: string, connectionId?: string | null): Promise<ScheduleActionResult> {
+export async function pauseScheduleAction(
+  connectorId: string,
+  connectionId?: string | null
+): Promise<ScheduleActionResult> {
   try {
     await (connectionId ? pauseConnectionSchedule(connectionId) : pauseConnectorSchedule(connectorId));
     revalidatePath("/dashboard/schedules");
@@ -43,7 +46,10 @@ export async function pauseScheduleAction(connectorId: string, connectionId?: st
   }
 }
 
-export async function resumeScheduleAction(connectorId: string, connectionId?: string | null): Promise<ScheduleActionResult> {
+export async function resumeScheduleAction(
+  connectorId: string,
+  connectionId?: string | null
+): Promise<ScheduleActionResult> {
   try {
     await (connectionId ? resumeConnectionSchedule(connectionId) : resumeConnectorSchedule(connectorId));
     revalidatePath("/dashboard/schedules");
@@ -54,7 +60,10 @@ export async function resumeScheduleAction(connectorId: string, connectionId?: s
   }
 }
 
-export async function deleteScheduleAction(connectorId: string, connectionId?: string | null): Promise<ScheduleActionResult> {
+export async function deleteScheduleAction(
+  connectorId: string,
+  connectionId?: string | null
+): Promise<ScheduleActionResult> {
   try {
     await (connectionId ? deleteConnectionSchedule(connectionId) : deleteConnectorSchedule(connectorId));
     revalidatePath("/dashboard/schedules");

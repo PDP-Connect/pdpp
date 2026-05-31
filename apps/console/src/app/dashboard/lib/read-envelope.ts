@@ -57,7 +57,9 @@ function extractMeta(value: unknown): CanonicalEnvelopeMeta {
   }
   const meta = value as Record<string, unknown>;
   const warnings = Array.isArray(meta.warnings)
-    ? (meta.warnings.filter((w): w is CanonicalReadWarning => isPlainObject(w) && typeof w.code === "string") as CanonicalReadWarning[])
+    ? (meta.warnings.filter(
+        (w): w is CanonicalReadWarning => isPlainObject(w) && typeof w.code === "string"
+      ) as CanonicalReadWarning[])
     : [];
   let count: CanonicalCountMeta | null = null;
   if (isPlainObject(meta.count)) {
@@ -96,9 +98,10 @@ export function adaptListEnvelope<T>(body: unknown): CanonicalListEnvelope<T> {
   const rawData = (root as { data?: unknown }).data;
   const data = Array.isArray(rawData) ? (rawData as T[]) : [];
   const hasMore = (root as { has_more?: unknown }).has_more === true;
-  const nextCursor = typeof (root as { next_cursor?: unknown }).next_cursor === "string"
-    ? ((root as { next_cursor: string }).next_cursor)
-    : null;
+  const nextCursor =
+    typeof (root as { next_cursor?: unknown }).next_cursor === "string"
+      ? (root as { next_cursor: string }).next_cursor
+      : null;
   return {
     data,
     has_more: hasMore,

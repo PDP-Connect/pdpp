@@ -10,8 +10,8 @@ import { test } from "node:test";
 
 import {
   embeddingCacheRow,
-  ownerPasswordRow,
   overallVerdict,
+  ownerPasswordRow,
   type ReadinessRow,
   referenceOriginRow,
   refreshTokenRow,
@@ -142,10 +142,7 @@ test("refreshTokenRow is warn when well-known is unreachable", () => {
 });
 
 test("refreshTokenRow is ok when refresh_token is advertised", () => {
-  assert.equal(
-    refreshTokenRow({ state: "loaded", refreshTokenSupported: true }).status,
-    "ok"
-  );
+  assert.equal(refreshTokenRow({ state: "loaded", refreshTokenSupported: true }).status, "ok");
 });
 
 test("refreshTokenRow is error when refresh_token is missing", () => {

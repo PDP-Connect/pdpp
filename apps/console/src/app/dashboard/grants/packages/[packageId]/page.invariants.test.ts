@@ -77,8 +77,5 @@ test("revoke server action enforces confirm_revoke=yes before calling revokeGran
   const confirmIdx = src.search(CONFIRM_GUARD_RE);
   const revokeIdx = src.search(REVOKE_CALL_RE);
   assert.ok(confirmIdx >= 0 && revokeIdx >= 0);
-  assert.ok(
-    confirmIdx < revokeIdx,
-    "confirm_revoke guard must precede the revokeGrantPackage call in source order",
-  );
+  assert.ok(confirmIdx < revokeIdx, "confirm_revoke guard must precede the revokeGrantPackage call in source order");
 });

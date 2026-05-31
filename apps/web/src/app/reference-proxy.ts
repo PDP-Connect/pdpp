@@ -22,7 +22,7 @@ interface CatchAllRouteContext {
 
 function referenceBaseUrl(target: ReferenceTarget): string {
   const configured = target === "as" ? process.env.PDPP_AS_URL : process.env.PDPP_RS_URL;
-  if (configured && configured.trim()) {
+  if (configured?.trim()) {
     return configured;
   }
   return target === "as" ? "http://localhost:7662" : "http://localhost:7663";
@@ -66,7 +66,7 @@ function targetUrl(target: ReferenceTarget, path: readonly string[], requestUrl:
 export async function proxyReferenceRequest(
   request: Request,
   target: ReferenceTarget,
-  path: readonly string[],
+  path: readonly string[]
 ): Promise<Response> {
   const sourceUrl = new URL(request.url);
   const upstreamUrl = targetUrl(target, path, sourceUrl);
@@ -94,7 +94,7 @@ export async function proxyReferenceRequest(
           detail: error instanceof Error ? error.message : String(error),
         },
       },
-      { status: 502 },
+      { status: 502 }
     );
   }
 }
@@ -103,7 +103,7 @@ export async function proxyReferenceCatchAll(
   request: Request,
   target: ReferenceTarget,
   prefix: readonly string[],
-  context: CatchAllRouteContext,
+  context: CatchAllRouteContext
 ): Promise<Response> {
   const { path = [] } = await context.params;
   return proxyReferenceRequest(request, target, [...prefix, ...path]);

@@ -6,10 +6,7 @@
 // for adapter-relevant helpers. Step 3 of the RemoteSurface migration; see
 // docs/remote-surface-step-3-dashboard-wire.md.
 
-import type {
-  NekoClientApi,
-  NekoPointerControl,
-} from "@opendatalabs/remote-surface/client";
+import type { NekoClientApi, NekoPointerControl } from "@opendatalabs/remote-surface/client";
 
 import {
   blurNekoKeyboard,
@@ -18,11 +15,11 @@ import {
   focusNekoKeyboard,
   getNekoPointerControlForAdapter,
   mapNekoPointerToRemoteForAdapter,
+  type NekoClientConfig,
   pasteTextIntoNeko,
+  setNekoRemoteInputFocused,
   startNeko,
   stopNeko,
-  setNekoRemoteInputFocused,
-  type NekoClientConfig,
 } from "./neko-client";
 
 /**
@@ -36,9 +33,7 @@ import {
  * ref (passed via `getTextarea`) — the adapter binds
  * MobileTextInputController to it lazily.
  */
-export function createNekoClientApi(opts?: {
-  getTextarea?: () => HTMLTextAreaElement | null;
-}): NekoClientApi {
+export function createNekoClientApi(opts?: { getTextarea?: () => HTMLTextAreaElement | null }): NekoClientApi {
   let mountedContainer: HTMLElement | null = null;
 
   return {

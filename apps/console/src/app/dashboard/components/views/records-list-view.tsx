@@ -322,24 +322,22 @@ function VersionChurnNotice({ rows }: { rows: RefRecordVersionStatsRow[] }) {
   }
   const high = rows.filter((row) => row.risk_level === "high").length;
   const watch = rows.filter((row) => row.risk_level === "watch").length;
-  const label = [
-    high > 0 ? `${high} high-risk` : null,
-    watch > 0 ? `${watch} watch` : null,
-  ].filter(Boolean).join(", ");
+  const label = [high > 0 ? `${high} high-risk` : null, watch > 0 ? `${watch} watch` : null].filter(Boolean).join(", ");
   return (
     <section
       aria-label="Record version churn diagnostics"
       className="mb-6 border-[color:var(--warning)] border-l-2 bg-[color:var(--warning)]/5 px-4 py-3 text-[color:var(--warning)]"
     >
-      <p className="pdpp-body font-medium">Version churn needs review: {label} stream{rows.length === 1 ? "" : "s"}.</p>
+      <p className="pdpp-body font-medium">
+        Version churn needs review: {label} stream{rows.length === 1 ? "" : "s"}.
+      </p>
       <p className="pdpp-caption mt-1">
         Highest signal:{" "}
         {formatConnectorNameForDisplay({
           connectorId: strongest.connector_id ?? strongest.connector_instance_id,
           displayName: strongest.display_name,
         })}{" "}
-        /{" "}
-        {strongest.stream} has {strongest.versions_per_record.toLocaleString()} retained versions per current record.
+        / {strongest.stream} has {strongest.versions_per_record.toLocaleString()} retained versions per current record.
       </p>
     </section>
   );

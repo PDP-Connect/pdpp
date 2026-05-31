@@ -3,13 +3,13 @@
 import { useEffect, useState } from "react";
 import {
   embeddingCacheRow,
-  ownerPasswordRow,
   overallVerdict,
+  ownerPasswordRow,
   type ReadinessRow,
   type ReadinessStatus,
+  type RefreshTokenProbe,
   referenceOriginRow,
   refreshTokenRow,
-  type RefreshTokenProbe,
   type ServerInputs,
   storageBackendRow,
   type Verdict,
@@ -79,15 +79,21 @@ function useRefreshTokenAdvertisement(): RefreshTokenProbe {
           credentials: "omit",
         });
         if (!res.ok) {
-          if (!cancelled) setProbe({ state: "unreachable" });
+          if (!cancelled) {
+            setProbe({ state: "unreachable" });
+          }
           return;
         }
         const body = (await res.json()) as { grant_types_supported?: unknown };
         const grants = Array.isArray(body.grant_types_supported) ? body.grant_types_supported : [];
         const refreshTokenSupported = grants.some((g) => g === "refresh_token");
-        if (!cancelled) setProbe({ state: "loaded", refreshTokenSupported });
+        if (!cancelled) {
+          setProbe({ state: "loaded", refreshTokenSupported });
+        }
       } catch {
-        if (!cancelled) setProbe({ state: "unreachable" });
+        if (!cancelled) {
+          setProbe({ state: "unreachable" });
+        }
       }
     })();
     return () => {
@@ -113,15 +119,13 @@ function verdictPresentation(verdict: Verdict): { label: string; body: string; t
       return {
         label: "Ready to share with Claude / ChatGPT",
         body: "Owner gate, origin, storage, embeddings, and refresh-token metadata all check out.",
-        toneClass:
-          "border-[color:var(--success)]/30 bg-[color:var(--success-wash)] text-[color:var(--success)]",
+        toneClass: "border-[color:var(--success)]/30 bg-[color:var(--success-wash)] text-[color:var(--success)]",
       };
     case "attention":
       return {
         label: "Attention needed before sharing",
         body: "Some rows are usable but suboptimal. Read the hints below.",
-        toneClass:
-          "border-[color:var(--warning)]/30 bg-[color:var(--warning-wash)] text-[color:var(--warning)]",
+        toneClass: "border-[color:var(--warning)]/30 bg-[color:var(--warning-wash)] text-[color:var(--warning)]",
       };
     case "blocked":
       return {

@@ -9,13 +9,13 @@
  *       specs/reference-implementation-architecture/spec.md
  */
 
-import Link from "next/link";
 import type { Metadata } from "next";
+import Link from "next/link";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
 import { DataList, PageHeader, Section, StatusBadge } from "../../components/primitives.tsx";
 import { DashboardShell, EmptyState, ServerUnreachable } from "../../components/shell.tsx";
 import { ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
-import { type GrantPackageSummary, listGrantPackages, type ListResponse } from "../../lib/ref-client.ts";
+import { type GrantPackageSummary, type ListResponse, listGrantPackages } from "../../lib/ref-client.ts";
 
 export const dynamic = "force-dynamic";
 

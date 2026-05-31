@@ -56,9 +56,7 @@ export default async function GrantDetailPage({
   const revoked = envelope.events.some((e) => e.event_type === "grant.revoked" || e.status === "revoked");
 
   const subscriptionsHref = `/dashboard/event-subscriptions?grant_id=${encodeURIComponent(grantId)}`;
-  const packageHref = packageId
-    ? `/dashboard/grants/packages/${encodeURIComponent(packageId)}`
-    : null;
+  const packageHref = packageId ? `/dashboard/grants/packages/${encodeURIComponent(packageId)}` : null;
 
   return (
     <DashboardShell active="grants">

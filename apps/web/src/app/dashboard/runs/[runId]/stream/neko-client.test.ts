@@ -5,8 +5,8 @@ import {
   detectNekoPointerMappingIssues,
   isNekoTouchPointInsideRect,
   isNekoTouchScrollIntent,
-  nekoTouchScrollStepsToControlDelta,
   type NekoViewportLayout,
+  nekoTouchScrollStepsToControlDelta,
   selectNekoMediaDisplayForLayout,
   selectNekoMediaSizeForLayout,
   selectNekoScreenStateSizeForLayout,
@@ -247,11 +247,7 @@ test("n.eko native touch path does not schedule a delayed PDPP tap (no double-de
   );
   // We DO still want a passive observation event so future regressions of
   // n.eko's native-click path are visible in telemetry.
-  assert.match(
-    src,
-    /native_tap_observed/,
-    "native taps are observed in telemetry without being double-delivered"
-  );
+  assert.match(src, /native_tap_observed/, "native taps are observed in telemetry without being double-delivered");
 });
 
 test("n.eko getNekoControlPos prefers n.eko-authoritative coordinate basis (no PDPP CSS-viewport remap)", async () => {

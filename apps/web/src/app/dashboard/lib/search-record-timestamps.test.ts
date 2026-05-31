@@ -36,20 +36,14 @@ test("pickSearchDisplayTimestamp falls back to emitted time when record time is 
 
 test("lookupSearchTimestampMetadata returns null when connector id is not in the map", () => {
   const metadata = new Map([
-    [
-      searchTimestampMetadataKey("codex", "messages"),
-      { consent_time_field: "timestamp", cursor_field: "timestamp" },
-    ],
+    [searchTimestampMetadataKey("codex", "messages"), { consent_time_field: "timestamp", cursor_field: "timestamp" }],
   ]);
   assert.equal(lookupSearchTimestampMetadata(metadata, "gmail", "messages"), null);
 });
 
 test("lookupSearchTimestampMetadata looks up by canonical connector key", () => {
   const metadata = new Map([
-    [
-      searchTimestampMetadataKey("codex", "messages"),
-      { consent_time_field: "timestamp", cursor_field: "timestamp" },
-    ],
+    [searchTimestampMetadataKey("codex", "messages"), { consent_time_field: "timestamp", cursor_field: "timestamp" }],
   ]);
   assert.deepEqual(lookupSearchTimestampMetadata(metadata, "codex", "messages"), {
     consent_time_field: "timestamp",

@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
-  PLAYGROUND_SEEN_REGISTRY_MAX,
   claimPlaygroundEvent,
   createPlaygroundSeenRegistry,
+  PLAYGROUND_SEEN_REGISTRY_MAX,
 } from "./playground-event-dedupe.ts";
 
 test("claimPlaygroundEvent claims a fresh seq+pageId pair exactly once", () => {
@@ -41,7 +41,10 @@ test("claimPlaygroundEvent scopes seq dedupe to pageId so a remote reload does n
 test("claimPlaygroundEvent handles missing/invalid seq by claiming (we never silently drop unkeyable events)", () => {
   const r = createPlaygroundSeenRegistry();
   assert.equal(claimPlaygroundEvent(r, { pageId: "P", type: "click" }), "claimed");
-  assert.equal(claimPlaygroundEvent(r, { pageId: "P", seq: "1", type: "click" } as unknown as Record<string, unknown>), "claimed");
+  assert.equal(
+    claimPlaygroundEvent(r, { pageId: "P", seq: "1", type: "click" } as unknown as Record<string, unknown>),
+    "claimed"
+  );
   assert.equal(claimPlaygroundEvent(r, null), "unkeyable");
   assert.equal(claimPlaygroundEvent(r, undefined), "unkeyable");
   assert.equal(claimPlaygroundEvent(r, "not-an-event" as unknown as Record<string, unknown>), "unkeyable");
@@ -83,6 +86,6 @@ test("PLAYGROUND_SEEN_REGISTRY_MAX is well above the playground ring buffer size
   // remote buffer waiting to be drained again.
   assert.ok(
     PLAYGROUND_SEEN_REGISTRY_MAX >= 24 * 10,
-    `PLAYGROUND_SEEN_REGISTRY_MAX=${PLAYGROUND_SEEN_REGISTRY_MAX} must comfortably exceed the remote ring buffer`,
+    `PLAYGROUND_SEEN_REGISTRY_MAX=${PLAYGROUND_SEEN_REGISTRY_MAX} must comfortably exceed the remote ring buffer`
   );
 });

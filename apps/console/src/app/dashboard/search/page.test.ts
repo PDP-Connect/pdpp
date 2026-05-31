@@ -11,8 +11,7 @@ import { fileURLToPath } from "node:url";
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const PAGE_FILE = `${HERE}page.tsx`;
 
-const RECORD_SEARCH_SYMBOL_RE =
-  /\b(?:searchRecordsLexical|searchRecordsHybrid|searchRecordsSemantic|getRecord)\b/;
+const RECORD_SEARCH_SYMBOL_RE = /\b(?:searchRecordsLexical|searchRecordsHybrid|searchRecordsSemantic|getRecord)\b/;
 const RS_CLIENT_IMPORT_RE = /from\s+["'][^"']*\brs-client(?:\.ts)?["']/;
 const RETRIEVAL_NOTICE_RE = /\b(?:RetrievalNotice|buildRetrievalNotice|RetrievalDebug)\b/;
 const WARNINGS_BANNER_RE = /\b(?:WarningsBanner|dedupeWarnings)\b/;

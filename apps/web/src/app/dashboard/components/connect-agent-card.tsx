@@ -1,7 +1,7 @@
 import { CopyButton } from "@/app/dashboard/components/copy-button.tsx";
 import {
-  pdppCliConnectCommandFor,
   pdppCliConnectCommand,
+  pdppCliConnectCommandFor,
   pdppCliPackageInfo,
   pdppCliTokenCompletionUnavailable,
 } from "@/lib/pdpp-cli-command.ts";

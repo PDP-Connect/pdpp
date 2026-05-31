@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { createContext, type ReactNode, useContext, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button.tsx";
 import { Input } from "@/components/ui/input.tsx";
-import { listDashboardCommands, type DashboardMode } from "../lib/actions.ts";
+import { type DashboardMode, listDashboardCommands } from "../lib/actions.ts";
 
 interface CommandPaletteContextValue {
   close: () => void;
@@ -133,26 +133,14 @@ export function CommandPalette({
           />
           <div className="mt-3 flex flex-wrap gap-1.5 text-muted-foreground">
             {navCommands.map((cmd) => (
-              <Button
-                key={cmd.id}
-                onClick={() => navigate(cmd.href)}
-                size="xs"
-                type="button"
-                variant="outline"
-              >
+              <Button key={cmd.id} onClick={() => navigate(cmd.href)} size="xs" type="button" variant="outline">
                 {cmd.title}
               </Button>
             ))}
           </div>
           <div className="mt-3 flex flex-wrap gap-1.5 text-muted-foreground">
             {actionCommands.map((cmd) => (
-              <Button
-                key={cmd.id}
-                onClick={() => navigate(cmd.href)}
-                size="xs"
-                type="button"
-                variant="secondary"
-              >
+              <Button key={cmd.id} onClick={() => navigate(cmd.href)} size="xs" type="button" variant="secondary">
                 {cmd.title}
               </Button>
             ))}

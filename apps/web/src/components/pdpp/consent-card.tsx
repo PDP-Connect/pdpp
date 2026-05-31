@@ -33,8 +33,6 @@ import { Button } from "@/components/ui/button.tsx";
 //   optional.consequenceOn/Off
 
 export interface ConsentCardConnection {
-  /** Stable canonical `connection_id` for telemetry / dedupe; not rendered. */
-  id: string;
   /**
    * Owner-meaningful label. Never `"legacy"`, `"legacy (pre-header)"`,
    * `"default_account"`, or any raw storage placeholder; callers SHOULD
@@ -43,12 +41,11 @@ export interface ConsentCardConnection {
    *   openspec/changes/expose-connection-identity-on-public-read
    */
   displayName: string;
+  /** Stable canonical `connection_id` for telemetry / dedupe; not rendered. */
+  id: string;
 }
 
 export interface ConsentCardStream {
-  detail: string; // manifest display.detail — server-trusted
-  key: string;
-  label: string; // manifest display.label — server-trusted
   /**
    * Per-connection sub-rows when a grant covers more than one connection
    * of the same connector type. When omitted or single-entry, the row
@@ -57,6 +54,9 @@ export interface ConsentCardStream {
    * which accounts/devices/profiles the grant will cover.
    */
   connections?: ConsentCardConnection[];
+  detail: string; // manifest display.detail — server-trusted
+  key: string;
+  label: string; // manifest display.label — server-trusted
 }
 
 export interface ConsentCardOptional {

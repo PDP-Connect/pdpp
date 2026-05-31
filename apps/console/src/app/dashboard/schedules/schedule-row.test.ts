@@ -6,8 +6,7 @@ import { fileURLToPath } from "node:url";
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const ROW_FILE = `${HERE}schedule-row.tsx`;
 
-const CONNECTION_TARGET =
-  /summary\.connection_id \?\? summary\.connector_instance_id \?\? null/;
+const CONNECTION_TARGET = /summary\.connection_id \?\? summary\.connector_instance_id \?\? null/;
 const UPSERT_RECEIVES_CONNECTION =
   /upsertScheduleAction\(summary\.connector_id,[\s\S]*connectionId: summary\.connection_id \?\? summary\.connector_instance_id \?\? null/;
 const PAUSE_RECEIVES_CONNECTION =

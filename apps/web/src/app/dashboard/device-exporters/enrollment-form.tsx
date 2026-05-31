@@ -3,10 +3,7 @@
 import { useActionState } from "react";
 import { Button } from "@/components/ui/button.tsx";
 import { Input } from "@/components/ui/input.tsx";
-import {
-  pdppLocalCollectorEnrollCommand,
-  pdppLocalCollectorRunCommand,
-} from "@/lib/pdpp-cli-command.ts";
+import { pdppLocalCollectorEnrollCommand, pdppLocalCollectorRunCommand } from "@/lib/pdpp-cli-command.ts";
 import { CopyButton } from "../components/copy-button.tsx";
 import { Callout, ToolbarField } from "../components/primitives.tsx";
 import { createEnrollmentCodeAction } from "./actions.ts";
@@ -64,12 +61,11 @@ export function EnrollmentForm({ referenceBaseUrl }: { referenceBaseUrl: string 
           <div>
             <div className="pdpp-eyebrow text-muted-foreground">1. Enroll the host that has the data</div>
             <p className="pdpp-caption mt-1 text-muted-foreground">
-              Run this <code className="font-mono">@pdpp/local-collector@beta</code> command on the host with Claude Code or
-              Codex data. It uses the npx-launched <code className="font-mono">pdpp-local-collector</code> binary; no
-              PDPP monorepo checkout is required. The JSON response returns{" "}
-              <code className="font-mono">device_id</code>,{" "}
-              <code className="font-mono">device_token</code>, and <code className="font-mono">source_instance_id</code>{" "}
-              &mdash; persist all three without logging the token.
+              Run this <code className="font-mono">@pdpp/local-collector@beta</code> command on the host with Claude
+              Code or Codex data. It uses the npx-launched <code className="font-mono">pdpp-local-collector</code>{" "}
+              binary; no PDPP monorepo checkout is required. The JSON response returns{" "}
+              <code className="font-mono">device_id</code>, <code className="font-mono">device_token</code>, and{" "}
+              <code className="font-mono">source_instance_id</code> &mdash; persist all three without logging the token.
             </p>
             <div className="mt-2 flex min-w-0 items-center gap-2 rounded-md border border-border/70 bg-muted/30 px-3 py-2">
               <code

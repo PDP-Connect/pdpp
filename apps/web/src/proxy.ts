@@ -3,8 +3,8 @@ import { type NextRequest, NextResponse } from "next/server";
 import { OWNER_AUTH_COOKIE_NAME } from "pdpp-reference-implementation/owner-session";
 import { resolveReferenceTopology } from "pdpp-reference-implementation/reference-topology";
 import { normalizeDashboardReturnTo } from "@/app/dashboard/lib/return-to.ts";
-import { isDashboardAuthRedirectEnabled } from "./proxy-policy.ts";
 import { redirectSandboxAliasPath, rewriteSandboxCanonicalPath } from "./proxy-paths.ts";
+import { isDashboardAuthRedirectEnabled } from "./proxy-policy.ts";
 
 const { rewrite: rewriteLLM } = rewritePath("/docs{/*path}", "/llms.mdx/docs{/*path}");
 const referenceTopology = resolveReferenceTopology();

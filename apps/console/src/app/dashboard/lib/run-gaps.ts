@@ -69,15 +69,10 @@ export function extractTerminalKnownGaps(events: readonly SpineEvent[]): {
 } {
   // Run-terminal event types — kept aligned with lib/spine.ts
   // RUN_TERMINAL_EVENT_TYPES. See docs/run-reconciliation-design-brief.md §3.7.
-  const RUN_TERMINAL_EVENT_TYPES = new Set([
-    "run.completed",
-    "run.failed",
-    "run.cancelled",
-    "run.abandoned",
-  ]);
+  const RUN_TERMINAL_EVENT_TYPES = new Set(["run.completed", "run.failed", "run.cancelled", "run.abandoned"]);
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];
-    if (!event || !RUN_TERMINAL_EVENT_TYPES.has(event.event_type)) {
+    if (!(event && RUN_TERMINAL_EVENT_TYPES.has(event.event_type))) {
       continue;
     }
     return {
@@ -179,12 +174,7 @@ function optionalStringField<Key extends "message" | "stream">(key: Key, value: 
 }
 
 function optionalSeverityField(value: unknown): Pick<KnownGap, "severity"> | {} {
-  if (
-    value === "actionable"
-    || value === "informational"
-    || value === "recoverable"
-    || value === "transient"
-  ) {
+  if (value === "actionable" || value === "informational" || value === "recoverable" || value === "transient") {
     return { severity: value };
   }
   return {};

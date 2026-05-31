@@ -60,8 +60,7 @@ const NEKO_MEDIA_SETTLE_LONG_STARTUP_WINDOW_RE = /nekoMediaSettleMaxPolls:\s*40/
 const NEKO_MEDIA_LAYOUT_EVENT_EXPORT_RE = /export const NEKO_MEDIA_LAYOUT_EVENT = "pdpp:neko-media-layout"/;
 const NEKO_MEDIA_LAYOUT_EVENT_DISPATCH_RE =
   /window\.dispatchEvent\(new CustomEvent\(NEKO_MEDIA_LAYOUT_EVENT,[\s\S]*?detail[\s\S]*?\)\)/;
-const NEKO_MEDIA_LAYOUT_EVENT_LISTENER_RE =
-  /window\.addEventListener\(NEKO_MEDIA_LAYOUT_EVENT,\s*handleMediaLayout\)/;
+const NEKO_MEDIA_LAYOUT_EVENT_LISTENER_RE = /window\.addEventListener\(NEKO_MEDIA_LAYOUT_EVENT,\s*handleMediaLayout\)/;
 const NEKO_MEDIA_REFRESH_EPOCH_DEP_RE =
   /mediaRefreshEpoch[\s\S]*?setMediaRefreshEpoch[\s\S]*?\[clientConfig, logDebug, mediaRefreshEpoch, onPresentationViewportReady, viewportInfo\]/;
 const NEKO_MEDIA_SETTLE_TARGET_MATCH_RE =
@@ -74,10 +73,8 @@ const NEKO_TARGET_CHANGE_RESETS_DISPLAYABLE_RE =
   /if \(targetChanged\) \{[\s\S]*setMediaDisplayable\(false\)[\s\S]*setMediaReady\(false\);[\s\S]*\} else \{/;
 const NEKO_WEBRTC_RECONNECT_CONFIG_RE =
   /NEKO_WEBRTC_RECONNECT_CONFIG[\s\S]*max_reconnects:\s*12[\s\S]*timeout_ms:\s*6000/;
-const NEKO_WEBRTC_RECONNECT_CONFIG_APPLIED_RE =
-  /setReconnectorConfig\?\.\("webrtc",\s*NEKO_WEBRTC_RECONNECT_CONFIG\)/;
-const NEKO_NATIVE_VIEWPORT_INFO_RE =
-  /toNekoNativeViewportInfo,[\s\S]*from "@pdpp\/remote-surface\/client"/;
+const NEKO_WEBRTC_RECONNECT_CONFIG_APPLIED_RE = /setReconnectorConfig\?\.\("webrtc",\s*NEKO_WEBRTC_RECONNECT_CONFIG\)/;
+const NEKO_NATIVE_VIEWPORT_INFO_RE = /toNekoNativeViewportInfo,[\s\S]*from "@pdpp\/remote-surface\/client"/;
 const NEKO_SURFACE_NATIVE_VIEWPORT_INFO_RE =
   /const nekoViewportInfo = useStableNekoNativeViewportInfo\(\s*!!nekoSession,\s*viewportInfo\s*\)[\s\S]*viewportInfo=\{nekoViewportInfo\}/;
 const NEKO_STABLE_NATIVE_VIEWPORT_INFO_RE =
@@ -111,7 +108,8 @@ const NEKO_DOCUMENT_MOUSEUP_CONSTRAINTS_RE =
 const VIEWER_DIRECT_NEKO_KEYBOARD_CALL_RE = /\b(?:setNekoRemoteInputFocused|focusNekoKeyboard|blurNekoKeyboard)\(/;
 const VIEWER_REMOTE_INPUT_FOCUS_VIA_ADAPTER_RE =
   /adapter\.setRemoteInputFocused\(true\)[\s\S]*adapter\.focusTextInput\(\)[\s\S]*adapter\.setRemoteInputFocused\(false\)[\s\S]*adapter\.blurTextInput\(\)/;
-const CDP_SURFACE_ADAPTER_IMPORT_RE = /import \{ CdpSurfaceAdapter, NekoSurfaceAdapter \} from "@pdpp\/remote-surface\/client"/;
+const CDP_SURFACE_ADAPTER_IMPORT_RE =
+  /import \{ CdpSurfaceAdapter, NekoSurfaceAdapter \} from "@pdpp\/remote-surface\/client"/;
 const CDP_SURFACE_ADAPTER_WIRING_RE =
   /new CdpSurfaceAdapter\(\{[\s\S]*sendInput: sendCdpInput[\s\S]*getViewportInfo: \(\) => viewportInfoRef\.current[\s\S]*getFrameElement: \(\) => imgRef\.current[\s\S]*getSoftKeyboardElement: \(\) => softKeyboardInputRef\.current/;
 const VIEWER_DIRECT_CDP_KEYBOARD_POST_RE = /postInput\(\{[\s\S]*type: "keyboard"/;
@@ -228,7 +226,7 @@ test("n.eko presentation waits for settled media before promoting a resized view
   assert.doesNotMatch(viewerSrc, NEKO_PRESENTATION_DEGRADED_PROMOTE_RE);
   assert.doesNotMatch(viewerSrc, NEKO_PRESENTATION_EARLY_MEDIA_READY_RE);
   const displayableBlock =
-    viewerSrc.match(/if \(displayable && !mediaDisplayableRef\.current\) \{[\s\S]*?\n        \}/)?.[0] ?? "";
+    viewerSrc.match(/if \(displayable && !mediaDisplayableRef\.current\) \{[\s\S]*?\n {8}\}/)?.[0] ?? "";
   assert.ok(displayableBlock.length > 0, "settling displayable block is identifiable");
   assert.doesNotMatch(displayableBlock, /setMediaReady\(true\)/);
   assert.doesNotMatch(displayableBlock, /onPresentationViewportReady\(/);

@@ -14,8 +14,8 @@ export interface ConnectorDisplayInput {
 }
 
 export interface SourceDisplayInput {
-  connector_id?: string | null;
   connection_id?: string | null;
+  connector_id?: string | null;
   id?: string | null;
   kind?: string | null;
 }

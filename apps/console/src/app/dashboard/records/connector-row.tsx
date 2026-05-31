@@ -167,9 +167,7 @@ export function ConnectorRow({ overview, runsHref }: RowProps) {
             href={detailHref}
           >
             <span className="pdpp-body font-medium text-foreground group-hover:underline">{displayName}</span>
-            <span className="pdpp-caption truncate text-muted-foreground">
-              {typeName}
-            </span>
+            <span className="pdpp-caption truncate text-muted-foreground">{typeName}</span>
           </Link>
         </div>
 

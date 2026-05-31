@@ -200,18 +200,14 @@ export function listDashboardCommands({
 } = {}): DashboardCommand[] {
   const nav = buildNavigationCommands(basePath);
   if (mode === "live") {
-    return [
-      ...nav,
-      ...buildLiveOnlyNavigationCommands(basePath),
-      ...buildLiveOnlyQuickActions(basePath),
-    ];
+    return [...nav, ...buildLiveOnlyNavigationCommands(basePath), ...buildLiveOnlyQuickActions(basePath)];
   }
   return nav;
 }
 
 export function matchDashboardCommands(
   query: string,
-  options: { basePath?: string; mode?: DashboardMode } = {},
+  options: { basePath?: string; mode?: DashboardMode } = {}
 ): DashboardCommand[] {
   const needle = query.trim().toLowerCase();
   if (!needle) {

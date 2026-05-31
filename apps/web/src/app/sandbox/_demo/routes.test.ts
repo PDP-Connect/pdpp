@@ -513,7 +513,9 @@ test("/sandbox/.well-known/oauth-authorization-server returns the live AS metada
 });
 
 test("/sandbox/.well-known/oauth-protected-resource returns the live RS metadata shape", async () => {
-  const res = await protectedResourceGet(new Request("https://example.invalid/sandbox/.well-known/oauth-protected-resource"));
+  const res = await protectedResourceGet(
+    new Request("https://example.invalid/sandbox/.well-known/oauth-protected-resource")
+  );
   assert.equal(res.status, 200);
   const body = (await jsonOf(res)) as Record<string, unknown>;
   assert.equal(body.resource, "https://example.invalid/sandbox");
