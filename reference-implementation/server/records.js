@@ -114,11 +114,16 @@ function nowIso() {
 }
 
 function resolveStorageConnectorId(storageTarget) {
+  const normalize = (value) => {
+    const trimmed = typeof value === 'string' ? value.trim() : null;
+    if (!trimmed) return null;
+    return canonicalConnectorKey(trimmed) ?? trimmed;
+  };
   if (typeof storageTarget === 'string' && storageTarget.trim()) {
-    return storageTarget.trim();
+    return normalize(storageTarget);
   }
   if (storageTarget && typeof storageTarget === 'object' && typeof storageTarget.connector_id === 'string' && storageTarget.connector_id.trim()) {
-    return storageTarget.connector_id.trim();
+    return normalize(storageTarget.connector_id);
   }
   return null;
 }

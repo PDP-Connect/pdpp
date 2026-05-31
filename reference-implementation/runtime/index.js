@@ -16,6 +16,7 @@ import { redactStderrTail } from './stderr-redact.js';
 import { getDefaultConnectorDetailGapStore } from '../server/stores/connector-detail-gap-store.js';
 import { getDefaultConnectorAttentionStore } from '../server/stores/connector-attention-store.js';
 import { createAttentionWriter } from './attention-writer.js';
+import { canonicalConnectorKey } from '../server/connector-key.js';
 
 function encodeScopeResourceKey(key) {
   return Array.isArray(key) ? JSON.stringify(key) : String(key);
@@ -1266,7 +1267,7 @@ export async function runConnector(opts) {
     : (msg) => safeStderrWrite(`[runtime] ${JSON.stringify(msg)}\n`);
   const {
     connectorPath,
-    connectorId,
+    connectorId: rawConnectorId,
     connectorInstanceId = null,
     ownerToken,
     manifest,
@@ -1296,6 +1297,7 @@ export async function runConnector(opts) {
     triggerKind = null,
     automationMode = null,
   } = opts;
+  const connectorId = canonicalConnectorKey(rawConnectorId) ?? rawConnectorId;
 
   // Check binding requirements
   const requiredBindings = manifest.runtime_requirements?.bindings || {};
@@ -3039,6 +3041,7 @@ export async function loadSyncState(connectorIdOrOpts, ownerToken, opts = {}) {
   }
   const rsUrl = o.rsUrl || process.env.RS_URL || 'http://localhost:7663';
   const connectorInstanceId = optionalNonEmptyEnv(o.connectorInstanceId);
+  connectorId = canonicalConnectorKey(connectorId) ?? connectorId;
   const stateUrl = new URL(`/v1/state/${encodeURIComponent(connectorId)}`, rsUrl);
   if (connectorInstanceId) stateUrl.searchParams.set('connector_instance_id', connectorInstanceId);
   if (o.grantId) stateUrl.searchParams.set('grant_id', o.grantId);

@@ -48,6 +48,10 @@ interface AppLike {
   post(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
 }
 
+function subscriptionIdFromParams(params: Readonly<Record<string, string>>): string {
+  return params.subscription_id ?? params.id ?? "";
+}
+
 // /_ref/grant-packages
 
 export interface GrantPackageChild {
@@ -238,56 +242,67 @@ export function mountRefGrantPackagesRevoke(app: AppLike, ctx: MountRefGrantsCon
 
 // GET /_ref/event-subscriptions
 export function mountRefEventSubscriptionsList(app: AppLike, ctx: MountRefGrantsContext): void {
-  app.get("/_ref/event-subscriptions", ctx.requireOwnerSession, async (req: RouteRequest, res: RouteResponse) => {
-    try {
-      const envelope = await executeRefClientEventSubscriptionsList(
-        {
-          clientId: typeof req.query.client_id === "string" ? req.query.client_id : null,
-          grantId: typeof req.query.grant_id === "string" ? req.query.grant_id : null,
-          status: typeof req.query.status === "string" ? req.query.status : null,
-        },
-        {
-          listAllSubscriptions: ctx.listAllSubscriptions,
-          getSubscriptionSummary: ctx.getSubscriptionSummary,
-        }
-      );
-      res.json(envelope);
-    } catch (err) {
-      ctx.handleError(res, err);
-    }
-  });
-}
-
-// GET /_ref/event-subscriptions/:id
-export function mountRefEventSubscriptionsGet(app: AppLike, ctx: MountRefGrantsContext): void {
-  app.get("/_ref/event-subscriptions/:id", ctx.requireOwnerSession, async (req: RouteRequest, res: RouteResponse) => {
-    try {
-      const detail = await executeRefClientEventSubscriptionsGet(req.params.id ?? "", {
-        getSubscriptionSummary: ctx.getSubscriptionSummary,
-        listAttemptsForSubscription: ctx.listAttemptsForSubscription,
-      });
-      res.json(detail);
-    } catch (err) {
-      if (err instanceof RefClientEventSubscriptionsNotFoundError) {
-        ctx.pdppError(res, 404, (err as { code: string }).code, (err as Error).message);
-        return;
+  app.get(
+    "/_ref/event-subscriptions",
+    { contract: "refListEventSubscriptions" } as RouteArg<RouteHandler>,
+    ctx.requireOwnerSession,
+    async (req: RouteRequest, res: RouteResponse) => {
+      try {
+        const envelope = await executeRefClientEventSubscriptionsList(
+          {
+            clientId: typeof req.query.client_id === "string" ? req.query.client_id : null,
+            grantId: typeof req.query.grant_id === "string" ? req.query.grant_id : null,
+            status: typeof req.query.status === "string" ? req.query.status : null,
+          },
+          {
+            listAllSubscriptions: ctx.listAllSubscriptions,
+            getSubscriptionSummary: ctx.getSubscriptionSummary,
+          }
+        );
+        res.json(envelope);
+      } catch (err) {
+        ctx.handleError(res, err);
       }
-      ctx.handleError(res, err);
     }
-  });
+  );
 }
 
-// POST /_ref/event-subscriptions/:id/disable
+// GET /_ref/event-subscriptions/:subscription_id
+export function mountRefEventSubscriptionsGet(app: AppLike, ctx: MountRefGrantsContext): void {
+  app.get(
+    "/_ref/event-subscriptions/:subscription_id",
+    { contract: "refGetEventSubscription" } as RouteArg<RouteHandler>,
+    ctx.requireOwnerSession,
+    async (req: RouteRequest, res: RouteResponse) => {
+      try {
+        const detail = await executeRefClientEventSubscriptionsGet(subscriptionIdFromParams(req.params), {
+          getSubscriptionSummary: ctx.getSubscriptionSummary,
+          listAttemptsForSubscription: ctx.listAttemptsForSubscription,
+        });
+        res.json(detail);
+      } catch (err) {
+        if (err instanceof RefClientEventSubscriptionsNotFoundError) {
+          ctx.pdppError(res, 404, (err as { code: string }).code, (err as Error).message);
+          return;
+        }
+        ctx.handleError(res, err);
+      }
+    }
+  );
+}
+
+// POST /_ref/event-subscriptions/:subscription_id/disable
 export function mountRefEventSubscriptionsDisable(app: AppLike, ctx: MountRefGrantsContext): void {
   app.post(
-    "/_ref/event-subscriptions/:id/disable",
+    "/_ref/event-subscriptions/:subscription_id/disable",
+    { contract: "refDisableEventSubscription" } as RouteArg<RouteHandler>,
     ctx.requireOwnerSession,
     async (req: RouteRequest, res: RouteResponse) => {
       try {
         const body = req.body as Record<string, unknown> | null | undefined;
         const reason = body && typeof body === "object" && typeof body.reason === "string" ? body.reason : null;
         const out = await executeRefClientEventSubscriptionsDisable(
-          { subscriptionId: req.params.id ?? "", reason },
+          { subscriptionId: subscriptionIdFromParams(req.params), reason },
           { store: ctx.getClientEventSubscriptionStore(), nowIso: ctx.nowIso }
         );
         const detail = await executeRefClientEventSubscriptionsGet(out.subscriptionId, {

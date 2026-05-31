@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 
 import { startServer } from '../server/index.js';
 import { ingestRecord } from '../server/records.js';
+import { canonicalConnectorKey } from '../server/connector-key.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFERENCE_IMPL_DIR = join(__dirname, '..');
@@ -19,6 +20,7 @@ const WEB_PRERENDER_MANIFEST_PATH = join(WEB_DIR, '.next/prerender-manifest.json
 const WEB_STANDALONE_SERVER_PATH = join(WEB_DIR, '.next/standalone/apps/web/server.js');
 const OWNER_PASSWORD = 'pdpp-owner-dev-password';
 const SPOTIFY_CONNECTOR_ID = 'https://registry.pdpp.org/connectors/spotify';
+const SPOTIFY_CONNECTOR_KEY = canonicalConnectorKey(SPOTIFY_CONNECTOR_ID);
 const CLAUDE_CODE_CONNECTOR_ID = 'https://registry.pdpp.org/connectors/claude-code';
 
 let webBuildPromise = null;
@@ -622,7 +624,7 @@ test('composed browser origin carries metadata, owner session, dashboard, device
     });
     assert.equal(approvedGrant.resp.status, 200);
     assert.equal(typeof approvedGrant.body.token, 'string');
-    assert.deepEqual(approvedGrant.body.grant.source, { kind: 'connector', id: SPOTIFY_CONNECTOR_ID });
+    assert.deepEqual(approvedGrant.body.grant.source, { kind: 'connector', id: SPOTIFY_CONNECTOR_KEY });
   } finally {
     await stopChildProcess(webServer.child);
     await closeServer(server);

@@ -2,12 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { closeDb, getDb, initDb } from '../server/db.js';
-import { deleteAllRecordsForConnector, getRecord, ingestRecord, queryRecords } from '../server/records.js';
+import { deleteAllRecordsForConnector, getRecord, ingestRecord, listAllStreams, queryRecords } from '../server/records.js';
 import { registerConnector } from '../server/auth.js';
 import { lexicalIndexBackfillForManifest } from '../server/search.js';
 import { buildSemanticSearchPlanForGrant } from '../server/search-semantic.js';
 
 const CONNECTOR_ID = 'instance-records';
+const SPOTIFY_REGISTRY_CONNECTOR_ID = 'https://registry.pdpp.org/connectors/spotify';
+const SPOTIFY_CONNECTOR_KEY = 'spotify';
 const WORK_INSTANCE_ID = 'cin_test_records_work';
 const PERSONAL_INSTANCE_ID = 'cin_test_records_personal';
 const STREAM = 'messages';
@@ -167,6 +169,36 @@ test('records with the same connector type, stream, and key are isolated by conn
         [WORK_INSTANCE_ID, '["subject"]'],
       ],
     );
+  } finally {
+    teardown();
+  }
+});
+
+test('record storage canonicalizes URL-shaped first-party connector ids at the storage boundary', async () => {
+  setup();
+  try {
+    await ingestRecord(SPOTIFY_REGISTRY_CONNECTOR_ID, {
+      stream: 'top_artists',
+      key: 'artist_owner_top_1',
+      data: { id: 'artist_owner_top_1', name: 'Nils Frahm' },
+      emitted_at: '2026-04-23T10:00:00.000Z',
+    });
+
+    const stored = getDb()
+      .prepare('SELECT connector_id, stream, record_key FROM records')
+      .all();
+    assert.deepEqual(stored, [
+      {
+        connector_id: SPOTIFY_CONNECTOR_KEY,
+        stream: 'top_artists',
+        record_key: 'artist_owner_top_1',
+      },
+    ]);
+
+    const canonicalStreams = await listAllStreams(SPOTIFY_CONNECTOR_KEY);
+    const urlAliasStreams = await listAllStreams(SPOTIFY_REGISTRY_CONNECTOR_ID);
+    assert.deepEqual(canonicalStreams.map((stream) => stream.name), ['top_artists']);
+    assert.deepEqual(urlAliasStreams.map((stream) => stream.name), ['top_artists']);
   } finally {
     teardown();
   }

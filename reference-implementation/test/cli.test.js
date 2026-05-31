@@ -3505,7 +3505,7 @@ test('PDPP CLI smoke', async (t) => {
         assert.equal(skippedEvent.status, 'skipped');
         assert.equal(skippedEvent.stream_id, 'saved_tracks');
         assert.equal(skippedEvent.data?.source?.kind, 'connector');
-        assert.equal(skippedEvent.data?.source?.id, spotifyManifest.connector_id);
+        assert.equal(skippedEvent.data?.source?.id, SPOTIFY_CONNECTOR_KEY);
         assert.equal(skippedEvent.data?.reason, 'rate_limited');
         assert.equal(skippedEvent.data?.message, 'Platform returned 429');
 
@@ -3584,7 +3584,7 @@ rl.on('line', (line) => {
         const interactionRequired = (timeline.json.data || []).find((event) => event.event_type === 'run.interaction_required');
         assert.ok(interactionRequired, 'run timeline should include run.interaction_required');
         assert.equal(interactionRequired.data?.source?.kind, 'connector');
-        assert.equal(interactionRequired.data?.source?.id, spotifyManifest.connector_id);
+        assert.equal(interactionRequired.data?.source?.id, SPOTIFY_CONNECTOR_KEY);
         assert.equal(interactionRequired.data?.kind, 'credentials');
         assert.equal(interactionRequired.data?.stream, 'saved_tracks');
 
@@ -4550,7 +4550,7 @@ rl.on('line', (line) => {
         const failedEvent = (timeline.json.data || []).find((event) => event.event_type === 'run.failed');
         assert.ok(failedEvent, 'run timeline should include run.failed for runtime authentication failures');
         assert.equal(failedEvent.data?.source?.kind, 'connector');
-        assert.equal(failedEvent.data?.source?.id, spotifyManifest.connector_id);
+        assert.equal(failedEvent.data?.source?.id, SPOTIFY_CONNECTOR_KEY);
         assert.equal(failedEvent.data?.reason, 'authentication_error');
         assert.equal(failedEvent.data?.records_emitted, 1);
         assert.equal(failedEvent.data?.records_flushed, 0);
@@ -4604,7 +4604,7 @@ rl.on('line', (line) => {
           return;
         }
 
-        if (req.method === 'PUT' && url.pathname === `/v1/state/${encodeURIComponent(spotifyManifest.connector_id)}`) {
+        if (req.method === 'PUT' && url.pathname === `/v1/state/${encodeURIComponent(SPOTIFY_CONNECTOR_KEY)}`) {
           res.writeHead(403, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({
             error: {
@@ -4656,7 +4656,7 @@ rl.on('line', (line) => {
         const failedEvent = (timeline.json.data || []).find((event) => event.event_type === 'run.failed');
         assert.ok(failedEvent, 'run timeline should include run.failed for runtime permission failures');
         assert.equal(failedEvent.data?.source?.kind, 'connector');
-        assert.equal(failedEvent.data?.source?.id, spotifyManifest.connector_id);
+        assert.equal(failedEvent.data?.source?.id, SPOTIFY_CONNECTOR_KEY);
         assert.equal(failedEvent.data?.reason, 'permission_error');
         assert.equal(failedEvent.data?.records_emitted, 1);
         assert.equal(failedEvent.data?.records_flushed, 1);
@@ -4748,7 +4748,7 @@ rl.on('line', (line) => {
         const failedEvent = (timeline.json.data || []).find((event) => event.event_type === 'run.failed');
         assert.ok(failedEvent, 'run timeline should include run.failed for deterministic runtime connector_invalid failures');
         assert.equal(failedEvent.data?.source?.kind, 'connector');
-        assert.equal(failedEvent.data?.source?.id, spotifyManifest.connector_id);
+        assert.equal(failedEvent.data?.source?.id, SPOTIFY_CONNECTOR_KEY);
         assert.equal(failedEvent.data?.reason, 'connector_invalid');
         assert.equal(failedEvent.data?.records_emitted, 1);
         assert.equal(failedEvent.data?.records_flushed, 0);
@@ -4836,7 +4836,7 @@ rl.on('line', (line) => {
         const failedEvent = (timeline.json.data || []).find((event) => event.event_type === 'run.failed');
         assert.ok(failedEvent, 'run timeline should include run.failed for retryable runtime rate_limit_error failures');
         assert.equal(failedEvent.data?.source?.kind, 'connector');
-        assert.equal(failedEvent.data?.source?.id, spotifyManifest.connector_id);
+        assert.equal(failedEvent.data?.source?.id, SPOTIFY_CONNECTOR_KEY);
         assert.equal(failedEvent.data?.reason, 'rate_limit_error');
         assert.equal(failedEvent.data?.records_emitted, 1);
         assert.equal(failedEvent.data?.records_flushed, 0);
@@ -4901,7 +4901,7 @@ rl.on('line', (line) => {
         const failedEvent = (timeline.json.data || []).find((event) => event.event_type === 'run.failed');
         assert.ok(failedEvent, 'run timeline should include run.failed for connector-declared failures');
         assert.equal(failedEvent.data?.source?.kind, 'connector');
-        assert.equal(failedEvent.data?.source?.id, spotifyManifest.connector_id);
+        assert.equal(failedEvent.data?.source?.id, SPOTIFY_CONNECTOR_KEY);
         assert.equal(failedEvent.data?.reason, 'connector_reported_failed');
         assert.equal(failedEvent.data?.connector_error_message, 'Remote provider rate limit');
         assert.equal(failedEvent.data?.connector_error_retryable, true);
@@ -4968,7 +4968,7 @@ rl.on('line', (line) => {
         assert.ok(failedEvent, 'run timeline should include run.failed for connector-declared cancellations');
         assert.equal(failedEvent.status, 'cancelled');
         assert.equal(failedEvent.data?.source?.kind, 'connector');
-        assert.equal(failedEvent.data?.source?.id, spotifyManifest.connector_id);
+        assert.equal(failedEvent.data?.source?.id, SPOTIFY_CONNECTOR_KEY);
         assert.equal(failedEvent.data?.reason, 'connector_reported_cancelled');
         assert.equal(failedEvent.data?.connector_error_message, 'User denied follow-up verification');
         assert.equal(failedEvent.data?.connector_error_retryable, false);
@@ -5053,7 +5053,7 @@ rl.on('line', (line) => {
         const failedEvent = (timeline.json.data || []).find((event) => event.event_type === 'run.failed');
         assert.ok(failedEvent, 'run timeline should include run.failed for terminal counter mismatch');
         assert.equal(failedEvent.data?.source?.kind, 'connector');
-        assert.equal(failedEvent.data?.source?.id, spotifyManifest.connector_id);
+        assert.equal(failedEvent.data?.source?.id, SPOTIFY_CONNECTOR_KEY);
         assert.equal(failedEvent.data?.reason, 'connector_protocol_violation');
         assert.equal(failedEvent.data?.records_emitted, 1);
         assert.equal(failedEvent.data?.reported_records_emitted, 2);
@@ -5140,7 +5140,7 @@ rl.on('line', (line) => {
         const failedEvent = (timeline.json.data || []).find((event) => event.event_type === 'run.failed');
         assert.ok(failedEvent, 'run timeline should include run.failed for invalid DONE.status');
         assert.equal(failedEvent.data?.source?.kind, 'connector');
-        assert.equal(failedEvent.data?.source?.id, spotifyManifest.connector_id);
+        assert.equal(failedEvent.data?.source?.id, SPOTIFY_CONNECTOR_KEY);
         assert.equal(failedEvent.data?.reason, 'connector_protocol_violation');
         assert.equal(failedEvent.data?.records_emitted, 1);
         assert.equal(failedEvent.data?.records_flushed, 1);
@@ -5249,7 +5249,7 @@ rl.on('line', (line) => {
           const failedEvent = (timeline.json.data || []).find((event) => event.event_type === 'run.failed');
           assert.ok(failedEvent, `run timeline should include run.failed for ${scenario.name}`);
           assert.equal(failedEvent.data?.source?.kind, 'connector');
-          assert.equal(failedEvent.data?.source?.id, spotifyManifest.connector_id);
+          assert.equal(failedEvent.data?.source?.id, SPOTIFY_CONNECTOR_KEY);
           assert.equal(failedEvent.data?.reason, 'connector_protocol_violation');
           assert.equal(failedEvent.data?.exit_code, scenario.expectedExitCode);
           assert.equal(failedEvent.data?.records_flushed, 1);
@@ -5319,7 +5319,7 @@ rl.on('line', (line) => {
         const failedEvent = (timeline.json.data || []).find((event) => event.event_type === 'run.failed');
         assert.ok(failedEvent, 'run timeline should include run.failed for contradictory success-terminal errors');
         assert.equal(failedEvent.data?.source?.kind, 'connector');
-        assert.equal(failedEvent.data?.source?.id, spotifyManifest.connector_id);
+        assert.equal(failedEvent.data?.source?.id, SPOTIFY_CONNECTOR_KEY);
         assert.equal(failedEvent.data?.reason, 'connector_protocol_violation');
         assert.equal(failedEvent.data?.checkpoint_commit_status, 'not_committed');
         assert.ok(!('connector_error_message' in failedEvent.data), 'protocol-violation timeline should not surface contradictory DONE.error details');
@@ -5410,7 +5410,7 @@ rl.on('line', (line) => {
         const failedEvent = (timeline.json.data || []).find((event) => event.event_type === 'run.failed');
         assert.ok(failedEvent, 'run timeline should include run.failed for post-DONE protocol violations');
         assert.equal(failedEvent.data?.source?.kind, 'connector');
-        assert.equal(failedEvent.data?.source?.id, spotifyManifest.connector_id);
+        assert.equal(failedEvent.data?.source?.id, SPOTIFY_CONNECTOR_KEY);
         assert.equal(failedEvent.data?.reason, 'connector_protocol_violation');
         assert.equal(failedEvent.data?.records_flushed, 1);
         assert.equal(failedEvent.data?.buffered_records_dropped, 0);
@@ -5672,7 +5672,7 @@ rl.on('line', (line) => {
       assert.ok(ingestRequested, 'trace show should include mutation.requested for owner ingest');
       assert.equal(ingestRequested.data?.operation, 'ingest_records');
       assert.equal(ingestRequested.data?.source?.kind, 'connector');
-      assert.equal(ingestRequested.data?.source?.id, spotifyManifest.connector_id);
+      assert.equal(ingestRequested.data?.source?.id, SPOTIFY_CONNECTOR_KEY);
 
       const ingestCompleted = (ingestTrace.json.data || []).find((event) => event.event_type === 'mutation.completed');
       assert.ok(ingestCompleted, 'trace show should include mutation.completed for owner ingest');
@@ -5722,13 +5722,12 @@ rl.on('line', (line) => {
       assert.equal(rejectedResp.status, 400);
       const rejectedBody = await rejectedResp.json();
       assert.equal(rejectedBody.error.code, 'connector_invalid');
-      // The owner mutation (delete) route does not canonicalize the connector
-      // id (unlike the read/admission routes — see owner-review note in the
-      // workstream report), so the rejection message and the mutation.rejected
-      // trace event still echo the URL-shaped id the caller supplied.
+      // Owner mutation routes canonicalize the connector id at the namespace
+      // boundary, so traces and diagnostics carry the operational key even
+      // when the caller supplied the first-party manifest URL.
       assert.match(
         rejectedBody.error.message,
-        new RegExp(`Connector manifest for ${spotifyManifest.connector_id} is malformed or no longer valid`),
+        new RegExp(`Connector manifest for ${SPOTIFY_CONNECTOR_KEY} is malformed or no longer valid`),
       );
       const requestId = rejectedResp.headers.get('Request-Id');
       const traceId = rejectedResp.headers.get('PDPP-Reference-Trace-Id');
@@ -5745,11 +5744,11 @@ rl.on('line', (line) => {
       assert.ok(mutationRejected, 'trace show should include mutation.rejected for malformed polyfill owner mutations');
       assert.equal(mutationRejected.data?.operation, 'delete_stream_records');
       assert.equal(mutationRejected.data?.source?.kind, 'connector');
-      assert.equal(mutationRejected.data?.source?.id, spotifyManifest.connector_id);
+      assert.equal(mutationRejected.data?.source?.id, SPOTIFY_CONNECTOR_KEY);
       assert.equal(mutationRejected.data?.error?.code, 'connector_invalid');
       assert.match(
         mutationRejected.data?.error?.message || '',
-        new RegExp(`Connector manifest for ${spotifyManifest.connector_id} is malformed or no longer valid`),
+        new RegExp(`Connector manifest for ${SPOTIFY_CONNECTOR_KEY} is malformed or no longer valid`),
       );
     });
   });
@@ -5779,7 +5778,7 @@ rl.on('line', (line) => {
       assert.equal(stateRequested.data?.operation, 'write');
       assert.deepEqual(stateRequested.data?.requested_streams, ['top_artists']);
       assert.equal(stateRequested.data?.source?.kind, 'connector');
-      assert.equal(stateRequested.data?.source?.id, spotifyManifest.connector_id);
+      assert.equal(stateRequested.data?.source?.id, SPOTIFY_CONNECTOR_KEY);
 
       const stateUpdated = (updateTrace.json.data || []).find((event) => event.event_type === 'state.updated');
       assert.ok(stateUpdated, 'trace show should include state.updated for owner state writes');
@@ -5822,13 +5821,12 @@ rl.on('line', (line) => {
       assert.equal(rejectedResp.status, 400);
       const rejectedBody = await rejectedResp.json();
       assert.equal(rejectedBody.error.code, 'connector_invalid');
-      // The owner state route does not canonicalize the connector id (unlike
-      // the read/admission routes — see owner-review note in the workstream
-      // report), so the rejection message and the state.rejected trace event
-      // still echo the URL-shaped id the caller supplied.
+      // Owner state routes canonicalize the connector id at the namespace
+      // boundary, so traces and diagnostics carry the operational key even
+      // when the caller supplied the first-party manifest URL.
       assert.match(
         rejectedBody.error.message,
-        new RegExp(`Connector manifest for ${spotifyManifest.connector_id} is malformed or no longer valid`),
+        new RegExp(`Connector manifest for ${SPOTIFY_CONNECTOR_KEY} is malformed or no longer valid`),
       );
       const requestId = rejectedResp.headers.get('Request-Id');
       const traceId = rejectedResp.headers.get('PDPP-Reference-Trace-Id');
@@ -5846,11 +5844,11 @@ rl.on('line', (line) => {
       assert.equal(stateRejected.data?.state_scope, 'owner');
       assert.equal(stateRejected.data?.operation, 'read');
       assert.equal(stateRejected.data?.source?.kind, 'connector');
-      assert.equal(stateRejected.data?.source?.id, spotifyManifest.connector_id);
+      assert.equal(stateRejected.data?.source?.id, SPOTIFY_CONNECTOR_KEY);
       assert.equal(stateRejected.data?.error?.code, 'connector_invalid');
       assert.match(
         stateRejected.data?.error?.message || '',
-        new RegExp(`Connector manifest for ${spotifyManifest.connector_id} is malformed or no longer valid`),
+        new RegExp(`Connector manifest for ${SPOTIFY_CONNECTOR_KEY} is malformed or no longer valid`),
       );
     });
   });

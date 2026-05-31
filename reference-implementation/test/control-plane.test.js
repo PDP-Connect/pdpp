@@ -105,6 +105,10 @@ async function seedOneRun({ asUrl, rsUrl, spotifyManifest }) {
   return { ownerToken, runResult };
 }
 
+function canonicalManifestConnectorId(manifest) {
+  return canonicalConnectorKey(manifest.connector_id) ?? manifest.connector_id;
+}
+
 test('_ref listing helpers', async (t) => {
   await t.test('GET /_ref/traces returns paginated trace summaries', async () => {
     await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
@@ -156,7 +160,7 @@ test('_ref listing helpers', async (t) => {
       const run = body.data[0];
       assert.equal(run.object, 'run_summary');
       assert.ok(run.run_id.startsWith('run_'));
-      assert.equal(run.connector_id, spotifyManifest.connector_id);
+      assert.equal(run.connector_id, canonicalManifestConnectorId(spotifyManifest));
     });
   });
 
@@ -168,8 +172,13 @@ test('_ref listing helpers', async (t) => {
       );
       assert.ok(body.data.length > 0);
       for (const r of body.data) {
-        assert.equal(r.connector_id, spotifyManifest.connector_id);
+        assert.equal(r.connector_id, canonicalManifestConnectorId(spotifyManifest));
       }
+
+      const { body: canonical } = await fetchJson(
+        `${asUrl}/_ref/runs?connector_id=${encodeURIComponent(canonicalManifestConnectorId(spotifyManifest))}`,
+      );
+      assert.ok(canonical.data.length > 0);
 
       const { body: none } = await fetchJson(`${asUrl}/_ref/runs?connector_id=does.not.exist`);
       assert.equal(none.data.length, 0);
@@ -190,13 +199,14 @@ test('_ref listing helpers', async (t) => {
 
   await t.test('GET /_ref/runs surfaces browser-surface queued and deferred runs without connector failures', async () => {
     await withHarness(async ({ asUrl, spotifyManifest }) => {
-      const source = { kind: 'connector', id: spotifyManifest.connector_id };
+      const spotifyId = canonicalManifestConnectorId(spotifyManifest);
+      const source = { kind: 'connector', id: spotifyId };
       const base = {
-        actor_id: spotifyManifest.connector_id,
+        actor_id: spotifyId,
         actor_type: 'runtime',
         object_type: 'run',
         scenario_id: 'scn_browser_surface_operator_status',
-        source_id: spotifyManifest.connector_id,
+        source_id: spotifyId,
         source_kind: 'connector',
       };
       await emitSpineEvent({
@@ -287,7 +297,8 @@ test('_ref listing helpers', async (t) => {
 
   await t.test('GET /_ref/runs reports pending interaction state without relying on event-kind sets', async () => {
     await withHarness(async ({ asUrl, spotifyManifest }) => {
-      const source = { connector_id: spotifyManifest.connector_id };
+      const spotifyId = canonicalManifestConnectorId(spotifyManifest);
+      const source = { connector_id: spotifyId };
       // Spine-layer stamping requirement: every run.started must carry
       // boot_epoch+seq. Harness ran startServer which initialized the
       // singleton; read it once and merge into every synthetic emit.
@@ -299,7 +310,7 @@ test('_ref listing helpers', async (t) => {
         controller_id: _epoch.controller_id,
       } : { boot_epoch: 'synthetic', seq: 1, controller_id: 'synthetic' };
       const base = {
-        actor_id: spotifyManifest.connector_id,
+        actor_id: spotifyId,
         actor_type: 'runtime',
         object_type: 'run',
         scenario_id: 'scn_pending_interaction_test',
@@ -479,8 +490,8 @@ test('_ref listing helpers', async (t) => {
       assert.ok(timeline.data.length > 0);
       const startedEvent = timeline.data.find((e) => e.event_type === 'run.started');
       assert.ok(startedEvent);
-      // actor_id on runtime events is the connectorId, which the run list should report.
-      assert.equal(startedEvent.actor_id, spotifyManifest.connector_id);
+      // actor_id on runtime events is the canonical connector key, which the run list should report.
+      assert.equal(startedEvent.actor_id, canonicalManifestConnectorId(spotifyManifest));
     });
   });
 });
@@ -650,7 +661,7 @@ test('_ref dataset summary', async (t) => {
 
   await t.test('streams without consent_time_field do not contribute to record-time bounds', async () => {
     await withHarness(async ({ asUrl, spotifyManifest }) => {
-      const spotifyId = spotifyManifest.connector_id;
+      const spotifyId = canonicalManifestConnectorId(spotifyManifest);
       // `tracks` is NOT a spotify manifest stream. Records seeded into it have
       // no manifest-declared consent_time_field, so they MUST NOT contribute
       // to earliest/latest_record_time even if data contains a timestamp-ish
@@ -682,7 +693,7 @@ test('_ref dataset summary', async (t) => {
 
   await t.test('record history is counted separately from live payload and folded into total_retained_bytes', async () => {
     await withHarness(async ({ asUrl, spotifyManifest }) => {
-      const spotifyId = spotifyManifest.connector_id;
+      const spotifyId = canonicalManifestConnectorId(spotifyManifest);
       // Three versions of the same record — one live row, two prior versions
       // in record_changes. The live payload counts once under
       // record_json_bytes; every version (including the live one) is mirrored

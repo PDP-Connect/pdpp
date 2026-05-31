@@ -35,6 +35,7 @@ import { fileURLToPath } from 'node:url';
 
 import { startServer } from '../server/index.js';
 import { getDb } from '../server/db.js';
+import { canonicalConnectorKey } from '../server/connector-key.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const POLYFILL_MANIFESTS_DIR = join(
@@ -348,7 +349,7 @@ test('assistant smoke: representative polyfill classes populate canonical spine 
       assert.ok(c, `missing representative case for ${representative.kind}`);
       const manifest = loadManifest(c.manifest);
       await registerManifest(asUrl, manifest);
-      expectedConnectorIds.push(manifest.connector_id);
+      expectedConnectorIds.push(canonicalConnectorKey(manifest.connector_id) ?? manifest.connector_id);
 
       await seedRecords(rsUrl, ownerToken, manifest.connector_id, c.stream, c.records().slice(0, 1));
       const page = await fetchJson(

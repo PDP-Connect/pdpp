@@ -61,9 +61,9 @@ import { getDefaultDeviceExporterStore } from "./stores/device-exporter-store.js
  *   openspec/changes/complete-explorer-slvp-ideal
  */
 interface ManifestFieldSchema {
-  type?: string | string[];
-  format?: string;
   description?: string;
+  format?: string;
+  type?: string | string[];
   /** Optional declared presentation type. Absent means "not declared". */
   x_pdpp_type?: string;
   [extension: string]: unknown;
@@ -75,24 +75,14 @@ interface ManifestFieldSchema {
  * validation in `schema.properties`.
  */
 interface ManifestFieldDeclaration {
-  name: string;
-  type: string;
-  semantic_class?: string;
   description?: string;
+  name: string;
+  semantic_class?: string;
+  type: string;
   [extension: string]: unknown;
 }
 
 interface ManifestStream extends ManifestStreamLike {
-  /** Sandbox-shaped typed field declarations already used by demo streams. */
-  fields?: ManifestFieldDeclaration[];
-  schema?: {
-    type?: string;
-    properties?: Record<string, ManifestFieldSchema>;
-    /** Schema-adjacent form for the same typed field declaration shape. */
-    fields?: ManifestFieldDeclaration[];
-    required?: string[];
-    [extension: string]: unknown;
-  };
   /**
    * Accepted-coverage policy for the stream. Default (absent) means
    * `collect`: the connector intends to collect this stream and any
@@ -110,6 +100,8 @@ interface ManifestStream extends ManifestStreamLike {
    * absent) and degrades health rather than projecting green.
    */
   coverage_policy?: "collect" | "deferred" | "inventory_only" | "unavailable" | "unsupported";
+  /** Sandbox-shaped typed field declarations already used by demo streams. */
+  fields?: ManifestFieldDeclaration[];
   name: string;
   /**
    * Required-stream policy. Defaults to `true` when absent so that streams
@@ -119,6 +111,14 @@ interface ManifestStream extends ManifestStreamLike {
    * is documented but not load-bearing).
    */
   required?: boolean;
+  schema?: {
+    /** Schema-adjacent form for the same typed field declaration shape. */
+    fields?: ManifestFieldDeclaration[];
+    properties?: Record<string, ManifestFieldSchema>;
+    required?: string[];
+    type?: string;
+    [extension: string]: unknown;
+  };
   semantics?: string;
 }
 

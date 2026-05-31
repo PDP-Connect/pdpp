@@ -109,18 +109,18 @@ unchanged.
     state, record ingest, gap store, canonical key) is host-injected via `refDeviceExportersContext`.
     `pnpm --dir reference-implementation run verify` passes; `openspec validate
     split-reference-server-by-route-family --strict` passes; 21/21 targeted tests pass.
-- [~] 2.7 Update `buildAsApp` in `server/index.js` to call each
+- [x] 2.7 Update `buildAsApp` in `server/index.js` to call each
   sub-family's mount function at the same point in route registration;
-  delete the moved blocks. (Partial: 2.2 list endpoints wired via
+  delete the moved blocks. (Complete: 2.2 list endpoints wired via
   `refSpineCorrelationsContext`; 2.2 detail/timeline endpoints wired
   via `refSpineTimelinesContext`; 2.3 dataset endpoints wired via
   `refDatasetContext`; 2.4 connectors / connections /
   connector-instances wired via `refConnectorsContext`; 2.5 admin
   routes wired via `refAdminContext`; 2.6 device-exporters wired via
   `refDeviceExportersContext`; grant-packages and client event-subscriptions
-  oversight routes wired via `refGrantsContext`; remaining
-  sub-families pending.)
-- [~] 2.8 Acceptance: targeted tests under `reference-implementation/test/` (ref-control, dataset summary, device exporter, web push, schedules) pass; `pnpm --dir reference-implementation run verify` passes.
+  oversight routes wired via `refGrantsContext`; `rg "\bapp\.(get|post|put|patch|delete)\s*\("
+  reference-implementation/server/index.js` finds only the two hosted-UI CSS handlers.)
+- [x] 2.8 Acceptance: targeted tests under `reference-implementation/test/` (ref-control, dataset summary, device exporter, web push, schedules) pass; `pnpm --dir reference-implementation run verify` passes.
   - [x] Tests covering 2.2 list endpoints pass: `node --test test/control-plane.test.js` (21/21), `node --test test/ref-read-owner-gate.test.js` (3/3), `node --test test/ref-spine-correlations-list-{boundary,operation}.test.js` (10/10).
   - [x] Tests covering 2.2 detail/timeline endpoints pass: `node --test test/control-plane.test.js`, `node --test test/ref-read-owner-gate.test.js`, `node --test test/ref-spine-events-page-{boundary,operation}.test.js`.
   - [x] Tests covering 2.3 dataset routes pass: `node --test test/ref-dataset-routes.test.js` (10/10), `test/ref-read-owner-gate.test.js` (3/3), `test/ref-dataset-summary-operation.test.js`, `test/ref-dataset-summary-streams-operation.test.js`.
@@ -130,7 +130,7 @@ unchanged.
   - [x] Tests covering grant-packages and event-subscriptions oversight routes pass:
     `node --test test/ref-client-event-subscriptions-routes.test.js test/ref-grant-packages.test.js test/ref-client-event-subscriptions-operations.test.js`
     (21/21).
-  - [ ] Remaining sub-family acceptance still gated by §2.7 landing.
+  - [x] Final family acceptance closed by §2.7 and §7.5: route mount points are extracted, `pnpm --dir reference-implementation run verify` passes, and the full reference-implementation suite passes.
 
 ## 3. RS read family
 
@@ -203,6 +203,10 @@ unchanged.
   PATCH, DELETE, POST test-event) into `rs-mutation.ts` as `mountRsEventSubscriptions`.
   Behaviour-preserving: same `requireClient` auth, same `buildBearerActorFromTokenInfo` wiring,
   same `ClientEventSubscriptionError` mapping, same best-effort delivery `.tick()` calls.
+  Post-full-suite contract-binding gate: all public `/v1/event-subscriptions*` and
+  `/_ref/event-subscriptions*` routes now declare their `@pdpp/reference-contract` operation ids,
+  and subscription-detail paths use the manifest `:subscription_id` parameter name while retaining a
+  fallback for prior `:id` callers.
 - [x] 4.4 Updated `buildRsApp` in `server/index.js`: built `rsMutationContext`,
   call `mountRsEventSubscriptions(app, rsMutationContext)` at the event-subscriptions mount
   point (before hosted-UI CSS), `mountRsBlobsUpload(app, rsMutationContext)` after
@@ -231,7 +235,7 @@ unchanged.
 - [x] 5.1 `server/routes/run-interaction.ts` — `POST /_ref/runs/:runId/interaction` plus dev playground. Landed: `mountRefRunInteraction` (owner-session, contract metadata, validation, 202 ack) and `mountRefDevPlaygroundSession` (gate-conditional at call site, owner-session, 200 playground session). Behaviour-preserving. Adapter logic covered by `test/run-interaction-adapter.test.js` (15/15 — focused fake-app unit tests for all validation branches, success paths, error forwarding, and playground surface). Integration test `test/run-interaction-control.test.js` is 2 pass / 10 fail on **both** `main` and this branch due to a pre-existing run-start regression (connector run endpoint returns 404); this failure is not introduced by this extraction. `test/run-interaction-stream-playground.test.js` also passes where applicable.
 - [x] 5.2 `server/routes/web-push.ts` — `_ref/web-push/*` (5 routes). Landed: five per-route mount fns (`mountRefWebPushConfig`, `mountRefWebPushListSubscriptions`, `mountRefWebPushCreateSubscription`, `mountRefWebPushDeleteSubscription`, `mountRefWebPushTest`). Behaviour-preserving; covered by `test/web-push-notifications.test.js` (36/37 pass, 1 pre-existing skip).
 - [x] 5.3 `server/routes/source-webhooks.ts` — `POST /_ref/source-webhooks/:sourceId`. Landed: single `mountRefSourceWebhooks` adapter. Behaviour-preserving (same HMAC posture, same 200/202 status codes, same `SourceWebhookError` mapping). Covered by `test/ref-source-webhook-route.test.js` (3/3 pass) and `test/ref-source-webhook-ingest-operation.test.js` (7/7 pass). Section §7.3 acceptance for this sub-family also met.
-- [ ] 5.4 `server/routes/remote-surface.ts` — any non-streaming neko/browser-surface routes still in `index.js`.
+- [x] 5.4 `server/routes/remote-surface.ts` — any non-streaming neko/browser-surface routes still in `index.js`. No-op closeout: `rg "\bapp\.(get|post|put|patch|delete)\s*\(" reference-implementation/server/index.js` finds only the two hosted-UI CSS handlers; n.eko/browser-surface streaming routes are already in `server/streaming/routes.js`, and no non-streaming remote-surface route remains inline to extract.
 - [x] 5.5 `server/routes/as-grant-revoke.ts` — `POST /grants/:grantId/revoke` plus `requireRevokeAuth` middleware.
   - [x] Single route (`POST /grants/:grantId/revoke`) extracted to `server/routes/as-grant-revoke.ts` with
     `mountAsGrantRevoke` and helper `buildApplyGrantRevokeSideEffects`. The inline `requireRevokeAuth`
@@ -261,11 +265,11 @@ unchanged.
 
 ## 7. Validation
 
-- [ ] 7.1 Run `openspec validate split-reference-server-by-route-family --strict`.
-- [ ] 7.2 Run `pnpm --dir reference-implementation run verify` after each family lands.
-- [ ] 7.3 Run targeted `node --test` files that cover each moved family.
-- [ ] 7.4 Spot-check `git log --stat` to confirm `server/index.js` shrinks and `server/routes/*.ts` grows; confirm no unrelated file changes per commit.
-- [ ] 7.5 After all families land, run `pnpm --dir reference-implementation run test` (full suite). Note any baseline failures verified against unchanged `main`.
+- [x] 7.1 Run `openspec validate split-reference-server-by-route-family --strict`. Passes on 2026-05-31.
+- [x] 7.2 Run `pnpm --dir reference-implementation run verify` after each family lands. Passes on 2026-05-31 (`tsc --noEmit` + Ultracite check). The resumed gate also fixed pre-existing sorted-interface drift in `server/ref-control.ts` so the route-family verify gate is green.
+- [x] 7.3 Run targeted `node --test` files that cover each moved family. Final remote-surface/streaming check passed 122/122 across `run-interaction-stream-routes`, `run-interaction-stream-neko-adapter`, `run-interaction-stream-neko-compose`, `controller-browser-surface-readiness`, `browser-surface-readiness`, `browser-surface-leases`, and `controller-browser-surface-leases`; prior task entries record the earlier family-specific suites.
+- [x] 7.4 Spot-check `git log --stat` to confirm `server/index.js` shrinks and `server/routes/*.ts` grows; confirm no unrelated file changes per commit. Current `server/index.js` is 4462 LOC, route modules live under `server/routes/*.ts`, route-family commits show `index.js` shrinkage with corresponding route-adapter growth, and current direct route registrations in `index.js` are only the two hosted-UI CSS handlers.
+- [x] 7.5 After all families land, run `pnpm --dir reference-implementation run test` (full suite). Passes on 2026-05-31 after closing stale canonical-connector assertions in `assistant-readiness-smoke`, `pdpp`, and `event-spine`; no baseline failures remain in the full reference-implementation suite.
 
 ## Acceptance checks
 

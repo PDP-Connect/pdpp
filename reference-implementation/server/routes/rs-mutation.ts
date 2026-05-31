@@ -61,6 +61,7 @@ import {
   RecordsIngestInvalidRequestError,
   RecordsIngestNotFoundError,
 } from "../../operations/rs-records-ingest/index.ts";
+import { canonicalConnectorKey } from "../connector-key.js";
 import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract.ts";
 
 // Express-shaped surface, structurally typed to avoid pulling in the
@@ -89,6 +90,14 @@ interface AppLike {
   patch(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
   post(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
   put(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
+}
+
+function subscriptionIdFromParams(params: Readonly<Record<string, string>>): string {
+  return params.subscription_id ?? params.id ?? "";
+}
+
+function canonicalizeConnectorId(connectorId: string | null): string | null {
+  return canonicalConnectorKey(connectorId) ?? connectorId;
 }
 
 interface TokenInfo {
@@ -428,6 +437,7 @@ export function mountRsEventSubscriptions(app: AppLike, ctx: MountRsMutationCont
   // POST /v1/event-subscriptions
   app.post(
     "/v1/event-subscriptions",
+    { contract: "createEventSubscription" } as RouteArg<RouteHandler>,
     ctx.requireToken,
     ctx.requireClient,
     async (req: RouteRequest, res: RouteResponse) => {
@@ -474,6 +484,7 @@ export function mountRsEventSubscriptions(app: AppLike, ctx: MountRsMutationCont
   // GET /v1/event-subscriptions
   app.get(
     "/v1/event-subscriptions",
+    { contract: "listEventSubscriptions" } as RouteArg<RouteHandler>,
     ctx.requireToken,
     ctx.requireClient,
     async (req: RouteRequest, res: RouteResponse) => {
@@ -493,9 +504,10 @@ export function mountRsEventSubscriptions(app: AppLike, ctx: MountRsMutationCont
     }
   );
 
-  // GET /v1/event-subscriptions/:id
+  // GET /v1/event-subscriptions/:subscription_id
   app.get(
-    "/v1/event-subscriptions/:id",
+    "/v1/event-subscriptions/:subscription_id",
+    { contract: "getEventSubscription" } as RouteArg<RouteHandler>,
     ctx.requireToken,
     ctx.requireClient,
     async (req: RouteRequest, res: RouteResponse) => {
@@ -506,7 +518,7 @@ export function mountRsEventSubscriptions(app: AppLike, ctx: MountRsMutationCont
         }
         const out = await executeGetSubscription(
           actor,
-          req.params.id ?? "",
+          subscriptionIdFromParams(req.params),
           clientEventSubsDeps() as Parameters<typeof executeGetSubscription>[2]
         );
         return res.json(out);
@@ -516,9 +528,10 @@ export function mountRsEventSubscriptions(app: AppLike, ctx: MountRsMutationCont
     }
   );
 
-  // PATCH /v1/event-subscriptions/:id
+  // PATCH /v1/event-subscriptions/:subscription_id
   app.patch(
-    "/v1/event-subscriptions/:id",
+    "/v1/event-subscriptions/:subscription_id",
+    { contract: "updateEventSubscription" } as RouteArg<RouteHandler>,
     ctx.requireToken,
     ctx.requireClient,
     async (req: RouteRequest, res: RouteResponse) => {
@@ -530,7 +543,7 @@ export function mountRsEventSubscriptions(app: AppLike, ctx: MountRsMutationCont
         const body = (req.body || {}) as Record<string, unknown>;
         const out = await executeUpdateSubscription(
           actor,
-          req.params.id ?? "",
+          subscriptionIdFromParams(req.params),
           {
             ...(typeof body.enabled === "boolean" ? { enabled: body.enabled } : {}),
             ...(body.rotate_secret === true ? { rotateSecret: true } : {}),
@@ -544,9 +557,10 @@ export function mountRsEventSubscriptions(app: AppLike, ctx: MountRsMutationCont
     }
   );
 
-  // DELETE /v1/event-subscriptions/:id
+  // DELETE /v1/event-subscriptions/:subscription_id
   app.delete(
-    "/v1/event-subscriptions/:id",
+    "/v1/event-subscriptions/:subscription_id",
+    { contract: "deleteEventSubscription" } as RouteArg<RouteHandler>,
     ctx.requireToken,
     ctx.requireClient,
     async (req: RouteRequest, res: RouteResponse) => {
@@ -557,7 +571,7 @@ export function mountRsEventSubscriptions(app: AppLike, ctx: MountRsMutationCont
         }
         await executeDeleteSubscription(
           actor,
-          req.params.id ?? "",
+          subscriptionIdFromParams(req.params),
           clientEventSubsDeps() as Parameters<typeof executeDeleteSubscription>[2]
         );
         return res.status(204).end();
@@ -567,9 +581,10 @@ export function mountRsEventSubscriptions(app: AppLike, ctx: MountRsMutationCont
     }
   );
 
-  // POST /v1/event-subscriptions/:id/test-event
+  // POST /v1/event-subscriptions/:subscription_id/test-event
   app.post(
-    "/v1/event-subscriptions/:id/test-event",
+    "/v1/event-subscriptions/:subscription_id/test-event",
+    { contract: "sendTestEvent" } as RouteArg<RouteHandler>,
     ctx.requireToken,
     ctx.requireClient,
     async (req: RouteRequest, res: RouteResponse) => {
@@ -580,7 +595,7 @@ export function mountRsEventSubscriptions(app: AppLike, ctx: MountRsMutationCont
         }
         const out = await executeEnqueueTestEvent(
           actor,
-          req.params.id ?? "",
+          subscriptionIdFromParams(req.params),
           clientEventSubsDeps() as Parameters<typeof executeEnqueueTestEvent>[2]
         );
         try {
@@ -610,7 +625,7 @@ export function mountRsRecordsDeleteStream(app: AppLike, ctx: MountRsMutationCon
     ctx.requireToken,
     ctx.requireOwner,
     async (req: RouteRequest, res: RouteResponse) => {
-      const connectorId = ctx.resolveSingleConnectorIdQueryValue(req.query.connector_id);
+      const connectorId = canonicalizeConnectorId(ctx.resolveSingleConnectorIdQueryValue(req.query.connector_id));
       const connectorInstanceId = ctx.resolveSingleConnectorIdQueryValue(req.query.connector_instance_id);
       const mutationContext = ctx.buildMutationContext(req, res, {
         connectorId,
@@ -701,7 +716,7 @@ export function mountRsRecordsDelete(app: AppLike, ctx: MountRsMutationContext):
     ctx.requireToken,
     ctx.requireOwner,
     async (req: RouteRequest, res: RouteResponse) => {
-      const connectorId = ctx.resolveSingleConnectorIdQueryValue(req.query.connector_id);
+      const connectorId = canonicalizeConnectorId(ctx.resolveSingleConnectorIdQueryValue(req.query.connector_id));
       const connectorInstanceId = ctx.resolveSingleConnectorIdQueryValue(req.query.connector_instance_id);
       const requestedRecordId = decodeURIComponent(req.params.id ?? "");
       const mutationContext = ctx.buildMutationContext(req, res, {
@@ -791,7 +806,7 @@ export function mountRsRecordsDelete(app: AppLike, ctx: MountRsMutationContext):
 // accepted/rejected counters, or the response envelope locally.
 export function mountRsRecordsIngest(app: AppLike, ctx: MountRsMutationContext): void {
   app.post("/v1/ingest/:stream", ctx.requireToken, ctx.requireOwner, async (req: RouteRequest, res: RouteResponse) => {
-    const connectorId = ctx.resolveSingleConnectorIdQueryValue(req.query.connector_id);
+    const connectorId = canonicalizeConnectorId(ctx.resolveSingleConnectorIdQueryValue(req.query.connector_id));
     const connectorInstanceId = ctx.resolveSingleConnectorIdQueryValue(req.query.connector_instance_id);
     // parseLines is imported inside executeRecordsIngest; the line-count for
     // the mutation context must be computed here using the same parser.
@@ -898,7 +913,7 @@ export function mountRsConnectorStateGet(app: AppLike, ctx: MountRsMutationConte
     ctx.requireToken,
     ctx.requireOwner,
     async (req: RouteRequest, res: RouteResponse) => {
-      const connectorId = decodeURIComponent(req.params.connectorId ?? "");
+      const connectorId = canonicalizeConnectorId(decodeURIComponent(req.params.connectorId ?? "")) ?? "";
       const grantId = typeof req.query.grant_id === "string" ? req.query.grant_id : null;
       const stateContext = ctx.buildStateContext(req, res, {
         connectorId,
@@ -965,7 +980,7 @@ export function mountRsConnectorStatePut(app: AppLike, ctx: MountRsMutationConte
     ctx.requireToken,
     ctx.requireOwner,
     async (req: RouteRequest, res: RouteResponse) => {
-      const connectorId = decodeURIComponent(req.params.connectorId ?? "");
+      const connectorId = canonicalizeConnectorId(decodeURIComponent(req.params.connectorId ?? "")) ?? "";
       const grantId = typeof req.query.grant_id === "string" ? req.query.grant_id : null;
       const body = req.body as Record<string, unknown> | null | undefined;
       const stateMap =

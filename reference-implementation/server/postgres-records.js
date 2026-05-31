@@ -26,6 +26,7 @@ import {
   projectStorageDisplayName,
   resolveRequestConnectionId,
 } from './connection-id-request.js';
+import { canonicalConnectorKey } from './connector-key.js';
 
 /**
  * Resolve `(connection_id, display_name)` identity for a postgres-backed
@@ -231,9 +232,14 @@ function decodeKey(keyStr) {
 }
 
 function resolveStorageConnectorId(storageTarget) {
-  if (typeof storageTarget === 'string') return storageTarget;
-  if (storageTarget?.connector_id) return storageTarget.connector_id;
-  if (storageTarget?.connectorId) return storageTarget.connectorId;
+  const normalize = (value) => {
+    const trimmed = typeof value === 'string' ? value.trim() : null;
+    if (!trimmed) return null;
+    return canonicalConnectorKey(trimmed) ?? trimmed;
+  };
+  if (typeof storageTarget === 'string') return normalize(storageTarget);
+  if (storageTarget?.connector_id) return normalize(storageTarget.connector_id);
+  if (storageTarget?.connectorId) return normalize(storageTarget.connectorId);
   throw new Error('storage target must include connector_id');
 }
 

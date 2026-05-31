@@ -4612,14 +4612,14 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(unknownStreamPutResp.body.error.code, 'not_found');
       assert.match(
         unknownStreamPutResp.body.error.message,
-        new RegExp(`Stream 'not_a_stream' not found for connector ${spotifyManifest.connector_id}`),
+        new RegExp(`Stream 'not_a_stream' not found for connector ${SPOTIFY_CONNECTOR_KEY}`),
       );
 
       const stateRows = getDb().prepare(`
         SELECT connector_id, stream, state_json
         FROM connector_state
         WHERE connector_id IN (?, ?)
-      `).all(missingConnectorId, spotifyManifest.connector_id);
+      `).all(missingConnectorId, SPOTIFY_CONNECTOR_KEY);
       assert.equal(stateRows.length, 0, 'rejected state writes should not create connector_state rows');
     });
   });
@@ -4642,7 +4642,7 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(malformedGetResp.body.error.code, 'connector_invalid');
       assert.match(
         malformedGetResp.body.error.message,
-        new RegExp(`Connector manifest for ${spotifyManifest.connector_id} is malformed or no longer valid`),
+        new RegExp(`Connector manifest for ${SPOTIFY_CONNECTOR_KEY} is malformed or no longer valid`),
       );
 
       const malformedPutResp = await fetchJson(
@@ -4660,14 +4660,14 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(malformedPutResp.body.error.code, 'connector_invalid');
       assert.match(
         malformedPutResp.body.error.message,
-        new RegExp(`Connector manifest for ${spotifyManifest.connector_id} is malformed or no longer valid`),
+        new RegExp(`Connector manifest for ${SPOTIFY_CONNECTOR_KEY} is malformed or no longer valid`),
       );
 
       const stateRows = getDb().prepare(`
         SELECT connector_id, stream, state_json
         FROM connector_state
         WHERE connector_id = ?
-      `).all(spotifyManifest.connector_id);
+      `).all(SPOTIFY_CONNECTOR_KEY);
       assert.equal(stateRows.length, 0, 'malformed-manifest state writes should not create connector_state rows');
     });
   });
@@ -4675,6 +4675,7 @@ test('PDPP reference implementation integration', async (t) => {
   await t.test('grant-scoped polyfill state rejects unknown grants and connector-mismatched grants instead of creating orphaned grant state', async () => {
     await withHarness(async ({ asUrl, rsUrl, spotifyManifest }) => {
       const githubManifest = JSON.parse(readFileSync(join(REFERENCE_IMPL_DIR, 'manifests/github.json'), 'utf8'));
+      const githubConnectorKey = canonicalConnectorKey(githubManifest.connector_id) ?? githubManifest.connector_id;
       const ownerToken = await issueOwnerToken(asUrl, 'u1');
 
       await fetchJson(`${asUrl}/connectors`, {
@@ -4725,7 +4726,7 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(mismatchedGrantGetResp.body.error.code, 'invalid_request');
       assert.match(
         mismatchedGrantGetResp.body.error.message,
-        new RegExp(`Grant '${approved.grant.grant_id}' is not scoped to connector ${githubManifest.connector_id}`),
+        new RegExp(`Grant '${approved.grant.grant_id}' is not scoped to connector ${githubConnectorKey}`),
       );
 
       const mismatchedGrantPutResp = await fetchJson(
@@ -4743,7 +4744,7 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(mismatchedGrantPutResp.body.error.code, 'invalid_request');
       assert.match(
         mismatchedGrantPutResp.body.error.message,
-        new RegExp(`Grant '${approved.grant.grant_id}' is not scoped to connector ${githubManifest.connector_id}`),
+        new RegExp(`Grant '${approved.grant.grant_id}' is not scoped to connector ${githubConnectorKey}`),
       );
 
       const grantStateRows = getDb().prepare(`
@@ -4796,7 +4797,7 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(malformedGrantRequested.data.state_scope, 'grant');
       assert.equal(malformedGrantRequested.data.operation, 'read');
       assert.equal(malformedGrantRequested.data.source?.kind, 'connector');
-      assert.equal(malformedGrantRequested.data.source?.id, spotifyManifest.connector_id);
+      assert.equal(malformedGrantRequested.data.source?.id, SPOTIFY_CONNECTOR_KEY);
 
       const malformedGrantRejected = (malformedGrantTimeline.data || []).find((event) =>
         event.event_type === 'state.rejected'
@@ -4880,7 +4881,7 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(getRequested.data.operation, 'read');
       assert.equal(getRequested.data.state_scope, 'grant');
       assert.equal(getRequested.data.source?.kind, 'connector');
-      assert.equal(getRequested.data.source?.id, spotifyManifest.connector_id);
+      assert.equal(getRequested.data.source?.id, SPOTIFY_CONNECTOR_KEY);
 
       const servedEvent = (grantTimelineAfterGet.data || []).find((event) =>
         event.event_type === 'state.served'
@@ -5256,7 +5257,7 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(unknownStreamDeleteAllResp.body.error.code, 'not_found');
       assert.match(
         unknownStreamDeleteAllResp.body.error.message,
-        new RegExp(`Stream 'not_a_stream' not found for connector ${spotifyManifest.connector_id}`),
+        new RegExp(`Stream 'not_a_stream' not found for connector ${SPOTIFY_CONNECTOR_KEY}`),
       );
 
       const unknownStreamDeleteOneResp = await fetchJson(
@@ -5270,7 +5271,7 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(unknownStreamDeleteOneResp.body.error.code, 'not_found');
       assert.match(
         unknownStreamDeleteOneResp.body.error.message,
-        new RegExp(`Stream 'not_a_stream' not found for connector ${spotifyManifest.connector_id}`),
+        new RegExp(`Stream 'not_a_stream' not found for connector ${SPOTIFY_CONNECTOR_KEY}`),
       );
 
       const afterRecordsResp = await fetch(
@@ -5328,7 +5329,7 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(ingestRequested.data.operation, 'ingest_records');
       assert.equal(ingestRequested.data.submitted_record_count, 2);
       assert.equal(ingestRequested.data.source?.kind, 'connector');
-      assert.equal(ingestRequested.data.source?.id, spotifyManifest.connector_id);
+      assert.equal(ingestRequested.data.source?.id, SPOTIFY_CONNECTOR_KEY);
 
       const ingestCompleted = ingestTrace.data.find((event) =>
         event.event_type === 'mutation.completed'
@@ -5341,7 +5342,7 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(ingestCompleted.data.records_rejected, 1);
       assert.equal(ingestCompleted.data.error_count, 1);
       assert.equal(ingestCompleted.data.source?.kind, 'connector');
-      assert.equal(ingestCompleted.data.source?.id, spotifyManifest.connector_id);
+      assert.equal(ingestCompleted.data.source?.id, SPOTIFY_CONNECTOR_KEY);
 
       const deleteResp = await fetch(
         `${rsUrl}/v1/streams/top_artists/records/${encodeURIComponent('artist_trace_success')}?connector_id=${encodeURIComponent(spotifyManifest.connector_id)}`,
@@ -5366,7 +5367,7 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(deleteRequested.data.operation, 'delete_record');
       assert.equal(deleteRequested.data.requested_record_id, 'artist_trace_success');
       assert.equal(deleteRequested.data.source?.kind, 'connector');
-      assert.equal(deleteRequested.data.source?.id, spotifyManifest.connector_id);
+      assert.equal(deleteRequested.data.source?.id, SPOTIFY_CONNECTOR_KEY);
 
       const deleteCompleted = deleteTrace.data.find((event) =>
         event.event_type === 'mutation.completed'
@@ -5378,7 +5379,7 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(deleteCompleted.data.requested_record_id, 'artist_trace_success');
       assert.equal(deleteCompleted.data.deleted_record_count, 1);
       assert.equal(deleteCompleted.data.source?.kind, 'connector');
-      assert.equal(deleteCompleted.data.source?.id, spotifyManifest.connector_id);
+      assert.equal(deleteCompleted.data.source?.id, SPOTIFY_CONNECTOR_KEY);
     });
   });
 
@@ -5463,7 +5464,7 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(rejectedResp.body.error.code, 'connector_invalid');
       assert.match(
         rejectedResp.body.error.message,
-        new RegExp(`Connector manifest for ${spotifyManifest.connector_id} is malformed or no longer valid`),
+        new RegExp(`Connector manifest for ${SPOTIFY_CONNECTOR_KEY} is malformed or no longer valid`),
       );
       const rejectedRequestId = rejectedResp.headers['request-id'];
       const rejectedTraceId = rejectedResp.headers['pdpp-reference-trace-id'];
@@ -5531,7 +5532,7 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(deleteAllResp.body.error.code, 'connector_invalid');
       assert.match(
         deleteAllResp.body.error.message,
-        new RegExp(`Connector manifest for ${spotifyManifest.connector_id} is malformed or no longer valid`),
+        new RegExp(`Connector manifest for ${SPOTIFY_CONNECTOR_KEY} is malformed or no longer valid`),
       );
       const deleteAllRequestId = deleteAllResp.headers['request-id'];
       const deleteAllTraceId = deleteAllResp.headers['pdpp-reference-trace-id'];
@@ -5565,7 +5566,7 @@ test('PDPP reference implementation integration', async (t) => {
       assert.equal(deleteOneResp.body.error.code, 'connector_invalid');
       assert.match(
         deleteOneResp.body.error.message,
-        new RegExp(`Connector manifest for ${spotifyManifest.connector_id} is malformed or no longer valid`),
+        new RegExp(`Connector manifest for ${SPOTIFY_CONNECTOR_KEY} is malformed or no longer valid`),
       );
 
       const afterRecordsResp = await fetchJson(
