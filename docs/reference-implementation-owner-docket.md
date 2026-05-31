@@ -73,7 +73,7 @@ of the docket, not a replacement for OpenSpec task ownership.
 | `split-public-site-and-operator-console` | 15/36 | `active-openspec` | Continue surface separation without hosted-service framing drift. |
 | `design-fast-broad-agent-consent` | 17/36 | `active-openspec` | Reconcile with current package-grant and owner-token behavior before more UI work. |
 | `add-gmail-attachment-backfill` | 28/28 | `resolved` | Archived 2026-05-31. Live Gmail/Docker proof remains residual owner-only connector evidence, not open implementation scope. |
-| `expose-connection-identity-on-public-read` | 50/60 | `active-openspec` | Finish remaining identity/read-surface tasks, then verify MCP gateway and Explorer consumers. |
+| `expose-connection-identity-on-public-read` | 51/60 | `active-openspec` | Remaining items are the UI test-infra-gated consent/dashboard tranche and out-of-repo hosted MCP gateway coordination. |
 | `canonicalize-connector-keys` | 24/28 | `owner-live-gated` | No-human runtime/storage/trace tails are closed. Remaining work is live DB backup/migration validation, local deploy proof, and real Claude/ChatGPT/Daisy acceptance flows. |
 | `split-reference-server-by-route-family` | 56/56 | `resolved` | Archived 2026-05-31. No route-extraction work remains in this change. |
 | `add-connector-adaptive-lanes` | 29/33 | `needs-verification` | Verify max-concurrency decision and remaining acceptance evidence before dispatch. |
