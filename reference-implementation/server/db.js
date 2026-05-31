@@ -431,8 +431,6 @@ CREATE INDEX IF NOT EXISTS idx_client_event_subscriptions_client
   ON client_event_subscriptions(client_id, status);
 CREATE INDEX IF NOT EXISTS idx_client_event_subscriptions_grant
   ON client_event_subscriptions(grant_id);
-CREATE INDEX IF NOT EXISTS idx_client_event_subscriptions_authority
-  ON client_event_subscriptions(authority_kind, subject_id, client_id, status);
 
 CREATE TABLE IF NOT EXISTS client_event_queue (
   queue_id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1419,6 +1417,13 @@ CREATE INDEX IF NOT EXISTS idx_client_event_subscriptions_authority
   ON client_event_subscriptions(authority_kind, subject_id, client_id, status);
 `);
   })();
+}
+
+function ensureClientEventSubscriptionAuthorityIndex(raw) {
+  raw.exec(`
+CREATE INDEX IF NOT EXISTS idx_client_event_subscriptions_authority
+  ON client_event_subscriptions(authority_kind, subject_id, client_id, status);
+`);
 }
 
 function stableJson(value) {
@@ -2980,6 +2985,7 @@ CREATE INDEX IF NOT EXISTS idx_blob_bindings_record ON blob_bindings(connector_i
   runWithSqliteBusyRetrySync(() => migrateLegacyConnectorInstancesToDefaultAccount(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateConnectorInstancesSourceKindCheck(raw, opts));
   runWithSqliteBusyRetrySync(() => migrateClientEventSubscriptionAuthority(raw));
+  runWithSqliteBusyRetrySync(() => ensureClientEventSubscriptionAuthorityIndex(raw));
   raw.exec(
     `CREATE INDEX IF NOT EXISTS idx_spine_events_run_terminal
       ON spine_events(run_id, event_type, event_seq DESC)
