@@ -32,9 +32,12 @@
 > configured in `apps/web`. The contract is connection-honest end-to-end
 > on the reference implementation and the regression suites
 > `reference-implementation/test/storage-fan-in-read-contract.test.js`
-> (24 tests, all green) and
+> (29 tests, all green),
 > `reference-implementation/test/blob-fan-in-ambiguity.test.js`
-> (4 tests, all green) lock the runtime behavior.
+> (6 tests, all green), and the search fan-in suites
+> `reference-implementation/test/rs-search-{lexical,semantic,hybrid}-fan-in.test.js`
+> + `reference-implementation/test/search-fan-in-host-shell.test.js`
+> (36 tests, all green) lock the runtime behavior.
 
 ## 1. Spec Deltas
 
@@ -93,7 +96,7 @@
 
 - [x] Cover response items carry `connection_id` + `display_name` and that grants can restrict to a single connection — `storage-fan-in-read-contract.test.js`: `listStreamsAcrossBindings emits one summary per (stream, connection_id)`, `queryRecordsAcrossBindings fans in records across two granted connections`, `queryRecordsAcrossBindings narrows to one binding when bindings list is filtered`. The contract-layer shape is also locked by `rs-streams-list-operation.test.js`.
 - [x] Records-list fan-in coverage — `storage-fan-in-read-contract.test.js`: `queryRecordsAcrossBindings fans in records across two granted connections` + `… auto-selects exactly-one binding without raising`.
-- [ ] **DEFERRED** — `rs-search-fan-in.test.js`. (Search ops run a ranked snapshot whose binding fan-in requires snapshot-builder topology changes orthogonal to this tranche. The single-binding search path already carries `connection_id` per hit (`search-connection-identity.test.js`); cross-binding union search is a separate, scoped change.)
+- [x] Search fan-in coverage. Cross-binding union search landed in `df137aad` ("feat(ref): cross-binding search fan-in for lexical/semantic/hybrid"), which explicitly closed this deferral — the snapshot builder now emits one connector plan per binding while preserving the lexical round-robin and semantic total-order merges, and the `plan_hash` covers the binding set so cursors invalidate on topology shifts. Covered by `rs-search-lexical-fan-in.test.js` (owner round-robin across two bindings of one connector, across connectors, `connection_id` narrowing, `connector_instance_id` alias narrowing + warning, binding-aware `source_skipped_not_applicable`, cursor pins the issued snapshot across binding reorder), `rs-search-semantic-fan-in.test.js` (total-order merge by distance across bindings, a record indexed in two bindings appears twice with distinct `connection_id`s), `rs-search-hybrid-fan-in.test.js` (dedup key extended to `(connection_id, stream, record_key)` so two bindings sharing a source-local key are not collapsed), and the host-shell suite `search-fan-in-host-shell.test.js` (client-mode union across grant-authorized bindings with no per-stream pin, per-stream grant `connection_id` pin, mixed per-stream constraints honored independently). 36 tests across these five files green (`node --test`). Satisfies spec delta "Unfiltered search fans in across granted connections".
 - [x] Records-detail identifier-ambiguity coverage — `storage-fan-in-read-contract.test.js`: `getRecordAcrossBindings emits ambiguous_connection when identifier resolves to multiple bindings`, `… auto-selects the only binding holding a unique identifier`, `… narrows successfully with explicit connection_id on ambiguous identifier`, `… returns not_found when identifier is absent from every binding`.
 - [x] Blob ambiguity is enforced at the route adapter (`/v1/blobs/:blob_id`) by iterating every blob binding, applying the addressable set and grant-scope per-stream `connection_id` constraint per binding, and raising typed `ambiguous_connection` (HTTP 409) with `available_connections` when more than one unique connection's visible record exposes the addressed blob. Route-level coverage: `blob-fan-in-ambiguity.test.js` (1) emits 409 with `available_connections` for two-connection ambiguity, (2) succeeds when the caller narrows with `connection_id`, (3) returns 200 when only one connection holds the blob (fan-in auto-select). Per-stream grant-scope narrowing covered by `blob route per-stream binding resolution narrows by grant connection_id` in the same file.
 - [x] Alias compat coverage — `validateConnectionAlias accepts canonical, accepts alias, rejects conflicts` in `storage-fan-in-read-contract.test.js` plus the pre-existing `public-read-connection-alias.test.js` regressions.
@@ -124,7 +127,7 @@ This section pins the owner-review revision that followed
 
 - [x] `openspec validate expose-connection-identity-on-public-read --strict`
 - [x] `openspec validate --all --strict`
-- [x] Multi-connection list/search reads return the union across granted connections without raising `ambiguous_connection` from multiplicity alone. Records-list / aggregate / streams-list fan-in covered by `storage-fan-in-read-contract.test.js`. Search is single-binding today (see Section 8 deferral).
+- [x] Multi-connection list/search reads return the union across granted connections without raising `ambiguous_connection` from multiplicity alone. Records-list / aggregate / streams-list fan-in covered by `storage-fan-in-read-contract.test.js`. Search fan-in (lexical/semantic/hybrid) landed in `df137aad` and is covered by `rs-search-{lexical,semantic,hybrid}-fan-in.test.js` + `search-fan-in-host-shell.test.js` (see Section 8).
 - [x] Record/blob reads with an identifier resolving to multiple connections raise the typed `ambiguous_connection` error with `available_connections` and retry guidance. Implemented in `getRecordAcrossBindings` and the `/v1/blobs/:blob_id` route adapter; covered by the new regression suite.
 - [x] Grant with exactly one matching connection auto-selects without raising. Implemented in `resolveFanInBindings`; covered by `queryRecordsAcrossBindings auto-selects exactly-one binding without raising` and `getRecordAcrossBindings auto-selects the only binding holding a unique identifier`.
 - [x] Consent card renders distinct per-connection scope rows for a grant covering multiple connections of the same connector type. (Implemented in `consent-card.tsx`; visual verification owed to follow-up UI tranche when test infra lands.)
