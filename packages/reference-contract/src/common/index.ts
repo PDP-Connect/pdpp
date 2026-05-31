@@ -27,6 +27,9 @@ import type { JsonSchema } from "./json-schema.ts";
 // type will propagate through validate.ts and downstream consumers.
 export interface RouteSchemaBody {
   contentType?: string;
+  // Emitted as OpenAPI `requestBody.required`. Defaults to `true` when
+  // omitted; set `false` for routes whose body is optional.
+  required?: boolean;
   schema?: JsonSchema;
 }
 

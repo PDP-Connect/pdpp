@@ -1232,6 +1232,191 @@ const OAuthFlowErrors = {
   400: { schema: OAuthErrorSchema, description: "OAuth request rejected" },
 };
 
+// Client event-subscription management. A reference-implementation extension
+// (discoverable via `pdpp_provider_connect_capabilities` /
+// `capabilities.event_subscriptions`) letting an active client subscribe its
+// callback URL to CloudEvents-shaped, Standard-Webhooks-signed delivery of
+// record changes scoped to its grant. See:
+//   openspec/specs/reference-implementation-architecture/spec.md
+//   openspec/changes/archive/2026-05-28-add-client-event-subscription-management
+const EventSubscriptionStatusSchema = {
+  type: "string",
+  enum: ["pending_verification", "active", "disabled", "disabled_failure", "disabled_revoked", "deleted"],
+};
+
+const EventSubscriptionIdPathSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: { subscription_id: NonEmptyStringSchema },
+  required: ["subscription_id"],
+};
+
+// The grant-resolved scope echoed back on read. `streams` is the resolved set
+// of grant-scoped stream targets; `filters` echoes the caller-supplied stream
+// filter when present.
+const EventSubscriptionScopeSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    streams: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          name: NonEmptyStringSchema,
+          connection_id: { type: "string" },
+        },
+        required: ["name"],
+      },
+    },
+    filters: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        streams: { type: "array", items: NonEmptyStringSchema },
+      },
+    },
+  },
+  required: ["streams"],
+};
+
+// Client-facing projection of a subscription. Never carries the signing
+// secret; the secret is returned only inline on create and secret rotation.
+const EventSubscriptionSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    subscription_id: NonEmptyStringSchema,
+    grant_id: NonEmptyStringSchema,
+    client_id: NonEmptyStringSchema,
+    callback_url: { type: "string", format: "uri" },
+    status: EventSubscriptionStatusSchema,
+    scope: EventSubscriptionScopeSchema,
+    created_at: { type: "string", format: "date-time" },
+    updated_at: { type: "string", format: "date-time" },
+    disabled_reason: { type: ["string", "null"] },
+  },
+  required: [
+    "subscription_id",
+    "grant_id",
+    "client_id",
+    "callback_url",
+    "status",
+    "scope",
+    "created_at",
+    "updated_at",
+    "disabled_reason",
+  ],
+};
+
+const CreateEventSubscriptionBodySchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    callback_url: {
+      type: "string",
+      format: "uri",
+      maxLength: 2048,
+      description:
+        "HTTPS endpoint that will receive CloudEvents 1.0 structured-mode JSON POST requests signed with Standard Webhooks headers. `http://localhost` is accepted for development.",
+    },
+    filters: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        streams: {
+          type: "array",
+          items: NonEmptyStringSchema,
+          description:
+            "Subset of grant-scoped stream names to subscribe to. Omit to subscribe to all streams in the grant.",
+        },
+      },
+    },
+  },
+  required: ["callback_url"],
+};
+
+const CreateEventSubscriptionResponseSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    subscription_id: NonEmptyStringSchema,
+    secret: {
+      type: "string",
+      description:
+        "Standard Webhooks HMAC signing secret (`whsec_<base64>`). Store securely; returned only on creation and on secret rotation.",
+    },
+    status: EventSubscriptionStatusSchema,
+    callback_url: { type: "string", format: "uri" },
+    created_at: { type: "string", format: "date-time" },
+  },
+  required: ["subscription_id", "secret", "status", "callback_url", "created_at"],
+};
+
+const ListEventSubscriptionsResponseSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    data: { type: "array", items: EventSubscriptionSchema },
+  },
+  required: ["data"],
+};
+
+const UpdateEventSubscriptionBodySchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    enabled: {
+      type: "boolean",
+      description:
+        "Set to `false` to disable delivery; `true` to re-enable a `disabled` or `disabled_failure` subscription. Cannot re-enable a `disabled_revoked` subscription.",
+    },
+    rotate_secret: {
+      type: "boolean",
+      description:
+        "Generate a new `whsec_*` signing secret. The new secret is returned in the response body. The old secret is immediately invalid.",
+    },
+  },
+};
+
+const UpdateEventSubscriptionResponseSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    subscription: EventSubscriptionSchema,
+    secret: {
+      type: "string",
+      description:
+        "New Standard Webhooks signing secret (`whsec_<base64>`). Present only when `rotate_secret` was `true`.",
+    },
+  },
+  required: ["subscription"],
+};
+
+const SendTestEventResponseSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    event_id: NonEmptyStringSchema,
+  },
+  required: ["event_id"],
+};
+
+// Client tokens only: 401 when the bearer is missing/invalid, 403 when the
+// bearer authenticates but is not a client token for an active grant.
+const EventSubscriptionAuthErrors = {
+  401: { schema: ErrorObjectSchema, description: "Bearer token missing or invalid" },
+  403: {
+    schema: ErrorObjectSchema,
+    description: "Bearer token is authenticated but is not a client token for an active grant.",
+  },
+};
+
+const EventSubscriptionNotFoundError = {
+  404: { schema: ErrorObjectSchema, description: "Subscription not found or not owned by the bearer" },
+};
+
 export const publicManifests = [
   {
     id: "getRsDiscoveryIndex",
@@ -1984,6 +2169,117 @@ export const publicManifests = [
     responses: {
       200: { description: "Blob bytes", contentType: "application/octet-stream" },
       ...ProtectedReadWithAmbiguityErrors,
+    },
+  },
+  {
+    id: "createEventSubscription",
+    method: "POST",
+    path: "/v1/event-subscriptions",
+    surface: "public",
+    tags: ["event-subscriptions"],
+    summary:
+      "Create a client event subscription. Immediately enqueues a `pdpp.subscription.verify` event to the callback URL. The subscription stays in `pending_verification` until the receiver echoes the `challenge` value. Returns the per-subscription HMAC signing secret (`whsec_*`) once; it cannot be retrieved again.",
+    request: {
+      body: { contentType: "application/json", schema: CreateEventSubscriptionBodySchema },
+    },
+    responses: {
+      201: {
+        schema: CreateEventSubscriptionResponseSchema,
+        description:
+          "Subscription created. The `secret` field is the Standard Webhooks signing key (`whsec_<base64>`) and is returned only on creation.",
+      },
+      400: {
+        schema: ErrorObjectSchema,
+        description: "Invalid request (callback URL malformed, filters not in grant, etc.)",
+      },
+      ...EventSubscriptionAuthErrors,
+    },
+  },
+  {
+    id: "listEventSubscriptions",
+    method: "GET",
+    path: "/v1/event-subscriptions",
+    surface: "public",
+    tags: ["event-subscriptions"],
+    summary: "List all non-deleted event subscriptions for the bearer's `(client_id, grant_id)` pair.",
+    responses: {
+      200: { schema: ListEventSubscriptionsResponseSchema },
+      ...EventSubscriptionAuthErrors,
+    },
+  },
+  {
+    id: "getEventSubscription",
+    method: "GET",
+    path: "/v1/event-subscriptions/{subscription_id}",
+    surface: "public",
+    tags: ["event-subscriptions"],
+    summary: "Get a single event subscription owned by the bearer.",
+    request: { params: EventSubscriptionIdPathSchema },
+    responses: {
+      200: { schema: EventSubscriptionSchema },
+      ...EventSubscriptionAuthErrors,
+      ...EventSubscriptionNotFoundError,
+    },
+  },
+  {
+    id: "updateEventSubscription",
+    method: "PATCH",
+    path: "/v1/event-subscriptions/{subscription_id}",
+    surface: "public",
+    tags: ["event-subscriptions"],
+    summary:
+      "Update an event subscription. Toggle `enabled` to disable or re-enable delivery. Set `rotate_secret` to true to generate a new signing secret (returned in the response body; old secret is immediately invalid).",
+    request: {
+      params: EventSubscriptionIdPathSchema,
+      body: { contentType: "application/json", schema: UpdateEventSubscriptionBodySchema },
+    },
+    responses: {
+      200: {
+        schema: UpdateEventSubscriptionResponseSchema,
+        description: "Updated subscription. `secret` is only present when `rotate_secret` was `true`.",
+      },
+      400: { schema: ErrorObjectSchema, description: "Invalid update (e.g. re-enabling a revoked subscription)" },
+      ...EventSubscriptionAuthErrors,
+      ...EventSubscriptionNotFoundError,
+      409: {
+        schema: ErrorObjectSchema,
+        description: "State conflict (e.g. re-enabling a `disabled_revoked` subscription)",
+      },
+    },
+  },
+  {
+    id: "deleteEventSubscription",
+    method: "DELETE",
+    path: "/v1/event-subscriptions/{subscription_id}",
+    surface: "public",
+    tags: ["event-subscriptions"],
+    summary:
+      "Delete an event subscription. Queued undelivered events are dropped. Idempotent for the caller's `(client_id, grant_id)` pair.",
+    request: { params: EventSubscriptionIdPathSchema },
+    responses: {
+      204: { description: "Subscription deleted." },
+      ...EventSubscriptionAuthErrors,
+      ...EventSubscriptionNotFoundError,
+    },
+  },
+  {
+    id: "sendTestEvent",
+    method: "POST",
+    path: "/v1/event-subscriptions/{subscription_id}/test-event",
+    surface: "public",
+    tags: ["event-subscriptions"],
+    summary:
+      "Enqueue a `pdpp.subscription.test` event for asynchronous delivery to the subscription's callback URL. Accepted for `active` and `pending_verification` subscriptions. Returns the enqueued event ID.",
+    request: { params: EventSubscriptionIdPathSchema },
+    responses: {
+      202: { schema: SendTestEventResponseSchema, description: "Test event accepted for delivery." },
+      ...EventSubscriptionAuthErrors,
+      ...EventSubscriptionNotFoundError,
+      409: {
+        schema: ErrorObjectSchema,
+        description:
+          "Subscription is not in a state that accepts test events (must be `active` or `pending_verification`)",
+      },
     },
   },
 ];

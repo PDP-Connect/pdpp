@@ -806,6 +806,159 @@ const DeviceSourceInstanceStateResponseSchema = {
   required: ["object", "device_id", "connector_instance_id", "source_instance_id", "state", "updated_at"],
 };
 
+// Operator oversight for client event subscriptions. These /_ref routes never
+// return the subscription's signing secret. See:
+//   openspec/specs/reference-implementation-architecture/spec.md
+//   openspec/changes/archive/2026-05-28-add-client-event-subscription-management
+const EventSubscriptionStatusSchema = {
+  type: "string",
+  enum: ["pending_verification", "active", "disabled", "disabled_failure", "disabled_revoked", "deleted"],
+};
+
+const EventSubscriptionScopeSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    streams: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          name: { type: "string", minLength: 1 },
+          connection_id: { type: "string" },
+        },
+        required: ["name"],
+      },
+    },
+    filters: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        streams: { type: "array", items: { type: "string", minLength: 1 } },
+      },
+    },
+  },
+  required: ["streams"],
+};
+
+const RefEventSubscriptionDeliveryFields = {
+  pending_queue_count: { type: "integer", minimum: 0 },
+  final_failure_count: { type: "integer", minimum: 0 },
+  last_attempted_at: { type: ["string", "null"], format: "date-time" },
+  last_attempt_ok: { type: ["boolean", "null"] },
+  last_attempt_status_code: { type: ["integer", "null"] },
+};
+
+const RefEventSubscriptionListItemSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    subscription_id: { type: "string", minLength: 1 },
+    client_id: { type: "string", minLength: 1 },
+    grant_id: { type: "string", minLength: 1 },
+    status: EventSubscriptionStatusSchema,
+    disabled_reason: { type: ["string", "null"] },
+    callback_host: { type: "string", minLength: 1 },
+    created_at: { type: "string", format: "date-time" },
+    updated_at: { type: "string", format: "date-time" },
+    disabled_at: { type: ["string", "null"], format: "date-time" },
+    ...RefEventSubscriptionDeliveryFields,
+  },
+  required: [
+    "subscription_id",
+    "client_id",
+    "grant_id",
+    "status",
+    "disabled_reason",
+    "callback_host",
+    "created_at",
+    "updated_at",
+    "disabled_at",
+    "pending_queue_count",
+    "final_failure_count",
+    "last_attempted_at",
+    "last_attempt_ok",
+    "last_attempt_status_code",
+  ],
+};
+
+const RefEventSubscriptionListResponseSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    object: { const: "list" },
+    data: { type: "array", items: RefEventSubscriptionListItemSchema },
+  },
+  required: ["object", "data"],
+};
+
+const RefEventSubscriptionAttemptSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    attempt_id: { type: "integer" },
+    queue_id: { type: "integer" },
+    event_id: { type: "string", minLength: 1 },
+    event_type: { type: "string", minLength: 1 },
+    attempted_at: { type: "string", format: "date-time" },
+    status_code: { type: ["integer", "null"] },
+    ok: { type: "boolean" },
+    latency_ms: { type: ["integer", "null"] },
+    error: { type: ["string", "null"] },
+    response_snippet: { type: ["string", "null"] },
+  },
+  required: ["attempt_id", "queue_id", "event_id", "event_type", "attempted_at", "ok"],
+};
+
+const RefEventSubscriptionDetailSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    subscription_id: { type: "string", minLength: 1 },
+    client_id: { type: "string", minLength: 1 },
+    grant_id: { type: "string", minLength: 1 },
+    subject_id: { type: "string", minLength: 1 },
+    status: EventSubscriptionStatusSchema,
+    disabled_reason: { type: ["string", "null"] },
+    callback_url: { type: "string", format: "uri" },
+    callback_host: { type: "string", minLength: 1 },
+    scope: EventSubscriptionScopeSchema,
+    created_at: { type: "string", format: "date-time" },
+    updated_at: { type: "string", format: "date-time" },
+    disabled_at: { type: ["string", "null"], format: "date-time" },
+    ...RefEventSubscriptionDeliveryFields,
+    recent_attempts: { type: "array", items: RefEventSubscriptionAttemptSchema },
+  },
+  required: [
+    "subscription_id",
+    "client_id",
+    "grant_id",
+    "subject_id",
+    "status",
+    "disabled_reason",
+    "callback_url",
+    "callback_host",
+    "scope",
+    "created_at",
+    "updated_at",
+    "disabled_at",
+    "pending_queue_count",
+    "final_failure_count",
+    "last_attempted_at",
+    "last_attempt_ok",
+    "last_attempt_status_code",
+    "recent_attempts",
+  ],
+};
+
+const EventSubscriptionIdParamSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: { subscription_id: { type: "string", minLength: 1 } },
+  required: ["subscription_id"],
+};
+
 export const referenceManifests = [
   {
     id: "refSearch",
@@ -1568,6 +1721,70 @@ export const referenceManifests = [
         },
       },
       ...CommonErrors,
+    },
+  },
+  {
+    id: "refListEventSubscriptions",
+    method: "GET",
+    path: "/_ref/event-subscriptions",
+    surface: "reference",
+    tags: ["event-subscriptions", "reference"],
+    summary:
+      "Operator oversight: list all client event subscriptions. Filter by `client_id`, `grant_id`, or `status`. Secrets are never returned on `/_ref` routes.",
+    request: {
+      query: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          client_id: { type: "string", minLength: 1 },
+          grant_id: { type: "string", minLength: 1 },
+          status: EventSubscriptionStatusSchema,
+        },
+      },
+    },
+    responses: {
+      200: { schema: RefEventSubscriptionListResponseSchema },
+    },
+  },
+  {
+    id: "refGetEventSubscription",
+    method: "GET",
+    path: "/_ref/event-subscriptions/{subscription_id}",
+    surface: "reference",
+    tags: ["event-subscriptions", "reference"],
+    summary: "Operator oversight: get a single subscription with delivery attempt history.",
+    request: { params: EventSubscriptionIdParamSchema },
+    responses: {
+      200: { schema: RefEventSubscriptionDetailSchema },
+      404: { schema: ErrorObjectSchema, description: "Subscription not found" },
+    },
+  },
+  {
+    id: "refDisableEventSubscription",
+    method: "POST",
+    path: "/_ref/event-subscriptions/{subscription_id}/disable",
+    surface: "reference",
+    tags: ["event-subscriptions", "reference"],
+    summary:
+      "Operator safety valve: forcibly disable a subscription. Accepts an optional `reason` string. Secrets are never returned.",
+    request: {
+      params: EventSubscriptionIdParamSchema,
+      body: {
+        contentType: "application/json",
+        required: false,
+        schema: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            reason: { type: "string", minLength: 1 },
+          },
+        },
+      },
+    },
+    responses: {
+      200: { schema: RefEventSubscriptionDetailSchema, description: "Subscription after disabling." },
+      400: { schema: ErrorObjectSchema, description: "Invalid request" },
+      404: { schema: ErrorObjectSchema, description: "Subscription not found" },
     },
   },
 ];

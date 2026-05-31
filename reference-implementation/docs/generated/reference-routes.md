@@ -29,6 +29,12 @@ Generated from `packages/reference-contract/src/public/`. Do not edit by hand.
 | **GET** | `/v1/search/hybrid` | `searchRecordsHybrid` | Experimental optional extension: hybrid retrieval blending lexical and semantic recall under one grant-safe result list. See the hybrid-retrieval capability spec. Hybrid does NOT support cursor pagination on this reference; check `pdpp_discovery_hints.hybrid_pagination_supported` in the protected-resource metadata and, when it is `false` or absent, fall back to `GET /v1/search` (lexical) which supports `cursor`. |
 | **POST** | `/v1/blobs` | `uploadBlob` | Upload connector/runtime-owned blob bytes for a bound record. |
 | **GET** | `/v1/blobs/{blob_id}` | `getBlob` | Fetch blob bytes authorized by the caller having discovered the referencing record under grant. When the blob identifier resolves to more than one connection under the caller's grant and `connection_id` is omitted, returns a typed `ambiguous_connection` (409) error with `available_connections` and retry guidance instead of silently picking one. The deprecated `connector_instance_id` alias is accepted for compatibility but new clients SHOULD use `connection_id`. |
+| **POST** | `/v1/event-subscriptions` | `createEventSubscription` | Create a client event subscription. Immediately enqueues a `pdpp.subscription.verify` event to the callback URL. The subscription stays in `pending_verification` until the receiver echoes the `challenge` value. Returns the per-subscription HMAC signing secret (`whsec_*`) once; it cannot be retrieved again. |
+| **GET** | `/v1/event-subscriptions` | `listEventSubscriptions` | List all non-deleted event subscriptions for the bearer's `(client_id, grant_id)` pair. |
+| **GET** | `/v1/event-subscriptions/{subscription_id}` | `getEventSubscription` | Get a single event subscription owned by the bearer. |
+| **PATCH** | `/v1/event-subscriptions/{subscription_id}` | `updateEventSubscription` | Update an event subscription. Toggle `enabled` to disable or re-enable delivery. Set `rotate_secret` to true to generate a new signing secret (returned in the response body; old secret is immediately invalid). |
+| **DELETE** | `/v1/event-subscriptions/{subscription_id}` | `deleteEventSubscription` | Delete an event subscription. Queued undelivered events are dropped. Idempotent for the caller's `(client_id, grant_id)` pair. |
+| **POST** | `/v1/event-subscriptions/{subscription_id}/test-event` | `sendTestEvent` | Enqueue a `pdpp.subscription.test` event for asynchronous delivery to the subscription's callback URL. Accepted for `active` and `pending_verification` subscriptions. Returns the enqueued event ID. |
 
 ## getRsDiscoveryIndex
 
@@ -517,4 +523,112 @@ Fetch blob bytes authorized by the caller having discovered the referencing reco
 - `403` — Grant does not permit this request
 - `404` — Stream or record not found
 - `409` — Identifier resolves to more than one connection under the caller's grant. Retry with the `connection_id` listed in `error.available_connections`.
+
+## createEventSubscription
+
+`POST /v1/event-subscriptions`
+
+Create a client event subscription. Immediately enqueues a `pdpp.subscription.verify` event to the callback URL. The subscription stays in `pending_verification` until the receiver echoes the `challenge` value. Returns the per-subscription HMAC signing secret (`whsec_*`) once; it cannot be retrieved again.
+
+### Request body
+
+`application/json`
+- `callback_url` (required) — string · format: uri · HTTPS endpoint that will receive CloudEvents 1.0 structured-mode JSON POST requests signed with Standard Webhooks headers. `http://localhost` is accepted for development.
+- `filters` — object
+
+### Responses
+
+- `201` — Subscription created. The `secret` field is the Standard Webhooks signing key (`whsec_<base64>`) and is returned only on creation.
+- `400` — Invalid request (callback URL malformed, filters not in grant, etc.)
+- `401` — Bearer token missing or invalid
+- `403` — Bearer token is authenticated but is not a client token for an active grant.
+
+## listEventSubscriptions
+
+`GET /v1/event-subscriptions`
+
+List all non-deleted event subscriptions for the bearer's `(client_id, grant_id)` pair.
+
+### Responses
+
+- `200` — JSON body
+- `401` — Bearer token missing or invalid
+- `403` — Bearer token is authenticated but is not a client token for an active grant.
+
+## getEventSubscription
+
+`GET /v1/event-subscriptions/{subscription_id}`
+
+Get a single event subscription owned by the bearer.
+
+### Path parameters
+
+- `subscription_id` — string
+
+### Responses
+
+- `200` — JSON body
+- `401` — Bearer token missing or invalid
+- `403` — Bearer token is authenticated but is not a client token for an active grant.
+- `404` — Subscription not found or not owned by the bearer
+
+## updateEventSubscription
+
+`PATCH /v1/event-subscriptions/{subscription_id}`
+
+Update an event subscription. Toggle `enabled` to disable or re-enable delivery. Set `rotate_secret` to true to generate a new signing secret (returned in the response body; old secret is immediately invalid).
+
+### Path parameters
+
+- `subscription_id` — string
+
+### Request body
+
+`application/json`
+- `enabled` — boolean · Set to `false` to disable delivery; `true` to re-enable a `disabled` or `disabled_failure` subscription. Cannot re-enable a `disabled_revoked` subscription.
+- `rotate_secret` — boolean · Generate a new `whsec_*` signing secret. The new secret is returned in the response body. The old secret is immediately invalid.
+
+### Responses
+
+- `200` — Updated subscription. `secret` is only present when `rotate_secret` was `true`.
+- `400` — Invalid update (e.g. re-enabling a revoked subscription)
+- `401` — Bearer token missing or invalid
+- `403` — Bearer token is authenticated but is not a client token for an active grant.
+- `404` — Subscription not found or not owned by the bearer
+- `409` — State conflict (e.g. re-enabling a `disabled_revoked` subscription)
+
+## deleteEventSubscription
+
+`DELETE /v1/event-subscriptions/{subscription_id}`
+
+Delete an event subscription. Queued undelivered events are dropped. Idempotent for the caller's `(client_id, grant_id)` pair.
+
+### Path parameters
+
+- `subscription_id` — string
+
+### Responses
+
+- `204` — Subscription deleted.
+- `401` — Bearer token missing or invalid
+- `403` — Bearer token is authenticated but is not a client token for an active grant.
+- `404` — Subscription not found or not owned by the bearer
+
+## sendTestEvent
+
+`POST /v1/event-subscriptions/{subscription_id}/test-event`
+
+Enqueue a `pdpp.subscription.test` event for asynchronous delivery to the subscription's callback URL. Accepted for `active` and `pending_verification` subscriptions. Returns the enqueued event ID.
+
+### Path parameters
+
+- `subscription_id` — string
+
+### Responses
+
+- `202` — Test event accepted for delivery.
+- `401` — Bearer token missing or invalid
+- `403` — Bearer token is authenticated but is not a client token for an active grant.
+- `404` — Subscription not found or not owned by the bearer
+- `409` — Subscription is not in a state that accepts test events (must be `active` or `pending_verification`)
 

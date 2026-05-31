@@ -19617,42 +19617,7 @@
           "event-subscriptions"
         ],
         "summary": "Create a client event subscription. Immediately enqueues a `pdpp.subscription.verify` event to the callback URL. The subscription stays in `pending_verification` until the receiver echoes the `challenge` value. Returns the per-subscription HMAC signing secret (`whsec_*`) once; it cannot be retrieved again.",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                  "callback_url": {
-                    "type": "string",
-                    "format": "uri",
-                    "maxLength": 2048,
-                    "description": "HTTPS endpoint that will receive CloudEvents 1.0 structured-mode JSON POST requests signed with Standard Webhooks headers. `http://localhost` is accepted for development."
-                  },
-                  "filters": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {
-                      "streams": {
-                        "type": "array",
-                        "items": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "description": "Subset of grant-scoped stream names to subscribe to. Omit to subscribe to all streams in the grant."
-                      }
-                    }
-                  }
-                },
-                "required": [
-                  "callback_url"
-                ]
-              }
-            }
-          }
-        },
+        "parameters": [],
         "responses": {
           "201": {
             "description": "Subscription created. The `secret` field is the Standard Webhooks signing key (`whsec_<base64>`) and is returned only on creation.",
@@ -19702,7 +19667,7 @@
             }
           },
           "400": {
-            "description": "Invalid request",
+            "description": "Invalid request (callback URL malformed, filters not in grant, etc.)",
             "content": {
               "application/json": {
                 "schema": {
@@ -19830,6 +19795,42 @@
                     "error"
                   ]
                 }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "callback_url": {
+                    "type": "string",
+                    "format": "uri",
+                    "maxLength": 2048,
+                    "description": "HTTPS endpoint that will receive CloudEvents 1.0 structured-mode JSON POST requests signed with Standard Webhooks headers. `http://localhost` is accepted for development."
+                  },
+                  "filters": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "streams": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "description": "Subset of grant-scoped stream names to subscribe to. Omit to subscribe to all streams in the grant."
+                      }
+                    }
+                  }
+                },
+                "required": [
+                  "callback_url"
+                ]
               }
             }
           }
@@ -20316,7 +20317,7 @@
         "tags": [
           "event-subscriptions"
         ],
-        "summary": "Toggle delivery (`enabled`) or rotate the signing secret (`rotate_secret`).",
+        "summary": "Update an event subscription. Toggle `enabled` to disable or re-enable delivery. Set `rotate_secret` to true to generate a new signing secret (returned in the response body; old secret is immediately invalid).",
         "parameters": [
           {
             "in": "path",
@@ -20328,25 +20329,6 @@
             }
           }
         ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                  "enabled": {
-                    "type": "boolean"
-                  },
-                  "rotate_secret": {
-                    "type": "boolean"
-                  }
-                }
-              }
-            }
-          }
-        },
         "responses": {
           "200": {
             "description": "Updated subscription. `secret` is only present when `rotate_secret` was `true`.",
@@ -20456,7 +20438,8 @@
                       ]
                     },
                     "secret": {
-                      "type": "string"
+                      "type": "string",
+                      "description": "New Standard Webhooks signing secret (`whsec_<base64>`). Present only when `rotate_secret` was `true`."
                     }
                   },
                   "required": [
@@ -20467,7 +20450,7 @@
             }
           },
           "400": {
-            "description": "Invalid update",
+            "description": "Invalid update (e.g. re-enabling a revoked subscription)",
             "content": {
               "application/json": {
                 "schema": {
@@ -20686,6 +20669,27 @@
               }
             }
           }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "enabled": {
+                    "type": "boolean",
+                    "description": "Set to `false` to disable delivery; `true` to re-enable a `disabled` or `disabled_failure` subscription. Cannot re-enable a `disabled_revoked` subscription."
+                  },
+                  "rotate_secret": {
+                    "type": "boolean",
+                    "description": "Generate a new `whsec_*` signing secret. The new secret is returned in the response body. The old secret is immediately invalid."
+                  }
+                }
+              }
+            }
+          }
         }
       },
       "delete": {
@@ -20693,7 +20697,7 @@
         "tags": [
           "event-subscriptions"
         ],
-        "summary": "Delete an event subscription. Queued undelivered events are dropped.",
+        "summary": "Delete an event subscription. Queued undelivered events are dropped. Idempotent for the caller's `(client_id, grant_id)` pair.",
         "parameters": [
           {
             "in": "path",
@@ -20850,7 +20854,7 @@
         "tags": [
           "event-subscriptions"
         ],
-        "summary": "Enqueue a `pdpp.subscription.test` event for asynchronous delivery. Accepted for `active` and `pending_verification` subscriptions.",
+        "summary": "Enqueue a `pdpp.subscription.test` event for asynchronous delivery to the subscription's callback URL. Accepted for `active` and `pending_verification` subscriptions. Returns the enqueued event ID.",
         "parameters": [
           {
             "in": "path",
@@ -21535,23 +21539,6 @@
             }
           }
         ],
-        "requestBody": {
-          "required": false,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                  "reason": {
-                    "type": "string",
-                    "minLength": 1
-                  }
-                }
-              }
-            }
-          }
-        },
         "responses": {
           "200": {
             "description": "Subscription after disabling.",
@@ -21856,6 +21843,23 @@
                   "required": [
                     "error"
                   ]
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1
+                  }
                 }
               }
             }

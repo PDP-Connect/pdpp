@@ -45,6 +45,9 @@ Generated from `packages/reference-contract/src/reference/`. Reference-designate
 | **GET** | `/_ref/records/version-stats` | `refRecordsVersionStats` | Record-version churn stats with projection and record-change authority for owner diagnostics. |
 | **POST** | `/_ref/dataset/size/rebuild` | `refDatasetSizeRebuild` | Owner-triggered rebuild of retained-size projection rows from durable reference state. |
 | **POST** | `/_ref/dataset/size/reconcile` | `refDatasetSizeReconcile` | Owner-triggered reconciliation of dirty retained-size projection rows from durable reference state. |
+| **GET** | `/_ref/event-subscriptions` | `refListEventSubscriptions` | Operator oversight: list all client event subscriptions. Filter by `client_id`, `grant_id`, or `status`. Secrets are never returned on `/_ref` routes. |
+| **GET** | `/_ref/event-subscriptions/{subscription_id}` | `refGetEventSubscription` | Operator oversight: get a single subscription with delivery attempt history. |
+| **POST** | `/_ref/event-subscriptions/{subscription_id}/disable` | `refDisableEventSubscription` | Operator safety valve: forcibly disable a subscription. Accepts an optional `reason` string. Secrets are never returned. |
 
 ## refSearch
 
@@ -805,4 +808,56 @@ Owner-triggered reconciliation of dirty retained-size projection rows from durab
 - `400` — Invalid request
 - `404` — Not found
 - `409` — Conflict (e.g. run_already_active)
+
+## refListEventSubscriptions
+
+`GET /_ref/event-subscriptions`
+
+Operator oversight: list all client event subscriptions. Filter by `client_id`, `grant_id`, or `status`. Secrets are never returned on `/_ref` routes.
+
+### Query parameters
+
+- `client_id` — string
+- `grant_id` — string
+- `status` — enum `pending_verification | active | disabled | disabled_failure | disabled_revoked | deleted`
+
+### Responses
+
+- `200` — JSON body
+
+## refGetEventSubscription
+
+`GET /_ref/event-subscriptions/{subscription_id}`
+
+Operator oversight: get a single subscription with delivery attempt history.
+
+### Path parameters
+
+- `subscription_id` — string
+
+### Responses
+
+- `200` — JSON body
+- `404` — Subscription not found
+
+## refDisableEventSubscription
+
+`POST /_ref/event-subscriptions/{subscription_id}/disable`
+
+Operator safety valve: forcibly disable a subscription. Accepts an optional `reason` string. Secrets are never returned.
+
+### Path parameters
+
+- `subscription_id` — string
+
+### Request body
+
+`application/json`
+- `reason` — string
+
+### Responses
+
+- `200` — Subscription after disabling.
+- `400` — Invalid request
+- `404` — Subscription not found
 

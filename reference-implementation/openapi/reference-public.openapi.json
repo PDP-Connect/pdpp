@@ -8456,42 +8456,7 @@
           "event-subscriptions"
         ],
         "summary": "Create a client event subscription. Immediately enqueues a `pdpp.subscription.verify` event to the callback URL. The subscription stays in `pending_verification` until the receiver echoes the `challenge` value. Returns the per-subscription HMAC signing secret (`whsec_*`) once; it cannot be retrieved again.",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                  "callback_url": {
-                    "type": "string",
-                    "format": "uri",
-                    "maxLength": 2048,
-                    "description": "HTTPS endpoint that will receive CloudEvents 1.0 structured-mode JSON POST requests signed with Standard Webhooks headers. `http://localhost` is accepted for development."
-                  },
-                  "filters": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {
-                      "streams": {
-                        "type": "array",
-                        "items": {
-                          "type": "string",
-                          "minLength": 1
-                        },
-                        "description": "Subset of grant-scoped stream names to subscribe to. Omit to subscribe to all streams in the grant."
-                      }
-                    }
-                  }
-                },
-                "required": [
-                  "callback_url"
-                ]
-              }
-            }
-          }
-        },
+        "parameters": [],
         "responses": {
           "201": {
             "description": "Subscription created. The `secret` field is the Standard Webhooks signing key (`whsec_<base64>`) and is returned only on creation.",
@@ -8669,6 +8634,42 @@
                     "error"
                   ]
                 }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "callback_url": {
+                    "type": "string",
+                    "format": "uri",
+                    "maxLength": 2048,
+                    "description": "HTTPS endpoint that will receive CloudEvents 1.0 structured-mode JSON POST requests signed with Standard Webhooks headers. `http://localhost` is accepted for development."
+                  },
+                  "filters": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "streams": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "description": "Subset of grant-scoped stream names to subscribe to. Omit to subscribe to all streams in the grant."
+                      }
+                    }
+                  }
+                },
+                "required": [
+                  "callback_url"
+                ]
               }
             }
           }
@@ -9167,27 +9168,6 @@
             }
           }
         ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                  "enabled": {
-                    "type": "boolean",
-                    "description": "Set to `false` to disable delivery; `true` to re-enable a `disabled` or `disabled_failure` subscription. Cannot re-enable a `disabled_revoked` subscription."
-                  },
-                  "rotate_secret": {
-                    "type": "boolean",
-                    "description": "Generate a new `whsec_*` signing secret. The new secret is returned in the response body. The old secret is immediately invalid."
-                  }
-                }
-              }
-            }
-          }
-        },
         "responses": {
           "200": {
             "description": "Updated subscription. `secret` is only present when `rotate_secret` was `true`.",
@@ -9524,6 +9504,27 @@
                   "required": [
                     "error"
                   ]
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "enabled": {
+                    "type": "boolean",
+                    "description": "Set to `false` to disable delivery; `true` to re-enable a `disabled` or `disabled_failure` subscription. Cannot re-enable a `disabled_revoked` subscription."
+                  },
+                  "rotate_secret": {
+                    "type": "boolean",
+                    "description": "Generate a new `whsec_*` signing secret. The new secret is returned in the response body. The old secret is immediately invalid."
+                  }
                 }
               }
             }
