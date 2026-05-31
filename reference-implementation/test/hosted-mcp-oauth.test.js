@@ -250,10 +250,10 @@ async function completeMultiSourcePackageFlow({ asUrl, client, connectorIds }) {
   // (`ownerAuthPassword: ''`), so `requireOwnerSession` and `requireCsrf`
   // are no-ops and the form goes through without a session cookie.
   //
-  // The picker renders child stream checkboxes unchecked/disabled until the
-  // owner selects a parent source. This helper mirrors an explicit whole-source
-  // approval by submitting every child stream for the selected sources; tests
-  // for narrowing construct their own forms instead of going through this helper.
+  // The picker makes source selection derive from checked streams. This helper
+  // mirrors an explicit whole-source approval by submitting every child stream
+  // for the selected sources; tests for narrowing construct their own forms
+  // instead of going through this helper.
   const params = new URLSearchParams();
   params.append('client_id', client.client_id);
   params.append('redirect_uri', 'https://client.example/callback');
@@ -1283,7 +1283,7 @@ test('list_streams with connection_id routes to one source only (G1 source-targe
 //
 //   - the picker renders collapsed source summaries with an owner-controllable
 //     checkbox per manifest stream, and the default visual state is source
-//     unchecked + child streams unchecked/disabled;
+//     unchecked + child streams unchecked but enabled;
 //   - the POST handler narrows a child grant when a subset of streams is
 //     submitted;
 //   - leaving every stream checked for a source preserves the canonical
@@ -1354,20 +1354,32 @@ test('hosted MCP picker renders collapsed source summaries with per-stream contr
     assert.match(html, /class="hosted-ui-option-source"/, 'picker must wrap each row in a source group');
     assert.match(html, /<details class="hosted-ui-option-source"[^>]*data-source-selected="false"/);
     assert.match(html, /data-hosted-mcp-source-checkbox/, 'picker must mark source checkboxes for picker behavior');
+    assert.match(
+      html,
+      /data-source-selection-mode="streams"/,
+      'source checkbox state must be derived from stream choices',
+    );
     assert.match(html, /class="hosted-ui-option-streams"/, 'picker must render the per-source stream block');
     assert.match(html, /class="hosted-ui-stream-option"/, 'picker must render at least one stream checkbox');
     assert.match(html, /data-hosted-mcp-stream-checkbox/, 'picker must mark stream checkboxes for source coupling');
     assert.match(html, /data-hosted-mcp-select-streams/, 'picker must offer per-source select-all streams');
     assert.match(html, /data-hosted-mcp-clear-streams/, 'picker must offer per-source clear streams');
 
+    const sourceInputs = [...html.matchAll(/<input[^>]*data-hosted-mcp-source-checkbox[^>]*>/g)];
+    assert.ok(sourceInputs.length > 0, 'picker must render source checkboxes');
+    for (const match of sourceInputs) {
+      assert.match(match[0], /data-source-selection-mode="streams"/);
+      assert.equal(/\schecked(?:\s|\/|>)/.test(match[0]), false, 'source checkbox must not start checked');
+    }
+
     const sourceDetails = [...html.matchAll(/<details class="hosted-ui-option-source"[^>]*>/g)];
     for (const match of sourceDetails) {
       assert.equal(/\sopen(?:\s|>)/.test(match[0]), false, 'source sections must start collapsed');
     }
 
-    // Every manifest stream must be rendered unchecked and disabled while the
-    // parent source is unchecked. JS enables the children when the parent
-    // source is selected without forcing the owner into an all-stream grant.
+    // Every manifest stream must be rendered unchecked but enabled. JS derives
+    // the parent source checkbox from checked streams so a source cannot stay
+    // selected for grant while every stream is clear.
     for (const stream of spotify.streams) {
       const streamFormValue = encodeHostedMcpStreamSelection({
         connectorId: spotify.connector_id,
@@ -1377,7 +1389,7 @@ test('hosted MCP picker renders collapsed source summaries with per-stream contr
       const input = html.match(new RegExp(`<input[^>]*name="stream"[^>]*value="${streamFormValue}"[^>]*>`));
       assert.ok(input, `picker must render a stream checkbox for spotify::${stream.name}`);
       assert.equal(/\schecked(?:\s|\/|>)/.test(input[0]), false, `spotify::${stream.name} must not be checked`);
-      assert.equal(/\sdisabled(?:\s|\/|>)/.test(input[0]), true, `spotify::${stream.name} must be disabled`);
+      assert.equal(/\sdisabled(?:\s|\/|>)/.test(input[0]), false, `spotify::${stream.name} must be enabled`);
     }
     for (const stream of github.streams) {
       const streamFormValue = encodeHostedMcpStreamSelection({
@@ -1388,12 +1400,16 @@ test('hosted MCP picker renders collapsed source summaries with per-stream contr
       const input = html.match(new RegExp(`<input[^>]*name="stream"[^>]*value="${streamFormValue}"[^>]*>`));
       assert.ok(input, `picker must render a stream checkbox for github::${stream.name}`);
       assert.equal(/\schecked(?:\s|\/|>)/.test(input[0]), false, `github::${stream.name} must not be checked`);
-      assert.equal(/\sdisabled(?:\s|\/|>)/.test(input[0]), true, `github::${stream.name} must be disabled`);
+      assert.equal(/\sdisabled(?:\s|\/|>)/.test(input[0]), false, `github::${stream.name} must be enabled`);
     }
 
-    // Owner-facing copy should make the source-first, stream-narrowing model
+    // Owner-facing copy should make the stream-derived source model
     // clear without registry URLs or demo-only phrasing.
     assert.match(html, /pick the specific streams/i, 'picker copy should explain stream narrowing');
+    assert.match(html, /Source checkboxes follow stream choices/i, 'picker copy should explain derived source state');
+    assert.match(html, /Stream choices set the grant/i, 'per-source copy should make stream selection authoritative');
+    assert.match(html, /sourceBox\.checked = selected/, 'picker JS should derive source checked state from streams');
+    assert.match(html, /sourceBox\.indeterminate = partiallySelected/, 'picker JS should expose subset stream grants');
     assert.match(html, /Use all streams/i, 'picker should make whole-source approval explicit');
     assert.match(html, /Use all sources and streams/i, 'picker should make global bulk approval explicit');
     assert.match(html, /Clear all/i, 'picker should offer a clear global reset affordance');
@@ -1579,10 +1595,12 @@ test('POST /oauth/authorize/mcp-package renders picker error when a selected sou
 
     const resp = await exchangePackageCode({ asUrl, client, params });
     assert.equal(resp.status, 400);
+    assert.match(resp.headers.get('content-type') || '', /text\/html/);
     const html = await resp.text();
     assert.match(html, /Choose what this app can read/);
     assert.match(html, /Choose at least one stream for/i);
     assert.match(html, /data-hosted-mcp-picker-error/);
+    assert.match(html, /class="hosted-ui-error hosted-ui-picker-error"/);
   } finally {
     await closeServer(server);
   }
