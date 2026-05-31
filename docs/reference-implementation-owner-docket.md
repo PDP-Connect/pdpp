@@ -74,8 +74,8 @@ of the docket, not a replacement for OpenSpec task ownership.
 | `design-fast-broad-agent-consent` | 17/36 | `active-openspec` | Reconcile with current package-grant and owner-token behavior before more UI work. |
 | `add-gmail-attachment-backfill` | 28/28 | `complete-awaiting-archive` | Archive after owner accepts that live Gmail/Docker proof is residual owner-only evidence. |
 | `expose-connection-identity-on-public-read` | 50/60 | `active-openspec` | Finish remaining identity/read-surface tasks, then verify MCP gateway and Explorer consumers. |
-| `canonicalize-connector-keys` | 22/26 | `owner-live-gated` | Finish live DB backup/migration validation and real Claude/ChatGPT client flows; reconcile deployed state in tasks. |
-| `split-reference-server-by-route-family` | 47/54 | `active-openspec` | Complete remaining route extraction and final validation/stat checks. |
+| `canonicalize-connector-keys` | 24/28 | `owner-live-gated` | No-human runtime/storage/trace tails are closed. Remaining work is live DB backup/migration validation, local deploy proof, and real Claude/ChatGPT/Daisy acceptance flows. |
+| `split-reference-server-by-route-family` | 56/56 | `complete-awaiting-archive` | Archive after owner accepts the full-suite/verify evidence; no route-extraction work remains. |
 | `add-connector-adaptive-lanes` | 29/33 | `needs-verification` | Verify max-concurrency decision and remaining acceptance evidence before dispatch. |
 | `republish-remote-surface-as-opendatalabs` | 37/42 | `active-openspec` | Continue package/release readiness only after current acceptance gates are stable. |
 | `add-chase-current-activity-stream` | 12/13 | `owner-live-gated` | Live owner investigation for stable transaction identity and pending-to-posted behavior. |
@@ -151,7 +151,7 @@ items were mostly stale relative to code shipped later.
 
 | Item | Status | Authority / evidence | Next action | Acceptance criterion |
 |---|---|---|---|---|
-| Route-family split and `index.js` reduction | `active-openspec` | `split-reference-server-by-route-family`. | Finish remaining extraction and full validation. | Route families have clear modules, parity tests, and no route-regression drift. |
+| Route-family split and `index.js` reduction | `complete-awaiting-archive` | `split-reference-server-by-route-family`; `01287318` full-suite acceptance tranche. | Archive after owner review; no further extraction work should be added to this change. | Route families have clear modules, parity tests, and no route-regression drift. |
 | Public site vs operator console split | `active-openspec` | `split-public-site-and-operator-console`; voice/framing guide. | Continue without implying hosted-service semantics. | Public docs, sandbox, and owner dashboard use distinct taxonomy and auth posture. |
 | Remote surface republishing | `active-openspec` | `republish-remote-surface-as-opendatalabs`. | Continue package readiness after current acceptance gates. | Package names, docs, and release policy match approved public posture. |
 | `@pdpp/mcp-server` npm publishing | `parked` | `tmp/workstreams/ri-gemini-item-mcp-server-package.md`; package release policy. | Do not author `publish-pdpp-mcp-server` unless the owner explicitly un-parks it. | If un-parked, an OpenSpec change adds it to the publishable package set and passes release checks. |
