@@ -13,10 +13,10 @@
 
 ## 3. Approval And Credential Handoff
 
-- [ ] 3.1 Add a first-class owner-agent bootstrap path that uses browser/dashboard owner approval and does not require pasting bearer material into chat or terminal transcripts.
-- [ ] 3.2 Write the issued owner-agent credential to the chosen local credential target with restrictive file permissions and non-secret status output.
+- [x] 3.1 Add a first-class owner-agent bootstrap path that uses browser/dashboard owner approval and does not require pasting bearer material into chat or terminal transcripts.
+- [x] 3.2 Write the issued owner-agent credential to the chosen local credential target with restrictive file permissions and non-secret status output.
 - [ ] 3.3 Update the dashboard deployment-token surface so the smooth owner-agent path is prominent and the bearer-copy/debug path is clearly secondary.
-- [ ] 3.4 Preserve introspection and RFC 7592 client-delete revocation for owner-agent credentials, with tests proving revoked credentials stop working.
+- [x] 3.4 Preserve introspection and RFC 7592 client-delete revocation for owner-agent credentials, with tests proving revoked credentials stop working.
 
 ## 4. Route Boundary And REST Semantics
 
