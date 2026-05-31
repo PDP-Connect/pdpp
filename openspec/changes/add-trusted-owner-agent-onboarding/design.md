@@ -27,6 +27,19 @@ the owner's Daisy use case is the second profile: a trusted local LLM at `~/appl
 
 ## Decisions
 
+### 0. Boundary audit findings
+
+The current reference already has the core primitives needed for trusted owner-agent onboarding:
+
+- Owner credential issuance exists through the OAuth device-authorization shape: `POST /oauth/device_authorization`, owner-browser approval at `/device`, and `POST /oauth/token`.
+- Dynamic client registration exists at `/oauth/register`; owner-session-created clients can be listed under `/_ref/clients?owner=true` and revoked through `DELETE /oauth/register/:clientId`.
+- Introspection distinguishes owner credentials with `pdpp_token_kind: "owner"`.
+- Owner bearers already work on owner-supported REST read surfaces such as `/v1/schema`, `/v1/streams`, stream metadata, record reads, search, and blob reads.
+- `/mcp` already rejects owner bearers; this change tightens the error text so the recovery path names grant-scoped MCP and owner-agent REST onboarding.
+- `/_ref/*` dashboard/operator reads remain owner-session-gated when owner auth is enabled. Owner bearers do not become dashboard sessions.
+
+The gaps are not token semantics. The gaps are discoverability, non-printing credential handoff, user-facing copy, and explicit owner-agent guidance.
+
 ### 1. Define two agent profiles, not one overloaded path
 
 The reference should name two profiles:
@@ -53,6 +66,12 @@ Rationale: Daisy can start from an entrypoint URL and derive the flow. The metad
 
 Alternative considered: add a Daisy-specific route. Rejected as too narrow; the profile should work for any trusted local owner agent.
 
+The first implementation should use these stable profile terms in metadata, CLI output, docs, and dashboard copy:
+
+- `grant_scoped_agent`: ordinary third-party, coding-agent, external assistant, or task-scoped client profile. It uses scoped client grants and MCP/client tokens.
+- `trusted_owner_agent`: local owner automation profile. It may receive an owner credential after explicit owner approval and uses REST/control-plane routes, not `/mcp`.
+- `owner_agent_credential`: an owner bearer issued to a registered local owner-agent client. It is owner-level authority, not a stream scope.
+
 ### 3. Approval is browser-mediated and token material is non-printing
 
 The owner-agent flow should reuse the existing device-authorization / dashboard approval shape where possible. The local agent can initiate or be instructed to initiate a request, but the owner approves in the dashboard. The successful flow should write token material to a local agent credential store or copy target under owner control; UI and CLI output should print only non-secret status, token kind, subject, expiry, and revocation handle.
@@ -60,6 +79,17 @@ The owner-agent flow should reuse the existing device-authorization / dashboard 
 Rationale: this keeps the smooth "tell Daisy to set it up" experience without training users to paste bearer tokens into chat.
 
 Alternative considered: dashboard page shows a bearer for the owner to paste. Rejected as acceptable only for low-level debugging, not the SLVP onboarding path.
+
+For Daisy, the first supported local credential target is:
+
+`~/applications/daisy/.pi/agent/pdpp-owner-agent.json`
+
+Rationale:
+
+- Daisy's service exports `DAISY_PI_AGENT_DIR`, defaulting to `~/applications/daisy/.pi/agent`.
+- `.pi/` is gitignored by Daisy, and `start_service.sh` already writes Pi agent config under this directory with mode `0600`.
+- `host-config/` is intentionally read-only from Daisy's sandbox and is tracked; it is not a credential target.
+- No Daisy daemon or dependency is required for the first tranche. The owner-agent CLI can create the file atomically with mode `0600`, and Daisy can read it as local agent state.
 
 ### 4. Owner-agent tokens remain REST/control-plane credentials, not MCP credentials
 
@@ -102,7 +132,4 @@ Rollback is straightforward for the first tranche: remove the metadata advisory 
 
 ## Open Questions
 
-- Should the first implementation include a CLI command that writes Daisy's credential store directly, or should it rely on dashboard-mediated token creation plus a documented local file target?
-- What exact local credential path should Daisy use under `~/applications/daisy`, and what file permissions should the reference require in its acceptance test?
-- Should owner-agent tokens be long-lived by default, or should the dashboard force an expiry/rotation policy for local agents?
-- Should the metadata include a machine-readable "full owner access" scope label, or is `pdpp_token_kind: owner` plus route documentation sufficient?
+- Token lifetime and rotation policy remains inherited from the current owner-token implementation for this tranche. If the owner wants shorter-lived or rotating owner-agent credentials, that needs a separate security/design change.

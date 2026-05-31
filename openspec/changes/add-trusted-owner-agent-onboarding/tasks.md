@@ -1,8 +1,8 @@
 ## 1. Boundary Audit
 
-- [ ] 1.1 Audit the current deployment-token/device-approval flow, root pointer, protected-resource metadata, `/mcp` owner-bearer rejection, and `/v1/*` owner-bearer reads; record any gaps in `design.md`.
-- [ ] 1.2 Inspect `~/applications/daisy` for existing credential/config conventions without printing secrets, then decide the first supported local credential target.
-- [ ] 1.3 Update `design.md` with the final owner-agent vocabulary and any Daisy-specific constraints found during the audit.
+- [x] 1.1 Audit the current deployment-token/device-approval flow, root pointer, protected-resource metadata, `/mcp` owner-bearer rejection, and `/v1/*` owner-bearer reads; record any gaps in `design.md`.
+- [x] 1.2 Inspect `~/applications/daisy` for existing credential/config conventions without printing secrets, then decide the first supported local credential target.
+- [x] 1.3 Update `design.md` with the final owner-agent vocabulary and any Daisy-specific constraints found during the audit.
 
 ## 2. Discovery Metadata
 
@@ -20,9 +20,9 @@
 
 ## 4. Route Boundary And REST Semantics
 
-- [ ] 4.1 Add or refresh tests proving valid owner-agent bearers can read owner-visible `/v1/schema`, `/v1/streams`, and representative record/search/blob metadata routes.
-- [ ] 4.2 Add or refresh tests proving `/mcp` rejects owner-agent bearers with a clear recovery hint toward grant-scoped MCP or owner-agent REST onboarding.
-- [ ] 4.3 Verify owner-agent credentials do not expand `/_ref/*` bearer behavior beyond the routes that already support owner bearer auth or owner-session auth.
+- [x] 4.1 Add or refresh tests proving valid owner-agent bearers can read owner-visible `/v1/schema`, `/v1/streams`, and representative record/search/blob metadata routes.
+- [x] 4.2 Add or refresh tests proving `/mcp` rejects owner-agent bearers with a clear recovery hint toward grant-scoped MCP or owner-agent REST onboarding.
+- [x] 4.3 Verify owner-agent credentials do not expand `/_ref/*` bearer behavior beyond the routes that already support owner bearer auth or owner-session auth.
 
 ## 5. Token-Efficient Local Agent Guidance
 

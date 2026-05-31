@@ -1146,7 +1146,12 @@ function requireClient(req, res, next) {
 function requireClientOrMcpPackage(req, res, next) {
   const kind = req.tokenInfo?.pdpp_token_kind;
   if (kind !== 'client' && kind !== 'mcp_package') {
-    return pdppError(res, 403, 'permission_error', 'Client or MCP package token required');
+    return pdppError(
+      res,
+      403,
+      'permission_error',
+      'MCP requires a grant-scoped client or MCP package token. Owner-agent bearers are REST/control-plane credentials; use owner-agent REST onboarding for local owner automation.',
+    );
   }
   next();
 }

@@ -653,6 +653,8 @@ test('/mcp rejects missing and owner bearers', async () => {
     });
     assert.equal(owner.status, 403);
     assert.equal(owner.body.error.code, 'permission_error');
+    assert.match(owner.body.error.message, /grant-scoped client or MCP package token/);
+    assert.match(owner.body.error.message, /owner-agent REST onboarding/);
   } finally {
     await closeServer(server);
   }
