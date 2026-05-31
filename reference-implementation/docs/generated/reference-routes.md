@@ -329,6 +329,7 @@ List records in a stream under grant enforcement. Supports logical-cursor pagina
 - `subject_id` — string
 - `connection_id` — string · Canonical public identifier for a connection (one owner-configured account/device/profile). Prefer this over the deprecated `connector_instance_id` alias.
 - `connector_instance_id` — string · Deprecated wire alias for `connection_id`. Emitted alongside `connection_id` during the migration window. New clients SHOULD ignore this field and read `connection_id` instead.
+- `window` — enum `none | exact`
 
 ### Path parameters
 

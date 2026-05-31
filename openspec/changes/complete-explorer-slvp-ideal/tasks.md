@@ -14,10 +14,10 @@ the single end-to-end journey in section 6.
 
 ## 2. Read-contract: bounded window metadata
 
-- [ ] 2.1 Add an optional `meta.window` (`total`, `earliest_at`, `latest_at`) to `GET /v1/streams/:stream/records`, computed under the same grant projection and the same exact/declared range-filter validation as the records.
-- [ ] 2.2 Omit `meta.window` when the aggregate cannot be computed cheaply or is not implemented; never estimate.
-- [ ] 2.3 Regenerate and verify `@pdpp/reference-contract` for the additive `meta.window` shape.
-- [ ] 2.4 Add reference-server tests: window figures reflect the filtered, grant-scoped corpus; absence is honest; no full-corpus figure is synthesized from a bounded sample.
+- [x] 2.1 Add an optional `meta.window` (`total`, `earliest_at`, `latest_at`) to `GET /v1/streams/:stream/records`, computed under the same grant projection and the same exact/declared range-filter validation as the records. (`window=exact` is opt-in; SQLite computes logical `consent_time_field` bounds; fan-in merges all-present windows.)
+- [x] 2.2 Omit `meta.window` when the aggregate cannot be computed cheaply or is not implemented; never estimate. (Absent/`none` omits; `changes_since` rejects `window`; Postgres validates but omits this tranche rather than substituting ingest time.)
+- [x] 2.3 Regenerate and verify `@pdpp/reference-contract` for the additive `meta.window` shape. (After event-sub generator repair, generated OpenAPI/docs change only `/v1/streams/{stream}/records` for `window` query + `meta.window` response schema.)
+- [x] 2.4 Add reference-server tests: window figures reflect the filtered, grant-scoped corpus; absence is honest; no full-corpus figure is synthesized from a bounded sample. (`reference-implementation/test/records-meta-window.test.js`.)
 
 ## 3. Explorer cards: typed dispatch with heuristic fallback
 

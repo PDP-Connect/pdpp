@@ -5426,6 +5426,18 @@
               "minLength": 1,
               "description": "Deprecated wire alias for `connection_id`. Emitted alongside `connection_id` during the migration window. New clients SHOULD ignore this field and read `connection_id` instead."
             }
+          },
+          {
+            "in": "query",
+            "name": "window",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "none",
+                "exact"
+              ]
+            }
           }
         ],
         "responses": {
@@ -5533,6 +5545,99 @@
                       "required": [
                         "status"
                       ]
+                    },
+                    "meta": {
+                      "$id": "pdpp/canonical/Meta",
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "count": {
+                          "$id": "pdpp/canonical/CountMeta",
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "kind": {
+                              "$id": "pdpp/canonical/CountKind",
+                              "type": "string",
+                              "enum": [
+                                "none",
+                                "estimated",
+                                "exact"
+                              ],
+                              "description": "Cost-graded count grade. `none` means the server returned no count value."
+                            },
+                            "value": {
+                              "type": "integer",
+                              "minimum": 0
+                            }
+                          },
+                          "required": [
+                            "kind"
+                          ]
+                        },
+                        "window": {
+                          "$id": "pdpp/canonical/WindowMeta",
+                          "type": "object",
+                          "additionalProperties": false,
+                          "properties": {
+                            "total": {
+                              "type": "integer",
+                              "minimum": 0
+                            },
+                            "earliest_at": {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            "latest_at": {
+                              "type": "string",
+                              "format": "date-time"
+                            }
+                          },
+                          "required": [
+                            "total"
+                          ]
+                        },
+                        "warnings": {
+                          "type": "array",
+                          "items": {
+                            "$id": "pdpp/canonical/Warning",
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "code": {
+                                "$id": "pdpp/canonical/WarningCode",
+                                "type": "string",
+                                "enum": [
+                                  "count_downgraded",
+                                  "source_skipped_not_applicable",
+                                  "deprecated_alias_used",
+                                  "partial_results",
+                                  "compatibility_fallback"
+                                ]
+                              },
+                              "message": {
+                                "type": "string",
+                                "description": "Human-readable explanation. Not a stable client signal."
+                              },
+                              "detail": {
+                                "type": "object",
+                                "additionalProperties": true
+                              },
+                              "field": {
+                                "type": "string"
+                              },
+                              "connection_id": {
+                                "type": "string",
+                                "minLength": 1
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ]
+                          }
+                        }
+                      }
                     }
                   },
                   "required": [
