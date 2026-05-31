@@ -75,11 +75,13 @@ curl -fsS "$ENTRYPOINT/.well-known/oauth-protected-resource" \
 curl -fsS "$ENTRYPOINT/" | jq '.pdpp_owner_agent_onboarding'
 ```
 
-The advisory block, when present, links the surfaces you need: the AS issuer and RS
-resource origin, the owner approval surface, the schema endpoint, the stream-discovery
-endpoint, the query base, the token-introspection endpoint, the revocation path, and the
-event-subscription discovery link. It also states that `/mcp` is not the owner-agent
-transport.
+The advisory block, when present, names every surface you need by field, so you never guess
+a route: `resource` (RS origin) and `authorization_server` (AS issuer); the
+`device_authorization_endpoint`, `owner_approval_url`, and `token_endpoint` for browser
+approval; `schema_endpoint`, `streams_endpoint`, and `query_base` for reads;
+`introspection_endpoint` and `revocation_path_template` for lifecycle; and
+`event_subscriptions_endpoint` for push delivery. `mcp_owner_bearer_rejected: true` states
+that `/mcp` is not the owner-agent transport.
 
 If the block is **absent**, this deployment does not support trusted owner-agent
 onboarding (it may be misconfigured, disabled, or behind an untrusted forwarded origin).
@@ -87,19 +89,26 @@ Do not fall back to scraping owner pages for a bearer. Report that owner-agent o
 is unavailable on this deployment and stop. Ordinary grant-scoped access via
 `pdpp-data-access` remains available where the grant-scoped workflow is advertised.
 
-### 2. Get browser-mediated owner approval
+### 2. Get browser-mediated owner approval (device authorization)
 
-Initiate (or instruct the operator to initiate) the owner-agent bootstrap through the
-approval surface named in the advisory block. The operator approves in an
-owner-authenticated browser/dashboard context. You cannot approve on their behalf.
+Onboarding is an RFC 8628 device-authorization flow. POST the
+`device_authorization_endpoint` to start it; the response carries a `device_code` and a
+`verification_uri_complete` — the `owner_approval_url` with a `user_code` attached
+(`<RS>/device?user_code=...`). Relay that approval URL prominently — terminal, your tool's
+UI, or a chat reply — and wait. The operator approves in an owner-authenticated browser
+context; you cannot approve on their behalf. Never relay the URL anywhere it would persist
+past the operator's session.
 
-Relay the approval URL prominently — terminal, your tool's UI, or a chat reply — and wait.
-Never relay it anywhere it would persist past the operator's session.
+After the operator approves, poll the `token_endpoint` with
+`grant_type=urn:ietf:params:oauth:grant-type:device_code` and the `device_code`, honoring
+`authorization_pending` / `slow_down` (keep polling), `access_denied` (denied — stop), and
+`expired_token` (start over). On success the response contains the owner `access_token`;
+write it to the local credential target (see §3) and surface only non-secret status.
+`pdpp owner-agent onboard <entrypoint>` performs all of this without printing the bearer.
 
-The successful flow writes the issued owner credential to the local credential target
-(see §3) and surfaces only non-secret status. **Do not ask the operator to copy a bearer
-string out of the dashboard and paste it to you.** A dashboard bearer-copy path may exist
-for low-level debugging; it is not the onboarding path for this profile.
+**Do not ask the operator to copy a bearer string out of the dashboard and paste it to
+you.** A dashboard bearer-copy path may exist for low-level debugging; it is not the
+onboarding path for this profile.
 
 ### 3. Store the credential locally, read it at call time
 
@@ -127,16 +136,20 @@ id, expiry, and revocation handle — never the bearer.
 This is the heart of the owner-agent profile. Do not rescan everything to answer each
 question. See `references/sync.md` for the full reference; the shape is:
 
-1. **Metadata first.** Fetch `/v1/schema`, then enumerate `/v1/streams` and the visible
-   connections before any record read. Build all queries off that response.
-2. **Attribute by `connection_id`.** In multi-connection deployments, use `connection_id`
-   to disambiguate and attribute records. Store sync state per stream **and** per
-   connection.
+1. **Metadata first.** Fetch `/v1/schema`, then enumerate `/v1/streams` and cache the
+   catalog before any record read. `/v1/streams` returns a list envelope
+   (`{ "object": "list", "has_more": ..., "data": [...] }`); the stream entries are under
+   **`data`**, not a top-level `streams` key. Build all queries off that response.
+2. **Attribute by `connection_id`.** In multi-connection deployments, pass the stable
+   `connection_id` query parameter to scope a read and attribute records. Store sync state
+   per stream **and** per connection.
 3. **Initial sync, bounded.** Page through each stream with the declared pagination
-   cursor and field projection. Request only the fields you need.
+   cursor (`next_cursor` while `has_more`) and field projection. Request only the fields
+   you need.
 4. **Incremental sync.** On refresh, prefer `changes_since=<stored cursor>` (bootstrap
    with `changes_since=beginning`), declared filters, and pagination over rescanning all
-   records. Persist the new cursor per stream/connection.
+   records. Records also arrive under `data`; persist the returned `next_changes_since`
+   cursor per stream/connection.
 5. **Periodic metadata refresh.** Re-fetch schema and stream metadata on a cadence so
    newly added streams and connections become visible without guessing.
 6. **Blobs by reference.** Fetch attachment bytes only when needed, by following
@@ -150,8 +163,10 @@ valid-TLS HTTPS callback receiver:
 
 - **You have a durable valid-TLS HTTPS receiver** → you MAY create event subscriptions
   with the registered owner-agent bearer where the reference advertises support, for
-  low-latency notification. Event payloads carry source identity plus a `changes_since`
-  cursor, never record bodies; fetch changed records via §4.
+  low-latency notification. Create/rotate returns a one-time `whsec_` signing secret in the
+  response body — persist it securely at that moment; the server stores only a hash and
+  will not return it again (rotate to replace a lost one). Event payloads carry source
+  identity plus a `changes_since` cursor, never record bodies; fetch changed records via §4.
 - **You do not** (most local agents, including a laptop-resident Daisy with no public
   callback) → **use cursor polling with backoff**, plus periodic schema refresh. Do not
   attempt callback delivery to an unreachable local endpoint.

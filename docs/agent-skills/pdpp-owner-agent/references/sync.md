@@ -16,7 +16,8 @@ query shapes; this file covers the owner-agent sync strategy that sits on top of
 A correct owner-agent never answers a question by scanning every record. The pattern is:
 
 1. **Metadata first.** `/v1/schema` → connectors, streams, fields, capability flags.
-   Then `/v1/streams` → the streams and connections currently visible. Build every query
+   Then `/v1/streams` → the streams and connections currently visible, returned as a list
+   envelope with entries under **`data`** (not a top-level `streams` key). Build every query
    off this response, not from memory.
 2. **Stable identity.** Use `connection_id` to attribute records and key your local sync
    state. A multi-connection deployment (two Gmail accounts, two banks) needs per-connection
@@ -70,9 +71,12 @@ valid-TLS HTTPS callback receiver** — not by preference.
 - Your credential is a registered owner-agent bearer. If introspection does not return
   `pdpp_token_kind: "owner"` and a `client_id`, use polling instead.
 
-When all hold, you MAY create subscriptions for low-latency notification. Event payloads
-carry source identity plus a `changes_since` cursor and **never** record bodies — on each
-event, run an incremental sync (below) from that cursor.
+When all hold, you MAY create subscriptions for low-latency notification. Creating (or
+rotating) a subscription returns a one-time `whsec_` signing secret in the response body:
+persist it at that moment, because the server keeps only a hash and will not return it
+again — rotate to replace a lost secret. Event payloads carry source identity plus a
+`changes_since` cursor and **never** record bodies — on each event, run an incremental sync
+(below) from that cursor.
 
 ### Otherwise, poll with backoff
 
@@ -96,13 +100,18 @@ For each `(stream, connection_id)` with a stored cursor:
 ```bash
 TOKEN="$(jq -r '.access_token' "$HOME/applications/daisy/.pi/agent/pdpp-owner-agent.json")"
 curl -fsS \
-  "$RS_URL/v1/streams/<stream>/records?changes_since=<stored-cursor>&limit=200&order=asc" \
-  -H "Authorization: Bearer $TOKEN" | jq '{records: .records, next: .cursor}'
+  "$RS_URL/v1/streams/<stream>/records?connection_id=<id>&changes_since=<stored-cursor>&limit=200" \
+  -H "Authorization: Bearer $TOKEN" \
+  | jq '{records: .data, has_more, next_cursor, next_changes_since}'
 unset TOKEN
 ```
 
+Records arrive in the canonical list envelope: rows under **`data`**, with `has_more`,
+`next_cursor` (pagination position), and `next_changes_since` (the delta cursor to store).
+
 - Bootstrap a never-synced stream with `changes_since=beginning`.
-- Page until the response stops advancing the cursor; persist the final cursor.
+- Page with `next_cursor` while `has_more` is true; persist `next_changes_since` per
+  `(stream, connection_id)` after each successful page.
 - Apply only schema-declared filters and request only needed fields.
 - Fetch `blob_ref.fetch_url` lazily, for blobs you actually surface.
 
