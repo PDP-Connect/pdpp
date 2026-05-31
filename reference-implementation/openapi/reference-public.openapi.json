@@ -331,7 +331,7 @@
         "tags": [
           "metadata"
         ],
-        "summary": "Return RFC 9728 protected-resource metadata advertising the PDPP query base and owner-self-export capabilities.",
+        "summary": "Return RFC 9728 protected-resource metadata advertising the PDPP query base, owner-self-export, advisory `pdpp_agent_discovery` / `pdpp_owner_agent_onboarding` when safely configured, and capabilities such as `client_event_subscriptions`.",
         "parameters": [],
         "responses": {
           "200": {
@@ -8832,7 +8832,7 @@
         "tags": [
           "event-subscriptions"
         ],
-        "summary": "Create a client event subscription. Immediately enqueues a `pdpp.subscription.verify` event to the callback URL. The subscription stays in `pending_verification` until the receiver echoes the `challenge` value. Returns the per-subscription HMAC signing secret (`whsec_*`) once; it cannot be retrieved again.",
+        "summary": "Create an event subscription for the bearer's explicit authority (`client_grant` or registered `trusted_owner_agent`). Immediately enqueues a `pdpp.subscription.verify` event to the callback URL. The subscription stays in `pending_verification` until the receiver echoes the `challenge` value. Returns the per-subscription HMAC signing secret (`whsec_*`) once; it cannot be retrieved again.",
         "parameters": [],
         "responses": {
           "201": {
@@ -8971,7 +8971,7 @@
             }
           },
           "403": {
-            "description": "Bearer token is authenticated but is not a client token for an active grant.",
+            "description": "Bearer token is authenticated but is neither a `client_grant` authority for an active grant nor a registered `trusted_owner_agent` authority; unregistered owner bearers are rejected.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9057,7 +9057,7 @@
         "tags": [
           "event-subscriptions"
         ],
-        "summary": "List all non-deleted event subscriptions for the bearer's `(client_id, grant_id)` pair.",
+        "summary": "List all non-deleted event subscriptions for the bearer's authority tuple (`authority_kind`, `client_id`, `subject_id`, and `grant_id` when `client_grant`).",
         "parameters": [],
         "responses": {
           "200": {
@@ -9223,7 +9223,7 @@
             }
           },
           "403": {
-            "description": "Bearer token is authenticated but is not a client token for an active grant.",
+            "description": "Bearer token is authenticated but is neither a `client_grant` authority for an active grant nor a registered `trusted_owner_agent` authority; unregistered owner bearers are rejected.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9439,7 +9439,7 @@
             }
           },
           "403": {
-            "description": "Bearer token is authenticated but is not a client token for an active grant.",
+            "description": "Bearer token is authenticated but is neither a `client_grant` authority for an active grant nor a registered `trusted_owner_agent` authority; unregistered owner bearers are rejected.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9754,7 +9754,7 @@
             }
           },
           "403": {
-            "description": "Bearer token is authenticated but is not a client token for an active grant.",
+            "description": "Bearer token is authenticated but is neither a `client_grant` authority for an active grant nor a registered `trusted_owner_agent` authority; unregistered owner bearers are rejected.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9913,7 +9913,7 @@
         "tags": [
           "event-subscriptions"
         ],
-        "summary": "Delete an event subscription. Queued undelivered events are dropped. Idempotent for the caller's `(client_id, grant_id)` pair.",
+        "summary": "Delete an event subscription. Queued undelivered events are dropped. Idempotent for the caller's authority tuple (`authority_kind`, `client_id`, `subject_id`, and `grant_id` when `client_grant`).",
         "parameters": [
           {
             "in": "path",
@@ -9974,7 +9974,7 @@
             }
           },
           "403": {
-            "description": "Bearer token is authenticated but is not a client token for an active grant.",
+            "description": "Bearer token is authenticated but is neither a `client_grant` authority for an active grant nor a registered `trusted_owner_agent` authority; unregistered owner bearers are rejected.",
             "content": {
               "application/json": {
                 "schema": {
@@ -10148,7 +10148,7 @@
             }
           },
           "403": {
-            "description": "Bearer token is authenticated but is not a client token for an active grant.",
+            "description": "Bearer token is authenticated but is neither a `client_grant` authority for an active grant nor a registered `trusted_owner_agent` authority; unregistered owner bearers are rejected.",
             "content": {
               "application/json": {
                 "schema": {

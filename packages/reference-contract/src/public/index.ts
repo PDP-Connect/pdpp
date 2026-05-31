@@ -1493,13 +1493,15 @@ const SendTestEventResponseSchema = {
   required: ["event_id"],
 };
 
-// Client tokens only: 401 when the bearer is missing/invalid, 403 when the
-// bearer authenticates but is not a client token for an active grant.
+// Event subscriptions require an explicit subscription authority: either a
+// client_grant bearer for an active grant or a registered trusted_owner_agent
+// bearer. Unregistered owner bearers are rejected.
 const EventSubscriptionAuthErrors = {
   401: { schema: ErrorObjectSchema, description: "Bearer token missing or invalid" },
   403: {
     schema: ErrorObjectSchema,
-    description: "Bearer token is authenticated but is not a client token for an active grant.",
+    description:
+      "Bearer token is authenticated but is neither a `client_grant` authority for an active grant nor a registered `trusted_owner_agent` authority; unregistered owner bearers are rejected.",
   },
 };
 
@@ -1556,7 +1558,7 @@ export const publicManifests = [
     surface: "public",
     tags: ["metadata"],
     summary:
-      "Return RFC 9728 protected-resource metadata advertising the PDPP query base and owner-self-export capabilities.",
+      "Return RFC 9728 protected-resource metadata advertising the PDPP query base, owner-self-export, advisory `pdpp_agent_discovery` / `pdpp_owner_agent_onboarding` when safely configured, and capabilities such as `client_event_subscriptions`.",
     responses: {
       200: { schema: ProtectedResourceMetadataSchema },
     },
@@ -2268,7 +2270,7 @@ export const publicManifests = [
     surface: "public",
     tags: ["event-subscriptions"],
     summary:
-      "Create a client event subscription. Immediately enqueues a `pdpp.subscription.verify` event to the callback URL. The subscription stays in `pending_verification` until the receiver echoes the `challenge` value. Returns the per-subscription HMAC signing secret (`whsec_*`) once; it cannot be retrieved again.",
+      "Create an event subscription for the bearer's explicit authority (`client_grant` or registered `trusted_owner_agent`). Immediately enqueues a `pdpp.subscription.verify` event to the callback URL. The subscription stays in `pending_verification` until the receiver echoes the `challenge` value. Returns the per-subscription HMAC signing secret (`whsec_*`) once; it cannot be retrieved again.",
     request: {
       body: { contentType: "application/json", schema: CreateEventSubscriptionBodySchema },
     },
@@ -2291,7 +2293,8 @@ export const publicManifests = [
     path: "/v1/event-subscriptions",
     surface: "public",
     tags: ["event-subscriptions"],
-    summary: "List all non-deleted event subscriptions for the bearer's `(client_id, grant_id)` pair.",
+    summary:
+      "List all non-deleted event subscriptions for the bearer's authority tuple (`authority_kind`, `client_id`, `subject_id`, and `grant_id` when `client_grant`).",
     responses: {
       200: { schema: ListEventSubscriptionsResponseSchema },
       ...EventSubscriptionAuthErrors,
@@ -2344,7 +2347,7 @@ export const publicManifests = [
     surface: "public",
     tags: ["event-subscriptions"],
     summary:
-      "Delete an event subscription. Queued undelivered events are dropped. Idempotent for the caller's `(client_id, grant_id)` pair.",
+      "Delete an event subscription. Queued undelivered events are dropped. Idempotent for the caller's authority tuple (`authority_kind`, `client_id`, `subject_id`, and `grant_id` when `client_grant`).",
     request: { params: EventSubscriptionIdPathSchema },
     responses: {
       204: { description: "Subscription deleted." },

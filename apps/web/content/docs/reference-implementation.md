@@ -113,6 +113,13 @@ Owner login is a separate device flow:
 
 That flow yields an **owner bearer token** for self-export and direct owner queries.
 
+Trusted local owner agents use a separate reference onboarding path rather than
+copying raw owner bearers into chat. Start from the resource-server entrypoint
+with `pdpp owner-agent onboard <entrypoint> --credential-file ~/applications/daisy/.pi/agent/pdpp-owner-agent.json`,
+approve in the browser, and verify with `pdpp owner-agent status`. This is
+reference REST/control-plane behavior; ordinary agents should use scoped grants
+or grant-scoped MCP.
+
 ### Error envelopes
 
 OAuth authorization-server endpoints keep RFC-shaped error bodies:

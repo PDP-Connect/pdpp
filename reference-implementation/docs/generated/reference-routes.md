@@ -7,7 +7,7 @@ Generated from `packages/reference-contract/src/public/`. Do not edit by hand.
 | **GET** | `/` | `getRsDiscoveryIndex` | Unauthenticated cold-start pointer at the resource server root. Names the well-known endpoint, the `/v1/schema` capability discovery surface, the core query base, and the running reference revision so a probe learns the next hop without trial-and-error. |
 | **GET** | `/` | `getAsDiscoveryIndex` | Unauthenticated cold-start pointer at the authorization server root. Names the AS well-known endpoint and the running reference revision so a probe learns the next hop without trial-and-error. |
 | **GET** | `/.well-known/oauth-authorization-server` | `getAuthorizationServerMetadata` | Return RFC 8414 authorization-server metadata with the reference provider-connect capability extensions. |
-| **GET** | `/.well-known/oauth-protected-resource` | `getProtectedResourceMetadata` | Return RFC 9728 protected-resource metadata advertising the PDPP query base and owner-self-export capabilities. |
+| **GET** | `/.well-known/oauth-protected-resource` | `getProtectedResourceMetadata` | Return RFC 9728 protected-resource metadata advertising the PDPP query base, owner-self-export, advisory `pdpp_agent_discovery` / `pdpp_owner_agent_onboarding` when safely configured, and capabilities such as `client_event_subscriptions`. |
 | **GET** | `/.well-known/oauth-protected-resource/mcp` | `getMcpProtectedResourceMetadata` | Return RFC 9728 protected-resource metadata for the hosted MCP endpoint. |
 | **POST** | `/oauth/register` | `registerDynamicClient` | Register a public client through the reference dynamic client registration profile. |
 | **POST** | `/oauth/par` | `createPushedAuthorizationRequest` | Stage a PDPP data-access request and receive a pending-consent request_uri plus authorization URL. |
@@ -29,11 +29,11 @@ Generated from `packages/reference-contract/src/public/`. Do not edit by hand.
 | **GET** | `/v1/search/hybrid` | `searchRecordsHybrid` | Experimental optional extension: hybrid retrieval blending lexical and semantic recall under one grant-safe result list. See the hybrid-retrieval capability spec. Hybrid does NOT support cursor pagination on this reference; check `pdpp_discovery_hints.hybrid_pagination_supported` in the protected-resource metadata and, when it is `false` or absent, fall back to `GET /v1/search` (lexical) which supports `cursor`. |
 | **POST** | `/v1/blobs` | `uploadBlob` | Upload connector/runtime-owned blob bytes for a bound record. |
 | **GET** | `/v1/blobs/{blob_id}` | `getBlob` | Fetch blob bytes authorized by the caller having discovered the referencing record under grant. When the blob identifier resolves to more than one connection under the caller's grant and `connection_id` is omitted, returns a typed `ambiguous_connection` (409) error with `available_connections` and retry guidance instead of silently picking one. The deprecated `connector_instance_id` alias is accepted for compatibility but new clients SHOULD use `connection_id`. |
-| **POST** | `/v1/event-subscriptions` | `createEventSubscription` | Create a client event subscription. Immediately enqueues a `pdpp.subscription.verify` event to the callback URL. The subscription stays in `pending_verification` until the receiver echoes the `challenge` value. Returns the per-subscription HMAC signing secret (`whsec_*`) once; it cannot be retrieved again. |
-| **GET** | `/v1/event-subscriptions` | `listEventSubscriptions` | List all non-deleted event subscriptions for the bearer's `(client_id, grant_id)` pair. |
+| **POST** | `/v1/event-subscriptions` | `createEventSubscription` | Create an event subscription for the bearer's explicit authority (`client_grant` or registered `trusted_owner_agent`). Immediately enqueues a `pdpp.subscription.verify` event to the callback URL. The subscription stays in `pending_verification` until the receiver echoes the `challenge` value. Returns the per-subscription HMAC signing secret (`whsec_*`) once; it cannot be retrieved again. |
+| **GET** | `/v1/event-subscriptions` | `listEventSubscriptions` | List all non-deleted event subscriptions for the bearer's authority tuple (`authority_kind`, `client_id`, `subject_id`, and `grant_id` when `client_grant`). |
 | **GET** | `/v1/event-subscriptions/{subscription_id}` | `getEventSubscription` | Get a single event subscription owned by the bearer. |
 | **PATCH** | `/v1/event-subscriptions/{subscription_id}` | `updateEventSubscription` | Update an event subscription. Toggle `enabled` to disable or re-enable delivery. Set `rotate_secret` to true to generate a new signing secret (returned in the response body; old secret is immediately invalid). |
-| **DELETE** | `/v1/event-subscriptions/{subscription_id}` | `deleteEventSubscription` | Delete an event subscription. Queued undelivered events are dropped. Idempotent for the caller's `(client_id, grant_id)` pair. |
+| **DELETE** | `/v1/event-subscriptions/{subscription_id}` | `deleteEventSubscription` | Delete an event subscription. Queued undelivered events are dropped. Idempotent for the caller's authority tuple (`authority_kind`, `client_id`, `subject_id`, and `grant_id` when `client_grant`). |
 | **POST** | `/v1/event-subscriptions/{subscription_id}/test-event` | `sendTestEvent` | Enqueue a `pdpp.subscription.test` event for asynchronous delivery to the subscription's callback URL. Accepted for `active` and `pending_verification` subscriptions. Returns the enqueued event ID. |
 
 ## getRsDiscoveryIndex
@@ -70,7 +70,7 @@ Return RFC 8414 authorization-server metadata with the reference provider-connec
 
 `GET /.well-known/oauth-protected-resource`
 
-Return RFC 9728 protected-resource metadata advertising the PDPP query base and owner-self-export capabilities.
+Return RFC 9728 protected-resource metadata advertising the PDPP query base, owner-self-export, advisory `pdpp_agent_discovery` / `pdpp_owner_agent_onboarding` when safely configured, and capabilities such as `client_event_subscriptions`.
 
 ### Responses
 
@@ -529,7 +529,7 @@ Fetch blob bytes authorized by the caller having discovered the referencing reco
 
 `POST /v1/event-subscriptions`
 
-Create a client event subscription. Immediately enqueues a `pdpp.subscription.verify` event to the callback URL. The subscription stays in `pending_verification` until the receiver echoes the `challenge` value. Returns the per-subscription HMAC signing secret (`whsec_*`) once; it cannot be retrieved again.
+Create an event subscription for the bearer's explicit authority (`client_grant` or registered `trusted_owner_agent`). Immediately enqueues a `pdpp.subscription.verify` event to the callback URL. The subscription stays in `pending_verification` until the receiver echoes the `challenge` value. Returns the per-subscription HMAC signing secret (`whsec_*`) once; it cannot be retrieved again.
 
 ### Request body
 
@@ -542,19 +542,19 @@ Create a client event subscription. Immediately enqueues a `pdpp.subscription.ve
 - `201` — Subscription created. The `secret` field is the Standard Webhooks signing key (`whsec_<base64>`) and is returned only on creation.
 - `400` — Invalid request (callback URL malformed, filters not in grant, etc.)
 - `401` — Bearer token missing or invalid
-- `403` — Bearer token is authenticated but is not a client token for an active grant.
+- `403` — Bearer token is authenticated but is neither a `client_grant` authority for an active grant nor a registered `trusted_owner_agent` authority; unregistered owner bearers are rejected.
 
 ## listEventSubscriptions
 
 `GET /v1/event-subscriptions`
 
-List all non-deleted event subscriptions for the bearer's `(client_id, grant_id)` pair.
+List all non-deleted event subscriptions for the bearer's authority tuple (`authority_kind`, `client_id`, `subject_id`, and `grant_id` when `client_grant`).
 
 ### Responses
 
 - `200` — JSON body
 - `401` — Bearer token missing or invalid
-- `403` — Bearer token is authenticated but is not a client token for an active grant.
+- `403` — Bearer token is authenticated but is neither a `client_grant` authority for an active grant nor a registered `trusted_owner_agent` authority; unregistered owner bearers are rejected.
 
 ## getEventSubscription
 
@@ -570,7 +570,7 @@ Get a single event subscription owned by the bearer.
 
 - `200` — JSON body
 - `401` — Bearer token missing or invalid
-- `403` — Bearer token is authenticated but is not a client token for an active grant.
+- `403` — Bearer token is authenticated but is neither a `client_grant` authority for an active grant nor a registered `trusted_owner_agent` authority; unregistered owner bearers are rejected.
 - `404` — Subscription not found or not owned by the bearer
 
 ## updateEventSubscription
@@ -594,7 +594,7 @@ Update an event subscription. Toggle `enabled` to disable or re-enable delivery.
 - `200` — Updated subscription. `secret` is only present when `rotate_secret` was `true`.
 - `400` — Invalid update (e.g. re-enabling a revoked subscription)
 - `401` — Bearer token missing or invalid
-- `403` — Bearer token is authenticated but is not a client token for an active grant.
+- `403` — Bearer token is authenticated but is neither a `client_grant` authority for an active grant nor a registered `trusted_owner_agent` authority; unregistered owner bearers are rejected.
 - `404` — Subscription not found or not owned by the bearer
 - `409` — State conflict (e.g. re-enabling a `disabled_revoked` subscription)
 
@@ -602,7 +602,7 @@ Update an event subscription. Toggle `enabled` to disable or re-enable delivery.
 
 `DELETE /v1/event-subscriptions/{subscription_id}`
 
-Delete an event subscription. Queued undelivered events are dropped. Idempotent for the caller's `(client_id, grant_id)` pair.
+Delete an event subscription. Queued undelivered events are dropped. Idempotent for the caller's authority tuple (`authority_kind`, `client_id`, `subject_id`, and `grant_id` when `client_grant`).
 
 ### Path parameters
 
@@ -612,7 +612,7 @@ Delete an event subscription. Queued undelivered events are dropped. Idempotent 
 
 - `204` — Subscription deleted.
 - `401` — Bearer token missing or invalid
-- `403` — Bearer token is authenticated but is not a client token for an active grant.
+- `403` — Bearer token is authenticated but is neither a `client_grant` authority for an active grant nor a registered `trusted_owner_agent` authority; unregistered owner bearers are rejected.
 - `404` — Subscription not found or not owned by the bearer
 
 ## sendTestEvent
@@ -629,7 +629,7 @@ Enqueue a `pdpp.subscription.test` event for asynchronous delivery to the subscr
 
 - `202` — Test event accepted for delivery.
 - `401` — Bearer token missing or invalid
-- `403` — Bearer token is authenticated but is not a client token for an active grant.
+- `403` — Bearer token is authenticated but is neither a `client_grant` authority for an active grant nor a registered `trusted_owner_agent` authority; unregistered owner bearers are rejected.
 - `404` — Subscription not found or not owned by the bearer
 - `409` — Subscription is not in a state that accepts test events (must be `active` or `pending_verification`)
 

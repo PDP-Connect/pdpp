@@ -12,14 +12,14 @@ surface is documented in
 
 ## What event subscriptions are
 
-A grant-scoped client or a trusted owner agent with a registered owner bearer can
+A grant-scoped client bearer or a registered trusted-owner-agent bearer can
 register an HTTPS webhook receiver against its authority. The reference resource
 server then delivers
 [CloudEvents 1.0](https://cloudevents.io/) JSON envelopes signed per
 [Standard Webhooks](https://www.standardwebhooks.com) when:
 
-- the grant is approved or revoked,
-- new records land for streams covered by the grant.
+- the bound grant is approved or revoked for grant-scoped subscriptions,
+- new records land for streams covered by the grant or owner-agent authority.
 
 Record bodies are never pushed. The event envelope carries a
 `data.changes_since` cursor; the client pulls the actual records by passing
@@ -105,9 +105,10 @@ node scripts/event-subscription-test-receiver.mjs
 #    adapter under `pdpp connect`) or from a trusted owner agent that holds a
 #    registered owner-agent bearer, create a subscription pointing at the
 #    receiver. With the MCP adapter, this is the create_event_subscription
-#    tool. With raw REST:
+#    tool. With raw REST, set PDPP_EVENT_SUBSCRIPTION_BEARER to either bearer
+#    kind without printing it:
 curl -sS -X POST \
-  -H "Authorization: Bearer $PDPP_CLIENT_BEARER" \
+  -H "Authorization: Bearer $PDPP_EVENT_SUBSCRIPTION_BEARER" \
   -H "Content-Type: application/json" \
   -d '{"callback_url":"http://localhost:8765/webhook"}' \
   https://<your-deployment>/v1/event-subscriptions
@@ -118,7 +119,7 @@ curl -sS -X POST \
 
 # 4. Trigger a test event:
 curl -sS -X POST \
-  -H "Authorization: Bearer $PDPP_CLIENT_BEARER" \
+  -H "Authorization: Bearer $PDPP_EVENT_SUBSCRIPTION_BEARER" \
   https://<your-deployment>/v1/event-subscriptions/{id}/test-event
 
 # 5. The receiver prints the `pdpp.subscription.test` envelope. Done.

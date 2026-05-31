@@ -74,30 +74,34 @@ current MCP setup command or settings UI and use the same URL above.
 
 ## Trusted local agents (operator-side)
 
-The owner-token path is a separate surface for the operator and for trusted
-local agents that run on the operator's behalf — a CLI tool you wrote, a
-backup script you run from your laptop, an agent like a personal assistant
-that lives on a machine you control. It is not the route for ordinary MCP
-clients.
+Trusted local owner agents are a separate REST/control-plane surface for the
+operator — a CLI tool you wrote, a backup script you run from your laptop, or a
+personal assistant that lives on a machine you control. This is not the route
+for ordinary MCP clients and it is not grant-scoped MCP access.
 
-Provision one from `/dashboard/deployment/tokens`:
+For the happy path, onboard the trusted owner agent with browser-mediated owner
+approval and a local credential file:
 
-1. Sign in to the operator dashboard at `/owner/login`.
-2. Open the **Deployment → Tokens** page in the operator console
-   (`/dashboard/deployment/tokens`).
-3. Enter a token name that identifies the bearer (for example `local-cli`,
-   `backup-script`, or the local agent's name).
-4. Click **Issue token**. The dashboard registers a fresh OAuth client
-   (RFC 7591), drives the device authorization flow under your signed-in
-   owner session, and renders the bearer once. Copy it now — the dashboard
-   does not store it.
-5. The bearer is bound to that named client. Revoking the client (RFC 7592)
-   from the same page cascade-revokes the bearer.
+```sh
+pdpp owner-agent onboard <PDPP_REFERENCE_ORIGIN> \
+  --credential-file ~/applications/daisy/.pi/agent/pdpp-owner-agent.json
 
-Use the bearer as `Authorization: Bearer …` against `/v1/*`. The owner
-bearer is an explicitly broader credential than a PDPP grant; treat it as
-operator-grade material, not something to paste into a third-party agent
-session.
+pdpp owner-agent status \
+  --credential-file ~/applications/daisy/.pi/agent/pdpp-owner-agent.json
+```
+
+The CLI discovers the owner-agent onboarding profile, opens the approval flow,
+and writes the issued credential with restrictive permissions. It prints only
+non-secret status; the bearer is not displayed and should not be pasted into a
+chat transcript. A trusted local owner agent reads the credential file at call
+time and uses the bearer only against owner-bearer-supported `/v1/*` REST
+routes.
+
+The dashboard token page at `/dashboard/deployment/tokens` may still be useful
+as a low-level self-export/debug tool for operators who need to inspect the raw
+REST bearer flow. Keep that path secondary: the bearer is broader than a PDPP
+grant, should not be used with `/mcp`, and should not be copied into a
+third-party agent session.
 
 Ordinary MCP clients (Claude, ChatGPT, third-party agents) should keep
 using the OAuth scoped-grant flow at `/mcp` described above. `/mcp` rejects
@@ -111,8 +115,9 @@ owner bearers on purpose.
 - `No streaming target registered for this run`: that belongs to connector
   browser streaming, not hosted MCP. Hosted MCP reads already-collected records.
 - `401` from `/mcp`: reconnect the MCP client or re-run OAuth approval.
-- `403` from `/mcp`: the bearer is valid but not a PDPP client bearer for this
-  MCP resource.
+- `403` from `/mcp`: the bearer is valid but not a grant-scoped PDPP client
+  bearer for this MCP resource. Trusted owner-agent bearers are REST
+  credentials and are rejected by `/mcp` on purpose.
 
 ## Event subscriptions
 
