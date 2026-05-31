@@ -296,3 +296,43 @@ test('DCR per owner token: owner-issued clients list and cascade-revoke owner be
     assert.equal(deletePreRegisteredResp.status, 403);
   });
 });
+
+test('owner device approval binds a public dynamic client to the approving owner for revoke', async () => {
+  await withServer(async ({ asUrl }) => {
+    const sessionCookie = await login(asUrl);
+
+    const registered = await registerClient(asUrl, {
+      client_name: 'Daisy local owner agent',
+      token_endpoint_auth_method: 'none',
+    });
+    assert.equal(registered.status, 201);
+    assert.ok(registered.body.client_id);
+
+    const listedBeforeApproval = await listOwnerClients(asUrl, sessionCookie);
+    assert.ok(!listedBeforeApproval.data.some((row) => row.client_id === registered.body.client_id));
+
+    const token = await issueOwnerTokenViaDeviceFlow(asUrl, registered.body.client_id, sessionCookie);
+    assert.ok(token.access_token);
+    const active = await introspect(asUrl, token.access_token);
+    assert.equal(active.active, true);
+    assert.equal(active.pdpp_token_kind, 'owner');
+    assert.equal(active.subject_id, TEST_SUBJECT);
+    assert.equal(active.client_id, registered.body.client_id);
+
+    const listedAfterApproval = await listOwnerClients(asUrl, sessionCookie);
+    const ownerClient = listedAfterApproval.data.find((row) => row.client_id === registered.body.client_id);
+    assert.ok(ownerClient, 'approval should bind the dynamic client to the approving owner');
+    assert.equal(ownerClient.client_name, 'Daisy local owner agent');
+    assert.equal(ownerClient.active_token_count, 1);
+
+    const deleteResp = await fetch(`${asUrl}/oauth/register/${encodeURIComponent(registered.body.client_id)}`, {
+      method: 'DELETE',
+      headers: { Cookie: sessionCookie },
+    });
+    assert.equal(deleteResp.status, 204);
+
+    const inactive = await introspect(asUrl, token.access_token);
+    assert.equal(inactive.active, false);
+    assert.equal(inactive.inactive_reason, 'token_revoked');
+  });
+});

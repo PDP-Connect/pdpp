@@ -1564,6 +1564,35 @@ export async function getRegisteredClient(clientId) {
   return mapRegisteredClientRow(row || null);
 }
 
+async function bindDynamicClientToApprovingOwner(registeredClient, subjectId) {
+  if (!(registeredClient?.client_id && subjectId)) {
+    return registeredClient;
+  }
+  if (registeredClient.registration_mode !== 'dynamic') {
+    return registeredClient;
+  }
+  const existingSubject = registeredClient.metadata?.issuer_subject_id || null;
+  if (existingSubject) {
+    if (existingSubject !== subjectId) {
+      const err = new Error('Dynamic client is bound to a different owner subject');
+      err.code = 'forbidden';
+      throw err;
+    }
+    return registeredClient;
+  }
+
+  await upsertRegisteredClient({
+    clientId: registeredClient.client_id,
+    registrationMode: registeredClient.registration_mode,
+    metadata: {
+      ...registeredClient.metadata,
+      issuer_subject_id: subjectId,
+    },
+    clientSecret: registeredClient.client_secret || null,
+  });
+  return (await getRegisteredClient(registeredClient.client_id)) || registeredClient;
+}
+
 /**
  * Operator-scoped listing of dynamic clients the dashboard registered on
  * behalf of a particular owner-session subject. Backs `GET /_ref/clients?owner=true`.
@@ -4233,6 +4262,11 @@ export async function approveOwnerDeviceAuthorization(userCode, subjectId = 'own
   if (!registeredClient) {
     const err = new Error(`Unknown client_id: ${pending.client_id}`);
     err.code = 'invalid_client';
+    throw attachOwnerDeviceTraceContext(err, pending);
+  }
+  try {
+    registeredClient = await bindDynamicClientToApprovingOwner(registeredClient, subjectId);
+  } catch (err) {
     throw attachOwnerDeviceTraceContext(err, pending);
   }
 
