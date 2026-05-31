@@ -699,10 +699,10 @@ export async function renderHostedMcpSourceSelection(
               </label>
             </summary>
             <div class="hosted-ui-option-stream-controls">
-              <p class="hosted-ui-option-streams-help">Select this source, then keep all streams or narrow the list.</p>
+              <p class="hosted-ui-option-streams-help">Select this source, then choose one or more streams. Use all streams only when the assistant needs the whole source.</p>
               <div class="hosted-ui-actions hosted-ui-stream-actions" aria-label="Stream bulk controls for ${ui.escapeHtml(row.connectorTypeLabel)}">
-                <button type="button" class="hosted-ui-button" data-hosted-mcp-select-streams>Select all streams</button>
-                <button type="button" class="hosted-ui-button" data-hosted-mcp-clear-streams>Clear streams</button>
+                <button type="button" class="hosted-ui-button" data-hosted-mcp-select-streams>Use all streams</button>
+                <button type="button" class="hosted-ui-button" data-hosted-mcp-clear-streams>Clear this source</button>
               </div>
             </div>
             ${renderRowStreams(row)}
@@ -713,23 +713,23 @@ export async function renderHostedMcpSourceSelection(
     : '<p class="pdpp-body">No connector manifests are registered on this reference server.</p>';
 
   const submit = rows.length
-    ? '<button type="submit" class="hosted-ui-button" data-variant="primary">Authorize selected sources</button>'
+    ? '<button type="submit" class="hosted-ui-button" data-variant="primary">Approve selected data</button>'
     : "";
 
   const riskCopy = rows.length
-    ? `<p class="pdpp-body"><strong>Reference-experimental setup.</strong> Choose the sources this MCP client may read. Each selected source creates its own revocable PDPP grant; unchecked sources and their streams are ignored. Open a source to review or narrow streams. This ceremony does not encode a machine-readable retention bound on the issued grants; how long fetched results are kept is governed by the MCP client's own policy and any external agreements you have with that client.</p>`
+    ? `<p class="pdpp-body"><strong>Choose deliberately.</strong> Pick the sources this assistant may read, then choose the streams inside each source. Each source becomes its own revocable PDPP grant. This setup does not encode a machine-readable retention bound; retention of fetched results is governed by the client and any agreement you have with it.</p>`
     : "";
 
   const validationError = typeof opts.validationError === "string" ? opts.validationError.trim() : "";
   const validationBanner = rows.length
-    ? `<div class="hosted-ui-error hosted-ui-picker-error" role="alert" data-hosted-mcp-picker-error data-default-message="Select at least one source before approving. Stream choices inside unchecked sources are ignored."${validationError ? "" : " hidden"}>${ui.escapeHtml(validationError)}</div>`
+    ? `<div class="hosted-ui-error hosted-ui-picker-error" role="alert" data-hosted-mcp-picker-error data-default-message="Select at least one source and one stream inside each selected source before approving."${validationError ? "" : " hidden"}>${ui.escapeHtml(validationError)}</div>`
     : "";
 
   const bulkControls = rows.length
     ? `
         <div class="hosted-ui-actions hosted-ui-picker-toolbar" aria-label="Source bulk controls">
-          <button type="button" class="hosted-ui-button" data-hosted-mcp-select-sources>Select all sources</button>
-          <button type="button" class="hosted-ui-button" data-hosted-mcp-clear-sources>Clear sources</button>
+          <button type="button" class="hosted-ui-button" data-hosted-mcp-select-sources>Use all sources and streams</button>
+          <button type="button" class="hosted-ui-button" data-hosted-mcp-clear-sources>Clear all</button>
         </div>
       `
     : "";
@@ -741,15 +741,15 @@ export async function renderHostedMcpSourceSelection(
           <label class="hosted-ui-access-mode-option">
             <input type="radio" name="access_mode" value="continuous" checked />
             <span class="hosted-ui-access-mode-body">
-              <span class="hosted-ui-access-mode-label">Continuous until revoked (default)</span>
-              <span class="hosted-ui-access-mode-meta">The MCP client may keep reading until you revoke this grant.</span>
+              <span class="hosted-ui-access-mode-label">Keep access until I revoke it</span>
+              <span class="hosted-ui-access-mode-meta">Best for assistants that need to stay up to date.</span>
             </span>
           </label>
           <label class="hosted-ui-access-mode-option">
             <input type="radio" name="access_mode" value="single_use" />
             <span class="hosted-ui-access-mode-body">
-              <span class="hosted-ui-access-mode-label">One read, then expire</span>
-              <span class="hosted-ui-access-mode-meta">The MCP client may read once. The grant expires on first use.</span>
+              <span class="hosted-ui-access-mode-label">Allow one read only</span>
+              <span class="hosted-ui-access-mode-meta">Best for a one-time check or export.</span>
             </span>
           </label>
         </fieldset>
@@ -830,11 +830,7 @@ export async function renderHostedMcpSourceSelection(
       for (const streamBox of streamBoxes) {
         streamBox.checked = false;
       }
-    } else if (streamBoxes.length > 0 && !streamBoxes.some((streamBox) => streamBox.checked)) {
-      for (const streamBox of streamBoxes) {
-        streamBox.checked = true;
-      }
-    }
+	    }
     const streamGroup = source.querySelector("[data-hosted-mcp-streams]");
     if (streamGroup) {
       streamGroup.dataset.streamsEnabled = selected ? "true" : "false";
@@ -874,14 +870,15 @@ export async function renderHostedMcpSourceSelection(
       syncSource(source);
       setError("");
     });
-    source.querySelector("[data-hosted-mcp-clear-streams]")?.addEventListener("click", () => {
-      for (const streamBox of streamsFor(source)) {
-        streamBox.checked = false;
-      }
-      sourceBox.checked = false;
-      syncSource(source);
-      setError("");
-    });
+	    source.querySelector("[data-hosted-mcp-clear-streams]")?.addEventListener("click", () => {
+	      for (const streamBox of streamsFor(source)) {
+	        streamBox.checked = false;
+	      }
+	      sourceBox.checked = false;
+	      syncSource(source);
+	      source.open = false;
+	      setError("");
+	    });
   }
   form.querySelector("[data-hosted-mcp-select-sources]")?.addEventListener("click", () => {
     for (const source of sources) {
@@ -898,19 +895,31 @@ export async function renderHostedMcpSourceSelection(
   form.querySelector("[data-hosted-mcp-clear-sources]")?.addEventListener("click", () => {
     for (const source of sources) {
       const sourceBox = source.querySelector("[data-hosted-mcp-source-checkbox]");
-      if (sourceBox) {
-        sourceBox.checked = false;
-      }
-      syncSource(source);
-    }
-    setError("");
-  });
-  form.addEventListener("submit", (event) => {
-    if (!sourceBoxes().some((sourceBox) => sourceBox.checked)) {
-      event.preventDefault();
-      setError(error?.dataset.defaultMessage || "Select at least one source before approving.");
-    }
-  });
+	      if (sourceBox) {
+	        sourceBox.checked = false;
+	      }
+	      syncSource(source);
+	      source.open = false;
+	    }
+	    setError("");
+	  });
+	  form.addEventListener("submit", (event) => {
+	    if (!sourceBoxes().some((sourceBox) => sourceBox.checked)) {
+	      event.preventDefault();
+	      setError(error?.dataset.defaultMessage || "Select at least one source before approving.");
+	      return;
+	    }
+	    const incomplete = sources.find((source) => {
+	      const sourceBox = source.querySelector("[data-hosted-mcp-source-checkbox]");
+	      const streamBoxes = streamsFor(source);
+	      return sourceBox?.checked && streamBoxes.length > 0 && !streamBoxes.some((streamBox) => streamBox.checked);
+	    });
+	    if (incomplete) {
+	      event.preventDefault();
+	      incomplete.open = true;
+	      setError("Choose at least one stream inside each selected source, or clear that source.");
+	    }
+	  });
   for (const source of sources) {
     syncSource(source);
   }
@@ -924,8 +933,8 @@ export async function renderHostedMcpSourceSelection(
     body: [
       ui.renderPageIntro({
         eyebrow: "MCP authorization",
-        title: "Choose what this MCP client can read",
-        lede: "Select one or more sources to authorize for this MCP connection. The MCP endpoint remains read-only and grant-scoped.",
+        title: "Choose the data this assistant can read",
+        lede: "Pick sources, then choose the streams inside each one. Unselected sources stay private, and every approval remains revocable.",
       }),
       ui.renderSurface({
         surface: "human",

@@ -88,6 +88,11 @@ Discovery tools (`schema`, `list_streams`) preserve the full RS body in
 so MCP clients whose models read only `content[]` can still choose streams, fields, and
 connection scopes.
 
+`query_records` also preserves the full RS envelope in `structuredContent.data`, and its
+text content includes a bounded preview of returned records. This keeps agents that can
+only reason over MCP `content[]` from seeing only a count summary while preserving
+`structuredContent` as the canonical machine-readable result.
+
 ### Side-effectful tools (event-subscription management)
 
 These tools manage outbound event subscriptions on the configured PDPP instance via the

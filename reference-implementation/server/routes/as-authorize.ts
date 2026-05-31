@@ -443,13 +443,14 @@ function rejectMissingHostedMcpSelection(
     req,
     res,
     ctx,
-    "Select at least one source before approving. Stream choices inside unchecked sources are ignored."
+    "Select at least one source and one stream inside each selected source before approving."
   );
 }
 
 // Builds the package grant and issues the auth code redirect.
 // Extracted to reduce cognitive complexity of the POST handler.
 async function buildPackageAndRedirect(
+  req: RouteRequest,
   res: RouteResponse,
   acc: SourceEntryAccumulator,
   pkce: {
@@ -463,20 +464,30 @@ async function buildPackageAndRedirect(
   ctx: Pick<
     MountAsAuthorizeContext,
     | "createHostedMcpGrantPackage"
+    | "consentPickerCaps"
+    | "consentUi"
+    | "ensureCsrfToken"
     | "issueOAuthAuthorizationCodeForPackageDeviceCode"
     | "oauthError"
+    | "providerName"
     | "stageOAuthAuthorizationCodeRequest"
   >
 ): Promise<unknown> {
-  if (acc.authorizationDetails.length === 0) {
-    // Every selected source had its streams fully deselected.
+  if (acc.sourcesWithEmptyStreams.length > 0) {
+    // A checked source without checked streams is ambiguous owner intent. Re-render
+    // the picker instead of silently dropping it or returning a raw JSON error.
     const labels = acc.sourcesWithEmptyStreams.map((e) => e.connectorLabel).join(", ");
-    return ctx.oauthError(
+    return renderHostedMcpPickerValidationPage(
+      req,
       res,
-      400,
-      "invalid_request",
-      labels ? `Select at least one stream to authorize for: ${labels}` : "At least one source must be selected"
+      ctx,
+      labels
+        ? `Choose at least one stream for ${labels}, or clear that source.`
+        : "Choose at least one stream inside each selected source, or clear that source."
     );
+  }
+  if (acc.authorizationDetails.length === 0) {
+    return renderHostedMcpPickerValidationPage(req, res, ctx, "Select at least one source before approving.");
   }
   const packageResult = await ctx.createHostedMcpGrantPackage({
     authorizationDetails: acc.authorizationDetails,
@@ -635,6 +646,7 @@ export function mountAsAuthorize(app: AppLike, ctx: MountAsAuthorizeContext): vo
 
         // Stage, issue, and redirect — or error if all streams were deselected.
         return buildPackageAndRedirect(
+          req,
           res,
           acc,
           { clientId, codeChallenge, codeChallengeMethod, redirectUri, state },

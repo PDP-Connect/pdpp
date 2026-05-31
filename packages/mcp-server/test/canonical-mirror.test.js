@@ -62,7 +62,35 @@ function recordingFetch() {
       return jsonResponse({ object: 'list', data: [] });
     }
     if (url.pathname === '/v1/streams/orders/records') {
-      return jsonResponse({ object: 'list', data: [], has_more: false });
+      return jsonResponse({
+        object: 'list',
+        data: [
+          { id: 'o1', amount: 12 },
+          { id: 'o2', amount: 99 },
+        ],
+        has_more: false,
+      });
+    }
+    if (url.pathname === '/v1/streams/bulky/records') {
+      return jsonResponse({
+        object: 'list',
+        data: [{ id: 'big-1', body: 'y'.repeat(5000) }],
+        has_more: true,
+      });
+    }
+    if (url.pathname === '/v1/streams/manylarge/records') {
+      return jsonResponse({
+        object: 'list',
+        data: Array.from({ length: 4 }, (_, i) => ({ id: `m${i}`, body: 'z'.repeat(2000) })),
+        has_more: true,
+      });
+    }
+    if (url.pathname === '/v1/streams/nested/records') {
+      return jsonResponse({
+        object: 'list',
+        data: { records: [{ id: 'n1' }, { id: 'n2' }] },
+        has_more: false,
+      });
     }
     if (url.pathname === '/v1/search') {
       return jsonResponse({ object: 'list', data: [], has_more: false });
@@ -228,7 +256,7 @@ test('5.2 successful tool calls carry canonical structuredContent that matches t
   await server.close();
 });
 
-test('5.3 content[] is a concise summary, not a JSON dump', async () => {
+test('5.3 content[] is a bounded readable preview, not a JSON dump', async () => {
   const { fetch } = recordingFetch();
   const { client, server } = await connectClient(fetch);
 
@@ -238,16 +266,15 @@ test('5.3 content[] is a concise summary, not a JSON dump', async () => {
   });
   assert.equal(result.isError, undefined);
   const text = result.content[0].text;
-  // Summary should NOT be a serialized RS body. The legacy implementation
-  // emitted `JSON.stringify(response.body, null, 2)`, which is a multi-line
-  // JSON dump. The canonical summary is a single short sentence pointing at
-  // structuredContent.
+  // Text content should be readable by model loops that cannot consume
+  // structuredContent, while still avoiding the legacy multi-line dump of the
+  // entire canonical RS envelope.
   assert.ok(
     !text.includes('\n  '),
     'content[] must not include multi-line JSON indentation',
   );
-  assert.match(text, /structuredContent/, 'summary must direct callers to structuredContent');
-  assert.ok(text.length < 300, `summary should be terse (got ${text.length} chars)`);
+  assert.match(text, /record\[0\]/, 'summary must include a bounded record preview');
+  assert.ok(text.length < 1800, `summary should stay bounded (got ${text.length} chars)`);
 
   await client.close();
   await server.close();
@@ -342,14 +369,70 @@ test('7.4 token-efficiency: prose content[] is far smaller than structuredConten
   });
   const proseLen = result.content[0].text.length;
   const structuredLen = JSON.stringify(result.structuredContent).length;
-  // Hard cap on the prose summary regardless of body size. This is a
-  // regression guard against re-introducing the legacy "dump the JSON in
-  // content[]" pattern, which doubled per-call token usage.
-  assert.ok(proseLen < 300, `prose content[] must stay terse (got ${proseLen})`);
+  // Hard cap on the prose preview regardless of body size. This is a
+  // regression guard against re-introducing the legacy "dump the entire JSON
+  // envelope in content[]" pattern while still letting agents read records.
+  assert.ok(proseLen < 1800, `prose content[] must stay bounded (got ${proseLen})`);
   assert.ok(
     proseLen < structuredLen || structuredLen < 100,
     'prose content[] must not be larger than structuredContent',
   );
+
+  await client.close();
+  await server.close();
+});
+
+test('7.5 oversized records stay bounded yet still surface readable payload', async () => {
+  const { fetch } = recordingFetch();
+  const { client, server } = await connectClient(fetch);
+
+  const result = await client.callTool({
+    name: 'query_records',
+    arguments: { stream: 'bulky' },
+  });
+  assert.equal(result.isError, undefined);
+  const text = result.content[0].text;
+  assert.equal(result.structuredContent.data.data[0].body.length, 5000);
+  assert.ok(text.length < 1800, `preview must stay bounded (got ${text.length})`);
+  assert.match(text, /record\[0\] \{"id":"big-1"/);
+  assert.ok(text.includes('yyyy'), 'truncated preview must still carry record payload');
+  assert.ok(text.endsWith('…'), 'oversized record must be truncated with an ellipsis');
+
+  await client.close();
+  await server.close();
+});
+
+test('7.5 multiple oversized records emit a bounded early-break marker', async () => {
+  const { fetch } = recordingFetch();
+  const { client, server } = await connectClient(fetch);
+
+  const result = await client.callTool({
+    name: 'query_records',
+    arguments: { stream: 'manylarge' },
+  });
+  assert.equal(result.isError, undefined);
+  const text = result.content[0].text;
+  assert.ok(text.length < 1800, `preview must stay bounded (got ${text.length})`);
+  assert.match(text, /record\[0\] \{"id":"m0"/);
+  assert.match(text, /record_preview_truncated=true/);
+
+  await client.close();
+  await server.close();
+});
+
+test('7.5 nested data.records envelope is previewed', async () => {
+  const { fetch } = recordingFetch();
+  const { client, server } = await connectClient(fetch);
+
+  const result = await client.callTool({
+    name: 'query_records',
+    arguments: { stream: 'nested' },
+  });
+  assert.equal(result.isError, undefined);
+  const text = result.content[0].text;
+  assert.match(text, /records from stream "nested": 2 record\(s\)/);
+  assert.match(text, /record\[0\] \{"id":"n1"\}/);
+  assert.match(text, /record\[1\] \{"id":"n2"\}/);
 
   await client.close();
   await server.close();

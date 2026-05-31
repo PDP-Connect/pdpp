@@ -52,26 +52,25 @@ The AS SHALL NOT accept arbitrary client-authored "all data" packages without va
 
 ### Requirement: Hosted MCP picker SHALL let the owner narrow streams within a selected source
 
-When the hosted MCP package picker presents a connector-backed source, it SHALL render an owner-controllable list of the connector's manifest streams alongside the source toggle. Deselecting an individual stream SHALL exclude that stream from the issued child grant. The AS SHALL NOT silently widen the issued child grant beyond the streams the picker observed as selected at submission time.
+When the hosted MCP package picker presents a connector-backed source, it SHALL render an owner-controllable list of the connector's manifest streams alongside the source toggle. Selecting the source SHALL make stream choices available without implying that every stream was approved. Leaving an individual stream unselected, or clearing it after selecting it, SHALL exclude that stream from the issued child grant. The AS SHALL NOT silently widen the issued child grant beyond the streams the picker observed as selected at submission time.
 
-#### Scenario: Owner narrows streams within a selected source
+#### Scenario: Owner selects a subset of streams within a selected source
 
-- **WHEN** the owner selects a hosted MCP source and deselects one or more streams within that source before submitting
-- **THEN** the issued child grant SHALL authorize only the streams that remained selected
-- **AND** the AS SHALL NOT include deselected streams in the resulting `authorization_details`.
+- **WHEN** the owner selects a hosted MCP source and selects only some streams within that source before submitting
+- **THEN** the issued child grant SHALL authorize only the streams selected for that source
+- **AND** the AS SHALL NOT include unselected streams in the resulting `authorization_details`.
 
-#### Scenario: Owner leaves every stream selected for a source
+#### Scenario: Owner explicitly authorizes every stream for a source
 
-- **WHEN** the owner selects a hosted MCP source without deselecting any of its streams
+- **WHEN** the owner selects a hosted MCP source and submits every manifest stream for that source as selected
 - **THEN** the AS MAY emit the canonical `[{ name: "*" }]` shorthand for that source so the child grant naturally expands when a future manifest revision adds streams
 - **AND** the issued child grant SHALL authorize every manifest stream for that source at the time of approval.
 
-#### Scenario: Owner deselects every stream for a selected source
+#### Scenario: Owner leaves every stream unselected for a selected source
 
-- **WHEN** the owner selects a hosted MCP source but deselects every stream within it
-- **THEN** the AS SHALL NOT issue a child grant for that source
-- **AND** the package SHALL contain only child grants for sources with at least one selected stream
-- **AND** if every selected source ends up with zero selected streams the AS SHALL return a typed `invalid_request` error naming the affected source(s) by manifest display name.
+- **WHEN** the owner selects a hosted MCP source but submits no stream selected within it
+- **THEN** the AS SHALL NOT silently drop the source or issue a child grant for that source
+- **AND** the AS SHALL re-render the hosted picker with an HTML validation error naming the affected source(s) by display name, not raw connector URLs or internal connection ids.
 
 ### Requirement: Hosted MCP picker SHALL let the owner choose the package access mode
 

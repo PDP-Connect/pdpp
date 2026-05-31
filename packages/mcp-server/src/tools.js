@@ -285,7 +285,7 @@ export function buildTools({ rs, providerUrl }) {
         const response = await rs.getJson(`/v1/streams/${encodeURIComponent(stream)}/records`, {
           query,
         });
-        return toToolResult(response, providerUrl, `records from stream "${stream}"`);
+        return toToolResult(response, providerUrl, `records from stream "${stream}"`, { previewRecords: true });
       },
     },
     {
@@ -684,13 +684,13 @@ function pickQuery(args, supportedKeys) {
 // See:
 //   openspec/changes/canonicalize-public-read-contract (5.3 prose content[] is
 //   a concise summary only and not a second divergent JSON contract).
-function toToolResult(response, providerUrl, label = 'response') {
+function toToolResult(response, providerUrl, label = 'response', options = {}) {
   if (response.ok) {
     return {
       content: [
         {
           type: 'text',
-          text: summarizeBody(response.body, label),
+          text: summarizeBody(response.body, label, options),
         },
       ],
       structuredContent: { data: response.body, provider_url: providerUrl, request_id: response.requestId },
@@ -741,12 +741,15 @@ function toFetchToolResult(response, providerUrl, requestedId) {
   };
 }
 
-function summarizeBody(body, label) {
+function summarizeBody(body, label, options = {}) {
   if (label === 'PDPP schema') {
     return summarizeSchemaDiscovery(body, label);
   }
   if (label === 'PDPP streams') {
     return summarizeStreamsDiscovery(body, label);
+  }
+  if (options.previewRecords) {
+    return summarizeRecordEnvelope(body, label);
   }
   if (Array.isArray(body)) {
     return `${label}: ${body.length} item(s). See structuredContent.data for the canonical envelope.`;
@@ -766,6 +769,57 @@ function summarizeBody(body, label) {
     return `${label}: see structuredContent.data for the canonical envelope.`;
   }
   return `${label}: see structuredContent.data for the canonical envelope.`;
+}
+
+const RECORD_PREVIEW_LIMIT = 5;
+// Hard ceiling on the whole text preview, including the header and any trailing
+// markers. The token-efficiency tests assert the preview stays below 1800
+// chars, so this is the load-bearing bound.
+const RECORD_PREVIEW_CHAR_LIMIT = 1792;
+const RECORD_PREVIEW_FOOTER_RESERVE = 96;
+const RECORD_PREVIEW_MIN_RECORD_CHARS = 24;
+const RECORD_PREVIEW_TRUNCATED_MARKER =
+  'record_preview_truncated=true; canonical envelope remains in structuredContent.data';
+
+function summarizeRecordEnvelope(body, label) {
+  const records = extractRecordRows(body);
+  const hasMore = body && typeof body === 'object' && body.has_more === true ? ' has_more=true.' : '';
+  if (records.length === 0) {
+    return `${label}: 0 record(s).`;
+  }
+  const shown = Math.min(records.length, RECORD_PREVIEW_LIMIT);
+  const lines = [`${label}: ${records.length} record(s).${hasMore} Showing up to ${shown}:`];
+  const contentCeiling = RECORD_PREVIEW_CHAR_LIMIT - RECORD_PREVIEW_FOOTER_RESERVE;
+  let used = lines[0].length;
+  let truncated = false;
+  for (const [index, record] of records.slice(0, RECORD_PREVIEW_LIMIT).entries()) {
+    const prefix = `record[${index}] `;
+    const budget = contentCeiling - used - prefix.length - 1;
+    if (budget < RECORD_PREVIEW_MIN_RECORD_CHARS) {
+      truncated = true;
+      break;
+    }
+    const rendered = `${prefix}${truncateText(stableInlineJson(record), budget)}`;
+    lines.push(rendered);
+    used += rendered.length + 1;
+  }
+  if (truncated) {
+    lines.push(RECORD_PREVIEW_TRUNCATED_MARKER);
+  } else if (records.length > RECORD_PREVIEW_LIMIT) {
+    lines.push(`more_records=${records.length - RECORD_PREVIEW_LIMIT}; canonical envelope remains in structuredContent.data`);
+  }
+  return lines.join('\n');
+}
+
+function extractRecordRows(body) {
+  if (Array.isArray(body)) return body;
+  if (!body || typeof body !== 'object') return [];
+  if (Array.isArray(body.records)) return body.records;
+  if (Array.isArray(body.data)) return body.data;
+  if (body.data && typeof body.data === 'object' && Array.isArray(body.data.records)) {
+    return body.data.records;
+  }
+  return [];
 }
 
 function summarizeStreamsDiscovery(body, label) {
@@ -1087,6 +1141,21 @@ function formatInlineValue(value) {
 
 function formatFieldName(value) {
   return String(value).replace(/[;,\[\]{}]/g, '_');
+}
+
+function stableInlineJson(value) {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return JSON.stringify(String(value));
+  }
+}
+
+function truncateText(value, limit) {
+  const safeLimit = Math.max(0, limit);
+  if (value.length <= safeLimit) return value;
+  if (safeLimit <= 1) return '…';
+  return `${value.slice(0, safeLimit - 1)}…`;
 }
 
 function summarizeSearch(body, results) {

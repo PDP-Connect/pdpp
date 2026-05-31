@@ -335,6 +335,9 @@ test('query_records forwards supported query params', async () => {
     { id: 'o1', amount: 12 },
     { id: 'o2', amount: 99 },
   ]);
+  assert.match(result.content[0].text, /records from stream "orders": 2 record\(s\)/);
+  assert.match(result.content[0].text, /record\[0\] \{"id":"o1","amount":12\}/);
+  assert.match(result.content[0].text, /record\[1\] \{"id":"o2","amount":99\}/);
   const call = calls.find((entry) => entry.url.includes('/v1/streams/orders/records'));
   const callUrl = new URL(call.url);
   assert.equal(callUrl.searchParams.get('limit'), '25');
