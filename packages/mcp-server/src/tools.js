@@ -140,8 +140,18 @@ class MalformedFilterError extends Error {
 // Translate a typed filter object into `[bracketKey, value]` query entries the
 // RsClient appends verbatim (`filter[field]=value`, `filter[field][op]=value`).
 function filterObjectToBracketEntries(filter) {
+  if (Object.keys(filter).length === 0) {
+    throw new MalformedFilterError(
+      'filter object must include at least one field; omit filter entirely or pass a typed object such as filter: { "field": "value" }',
+    );
+  }
   const entries = [];
   for (const [field, spec] of Object.entries(filter)) {
+    if (field.includes('[') || field.includes(']')) {
+      throw new MalformedFilterError(
+        `filter field '${field}' must be an advertised field name, not pre-encoded bracket syntax; pass filter: { "field": "value" }`,
+      );
+    }
     if (spec === undefined || spec === null) continue;
     if (typeof spec === 'object' && !Array.isArray(spec)) {
       const opEntries = Object.entries(spec).filter(([, v]) => v !== undefined && v !== null);
@@ -172,7 +182,11 @@ function filterObjectToBracketEntries(filter) {
 // rather than forwarded as a bare `filter=` param that the RS silently ignores.
 function legacyFilterStringToBracketEntries(raw) {
   const trimmed = raw.trim();
-  if (trimmed.length === 0) return [];
+  if (trimmed.length === 0) {
+    throw new MalformedFilterError(
+      'filter string is empty; omit filter entirely or pass a typed object such as filter: { "field": "value" }',
+    );
+  }
   const pairs = trimmed.split('&').filter((segment) => segment.length > 0);
   const entries = [];
   for (const pair of pairs) {
@@ -200,6 +214,11 @@ function legacyFilterStringToBracketEntries(raw) {
     }
     const value = decodeFilterComponent(rawValue);
     entries.push([op === undefined ? `filter[${field}]` : `filter[${field}][${op}]`, value]);
+  }
+  if (entries.length === 0) {
+    throw new MalformedFilterError(
+      'filter string did not include any filter[field]=value entries; pass a typed filter object instead',
+    );
   }
   return entries;
 }

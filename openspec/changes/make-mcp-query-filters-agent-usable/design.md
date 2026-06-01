@@ -80,8 +80,9 @@ output schema.
 
 - Typed exact filter → `filter[field]=value` reaches the RS and narrows results.
 - Typed range filter → `filter[field][op]=value` reaches the RS.
-- Literal bracket string parses; any other string → `invalid_filter` error; no
-  bare `filter=` param ever reaches the RS.
+- Literal bracket string parses; any other string, empty string, empty object, or
+  object key that embeds bracket syntax → `invalid_filter` error; no bare
+  `filter=` param ever reaches the RS.
 - `aggregate` accepts the typed filter and rejects malformed strings identically.
 - `aggregate` `content[]` text contains the metric, stream, and numeric result
   and stays compact.

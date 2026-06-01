@@ -193,6 +193,28 @@ test('query_records rejects an ambiguous/malformed string filter with an actiona
   await server.close();
 });
 
+test('query_records rejects empty/no-op filter shapes instead of silently dropping them', async () => {
+  const { fetch, calls } = recordingFetch();
+  const { client, server } = await connectClient(fetch);
+
+  for (const filter of ['', '   ', {}, { 'filter[user_id]': 'U123' }]) {
+    const result = await client.callTool({
+      name: 'query_records',
+      arguments: { stream: 'messages', filter },
+    });
+    assert.equal(result.isError, true, `filter ${JSON.stringify(filter)} must be rejected, not silently ignored`);
+  }
+
+  assert.equal(
+    calls.some((c) => c.searchParams.get('filter') !== null || c.searchParams.get('filter[user_id]') !== null),
+    false,
+    'empty or pre-encoded typed filters must not reach the RS as query params',
+  );
+
+  await client.close();
+  await server.close();
+});
+
 test('query_records rejects an unsupported range operator with an actionable error', async () => {
   const { fetch } = recordingFetch();
   const { client, server } = await connectClient(fetch);

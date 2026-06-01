@@ -12,11 +12,12 @@ client to construct bracket keys inside a string.
 
 A legacy raw query string using literal `filter[field]=value` bracket syntax
 SHALL be accepted and parsed into the same bracket parameters. Any other string
-shape SHALL be rejected with a typed, actionable error that directs the agent to
-the typed filter input. A `filter` argument SHALL NOT be silently forwarded as a
-bare `filter=` parameter, which the resource server ignores. The adapter SHALL
-NOT change resource-server filtering semantics; field and operator legality
-remain owned by the resource server and advertised by `GET /v1/schema`.
+shape, an empty string, or an empty typed filter object SHALL be rejected with a
+typed, actionable error that directs the agent to the typed filter input. A
+`filter` argument SHALL NOT be silently forwarded as a bare `filter=` parameter,
+which the resource server ignores. The adapter SHALL NOT change resource-server
+filtering semantics; field and operator legality remain owned by the resource
+server and advertised by `GET /v1/schema`.
 
 #### Scenario: Agent supplies a typed exact filter
 
@@ -44,10 +45,19 @@ remain owned by the resource server and advertised by `GET /v1/schema`.
 
 - **WHEN** an MCP client calls the record-query or aggregate tool with a `filter`
   string that is not literal bracket syntax (for example `amount>100`,
-  `user_id=U123`, a bare term, or JSON encoded as a string)
+  `user_id=U123`, a bare term, an empty string, or JSON encoded as a string)
 - **THEN** the adapter SHALL return a typed, actionable error instructing the
   agent to use the typed filter input
 - **AND** the adapter SHALL NOT forward the value as a bare `filter=` parameter
+
+#### Scenario: Empty or pre-encoded typed filter objects are rejected
+
+- **WHEN** an MCP client calls the record-query tool with `filter` set to an
+  empty object or with an object key that embeds bracket syntax such as
+  `filter[user_id]`
+- **THEN** the adapter SHALL return a typed, actionable error
+- **AND** the adapter SHALL NOT forward any `filter` query parameter to the
+  resource server
 
 #### Scenario: Aggregate accepts the same typed filter
 

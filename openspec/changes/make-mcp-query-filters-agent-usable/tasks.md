@@ -28,6 +28,8 @@
 - [x] 3.2 `query_records` typed range filter forwards as `filter[field][op]=value`.
 - [x] 3.3 `query_records` legacy bracket string parses; other strings rejected
       with `invalid_filter`; no bare `filter=` ever reaches the RS.
+- [x] 3.3a Empty filters and typed object keys that embed bracket syntax are
+      rejected rather than treated as "no filter".
 - [x] 3.4 `aggregate` typed filter forwards and scopes the count; malformed
       string rejected identically.
 - [x] 3.5 `aggregate` text includes the numeric value and stays compact; grouped
