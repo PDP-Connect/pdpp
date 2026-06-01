@@ -94,6 +94,29 @@ the same principle already applied to aggregate counts and one-time subscription
 secrets: model-visible text carries the minimal action handle; structured data
 remains canonical.
 
+### Agent-visible usability is a journey invariant, not a per-tool guess
+
+The follow-up live Claude check proved that fixing `search` alone was not enough:
+`fetch` still returned a generic pointer to `structuredContent`, so a client that
+could read only `content[]` had to route around the intended `search -> fetch`
+journey with `query_records`. The design rule is therefore stronger than
+"include a summary": every canonical MCP workflow must remain executable from
+model-visible text alone.
+
+For data-bearing read tools, `content[]` carries the minimum safe next-action
+payload: ids, source handles such as `connection_id`, titles/status, pagination
+or follow-up instructions, and bounded previews. `structuredContent` remains the
+canonical exhaustive payload. This avoids the opposite failure mode of dumping
+large records or binary blobs into the prompt while still preventing a tool from
+answering "see structuredContent" before the model has the handle or preview it
+needs.
+
+`fetch` now follows the same invariant as `search`: it renders the fetched id,
+title, available source handles, and a bounded text preview in `content[]`, and
+it normalizes canonical record wrappers (`{ id, stream, data: {...} }`) so nested
+document fields are not hidden from either the ChatGPT-compatible projection or
+the model-visible text.
+
 ### Package stream filters are per-child intersections
 
 Hosted MCP package tokens represent a union of independent child grants. A

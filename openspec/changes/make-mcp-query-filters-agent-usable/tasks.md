@@ -73,6 +73,11 @@
 - [x] 4.17 Hosted package search with mixed `streams[]` filters intersects the
       requested streams per child grant and skips unrelated children instead of
       forwarding unauthorized stream names.
+- [x] 4.18 `fetch` `content[]` text includes fetched id, title, source handles,
+      and a bounded text preview, and wrapped canonical records derive document
+      fields from nested `data`.
+- [x] 4.19 Model-visible-only regression coverage proves the canonical
+      `search -> fetch` path does not require `structuredContent` inspection.
 
 ## 5. Docs + discovery guidance
 

@@ -155,6 +155,34 @@ projection for clients that can inspect structured tool results.
 - **AND** it SHALL preserve the full canonical search envelope in
   `structuredContent.data`
 
+### Requirement: MCP Fetch Results Are Usable In Tool Text
+
+The MCP adapter SHALL include the fetched document id, title, available source
+handles, and a bounded text preview in the fetch tool result `content[]` text.
+The text SHALL be sufficient for a model that cannot inspect
+`structuredContent` to confirm it fetched the intended record and use the
+preview to answer or decide a follow-up. The adapter SHALL continue to expose the
+full ChatGPT-compatible document in `structuredContent.text` and the canonical
+resource-server record in `structuredContent.data`.
+
+#### Scenario: Fetch surfaces the fetched document in text
+
+- **WHEN** an MCP client calls fetch with an id returned by search
+- **THEN** the tool result `content[]` text SHALL include the fetched id and
+  title
+- **AND** when the fetched record has `connection_id`, stream, display label, or
+  connector key information, the text SHALL include the available values
+- **AND** the text SHALL include a bounded preview of the fetched document text
+
+#### Scenario: Fetch understands canonical record wrappers
+
+- **WHEN** the resource server returns a canonical record wrapper whose
+  document fields live under `data`
+- **THEN** the adapter SHALL derive the fetch document title, text, url, and
+  source handles from the nested record data when present
+- **AND** the model-visible `content[]` text SHALL not collapse to a generic
+  pointer to `structuredContent`
+
 ### Requirement: Hosted MCP Package Search Merges Canonical Child Hits
 
 The hosted MCP adapter SHALL fan out unscoped package-token search calls across

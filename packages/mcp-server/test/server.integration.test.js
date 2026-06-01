@@ -38,7 +38,27 @@ function makeFakeRs() {
     title: 'Order o2',
     text: 'Pasta order for $99.',
     url: 'https://merchant.test/o2',
+    connection_id: 'conn_orders',
+    display_name: 'Merchant orders',
     metadata: { amount: 99 },
+  };
+  const CONVERSATION_C1 = {
+    object: 'record',
+    id: 'c1',
+    stream: 'conversations',
+    data: {
+      id: 'c1',
+      title: 'Redactable developer ODCs',
+      content: 'Jeremy and I had a call with Redactable yesterday and I was so unimpressed.',
+      url: 'https://chatgpt.test/c/c1',
+      connection_id: 'conn_chatgpt',
+      connector_key: 'chatgpt',
+      display_name: 'ChatGPT - everyone@appears.blue',
+    },
+    emitted_at: '2026-04-19T07:16:43.755Z',
+    connection_id: 'conn_chatgpt',
+    connector_instance_id: 'conn_chatgpt',
+    display_name: 'ChatGPT - everyone@appears.blue',
   };
   const STREAM_META = { name: 'orders', record_count: 2 };
   const BLOB = Buffer.from([10, 20, 30, 40, 50]);
@@ -73,6 +93,9 @@ function makeFakeRs() {
     }
     if (url.pathname === '/v1/streams/orders/records/o2') {
       return jsonResponse(ORDER_O2);
+    }
+    if (url.pathname === '/v1/streams/conversations/records/c1') {
+      return jsonResponse(CONVERSATION_C1);
     }
     if (url.pathname === '/v1/streams/missing/records') {
       return new Response(
@@ -494,7 +517,44 @@ test('fetch tool returns ChatGPT-compatible document shape', async () => {
   assert.equal(result.structuredContent.text, 'Pasta order for $99.');
   assert.equal(result.structuredContent.url, 'https://merchant.test/o2');
   assert.deepEqual(result.structuredContent.metadata.amount, 99);
+  assert.match(result.content[0].text, /fetched id=orders:o2/);
+  assert.match(result.content[0].text, /title="Order o2"/);
+  assert.match(result.content[0].text, /connection_id=conn_orders/);
+  assert.match(result.content[0].text, /display_name="Merchant orders"/);
+  assert.match(result.content[0].text, /text_preview="Pasta order for \$99\."/);
   assert.ok(calls.some((entry) => entry.url.endsWith('/v1/streams/orders/records/o2')));
+
+  await client.close();
+  await server.close();
+});
+
+test('fetch text channel is self-sufficient for canonical wrapped records', async () => {
+  const { fetch } = makeFakeRs();
+  const { client, server } = await connectClient(fetch);
+
+  const result = await client.callTool({
+    name: 'fetch',
+    arguments: { id: 'conversations:c1', connection_id: 'conn_chatgpt' },
+  });
+
+  assert.equal(result.isError, undefined);
+  assert.equal(result.structuredContent.id, 'conversations:c1');
+  assert.equal(result.structuredContent.title, 'Redactable developer ODCs');
+  assert.equal(
+    result.structuredContent.text,
+    'Jeremy and I had a call with Redactable yesterday and I was so unimpressed.',
+  );
+  assert.equal(result.structuredContent.url, 'https://chatgpt.test/c/c1');
+
+  // This is the model-visible path for clients that hide structuredContent.
+  const text = result.content[0].text;
+  assert.match(text, /fetched id=conversations:c1/);
+  assert.match(text, /title="Redactable developer ODCs"/);
+  assert.match(text, /connection_id=conn_chatgpt/);
+  assert.match(text, /connector_key=chatgpt/);
+  assert.match(text, /display_name="ChatGPT - everyone@appears.blue"/);
+  assert.match(text, /text_preview="Jeremy and I had a call with Redactable yesterday/);
+  assert.doesNotMatch(text, /^fetched .* See structuredContent/m);
 
   await client.close();
   await server.close();

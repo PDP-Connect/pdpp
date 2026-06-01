@@ -26,7 +26,9 @@ adapter's input schema and query translation. A secondary defect: the
 `aggregate` tool mirrored its numeric result only into `structuredContent.data`;
 some hosted agents cannot reliably read `structuredContent`, so the numeric
 answer must also appear in the `content[]` text. The same client limitation
-applies to search: a hit count without model-visible hit handles is not usable.
+applies to search and fetch: a hit count without model-visible hit handles is
+not usable, and a search hit is not actionable if the follow-up fetch collapses
+back to `see structuredContent`.
 
 ## What Changes
 
@@ -56,6 +58,9 @@ applies to search: a hit count without model-visible hit handles is not usable.
 - The `search` tool result includes a bounded top-hit preview in `content[]`
   text with the result id and available source handles such as `connection_id`.
   The canonical envelope remains in `structuredContent.data`.
+- The `fetch` tool result includes the fetched id, title, available source
+  handles, and a bounded text preview in `content[]`, and it derives document
+  fields from canonical record wrappers whose user data lives under `data`.
 - Hosted package search merges canonical child `data[]` search envelopes instead
   of interpreting them as empty on unscoped package-token search.
 - Hosted package search intersects requested `streams[]` with each child grant

@@ -1758,9 +1758,15 @@ function truncateText(value, limit) {
   return `${value.slice(0, safeLimit - 1)}…`;
 }
 
+function normalizeWhitespace(value) {
+  if (typeof value !== 'string') return '';
+  return value.replace(/\s+/g, ' ').trim();
+}
+
 const SEARCH_TEXT_PREVIEW_LIMIT = 3;
 const SEARCH_TEXT_SNIPPET_CHAR_LIMIT = 140;
 const SEARCH_RESULT_SNIPPET_CHAR_LIMIT = 320;
+const FETCH_TEXT_PREVIEW_CHAR_LIMIT = 420;
 
 function summarizeSearch(body, results) {
   const hasMore = body && body.has_more === true ? ' has_more=true.' : '';
@@ -1784,8 +1790,42 @@ function formatSearchPreviewLine(result, index) {
 }
 
 function summarizeFetchedDocument(document) {
-  const title = document.title || document.id;
-  return `fetched ${document.id}: ${title}. See structuredContent for the canonical record and ChatGPT-compatible document fields.`;
+  const metadata = objectValue(document.metadata) || {};
+  const data = objectValue(metadata.data) || {};
+  const source = objectValue(metadata.source) || objectValue(data.source) || {};
+  const parts = [
+    `fetched id=${formatInlineValue(document.id)}`,
+    `title=${formatScalar(truncateText(document.title || document.id, 100))}`,
+  ];
+  if (document.url) parts.push(`url=${formatScalar(truncateText(document.url, 160))}`);
+
+  const stream = firstString(metadata.stream, metadata.stream_name, data.stream, data.stream_name);
+  const connectionId = firstString(
+    metadata.connection_id,
+    metadata.connector_instance_id,
+    data.connection_id,
+    data.connector_instance_id,
+    source.connection_id,
+  );
+  const connectorKey = firstString(
+    metadata.connector_key,
+    metadata.connector_id,
+    data.connector_key,
+    data.connector_id,
+    source.connector_key,
+    source.connector_id,
+  );
+  const displayName = firstString(metadata.display_name, data.display_name, source.display_name);
+  if (stream) parts.push(`stream=${formatInlineValue(truncateText(stream, 80))}`);
+  if (connectionId) parts.push(`connection_id=${formatInlineValue(truncateText(connectionId, 80))}`);
+  if (connectorKey) parts.push(`connector_key=${formatInlineValue(truncateText(connectorKey, 80))}`);
+  if (displayName) parts.push(`display_name=${formatScalar(truncateText(displayName, 100))}`);
+
+  const preview = normalizeWhitespace(document.text);
+  if (preview) {
+    parts.push(`text_preview=${formatScalar(truncateText(preview, FETCH_TEXT_PREVIEW_CHAR_LIMIT))}`);
+  }
+  return `${parts.join(' ')}. Full document text: structuredContent.text; canonical record: structuredContent.data.`;
 }
 
 function normalizeSearchResults(body) {
@@ -1870,14 +1910,25 @@ function parseRecordResultId(id) {
 }
 
 function normalizeFetchedDocument(record, requestedId, providerUrl) {
-  const id = stringValue(record?.id ?? record?.record_id ?? record?.recordId) || requestedId;
-  const stream = stringValue(record?.stream ?? record?.stream_name ?? record?.streamName);
+  const payload = objectValue(record?.data);
+  const id =
+    stringValue(record?.id ?? record?.record_id ?? record?.recordId) ||
+    stringValue(payload?.id ?? payload?.record_id ?? payload?.recordId) ||
+    requestedId;
+  const stream =
+    stringValue(record?.stream ?? record?.stream_name ?? record?.streamName) ||
+    stringValue(payload?.stream ?? payload?.stream_name ?? payload?.streamName);
   const resultId = stream && id && !requestedId.includes(':') ? `${stream}:${id}` : requestedId;
-  const title = titleForRecord(record, resultId);
-  const text = textForRecord(record);
-  const url = urlForRecord(record, resultId, providerUrl);
+  const title = titleForFetchedRecord(record, payload, resultId);
+  const text = textForFetchedRecord(record, payload);
+  const url = urlForFetchedRecord(record, payload, resultId, providerUrl);
   const metadata = metadataForRecord(record, { id: resultId, title, url });
   return { id: resultId, title, text, url, metadata };
+}
+
+function titleForFetchedRecord(record, payload, fallbackId) {
+  const payloadTitle = payload ? titleForRecord(payload, '') : '';
+  return payloadTitle || titleForRecord(record, fallbackId);
 }
 
 function titleForRecord(record, fallbackId) {
@@ -1889,6 +1940,12 @@ function titleForRecord(record, fallbackId) {
     stringValue(record?.summary) ||
     fallbackId
   );
+}
+
+function textForFetchedRecord(record, payload) {
+  const declared = (payload ? declaredTextForRecord(payload) : undefined) || declaredTextForRecord(record);
+  if (declared) return declared;
+  return fallbackTextForRecord(payload || record);
 }
 
 // Hard ceiling on the JSON-stringify fallback for `fetch`'s `text` field.
@@ -1906,16 +1963,44 @@ const FETCH_TEXT_FALLBACK_POINTER =
   '… [record has no text/content/body/summary field; full record in structuredContent.data]';
 
 function textForRecord(record) {
-  const declared =
+  const declared = declaredTextForRecord(record);
+  if (declared) return declared;
+  return fallbackTextForRecord(record);
+}
+
+function declaredTextForRecord(record) {
+  return (
     stringValue(record?.text) ||
     stringValue(record?.content) ||
     stringValue(record?.body) ||
-    stringValue(record?.summary);
-  if (declared) return declared;
+    stringValue(record?.summary)
+  );
+}
+
+function fallbackTextForRecord(record) {
   const serialized = JSON.stringify(record, null, 2);
   if (serialized.length <= FETCH_TEXT_FALLBACK_CHAR_LIMIT) return serialized;
   const head = FETCH_TEXT_FALLBACK_CHAR_LIMIT - FETCH_TEXT_FALLBACK_POINTER.length;
   return `${serialized.slice(0, Math.max(0, head))}${FETCH_TEXT_FALLBACK_POINTER}`;
+}
+
+function urlForFetchedRecord(record, payload, fallbackId, providerUrl) {
+  const directUrl = firstString(
+    payload?.url,
+    payload?.record_url,
+    payload?.recordUrl,
+    payload?.href,
+    payload?.source_url,
+    payload?.sourceUrl,
+    record?.url,
+    record?.record_url,
+    record?.recordUrl,
+    record?.href,
+    record?.source_url,
+    record?.sourceUrl,
+  );
+  if (directUrl) return directUrl;
+  return urlForRecord(record, fallbackId, providerUrl);
 }
 
 function urlForRecord(record, fallbackId, providerUrl) {
