@@ -158,27 +158,36 @@ test("version-churn copy frames churn as retained history, not data loss", async
   assert.match(src, CHURN_HISTORY_NOT_LOSS);
 });
 
-// ─── Honest add-connection affordance + copy ──────────────────────────────
+// ─── Honest add-connection entry point + copy ─────────────────────────────
 //
-// The console has no path to create a browser/OAuth/import connection (no
-// `/_ref/*` route mints a connection instance). Rather than a dead "Add
-// connection" button, the view must state that plainly and point to the one
-// supported creation path: enrolling a local-collector device, scoped to the
-// claude_code/codex connectors. The two audit copy soft spots are also fixed:
-// the blanket "Click Sync now to pull fresh data" promise and the
-// local-collector-only "No data yet" wording.
+// The owner-agent typed connection-intent route now exists, but it is
+// owner-BEARER REST — the browser owner session has no owner bearer, so the
+// console must not call it. The proven console creation primitive is the
+// cookie-authed local-collector enrollment at /dashboard/device-exporters.
+// The records-list entry point must therefore be a REAL path: the supported
+// connectors (claude_code, codex) deep-link into the enrollment form
+// pre-selected, and the unsupported modalities (browser-bound like Amazon,
+// API/network) are named honestly with the missing primitive — never an
+// implied "Add connection"/"Sync now" that would silently fail. The supported
+// set + unsupported reasons come from the shared connection-modality module
+// (one source of truth across the console and the backend intent route). The
+// two audit copy soft spots are also fixed: the blanket "Click Sync now to
+// pull fresh data" promise and the local-collector-only "No data yet" wording.
 
 const ADD_CONNECTION_GUIDANCE_DEF = /function AddConnectionGuidance\(/;
 // The guidance is rendered (live only) — once in the no-data section and once
 // in the zero-connections empty state — and points at device enrollment.
 const ADD_CONNECTION_GUIDANCE_RENDERED =
   /<AddConnectionGuidance deviceExportersHref=\{routes\.section\.deviceExporters\}/;
-const ADD_CONNECTION_HONEST_COPY =
-  /Connecting a new browser, OAuth, or imported source from the console isn't supported yet/;
-const ADD_CONNECTION_SCOPES_LOCAL = /Local collectors are scoped to the/;
-const ADD_CONNECTION_LINKS_ENROLL = /Enroll a device →/;
-const ADD_CONNECTION_NAMES_CLAUDE_CODE = /claude_code/;
-const ADD_CONNECTION_NAMES_CODEX = /codex/;
+// The supported set and unsupported reasons must come from the shared module,
+// not be re-hardcoded in the view (single source of truth with the backend).
+const ADD_CONNECTION_USES_SHARED_MODALITY = /from "\.\.\/\.\.\/lib\/connection-modality\.ts"/;
+const ADD_CONNECTION_RENDERS_SUPPORTED = /SUPPORTED_LOCAL_COLLECTOR_CONNECTORS\.map\(/;
+const ADD_CONNECTION_RENDERS_UNSUPPORTED = /UNSUPPORTED_ADD_MODALITIES\.map\(/;
+// Supported connectors deep-link into the enrollment form pre-selected.
+const ADD_CONNECTION_DEEP_LINKS_PRESELECTED =
+  /\$\{deviceExportersHref\}\?connector=\$\{encodeURIComponent\(connectorId\)\}/;
+const ADD_CONNECTION_NAMES_NOT_SUPPORTED_YET = /Not supported from the console yet/;
 // The PageHeader must not promise that every connection supports Sync now.
 const NO_BLANKET_SYNC_NOW_PROMISE = /Click Sync now to pull fresh data/;
 const QUALIFIED_SYNC_NOW = /Where a connector supports an owner-triggered pull, Sync now refetches it/;
@@ -188,20 +197,25 @@ const NO_DATA_SECTION_LOCAL_ONLY =
   /Click Sync now to pull initial data, or wait for a local-collector device to push its first records/;
 const NO_DATA_SECTION_MIXED_POPULATION = /a local-collector connection fills in when its device pushes/;
 
-test("view exposes an honest add-connection guidance, not a dead Add button", async () => {
+test("view exposes a real add-connection entry point, not a dead Add button", async () => {
   const src = await readFile(VIEW_FILE, "utf8");
   assert.match(src, ADD_CONNECTION_GUIDANCE_DEF);
   assert.match(src, ADD_CONNECTION_GUIDANCE_RENDERED);
-  assert.match(src, ADD_CONNECTION_HONEST_COPY);
+  // Supported connectors deep-link into the enrollment form pre-selected — a
+  // real path, not just prose.
+  assert.match(src, ADD_CONNECTION_DEEP_LINKS_PRESELECTED);
 });
 
-test("add-connection guidance scopes the local-collector path to its connectors", async () => {
+test("add-connection entry point sources its taxonomy from the shared module", async () => {
   const src = await readFile(VIEW_FILE, "utf8");
-  assert.match(src, ADD_CONNECTION_SCOPES_LOCAL);
-  // Must name the only two connectors the local-collector path supports.
-  assert.match(src, ADD_CONNECTION_NAMES_CLAUDE_CODE);
-  assert.match(src, ADD_CONNECTION_NAMES_CODEX);
-  assert.match(src, ADD_CONNECTION_LINKS_ENROLL);
+  // Single source of truth: the view must consume the shared module rather than
+  // re-hardcoding the supported set or the unsupported reasons.
+  assert.match(src, ADD_CONNECTION_USES_SHARED_MODALITY);
+  assert.match(src, ADD_CONNECTION_RENDERS_SUPPORTED);
+  assert.match(src, ADD_CONNECTION_RENDERS_UNSUPPORTED);
+  // Unsupported modalities are named honestly, not hidden behind a generic
+  // "not supported" line.
+  assert.match(src, ADD_CONNECTION_NAMES_NOT_SUPPORTED_YET);
 });
 
 test("page header no longer promises every connection supports Sync now", async () => {

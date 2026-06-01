@@ -4,6 +4,7 @@ import { CopyButton } from "../components/copy-button.tsx";
 import { DataList, MetaPill, PageHeader, Section, StatusBadge } from "../components/primitives.tsx";
 import { DashboardShell, EmptyState, ServerUnreachable } from "../components/shell.tsx";
 import { formatSourceOutboxState } from "../lib/connection-evidence.ts";
+import { isSupportedLocalCollectorConnector } from "../lib/connection-modality.ts";
 import { formatConnectorKeyForDisplay } from "../lib/connector-display.ts";
 import { getReferencePublicOrigin, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import {
@@ -34,7 +35,20 @@ const DEVICE_STATUS_VOCABULARY = {
   fresh: { label: "fresh", tone: "success" },
 } as const;
 
-export default async function DeviceExportersPage() {
+export default async function DeviceExportersPage({
+  searchParams,
+}: {
+  searchParams?: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  // The records-list "Add a connection" entry point deep-links here with
+  // `?connector=claude_code` (or `codex`). Validate against the supported
+  // local-collector set before prefilling so an arbitrary or unsupported value
+  // never lands in the form; an absent/invalid value leaves the field empty.
+  const resolvedSearchParams = searchParams ? await searchParams : undefined;
+  const connectorParam = resolvedSearchParams?.connector;
+  const requestedConnector = Array.isArray(connectorParam) ? connectorParam[0] : connectorParam;
+  const defaultConnectorId = isSupportedLocalCollectorConnector(requestedConnector) ? requestedConnector : undefined;
+
   try {
     const [diagnostics, sourceInstances, referenceBaseUrl] = await Promise.all([
       listDeviceExporterDiagnostics(),
@@ -58,7 +72,7 @@ export default async function DeviceExportersPage() {
         />
 
         <Section>
-          <EnrollmentForm referenceBaseUrl={referenceBaseUrl} />
+          <EnrollmentForm defaultConnectorId={defaultConnectorId} referenceBaseUrl={referenceBaseUrl} />
         </Section>
 
         <Section

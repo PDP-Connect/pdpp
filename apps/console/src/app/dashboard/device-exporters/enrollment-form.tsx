@@ -10,7 +10,21 @@ import { createEnrollmentCodeAction } from "./actions.ts";
 
 const COLLECTOR_RUN_CONNECTORS = ["claude_code", "codex"] as const;
 
-export function EnrollmentForm({ referenceBaseUrl }: { referenceBaseUrl: string }) {
+export function EnrollmentForm({
+  referenceBaseUrl,
+  defaultConnectorId,
+}: {
+  referenceBaseUrl: string;
+  /**
+   * Optional connector key to prefill the `connector_id` field. The records-list
+   * "Add a connection" entry point deep-links here with `?connector=claude_code`
+   * (or `codex`) so the supported-connector path is a real, ready-to-submit flow
+   * rather than landing the owner on an empty form. The page validates the value
+   * against the supported set before passing it; an unsupported/absent value
+   * leaves the field empty.
+   */
+  defaultConnectorId?: string;
+}) {
   const [state, formAction, pending] = useActionState(createEnrollmentCodeAction, { ok: null });
 
   const enrollCommand =
@@ -30,7 +44,7 @@ export function EnrollmentForm({ referenceBaseUrl }: { referenceBaseUrl: string 
     >
       <form action={formAction} className="grid gap-3 lg:grid-cols-[1fr_1fr_1fr_auto] lg:items-end">
         <ToolbarField label="Connector id">
-          <Input name="connector_id" placeholder="claude_code" required />
+          <Input defaultValue={defaultConnectorId} name="connector_id" placeholder="claude_code" required />
         </ToolbarField>
         <ToolbarField label="Local binding">
           <Input name="local_binding_name" placeholder="personal-laptop" required />

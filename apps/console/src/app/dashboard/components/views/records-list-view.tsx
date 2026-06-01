@@ -15,6 +15,11 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { buttonVariants } from "@/components/ui/button.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
+import {
+  localCollectorConnectorLabel,
+  SUPPORTED_LOCAL_COLLECTOR_CONNECTORS,
+  UNSUPPORTED_ADD_MODALITIES,
+} from "../../lib/connection-modality.ts";
 import { summarizeConnectionHealth } from "../../lib/connection-summary-stats.ts";
 import { formatConnectorKeyForDisplay, formatConnectorNameForDisplay } from "../../lib/connector-display.ts";
 import { shouldShowInPrimaryConnections } from "../../lib/records-list-classification.ts";
@@ -340,36 +345,73 @@ export function RecordsListView({
 }
 
 /**
- * Honest add-connection guidance.
+ * Honest add-connection entry point.
  *
- * The console has no owner-facing path to create a browser/OAuth/import
- * connection (no `/_ref/*` route mints a connection instance; instances are
- * created only by the runtime). Rather than show a dead "Add connection"
- * button, this states that reality plainly and points to the one supported
- * console creation path: enrolling a local-collector device, which the
- * reference scopes to the `claude_code` and `codex` connectors.
+ * The owner-agent typed connection-intent route now exists
+ * (`POST /v1/owner/connections/intents`), but it is owner-*bearer* REST for
+ * trusted local agents — a browser owner session has no owner bearer, so the
+ * console must not call it. The proven console creation primitive is the
+ * cookie-authed local-collector device enrollment at
+ * `/dashboard/device-exporters` (`POST /_ref/device-exporters/enrollment-codes`).
  *
- * Scope is deliberate — per `docs/voice-and-framing.md` we do not imply every
- * connector can be added from here, and we frame the local collector as the
- * reference-experimental control it is. When a typed connection-intent route
- * ships (`add-owner-agent-control-surface` tasks 5.1–5.3), this is where a real
- * creation entry point belongs.
+ * This entry point gives owners a *real path*, not a dead button: the connectors
+ * the reference can create from here (`claude_code`, `codex`) deep-link into the
+ * enrollment form pre-selected; the connectors it cannot create yet (browser-
+ * bound like Amazon, API/network like GitHub/Gmail) are listed honestly with the
+ * exact missing primitive named — never an implied "Add connection" or "Sync
+ * now" that would silently fail.
+ *
+ * The supported set and the unsupported reasons come from the shared
+ * `connection-modality` module, which is the cookie-session sibling of the
+ * backend intent route's classifier — one source of truth across both surfaces
+ * (`docs/voice-and-framing.md`: qualify connector claims; name the gap).
  */
 function AddConnectionGuidance({ deviceExportersHref }: { deviceExportersHref: string }) {
   return (
     <Callout
       className="mb-4"
-      description="Connecting a new browser, OAuth, or imported source from the console isn't supported yet — those connections are created by the connector runtime, not from this page. One creation path works today: enroll a local-collector device."
+      description="Two connector types can be added from the console today by enrolling a local-collector device. Other sources are created elsewhere — they're listed below with the reason."
       surface="human"
       title="Add a connection"
     >
-      <p className="pdpp-caption text-muted-foreground">
-        Local collectors are scoped to the <code className="font-mono">claude_code</code> and{" "}
-        <code className="font-mono">codex</code> connectors.{" "}
-        <Link className="text-foreground underline underline-offset-2 hover:no-underline" href={deviceExportersHref}>
-          Enroll a device →
-        </Link>
-      </p>
+      <div className="space-y-3">
+        <div>
+          <p className="pdpp-caption mb-1.5 font-medium text-foreground">Supported from the console</p>
+          <ul className="flex flex-wrap gap-2">
+            {SUPPORTED_LOCAL_COLLECTOR_CONNECTORS.map((connectorId) => (
+              <li key={connectorId}>
+                <Link
+                  className="inline-flex items-center gap-1.5 rounded-md border border-border/80 bg-background px-2.5 py-1 text-foreground transition-colors hover:bg-muted/40"
+                  href={`${deviceExportersHref}?connector=${encodeURIComponent(connectorId)}`}
+                >
+                  <span className="pdpp-caption font-medium">{localCollectorConnectorLabel(connectorId)}</span>
+                  <code className="pdpp-eyebrow font-mono text-muted-foreground">{connectorId}</code>
+                  <span aria-hidden className="text-muted-foreground">
+                    →
+                  </span>
+                </Link>
+              </li>
+            ))}
+          </ul>
+          <p className="pdpp-caption mt-1.5 text-muted-foreground">
+            Each opens the enrollment form pre-selected. You run the collector on the host that has the data; the
+            connection materializes when the device enrolls and ingests.
+          </p>
+        </div>
+
+        <div>
+          <p className="pdpp-caption mb-1.5 font-medium text-foreground">Not supported from the console yet</p>
+          <ul className="space-y-1.5">
+            {UNSUPPORTED_ADD_MODALITIES.map((entry) => (
+              <li className="pdpp-caption text-muted-foreground" key={entry.modality}>
+                <span className="text-foreground">{entry.label}</span>{" "}
+                <span className="text-muted-foreground">({entry.examples.join(", ")})</span> — the reference has no{" "}
+                {entry.missingPrimitive}.
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
     </Callout>
   );
 }
