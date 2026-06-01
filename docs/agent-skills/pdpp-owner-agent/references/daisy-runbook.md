@@ -141,8 +141,10 @@ unset TOKEN
    ```
 
 3. For each stream, page through with the declared pagination cursor and request only the
-   fields you need. In multi-connection deployments, pass the stable `connection_id` as a
-   query parameter (`?connection_id=...`) to scope a read, and attribute every record by its
+   fields you need. **Owner bearers require `?connector_id=<connector_id>` on every record
+   read** — the polyfill layer cannot infer a connector from the bearer alone (400
+   `invalid_request` if omitted). In multi-connection deployments, also pass
+   `?connection_id=<id>` to address a specific instance. Attribute every record by its
    `connection_id`.
 4. Persist sync state **per `(stream, connection_id)`** — the latest pagination cursor and
    the last `changes_since` value — to Daisy's local state. This is what makes future syncs
@@ -158,7 +160,7 @@ On every refresh, do not rescan. For each stream/connection, resume from the sto
 ```bash
 TOKEN="$(jq -r '.access_token' "$HOME/applications/daisy/.pi/agent/pdpp-owner-agent.json")"
 curl -fsS \
-  "$RS_URL/v1/streams/<stream>/records?connection_id=<id>&changes_since=<stored-cursor>&limit=200" \
+  "$RS_URL/v1/streams/<stream>/records?connector_id=<connector_id>&connection_id=<id>&changes_since=<stored-cursor>&limit=200" \
   -H "Authorization: Bearer $TOKEN" \
   | jq '{records: .data, has_more, next_cursor, next_changes_since}'
 unset TOKEN
@@ -239,10 +241,11 @@ A concise, copy-pasteable first-run prompt for the public reference deployment a
 > bearer; confirm with non-secret status only (token kind, subject, expiry).
 >
 > From then on, read the credential from that file at call time without printing it. Pull
-> `schema_compact_endpoint` and `/v1/streams` (the stream catalog is under `data`), cache it, and use
-> the stable `connection_id` to scope reads. Query records at
-> `/v1/streams/{stream}/records` with `data` rows, `next_cursor` for pagination, and
-> `changes_since` (bootstrap `beginning`, then store `next_changes_since`) for deltas. Keep
-> per-`(stream, connection_id)` cursors so refreshes are incremental, and re-list streams
-> periodically so new data appears. Don't use `/mcp` with this credential — it's
-> owner-level REST only.
+> `schema_compact_endpoint` and `/v1/streams` (the stream catalog is under `data`), cache it.
+> Query records at `/v1/streams/{stream}/records?connector_id=<connector_id>` — owner
+> bearers require `connector_id` on every record read (400 if omitted); also pass
+> `connection_id` to address a specific instance in multi-connection deployments.
+> Use `next_cursor` for pagination and `changes_since` (bootstrap `beginning`, then store
+> `next_changes_since`) for deltas. Keep per-`(stream, connection_id)` cursors so refreshes
+> are incremental, and re-list streams periodically so new data appears. Don't use `/mcp`
+> with this credential — it's owner-level REST only.

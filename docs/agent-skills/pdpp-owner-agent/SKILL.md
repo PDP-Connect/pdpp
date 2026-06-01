@@ -151,9 +151,11 @@ question. See `references/sync.md` for the full reference; the shape is:
    catalog before any record read. `/v1/streams` returns a list envelope
    (`{ "object": "list", "has_more": ..., "data": [...] }`); the stream entries are under
    **`data`**, not a top-level `streams` key. Build all queries off that response.
-2. **Attribute by `connection_id`.** In multi-connection deployments, pass the stable
-   `connection_id` query parameter to scope a read and attribute records. Store sync state
-   per stream **and** per connection.
+2. **Scope record reads by `connector_id` (required for owner bearers).** Owner-bearer
+   record reads require `?connector_id=<connector_id>` — the polyfill layer does not
+   infer a connector from the bearer alone. Additionally pass `connection_id` as a
+   query parameter when addressing a specific instance in a multi-connection deployment.
+   Store sync state per stream **and** per connection.
 3. **Initial sync, bounded.** Page through each stream with the declared pagination
    cursor (`next_cursor` while `has_more`) and field projection. Request only the fields
    you need.
