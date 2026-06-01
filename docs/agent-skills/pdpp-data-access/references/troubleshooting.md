@@ -10,6 +10,13 @@ When the flow breaks, work the failure top-down: discovery -> agent-connect -> a
 - Try the other well-known path. Many users provide the AS URL when you needed the RS URL or vice versa.
 - If both 404, ask the user for the issuer URL printed at server start.
 
+**Symptom:** You guessed a convenience entrypoint like `/llms.txt`, `/.well-known/llms.txt`, or `/.well-known/skills/pdpp-data-access/SKILL.md` on the server origin and got an HTML `404` page.
+
+- Those convenience entrypoints are served by the project's public documentation/standards site, not guaranteed on every reference-server or operator-console origin. An operator origin that fronts a live AS/RS may serve none of them and return its framework's default HTML `404`. That is expected; it is not the discovery entrypoint.
+- The canonical, metadata-first entrypoint on the server origin is `GET /.well-known/oauth-protected-resource`. Start there. Its `pdpp_agent_discovery` block names the absolute `skill`, `skill_catalog`, `llms_txt`, and `llms_full_txt` URLs (resolved to whichever origin actually serves them), so you never have to guess the convenience paths.
+- If you reached this `SKILL.md` over HTTP, fetch its `references/*` from the *same* base URL you fetched the skill from (per `SKILL.md`), not from a guessed origin.
+- Do not fall back to scraping HTML, owner pages, or a marketing site when a convenience path 404s. Read the protected-resource metadata and follow named URLs.
+
 **Symptom:** Discovery returns metadata but no `agent_connect_endpoint`.
 
 - This provider has not enabled the no-owner-token CLI completion path.
