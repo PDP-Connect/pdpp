@@ -626,7 +626,7 @@ const OWNER_AGENT_CONTROL_ACTION_CATALOG: readonly OwnerAgentControlActionDescri
     method: null,
     urlTemplate: null,
     reason:
-      "Connection-scoped credential revoke is not implemented as an owner-agent control route in this build. The only revoke primitive (device-exporter revoke) is device-scoped and cascades to every connection sharing the device, so it cannot be reused for one connection_id. Device-exporter revoke remains on the browser owner-session surface; a connection-scoped revoke primitive must ship before this becomes supported.",
+      "Connection-scoped credential revoke is not yet a durable owner-agent control route in this build. A connection-scoped, zero-cascade revoke primitive does exist (the connector-instance store can soft-flip one connection_id to status 'revoked' without touching records, spine, device rows, or sibling connections), and routine ingest already refuses a revoked connection — so it is durable for device-collected connections. It stays unsupported because it is not yet durable for the implicitly-materialized default-account connection class: that class is silently resurrected to active by implicit default-account materialization on the next owner read, which would make the revoke a faked success. The remaining work is a durability guard on default-account materialization (not a new store primitive); once it lands, a POST /v1/owner/connections/{connection_id}/revoke route shares the existing primitive under the owner-bearer adapter and this flips to supported. Device-scoped device-exporter revoke (which over-revokes sibling connections sharing a device) remains owner-session only and is deliberately not reused here.",
   },
 ];
 
