@@ -22,7 +22,7 @@ Findings consolidated in `design-notes/2026-04-27-prior-art-review.md`.
 
 Open owner decisions are detailed in `design-notes/2026-04-27-prior-art-review.md` "Owner Decisions Still Required" and refined with proposed defaults in `design-notes/2026-04-29-owner-review-synthesis.md`.
 
-- [ ] Decide whether issued grants remain source-bounded in all near-term designs. (Recommendation: yes — consistent across every surveyed system.)
+- [x] Decide whether issued grants remain source-bounded in all near-term designs. **Decided: yes.** Already normative in `openspec/specs/agent-consent-bundling/spec.md` ("Hosted MCP broad approval SHALL issue source-bounded child grants") and reasserted in this change's delta. Owner steering confirms.
 - [ ] Decide whether the first fast setup primitive is client-authored batch consent (Option B), owner-authored permission sets (Option C), agent roles (Option D), or no change. (Recommendation: B first, then C as the next OpenSpec change. D out of scope.)
 - [ ] Decide whether both Option B and Option C are on the roadmap, or only B with C deferred.
 - [ ] Decide a soft cap or warning threshold on `authorization_details[]` entries per staged request.
@@ -32,10 +32,10 @@ Open owner decisions are detailed in `design-notes/2026-04-27-prior-art-review.m
 - [ ] Decide whether incremental "add a source later" produces a new package linked via `parent_package_id` or stands alone, and how the dashboard renders the cumulative picture per agent identity.
 - [ ] Decide where owner-authored permission sets are stored when Option C lands (owner-local, manifest, or both) and how they affect client registration.
 - [x] Confirm any first implementation of Option B is labeled reference-experimental in UI and docs until promoted by a follow-up OpenSpec change.
-- [ ] Decide whether AS-side enrichment of `authorization_details` is forbidden (synthesis recommendation: yes — AS may narrow only) and where that rule is captured.
-- [ ] Decide whether cross-source grants stay off the roadmap permanently or are reopened by a future change (synthesis recommendation: stay off).
-- [ ] Decide whether consent-level predicate filters (date / resource / category) are explicitly deferred to a separate OpenSpec change after the query-layer filter grammar settles (synthesis recommendation: defer).
-- [ ] Decide where normative "issued grants are source-bounded" lives: `spec-core.md` directly, or inside the `agent-consent-bundling` capability spec.
+- [x] Decide whether AS-side enrichment of `authorization_details` is forbidden (synthesis recommendation: yes — AS may narrow only) and where that rule is captured. **Decided: forbidden; AS may narrow only.** Captured in this change's delta ("The AS SHALL NOT silently widen the issued child grant beyond the streams the picker observed as selected") and the merged `reference-implementation-architecture` no-widen requirements. Owner steering confirms.
+- [x] Decide whether cross-source grants stay off the near-term roadmap or are reopened by a future change (synthesis recommendation: stay off). **Decided: off the near-term roadmap.** The capability spec already forbids a single cross-source grant ("SHALL NOT issue a single cross-source PDPP grant"); owner steering keeps cross-source grant objects off near-term. Permanence remains an owner call but is not required for this track.
+- [x] Decide whether consent-level predicate filters (date / resource / category) are explicitly deferred to a separate OpenSpec change after the query-layer filter grammar settles (synthesis recommendation: defer). **Decided: deferred.** Out of scope for this track; reopened only as its own OpenSpec change once the query-layer filter grammar settles (synthesis Q4 / decision #11). Owner steering confirms.
+- [x] Decide where normative "issued grants are source-bounded" lives: `spec-core.md` directly, or inside the `agent-consent-bundling` capability spec. **Decided: the `agent-consent-bundling` capability spec.** That spec already carries the normative rule for the hosted MCP flow; no `spec-core.md` change was made or required. A future promotion into `spec-core.md` remains an owner call but is not blocking.
 - [ ] Decide soft-cap value for `authorization_details[]` entries per staged request (synthesis suggestion: 8, warning at 6).
 - [ ] Decide ownership of connector sensitivity classification: manifest-declared, central PDPP registry, or both.
 
