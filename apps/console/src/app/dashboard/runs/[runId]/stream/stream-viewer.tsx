@@ -67,6 +67,7 @@ import {
   parseStreamErrorMessage,
   parseUrlChangedMessage,
 } from "@opendatalabs/remote-surface/protocol";
+import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { type FormEvent, type RefObject, useCallback, useEffect, useRef, useState, useTransition } from "react";
@@ -81,7 +82,6 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog.tsx";
 import { Input } from "@/components/ui/input.tsx";
-import { dashboardRoutes } from "../../../components/views/routes.ts";
 import { submitRunInteractionAction } from "../actions.ts";
 import { type MintedStreamSession, mintStreamSessionAction } from "./actions.ts";
 import {

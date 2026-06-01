@@ -1,7 +1,7 @@
+import { PageHeader, Section } from "@pdpp/operator-ui/components/primitives";
 import { notFound } from "next/navigation";
 import { Fragment } from "react";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
-import { PageHeader, Section } from "../../../../components/primitives.tsx";
 import { DashboardShell, ServerUnreachable } from "../../../../components/shell.tsx";
 import { ReferenceServerUnreachableError } from "../../../../lib/owner-token.ts";
 import { type FieldHealth, type StreamHealth, streamHealth } from "../../../../lib/rs-client.ts";

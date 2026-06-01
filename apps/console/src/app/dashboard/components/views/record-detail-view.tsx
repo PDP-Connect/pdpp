@@ -3,11 +3,11 @@
  * inside the standard dashboard breadcrumb header.
  */
 
+import { PageHeader, Section } from "@pdpp/operator-ui/components/primitives";
+import type { Routes } from "@pdpp/operator-ui/components/views/routes";
+import { formatConnectorKeyForDisplay } from "@pdpp/operator-ui/lib/connector-display";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
-import { formatConnectorKeyForDisplay } from "../../lib/connector-display.ts";
 import type { StreamRecord } from "../../lib/rs-client.ts";
-import { PageHeader, Section } from "../primitives.tsx";
-import type { Routes } from "./routes.ts";
 
 export function RecordDetailView({
   connectorId,

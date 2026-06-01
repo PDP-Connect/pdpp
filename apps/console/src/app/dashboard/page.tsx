@@ -1,7 +1,5 @@
-import { Suspense } from "react";
-import { OverviewHero, OverviewHeroError, OverviewHeroPlaceholder } from "./components/overview-hero.tsx";
-import { PageHeader } from "./components/primitives.tsx";
-import { DashboardShell } from "./components/shell.tsx";
+import { OverviewHero, OverviewHeroError, OverviewHeroPlaceholder } from "@pdpp/operator-ui/components/overview-hero";
+import { PageHeader } from "@pdpp/operator-ui/components/primitives";
 import {
   AttentionOverview,
   type AttentionOverviewData,
@@ -11,8 +9,10 @@ import {
   RecentActivityOverview,
   type RecentActivityOverviewData,
   RecentActivityPlaceholder,
-} from "./components/views/overview-view.tsx";
-import { dashboardRoutes } from "./components/views/routes.ts";
+} from "@pdpp/operator-ui/components/views/overview-view";
+import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
+import { Suspense } from "react";
+import { DashboardShell } from "./components/shell.tsx";
 import { WebPushSettings } from "./components/web-push-settings.tsx";
 import { liveDashboardDataSource } from "./lib/data-source.ts";
 import { getWebPushConfig, listWebPushSubscriptions } from "./lib/ref-client.ts";

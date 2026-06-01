@@ -9,11 +9,13 @@
  * mobile/desktop table.
  */
 
+import { PageHeader, Pager } from "@pdpp/operator-ui/components/primitives";
+import type { Routes } from "@pdpp/operator-ui/components/views/routes";
+import { formatConnectorKeyForDisplay } from "@pdpp/operator-ui/lib/connector-display";
 import Link from "next/link";
 import { Fragment } from "react";
 import { buttonVariants } from "@/components/ui/button.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
-import { formatConnectorKeyForDisplay } from "../../lib/connector-display.ts";
 import {
   computeDefaultColumns,
   deriveAllColumns,
@@ -25,8 +27,6 @@ import {
   truncate,
 } from "../../lib/rs-client.ts";
 import { ColumnsMenu } from "../../records/[connector]/[stream]/columns-menu.tsx";
-import { PageHeader, Pager } from "../primitives.tsx";
-import type { Routes } from "./routes.ts";
 
 const TH = "pdpp-eyebrow border-border/70 border-b px-3 py-2 text-left text-muted-foreground";
 const TD = "pdpp-caption border-border/70 border-b px-3 py-2";

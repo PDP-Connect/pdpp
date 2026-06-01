@@ -12,13 +12,7 @@
  *       reference-implementation-architecture/spec.md
  */
 
-import type { Metadata } from "next";
-import Link from "next/link";
-import type { ReactNode } from "react";
-import { Button } from "@/components/ui/button.tsx";
-import { Input } from "@/components/ui/input.tsx";
-import { Select } from "@/components/ui/select.tsx";
-import { Timestamp } from "@/components/ui/timestamp.tsx";
+import { EmptyState } from "@pdpp/operator-ui/components/empty-state";
 import {
   DataList,
   FilterSummary,
@@ -28,9 +22,16 @@ import {
   StatusBadge,
   Toolbar,
   ToolbarField,
-} from "../components/primitives.tsx";
-import { DashboardShell, EmptyState, ServerUnreachable } from "../components/shell.tsx";
-import { dashboardRoutes } from "../components/views/routes.ts";
+} from "@pdpp/operator-ui/components/primitives";
+import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
+import type { Metadata } from "next";
+import Link from "next/link";
+import type { ReactNode } from "react";
+import { Button } from "@/components/ui/button.tsx";
+import { Input } from "@/components/ui/input.tsx";
+import { Select } from "@/components/ui/select.tsx";
+import { Timestamp } from "@/components/ui/timestamp.tsx";
+import { DashboardShell, ServerUnreachable } from "../components/shell.tsx";
 import { ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import {
   type ClientEventSubscriptionAttempt,

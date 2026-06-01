@@ -1,5 +1,6 @@
 "use client";
 
+import { Section } from "@pdpp/operator-ui/components/primitives";
 import { useEffect, useState } from "react";
 import {
   embeddingCacheRow,
@@ -14,7 +15,6 @@ import {
   storageBackendRow,
   type Verdict,
 } from "./deployment-readiness-rows.ts";
-import { Section } from "./primitives.tsx";
 
 // Self-host onboarding SLVP readiness panel. Presents existing diagnostic
 // state as a small, opinionated "can I share this MCP URL?" checklist.

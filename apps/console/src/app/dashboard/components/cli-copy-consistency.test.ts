@@ -38,8 +38,8 @@ const SURFACED_FILES = [
   "apps/site/src/app/sandbox/grants/[grantId]/page.tsx",
   "apps/site/src/app/sandbox/traces/page.tsx",
   "apps/site/src/app/sandbox/traces/[traceId]/page.tsx",
-  "apps/console/src/app/dashboard/components/peek.tsx",
-  "apps/console/src/app/dashboard/components/views/timeline-detail-view.tsx",
+  "packages/operator-ui/src/components/peek.tsx",
+  "packages/operator-ui/src/components/views/timeline-detail-view.tsx",
   "apps/site/content/docs/reference-implementation.md",
 ];
 
@@ -96,13 +96,13 @@ test("cli README advertises pdpp ref namespace", async () => {
 // command got `command not found: pdpp`. The peek + detail surfaces must now
 // also render a zero-install one-shot form (`npx -y @pdpp/cli@beta ref ...`).
 test("peek pane surfaces a zero-install npx invocation", async () => {
-  const src = await read("apps/console/src/app/dashboard/components/peek.tsx");
+  const src = await read("packages/operator-ui/src/components/peek.tsx");
   assert.match(src, NO_INSTALL_HELPER, "peek pane must derive the no-install form via the shared helper");
   assert.match(src, PEEK_NO_INSTALL_HOOK, "peek pane must render the no-install form with a stable test hook");
 });
 
 test("timeline detail view surfaces a zero-install npx invocation", async () => {
-  const src = await read("apps/console/src/app/dashboard/components/views/timeline-detail-view.tsx");
+  const src = await read("packages/operator-ui/src/components/views/timeline-detail-view.tsx");
   assert.match(src, NO_INSTALL_HELPER);
   assert.match(src, DETAIL_NO_INSTALL_HOOK);
 });

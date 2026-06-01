@@ -1,7 +1,7 @@
+import { formatConnectorNameForDisplay } from "@pdpp/operator-ui/lib/connector-display";
 import type { Viewport } from "next";
 import { notFound } from "next/navigation";
 import { ServerUnreachable } from "../../../components/shell.tsx";
-import { formatConnectorNameForDisplay } from "../../../lib/connector-display.ts";
 import { ReferenceServerUnreachableError } from "../../../lib/owner-token.ts";
 import {
   getRunTimeline,

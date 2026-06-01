@@ -1,8 +1,8 @@
+import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
+import { type SearchData, SearchView } from "@pdpp/operator-ui/components/views/search-view";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { DashboardShell, ServerUnreachable } from "../components/shell.tsx";
-import { dashboardRoutes } from "../components/views/routes.ts";
-import { type SearchData, SearchView } from "../components/views/search-view.tsx";
 import { ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import { type GrantSummary, type RunSummary, refSearch, type TraceSummary } from "../lib/ref-client.ts";
 import { verifyDashboardSession } from "../lib/verify-session.ts";

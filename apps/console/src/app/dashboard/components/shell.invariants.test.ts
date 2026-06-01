@@ -21,6 +21,10 @@ import { fileURLToPath } from "node:url";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const SHELL_FILE = `${HERE}shell.tsx`;
+// routes.ts moved to the shared @pdpp/operator-ui package; resolve it from the
+// repo root rather than the now-deleted console-local components/views path.
+const REPO_ROOT = new URL("../../../../../../", import.meta.url);
+const PACKAGE_ROUTES_FILE = fileURLToPath(new URL("packages/operator-ui/src/components/views/routes.ts", REPO_ROOT));
 const DEPLOYMENT_LIVE_MODE_RE = /active === "deployment" && mode === "live"/;
 const DEPLOYMENT_SUBNAV_RE = /DeploymentSubnav/;
 const DEPLOYMENT_ROUTE_RE = /routes\.section\.deployment\b/;
@@ -28,6 +32,10 @@ const DEPLOYMENT_TOKENS_ROUTE_RE = /routes\.section\.deploymentTokens/;
 const OWNER_TOKENS_LABEL_RE = /Owner tokens/;
 const DEPLOYMENT_TOKENS_SYMBOL_RE = /deploymentTokens\b/;
 const DEPLOYMENT_TOKENS_PATH_RE = /deployment\/tokens/;
+const MOBILE_DRAWER_PROVIDER_IMPORT_RE =
+  /import \{[\s\S]*MobileDrawerProvider[\s\S]*\} from "@pdpp\/operator-ui\/components\/mobile-drawer"/;
+const MOBILE_DRAWER_PROVIDER_WRAP_RE =
+  /<MobileDrawerProvider>[\s\S]*<MobileDrawer>[\s\S]*<\/MobileDrawer>[\s\S]*<\/MobileDrawerProvider>/;
 
 test("shell renders DeploymentSubnav when active is deployment (live mode only)", async () => {
   const src = await readFile(SHELL_FILE, "utf8");
@@ -53,8 +61,15 @@ test("DeploymentSubnav label is 'Owner tokens', not a generic term", async () =>
 });
 
 test("routes.ts exposes a deploymentTokens section pointing to /deployment/tokens", async () => {
-  const routesFile = `${HERE}views/routes.ts`;
-  const src = await readFile(routesFile, "utf8");
+  const src = await readFile(PACKAGE_ROUTES_FILE, "utf8");
   assert.match(src, DEPLOYMENT_TOKENS_SYMBOL_RE);
   assert.match(src, DEPLOYMENT_TOKENS_PATH_RE);
+});
+
+test("shell wraps the topbar trigger and drawer in the same MobileDrawerProvider", async () => {
+  // Moved here from the package mobile-drawer test: `shell.tsx` is forked per
+  // app and stays app-local, so the shell↔provider wrap is an app invariant.
+  const src = await readFile(SHELL_FILE, "utf8");
+  assert.match(src, MOBILE_DRAWER_PROVIDER_IMPORT_RE);
+  assert.match(src, MOBILE_DRAWER_PROVIDER_WRAP_RE);
 });

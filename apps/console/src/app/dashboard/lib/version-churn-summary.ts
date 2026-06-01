@@ -14,7 +14,7 @@
  * operator voice — this is the owner's own instance state, not a hosted
  * service promise. See `docs/voice-and-framing.md`.
  */
-import { formatConnectorNameForDisplay } from "./connector-display.ts";
+import { formatConnectorNameForDisplay } from "@pdpp/operator-ui/lib/connector-display";
 import type { RefRecordVersionRisk, RefRecordVersionStatsRow } from "./ref-client.ts";
 
 /** Human-readable connector/stream label for one churn row. */

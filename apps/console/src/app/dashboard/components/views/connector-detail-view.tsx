@@ -7,15 +7,15 @@
  * sandbox page passes nothing so the surface is read-only.
  */
 
+import { DataList, PageHeader, Section, StatusBadge } from "@pdpp/operator-ui/components/primitives";
+import type { Routes } from "@pdpp/operator-ui/components/views/routes";
+import { formatConnectorKeyForDisplay, formatConnectorNameForDisplay } from "@pdpp/operator-ui/lib/connector-display";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { buttonVariants } from "@/components/ui/button.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
-import { formatConnectorKeyForDisplay, formatConnectorNameForDisplay } from "../../lib/connector-display.ts";
 import type { RunSummary } from "../../lib/ref-client.ts";
 import type { ConnectorManifest, ConnectorOverview, StreamSummary } from "../../lib/rs-client.ts";
-import { DataList, PageHeader, Section, StatusBadge } from "../primitives.tsx";
-import type { Routes } from "./routes.ts";
 
 const RUNNING_STATES = new Set(["started", "in_progress"]);
 

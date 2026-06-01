@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { buildPeekReadUrl } from "./peek-read-url.ts";
+import { buildPeekReadUrl } from "@pdpp/operator-ui/explore/peek-read-url";
 
 test("buildPeekReadUrl matches the canonical record-read URL shape", () => {
   const url = buildPeekReadUrl({

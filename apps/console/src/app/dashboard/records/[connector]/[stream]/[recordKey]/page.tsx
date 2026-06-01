@@ -1,6 +1,6 @@
+import { PageHeader, Section } from "@pdpp/operator-ui/components/primitives";
 import { notFound } from "next/navigation";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
-import { PageHeader, Section } from "../../../../components/primitives.tsx";
 import { DashboardShell, ServerUnreachable } from "../../../../components/shell.tsx";
 import { WarningsBanner } from "../../../../components/warnings-banner.tsx";
 import { ReferenceServerUnreachableError } from "../../../../lib/owner-token.ts";

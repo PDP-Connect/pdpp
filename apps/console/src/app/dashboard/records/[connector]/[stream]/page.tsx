@@ -1,9 +1,9 @@
+import { PageHeader, Pager } from "@pdpp/operator-ui/components/primitives";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Fragment } from "react";
 import { buttonVariants } from "@/components/ui/button.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
-import { PageHeader, Pager } from "../../../components/primitives.tsx";
 import { DashboardShell, ServerUnreachable } from "../../../components/shell.tsx";
 import { WarningsBanner } from "../../../components/warnings-banner.tsx";
 import { ReferenceServerUnreachableError } from "../../../lib/owner-token.ts";

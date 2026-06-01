@@ -1,9 +1,9 @@
+import { CopyButton } from "@pdpp/operator-ui/components/copy-button";
+import { Callout, PageHeader } from "@pdpp/operator-ui/components/primitives";
 import Link from "next/link";
 import { Button, buttonVariants } from "@/components/ui/button.tsx";
 import { Input } from "@/components/ui/input.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
-import { CopyButton } from "../../components/copy-button.tsx";
-import { Callout, PageHeader } from "../../components/primitives.tsx";
 import { DashboardShell, ServerUnreachable } from "../../components/shell.tsx";
 import { buildOwnerBootstrapExamples, getOwnerBootstrapFlow } from "../../lib/operator-bootstrap.ts";
 import { getReferencePublicOrigin, ReferenceServerUnreachableError } from "../../lib/owner-token.ts";

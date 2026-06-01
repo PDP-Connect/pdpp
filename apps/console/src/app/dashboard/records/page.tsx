@@ -1,7 +1,7 @@
-import { PageHeader } from "../components/primitives.tsx";
+import { PageHeader } from "@pdpp/operator-ui/components/primitives";
+import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import { DashboardShell, ServerUnreachable } from "../components/shell.tsx";
 import { RecordsListView } from "../components/views/records-list-view.tsx";
-import { dashboardRoutes } from "../components/views/routes.ts";
 import { liveDashboardDataSource } from "../lib/data-source.ts";
 import { ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import {

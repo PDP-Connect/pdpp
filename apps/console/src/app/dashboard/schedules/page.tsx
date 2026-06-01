@@ -1,6 +1,6 @@
-import { PageHeader } from "../components/primitives.tsx";
+import { PageHeader } from "@pdpp/operator-ui/components/primitives";
+import { SchedulesView } from "@pdpp/operator-ui/components/views/schedules-view";
 import { DashboardShell, ServerUnreachable } from "../components/shell.tsx";
-import { SchedulesView } from "../components/views/schedules-view.tsx";
 import { ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import { listConnectorSummaries, type RefConnectorSummary } from "../lib/ref-client.ts";
 import { ScheduleRow } from "./schedule-row.tsx";

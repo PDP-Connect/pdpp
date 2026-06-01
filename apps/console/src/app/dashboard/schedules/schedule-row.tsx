@@ -1,11 +1,11 @@
 "use client";
 
+import { formatConnectorKeyForDisplay, formatConnectorNameForDisplay } from "@pdpp/operator-ui/lib/connector-display";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useState, useTransition } from "react";
 import { Button } from "@/components/ui/button.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
-import { formatConnectorKeyForDisplay, formatConnectorNameForDisplay } from "../lib/connector-display.ts";
 import type { RefConnectorSummary, RefSchedule } from "../lib/ref-client.ts";
 import { deleteScheduleAction, pauseScheduleAction, resumeScheduleAction, upsertScheduleAction } from "./actions.ts";
 

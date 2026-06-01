@@ -1,12 +1,12 @@
+import { CopyButton } from "@pdpp/operator-ui/components/copy-button";
+import { MobileDrawer, MobileDrawerProvider, MobileDrawerTrigger } from "@pdpp/operator-ui/components/mobile-drawer";
+import { dashboardRoutes, type Routes, sandboxRoutes } from "@pdpp/operator-ui/components/views/routes";
 import Link from "next/link";
 import { cache, type ReactNode } from "react";
 import { PdppLogo } from "@/components/pdpp-logo.tsx";
 import { ThemeToggle } from "@/components/theme/theme-toggle.tsx";
 import { getAsInternalUrl, getOwnerLoginPath, getReferencePublicOrigin, getRsInternalUrl } from "../lib/owner-token.ts";
 import { CommandPalette, CommandPaletteProvider, CommandPaletteTrigger } from "./command-palette.tsx";
-import { CopyButton } from "./copy-button.tsx";
-import { MobileDrawer, MobileDrawerProvider, MobileDrawerTrigger } from "./mobile-drawer.tsx";
-import { dashboardRoutes, type Routes, sandboxRoutes } from "./views/routes.ts";
 
 interface NavItem {
   href: string;
@@ -404,15 +404,6 @@ export function OwnerTokenRequired() {
           Owner access →
         </a>
       </div>
-    </div>
-  );
-}
-
-export function EmptyState({ title, hint }: { title: string; hint?: ReactNode }) {
-  return (
-    <div className="rounded-md border border-border/80 border-dashed px-4 py-10 text-center">
-      <p className="pdpp-body font-medium text-foreground">{title}</p>
-      {hint ? <p className="pdpp-body mx-auto mt-1 max-w-md text-muted-foreground">{hint}</p> : null}
     </div>
   );
 }

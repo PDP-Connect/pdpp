@@ -1,9 +1,9 @@
+import { Callout, MetaPill, PageHeader, StatusBadge } from "@pdpp/operator-ui/components/primitives";
+import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
+import { TimelineDetailView } from "@pdpp/operator-ui/components/views/timeline-detail-view";
 import { notFound } from "next/navigation";
 import { Fragment } from "react";
-import { Callout, MetaPill, PageHeader, StatusBadge } from "../../components/primitives.tsx";
 import { DashboardShell, ServerUnreachable } from "../../components/shell.tsx";
-import { dashboardRoutes } from "../../components/views/routes.ts";
-import { TimelineDetailView } from "../../components/views/timeline-detail-view.tsx";
 import { getAsInternalUrl, ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
 import { getRunTimeline, type SpineEvent, type TimelineEnvelope } from "../../lib/ref-client.ts";
 import {

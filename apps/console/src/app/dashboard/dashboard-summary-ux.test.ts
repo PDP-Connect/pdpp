@@ -4,8 +4,11 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
+// overview-hero.tsx moved to the shared @pdpp/operator-ui package; resolve it
+// from the repo root. ref-client.ts stays console-local (live runtime).
+const REPO_ROOT = new URL("../../../../../", import.meta.url);
 const PAGE_FILE = `${HERE}page.tsx`;
-const HERO_FILE = `${HERE}components/overview-hero.tsx`;
+const HERO_FILE = fileURLToPath(new URL("packages/operator-ui/src/components/overview-hero.tsx", REPO_ROOT));
 const REF_CLIENT_FILE = `${HERE}lib/ref-client.ts`;
 
 const DASHBOARD_PAGE_IS_SYNC = /export default function DashboardPage\(\)/;

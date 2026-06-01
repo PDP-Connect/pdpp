@@ -1,14 +1,14 @@
-import Link from "next/link";
-import { notFound } from "next/navigation";
-import { buttonVariants } from "@/components/ui/button.tsx";
-import { Timestamp } from "@/components/ui/timestamp.tsx";
-import { DataList, PageHeader, Section, StatusBadge } from "../../components/primitives.tsx";
-import { DashboardShell, ServerUnreachable } from "../../components/shell.tsx";
+import { DataList, PageHeader, Section, StatusBadge } from "@pdpp/operator-ui/components/primitives";
 import {
   formatConnectorKeyForDisplay,
   formatConnectorNameForDisplay,
   isFallbackConnectionLabel,
-} from "../../lib/connector-display.ts";
+} from "@pdpp/operator-ui/lib/connector-display";
+import Link from "next/link";
+import { notFound } from "next/navigation";
+import { buttonVariants } from "@/components/ui/button.tsx";
+import { Timestamp } from "@/components/ui/timestamp.tsx";
+import { DashboardShell, ServerUnreachable } from "../../components/shell.tsx";
 import { ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
 import {
   type DeviceSourceInstance,

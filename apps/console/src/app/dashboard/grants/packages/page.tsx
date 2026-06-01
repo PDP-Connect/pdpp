@@ -9,11 +9,12 @@
  *       specs/reference-implementation-architecture/spec.md
  */
 
+import { EmptyState } from "@pdpp/operator-ui/components/empty-state";
+import { DataList, PageHeader, Section, StatusBadge } from "@pdpp/operator-ui/components/primitives";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
-import { DataList, PageHeader, Section, StatusBadge } from "../../components/primitives.tsx";
-import { DashboardShell, EmptyState, ServerUnreachable } from "../../components/shell.tsx";
+import { DashboardShell, ServerUnreachable } from "../../components/shell.tsx";
 import { ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
 import { type GrantPackageSummary, type ListResponse, listGrantPackages } from "../../lib/ref-client.ts";
 

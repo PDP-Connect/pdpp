@@ -1,9 +1,9 @@
+import { PageHeader, StatusBadge } from "@pdpp/operator-ui/components/primitives";
+import { type ListWithPeekParams, ListWithPeekView } from "@pdpp/operator-ui/components/views/list-with-peek";
+import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 import Link from "next/link";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
-import { PageHeader, StatusBadge } from "../components/primitives.tsx";
 import { DashboardShell, ServerUnreachable } from "../components/shell.tsx";
-import { type ListWithPeekParams, ListWithPeekView } from "../components/views/list-with-peek.tsx";
-import { dashboardRoutes } from "../components/views/routes.ts";
 import { ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import {
   getTraceTimeline,

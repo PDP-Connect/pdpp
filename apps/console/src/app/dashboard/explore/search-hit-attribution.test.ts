@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { attributeSearchHit, shouldIncludeSearchHit } from "@pdpp/operator-ui/explore/search-hit-attribution";
 import type { RefConnectorSummary } from "../lib/ref-client.ts";
-import { attributeSearchHit, shouldIncludeSearchHit } from "./search-hit-attribution.ts";
 
 function summary(
   over: Partial<RefConnectorSummary> & { connection_id: string; connector_id: string }

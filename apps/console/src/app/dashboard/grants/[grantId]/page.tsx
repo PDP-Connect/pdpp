@@ -1,9 +1,9 @@
+import { PageHeader } from "@pdpp/operator-ui/components/primitives";
+import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
+import { TimelineDetailView } from "@pdpp/operator-ui/components/views/timeline-detail-view";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { PageHeader } from "../../components/primitives.tsx";
 import { DashboardShell, ServerUnreachable } from "../../components/shell.tsx";
-import { dashboardRoutes } from "../../components/views/routes.ts";
-import { TimelineDetailView } from "../../components/views/timeline-detail-view.tsx";
 import { getAsInternalUrl, ReferenceServerUnreachableError } from "../../lib/owner-token.ts";
 import { getGrantTimeline, lookupGrantPackageIdForGrant } from "../../lib/ref-client.ts";
 

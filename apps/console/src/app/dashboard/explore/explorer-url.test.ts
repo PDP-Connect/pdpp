@@ -12,8 +12,8 @@ import {
   feedSectionTitle,
   groupFeedByDay,
   parseExplorerPeekParam,
-} from "../components/views/explorer-utils.ts";
-import { dashboardRoutes } from "../components/views/routes.ts";
+} from "@pdpp/operator-ui/components/views/explorer-utils";
+import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
 
 const NO_CONNECTION_TOKEN = "~";
 

@@ -1,11 +1,11 @@
 "use client";
 
+import { CopyButton } from "@pdpp/operator-ui/components/copy-button";
+import { Callout, ToolbarField } from "@pdpp/operator-ui/components/primitives";
 import { useActionState } from "react";
 import { Button } from "@/components/ui/button.tsx";
 import { Input } from "@/components/ui/input.tsx";
 import { pdppLocalCollectorEnrollCommand, pdppLocalCollectorRunCommand } from "@/lib/pdpp-cli-command.ts";
-import { CopyButton } from "../components/copy-button.tsx";
-import { Callout, ToolbarField } from "../components/primitives.tsx";
 import { createEnrollmentCodeAction } from "./actions.ts";
 
 const COLLECTOR_RUN_CONNECTORS = ["claude_code", "codex"] as const;

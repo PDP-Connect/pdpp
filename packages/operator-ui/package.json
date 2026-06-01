@@ -46,7 +46,8 @@
     "typecheck": "tsc --noEmit",
     "check": "ultracite check",
     "fix": "ultracite fix",
-    "verify": "pnpm typecheck && pnpm check"
+    "test": "node --test --import tsx 'src/**/*.test.ts'",
+    "verify": "pnpm typecheck && pnpm check && pnpm test"
   },
   "dependencies": {
     "class-variance-authority": "^0.7.1",
@@ -64,6 +65,7 @@
     "@types/node": "^25.5.2",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
+    "tsx": "^4.21.0",
     "typescript": "^6.0.2",
     "ultracite": "7.6.0"
   }

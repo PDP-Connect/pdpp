@@ -11,6 +11,10 @@
  * existing client-component ConnectorRow with its server action.
  */
 
+import { EmptyState } from "@pdpp/operator-ui/components/empty-state";
+import { Callout, DataList, PageHeader, Section } from "@pdpp/operator-ui/components/primitives";
+import type { Routes } from "@pdpp/operator-ui/components/views/routes";
+import { formatConnectorKeyForDisplay, formatConnectorNameForDisplay } from "@pdpp/operator-ui/lib/connector-display";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { buttonVariants } from "@/components/ui/button.tsx";
@@ -21,15 +25,11 @@ import {
   UNSUPPORTED_ADD_MODALITIES,
 } from "../../lib/connection-modality.ts";
 import { summarizeConnectionHealth } from "../../lib/connection-summary-stats.ts";
-import { formatConnectorKeyForDisplay, formatConnectorNameForDisplay } from "../../lib/connector-display.ts";
 import { shouldShowInPrimaryConnections } from "../../lib/records-list-classification.ts";
 import type { RefRecordVersionStatsRow } from "../../lib/ref-client.ts";
 import type { ConnectorOverview, ConnectorRunRef } from "../../lib/rs-client.ts";
 import { buildChurnDrilldownRows, summarizeVersionChurn } from "../../lib/version-churn-summary.ts";
 import { ConnectorRow } from "../../records/connector-row.tsx";
-import { Callout, DataList, PageHeader, Section } from "../primitives.tsx";
-import { EmptyState } from "../shell.tsx";
-import type { Routes } from "./routes.ts";
 
 /**
  * Sort connections so the most actionable appear first.

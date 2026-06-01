@@ -1,10 +1,10 @@
+import { MetaPill, PageHeader, Section } from "@pdpp/operator-ui/components/primitives";
 import Link from "next/link";
 import { Button, buttonVariants } from "@/components/ui/button.tsx";
 import { Input } from "@/components/ui/input.tsx";
 import { Select } from "@/components/ui/select.tsx";
 import { Textarea } from "@/components/ui/textarea.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
-import { MetaPill, PageHeader, Section } from "../../components/primitives.tsx";
 import { DashboardShell } from "../../components/shell.tsx";
 import {
   buildGrantRequestExamples,

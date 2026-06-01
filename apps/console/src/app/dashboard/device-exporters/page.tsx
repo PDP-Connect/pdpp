@@ -1,11 +1,12 @@
+import { CopyButton } from "@pdpp/operator-ui/components/copy-button";
+import { EmptyState } from "@pdpp/operator-ui/components/empty-state";
+import { DataList, MetaPill, PageHeader, Section, StatusBadge } from "@pdpp/operator-ui/components/primitives";
+import { formatConnectorKeyForDisplay } from "@pdpp/operator-ui/lib/connector-display";
 import Link from "next/link";
 import { Button } from "@/components/ui/button.tsx";
-import { CopyButton } from "../components/copy-button.tsx";
-import { DataList, MetaPill, PageHeader, Section, StatusBadge } from "../components/primitives.tsx";
-import { DashboardShell, EmptyState, ServerUnreachable } from "../components/shell.tsx";
+import { DashboardShell, ServerUnreachable } from "../components/shell.tsx";
 import { formatSourceOutboxState } from "../lib/connection-evidence.ts";
 import { isSupportedLocalCollectorConnector } from "../lib/connection-modality.ts";
-import { formatConnectorKeyForDisplay } from "../lib/connector-display.ts";
 import { getReferencePublicOrigin, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import {
   type DeviceExporter,

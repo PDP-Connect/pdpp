@@ -1,8 +1,8 @@
 "use client";
 
+import { Section } from "@pdpp/operator-ui/components/primitives";
 import { useEffect, useState } from "react";
 import type { WebPushConfig, WebPushSubscriptionSummary } from "../lib/ref-client.ts";
-import { Section } from "./primitives.tsx";
 
 function urlBase64ToUint8Array(base64String: string) {
   const padding = "=".repeat((4 - (base64String.length % 4)) % 4);

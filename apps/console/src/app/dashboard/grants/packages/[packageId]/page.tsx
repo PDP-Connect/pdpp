@@ -12,14 +12,14 @@
  *       specs/reference-implementation-architecture/spec.md
  */
 
+import { DataList, PageHeader, Section, StatusBadge } from "@pdpp/operator-ui/components/primitives";
+import { formatSourceWithConnectionForDisplay } from "@pdpp/operator-ui/lib/connector-display";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Button } from "@/components/ui/button.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
-import { DataList, PageHeader, Section, StatusBadge } from "../../../components/primitives.tsx";
 import { DashboardShell, ServerUnreachable } from "../../../components/shell.tsx";
-import { formatSourceWithConnectionForDisplay } from "../../../lib/connector-display.ts";
 import { ReferenceServerUnreachableError } from "../../../lib/owner-token.ts";
 import { type GrantPackageChild, getGrantPackage } from "../../../lib/ref-client.ts";
 import { revokePackageAction } from "./revoke-action.ts";

@@ -32,12 +32,14 @@
  * explore-data-assembler.ts so the inline loaders are not duplicated if a
  * second surface ever needs them.
  */
+
+import { buildExplorerHref, RecordsExplorerView } from "@pdpp/operator-ui/components/views/records-explorer-view";
+import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
+import { assembleExplorerData } from "@pdpp/operator-ui/explore/explore-data-assembler";
 import { DashboardShell, ServerUnreachable } from "../components/shell.tsx";
-import { buildExplorerHref, RecordsExplorerView } from "../components/views/records-explorer-view.tsx";
-import { dashboardRoutes } from "../components/views/routes.ts";
+import { liveDashboardDataSource } from "../lib/data-source.ts";
 import { getOwnerToken, getRsInternalUrl, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import { verifyDashboardSession } from "../lib/verify-session.ts";
-import { assembleExplorerData } from "./explore-data-assembler.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -64,7 +66,7 @@ export default async function RecordsExplorerPage({
   const params = await searchParams;
 
   try {
-    const data = await assembleExplorerData(params, getRsInternalUrl());
+    const data = await assembleExplorerData(params, liveDashboardDataSource, getRsInternalUrl());
     return (
       <DashboardShell active="explore">
         <RecordsExplorerView data={data} routes={dashboardRoutes} />

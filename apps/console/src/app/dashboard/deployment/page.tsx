@@ -1,11 +1,14 @@
+import { ConnectAgentCard } from "@pdpp/operator-ui/components/connect-agent-card";
+import {
+  DeploymentDiagnosticsView,
+  isDeploymentIndexing,
+} from "@pdpp/operator-ui/components/views/deployment-diagnostics-view";
 import Link from "next/link";
 import { buttonVariants } from "@/components/ui/button.tsx";
-import { ConnectAgentCard } from "../components/connect-agent-card.tsx";
 import { DeploymentReadinessPanel } from "../components/deployment-readiness-panel.tsx";
 import { extractReadinessInputs } from "../components/deployment-readiness-rows.ts";
 import { LivePoller } from "../components/live-poller.tsx";
 import { DashboardShell, ServerUnreachable } from "../components/shell.tsx";
-import { DeploymentDiagnosticsView, isDeploymentIndexing } from "../components/views/deployment-diagnostics-view.tsx";
 import { getReferencePublicOrigin, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import { type DeploymentDiagnostics, getDeploymentDiagnostics } from "../lib/ref-client.ts";
 

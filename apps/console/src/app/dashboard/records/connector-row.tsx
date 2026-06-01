@@ -1,5 +1,6 @@
 "use client";
 
+import { formatConnectorNameForDisplay, isFallbackConnectionLabel } from "@pdpp/operator-ui/lib/connector-display";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
@@ -16,7 +17,6 @@ import {
   resolveRecordCountDisplay,
   summarizeAxisChips,
 } from "../lib/connection-evidence.ts";
-import { formatConnectorNameForDisplay, isFallbackConnectionLabel } from "../lib/connector-display.ts";
 import { formatNextAction } from "../lib/next-action.ts";
 import type { ConnectorOverview, ConnectorRunRef } from "../lib/rs-client.ts";
 import { connectorHasPartialCoverageHint, normalizeKnownGaps } from "../lib/run-gaps.ts";

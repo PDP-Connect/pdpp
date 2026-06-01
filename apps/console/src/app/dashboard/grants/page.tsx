@@ -1,11 +1,12 @@
+import { EmptyState } from "@pdpp/operator-ui/components/empty-state";
+import { DataList, PageHeader, Section, StatusBadge } from "@pdpp/operator-ui/components/primitives";
+import { type ListWithPeekParams, ListWithPeekView } from "@pdpp/operator-ui/components/views/list-with-peek";
+import { dashboardRoutes } from "@pdpp/operator-ui/components/views/routes";
+import { formatSourceForDisplay } from "@pdpp/operator-ui/lib/connector-display";
 import Link from "next/link";
 import { Button, buttonVariants } from "@/components/ui/button.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
-import { DataList, PageHeader, Section, StatusBadge } from "../components/primitives.tsx";
-import { DashboardShell, EmptyState, ServerUnreachable } from "../components/shell.tsx";
-import { type ListWithPeekParams, ListWithPeekView } from "../components/views/list-with-peek.tsx";
-import { dashboardRoutes } from "../components/views/routes.ts";
-import { formatSourceForDisplay } from "../lib/connector-display.ts";
+import { DashboardShell, ServerUnreachable } from "../components/shell.tsx";
 import { getOwnerLoginPath, ReferenceServerUnreachableError } from "../lib/owner-token.ts";
 import {
   type GrantSummary,

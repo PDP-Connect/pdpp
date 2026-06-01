@@ -1,8 +1,8 @@
+import { CopyButton } from "@pdpp/operator-ui/components/copy-button";
+import { DataList, Section } from "@pdpp/operator-ui/components/primitives";
 import Link from "next/link";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
 import { pdppLocalCollectorDoctorCommand } from "@/lib/pdpp-cli-command.ts";
-import { CopyButton } from "../../components/copy-button.tsx";
-import { DataList, Section } from "../../components/primitives.tsx";
 import {
   formatDominantCondition,
   formatProjectionFreshness,
