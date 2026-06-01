@@ -179,6 +179,15 @@ test('control document marks supported families with method + absolute URL', asy
     assert.equal(listConnections.status, 'supported');
     assert.equal(listConnections.method, 'GET');
     assert.equal(listConnections.url, `${rsUrl}/v1/owner/connections`);
+
+    // Rename is served over the owner-agent bearer surface as of the
+    // owner-agent rename slice (task 4.4). It is templated by connection_id so
+    // the URL carries a literal `{connection_id}` placeholder, not a live id.
+    const rename = actionByFamily(body, 'rename_connection');
+    assert.ok(rename, 'rename_connection must be listed');
+    assert.equal(rename.status, 'supported');
+    assert.equal(rename.method, 'PATCH');
+    assert.equal(rename.url, `${rsUrl}/v1/owner/connections/{connection_id}`);
   });
 });
 
@@ -191,9 +200,11 @@ test('control document names unsupported/owner-mediated families instead of omit
 
     // Important admin tasks the change explicitly does NOT overclaim in this
     // branch must be present and typed, not silently dropped.
+    // `rename_connection` is intentionally NOT in this list anymore: it is now
+    // served over the owner-agent bearer surface (task 4.4) and is asserted as
+    // `supported` in the "supported families" test above.
     for (const family of [
       'initiate_connection',
-      'rename_connection',
       'run_connection',
       'manage_schedule',
       'inspect_diagnostics',

@@ -14,8 +14,8 @@
 
 ## 3. Authorization And Audit
 
-- [ ] 3.1 Add explicit owner-agent bearer allowlisting for the selected owner control routes without making `/mcp` accept owner bearers. (Partial: `GET /v1/owner/control` is gated by `requireToken` + `requireOwner`; client/`mcp_package` bearers → 403, missing bearer → 401, `/mcp` owner-bearer rejection pinned by regression test. Mutating control routes remain for later lanes.)
-- [ ] 3.2 Share control operation handlers between browser owner sessions and owner-agent bearers where semantics match, while keeping auth adapters separate.
+- [ ] 3.1 Add explicit owner-agent bearer allowlisting for the selected owner control routes without making `/mcp` accept owner bearers. (Partial: `GET /v1/owner/control`, `GET /v1/owner/connections`, and the first mutating control route `PATCH /v1/owner/connections/{connectionId}` are all gated by `requireToken` + `requireOwner`; client/`mcp_package` bearers → 403, missing bearer → 401, `/mcp` owner-bearer rejection re-pinned by `test/owner-connection-rename.test.js`. Other mutating control routes — run/schedule/delete/revoke — remain for later lanes.)
+- [ ] 3.2 Share control operation handlers between browser owner sessions and owner-agent bearers where semantics match, while keeping auth adapters separate. (Partial: rename shares the connector-instance store `setDisplayName` semantics — owner-scoped WHERE clause, ≤200-char validation, typed `invalid_request`/`connector_instance_not_found` errors — between the cookie-authed `PATCH /_ref/connections/:id` and the owner-bearer `PATCH /v1/owner/connections/:connectionId` while keeping `requireOwnerSession` and `requireToken`+`requireOwner` as separate adapters. Run/schedule handler sharing remains for later lanes. Lane `ri-owner-agent-rename-control-v1`.)
 - [ ] 3.3 Add non-secret audit evidence for owner-agent mutations: actor kind, client id/name, target resource, operation, result, and request id.
 - [ ] 3.4 Add revocation/authorization tests proving a revoked owner-agent credential cannot perform read or control operations.
 
@@ -24,7 +24,7 @@
 - [ ] 4.1 Implement owner-agent connector-template listing with links or embedded summaries for configured connection instances.
 - [x] 4.2 Implement owner-agent connection-instance listing with owner-meaningful labels or explicit label-needed state. (`GET /v1/owner/connections`, bearer-authed; lane `ri-owner-agent-connections-list-v1`.)
 - [x] 4.3 Ensure display-name fallback values such as registry URLs are exposed as fallback/label-needed rather than treated as final SLVP labels. (`label_status: owner_set | fallback` via `projectStorageDisplayName`.)
-- [ ] 4.4 Implement or extend owner-agent rename support so a trusted agent can label Amazon instances as `the owner personal` and `Shared Amazon`.
+- [x] 4.4 Implement or extend owner-agent rename support so a trusted agent can label Amazon instances as `the owner personal` and `Shared Amazon`. (`PATCH /v1/owner/connections/{connectionId}`, bearer-authed via `requireToken` + `requireOwner`; reuses the connector-instance store `setDisplayName` rename semantics shared with the cookie-authed `/_ref` PATCH; response re-projects through `projectOwnerConnection` so a labeled row reports `label_status: owner_set` and a follow-up `GET /v1/owner/connections` reflects the new `display_name`. Two-Amazon `the owner personal` / `Shared Amazon` acceptance covered by `test/owner-connection-rename.test.js`. Lane `ri-owner-agent-rename-control-v1`.)
 
 ## 5. Connection Lifecycle Intents
 

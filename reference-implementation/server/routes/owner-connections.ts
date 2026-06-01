@@ -1,5 +1,6 @@
-// HTTP adapter for the bearer-authed owner-agent control surface route
-// `GET /v1/owner/connections`.
+// HTTP adapter for the bearer-authed owner-agent control surface routes
+// `GET /v1/owner/connections` and `PATCH /v1/owner/connections/:connectionId`
+// (rename).
 //
 // This is the owner-agent (bearer) sibling of the cookie-authed
 // `/_ref/connections` listing in `server/routes/ref-connectors.ts`. Per the
@@ -30,6 +31,8 @@ import type { MiddlewareHandler, PdppErrorFn, RouteArg } from "./_route-contract
 // `server/routes/ref-connectors.ts` and `server/routes/rs-mutation.ts`.
 
 interface RouteRequest {
+  readonly body?: unknown;
+  readonly params: Readonly<Record<string, string>>;
   readonly query: Readonly<Record<string, unknown>>;
   readonly tokenInfo?: { readonly subject_id?: string | null } | null;
 }
@@ -43,6 +46,7 @@ type RouteHandler = (req: RouteRequest, res: RouteResponse) => unknown | Promise
 
 interface AppLike {
   get(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
+  patch(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
 }
 
 // Minimal connector-instance shape this adapter projects. The substrate
@@ -64,7 +68,12 @@ interface ScheduleRow {
 }
 
 interface ConnectorInstanceStore {
+  get(connectorInstanceId: string): Promise<ConnectorInstanceRow | null> | ConnectorInstanceRow | null;
   listByOwner(ownerSubjectId: string): Promise<ConnectorInstanceRow[]> | ConnectorInstanceRow[];
+  setDisplayName(
+    connectorInstanceId: string,
+    options: { ownerSubjectId: string; displayName: string; updatedAt: string }
+  ): Promise<ConnectorInstanceRow>;
 }
 
 export interface MountOwnerConnectionsContext {
@@ -73,6 +82,10 @@ export interface MountOwnerConnectionsContext {
   getOwnerTokenSubjectId(req: unknown): string;
   handleError(res: unknown, err: unknown): void;
   listSchedules(): Promise<ScheduleRow[]> | ScheduleRow[];
+  // Wall-clock stamp for the `updated_at` recorded on rename. Injected so the
+  // route stays deterministic under test and so this module does not import a
+  // clock. Defaults to `new Date().toISOString()` at the call site.
+  now?(): string;
   pdppError: PdppErrorFn;
   // Filters a stored `display_name` to an owner-meaningful label, or `null`
   // when the value is a storage-layer placeholder / connector-type fallback.
@@ -175,6 +188,69 @@ export function mountOwnerConnectionsList(app: AppLike, ctx: MountOwnerConnectio
           .filter((instance) => !status || instance.status === status)
           .map((instance) => projectOwnerConnection(ctx, instance, schedulesByInstanceId));
         res.json({ object: "list", data });
+      } catch (err) {
+        ctx.handleError(res, err);
+      }
+    }
+  );
+}
+
+// PATCH /v1/owner/connections/:connectionId — bearer-authed owner-agent rename
+// of a connection's owner-meaningful `display_name`. This is the owner-agent
+// (bearer) sibling of the cookie-authed `PATCH /_ref/connections/:id` route. It
+// shares the connector-instance store's rename semantics
+// (`store.setDisplayName`, owner-scoped WHERE clause, ≤200-char validation) so
+// the two auth surfaces converge on one mutation path, while keeping their auth
+// adapters (`requireToken` + `requireOwner` vs `requireOwnerSession`) separate.
+//
+// The store's update is owner-scoped: a `connection_id` belonging to another
+// owner matches zero rows and surfaces as `connector_instance_not_found` (404),
+// so a stolen id cannot cross owners even though no separate preflight runs.
+//
+// On success the row is re-projected through `projectOwnerConnection`, so the
+// response carries the owner-agent contract (`connection_id`, `connector_key`,
+// `label_status`) and an owner-set rename reports `label_status: "owner_set"`.
+//
+// Auth: owner bearer (`pdpp_token_kind: "owner"`). Client and `mcp_package`
+// bearers are rejected with 403 by `requireOwner`; a missing bearer is rejected
+// with 401 by `requireToken`. `/mcp` owner-bearer rejection is untouched.
+//
+// Spec: openspec/changes/add-owner-agent-control-surface/specs/
+//       reference-owner-agent-control-surface/spec.md
+//       (#"Owner-agent control mutations SHALL be auditable and secret-safe"
+//         → "Owner agent renames a connection")
+export function mountOwnerConnectionRename(app: AppLike, ctx: MountOwnerConnectionsContext): void {
+  app.patch(
+    "/v1/owner/connections/:connectionId",
+    { contract: "ownerSetConnectionDisplayName" },
+    ctx.requireToken,
+    ctx.requireOwner,
+    async (req: RouteRequest, res: RouteResponse) => {
+      try {
+        const connectionId = decodeURIComponent(req.params.connectionId as string);
+        const body = (req.body as Record<string, unknown> | null) || {};
+        const displayName = body.display_name;
+        // Validate at the boundary so a malformed request is a typed 400 before
+        // the store is touched, matching the `/_ref` PATCH behaviour and the
+        // contract's `display_name` body schema.
+        if (typeof displayName !== "string" || !displayName.trim()) {
+          ctx.pdppError(res, 400, "invalid_request", "display_name must be a non-empty string", "display_name");
+          return;
+        }
+        const ownerSubjectId = ctx.getOwnerTokenSubjectId(req);
+        const store = ctx.createRequestConnectorInstanceStore();
+        const updated = await store.setDisplayName(connectionId, {
+          ownerSubjectId,
+          displayName: displayName.trim(),
+          updatedAt: ctx.now ? ctx.now() : new Date().toISOString(),
+        });
+        const schedules = await ctx.listSchedules();
+        const schedulesByInstanceId = new Map<string, unknown>(
+          schedules
+            .filter((schedule) => schedule?.connector_instance_id)
+            .map((schedule) => [schedule.connector_instance_id as string, schedule])
+        );
+        res.json(projectOwnerConnection(ctx, updated, schedulesByInstanceId));
       } catch (err) {
         ctx.handleError(res, err);
       }

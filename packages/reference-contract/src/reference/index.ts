@@ -96,6 +96,17 @@ const ConnectorInstanceIdParamSchema = {
   required: ["connectorInstanceId"],
 };
 
+// Owner-agent control surface standardizes on `connection_id` as the stable
+// selector (see `OwnerConnectionSchema`), so its path params use
+// `{connectionId}` rather than the deprecated `{connectorInstanceId}` alias the
+// `/_ref/*` surface carries.
+const ConnectionIdParamSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: { connectionId: { type: "string", minLength: 1 } },
+  required: ["connectionId"],
+};
+
 const ConnectionQuerySchema = {
   type: "object",
   additionalProperties: false,
@@ -1149,6 +1160,29 @@ export const referenceManifests = [
     summary:
       "Owner-agent bearer control entrypoint: capability document naming supported, owner-mediated, and unsupported owner-agent control action families with links to supported routes.",
     responses: { 200: { schema: OwnerControlSurfaceResponseSchema }, ...CommonErrors },
+  },
+  {
+    id: "ownerSetConnectionDisplayName",
+    method: "PATCH",
+    path: "/v1/owner/connections/{connectionId}",
+    surface: "reference",
+    tags: ["reference", "connections", "owner-agent"],
+    summary:
+      "Owner-agent bearer rename of the owner-meaningful `display_name` on a connection, addressed by `connection_id`. Owner bearers only; client/mcp_package grants SHALL NOT reach this route. Shares the connector-instance store rename semantics with the cookie-authed `/_ref` PATCH; on success the returned row reports label_status owner_set.",
+    request: {
+      params: ConnectionIdParamSchema,
+      body: {
+        schema: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            display_name: { type: "string", minLength: 1, maxLength: 200 },
+          },
+          required: ["display_name"],
+        },
+      },
+    },
+    responses: { 200: { schema: OwnerConnectionSchema }, ...CommonErrors },
   },
   {
     id: "refGetConnection",

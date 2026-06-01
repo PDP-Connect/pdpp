@@ -367,7 +367,7 @@ import {
   mountRefConnectorsList,
 } from './routes/ref-connectors.ts';
 import { mountRsBlobRead, mountRsReadQueries } from './routes/rs-read.ts';
-import { mountOwnerConnectionsList } from './routes/owner-connections.ts';
+import { mountOwnerConnectionRename, mountOwnerConnectionsList } from './routes/owner-connections.ts';
 import { mountOwnerControl } from './routes/owner-control.ts';
 import {
   mountRsBlobsUpload,
@@ -3635,7 +3635,7 @@ function buildRsApp(opts = {}) {
   // `label_status`). Gated by `requireToken` + `requireOwner` so client and
   // mcp_package bearers are rejected with 403; `/mcp` owner-bearer rejection is
   // untouched. See openspec/changes/add-owner-agent-control-surface.
-  mountOwnerConnectionsList(app, {
+  const ownerConnectionsContext = {
     requireToken,
     requireOwner,
     pdppError,
@@ -3646,7 +3646,17 @@ function buildRsApp(opts = {}) {
     listSchedules: async () => (opts.controller ? await opts.controller.listSchedules() : []),
     projectStorageDisplayName,
     resolveSingleConnectorIdQueryValue,
-  });
+  };
+  mountOwnerConnectionsList(app, ownerConnectionsContext);
+
+  // PATCH /v1/owner/connections/:connectionId is the bearer-authed owner-agent
+  // rename: a trusted local owner agent labels a connection (e.g. "the owner personal"
+  // / "Shared Amazon") without a browser owner session or `/_ref` session cookie.
+  // It shares the connector-instance store rename semantics with the cookie-authed
+  // `PATCH /_ref/connections/:id` route under a separate owner-bearer auth adapter;
+  // `/mcp` owner-bearer rejection is untouched. See
+  // openspec/changes/add-owner-agent-control-surface (task 4.4).
+  mountOwnerConnectionRename(app, ownerConnectionsContext);
 
   // GET /v1/owner/control is the bearer-authed owner-agent control entrypoint:
   // a non-secret capability document that names every owner-agent control

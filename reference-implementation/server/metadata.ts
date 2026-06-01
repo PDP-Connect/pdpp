@@ -483,11 +483,13 @@ export function buildOwnerAgentControlSurface({ resource }: OwnerAgentControlSur
     },
     {
       family: "rename_connection",
-      status: "owner_mediated",
-      method: null,
-      url: null,
+      status: "supported",
+      method: "PATCH",
+      // Templated path: the agent substitutes a concrete `connection_id` from
+      // the listing. `{connection_id}` is a literal placeholder, not a live URL.
+      url: `${rs}/v1/owner/connections/{connection_id}`,
       reason:
-        "Renaming a connection is available on the browser owner-session surface; it is not yet exposed to owner-agent bearers in this build.",
+        "Set a connection's owner-meaningful display_name by connection_id. Body: { display_name }. Use a connection_id from list_connections.",
     },
     {
       family: "run_connection",
