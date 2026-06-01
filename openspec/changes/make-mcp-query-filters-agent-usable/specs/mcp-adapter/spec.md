@@ -68,6 +68,39 @@ server and advertised by `GET /v1/schema`.
 - **AND** a malformed string filter SHALL produce the same class of actionable
   error as the record-query tool
 
+### Requirement: MCP Expand Limits Are Encoded As Resource-Server Bracket Parameters
+
+The MCP adapter SHALL expose `expand_limit` on record-query and fetch tools as a
+typed object keyed by relation name. The adapter SHALL encode the typed input
+into the resource server's `expand_limit[relation]=N` query parameters and SHALL
+NOT forward the object as a bare `expand_limit=` JSON string. An empty
+`expand_limit` object or a relation key that embeds bracket syntax SHALL be
+rejected with a typed, actionable error before any resource-server call.
+
+#### Scenario: Agent supplies typed expand limits on a record query
+
+- **WHEN** an MCP client calls the record-query tool with `expand` set to a
+  relation and `expand_limit` set to an object such as `{ "messages": 3 }`
+- **THEN** the adapter SHALL forward `expand=messages` and
+  `expand_limit[messages]=3` to the resource server
+- **AND** the adapter SHALL NOT forward a bare `expand_limit=` parameter
+
+#### Scenario: Agent supplies typed expand limits on a fetch
+
+- **WHEN** an MCP client calls the fetch tool with `expand_limit` set to an
+  object such as `{ "messages": 3 }`
+- **THEN** the adapter SHALL forward `expand_limit[messages]=3` to the resource
+  server
+- **AND** the adapter SHALL NOT forward a bare `expand_limit=` parameter
+
+#### Scenario: Empty or pre-encoded expand-limit objects are rejected
+
+- **WHEN** an MCP client calls the record-query or fetch tool with
+  `expand_limit` set to an empty object or with an object key that embeds bracket
+  syntax such as `expand_limit[messages]`
+- **THEN** the adapter SHALL return a typed, actionable error
+- **AND** the adapter SHALL NOT call the resource server
+
 ### Requirement: MCP Aggregate Results Are Readable In Tool Text
 
 The MCP adapter SHALL include the aggregation metric, stream, and numeric result

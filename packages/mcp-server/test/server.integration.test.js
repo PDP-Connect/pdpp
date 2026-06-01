@@ -368,6 +368,45 @@ test('query_records forwards supported query params', async () => {
   await server.close();
 });
 
+test('query_records encodes typed expand_limit as bracket query params', async () => {
+  const { fetch, calls } = makeFakeRs();
+  const { client, server } = await connectClient(fetch);
+
+  const result = await client.callTool({
+    name: 'query_records',
+    arguments: { stream: 'orders', expand: ['line_items'], expand_limit: { line_items: 3 } },
+  });
+
+  assert.equal(result.isError, undefined);
+  const call = calls.find((entry) => entry.url.includes('/v1/streams/orders/records'));
+  const callUrl = new URL(call.url);
+  assert.deepEqual(callUrl.searchParams.getAll('expand'), ['line_items']);
+  assert.equal(callUrl.searchParams.get('expand_limit[line_items]'), '3');
+  assert.equal(callUrl.searchParams.get('expand_limit'), null, 'must not forward expand_limit as a JSON object string');
+
+  await client.close();
+  await server.close();
+});
+
+test('query_records rejects empty or pre-encoded expand_limit objects before hitting RS', async () => {
+  const { fetch, calls } = makeFakeRs();
+  const { client, server } = await connectClient(fetch);
+
+  for (const expand_limit of [{}, { 'expand_limit[line_items]': 3 }]) {
+    const result = await client.callTool({
+      name: 'query_records',
+      arguments: { stream: 'orders', expand: ['line_items'], expand_limit },
+    });
+    assert.equal(result.isError, true, `expand_limit ${JSON.stringify(expand_limit)} must be rejected`);
+    assert.equal(result.structuredContent.error.code, 'invalid_expand');
+  }
+
+  assert.equal(calls.some((entry) => entry.url.includes('/v1/streams/orders/records')), false);
+
+  await client.close();
+  await server.close();
+});
+
 test('query_records rejects unsupported MCP arguments before hitting RS', async () => {
   const { fetch, calls } = makeFakeRs();
   const { client, server } = await connectClient(fetch);
@@ -441,6 +480,26 @@ test('fetch tool returns ChatGPT-compatible document shape', async () => {
   assert.equal(result.structuredContent.url, 'https://merchant.test/o2');
   assert.deepEqual(result.structuredContent.metadata.amount, 99);
   assert.ok(calls.some((entry) => entry.url.endsWith('/v1/streams/orders/records/o2')));
+
+  await client.close();
+  await server.close();
+});
+
+test('fetch encodes typed expand_limit as bracket query params', async () => {
+  const { fetch, calls } = makeFakeRs();
+  const { client, server } = await connectClient(fetch);
+
+  const result = await client.callTool({
+    name: 'fetch',
+    arguments: { id: 'orders:o2', expand: ['line_items'], expand_limit: { line_items: 2 } },
+  });
+
+  assert.equal(result.isError, undefined);
+  const call = calls.find((entry) => entry.url.includes('/v1/streams/orders/records/o2'));
+  const callUrl = new URL(call.url);
+  assert.deepEqual(callUrl.searchParams.getAll('expand'), ['line_items']);
+  assert.equal(callUrl.searchParams.get('expand_limit[line_items]'), '2');
+  assert.equal(callUrl.searchParams.get('expand_limit'), null);
 
   await client.close();
   await server.close();

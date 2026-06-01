@@ -139,6 +139,10 @@ string) is **rejected with a typed `invalid_filter` error** — it is never
 silently forwarded as a bare `filter=` parameter (which the resource server
 ignores). `aggregate` and `search` accept the same typed `filter` input.
 
+`expand_limit` is typed the same way: pass an object keyed by relation name, for
+example `{ "expand": ["messages"], "expand_limit": { "messages": 3 } }`. The
+adapter encodes it as `expand_limit[messages]=3`; do not pre-encode bracket keys.
+
 `aggregate` is the token-efficient way to answer count / sum / min / max / distinct-count and
 grouped or time-bucketed rollup questions. It returns small bucket rows from
 `GET /v1/streams/{stream}/aggregate`, never record bodies — so an agent that needs "how many

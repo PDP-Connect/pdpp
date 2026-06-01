@@ -55,6 +55,15 @@ through `qs.parse` correctly. `pickQuery` explicitly skips the raw `filter` key 
 it can never be re-introduced as a bare param. This keeps the translation
 explicit, unit-testable, and out of the shared transport client.
 
+### `expand_limit` uses the same nested-query adapter pattern
+
+The same audit found one other typed MCP object whose REST query shape is nested:
+`expand_limit[relation]=N`. The adapter now handles it at the tool handler
+boundary, like `filter`, rather than teaching `RsClient` how to serialize every
+nested query vocabulary. Empty objects and object keys that embed bracket syntax
+are rejected as `invalid_expand` before any RS call. `expand[]` itself remains a
+plain repeated scalar query key and needs no translation.
+
 ### Aggregate gets a dedicated result formatter
 
 `aggregate` switches from the generic `toToolResult` (which emits
@@ -84,6 +93,8 @@ output schema.
   object key that embeds bracket syntax → `invalid_filter` error; no bare
   `filter=` param ever reaches the RS.
 - `aggregate` accepts the typed filter and rejects malformed strings identically.
+- `expand_limit` on `query_records` and `fetch` → `expand_limit[relation]=N`;
+  empty objects and bracket-embedded object keys are rejected before any RS call.
 - `aggregate` `content[]` text contains the metric, stream, and numeric result
   and stays compact.
 - `search` forwards `q` and the typed filter as bracket params and surfaces a

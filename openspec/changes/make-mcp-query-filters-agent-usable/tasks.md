@@ -21,35 +21,44 @@
 - [x] 2.2 Keep `structuredContent.data` as the canonical envelope (unchanged
       output schema).
 
-## 3. Tests
+## 3. Nested query object translation
 
-- [x] 3.1 `query_records` typed exact filter forwards as `filter[field]=value`
+- [x] 3.1 Encode typed `expand_limit` objects on `query_records` and `fetch` as
+      `expand_limit[relation]=N`, not as JSON-in-a-query-param.
+- [x] 3.2 Reject empty `expand_limit` objects and relation keys that embed
+      bracket syntax before any RS call.
+
+## 4. Tests
+
+- [x] 4.1 `query_records` typed exact filter forwards as `filter[field]=value`
       and narrows results.
-- [x] 3.2 `query_records` typed range filter forwards as `filter[field][op]=value`.
-- [x] 3.3 `query_records` legacy bracket string parses; other strings rejected
+- [x] 4.2 `query_records` typed range filter forwards as `filter[field][op]=value`.
+- [x] 4.3 `query_records` legacy bracket string parses; other strings rejected
       with `invalid_filter`; no bare `filter=` ever reaches the RS.
-- [x] 3.3a Empty filters and typed object keys that embed bracket syntax are
+- [x] 4.4 Empty filters and typed object keys that embed bracket syntax are
       rejected rather than treated as "no filter".
-- [x] 3.4 `aggregate` typed filter forwards and scopes the count; malformed
+- [x] 4.5 `aggregate` typed filter forwards and scopes the count; malformed
       string rejected identically.
-- [x] 3.5 `aggregate` text includes the numeric value and stays compact; grouped
+- [x] 4.6 `aggregate` text includes the numeric value and stays compact; grouped
       preview shows bucket counts.
-- [x] 3.6 `search` typed filter forwards as bracket params; readable hit count in
+- [x] 4.7 `search` typed filter forwards as bracket params; readable hit count in
       text.
-- [x] 3.7 All pre-existing MCP server tests stay green.
+- [x] 4.8 `query_records` and `fetch` typed `expand_limit` forward as bracket
+      params; malformed shapes are rejected.
+- [x] 4.9 All pre-existing MCP server tests stay green.
 
-## 4. Docs + discovery guidance
+## 5. Docs + discovery guidance
 
-- [x] 4.1 Update the `FILTER_DESCRIPTION` tool-facing text to teach the typed
+- [x] 5.1 Update the `FILTER_DESCRIPTION` tool-facing text to teach the typed
       object form and the string-rejection rule.
-- [x] 4.2 Update package docs (`packages/mcp-server`) to show the typed filter
+- [x] 5.2 Update package docs (`packages/mcp-server`) to show the typed filter
       and the `list_streams -> schema(stream) -> query_records` compact path.
 
-## 5. Validation
+## 6. Validation
 
-- [x] 5.1 `pnpm --filter @pdpp/mcp-server run test` green.
-- [x] 5.2 `openspec validate make-mcp-query-filters-agent-usable --strict`.
-- [ ] 5.3 Owner/live: confirm an external hosted MCP client (e.g. ChatGPT) can
+- [x] 6.1 `pnpm --filter @pdpp/mcp-server run test` green.
+- [x] 6.2 `openspec validate make-mcp-query-filters-agent-usable --strict`.
+- [ ] 6.3 Owner/live: confirm an external hosted MCP client (e.g. ChatGPT) can
       now filter with the typed object end-to-end against the live RS. Recorded
       as a residual owner-run check (worker lacks the owner token / hosted
       client).

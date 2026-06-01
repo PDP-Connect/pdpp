@@ -79,7 +79,7 @@ const EXPAND_DESCRIPTION =
   'One-hop inline expansion list. Each entry is a manifest-declared parent-to-child relation. Expandable relations and per-relation `expand_limit` caps are advertised by `GET /v1/schema` (`expand_capabilities`); unadvertised relations are rejected by the RS.';
 
 const EXPAND_LIMIT_DESCRIPTION =
-  'Per-relation cap for has-many expansion, keyed by relation name. The RS clamps to the per-relation `max_limit` advertised by `GET /v1/schema`.';
+  'Typed per-relation cap for has-many expansion, keyed by relation name. Pass an object such as `{ "messages": 3 }`; the adapter encodes it into the RS `expand_limit[relation]=N` query shape. The RS clamps to the per-relation `max_limit` advertised by `GET /v1/schema`.';
 
 const ORDER_DESCRIPTION =
   "Page order for the cursor-based pagination primitive: `asc` or `desc`. This is the reference runtime's spelling; the canonical `sort=-field` sign-prefix vocabulary is advertised by `GET /v1/schema` but not yet implemented by the runtime — forwarding `sort` will currently return a typed `unsupported_query` 400.";
@@ -134,6 +134,14 @@ class MalformedFilterError extends Error {
     super(message);
     this.name = 'MalformedFilterError';
     this.code = 'invalid_filter';
+  }
+}
+
+class MalformedExpandLimitError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'MalformedExpandLimitError';
+    this.code = 'invalid_expand';
   }
 }
 
@@ -253,6 +261,25 @@ function resolveFilterQueryEntries(filter) {
 function applyFilterToQuery(query, filter) {
   for (const [key, value] of resolveFilterQueryEntries(filter)) {
     query[key] = value;
+  }
+  return query;
+}
+
+function applyExpandLimitToQuery(query, expandLimit) {
+  if (expandLimit === undefined || expandLimit === null) return query;
+  const entries = Object.entries(expandLimit);
+  if (entries.length === 0) {
+    throw new MalformedExpandLimitError(
+      'expand_limit must include at least one relation; omit expand_limit entirely when not setting a cap',
+    );
+  }
+  for (const [relation, limit] of entries) {
+    if (relation.includes('[') || relation.includes(']')) {
+      throw new MalformedExpandLimitError(
+        `expand_limit relation '${relation}' must be a relation name, not pre-encoded bracket syntax; pass expand_limit: { "relation": 3 }`,
+      );
+    }
+    query[`expand_limit[${relation}]`] = String(limit);
   }
   return query;
 }
@@ -491,7 +518,10 @@ export function buildTools({ rs, providerUrl }) {
       outputSchema: z.object(READ_OUTPUT_SCHEMA_SHAPE),
       handler: async (args) => {
         const stream = requireSafeName(args?.stream, 'stream');
-        const query = applyFilterToQuery(pickQuery(args, SUPPORTED_QUERY_KEYS), args?.filter);
+        const query = applyExpandLimitToQuery(
+          applyFilterToQuery(pickQuery(args, SUPPORTED_QUERY_KEYS), args?.filter),
+          args?.expand_limit,
+        );
         const response = await rs.getJson(`/v1/streams/${encodeURIComponent(stream)}/records`, {
           query,
         });
@@ -613,7 +643,7 @@ export function buildTools({ rs, providerUrl }) {
       outputSchema: z.object(FETCH_OUTPUT_SCHEMA_SHAPE),
       handler: async (args) => {
         const ref = parseRecordResultId(args.id);
-        const query = pickQuery(args, SUPPORTED_QUERY_KEYS);
+        const query = applyExpandLimitToQuery(pickQuery(args, SUPPORTED_QUERY_KEYS), args?.expand_limit);
         const response = await rs.getJson(
           `/v1/streams/${encodeURIComponent(ref.stream)}/records/${encodeURIComponent(ref.recordId)}`,
           { query }
@@ -890,6 +920,10 @@ function pickQuery(args, supportedKeys) {
     // `applyFilterToQuery`. Forwarding the raw value here would re-introduce the
     // silent bare-`filter=` no-op this change fixes.
     if (key === 'filter') continue;
+    // `expand_limit` mirrors the same nested REST query shape:
+    // `expand_limit[relation]=N`. Forwarding the raw object would become a JSON
+    // string under URLSearchParams instead of the query key the RS parses.
+    if (key === 'expand_limit') continue;
     if (!supportedKeys.has(key)) continue;
     out[key] = args[key];
   }

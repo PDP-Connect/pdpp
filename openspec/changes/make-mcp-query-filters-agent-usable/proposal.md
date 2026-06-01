@@ -43,6 +43,11 @@ answer must also appear in the `content[]` text.
   object — it is never silently forwarded as a bare `filter=` param.
 - `aggregate` accepts the same typed filter input as `query_records` and rejects
   malformed string filters the same way; no query tool silently ignores them.
+- `expand_limit` on `query_records` and `fetch` remains a typed object keyed by
+  relation name, but the adapter now encodes it into the resource server's
+  `expand_limit[relation]=N` query parameters instead of forwarding the object as
+  a JSON string. Empty objects and object keys that embed bracket syntax are
+  rejected before any resource-server call.
 - The `aggregate` tool result includes the metric, stream, and numeric result
   (or a compact grouped-bucket preview) in `content[]` text, in addition to the
   canonical `structuredContent.data` envelope. The text stays compact and
