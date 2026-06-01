@@ -146,6 +146,59 @@ const ConnectionListResponseSchema = {
   required: ["object", "data"],
 };
 
+// Owner-agent control-surface projection of a configured connection. The
+// bearer-authed `/v1/owner/connections` sibling of `/_ref/connections`
+// standardizes on `connection_id` as the stable selector (keeping
+// `connector_instance_id` as a deprecated alias), exposes both
+// `connector_id` and the canonical `connector_key`, and adds `label_status`
+// so an owner agent can tell an owner-chosen label from a storage-layer
+// fallback (label-needed) without re-deriving the placeholder rules.
+const OwnerConnectionSchema = {
+  type: "object",
+  additionalProperties: true,
+  properties: {
+    object: { const: "owner_connection" },
+    connection_id: { type: "string" },
+    connector_instance_id: { type: "string" },
+    connector_id: { type: "string" },
+    connector_key: { type: "string" },
+    display_name: { type: ["string", "null"] },
+    label_status: { type: "string", enum: ["owner_set", "fallback"] },
+    status: { type: ["string", "null"] },
+    source_kind: { type: ["string", "null"] },
+    source_binding: { type: ["object", "null"], additionalProperties: true },
+    created_at: { type: ["string", "null"] },
+    updated_at: { type: ["string", "null"] },
+    revoked_at: { type: ["string", "null"] },
+    schedule: { type: ["object", "null"], additionalProperties: true },
+  },
+  required: [
+    "object",
+    "connection_id",
+    "connector_instance_id",
+    "connector_id",
+    "connector_key",
+    "display_name",
+    "label_status",
+    "status",
+    "source_kind",
+    "created_at",
+    "updated_at",
+    "revoked_at",
+    "schedule",
+  ],
+};
+
+const OwnerConnectionListResponseSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    object: { const: "list" },
+    data: { type: "array", items: OwnerConnectionSchema },
+  },
+  required: ["object", "data"],
+};
+
 const ApprovalItemSchema = {
   type: "object",
   additionalProperties: true,
@@ -1041,6 +1094,17 @@ export const referenceManifests = [
     summary: "Compatibility alias for listing configured connector instances behind owner-facing connections.",
     request: { query: ConnectionQuerySchema },
     responses: { 200: { schema: ConnectionListResponseSchema }, ...CommonErrors },
+  },
+  {
+    id: "ownerListConnections",
+    method: "GET",
+    path: "/v1/owner/connections",
+    surface: "reference",
+    tags: ["reference", "connections", "owner-agent"],
+    summary:
+      "Owner-agent bearer listing of configured connections with connection_id, connector_key, owner-meaningful display_name, label status, lifecycle fields, and schedules.",
+    request: { query: ConnectionQuerySchema },
+    responses: { 200: { schema: OwnerConnectionListResponseSchema }, ...CommonErrors },
   },
   {
     id: "refGetConnection",

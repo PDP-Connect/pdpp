@@ -62,6 +62,7 @@ import {
   parseHostedMcpStreamSelections,
 } from './hosted-mcp-selection.js';
 import { canonicalConnectorKey, isInternalConnectorId } from './connector-key.js';
+import { projectStorageDisplayName } from './connection-id-request.js';
 import { codeToStatus, typeFor } from './routes/ref-error-status.ts';
 import {
   createPostgresConnectorInstanceStore,
@@ -365,6 +366,7 @@ import {
   mountRefConnectorsList,
 } from './routes/ref-connectors.ts';
 import { mountRsBlobRead, mountRsReadQueries } from './routes/rs-read.ts';
+import { mountOwnerConnectionsList } from './routes/owner-connections.ts';
 import {
   mountRsBlobsUpload,
   mountRsEventSubscriptions,
@@ -3615,6 +3617,28 @@ function buildRsApp(opts = {}) {
   // Registered immediately after mountRsReadQueries, before mountRsBlobRead,
   // to preserve the original route registration order.
   mountRsBlobsUpload(app, rsMutationContext);
+
+  // GET /v1/owner/connections is the bearer-authed owner-agent control-surface
+  // listing of configured connection instances. It is the `/v1/owner/*` sibling
+  // of the cookie-authed `/_ref/connections` listing: same store, same
+  // connector-key canonicalization, same display-name placeholder rules, but it
+  // emits the owner-agent contract (`connection_id`, deprecated
+  // `connector_instance_id` alias, `connector_id`/`connector_key`,
+  // `label_status`). Gated by `requireToken` + `requireOwner` so client and
+  // mcp_package bearers are rejected with 403; `/mcp` owner-bearer rejection is
+  // untouched. See openspec/changes/add-owner-agent-control-surface.
+  mountOwnerConnectionsList(app, {
+    requireToken,
+    requireOwner,
+    pdppError,
+    handleError,
+    canonicalConnectorKey,
+    createRequestConnectorInstanceStore,
+    getOwnerTokenSubjectId,
+    listSchedules: async () => await getDefaultSchedulerStore().listSchedules(),
+    projectStorageDisplayName,
+    resolveSingleConnectorIdQueryValue,
+  });
 
   // GET /v1/blobs/:blob_id is mounted via `server/routes/rs-read.ts` (§3),
   // registered here — immediately after `POST /v1/blobs` — to preserve the

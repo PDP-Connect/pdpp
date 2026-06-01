@@ -1,0 +1,303 @@
+/**
+ * Integration suite for the bearer-authed owner-agent control-surface listing
+ * `GET /v1/owner/connections` (mounted from `server/routes/owner-connections.ts`).
+ *
+ * Covers the Lane B slice of the owner-agent control surface:
+ *
+ *   - a trusted owner-agent bearer can list configured connection instances;
+ *   - client grant tokens and missing/unauthenticated bearers cannot;
+ *   - `/mcp` continues to reject owner bearers (the boundary this lane preserves);
+ *   - each row exposes `connection_id`, the deprecated `connector_instance_id`
+ *     alias, `connector_id`/`connector_key`, `display_name`, lifecycle fields,
+ *     and a `label_status` (`owner_set` vs `fallback`);
+ *   - two Amazon connections share the `amazon` connector identity but carry
+ *     distinct `connection_id` values (multi-connection disambiguation);
+ *   - a never-labeled connection (display_name defaulting to the connector id)
+ *     reports `label_status: "fallback"` rather than masquerading as owner-set.
+ *
+ * Spec: openspec/changes/add-owner-agent-control-surface
+ */
+
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import test from 'node:test';
+import { fileURLToPath } from 'node:url';
+
+import { startServer } from '../server/index.js';
+import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
+import { canonicalConnectorKey } from '../server/connector-key.js';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const REFERENCE_IMPL_DIR = join(__dirname, '..');
+const OWNER_SUBJECT_ID = 'owner_local';
+const NOW = '2026-05-31T00:00:00.000Z';
+
+async function closeServer(server) {
+  server.schedulerManager?.stop?.();
+  server.asServer.closeAllConnections();
+  server.rsServer.closeAllConnections();
+  await Promise.allSettled([
+    new Promise((resolve) => server.asServer.close(resolve)),
+    new Promise((resolve) => server.rsServer.close(resolve)),
+  ]);
+}
+
+async function fetchJson(url, opts = {}) {
+  const resp = await fetch(url, opts);
+  const text = await resp.text();
+  let body = null;
+  try {
+    body = text ? JSON.parse(text) : null;
+  } catch {
+    body = text;
+  }
+  return { body, resp, status: resp.status };
+}
+
+async function withServer(fn) {
+  const server = await startServer({ quiet: true, asPort: 0, rsPort: 0, dbPath: ':memory:' });
+  const asUrl = `http://localhost:${server.asPort}`;
+  const rsUrl = `http://localhost:${server.rsPort}`;
+  try {
+    await fn({ asUrl, rsUrl });
+  } finally {
+    await closeServer(server);
+  }
+}
+
+// Device-code exchange yields an owner-kind bearer (pdpp_token_kind: "owner").
+// Default subject_id matches the seeded OWNER_SUBJECT_ID so seeded instances
+// resolve to the token's owner.
+async function issueOwnerToken(asUrl, subjectId = OWNER_SUBJECT_ID) {
+  const clientId = 'cli_longview';
+  const device = (await fetchJson(`${asUrl}/oauth/device_authorization`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ client_id: clientId }).toString(),
+  })).body;
+  await fetch(`${asUrl}/device/approve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ user_code: device.user_code, subject_id: subjectId }).toString(),
+  });
+  const tok = (await fetchJson(`${asUrl}/oauth/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+      device_code: device.device_code,
+      client_id: clientId,
+    }).toString(),
+  })).body;
+  assert.ok(tok.access_token, 'device exchange should issue an owner token');
+  return tok.access_token;
+}
+
+// PAR + consent yields a grant-scoped client-kind bearer (pdpp_token_kind:
+// "client"). These must NOT reach the owner-agent control surface.
+async function approveClientGrant(asUrl, connectorId, streamName) {
+  const par = (await fetchJson(`${asUrl}/oauth/par`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      client_id: 'longview',
+      authorization_details: [{
+        type: 'https://pdpp.org/data-access',
+        source: { kind: 'connector', id: connectorId },
+        purpose_code: 'https://pdpp.org/purpose/analytics',
+        purpose_description: 'owner-connections boundary test',
+        access_mode: 'continuous',
+        streams: [{ name: streamName, fields: ['id'] }],
+      }],
+    }),
+  })).body;
+  const approved = (await fetchJson(`${asUrl}/consent/approve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ request_uri: par.request_uri, subject_id: OWNER_SUBJECT_ID }),
+  })).body;
+  assert.ok(approved.token, 'consent approval should issue a client grant token');
+  return approved.token;
+}
+
+function loadManifest(name) {
+  return JSON.parse(
+    readFileSync(join(REFERENCE_IMPL_DIR, '..', 'packages', 'polyfill-connectors', 'manifests', `${name}.json`), 'utf8'),
+  );
+}
+
+async function registerConnector(asUrl, manifest) {
+  const resp = await fetch(`${asUrl}/connectors`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(manifest),
+  });
+  assert.equal(resp.status, 201, `register ${manifest.connector_id} failed: ${resp.status}`);
+  return manifest;
+}
+
+async function seedInstance({ connectorInstanceId, connectorId, displayName, sourceBindingKey, sourceBinding }) {
+  const store = createSqliteConnectorInstanceStore();
+  await store.upsert({
+    connectorInstanceId,
+    ownerSubjectId: OWNER_SUBJECT_ID,
+    connectorId,
+    displayName,
+    status: 'active',
+    sourceKind: 'account',
+    sourceBindingKey,
+    sourceBinding: sourceBinding ?? { account_hint: sourceBindingKey },
+    createdAt: NOW,
+    updatedAt: NOW,
+  });
+}
+
+test('owner-agent bearer lists a configured connection with full identity + owner_set label', async () => {
+  await withServer(async ({ asUrl, rsUrl }) => {
+    const manifest = await registerConnector(asUrl, loadManifest('amazon'));
+    const connectorKey = canonicalConnectorKey(manifest.connector_id);
+    await seedInstance({
+      connectorInstanceId: 'cin_amazon_personal',
+      connectorId: connectorKey,
+      displayName: 'the owner personal',
+      sourceBindingKey: 'the owner@example.com',
+    });
+
+    const ownerToken = await issueOwnerToken(asUrl);
+    const { status, body } = await fetchJson(`${rsUrl}/v1/owner/connections`, {
+      headers: { Authorization: `Bearer ${ownerToken}` },
+    });
+
+    assert.equal(status, 200);
+    assert.equal(body.object, 'list');
+    assert.equal(body.data.length, 1);
+    const row = body.data[0];
+    assert.equal(row.object, 'owner_connection');
+    assert.equal(row.connection_id, 'cin_amazon_personal');
+    // Deprecated alias preserved for compatibility.
+    assert.equal(row.connector_instance_id, 'cin_amazon_personal');
+    assert.equal(row.connector_id, connectorKey);
+    assert.equal(row.connector_key, connectorKey);
+    assert.equal(row.display_name, 'the owner personal');
+    assert.equal(row.label_status, 'owner_set');
+    assert.equal(row.status, 'active');
+    assert.equal(row.source_kind, 'account');
+    assert.equal(row.schedule, null);
+  });
+});
+
+test('owner-agent bearer sees fallback label_status for a never-labeled connection', async () => {
+  await withServer(async ({ asUrl, rsUrl }) => {
+    const manifest = await registerConnector(asUrl, loadManifest('spotify'));
+    const connectorKey = canonicalConnectorKey(manifest.connector_id);
+    // display_name left equal to the connector id — the storage default for an
+    // unlabeled connection. The surface must report this as label-needed.
+    await seedInstance({
+      connectorInstanceId: 'cin_spotify_unlabeled',
+      connectorId: connectorKey,
+      displayName: connectorKey,
+      sourceBindingKey: 'acct_unlabeled',
+    });
+
+    const ownerToken = await issueOwnerToken(asUrl);
+    const { status, body } = await fetchJson(`${rsUrl}/v1/owner/connections`, {
+      headers: { Authorization: `Bearer ${ownerToken}` },
+    });
+
+    assert.equal(status, 200);
+    const row = body.data.find((r) => r.connection_id === 'cin_spotify_unlabeled');
+    assert.ok(row, 'unlabeled connection must appear in the listing');
+    assert.equal(row.label_status, 'fallback');
+  });
+});
+
+test('owner-agent bearer distinguishes two Amazon connections by connection_id', async () => {
+  await withServer(async ({ asUrl, rsUrl }) => {
+    const manifest = await registerConnector(asUrl, loadManifest('amazon'));
+    const connectorKey = canonicalConnectorKey(manifest.connector_id);
+    await seedInstance({
+      connectorInstanceId: 'cin_amazon_personal',
+      connectorId: connectorKey,
+      displayName: 'the owner personal',
+      sourceBindingKey: 'the owner@example.com',
+    });
+    await seedInstance({
+      connectorInstanceId: 'cin_amazon_shared',
+      connectorId: connectorKey,
+      // Distinct binding key so the upsert does not collapse onto the first row.
+      displayName: connectorKey, // unlabeled -> fallback
+      sourceBindingKey: 'shared@example.com',
+    });
+
+    const ownerToken = await issueOwnerToken(asUrl);
+    const { status, body } = await fetchJson(
+      `${rsUrl}/v1/owner/connections?connector_id=${encodeURIComponent(connectorKey)}`,
+      { headers: { Authorization: `Bearer ${ownerToken}` } },
+    );
+
+    assert.equal(status, 200);
+    const amazonRows = body.data.filter((r) => r.connector_key === connectorKey);
+    assert.equal(amazonRows.length, 2, 'both Amazon connections must be listed');
+    const ids = amazonRows.map((r) => r.connection_id).sort();
+    assert.deepEqual(ids, ['cin_amazon_personal', 'cin_amazon_shared']);
+    // Same connector identity, distinct connection identity.
+    assert.ok(amazonRows.every((r) => r.connector_key === connectorKey));
+    assert.equal(new Set(ids).size, 2);
+    // One labeled, one label-needed — the agent can tell them apart and knows
+    // which still needs a label.
+    const personal = amazonRows.find((r) => r.connection_id === 'cin_amazon_personal');
+    const shared = amazonRows.find((r) => r.connection_id === 'cin_amazon_shared');
+    assert.equal(personal.label_status, 'owner_set');
+    assert.equal(personal.display_name, 'the owner personal');
+    assert.equal(shared.label_status, 'fallback');
+  });
+});
+
+test('owner-agent connection listing rejects a client grant token with 403', async () => {
+  await withServer(async ({ asUrl, rsUrl }) => {
+    const manifest = await registerConnector(asUrl, loadManifest('amazon'));
+    const connectorKey = canonicalConnectorKey(manifest.connector_id);
+    await seedInstance({
+      connectorInstanceId: 'cin_amazon_personal',
+      connectorId: connectorKey,
+      displayName: 'the owner personal',
+      sourceBindingKey: 'the owner@example.com',
+    });
+    // A client grant needs a stream to scope to; amazon's first stream suffices.
+    const streamName = manifest.streams[0].name;
+    const clientToken = await approveClientGrant(asUrl, connectorKey, streamName);
+
+    const { status, body } = await fetchJson(`${rsUrl}/v1/owner/connections`, {
+      headers: { Authorization: `Bearer ${clientToken}` },
+    });
+    assert.equal(status, 403);
+    assert.equal(body?.error?.code, 'permission_error');
+  });
+});
+
+test('owner-agent connection listing rejects a request with no bearer (401)', async () => {
+  await withServer(async ({ rsUrl }) => {
+    const { status, body } = await fetchJson(`${rsUrl}/v1/owner/connections`);
+    assert.equal(status, 401);
+    assert.equal(body?.error?.type, 'authentication_error');
+  });
+});
+
+test('/mcp continues to reject owner-agent bearers (boundary preserved)', async () => {
+  await withServer(async ({ asUrl, rsUrl }) => {
+    const ownerToken = await issueOwnerToken(asUrl);
+    const { status, body } = await fetchJson(`${rsUrl}/mcp`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${ownerToken}`,
+        'Content-Type': 'application/json',
+        Accept: 'application/json, text/event-stream',
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+    });
+    assert.equal(status, 403);
+    assert.equal(body?.error?.code, 'permission_error');
+    assert.match(body?.error?.message ?? '', /owner-agent/i);
+  });
+});

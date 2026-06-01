@@ -8,7 +8,7 @@
 ## 2. Contract And Metadata
 
 - [ ] 2.1 Define owner-agent control metadata in root/protected-resource discovery, including entrypoint URL, action families, and unsupported-action semantics.
-- [ ] 2.2 Define connector template and connection instance response shapes with `connector_id`/`connector_key`, `connection_id`, deprecated `connector_instance_id` compatibility, `display_name`, label status, lifecycle status, and supported actions.
+- [ ] 2.2 Define connector template and connection instance response shapes with `connector_id`/`connector_key`, `connection_id`, deprecated `connector_instance_id` compatibility, `display_name`, label status, lifecycle status, and supported actions. (Connection-instance shape landed via `ownerListConnections` reference-contract op + `OwnerConnectionSchema`: `connection_id`, deprecated `connector_instance_id`, `connector_id`/`connector_key`, `display_name`, `label_status`, lifecycle fields. Template shape and `supported_actions` remain for other lanes.)
 - [ ] 2.3 Define typed connection-intent response shapes for OAuth, browser assistance, upload/import, local-collector enrollment, and unsupported connectors.
 - [ ] 2.4 Add typed error envelopes for ambiguous connector-only actions, unsupported actions, missing owner-agent action family, and unsafe provider step.
 
@@ -22,8 +22,8 @@
 ## 4. Connection Discovery And Labels
 
 - [ ] 4.1 Implement owner-agent connector-template listing with links or embedded summaries for configured connection instances.
-- [ ] 4.2 Implement owner-agent connection-instance listing with owner-meaningful labels or explicit label-needed state.
-- [ ] 4.3 Ensure display-name fallback values such as registry URLs are exposed as fallback/label-needed rather than treated as final SLVP labels.
+- [x] 4.2 Implement owner-agent connection-instance listing with owner-meaningful labels or explicit label-needed state. (`GET /v1/owner/connections`, bearer-authed; lane `ri-owner-agent-connections-list-v1`.)
+- [x] 4.3 Ensure display-name fallback values such as registry URLs are exposed as fallback/label-needed rather than treated as final SLVP labels. (`label_status: owner_set | fallback` via `projectStorageDisplayName`.)
 - [ ] 4.4 Implement or extend owner-agent rename support so a trusted agent can label Amazon instances as `the owner personal` and `Shared Amazon`.
 
 ## 5. Connection Lifecycle Intents
