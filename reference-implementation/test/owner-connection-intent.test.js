@@ -329,6 +329,23 @@ test('owner-agent initiating an API/network-only connector (gmail) gets a typed 
     assert.equal(body.connector_modality, 'api_network');
     assert.equal(body.next_step.kind, 'unsupported');
     assert.match(body.next_step.reason, /API|network/i);
+    // Honesty: an API connection materializes implicitly on first ingest, so the
+    // reason must name that truth and NOT loop the owner back to "add this from
+    // the dashboard" — the console marks API/network sources unsupported for the
+    // same reason (apps/console/.../connection-modality.ts), and there is no
+    // provider-connect URL to send the owner to. It must also name the deferred
+    // owner-agent API-connect primitive so an agent/reviewer has the concrete gap.
+    assert.match(body.next_step.reason, /first ingest/i);
+    assert.match(body.next_step.reason, /open_url/);
+    assert.doesNotMatch(
+      body.next_step.reason,
+      /add this connection from the dashboard/i,
+      'must not point the owner at a dashboard that lists API/network as unsupported',
+    );
+    // The reason names the eventual next-step kind but the route must NOT yet
+    // advertise it: no real provider-connect URL exists, so emitting open_url
+    // would be a faked success the acceptance criteria forbid.
+    assert.notEqual(body.next_step.kind, 'open_url');
   });
 });
 
