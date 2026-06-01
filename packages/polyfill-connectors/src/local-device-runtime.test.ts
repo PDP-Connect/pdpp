@@ -6,9 +6,15 @@ import { test } from "node:test";
 import type { IngestBatchRequest } from "./local-device-client.ts";
 import { LocalDeviceQueue } from "./local-device-queue.ts";
 import {
+  AMAZON_CONNECTOR_ID,
   buildCodexStartMessage,
+  buildLocalDeviceStartMessage,
+  CLAUDE_CODE_CONNECTOR_ID,
   CODEX_CONNECTOR_ID,
+  DEFAULT_AMAZON_STREAMS,
   drainLocalDeviceQueue,
+  LOCAL_DEVICE_CONNECTOR_PROFILES,
+  resolveLocalDeviceConnectorProfile,
   transformRecordsToLocalDeviceEnvelopes,
 } from "./local-device-runtime.ts";
 
@@ -98,3 +104,42 @@ test("buildCodexStartMessage does not require an owner token", () => {
 async function tempQueuePath(): Promise<string> {
   return join(await mkdtemp(join(tmpdir(), "pdpp-local-device-runtime-")), "queue.json");
 }
+
+// ─── Browser-collector connector profile (add-browser-collector-enrollment-
+//     primitive proof harness) ──────────────────────────────────────────────
+// The monorepo local-device runner resolves the connector entrypoint from
+// LOCAL_DEVICE_CONNECTOR_PROFILES. Registering `amazon` is the deterministic
+// wiring the owner-run live browser-collector proof needs; the live browser
+// session itself stays owner-mediated. This registry is the MONOREPO runner's
+// (development/owner-run) registry — distinct from the published
+// `@pdpp/local-collector` BUNDLED_CONNECTORS, which stays filesystem-only so
+// the publish never ships browser automation.
+
+test("local-device runner resolves the amazon browser-collector connector profile", () => {
+  const profile = resolveLocalDeviceConnectorProfile(AMAZON_CONNECTOR_ID);
+  assert.equal(profile.connectorId, AMAZON_CONNECTOR_ID);
+  assert.equal(profile.entrypoint, "connectors/amazon/index.ts");
+  assert.deepEqual([...profile.defaultStreams], [...DEFAULT_AMAZON_STREAMS]);
+  assert.deepEqual([...DEFAULT_AMAZON_STREAMS], ["orders", "order_items"]);
+});
+
+test("amazon profile START scope carries its declared streams without a token", () => {
+  const profile = resolveLocalDeviceConnectorProfile(AMAZON_CONNECTOR_ID);
+  const start = buildLocalDeviceStartMessage(profile.defaultStreams);
+  assert.deepEqual(start, {
+    scope: { streams: [{ name: "orders" }, { name: "order_items" }] },
+    type: "START",
+  });
+  assert.equal(JSON.stringify(start).includes("token"), false);
+});
+
+test("local-device profile registry covers exactly codex, claude-code, and amazon", () => {
+  assert.deepEqual(
+    Object.keys(LOCAL_DEVICE_CONNECTOR_PROFILES).sort(),
+    [AMAZON_CONNECTOR_ID, CLAUDE_CODE_CONNECTOR_ID, CODEX_CONNECTOR_ID].sort()
+  );
+});
+
+test("resolveLocalDeviceConnectorProfile still rejects an unknown connector", () => {
+  assert.throws(() => resolveLocalDeviceConnectorProfile("totally-unknown"), /unsupported local-device connector/);
+});

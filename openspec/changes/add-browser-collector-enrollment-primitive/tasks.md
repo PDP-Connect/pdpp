@@ -41,15 +41,34 @@
       contradicting/unresolvable kind before minting a code.)
 - [ ] Land an Amazon end-to-end proof test that drives enrollment → browser
       session → device-exporter ingest, plus a scrubbed Amazon fixture.
-      (DEFERRED: requires a real browser session against a logged-in provider,
-      which cannot be produced honestly in a no-human worktree. See report
-      Residual proof gate.)
+      (STILL OWNER/LIVE-GATED. The deterministic, no-human HALF landed in lane
+      `ri-browser-collector-proof-harness-v1`:
+      `reference-implementation/test/browser-collector-ingest-proof.test.js`
+      drives the real enroll → heartbeat → `ingest-batches` → records-persisted
+      path for a `browser_collector` Amazon instance, ingesting records the real
+      Amazon connector parsers produce (committed fixture
+      `reference-implementation/test/fixtures/amazon-browser-collector-proof-records.json`,
+      generated + drift-locked against the live parsers over the scrubbed DOM
+      fixture `fixtures/amazon/scrubbed/pilot-real-shape/dom/orders-list-2026.html`
+      by `packages/polyfill-connectors/connectors/amazon/proof-ingest-records.test.ts`),
+      and proves multi-account isolation. The monorepo runner now registers the
+      `amazon` local-device profile (`src/local-device-runtime.ts`) so the
+      live run is executable. What remains is the LIVE half — a real,
+      owner-logged-in Amazon browser session producing those records, scrubbed
+      into a committed `fixtures/amazon/scrubbed/<runId>/` fixture — which cannot
+      be produced honestly in a no-human worktree. The owner-run procedure and
+      the exact closing artifact are documented in
+      `docs/operator/browser-collector-proof-runbook.md`.)
 - [ ] Flip the `browser_bound` intent branch to return `enroll_browser_collector`
       only after the proof lands; add `add-owner-agent-control-surface` tasks
       5.3 / 8.5 Amazon second-account acceptance coverage.
-      (DEFERRED: intentionally left as honest `unsupported` until the proof
-      above lands — the spec forbids advertising the next step without committed
-      proof.)
+      (INTENTIONALLY UNFLIPPED. Left as honest `unsupported` until the LIVE
+      proof above lands and is committed — the spec
+      (`local-device-exporter-collection`: "Browser-bound connectors SHALL NOT
+      advertise a real next step without committed proof") forbids advertising
+      the next step without committed proof, and requires the flip and the proof
+      to be reviewable as one unit. The flip steps are pre-written in the
+      runbook §7.)
 
 ## Acceptance checks
 

@@ -14,6 +14,7 @@ import { LocalDeviceQueue, type LocalDeviceQueueItem } from "./local-device-queu
 
 export const CODEX_CONNECTOR_ID = "codex";
 export const CLAUDE_CODE_CONNECTOR_ID = "claude-code";
+export const AMAZON_CONNECTOR_ID = "amazon";
 export const DEFAULT_CODEX_STREAMS = ["sessions", "messages", "function_calls", "rules", "prompts", "skills"] as const;
 export const DEFAULT_CLAUDE_CODE_STREAMS = [
   "sessions",
@@ -23,6 +24,7 @@ export const DEFAULT_CLAUDE_CODE_STREAMS = [
   "skills",
   "slash_commands",
 ] as const;
+export const DEFAULT_AMAZON_STREAMS = ["orders", "order_items"] as const;
 const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const REPO_ROOT = join(PACKAGE_ROOT, "..", "..");
 
@@ -53,6 +55,23 @@ export const LOCAL_DEVICE_CONNECTOR_PROFILES: Readonly<Record<string, LocalDevic
     connectorId: CLAUDE_CODE_CONNECTOR_ID,
     defaultStreams: DEFAULT_CLAUDE_CODE_STREAMS,
     entrypoint: "connectors/claude_code/index.ts",
+  },
+  // Amazon is a browser-bound connector. Unlike codex/claude-code it requires a
+  // real, owner-mediated browser session (live login, possibly 2FA) to produce
+  // RECORDs, so spawning it in a headless/no-human context will fail at the
+  // session probe — that is expected and is exactly the step the
+  // browser-collector proof keeps owner-mediated. Registering the profile here
+  // is the deterministic monorepo-runner wiring the owner-run live proof needs
+  // (`docs/operator/browser-collector-proof-runbook.md`); it does NOT add a new
+  // browser transport, and it is intentionally absent from the published
+  // `@pdpp/local-collector` bundle (see `src/runner.ts` — that registry stays
+  // filesystem-class only so the publish stays browser-free). The
+  // device-exporter ingest path it feeds is connector-agnostic; binding-aware
+  // enrollment records this connector as `browser_collector`.
+  [AMAZON_CONNECTOR_ID]: {
+    connectorId: AMAZON_CONNECTOR_ID,
+    defaultStreams: DEFAULT_AMAZON_STREAMS,
+    entrypoint: "connectors/amazon/index.ts",
   },
 };
 
