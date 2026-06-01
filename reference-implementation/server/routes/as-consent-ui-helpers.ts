@@ -348,11 +348,7 @@ function ownerFacingConnectorLabel(label: string | null | undefined, fallbackKey
 
 function ownerFacingConnectionName(
   displayName: string | null | undefined,
-  {
-    connectorId,
-    connectorLabel,
-    connectorKey,
-  }: { connectorId: string; connectorLabel: string; connectorKey: string }
+  { connectorId, connectorLabel, connectorKey }: { connectorId: string; connectorLabel: string; connectorKey: string }
 ): string | null {
   const trimmed = typeof displayName === "string" ? displayName.trim() : "";
   if (!trimmed) {
@@ -410,9 +406,7 @@ function buildPickerRowMeta({
 // the owner can tell a one-stream grant is possible without opening the row.
 // Names are the manifest stream names; we cap the list to keep the summary
 // scannable and append a "+N more" tail when truncated.
-function buildStreamPreview(
-  streams: Array<{ name: string; description: string | null }> | null | undefined
-): string {
+function buildStreamPreview(streams: Array<{ name: string; description: string | null }> | null | undefined): string {
   if (!Array.isArray(streams) || streams.length === 0) {
     return "";
   }
