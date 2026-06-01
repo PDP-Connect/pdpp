@@ -125,6 +125,36 @@ envelope and SHALL continue to validate against the tool output schema.
   and a bounded set of bucket keys with their counts
 - **AND** the full bucket list SHALL remain in `structuredContent.data`
 
+### Requirement: MCP Search Results Are Usable In Tool Text
+
+The MCP adapter SHALL include a bounded preview of search hits in the search
+tool result `content[]` text, not only a hit count or a pointer to
+`structuredContent`. Each previewed hit SHALL include the result id and SHALL
+include available source handles such as `connection_id`, `connector_key`, and
+stream when present. The text SHALL stay compact and SHALL NOT dump the full JSON
+envelope. The `structuredContent.data` payload SHALL remain the canonical
+envelope, and `structuredContent.results` SHALL remain the flattened search
+projection for clients that can inspect structured tool results.
+
+#### Scenario: Search surfaces fetch handles in text
+
+- **WHEN** an MCP client calls the search tool and the resource server returns
+  one or more hits
+- **THEN** the tool result `content[]` text SHALL include a bounded top-hit
+  preview with each previewed hit's id
+- **AND** when a previewed hit has `connection_id`, stream, display label,
+  connector key, title, or snippet information, the text SHALL include the
+  available values within the preview budget
+- **AND** the text SHALL tell the agent to fetch a hit by id and include
+  `connection_id` when shown
+
+#### Scenario: Search text remains bounded
+
+- **WHEN** the resource server returns many hits or large snippets
+- **THEN** the MCP adapter SHALL keep `content[]` text bounded
+- **AND** it SHALL preserve the full canonical search envelope in
+  `structuredContent.data`
+
 ### Requirement: Hosted MCP Package Search Merges Canonical Child Hits
 
 The hosted MCP adapter SHALL fan out unscoped package-token search calls across
@@ -132,7 +162,11 @@ authorized child grants and merge search hits from each successful child
 response. The package merge SHALL accept the resource server's canonical
 list-envelope `data[]` search result shape and compatibility `data.results[]` or
 `data.data[]` shapes. The merge SHALL NOT treat a successful child search
-response as empty merely because it uses the canonical `data[]` envelope.
+response as empty merely because it uses the canonical `data[]` envelope. When a
+package search includes a stream filter, the adapter SHALL intersect the
+requested stream names with each child grant before forwarding the child request
+and SHALL skip child grants with no requested streams rather than forwarding
+stream names that are outside that child grant.
 
 #### Scenario: Unscoped package search merges canonical child list envelopes
 
@@ -141,6 +175,22 @@ response as empty merely because it uses the canonical `data[]` envelope.
   hits in `data[]`
 - **THEN** the package adapter SHALL return the merged hit list
 - **AND** each merged hit SHALL retain source attribution for the child grant
+
+#### Scenario: Package search stream filter is evaluated per child grant
+
+- **WHEN** a hosted MCP package search omits `connection_id`
+- **AND** the request includes `streams[]` values that span multiple child grants
+- **THEN** the package adapter SHALL forward only the stream names authorized by
+  each child grant to that child
+- **AND** it SHALL NOT forward unrelated stream names that would cause the child
+  resource server call to fail with `grant_stream_not_allowed`
+
+#### Scenario: Package search skips children outside the stream filter
+
+- **WHEN** a hosted MCP package search omits `connection_id`
+- **AND** a child grant authorizes none of the requested stream names
+- **THEN** the package adapter SHALL not call that child grant for the search
+- **AND** the merged result SHALL include hits from matching child grants
 
 #### Scenario: Scoped package search still selects one child
 

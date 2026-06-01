@@ -25,7 +25,8 @@ The resource server's filtering is correct. The defect is entirely in the MCP
 adapter's input schema and query translation. A secondary defect: the
 `aggregate` tool mirrored its numeric result only into `structuredContent.data`;
 some hosted agents cannot reliably read `structuredContent`, so the numeric
-answer must also appear in the `content[]` text.
+answer must also appear in the `content[]` text. The same client limitation
+applies to search: a hit count without model-visible hit handles is not usable.
 
 ## What Changes
 
@@ -52,8 +53,14 @@ answer must also appear in the `content[]` text.
   (or a compact grouped-bucket preview) in `content[]` text, in addition to the
   canonical `structuredContent.data` envelope. The text stays compact and
   token-efficient (no full JSON dump).
+- The `search` tool result includes a bounded top-hit preview in `content[]`
+  text with the result id and available source handles such as `connection_id`.
+  The canonical envelope remains in `structuredContent.data`.
 - Hosted package search merges canonical child `data[]` search envelopes instead
   of interpreting them as empty on unscoped package-token search.
+- Hosted package search intersects requested `streams[]` with each child grant
+  before forwarding, so mixed stream filters do not fail against unrelated child
+  grants in a package.
 - Reference lexical backfill reads and writes the active storage backend and,
   for unpinned manifests, evaluates active owner-visible connector instances
   rather than only the default synthetic instance.
@@ -67,7 +74,7 @@ answer must also appear in the `content[]` text.
 
 - Affected specs: `mcp-adapter`, `reference-implementation-architecture`.
 - Affected code: `packages/mcp-server/src/tools.js` (input schema + filter
-  translation + aggregate text), `packages/mcp-server/test/typed-filter.test.js`
+  translation + aggregate/search text), `packages/mcp-server/test/typed-filter.test.js`
   (new), `reference-implementation/server/package-rs-client.js`,
   `reference-implementation/server/search.js`, manifest reconciliation,
   Postgres storage helpers, package docs.

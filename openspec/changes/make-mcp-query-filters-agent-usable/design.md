@@ -83,6 +83,27 @@ envelope (`data[]`) as well as compatibility shapes (`data.results[]` and
 returned the child response directly; the unscoped path now preserves the same
 hit semantics instead of interpreting canonical `data[]` as an empty result set.
 
+### Search text must be sufficient for model-visible clients
+
+Some MCP clients expose `structuredContent` poorly or not at all in the model's
+visible transcript. For `search`, a hit count alone is not a usable result: the
+agent needs at least a hit id and source selector to fetch or explain a match.
+The MCP adapter therefore includes a bounded top-hit preview in `content[]`
+while keeping the canonical search envelope in `structuredContent.data`. This is
+the same principle already applied to aggregate counts and one-time subscription
+secrets: model-visible text carries the minimal action handle; structured data
+remains canonical.
+
+### Package stream filters are per-child intersections
+
+Hosted MCP package tokens represent a union of independent child grants. A
+stream filter such as `["messages", "conversations"]` is a package-level filter,
+not a command to send every stream name to every child. The package adapter
+therefore intersects the requested stream names with each child grant before
+forwarding the child search request, and skips children with no intersection.
+This preserves source-bounded child-grant enforcement while avoiding false
+`grant_stream_not_allowed` failures from unrelated package members.
+
 ### Aggregate gets a dedicated result formatter
 
 `aggregate` switches from the generic `toToolResult` (which emits
@@ -150,7 +171,9 @@ health checks.
 - `aggregate` `content[]` text contains the metric, stream, and numeric result
   and stays compact.
 - `search` forwards `q` and the typed filter as bracket params and surfaces a
-  readable hit count.
+  bounded, model-visible top-hit preview with fetch handles.
+- Hosted package search with mixed `streams[]` filters intersects stream names
+  per child grant and does not fail against unrelated child grants.
 - All pre-existing MCP server tests stay green.
 - Postgres-backed aggregate count uses the active record backend and applies the
   same exact filter semantics as the record-list path.

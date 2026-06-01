@@ -319,6 +319,74 @@ test('search fan-out merges nested data.data envelopes across children', async (
   assert.deepEqual(out.body.data.data.map((hit) => hit.record_key).sort(), ['a', 'b']);
 });
 
+test('search fan-out intersects requested streams with each child grant', async () => {
+  const calls = [];
+  const fetch = makeRouter(async (req) => {
+    const streams = req.query.getAll('streams');
+    calls.push({ token: req.token, streams });
+    if (req.token === 'tok_A') {
+      assert.deepEqual(streams, ['conversations']);
+      return jsonResponse(200, {
+        object: 'list',
+        data: [{ object: 'search_result', stream: 'conversations', record_key: 'c1' }],
+      });
+    }
+    if (req.token === 'tok_B') {
+      assert.deepEqual(streams, ['messages']);
+      return jsonResponse(200, {
+        object: 'list',
+        data: [{ object: 'search_result', stream: 'messages', record_key: 'm1' }],
+      });
+    }
+    return jsonResponse(500, {});
+  });
+  const members = [
+    { ...memberA(), grant: { streams: [{ name: 'conversations' }] } },
+    { ...memberB(), grant: { streams: [{ name: 'messages' }] } },
+  ];
+  const rs = createPackageRsClient({ providerUrl: PROVIDER, members, fetch });
+
+  const out = await rs.getJson('/v1/search', {
+    query: { q: 'redactable', streams: ['messages', 'conversations', 'comments'] },
+  });
+
+  assert.equal(out.ok, true);
+  assert.deepEqual(out.body.data.map((hit) => hit.record_key).sort(), ['c1', 'm1']);
+  assert.deepEqual(calls.map((call) => call.streams), [['conversations'], ['messages']]);
+});
+
+test('search fan-out skips children with no requested streams in their grant', async () => {
+  let aCalled = 0;
+  let bCalled = 0;
+  const fetch = makeRouter(async (req) => {
+    if (req.token === 'tok_A') {
+      aCalled += 1;
+      return jsonResponse(400, { error: { type: 'permission_error', code: 'grant_stream_not_allowed' } });
+    }
+    if (req.token === 'tok_B') {
+      bCalled += 1;
+      assert.deepEqual(req.query.getAll('streams'), ['messages']);
+      return jsonResponse(200, {
+        object: 'list',
+        data: [{ object: 'search_result', stream: 'messages', record_key: 'm1' }],
+      });
+    }
+    return jsonResponse(500, {});
+  });
+  const members = [
+    { ...memberA(), grant: { streams: [{ name: 'conversations' }] } },
+    { ...memberB(), grant: { streams: [{ name: 'messages' }] } },
+  ];
+  const rs = createPackageRsClient({ providerUrl: PROVIDER, members, fetch });
+
+  const out = await rs.getJson('/v1/search', { query: { q: 'redactable', streams: ['messages'] } });
+
+  assert.equal(out.ok, true);
+  assert.deepEqual(out.body.data.map((hit) => hit.record_key), ['m1']);
+  assert.equal(aCalled, 0);
+  assert.equal(bCalled, 1);
+});
+
 test('search with unknown connection_id returns not_found without fanout', async () => {
   let called = 0;
   const fetch = makeRouter(async () => {

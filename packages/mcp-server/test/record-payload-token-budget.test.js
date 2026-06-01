@@ -71,6 +71,7 @@ function makeFatFetch() {
           stream: 'mail',
           title: `Subject ${i}`,
           snippet: { text: big(500) },
+          connection_id: 'conn_1',
           score: 0.9,
         })),
         has_more: true,
@@ -168,6 +169,9 @@ test('search prose stays bounded; structuredContent carries both the envelope an
     proseBytes < PROSE_BYTE_BUDGET,
     `search prose must stay under ${PROSE_BYTE_BUDGET} bytes (got ${proseBytes})`,
   );
+  assert.match(result.content[0].text, /id=mail:m0/);
+  assert.match(result.content[0].text, /connection_id=conn_1/);
+  assert.match(result.content[0].text, /Subject 0/);
   // Disambiguation data the agent needs survives: every hit has a stable id +
   // title + url in the flattened projection.
   assert.equal(result.structuredContent.results.length, 200);

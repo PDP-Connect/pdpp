@@ -45,8 +45,8 @@
       string rejected identically.
 - [x] 4.6 `aggregate` text includes the numeric value and stays compact; grouped
       preview shows bucket counts.
-- [x] 4.7 `search` typed filter forwards as bracket params; readable hit count in
-      text.
+- [x] 4.7 `search` typed filter forwards as bracket params; readable hit count
+      and top-hit preview appear in text.
 - [x] 4.8 `query_records` and `fetch` typed `expand_limit` forward as bracket
       params; malformed shapes are rejected.
 - [x] 4.9 All pre-existing MCP server tests stay green.
@@ -67,6 +67,12 @@
 - [x] 4.15 Startup manifest reconciliation persists manifest fixes without
       blocking AS/RS listen on large retrieval index rebuilds; the existing
       post-listen startup backfill handles index repair.
+- [x] 4.16 `search` `content[]` text includes a bounded top-hit preview with
+      fetch handles instead of only a hit count and a `structuredContent`
+      pointer.
+- [x] 4.17 Hosted package search with mixed `streams[]` filters intersects the
+      requested streams per child grant and skips unrelated children instead of
+      forwarding unauthorized stream names.
 
 ## 5. Docs + discovery guidance
 
@@ -86,3 +92,6 @@
 - [x] 6.4 Owner/live follow-up: confirm unscoped hosted package search returns
       merged child hits and that Postgres lexical backfill restores historical
       search hits for existing records on the active connection.
+- [x] 6.5 Regression follow-up: confirm Claude-style model-visible search text
+      carries fetchable hit handles and package stream filters do not produce
+      false `grant_stream_not_allowed` failures for unrelated child grants.

@@ -25,6 +25,9 @@ function makeFakeRs() {
         id: 'o2',
         title: 'Order o2',
         url: 'https://merchant.test/o2',
+        connection_id: 'conn_orders',
+        display_name: 'Merchant orders',
+        snippet: { text: 'Pasta order for $99.' },
         score: 0.7,
       },
     ],
@@ -454,10 +457,22 @@ test('search tool forwards q and returns hits', async () => {
   assert.equal(result.structuredContent.data._echo.q, 'pasta');
   assert.equal(result.structuredContent.data.hits[0].id, 'o2');
   assert.deepEqual(result.structuredContent.results, [
-    { id: 'orders:o2', title: 'Order o2', url: 'https://merchant.test/o2' },
+    {
+      id: 'orders:o2',
+      title: 'Order o2',
+      url: 'https://merchant.test/o2',
+      stream: 'orders',
+      record_key: 'o2',
+      connection_id: 'conn_orders',
+      display_name: 'Merchant orders',
+      snippet: 'Pasta order for $99.',
+    },
   ]);
-  // Prose content is a concise summary, not a JSON dump.
+  // Prose content is a concise, agent-visible preview, not a JSON dump.
   assert.match(result.content[0].text, /search: 1 hit/i);
+  assert.match(result.content[0].text, /id=orders:o2/);
+  assert.match(result.content[0].text, /connection_id=conn_orders/);
+  assert.match(result.content[0].text, /Pasta order/);
   assert.match(result.content[0].text, /structuredContent/);
 
   await client.close();

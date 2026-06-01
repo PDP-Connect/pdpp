@@ -79,7 +79,10 @@ All tools forward to existing RS endpoints under the scoped client token.
 Plus one resource template: `pdpp://stream/{name}` → `GET /v1/streams/{name}`.
 
 `search` preserves the RS envelope in `structuredContent.data` and also returns
-ChatGPT-compatible `structuredContent.results[]` entries with `id`, `title`, and `url`.
+ChatGPT-compatible `structuredContent.results[]` entries with `id`, `title`, `url`,
+and available source handles such as `connection_id`. Its `content[]` text also
+previews a bounded set of top hits so clients that cannot inspect structured
+tool output can still fetch a result.
 `fetch` accepts result ids in `stream:record_id` form and returns `id`, `title`, `text`,
 `url`, and `metadata`.
 

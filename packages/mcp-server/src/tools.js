@@ -326,7 +326,7 @@ const SEARCH_OUTPUT_SCHEMA_SHAPE = {
       }).passthrough(),
     )
     .describe(
-      'ChatGPT-compatible flattened search results. Each entry carries `id` (default `stream:record_id`), `title`, and `url`. Use `data` for the full canonical envelope.',
+      'ChatGPT-compatible flattened search results. Each entry carries `id` (default `stream:record_id`), `title`, `url`, and available source handles such as `connection_id`. Use `data` for the full canonical envelope.',
     ),
 };
 
@@ -1758,9 +1758,29 @@ function truncateText(value, limit) {
   return `${value.slice(0, safeLimit - 1)}…`;
 }
 
+const SEARCH_TEXT_PREVIEW_LIMIT = 3;
+const SEARCH_TEXT_SNIPPET_CHAR_LIMIT = 140;
+const SEARCH_RESULT_SNIPPET_CHAR_LIMIT = 320;
+
 function summarizeSearch(body, results) {
   const hasMore = body && body.has_more === true ? ' has_more=true.' : '';
-  return `search: ${results.length} hit(s).${hasMore} See structuredContent.data for the canonical envelope and structuredContent.results for the ChatGPT-compatible projection.`;
+  const previews = results.slice(0, SEARCH_TEXT_PREVIEW_LIMIT).map(formatSearchPreviewLine);
+  const previewText = previews.length > 0 ? ` Top results:\n${previews.join('\n')}` : '';
+  const fetchHint = previews.length > 0
+    ? '\nFetch a hit with `fetch` using the shown id; include connection_id when shown.'
+    : '';
+  return `search: ${results.length} hit(s).${hasMore}${previewText}${fetchHint} Canonical envelope: structuredContent.data; flattened results: structuredContent.results.`;
+}
+
+function formatSearchPreviewLine(result, index) {
+  const parts = [`${index + 1}. id=${formatInlineValue(truncateText(result.id, 80))}`];
+  if (result.connection_id) parts.push(`connection_id=${formatInlineValue(truncateText(result.connection_id, 80))}`);
+  if (result.connector_key) parts.push(`connector_key=${formatInlineValue(truncateText(result.connector_key, 60))}`);
+  if (result.stream) parts.push(`stream=${formatInlineValue(truncateText(result.stream, 60))}`);
+  if (result.title && result.title !== result.id) parts.push(`title=${formatScalar(truncateText(result.title, 80))}`);
+  if (result.display_name) parts.push(`display_name=${formatScalar(truncateText(result.display_name, 60))}`);
+  if (result.snippet) parts.push(`snippet=${formatScalar(truncateText(result.snippet, SEARCH_TEXT_SNIPPET_CHAR_LIMIT))}`);
+  return parts.join(' ');
 }
 
 function summarizeFetchedDocument(document) {
@@ -1769,28 +1789,46 @@ function summarizeFetchedDocument(document) {
 }
 
 function normalizeSearchResults(body) {
-  const candidates = Array.isArray(body?.results)
-    ? body.results
-    : Array.isArray(body?.data)
-      ? body.data
-      : Array.isArray(body?.hits)
-        ? body.hits
-        : [];
+  const candidates = searchCandidatesFromBody(body);
   return candidates.map((hit, index) => {
     const id = resultIdForHit(hit, index);
-    return {
+    const source = objectValue(hit?.source) || {};
+    const stream = streamForHit(hit);
+    const recordKey = recordKeyForHit(hit);
+    const connectionId = firstString(hit?.connection_id, hit?.connector_instance_id, source.connection_id);
+    const displayName = firstString(hit?.display_name, source.display_name);
+    const connectorKey = firstString(hit?.connector_key, hit?.connector_id, source.connector_key, source.connector_id);
+    const snippet = snippetForSearchHit(hit);
+    const normalized = {
       id,
       title: titleForRecord(hit, id),
       url: urlForRecord(hit, id),
     };
+    if (stream) normalized.stream = stream;
+    if (recordKey) normalized.record_key = recordKey;
+    if (connectionId) normalized.connection_id = connectionId;
+    if (displayName) normalized.display_name = displayName;
+    if (connectorKey) normalized.connector_key = connectorKey;
+    if (snippet) normalized.snippet = truncateText(snippet, SEARCH_RESULT_SNIPPET_CHAR_LIMIT);
+    return normalized;
   });
+}
+
+function searchCandidatesFromBody(body) {
+  if (!body || typeof body !== 'object') return [];
+  if (Array.isArray(body.results)) return body.results;
+  if (Array.isArray(body.hits)) return body.hits;
+  if (Array.isArray(body.data)) return body.data;
+  if (body.data && typeof body.data === 'object' && Array.isArray(body.data.results)) return body.data.results;
+  if (body.data && typeof body.data === 'object' && Array.isArray(body.data.data)) return body.data.data;
+  return [];
 }
 
 function resultIdForHit(hit, index) {
   const directId = stringValue(hit?.result_id ?? hit?.resultId);
   if (directId) return directId;
 
-  const stream = stringValue(hit?.stream ?? hit?.stream_name ?? hit?.streamName);
+  const stream = streamForHit(hit);
   const recordId = stringValue(hit?.id ?? hit?.record_id ?? hit?.recordId ?? hit?.record_key ?? hit?.recordKey);
   if (stream && recordId) {
     return `${stream}:${recordId}`;
@@ -1798,6 +1836,25 @@ function resultIdForHit(hit, index) {
 
   const fallback = stringValue(hit?.id ?? hit?.url);
   return fallback || `result:${index + 1}`;
+}
+
+function streamForHit(hit) {
+  return firstString(hit?.stream, hit?.stream_name, hit?.streamName);
+}
+
+function recordKeyForHit(hit) {
+  return firstString(hit?.record_key, hit?.recordKey, hit?.record_id, hit?.recordId, hit?.id);
+}
+
+function snippetForSearchHit(hit) {
+  const snippet = objectValue(hit?.snippet);
+  return firstString(
+    snippet?.text,
+    typeof hit?.snippet === 'string' ? hit.snippet : undefined,
+    hit?.snippet_text,
+    hit?.summary,
+    hit?.text,
+  );
 }
 
 function parseRecordResultId(id) {

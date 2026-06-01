@@ -12,8 +12,8 @@
  *   - `GET /v1/streams/:s/records`  — require source selector → single child.
  *   - `GET /v1/streams/:s/records/:id` — same as above.
  *   - `GET /v1/streams/:s`          — same as above.
- *   - `GET /v1/search[/...]`        — fan out, merge results (each hit
- *                                     already carries connection_id).
+ *   - `GET /v1/search[/...]`        — fan out, tailor streams[] per child
+ *                                     grant, merge results.
  *   - `GET /v1/blobs/:id` (getRaw)  — require source selector → single child.
  *
  *   - `POST   /v1/event-subscriptions`           — require source selector.
@@ -190,7 +190,11 @@ class PackageRsClient {
     }
 
     const results = await Promise.all(
-      this.children.map(({ client }) => client.getJson(path, { query, headers })),
+      this.children.map(({ member, client }) => {
+        const childQuery = searchQueryForChild(query, member);
+        if (childQuery === null) return emptySearchResponse();
+        return client.getJson(path, { query: childQuery, headers });
+      }),
     );
     return mergeSearchEnvelopes(this.children, results, path);
   }
@@ -328,6 +332,65 @@ function stripConnectionId(query) {
   if (!query || typeof query !== 'object') return query;
   const { connection_id: _omit, ...rest } = query;
   return rest;
+}
+
+function searchQueryForChild(query, member) {
+  const requested = requestedStreamsFromQuery(query);
+  if (requested.length === 0) return query;
+  const granted = grantedStreamNames(member);
+  if (!granted) return query;
+
+  const selected = granted.has('*') ? requested : requested.filter((stream) => granted.has(stream));
+  if (selected.length === 0) return null;
+
+  const next = query && typeof query === 'object' ? { ...query } : {};
+  delete next.streams;
+  delete next['streams[]'];
+  next.streams = selected;
+  return next;
+}
+
+function requestedStreamsFromQuery(query) {
+  if (!query || typeof query !== 'object') return [];
+  const values = [];
+  collectStreamQueryValues(values, query.streams);
+  collectStreamQueryValues(values, query['streams[]']);
+
+  const seen = new Set();
+  return values.filter((value) => {
+    if (seen.has(value)) return false;
+    seen.add(value);
+    return true;
+  });
+}
+
+function collectStreamQueryValues(out, value) {
+  if (Array.isArray(value)) {
+    for (const entry of value) collectStreamQueryValues(out, entry);
+    return;
+  }
+  if (typeof value !== 'string') return;
+  const trimmed = value.trim();
+  if (trimmed.length > 0) out.push(trimmed);
+}
+
+function grantedStreamNames(member) {
+  const streams = member?.grant?.streams;
+  if (!Array.isArray(streams)) return null;
+  const names = streams
+    .map((stream) => (typeof stream?.name === 'string' ? stream.name.trim() : ''))
+    .filter((name) => name.length > 0);
+  return new Set(names);
+}
+
+function emptySearchResponse() {
+  return {
+    ok: true,
+    status: 200,
+    body: { object: 'list', data: [], has_more: false },
+    requestId: null,
+    contentType: 'application/json',
+  };
 }
 
 // -------- envelope helpers --------

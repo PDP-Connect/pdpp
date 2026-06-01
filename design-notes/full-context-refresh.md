@@ -3,7 +3,7 @@
 Status: captured
 Owner: reference implementation owner
 Created: 2026-05-19
-Updated: 2026-05-19
+Updated: 2026-06-01
 Related: spec-core.md, spec-collection-profile.md, spec-architecture.md, spec-dti-alignment.md, docs/personas/pdpp-reviewer-onboarding.md, openspec/changes/define-connector-instances, openspec/changes/design-local-device-exporter-collection, openspec/changes/publish-pdpp-local-collector, openspec/changes/complete-local-agent-collectors, design-notes/local-collector-durable-work-substrate-2026-05-19.md
 
 ## Question
@@ -126,6 +126,16 @@ Prefer designs that identify the essential nouns, invariants, and ownership boun
 
 This is not a license to over-generalize. The bar is construction quality, not abstraction volume. A new primitive is justified only when it reduces incidental complexity across multiple concrete cases, makes correctness easier to verify, or prevents a class of false-success/failure modes. Otherwise, keep the solution local and honest.
 
+## Research Corpus Discipline
+
+Prior-art research should leave a durable corpus, not just a chat summary or worker report. Design notes are not that corpus by default: they are the intake queue for significant design observations, unresolved questions, and decisions to revisit when the project shifts from execution mode into slower architecture review.
+
+For non-trivial research, preserve a small, curated research artifact under `docs/research/` for cross-cutting work or `openspec/changes/<change>/research/` for change-local work. Record sources, dates, provenance, and the conclusion we are carrying forward. Link from a design note only when the research creates a significant observation or open question that belongs in the architecture-review queue.
+
+Hand-written synthesis is usually enough when the source material is stable and linkable. Direct downloads or copied artifacts are appropriate when the original is likely to move, when exact wording matters, or when reviewers need to inspect the source offline. Keep these artifacts scoped and citeable; do not dump large logs, private records, or source material whose reuse is unclear.
+
+Worker reports are transient coordination evidence. If research changes the protocol surface, reference contract, architecture boundary, security posture, storage model, user-facing behavior, or multi-step implementation plan, promote the finding into OpenSpec or a decided design note before implementation depends on it.
+
 ## History To Preserve
 
 The core design already converged on a few non-negotiables:
@@ -176,3 +186,4 @@ Promote this note into OpenSpec before implementing any tranche that changes:
 - 2026-06-01: Every delegated lane needs a cleanup contract at launch time. The packet should say whether the branch is expected to be merged, archived as evidence, or removed when patch-equivalent. After acceptance, run a cleanup pass that preserves dirty worktrees, active tmux sessions, and branches with unique commits; removes only merged or patch-equivalent branches; and records a manifest before deletion.
 - 2026-06-01: Agent-facing surfaces should default to token-efficient discovery. If a compact schema or summary view exists, skill docs, MCP tool descriptions, and CLI guidance should teach agents to start there and opt into full schema only for deep inspection or backcompat.
 - 2026-06-01: Reference heuristics are acceptable only when they are warning-only and visible. Any threshold that can block, grant, delete, compact, or hide data needs an explicit rationale, an owner-visible override or dry-run path, and a promotion path into OpenSpec if it becomes durable behavior.
+- 2026-06-01: Prior-art research needs a durable corpus. Chat summaries and worker reports are not enough; significant research should produce a citeable research artifact under `docs/research/` or change-local `research/`, while design notes remain the queue for significant observations, open questions, and slow architecture review.

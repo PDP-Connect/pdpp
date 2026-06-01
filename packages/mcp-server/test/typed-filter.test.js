@@ -330,7 +330,7 @@ test('search typed filter forwards as bracket params (same fix as query_records)
   await server.close();
 });
 
-test('search surfaces a readable hit count in content text', async () => {
+test('search surfaces readable hit handles in content text', async () => {
   const { fetch } = recordingFetch();
   const { client, server } = await connectClient(fetch);
 
@@ -338,6 +338,7 @@ test('search surfaces a readable hit count in content text', async () => {
   assert.equal(result.isError, undefined);
   const text = result.content.map((c) => c.text).join('\n');
   assert.match(text, /1|result|hit/i, 'search text must surface a usable result summary');
+  assert.match(text, /id=messages:m1/, 'search text must include a fetchable result id');
   assert.equal(result.structuredContent.results.length, 1, 'flattened results must be populated');
 
   await client.close();
