@@ -178,6 +178,18 @@ this skill remains the canonical interface and the source of truth for query
 shapes. If `@pdpp/mcp-server` is not yet published to npm, consume it from the
 in-repo workspace package or use the raw-HTTP path.
 
+**Stale hosted-MCP tool surface.** External MCP hosts (ChatGPT, Claude, etc.)
+cache the tool surface at registration time. If you see fewer tools than this
+skill describes — for example, `schema` is missing the `detail` or `stream`
+inputs, or event-subscription tools are absent — the client is holding a stale
+registration. This is an external host cache reality, not a PDPP bug. The
+reference server publishes the current tool surface on every connection via the
+MCP `initialize` `serverVersion`, but it cannot force an external host to
+refresh a cached registration. Ask the user to delete the PDPP connector in
+their MCP client and re-add it against the same `<origin>/mcp` URL; after
+completing the OAuth grant the client fetches the current tool surface. See
+`references/troubleshooting.md` for the full symptom/remediation checklist.
+
 **MCP filter argument is a typed object, not a query string.** The raw-HTTP query
 shapes above use bracket query syntax (`filter[field]=value`,
 `filter[field][op]=value`). When you call the MCP `query_records`, `aggregate`, or

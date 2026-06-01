@@ -24,6 +24,13 @@ When the flow breaks, work the failure top-down: discovery -> agent-connect -> a
 
 ## Registration
 
+**Symptom:** The MCP connector shows fewer tools than expected, or tools are missing inputs advertised in the skill (`detail`, `stream`, event-subscription tools, etc.).
+
+- This is a **stale host registration**, not a PDPP bug. External MCP clients (ChatGPT, Claude, and similar) cache the tool surface at the time the connector is first registered. They do not poll PDPP for changes after the initial setup.
+- The PDPP reference server publishes the current tool surface on every connection via the MCP `initialize` response `serverVersion`, but external hosts cannot be forced to refresh a cached registration.
+- **Remediation:** Ask the user to delete the PDPP connector in the external MCP client and re-add it pointing at the same `<origin>/mcp` URL. After re-adding and completing the OAuth grant, the client fetches the current tool surface.
+- Do not work around missing tools by guessing at raw HTTP endpoints. If the tool the task requires is absent, request the re-add before proceeding.
+
 **Symptom:** `POST /oauth/register` returns `401 invalid_token` or `403`.
 
 - If you sent an `Authorization: Bearer ...` header, the AS rejected that bootstrap token. Retry public self-registration without a bearer token when metadata advertises `registration_endpoint` and `pdpp_registration_modes_supported` includes `dynamic`.

@@ -183,6 +183,17 @@ around it by weakening the compact default.
 
 ## Troubleshooting
 
+- **Stale tool surface (fewer tools than expected, missing `detail`/`stream`
+  inputs, or no event-subscription tools):** External MCP hosts (ChatGPT,
+  Claude, and similar) cache the tool surface at registration time and do not
+  poll PDPP for changes. This is an external host cache reality — PDPP cannot
+  force the client to refresh a cached registration. The reference server
+  publishes the current tool surface version via the MCP `initialize`
+  `serverVersion` field on every connection, but the client may not act on it.
+  **Fix:** delete the PDPP connector from the MCP client and re-add it pointing
+  at the same `<PDPP_REFERENCE_ORIGIN>/mcp` URL, then complete the OAuth grant.
+  The client fetches the current tool surface on re-add. Do not conclude the
+  server is broken just because a client shows an old tool list.
 - `Unsupported grant_types metadata values: refresh_token`: the deployment is
   running an old reference image. Update the reference service to a revision
   that advertises `refresh_token` in authorization-server metadata.
