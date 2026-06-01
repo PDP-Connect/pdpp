@@ -1451,14 +1451,31 @@ function titleForRecord(record, fallbackId) {
   );
 }
 
+// Hard ceiling on the JSON-stringify fallback for `fetch`'s `text` field.
+// A real declared text-like field (`text`/`content`/`body`/`summary`) is the
+// document text ChatGPT consumes and is returned verbatim and unbounded — that
+// is the contract. The fallback below only fires when a record declares NONE of
+// those fields; without a cap it pretty-prints the entire record into `text`,
+// duplicating the canonical record already present verbatim in
+// `structuredContent.data` (measured at tens of KB and unbounded for fat
+// records). Bounding only the fallback keeps `fetch.text` a readable, honest
+// excerpt and points the agent at the full record in `structuredContent.data`;
+// no declared text is ever truncated and no field an agent needs is dropped.
+const FETCH_TEXT_FALLBACK_CHAR_LIMIT = 1024;
+const FETCH_TEXT_FALLBACK_POINTER =
+  '… [record has no text/content/body/summary field; full record in structuredContent.data]';
+
 function textForRecord(record) {
-  return (
+  const declared =
     stringValue(record?.text) ||
     stringValue(record?.content) ||
     stringValue(record?.body) ||
-    stringValue(record?.summary) ||
-    JSON.stringify(record, null, 2)
-  );
+    stringValue(record?.summary);
+  if (declared) return declared;
+  const serialized = JSON.stringify(record, null, 2);
+  if (serialized.length <= FETCH_TEXT_FALLBACK_CHAR_LIMIT) return serialized;
+  const head = FETCH_TEXT_FALLBACK_CHAR_LIMIT - FETCH_TEXT_FALLBACK_POINTER.length;
+  return `${serialized.slice(0, Math.max(0, head))}${FETCH_TEXT_FALLBACK_POINTER}`;
 }
 
 function urlForRecord(record, fallbackId, providerUrl) {
