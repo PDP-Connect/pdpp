@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const VIEW_FILE = `${HERE}records-list-view.tsx`;
 const NEEDS_ATTENTION_LABEL_RE = /"Needs attention"/;
+const DEGRADED_LABEL_RE = /label="Degraded"/;
 const RUNNING_LABEL_RE = /"Running"/;
 const STALE_LABEL_RE = /"Stale"/;
 const NO_ACTIVE_RUNS_RETURN_RE = /return "No active runs"/;
@@ -26,14 +27,20 @@ const NEEDS_ATTENTION_STATE_RE = /state === "needs_attention"/;
 const BLOCKED_STATE_RE = /state === "blocked"/;
 const DEGRADED_STATE_RE = /state === "degraded"/;
 const FAILED_RUN_FALLBACK_RE = /!state && o\.lastRun\?\.status === "failed"/;
-const STALE_FRESHNESS_AXIS_RE = /axes\.freshness === "stale"/;
-const NEEDS_ATTENTION_COUNT_RE = /state === "blocked" \|\| state === "needs_attention"/;
-const SYNCING_BADGE_RE = /connectionHealth\?\.badges\.syncing/;
+// The summary counting moved to the pure `connection-summary-stats` module so
+// it can be unit-tested without rendering JSX. The view must delegate to it
+// rather than re-deriving the counts inline.
+const SUMMARY_MODULE_IMPORT_RE = /summarizeConnectionHealth/;
+const INLINE_STALE_AXIS_RE = /axes\.freshness === "stale"/;
+const INLINE_NEEDS_ATTENTION_RE = /state === "blocked" \|\| state === "needs_attention"/;
 
 test("vital signs strip uses fixed dimension labels that never rotate based on counts", async () => {
   const src = await readFile(VIEW_FILE, "utf8");
   // Fixed labels must be present (each represents one distinct dimension).
   assert.match(src, NEEDS_ATTENTION_LABEL_RE);
+  // Degraded / cooling-off / stalled work has its own attention-visible stat
+  // so the summary can never read all-zero attention while degraded cards show.
+  assert.match(src, DEGRADED_LABEL_RE);
   assert.match(src, RUNNING_LABEL_RE);
   assert.match(src, STALE_LABEL_RE);
   // Dynamic-label helper functions that rotated labels based on counts must
@@ -60,22 +67,14 @@ test("sort key uses health projection state to surface attention-required connec
   assert.match(src, FAILED_RUN_FALLBACK_RE);
 });
 
-test("stale count uses health projection freshness axis when available", async () => {
+test("summary counts are delegated to the pure connection-summary-stats module", async () => {
   const src = await readFile(VIEW_FILE, "utf8");
-  // The stale count should check the projection's freshness axis first.
-  assert.match(src, STALE_FRESHNESS_AXIS_RE);
-});
-
-test("needs-attention count uses health projection blocked and needs_attention states", async () => {
-  const src = await readFile(VIEW_FILE, "utf8");
-  assert.match(src, NEEDS_ATTENTION_COUNT_RE);
-});
-
-test("running count includes health projection syncing badge", async () => {
-  const src = await readFile(VIEW_FILE, "utf8");
-  // push-mode local collectors report progress via the syncing badge, not
-  // isRunning, so the count must include both signals.
-  assert.match(src, SYNCING_BADGE_RE);
+  // The view must consume the testable rollup helper, not re-derive counts.
+  assert.match(src, SUMMARY_MODULE_IMPORT_RE);
+  // The counting predicates must NOT be inlined in the JSX view anymore;
+  // their behavior is owned and tested in connection-summary-stats.test.ts.
+  assert.doesNotMatch(src, INLINE_STALE_AXIS_RE);
+  assert.doesNotMatch(src, INLINE_NEEDS_ATTENTION_RE);
 });
 
 // ─── SLVP ordinal-label fallback ──────────────────────────────────────────

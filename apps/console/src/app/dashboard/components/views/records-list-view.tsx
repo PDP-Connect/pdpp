@@ -15,6 +15,7 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { buttonVariants } from "@/components/ui/button.tsx";
 import { Timestamp } from "@/components/ui/timestamp.tsx";
+import { summarizeConnectionHealth } from "../../lib/connection-summary-stats.ts";
 import { formatConnectorKeyForDisplay, formatConnectorNameForDisplay } from "../../lib/connector-display.ts";
 import { shouldShowInPrimaryConnections } from "../../lib/records-list-classification.ts";
 import type { RefRecordVersionStatsRow } from "../../lib/ref-client.ts";
@@ -23,8 +24,6 @@ import { ConnectorRow } from "../../records/connector-row.tsx";
 import { DataList, PageHeader, Section } from "../primitives.tsx";
 import { EmptyState } from "../shell.tsx";
 import type { Routes } from "./routes.ts";
-
-const STALE_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
  * Sort connections so the most actionable appear first.
@@ -158,7 +157,6 @@ export function RecordsListView({
   pendingOnDevices,
   pollerSlot,
   versionChurnRows,
-  now: nowOverride,
 }: {
   overviews: ConnectorOverview[];
   routes: Routes;
@@ -178,10 +176,11 @@ export function RecordsListView({
   /** Highest-risk stream-level version churn diagnostics from /_ref/records/version-stats. */
   versionChurnRows?: RefRecordVersionStatsRow[];
   /**
-   * Reference "now" in epoch ms for the freshness/staleness labels. The live
-   * dashboard wants wall-clock time; the sandbox wants its frozen demo clock
-   * so seeded `last_at` values do not drift into "Stale" as wall-clock time
-   * advances.
+   * Reference "now" in epoch ms. Historically used to derive staleness from
+   * raw `last_at` age; the summary now reads staleness from the health
+   * projection's freshness axis instead (unknown freshness is never treated as
+   * stale), so this prop is accepted for caller compatibility but unused. The
+   * per-row freshness labels resolve their own timestamps.
    */
   now?: number;
 }) {
@@ -203,31 +202,24 @@ export function RecordsListView({
   const totalRecords = withData.reduce((sum, o) => sum + o.totalRecords, 0);
   const totalStreams = withData.reduce((sum, o) => sum + (o.streamCount ?? o.streams.length), 0);
 
-  const now = nowOverride ?? Date.now();
-  // Active runs: use health projection syncing badge where available so
-  // push-mode local collectors (which bypass scheduler runs) are counted.
-  const runningCount = withData.filter((o) => o.isRunning || o.connectionHealth?.badges.syncing).length;
-  // Needs attention: health-projection-authoritative blocked/needs_attention,
-  // with a fallback to run-history failure when no projection is present.
-  const needsAttentionCount = withData.filter((o) => {
-    const state = o.connectionHealth?.state;
-    if (state === "blocked" || state === "needs_attention") {
-      return true;
-    }
-    if (!state && o.lastRun?.status === "failed") {
-      return true;
-    }
-    return false;
-  }).length;
-  // Stale: prefer the health projection's freshness axis (policy-aware) over
-  // a hard 7-day cutoff, but fall back when no projection is present.
-  const staleCount = withData.filter((o) => {
-    if (o.connectionHealth?.axes) {
-      return o.connectionHealth.axes.freshness === "stale";
-    }
-    const ts = o.lastSuccessfulRun ? Date.parse(o.lastSuccessfulRun.last_at) : 0;
-    return ts > 0 && now - ts > STALE_MS;
-  }).length;
+  // Summary rollup lives in a pure, importable module so the counter behavior
+  // is testable without rendering this JSX component. The summary is lossless:
+  // degraded / cooling_off / stalled-outbox connections are surfaced in the
+  // attention-visible `degraded` bucket rather than silently excluded, so the
+  // strip can never read all-zero attention while degraded cards are visible.
+  const summary = summarizeConnectionHealth(labeled);
+  const needsAttentionCount = summary.needsAttention;
+  const degradedCount = summary.degraded;
+  const runningCount = summary.running;
+  const staleCount = summary.stale;
+
+  // Name the population the count describes. The number is the with-data list;
+  // when registered no-data connections exist we say so instead of letting a
+  // bare "connections" number imply the registered total.
+  const connectionsCountLabel =
+    summary.noData > 0
+      ? `${summary.withData} with data · ${summary.registeredTotal} registered`
+      : `${summary.withData} connections`;
 
   return (
     <>
@@ -240,8 +232,8 @@ export function RecordsListView({
         }
         count={
           pendingOnDevices && pendingOnDevices > 0
-            ? `${totalRecords.toLocaleString()} retained records · ${totalStreams} streams · ${withData.length} connections · +${pendingOnDevices.toLocaleString()} pending on devices`
-            : `${totalRecords.toLocaleString()} retained records · ${totalStreams} streams · ${withData.length} connections`
+            ? `${totalRecords.toLocaleString()} retained records · ${totalStreams} streams · ${connectionsCountLabel} · +${pendingOnDevices.toLocaleString()} pending on devices`
+            : `${totalRecords.toLocaleString()} retained records · ${totalStreams} streams · ${connectionsCountLabel}`
         }
         description={
           interactive
@@ -253,12 +245,22 @@ export function RecordsListView({
 
       {versionChurnRows && versionChurnRows.length > 0 ? <VersionChurnNotice rows={versionChurnRows} /> : null}
 
-      <section aria-label="Connection health summary" className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
-        <HealthStat label="Connections" tone="neutral" value={withData.length.toLocaleString()} />
+      <section aria-label="Connection health summary" className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-5">
+        <HealthStat
+          hint={summary.noData > 0 ? `${summary.registeredTotal.toLocaleString()} registered` : undefined}
+          label={summary.noData > 0 ? "With data" : "Connections"}
+          tone="neutral"
+          value={summary.withData.toLocaleString()}
+        />
         <HealthStat
           label="Needs attention"
           tone={needsAttentionCount > 0 ? "danger" : "neutral"}
           value={needsAttentionCount.toLocaleString()}
+        />
+        <HealthStat
+          label="Degraded"
+          tone={degradedCount > 0 ? "warning" : "neutral"}
+          value={degradedCount.toLocaleString()}
         />
         <HealthStat
           label="Running"
@@ -410,12 +412,24 @@ const HEALTH_STAT_TONE_CLASSES: Record<HealthStatTone, string> = {
   neutral: "text-foreground",
 };
 
-function HealthStat({ label, value, tone }: { label: string; value: string; tone: HealthStatTone }) {
+function HealthStat({
+  label,
+  value,
+  tone,
+  hint,
+}: {
+  label: string;
+  value: string;
+  tone: HealthStatTone;
+  /** Optional sub-label that names the population behind the number. */
+  hint?: string;
+}) {
   const toneClass = HEALTH_STAT_TONE_CLASSES[tone];
   return (
     <div className="flex flex-col gap-1 border-border/60 border-l-2 pl-3">
       <span className="pdpp-caption text-muted-foreground">{label}</span>
       <span className={`pdpp-heading tabular-nums ${toneClass}`}>{value}</span>
+      {hint ? <span className="pdpp-caption text-muted-foreground tabular-nums">{hint}</span> : null}
     </div>
   );
 }
