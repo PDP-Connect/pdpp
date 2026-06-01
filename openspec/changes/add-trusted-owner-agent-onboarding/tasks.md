@@ -30,6 +30,7 @@
 - [x] 5.2 Add a Daisy-focused runbook that starts from an entrypoint URL, completes approval, stores the local credential, performs initial sync, then performs incremental sync.
 - [x] 5.3 Document the callback decision: use event subscriptions only with a durable valid-TLS HTTPS receiver; otherwise use cursor polling with backoff.
 - [x] 5.4 Add a guard or doc check that ordinary grant-scoped agent guidance still does not recommend owner bearers as the default path.
+- [ ] 5.5 Define and pin the SLVP agent-readable onboarding entrypoint for non-CLI local agents. A trusted agent starting from `https://pdpp.vivid.fish` must be able to discover the owner-agent flow from advertised metadata without guessing `/.well-known/skills/*` or `/llms.txt`; any unsupported agent-doc path should fail with a concise machine-readable response rather than a large HTML 404. Acceptance evidence should include a Simon/Daisy-equivalent smoke that completes metadata discovery without route guessing.
 
 ## 6. Acceptance Checks
 
