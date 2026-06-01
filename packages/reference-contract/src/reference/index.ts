@@ -466,16 +466,30 @@ const OwnerConnectionIntentRequestSchema = {
 // agent branches on. The reference build emits `enroll_local_collector` for
 // proven local-collector connectors and `unsupported` for browser-bound,
 // API/network-only, and unknown connectors; `open_url`, `complete_browser_assistance`,
-// and `upload_file` are reserved for future primitives so a later lane can emit
-// them without a contract break. Secret material (enrollment codes excepted —
-// they are single-use, owner-scoped, and short-lived) is never carried here.
+// `upload_file`, and `enroll_browser_collector` are reserved for future primitives
+// so a later lane can emit them without a contract break. `enroll_browser_collector`
+// in particular is the kind the `browser_bound` branch will emit once the
+// `add-browser-collector-enrollment-primitive` live proof gate is satisfied
+// (design Decision 3); reserving it here keeps the post-proof flip a single
+// reviewable unit rather than a flip plus a contract widening. Reserving the value
+// does NOT advertise the flow — no route emits it until the proof lands, and
+// `owner-connection-intent.test.js` pins that the runtime `browser_bound` branch
+// stays `unsupported`. Secret material (enrollment codes excepted — they are
+// single-use, owner-scoped, and short-lived) is never carried here.
 const OwnerConnectionIntentNextStepSchema = {
   type: "object",
   additionalProperties: true,
   properties: {
     kind: {
       type: "string",
-      enum: ["open_url", "complete_browser_assistance", "upload_file", "enroll_local_collector", "unsupported"],
+      enum: [
+        "open_url",
+        "complete_browser_assistance",
+        "upload_file",
+        "enroll_local_collector",
+        "enroll_browser_collector",
+        "unsupported",
+      ],
     },
     reason: { type: ["string", "null"] },
     url: { type: "string" },

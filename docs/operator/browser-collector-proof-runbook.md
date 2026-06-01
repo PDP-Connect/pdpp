@@ -283,6 +283,13 @@ Only after Steps 5–6 are committed:
   `ctx.deviceExporterStore.createEnrollmentCode` (the same operation the
   `local_collector` branch uses) and return
   `next_step.kind: "enroll_browser_collector"` with `connection_active: false`.
+  The contract enum already RESERVES `enroll_browser_collector` (in
+  `packages/reference-contract/src/reference/index.ts`
+  `OwnerConnectionIntentNextStepSchema`, regenerated into
+  `reference-implementation/openapi/reference-full.openapi.json`; pinned by the
+  `owner-connection-intent.test.js` reservation test), so emitting it is **not** a
+  contract break and no contract widening is needed here — only the runtime branch
+  and its tests move.
 - Update `reference-implementation/test/owner-connection-intent.test.js`: Amazon
   now returns `enroll_browser_collector` (not `unsupported`).
 - Check `tasks.md` §3.4 and §3.5 in

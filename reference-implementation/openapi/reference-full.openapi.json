@@ -15735,6 +15735,7 @@
                             "complete_browser_assistance",
                             "upload_file",
                             "enroll_local_collector",
+                            "enroll_browser_collector",
                             "unsupported"
                           ]
                         },

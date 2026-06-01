@@ -82,7 +82,25 @@
       advertise a real next step without committed proof") forbids advertising
       the next step without committed proof, and requires the flip and the proof
       to be reviewable as one unit. The flip steps are pre-written in the
-      runbook §7.)
+      runbook §7.
+      Lane `ri-browser-collector-live-proof-tail-v3` removed one no-human
+      prerequisite the flip would otherwise have to carry: the published contract
+      now RESERVES `enroll_browser_collector` in the
+      `POST /v1/owner/connections/intents` `next_step.kind` enum
+      (`packages/reference-contract/src/reference/index.ts`
+      `OwnerConnectionIntentNextStepSchema`, regenerated into
+      `reference-implementation/openapi/reference-full.openapi.json`), alongside
+      the other reserved-but-unemitted kinds (`open_url`,
+      `complete_browser_assistance`, `upload_file`) — exactly as design Decision 3
+      states. Reserving the value does NOT advertise the flow: no route emits it,
+      and the runtime `browser_bound` branch still returns `unsupported` (pinned by
+      `test/owner-connection-intent.test.js` →
+      "owner-agent initiating a browser-bound connector (Amazon) gets a typed
+      unsupported"). A new contract test ("owner-agent intent contract reserves
+      enroll_browser_collector without emitting it") pins the reservation against
+      the generated OpenAPI so a regen/edit can't silently drop it (negative
+      control verified). Net effect: the post-proof flip is now a single reviewable
+      unit — flip the branch + its tests — with no hidden contract-widening step.)
 
 ## Acceptance checks
 

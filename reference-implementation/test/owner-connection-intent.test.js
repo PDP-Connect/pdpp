@@ -30,6 +30,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import { COLLECTOR_PROTOCOL_VERSION } from '../server/collector-protocol.ts';
@@ -469,4 +470,34 @@ test('GET /v1/owner/control advertises initiate_connection as supported with the
     assert.equal(initiate.method, 'POST');
     assert.match(initiate.url, /\/v1\/owner\/connections\/intents$/);
   });
+});
+
+// The published contract reserves `enroll_browser_collector` as a next-step kind
+// BEFORE any route emits it. Per add-browser-collector-enrollment-primitive design
+// Decision 3, reserving the value keeps the post-proof `browser_bound` flip a single
+// reviewable unit (flip the branch + its tests) instead of a flip PLUS a contract
+// widening that a reviewer could miss. This pins the reservation so a future
+// contract regen/edit can't silently drop it. It is the contract complement of the
+// runtime guard above (the Amazon intent test asserts the live branch stays
+// `unsupported` and does NOT yet emit `enroll_browser_collector`): reserved in the
+// contract, not emitted at runtime.
+test('owner-agent intent contract reserves enroll_browser_collector without emitting it', () => {
+  const openapi = JSON.parse(
+    readFileSync(new URL('../openapi/reference-full.openapi.json', import.meta.url), 'utf8'),
+  );
+  const intentResponseSchema =
+    openapi.paths?.['/v1/owner/connections/intents']?.post?.responses?.['201']?.content?.[
+      'application/json'
+    ]?.schema;
+  assert.ok(intentResponseSchema, 'intent route must document a 201 JSON response schema');
+  const nextStepEnum = intentResponseSchema.properties?.next_step?.properties?.kind?.enum;
+  assert.ok(Array.isArray(nextStepEnum), 'next_step.kind must be a closed enum in the contract');
+  // Reserved-then-emitted: the value is in the contract enum so the flip is not a
+  // contract break, alongside the other reserved-but-unemitted kinds.
+  assert.ok(
+    nextStepEnum.includes('enroll_browser_collector'),
+    'contract must reserve enroll_browser_collector for the post-proof browser_bound flip',
+  );
+  assert.ok(nextStepEnum.includes('enroll_local_collector'), 'the emitted local-collector kind stays reserved');
+  assert.ok(nextStepEnum.includes('unsupported'), 'unsupported stays the honest browser-bound default');
 });
