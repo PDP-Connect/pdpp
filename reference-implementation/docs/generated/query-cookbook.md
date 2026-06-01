@@ -1,6 +1,6 @@
 # PDPP query cookbook
 
-All examples below target the public record-query surface at `/v1/streams/...`. Tokens are Bearer access tokens bound to a PDPP grant (see spec §7).
+All examples below target the public record-query surface at `/v1/streams/...`. Tokens are Bearer access tokens bound to a PDPP grant. Core spec §8 (Resource Server Interface) is authoritative for query syntax — the canonical `filter[<field>]` / `filter[<field>][op]` shapes, declaration-driven `query.range_filters` and `query.expand`, and the `limit_clamped` warning. This cookbook shows the smallest correct call for each shape; where it is terser than §8, §8 governs.
 
 ## Discovery (one shot)
 
@@ -83,6 +83,8 @@ GET /v1/streams/top_artists/records?view=basic
 ## Logical cursor pagination
 
 Records are sorted by `(cursor_field, primary_key)`. Null cursor values sort after present values. Cursors are opaque — clients must not parse or construct them. Cursors are direction-bound: follow a page cursor with the same `order` value that produced it. To change direction, restart pagination without a cursor; the reference rejects order-mismatched cursors as `invalid_cursor`.
+
+`limit` defaults to 25 and is capped at 100. A request for more than 100 is clamped to 100 and returns a non-fatal `meta.warnings[]` entry with `code: "limit_clamped"`, not an error — page forward with the returned cursor rather than expecting a larger page.
 
 ```http
 GET /v1/streams/top_artists/records?order=asc&limit=50

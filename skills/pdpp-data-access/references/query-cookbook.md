@@ -2,6 +2,8 @@
 
 This file lists the data-access patterns the PDPP RS supports and shows the smallest correct call for each one. Always check `/v1/schema` first — capabilities are per-grant, not global.
 
+Authoritative query syntax lives in Core spec §8 (Resource Server Interface): the canonical `filter[field]` / `filter[field][op]` shapes, declaration-driven `query.range_filters` and `query.expand`, and the non-fatal `limit_clamped` warning. This file shows the smallest correct call for each shape; where it is terser than §8, §8 governs.
+
 ## Discovery
 
 Before any data call, get the per-grant capability map:

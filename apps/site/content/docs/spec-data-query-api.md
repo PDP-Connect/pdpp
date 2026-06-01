@@ -8,7 +8,7 @@ description: "Historical companion spec — Core spec Section 8 is now authorita
 
   Date: 2026-03-28 (original); superseded 2026-04-12
 </Callout>
-> **Note:** This document was written before Core Section 8 was expanded to normatively define the RS query interface. The Core spec is authoritative. This file is retained for historical reference but should not be used for implementation. Where this document disagrees with Core Section 8, Core Section 8 prevails.
+> **Note:** This document was written before Core Section 8 was expanded to normatively define the RS query interface. [Core Section 8 (Resource Server Interface)](/docs/spec-core#resource-server-interface) is authoritative for current query syntax, including the canonical `filter[{field}]` / `filter[{field}][op]` shapes, declaration-driven `query.range_filters` and `query.expand`, and the `limit_clamped` warning behavior. This file is retained for historical reference and should not be used for implementation. Where it disagrees with Core Section 8, Core Section 8 prevails — in particular, the `limit`, `expand_limit`, search, and error-table sections below predate the current contract and are stale.
 
 Companion to the Personal Data Portability Protocol (PDPP) core spec.
 

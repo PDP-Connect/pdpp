@@ -1029,7 +1029,7 @@ Returns records from a stream, filtered by the grant and any additional request 
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `limit` | integer | Records per page. Default 25, max 100. |
+| `limit` | integer | Records per page. Default 25, max 100. A request for more than 100 is clamped to 100 and the response carries a non-fatal `limit_clamped` warning (see below), not an error. |
 | `cursor` | string | Opaque pagination token from a previous response. Clients MUST NOT parse or construct cursor tokens. |
 | `order` | enum | `desc` (default) or `asc`. |
 | `filter[{field}]` | string | Exact match filter on an authorized top-level scalar field. |
@@ -1046,6 +1046,8 @@ Returns records from a stream, filtered by the grant and any additional request 
 The durable base query surface in v0.1 is: `limit`, `cursor`, `order`, exact top-level scalar `filter[{field}]`, `fields`, `view`, `changes_since`, and blob fetch. Advanced stream-specific query power MUST be declared in stream metadata under `query`.
 
 Unknown query parameters and unsupported query shapes MUST be rejected with HTTP 400 and MUST NOT be silently ignored.
+
+**Non-fatal warnings:** A list response MAY carry a `meta.warnings[]` array reporting non-fatal lossiness that the server resolved without failing the request. Each entry has a stable `code` and a human-readable `message`; clients SHOULD branch on `code`, not on message text. A `limit` above the maximum is the canonical case: the RS returns the bounded page and a `limit_clamped` warning rather than silently dropping the excess or returning an error. Clients page forward with the returned cursor instead of expecting a larger page. Warnings are not errors and MUST NOT change the HTTP status.
 
 Exact `filter[{field}]` applies only to authorized top-level scalar fields. Unknown fields and non-scalar fields are HTTP 400. Fields outside the grant's authorized projection are HTTP 403 `field_not_granted`.
 
