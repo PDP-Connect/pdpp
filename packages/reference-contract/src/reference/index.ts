@@ -337,6 +337,98 @@ const OwnerControlSurfaceResponseSchema = {
   required: ["object", "entrypoint", "scope", "mcp_owner_bearer_rejected", "actions"],
 };
 
+// One run summary inside the connection-scoped diagnostics read. Carries only
+// the non-secret status/timing/run-id fields; gap arrays and event counts stay
+// in the richer connector-summary surface.
+const OwnerConnectionDiagnosticsRunSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    run_id: { type: ["string", "null"] },
+    status: { type: "string" },
+    started_at: { type: ["string", "null"] },
+    finished_at: { type: ["string", "null"] },
+    failure_reason: { type: ["string", "null"] },
+  },
+  required: ["run_id", "status", "started_at", "finished_at", "failure_reason"],
+};
+
+// The typed connection-health classification inside the diagnostics read. `state`
+// is the canonical connection-health taxonomy the connector-health-surface
+// research captured; `axes` and `badges` are orthogonal diagnostic detail. The
+// shape mirrors the runtime `ConnectionHealthSnapshot` subset the diagnostics
+// projection surfaces, so it stays permissive (`additionalProperties: true`) on
+// the nested axes/badges objects to avoid a contract break when an axis is added.
+const OwnerConnectionDiagnosticsHealthSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    state: {
+      type: "string",
+      enum: ["blocked", "cooling_off", "degraded", "healthy", "idle", "needs_attention", "unknown"],
+    },
+    reason_code: { type: ["string", "null"] },
+    last_success_at: { type: ["string", "null"] },
+    next_attempt_at: { type: ["string", "null"] },
+    axes: { type: "object", additionalProperties: true },
+    badges: { type: "object", additionalProperties: true },
+  },
+  required: ["state", "reason_code", "last_success_at", "next_attempt_at", "axes", "badges"],
+};
+
+// Owner-agent connection-scoped diagnostics read returned by
+// `GET /v1/owner/connections/{connectionId}/diagnostics`. Connection-scoped by
+// construction: every field describes exactly the one configured connection the
+// `connection_id` addresses — last run status, last successful run, last
+// successful ingest time, current schedule state, freshness, and the typed
+// health classification. It carries NO device-exporter subsystem state and NO
+// sibling-connection state, which is the boundary that lets it ship under the
+// owner-bearer adapter where device-rooted diagnostics cannot. See
+// openspec/changes/add-owner-agent-control-surface.
+const OwnerConnectionDiagnosticsSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    object: { const: "owner_connection_diagnostics" },
+    connection_id: { type: "string" },
+    connector_id: { type: "string" },
+    connector_key: { type: "string" },
+    display_name: { type: ["string", "null"] },
+    health: OwnerConnectionDiagnosticsHealthSchema,
+    last_run: { oneOf: [OwnerConnectionDiagnosticsRunSchema, { type: "null" }] },
+    last_successful_run: { oneOf: [OwnerConnectionDiagnosticsRunSchema, { type: "null" }] },
+    last_ingest_at: { type: ["string", "null"] },
+    schedule: {
+      oneOf: [
+        {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            enabled: { type: "boolean" },
+            interval_seconds: { type: ["integer", "null"] },
+          },
+          required: ["enabled", "interval_seconds"],
+        },
+        { type: "null" },
+      ],
+    },
+    freshness: { type: "object", additionalProperties: true },
+  },
+  required: [
+    "object",
+    "connection_id",
+    "connector_id",
+    "connector_key",
+    "display_name",
+    "health",
+    "last_run",
+    "last_successful_run",
+    "last_ingest_at",
+    "schedule",
+    "freshness",
+  ],
+};
+
 // Owner-agent connection-intent request: a trusted owner agent names the
 // connector type it wants to add a connection for. `connector_id` accepts the
 // canonical key (`amazon`) or a registry URL; the route canonicalizes it. An
@@ -1454,6 +1546,28 @@ export const referenceManifests = [
       202: { schema: RunStartResponseSchema, description: "Accepted" },
       ...CommonErrors,
     },
+  },
+  {
+    id: "ownerInspectConnectionDiagnostics",
+    method: "GET",
+    path: "/v1/owner/connections/{connectionId}/diagnostics",
+    surface: "reference",
+    tags: ["reference", "connections", "owner-agent"],
+    summary:
+      "Owner-agent bearer: read connection-scoped diagnostics for one configured connection, addressed by `connection_id` — last run status, last successful run, last successful ingest time, current schedule state, freshness, and a typed health classification. Connection-scoped by construction: the response describes only the addressed connection and carries no device-exporter subsystem or sibling-connection state. Owner bearers only; client/mcp_package grants SHALL NOT reach this route.",
+    request: { params: ConnectionIdParamSchema },
+    responses: { 200: { schema: OwnerConnectionDiagnosticsSchema }, ...CommonErrors },
+  },
+  {
+    id: "ownerInspectConnectorDiagnostics",
+    method: "GET",
+    path: "/v1/owner/connectors/{connectorId}/diagnostics",
+    surface: "reference",
+    tags: ["reference", "connections", "owner-agent"],
+    summary:
+      "Owner-agent bearer: read connection-scoped diagnostics for a connector addressed by `connector_id`. Auto-selects the only active connection for that connector. When more than one active connection exists the request is rejected with a typed `ambiguous_connection` (409) carrying the available `connection_id` values and `retry_with: connection_id`. Owner bearers only; client/mcp_package grants SHALL NOT reach this route.",
+    request: { params: ConnectorIdParamSchema },
+    responses: { 200: { schema: OwnerConnectionDiagnosticsSchema }, ...CommonErrors },
   },
   {
     id: "refGetConnection",

@@ -22,6 +22,8 @@ Generated from `packages/reference-contract/src/reference/`. Reference-designate
 | **DELETE** | `/v1/owner/connectors/{connectorId}/schedule` | `ownerDeleteConnectorSchedule` | Owner-agent bearer: delete a connector's schedule config addressed by `connector_id`. Auto-selects the only active connection for that connector. When more than one active connection exists the request is rejected with a typed `ambiguous_connection` (409) carrying the available `connection_id` values and `retry_with: connection_id`. Returns 204 on delete and a typed 404 when no schedule existed. Owner bearers only; client/mcp_package grants SHALL NOT reach this route. |
 | **POST** | `/v1/owner/connections/{connectionId}/run` | `ownerRunConnection` | Owner-agent bearer: start a run-now for one configured connection, addressed by `connection_id`. Returns 202 with run_id + trace_id, or 409 run_already_active. Owner bearers only; client/mcp_package grants SHALL NOT reach this route. Shares the controller `runNow` semantics with the cookie-authed `/_ref` run route under a separate owner-bearer auth adapter. |
 | **POST** | `/v1/owner/connectors/{connectorId}/run` | `ownerRunConnector` | Owner-agent bearer: start a run-now for a connector addressed by `connector_id`. Auto-selects the only active connection for that connector. When more than one active connection exists the request is rejected with a typed `ambiguous_connection` (409) carrying the available `connection_id` values and `retry_with: connection_id`. Returns 202 with run_id + trace_id, or 409 run_already_active. Owner bearers only; client/mcp_package grants SHALL NOT reach this route. |
+| **GET** | `/v1/owner/connections/{connectionId}/diagnostics` | `ownerInspectConnectionDiagnostics` | Owner-agent bearer: read connection-scoped diagnostics for one configured connection, addressed by `connection_id` — last run status, last successful run, last successful ingest time, current schedule state, freshness, and a typed health classification. Connection-scoped by construction: the response describes only the addressed connection and carries no device-exporter subsystem or sibling-connection state. Owner bearers only; client/mcp_package grants SHALL NOT reach this route. |
+| **GET** | `/v1/owner/connectors/{connectorId}/diagnostics` | `ownerInspectConnectorDiagnostics` | Owner-agent bearer: read connection-scoped diagnostics for a connector addressed by `connector_id`. Auto-selects the only active connection for that connector. When more than one active connection exists the request is rejected with a typed `ambiguous_connection` (409) carrying the available `connection_id` values and `retry_with: connection_id`. Owner bearers only; client/mcp_package grants SHALL NOT reach this route. |
 | **GET** | `/_ref/connections/{connectorInstanceId}` | `refGetConnection` | Get one owner-facing configured connector connection by connector instance id. |
 | **GET** | `/_ref/connector-instances/{connectorInstanceId}` | `refGetConnectorInstance` | Compatibility alias for reading one configured connector instance behind an owner-facing connection. |
 | **PATCH** | `/_ref/connections/{connectorInstanceId}` | `refSetConnectionDisplayName` | Owner-authenticated mutation of the owner-meaningful `display_name` carried on the public read contract. Operator-only surface; grant-authorized tokens SHALL NOT reach this route. |
@@ -368,6 +370,40 @@ Owner-agent bearer: start a run-now for a connector addressed by `connector_id`.
 ### Responses
 
 - `202` — Accepted
+- `400` — Invalid request
+- `404` — Not found
+- `409` — Conflict (e.g. run_already_active)
+
+## ownerInspectConnectionDiagnostics
+
+`GET /v1/owner/connections/{connectionId}/diagnostics`
+
+Owner-agent bearer: read connection-scoped diagnostics for one configured connection, addressed by `connection_id` — last run status, last successful run, last successful ingest time, current schedule state, freshness, and a typed health classification. Connection-scoped by construction: the response describes only the addressed connection and carries no device-exporter subsystem or sibling-connection state. Owner bearers only; client/mcp_package grants SHALL NOT reach this route.
+
+### Path parameters
+
+- `connectionId` — string
+
+### Responses
+
+- `200` — JSON body
+- `400` — Invalid request
+- `404` — Not found
+- `409` — Conflict (e.g. run_already_active)
+
+## ownerInspectConnectorDiagnostics
+
+`GET /v1/owner/connectors/{connectorId}/diagnostics`
+
+Owner-agent bearer: read connection-scoped diagnostics for a connector addressed by `connector_id`. Auto-selects the only active connection for that connector. When more than one active connection exists the request is rejected with a typed `ambiguous_connection` (409) carrying the available `connection_id` values and `retry_with: connection_id`. Owner bearers only; client/mcp_package grants SHALL NOT reach this route.
+
+### Path parameters
+
+- `connectorId` — string
+
+### Responses
+
+- `200` — JSON body
 - `400` — Invalid request
 - `404` — Not found
 - `409` — Conflict (e.g. run_already_active)

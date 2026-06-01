@@ -200,6 +200,7 @@ import {
   collectRecordsTimelineEntries,
   getConnectorAttentionProjection,
   getConnectorDetail,
+  getOwnerConnectionDiagnostics,
   listConnectorSummaries,
   listPendingApprovals,
 } from './ref-control.ts';
@@ -371,6 +372,7 @@ import { mountRsBlobRead, mountRsReadQueries } from './routes/rs-read.ts';
 import { mountOwnerConnectionRename, mountOwnerConnectionsList } from './routes/owner-connections.ts';
 import { mountOwnerConnectionSchedule } from './routes/owner-connection-schedule.ts';
 import { mountOwnerConnectionRun } from './routes/owner-connection-run.ts';
+import { mountOwnerConnectionDiagnostics } from './routes/owner-connection-diagnostics.ts';
 import { mountOwnerConnectionIntent } from './routes/owner-connection-intent.ts';
 import { mountOwnerConnectorTemplates } from './routes/owner-connector-templates.ts';
 import { mountOwnerControl } from './routes/owner-control.ts';
@@ -3751,6 +3753,41 @@ function buildRsApp(opts = {}) {
     resolveOwnerConnectorNamespace,
     setReferenceTraceId,
     runNow: (connectorId, options) => opts.controller.runNow(connectorId, options),
+  });
+
+  // GET /v1/owner/connections/:connectionId/diagnostics and
+  // GET /v1/owner/connectors/:connectorId/diagnostics are the bearer-authed
+  // owner-agent connection-scoped diagnostics reads: a trusted local owner agent
+  // inspects ONE connection's last run status, last successful ingest time,
+  // current schedule state, freshness, and typed health classification, without a
+  // browser owner session. They share the `getOwnerConnectionDiagnostics`
+  // operation (which reuses `listConnectorSummaries`) under a separate
+  // owner-bearer auth adapter (`requireToken` + `requireOwner`). The read is
+  // connection-scoped by construction — it derives from the single configured
+  // connection matching the resolved `connection_id`, never device-exporter
+  // subsystem or sibling-connection state, which is why it is safe to share where
+  // the device-rooted `GET /_ref/device-exporters/diagnostics` is not. The
+  // connector-only route auto-selects the single active connection or rejects with
+  // a typed `ambiguous_connection` (409); `/mcp` owner-bearer rejection is
+  // untouched. See openspec/changes/add-owner-agent-control-surface (tasks 6.1d,
+  // design "Deferred: connection-scoped diagnostics").
+  mountOwnerConnectionDiagnostics(app, {
+    AmbiguousConnectionError,
+    canonicalConnectorKey,
+    createTraceContext,
+    emitSpineEvent,
+    ensureRequestId,
+    getOwnerConnectionDiagnostics: (connectorInstanceId) =>
+      getOwnerConnectionDiagnostics(connectorInstanceId, opts.controller),
+    getOwnerTokenSubjectId,
+    handleError,
+    listActiveBindingsForGrant,
+    pdppError,
+    projectBindingForWire,
+    requireOwner,
+    requireToken,
+    resolveOwnerConnectorNamespace,
+    setReferenceTraceId,
   });
 
   // POST /v1/owner/connections/intents is the bearer-authed owner-agent

@@ -2197,6 +2197,133 @@ export async function getConnectorDetail(
   };
 }
 
+// ─── Connection-scoped diagnostics ───────────────────────────────────────────
+//
+// `getOwnerConnectionDiagnostics` is the single, connection-scoped diagnostics
+// read shared by the browser owner-session surface and the owner-agent bearer
+// REST surface (`GET /v1/owner/connections/:connectionId/diagnostics`). It is
+// the connection-scoped primitive the owner-agent control design requires for
+// `inspect_diagnostics` (design.md "Deferred: connection-scoped diagnostics
+// needs a per-connection health primitive" / "Connection-scoped vs owner-wide
+// boundary").
+//
+// It is correct-by-construction connection-scoped: it derives entirely from the
+// ONE `ConnectorSummary` whose `connector_instance_id` matches the addressed
+// `connection_id`. `listConnectorSummaries` already projects per-configured-
+// connection rows that carry no sibling-connection or device-exporter-subsystem
+// state, so selecting one row cannot leak another connection's diagnostics. This
+// is the structural distinction from `GET /_ref/device-exporters/diagnostics`,
+// which is device-rooted (every device, every source-instance for the owner) and
+// therefore over-broad for a `connection_id`-addressed read.
+//
+// The response carries the last run status, last successful run, last successful
+// ingest time, current schedule state, freshness, and the typed connection
+// health classification (the canonical `ConnectionHealthState` taxonomy the
+// connector-health-surface research captured) — all for exactly one binding.
+// Returns `null` when no configured connection matches the id, so the caller can
+// map a miss to a typed 404 instead of fabricating an empty diagnostic.
+
+export interface OwnerConnectionDiagnosticsRun {
+  readonly failure_reason: string | null;
+  readonly finished_at: string | null;
+  readonly run_id: string | null;
+  readonly started_at: string | null;
+  readonly status: string;
+}
+
+export interface OwnerConnectionDiagnosticsHealth {
+  readonly axes: ConnectionHealthSnapshot["axes"];
+  readonly badges: ConnectionHealthSnapshot["badges"];
+  readonly last_success_at: string | null;
+  readonly next_attempt_at: string | null;
+  readonly reason_code: string | null;
+  readonly state: ConnectionHealthSnapshot["state"];
+}
+
+export interface OwnerConnectionDiagnostics {
+  readonly connection_id: string;
+  readonly connector_id: string;
+  readonly connector_key: string;
+  readonly display_name: string | null;
+  readonly freshness: Freshness;
+  readonly health: OwnerConnectionDiagnosticsHealth;
+  readonly last_ingest_at: string | null;
+  readonly last_run: OwnerConnectionDiagnosticsRun | null;
+  readonly last_successful_run: OwnerConnectionDiagnosticsRun | null;
+  readonly object: "owner_connection_diagnostics";
+  readonly schedule: { readonly enabled: boolean; readonly interval_seconds: number | null } | null;
+}
+
+// Projects a `ConnectorRunSummary` to the diagnostics-facing run shape. Only the
+// non-secret status/timing/run-id fields are surfaced; gap arrays and event
+// counts stay in the richer summary surface.
+function projectDiagnosticsRun(run: ConnectorRunSummary | null): OwnerConnectionDiagnosticsRun | null {
+  if (!run) {
+    return null;
+  }
+  return {
+    run_id: run.run_id ?? null,
+    status: run.status,
+    started_at: run.started_at ?? null,
+    finished_at: run.finished_at ?? null,
+    failure_reason: run.failure_reason ?? null,
+  };
+}
+
+// Narrows the opaque schedule projection to the connection-scoped enabled +
+// interval state. The full schedule object carries more (jitter, timestamps),
+// but the diagnostics read only needs whether the schedule is paused and its
+// cadence, which is what the typed health classification already consumes.
+function projectDiagnosticsSchedule(schedule: unknown): { enabled: boolean; interval_seconds: number | null } | null {
+  if (!schedule || typeof schedule !== "object") {
+    return null;
+  }
+  const row = schedule as { enabled?: unknown; interval_seconds?: unknown };
+  if (typeof row.enabled !== "boolean") {
+    return null;
+  }
+  return {
+    enabled: row.enabled,
+    interval_seconds: typeof row.interval_seconds === "number" ? row.interval_seconds : null,
+  };
+}
+
+export async function getOwnerConnectionDiagnostics(
+  connectorInstanceId: string,
+  controller?: ControllerLike | null
+): Promise<OwnerConnectionDiagnostics | null> {
+  const summaries = await listConnectorSummaries(controller);
+  const summary = summaries.find((row) => row.connector_instance_id === connectorInstanceId);
+  if (!summary) {
+    return null;
+  }
+  const health = summary.connection_health;
+  return {
+    object: "owner_connection_diagnostics",
+    connection_id: summary.connection_id,
+    connector_id: summary.connector_id,
+    connector_key: summary.connector_id,
+    display_name: summary.display_name ?? null,
+    health: {
+      state: health.state,
+      reason_code: health.reason_code,
+      last_success_at: health.last_success_at,
+      next_attempt_at: health.next_attempt_at,
+      axes: health.axes,
+      badges: health.badges,
+    },
+    last_run: projectDiagnosticsRun(summary.last_run),
+    last_successful_run: projectDiagnosticsRun(summary.last_successful_run),
+    // Last successful ingest time for push-mode (local-device) connections.
+    // `null` for scheduler-managed connections with no device heartbeat, which
+    // is the honest "no ingest evidence on this connection" state — never a
+    // sibling connection's ingest time.
+    last_ingest_at: summary.local_device_progress?.last_ingest_at ?? null,
+    schedule: projectDiagnosticsSchedule(summary.schedule),
+    freshness: summary.freshness,
+  };
+}
+
 function buildConsentApproval(row: PendingConsentRow): ConsentApproval | null {
   // approval_id is populated for every row created after the
   // device-code-exposure fix. Pre-existing rows from an older DB schema

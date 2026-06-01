@@ -220,6 +220,18 @@ test('control document marks supported families with method + absolute URL', asy
     assert.equal(runConnection.method, 'POST');
     assert.equal(runConnection.url, `${rsUrl}/v1/owner/connections/{connection_id}/run`);
     assert.match(runConnection.reason, /connector_id/);
+
+    // Connection-scoped diagnostics is served over the owner-agent bearer surface
+    // as of the diagnostics slice (task 6.1d / design "Deferred: connection-scoped
+    // diagnostics"). It is templated by connection_id; the representative URL is
+    // the connection-scoped route and the reason names the typed health states
+    // and the connector-only addressing.
+    const inspectDiagnostics = actionByFamily(body, 'inspect_diagnostics');
+    assert.ok(inspectDiagnostics, 'inspect_diagnostics must be listed');
+    assert.equal(inspectDiagnostics.status, 'supported');
+    assert.equal(inspectDiagnostics.method, 'GET');
+    assert.equal(inspectDiagnostics.url, `${rsUrl}/v1/owner/connections/{connection_id}/diagnostics`);
+    assert.match(inspectDiagnostics.reason, /health/);
   });
 });
 
@@ -237,7 +249,6 @@ test('control document names unsupported/owner-mediated families instead of omit
     // served over the owner-agent bearer surface (tasks 4.4, 2.3/5.x, 6.1-6.3)
     // and are asserted as `supported` in the "supported families" test above.
     for (const family of [
-      'inspect_diagnostics',
       'delete_connection',
       'revoke_connection',
     ]) {

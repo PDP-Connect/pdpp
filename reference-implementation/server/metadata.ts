@@ -567,14 +567,26 @@ const OWNER_AGENT_CONTROL_ACTION_CATALOG: readonly OwnerAgentControlActionDescri
     reason:
       "Pause, resume, or delete a connection's schedule by connection_id. POST this URL to pause; POST the sibling `/v1/owner/connections/{connection_id}/schedule/resume` to resume; DELETE `/v1/owner/connections/{connection_id}/schedule` to delete the schedule config (204 on delete, typed 404 when none existed). Use a connection_id from list_connections. Schedule create/replace remains owner-session only.",
   },
+  // Supported in this build: a trusted owner agent reads connection-scoped
+  // diagnostics for one connection by connection_id. The representative URL is
+  // the connection-scoped route; connector-only addressing
+  // (`GET /v1/owner/connectors/{connector_id}/diagnostics`) auto-selects a single
+  // active connection or returns a typed `ambiguous_connection`. The read is
+  // connection-scoped by construction (it derives from the single configured
+  // connection's summary, never device-exporter subsystem or sibling-connection
+  // state), which is why it ships where the device-rooted
+  // `GET /_ref/device-exporters/diagnostics` cannot be shared under an
+  // owner-bearer adapter.
   {
     family: "inspect_diagnostics",
     scope: "instance",
-    status: "unsupported",
-    method: null,
-    urlTemplate: null,
+    status: "supported",
+    method: "GET",
+    // Templated path: the surface catalog carries the literal `{connection_id}`
+    // placeholder; the per-connection projection substitutes the concrete id.
+    urlTemplate: (rs) => `${rs}/v1/owner/connections/{connection_id}/diagnostics`,
     reason:
-      "Per-connection diagnostics is not implemented as an owner-agent control route in this build. Device-exporter diagnostics remain on the browser owner-session surface.",
+      "Read connection-scoped diagnostics for a connection by connection_id: last run status, last successful ingest time, current schedule state, freshness, and a typed health classification (healthy/degraded/blocked/cooling_off/idle/needs_attention/unknown). GET this URL. Use a connection_id from list_connections. Connector-only addressing (`GET /v1/owner/connectors/{connector_id}/diagnostics`) auto-selects a single active connection or returns a typed ambiguous_connection. The response describes only the addressed connection and never device-exporter subsystem or sibling-connection state.",
   },
   {
     family: "delete_connection",

@@ -229,10 +229,20 @@ test('owner-agent bearer lists a configured connection with full identity + owne
       runConnection.url,
     );
     assert.ok(!runConnection.url.includes('{connection_id}'), 'placeholder must be resolved');
+    // inspect_diagnostics is supported and instance-scoped: the per-connection
+    // URL resolves to this connection's diagnostics route.
+    const inspectDiagnostics = byFamily.get('inspect_diagnostics');
+    assert.ok(inspectDiagnostics, 'inspect_diagnostics action must be advertised');
+    assert.equal(inspectDiagnostics.status, 'supported');
+    assert.equal(inspectDiagnostics.method, 'GET');
+    assert.ok(
+      inspectDiagnostics.url.endsWith('/v1/owner/connections/cin_amazon_personal/diagnostics'),
+      inspectDiagnostics.url,
+    );
+    assert.ok(!inspectDiagnostics.url.includes('{connection_id}'), 'placeholder must be resolved');
     // Not-yet-exposed instance families are named with a typed status, not omitted.
     assert.equal(byFamily.get('delete_connection')?.status, 'unsupported');
     assert.equal(byFamily.get('revoke_connection')?.status, 'unsupported');
-    assert.equal(byFamily.get('inspect_diagnostics')?.status, 'unsupported');
   });
 });
 
