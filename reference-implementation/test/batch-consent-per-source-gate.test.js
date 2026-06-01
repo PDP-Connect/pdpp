@@ -78,6 +78,11 @@ async function par(asUrl, authorizationDetails) {
   return { status: resp.status, body: await resp.json().catch(() => null) };
 }
 
+async function consentPage(asUrl, requestUri) {
+  const resp = await fetch(`${asUrl}/consent?request_uri=${encodeURIComponent(requestUri)}`);
+  return { status: resp.status, html: await resp.text() };
+}
+
 async function approve(asUrl, body) {
   const resp = await fetch(`${asUrl}/consent/approve`, {
     method: 'POST',
@@ -238,5 +243,52 @@ test('batch consent gate: staged batch remains source-bounded in storage', async
     const stored = JSON.parse(row.params_json);
     assert.equal(stored.request_kind, 'pdpp_selection_request_batch');
     assert.deepEqual(stored.entries.map((entry) => entry.source_binding.id), ['spotify', 'reddit']);
+  });
+});
+
+test('batch consent gate: a request at the warning threshold surfaces the broad-setup warning', async () => {
+  await withHarness(async ({ asUrl, spotify }) => {
+    // Soft cap is 8, warning threshold is 6. Six entries warns but does not exceed the cap.
+    const entries = Array.from({ length: 6 }, () =>
+      detail({ kind: 'connector', id: spotify.connector_id }, [{ name: 'top_artists' }]));
+    const { status, body } = await par(asUrl, entries);
+    assert.equal(status, 201);
+
+    const { status: pageStatus, html } = await consentPage(asUrl, body.request_uri);
+    assert.equal(pageStatus, 200);
+    assert.match(html, /Broad setup/);
+    assert.match(html, /reference warning threshold/);
+    // At the warning threshold but not over the cap: no over-cap flag.
+    assert.doesNotMatch(html, /Over the soft cap/);
+  });
+});
+
+test('batch consent gate: over-soft-cap requests are flagged with affected sources, never silently dropped', async () => {
+  await withHarness(async ({ asUrl, spotify, reddit }) => {
+    // Nine entries exceeds the soft cap of 8. The first eight are spotify; the
+    // ninth is reddit — the over-cap source that must be named.
+    const entries = [
+      ...Array.from({ length: 8 }, () =>
+        detail({ kind: 'connector', id: spotify.connector_id }, [{ name: 'top_artists' }])),
+      detail({ kind: 'connector', id: reddit.connector_id }, [{ name: 'posts' }]),
+    ];
+    const { status, body } = await par(asUrl, entries);
+    // Soft cap is not a hard cap: the request is accepted, not rejected.
+    assert.equal(status, 201);
+
+    // All nine sources are persisted — nothing is silently truncated.
+    const deviceCode = parsePendingConsentRequestUri(body.request_uri);
+    const row = getDb().prepare('SELECT params_json FROM pending_consents WHERE device_code = ?').get(deviceCode);
+    const stored = JSON.parse(row.params_json);
+    assert.equal(stored.entries.length, 9);
+    assert.equal(stored.over_soft_cap, true);
+    assert.deepEqual(stored.over_cap_sources.map((source) => source.id), ['reddit']);
+
+    // The ceremony flags the over-cap condition and names the affected source.
+    const { status: pageStatus, html } = await consentPage(asUrl, body.request_uri);
+    assert.equal(pageStatus, 200);
+    assert.match(html, /Over the soft cap/);
+    assert.match(html, /above the reference soft cap of 8/);
+    assert.match(html, /reddit/);
   });
 });

@@ -625,6 +625,16 @@ function normalizeStagedGrantRequestBatch(input, opts = {}) {
   const clientId = requireStagedRequestEnvelope(input);
   const entries = input.authorization_details.map((detail, index) => normalizeAuthorizationDetail(detail, index, opts));
   const entryCount = entries.length;
+  const overSoftCap = entryCount > BATCH_CONSENT_STAGED_ENTRY_SOFT_CAP;
+  // The soft cap is a reference-contract policy constant, not a hard limit
+  // (design.md rejects a hard cap). Over-cap requests are accepted but
+  // flagged — never silently truncated — and the over-cap sources are named
+  // so the owner sees exactly which sources push past the cap.
+  const overCapSources = overSoftCap
+    ? entries
+        .slice(BATCH_CONSENT_STAGED_ENTRY_SOFT_CAP)
+        .map((entry) => describeSourceBinding(entry.source_binding))
+    : [];
   return {
     request_kind: 'pdpp_selection_request_batch',
     request_version: 'reference.v1',
@@ -637,6 +647,8 @@ function normalizeStagedGrantRequestBatch(input, opts = {}) {
     soft_cap: BATCH_CONSENT_STAGED_ENTRY_SOFT_CAP,
     warning_threshold: BATCH_CONSENT_STAGED_ENTRY_WARNING_THRESHOLD,
     soft_cap_warning: entryCount >= BATCH_CONSENT_STAGED_ENTRY_WARNING_THRESHOLD,
+    over_soft_cap: overSoftCap,
+    over_cap_sources: overCapSources,
   };
 }
 
@@ -2842,6 +2854,8 @@ async function initiateStagedGrantBatch(input, opts = {}) {
         staged: true,
         entry_count: batch.entry_count,
         soft_cap_warning: batch.soft_cap_warning,
+        over_soft_cap: batch.over_soft_cap,
+        over_cap_sources: batch.over_cap_sources,
         sources: batch.entries.map((entry) => describeSourceBinding(entry.source_binding)),
       },
     });
@@ -2972,6 +2986,9 @@ async function getPendingConsentBatch(request, row) {
       cumulativeRisk: summarizeBatchCumulativeRisk(cards),
       approveAllGate: evaluateBatchApproveAllGate(cards),
       softCapWarning: Boolean(request.soft_cap_warning),
+      overSoftCap: Boolean(request.over_soft_cap),
+      overCapSources: Array.isArray(request.over_cap_sources) ? request.over_cap_sources : [],
+      softCap: request.soft_cap ?? BATCH_CONSENT_STAGED_ENTRY_SOFT_CAP,
     };
   } catch (err) {
     await emitPendingConsentRejected(

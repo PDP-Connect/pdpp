@@ -521,7 +521,10 @@ export interface PendingGrant {
   cards?: PendingConsentCard[];
   cumulativeRisk?: PendingConsentCumulativeRisk | null;
   manifestStreamNames?: string[] | null;
+  overCapSources?: Array<{ id?: string | null; kind?: string | null } | null> | null;
+  overSoftCap?: boolean;
   request: PendingGrantRequest;
+  softCap?: number;
   softCapWarning?: boolean;
   userCode?: string | null;
 }
@@ -711,6 +714,18 @@ function renderBatchConsentHtml(
   const broadWarning = pending.softCapWarning
     ? `<div class="hosted-ui-warning" role="note"><span class="hosted-ui-warning-title">Broad setup</span><span class="hosted-ui-warning-body">This request is at or above the reference warning threshold.</span></div>`
     : "";
+  const overCapSourceLabels = Array.isArray(pending.overCapSources)
+    ? pending.overCapSources.map((source) => source?.id || "unnamed source")
+    : [];
+  const overCapWarning = pending.overSoftCap
+    ? `<div class="hosted-ui-warning" role="note"><span class="hosted-ui-warning-title">Over the soft cap</span><span class="hosted-ui-warning-body">${ui.escapeHtml(
+        `This request stages ${cards.length} sources, above the reference soft cap of ${
+          pending.softCap ?? cards.length
+        }. No sources were dropped; review the over-cap sources individually: ${
+          overCapSourceLabels.length > 0 ? overCapSourceLabels.join(", ") : "unnamed sources"
+        }.`
+      )}</span></div>`
+    : "";
   const denyForm = ui.renderActionRow([
     {
       label: "Deny",
@@ -735,6 +750,7 @@ function renderBatchConsentHtml(
       title: `${clientName} wants access to several sources`,
       lede: "Review each source. Your server will only issue grants for sources you confirm.",
     }),
+    overCapWarning,
     broadWarning,
     buildBatchRiskHeader(pending.cumulativeRisk, ui),
     buildBatchSourceCards(cards, ui),
