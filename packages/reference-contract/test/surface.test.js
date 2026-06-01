@@ -79,6 +79,10 @@ test('request validators accept the shipped public flow shapes', () => {
 });
 
 test('PAR contract advertises batch consent caps as advisory metadata, not hard maxItems', () => {
+  assert.equal(BATCH_CONSENT_STAGED_ENTRY_SOFT_CAP, 8);
+  assert.equal(BATCH_CONSENT_STAGED_ENTRY_WARNING_THRESHOLD, 6);
+  assert.ok(BATCH_CONSENT_STAGED_ENTRY_WARNING_THRESHOLD < BATCH_CONSENT_STAGED_ENTRY_SOFT_CAP);
+
   const entries = Array.from({ length: BATCH_CONSENT_STAGED_ENTRY_SOFT_CAP + 1 }, (_, index) => ({
     type: 'https://pdpp.org/data-access',
     source: { kind: 'connector', id: `source_${index + 1}` },
