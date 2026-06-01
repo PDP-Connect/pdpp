@@ -2160,7 +2160,8 @@
                   "authorization_details": {
                     "type": "array",
                     "minItems": 1,
-                    "maxItems": 8,
+                    "x-pdpp-soft-cap": 8,
+                    "x-pdpp-warning-threshold": 6,
                     "items": {
                       "type": "object",
                       "additionalProperties": false,

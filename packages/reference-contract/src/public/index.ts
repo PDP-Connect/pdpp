@@ -829,7 +829,8 @@ const GrantInitiationRequestSchema = {
     authorization_details: {
       type: "array",
       minItems: 1,
-      maxItems: BATCH_CONSENT_STAGED_ENTRY_SOFT_CAP,
+      "x-pdpp-soft-cap": BATCH_CONSENT_STAGED_ENTRY_SOFT_CAP,
+      "x-pdpp-warning-threshold": BATCH_CONSENT_STAGED_ENTRY_WARNING_THRESHOLD,
       items: AuthorizationDetailSchema,
     },
   },
@@ -1736,10 +1737,7 @@ export const publicManifests = [
               ],
             },
             confirm_approve_all: {
-              oneOf: [
-                { type: "boolean" },
-                { type: "string", enum: ["true", "1", "on"] },
-              ],
+              oneOf: [{ type: "boolean" }, { type: "string", enum: ["true", "1", "on"] }],
             },
           },
           required: ["request_uri"],

@@ -15,7 +15,7 @@ These tasks describe the later implementation lane. They are intentionally small
 - [x] 2.1.1 Replace the reference-contract `authorization_details.maxItems = 1` constraint with a soft cap policy constant (default 8) plus a warning-threshold constant (default 6), each carrying exactly one source binding. Regenerate the public reference contract schema.
   - Acceptance: `pnpm --filter @pdpp/reference-contract run verify` and `run check:generated` pass; the generated schema advertises the soft cap, not `maxItems = 1`; a staged request with two source-bounded entries is accepted by the contract validator.
   - Tests: reference-contract generation tests pin the soft-cap and warning-threshold constants.
-  - Landed: `packages/reference-contract/src/public/index.ts:32-33` (`BATCH_CONSENT_STAGED_ENTRY_SOFT_CAP = 8`, `..._WARNING_THRESHOLD = 6`); applied at `:832` (`maxItems: BATCH_CONSENT_STAGED_ENTRY_SOFT_CAP`).
+  - Landed: `packages/reference-contract/src/public/index.ts:32-33` (`BATCH_CONSENT_STAGED_ENTRY_SOFT_CAP = 8`, `..._WARNING_THRESHOLD = 6`); applied to the PAR `authorization_details` schema as advisory `x-pdpp-soft-cap` / `x-pdpp-warning-threshold` metadata with no `maxItems` hard cap. `packages/reference-contract/test/surface.test.js` validates a request above the soft cap and pins the generated OpenAPI metadata.
 
 ### 2.2 PAR / staged-request acceptance
 

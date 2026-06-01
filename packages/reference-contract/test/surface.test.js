@@ -4,7 +4,11 @@ import assert from 'node:assert/strict';
 import { listOperations, validateRequest, validateResponse } from '../src/index.ts';
 import { generateDocs } from '../src/docs/generate.js';
 import { generateOpenApi } from '../src/openapi/index.js';
-import { publicManifests } from '../src/public/index.ts';
+import {
+  BATCH_CONSENT_STAGED_ENTRY_SOFT_CAP,
+  BATCH_CONSENT_STAGED_ENTRY_WARNING_THRESHOLD,
+  publicManifests,
+} from '../src/public/index.ts';
 
 test('public manifests cover metadata, auth, grant, and record surfaces', () => {
   const ids = new Set(publicManifests.map((manifest) => manifest.id));
@@ -72,6 +76,31 @@ test('request validators accept the shipped public flow shapes', () => {
   });
   assert.equal(introspectionRequest.ok, false);
   assert.ok(introspectionRequest.errors.some((error) => error.where === 'body'));
+});
+
+test('PAR contract advertises batch consent caps as advisory metadata, not hard maxItems', () => {
+  const entries = Array.from({ length: BATCH_CONSENT_STAGED_ENTRY_SOFT_CAP + 1 }, (_, index) => ({
+    type: 'https://pdpp.org/data-access',
+    source: { kind: 'connector', id: `source_${index + 1}` },
+    purpose_code: 'https://pdpp.org/purpose/personalization',
+    access_mode: 'continuous',
+    streams: [{ name: 'items', view: 'basic' }],
+  }));
+  const result = validateRequest('createPushedAuthorizationRequest', {
+    body: {
+      client_id: 'longview',
+      authorization_details: entries,
+    },
+  });
+  assert.deepEqual(result, { ok: true });
+
+  const publicDocument = generateOpenApi({ includeReference: false });
+  const schema =
+    publicDocument.paths['/oauth/par'].post.requestBody.content['application/json'].schema.properties
+      .authorization_details;
+  assert.equal(schema.maxItems, undefined);
+  assert.equal(schema['x-pdpp-soft-cap'], BATCH_CONSENT_STAGED_ENTRY_SOFT_CAP);
+  assert.equal(schema['x-pdpp-warning-threshold'], BATCH_CONSENT_STAGED_ENTRY_WARNING_THRESHOLD);
 });
 
 test('listRecords response validator accepts runtime warning parameters', () => {
