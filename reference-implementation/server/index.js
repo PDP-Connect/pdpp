@@ -3641,11 +3641,15 @@ function buildRsApp(opts = {}) {
     pdppError,
     handleError,
     canonicalConnectorKey,
+    createTraceContext,
     createRequestConnectorInstanceStore,
+    emitSpineEvent,
+    ensureRequestId,
     getOwnerTokenSubjectId,
     listSchedules: async () => (opts.controller ? await opts.controller.listSchedules() : []),
     projectStorageDisplayName,
     resolveSingleConnectorIdQueryValue,
+    setReferenceTraceId,
   };
   mountOwnerConnectionsList(app, ownerConnectionsContext);
 

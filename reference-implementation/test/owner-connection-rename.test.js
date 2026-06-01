@@ -29,6 +29,7 @@ import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import { listSpineEventsPage } from '../lib/spine.ts';
 import { startServer } from '../server/index.js';
 import { createSqliteConnectorInstanceStore } from '../server/stores/connector-instance-store.js';
 import { canonicalConnectorKey } from '../server/connector-key.js';
@@ -168,6 +169,19 @@ async function renameConnection(rsUrl, ownerToken, connectionId, body) {
   });
 }
 
+function findRenameAuditEvent(resp) {
+  const traceId = resp.headers.get('PDPP-Reference-Trace-Id');
+  assert.ok(traceId?.startsWith('trc_'), 'rename response should carry an audit trace id');
+  const page = listSpineEventsPage('trace', traceId, { limit: 20 });
+  const event = page.events.find((entry) => entry.event_type === 'owner_agent.connection.rename');
+  assert.ok(event, 'expected owner-agent rename audit event');
+  assert.equal(event.request_id, resp.headers.get('Request-Id'));
+  assert.equal(event.token_id, null, 'audit event must not store bearer tokens');
+  assert.equal(event.data?.display_name, undefined, 'audit event must not store raw display_name values');
+  assert.equal(typeof event.data?.display_name_supplied, 'boolean');
+  return event;
+}
+
 test('owner-agent bearer renames a connection and the listing reflects the new label', async () => {
   await withServer(async ({ asUrl, rsUrl }) => {
     const manifest = await registerConnector(asUrl, loadManifest('amazon'));
@@ -190,7 +204,7 @@ test('owner-agent bearer renames a connection and the listing reflects the new l
     assert.equal(beforeRow.label_status, 'fallback');
 
     // Rename.
-    const { status, body } = await renameConnection(rsUrl, ownerToken, 'cin_amazon_personal', {
+    const { status, body, resp } = await renameConnection(rsUrl, ownerToken, 'cin_amazon_personal', {
       display_name: 'the owner personal',
     });
     assert.equal(status, 200);
@@ -201,6 +215,21 @@ test('owner-agent bearer renames a connection and the listing reflects the new l
     assert.equal(body.connector_id, connectorKey);
     assert.equal(body.display_name, 'the owner personal');
     assert.equal(body.label_status, 'owner_set');
+
+    const audit = findRenameAuditEvent(resp);
+    assert.equal(audit.actor_type, 'owner_agent');
+    assert.equal(audit.actor_id, 'cli_longview');
+    assert.equal(audit.client_id, 'cli_longview');
+    assert.equal(audit.subject_id, OWNER_SUBJECT_ID);
+    assert.equal(audit.object_type, 'connection');
+    assert.equal(audit.object_id, 'cin_amazon_personal');
+    assert.equal(audit.status, 'succeeded');
+    assert.equal(audit.data?.actor_kind, 'owner_agent');
+    assert.equal(audit.data?.auth_token_kind, 'owner');
+    assert.equal(audit.data?.operation, 'rename_connection');
+    assert.equal(audit.data?.connector_key, connectorKey);
+    assert.equal(audit.data?.display_name_supplied, true);
+    assert.equal(audit.data?.label_status, 'owner_set');
 
     // Follow-up listing reflects the new label with owner_set status.
     const after = await fetchJson(`${rsUrl}/v1/owner/connections`, {
@@ -276,10 +305,16 @@ test('owner-agent rename rejects a missing display_name with a typed 400', async
       sourceBindingKey: 'the owner@example.com',
     });
     const ownerToken = await issueOwnerToken(asUrl);
-    const { status, body } = await renameConnection(rsUrl, ownerToken, 'cin_amazon_personal', {});
+    const { status, body, resp } = await renameConnection(rsUrl, ownerToken, 'cin_amazon_personal', {});
     assert.equal(status, 400);
     assert.equal(body?.error?.code, 'invalid_request');
     assert.equal(body?.error?.param, 'display_name');
+    const audit = findRenameAuditEvent(resp);
+    assert.equal(audit.status, 'failed');
+    assert.equal(audit.data?.actor_kind, 'owner_agent');
+    assert.equal(audit.data?.display_name_supplied, false);
+    assert.equal(audit.data?.error?.code, 'invalid_request');
+    assert.equal(audit.data?.error?.http_status, 400);
   });
 });
 
@@ -370,11 +405,19 @@ test('owner-agent rename rejects a client grant token with 403', async () => {
     const streamName = manifest.streams[0].name;
     const clientToken = await approveClientGrant(asUrl, connectorKey, streamName);
 
-    const { status, body } = await renameConnection(rsUrl, clientToken, 'cin_amazon_personal', {
+    const { status, body, resp } = await renameConnection(rsUrl, clientToken, 'cin_amazon_personal', {
       display_name: 'the owner personal',
     });
     assert.equal(status, 403);
     assert.equal(body?.error?.code, 'permission_error');
+    const audit = findRenameAuditEvent(resp);
+    assert.equal(audit.status, 'failed');
+    assert.equal(audit.actor_type, 'client');
+    assert.equal(audit.client_id, 'longview');
+    assert.equal(audit.data?.actor_kind, 'client');
+    assert.equal(audit.data?.auth_token_kind, 'client');
+    assert.equal(audit.data?.display_name_supplied, true);
+    assert.equal(audit.data?.error?.code, 'permission_error');
   });
 });
 

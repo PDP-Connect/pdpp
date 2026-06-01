@@ -34,15 +34,24 @@ interface RouteRequest {
   readonly body?: unknown;
   readonly params: Readonly<Record<string, string>>;
   readonly query: Readonly<Record<string, unknown>>;
-  readonly tokenInfo?: { readonly subject_id?: string | null } | null;
+  readonly tokenInfo?: {
+    readonly client_id?: string | null;
+    readonly client_name?: string | null;
+    readonly pdpp_token_kind?: string | null;
+    readonly scenario_id?: string | null;
+    readonly subject_id?: string | null;
+  } | null;
 }
 
 interface RouteResponse {
+  getHeader(name: string): string | number | string[] | undefined;
   json(body: unknown): unknown;
+  setHeader(name: string, value: string): void;
   status(code: number): RouteResponse;
 }
 
 type RouteHandler = (req: RouteRequest, res: RouteResponse) => unknown | Promise<unknown>;
+type NextFn = () => unknown | Promise<unknown>;
 
 interface AppLike {
   get(path: string, ...args: RouteArg<RouteHandler>[]): AppLike;
@@ -76,9 +85,18 @@ interface ConnectorInstanceStore {
   ): Promise<ConnectorInstanceRow>;
 }
 
+interface TraceContext {
+  readonly request_id: string;
+  readonly scenario_id: string;
+  readonly trace_id: string;
+}
+
 export interface MountOwnerConnectionsContext {
   canonicalConnectorKey(value: string | null | undefined): string | null;
+  createTraceContext(input?: { scenarioId?: string }): TraceContext;
   createRequestConnectorInstanceStore(): ConnectorInstanceStore;
+  emitSpineEvent(event: Record<string, unknown>): Promise<unknown>;
+  ensureRequestId(res: RouteResponse): string;
   getOwnerTokenSubjectId(req: unknown): string;
   handleError(res: unknown, err: unknown): void;
   listSchedules(): Promise<ScheduleRow[]> | ScheduleRow[];
@@ -98,6 +116,7 @@ export interface MountOwnerConnectionsContext {
   requireOwner: MiddlewareHandler;
   requireToken: MiddlewareHandler;
   resolveSingleConnectorIdQueryValue(raw: unknown): string | null;
+  setReferenceTraceId(res: RouteResponse, traceId: string): void;
 }
 
 // Owner-agent projection of a connector instance. Standardizes on
@@ -150,6 +169,126 @@ function connectorIdMatchesFilter(
     return true;
   }
   return (ctx.canonicalConnectorKey(instance.connectorId) ?? instance.connectorId) === connectorId;
+}
+
+function httpStatusForAuditError(err: unknown): number {
+  const code = (err as { code?: unknown })?.code;
+  if (code === "invalid_request") {
+    return 400;
+  }
+  if (code === "authentication_error") {
+    return 401;
+  }
+  if (code === "permission_error") {
+    return 403;
+  }
+  if (code === "connector_instance_not_found") {
+    return 404;
+  }
+  return 500;
+}
+
+function buildAuditTrace(ctx: MountOwnerConnectionsContext, req: RouteRequest, res: RouteResponse): TraceContext {
+  const scenarioId = typeof req.tokenInfo?.scenario_id === "string" ? req.tokenInfo.scenario_id : undefined;
+  const trace = scenarioId ? ctx.createTraceContext({ scenarioId }) : ctx.createTraceContext();
+  const requestId = ctx.ensureRequestId(res);
+  ctx.setReferenceTraceId(res, trace.trace_id);
+  return {
+    request_id: requestId,
+    scenario_id: trace.scenario_id,
+    trace_id: trace.trace_id,
+  };
+}
+
+function auditActorKind(req: RouteRequest): "owner_agent" | "client" | "mcp_package" | "unknown" {
+  const kind = req.tokenInfo?.pdpp_token_kind;
+  if (kind === "owner") {
+    return "owner_agent";
+  }
+  if (kind === "client" || kind === "mcp_package") {
+    return kind;
+  }
+  return "unknown";
+}
+
+async function emitOwnerConnectionRenameAudit(
+  ctx: MountOwnerConnectionsContext,
+  req: RouteRequest,
+  res: RouteResponse,
+  args: {
+    connectionId: string;
+    connectorKey?: string | null;
+    displayNameSupplied?: boolean;
+    error?: unknown;
+    labelStatus?: string | null;
+    ownerSubjectId?: string | null;
+    outcome: "succeeded" | "failed";
+  }
+): Promise<void> {
+  const trace = buildAuditTrace(ctx, req, res);
+  const clientId = typeof req.tokenInfo?.client_id === "string" ? req.tokenInfo.client_id : null;
+  const clientName = typeof req.tokenInfo?.client_name === "string" ? req.tokenInfo.client_name : null;
+  const actorKind = auditActorKind(req);
+  const ownerSubjectId =
+    args.ownerSubjectId ?? (typeof req.tokenInfo?.subject_id === "string" ? req.tokenInfo.subject_id : null);
+  const code = (args.error as { code?: unknown } | null)?.code;
+  await ctx.emitSpineEvent({
+    event_type: "owner_agent.connection.rename",
+    trace_id: trace.trace_id,
+    scenario_id: trace.scenario_id,
+    request_id: trace.request_id,
+    actor_type: actorKind,
+    actor_id: clientId ?? ownerSubjectId ?? actorKind,
+    subject_type: "subject",
+    subject_id: ownerSubjectId,
+    client_id: clientId,
+    object_type: "connection",
+    object_id: args.connectionId || "unknown_connection",
+    status: args.outcome,
+    data: {
+      auth_token_kind: req.tokenInfo?.pdpp_token_kind ?? null,
+      actor_kind: actorKind,
+      client_id: clientId,
+      client_name: clientName,
+      connection_id: args.connectionId,
+      connector_key: args.connectorKey ?? null,
+      display_name_supplied: args.displayNameSupplied ?? true,
+      label_status: args.labelStatus ?? null,
+      operation: "rename_connection",
+      outcome: args.outcome,
+      target_resource: "connection",
+      ...(args.error
+        ? {
+            error: {
+              code: typeof code === "string" ? code : "api_error",
+              http_status: httpStatusForAuditError(args.error),
+            },
+          }
+        : {}),
+    },
+  });
+}
+
+function buildOwnerConnectionRenameRequireOwner(
+  ctx: MountOwnerConnectionsContext
+): MiddlewareHandler {
+  return async (...args: unknown[]) => {
+    const [req, res, next] = args as [RouteRequest, RouteResponse, NextFn];
+    if (req.tokenInfo?.pdpp_token_kind === "owner") {
+      await next();
+      return;
+    }
+    const connectionId = decodeURIComponent(req.params.connectionId as string);
+    const err = new Error("Owner token required") as Error & { code: string };
+    err.code = "permission_error";
+    await emitOwnerConnectionRenameAudit(ctx, req, res, {
+      connectionId,
+      error: err,
+      outcome: "failed",
+      ownerSubjectId: typeof req.tokenInfo?.subject_id === "string" ? req.tokenInfo.subject_id : null,
+    });
+    ctx.pdppError(res, 403, "permission_error", "Owner token required");
+  };
 }
 
 // GET /v1/owner/connections — bearer-authed owner-agent listing of every
@@ -224,7 +363,7 @@ export function mountOwnerConnectionRename(app: AppLike, ctx: MountOwnerConnecti
     "/v1/owner/connections/:connectionId",
     { contract: "ownerSetConnectionDisplayName" },
     ctx.requireToken,
-    ctx.requireOwner,
+    buildOwnerConnectionRenameRequireOwner(ctx),
     async (req: RouteRequest, res: RouteResponse) => {
       try {
         const connectionId = decodeURIComponent(req.params.connectionId as string);
@@ -234,6 +373,16 @@ export function mountOwnerConnectionRename(app: AppLike, ctx: MountOwnerConnecti
         // the store is touched, matching the `/_ref` PATCH behaviour and the
         // contract's `display_name` body schema.
         if (typeof displayName !== "string" || !displayName.trim()) {
+          const err = new Error("display_name must be a non-empty string") as Error & { code: string; param: string };
+          err.code = "invalid_request";
+          err.param = "display_name";
+          await emitOwnerConnectionRenameAudit(ctx, req, res, {
+            connectionId,
+            displayNameSupplied: Object.prototype.hasOwnProperty.call(body, "display_name"),
+            error: err,
+            outcome: "failed",
+            ownerSubjectId: ctx.getOwnerTokenSubjectId(req),
+          });
           ctx.pdppError(res, 400, "invalid_request", "display_name must be a non-empty string", "display_name");
           return;
         }
@@ -250,8 +399,23 @@ export function mountOwnerConnectionRename(app: AppLike, ctx: MountOwnerConnecti
             .filter((schedule) => schedule?.connector_instance_id)
             .map((schedule) => [schedule.connector_instance_id as string, schedule])
         );
-        res.json(projectOwnerConnection(ctx, updated, schedulesByInstanceId));
+        const projected = projectOwnerConnection(ctx, updated, schedulesByInstanceId);
+        await emitOwnerConnectionRenameAudit(ctx, req, res, {
+          connectionId,
+          connectorKey: typeof projected.connector_key === "string" ? projected.connector_key : null,
+          labelStatus: typeof projected.label_status === "string" ? projected.label_status : null,
+          outcome: "succeeded",
+          ownerSubjectId,
+        });
+        res.json(projected);
       } catch (err) {
+        const connectionId = decodeURIComponent(req.params.connectionId as string);
+        await emitOwnerConnectionRenameAudit(ctx, req, res, {
+          connectionId,
+          error: err,
+          outcome: "failed",
+          ownerSubjectId: ctx.getOwnerTokenSubjectId(req),
+        });
         ctx.handleError(res, err);
       }
     }
