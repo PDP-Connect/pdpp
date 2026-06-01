@@ -540,7 +540,7 @@ registerPilotFixtureTests({ connector: "<name>", validateRecord });
 
 The helper registers one `node:test` case per `records/<stream>.jsonl`, parses every non-blank line, and asserts `validateRecord(stream, row).ok === true`. A missing fixture directory or an empty stream file fails the test — a `schemas.ts`-bearing connector is expected to ship this fixture (opt out only with `expectMissing: true`, and only with justification).
 
-A `pilot-real-shape` fixture is either a reviewed real owner capture (scrubbed via the steps above) or a hand-authored **synthetic-but-shape-real** record set: real field shapes and representative non-identifying values, with `[REDACTED_*]` placeholders wherever a real capture would carry owner identity. Either way the committed bytes are PII-free; the only requirement the test enforces is that every row matches the connector's live schema.
+A `pilot-real-shape` fixture is a hand-authored **synthetic-but-shape-real** record set: real field shapes and representative non-identifying values, with `[REDACTED_*]` placeholders wherever a real capture would carry owner identity. A reviewed real owner capture can calibrate the synthetic rows, but real owner rows must not be committed under `pilot-real-shape/`. If retaining a scrubbed real run as separate evidence, keep it under a run-specific `fixtures/<connector>/scrubbed/<runId>/` path and use the LLM-assisted redaction review above.
 
 The three committed pilots double as the per-shape reference for new connectors:
 
